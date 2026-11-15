@@ -10,7 +10,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::game::{Clock, Game};
-use crate::render::{Frame, Renderer};
+use crate::demo;
+use crate::render::Renderer;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -48,7 +49,10 @@ impl ApplicationHandler for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1600.0, 900.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         match Renderer::new_windowed(window.clone()) {
-            Ok(r) => self.renderer = Some(r),
+            Ok(mut r) => {
+                r.set_static_mesh(&demo::static_mesh());
+                self.renderer = Some(r);
+            }
             Err(e) => {
                 log::error!("renderer init failed: {e:#}");
                 event_loop.exit();
@@ -94,7 +98,8 @@ impl App {
         }
 
         if let Some(r) = &mut self.renderer {
-            r.render(&Frame { time: self.game.time() });
+            let scene = demo::scene(self.game.time(), r.width as f32, r.height as f32);
+            r.render(&scene);
         }
 
         self.fps_timer += dt;

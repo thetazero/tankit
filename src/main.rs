@@ -1,4 +1,5 @@
 mod app;
+mod demo;
 mod game;
 mod render;
 
@@ -62,7 +63,9 @@ fn screenshot(args: ShotArgs) -> Result<()> {
         game.step();
     }
     let mut renderer = render::Renderer::new_headless(args.width, args.height)?;
-    let img = renderer.render_to_image(&render::Frame { time: game.time() })?;
+    renderer.set_static_mesh(&demo::static_mesh());
+    let scene = demo::scene(game.time(), args.width as f32, args.height as f32);
+    let img = renderer.render_to_image(&scene)?;
     img.save(&args.out).with_context(|| format!("save {}", args.out))?;
     println!("wrote {} ({}x{}, t={:.2}s)", args.out, args.width, args.height, game.time());
     Ok(())
