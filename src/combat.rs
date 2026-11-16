@@ -507,6 +507,8 @@ pub enum Sound {
     Confirm,
     /// The player's link came back in a fresh chassis.
     Link,
+    /// The Hold site changed hands, or paid you for holding it.
+    Hold(hold::Cue),
     /// A Vigil's crystal shell cracking open: glass, a rush of light, and
     /// its bell struck hard.
     Shatter {
@@ -1323,7 +1325,11 @@ impl Match {
         });
         let paid = (h.own[0] / hold::TRUST_EVERY).floor() > (before / hold::TRUST_EVERY).floor();
         let won = h.winner().is_some();
+        if let Some(cue) = h.cue() {
+            self.sounds.push(Sound::Hold(cue));
+        }
         if paid {
+            self.sounds.push(Sound::Hold(hold::Cue::Paid));
             self.award(hold::HOLD_TRUST, "HOLDING");
         }
         if won {
@@ -2645,11 +2651,21 @@ mod tests {
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
         m.hold.as_mut().unwrap().own[0] = hold::TRUST_EVERY - 0.1;
-        for _ in 0..30 {
+        for _ in 0..60 {
             m.step(Command::default(), false);
         }
         assert_eq!(m.trust, hold::HOLD_TRUST);
         assert_eq!(m.trust_pops.last().map(|x| x.reason), Some("HOLDING"));
+        let heard: Vec<_> = m
+            .sounds
+            .iter()
+            .filter_map(|s| match s {
+                Sound::Hold(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        // Paid first here only because the test starts a hair short of a payout.
+        assert_eq!(heard, [hold::Cue::Paid, hold::Cue::Taken]);
         assert_eq!(m.phase, Phase::Playing);
         m.hold.as_mut().unwrap().held[0] = hold::TARGET - 0.1;
         for _ in 0..30 {

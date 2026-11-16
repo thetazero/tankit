@@ -25,6 +25,7 @@ use glam::Vec3;
 
 use crate::combat::{Burn, Match, Sound, muzzle};
 use crate::faction::Faction;
+use crate::hold::Cue;
 use crate::render::Camera;
 use crate::sim::{HullKind, TurretKind};
 
@@ -264,6 +265,16 @@ impl Audio {
             Sound::Gutter { at } => (patch::GUTTER, Some(at), 1.2, 1.0),
             Sound::Confirm => (patch::CONFIRM, None, 1.0, 1.0),
             Sound::Link => (patch::LINK, None, 1.0, 1.0),
+            // Heard wherever you are: the site is the round's objective.
+            Sound::Hold(cue) => {
+                let layers = match cue {
+                    Cue::Taken => patch::SITE_TAKEN,
+                    Cue::Lost => patch::SITE_LOST,
+                    Cue::Contested => patch::SITE_CONTESTED,
+                    Cue::Paid => patch::SITE_PAID,
+                };
+                (layers, None, 1.0, 1.0)
+            }
             // Your own arrival is heard close up, as if from inside the hull.
             Sound::Arrival { tank, faction, at } => {
                 let layers = match faction {
@@ -566,6 +577,61 @@ mod tests {
         let hot = buf.iter().filter(|x| x.abs() > 0.95).count() as f32 / buf.len() as f32;
         assert!(rms > 0.01, "rms {rms}");
         assert!(hot < 0.01, "{:.2}% of samples near full scale", hot * 100.0);
+    }
+
+    /// Each Hold cue on its own, as heard in the match, `secs` long.
+    fn hold_cue(cue: Cue, secs: f32) -> Vec<f32> {
+        const RATE: u32 = 48_000;
+        let mut audio = Audio::offline(RATE);
+        audio.set_volume(crate::profile::Settings::default().volume());
+        let shot = audio.one_shot(&Sound::Hold(cue), &ears()).unwrap();
+        audio.with(|m| {
+            m.set_wind(0.0);
+            m.play(shot)
+        });
+        let mut out = vec![0.0; 2 * (secs * RATE as f32) as usize];
+        audio.render(&mut out);
+        out
+    }
+
+    const CUES: [(Cue, &str); 4] = [
+        (Cue::Taken, "taken"),
+        (Cue::Lost, "lost"),
+        (Cue::Contested, "contested"),
+        (Cue::Paid, "paid"),
+    ];
+
+    /// Every Hold cue is clearly audible, under a kill's peak, and differs from the others.
+    #[test]
+    fn hold_cues_are_heard_and_tell_apart() {
+        let peaks: Vec<f32> = CUES
+            .iter()
+            .map(|&(c, _)| hold_cue(c, 1.2).iter().fold(0.0f32, |m, x| m.max(x.abs())))
+            .collect();
+        for (p, (_, name)) in peaks.iter().zip(CUES) {
+            assert!(*p > 0.05 && *p < 0.9, "{name} peaks at {p}");
+        }
+        let layers = [
+            patch::SITE_TAKEN,
+            patch::SITE_LOST,
+            patch::SITE_CONTESTED,
+            patch::SITE_PAID,
+        ];
+        for i in 0..4 {
+            for j in i + 1..4 {
+                assert!(layers[i] != layers[j]);
+            }
+        }
+    }
+
+    /// Writes `docs/audio/hold-*.wav`: `cargo test record_hold_cues -- --ignored`.
+    #[test]
+    #[ignore]
+    fn record_hold_cues() {
+        for (cue, name) in CUES {
+            let path = format!("docs/audio/hold-{name}.wav");
+            std::fs::write(&path, wav(&hold_cue(cue, 1.5), 48_000)).unwrap();
+        }
     }
 
     fn layers(shots: &[OneShot]) -> Vec<&'static [patch::Layer]> {

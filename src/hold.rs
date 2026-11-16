@@ -22,6 +22,9 @@ pub const TRUST_EVERY: f32 = 10.0;
 pub const HOLD_TRUST: u32 = 5;
 /// Tanks further than this above or below the ring's ground (a roof, a ledge) don't count.
 const REACH_Y: f32 = 4.0;
+/// Seconds a new state of the site must last before it's announced, so a
+/// tank on the ring's edge doesn't make it chatter.
+const SETTLE: f32 = 0.3;
 const DASHES: usize = 40;
 const POSTS: usize = 4;
 
@@ -35,6 +38,19 @@ pub enum Control {
     Contested,
 }
 
+/// A change at the site the player hears, from side 0's point of view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cue {
+    /// Your side took the site.
+    Taken,
+    /// Your side's hold is gone, or another side took the site.
+    Lost,
+    /// Two or more sides are in the ring.
+    Contested,
+    /// You were paid for your time on the site.
+    Paid,
+}
+
 pub struct Hold {
     pub at: Vec2,
     pub ground: f32,
@@ -45,6 +61,9 @@ pub struct Hold {
     pub control: Control,
     /// Ground height under each dash of the ring.
     dash_y: Vec<f32>,
+    /// The state last announced, and how long `control` has stood unchanged.
+    heard: Control,
+    steady: f32,
 }
 
 impl Hold {
@@ -71,6 +90,8 @@ impl Hold {
             own: vec![0.0; tanks],
             control: Control::Open,
             dash_y,
+            heard: Control::Open,
+            steady: 0.0,
         }
     }
 
@@ -95,11 +116,17 @@ impl Hold {
         let mut present: Vec<usize> = on.iter().map(|&(_, s)| s).collect();
         present.sort_unstable();
         present.dedup();
-        self.control = match present[..] {
+        let control = match present[..] {
             [] => Control::Open,
             [s] => Control::Held(s),
             _ => Control::Contested,
         };
+        self.steady = if control == self.control {
+            self.steady + dt
+        } else {
+            0.0
+        };
+        self.control = control;
         let Control::Held(s) = self.control else {
             return None;
         };
@@ -108,6 +135,21 @@ impl Hold {
             self.own[i] += dt;
         }
         Some(s)
+    }
+
+    /// What the player should hear about the site now, if anything: once a
+    /// new state has lasted `SETTLE`, the cue for the change. Call once a step.
+    pub fn cue(&mut self) -> Option<Cue> {
+        if self.steady < SETTLE || self.control == self.heard {
+            return None;
+        }
+        let was = std::mem::replace(&mut self.heard, self.control);
+        match (was, self.control) {
+            (_, Control::Held(0)) => Some(Cue::Taken),
+            (_, Control::Contested) => Some(Cue::Contested),
+            (_, Control::Held(_)) | (Control::Held(0), Control::Open) => Some(Cue::Lost),
+            _ => None,
+        }
     }
 
     /// The side that has reached `TARGET`.
@@ -265,6 +307,62 @@ mod tests {
             h.step(DT, &w.tanks, |i| if i == 2 { None } else { sides(i) }),
             Some(0)
         );
+    }
+
+    /// Steps for `secs` with tank `i` on side `side_of(i)`, collecting cues.
+    fn run(
+        h: &mut Hold,
+        w: &World,
+        secs: f32,
+        side_of: impl Fn(usize) -> Option<usize> + Copy,
+    ) -> Vec<Cue> {
+        (0..(secs / DT).round() as usize)
+            .filter_map(|_| {
+                h.step(DT, &w.tanks, side_of);
+                h.cue()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn taking_contesting_and_losing_the_site_are_each_heard_once() {
+        let (mut w, mut h) = world_with(3);
+        let out = Vec2::new(RADIUS + 10.0, 0.0);
+        put(&mut w, &h, 0, Vec2::ZERO);
+        put(&mut w, &h, 1, out);
+        put(&mut w, &h, 2, out);
+        assert_eq!(run(&mut h, &w, 2.0, sides), [Cue::Taken]);
+        put(&mut w, &h, 2, Vec2::new(3.0, 0.0));
+        assert_eq!(run(&mut h, &w, 2.0, sides), [Cue::Contested]);
+        put(&mut w, &h, 0, out);
+        assert_eq!(run(&mut h, &w, 2.0, sides), [Cue::Lost]);
+        // The enemy leaving an empty site says nothing; your side walking off yours is a loss.
+        put(&mut w, &h, 2, out);
+        assert_eq!(run(&mut h, &w, 2.0, sides), []);
+        put(&mut w, &h, 0, Vec2::ZERO);
+        assert_eq!(run(&mut h, &w, 2.0, sides), [Cue::Taken]);
+        put(&mut w, &h, 0, out);
+        assert_eq!(run(&mut h, &w, 2.0, sides), [Cue::Lost]);
+    }
+
+    /// A tank flickering across the ring's edge every few steps stays quiet.
+    #[test]
+    fn a_flickering_edge_doesnt_chatter() {
+        let (mut w, mut h) = world_with(3);
+        put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 0.0));
+        put(&mut w, &h, 2, Vec2::new(RADIUS + 10.0, 5.0));
+        let mut cues = Vec::new();
+        for k in 0..120 {
+            let r = if (k / 4) % 2 == 0 {
+                RADIUS - 0.2
+            } else {
+                RADIUS + 0.2
+            };
+            put(&mut w, &h, 0, Vec2::new(r, 0.0));
+            h.step(DT, &w.tanks, sides);
+            cues.extend(h.cue());
+        }
+        assert!(cues.is_empty(), "{cues:?}");
     }
 
     #[test]

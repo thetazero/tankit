@@ -336,6 +336,113 @@ pub const LINK: &[Layer] = &[
     },
 ];
 
+/// Hold site taken by your side: a bright fanfare climbing a major chord
+/// (C, E, G, high C) over a soft swell, ending on a held top note.
+pub const SITE_TAKEN: &[Layer] = &[
+    Layer {
+        attack: 0.08,
+        ..sine(262.0, 262.0, 1.0, 0.5, 0.1)
+    },
+    sine(523.0, 523.0, 1.0, 0.16, 0.18),
+    sine(1046.0, 1046.0, 1.0, 0.08, 0.05),
+    Layer {
+        delay: 0.1,
+        ..sine(659.0, 659.0, 1.0, 0.16, 0.18)
+    },
+    Layer {
+        delay: 0.2,
+        ..sine(784.0, 784.0, 1.0, 0.18, 0.18)
+    },
+    Layer {
+        delay: 0.3,
+        attack: 0.01,
+        ..sine(1046.0, 1046.0, 1.0, 0.6, 0.2)
+    },
+    Layer {
+        delay: 0.3,
+        attack: 0.01,
+        ..sine(2093.0, 2093.0, 1.0, 0.3, 0.05)
+    },
+];
+
+/// Hold site lost: three low notes falling down a minor chord (G, E flat,
+/// C) that sag flat as they go, over a dull thud: the opposite of taking it.
+pub const SITE_LOST: &[Layer] = &[
+    ring(90.0, 0.25, 0.35),
+    noise(Filt::Low, 400.0, 120.0, 0.1, 0.15, 0.3),
+    sine(392.0, 380.0, 0.2, 0.18, 0.2),
+    Layer {
+        delay: 0.14,
+        ..sine(311.0, 300.0, 0.2, 0.2, 0.2)
+    },
+    Layer {
+        delay: 0.28,
+        attack: 0.01,
+        ..sine(262.0, 233.0, 0.5, 0.6, 0.22)
+    },
+    Layer {
+        delay: 0.28,
+        attack: 0.01,
+        ..sine(131.0, 117.0, 0.5, 0.6, 0.15)
+    },
+];
+
+/// A two-tone siren note: a buzzy tone (fundamental and odd overtones) with
+/// a fast attack, starting `delay` in.
+const fn siren(f: f32, delay: f32, gain: f32) -> [Layer; 2] {
+    [
+        Layer {
+            delay,
+            attack: 0.01,
+            ..sine(f, f, 1.0, 0.12, gain)
+        },
+        Layer {
+            delay,
+            attack: 0.01,
+            ..sine(f * 3.0, f * 3.0, 1.0, 0.08, gain * 0.3)
+        },
+    ]
+}
+
+/// Hold site contested: an alarm, a hard high-low siren played three times,
+/// nothing like the chords for taking or losing it.
+pub const SITE_CONTESTED: &[Layer] = &{
+    let a = siren(988.0, 0.0, 0.24);
+    let b = siren(740.0, 0.13, 0.24);
+    let c = siren(988.0, 0.26, 0.24);
+    let d = siren(740.0, 0.39, 0.24);
+    let e = siren(988.0, 0.52, 0.24);
+    let f = siren(740.0, 0.65, 0.2);
+    [
+        a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1], e[0], e[1], f[0], f[1],
+    ]
+};
+
+/// Paid for holding the site: two quick coin clinks (bright inharmonic
+/// partials, like struck metal) and a cash-drawer rattle.
+pub const SITE_PAID: &[Layer] = &[
+    ring(2637.0, 0.08, 0.12),
+    ring(3951.0, 0.06, 0.08),
+    ring(5870.0, 0.04, 0.04),
+    Layer {
+        delay: 0.08,
+        ..ring(3136.0, 0.12, 0.12)
+    },
+    Layer {
+        delay: 0.08,
+        ..ring(4699.0, 0.09, 0.08)
+    },
+    Layer {
+        delay: 0.08,
+        ..ring(6980.0, 0.05, 0.04)
+    },
+    Layer {
+        src: Src::Crackle(90.0),
+        delay: 0.02,
+        ..noise(Filt::High, 4000.0, 4000.0, 0.1, 0.12, 0.12)
+    },
+];
+
 /// Menu cursor moved.
 pub const TICK: &[Layer] = &[
     sine(1800.0, 1800.0, 1.0, 0.015, 0.09),
