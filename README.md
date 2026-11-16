@@ -10,13 +10,14 @@ Plain Rust: `winit` + `wgpu`, no engine.
 ## Run
 
 ```sh
-cargo run --release                          # play a deathmatch round (random map, 5 bots)
-cargo run --release -- --bots 7              # more opponents (0-7)
+cargo run --release                          # main menu: missions, garage, pilot rank
+cargo run --release -- --bots 7              # skip the menu: straight into a round (random map), more opponents (0-7)
 cargo run --release -- --seed 21             # play a specific map
 cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
 cargo run --release -- --hull bastion --turret maul   # start with a different loadout
 cargo run --release -- --seed 21 --garage --hull bastion --time 2 --shot garage.png   # garage open, Bastion picked
+cargo run --release -- --screen menu --xp 260 --time 2 --shot menu.png   # main menu (also: missions, pause)
 cargo run --release -- --showroom            # every hull x turret combo, animated, orbiting camera
 cargo run --release -- --showroom --focus 0 --dist 8 --orbit 120 --time 3 --shot tank.png
 cargo run --release -- --map proving --spawn 2 --straight --time 1.2 --frames 90 --shot clip/f.png   # frame sequence
@@ -37,18 +38,53 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | Space | fire (hold to keep firing as the gun reloads) |
 | Tab | scoreboard |
 | G | garage: park, orbit the tank, swap hull and turret (see below) |
-| Enter | next round (once the clock runs out) |
+| Enter | play the round again (once the clock runs out) |
 | 1 / 2 | quick-cycle the hull / turret queued for the next respawn |
 | R | restart the round at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
 | [ / ] | live tuning: sideways grip ×0.9 / ×1.1 |
 | ; / ' | live tuning: turn rate −/+ 0.1 rad/s |
 | Backspace | reset live tuning |
-| Esc | quit |
+| Esc | pause (resume / exit to menu / quit); back to the menu once the round is over |
+
+## Game loop
+
+`cargo run` opens the **main menu**, over the first mission's map with your
+tank parked in it:
+
+- **Missions**: pick one and deploy. A mission is a map plus a contract
+  (game mode). For now there's one: *Dead Town*, an Attrition contract
+  (deathmatch, 5 bots) on the desert town (fixed seed 21).
+- **Garage**: the same garage panel as in battle. Both answer one question:
+  what tank you spawn in next. From the menu that's the tank you deploy in.
+- **Quit**.
+
+In a match, **Esc** pauses (the battle freezes): resume, exit to menu, or
+quit. When the round ends, Enter plays it again and Esc goes back to the menu.
+
+**XP and pilot rank.** Every enemy you kill pays 10 XP the moment it dies
+(a `+10 XP` pops over the crosshair), and finishing the round on top pays
+25 more. Leaving early keeps everything earned so far. Rank comes from total
+XP: 100 to reach rank 2, then 50 more per rank (150, 200, ...). Rank will
+gate parts later; for now it's tracked and shown.
+
+**Saving** is automatic. One pilot profile (XP and the kit you deploy in)
+lives at `~/.local/share/tankit/profile.json` (the OS data directory
+elsewhere) and is rewritten whenever it changes. Delete it to start over.
+
+![main menu](docs/screenshots/menu.png)
+![mission select](docs/screenshots/missions.png)
+![pause](docs/screenshots/pause.png)
+
+Any match flag (`--seed`, `--map`, `--spawn`, `--bots`, `--hull`, `--turret`)
+skips the menu and drops straight into a round, for testing.
+
+Code: `src/menu.rs` (main menu, mission select, pause), `src/mission.rs`,
+`src/profile.rs`, XP in `src/combat.rs`, the state machine in `src/app.rs`.
 
 ## Garage
 
-Press **G** mid-battle, alive or waiting to respawn. The tank parks where
+Press **G** mid-battle (alive or waiting to respawn), or pick **Garage** in the main menu. The tank parks where
 it is (and stays a target), the HUD fades out and the camera swings round
 to orbit it, with a panel listing the hulls and turrets and their stats.
 What you pick is fitted **at your next respawn**; the orbit camera shows it

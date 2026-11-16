@@ -1,4 +1,9 @@
 //! Windowed app: winit event loop, input mapping, fixed-step simulation, rendering.
+//!
+//! The loop: main menu (missions, garage, quit) → a mission's match → Esc
+//! pauses (resume, exit to menu, quit) → when the round ends, Enter plays it
+//! again and Esc goes back to the menu. XP is banked into the pilot profile
+//! the moment it's earned, and the profile saves itself on every change.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -14,6 +19,9 @@ use crate::combat::{Match, Phase};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hud::Hud;
+use crate::menu::{self, Menu, Nav, Pause, PauseAction};
+use crate::mission::MISSIONS;
+use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullKind, HullStats, TurretKind};
@@ -22,18 +30,51 @@ use crate::{ShowroomArgs, make_map, showroom};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
+/// Main menu camera drift around the parked tank, rad/s.
+const MENU_ORBIT: f32 = 0.06;
+
+/// What the window is showing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Mode {
+    /// Main menu / mission select / garage, over the first mission's map.
+    Menu,
+    Playing,
+    /// The match is frozen under the pause menu.
+    Paused,
+}
+
+/// How the app starts.
+pub struct Launch {
+    pub seed: u64,
+    pub proving: bool,
+    pub spawn: usize,
+    pub bots: usize,
+    /// Starting kit; `None` uses the profile's.
+    pub loadout: Option<garage::Loadout>,
+    /// Open on the main menu (otherwise straight into a match with the settings above).
+    pub menu: bool,
+    pub showroom: Option<ShowroomArgs>,
+}
 
 struct App {
     seed: u64,
     proving: bool,
     spawn: usize,
     bots: usize,
+    mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     art: Option<TankArt>,
     showroom: Option<ShowroomArgs>,
-    /// The deathmatch (its world drives the showroom too, with no bots).
+    /// The deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
+    profile: Profile,
+    /// How much of `game.xp` is already banked into the profile.
+    banked: u32,
+    menu: Menu,
+    pause: Pause,
+    /// Main menu camera angle around the parked tank.
+    menu_orbit: f32,
     cam: ChaseCam,
     hud: Hud,
     garage: Garage,
@@ -51,33 +92,43 @@ struct App {
     fps_frames: u32,
 }
 
-pub fn run(
-    seed: u64,
-    proving: bool,
-    spawn: usize,
-    bots: usize,
-    loadout: garage::Loadout,
-    showroom: Option<ShowroomArgs>,
-) -> anyhow::Result<()> {
+pub fn run(launch: Launch) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut game = Match::new(make_map(seed, proving), spawn, if showroom.is_some() { 0 } else { bots }, seed);
-    if showroom.is_some() {
-        game.world = showroom::world();
+    let profile = match Profile::default_path() {
+        Some(path) => Profile::load(path),
+        None => {
+            log::warn!("no data directory; progress won't be saved");
+            Profile::in_memory()
+        }
+    };
+    let loadout = launch.loadout.unwrap_or(profile.loadout);
+    let game = if launch.showroom.is_some() {
+        let mut m = Match::new(make_map(launch.seed, launch.proving), launch.spawn, 0, launch.seed);
+        m.world = showroom::world();
+        m
+    } else if launch.menu {
+        menu_match(loadout)
     } else {
-        game.set_player_hull(loadout.0);
-        game.world.tanks[0].turret_kind = loadout.1;
-    }
+        new_match(launch.seed, launch.proving, launch.spawn, launch.bots, loadout)
+    };
+    let menu_orbit = garage::front_angle(&game.world.tanks[0]);
     let mut app = App {
-        seed,
-        proving,
-        spawn,
-        bots,
+        seed: launch.seed,
+        proving: launch.proving,
+        spawn: launch.spawn,
+        bots: launch.bots,
+        mode: if launch.menu && launch.showroom.is_none() { Mode::Menu } else { Mode::Playing },
         window: None,
         renderer: None,
         art: None,
-        showroom,
+        showroom: launch.showroom,
         game,
+        profile,
+        banked: 0,
+        menu: Menu::new(),
+        pause: Pause::new(),
+        menu_orbit,
         cam: ChaseCam::new(),
         hud: Hud::new(),
         garage: Garage::new(),
@@ -93,6 +144,21 @@ pub fn run(
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// A round with the player in `kit`.
+pub fn new_match(seed: u64, proving: bool, spawn: usize, bots: usize, kit: garage::Loadout) -> Match {
+    let mut m = Match::new(make_map(seed, proving), spawn, bots, seed.wrapping_add(spawn as u64));
+    m.set_player_hull(kit.0);
+    m.world.tanks[0].turret_kind = kit.1;
+    m
+}
+
+/// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
+pub fn menu_match(kit: garage::Loadout) -> Match {
+    let mut m = new_match(MISSIONS[0].seed, false, 0, 0, kit);
+    m.time_left = f32::INFINITY;
+    m
 }
 
 impl ApplicationHandler for App {
@@ -160,18 +226,39 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    /// Start a new round on the current map settings, keeping the player's tank kit.
-    fn restart(&mut self) {
-        let (hull, turret) = self.queued();
-        self.game = Match::new(make_map(self.seed, self.proving), self.spawn, self.bots, self.seed.wrapping_add(self.spawn as u64));
-        self.game.set_player_hull(hull);
-        self.game.world.tanks[0].turret_kind = turret;
+    /// Swap in a new match (or menu backdrop) and reset everything tied to the old one.
+    fn load(&mut self, game: Match) {
+        self.game = game;
+        self.banked = 0;
         self.cam = ChaseCam::new();
         self.hud = Hud::new();
         self.garage = Garage::new();
+        self.player_alive = true;
         if let Some(r) = &mut self.renderer {
             r.set_static_mesh(&scene::map_mesh(&self.game.world.map));
         }
+    }
+
+    /// Start a new round on the current map settings, keeping the player's queued kit.
+    fn restart(&mut self) {
+        let kit = self.queued();
+        self.load(new_match(self.seed, self.proving, self.spawn, self.bots, kit));
+        self.mode = Mode::Playing;
+    }
+
+    fn start_mission(&mut self, i: usize) {
+        let m = &MISSIONS[i];
+        (self.seed, self.proving, self.spawn, self.bots) = (m.seed, false, 0, m.bots);
+        self.load(new_match(self.seed, self.proving, self.spawn, self.bots, self.profile.loadout));
+        self.mode = Mode::Playing;
+        log::info!("deployed: {} ({}, {})", m.name, m.mode, m.map);
+    }
+
+    fn back_to_menu(&mut self) {
+        self.load(menu_match(self.profile.loadout));
+        self.menu = Menu::new();
+        self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
+        self.mode = Mode::Menu;
     }
 
     /// The player's kit for the next respawn (the current one if nothing is queued).
@@ -180,10 +267,29 @@ impl App {
         self.game.player().next_kit.unwrap_or((t.hull_kind, t.turret_kind))
     }
 
-    /// Queue a kit for the player's next respawn.
+    /// Pick the kit for the next respawn. In a match it's queued for the next
+    /// respawn; in the menu the parked tank wears it right away. Either way
+    /// it's what you deploy in next time.
     fn queue(&mut self, kit: garage::Loadout) {
-        let t = &self.game.world.tanks[0];
-        self.game.fighters[0].next_kit = (kit != (t.hull_kind, t.turret_kind)).then_some(kit);
+        if self.mode == Mode::Menu {
+            self.game.set_player_hull(kit.0);
+            self.game.world.tanks[0].turret_kind = kit.1;
+            self.game.fighters[0].next_kit = None;
+        } else {
+            let t = &self.game.world.tanks[0];
+            self.game.fighters[0].next_kit = (kit != (t.hull_kind, t.turret_kind)).then_some(kit);
+        }
+        self.profile.set_loadout(kit);
+    }
+
+    fn nav(code: KeyCode) -> Option<Nav> {
+        Some(match code {
+            KeyCode::KeyW | KeyCode::ArrowUp => Nav::Up,
+            KeyCode::KeyS | KeyCode::ArrowDown => Nav::Down,
+            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Nav::Select,
+            KeyCode::Escape | KeyCode::Backspace => Nav::Back,
+            _ => return None,
+        })
     }
 
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
@@ -202,15 +308,48 @@ impl App {
             }
             return;
         }
+        match self.mode {
+            Mode::Menu => {
+                let Some(nav) = Self::nav(code) else { return };
+                match self.menu.input(nav) {
+                    Some(menu::Action::Deploy(i)) => self.start_mission(i),
+                    Some(menu::Action::Garage) => {
+                        if let Some(cam) = self.camera {
+                            self.garage.toggle(&self.game.world, &cam, self.queued());
+                        }
+                    }
+                    Some(menu::Action::Quit) => event_loop.exit(),
+                    None => {}
+                }
+                return;
+            }
+            Mode::Paused => {
+                let Some(nav) = Self::nav(code) else { return };
+                match self.pause.input(nav) {
+                    Some(PauseAction::Resume) => self.mode = Mode::Playing,
+                    Some(PauseAction::ExitToMenu) => self.back_to_menu(),
+                    Some(PauseAction::Quit) => event_loop.exit(),
+                    None => {}
+                }
+                return;
+            }
+            Mode::Playing => {}
+        }
         match code {
+            KeyCode::Escape if self.showroom.is_some() => event_loop.exit(),
+            // Round over: back to the menu. Otherwise pause.
+            KeyCode::Escape if self.game.phase == Phase::Over => self.back_to_menu(),
+            KeyCode::Escape => {
+                self.pause = Pause::new();
+                self.mode = Mode::Paused;
+            }
             // Garage: park and pick the hull / turret for the next respawn.
             KeyCode::KeyG if self.showroom.is_none() && self.game.phase == Phase::Playing => {
                 if let Some(cam) = self.camera {
                     self.garage.toggle(&self.game.world, &cam, self.queued());
                 }
             }
-            KeyCode::Escape => event_loop.exit(),
-            // Next round once the clock has run out.
+            // Play the round again once the clock has run out.
             KeyCode::Enter | KeyCode::NumpadEnter if self.showroom.is_none() && self.game.phase == Phase::Over => {
                 self.spawn += 1;
                 self.restart();
@@ -251,8 +390,8 @@ impl App {
     }
 
     fn command(&self) -> Command {
-        // Parked in the garage.
-        if self.garage.is_open() {
+        // Parked in the garage or the menu.
+        if self.garage.is_open() || self.mode != Mode::Playing {
             return Command::default();
         }
         let axis = |pos: &[KeyCode], neg: &[KeyCode]| (self.held(pos) as i32 - self.held(neg) as i32) as f32;
@@ -281,32 +420,51 @@ impl App {
         }
 
         let cmd = self.command();
-        let fire = self.held(&[KeyCode::Space]) && !self.garage.is_open();
-        for _ in 0..self.clock.advance(dt) {
-            if self.showroom.is_some() {
-                let w = &mut self.game.world;
-                let cmds = showroom::commands(w);
-                w.step(&cmds);
-                showroom::after_step(w);
-            } else {
-                self.game.step(cmd, fire);
+        let fire = self.held(&[KeyCode::Space]) && !self.garage.is_open() && self.mode == Mode::Playing;
+        if self.mode != Mode::Paused {
+            for _ in 0..self.clock.advance(dt) {
+                if self.showroom.is_some() {
+                    let w = &mut self.game.world;
+                    let cmds = showroom::commands(w);
+                    w.step(&cmds);
+                    showroom::after_step(w);
+                } else {
+                    self.game.step(cmd, fire);
+                }
             }
+        }
+
+        // Paid the moment it's earned.
+        if self.game.xp > self.banked {
+            self.profile.add_xp(self.game.xp - self.banked);
+            self.banked = self.game.xp;
         }
 
         // Respawned (in the new kit) or round over: back to battle.
         let alive = self.game.player().alive;
-        if (alive && !self.player_alive) || self.game.phase != Phase::Playing {
+        if self.mode == Mode::Playing && ((alive && !self.player_alive) || self.game.phase != Phase::Playing) {
             self.garage.close();
         }
         self.player_alive = alive;
+        if self.mode == Mode::Menu && !self.garage.is_open() {
+            self.menu_orbit += MENU_ORBIT * dt;
+        }
         let queued = self.queued();
         let scores = self.held(&[KeyCode::Tab]);
         if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
-            let alpha = self.clock.alpha();
+            let (w, h) = (r.width as f32, r.height as f32);
+            let alpha = if self.mode == Mode::Paused { 1.0 } else { self.clock.alpha() };
             let mut tanks = self.game.display_tanks(alpha);
-            let mut camera = self.cam.update(&self.game.world, &tanks[0], dt);
-            self.garage.update(dt);
-            camera = self.garage.camera(camera, &self.game.world, &tanks[0], r.width as f32 / r.height as f32);
+            let mut camera = match (self.mode, self.camera) {
+                (Mode::Menu, _) => garage::orbit_camera(&self.game.world, &tanks[0], self.menu_orbit, w / h),
+                // Frozen: hold the last frame's view.
+                (Mode::Paused, Some(c)) => c,
+                _ => self.cam.update(&self.game.world, &tanks[0], dt),
+            };
+            if self.mode != Mode::Paused {
+                self.garage.update(dt);
+                camera = self.garage.camera(camera, &self.game.world, &tanks[0], w / h);
+            }
             let driven = tanks[0].clone();
             self.garage.preview(&mut tanks[0], queued);
             if let Some(room) = self.showroom {
@@ -320,9 +478,22 @@ impl App {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
             } else {
-                let (w, h) = (r.width as f32, r.height as f32);
-                let hud = self.hud.draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
-                scene.ui = self.garage.overlay(hud, &driven, queued, h);
+                scene.ui = match self.mode {
+                    Mode::Menu => {
+                        let mut ui = self.menu.draw(&self.profile, h, 1.0 - self.garage.presence());
+                        ui.extend(self.garage.draw(&driven, queued, h));
+                        ui
+                    }
+                    Mode::Playing => {
+                        let hud = self.hud.draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
+                        self.garage.overlay(hud, &driven, queued, h)
+                    }
+                    Mode::Paused => {
+                        let mut ui = menu::dim(self.hud.draw(&self.game, &tanks, self.seed, &camera, w, h, 0.0, false));
+                        ui.extend(self.pause.draw(&self.profile, self.game.xp, w, h));
+                        ui
+                    }
+                };
             }
             r.render(&scene);
             self.camera = Some(camera);
@@ -335,7 +506,7 @@ impl App {
                 let fps = self.fps_frames as f32 / self.fps_timer;
                 let t = &self.game.world.tanks[0];
                 w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2} ([ ])  turn {:.1} rad/s (; ')  Backspace reset  |  WASD, Z/X/C turret, Space fire, Tab scores, G garage, R restart",
+                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2} ([ ])  turn {:.1} rad/s (; ')  Backspace reset  |  WASD, Z/X/C turret, Space fire, Tab scores, G garage, Esc pause",
                     t.speed(),
                     if t.grounded() { "ground" } else { "AIR" },
                     self.tune_grip,
