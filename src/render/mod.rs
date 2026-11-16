@@ -3,6 +3,7 @@
 //!
 //! Frame: sun shadow map -> lit HDR scene + sky -> tonemap to output -> 2D overlay.
 
+pub mod material;
 pub mod mesh;
 pub mod surface;
 
@@ -234,7 +235,15 @@ impl Renderer {
     ) -> Renderer {
         let scene_src = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/scene.wgsl").into()),
+            // Material ids come from render/material.rs, never hard-coded in the shader.
+            source: wgpu::ShaderSource::Wgsl(
+                format!(
+                    "{}\n{}",
+                    material::Material::wgsl_constants(),
+                    include_str!("../shaders/scene.wgsl")
+                )
+                .into(),
+            ),
         });
         let post_src = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post.wgsl"),

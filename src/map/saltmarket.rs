@@ -18,10 +18,11 @@
 //!
 //! The three lanes loop into each other: no dead ends.
 
+use crate::render::material::Material;
 use glam::{Vec2, Vec3};
 
 use super::ruins::{self, Drift};
-use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge, mat};
+use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge};
 use crate::rng::Rng;
 
 const SIZE: f32 = 240.0;
@@ -237,8 +238,8 @@ impl Map {
             y0: 0.0,
             y1: 1.0,
             color: CONCRETE,
-            side_mat: mat::WALL,
-            top_mat: mat::ROOF,
+            side_mat: Material::Wall,
+            top_mat: Material::Roof,
             ..OBox::default()
         };
 
@@ -318,7 +319,7 @@ impl Map {
         y0: f32,
         y1: f32,
         color: Vec3,
-        material: f32,
+        material: Material,
     ) -> OBox {
         let (ax, az) = lot.axes();
         let mid = (min + max) * 0.5;
@@ -378,7 +379,7 @@ impl Map {
                 0.0,
                 height,
                 RUIN * rng.range(0.9, 1.0),
-                mat::PLASTER,
+                Material::Plaster,
             );
             drifts.push(Drift {
                 b: lot,
@@ -399,7 +400,7 @@ impl Map {
                     y0,
                     y0 + 0.45,
                     RUBBLE * (1.0 - 0.04 * k as f32),
-                    mat::RUBBLE,
+                    Material::Rubble,
                 );
             }
             let wall_len = h.x * rng.range(0.6, 1.4);
@@ -410,7 +411,7 @@ impl Map {
                 0.0,
                 rng.range(3.0, 6.0),
                 RUIN,
-                mat::PLASTER,
+                Material::Plaster,
             );
         } else {
             // A real building, built then damaged (see ruins.rs).
@@ -490,7 +491,7 @@ impl Map {
             ground(x, z) + drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max)
         });
         terrain.color = SAND;
-        terrain.material = mat::SAND;
+        terrain.material = Material::Sand;
         map.terrain = Some(terrain);
         map.market_hall();
         map.dam();
@@ -501,7 +502,8 @@ impl Map {
         map.perimeter_walls();
         // Everything masonry is knocked about a bit (visual only).
         for o in &mut map.oboxes {
-            let masonry = [mat::PLASTER, mat::CONCRETE, mat::RUBBLE].contains(&o.side_mat);
+            let masonry =
+                [Material::Plaster, Material::Concrete, Material::Rubble].contains(&o.side_mat);
             if o.solid && o.tilt == 0.0 && o.chip == 0.0 && masonry {
                 o.chip = 0.25;
             }
@@ -537,10 +539,10 @@ impl Map {
         }
     }
 
-    fn block_c(&mut self, min: Vec3, max: Vec3, color: Vec3, material: f32) {
+    fn block_c(&mut self, min: Vec3, max: Vec3, color: Vec3, material: Material) {
         // Masonry and stone are worn rotated boxes (chipped, visual only);
         // rocks get bigger chips so they read as stone, not blocks.
-        if [mat::CONCRETE, mat::RUBBLE, mat::PLASTER].contains(&material) {
+        if [Material::Concrete, Material::Rubble, Material::Plaster].contains(&material) {
             let size = max - min;
             self.oboxes.push(OBox {
                 center: Vec2::new(min.x + max.x, min.z + max.z) * 0.5,
@@ -551,7 +553,7 @@ impl Map {
                 side_mat: material,
                 top_mat: material,
                 // Big blocks get bigger chips (a fixed size reads as perfect at scale).
-                chip: if material == mat::RUBBLE {
+                chip: if material == Material::Rubble {
                     0.9
                 } else {
                     (0.3 + 0.08 * size.x.min(size.z)).min(1.0)
@@ -579,7 +581,7 @@ impl Map {
         height: f32,
         rise: Rise,
         color: Vec3,
-        material: f32,
+        material: Material,
     ) {
         self.wedges.push(Wedge {
             min,
@@ -603,21 +605,21 @@ impl Map {
                 Vec3::new(p.x - pier * 0.5, 0.0, p.y - pier * 0.5),
                 Vec3::new(p.x + pier * 0.5, roof_lo, p.y + pier * 0.5),
                 CONCRETE,
-                mat::CONCRETE,
+                Material::Concrete,
             );
         }
         self.block_c(
             Vec3::new(c.x - half, roof_lo, c.y - half),
             Vec3::new(c.x + half, roof_hi, c.y + half),
             CONCRETE * 1.04,
-            mat::CONCRETE,
+            Material::Concrete,
         );
         // A smaller drum on the roof stands in for the dome.
         self.block_c(
             Vec3::new(c.x - 6.0, roof_hi, c.y - 6.0),
             Vec3::new(c.x + 6.0, roof_hi + 3.5, c.y + 6.0),
             CONCRETE * 0.97,
-            mat::CONCRETE,
+            Material::Concrete,
         );
     }
 
@@ -631,13 +633,13 @@ impl Map {
             Vec3::new(x0, 0.0, z0),
             Vec3::new(gap0, h, z1),
             DAM,
-            mat::CONCRETE,
+            Material::Concrete,
         );
         self.block_c(
             Vec3::new(gap1, 0.0, z0),
             Vec3::new(x1, h, z1),
             DAM,
-            mat::CONCRETE,
+            Material::Concrete,
         );
         // Rubble spilling out of the breach.
         self.ramp(
@@ -647,7 +649,7 @@ impl Map {
             1.0,
             Rise::PosZ,
             RUBBLE,
-            mat::RUBBLE,
+            Material::Rubble,
         );
         // Up from the town's south edge onto the west half of the dam.
         self.ramp(
@@ -657,7 +659,7 @@ impl Map {
             h,
             Rise::PosX,
             DAM * 0.95,
-            mat::CONCRETE,
+            Material::Concrete,
         );
         // Down from the east half into the bowl.
         self.ramp(
@@ -667,7 +669,7 @@ impl Map {
             h + 2.5,
             Rise::NegZ,
             DAM * 0.95,
-            mat::CONCRETE,
+            Material::Concrete,
         );
     }
 
@@ -682,7 +684,7 @@ impl Map {
                        half: Vec2,
                        y1: f32,
                        color: Vec3,
-                       material: f32| {
+                       material: Material| {
             let b = OBox {
                 center,
                 yaw,
@@ -707,7 +709,7 @@ impl Map {
             Vec2::new(3.0, 3.0),
             0.8,
             DAM,
-            mat::CONCRETE,
+            Material::Concrete,
         );
         let footing = OBox {
             center: Vec2::new(140.0, 84.0),
@@ -730,8 +732,8 @@ impl Map {
                 y0: 0.8,
                 y1: 0.8 + h,
                 color: RUST,
-                side_mat: mat::RUST,
-                top_mat: mat::RUST,
+                side_mat: Material::Rust,
+                top_mat: Material::Rust,
                 ..OBox::default()
             });
         }
@@ -742,7 +744,7 @@ impl Map {
             Vec2::new(5.0, 3.2),
             4.5,
             Vec3::new(0.58, 0.68, 0.64),
-            mat::PAINTED,
+            Material::Painted,
         );
         // Riveted bands around the fallen tank.
         let tank = *placed.last().unwrap();
@@ -755,8 +757,8 @@ impl Map {
                 y0: -0.1,
                 y1: tank.y1 + 0.07,
                 color: RUST * 0.8,
-                side_mat: mat::RUST,
-                top_mat: mat::RUST,
+                side_mat: Material::Rust,
+                top_mat: Material::Rust,
                 ..OBox::default()
             });
         }
@@ -784,28 +786,29 @@ impl Map {
         let paint = Vec3::new(0.56, 0.66, 0.74); // faded blue
         let cream = Vec3::new(0.84, 0.8, 0.68);
         let dark = Vec3::new(0.12, 0.11, 0.1);
-        let part = |m: &mut Map, lo: Vec3, hi: Vec3, color: Vec3, material: f32, solid: bool| {
-            let mid = (lo + hi) * 0.5;
-            m.oboxes.push(OBox {
-                center: b.center + ax * mid.x + az * mid.z,
-                yaw: b.yaw,
-                half: Vec2::new((hi.x - lo.x) * 0.5, (hi.z - lo.z) * 0.5),
-                y0: lo.y,
-                y1: hi.y,
-                color,
-                side_mat: material,
-                top_mat: material,
-                solid,
-                ..OBox::default()
-            });
-        };
+        let part =
+            |m: &mut Map, lo: Vec3, hi: Vec3, color: Vec3, material: Material, solid: bool| {
+                let mid = (lo + hi) * 0.5;
+                m.oboxes.push(OBox {
+                    center: b.center + ax * mid.x + az * mid.z,
+                    yaw: b.yaw,
+                    half: Vec2::new((hi.x - lo.x) * 0.5, (hi.z - lo.z) * 0.5),
+                    y0: lo.y,
+                    y1: hi.y,
+                    color,
+                    side_mat: material,
+                    top_mat: material,
+                    solid,
+                    ..OBox::default()
+                });
+            };
         let (l, w) = (b.half.x, b.half.y);
         part(
             self,
             Vec3::new(-l, 0.45, -w),
             Vec3::new(l, 1.5, w),
             paint,
-            mat::PAINTED,
+            Material::Painted,
             true,
         );
         part(
@@ -813,7 +816,7 @@ impl Map {
             Vec3::new(-l + 0.3, 0.12, -w + 0.15),
             Vec3::new(l - 0.3, 0.45, w - 0.15),
             dark,
-            mat::RUST,
+            Material::Rust,
             true,
         );
         part(
@@ -821,7 +824,7 @@ impl Map {
             Vec3::new(-l + 0.15, 1.45, -w + 0.2),
             Vec3::new(l - 0.15, 2.5, w - 0.2),
             dark,
-            mat::RUBBLE,
+            Material::Rubble,
             false,
         );
         let pillars = 9;
@@ -832,7 +835,7 @@ impl Map {
                 Vec3::new(x, 1.5, -w),
                 Vec3::new(x + 0.18, 2.55, w),
                 cream,
-                mat::PAINTED,
+                Material::Painted,
                 false,
             );
         }
@@ -841,7 +844,7 @@ impl Map {
             Vec3::new(-l, 2.55, -w),
             Vec3::new(l, 2.8, w),
             cream,
-            mat::PAINTED,
+            Material::Painted,
             true,
         );
         for sx in [-3.4f32, 3.4] {
@@ -852,7 +855,7 @@ impl Map {
                     Vec3::new(sx - 0.4, 0.0, z.min(z - sz * 0.25)),
                     Vec3::new(sx + 0.4, 0.8, z.max(z - sz * 0.25)),
                     dark * 2.5,
-                    mat::RUST,
+                    Material::Rust,
                     false,
                 );
             }
@@ -868,19 +871,19 @@ impl Map {
             Vec3::new(cx - 8.0, floor - 2.0, cz - 5.0),
             Vec3::new(cx + 8.0, floor + 4.5, cz + 5.0),
             WRECK,
-            mat::RUST,
+            Material::Rust,
         );
         self.block_c(
             Vec3::new(cx - 3.5, floor + 4.5, cz - 3.5),
             Vec3::new(cx + 3.5, floor + 7.5, cz + 3.5),
             WRECK * 1.05,
-            mat::RUST,
+            Material::Rust,
         );
         self.block_c(
             Vec3::new(cx - 18.0, floor + 5.2, cz - 0.7),
             Vec3::new(cx - 3.5, floor + 6.6, cz + 0.7),
             WRECK * 0.9,
-            mat::RUST,
+            Material::Rust,
         );
         // A sand drift banked against its west flank: the way up.
         self.ramp(
@@ -890,7 +893,7 @@ impl Map {
             4.5,
             Rise::PosX,
             SAND,
-            mat::SAND,
+            Material::Sand,
         );
     }
 
@@ -905,7 +908,7 @@ impl Map {
             Vec3::new(146.0, -1.0, pz0),
             Vec3::new(176.0, 0.4, pz1),
             RUST * 0.8,
-            mat::RUST,
+            Material::Rust,
         );
         for x in [154.0f32, 162.0, 170.0] {
             let g = at(x, pz0);
@@ -913,13 +916,13 @@ impl Map {
                 Vec3::new(x - 0.6, g - 0.5, pz0 + 0.5),
                 Vec3::new(x + 0.6, -1.0, pz0 + 1.7),
                 RUST * 0.7,
-                mat::RUST,
+                Material::Rust,
             );
             self.block_c(
                 Vec3::new(x - 0.6, g - 0.5, pz1 - 1.7),
                 Vec3::new(x + 0.6, -1.0, pz1 - 0.5),
                 RUST * 0.7,
-                mat::RUST,
+                Material::Rust,
             );
         }
         // Pipeline: segments half sunk in the bed, with gaps to drive through.
@@ -930,7 +933,7 @@ impl Map {
                 Vec3::new(170.5, g - 0.8, z0),
                 Vec3::new(173.5, g + 1.4, z0 + 8.0),
                 RUST,
-                mat::RUST,
+                Material::Rust,
             );
         }
         // Stranded boats: hull block with a bow ramp, lying in the mud.
@@ -941,7 +944,7 @@ impl Map {
                 Vec3::new(x - hx, g - 0.5, z - hz),
                 Vec3::new(x + hx, g + 2.4, z + hz),
                 Vec3::new(0.44, 0.4, 0.36),
-                mat::RUST,
+                Material::Rust,
             );
             if along_x {
                 self.ramp(
@@ -951,7 +954,7 @@ impl Map {
                     2.9,
                     Rise::NegX,
                     SAND,
-                    mat::SAND,
+                    Material::Sand,
                 );
             } else {
                 self.ramp(
@@ -961,7 +964,7 @@ impl Map {
                     2.9,
                     Rise::PosZ,
                     SAND,
-                    mat::SAND,
+                    Material::Sand,
                 );
             }
         }
@@ -984,7 +987,7 @@ impl Map {
                 Vec3::new(x - w, g - 1.0, z - d),
                 Vec3::new(x + w, g + h, z + d),
                 Vec3::new(0.62, 0.52, 0.4),
-                mat::RUBBLE,
+                Material::Rubble,
             );
         }
     }
@@ -997,14 +1000,14 @@ impl Map {
             Vec3::new(142.0, g - 1.0, 212.0),
             Vec3::new(156.0, g + 2.8, 220.0),
             DAM,
-            mat::CONCRETE,
+            Material::Concrete,
         );
         let g = at(96.0, 222.0);
         self.block_c(
             Vec3::new(95.0, g - 0.5, 221.0),
             Vec3::new(97.0, g + 11.0, 223.0),
             RUST,
-            mat::RUST,
+            Material::Rust,
         );
         for (x, z, w, h) in [
             (30.0f32, 220.0f32, 4.0f32, 3.0f32),
@@ -1018,7 +1021,7 @@ impl Map {
                 Vec3::new(x - w, g - 1.0, z - w * 0.8),
                 Vec3::new(x + w, g + h, z + w * 0.8),
                 Vec3::new(0.62, 0.52, 0.4),
-                mat::RUBBLE,
+                Material::Rubble,
             );
         }
     }
@@ -1126,8 +1129,8 @@ mod tests {
             y0: 0.0,
             y1: 4.0,
             color: CONCRETE,
-            side_mat: mat::WALL,
-            top_mat: mat::ROOF,
+            side_mat: Material::Wall,
+            top_mat: Material::Roof,
             ..OBox::default()
         };
         map.oboxes.push(b);

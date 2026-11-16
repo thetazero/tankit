@@ -147,7 +147,7 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
     let uv = plane_uv(lpos, ln);
     // Grime collects low on the vehicle.
     let grime = mix(0.72, 1.0, smoothstep(0.1, 1.1, wpos.y));
-    if (m == 6) {
+    if (m == MAT_CARBON) {
         // Dark composite: fine diagonal weave plus faint panel seams.
         let q = uv * 22.0;
         let weave = step(0.5, fract((q.x + q.y) * 0.5)) * 0.5 + step(0.5, fract((q.x - q.y) * 0.5)) * 0.5;
@@ -156,12 +156,12 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         let seams = max(grid_line(uv.x * 0.9, 0.006, duv.x * 0.9), grid_line(uv.y * 0.9 + 0.3, 0.006, duv.y * 0.9));
         s.albedo *= 1.0 - seams * 0.4;
         s.rough = 0.38 + 0.15 * noise2(uv * 9.0);
-    } else if (m == 7 || m == 11) {
+    } else if (m == MAT_PAINT || m == MAT_WORN) {
         // Painted armor (team color via tint). Worn edges (11) show bare metal through scuffs.
         let n = noise2(uv * 7.0) * 0.6 + noise2(uv * 23.0) * 0.4;
         s.albedo = base * (0.92 + 0.1 * n) * grime;
         s.rough = 0.42;
-        if (m == 11) {
+        if (m == MAT_WORN) {
             let wear = smoothstep(0.55, 0.68, noise2(uv * 14.0 + 3.1) * 0.7 + noise2(uv * 41.0) * 0.3);
             s.albedo = mix(s.albedo, vec3<f32>(0.42, 0.42, 0.44), wear);
             s.metal = wear * 0.8;
@@ -170,18 +170,18 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         // Small scratches.
         let scratch = smoothstep(0.86, 0.92, noise2(vec2<f32>(uv.x * 60.0, uv.y * 4.0)));
         s.albedo = mix(s.albedo, s.albedo * 0.8, scratch * 0.3);
-    } else if (m == 8) {
+    } else if (m == MAT_TREAD) {
         // Track steel: dark, worn bright on ridges facing outward.
         let n = noise2(uv * 30.0);
         s.albedo = base * (0.8 + 0.4 * n) * grime;
         s.metal = 0.6;
         s.rough = 0.55;
-    } else if (m == 9) {
+    } else if (m == MAT_GLOW) {
         // Light strip: slow pulse running along the hull.
         let pulse = 0.75 + 0.25 * sin(g.params.x * 3.0 - lpos.z * 1.5 + lpos.x * 0.7);
         s.albedo = base * 0.2;
         s.emissive = base * 2.2 * pulse;
-    } else if (m == 10) {
+    } else if (m == MAT_METAL) {
         // Bare gunmetal: brushed along the part's long axis.
         let brush = noise2(vec2<f32>(uv.x * 3.0, uv.y * 80.0));
         s.albedo = base * (0.85 + 0.25 * brush);
@@ -200,7 +200,7 @@ fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>) -> Surface {
     s.emissive = vec3<f32>(0.0);
     s.metal = 0.0;
     let m = i32(round(id));
-    if (m == 1) {
+    if (m == MAT_WALL) {
         // Building wall: window grid with floor bands, a few windows lit.
         let tangent = normalize(vec3<f32>(-n.z, 0.0, n.x));
         let u = dot(wpos, tangent);
@@ -220,21 +220,21 @@ fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>) -> Surface {
         }
         // Grounding: darken the base of walls.
         s.ao = mix(0.55, 1.0, smoothstep(0.0, 2.5, wpos.y));
-    } else if (m == 2) {
+    } else if (m == MAT_ASPHALT) {
         // Asphalt with coarse patches.
         let h = hash2(floor(wpos.xz * 0.5));
         let h2 = hash2(floor(wpos.xz * 4.0));
         s.albedo = base * (0.85 + 0.25 * h) * (0.95 + 0.1 * h2);
         s.rough = 0.9;
-    } else if (m == 3) {
+    } else if (m == MAT_ROOF) {
         let h = hash2(floor(wpos.xz * 0.7));
         s.albedo = base * 0.75 * (0.9 + 0.15 * h);
         s.rough = 0.85;
-    } else if (m == 4) {
+    } else if (m == MAT_GRASS) {
         let h = hash2(floor(wpos.xz * 2.0));
         s.albedo = base * (0.85 + 0.3 * h);
         s.rough = 0.95;
-    } else if (m == 5) {
+    } else if (m == MAT_PAVING) {
         // Paving tiles.
         let f = fract(wpos.xz * 0.5);
         let grout = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
@@ -322,7 +322,7 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
     let vertical = 1.0 - abs(n.y);
     let blotch = d.masks.r;
     let grain = d.fine.r;
-    if (m == 13) {
+    if (m == MAT_SAND) {
         // Sand: wind ripples across the flats, darker crusted hardpan in
         // patches, cracked dry mud on the reservoir floor.
         // Ripples: two trains at different angles and wavelengths, bent by
@@ -346,7 +346,7 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         s.albedo = mix(s.albedo, vec3<f32>(0.6, 0.53, 0.44), mud * 0.6);
         s.albedo *= 1.0 - crack * mud * 0.45;
         s.rough = 0.96;
-    } else if (m == 14) {
+    } else if (m == MAT_PLASTER) {
         // Plaster: sun-bleached and blotchy, chipped through to stone and brick
         // underneath, grime streaks running down from ledges, dust caked low.
         s.albedo = base * (0.84 + 0.32 * blotch) * (0.94 + 0.12 * grain);
@@ -360,17 +360,17 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         let caked = 1.0 - smoothstep(0.0, 1.6, wpos.y);
         s.albedo = mix(s.albedo, SAND_COL * 0.9, caked * vertical * 0.55);
         s.rough = 0.9;
-    } else if (m == 15) {
+    } else if (m == MAT_CONCRETE) {
         // Cast concrete: grey, blotchy, pitted, stained along the edges.
         s.albedo = base * (0.76 + 0.48 * blotch) * (0.9 + 0.2 * grain);
         s.albedo *= 1.0 - 0.18 * smoothstep(0.4, 0.8, d.masks.a) * vertical;
         s.rough = 0.92;
-    } else if (m == 16) {
+    } else if (m == MAT_RUBBLE) {
         // Rubble: broken masonry and stone, high variation, deep crevices.
         s.albedo = base * (0.62 + 0.7 * grain) * (0.8 + 0.4 * blotch);
         s.ao = d.cavity * d.cavity;
         s.rough = 0.95;
-    } else if (m == 17) {
+    } else if (m == MAT_RUST) {
         // Rusted steel: orange-brown bloom, flaking dark scale, a little bare
         // metal where it's been scraped.
         let bloom = vec3<f32>(0.4, 0.24, 0.14) * (0.7 + 0.6 * grain);
@@ -381,7 +381,7 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         s.metal = bare * 0.8;
         s.rough = mix(0.8, 0.4, bare);
     }
-    if (m == 18) {
+    if (m == MAT_PAINTED) {
         // Weathered paint over steel: faded and blotchy, rust breaking through
         // in patches (worse low down) and running down from them.
         s.albedo = base * (0.8 + 0.3 * blotch) * (0.94 + 0.12 * grain);
@@ -392,7 +392,7 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         s.rough = mix(0.65, 0.85, rust);
     }
     // Sand settles on everything that faces up.
-    if (m != 13) {
+    if (m != MAT_SAND) {
         let dust = smoothstep(0.55, 0.95, up) * clamp(0.3 + 0.6 * d.masks.g, 0.0, 1.0);
         s.albedo = mix(s.albedo, SAND_COL, dust * 0.65);
         s.rough = mix(s.rough, 0.96, dust);
@@ -424,13 +424,13 @@ fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>)
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
     let m = i32(round(v.color.a));
-    let is_tank = m >= 6 && m <= 11;
+    let is_tank = m == MAT_CARBON || m == MAT_PAINT || m == MAT_TREAD || m == MAT_GLOW || m == MAT_METAL || m == MAT_WORN;
     // On tanks the instance tint is the team color and only affects paint.
-    let paint = m == 7 || m == 11;
+    let paint = m == MAT_PAINT || m == MAT_WORN;
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
     let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);
-    let is_world_detail = m >= 13 && m <= 18;
+    let is_world_detail = m == MAT_SAND || m == MAT_PLASTER || m == MAT_CONCRETE || m == MAT_RUBBLE || m == MAT_RUST || m == MAT_PAINTED;
     var s: Surface;
     if (is_tank) {
         s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
