@@ -117,6 +117,7 @@ impl Map {
             oboxes: Vec::new(),
             terrain: None,
             scenery_terrain: None,
+            sculpted: crate::render::mesh::MeshData::default(),
             open_spots: Vec::new(),
             spawn_yaw: None,
             // Overcast and smoky: a flat pale sun through grey haze.
