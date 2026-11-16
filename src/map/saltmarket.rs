@@ -85,7 +85,8 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
     // plateau; west, past the barricade, the sand just rolls away.
     let out = p - edge;
     let west = smoothstep(0.2, 0.8, -out.x / (-out.x + out.y.abs()).max(1e-3));
-    let plateau = (1.0 - west) * 12.0 * smoothstep(1.0, 9.0, d);
+    let high = 15.0 + 3.5 * (along * 0.021).sin() + 2.0 * (along * 0.057 + 1.0).sin();
+    let plateau = (1.0 - west) * high * smoothstep(3.0, 9.0, d);
     let berm = berm * (1.0 - 0.7 * (1.0 - west));
     let dunes = smoothstep(10.0, 40.0, d)
         * (6.0 * (x * 0.021 + (z * 0.013).sin() * 2.0).sin().abs()
@@ -548,7 +549,7 @@ impl Map {
         map.reservoir_cover(&mut rng);
         map.ridge();
         // Cliffs and a container barricade close the edge (see valley.rs).
-        map.valley_edge(&mut rng, ground);
+        map.valley_edge(&mut rng, ground, scenery_ground);
         map.spawns();
         // A backstop buried inside them: nothing reaches it.
         map.perimeter(false);
@@ -1565,38 +1566,86 @@ mod tests {
         assert!(worst < 22.0, "slope of {worst} degrees");
     }
 
-    /// No invisible wall: every point along the arena's edge lies inside a
-    /// solid cliff or container stack, standing from below the sand to well
-    /// above a tank, so a tank driving at any edge stops against something
-    /// it can see before it reaches the hidden boundary.
+    /// No invisible wall: every point along the arena's edge lies inside the
+    /// cliff or a container stack, standing from below the sand to well above
+    /// a tank, so a tank driving at any edge stops against something it can
+    /// see before it reaches the hidden boundary. Where it's the cliff (a
+    /// sculpted face with invisible colliders), the rock face stands right
+    /// where its collider does.
     #[test]
     fn edge_is_closed_by_visible_obstacles() {
         let m = Map::saltmarket();
+        // Sculpted vertices at about tank height, bucketed on a 2 m grid.
+        let cell = |p: Vec2| ((p.x / 2.0).floor() as i32, (p.y / 2.0).floor() as i32);
+        let mut verts: std::collections::HashMap<(i32, i32), Vec<Vec3>> = Default::default();
+        for v in &m.sculpted.verts {
+            let p = Vec3::from(v.pos);
+            verts.entry(cell(Vec2::new(p.x, p.z))).or_default().push(p);
+        }
+        let in_solid = |q: Vec2| {
+            m.solids
+                .iter()
+                .filter(move |s| q.cmpge(s.min2()).all() && q.cmple(s.max2()).all())
+                .map(|s| (s.min.y, s.max.y))
+        };
+        // Height ranges of whatever blocks the point.
+        let over = |q: Vec2| {
+            m.oboxes
+                .iter()
+                .filter(move |o| o.solid && !o.is_turned() && o.distance(q) == 0.0)
+                .map(|o| (o.y0, o.y1))
+                .chain(in_solid(q))
+        };
         let n = (SIZE / 0.5) as usize;
         for k in 0..=n {
             let t = k as f32 * 0.5;
             // Just inside each side.
-            for (p, along) in [
-                (Vec2::new(t, 0.05), Vec2::X),
-                (Vec2::new(t, SIZE - 0.05), Vec2::X),
-                (Vec2::new(0.05, t), Vec2::Y),
-                (Vec2::new(SIZE - 0.05, t), Vec2::Y),
+            for (p, along, inward) in [
+                (Vec2::new(t, 0.05), Vec2::X, Vec2::Y),
+                (Vec2::new(t, SIZE - 0.05), Vec2::X, Vec2::NEG_Y),
+                (Vec2::new(0.05, t), Vec2::Y, Vec2::X),
+                (Vec2::new(SIZE - 0.05, t), Vec2::Y, Vec2::NEG_X),
             ] {
                 let g = ground(p.x, p.y);
-                let over = |q: Vec2| {
-                    m.oboxes
-                        .iter()
-                        .filter(move |o| o.solid && !o.is_turned() && o.distance(q) == 0.0)
-                };
-                let foot = over(p).any(|o| o.y0 <= g && o.y1 > g + 1.0);
-                assert!(foot, "nothing visible stops a tank at the edge at {p}");
+                let foot = over(p).any(|(y0, y1)| y0 <= g && y1 > g + 1.0);
+                assert!(foot, "nothing stops a tank at the edge at {p}");
                 // Too tall to climb, but for gaps narrower than a tank.
                 let top = [-1.0, 0.0, 1.0]
                     .iter()
                     .flat_map(|&s| over(p + along * s))
-                    .map(|o| o.y1)
+                    .map(|(_, y1)| y1)
                     .fold(f32::MIN, f32::max);
                 assert!(top > g + 4.0, "the edge at {p} is only {} m high", top - g);
+                // Where only the cliff's colliders hold it, the rock face is
+                // there to see: walk in to the collider's face and look for
+                // sculpted rock at tank height within a meter of it.
+                let boxed = m
+                    .oboxes
+                    .iter()
+                    .any(|o| o.solid && o.distance(p) == 0.0 && o.y1 > g + 1.0);
+                if boxed {
+                    continue;
+                }
+                let mut q = p;
+                while in_solid(q).next().is_some() && q.distance(p) < 6.0 {
+                    q += inward * 0.1;
+                }
+                if q.distance(p) >= 6.0 {
+                    // Deep in a rounded corner of the rock: no tank gets here.
+                    continue;
+                }
+                let (cx, cz) = cell(q);
+                let seen = (-1..=1)
+                    .flat_map(|dx| (-1..=1).map(move |dz| (cx + dx, cz + dz)))
+                    .any(|c| {
+                        verts.get(&c).into_iter().flatten().any(|v| {
+                            Vec2::new(v.x, v.z).distance(q) < 1.0 && v.y > g + 0.3 && v.y < g + 4.5
+                        })
+                    });
+                assert!(
+                    seen,
+                    "the cliff's collider at {q} (from {p}) has no rock face in front of it"
+                );
             }
         }
     }
