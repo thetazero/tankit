@@ -1476,14 +1476,6 @@ pub fn maul() -> TurretModel {
 // Faction turrets. The Imperium builds the plated Lance and Maul above; the
 // others below each have their own shape language and glow color.
 
-<<<<<<< HEAD
-/// Sorn plasma glow.
-const SORN_GLOW: Skin = Skin {
-    face: Vec4::new(0.25, 1.0, 0.6, Material::Glow.id()),
-    edge: Vec4::new(0.25, 1.0, 0.6, Material::Glow.id()),
-};
-=======
->>>>>>> 69dcc18 (WIP Ithessar)
 /// Machine laser red.
 const LASER_GLOW: Skin = Skin {
     face: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
@@ -1494,25 +1486,6 @@ const CRYSTAL: Skin = Skin {
     face: Vec4::new(0.6, 0.25, 1.0, Material::Glow.id()),
     edge: Vec4::new(0.8, 0.55, 1.0, Material::Glow.id()),
 };
-
-/// An oval dome lofted from horizontal rings: half extents `rx` x `rz` at
-/// `y0`, rising `h`, centered at z = `cz`.
-pub(crate) fn dome(m: &mut MeshData, rx: f32, rz: f32, cz: f32, y0: f32, h: f32, skin: Skin) {
-    let steps = 5;
-    let rings: Vec<Vec<Vec3>> = (0..=steps)
-        .map(|i| {
-            let f = i as f32 / steps as f32;
-            // Quarter-ellipse profile, with a small flat cap on top.
-            let r = (1.0 - f * f).sqrt().max(0.18);
-            let y = y0 + h * (f * std::f32::consts::FRAC_PI_2).sin();
-            ngon(18, 1.0, Vec2::ZERO)
-                .iter()
-                .map(|p| Vec3::new(p.x * rx * r, y, cz + p.y * rz * r))
-                .collect()
-        })
-        .collect();
-    round(m, &rings, 0.02, skin);
-}
 
 /// A crystal shard: a hexagonal prism from `base` along `dir`, tapering to a point.
 pub(crate) fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, skin: Skin) {

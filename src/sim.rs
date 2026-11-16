@@ -142,21 +142,21 @@ impl Chassis {
         center_of_mass: Vec3::new(0.0, 0.7, -0.1),
         hover: false,
     };
-    /// Ithessar hover hull: light and long, riding 0.8 m up on six emitters.
+    /// Ithessar hover hull: light and long, its belly riding 0.7 m up on six emitters.
     /// No tracks: `front`/`rear` are only the collider's prow and tail.
     pub const SETHUUN: Chassis = Chassis {
         mass: 13_000.0,
         track_x: 1.0,
         track_width: 0.5,
         road_z: &[-1.75, 0.05, 1.7],
-        road_y: 0.8,
+        road_y: 1.1,
         road_r: 0.0,
-        front: (2.75, 0.95, 0.0),
-        rear: (-2.55, 1.0, 0.0),
+        front: (2.75, 1.25, 0.0),
+        rear: (-2.55, 1.3, 0.0),
         hull_half_x: 1.4,
-        hull_top: 1.5,
+        hull_top: 1.8,
         hull_z: (-2.3, 2.1),
-        center_of_mass: Vec3::new(0.0, 0.95, 0.0),
+        center_of_mass: Vec3::new(0.0, 1.25, 0.0),
         hover: true,
     };
 
@@ -432,6 +432,8 @@ pub struct Tank {
     pub flipped_time: f32,
     /// Seconds since the tank was spawned (drives idle animation).
     pub age: f32,
+    /// Destroyed: a hover hull's field is out and it falls.
+    pub dead: bool,
     /// Hover hulls bank into turns (radians, + rolls right side down). Visual.
     pub lean: f32,
     /// Spin-up guns: how far spun up, 0..1, and the cluster's angle.
@@ -596,6 +598,7 @@ impl World {
             fire_barrel: 0,
             flipped_time: 0.0,
             age: 0.0,
+            dead: false,
             lean: 0.0,
             spool: 0.0,
             spin: 0.0,
@@ -1158,6 +1161,11 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
         }
     }
 
+    if t.dead {
+        t.wheels_down = 0;
+        t.wheel_lift.fill(-HOVER_SAG);
+        return;
+    }
     let k = mass * GRAVITY / (n as f32 * HOVER_SAG);
     let damp = 2.0 * (k * mass / n as f32).sqrt() * HOVER_DAMPING_RATIO;
     let b = &mut physics.bodies[t.body];
@@ -1925,5 +1933,86 @@ mod tests {
         }
         // Lance fires forward: the nose kicks up as the hull rocks back.
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
+    }
+}
+
+#[cfg(test)]
+mod hover_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    fn hover_world() -> World {
+        let mut w = flat_world();
+        w.set_hull(0, HullKind::Sethuun);
+        run(&mut w, Command::default(), 2.0);
+        w
+    }
+
+    fn cmd(throttle: f32, steer: f32) -> Command {
+        Command {
+            throttle,
+            steer,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn floats_at_ride_height_and_holds_still() {
+        let mut w = hover_world();
+        let start = w.tanks[0].pos;
+        run(&mut w, Command::default(), 3.0);
+        let t = &w.tanks[0];
+        // Belly clear of the ground, hull level, not drifting.
+        assert!((t.pos.y - 0.0).abs() < 0.2, "rides at {}", t.pos.y);
+        assert!(t.up().y > 0.99);
+        assert!(t.pos.distance(start) < 0.3, "drifted {}", t.pos.distance(start));
+        assert_eq!(t.wheels_down, 6);
+    }
+
+    #[test]
+    fn faster_than_tracks_in_a_straight_line() {
+        let mut w = hover_world();
+        run(&mut w, cmd(1.0, 0.0), 5.0);
+        let hover = w.tanks[0].speed();
+        let mut l = flat_world();
+        run(&mut l, cmd(1.0, 0.0), 5.0);
+        let tracks = l.tanks[0].speed();
+        assert!(hover > tracks + 1.5, "hover {hover} vs tracks {tracks}");
+    }
+
+    #[test]
+    fn slides_through_a_fast_turn() {
+        let mut w = hover_world();
+        run(&mut w, cmd(1.0, 0.0), 4.0);
+        run(&mut w, cmd(1.0, 1.0), 0.6);
+        let t = &w.tanks[0];
+        let v = t.vel.normalize();
+        // Velocity lags the nose: it's drifting, not carving.
+        let slip = v.dot(t.forward()).acos();
+        assert!(slip > 0.15, "slip {slip}");
+        assert!(t.lean.abs() > 0.03, "lean {}", t.lean);
+    }
+
+    #[test]
+    fn rides_up_over_a_low_ledge() {
+        let mut w = ledge_world(0.6);
+        w.set_hull(0, HullKind::Sethuun);
+        run(&mut w, Command::default(), 2.0);
+        // Onto the block (near face at z=110, 30 m deep) and riding on top.
+        let mut on_top = false;
+        for _ in 0..40 {
+            run(&mut w, cmd(1.0, 0.0), 0.1);
+            let t = &w.tanks[0];
+            on_top |= t.pos.z > 115.0 && t.pos.z < 138.0 && t.pos.y > 0.4;
+        }
+        assert!(on_top, "never got on top; at {}", w.tanks[0].pos);
+    }
+
+    #[test]
+    fn a_dead_hull_drops() {
+        let mut w = hover_world();
+        w.tanks[0].dead = true;
+        run(&mut w, Command::default(), 2.0);
+        assert!(w.tanks[0].pos.y < -0.4, "still floating at {}", w.tanks[0].pos.y);
     }
 }

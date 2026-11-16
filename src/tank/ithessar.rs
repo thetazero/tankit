@@ -47,6 +47,10 @@ fn glow_color(c: Vec3) -> Skin {
     Skin::new(c, c)
 }
 
+/// The hull is modelled with its belly at 0.4; it rides this much higher
+/// (the physics chassis's emitters are `road_y` up).
+pub const RIDE: f32 = 0.3;
+
 /// The hover hull's art. Everything but `body` is drawn per frame with its
 /// own motion and glow.
 pub struct HoverModel {
@@ -60,7 +64,7 @@ pub struct HoverModel {
     pub shard: MeshData,
     /// Where loose crystals float (body frame) and their length.
     pub shards: Vec<(Vec3, f32)>,
-    /// Emitter cradle height above the ground at rest.
+    /// Emitter cradle height in the model.
     pub emitter_y: f32,
     /// Turret ring position.
     pub mount: Vec3,
@@ -94,14 +98,16 @@ fn half_section(i: usize, z: f32, w: f32, belly: f32, top: f32, slot: f32) -> Ve
 }
 
 /// Stations along the hull: (z, half-width, belly, top, slot).
-const STATIONS: [(f32, f32, f32, f32, f32); 7] = [
+const STATIONS: [(f32, f32, f32, f32, f32); 8] = [
     (2.85, 0.2, 0.66, 0.8, 0.04),
     (2.3, 0.66, 0.5, 1.04, 0.07),
     (1.3, 1.14, 0.42, 1.28, 0.11),
     (0.0, 1.38, 0.4, 1.4, 0.14),
     (-1.25, 1.36, 0.42, 1.46, 0.16),
-    (-2.15, 1.12, 0.5, 1.54, 0.18),
-    (-2.62, 0.78, 0.64, 1.5, 0.2),
+    (-2.1, 1.14, 0.5, 1.54, 0.18),
+    (-2.65, 0.82, 0.68, 1.56, 0.2),
+    // The tail sweeps up and narrows to a blade.
+    (-3.05, 0.42, 1.05, 1.5, 0.2),
 ];
 
 /// Carapace surface at (z, fraction of the way from slot to the outer edge),
@@ -115,7 +121,11 @@ fn station_at(z: f32) -> (f32, f32, f32, f32) {
             return (l(a.1, b.1), l(a.2, b.2), l(a.3, b.3), l(a.4, b.4));
         }
     }
-    let s = if z > 0.0 { STATIONS[0] } else { STATIONS[6] };
+    let s = if z > 0.0 {
+        STATIONS[0]
+    } else {
+        STATIONS[STATIONS.len() - 1]
+    };
     (s.1, s.2, s.3, s.4)
 }
 
@@ -148,17 +158,18 @@ pub fn sethuun() -> HoverModel {
         VHAAL,
     );
 
-    // Tail vanes: two long blades sweeping up and back, in the side's color.
+    // Tail fins: two broad blades rising off the rear quarters, in the
+    // side's color, raked back like a ray's.
     plate2(
         &mut body,
         [
-            v(0.32, 1.4, -1.35),
-            v(0.5, 1.52, -1.5),
-            v(0.86, 2.2, -3.0),
-            v(0.74, 2.24, -3.02),
+            v(0.3, 1.52, -1.05),
+            v(0.62, 1.48, -1.95),
+            v(0.86, 2.3, -3.35),
+            v(0.52, 2.22, -2.75),
         ],
-        0.06,
-        v(0.0, 1.2, -1.8),
+        0.07,
+        v(0.0, 1.0, -1.8),
         PAINT,
     );
     // Cheek plates on the prow: the side's color from the front, too.
@@ -177,19 +188,6 @@ pub fn sethuun() -> HoverModel {
             v(0.0, 0.6, (z.0 + z.1) * 0.5),
             PAINT,
         );
-    }
-    // Emitter hangers: short struts down from each half's underside.
-    for &z in crate::sim::Chassis::SETHUUN.road_z {
-        for s in [1.0f32, -1.0] {
-            let x = crate::sim::Chassis::SETHUUN.track_x * s;
-            super::model::block(
-                &mut body,
-                v(x - 0.12, 0.44, z - 0.18),
-                v(x + 0.12, 0.6, z + 0.18),
-                0.03,
-                CRADLE,
-            );
-        }
     }
 
     // Glow: the core along the spine, and three vents down each flank.
@@ -249,33 +247,20 @@ pub fn sethuun() -> HoverModel {
     round(
         &mut emitter,
         &[
-            at_y(&ngon(6, 0.24, Vec2::ZERO), 0.16),
-            at_y(&ngon(6, 0.3, Vec2::ZERO), 0.08),
-            at_y(&ngon(6, 0.27, Vec2::ZERO), 0.0),
+            at_y(&ngon(6, 0.16, Vec2::ZERO), 0.14),
+            at_y(&ngon(6, 0.22, Vec2::ZERO), 0.06),
+            at_y(&ngon(6, 0.2, Vec2::ZERO), -0.02),
         ],
         0.02,
         CRADLE,
     );
-    for k in 0..3 {
-        let a = k as f32 / 3.0 * TAU + 0.5;
-        let d = Vec3::new(a.cos(), 0.0, a.sin());
-        let t = Vec3::new(-d.z, 0.0, d.x) * 0.05;
-        let (p0, p1) = (d * 0.27, d * 0.17 + Vec3::Y * -0.17);
-        plate(
-            &mut emitter,
-            [p0 + t, p1 + t, p1 - t, p0 - t],
-            0.04,
-            Vec3::Y * -0.05,
-            VHAAL,
-        );
-    }
     let mut lens = MeshData::default();
     round(
         &mut lens,
         &[
-            at_y(&ngon(6, 0.2, Vec2::ZERO), 0.02),
-            at_y(&ngon(6, 0.17, Vec2::ZERO), -0.1),
-            at_y(&ngon(6, 0.03, Vec2::ZERO), -0.2),
+            at_y(&ngon(6, 0.15, Vec2::ZERO), 0.0),
+            at_y(&ngon(6, 0.12, Vec2::ZERO), -0.07),
+            at_y(&ngon(6, 0.02, Vec2::ZERO), -0.14),
         ],
         0.0,
         hot,
@@ -291,16 +276,13 @@ pub fn sethuun() -> HoverModel {
         lens,
         shard: loose,
         shards: vec![
-            // Above the vane tips.
-            (v(0.86, 2.55, -3.1), 0.55),
-            (v(-0.86, 2.55, -3.1), 0.55),
-            // Outriders off the flanks.
-            (v(1.72, 1.15, -0.55), 0.4),
-            (v(-1.72, 1.15, -0.55), 0.4),
+            // Off the fin tips.
+            (v(0.98, 2.75, -3.62), 0.6),
+            (v(-0.98, 2.75, -3.62), 0.6),
             // The eye ahead of the prow.
-            (v(0.0, 1.0, 3.2), 0.36),
+            (v(0.0, 1.0, 3.3), 0.5),
         ],
-        emitter_y: 0.3,
+        emitter_y: 0.36,
         mount: v(0.0, 1.38, -0.15),
     }
 }

@@ -268,7 +268,7 @@ impl TankArt {
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let alive = t.color.max_element() > 0.2;
-        let body = base * Mat4::from_rotation_z(t.lean);
+        let body = base * Mat4::from_rotation_z(t.lean) * Mat4::from_translation(Vec3::Y * ithessar::RIDE);
         out.push((h.body, Instance::new(body, tint)));
         if !alive {
             // A wreck: the field is gone, the crystals lie where they fell.
@@ -297,8 +297,8 @@ impl TankArt {
         let pulse = 2.4 + 0.5 * (time * 2.6).sin() + effort * 1.2;
         out.push((h.glow, Instance::new(body, Vec4::new(1.0, 1.0, 1.0, pulse))));
 
-        // Emitters tilt against the motion (thrust vectoring), and each throws
-        // a jet down to the ground that flares with its load.
+        // Emitters tilt against the motion (thrust vectoring); each lens burns
+        // brighter the harder it's pushing.
         let local_v = t.rot.inverse() * t.vel;
         let tilt_x = (local_v.z * 0.025).clamp(-0.35, 0.35);
         let tilt_z = (-local_v.x * 0.04).clamp(-0.3, 0.3);
@@ -319,38 +319,6 @@ impl TankArt {
                     Vec4::new(1.0, 1.0, 1.0, 2.5 + load * 1.5 * flicker),
                 ),
             ));
-            // Jet from the lens to the ground (the ray's length at rest), then
-            // a splash where it lands.
-            let lens_low = h.emitter_y - 0.2;
-            let gap = (m.y - lift - (m.y - lens_low)).clamp(0.05, 1.6);
-            if gap < 1.2 {
-                let w = (0.18 + 0.1 * load) * flicker;
-                out.push((
-                    MeshId::GEM,
-                    Instance::new(
-                        body * gimbal
-                            * Mat4::from_scale_rotation_translation(
-                                Vec3::new(w, gap * 1.6, w),
-                                Quat::IDENTITY,
-                                Vec3::new(0.0, -0.2 - gap * 0.5, 0.0),
-                            ),
-                        (ithessar::PLASMA * 0.9).extend(2.2 + load),
-                    ),
-                ));
-                let splash = (0.35 + 0.18 * load) * flicker * (1.0 - gap / 1.2);
-                out.push((
-                    MeshId::SPHERE,
-                    Instance::new(
-                        body * Mat4::from_translation(at)
-                            * Mat4::from_scale_rotation_translation(
-                                Vec3::new(splash * 1.6, 0.05, splash * 1.6),
-                                Quat::IDENTITY,
-                                Vec3::new(0.0, -0.2 - gap, 0.0),
-                            ),
-                        ithessar::PLASMA.extend(1.6 + load),
-                    ),
-                ));
-            }
         }
 
         // Loose crystals: each bobs on its own beat and turns slowly; at
