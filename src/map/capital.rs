@@ -513,25 +513,21 @@ impl Map {
                 let along = Vec2::new(-a.sin(), a.cos()) * 0.4 - Vec2::new(a.cos(), a.sin());
                 let along = along.normalize();
                 let e = p + along * 12.0;
-                self.pipe(
+                self.drum(
                     Vec3::new(p.x, base + 1.0, p.y),
                     Vec3::new(e.x, base + 1.0, e.y),
                     1.0,
                     STONE,
-                    Material::Concrete,
-                    true,
                 );
                 continue;
             }
             self.column(Vec3::new(p.x, base, p.y), 1.0, DRUM_H - 1.0, false);
         }
-        self.pipe(
+        self.drum(
             Vec3::new(CENTER.x, base, CENTER.y),
             Vec3::new(CENTER.x, base + 1.2, CENTER.y),
             4.5,
             STONE,
-            Material::Concrete,
-            true,
         );
         // A square stele on the dais, the emblem on each face, one to
         // greet each door.
@@ -662,16 +658,25 @@ impl Map {
                     // A column drum on its side, carted off and left.
                     let a = Vec2::new(yaw.cos(), yaw.sin());
                     let (u, v) = (p - a * 2.2, p + a * 2.2);
-                    self.pipe(
+                    self.drum(
                         Vec3::new(u.x, 1.0, u.y),
                         Vec3::new(v.x, 1.0, v.y),
                         1.05,
                         STONE * 0.95,
-                        Material::Concrete,
-                        true,
                     );
                 }
             }
+        }
+    }
+
+    /// A solid round drum of stone from `a` to `b`: the pipe's ring of
+    /// plates, capped at both ends (a broken or fallen column shows its
+    /// section, not a hollow tube).
+    fn drum(&mut self, a: Vec3, b: Vec3, r: f32, color: Vec3) {
+        self.pipe(a, b, r, color, Material::Concrete, true);
+        let d = (b - a).normalize_or(Vec3::Y) * 0.03;
+        for end in [a + d, b - d] {
+            self.disc(end, d, r * 0.99, color * 0.9, Material::Concrete);
         }
     }
 
@@ -685,14 +690,7 @@ impl Map {
             Material::Concrete,
             true,
         );
-        self.pipe(
-            at + Vec3::Y * 0.8,
-            at + Vec3::Y * (h - 0.6),
-            r,
-            STONE,
-            Material::Concrete,
-            true,
-        );
+        self.drum(at + Vec3::Y * 0.8, at + Vec3::Y * (h - 0.6), r, STONE);
         if broken {
             return;
         }
@@ -743,13 +741,11 @@ impl Map {
                     let b0 = p + along * 7.3;
                     let b1 = p + along * 11.0;
                     for (u, v) in [(a0, a1), (b0, b1)] {
-                        self.pipe(
+                        self.drum(
                             Vec3::new(u.x, PLAZA_H + 0.9, u.y),
                             Vec3::new(v.x, PLAZA_H + 0.9, v.y),
                             0.9,
                             STONE,
-                            Material::Concrete,
-                            true,
                         );
                     }
                 }
