@@ -1198,13 +1198,10 @@ impl Match {
     /// Plasma's light: soft additive glow for shells in flight and the
     /// bursts they leave, drawn in the particle pass.
     pub fn glow_particles(&self, alpha: f32, out: &mut Vec<Particle>) {
-        let glow = |at: Vec3, size: f32, color: Vec3, strength: f32, stretch: Vec3| Particle {
-            pos: at.to_array(),
-            size,
-            color: color.extend(1.0).to_array(),
-            stretch: stretch.to_array(),
-            glow: strength,
-        };
+        let glow = Particle::glow;
+        for c in &self.world.map.cores {
+            core_glow(c, self.world.time, out);
+        }
         for s in &self.shells {
             let p = s.prev.lerp(s.pos, alpha);
             let d = s.vel.normalize_or_zero();
@@ -1543,6 +1540,40 @@ impl Match {
     }
 }
 
+/// An Ithessar core's light: a breathing ball of plasma with a white-hot
+/// heart, and motes circling it on tilted orbits.
+fn core_glow(c: &crate::map::Core, time: f32, out: &mut Vec<Particle>) {
+    let breathe = 1.0 + 0.05 * (time * 1.7).sin() + 0.02 * (time * 5.3).sin();
+    let r = c.radius;
+    out.push(Particle::glow(
+        c.at,
+        2.6 * r * breathe,
+        PLASMA,
+        1.4,
+        Vec3::ZERO,
+    ));
+    out.push(Particle::glow(
+        c.at,
+        1.4 * r * breathe,
+        PLASMA_HOT,
+        2.2,
+        Vec3::ZERO,
+    ));
+    for k in 0..9 {
+        let k = k as f32;
+        let tilt = Quat::from_rotation_x(0.5 + k * 0.7) * Quat::from_rotation_z(k * 1.3);
+        let a = time * (0.6 + 0.07 * k) + k * 2.4;
+        let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
+        out.push(Particle::glow(
+            p,
+            0.6 + 0.15 * (k % 2.0),
+            PLASMA_HOT,
+            2.0,
+            Vec3::ZERO,
+        ));
+    }
+}
+
 /// An Ithessar core: a ball of plasma that breathes, motes circling it on
 /// tilted orbits, and arcs jumping to it from the monoliths that hold it.
 pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, Instance)>) {
@@ -1557,15 +1588,8 @@ pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, In
             ),
         )
     };
-    out.push(ball(c.at, 2.0 * r * breathe, PLASMA.extend(2.2)));
-    out.push(ball(c.at, 1.25 * r * breathe, PLASMA_HOT.extend(4.5)));
-    for k in 0..9 {
-        let k = k as f32;
-        let tilt = Quat::from_rotation_x(0.5 + k * 0.7) * Quat::from_rotation_z(k * 1.3);
-        let a = time * (0.6 + 0.07 * k) + k * 2.4;
-        let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
-        out.push(ball(p, 0.35 + 0.08 * (k % 2.0), PLASMA_HOT.extend(4.0)));
-    }
+    // The ball and its motes are light (`core_glow`); only the white heart is solid.
+    out.push(ball(c.at, 0.45 * r * breathe, PLASMA_HOT.extend(6.0)));
     for (k, &tip) in c.prongs.iter().enumerate() {
         let beat = (time * 6.0 + k as f32 * 1.9).sin() + (time * 13.0 + k as f32).sin() * 0.5;
         if beat < 0.6 {

@@ -100,6 +100,20 @@ pub struct Particle {
     pub glow: f32,
 }
 
+impl Particle {
+    /// Self-lit plasma light: `size` m radius, stretched along `stretch`
+    /// (zero for round), at `strength` (0 is dark).
+    pub fn glow(at: Vec3, size: f32, color: Vec3, strength: f32, stretch: Vec3) -> Particle {
+        Particle {
+            pos: at.to_array(),
+            size,
+            color: color.extend(1.0).to_array(),
+            stretch: stretch.to_array(),
+            glow: strength.max(0.0),
+        }
+    }
+}
+
 /// Everything the renderer needs to draw one frame.
 pub struct Scene {
     pub camera: Camera,
