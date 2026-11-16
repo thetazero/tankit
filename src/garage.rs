@@ -16,8 +16,8 @@ use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Painter, TextStyle, theme};
 
 const REF_HEIGHT: f32 = 900.0;
-const PANEL_X: f32 = 64.0;
-const PANEL_W: f32 = 340.0;
+pub const PANEL_X: f32 = 64.0;
+pub const PANEL_W: f32 = 340.0;
 /// Open/close transition speed (1 / seconds).
 const BLEND_RATE: f32 = 2.5;
 /// Orbit camera: distance, height and slow drift around the tank (rad/s).
@@ -203,8 +203,7 @@ impl Garage {
             let off = camera.pos - t.pos;
             self.orbit = off.x.atan2(off.z);
         }
-        let f = t.forward();
-        self.orbit_goal = self.orbit + wrap_angle(f.x.atan2(f.z) + 0.65 - self.orbit);
+        self.orbit_goal = self.orbit + wrap_angle(front_angle(t) - self.orbit);
     }
 
     /// Close without touching the loadout (e.g. the player was killed).
@@ -339,16 +338,7 @@ impl Garage {
         let h = REF_HEIGHT;
         let mut p = Painter::new(scale);
 
-        // Backdrop so the hairlines read over a bright city.
-        let shade = [0.03, 0.03, 0.035, 0.72];
-        let solid = PANEL_X + PANEL_W + 40.0;
-        p.gradient_h(Vec2::ZERO, Vec2::new(solid, h), shade, shade);
-        p.gradient_h(
-            Vec2::new(solid, 0.0),
-            Vec2::new(260.0, h),
-            shade,
-            [0.0, 0.0, 0.0, 0.0],
-        );
+        backdrop(&mut p, h);
 
         let x = PANEL_X - (1.0 - e) * 30.0;
         let mut y = 72.0;
@@ -499,6 +489,46 @@ impl Garage {
         }
         v
     }
+}
+
+/// A slow orbit around `tank` at the garage's framing (tank right of the
+/// panel), for the main menu. `angle` is the camera's world yaw around it.
+pub fn orbit_camera(world: &World, tank: &Tank, angle: f32, aspect: f32) -> Camera {
+    let focus = tank.pos + Vec3::Y * 1.0;
+    let dir = Vec3::new(
+        angle.sin() * ORBIT_DIST,
+        ORBIT_HEIGHT,
+        angle.cos() * ORBIT_DIST,
+    );
+    let len = dir.length();
+    let hit = world.camera_raycast(focus, dir / len, len);
+    let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
+    let right = (focus - pos).cross(Vec3::Y).normalize_or_zero();
+    let shift = (focus - pos).length() * 0.28 * (aspect / (16.0 / 9.0)).clamp(0.6, 1.2);
+    Camera {
+        pos,
+        target: focus - right * shift,
+        fov_y: 50f32.to_radians(),
+    }
+}
+
+/// The front three-quarter view angle for `tank`, where the garage swings to.
+pub fn front_angle(tank: &Tank) -> f32 {
+    let f = tank.forward();
+    f.x.atan2(f.z) + 0.65
+}
+
+/// Dark backdrop behind the left-hand panel, so the hairlines read over a bright city.
+pub fn backdrop(p: &mut Painter, h: f32) {
+    let shade = [0.03, 0.03, 0.035, 0.72];
+    let solid = PANEL_X + PANEL_W + 40.0;
+    p.gradient_h(Vec2::ZERO, Vec2::new(solid, h), shade, shade);
+    p.gradient_h(
+        Vec2::new(solid, 0.0),
+        Vec2::new(260.0, h),
+        shade,
+        [0.0, 0.0, 0.0, 0.0],
+    );
 }
 
 fn index_of(items: &[(Part, &str)], part: Part) -> usize {

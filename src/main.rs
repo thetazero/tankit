@@ -5,6 +5,9 @@ mod game;
 mod garage;
 mod hud;
 mod map;
+mod menu;
+mod mission;
+mod profile;
 mod render;
 mod repair;
 mod rng;
@@ -20,7 +23,8 @@ use glam::Vec3;
 const USAGE: &str = "\
 tankit [OPTIONS]
 
-  (no options)            play in a window
+  (no options)            open the main menu (missions, garage)
+  any of --seed --map --spawn --bots --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
   --map <city|proving|saltmarket>
                           city (default), the physics test course, or Saltmarket (desert town)
@@ -36,6 +40,8 @@ tankit [OPTIONS]
   --hull <lancer|bastion> player hull (default lancer)
   --turret <lance|maul>   player turret (default lance)
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
+  --screen <menu|missions|pause>  (with --shot) render that menu screen
+  --xp <n>                (with --shot --screen) pilot XP to show
   --showroom              all hull x turret combos on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
@@ -48,7 +54,13 @@ pub struct Args {
     pub spawn: usize,
     pub bots: usize,
     pub loadout: garage::Loadout,
+    /// --hull or --turret was given.
+    kit_given: bool,
+    /// A match flag was given: skip the menu.
+    play: bool,
     garage: bool,
+    screen: Option<Screen>,
+    xp: u32,
     straight: bool,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
@@ -88,6 +100,13 @@ pub struct ShowroomArgs {
     pub focus: Option<usize>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Screen {
+    Menu,
+    Missions,
+    Pause,
+}
+
 struct ShotArgs {
     out: String,
     time: f32,
@@ -105,15 +124,19 @@ fn main() -> Result<()> {
     let args = parse_args()?;
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
+        (Some(shot), None) if matches!(args.screen, Some(Screen::Menu | Screen::Missions)) => {
+            menu_shot(&args, shot)
+        }
         (Some(shot), None) => screenshot(&args, shot),
-        (None, room) => app::run(
-            args.seed,
-            args.map,
-            args.spawn,
-            args.bots,
-            args.loadout,
-            room,
-        ),
+        (None, showroom) => app::run(app::Launch {
+            seed: args.seed,
+            map_kind: args.map,
+            spawn: args.spawn,
+            bots: args.bots,
+            loadout: args.kit_given.then_some(args.loadout),
+            menu: !args.play,
+            showroom,
+        }),
     }
 }
 
@@ -133,12 +156,22 @@ fn parse_args() -> Result<Args> {
     let mut bots: Option<usize> = None;
     let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
     let mut garage = false;
+    let (mut kit_given, mut play) = (false, false);
+    let mut screen = None;
+    let mut xp = 0;
     let mut room = ShowroomArgs {
         orbit: None,
         dist: 24.0,
         focus: None,
     };
     while let Some(a) = args.next() {
+        if matches!(
+            a.as_str(),
+            "--seed" | "--map" | "--spawn" | "--bots" | "--hull" | "--turret"
+        ) {
+            play = true;
+        }
+        kit_given |= matches!(a.as_str(), "--hull" | "--turret");
         match a.as_str() {
             "--shot" => shot = Some(args.next().context("--shot needs a path")?),
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
@@ -186,6 +219,15 @@ fn parse_args() -> Result<Args> {
                     .context("--turret expects lance or maul")?;
             }
             "--garage" => garage = true,
+            "--screen" => {
+                screen = Some(match args.next().as_deref() {
+                    Some("menu") => Screen::Menu,
+                    Some("missions") => Screen::Missions,
+                    Some("pause") => Screen::Pause,
+                    other => bail!("--screen expects menu, missions or pause, got {other:?}"),
+                })
+            }
+            "--xp" => xp = args.next().context("--xp needs a number")?.parse()?,
             "--showroom" => showroom = true,
             "--orbit" => {
                 room.orbit = Some(
@@ -212,7 +254,11 @@ fn parse_args() -> Result<Args> {
         spawn,
         bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 5 }),
         loadout,
+        kit_given,
+        play,
         garage,
+        screen,
+        xp,
         straight,
         cam,
         shot: shot.map(|out| ShotArgs {
@@ -304,6 +350,14 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
             frame.ui = garage.overlay(ui, &driven, args.loadout, h);
+            if args.screen == Some(Screen::Pause) {
+                frame.ui = menu::dim(std::mem::take(&mut frame.ui));
+                let mut profile = profile::Profile::in_memory();
+                profile.xp = args.xp;
+                frame
+                    .ui
+                    .extend(menu::Pause::new().draw(&profile, game.xp, w, h));
+            }
         }
         let out = frame_path(shot, i);
         renderer
@@ -336,6 +390,36 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         t.wheels_down,
         t.face_contacts
     );
+    Ok(())
+}
+
+/// The main menu or mission select over the menu backdrop, headless.
+fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
+    let mut profile = profile::Profile::in_memory();
+    profile.xp = args.xp;
+    profile.loadout = args.loadout;
+    let mut game = app::menu_match(profile.loadout);
+    let mut menu = menu::Menu::new();
+    if args.screen == Some(Screen::Missions) {
+        menu.input(menu::Nav::Select);
+    }
+    let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
+    renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
+    let art = tank::TankArt::upload(&mut renderer);
+    for _ in 0..(shot.time / game::DT).round() as u32 {
+        game.step(sim::Command::default(), false);
+    }
+    let (w, h) = (shot.width as f32, shot.height as f32);
+    let angle = garage::front_angle(&game.world.tanks[0]) + shot.time * 0.06;
+    let tanks = game.display_tanks(1.0);
+    let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
+    let mut frame = scene::build(&game.world, &tanks, &art, camera);
+    frame.ui = menu.draw(&profile, h, 1.0);
+    renderer
+        .render_to_image(&frame)?
+        .save(&shot.out)
+        .with_context(|| format!("save {}", shot.out))?;
+    println!("wrote menu to {}", shot.out);
     Ok(())
 }
 

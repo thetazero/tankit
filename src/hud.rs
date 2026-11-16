@@ -7,7 +7,7 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase};
+use crate::combat::{FEED_TIME, Match, Phase, XP_POP_TIME};
 use crate::render::{Camera, UiVertex};
 use crate::repair::State;
 use crate::scene::project;
@@ -117,12 +117,24 @@ impl Hud {
         label(
             &mut p,
             Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "RANK",
+            "PLACE",
             Align::Left,
         );
         p.text(
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
             &format!("{rank}/{}", m.fighters.len()),
+            &TextStyle::value(14.0),
+            Align::Left,
+        );
+        label(
+            &mut p,
+            Vec2::new(MARGIN + 230.0, MARGIN + 50.0),
+            "XP",
+            Align::Left,
+        );
+        p.text(
+            Vec2::new(MARGIN + 230.0, MARGIN + 64.0),
+            &format!("+{}", m.xp),
             &TextStyle::value(14.0),
             Align::Left,
         );
@@ -336,6 +348,21 @@ impl Hud {
             );
         }
 
+        // XP popups, just above the crosshair, drifting up as they fade.
+        if !board {
+            for (row, x) in m.xp_pops.iter().rev().take(3).enumerate() {
+                let fade =
+                    ((XP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0) * (x.age / 0.08).clamp(0.0, 1.0);
+                let at = Vec2::new(w * 0.5, h * 0.30 - x.age * 14.0 - row as f32 * 30.0);
+                let mut s = TextStyle::value(16.0);
+                s.color = with_alpha(theme::HOT, fade);
+                p.text(at, &format!("+{} XP", x.amount), &s, Align::Center);
+                let mut l = TextStyle::LABEL;
+                l.color = with_alpha(theme::FG, 0.8 * fade);
+                p.text(at + Vec2::new(0.0, 24.0), x.reason, &l, Align::Center);
+            }
+        }
+
         if board {
             scoreboard(&mut p, m, Vec2::new(w * 0.5, h * 0.28));
         }
@@ -429,7 +456,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = [0.0, 0.0, 0.0, 0.45];
-    let height = if m.phase == Phase::Over { 120.0 } else { 52.0 } + rows * 22.0;
+    let height = if m.phase == Phase::Over { 140.0 } else { 52.0 } + rows * 22.0;
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
         Vec2::new(width + 48.0, height),
@@ -459,7 +486,13 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
             &TextStyle::value(12.0),
             Align::Center,
         );
-        y += 68.0;
+        label(
+            p,
+            Vec2::new(top.x, y + 56.0),
+            &format!("+{} XP THIS MATCH", m.xp),
+            Align::Center,
+        );
+        y += 84.0;
     }
     label(p, Vec2::new(x0, y), "PILOT", Align::Left);
     label(p, Vec2::new(x1 - 110.0, y), "KILLS", Align::Right);
@@ -492,7 +525,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         label(
             p,
             Vec2::new(top.x, y + 8.0),
-            "ENTER  NEXT ROUND",
+            "ENTER  AGAIN     ESC  MENU",
             Align::Center,
         );
     }

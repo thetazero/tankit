@@ -25,6 +25,12 @@ const SHELL_LIFE: f32 = 1.6;
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
+/// XP for each enemy the player kills, paid the moment it dies.
+pub const KILL_XP: u32 = 10;
+/// XP bonus for finishing the round on top.
+pub const WIN_XP: u32 = 25;
+/// How long an XP popup stays on screen, seconds.
+pub const XP_POP_TIME: f32 = 2.0;
 
 pub const BOT_NAMES: [&str; 7] = ["VEGA", "KITE", "ONYX", "RUST", "MOTH", "FLINT", "SABLE"];
 const BOT_COLORS: [Vec3; 7] = [
@@ -157,6 +163,13 @@ pub struct Kill {
     pub age: f32,
 }
 
+/// XP the player just earned, for the HUD popup.
+pub struct XpPop {
+    pub amount: u32,
+    pub reason: &'static str,
+    pub age: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
     Playing,
@@ -170,6 +183,9 @@ pub struct Match {
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
+    /// XP the player has earned this match (kills plus the win bonus).
+    pub xp: u32,
+    pub xp_pops: Vec<XpPop>,
     pub repairs: Repairs,
     pub time_left: f32,
     pub phase: Phase,
@@ -209,6 +225,8 @@ impl Match {
             shells: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
+            xp: 0,
+            xp_pops: Vec::new(),
             repairs,
             time_left: ROUND_TIME,
             phase: Phase::Playing,
@@ -250,6 +268,9 @@ impl Match {
                 self.time_left = 0.0;
                 self.phase = Phase::Over;
                 self.shells.clear();
+                if self.standings()[0] == 0 {
+                    self.award(WIN_XP, "ROUND WON");
+                }
             }
         }
         let playing = self.phase == Phase::Playing;
@@ -302,6 +323,10 @@ impl Match {
             k.age += DT;
         }
         self.feed.retain(|k| k.age < FEED_TIME);
+        for x in &mut self.xp_pops {
+            x.age += DT;
+        }
+        self.xp_pops.retain(|x| x.age < XP_POP_TIME);
     }
 
     /// Elevate each gun onto a tank roughly along its line of fire (Tanki-style
@@ -431,6 +456,9 @@ impl Match {
         v.killed_by = Some(killer);
         if killer != victim {
             self.fighters[killer].kills += 1;
+            if killer == 0 {
+                self.award(KILL_XP, "KILL");
+            }
         }
         self.feed.push(Kill {
             killer,
@@ -451,6 +479,15 @@ impl Match {
         if let Some(b) = &mut self.bots[victim] {
             b.reset();
         }
+    }
+
+    fn award(&mut self, amount: u32, reason: &'static str) {
+        self.xp += amount;
+        self.xp_pops.push(XpPop {
+            amount,
+            reason,
+            age: 0.0,
+        });
     }
 
     fn pick_up_repairs(&mut self) {
@@ -701,6 +738,35 @@ mod tests {
         );
         assert_eq!(m.fighters[0].kills, m.fighters[1].deaths);
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
+        // Paid per kill, on the spot.
+        assert_eq!(m.xp, m.fighters[0].kills * KILL_XP);
+    }
+
+    #[test]
+    fn bots_killing_bots_pays_the_player_nothing() {
+        let mut m = arena(2);
+        m.kill(1, 2);
+        m.kill(0, 0);
+        assert_eq!(m.xp, 0);
+        m.kill(0, 1);
+        assert_eq!(m.xp, KILL_XP);
+        assert_eq!(m.xp_pops.len(), 1, "one popup, for the player's own kill");
+    }
+
+    #[test]
+    fn winning_the_round_pays_a_bonus() {
+        let mut m = arena(1);
+        m.fighters[0].kills = 1;
+        m.time_left = DT * 0.5;
+        m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.xp, WIN_XP);
+        // Losing pays nothing extra.
+        let mut m = arena(1);
+        m.fighters[1].kills = 1;
+        m.time_left = DT * 0.5;
+        m.step(Command::default(), false);
+        assert_eq!(m.xp, 0);
     }
 
     #[test]
