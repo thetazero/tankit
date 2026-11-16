@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -287,6 +287,13 @@ impl ApplicationHandler for App {
                 self.on_hover(at);
             }
             WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::MouseWheel { delta, .. } if self.garage.is_open() => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                };
+                self.garage.scroll(-lines * 60.0);
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
@@ -460,6 +467,7 @@ impl App {
                 KeyCode::Escape => garage::Input::Revert,
                 KeyCode::KeyE => garage::Input::Act,
                 KeyCode::KeyU => garage::Input::Upgrade,
+                KeyCode::Tab | KeyCode::KeyQ => garage::Input::Switch,
                 _ => return,
             };
             self.garage_sound(input);
@@ -622,7 +630,7 @@ impl App {
             UiHit::Garage(h) => {
                 self.garage_sound(match h {
                     garage::Hit::Key(input) => input,
-                    garage::Hit::Part(_) => garage::Input::Down,
+                    garage::Hit::Part(_) | garage::Hit::Tab(_) => garage::Input::Down,
                 });
                 if let Some(event) = self.garage.click(h, self.queued(), &self.profile) {
                     self.garage_event(event);
@@ -758,6 +766,9 @@ impl App {
                     .camera(camera, &self.game.world, &tanks[0], w / h);
             }
             let driven = tanks[0].clone();
+            // A couple of card thumbnails a frame, so opening doesn't hitch.
+            self.garage
+                .render_thumbs(r, art, &self.game.world, &driven, queued, h, 2);
             self.garage.preview(&mut tanks[0]);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
@@ -784,7 +795,7 @@ impl App {
                         let menu = self
                             .menu
                             .draw(&self.profile, h, 1.0 - self.garage.presence());
-                        let garage = self.garage.draw(&driven, queued, &self.profile, h);
+                        let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
                         let mut ui = menu.verts;
                         ui.extend(garage.verts);
                         // The garage covers the menu panel while it's open.
@@ -798,7 +809,9 @@ impl App {
                     }
                     Mode::Playing => {
                         let hud = self.hud.draw(&self.game, &tanks, &camera, w, h, dt, scores);
-                        let layer = self.garage.overlay(hud, &driven, queued, &self.profile, h);
+                        let layer = self
+                            .garage
+                            .overlay(hud, &driven, queued, &self.profile, w, h);
                         (layer.verts, layer.hits.map(UiHit::Garage))
                     }
                     Mode::Paused => {

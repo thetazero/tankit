@@ -20,6 +20,7 @@ mod scene;
 mod showroom;
 mod sim;
 mod tank;
+mod thumbs;
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -55,6 +56,8 @@ tankit [OPTIONS]
                           lumen (Uthenn), hymn (Resonant); default kontos
   --garage                (with --shot) open the garage at the start, previewing --hull/--turret
                           (the parts of it you own are equipped, starters otherwise)
+  --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
+  --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
@@ -80,6 +83,10 @@ pub struct Args {
     /// A match flag was given: skip the menu.
     play: bool,
     garage: bool,
+    /// Parts the shot's pilot has bought.
+    own: Vec<economy::Part>,
+    /// Garage shot: highlight this part instead of --hull/--turret.
+    preview: Option<economy::Part>,
     screen: Option<Screen>,
     trust: u32,
     crystals: u32,
@@ -100,6 +107,9 @@ impl Args {
         p.set_trust_all(self.trust);
         p.crystals = self.crystals;
         p.settings.debug = self.debug;
+        for &part in &self.own {
+            p.grant(part);
+        }
         p
     }
 
@@ -196,6 +206,15 @@ fn main() -> Result<()> {
     }
 }
 
+/// A part named on the command line (any hull or turret name).
+fn part_arg(name: Option<String>, flag: &str) -> Result<economy::Part> {
+    let name = name.with_context(|| format!("{flag} needs a part name"))?;
+    economy::PARTS
+        .into_iter()
+        .find(|p| p.name().eq_ignore_ascii_case(&name))
+        .with_context(|| format!("{flag}: no part called {name}"))
+}
+
 fn parse_args() -> Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut seed = std::time::SystemTime::now()
@@ -215,6 +234,8 @@ fn parse_args() -> Result<Args> {
     let mut employer: Option<faction::Faction> = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
+    let mut own = Vec::new();
+    let mut preview = None;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
     let (mut trust, mut crystals) = (0, 0);
@@ -311,6 +332,8 @@ fn parse_args() -> Result<Args> {
                     .context("--turret expects kontos, pelekys, ammeth, ossrin, lumen or hymn")?;
             }
             "--garage" => garage = true,
+            "--own" => own.push(part_arg(args.next(), "--own")?),
+            "--preview" => preview = Some(part_arg(args.next(), "--preview")?),
             "--screen" => {
                 screen = Some(match args.next().as_deref() {
                     Some("menu") => Screen::Menu,
@@ -375,6 +398,8 @@ fn parse_args() -> Result<Args> {
         kit_given,
         play,
         garage,
+        own,
+        preview,
         screen,
         trust,
         crystals,
@@ -488,7 +513,10 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         if args.garage && !garage.is_open() {
             garage.toggle(&m.world, &camera, equipped);
-            garage.browse(args.loadout);
+            garage.browse(match args.preview {
+                Some(part) => garage::with_part(equipped, part),
+                None => args.loadout,
+            });
         }
         for _ in 0..(seconds / game::DT).round() as u32 {
             m.ambience.focus = args.cam.map_or(camera.pos, |c| c.0);
@@ -507,6 +535,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         let mut tanks = game.display_tanks(1.0);
         let driven = tanks[0].clone();
+        garage.render_thumbs(
+            &mut renderer,
+            &art,
+            &game.world,
+            &driven,
+            equipped,
+            shot.height as f32,
+            usize::MAX,
+        );
         garage.preview(&mut tanks[0]);
         let view = match args.cam {
             Some((pos, target)) => render::Camera {
@@ -523,7 +560,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, equipped, &profile, h).verts;
+            frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
                 frame.ui.extend(

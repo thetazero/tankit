@@ -43,7 +43,12 @@ impl Camera {
 pub struct UiVertex {
     pub pos: [f32; 2],
     pub color: [f32; 4],
+    /// Where in the thumbnail atlas to sample (0..1), or negative for a flat colour.
+    pub uv: [f32; 2],
 }
+
+/// UV for a flat-coloured UI vertex (no texture).
+pub const NO_UV: [f32; 2] = [-1.0, -1.0];
 
 /// Sky, sun and haze for a map.
 #[derive(Clone, Copy, Debug)]
@@ -127,6 +132,8 @@ pub struct Scene {
     /// Drawn after the opaque scene, blended.
     pub particles: Vec<Particle>,
     pub ui: Vec<UiVertex>,
+    /// Draw the map's static geometry (off for studio shots like thumbnails).
+    pub world: bool,
 }
 
 #[repr(C)]
@@ -214,6 +221,14 @@ pub struct Renderer {
     instance_cap: usize,
     ui_buf: wgpu::Buffer,
     ui_cap: usize,
+
+    /// Thumbnail atlas the UI can sample, and its bind group.
+    thumb_bgl: wgpu::BindGroupLayout,
+    thumb_bg: wgpu::BindGroup,
+    thumb_size: (u32, u32),
+    thumb_tex: Option<wgpu::Texture>,
+    /// Render targets and colour texture for one thumbnail, kept between calls.
+    thumb_targets: Option<((u32, u32), Targets, wgpu::Texture)>,
 }
 
 impl Renderer {
@@ -415,7 +430,28 @@ impl Renderer {
         let ao_layout = layout(&[Some(&globals_bgl), Some(&ao_bgl)]);
         // Particles also read scene depth, to fade out where they meet geometry.
         let particle_layout = layout(&[Some(&globals_bgl), Some(&shadow_bgl), Some(&ao_bgl)]);
-        let ui_layout = layout(&[Some(&ui_bgl)]);
+        let thumb_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("thumbnails"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let ui_layout = layout(&[Some(&ui_bgl), Some(&thumb_bgl)]);
 
         let vertex_layouts = [
             wgpu::VertexBufferLayout {
@@ -608,7 +644,7 @@ impl Renderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<UiVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2],
                 })],
             },
             primitive: Default::default(),
@@ -720,6 +756,7 @@ impl Renderer {
         });
 
         let targets = make_targets(&device, &post_bgl, &ao_bgl, &linear_sampler, width, height);
+        let thumb_bg = make_thumb_bg(&device, &thumb_bgl, &linear_sampler, format, (1, 1)).1;
         let meshes = MeshData::primitives()
             .iter()
             .map(|m| GpuMesh::new(&device, m, "primitive"))
@@ -779,7 +816,102 @@ impl Renderer {
             instance_cap,
             ui_buf,
             ui_cap,
+            thumb_bgl,
+            thumb_bg,
+            thumb_size: (1, 1),
+            thumb_tex: None,
+            thumb_targets: None,
         }
+    }
+
+    /// Make the thumbnail atlas `size` px (cleared) if it isn't already.
+    /// Returns whether it was remade, so anything drawn into it is gone.
+    pub fn ensure_thumb_atlas(&mut self, size: (u32, u32)) -> bool {
+        let size = (size.0.max(1), size.1.max(1));
+        if size == self.thumb_size {
+            return false;
+        }
+        let (tex, bg) = make_thumb_bg(
+            &self.device,
+            &self.thumb_bgl,
+            &self.linear_sampler,
+            self.format,
+            size,
+        );
+        self.thumb_tex = Some(tex);
+        self.thumb_bg = bg;
+        self.thumb_size = size;
+        true
+    }
+
+    /// Render `scene` at `size` px into the thumbnail atlas at `origin`.
+    pub fn render_thumb(&mut self, scene: &Scene, origin: (u32, u32), size: (u32, u32)) {
+        let Some(atlas) = self.thumb_tex.clone() else {
+            return;
+        };
+        if self
+            .thumb_targets
+            .as_ref()
+            .is_none_or(|(s, _, _)| *s != size)
+        {
+            let targets = make_targets(
+                &self.device,
+                &self.post_bgl,
+                &self.ao_bgl,
+                &self.linear_sampler,
+                size.0,
+                size.1,
+            );
+            let color = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("thumbnail"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            self.thumb_targets = Some((size, targets, color));
+        }
+        let (_, mut targets, color) = self.thumb_targets.take().expect("made above");
+        // Render as if the screen were the thumbnail's size.
+        std::mem::swap(&mut self.targets, &mut targets);
+        let screen = (self.width, self.height);
+        (self.width, self.height) = size;
+        let view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("thumbnail"),
+            });
+        self.encode(scene, &view, &mut encoder);
+        encoder.copy_texture_to_texture(
+            color.as_image_copy(),
+            wgpu::TexelCopyTextureInfo {
+                texture: &atlas,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: origin.0,
+                    y: origin.1,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: size.0.min(self.thumb_size.0 - origin.0),
+                height: size.1.min(self.thumb_size.1 - origin.1),
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        (self.width, self.height) = screen;
+        std::mem::swap(&mut self.targets, &mut targets);
+        self.thumb_targets = Some((size, targets, color));
     }
 
     /// Register a mesh for instanced drawing.
@@ -1020,9 +1152,10 @@ impl Renderer {
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         ranges: &[(MeshId, std::ops::Range<u32>)],
+        world: bool,
     ) {
         pass.set_vertex_buffer(1, self.instance_buf.slice(..));
-        if let Some(m) = &self.static_mesh {
+        if let Some(m) = self.static_mesh.as_ref().filter(|_| world) {
             pass.set_vertex_buffer(0, m.vb.slice(..));
             pass.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..m.count, 0, 0..1);
@@ -1061,7 +1194,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            self.draw_geometry(&mut pass, &ranges);
+            self.draw_geometry(&mut pass, &ranges, scene.world);
         }
 
         {
@@ -1091,7 +1224,7 @@ impl Renderer {
             pass.set_pipeline(&self.scene_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_bind_group(1, &self.shadow_bg, &[]);
-            self.draw_geometry(&mut pass, &ranges);
+            self.draw_geometry(&mut pass, &ranges, scene.world);
             pass.set_pipeline(&self.sky_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
@@ -1174,6 +1307,7 @@ impl Renderer {
             if !scene.ui.is_empty() {
                 pass.set_pipeline(&self.ui_pipe);
                 pass.set_bind_group(0, &self.ui_globals_bg, &[]);
+                pass.set_bind_group(1, &self.thumb_bg, &[]);
                 pass.set_vertex_buffer(0, self.ui_buf.slice(..));
                 pass.draw(0..scene.ui.len() as u32, 0..1);
             }
@@ -1246,6 +1380,46 @@ fn upload_surface_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     })
+}
+
+/// A thumbnail atlas of `size` px and the UI bind group that samples it.
+fn make_thumb_bg(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    format: wgpu::TextureFormat,
+    size: (u32, u32),
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("thumbnail atlas"),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("thumbnails"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    (tex, bg)
 }
 
 fn make_targets(
