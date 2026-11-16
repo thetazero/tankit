@@ -78,6 +78,9 @@ pub struct OBox {
     pub broken: bool,
     /// A drivable ramp (set explicitly; a tilted log is not a ramp).
     pub ramp: bool,
+    /// Collides but isn't drawn: the collider for something drawn another
+    /// way (a sculpted rock face).
+    pub hidden: bool,
 }
 
 impl Default for OBox {
@@ -97,6 +100,7 @@ impl Default for OBox {
             chip: 0.0,
             broken: false,
             ramp: false,
+            hidden: false,
         }
     }
 }
@@ -734,6 +738,71 @@ impl Map {
                 top_mat: Material::Plain,
             });
             self.solids.push(Solid { min, max });
+        }
+    }
+
+    /// On Saltmarket (in the shifted frame `Map::saltmarket` returns), how
+    /// far a point is past the edge a tank should never cross: into the
+    /// cliff's rock past its foot, or west behind the barricade. Negative:
+    /// on the open ground.
+    #[cfg(test)]
+    pub fn saltmarket_past_edge(p: Vec2) -> f32 {
+        let q = p - Vec2::splat(valley::MARGIN);
+        valley::past_foot(q).0.max(-q.x - 1.0)
+    }
+
+    /// Moves everything on the map by `by` on the ground plane (a map built
+    /// round its own origin, shifted so the arena starts at 0).
+    pub fn translate(&mut self, by: Vec2) {
+        let by3 = Vec3::new(by.x, 0.0, by.y);
+        for s in &mut self.solids {
+            s.min += by3;
+            s.max += by3;
+        }
+        for b in &mut self.boxes {
+            b.min += by3;
+            b.max += by3;
+        }
+        for w in &mut self.wedges {
+            w.min += by;
+            w.max += by;
+        }
+        for o in &mut self.oboxes {
+            o.center += by;
+        }
+        for t in self
+            .terrain
+            .iter_mut()
+            .chain(self.scenery_terrain.iter_mut())
+        {
+            t.origin += by;
+        }
+        for p in self
+            .open_spots
+            .iter_mut()
+            .chain(self.repair_spots.iter_mut())
+            .chain(self.bases.iter_mut().flatten())
+            .chain(self.hold_site.iter_mut())
+        {
+            *p += by;
+        }
+        for c in &mut self.cores {
+            c.at += by3;
+            for p in &mut c.prongs {
+                *p += by3;
+            }
+        }
+        for c in &mut self.crystals {
+            c.base += by3;
+        }
+        for g in &mut self.glow_paths {
+            for p in &mut g.points {
+                *p += by3;
+            }
+        }
+        for v in &mut self.sculpted.verts {
+            v.pos[0] += by.x;
+            v.pos[2] += by.y;
         }
     }
 

@@ -1859,55 +1859,53 @@ mod tests {
     }
 
     /// Saltmarket's edge is cliffs and stacked containers: a tank driving
-    /// flat out at any side stops against them and doesn't get up onto them
-    /// (tracked or hovering). That it's them, not the hidden boundary, that
-    /// stops it is `edge_is_closed_by_visible_obstacles` in saltmarket.rs.
+    /// flat out at any of them stops against them and doesn't get up onto
+    /// or past them (tracked or hovering). That it's them, not the hidden
+    /// boundary, that stops it is in valley.rs's tests.
     #[test]
     fn saltmarket_edge_stops_tanks() {
         use std::f32::consts::{FRAC_PI_2, PI};
         let map = Map::saltmarket();
         let size = map.size;
-        // (start, heading): south, north, east, west, each twice.
+        // The town square's corner in the map's frame.
+        let o = Vec2::splat(40.0);
+        // (start, heading): at the south, east and north cliffs (into bays,
+        // a gully, at headlands) and the west barricade.
         let runs = [
-            (Vec2::new(60.0, 16.0), PI),
+            (Vec2::new(60.0, 14.0), PI),
             (Vec2::new(170.0, 12.0), PI),
-            (Vec2::new(40.0, 225.0), 0.0),
+            (Vec2::new(225.0, 60.0), FRAC_PI_2),
+            (Vec2::new(225.0, 100.0), FRAC_PI_2),
+            (Vec2::new(225.0, 200.0), FRAC_PI_2),
+            (Vec2::new(40.0, 222.0), 0.0),
             (Vec2::new(160.0, 226.0), 0.0),
-            (Vec2::new(222.0, 100.0), FRAC_PI_2),
-            (Vec2::new(222.0, 200.0), FRAC_PI_2),
+            (Vec2::new(78.0, 225.0), 0.0),
             (Vec2::new(14.0, 150.0), -FRAC_PI_2),
             (Vec2::new(14.0, 40.0), -FRAC_PI_2),
         ];
         for hull in [HullKind::Kataphrakt, HullKind::Sethuun] {
             for (start, yaw) in runs {
                 let mut w = World::empty(map.clone());
-                w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Kontos);
+                w.spawn_tank(Vec3::ONE, start + o, yaw, hull, TurretKind::Kontos);
                 run(&mut w, Command::default(), 0.5);
-                let mut nearest = f32::MAX;
-                let mut highest = f32::MIN;
-                for _ in 0..(8.0 / DT) as usize {
+                let mut worst = f32::MIN;
+                for _ in 0..(10.0 / DT) as usize {
                     w.step(&[throttle(1.0)]);
                     let p = w.tanks[0].pos;
-                    let edge = p.x.min(p.z).min(size - p.x).min(size - p.z);
-                    nearest = nearest.min(edge);
-                    // Up on top of something: upright, on its tracks,
-                    // high over the ground (a tank flipping over off the
-                    // wall face doesn't count).
-                    let t = &w.tanks[0];
-                    if t.up().y > 0.8 && (t.wheels_down > 0 || hull == HullKind::Sethuun) {
-                        highest = highest.max(p.y - w.map.ground_height(p.x, p.z));
-                    }
+                    let q = Vec2::new(p.x, p.z);
+                    assert!(
+                        q.cmpgt(Vec2::ZERO).all() && q.cmplt(Vec2::splat(size)).all(),
+                        "{hull:?} from {start} left the map at {q}"
+                    );
+                    worst = worst.max(Map::saltmarket_past_edge(q));
                 }
-                // Tracks can walk the nose up a wall face (and flip back off
-                // it), but never get over it or up on top.
+                // The tank's middle never gets into the rock or behind the
+                // barricade. The face stands up to about 4 m back from the
+                // foot line in its recesses, and the rock (the plateau's rise)
+                // starts 4.5 m past it.
                 assert!(
-                    nearest > 0.0,
-                    "{hull:?} from {start} got {} m past the boundary",
-                    -nearest
-                );
-                assert!(
-                    highest < 4.0,
-                    "{hull:?} from {start} got {highest} m up onto the edge"
+                    worst < 4.0,
+                    "{hull:?} from {start} got {worst} m past the edge"
                 );
             }
         }
