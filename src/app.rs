@@ -26,7 +26,7 @@ use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullKind, HullStats, TurretKind};
 use crate::tank::TankArt;
-use crate::{ShowroomArgs, make_map, showroom};
+use crate::{MapKind, ShowroomArgs, make_map, showroom};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
@@ -46,7 +46,7 @@ enum Mode {
 /// How the app starts.
 pub struct Launch {
     pub seed: u64,
-    pub proving: bool,
+    pub map_kind: MapKind,
     pub spawn: usize,
     pub bots: usize,
     /// Starting kit; `None` uses the profile's.
@@ -58,7 +58,7 @@ pub struct Launch {
 
 struct App {
     seed: u64,
-    proving: bool,
+    map_kind: MapKind,
     spawn: usize,
     bots: usize,
     mode: Mode,
@@ -104,18 +104,18 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     };
     let loadout = launch.loadout.unwrap_or(profile.loadout);
     let game = if launch.showroom.is_some() {
-        let mut m = Match::new(make_map(launch.seed, launch.proving), launch.spawn, 0, launch.seed);
+        let mut m = Match::new(make_map(launch.seed, launch.map_kind), launch.spawn, 0, launch.seed);
         m.world = showroom::world();
         m
     } else if launch.menu {
         menu_match(loadout)
     } else {
-        new_match(launch.seed, launch.proving, launch.spawn, launch.bots, loadout)
+        new_match(launch.seed, launch.map_kind, launch.spawn, launch.bots, loadout)
     };
     let menu_orbit = garage::front_angle(&game.world.tanks[0]);
     let mut app = App {
         seed: launch.seed,
-        proving: launch.proving,
+        map_kind: launch.map_kind,
         spawn: launch.spawn,
         bots: launch.bots,
         mode: if launch.menu && launch.showroom.is_none() { Mode::Menu } else { Mode::Playing },
@@ -147,8 +147,8 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
 }
 
 /// A round with the player in `kit`.
-pub fn new_match(seed: u64, proving: bool, spawn: usize, bots: usize, kit: garage::Loadout) -> Match {
-    let mut m = Match::new(make_map(seed, proving), spawn, bots, seed.wrapping_add(spawn as u64));
+pub fn new_match(seed: u64, map_kind: MapKind, spawn: usize, bots: usize, kit: garage::Loadout) -> Match {
+    let mut m = Match::new(make_map(seed, map_kind), spawn, bots, seed.wrapping_add(spawn as u64));
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
@@ -156,7 +156,7 @@ pub fn new_match(seed: u64, proving: bool, spawn: usize, bots: usize, kit: garag
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    let mut m = new_match(MISSIONS[0].seed, false, 0, 0, kit);
+    let mut m = new_match(MISSIONS[0].seed, MISSIONS[0].map_kind, 0, 0, kit);
     m.time_left = f32::INFINITY;
     m
 }
@@ -242,14 +242,14 @@ impl App {
     /// Start a new round on the current map settings, keeping the player's queued kit.
     fn restart(&mut self) {
         let kit = self.queued();
-        self.load(new_match(self.seed, self.proving, self.spawn, self.bots, kit));
+        self.load(new_match(self.seed, self.map_kind, self.spawn, self.bots, kit));
         self.mode = Mode::Playing;
     }
 
     fn start_mission(&mut self, i: usize) {
         let m = &MISSIONS[i];
-        (self.seed, self.proving, self.spawn, self.bots) = (m.seed, false, 0, m.bots);
-        self.load(new_match(self.seed, self.proving, self.spawn, self.bots, self.profile.loadout));
+        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots);
+        self.load(new_match(self.seed, self.map_kind, self.spawn, self.bots, self.profile.loadout));
         self.mode = Mode::Playing;
         log::info!("deployed: {} ({}, {})", m.name, m.mode, m.map);
     }
@@ -362,7 +362,7 @@ impl App {
             // New random map.
             KeyCode::F5 if self.showroom.is_none() => {
                 self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
-                self.proving = false;
+                self.map_kind = MapKind::City;
                 self.restart();
                 log::info!("map seed {}", self.seed);
             }
