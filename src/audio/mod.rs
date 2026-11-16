@@ -3,10 +3,11 @@
 //! Each tank carries continuous loops driven by its physics: an engine whose
 //! revs follow the belts and throttle, track clatter at the rate links meet
 //! the sprockets, a turret ring motor, and the laser's buzz or the flamer's
-//! roar while they fire; where a beam lands it sizzles. Discrete moments (shots, impacts, armour hits, kills,
-//! repairs) come out of the match as [`Sound`] events and play as one-shots;
-//! a beam lighting, letting go and striking a hull are spotted here, frame
-//! to frame.
+//! roar while they fire; where a beam lands it sizzles, and a broken Vigil's
+//! light sings out of its cracks. Discrete moments (shots, impacts, armour
+//! hits, kills, repairs) come out of the match as [`Sound`] events and play
+//! as one-shots; a beam lighting, letting go and striking a hull are spotted
+//! here, frame to frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
@@ -254,6 +255,14 @@ impl Audio {
                 let g = if tank == 0 { 1.0 } else { 0.6 };
                 (patch::OVERHEAT, Some(at), g, jitter)
             }
+            // One bell throughout: no pitch jitter.
+            Sound::Shatter { at } => (patch::SHATTER, Some(at), 1.3, 1.0),
+            // Each toll weaker and a little flatter than the last.
+            Sound::Toll { at, strength } => {
+                let s = strength.clamp(0.0, 1.0);
+                (patch::TOLL, Some(at), 0.8 + 0.7 * s, 0.94 + 0.06 * s)
+            }
+            Sound::Gutter { at } => (patch::GUTTER, Some(at), 1.2, 1.0),
             Sound::Confirm => (patch::CONFIRM, None, 1.0, 1.0),
             Sound::Link => (patch::LINK, None, 1.0, 1.0),
             // Heard wherever you are: the site is the round's objective.
@@ -366,6 +375,7 @@ impl Audio {
                     },
                     heat: f.map_or(0.0, |f| f.heat),
                     flame: flaming as u8 as f32,
+                    husk: f.filter(|f| f.is_husk()).map_or(0.0, |f| f.strength()),
                     heavy: t.hull_kind == HullKind::Kastron,
                     hover: t.chassis.hover,
                 }
