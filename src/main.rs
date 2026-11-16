@@ -30,9 +30,9 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket|shards>
+  --map <city|proving|saltmarket|shards|kiln>
                           city (default), the physics test course, Saltmarket (desert town),
-                          or Shard Flats (crystal deposit, the Hold map)
+                          Shard Flats (crystal deposit, the Hold map), or the Kiln (Ithessar ground)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
   --contract <attrition|hold>
@@ -45,8 +45,8 @@ tankit [OPTIONS]
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
-  --hull <lancer|bastion> player hull (default lancer)
-  --turret <name>         player turret: lance maul (Imperium), wisp triad (Sorn),
+  --hull <lancer|bastion|sethuun>  player hull (default lancer; sethuun hovers)
+  --turret <name>         player turret: lance maul (Imperium), ammeth ossrin (Ithessar),
                           lumen (machines), hymn (Resonant); default lance
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
@@ -111,6 +111,8 @@ pub enum MapKind {
     Saltmarket,
     /// Placeholder: open flats around a crystal deposit (the Hold map).
     ShardFlats,
+    /// Ithessar ground: crystal monoliths holding a plasma core.
+    Kiln,
 }
 
 pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
@@ -119,6 +121,7 @@ pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
         MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::ShardFlats => map::Map::shard_flats(),
+        MapKind::Kiln => map::Map::kiln(),
     }
 }
 
@@ -223,7 +226,10 @@ fn parse_args() -> Result<Args> {
                 Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("shards") => map_kind = MapKind::ShardFlats,
-                other => bail!("--map expects city, proving, saltmarket or shards, got {other:?}"),
+                Some("kiln") => map_kind = MapKind::Kiln,
+                other => {
+                    bail!("--map expects city, proving, saltmarket, shards or kiln, got {other:?}")
+                }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--team-size" => {
@@ -265,14 +271,14 @@ fn parse_args() -> Result<Args> {
                 loadout.0 = *garage::HULLS
                     .iter()
                     .find(|&&k| garage::hull_name(k) == name)
-                    .context("--hull expects lancer or bastion")?;
+                    .context("--hull expects lancer, bastion or sethuun")?;
             }
             "--turret" => {
                 let name = args.next().unwrap_or_default().to_ascii_uppercase();
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects lance, maul, wisp, triad, lumen or hymn")?;
+                    .context("--turret expects lance, maul, ammeth, ossrin, lumen or hymn")?;
             }
             "--garage" => garage = true,
             "--screen" => {

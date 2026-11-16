@@ -195,8 +195,8 @@ impl Audio {
                 let layers = match turret {
                     TurretKind::Lance => patch::LANCE,
                     TurretKind::Maul => patch::MAUL,
-                    TurretKind::Wisp => patch::WISP,
-                    TurretKind::Triad => patch::TRIAD,
+                    TurretKind::Ammeth => patch::WISP,
+                    TurretKind::Ossrin => patch::TRIAD,
                     TurretKind::Hymn => {
                         if let Some(t) = self.flame_until.get_mut(tank) {
                             *t = self.time + FLAME_HOLD;
@@ -255,7 +255,9 @@ impl Audio {
                 }
                 let p = ears.place(t.pos + t.up());
                 let tread = (t.belt[0].abs() + t.belt[1].abs()) * 0.5;
-                let revs = (tread / t.hull.max_speed).min(1.0);
+                // A hover hull has no belts: its field works with ground speed.
+                let pace = if t.chassis.hover { t.speed() } else { tread };
+                let revs = (pace / t.hull.max_speed).min(1.0);
                 let turret = (t.turret_rate.abs() / t.hull.turret_speed).min(1.0);
                 let flaming = live && self.flame_until.get(i).is_some_and(|&u| u > self.time);
                 TankParams {
@@ -270,6 +272,7 @@ impl Audio {
                     heat: f.map_or(0.0, |f| f.heat),
                     flame: flaming as u8 as f32,
                     heavy: t.hull_kind == HullKind::Bastion,
+                    hover: t.chassis.hover,
                 }
             })
             .collect()

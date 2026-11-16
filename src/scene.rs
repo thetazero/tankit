@@ -1,9 +1,10 @@
 //! Turns simulation state into renderer input: the static map mesh, tank
 //! instances and the chase camera. The HUD lives in `hud`.
 
+use crate::render::material::Material;
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::map::{Map, Terrain, Wedge, mat};
+use crate::map::{Map, Terrain, Wedge};
 use crate::render::mesh::{MeshData, Vertex};
 use crate::render::{Camera, Scene};
 use crate::sim::{Tank, World, apron_rects, dir2, wrap_angle};
@@ -13,7 +14,7 @@ use crate::tank::TankArt;
 pub fn map_mesh(map: &Map) -> MeshData {
     let mut m = MeshData::default();
     let pad = 120.0;
-    let asphalt = Vec4::new(0.17, 0.17, 0.18, mat::ASPHALT);
+    let asphalt = Vec4::new(0.17, 0.17, 0.18, Material::Asphalt.id());
     match &map.terrain {
         Some(t) => {
             terrain_mesh(t, &mut m);
@@ -44,10 +45,12 @@ pub fn map_mesh(map: &Map) -> MeshData {
                 n = -n;
             }
             // Slope faces get the paving pattern, everything else is plain.
-            let material = w
-                .material
-                .unwrap_or(if n.y > 0.2 { mat::PAVING } else { mat::PLAIN });
-            let c = w.color.extend(material);
+            let material = w.material.unwrap_or(if n.y > 0.2 {
+                Material::Paving
+            } else {
+                Material::Plain
+            });
+            let c = w.color.extend(material.id());
             if pts.len() == 4 {
                 m.quad([pts[0], pts[1], pts[2], pts[3]], n, c);
             } else {
@@ -60,8 +63,8 @@ pub fn map_mesh(map: &Map) -> MeshData {
         m.add_box(
             b.min,
             b.max,
-            b.color.extend(b.side_mat),
-            b.color.extend(b.top_mat),
+            b.color.extend(b.side_mat.id()),
+            b.color.extend(b.top_mat.id()),
         );
     }
     for o in &map.oboxes {
@@ -74,7 +77,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
         m.append(
             &sphere,
             Mat4::from_scale_rotation_translation(s, Quat::IDENTITY, t.pos),
-            Vec4::new(0.27, 0.45, 0.2, mat::PLAIN),
+            Vec4::new(0.27, 0.45, 0.2, Material::Plain.id()),
         );
     }
 
@@ -90,7 +93,12 @@ fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
     if o.chip > 0.0 || o.broken {
         worn_box(o, &mut local);
     } else {
-        local.add_box(-h, h, o.color.extend(o.side_mat), o.color.extend(o.top_mat));
+        local.add_box(
+            -h,
+            h,
+            o.color.extend(o.side_mat.id()),
+            o.color.extend(o.top_mat.id()),
+        );
     }
     let xf = Mat4::from_rotation_translation(o.rotation(), o.center3());
     let base = m.verts.len() as u32;
@@ -130,17 +138,17 @@ fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
     let mut rng = Hash::of(Vec3::new(o.center.x, o.y0 + o.y1, o.center.y));
     let (hx, hz) = (o.half.x, o.half.y);
     let hy = (o.y1 - o.y0) * 0.5;
-    let face = o.color.extend(o.side_mat);
-    let top_c = o.color.extend(o.top_mat);
+    let face = o.color.extend(o.side_mat.id());
+    let top_c = o.color.extend(o.top_mat.id());
     // Broken edges expose the core: rubble-textured, a darker masonry tone.
-    let raw = (o.color * Vec3::new(0.78, 0.72, 0.66)).extend(crate::map::mat::RUBBLE);
+    let raw = (o.color * Vec3::new(0.78, 0.72, 0.66)).extend(Material::Rubble.id());
     let chip = o.chip.min(0.45 * hx.min(hz)).max(0.0);
 
     // Footprint ring, counter-clockwise, with per-point top drop and whether
     // the side face after this point is a chip face.
     // Rocks (heavily chipped rubble): an irregular outline, tapering to a
     // lumpy top, instead of a chipped rectangle.
-    if o.chip >= 0.6 && o.side_mat == crate::map::mat::RUBBLE {
+    if o.chip >= 0.6 && o.side_mat == Material::Rubble {
         let n = 7 + (rng.f() * 3.0) as usize;
         let phase = rng.f() * 6.28;
         let ring: Vec<(Vec2, f32)> = (0..n)
@@ -244,7 +252,7 @@ fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
 
 /// Painted drop zones where repair crates come down: a square outline with a cross.
 fn repair_pads(map: &Map, m: &mut MeshData) {
-    let paint = Vec4::new(0.5, 0.78, 0.5, mat::PLAIN);
+    let paint = Vec4::new(0.5, 0.78, 0.5, Material::Plain.id());
     for &c in &map.repair_spots {
         let y = map.ground_height(c.x, c.y) + 0.02;
         let mut stripe = |min: Vec2, max: Vec2| {
@@ -290,7 +298,7 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
             m.verts.push(Vertex {
                 pos: p.to_array(),
                 normal: n.to_array(),
-                color: t.color.extend(t.material).to_array(),
+                color: t.color.extend(t.material.id()).to_array(),
             });
         }
     }
@@ -307,7 +315,7 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
 /// Dashed center lines along each inner road, skipping intersections.
 fn road_markings(map: &Map, m: &mut MeshData) {
     use crate::map::CELL;
-    let paint = Vec4::new(0.85, 0.78, 0.45, mat::PLAIN);
+    let paint = Vec4::new(0.85, 0.78, 0.45, Material::Plain.id());
     for (ri, r) in map.roads.iter().enumerate() {
         let (w, h) = (r.x1 - r.x0, r.y1 - r.y0);
         let along_x = w > h;

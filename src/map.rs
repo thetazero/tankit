@@ -3,11 +3,13 @@
 //! small parks); `Map::proving_ground` is a hand-built physics test course.
 //! Shapes are boxes, wedges (ramps), and an optional heightfield ground.
 
+use crate::render::material::Material;
 use glam::{Vec2, Vec3};
 
 use crate::faction::Faction;
 use crate::rng::Rng;
 
+mod kiln;
 mod ruins;
 mod saltmarket;
 mod shard_flats;
@@ -16,30 +18,6 @@ mod shard_flats;
 pub const CELL: f32 = 4.0;
 /// City grid is GRID x GRID cells.
 pub const GRID: i32 = 42;
-
-/// Material ids, read by the scene shader from vertex color alpha.
-pub mod mat {
-    pub const PLAIN: f32 = 0.0;
-    pub const WALL: f32 = 1.0;
-    pub const ASPHALT: f32 = 2.0;
-    pub const ROOF: f32 = 3.0;
-    pub const GRASS: f32 = 4.0;
-    pub const PAVING: f32 = 5.0;
-    // 6..12 are tank materials (tank/model.rs). World materials with
-    // procedural surface detail (scene.wgsl `world_surface`):
-    /// Wind-rippled desert sand.
-    pub const SAND: f32 = 13.0;
-    /// Sun-bleached plaster over masonry: chips, stains, grime streaks.
-    pub const PLASTER: f32 = 14.0;
-    /// Bare cast concrete: blotchy, pitted.
-    pub const CONCRETE: f32 = 15.0;
-    /// Broken masonry and stone.
-    pub const RUBBLE: f32 = 16.0;
-    /// Rusted steel.
-    pub const RUST: f32 = 17.0;
-    /// Weathered paint over steel, rusting through in patches.
-    pub const PAINTED: f32 = 18.0;
-}
 
 /// Blocking collider.
 #[derive(Clone, Copy, Debug)]
@@ -63,8 +41,8 @@ pub struct VisBox {
     pub min: Vec3,
     pub max: Vec3,
     pub color: Vec3,
-    pub side_mat: f32,
-    pub top_mat: f32,
+    pub side_mat: Material,
+    pub top_mat: Material,
 }
 
 /// A box turned about the vertical axis (buildings and walls that don't line
@@ -82,8 +60,8 @@ pub struct OBox {
     pub y0: f32,
     pub y1: f32,
     pub color: Vec3,
-    pub side_mat: f32,
-    pub top_mat: f32,
+    pub side_mat: Material,
+    pub top_mat: Material,
     /// Rotation about the box's local x axis after the yaw, radians: positive
     /// tips its local +z end down. The box turns about its own center.
     pub tilt: f32,
@@ -105,8 +83,8 @@ impl Default for OBox {
             y0: 0.0,
             y1: 1.0,
             color: Vec3::ONE,
-            side_mat: mat::PLAIN,
-            top_mat: mat::PLAIN,
+            side_mat: Material::Plain,
+            top_mat: Material::Plain,
             tilt: 0.0,
             solid: true,
             chip: 0.0,
@@ -205,7 +183,7 @@ pub struct Wedge {
     pub rise: Rise,
     pub color: Vec3,
     /// Surface material; None picks by slope (paving on top, plain sides).
-    pub material: Option<f32>,
+    pub material: Option<Material>,
 }
 
 impl Wedge {
@@ -268,7 +246,7 @@ pub struct Terrain {
     pub nz: usize,
     pub heights: Vec<f32>,
     pub color: Vec3,
-    pub material: f32,
+    pub material: Material,
 }
 
 impl Terrain {
@@ -292,7 +270,7 @@ impl Terrain {
             nz,
             heights,
             color: Vec3::new(0.36, 0.5, 0.28),
-            material: mat::GRASS,
+            material: Material::Grass,
         }
     }
 
@@ -376,6 +354,18 @@ pub struct Map {
     pub repair_spots: Vec<Vec2>,
     /// The Hold contract's site; `None` picks the open spot nearest the middle (see `hold`).
     pub hold_site: Option<Vec2>,
+    /// Ithessar cores: plasma held in the air between crystal monoliths.
+    /// Drawn (and animated) with the effects.
+    pub cores: Vec<Core>,
+}
+
+/// A ball of plasma held in the air between crystal monoliths.
+#[derive(Clone, Debug)]
+pub struct Core {
+    pub at: Vec3,
+    pub radius: f32,
+    /// The monoliths' tips that hold it (arcs jump from them to the core).
+    pub prongs: Vec<Vec3>,
 }
 
 /// The matchup on maps that don't name their own.
@@ -419,6 +409,7 @@ impl Map {
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
             hold_site: None,
+            cores: Vec::new(),
         };
 
         // Ring road around the inner city.
@@ -482,8 +473,8 @@ impl Map {
             min: Vec3::new(bmin.x, 0.0, bmin.y),
             max: Vec3::new(bmax.x, 0.12, bmax.y),
             color: Vec3::new(0.55, 0.55, 0.54),
-            side_mat: mat::PLAIN,
-            top_mat: mat::PAVING,
+            side_mat: Material::Plain,
+            top_mat: Material::Paving,
         });
 
         // Split the block into lots along its long axis, sometimes with an alley.
@@ -511,8 +502,8 @@ impl Map {
                     min: Vec3::new(umin.x, height, umin.y),
                     max: Vec3::new(umax.x, h2, umax.y),
                     color: shade,
-                    side_mat: mat::WALL,
-                    top_mat: mat::ROOF,
+                    side_mat: Material::Wall,
+                    top_mat: Material::Roof,
                 });
                 self.solids.push(Solid {
                     min: Vec3::new(umin.x, height, umin.y),
@@ -531,8 +522,8 @@ impl Map {
                     min: Vec3::new(p.x, height, p.y),
                     max: Vec3::new(p.x + s.x, height + rng.range(0.8, 2.0), p.y + s.y),
                     color: Vec3::splat(0.62),
-                    side_mat: mat::PLAIN,
-                    top_mat: mat::PLAIN,
+                    side_mat: Material::Plain,
+                    top_mat: Material::Plain,
                 });
             }
         }
@@ -547,8 +538,8 @@ impl Map {
             min: min3,
             max: max3,
             color,
-            side_mat: mat::WALL,
-            top_mat: mat::ROOF,
+            side_mat: Material::Wall,
+            top_mat: Material::Roof,
         });
         self.solids.push(Solid {
             min: min3,
@@ -562,8 +553,8 @@ impl Map {
             min: Vec3::new(bmin.x, 0.0, bmin.y),
             max: Vec3::new(bmax.x, 0.06, bmax.y),
             color: Vec3::new(0.62, 0.58, 0.52),
-            side_mat: mat::PLAIN,
-            top_mat: mat::PAVING,
+            side_mat: Material::Plain,
+            top_mat: Material::Paving,
         });
 
         let mut placed: Vec<(Vec2, Vec2)> = Vec::new();
@@ -616,8 +607,8 @@ impl Map {
                 min,
                 max,
                 color,
-                side_mat: mat::PLAIN,
-                top_mat: mat::PLAIN,
+                side_mat: Material::Plain,
+                top_mat: Material::Plain,
             });
             self.solids.push(Solid { min, max });
         }
@@ -629,8 +620,8 @@ impl Map {
             min: Vec3::new(bmin.x, 0.0, bmin.y),
             max: Vec3::new(bmax.x, 0.1, bmax.y),
             color: Vec3::new(0.32, 0.48, 0.24),
-            side_mat: mat::PLAIN,
-            top_mat: mat::GRASS,
+            side_mat: Material::Plain,
+            top_mat: Material::Grass,
         });
         let mut placed: Vec<Vec2> = Vec::new();
         let count = ((b.w() * b.h()) as f32 / 8.0).round() as i32;
@@ -652,8 +643,8 @@ impl Map {
                 min: Vec3::new(p.x - trunk, 0.0, p.y - trunk),
                 max: Vec3::new(p.x + trunk, 3.2, p.y + trunk),
                 color: Vec3::new(0.36, 0.26, 0.18),
-                side_mat: mat::PLAIN,
-                top_mat: mat::PLAIN,
+                side_mat: Material::Plain,
+                top_mat: Material::Plain,
             });
             self.solids.push(Solid {
                 min: Vec3::new(p.x - 0.6, 0.0, p.y - 0.6),
@@ -680,8 +671,8 @@ impl Map {
                 min,
                 max,
                 color: Vec3::new(0.40, 0.40, 0.42),
-                side_mat: mat::PLAIN,
-                top_mat: mat::PLAIN,
+                side_mat: Material::Plain,
+                top_mat: Material::Plain,
             });
             self.solids.push(Solid { min, max });
         }
@@ -750,8 +741,8 @@ impl Map {
                     min: Vec3::new(bmin.x, 0.0, bmin.y),
                     max: Vec3::new(bmax.x, h, bmax.y),
                     color,
-                    side_mat: mat::WALL,
-                    top_mat: mat::ROOF,
+                    side_mat: Material::Wall,
+                    top_mat: Material::Roof,
                 });
                 t += w;
             }
@@ -804,6 +795,7 @@ impl Map {
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
             hold_site: None,
+            cores: Vec::new(),
         }
     }
 
@@ -835,6 +827,7 @@ impl Map {
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
             hold_site: None,
+            cores: Vec::new(),
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.
@@ -985,8 +978,8 @@ impl Map {
             min,
             max,
             color,
-            side_mat: mat::PLAIN,
-            top_mat: mat::PAVING,
+            side_mat: Material::Plain,
+            top_mat: Material::Paving,
         });
         self.solids.push(Solid { min, max });
     }

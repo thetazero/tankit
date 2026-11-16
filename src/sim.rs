@@ -28,6 +28,8 @@ pub const GRAVITY: f32 = 9.81;
 pub enum HullKind {
     Lancer,
     Bastion,
+    /// Ithessar: rides a plasma cushion instead of tracks.
+    Sethuun,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,10 +38,10 @@ pub enum TurretKind {
     Lance,
     /// Imperium twin autocannon.
     Maul,
-    /// Sorn plasma orb that bounces off walls.
-    Wisp,
-    /// Sorn three-barrel rapid plasma.
-    Triad,
+    /// Ithessar plasma orb that bounces off walls.
+    Ammeth,
+    /// Ithessar three-barrel rapid plasma.
+    Ossrin,
     /// Machine laser beam; overheats.
     Lumen,
     /// Resonant short-range crystal flamethrower.
@@ -51,8 +53,8 @@ impl TurretKind {
     pub const ALL: [TurretKind; 6] = [
         TurretKind::Lance,
         TurretKind::Maul,
-        TurretKind::Wisp,
-        TurretKind::Triad,
+        TurretKind::Ammeth,
+        TurretKind::Ossrin,
         TurretKind::Lumen,
         TurretKind::Hymn,
     ];
@@ -61,7 +63,7 @@ impl TurretKind {
         use crate::faction::Faction;
         match self {
             TurretKind::Lance | TurretKind::Maul => Faction::Imperium,
-            TurretKind::Wisp | TurretKind::Triad => Faction::Sorn,
+            TurretKind::Ammeth | TurretKind::Ossrin => Faction::Ithessar,
             TurretKind::Lumen => Faction::Machines,
             TurretKind::Hymn => Faction::Resonant,
         }
@@ -76,8 +78,8 @@ impl TurretKind {
             // Twin short guns: smaller kicks, more often.
             TurretKind::Maul => 1.3,
             // Plasma has little mass: a soft push.
-            TurretKind::Wisp => 0.8,
-            TurretKind::Triad => 0.35,
+            TurretKind::Ammeth => 0.8,
+            TurretKind::Ossrin => 0.35,
             // Beam and flame don't kick.
             TurretKind::Lumen | TurretKind::Hymn => 0.0,
         }
@@ -104,6 +106,9 @@ pub struct Chassis {
     pub hull_top: f32,
     pub hull_z: (f32, f32),
     pub center_of_mass: Vec3,
+    /// Floats on plasma emitters instead of running on tracks. The emitters sit
+    /// where road wheels would (`track_x` x `road_z`), `road_y` above the ground.
+    pub hover: bool,
 }
 
 impl Chassis {
@@ -120,6 +125,7 @@ impl Chassis {
         hull_top: 1.42,
         hull_z: (-2.3, 2.2),
         center_of_mass: Vec3::new(0.0, 0.65, -0.1),
+        hover: false,
     };
     pub const BASTION: Chassis = Chassis {
         mass: 28_000.0,
@@ -134,12 +140,31 @@ impl Chassis {
         hull_top: 1.62,
         hull_z: (-2.5, 2.4),
         center_of_mass: Vec3::new(0.0, 0.7, -0.1),
+        hover: false,
+    };
+    /// Ithessar hover hull: light and long, its belly riding 0.7 m up on six emitters.
+    /// No tracks: `front`/`rear` are only the collider's prow and tail.
+    pub const SETHUUN: Chassis = Chassis {
+        mass: 13_000.0,
+        track_x: 1.0,
+        track_width: 0.5,
+        road_z: &[-1.75, 0.05, 1.7],
+        road_y: 1.1,
+        road_r: 0.0,
+        front: (2.75, 1.25, 0.0),
+        rear: (-2.55, 1.3, 0.0),
+        hull_half_x: 1.4,
+        hull_top: 1.7,
+        hull_z: (-2.3, 2.1),
+        center_of_mass: Vec3::new(0.0, 1.25, 0.0),
+        hover: true,
     };
 
     pub fn of(kind: HullKind) -> &'static Chassis {
         match kind {
             HullKind::Lancer => &Chassis::LANCER,
             HullKind::Bastion => &Chassis::BASTION,
+            HullKind::Sethuun => &Chassis::SETHUUN,
         }
     }
 
@@ -151,22 +176,34 @@ impl Chassis {
     pub fn mount(&self, i: usize) -> Vec3 {
         let n = self.road_z.len();
         let x = if i < n { self.track_x } else { -self.track_x };
-        Vec3::new(x, self.road_y + SUSPENSION_TRAVEL_UP, self.road_z[i % n])
+        Vec3::new(x, self.rest_len(), self.road_z[i % n])
     }
 
     /// Ray length from mount to ground at rest under load.
     pub fn rest_len(&self) -> f32 {
-        self.road_y + SUSPENSION_TRAVEL_UP
+        if self.hover {
+            self.road_y
+        } else {
+            self.road_y + SUSPENSION_TRAVEL_UP
+        }
     }
 
     /// Ray length with the spring fully extended.
     pub fn free_len(&self) -> f32 {
-        self.rest_len() + SUSPENSION_SAG
+        self.rest_len()
+            + if self.hover {
+                HOVER_SAG
+            } else {
+                SUSPENSION_SAG
+            }
     }
 
     /// Convex collider: belly above the road wheels' travel, ends swept up around the
     /// sprocket and idler like the real track run, hull box on top.
     pub fn collider_points(&self) -> Vec<Vec3> {
+        if self.hover {
+            return self.hover_collider_points();
+        }
         let mut pts = Vec::new();
         let x = self.track_x + self.track_width * 0.5;
         // The road wheels (suspension rays) handle anything up to their travel.
@@ -188,6 +225,33 @@ impl Chassis {
         for sx in [-self.hull_half_x, self.hull_half_x] {
             for z in [self.hull_z.0, self.hull_z.1] {
                 pts.push(Vec3::new(sx, self.hull_top, z));
+            }
+        }
+        pts
+    }
+
+    /// A sled: flat belly just above the emitters' working range, a long
+    /// raked prow (so ledges and wrecks push it up instead of stopping it
+    /// dead) and a shorter rake at the tail.
+    fn hover_collider_points(&self) -> Vec<Vec3> {
+        let belly = self.road_y - HOVER_BELLY_GAP;
+        let (fz, fy, _) = self.front;
+        let (rz, ry, _) = self.rear;
+        let (z_lo, z_hi) = (
+            self.road_z[0] - 0.3,
+            self.road_z[self.road_z.len() - 1] + 0.1,
+        );
+        let mut pts = Vec::new();
+        for sx in [-1.0, 1.0] {
+            let w = self.hull_half_x;
+            pts.push(Vec3::new(sx * w * 0.7, belly, z_lo));
+            pts.push(Vec3::new(sx * w * 0.7, belly, z_hi));
+            pts.push(Vec3::new(sx * w, belly + 0.25, z_hi - 0.4));
+            pts.push(Vec3::new(sx * w, belly + 0.25, z_lo + 0.2));
+            pts.push(Vec3::new(sx * 0.35, fy, fz));
+            pts.push(Vec3::new(sx * w * 0.6, ry, rz));
+            for z in [self.hull_z.0, self.hull_z.1] {
+                pts.push(Vec3::new(sx * w * 0.8, self.hull_top, z));
             }
         }
         pts
@@ -219,6 +283,15 @@ const ANTI_SQUAT: f32 = 0.6;
 const BELT_MASS_FRAC: f32 = 0.08;
 /// Below this speed with no input, the parking brake holds the tank.
 const PARK_SPEED: f32 = 0.3;
+/// Hover emitters: static compression under the hull's weight (soft: it bobs).
+pub const HOVER_SAG: f32 = 0.16;
+const HOVER_DAMPING_RATIO: f32 = 0.45;
+/// How far the belly sits above the emitters' rest line: their working range
+/// before the hull itself touches.
+const HOVER_BELLY_GAP: f32 = 0.42;
+/// Beyond full extension the cushion still steers and thrusts, fading out
+/// over this much more height (cresting a dune doesn't cut the drive).
+const HOVER_REACH: f32 = 0.9;
 /// Seconds upside down (and slow) before the tank rights itself.
 const FLIP_RECOVER_TIME: f32 = 2.5;
 
@@ -297,10 +370,31 @@ impl HullStats {
         turret_brake: 7.0,
     };
 
+    /// Hover: fast and light, but nothing grips the ground. Thrust and
+    /// braking are accelerations; `grip_lat` is how hard the cushion can stop
+    /// a sideways slide (m/s²), so it drifts through turns; `steer_accel` is
+    /// how fast it spins up a turn (rad/s²). `grip_long` is unused.
+    pub const SETHUUN: Self = Self {
+        max_speed: 16.5,
+        reverse_speed: 10.0,
+        accel: 10.0,
+        power_knee: 9.0,
+        brake: 13.0,
+        rolling: 0.9,
+        turn_rate: 2.5,
+        steer_accel: 11.0,
+        grip_long: 0.0,
+        grip_lat: 8.5,
+        turret_speed: 1.6,
+        turret_accel: 4.0,
+        turret_brake: 12.0,
+    };
+
     pub fn of(kind: HullKind) -> HullStats {
         match kind {
             HullKind::Lancer => HullStats::LANCER,
             HullKind::Bastion => HullStats::BASTION,
+            HullKind::Sethuun => HullStats::SETHUUN,
         }
     }
 }
@@ -346,6 +440,15 @@ pub struct Tank {
     /// Which barrel fired last (twin guns alternate).
     pub fire_barrel: usize,
     pub flipped_time: f32,
+    /// Seconds since the tank was spawned (drives idle animation).
+    pub age: f32,
+    /// Destroyed: a hover hull's field is out and it falls.
+    pub dead: bool,
+    /// Hover hulls bank into turns (radians, + rolls right side down). Visual.
+    pub lean: f32,
+    /// Spin-up guns: how far spun up, 0..1, and the cluster's angle.
+    pub spool: f32,
+    pub spin: f32,
     /// State at the start of the last step, for render interpolation.
     prev_pos: Vec3,
     prev_rot: Quat,
@@ -505,6 +608,11 @@ impl World {
             since_fire: 10.0,
             fire_barrel: 0,
             flipped_time: 0.0,
+            age: 0.0,
+            dead: false,
+            lean: 0.0,
+            spool: 0.0,
+            spin: 0.0,
             prev_pos: Vec3::ZERO,
             prev_rot: Quat::IDENTITY,
             prev_turret_rel: 0.0,
@@ -606,6 +714,7 @@ impl World {
             drive(t, &cmd, &mut self.physics);
             turret(t, &cmd, DT);
             t.since_fire += DT;
+            t.age += DT;
         }
         self.physics.step();
         for t in &mut self.tanks {
@@ -800,6 +909,10 @@ impl Chassis {
 }
 
 fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
+    if t.chassis.hover {
+        hover(t, cmd, physics);
+        return;
+    }
     let c = t.chassis;
     let (pose, mass) = {
         let b = &physics.bodies[t.body];
@@ -1032,6 +1145,126 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     }
     t.track_dist[0] += t.belt[0] * DT;
     t.track_dist[1] += t.belt[1] * DT;
+}
+
+/// Hover drive: each emitter is a spring of plasma against whatever is below
+/// it. Thrust, braking, sideways grip and turning all push through the
+/// cushion, so they fade as the hull lifts off and stop in the air.
+fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
+    let c = t.chassis;
+    let (pose, mass) = {
+        let b = &physics.bodies[t.body];
+        (*b.position(), b.mass())
+    };
+    let up = pose.rotation * Vec3::Y;
+    let fwd = pose.rotation * Vec3::Z;
+    let n = c.wheel_count();
+    let reach = c.free_len() + HOVER_REACH;
+
+    let mut hits: Vec<Option<(Vec3, Vec3, f32)>> = vec![None; n];
+    {
+        let filter = QueryFilter::default().exclude_rigid_body(t.body);
+        let qp = physics.query_pipeline_with_filter(filter);
+        for (i, hit) in hits.iter_mut().enumerate() {
+            let origin = pose.transform_point(c.mount(i));
+            if let Some((_, h)) = qp.cast_ray_and_get_normal(&Ray::new(origin, -up), reach, true) {
+                *hit = Some((origin, h.normal, h.time_of_impact));
+            }
+        }
+    }
+
+    if t.dead {
+        t.wheels_down = 0;
+        t.wheel_lift.fill(-HOVER_SAG);
+        return;
+    }
+    let k = mass * GRAVITY / (n as f32 * HOVER_SAG);
+    let damp = 2.0 * (k * mass / n as f32).sqrt() * HOVER_DAMPING_RATIO;
+    let b = &mut physics.bodies[t.body];
+    // How much of the cushion is working (1 = every emitter in range), and the
+    // average ground normal under it.
+    let mut grip = 0.0;
+    let mut ground_n = Vec3::ZERO;
+    t.wheels_down = 0;
+    for (i, hit) in hits.iter().enumerate() {
+        let Some((origin, nrm, toi)) = *hit else {
+            t.wheel_lift[i] = -HOVER_SAG - HOVER_REACH;
+            continue;
+        };
+        t.wheel_lift[i] = c.rest_len() - toi;
+        let compression = c.free_len() - toi;
+        let w = (1.0 - (toi - c.free_len()).max(0.0) / HOVER_REACH).clamp(0.0, 1.0);
+        grip += w / n as f32;
+        ground_n += nrm * w;
+        if compression > 0.0 {
+            t.wheels_down += 1;
+            // Past the belly gap the hull is about to scrape: stiffen hard.
+            let over = (compression - HOVER_SAG - HOVER_BELLY_GAP * 0.8).max(0.0);
+            let v_along = b.velocity_at_point(origin).dot(up);
+            let force = (k * compression + k * 6.0 * over - damp * v_along).max(0.0);
+            b.apply_impulse_at_point(up * force * DT, origin, true);
+        }
+    }
+    t.face_contacts = 0;
+
+    let h = t.hull;
+    let throttle = cmd.throttle.clamp(-1.0, 1.0);
+    let steer = cmd.steer.clamp(-1.0, 1.0);
+    let v = b.linvel();
+    let idle = throttle.abs() < 0.05 && steer.abs() < 0.05;
+    if !idle {
+        t.parked = false;
+    } else if v.length() < PARK_SPEED {
+        t.parked = true;
+    }
+
+    // Drive in the plane of the ground under the cushion.
+    let gn = ground_n.normalize_or(up);
+    let f = (fwd - gn * fwd.dot(gn)).normalize_or(fwd);
+    let side = gn.cross(f);
+    let (v_f, v_s) = (v.dot(f), v.dot(side));
+    let a_long = if throttle.abs() > 0.05 {
+        let target = throttle
+            * if throttle > 0.0 {
+                h.max_speed
+            } else {
+                h.reverse_speed
+            };
+        let thrust = h.accel * (h.power_knee / v_f.abs().max(h.power_knee));
+        let limit = if v_f * throttle < -0.5 {
+            h.brake
+        } else {
+            thrust
+        };
+        ((target - v_f) / DT).clamp(-limit, limit)
+    } else if t.parked {
+        // Station-keeping: hold position, even on a slope.
+        (-v_f / DT).clamp(-h.brake, h.brake)
+    } else {
+        // Coasting: it glides a long way.
+        (-v_f / DT).clamp(-h.rolling, h.rolling)
+    };
+    let lat_limit = if t.parked { h.brake } else { h.grip_lat };
+    let a_side = (-v_s / DT).clamp(-lat_limit, lat_limit);
+    // On a slope the cushion also has to hold the hull against gravity's pull
+    // down it, or it would slide off every hill.
+    let downhill = Vec3::NEG_Y - gn * Vec3::NEG_Y.dot(gn);
+    let hold = -downhill * GRAVITY;
+    b.apply_impulse((f * a_long + side * a_side + hold) * mass * DT * grip, true);
+
+    // Yaw: spin up toward the turn asked for. Steering left is +y.
+    let w = b.angvel().dot(up);
+    let want = steer * h.turn_rate;
+    let dw = (want - w).clamp(-h.steer_accel * DT, h.steer_accel * DT) * grip;
+    let inertia = c.inertia().y;
+    b.apply_torque_impulse(up * inertia * dw, true);
+
+    // Bank into the turn, more the faster it goes.
+    let bank = (w * v_f * 0.014).clamp(-0.14, 0.14);
+    t.lean += (bank - t.lean) * (1.0 - (-DT * 5.0).exp());
+    t.belt = [v_f; 2];
+    t.track_dist[0] += v_f * DT;
+    t.track_dist[1] += v_f * DT;
 }
 
 fn turret(t: &mut Tank, cmd: &Command, dt: f32) {
@@ -1716,5 +1949,94 @@ mod tests {
         }
         // Lance fires forward: the nose kicks up as the hull rocks back.
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
+    }
+}
+
+#[cfg(test)]
+mod hover_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    fn hover_world() -> World {
+        let mut w = flat_world();
+        w.set_hull(0, HullKind::Sethuun);
+        run(&mut w, Command::default(), 2.0);
+        w
+    }
+
+    fn cmd(throttle: f32, steer: f32) -> Command {
+        Command {
+            throttle,
+            steer,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn floats_at_ride_height_and_holds_still() {
+        let mut w = hover_world();
+        let start = w.tanks[0].pos;
+        run(&mut w, Command::default(), 3.0);
+        let t = &w.tanks[0];
+        // Belly clear of the ground, hull level, not drifting.
+        assert!((t.pos.y - 0.0).abs() < 0.2, "rides at {}", t.pos.y);
+        assert!(t.up().y > 0.99);
+        assert!(
+            t.pos.distance(start) < 0.3,
+            "drifted {}",
+            t.pos.distance(start)
+        );
+        assert_eq!(t.wheels_down, 6);
+    }
+
+    #[test]
+    fn faster_than_tracks_in_a_straight_line() {
+        let mut w = hover_world();
+        run(&mut w, cmd(1.0, 0.0), 5.0);
+        let hover = w.tanks[0].speed();
+        let mut l = flat_world();
+        run(&mut l, cmd(1.0, 0.0), 5.0);
+        let tracks = l.tanks[0].speed();
+        assert!(hover > tracks + 1.5, "hover {hover} vs tracks {tracks}");
+    }
+
+    #[test]
+    fn slides_through_a_fast_turn() {
+        let mut w = hover_world();
+        run(&mut w, cmd(1.0, 0.0), 4.0);
+        run(&mut w, cmd(1.0, 1.0), 0.6);
+        let t = &w.tanks[0];
+        let v = t.vel.normalize();
+        // Velocity lags the nose: it's drifting, not carving.
+        let slip = v.dot(t.forward()).acos();
+        assert!(slip > 0.15, "slip {slip}");
+        assert!(t.lean.abs() > 0.03, "lean {}", t.lean);
+    }
+
+    #[test]
+    fn rides_up_over_a_low_ledge() {
+        let mut w = ledge_world(0.6);
+        w.set_hull(0, HullKind::Sethuun);
+        run(&mut w, Command::default(), 2.0);
+        // Onto the block (near face at z=110, 30 m deep) and riding on top.
+        let mut on_top = false;
+        for _ in 0..40 {
+            run(&mut w, cmd(1.0, 0.0), 0.1);
+            let t = &w.tanks[0];
+            on_top |= t.pos.z > 115.0 && t.pos.z < 138.0 && t.pos.y > 0.4;
+        }
+        assert!(on_top, "never got on top; at {}", w.tanks[0].pos);
+    }
+
+    #[test]
+    fn a_dead_hull_drops() {
+        let mut w = hover_world();
+        w.tanks[0].dead = true;
+        run(&mut w, Command::default(), 2.0);
+        assert!(
+            w.tanks[0].pos.y < -0.4,
+            "still floating at {}",
+            w.tanks[0].pos.y
+        );
     }
 }

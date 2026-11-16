@@ -36,6 +36,8 @@ pub struct TankParams {
     pub flame: f32,
     /// Heavy hull: a deeper, slower engine.
     pub heavy: bool,
+    /// Rides a plasma cushion: a field hum instead of an engine and tracks.
+    pub hover: bool,
 }
 
 /// A one-shot to start.
@@ -59,6 +61,7 @@ struct TankVoice {
     heat: Smooth,
     flame: Smooth,
     heavy: bool,
+    hover: bool,
     noise: Noise,
     // Engine.
     cycle: f32,
@@ -99,6 +102,7 @@ impl TankVoice {
             heat: Smooth::new(0.0),
             flame: Smooth::new(0.0),
             heavy: false,
+            hover: false,
             noise: Noise::new(seed.wrapping_mul(2654435761).max(1)),
             cycle: 0.0,
             cylinder: 1.0,
@@ -135,6 +139,7 @@ impl TankVoice {
         self.heat.target = p.heat;
         self.flame.target = p.flame;
         self.heavy = p.heavy;
+        self.hover = p.hover;
     }
 
     fn silent(&self) -> bool {
@@ -143,7 +148,11 @@ impl TankVoice {
 
     /// Add this tank's loops into `out` (stereo frames).
     fn render(&mut self, out: &mut [f32], sr: f32, k: &Coefs) {
-        let base = if self.heavy { 22.0 } else { 29.0 };
+        let base = match (self.hover, self.heavy) {
+            (true, _) => 58.0,
+            (_, true) => 22.0,
+            _ => 29.0,
+        };
         for frame in out.chunks_exact_mut(2) {
             let gain = self.gain.next(k.slow);
             let pan = self.pan.next(k.slow);
@@ -168,12 +177,19 @@ impl TankVoice {
             let sub = (self.cycle * TAU * 0.5).sin();
             let raw = pulse + sub * 0.3 + n * 0.15 * pulse * (0.4 + load);
             let cutoff = 220.0 + 1000.0 * load + 600.0 * rpm;
-            let engine = self.dc.run(self.engine_lp.run(raw, cutoff, 0.9, sr).low)
-                * (0.3 + 0.4 * rpm + 0.3 * load);
+            let engine = if self.hover {
+                // Field hum: a steady tone and its fifth, rising with effort, over hiss.
+                let hum = (self.cycle * TAU).sin() * 0.7 + (self.cycle * TAU * 3.0).sin() * 0.25;
+                let air = self.engine_lp.run(n, 500.0 + 1200.0 * rpm, 1.5, sr).band;
+                (hum + air * 0.8) * (0.15 + 0.2 * rpm + 0.15 * load)
+            } else {
+                self.dc.run(self.engine_lp.run(raw, cutoff, 0.9, sr).low)
+                    * (0.3 + 0.4 * rpm + 0.3 * load)
+            };
 
             // Tracks: a clank per link meeting a sprocket, and ground rumble.
             let mut tracks = 0.0;
-            if tread > 0.05 {
+            if tread > 0.05 && !self.hover {
                 self.link += tread / 0.3 / sr;
                 let mut hit = 0.0;
                 if self.link >= 1.0 {
