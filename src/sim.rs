@@ -167,7 +167,7 @@ pub const SUSPENSION_TRAVEL_UP: f32 = 0.25;
 pub const SUSPENSION_SAG: f32 = 0.09;
 const SUSPENSION_DAMPING_RATIO: f32 = 0.5;
 /// How much tighter than grip allows a turn may be requested at speed (drift room).
-const TURN_OVERDRIVE: f32 = 2.2;
+const TURN_OVERDRIVE: f32 = 1.35;
 /// Fraction of the drive force's lever arm removed by suspension geometry.
 const ANTI_SQUAT: f32 = 0.6;
 /// How far the tracks' commanded speed may lead the hull (m/s, rad/s).
@@ -206,10 +206,8 @@ pub struct HullStats {
     /// Track grip along and across the direction of travel.
     pub grip_long: f32,
     pub grip_lat: f32,
-    /// Sideways grip while steering at speed (tracks scrub to let the hull swing).
+    /// Sideways grip while steering (tracks scrub to let the hull swing).
     pub grip_lat_turning: f32,
-    /// Sideways grip while pivoting in place.
-    pub grip_lat_pivot: f32,
     /// Grip of the track run against edges and walls (steel on concrete).
     pub grip_edge: f32,
     /// Max turret rotation speed relative to the hull, rad/s.
@@ -228,10 +226,9 @@ impl HullStats {
         coast: 10.0,
         turn_rate: 2.5,
         turn_accel: 20.0,
-        grip_long: 1.6,
+        grip_long: 2.0,
         grip_lat: 2.0,
         grip_lat_turning: 1.4,
-        grip_lat_pivot: 0.8,
         grip_edge: 0.8,
         turret_speed: 2.0,
         turret_accel: 12.0,
@@ -245,10 +242,9 @@ impl HullStats {
         coast: 8.0,
         turn_rate: 1.7,
         turn_accel: 9.0,
-        grip_long: 1.6,
+        grip_long: 2.0,
         grip_lat: 2.0,
         grip_lat_turning: 1.4,
-        grip_lat_pivot: 0.85,
         grip_edge: 0.8,
         turret_speed: 1.5,
         turret_accel: 8.0,
@@ -776,14 +772,23 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // 4. Traction: each contact pushes its patch toward the track speed along the
     // track's direction at that point, and resists sliding sideways, each limited
     // by friction times the contact's load.
-    // Tracks scrub sideways to let the hull swing: easiest when pivoting slowly,
-    // firmer when cornering at speed.
+    // Tracks scrub sideways to let the hull swing while steering.
     let turning = turn_target.abs() > 0.05;
-    let speed_frac = (v_now.abs() / h.max_speed).min(1.0);
-    let grip_lat = if turning { h.grip_lat_pivot + (h.grip_lat_turning - h.grip_lat_pivot) * speed_frac } else { h.grip_lat };
+    let grip_lat = if turning { h.grip_lat_turning } else { h.grip_lat };
     // Velocities are sampled before any impulse is applied, so every contact
     // sees the same slip and together they deliver exactly the requested change.
+    //
+    // Each contact's push is split into a common part (accelerate the hull) and a
+    // differential part (this track vs. the average: yaw the hull). Steering gets
+    // first claim on the contact's grip and the engine gets what's left, so a tank
+    // keeps turning while it accelerates instead of going straight until it hits
+    // top speed. Only yaw counts as steering; pitch and roll from the suspension
+    // don't eat into it.
     let share = mass / contacts.len() as f32;
+    let v_hull = b.linvel();
+    let yaw_spin = up * b.angvel().dot(up);
+    let com = b.center_of_mass();
+    let common_speed = (t.track_speed[0] + t.track_speed[1]) * 0.5;
     let impulses: Vec<(Vec3, Vec3)> = contacts
         .iter()
         .filter_map(|ct| {
@@ -796,7 +801,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
             let v = b.velocity_at_point(ct.point);
             let max_long = ct.grip * ct.load * DT;
             let max_lat = grip_lat * ct.load * DT;
-            let j_long = (share * (t.track_speed[ct.side] - v.dot(tangent))).clamp(-max_long, max_long);
+            let hull_along = v_hull.dot(tangent);
+            let yaw_along = yaw_spin.cross(ct.point - com).dot(tangent);
+            let want_drive = share * (common_speed - hull_along);
+            let want_steer = share * ((t.track_speed[ct.side] - common_speed) - yaw_along);
+            let j_steer = want_steer.clamp(-max_long, max_long);
+            let room = max_long - j_steer.abs();
+            let j_long = j_steer + want_drive.clamp(-room, room);
             let j_lat = (-share * v.dot(lateral)).clamp(-max_lat, max_lat);
             Some((tangent * j_long + lateral * j_lat, ct.point))
         })
@@ -804,7 +815,6 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // Anti-squat: track and suspension geometry carries part of the drive force
     // up toward the center of mass, so hard acceleration squats the hull instead
     // of standing it on its tail. 0 = force at the ground, 1 = at the CoM.
-    let com = b.center_of_mass();
     for (j, p) in impulses {
         let lift = (com - p).dot(up).max(0.0) * ANTI_SQUAT;
         b.apply_impulse_at_point(j, p + up * lift, true);
@@ -1047,6 +1057,31 @@ mod tests {
         (f.angle_to(v).to_degrees().abs(), v.length())
     }
 
+    /// Holding throttle + steer from a standstill: the tank turns from the start
+    /// and keeps turning while it accelerates. The turn rate may ease off as speed
+    /// builds (wider turns at speed) but never collapses and never jumps up.
+    #[test]
+    fn turns_smoothly_while_accelerating() {
+        let mut w = flat_world();
+        run(&mut w, Command::default(), 0.5);
+        let cmd = Command { throttle: 1.0, steer: 1.0, ..Default::default() };
+        let mut rates = Vec::new();
+        for _ in 0..(4.0 / DT) as usize {
+            w.step(&[cmd]);
+            rates.push(w.physics.bodies[w.tanks[0].body].angvel().y);
+        }
+        let after_spinup = &rates[(0.8 / DT) as usize..];
+        let min = after_spinup.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(min > 0.4, "turn rate collapsed to {min} rad/s while accelerating");
+        // No sudden surges: over any 0.3 s window the rate never climbs by more than 0.4 rad/s.
+        let win = (0.3 / DT) as usize;
+        for k in 0..after_spinup.len() - win {
+            let rise = after_spinup[k + win] - after_spinup[k];
+            assert!(rise < 0.4, "turn rate surged by {rise} rad/s at t={:.2}", 1.3 + k as f32 * DT);
+        }
+        assert!(w.tanks[0].speed() > 12.0, "turning starved the engine: {} m/s", w.tanks[0].speed());
+    }
+
     /// Cranking the steering at top speed drifts a little, but stays controlled.
     #[test]
     fn drifts_but_stays_planted() {
@@ -1244,6 +1279,7 @@ mod tests {
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
     }
 }
+
 
 
 
