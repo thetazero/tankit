@@ -845,6 +845,11 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
             None,
         );
     }
+    for c in map.crystals.iter().filter(|c| c.solid) {
+        if let Some(b) = ColliderBuilder::convex_hull(&c.points()) {
+            physics.insert_collider(b.friction(0.4), None);
+        }
+    }
     // Low visual slabs (sidewalks, plazas, lawns) are real curbs to roll over.
     for b in &map.boxes {
         let h = b.max.y - b.min.y;

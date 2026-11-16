@@ -78,6 +78,12 @@ pub fn map_mesh(map: &Map) -> MeshData {
     for o in &map.oboxes {
         add_obox(o, &mut m);
     }
+    for c in &map.crystals {
+        c.mesh(&mut m);
+    }
+    for g in &map.glow_paths {
+        g.mesh(&mut m);
+    }
 
     let sphere = MeshData::sphere(12, 8);
     for t in &map.trees {
