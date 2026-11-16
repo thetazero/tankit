@@ -927,7 +927,7 @@ impl Map {
                 CONCRETE,
                 Material::Concrete,
                 true,
-                0.0,
+                0.01,
             );
             if broken {
                 self.oboxes.last_mut().unwrap().broken = true;
@@ -968,8 +968,15 @@ impl Map {
             if ruined && x1 > 0.0 {
                 break;
             }
-            // The curve's height under this strip, taken at its lower edge.
-            let edge = x0.abs().max(x1.abs()).min(opening);
+            // The curve's height under this strip, taken where it's highest
+            // (the strip's inner edge), so no strip hangs below the curve:
+            // the voussoirs cover the steps.
+            let edge = if x0 < 0.0 && x1 > 0.0 {
+                0.0
+            } else {
+                x0.abs().min(x1.abs())
+            }
+            .min(opening);
             let y = spring + (opening * opening - edge * edge).sqrt();
             if pier_h - y < 0.05 {
                 continue;
@@ -982,8 +989,12 @@ impl Map {
                 CONCRETE,
                 Material::Concrete,
                 true,
-                0.0,
+                0.01,
             );
+            // The ruined arch ends in a broken edge at the crown.
+            if ruined && x1 + 2.0 * opening / strips as f32 > 0.0 {
+                self.oboxes.last_mut().unwrap().broken = true;
+            }
         }
         let arc_n = 15;
         for k in 0..arc_n {
@@ -999,7 +1010,11 @@ impl Map {
             rig.part(
                 self,
                 p,
-                Vec3::new(0.55, opening * PI / arc_n as f32 * 0.52, depth * 0.5 + 0.12),
+                Vec3::new(
+                    0.6,
+                    (opening + 0.45) * PI / arc_n as f32 * 0.56,
+                    depth * 0.5 + 0.12,
+                ),
                 Quat::from_rotation_z(a),
                 STONE * 0.9,
                 Material::Concrete,
@@ -1034,7 +1049,7 @@ impl Map {
             CONCRETE,
             Material::Concrete,
             true,
-            0.0,
+            0.01,
         );
         rig.part(
             self,
