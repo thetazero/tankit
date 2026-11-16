@@ -745,7 +745,8 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // the hull (that slip is what pushes), but only within a window, so a blocked
     // or airborne tank doesn't wind up a huge target.
     t.drive_speed = approach(t.drive_speed, target, rate * DT).clamp(v_now - DRIVE_SLIP, v_now + DRIVE_SLIP);
-    let steer = if v_now < -0.5 && throttle < 0.0 { -cmd.steer } else { cmd.steer };
+    // Tank steering: A/D always rotate the hull the same way, reversing or not.
+    let steer = cmd.steer;
     let speed_frac = (v_now.abs() / h.max_speed).min(1.0);
     let turn_target = steer.clamp(-1.0, 1.0) * h.turn_rate * (1.0 - 0.25 * speed_frac);
     let yaw_now = b.angvel().dot(up);
@@ -1182,6 +1183,21 @@ mod tests {
         let mid = t.interpolated(0.5).pos;
         assert!((mid - (t.prev_pos + t.pos) * 0.5).length() < 1e-5);
         assert!(t.pos.distance(t.prev_pos) > 0.01, "moving tank should differ between steps");
+    }
+
+    /// A always rotates the hull counter-clockwise, D clockwise, whether driving
+    /// forward, reversing, or standing still.
+    #[test]
+    fn steering_direction_ignores_throttle() {
+        for throttle in [1.0, 0.0, -1.0] {
+            let mut w = flat_world();
+            run(&mut w, Command::default(), 0.5);
+            run(&mut w, Command { throttle, ..Default::default() }, 1.0);
+            let yaw0 = w.tanks[0].yaw();
+            run(&mut w, Command { throttle, steer: 1.0, ..Default::default() }, 0.5);
+            let turned = wrap_angle(w.tanks[0].yaw() - yaw0);
+            assert!(turned > 0.2, "steer left with throttle {throttle} turned {turned} rad");
+        }
     }
 
     #[test]
