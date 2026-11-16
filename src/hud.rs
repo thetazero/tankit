@@ -63,7 +63,6 @@ impl Hud {
         &mut self,
         m: &Match,
         tanks: &[Tank],
-        seed: u64,
         camera: &Camera,
         width: f32,
         height: f32,
@@ -98,7 +97,7 @@ impl Hud {
             theme::FAINT,
         );
 
-        // Top left: round clock, kills / deaths, map seed.
+        // Top left: round clock, kills / deaths, trust.
         let secs = m.time_left.ceil() as u32;
         label(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
         let mut clock = TextStyle::value(20.0);
@@ -145,12 +144,6 @@ impl Hud {
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
             &format!("+{}", m.trust),
             &TextStyle::value(14.0),
-            Align::Left,
-        );
-        label(
-            &mut p,
-            Vec2::new(MARGIN, MARGIN + 92.0),
-            &format!("GRID {seed}"),
             Align::Left,
         );
 
@@ -329,7 +322,12 @@ impl Hud {
                     let mut s = TextStyle::LABEL;
                     s.color = hold_color(m, hd.control);
                     let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
-                    p.text(at, &format!("DEPOSIT  {d:.0} M"), &s, Align::Center);
+                    p.text(
+                        at,
+                        &format!("{}  {d:.0} M", m.world.map.hold_name),
+                        &s,
+                        Align::Center,
+                    );
                 }
             }
         }
@@ -698,7 +696,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
 /// side's bar grows left from the middle, theirs right.
 fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     let status = match hd.control {
-        Control::Open => "DEPOSIT OPEN".to_string(),
+        Control::Open => format!("{} OPEN", m.world.map.hold_name),
         Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
         Control::Contested => "CONTESTED".to_string(),
     };
@@ -778,8 +776,12 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
         ),
         (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
     ];
-    let hold = (m.contract == Contract::Hold)
-        .then(|| (format!("ON THE DEPOSIT  {:.0} S", pay.held), pay.hold));
+    let hold = (m.contract == Contract::Hold).then(|| {
+        (
+            format!("ON THE {}  {:.0} S", m.world.map.hold_name, pay.held),
+            pay.hold,
+        )
+    });
     let lines: Vec<_> = lines.into_iter().chain(hold).collect();
     let n = lines.len() as f32;
     for (i, (what, amount)) in lines.iter().enumerate() {
@@ -835,7 +837,7 @@ mod tests {
     }
 
     fn draws_at_any_size_under(contract: Contract) {
-        let mut m = Match::new(crate::map::Map::generate(21), 0, 11, 21);
+        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
         m.set_contract(contract);
         m.fighters[0].alive = false;
         m.phase = Phase::Over;
@@ -849,7 +851,7 @@ mod tests {
         };
         let mut hud = Hud::new();
         for (w, h) in [(1600.0, 900.0), (800.0, 600.0), (3840.0, 2160.0)] {
-            let v = hud.draw(&m, &m.world.tanks, 21, &camera, w, h, 1.0 / 60.0, true);
+            let v = hud.draw(&m, &m.world.tanks, &camera, w, h, 1.0 / 60.0, true);
             assert!(!v.is_empty());
             // A little slack for halos and anti-aliasing at the screen edge.
             assert!(v.iter().all(|v| v.pos[0] > -4.0

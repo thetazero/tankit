@@ -1,5 +1,7 @@
-// Soft, camera-facing, alpha-blended particles (dust, blown sand). Drawn into
-// the HDR target after the opaque scene: depth-tested, not depth-written.
+// Soft, camera-facing particles drawn into the HDR target after the opaque
+// scene: depth-tested, not depth-written. Blended premultiplied, so one pass
+// holds both kinds: lit, alpha-blended dust and blown sand (glow 0), and
+// self-lit plasma glow (glow > 0) that adds light and blocks none.
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -54,6 +56,7 @@ struct POut {
     @location(2) wpos: vec3<f32>,
     @location(3) streak: f32,
     @location(4) size: f32,
+    @location(5) glow: f32,
 };
 
 @vertex
@@ -84,6 +87,7 @@ fn vs_particle(@builtin(vertex_index) i: u32, p: PIn) -> POut {
     o.wpos = w;
     o.streak = select(0.0, 1.0, sl > 0.01);
     o.size = p.size;
+    o.glow = p.stretch.w;
     return o;
 }
 
@@ -104,12 +108,26 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     if (soft <= 0.0) {
         discard;
     }
+    let d_fog = 1.0 - exp(-d * g.params.y);
+    if (v.glow > 0.0) {
+        // Plasma: a wide colored halo around a white-hot heart, both falling
+        // off smoothly (no hard edge), haze swallowing it with distance.
+        let halo = exp(-r2 * 4.0) * fade;
+        let heart = exp(-r2 * 22.0) * fade;
+        let hot = mix(v.color.rgb, vec3<f32>(1.0, 0.92, 0.97), 0.6);
+        let strength = v.glow * v.color.a * (1.0 - d_fog);
+        let light = (v.color.rgb * halo + hot * heart * 2.0) * strength;
+        // A little coverage too, so the color holds against a bright sky
+        // or wall instead of adding up to white.
+        let cover = clamp(halo * min(strength, 1.0) * 0.45, 0.0, 0.6);
+        return vec4<f32>(light, cover);
+    }
     // Lit like a sunlit cloud of grains: sun from above, sky and bounce fill.
     let sun = g.sun_color.rgb * (0.35 + 0.35 * max(g.sun_dir.y, 0.0)) * sunlit(v.wpos);
     let fill = mix(g.ground_color.rgb, g.sky_horizon.rgb, 0.6) * 0.55;
     var c = v.color.rgb * (sun + fill);
     // Same haze as the scene.
-    let f = 1.0 - exp(-d * g.params.y);
-    c = mix(c, g.sky_horizon.rgb, f);
-    return vec4<f32>(c, v.color.a * soft);
+    c = mix(c, g.sky_horizon.rgb, d_fog);
+    let a = v.color.a * soft;
+    return vec4<f32>(c * a, a);
 }

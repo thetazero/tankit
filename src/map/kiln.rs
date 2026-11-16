@@ -173,12 +173,10 @@ impl Map {
             size: SIZE,
             solids: Vec::new(),
             boxes: Vec::new(),
-            trees: Vec::new(),
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
             scenery_terrain: None,
-            roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
             // A cold dusk: a low pale sun, a deep indigo sky, slate ground.
@@ -201,6 +199,8 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
         terrain.color = SLATE;

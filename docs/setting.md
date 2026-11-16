@@ -141,7 +141,9 @@ loop.
   carry crystals to your extraction point, deny the enemy theirs. Carrying
   crystals makes you a little stronger, but they resonate, so everyone can see
   you.
-- **Hold** (king of the hill): secure a crystal deposit, paid while you hold it.
+- **Hold** (king of the hill): secure a crystal site, paid while you hold it.
+  First on the Sanctum, a Resonant holy site: a great church on a mesa, the
+  site the crystal on its altar. The Imperium have come for it.
 - More later as other job types (escort, salvage, ...).
 
 ## First map

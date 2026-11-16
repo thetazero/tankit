@@ -30,13 +30,13 @@ tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
-  --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket|shards|kiln|capital>
-                          city (default), the physics test course, Saltmarket (desert town),
-                          Shard Flats (crystal deposit, the Hold map), the Kiln (Ithessar ground),
-                          or the Capital (Imperium city, all four factions)
+  --seed <n>              match seed: bot brains, spawns, kits (default: random)
+  --map <saltmarket|sanctum|kiln|capital>
+                          Saltmarket (desert town, the default), the Sanctum (a Resonant church
+                          on a mesa, the Hold map), the Kiln (Ithessar ground), or the Capital
+                          (Imperium city, all four factions)
   --spawn <n>             which spawn point to start at
-  --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
+  --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
   --employer <faction>    which of the map's sides hires you (default: its first);
@@ -102,7 +102,7 @@ impl Args {
     }
 
     pub fn map(&self) -> map::Map {
-        let mut m = make_map(self.seed, self.map);
+        let mut m = make_map(self.map);
         if self.side > 0 {
             m.swap_sides(self.side);
         }
@@ -113,26 +113,20 @@ impl Args {
 /// Which arena to load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapKind {
-    /// Procedural city (seeded).
-    City,
-    /// Hand-built physics test course.
-    Proving,
     /// Hand-built desert town on a dry reservoir.
     Saltmarket,
-    /// Placeholder: open flats around a crystal deposit (the Hold map).
-    ShardFlats,
+    /// The Sanctum: a Resonant church on a mesa (the Hold map).
+    Sanctum,
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
     /// An Imperium city, half ruined round a domed rotunda: four sides.
     Capital,
 }
 
-pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
+pub fn make_map(kind: MapKind) -> map::Map {
     match kind {
-        MapKind::City => map::Map::generate(seed),
-        MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
-        MapKind::ShardFlats => map::Map::shard_flats(),
+        MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::Capital => map::Map::capital(),
     }
@@ -208,7 +202,7 @@ fn parse_args() -> Result<Args> {
     let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
-    let (mut map_kind, mut spawn, mut straight) = (MapKind::City, 0usize, false);
+    let (mut map_kind, mut spawn, mut straight) = (MapKind::Saltmarket, 0usize, false);
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut team_size: Option<usize> = None;
@@ -244,16 +238,12 @@ fn parse_args() -> Result<Args> {
             "--shot" => shot = Some(args.next().context("--shot needs a path")?),
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--map" => match args.next().as_deref() {
-                Some("city") => map_kind = MapKind::City,
-                Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
-                Some("shards") => map_kind = MapKind::ShardFlats,
+                Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("capital") => map_kind = MapKind::Capital,
                 other => {
-                    bail!(
-                        "--map expects city, proving, saltmarket, shards, kiln or capital, got {other:?}"
-                    )
+                    bail!("--map expects saltmarket, sanctum, kiln or capital, got {other:?}")
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
@@ -350,7 +340,7 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
-    let sides = make_map(seed, map_kind).factions;
+    let sides = make_map(map_kind).factions;
     let side = match employer {
         None => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
@@ -371,11 +361,7 @@ fn parse_args() -> Result<Args> {
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
-        bots: match (team_size, map_kind) {
-            (Some(n), _) => sides.len() * n - 1,
-            (None, MapKind::Proving) => 0,
-            (None, _) => sides.len() * 6 - 1,
-        },
+        bots: sides.len() * team_size.unwrap_or(6) - 1,
         contract,
         loadout,
         kit_given,
@@ -510,20 +496,19 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         };
         let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
-        frame.particles = game.ambience.particles();
+        frame.particles.extend(game.ambience.particles());
+        game.glow_particles(1.0, &mut frame.particles);
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
-            let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
+            let ui = hud.draw(&game, &tanks, &camera, w, h, game::DT, false);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame.ui.extend(menu::Pause::new().draw(
-                    &profile,
-                    game.factions[0],
-                    game.trust,
-                    w,
-                    h,
-                ));
+                frame.ui.extend(
+                    menu::Pause::new()
+                        .draw(&profile, game.factions[0], game.trust, w, h)
+                        .verts,
+                );
             }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));
@@ -601,7 +586,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let tanks = game.display_tanks(1.0);
     let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
-    frame.ui = menu.draw(&profile, h, 1.0);
+    frame.ui = menu.draw(&profile, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));
     }

@@ -471,12 +471,10 @@ impl Map {
             size: SIZE,
             solids: Vec::new(),
             boxes: Vec::new(),
-            trees: Vec::new(),
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
             scenery_terrain: None,
-            roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
             // Late afternoon on a desert world: low warm sun, dusty sky, sand haze.
@@ -506,6 +504,8 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();

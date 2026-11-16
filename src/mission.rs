@@ -30,7 +30,7 @@ pub struct Mission {
     pub contract: Contract,
     pub map: &'static str,
     pub map_kind: MapKind,
-    /// Map seed (only matters for procedural maps).
+    /// Match seed: bot brains, spawns and kits.
     pub seed: u64,
     /// Tanks per side, the player included.
     pub team_size: usize,
@@ -51,14 +51,14 @@ pub const MISSIONS: &[Mission] = &[
         brief: "PAID PER KILL. MOST KILLS FOR YOUR SIDE TAKES THE TOWN",
     },
     Mission {
-        name: "CRYSTAL VEIN",
+        name: "HOLY GROUND",
         contract: Contract::Hold,
-        map: "SHARD FLATS",
-        map_kind: MapKind::ShardFlats,
+        map: "THE SANCTUM",
+        map_kind: MapKind::Sanctum,
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
-        brief: "SECURE THE DEPOSIT. PAID FOR YOUR TIME ON IT",
+        brief: "HOLD THE ALTAR AT THE HEART OF THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
     },
     Mission {
         name: "KEPT FIRE",
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
-            assert_eq!(m.sides, crate::make_map(m.seed, m.map_kind).factions);
+            assert_eq!(m.sides, crate::make_map(m.map_kind).factions);
         }
     }
 

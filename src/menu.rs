@@ -12,7 +12,7 @@ use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Painter, TextStyle, theme};
+use crate::ui::{Align, Hits, Layer, Painter, TextStyle, theme};
 
 const REF_HEIGHT: f32 = 900.0;
 
@@ -52,6 +52,28 @@ pub enum Change {
     Volume(i32),
     /// Volume one step up, wrapping round to silent past the top (Enter on the row).
     CycleVolume,
+}
+
+/// What can be clicked on the menus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hit {
+    /// Row `i` of the list on screen.
+    Row(usize),
+    /// The volume bar; where along it picks the level.
+    Volume,
+    /// The mission screen's employer line.
+    Employer,
+    /// A key hint: clicking it presses the key.
+    Key(Nav),
+}
+
+/// A click: the key it stands in for (for the sound), and what it did.
+pub type Click<A> = (Nav, Option<A>);
+
+/// The volume change that a click at `frac` (0..1) along the bar makes.
+fn volume_click(settings: &Settings, frac: f32) -> Change {
+    let to = (frac.clamp(0.0, 1.0) * Settings::MAX_VOLUME as f32).round() as i32;
+    Change::Volume(to - settings.volume as i32)
 }
 
 const MAIN_ITEMS: [&str; 4] = ["MISSIONS", "GARAGE", "SETTINGS", "QUIT"];
@@ -154,14 +176,47 @@ impl Menu {
         None
     }
 
+    /// The pointer moved onto `hit`: select that row. True if the selection changed.
+    pub fn hover(&mut self, hit: Hit) -> bool {
+        let i = match hit {
+            Hit::Row(i) => i,
+            Hit::Volume => VOLUME_ROW,
+            Hit::Employer | Hit::Key(_) => return false,
+        };
+        let slot = match self.screen {
+            Screen::Main => &mut self.cursor,
+            Screen::Missions => &mut self.mission,
+            Screen::Settings => &mut self.setting,
+        };
+        std::mem::replace(slot, i) != i
+    }
+
+    /// A click on `hit`, `at` (0..1) across it.
+    pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<Action> {
+        self.hover(hit);
+        let nav = match hit {
+            Hit::Volume => {
+                return (
+                    Nav::Right,
+                    Some(Action::Setting(volume_click(settings, at.x))),
+                );
+            }
+            Hit::Row(_) => Nav::Select,
+            Hit::Employer => Nav::Right,
+            Hit::Key(nav) => nav,
+        };
+        (nav, self.input(nav))
+    }
+
     /// The panel; `alpha` fades it (out while the garage is open over it).
-    pub fn draw(&self, profile: &Profile, height: f32, alpha: f32) -> Vec<UiVertex> {
+    pub fn draw(&self, profile: &Profile, height: f32, alpha: f32) -> Layer<Hit> {
         if alpha <= 0.0 {
-            return Vec::new();
+            return Layer::empty();
         }
         let scale = height / REF_HEIGHT;
         let h = REF_HEIGHT;
         let mut p = Painter::new(scale);
+        let mut hits = Hits::new();
         garage::backdrop(&mut p, h);
         let x = PANEL_X;
         let mut y = 72.0;
@@ -189,7 +244,7 @@ impl Menu {
 
         match self.screen {
             Screen::Main => {
-                rows(&mut p, Vec2::new(x, y), &MAIN_ITEMS, self.cursor);
+                rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor);
                 y += MAIN_ITEMS.len() as f32 * 30.0 + 20.0;
                 label(&mut p, Vec2::new(x, y), "DEPLOYING IN", Align::Left);
                 y += 16.0;
@@ -199,7 +254,16 @@ impl Menu {
                     &TextStyle::value(12.0),
                     Align::Left,
                 );
-                hints(&mut p, x, h, &[("W/S", "SELECT"), ("ENTER", "OPEN")]);
+                hints(
+                    &mut p,
+                    &mut hits,
+                    x,
+                    h,
+                    &[
+                        ("W/S", "SELECT", None),
+                        ("ENTER", "OPEN", Some(Nav::Select)),
+                    ],
+                );
             }
             Screen::Missions => {
                 label(&mut p, Vec2::new(x, y), "01  MISSIONS", Align::Left);
@@ -211,7 +275,7 @@ impl Menu {
                 );
                 y += 20.0;
                 let names: Vec<&str> = MISSIONS.iter().map(|m| m.name).collect();
-                rows(&mut p, Vec2::new(x, y), &names, self.mission);
+                rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission);
                 y += names.len() as f32 * 30.0 + 14.0;
 
                 let m = &MISSIONS[self.mission];
@@ -237,6 +301,14 @@ impl Menu {
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
                 ] {
+                    if k == "EMPLOYER" {
+                        hits.add(
+                            &p,
+                            Vec2::new(x - 14.0, y - 5.0),
+                            Vec2::new(PANEL_W + 14.0, 22.0),
+                            Hit::Employer,
+                        );
+                    }
                     label(&mut p, Vec2::new(x, y + 1.0), k, Align::Left);
                     p.text(
                         Vec2::new(x + PANEL_W, y),
@@ -250,34 +322,45 @@ impl Menu {
                 label(&mut p, Vec2::new(x, y), m.brief, Align::Left);
                 hints(
                     &mut p,
+                    &mut hits,
                     x,
                     h,
                     &[
-                        ("W/S", "SELECT"),
-                        ("A/D", "EMPLOYER"),
-                        ("ENTER", "DEPLOY"),
-                        ("ESC", "BACK"),
+                        ("W/S", "SELECT", None),
+                        ("A/D", "EMPLOYER", Some(Nav::Right)),
+                        ("ENTER", "DEPLOY", Some(Nav::Select)),
+                        ("ESC", "BACK", Some(Nav::Back)),
                     ],
                 );
             }
             Screen::Settings => {
                 label(&mut p, Vec2::new(x, y), "03  SETTINGS", Align::Left);
                 y += 20.0;
-                settings_rows(&mut p, Vec2::new(x, y), &profile.settings, self.setting);
+                settings_rows(
+                    &mut p,
+                    &mut hits,
+                    Vec2::new(x, y),
+                    &profile.settings,
+                    self.setting,
+                );
                 hints(
                     &mut p,
+                    &mut hits,
                     x,
                     h,
                     &[
-                        ("W/S", "SELECT"),
-                        ("ENTER", "TOGGLE"),
-                        ("A/D", "VOLUME"),
-                        ("ESC", "BACK"),
+                        ("W/S", "SELECT", None),
+                        ("ENTER", "TOGGLE", Some(Nav::Select)),
+                        ("A/D", "VOLUME", None),
+                        ("ESC", "BACK", Some(Nav::Back)),
                     ],
                 );
             }
         }
-        fade(p.finish(), alpha)
+        Layer {
+            verts: fade(p.finish(), alpha),
+            hits,
+        }
     }
 }
 
@@ -328,6 +411,34 @@ impl Pause {
         None
     }
 
+    /// The pointer moved onto `hit`: select that row. True if the selection changed.
+    pub fn hover(&mut self, hit: Hit) -> bool {
+        let i = match hit {
+            Hit::Row(i) => i,
+            Hit::Volume => VOLUME_ROW,
+            Hit::Employer | Hit::Key(_) => return false,
+        };
+        let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
+        std::mem::replace(slot, i) != i
+    }
+
+    /// A click on `hit`, `at` (0..1) across it.
+    pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<PauseAction> {
+        self.hover(hit);
+        let nav = match hit {
+            Hit::Volume => {
+                return (
+                    Nav::Right,
+                    Some(PauseAction::Setting(volume_click(settings, at.x))),
+                );
+            }
+            Hit::Row(_) => Nav::Select,
+            Hit::Employer => Nav::Right,
+            Hit::Key(nav) => nav,
+        };
+        (nav, self.input(nav))
+    }
+
     /// Dims the battle and draws the box. `match_trust` is what this match has
     /// earned you with `employer` so far.
     pub fn draw(
@@ -337,10 +448,11 @@ impl Pause {
         match_trust: u32,
         width: f32,
         height: f32,
-    ) -> Vec<UiVertex> {
+    ) -> Layer<Hit> {
         let scale = height / REF_HEIGHT;
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
+        let mut hits = Hits::new();
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
         let size = Vec2::new(PANEL_W + 48.0, 350.0);
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
@@ -359,16 +471,25 @@ impl Pause {
         p.text(Vec2::new(x, y), title, &TextStyle::value(20.0), Align::Left);
         y += 44.0;
         if let Some(i) = self.settings {
-            settings_rows(&mut p, Vec2::new(x, y), &profile.settings, i);
+            settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
             label(
                 &mut p,
                 Vec2::new(x, min.y + size.y - 34.0),
                 "ENTER TOGGLE    A/D VOLUME    ESC BACK",
                 Align::Left,
             );
-            return p.finish();
+            return Layer {
+                verts: p.finish(),
+                hits,
+            };
         }
-        rows(&mut p, Vec2::new(x, y), &PAUSE_ITEMS, self.cursor);
+        rows(
+            &mut p,
+            &mut hits,
+            Vec2::new(x, y),
+            &PAUSE_ITEMS,
+            self.cursor,
+        );
         y += PAUSE_ITEMS.len() as f32 * 30.0 + 8.0;
         p.line(
             Vec2::new(x, y),
@@ -406,14 +527,24 @@ impl Pause {
             "LEAVING FORFEITS THE CONTRACT PAY",
             Align::Left,
         );
-        p.finish()
+        Layer {
+            verts: p.finish(),
+            hits,
+        }
     }
 }
 
 /// The settings toggles: each a row with a checkbox, and under it what it does.
-fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize) {
+fn settings_rows(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    at: Vec2,
+    settings: &Settings,
+    selected: usize,
+) {
     for (i, (name, what, flag)) in SETTINGS.iter().enumerate() {
         let y = at.y + i as f32 * 44.0;
+        garage::row_hit(p, hits, Vec2::new(at.x, y), 44.0, Hit::Row(i));
         let on = i == selected;
         if on {
             p.line(
@@ -436,6 +567,14 @@ fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize
         label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
     }
     let y = at.y + VOLUME_ROW as f32 * 44.0;
+    garage::row_hit(p, hits, Vec2::new(at.x, y), 44.0, Hit::Row(VOLUME_ROW));
+    // The bar itself, exactly as wide as drawn so the click lands on the level under it.
+    hits.add(
+        p,
+        Vec2::new(at.x, y + 18.0),
+        Vec2::new(PANEL_W, 16.0),
+        Hit::Volume,
+    );
     let on = selected == VOLUME_ROW;
     if on {
         p.line(
@@ -514,9 +653,10 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
 }
 
 /// A selectable list, with the garage's bar-and-chevron marker on the selected row.
-fn rows(p: &mut Painter, at: Vec2, items: &[&str], selected: usize) {
+fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[&str], selected: usize) {
     for (i, item) in items.iter().enumerate() {
         let y = at.y + i as f32 * 30.0;
+        garage::row_hit(p, hits, Vec2::new(at.x, y), 30.0, Hit::Row(i));
         let on = i == selected;
         if on {
             p.line(
@@ -542,13 +682,28 @@ fn rows(p: &mut Painter, at: Vec2, items: &[&str], selected: usize) {
     }
 }
 
-fn hints(p: &mut Painter, x: f32, h: f32, keys: &[(&str, &str)]) {
+/// Key hints along the bottom; the ones with a key to press can be clicked.
+fn hints(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    x: f32,
+    h: f32,
+    keys: &[(&str, &str, Option<Nav>)],
+) {
     let mut y = h - 100.0;
-    for (key, what) in keys {
+    for (key, what, nav) in keys {
         let mut k = TextStyle::LABEL;
         k.color = theme::FG;
         p.text(Vec2::new(x, y), key, &k, Align::Left);
-        label(p, Vec2::new(x + 70.0, y), what, Align::Left);
+        let w = label(p, Vec2::new(x + 70.0, y), what, Align::Left);
+        if let Some(nav) = nav {
+            hits.add(
+                p,
+                Vec2::new(x - 4.0, y - 3.0),
+                Vec2::new(74.0 + w + 4.0, 14.0),
+                Hit::Key(*nav),
+            );
+        }
         y += 14.0;
     }
 }
@@ -660,9 +815,11 @@ mod tests {
             m.screen = screen;
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
                 for v in [
-                    m.draw(&profile, h, 1.0),
-                    Pause::new().draw(&profile, Faction::Imperium, 30, w, h),
-                    settings.draw(&profile, Faction::Imperium, 30, w, h),
+                    m.draw(&profile, h, 1.0).verts,
+                    Pause::new()
+                        .draw(&profile, Faction::Imperium, 30, w, h)
+                        .verts,
+                    settings.draw(&profile, Faction::Imperium, 30, w, h).verts,
                 ] {
                     assert!(!v.is_empty());
                     assert!(v.iter().all(|v| v.pos[0] > -4.0
@@ -672,7 +829,75 @@ mod tests {
                 }
             }
         }
-        assert!(m.draw(&profile, 900.0, 0.0).is_empty());
+        assert!(m.draw(&profile, 900.0, 0.0).verts.is_empty());
+    }
+
+    /// Clicks the middle of `hit` where `draw` put it.
+    fn click_drawn(m: &mut Menu, profile: &Profile, hit: Hit) -> Click<Action> {
+        let hits = m.draw(profile, 900.0, 1.0).hits;
+        let (id, at) = hits.at(hits.center_of(hit).unwrap()).unwrap();
+        assert_eq!(id, hit);
+        m.click(id, at, &profile.settings)
+    }
+
+    #[test]
+    fn clicking_the_menu() {
+        let profile = Profile::in_memory();
+        let mut m = Menu::new();
+        let hits = m.draw(&profile, 900.0, 1.0).hits;
+        // Off the panel there's nothing to click.
+        assert_eq!(hits.at(Vec2::new(1200.0, 450.0)), None);
+        assert!(m.hover(Hit::Row(3)));
+        assert!(!m.hover(Hit::Row(3)));
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(1)),
+            (Nav::Select, Some(Action::Garage))
+        );
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(0)),
+            (Nav::Select, None)
+        );
+        assert_eq!(m.screen, Screen::Missions);
+        click_drawn(&mut m, &profile, Hit::Employer);
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(0)),
+            (Nav::Select, Some(Action::Deploy(0, 1)))
+        );
+        click_drawn(&mut m, &profile, Hit::Key(Nav::Back));
+        assert_eq!(m.screen, Screen::Main);
+
+        m.screen = Screen::Settings;
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(0)).1,
+            Some(Action::Setting(Change::Toggle(0)))
+        );
+        // The volume bar sets the level under the click: its middle is half volume.
+        let half = Settings::MAX_VOLUME as i32 / 2 - profile.settings.volume as i32;
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Volume).1,
+            Some(Action::Setting(Change::Volume(half)))
+        );
+        assert_eq!(m.setting, VOLUME_ROW);
+    }
+
+    #[test]
+    fn clicking_the_pause_box() {
+        let profile = Profile::in_memory();
+        let mut p = Pause::new();
+        let click = |p: &mut Pause, hit: Hit| {
+            let hits = p.draw(&profile, Faction::Imperium, 0, 1600.0, 900.0).hits;
+            let (id, at) = hits.at(hits.center_of(hit).unwrap()).unwrap();
+            p.click(id, at, &profile.settings)
+        };
+        assert_eq!(
+            click(&mut p, Hit::Row(2)),
+            (Nav::Select, Some(PauseAction::ExitToMenu))
+        );
+        assert_eq!(click(&mut p, Hit::Row(1)), (Nav::Select, None));
+        assert_eq!(
+            click(&mut p, Hit::Row(0)).1,
+            Some(PauseAction::Setting(Change::Toggle(0)))
+        );
     }
 
     #[test]
