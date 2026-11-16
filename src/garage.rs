@@ -1180,7 +1180,7 @@ pub fn row_hit<T: Copy>(p: &Painter, hits: &mut Hits<T>, at: Vec2, pitch: f32, i
 
 /// Dark backdrop behind the left-hand panel, so the hairlines read over a bright city.
 pub fn backdrop(p: &mut Painter, h: f32) {
-    let shade = [0.03, 0.03, 0.035, 0.72];
+    let shade = theme::PANEL;
     let solid = PANEL_X + PANEL_W + 40.0;
     p.gradient_h(Vec2::ZERO, Vec2::new(solid, h), shade, shade);
     p.gradient_h(

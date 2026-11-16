@@ -8,12 +8,12 @@ use glam::Vec2;
 
 use crate::faction::Faction;
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
-use crate::mission::MISSIONS;
+use crate::mission::{self, MISSIONS};
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Hits, Layer, Painter, TextStyle, theme};
+use crate::ui::{Align, Hits, Layer, Painter, TextStyle, measure, theme};
 
 const REF_HEIGHT: f32 = 900.0;
 
@@ -31,6 +31,9 @@ pub enum Nav {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Screen {
     Main,
+    /// Pick who you work for.
+    Factions,
+    /// Pick one of that faction's missions.
     Missions,
     Settings,
 }
@@ -62,8 +65,6 @@ pub enum Hit {
     Row(usize),
     /// The volume bar; where along it picks the level.
     Volume,
-    /// The mission screen's employer line.
-    Employer,
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -145,9 +146,10 @@ fn setting_input(i: usize, nav: Nav) -> Option<Change> {
 pub struct Menu {
     pub screen: Screen,
     cursor: usize,
+    /// Your employer: index into `Faction::ALL`.
+    faction: usize,
+    /// Index into the employer's missions (`mission::hiring`).
     mission: usize,
-    /// Which of the mission's sides you're taking the contract from.
-    side: usize,
     setting: usize,
 }
 
@@ -156,8 +158,8 @@ impl Menu {
         Menu {
             screen: Screen::Main,
             cursor: 0,
+            faction: 0,
             mission: 0,
-            side: 0,
             setting: 0,
         }
     }
@@ -168,28 +170,30 @@ impl Menu {
                 self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav)
             }
             (Screen::Main, Nav::Select) => match self.cursor {
-                0 => self.screen = Screen::Missions,
+                0 => self.screen = Screen::Factions,
                 1 => return Some(Action::Garage),
                 2 => self.screen = Screen::Settings,
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
-            (Screen::Missions, Nav::Up | Nav::Down) => {
-                self.mission = step(self.mission, MISSIONS.len(), nav);
-                self.side %= MISSIONS[self.mission].sides.len();
+            (Screen::Factions, Nav::Up | Nav::Down) => {
+                self.faction = step(self.faction, Faction::ALL.len(), nav)
             }
-            (Screen::Missions, Nav::Left | Nav::Right) => {
-                let n = MISSIONS[self.mission].sides.len();
-                self.side = if nav == Nav::Right {
-                    (self.side + 1) % n
-                } else {
-                    (self.side + n - 1) % n
-                };
+            (Screen::Factions, Nav::Select) => {
+                self.mission = 0;
+                self.screen = Screen::Missions;
+            }
+            (Screen::Factions, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Factions, Nav::Left | Nav::Right) => {}
+            (Screen::Missions, Nav::Up | Nav::Down) => {
+                self.mission = step(self.mission, self.missions().len(), nav)
             }
             (Screen::Missions, Nav::Select) => {
-                return Some(Action::Deploy(self.mission, self.side));
+                let i = self.missions()[self.mission];
+                return Some(Action::Deploy(i, MISSIONS[i].side_of(self.employer())));
             }
-            (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Missions, Nav::Back) => self.screen = Screen::Factions,
+            (Screen::Missions, Nav::Left | Nav::Right) => {}
             (Screen::Settings, Nav::Up | Nav::Down) => {
                 self.setting = step(self.setting, SETTING_ROWS, nav)
             }
@@ -199,15 +203,30 @@ impl Menu {
         None
     }
 
+    /// Who you're picking work from.
+    pub fn employer(&self) -> Faction {
+        Faction::ALL[self.faction]
+    }
+
+    /// Select `faction` on the faction screen.
+    pub fn pick_employer(&mut self, faction: Faction) {
+        self.faction = faction.index();
+    }
+
+    /// The employer's missions, as indices into `MISSIONS`.
+    fn missions(&self) -> Vec<usize> {
+        mission::hiring(self.employer())
+    }
+
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
         let i = match hit {
             Hit::Row(i) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Employer => return false,
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
+            Screen::Factions => &mut self.faction,
             Screen::Missions => &mut self.mission,
             Screen::Settings => &mut self.setting,
         };
@@ -225,7 +244,6 @@ impl Menu {
                 );
             }
             Hit::Row(_) => Nav::Select,
-            Hit::Employer => Nav::Right,
         };
         (nav, self.input(nav))
     }
@@ -276,20 +294,78 @@ impl Menu {
                     Align::Left,
                 );
             }
-            Screen::Missions => {
-                label(&mut p, Vec2::new(x, y), "01  MISSIONS", Align::Left);
+            Screen::Factions => {
+                label(&mut p, Vec2::new(x, y), "01  EMPLOYER", Align::Left);
                 label(
                     &mut p,
                     Vec2::new(x + PANEL_W, y),
-                    &format!("{}/{}", self.mission + 1, MISSIONS.len()),
+                    &format!("{}/{}", self.faction + 1, Faction::ALL.len()),
                     Align::Right,
                 );
                 y += 20.0;
-                let names: Vec<Item> = MISSIONS.iter().map(|m| Item::Opens(m.name)).collect();
+                let names: Vec<Item> = Faction::ALL.iter().map(|f| Item::Opens(f.name())).collect();
+                let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.faction);
+                for (i, f) in Faction::ALL.iter().enumerate() {
+                    // Their emblem, in their colour, beside the chevron.
+                    emblem::emblem(
+                        &mut p,
+                        *f,
+                        Vec2::new(x + PANEL_W - 26.0, y + i as f32 * 30.0 + 7.5),
+                        13.0,
+                        1.2,
+                        f.ui(),
+                    );
+                }
+                y += drawn + 14.0;
+
+                let f = self.employer();
+                let s = profile.standing(f);
+                let work = self.missions();
+                // Whole map names, so none breaks across lines.
+                let n = work.len();
+                let maps: Vec<String> = work
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &i)| {
+                        let dot = if k + 1 < n { " ·" } else { "" };
+                        format!("{}{dot}", MISSIONS[i].map)
+                    })
+                    .collect();
+                for (k, v) in [
+                    (
+                        "THEIR TRUST",
+                        format!("T{}  {} / {}", s.level, s.into, s.span),
+                    ),
+                    ("CONTRACTS", work.len().to_string()),
+                ] {
+                    y = detail(&mut p, Vec2::new(x, y), k, &v);
+                }
+                y += 8.0;
+                wrap(&mut p, Vec2::new(x, y), &maps);
+            }
+            Screen::Missions => {
+                let employer = self.employer();
+                let work = self.missions();
+                label(
+                    &mut p,
+                    Vec2::new(x, y),
+                    &format!("01  {} CONTRACTS", employer.name()),
+                    Align::Left,
+                );
+                label(
+                    &mut p,
+                    Vec2::new(x + PANEL_W, y),
+                    &format!("{}/{}", self.mission + 1, work.len()),
+                    Align::Right,
+                );
+                y += 20.0;
+                let names: Vec<Item> = work
+                    .iter()
+                    .map(|&i| Item::Opens(MISSIONS[i].name))
+                    .collect();
                 y += rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission) + 14.0;
 
-                let m = &MISSIONS[self.mission];
-                let employer = m.sides[self.side];
+                let m = &MISSIONS[work[self.mission]];
                 let against = m
                     .sides
                     .iter()
@@ -301,7 +377,7 @@ impl Menu {
                 for (k, v) in [
                     ("CONTRACT", m.contract.name().to_string()),
                     ("MAP", m.map.to_string()),
-                    ("EMPLOYER", format!("< {} >", employer.name())),
+                    ("EMPLOYER", employer.name().to_string()),
                     ("AGAINST", against),
                     (
                         "THEIR TRUST",
@@ -311,38 +387,32 @@ impl Menu {
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
                 ] {
-                    if k == "EMPLOYER" {
-                        hits.add(
-                            &p,
-                            Vec2::new(x - 14.0, y - 5.0),
-                            Vec2::new(PANEL_W + 14.0, 22.0),
-                            Hit::Employer,
-                        );
-                    }
-                    label(&mut p, Vec2::new(x, y + 1.0), k, Align::Left);
                     let style = TextStyle::value(11.0);
-                    let right = Vec2::new(x + PANEL_W, y);
+                    let others: Vec<Faction> =
+                        m.sides.iter().copied().filter(|&f| f != employer).collect();
+                    let sep = measure(" · ", &style);
+                    let width = match k {
+                        "EMPLOYER" => emblem::tagged_width(employer.name(), &style),
+                        "AGAINST" => {
+                            others
+                                .iter()
+                                .map(|f| emblem::tagged_width(f.name(), &style))
+                                .sum::<f32>()
+                                + sep * others.len().saturating_sub(1) as f32
+                        }
+                        _ => measure(&v, &style),
+                    };
+                    let right = detail_key(&mut p, Vec2::new(x, y), k, width);
                     match k {
                         "EMPLOYER" => {
-                            // "< [emblem] NAME >"
-                            let tail = format!("{} >", employer.name());
-                            let mut at = right;
-                            at.x -= p.text(at, &tail, &style, Align::Right)
-                                + emblem::mark_width(&style);
-                            emblem::mark(&mut p, at, employer, &style);
-                            p.text(
-                                at - Vec2::new(style.tracking, 0.0),
-                                "<",
-                                &style,
-                                Align::Right,
-                            );
+                            let mut style = style;
+                            style.color = employer.ui();
+                            emblem::faction_name(&mut p, right, employer, &style, Align::Right);
                         }
                         "AGAINST" => {
                             let mut style = style;
                             let mut at = right;
-                            for (i, &f) in
-                                m.sides.iter().filter(|&&f| f != employer).rev().enumerate()
-                            {
+                            for (i, &f) in others.iter().rev().enumerate() {
                                 if i > 0 {
                                     style.color = theme::FG;
                                     at.x -= p.text(at, " · ", &style, Align::Right);
@@ -355,10 +425,12 @@ impl Menu {
                             p.text(right, &v, &style, Align::Right);
                         }
                     }
-                    y += 22.0;
+                    y = right.y + 22.0;
                 }
                 y += 8.0;
-                label(&mut p, Vec2::new(x, y), m.brief, Align::Left);
+                let brief = m.briefs[m.side_of(employer)];
+                let words: Vec<String> = brief.split(' ').map(String::from).collect();
+                wrap(&mut p, Vec2::new(x, y), &words);
             }
             Screen::Settings => {
                 label(&mut p, Vec2::new(x, y), "03  SETTINGS", Align::Left);
@@ -436,7 +508,6 @@ impl Pause {
         let i = match hit {
             Hit::Row(i) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Employer => return false,
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
         std::mem::replace(slot, i) != i
@@ -453,7 +524,6 @@ impl Pause {
                 );
             }
             Hit::Row(_) => Nav::Select,
-            Hit::Employer => Nav::Right,
         };
         (nav, self.input(nav))
     }
@@ -475,7 +545,7 @@ impl Pause {
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
         let size = Vec2::new(PANEL_W + 48.0, 350.0);
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
-        p.rect(min, size, [0.03, 0.03, 0.035, 0.9]);
+        p.rect(min, size, theme::PANEL);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
 
         let x = min.x + 24.0;
@@ -733,6 +803,46 @@ fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selecte
     y - at.y
 }
 
+/// A detail line, key on the left and value on the right; a value too long to
+/// sit beside its key drops onto the line below. Returns where the next one goes.
+fn detail(p: &mut Painter, at: Vec2, key: &str, value: &str) -> f32 {
+    let style = TextStyle::value(11.0);
+    let right = detail_key(p, at, key, measure(value, &style));
+    p.text(right, value, &style, Align::Right);
+    right.y + 22.0
+}
+
+/// A detail line's key; returns where a value `width` wide goes, right-aligned:
+/// beside the key if it fits, else on the line below.
+fn detail_key(p: &mut Painter, at: Vec2, key: &str, width: f32) -> Vec2 {
+    let gap = 8.0;
+    let beside = measure(key, &TextStyle::LABEL) + gap + width <= PANEL_W;
+    label(p, at + Vec2::new(0.0, 1.0), key, Align::Left);
+    let y = if beside { at.y } else { at.y + 16.0 };
+    Vec2::new(at.x + PANEL_W, y)
+}
+
+/// Small label text, `words` spaced and wrapped to the panel's width.
+fn wrap(p: &mut Painter, at: Vec2, words: &[String]) {
+    let mut line = String::new();
+    let mut y = at.y;
+    for word in words {
+        let longer = if line.is_empty() {
+            word.clone()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && measure(&longer, &TextStyle::LABEL) > PANEL_W {
+            label(p, Vec2::new(at.x, y), &line, Align::Left);
+            y += 14.0;
+            line = word.clone();
+        } else {
+            line = longer;
+        }
+    }
+    label(p, Vec2::new(at.x, y), &line, Align::Left);
+}
+
 pub fn kit_name(kit: Loadout) -> String {
     format!(
         "{} · {}",
@@ -789,16 +899,22 @@ mod tests {
         m.input(Nav::Back);
         assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), Some(Action::Quit));
-        // Wraps round to MISSIONS, which opens the mission list.
+        // Wraps round to MISSIONS, which opens the employer list.
         m.input(Nav::Down);
+        assert_eq!(m.input(Nav::Select), None);
+        assert_eq!(m.screen, Screen::Factions);
+        // The Imperium fight on every map, as the first side.
         assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Missions);
         assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0, 0)));
-        // A/D takes the contract from the other side instead.
-        assert_eq!(m.input(Nav::Right), None);
+        // Back to the employers; the Resonant are the other side of the first map.
+        m.input(Nav::Back);
+        assert_eq!(m.screen, Screen::Factions);
+        m.input(Nav::Down);
+        assert_eq!(m.employer(), Faction::Resonant);
+        m.input(Nav::Select);
         assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0, 1)));
-        m.input(Nav::Left);
-        assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0, 0)));
+        m.input(Nav::Back);
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
     }
@@ -836,7 +952,12 @@ mod tests {
         let mut settings = Pause::new();
         settings.input(Nav::Down);
         settings.input(Nav::Select);
-        for screen in [Screen::Main, Screen::Missions, Screen::Settings] {
+        for screen in [
+            Screen::Main,
+            Screen::Factions,
+            Screen::Missions,
+            Screen::Settings,
+        ] {
             m.screen = screen;
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
                 for v in [
@@ -882,13 +1003,23 @@ mod tests {
             click_drawn(&mut m, &profile, Hit::Row(0)),
             (Nav::Select, None)
         );
+        assert_eq!(m.screen, Screen::Factions);
+        // The Ithessar: only their kiln and the four-way capital.
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(3)),
+            (Nav::Select, None)
+        );
         assert_eq!(m.screen, Screen::Missions);
-        click_drawn(&mut m, &profile, Hit::Employer);
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(1)),
+            (Nav::Select, Some(Action::Deploy(3, 3)))
+        );
         assert_eq!(
             click_drawn(&mut m, &profile, Hit::Row(0)),
-            (Nav::Select, Some(Action::Deploy(0, 1)))
+            (Nav::Select, Some(Action::Deploy(2, 0)))
         );
         // Esc, or a right click, goes back.
+        m.input(Nav::Back);
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
 

@@ -166,7 +166,7 @@ impl Hud {
             let fade = ((FEED_TIME - k.age) / 0.8).clamp(0.0, 1.0);
             let y = tr.y + row as f32 * 18.0;
             let mut s = TextStyle::value(10.0);
-            s.tracking = 2.5;
+            s.tracking = 1.0;
             s.color = with_alpha(side_color(m, k.victim), fade * 0.95);
             let vw = p.text(Vec2::new(tr.x, y), callsign(m, k.victim), &s, Align::Right);
             // A small chevron between killer and victim.
@@ -520,8 +520,12 @@ impl Hud {
 /// with a winner banner once the round is over.
 fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Match, top: Vec2) {
     let holding = m.contract == Contract::Hold;
-    // Hold adds a HELD column: wider tables so it clears the tank names.
-    let col = if holding { 410.0 } else { 380.0 };
+    let cols = StatColumns::new(holding);
+    // Wide enough for the longest tank name in the match beside the stat columns.
+    let widest = (0..m.fighters.len())
+        .map(|i| measure(&kit_name(m, i), &TextStyle::value(ROW_SIZE)))
+        .fold(0.0, f32::max);
+    let col = (widest + NAME_GAP + cols.width).max(380.0).ceil();
     let gap = 48.0;
     let sides = m.factions.len();
     let rows = (0..sides)
@@ -536,7 +540,7 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
     let width = col * 2.0 + gap;
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
-    let backdrop = [0.02, 0.02, 0.025, 0.7];
+    let backdrop = theme::PANEL;
     let extra = if holding { 18.0 } else { 0.0 };
     let height = if m.phase == Phase::Over {
         306.0 + extra
@@ -603,11 +607,9 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
         );
         let mut ty = y + 32.0;
         label(p, Vec2::new(a, ty), "TANK", Align::Left);
-        if holding {
-            label(p, Vec2::new(b - 130.0, ty), "HELD", Align::Right);
+        for (name, dx) in cols.headers() {
+            label(p, Vec2::new(b - dx, ty), name, Align::Right);
         }
-        label(p, Vec2::new(b - 70.0, ty), "KILLS", Align::Right);
-        label(p, Vec2::new(b, ty), "DEATHS", Align::Right);
         ty += 14.0;
         p.line(
             Vec2::new(a, ty),
@@ -618,28 +620,21 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
         ty += 10.0;
         for &i in order.iter().filter(|&&i| m.fighters[i].team == team) {
             let fi = &m.fighters[i];
-            let t = &m.world.tanks[i];
-            let mut s = TextStyle::value(11.0);
+            let mut s = TextStyle::value(ROW_SIZE);
             if i == 0 {
                 s.color = theme::HOT;
             }
-            let kit = format!(
-                "{}{} · {}",
-                if i == 0 { "YOU  " } else { "" },
-                crate::garage::hull_name(t.hull_kind),
-                crate::garage::turret_name(t.turret_kind)
-            );
-            p.text(Vec2::new(a, ty), &kit, &s, Align::Left);
-            if holding {
+            p.text(Vec2::new(a, ty), &kit_name(m, i), &s, Align::Left);
+            if let Some(dx) = cols.held {
                 p.text(
-                    Vec2::new(b - 130.0, ty),
+                    Vec2::new(b - dx, ty),
                     &format!("{:.0}", m.held(i).floor()),
                     &s,
                     Align::Right,
                 );
             }
             p.text(
-                Vec2::new(b - 70.0, ty),
+                Vec2::new(b - cols.kills, ty),
                 &fi.kills.to_string(),
                 &s,
                 Align::Right,
@@ -680,6 +675,56 @@ fn round_over_buttons(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>,
         p.text(Vec2::new(min.x + BUTTON_PAD, ty), what, &a, Align::Left);
         hits.add(p, min, size, id);
         x += size.x + BUTTON_GAP;
+    }
+}
+
+/// Scoreboard row text size.
+const ROW_SIZE: f32 = 11.0;
+/// Space between a tank's name and the first stat column, and between stat columns.
+const NAME_GAP: f32 = 20.0;
+const STAT_GAP: f32 = 22.0;
+
+/// A tank's scoreboard name: hull and turret, yours marked.
+fn kit_name(m: &Match, i: usize) -> String {
+    let t = &m.world.tanks[i];
+    format!(
+        "{}{} · {}",
+        if i == 0 { "YOU  " } else { "" },
+        crate::garage::hull_name(t.hull_kind),
+        crate::garage::turret_name(t.turret_kind)
+    )
+}
+
+/// The scoreboard's right-aligned stat columns, each one's right edge as a
+/// distance from the table's right edge, spaced by their headers' widths
+/// (wider than any count under them).
+struct StatColumns {
+    held: Option<f32>,
+    kills: f32,
+    /// From the left edge of the leftmost header to the table's right edge.
+    width: f32,
+}
+
+impl StatColumns {
+    fn new(holding: bool) -> StatColumns {
+        let w = |s: &str| {
+            measure(s, &TextStyle::LABEL).max(measure("000", &TextStyle::value(ROW_SIZE)))
+        };
+        let kills = w("DEATHS") + STAT_GAP;
+        let held = holding.then(|| kills + w("KILLS") + STAT_GAP);
+        let width = match held {
+            Some(h) => h + w("HELD"),
+            None => kills + w("KILLS"),
+        };
+        StatColumns { held, kills, width }
+    }
+
+    /// Each header with its right edge's distance from the table's right edge.
+    fn headers(&self) -> Vec<(&'static str, f32)> {
+        let mut out: Vec<_> = self.held.map(|h| ("HELD", h)).into_iter().collect();
+        out.push(("KILLS", self.kills));
+        out.push(("DEATHS", 0.0));
+        out
     }
 }
 
@@ -816,6 +861,43 @@ mod tests {
     use super::*;
     use crate::render::Camera;
     use glam::Vec3;
+
+    #[test]
+    fn scoreboard_fits_any_kit_on_a_square_screen() {
+        // The longest hull and turret names, marked as yours, beside every stat column.
+        let widest = crate::garage::HULLS
+            .iter()
+            .flat_map(|&h| crate::garage::TURRETS.iter().map(move |&t| (h, t)))
+            .map(|(h, t)| {
+                let name = format!(
+                    "YOU  {} · {}",
+                    crate::garage::hull_name(h),
+                    crate::garage::turret_name(t)
+                );
+                measure(&name, &TextStyle::value(ROW_SIZE))
+            })
+            .fold(0.0, f32::max);
+        let col = widest + NAME_GAP + StatColumns::new(true).width;
+        // Two tables, the gap between them and the panel's margins, at 4:3 (1200 logical px wide).
+        assert!(col * 2.0 + 48.0 + 48.0 < 1200.0, "table {col} px");
+    }
+
+    #[test]
+    fn stat_columns_dont_touch() {
+        for holding in [false, true] {
+            let c = StatColumns::new(holding);
+            let h = c.headers();
+            for pair in h.windows(2) {
+                let (left, l) = pair[0];
+                let (right, r) = pair[1];
+                // The right column's header starts after the left column ends.
+                assert!(
+                    r + measure(right, &TextStyle::LABEL) + 8.0 < l,
+                    "{left} {right}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn round_over_has_buttons() {
