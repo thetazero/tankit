@@ -34,9 +34,10 @@ pub struct Mission {
     pub seed: u64,
     /// Tanks per side, the player included.
     pub team_size: usize,
-    /// Who hires you, and who you're sent against (the map's sides).
+    /// The map's sides: whichever of them you pick hires you, against the rest.
     pub sides: &'static [Faction],
-    pub brief: &'static str,
+    /// The brief from each side's point of view, in `sides` order.
+    pub briefs: &'static [&'static str],
 }
 
 pub const MISSIONS: &[Mission] = &[
@@ -48,7 +49,10 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
-        brief: "PAID PER KILL. MOST KILLS FOR YOUR SIDE TAKES THE TOWN",
+        briefs: &[
+            "THE IMPERIUM WANT THE TOWN BACK. PAID PER KILL. MOST KILLS TAKES IT",
+            "THE RESONANT WANT THE TOWN KEPT. PAID PER KILL. MOST KILLS TAKES IT",
+        ],
     },
     Mission {
         name: "HOLY GROUND",
@@ -58,7 +62,10 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
-        brief: "HOLD THE ALTAR AT THE HEART OF THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
+        briefs: &[
+            "TAKE THE ALTAR FROM THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
+            "HOLD THE ALTAR AT THE HEART OF THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
+        ],
     },
     Mission {
         name: "KEPT FIRE",
@@ -68,7 +75,10 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Imperium],
-        brief: "THE ITHESSAR HIRE YOU TO HOLD THE IMPERIUM OFF THEIR KILN. PAID PER KILL",
+        briefs: &[
+            "THE ITHESSAR HIRE YOU TO HOLD THE IMPERIUM OFF THEIR KILN. PAID PER KILL",
+            "THE IMPERIUM HIRE YOU TO PUT OUT THE ITHESSAR KILN. PAID PER KILL",
+        ],
     },
     Mission {
         name: "FOUR WINDS",
@@ -78,7 +88,7 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,
-        brief: "EVERY SIDE AGAINST EVERY OTHER IN THE IMPERIAL CITY. PAID PER KILL",
+        briefs: &["EVERY SIDE AGAINST EVERY OTHER IN THE IMPERIAL CITY. PAID PER KILL"; 4],
     },
     Mission {
         name: "SCRAP METAL",
@@ -88,11 +98,29 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Uthenn, Faction::Imperium],
-        brief: "THE UTHENN HIRE YOU TO DRIVE THE IMPERIUM OUT OF THEIR WRECKED FOUNDRY. PAID PER KILL",
+        briefs: &[
+            "THE UTHENN HIRE YOU TO DRIVE THE IMPERIUM OUT OF THEIR WRECKED FOUNDRY. PAID PER KILL",
+            "THE IMPERIUM HIRE YOU TO KEEP THE UTHENN OUT OF THE FOUNDRY THEY WRECKED. PAID PER KILL",
+        ],
     },
 ];
 
+/// The missions `faction` can be hired for: indices into `MISSIONS`.
+pub fn hiring(faction: Faction) -> Vec<usize> {
+    (0..MISSIONS.len())
+        .filter(|&i| MISSIONS[i].sides.contains(&faction))
+        .collect()
+}
+
 impl Mission {
+    /// Where `faction` stands among the sides (it must be one of them).
+    pub fn side_of(&self, faction: Faction) -> usize {
+        self.sides
+            .iter()
+            .position(|&f| f == faction)
+            .expect("a side of this mission")
+    }
+
     /// Bots to fill every side around the player.
     pub fn bots(&self) -> usize {
         self.sides.len() * self.team_size - 1
@@ -132,6 +160,20 @@ mod tests {
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
             assert_eq!(m.sides, crate::make_map(m.map_kind).factions);
+        }
+    }
+
+    #[test]
+    fn a_brief_for_every_side() {
+        for m in MISSIONS {
+            assert_eq!(m.briefs.len(), m.sides.len(), "{}", m.name);
+        }
+    }
+
+    #[test]
+    fn every_faction_has_work() {
+        for f in Faction::ALL {
+            assert!(!hiring(f).is_empty(), "nobody hires {}", f.name());
         }
     }
 
