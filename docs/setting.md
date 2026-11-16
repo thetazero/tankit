@@ -8,8 +8,9 @@ A forever war spanning the galaxy. Nobody remembers how it started; it keeps
 going anyway. Mostly automated, with humans still in it.
 
 **Tone:** grim and melancholic (Dune, Horizon's old world): ruins, faded human
-traces, a war that doesn't notice them. Whether there's real magic is left
-**ambiguous**, on purpose.
+traces, a war that doesn't notice them. Things that behave like magic
+unambiguously exist; whether they're science or magic is left **ambiguous**,
+on purpose.
 
 ## The player
 
@@ -24,7 +25,7 @@ Four sides. Any of them can hire you.
 | Faction | Who they are |
 |---|---|
 | **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. |
-| **The Resonant** | Human. A cult built around the crystals. The crystals seem to answer: pilots who carry them see a moment ahead, ruined machines keep running, shells bend away. Magic or alien technology nobody understands: never resolved. |
+| **The Resonant** | Human. A cult built around the crystals. The crystals answer: pilots who carry them see a moment ahead, ruined machines keep running, shells bend away. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. |
 | **The machines** | A machine faction (name and origin TBD). Machines hire mercenaries too. |
 | **The aliens** | An alien faction (name and nature TBD). |
 
