@@ -650,6 +650,17 @@ mod tests {
     }
 
     #[test]
+    fn every_kicker_lane_is_clearable_at_full_speed() {
+        for lane in 0..3 {
+            let mut w = World::new(Map::proving_ground(), lane);
+            run(&mut w, Command { throttle: 1.0, ..Default::default() }, 5.0);
+            let t = &w.tanks[0];
+            assert!(t.pos.z > 75.0, "lane {lane}: stopped at z={} (crashed into the landing ramp?)", t.pos.z);
+            assert!(t.up().y > 0.95, "lane {lane}: not upright");
+        }
+    }
+
+    #[test]
     fn turret_turns_with_hull_and_centers() {
         let mut w = flat_world();
         run(&mut w, Command { turret: 1.0, ..Default::default() }, 0.5);

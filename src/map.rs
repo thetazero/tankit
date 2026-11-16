@@ -545,13 +545,17 @@ impl Map {
                 rise: Rise::PosZ,
                 color,
             });
-            // Landing ramp: gap, then a long gentle down slope.
-            let land_z = z0 + len + 14.0;
+            // Landing ramp, same height as the kicker, after a gap sized to about
+            // 70% of the flight distance at top speed so a full-speed jump clears it
+            // and lands on the down slope.
+            let (v, g) = (15.0f32, 20.0f32);
+            let flight = 2.0 * v * deg.to_radians().sin() / g * v * deg.to_radians().cos();
+            let land_z = z0 + len + flight * 0.7;
             map.wedges.push(Wedge {
                 min: Vec2::new(x - 5.0, land_z),
-                max: Vec2::new(x + 5.0, land_z + 16.0),
+                max: Vec2::new(x + 5.0, land_z + 14.0),
                 base_y: 0.0,
-                height: 2.2,
+                height: h,
                 rise: Rise::NegZ,
                 color: concrete,
             });
