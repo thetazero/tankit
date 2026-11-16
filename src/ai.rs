@@ -53,7 +53,8 @@ impl NavGrid {
             }
         }
         for o in &map.oboxes {
-            if o.y1 - o.y0 < 0.6 || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0 {
+            // Debris and drivable ramps don't block; neither does anything low or overhead.
+            if !o.solid || o.is_ramp() || o.y1 - o.y0 < 0.6 || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0 {
                 continue;
             }
             let reach = o.half.length() + CLEARANCE;
