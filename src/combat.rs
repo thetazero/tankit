@@ -2489,3 +2489,34 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod hover_bots_stay_upright {
+    use super::*;
+
+    /// Ithessar bots used to go end over end within seconds of the start:
+    /// running into each other at full speed off their spawn columns, or
+    /// driving up crystal faces. A match's worth of them stays upright.
+    #[test]
+    fn ithessar_bots_dont_flip_on_the_kiln() {
+        let mut m = Match::new(Map::kiln(), 0, 11, 1);
+        let n = m.world.tanks.len();
+        let mut tipped = vec![false; n];
+        for _ in 0..(20.0 / DT) as usize {
+            m.fighters[0].shield = 1.0;
+            m.step(Command::default(), false);
+            for (i, t) in m.world.tanks.iter().enumerate().skip(1) {
+                tipped[i] |= t.hull_kind == HullKind::Sethuun && !t.dead && t.up().y < 0.3;
+            }
+        }
+        let hover = m
+            .world
+            .tanks
+            .iter()
+            .filter(|t| t.hull_kind == HullKind::Sethuun)
+            .count();
+        assert!(hover >= 5, "only {hover} hover hulls");
+        let flipped: Vec<usize> = (0..n).filter(|&i| tipped[i]).collect();
+        assert!(flipped.is_empty(), "hover bots {flipped:?} tipped over");
+    }
+}
