@@ -10,6 +10,7 @@ Plain Rust: `winit` + `wgpu`, no engine.
 ```sh
 cargo run --release                          # play (random map)
 cargo run --release -- --seed 21             # play a specific map
+cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
 cargo test
 ```
@@ -25,5 +26,6 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | Z / X | rotate turret left / right (it turns with the hull) |
 | C | swing turret back to center |
 | PageUp / PageDown | camera height |
+| R | respawn at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
 | Esc | quit |

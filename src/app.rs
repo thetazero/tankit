@@ -20,6 +20,8 @@ const CAM_TILT_SPEED: f32 = 0.8;
 
 struct App {
     seed: u64,
+    proving: bool,
+    spawn: usize,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     world: World,
@@ -31,13 +33,15 @@ struct App {
     fps_frames: u32,
 }
 
-pub fn run(seed: u64) -> anyhow::Result<()> {
+pub fn run(seed: u64, proving: bool, spawn: usize) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let world = World::new(seed);
+    let world = World::new(make_map(seed, proving), spawn);
     let cam = ChaseCam::new();
     let mut app = App {
         seed,
+        proving,
+        spawn,
         window: None,
         renderer: None,
         world,
@@ -50,6 +54,10 @@ pub fn run(seed: u64) -> anyhow::Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+fn make_map(seed: u64, proving: bool) -> crate::map::Map {
+    if proving { crate::map::Map::proving_ground() } else { crate::map::Map::generate(seed) }
 }
 
 impl ApplicationHandler for App {
@@ -115,10 +123,19 @@ impl App {
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
         match code {
             KeyCode::Escape => event_loop.exit(),
+            // Restart at the next spawn point (handy on the proving ground).
+            KeyCode::KeyR => {
+                self.spawn += 1;
+                self.world = World::new(make_map(self.seed, self.proving), self.spawn);
+                self.cam = ChaseCam::new();
+                if let Some(r) = &mut self.renderer {
+                    r.set_static_mesh(&scene::map_mesh(&self.world.map));
+                }
+            }
             // New random map.
             KeyCode::F5 => {
                 self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
-                self.world = World::new(self.seed);
+                self.world = World::new(make_map(self.seed, self.proving), self.spawn);
                 self.cam = ChaseCam::new();
                 if let Some(r) = &mut self.renderer {
                     r.set_static_mesh(&scene::map_mesh(&self.world.map));
@@ -168,7 +185,7 @@ impl App {
             if let Some(w) = &self.window {
                 let fps = self.fps_frames as f32 / self.fps_timer;
                 w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  seed {}  |  WASD drive, Z/X turret, C center, PgUp/PgDn camera, F5 new map",
+                    "tankit  |  {fps:.0} fps  |  seed {}  |  WASD drive, Z/X turret, C center, PgUp/PgDn camera, R respawn, F5 new map",
                     self.seed
                 ));
             }

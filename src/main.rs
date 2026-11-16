@@ -13,6 +13,9 @@ tankit [OPTIONS]
 
   (no options)            play in a window
   --seed <n>              map seed (default: random)
+  --map <city|proving>    city (default) or the physics test course
+  --spawn <n>             which spawn point to start at
+  --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --shot <out.png>        render one frame offscreen and save it
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -20,7 +23,16 @@ tankit [OPTIONS]
 
 struct Args {
     seed: u64,
+    proving: bool,
+    spawn: usize,
+    straight: bool,
     shot: Option<ShotArgs>,
+}
+
+impl Args {
+    fn map(&self) -> map::Map {
+        if self.proving { map::Map::proving_ground() } else { map::Map::generate(self.seed) }
+    }
 }
 
 struct ShotArgs {
@@ -34,9 +46,9 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"))
         .init();
     let args = parse_args()?;
-    match args.shot {
-        Some(shot) => screenshot(args.seed, shot),
-        None => app::run(args.seed),
+    match &args.shot {
+        Some(shot) => screenshot(&args, shot),
+        None => app::run(args.seed, args.proving, args.spawn),
     }
 }
 
@@ -46,12 +58,20 @@ fn parse_args() -> Result<Args> {
     let mut shot: Option<ShotArgs> = None;
     let mut time = 1.0;
     let (mut width, mut height) = (1600, 900);
+    let (mut proving, mut spawn, mut straight) = (false, 0usize, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--shot" => {
                 shot = Some(ShotArgs { out: args.next().context("--shot needs a path")?, time, width, height })
             }
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
+            "--map" => match args.next().as_deref() {
+                Some("city") => proving = false,
+                Some("proving") => proving = true,
+                other => bail!("--map expects city or proving, got {other:?}"),
+            },
+            "--straight" => straight = true,
+            "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--size" => {
                 let s = args.next().context("--size needs WxH")?;
@@ -65,23 +85,32 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
-    Ok(Args { seed, shot: shot.map(|s| ShotArgs { time, width, height, ..s }) })
+    Ok(Args { seed, proving, spawn, straight, shot: shot.map(|s| ShotArgs { time, width, height, ..s }) })
 }
 
-fn screenshot(seed: u64, args: ShotArgs) -> Result<()> {
-    let mut world = sim::World::new(seed);
+fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
+    let mut world = sim::World::new(args.map(), args.spawn);
     let mut cam = scene::ChaseCam::new();
-    let steps = (args.time / game::DT).round() as u32;
+    let steps = (shot.time / game::DT).round() as u32;
     let mut camera = cam.update(&world, &world.tanks[0], game::DT);
     for _ in 0..steps {
-        world.step(&[game::autopilot(world.time)]);
+        let cmd = if args.straight {
+            sim::Command { throttle: 1.0, ..Default::default() }
+        } else {
+            game::autopilot(world.time)
+        };
+        world.step(&[cmd]);
         camera = cam.update(&world, &world.tanks[0], game::DT);
     }
-    let mut renderer = render::Renderer::new_headless(args.width, args.height)?;
+    let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&world.map));
-    let frame = scene::build(&world, camera, args.width as f32, args.height as f32);
+    let frame = scene::build(&world, camera, shot.width as f32, shot.height as f32);
     let img = renderer.render_to_image(&frame)?;
-    img.save(&args.out).with_context(|| format!("save {}", args.out))?;
-    println!("wrote {} ({}x{}, seed {seed}, t={:.2}s)", args.out, args.width, args.height, world.time);
+    img.save(&shot.out).with_context(|| format!("save {}", shot.out))?;
+    let t = &world.tanks[0];
+    println!(
+        "wrote {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {}",
+        shot.out, shot.width, shot.height, world.time, t.pos, t.up(), t.wheels_down
+    );
     Ok(())
 }
