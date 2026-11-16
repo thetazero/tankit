@@ -17,6 +17,10 @@
 //!   down into the bowl, a breach through the middle).
 //!
 //! The three lanes loop into each other: no dead ends.
+//!
+//! The edge: the town lies in a dry valley, so sandstone cliffs close it in
+//! on the north, east and south, and a barricade of stacked shipping
+//! containers walls off the valley mouth on the west (see valley.rs).
 
 use crate::render::material::Material;
 use glam::{Vec2, Vec3};
@@ -61,7 +65,8 @@ fn edge_distance(p: Vec2) -> f32 {
 }
 
 /// Visual dunes outside the arena: meets the play ground at the edge, rises
-/// into a berm, then rolls. Inside, it hides under the play terrain.
+/// onto the plateau behind the cliffs (or a berm behind the barricade), then
+/// rolls. Inside, it hides under the play terrain.
 fn scenery_ground(x: f32, z: f32) -> f32 {
     let p = Vec2::new(x, z);
     let d = edge_distance(p);
@@ -76,11 +81,17 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
     let vary = 0.55 + 0.3 * (along * 0.045).sin() + 0.25 * (along * 0.11 + 1.3).sin();
     let rise = 10.0 + 8.0 * (along * 0.07).sin().abs();
     let berm = 7.5 * vary * smoothstep(0.0, rise, d) * (1.0 - 0.45 * smoothstep(20.0, 60.0, d));
+    // North, east and south, the valley's cliffs (valley.rs) hold up a
+    // plateau; west, past the barricade, the sand just rolls away.
+    let out = p - edge;
+    let west = smoothstep(0.2, 0.8, -out.x / (-out.x + out.y.abs()).max(1e-3));
+    let plateau = (1.0 - west) * 12.0 * smoothstep(1.0, 9.0, d);
+    let berm = berm * (1.0 - 0.7 * (1.0 - west));
     let dunes = smoothstep(10.0, 40.0, d)
         * (6.0 * (x * 0.021 + (z * 0.013).sin() * 2.0).sin().abs()
             + 3.0 * ((x * 0.007 - z * 0.011).sin() + 1.0)
             + 1.5 * (x * 0.05).sin() * (z * 0.043).cos());
-    base + berm + dunes
+    base + plateau + berm + dunes
 }
 
 /// Ground height: flat town at 0, the reservoir bowl, the north dune ridge,
@@ -535,8 +546,10 @@ impl Map {
         map.landmarks();
         map.reservoir_cover(&mut rng);
         map.ridge();
+        // Cliffs and a container barricade close the edge (see valley.rs).
+        map.valley_edge(&mut rng, ground);
         map.spawns();
-        // The edge is dunes, not a wall: colliders stay, the grey wall goes.
+        // A backstop buried inside them: nothing reaches it.
         map.perimeter(false);
         map.horizon(&mut rng);
         // Everything masonry is knocked about a bit (visual only).
@@ -1136,9 +1149,10 @@ impl Map {
         }
     }
 
-    /// Beyond the arena, visual only: sand rises into a berm at the edge,
-    /// rolls away in dunes to the haze, with the half-buried ruins of the rest
-    /// of the town on them and mesas on the horizon.
+    /// Beyond the arena, visual only: a plateau behind the cliffs and a sand
+    /// berm behind the barricade, rolling away in dunes to the haze, with the
+    /// half-buried ruins of the rest of the town on them and mesas on the
+    /// horizon.
     fn horizon(&mut self, rng: &mut Rng) {
         // Dunes on a 4 m grid out to ~560 m past each edge (the camera's far
         // plane is 600 m). Inside the arena it sits well below the play
@@ -1548,5 +1562,41 @@ mod tests {
             }
         }
         assert!(worst < 22.0, "slope of {worst} degrees");
+    }
+
+    /// No invisible wall: every point along the arena's edge lies inside a
+    /// solid cliff or container stack, standing from below the sand to well
+    /// above a tank, so a tank driving at any edge stops against something
+    /// it can see before it reaches the hidden boundary.
+    #[test]
+    fn edge_is_closed_by_visible_obstacles() {
+        let m = Map::saltmarket();
+        let n = (SIZE / 0.5) as usize;
+        for k in 0..=n {
+            let t = k as f32 * 0.5;
+            // Just inside each side.
+            for (p, along) in [
+                (Vec2::new(t, 0.05), Vec2::X),
+                (Vec2::new(t, SIZE - 0.05), Vec2::X),
+                (Vec2::new(0.05, t), Vec2::Y),
+                (Vec2::new(SIZE - 0.05, t), Vec2::Y),
+            ] {
+                let g = ground(p.x, p.y);
+                let over = |q: Vec2| {
+                    m.oboxes
+                        .iter()
+                        .filter(move |o| o.solid && !o.is_turned() && o.distance(q) == 0.0)
+                };
+                let foot = over(p).any(|o| o.y0 <= g && o.y1 > g + 1.0);
+                assert!(foot, "nothing visible stops a tank at the edge at {p}");
+                // Too tall to climb, but for gaps narrower than a tank.
+                let top = [-1.0, 0.0, 1.0]
+                    .iter()
+                    .flat_map(|&s| over(p + along * s))
+                    .map(|o| o.y1)
+                    .fold(f32::MIN, f32::max);
+                assert!(top > g + 4.0, "the edge at {p} is only {} m high", top - g);
+            }
+        }
     }
 }

@@ -16,6 +16,7 @@ mod saltmarket;
 mod sanctum;
 #[cfg(test)]
 mod test_kit;
+mod valley;
 
 /// Blocking collider.
 #[derive(Clone, Copy, Debug)]

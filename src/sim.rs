@@ -1811,6 +1811,54 @@ mod tests {
         }
     }
 
+    /// Saltmarket's edge is cliffs and stacked containers: a tank driving
+    /// flat out at any side stops against them and doesn't get up onto them
+    /// (tracked or hovering). That it's them, not the hidden boundary, that
+    /// stops it is `edge_is_closed_by_visible_obstacles` in saltmarket.rs.
+    #[test]
+    fn saltmarket_edge_stops_tanks() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let map = Map::saltmarket();
+        let size = map.size;
+        // (start, heading): south, north, east, west, each twice.
+        let runs = [
+            (Vec2::new(60.0, 16.0), PI),
+            (Vec2::new(170.0, 12.0), PI),
+            (Vec2::new(40.0, 225.0), 0.0),
+            (Vec2::new(160.0, 226.0), 0.0),
+            (Vec2::new(222.0, 100.0), FRAC_PI_2),
+            (Vec2::new(222.0, 200.0), FRAC_PI_2),
+            (Vec2::new(14.0, 150.0), -FRAC_PI_2),
+            (Vec2::new(14.0, 40.0), -FRAC_PI_2),
+        ];
+        for hull in [HullKind::Kataphrakt, HullKind::Sethuun] {
+            for (start, yaw) in runs {
+                let mut w = World::empty(map.clone());
+                w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Kontos);
+                run(&mut w, Command::default(), 0.5);
+                let mut nearest = f32::MAX;
+                let mut highest = f32::MIN;
+                for _ in 0..(8.0 / DT) as usize {
+                    w.step(&[throttle(1.0)]);
+                    let p = w.tanks[0].pos;
+                    let edge = p.x.min(p.z).min(size - p.x).min(size - p.z);
+                    nearest = nearest.min(edge);
+                    highest = highest.max(p.y - w.map.ground_height(p.x, p.z));
+                }
+                // Tracks can walk the nose up a wall face, but never over it.
+                assert!(
+                    nearest > 0.0,
+                    "{hull:?} from {start} got {} m past the boundary",
+                    -nearest
+                );
+                assert!(
+                    highest < 4.0,
+                    "{hull:?} from {start} got {highest} m up onto the edge"
+                );
+            }
+        }
+    }
+
     /// Something clearly wall-like (taller than the hull) still blocks.
     #[test]
     fn walls_still_block() {
