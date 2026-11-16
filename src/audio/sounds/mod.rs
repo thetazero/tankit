@@ -37,6 +37,7 @@ pub mod garage;
 pub mod guns;
 pub mod hits;
 pub mod hold;
+pub mod hull;
 pub mod places;
 pub mod repair;
 pub mod shield;

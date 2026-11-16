@@ -515,6 +515,11 @@ pub enum Sound {
         tank: usize,
         at: Vec3,
     },
+    /// An overheated beam has cooled right down: it can fire again.
+    BeamReady {
+        tank: usize,
+        at: Vec3,
+    },
     /// The player's shot made a kill.
     Confirm,
     /// The player's link came back in a fresh chassis.
@@ -819,8 +824,14 @@ impl Match {
                         self.beam(i, range);
                     } else {
                         f.heat = (f.heat - COOL_RATE * DT / capacity).max(0.0);
-                        if f.heat == 0.0 {
+                        if f.heat == 0.0 && f.overheated {
                             f.overheated = false;
+                            if f.alive {
+                                self.sounds.push(Sound::BeamReady {
+                                    tank: i,
+                                    at: muzzle(&self.world.tanks[i]),
+                                });
+                            }
                         }
                     }
                 }
@@ -2355,6 +2366,7 @@ mod tests {
             m.step(Command::default(), true);
         }
         assert!(m.fighters[0].overheated);
+        m.sounds.clear();
         // Still holding the trigger: nothing comes out while it cools.
         m.step(Command::default(), true);
         assert!(m.fighters[0].beam.is_none());
@@ -2369,6 +2381,13 @@ mod tests {
         }
         assert!(!m.fighters[0].overheated);
         assert!(m.fighters[0].beam.is_some());
+        // Cooled right down: you hear it's ready, once.
+        let ready = m
+            .sounds
+            .iter()
+            .filter(|s| matches!(s, Sound::BeamReady { tank: 0, .. }))
+            .count();
+        assert_eq!(ready, 1);
     }
 
     #[test]
