@@ -2,6 +2,7 @@ mod ai;
 mod app;
 mod combat;
 mod game;
+mod garage;
 mod hud;
 mod map;
 mod render;
@@ -31,28 +32,22 @@ tankit [OPTIONS]
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
+  --hull <lancer|bastion> player hull (default lancer)
+  --turret <lance|maul>   player turret (default lance)
+  --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --showroom              all hull x turret combos on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
   --focus <0-3>           showroom: frame one tank
 ";
 
-/// Which arena to load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MapKind {
-    /// Procedural city (seeded).
-    City,
-    /// Hand-built physics test course.
-    Proving,
-    /// Hand-built desert town on a dry reservoir.
-    Saltmarket,
-}
-
 pub struct Args {
     pub seed: u64,
     pub map: MapKind,
     pub spawn: usize,
     pub bots: usize,
+    pub loadout: garage::Loadout,
+    garage: bool,
     straight: bool,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
@@ -64,6 +59,17 @@ impl Args {
     pub fn map(&self) -> map::Map {
         make_map(self.seed, self.map)
     }
+}
+
+/// Which arena to load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapKind {
+    /// Procedural city (seeded).
+    City,
+    /// Hand-built physics test course.
+    Proving,
+    /// Hand-built desert town on a dry reservoir.
+    Saltmarket,
 }
 
 pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
@@ -97,7 +103,7 @@ fn main() -> Result<()> {
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
         (Some(shot), None) => screenshot(&args, shot),
-        (None, room) => app::run(args.seed, args.map, args.spawn, args.bots, room),
+        (None, room) => app::run(args.seed, args.map, args.spawn, args.bots, args.loadout, room),
     }
 }
 
@@ -112,6 +118,8 @@ fn parse_args() -> Result<Args> {
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut bots: Option<usize> = None;
+    let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
+    let mut garage = false;
     let mut room = ShowroomArgs { orbit: None, dist: 24.0, focus: None };
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -141,6 +149,15 @@ fn parse_args() -> Result<Args> {
                 let (w, h) = s.split_once('x').context("--size format is WxH")?;
                 (width, height) = (w.parse()?, h.parse()?);
             }
+            "--hull" => {
+                let name = args.next().unwrap_or_default().to_ascii_uppercase();
+                loadout.0 = *garage::HULLS.iter().find(|&&k| garage::hull_name(k) == name).context("--hull expects lancer or bastion")?;
+            }
+            "--turret" => {
+                let name = args.next().unwrap_or_default().to_ascii_uppercase();
+                loadout.1 = *garage::TURRETS.iter().find(|&&k| garage::turret_name(k) == name).context("--turret expects lance or maul")?;
+            }
+            "--garage" => garage = true,
             "--showroom" => showroom = true,
             "--orbit" => room.orbit = Some(args.next().context("--orbit needs degrees")?.parse::<f32>()?.to_radians()),
             "--dist" => room.dist = args.next().context("--dist needs meters")?.parse()?,
@@ -157,6 +174,8 @@ fn parse_args() -> Result<Args> {
         map: map_kind,
         spawn,
         bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 5 }),
+        loadout,
+        garage,
         straight,
         cam,
         shot: shot.map(|out| ShotArgs { out, time, width, height, frames, fps }),
@@ -174,33 +193,50 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+    if args.garage {
+        game.fighters[0].next_kit = Some(args.loadout);
+    } else {
+        game.set_player_hull(args.loadout.0);
+        game.world.tanks[0].turret_kind = args.loadout.1;
+    }
     let mut cam = scene::ChaseCam::new();
+    let mut garage = garage::Garage::new();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
     let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
-        if args.straight { sim::Command { throttle: 1.0, ..Default::default() } } else { game::autopilot(world.time) }
+        if args.garage {
+            sim::Command::default()
+        } else if args.straight {
+            sim::Command { throttle: 1.0, ..Default::default() } } else { game::autopilot(world.time) }
     };
 
     // Simulate `seconds` more, keeping the camera in step; returns the latest camera.
     // The autopilot holds the trigger so shots show combat.
-    let advance = |m: &mut combat::Match, cam: &mut scene::ChaseCam, seconds: f32| {
+    let aspect = shot.width as f32 / shot.height as f32;
+    let advance = |m: &mut combat::Match, cam: &mut scene::ChaseCam, garage: &mut garage::Garage, seconds: f32| {
         let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
+        if args.garage && !garage.is_open() {
+            garage.toggle(&m.world, &camera, args.loadout);
+        }
         for _ in 0..(seconds / game::DT).round() as u32 {
             let cmd = command(&m.world);
-            m.step(cmd, !args.straight);
+            m.step(cmd, !args.straight && !args.garage);
             camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
+            garage.update(game::DT);
         }
-        camera
+        garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = advance(&mut game, &mut cam, shot.time);
+    let mut camera = advance(&mut game, &mut cam, &mut garage, shot.time);
 
     for i in 0..shot.frames {
         if i > 0 {
-            camera = advance(&mut game, &mut cam, 1.0 / shot.fps);
+            camera = advance(&mut game, &mut cam, &mut garage, 1.0 / shot.fps);
         }
-        let tanks = game.display_tanks(1.0);
+        let mut tanks = game.display_tanks(1.0);
+        let driven = tanks[0].clone();
+        garage.preview(&mut tanks[0], args.loadout);
         let view = match args.cam {
             Some((pos, target)) => render::Camera { pos, target, fov_y: 60f32.to_radians() },
             None => camera,
@@ -208,7 +244,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
         if args.cam.is_none() {
-            frame.ui = hud.draw(&game, &tanks, args.seed, &camera, shot.width as f32, shot.height as f32, game::DT, false);
+            let (w, h) = (shot.width as f32, shot.height as f32);
+            let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, h);
         }
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;

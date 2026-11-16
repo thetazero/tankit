@@ -566,7 +566,7 @@ impl Map {
             // Landing ramp, same height as the kicker, after a gap sized to about
             // 70% of the flight distance at top speed so a full-speed jump clears it
             // and lands on the down slope.
-            let (v, g) = (15.0f32, crate::sim::GRAVITY);
+            let (v, g) = (crate::sim::HullStats::LANCER.max_speed, crate::sim::GRAVITY);
             let flight = 2.0 * v * deg.to_radians().sin() / g * v * deg.to_radians().cos();
             let land_z = z0 + len + flight * 0.7;
             map.wedges.push(Wedge {

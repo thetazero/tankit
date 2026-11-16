@@ -77,6 +77,8 @@ pub struct Fighter {
     pub since_hit: f32,
     /// Seconds since this tank last landed a hit on someone.
     pub since_dealt: f32,
+    /// Kit to fit at the next respawn (picked in the garage).
+    pub next_kit: Option<(HullKind, TurretKind)>,
 }
 
 impl Fighter {
@@ -405,6 +407,10 @@ impl Match {
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
             }
+            if let Some((hull, turret)) = self.fighters[i].next_kit.take() {
+                self.world.set_hull(i, hull);
+                self.world.tanks[i].turret_kind = turret;
+            }
             let (at, yaw) = spawn_point(&self.world, &mut self.rng, Some((i, &self.fighters)));
             self.world.teleport(i, at, yaw);
             let f = &mut self.fighters[i];
@@ -479,6 +485,7 @@ fn fighter(name: &str, health: f32) -> Fighter {
         killed_by: None,
         since_hit: 10.0,
         since_dealt: 10.0,
+        next_kit: None,
     }
 }
 
@@ -561,6 +568,29 @@ mod tests {
         assert!(m.fighters[1].alive);
         assert_eq!(m.fighters[1].health, max_health(m.world.tanks[1].hull_kind));
         assert!(m.fighters[1].shield > 0.0);
+    }
+
+    #[test]
+    fn queued_kit_is_fitted_at_respawn() {
+        let mut m = arena(1);
+        // Whatever the player has now, queue the other hull.
+        let hull = if m.world.tanks[0].hull_kind == HullKind::Bastion { HullKind::Lancer } else { HullKind::Bastion };
+        let kit = (hull, TurretKind::Maul);
+        m.fighters[0].next_kit = Some(kit);
+        // Not while alive.
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        assert_ne!(m.world.tanks[0].hull_kind, kit.0);
+        m.fighters[0].shield = 0.0;
+        m.kill(1, 0);
+        for _ in 0..((RESPAWN_TIME + 0.2) / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[0].alive);
+        assert_eq!((m.world.tanks[0].hull_kind, m.world.tanks[0].turret_kind), kit);
+        assert_eq!(m.fighters[0].health, max_health(kit.0));
+        assert_eq!(m.fighters[0].next_kit, None);
     }
 
     #[test]

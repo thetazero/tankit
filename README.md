@@ -16,6 +16,8 @@ cargo run --release -- --seed 21             # play a specific map
 cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
 cargo run --release -- --map saltmarket      # Saltmarket: desert town on a dry reservoir (blockout)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
+cargo run --release -- --hull bastion --turret maul   # start with a different loadout
+cargo run --release -- --seed 21 --garage --hull bastion --time 2 --shot garage.png   # garage open, Bastion picked
 cargo run --release -- --showroom            # every hull x turret combo, animated, orbiting camera
 cargo run --release -- --showroom --focus 0 --dist 8 --orbit 120 --time 3 --shot tank.png
 cargo run --release -- --map proving --spawn 2 --straight --time 1.2 --frames 90 --shot clip/f.png   # frame sequence
@@ -35,14 +37,37 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | PageUp / PageDown | camera height |
 | Space | fire (hold to keep firing as the gun reloads) |
 | Tab | scoreboard |
+| G | garage: park, orbit the tank, swap hull and turret (see below) |
 | Enter | next round (once the clock runs out) |
-| 1 / 2 | cycle hull / turret |
+| 1 / 2 | quick-cycle the hull / turret queued for the next respawn |
 | R | restart the round at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
 | [ / ] | live tuning: sideways grip ×0.9 / ×1.1 |
 | ; / ' | live tuning: turn rate −/+ 0.1 rad/s |
 | Backspace | reset live tuning |
 | Esc | quit |
+
+## Garage
+
+Press **G** mid-battle, alive or waiting to respawn. The tank parks where
+it is (and stays a target), the HUD fades out and the camera swings round
+to orbit it, with a panel listing the hulls and turrets and their stats.
+What you pick is fitted **at your next respawn**; the orbit camera shows it
+on your tank as a preview, and the HUD shows `NEXT SPAWN` until then.
+Respawning or the round ending closes the garage.
+
+| Key | Action |
+|---|---|
+| W/S or ↑/↓ | previous / next part |
+| A/D or ←/→ | switch between hull and turret |
+| Enter or G | back to battle with this pick queued |
+| Esc | cancel: keep what was queued before |
+
+Stat bars are scaled to the best part in the kit; a faint tick marks the
+part you're driving now.
+
+
+![garage](docs/screenshots/garage.png)
 
 ## Deathmatch
 
