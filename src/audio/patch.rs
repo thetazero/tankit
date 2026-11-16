@@ -22,7 +22,7 @@ pub enum Filt {
 }
 
 /// One layer of a one-shot.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Layer {
     pub src: Src,
     /// Oscillator pitch, start and end, Hz.

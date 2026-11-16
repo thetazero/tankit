@@ -562,8 +562,9 @@ mod tests {
         shots.iter().map(|s| s.layers).collect()
     }
 
+    /// By value: a `const` slice has no one address (debug builds copy it).
     fn has(shots: &[OneShot], l: &'static [patch::Layer]) -> bool {
-        layers(shots).iter().any(|x| std::ptr::eq(*x, l))
+        layers(shots).iter().any(|x| *x == l)
     }
 
     /// Issue #114: a beam is heard lighting, striking a hull (once, not
@@ -619,7 +620,7 @@ mod tests {
         let shots = audio.beam_moments(&game, &e);
         let scorch = shots
             .iter()
-            .filter(|s| std::ptr::eq(s.layers, patch::SCORCH))
+            .filter(|s| s.layers == patch::SCORCH)
             .map(|s| s.gain)
             .fold(0.0, f32::max);
         let hit = audio
