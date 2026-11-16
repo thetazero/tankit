@@ -463,6 +463,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         instances,
         particles,
         ui: Vec::new(),
+        world: true,
     }
 }
 

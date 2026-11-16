@@ -14,7 +14,7 @@ pub mod widgets;
 
 use glam::Vec2;
 
-use crate::render::UiVertex;
+use crate::render::{NO_UV, UiVertex};
 
 pub type Rgba = [f32; 4];
 
@@ -190,7 +190,8 @@ impl Painter {
         self.halo = halo;
     }
 
-    /// Restrict lines to a logical-px rectangle (min, max). Rects ignore it.
+    /// Restrict drawing to a logical-px rectangle (min, max): lines, rects
+    /// (so text too) and images. Gradients ignore it.
     pub fn set_clip(&mut self, clip: Option<(Vec2, Vec2)>) {
         self.clip = clip;
     }
@@ -236,6 +237,9 @@ impl Painter {
     }
 
     pub fn rect(&mut self, min: Vec2, size: Vec2, color: Rgba) {
+        let Some((min, size)) = clip_rect(min, size, self.clip) else {
+            return;
+        };
         let s = self.scale;
         if let Some((hc, hw)) = self.halo {
             let h = hw * s;
@@ -249,6 +253,31 @@ impl Painter {
         push_rect(&mut self.verts, min * s, size * s, color);
     }
 
+    /// A rect showing the thumbnail atlas between `uv_min` and `uv_max`,
+    /// tinted by `tint`, no halo. Clipped (and its UVs with it) like a rect.
+    pub fn image(&mut self, min: Vec2, size: Vec2, uv_min: Vec2, uv_max: Vec2, tint: Rgba) {
+        let Some((cmin, csize)) = clip_rect(min, size, self.clip) else {
+            return;
+        };
+        let uv_at = |p: Vec2| uv_min + (uv_max - uv_min) * ((p - min) / size);
+        let (u0, u1) = (uv_at(cmin), uv_at(cmin + csize));
+        let s = self.scale;
+        let (a, b) = (cmin * s, (cmin + csize) * s);
+        let v = |x: f32, y: f32, u: f32, w: f32| UiVertex {
+            pos: [x, y],
+            color: tint,
+            uv: [u, w],
+        };
+        self.verts.extend_from_slice(&[
+            v(a.x, a.y, u0.x, u0.y),
+            v(b.x, a.y, u1.x, u0.y),
+            v(b.x, b.y, u1.x, u1.y),
+            v(a.x, a.y, u0.x, u0.y),
+            v(b.x, b.y, u1.x, u1.y),
+            v(a.x, b.y, u0.x, u1.y),
+        ]);
+    }
+
     /// Rect fading horizontally from `left` to `right` colour, no halo (for backdrops).
     pub fn gradient_h(&mut self, min: Vec2, size: Vec2, left: Rgba, right: Rgba) {
         let s = self.scale;
@@ -258,7 +287,11 @@ impl Painter {
             (min.x + size.x) * s,
             (min.y + size.y) * s,
         );
-        let v = |x: f32, y: f32, color: Rgba| UiVertex { pos: [x, y], color };
+        let v = |x: f32, y: f32, color: Rgba| UiVertex {
+            pos: [x, y],
+            color,
+            uv: NO_UV,
+        };
         self.under.extend_from_slice(&[
             v(x0, y0, left),
             v(x1, y0, right),
@@ -333,6 +366,15 @@ pub fn measure(text: &str, style: &TextStyle) -> f32 {
     if n > 0 { w - style.tracking } else { 0.0 }
 }
 
+/// The part of a rect inside the clip box, if any.
+fn clip_rect(min: Vec2, size: Vec2, clip: Option<(Vec2, Vec2)>) -> Option<(Vec2, Vec2)> {
+    let Some((cmin, cmax)) = clip else {
+        return Some((min, size));
+    };
+    let (a, b) = (min.max(cmin), (min + size).min(cmax));
+    (b.x > a.x && b.y > a.y).then(|| (a, b - a))
+}
+
 /// Liang–Barsky: the part of segment a→b inside the box, if any.
 pub fn clip_segment(a: Vec2, b: Vec2, clip: Option<(Vec2, Vec2)>) -> Option<(Vec2, Vec2)> {
     let Some((min, max)) = clip else {
@@ -366,7 +408,11 @@ pub fn clip_segment(a: Vec2, b: Vec2, clip: Option<(Vec2, Vec2)>) -> Option<(Vec
 }
 
 fn push_rect(out: &mut Vec<UiVertex>, min: Vec2, size: Vec2, color: Rgba) {
-    let v = |x: f32, y: f32| UiVertex { pos: [x, y], color };
+    let v = |x: f32, y: f32| UiVertex {
+        pos: [x, y],
+        color,
+        uv: NO_UV,
+    };
     let (x0, y0, x1, y1) = (min.x, min.y, min.x + size.x, min.y + size.y);
     out.extend_from_slice(&[
         v(x0, y0),
@@ -404,6 +450,7 @@ fn push_line(out: &mut Vec<UiVertex>, a: Vec2, b: Vec2, width: f32, color: Rgba)
         let v = |p: Vec2, c: Rgba| UiVertex {
             pos: p.into(),
             color: c,
+            uv: NO_UV,
         };
         let (p00, p01, p10, p11) = (a + n * o0, b + n * o0, a + n * o1, b + n * o1);
         out.extend_from_slice(&[

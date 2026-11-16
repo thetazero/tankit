@@ -20,6 +20,7 @@ mod scene;
 mod showroom;
 mod sim;
 mod tank;
+mod thumbs;
 mod ui;
 
 use anyhow::{Context, Result, bail};
@@ -500,6 +501,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         let mut tanks = game.display_tanks(1.0);
         let driven = tanks[0].clone();
+        garage.render_thumbs(
+            &mut renderer,
+            &art,
+            &game.world,
+            &driven,
+            equipped,
+            shot.height as f32,
+            usize::MAX,
+        );
         garage.preview(&mut tanks[0]);
         let view = match args.cam {
             Some((pos, target)) => render::Camera {
@@ -516,7 +526,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, equipped, &profile, h).verts;
+            frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
                 frame.ui.extend(
