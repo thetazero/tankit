@@ -167,7 +167,7 @@ impl TankArt {
         }
 
         // Turret yaws on the hull's ring; the gun pitches about its trunnion.
-        let tm = sprung * Mat4::from_translation(hull.mount) * Mat4::from_rotation_y(t.turret_yaw - t.yaw);
+        let tm = sprung * Mat4::from_translation(hull.mount) * Mat4::from_rotation_y(t.turret_rel);
         out.push((turret.head, Instance::new(tm, tint)));
         let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-t.gun_pitch);
         out.push((turret.mantlet, Instance::new(gun, tint)));

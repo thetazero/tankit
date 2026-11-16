@@ -31,8 +31,10 @@ pub struct Command {
     pub throttle: f32,
     /// +1 turns left (counter-clockwise seen from above).
     pub steer: f32,
-    /// World-space yaw the turret should rotate toward.
-    pub aim_yaw: f32,
+    /// Turret rotation input, -1..1 (+1 turns left). Tanki-style: Z/X.
+    pub turret: f32,
+    /// Swing the turret back to face forward over the hull (C).
+    pub center_turret: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,7 +47,10 @@ pub struct HullStats {
     pub turn_rate: f32,
     pub turn_accel: f32,
     pub grip: f32,
+    /// Max turret rotation speed relative to the hull, rad/s.
     pub turret_speed: f32,
+    /// How fast the turret spins up to full speed, rad/s².
+    pub turret_accel: f32,
 }
 
 impl HullStats {
@@ -59,7 +64,8 @@ impl HullStats {
         turn_rate: 2.5,
         turn_accel: 16.0,
         grip: 38.0,
-        turret_speed: 2.6,
+        turret_speed: 2.0,
+        turret_accel: 12.0,
     };
 }
 
@@ -74,7 +80,9 @@ pub struct Tank {
     pub vel: Vec2,
     pub yaw: f32,
     pub yaw_rate: f32,
-    pub turret_yaw: f32,
+    /// Turret angle relative to the hull: the turret is mounted, so it turns with the hull.
+    pub turret_rel: f32,
+    pub turret_rate: f32,
     /// Gun elevation in radians (positive = up).
     pub gun_pitch: f32,
 
@@ -100,7 +108,8 @@ impl Tank {
             vel: Vec2::ZERO,
             yaw,
             yaw_rate: 0.0,
-            turret_yaw: yaw,
+            turret_rel: 0.0,
+            turret_rate: 0.0,
             gun_pitch: 0.0,
             hull_kind: HullKind::Lancer,
             turret_kind: TurretKind::Lance,
@@ -118,13 +127,18 @@ impl Tank {
     pub fn fire_fx(&mut self) {
         self.since_fire = 0.0;
         self.fire_barrel += 1;
-        let rel = self.turret_yaw - self.yaw;
+        let rel = self.turret_rel;
         self.pitch_vel -= rel.cos() * 0.9;
         self.roll_vel += rel.sin() * 0.7;
     }
 
     pub fn forward(&self) -> Vec2 {
         dir2(self.yaw)
+    }
+
+    /// World-space turret heading.
+    pub fn turret_yaw(&self) -> f32 {
+        wrap_angle(self.yaw + self.turret_rel)
     }
 
     pub fn pos3(&self) -> Vec3 {
@@ -248,10 +262,31 @@ fn drive(t: &mut Tank, cmd: &Command, dt: f32) {
     t.track_dist[1] += (new_long + t.yaw_rate * half) * dt;
     t.since_fire += dt;
 
-    // Turret slews toward the commanded aim at a limited rate.
-    let diff = wrap_angle(cmd.aim_yaw - t.turret_yaw);
-    let step = h.turret_speed * dt;
-    t.turret_yaw = wrap_angle(t.turret_yaw + diff.clamp(-step, step));
+    // Turret: manual rotation relative to the hull, with a short spin-up.
+    // Centering drives it back to 0 and stops exactly there.
+    let manual = cmd.turret.clamp(-1.0, 1.0);
+    let target_rate = if manual.abs() > 0.05 {
+        manual * h.turret_speed
+    } else if cmd.center_turret {
+        // Full speed toward center until it's time to brake.
+        let stop_dist = t.turret_rate * t.turret_rate / (2.0 * h.turret_accel);
+        let err = -t.turret_rel;
+        if err.abs() <= stop_dist { 0.0 } else { err.signum() * h.turret_speed }
+    } else {
+        0.0
+    };
+    t.turret_rate = approach(t.turret_rate, target_rate, h.turret_accel * dt);
+    let before = t.turret_rel;
+    t.turret_rel = wrap_angle(t.turret_rel + t.turret_rate * dt);
+    if cmd.center_turret && manual.abs() <= 0.05 {
+        let crossed = before.signum() != t.turret_rel.signum() && before.abs() < 0.5;
+        let settled = t.turret_rel.abs() < 0.02 && t.turret_rate.abs() < 0.5;
+        if crossed || settled {
+            // Snap and stop exactly forward instead of creeping or oscillating.
+            t.turret_rel = 0.0;
+            t.turret_rate = 0.0;
+        }
+    }
 
     // Suspension feel: nose lifts when accelerating, hull leans out of turns.
     let long_accel = (new_long - v_long) / dt;
@@ -371,7 +406,7 @@ mod tests {
         let mut w = World::new(1);
         w.tanks[0].pos = Vec2::new(5.0, w.map.size * 0.5);
         w.tanks[0].yaw = -std::f32::consts::FRAC_PI_2; // facing -x, toward the perimeter wall
-        let cmd = Command { throttle: 1.0, steer: 0.0, aim_yaw: w.tanks[0].yaw };
+        let cmd = Command { throttle: 1.0, ..Default::default() };
         for _ in 0..240 {
             w.step(&[cmd]);
         }
@@ -385,11 +420,38 @@ mod tests {
         let mut w = World::new(1);
         w.map.solids.clear();
         w.tanks[0].pos = Vec2::splat(80.0);
-        let cmd = Command { throttle: 1.0, steer: 0.0, aim_yaw: w.tanks[0].yaw };
+        let cmd = Command { throttle: 1.0, ..Default::default() };
         for _ in 0..240 {
             w.step(&[cmd]);
         }
         assert!((w.tanks[0].speed() - HullStats::SCOUT.max_speed).abs() < 0.01);
+    }
+
+    #[test]
+    fn turret_turns_with_hull_and_centers() {
+        let mut w = World::new(1);
+        w.map.solids.clear();
+        // Spin the turret left for half a second.
+        for _ in 0..60 {
+            w.step(&[Command { turret: 1.0, ..Default::default() }]);
+        }
+        let rel = w.tanks[0].turret_rel;
+        assert!(rel > 0.5, "turret barely moved: {rel}");
+        // Turning the hull carries the turret along: relative angle holds (it coasts to a stop first).
+        for _ in 0..30 {
+            w.step(&[Command::default()]);
+        }
+        let rel = w.tanks[0].turret_rel;
+        for _ in 0..120 {
+            w.step(&[Command { steer: 1.0, ..Default::default() }]);
+        }
+        assert!((w.tanks[0].turret_rel - rel).abs() < 1e-4);
+        // Centering returns it to exactly forward.
+        for _ in 0..240 {
+            w.step(&[Command { center_turret: true, ..Default::default() }]);
+        }
+        assert!(w.tanks[0].turret_rel.abs() < 0.01, "not centered: {}", w.tanks[0].turret_rel);
+        assert!(w.tanks[0].turret_rate.abs() < 0.01);
     }
 
     #[test]

@@ -5,20 +5,20 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{Window, WindowId};
 
 use crate::game::Clock;
 use crate::render::Renderer;
 use crate::scene::{self, ChaseCam};
-use crate::sim::{Command, HullKind, TurretKind, World, wrap_angle};
+use crate::sim::{Command, HullKind, TurretKind, World};
 use crate::tank::TankArt;
 use crate::{ShowroomArgs, showroom};
 
-const MOUSE_SENS: f32 = 0.0025;
-const KEY_TURRET_SPEED: f32 = 2.2;
+/// Camera height change per second while PageUp/PageDown is held (0..1 range).
+const CAM_TILT_SPEED: f32 = 0.8;
 
 struct App {
     seed: u64,
@@ -30,7 +30,6 @@ struct App {
     cam: ChaseCam,
     clock: Clock,
     keys: HashSet<KeyCode>,
-    grabbed: bool,
     last: Instant,
     fps_timer: f32,
     fps_frames: u32,
@@ -40,8 +39,7 @@ pub fn run(seed: u64, showroom: Option<ShowroomArgs>) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let world = if showroom.is_some() { showroom::world(seed) } else { World::new(seed) };
-    let mut cam = ChaseCam::new();
-    cam.yaw = world.tanks[0].yaw;
+    let cam = ChaseCam::new();
     let mut app = App {
         seed,
         window: None,
@@ -52,7 +50,6 @@ pub fn run(seed: u64, showroom: Option<ShowroomArgs>) -> anyhow::Result<()> {
         cam,
         clock: Clock::default(),
         keys: HashSet::new(),
-        grabbed: false,
         last: Instant::now(),
         fps_timer: 0.0,
         fps_frames: 0,
@@ -107,18 +104,7 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if !self.grabbed {
-                    self.set_grab(true);
-                } else {
-                    // Visual only until shooting lands: recoil, flash, hull kick.
-                    self.world.tanks[0].fire_fx();
-                }
-            }
-            WindowEvent::Focused(false) => {
-                self.keys.clear();
-                self.set_grab(false);
-            }
+            WindowEvent::Focused(false) => self.keys.clear(),
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -126,15 +112,6 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => self.frame(),
             _ => {}
-        }
-    }
-
-    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta } = event {
-            if self.grabbed {
-                self.cam.yaw = wrap_angle(self.cam.yaw - delta.0 as f32 * MOUSE_SENS);
-                self.cam.tilt = (self.cam.tilt + delta.1 as f32 * MOUSE_SENS * 0.6).clamp(0.0, 1.0);
-            }
         }
     }
 
@@ -148,19 +125,12 @@ impl ApplicationHandler for App {
 impl App {
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
         match code {
-            KeyCode::Escape => {
-                if self.grabbed {
-                    self.set_grab(false);
-                } else {
-                    event_loop.exit();
-                }
-            }
+            KeyCode::Escape => event_loop.exit(),
             // New random map.
             KeyCode::F5 => {
                 self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
                 self.world = World::new(self.seed);
                 self.cam = ChaseCam::new();
-                self.cam.yaw = self.world.tanks[0].yaw;
                 if let Some(r) = &mut self.renderer {
                     r.set_static_mesh(&scene::map_mesh(&self.world.map));
                 }
@@ -175,26 +145,9 @@ impl App {
                 let t = &mut self.world.tanks[0];
                 t.turret_kind = if t.turret_kind == TurretKind::Lance { TurretKind::Maul } else { TurretKind::Lance };
             }
+            // Visual only until shooting lands: recoil, flash, hull kick.
             KeyCode::Space => self.world.tanks[0].fire_fx(),
-            // Snap the aim back over the hull.
-            KeyCode::KeyC => self.cam.yaw = self.world.tanks[0].yaw,
             _ => {}
-        }
-    }
-
-    fn set_grab(&mut self, grab: bool) {
-        let Some(w) = &self.window else { return };
-        if grab {
-            let ok = w
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| w.set_cursor_grab(CursorGrabMode::Confined))
-                .is_ok();
-            w.set_cursor_visible(!ok);
-            self.grabbed = ok;
-        } else {
-            let _ = w.set_cursor_grab(CursorGrabMode::None);
-            w.set_cursor_visible(true);
-            self.grabbed = false;
         }
     }
 
@@ -207,7 +160,8 @@ impl App {
         Command {
             throttle: axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]),
             steer: axis(&[KeyCode::KeyA, KeyCode::ArrowLeft], &[KeyCode::KeyD, KeyCode::ArrowRight]),
-            aim_yaw: self.cam.yaw,
+            turret: axis(&[KeyCode::KeyZ], &[KeyCode::KeyX]),
+            center_turret: self.held(&[KeyCode::KeyC]),
         }
     }
 
@@ -216,9 +170,8 @@ impl App {
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
 
-        // Keyboard turret control (Z/X or Q/E) for players who prefer it to the mouse.
-        let turn = (self.held(&[KeyCode::KeyZ, KeyCode::KeyQ]) as i32 - self.held(&[KeyCode::KeyX, KeyCode::KeyE]) as i32) as f32;
-        self.cam.yaw = wrap_angle(self.cam.yaw + turn * KEY_TURRET_SPEED * dt);
+        let tilt = (self.held(&[KeyCode::PageUp]) as i32 - self.held(&[KeyCode::PageDown]) as i32) as f32;
+        self.cam.tilt = (self.cam.tilt + tilt * CAM_TILT_SPEED * dt).clamp(0.0, 1.0);
 
         let cmd = self.command();
         for _ in 0..self.clock.advance(dt) {
@@ -234,8 +187,8 @@ impl App {
         if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
             let mut camera = self.cam.update(&self.world, &self.world.tanks[0], dt);
             if let Some(room) = self.showroom {
-                // Mouse (once captured) or the slow auto-orbit picks the angle.
-                let angle = room.orbit.unwrap_or(0.0) + if self.grabbed { self.cam.yaw } else { self.world.time * 0.15 };
+                // Slow auto-orbit; PageUp/PageDown zoom.
+                let angle = room.orbit.unwrap_or(self.world.time * 0.15);
                 camera = showroom::camera(&self.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
             }
             let mut scene = scene::build(&self.world, art, camera, r.width as f32, r.height as f32);
@@ -252,8 +205,10 @@ impl App {
         if self.fps_timer >= 0.5 {
             if let Some(w) = &self.window {
                 let fps = self.fps_frames as f32 / self.fps_timer;
-                let hint = if self.grabbed { "Esc: release mouse" } else { "click to aim with mouse" };
-                w.set_title(&format!("tankit  |  {fps:.0} fps  |  seed {}  |  {hint}  |  F5: new map", self.seed));
+                w.set_title(&format!(
+                    "tankit  |  {fps:.0} fps  |  seed {}  |  WASD drive, Z/X turret, C center, Space fire, 1/2 swap parts, PgUp/PgDn camera, F5 new map",
+                    self.seed
+                ));
             }
             self.fps_timer = 0.0;
             self.fps_frames = 0;

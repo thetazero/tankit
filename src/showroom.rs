@@ -41,10 +41,15 @@ pub fn commands(w: &World) -> Vec<Command> {
     w.tanks
         .iter()
         .enumerate()
-        .map(|(i, tank)| match i {
-            0 => Command { throttle: 0.0, steer: (t * 0.6).sin().signum() * ((t * 0.6).sin().abs() > 0.3) as i32 as f32, aim_yaw: tank.yaw + (t * 0.5).sin() * 0.6 },
-            1 => Command { throttle: (t * 0.8).sin() * 0.45, steer: 0.0, aim_yaw: tank.yaw + 0.3 },
-            _ => Command { throttle: 0.0, steer: 0.0, aim_yaw: 0.4 + (t * 0.4 + i as f32).sin() * 1.2 },
+        .map(|(i, _)| match i {
+            0 => Command {
+                throttle: 0.0,
+                steer: (t * 0.6).sin().signum() * ((t * 0.6).sin().abs() > 0.3) as i32 as f32,
+                turret: (t * 0.5).cos() * 0.4,
+                center_turret: false,
+            },
+            1 => Command { throttle: (t * 0.8).sin() * 0.45, steer: 0.0, turret: 0.0, center_turret: false },
+            _ => Command { throttle: 0.0, steer: 0.0, turret: (t * 0.4 + i as f32).cos() * 0.6, center_turret: false },
         })
         .collect()
 }

@@ -6,7 +6,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use crate::map::{Map, mat};
 use crate::render::mesh::MeshData;
 use crate::render::{Camera, Scene, UiVertex};
-use crate::sim::{Tank, World, dir2};
+use crate::sim::{Tank, World, dir2, wrap_angle};
 use crate::tank::TankArt;
 
 pub const SUN_DIR: Vec3 = Vec3::new(0.55, 0.48, 0.4);
@@ -67,10 +67,11 @@ fn road_markings(map: &Map, m: &mut MeshData) {
     }
 }
 
-/// Third-person chase camera. Yaw comes from the player's aim; it follows the
-/// tank with a little lag and pulls in when a building is in the way.
+/// Third-person chase camera, Tanki-style: it sits behind the turret and
+/// swings with it, follows with a little lag, and pulls in when something is
+/// in the way.
 pub struct ChaseCam {
-    pub yaw: f32,
+    yaw: f32,
     /// 0 = low behind the tank, 1 = high overhead-ish.
     pub tilt: f32,
     focus: Vec3,
@@ -84,11 +85,14 @@ impl ChaseCam {
 
     pub fn update(&mut self, world: &World, tank: &Tank, dt: f32) -> Camera {
         let anchor = tank.pos3() + Vec3::Y * 2.2;
+        let turret_yaw = tank.turret_yaw();
         if !self.initialized {
             self.focus = anchor;
+            self.yaw = turret_yaw;
             self.initialized = true;
         }
         self.focus = self.focus.lerp(anchor, 1.0 - (-dt * 14.0).exp());
+        self.yaw = wrap_angle(self.yaw + wrap_angle(turret_yaw - self.yaw) * (1.0 - (-dt * 10.0).exp()));
 
         let tilt = self.tilt.clamp(0.0, 1.0);
         let dist = 9.0 + tilt * 3.0;
@@ -118,7 +122,7 @@ pub fn build(world: &World, art: &TankArt, camera: Camera, width: f32, height: f
     let vp = camera.view_proj(width / height);
 
     // Crosshair sits where the turret actually points, so turret lag is visible.
-    let aim_dir = dir2(player.turret_yaw);
+    let aim_dir = dir2(player.turret_yaw());
     let aim_point = player.pos3() + Vec3::new(aim_dir.x, 0.0, aim_dir.y) * 40.0 + Vec3::Y * 1.7;
     if let Some((x, y)) = project(vp, aim_point, width, height) {
         crosshair(&mut ui, x, y);

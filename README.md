@@ -3,6 +3,8 @@
 Single-player arcade tank arena shooter: fast tanks, dense procedurally
 generated city maps, bots, and an XP + crystals progression loop.
 
+Look: rugged, solid metal, exposed machinery — see [docs/design-direction.md](docs/design-direction.md).
+
 Plain Rust: `winit` + `wgpu`, no engine.
 
 ## Run
@@ -18,17 +20,19 @@ cargo test
 
 ## Controls
 
-| Input | Action |
+Tanki-style: the camera rides behind the turret, and the turret is turned with keys.
+
+| Key | Action |
 |---|---|
 | W/S or ↑/↓ | throttle / reverse |
 | A/D or ←/→ | turn hull |
-| Mouse (click to capture) | aim turret / orbit camera, vertical = camera height |
-| Q/E or Z/X | rotate turret with keys |
-| C | snap aim back over the hull |
-| Click (while captured) or Space | fire (visual only for now: recoil, muzzle flash, hull kick) |
+| Z / X | rotate turret left / right (it turns with the hull) |
+| C | swing turret back to center |
+| PageUp / PageDown | camera height |
+| Space | fire (visual only for now: recoil, muzzle flash, hull kick) |
 | 1 / 2 | cycle hull / turret |
 | F5 | new random map |
-| Esc | release mouse, press again to quit |
+| Esc | quit |
 
 ## Tank kit
 
