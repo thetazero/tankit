@@ -2,10 +2,11 @@
 //! different animation (pivot turns, driving, turret sweeps, firing), with an
 //! orbiting camera. `--showroom` opens it in the window or for `--shot`.
 
+use crate::render::material::Material;
 use glam::{Vec2, Vec3, Vec4};
 
 use crate::game::DT;
-use crate::map::{Map, mat};
+use crate::map::Map;
 use crate::render::Camera;
 use crate::render::mesh::MeshData;
 use crate::sim::{Command, HullKind, TurretKind, World};
@@ -107,14 +108,14 @@ pub fn camera(w: &World, angle: f32, dist: f32, focus: Option<usize>) -> Camera 
 
 pub fn ground_mesh() -> MeshData {
     let mut m = MeshData::default();
-    let asphalt = Vec4::new(0.17, 0.17, 0.18, mat::ASPHALT);
+    let asphalt = Vec4::new(0.17, 0.17, 0.18, Material::Asphalt.id());
     m.add_box(
         Vec3::new(-150.0, -0.2, -150.0),
         Vec3::new(150.0, -0.02, 150.0),
         asphalt,
         asphalt,
     );
-    let pave = Vec4::new(0.6, 0.57, 0.52, mat::PAVING);
+    let pave = Vec4::new(0.6, 0.57, 0.52, Material::Paving.id());
     m.add_box(
         Vec3::new(-14.0, -0.1, -13.0),
         Vec3::new(14.0, 0.0, 14.0),

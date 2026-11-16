@@ -13,9 +13,10 @@
 //! Everything is built in the lot's local frame: x along the street frontage,
 //! z into the depth, y up.
 
+use crate::render::material::Material;
 use glam::{Vec2, Vec3};
 
-use super::{Map, OBox, mat};
+use super::{Map, OBox};
 use crate::rng::Rng;
 
 /// Ground floor is tall (shopfronts a tank fits through); upper storeys less so.
@@ -87,7 +88,7 @@ struct Frame<'a> {
 
 impl Frame<'_> {
     /// Box from local `lo` to `hi` (x, y, z).
-    fn put(&mut self, lo: Vec3, hi: Vec3, color: Vec3, solid: bool, material: f32) {
+    fn put(&mut self, lo: Vec3, hi: Vec3, color: Vec3, solid: bool, material: Material) {
         let (ax, az) = self.lot.axes();
         let mid = (lo + hi) * 0.5;
         self.map.oboxes.push(OBox {
@@ -102,7 +103,7 @@ impl Frame<'_> {
             tilt: 0.0,
             solid,
             // Masonry and concrete pieces get knocked edges (visual only).
-            chip: if material == mat::PLASTER || material == mat::CONCRETE {
+            chip: if material == Material::Plaster || material == Material::Concrete {
                 0.22
             } else {
                 0.0
@@ -113,7 +114,7 @@ impl Frame<'_> {
 
     /// A piece whose top is a broken edge: drawn jagged, with rebar sticking
     /// out of it where it's long enough to have had some.
-    fn put_broken(&mut self, rng: &mut Rng, lo: Vec3, hi: Vec3, color: Vec3, material: f32) {
+    fn put_broken(&mut self, rng: &mut Rng, lo: Vec3, hi: Vec3, color: Vec3, material: Material) {
         self.put(lo, hi, color, true, material);
         if let Some(o) = self.map.oboxes.last_mut() {
             o.broken = true;
@@ -146,7 +147,7 @@ impl Frame<'_> {
                 Vec3::new(p.x + 0.025, hi.y + h, p.z + 0.025),
                 Vec3::new(0.32, 0.2, 0.13),
                 false,
-                mat::RUST,
+                Material::Rust,
             );
             if let Some(o) = self.map.oboxes.last_mut() {
                 o.tilt = rng.range(-0.35, 0.35);
@@ -172,8 +173,8 @@ impl Frame<'_> {
             y0: y_mid - SLAB * 0.5,
             y1: y_mid + SLAB * 0.5,
             color,
-            side_mat: mat::CONCRETE,
-            top_mat: mat::CONCRETE,
+            side_mat: Material::Concrete,
+            top_mat: Material::Concrete,
             tilt: angle,
             solid: true,
             chip: 0.0,
@@ -192,8 +193,8 @@ impl Frame<'_> {
             y0: -s * 0.3,
             y1: s * rng.range(0.4, 0.9),
             color,
-            side_mat: mat::RUBBLE,
-            top_mat: mat::RUBBLE,
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
             tilt: rng.range(-0.5, 0.5),
             solid: false,
             chip: 0.0,
@@ -425,7 +426,7 @@ pub(super) fn building(
                 if top_here < o0 + 0.3 {
                     // Broken off below the window: just a ragged stub of wall.
                     let (lo, hi) = span(s0, s1, y0, top_here);
-                    f.put_broken(rng, lo, hi, color, mat::PLASTER);
+                    f.put_broken(rng, lo, hi, color, Material::Plaster);
                     continue;
                 }
                 // Piers either side, each broken at its own height.
@@ -433,28 +434,28 @@ pub(super) fn building(
                     let h = cut(at((p0 + p1) * 0.5)).min(full).max(o0.min(top_here));
                     let (lo, hi) = span(p0, p1, y0, h);
                     if h < full - 0.05 {
-                        f.put_broken(rng, lo, hi, color, mat::PLASTER);
+                        f.put_broken(rng, lo, hi, color, Material::Plaster);
                     } else {
-                        f.put(lo, hi, color, true, mat::PLASTER);
+                        f.put(lo, hi, color, true, Material::Plaster);
                     }
                 }
                 // Sill under the opening.
                 if o0 > y0 + 0.01 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, y0, o0);
-                    f.put(lo, hi, color, true, mat::PLASTER);
+                    f.put(lo, hi, color, true, Material::Plaster);
                 }
                 // Wall over the opening, up to whatever height survives (jagged
                 // where it's broken: the top steps across the bay).
                 if top_here > o1 + 0.25 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, o1, top_here);
                     if top_here < full - 0.05 {
-                        f.put_broken(rng, lo, hi, color * 0.97, mat::PLASTER);
+                        f.put_broken(rng, lo, hi, color * 0.97, Material::Plaster);
                     } else {
-                        f.put(lo, hi, color * 0.97, true, mat::PLASTER);
+                        f.put(lo, hi, color * 0.97, true, Material::Plaster);
                     }
                 } else if top_here > o1 - 0.2 && rng.chance(0.5) {
                     let (lo, hi) = span(s0 + PIER, s0 + PIER + bw * 0.35, o1, o1 + 0.45);
-                    f.put_broken(rng, lo, hi, color * 0.95, mat::PLASTER);
+                    f.put_broken(rng, lo, hi, color * 0.95, Material::Plaster);
                 }
             }
         }
@@ -500,7 +501,7 @@ pub(super) fn building(
                     ),
                     SLAB_C,
                     true,
-                    mat::CONCRETE,
+                    Material::Concrete,
                 );
             }
         }
@@ -518,9 +519,9 @@ pub(super) fn building(
             Vec3::new(c.x + 0.4, h, c.y + 0.4),
         );
         if cut(c) < top_y + 0.85 {
-            f.put_broken(rng, lo, hi, color * 0.92, mat::PLASTER);
+            f.put_broken(rng, lo, hi, color * 0.92, Material::Plaster);
         } else {
-            f.put(lo, hi, color * 0.92, true, mat::PLASTER);
+            f.put(lo, hi, color * 0.92, true, Material::Plaster);
         }
     }
 
@@ -545,7 +546,7 @@ pub(super) fn building(
             Vec3::new(hi.x, GROUND_H + 0.03, hi.y),
             SLAB_C,
             true,
-            mat::CONCRETE,
+            Material::Concrete,
         );
     }
 

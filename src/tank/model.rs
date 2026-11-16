@@ -6,26 +6,13 @@
 //! ground at y = 0; turrets are built around their yaw ring at the origin;
 //! guns around their pitch pivot.
 
+use crate::render::material::Material;
 use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3, Vec4};
 
 use super::track::Wheel;
 use crate::render::mesh::MeshData;
-
-/// Material ids understood by `tank_surface` in scene.wgsl.
-pub mod mat {
-    /// Dark composite with a fine weave.
-    pub const CARBON: f32 = 6.0;
-    /// Light armor paint; multiplied by the team color.
-    pub const PAINT: f32 = 7.0;
-    pub const TREAD: f32 = 8.0;
-    /// Pulsing emissive light strip.
-    pub const GLOW: f32 = 9.0;
-    pub const METAL: f32 = 10.0;
-    /// Paint on chamfered edges, worn through to metal in places.
-    pub const WORN: f32 = 11.0;
-}
 
 #[derive(Clone, Copy)]
 pub struct Skin {
@@ -34,36 +21,36 @@ pub struct Skin {
 }
 
 pub const CARBON: Skin = Skin {
-    face: Vec4::new(0.034, 0.037, 0.042, mat::CARBON),
-    edge: Vec4::new(0.09, 0.095, 0.1, mat::CARBON),
+    face: Vec4::new(0.034, 0.037, 0.042, Material::Carbon.id()),
+    edge: Vec4::new(0.09, 0.095, 0.1, Material::Carbon.id()),
 };
 pub const CARBON_LIGHT: Skin = Skin {
-    face: Vec4::new(0.075, 0.08, 0.088, mat::CARBON),
-    edge: Vec4::new(0.15, 0.16, 0.17, mat::CARBON),
+    face: Vec4::new(0.075, 0.08, 0.088, Material::Carbon.id()),
+    edge: Vec4::new(0.15, 0.16, 0.17, Material::Carbon.id()),
 };
 pub const PAINT: Skin = Skin {
-    face: Vec4::new(0.9, 0.9, 0.9, mat::PAINT),
-    edge: Vec4::new(0.9, 0.9, 0.9, mat::WORN),
+    face: Vec4::new(0.9, 0.9, 0.9, Material::Paint.id()),
+    edge: Vec4::new(0.9, 0.9, 0.9, Material::Worn.id()),
 };
 pub const METAL: Skin = Skin {
-    face: Vec4::new(0.36, 0.37, 0.39, mat::METAL),
-    edge: Vec4::new(0.5, 0.5, 0.52, mat::METAL),
+    face: Vec4::new(0.36, 0.37, 0.39, Material::Metal.id()),
+    edge: Vec4::new(0.5, 0.5, 0.52, Material::Metal.id()),
 };
 pub const TREAD: Skin = Skin {
-    face: Vec4::new(0.15, 0.15, 0.16, mat::TREAD),
-    edge: Vec4::new(0.24, 0.24, 0.25, mat::TREAD),
+    face: Vec4::new(0.15, 0.15, 0.16, Material::Tread.id()),
+    edge: Vec4::new(0.24, 0.24, 0.25, Material::Tread.id()),
 };
 pub const RUBBER: Skin = Skin {
-    face: Vec4::new(0.06, 0.06, 0.065, mat::CARBON),
-    edge: Vec4::new(0.1, 0.1, 0.11, mat::CARBON),
+    face: Vec4::new(0.06, 0.06, 0.065, Material::Carbon.id()),
+    edge: Vec4::new(0.1, 0.1, 0.11, Material::Carbon.id()),
 };
 pub const GLOW: Skin = Skin {
-    face: Vec4::new(1.0, 0.2, 0.03, mat::GLOW),
-    edge: Vec4::new(1.0, 0.2, 0.03, mat::GLOW),
+    face: Vec4::new(1.0, 0.2, 0.03, Material::Glow.id()),
+    edge: Vec4::new(1.0, 0.2, 0.03, Material::Glow.id()),
 };
 pub const BORE: Skin = Skin {
-    face: Vec4::new(0.01, 0.01, 0.012, mat::CARBON),
-    edge: Vec4::new(0.01, 0.01, 0.012, mat::CARBON),
+    face: Vec4::new(0.01, 0.01, 0.012, Material::Carbon.id()),
+    edge: Vec4::new(0.01, 0.01, 0.012, Material::Carbon.id()),
 };
 
 // ---------------------------------------------------------------------------
@@ -1468,18 +1455,18 @@ pub fn maul() -> TurretModel {
 
 /// Sorn plasma glow.
 const SORN_GLOW: Skin = Skin {
-    face: Vec4::new(0.25, 1.0, 0.6, mat::GLOW),
-    edge: Vec4::new(0.25, 1.0, 0.6, mat::GLOW),
+    face: Vec4::new(0.25, 1.0, 0.6, Material::Glow.id()),
+    edge: Vec4::new(0.25, 1.0, 0.6, Material::Glow.id()),
 };
 /// Machine laser red.
 const LASER_GLOW: Skin = Skin {
-    face: Vec4::new(1.0, 0.07, 0.04, mat::GLOW),
-    edge: Vec4::new(1.0, 0.07, 0.04, mat::GLOW),
+    face: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
+    edge: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
 };
 /// Resonant crystal violet.
 const CRYSTAL: Skin = Skin {
-    face: Vec4::new(0.6, 0.25, 1.0, mat::GLOW),
-    edge: Vec4::new(0.8, 0.55, 1.0, mat::GLOW),
+    face: Vec4::new(0.6, 0.25, 1.0, Material::Glow.id()),
+    edge: Vec4::new(0.8, 0.55, 1.0, Material::Glow.id()),
 };
 
 /// An oval dome lofted from horizontal rings: half extents `rx` x `rz` at
