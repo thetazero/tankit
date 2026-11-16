@@ -505,6 +505,7 @@ impl Map {
             ],
             hold_site: None,
             cores: Vec::new(),
+            crystals: Vec::new(),
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();

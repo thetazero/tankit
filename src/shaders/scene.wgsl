@@ -186,8 +186,8 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         // clouded depth and rare flecks of trapped plasma deep inside.
         let n = noise2(uv * 4.0) * 0.6 + noise2(uv * 13.0) * 0.4;
         s.albedo = base * (0.75 + 0.5 * n);
-        s.rough = 0.1 + 0.12 * n;
-        s.metal = 0.45;
+        s.rough = 0.3 + 0.12 * n;
+        s.metal = 0.18;
         let fleck = smoothstep(0.95, 0.99, noise2(uv * 31.0 + vec2<f32>(lpos.y * 5.0, 0.0)));
         let flick = 0.6 + 0.4 * sin(g.params.x * 2.0 + lpos.z * 3.0);
         s.emissive = vec3<f32>(1.0, 0.36, 0.62) * fleck * 0.35 * flick;

@@ -72,6 +72,7 @@ impl Map {
             ],
             hold_site: Some(CENTER),
             cores: Vec::new(),
+            crystals: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, ground);
         terrain.color = SAND;

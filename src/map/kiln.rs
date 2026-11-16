@@ -1,51 +1,94 @@
-//! The Kiln: Ithessar ground, under attack. The Ithessar keep a sun here:
-//! six crystal monoliths lean in over a raised dais and hold a ball of
-//! plasma in the air between them. The Imperium has landed at the east edge
-//! to take it. 220 m square (+x east, +z north), mirrored west to east so
-//! neither side has the better ground:
+//! The Kiln: Ithessar ground, and their weapons' ground. Slow plasma wants
+//! walls to bank off and corners to wait behind, so this is a warren: lanes
+//! winding through a forest of worked crystal, opening into small courts,
+//! with nowhere you can see (or shoot) more than a few dozen meters down.
+//! In the middle the Ithessar keep a sun: six great crystals lean in over a
+//! raised court and hold a ball of plasma between their tips. The Imperium
+//! has broken in at the east edge.
 //!
-//! - center: the dais, a low plateau with the kiln on it (the hold site)
-//! - north: the glass canyon, a sunken lane with a river of plasma down its
-//!   floor and crystal walls along both rims, broken by ways in
-//! - south: the ridge, high ground along the south edge with a pass cut
-//!   through the middle; fallen monoliths along its crest for cover
-//! - between bases and the dais: spire groves, cover for the approach
-//! - west: the Ithessar gate, arches of leaning spires, lanterns
-//! - east: the Imperium foothold, drop pods, prefab walls, floodlights, and
-//!   a dropship that came down short in the field
-//! - beyond the edge: ash dunes, and the Ithessar's great spires on the
-//!   horizon with another kept sun hanging among them
+//! 180 m square (+x east, +z north), mirrored east to west. Three ways
+//! across, each its own kind of fight:
+//!
+//! - north: the canyon, wide and sunken, a river of plasma down its floor
+//! - middle: short and straight through a court to the kiln, the fast way in
+//! - south: the gallery, narrow and twisting, crystals leaning in overhead
+//!
+//! Cross-cuts link the three near each base. Crystal fills everything else.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::{Core, Map, OBox, Terrain};
+use super::{Core, Crystal, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::rng::Rng;
 use crate::tank::ithessar::PLASMA;
 
-const SIZE: f32 = 220.0;
-const CENTER: Vec2 = Vec2::new(110.0, 110.0);
-/// The dais: flat top inside `DAIS_R`, sloping down to the plain by `DAIS_FOOT`.
-const DAIS_R: f32 = 21.0;
-const DAIS_FOOT: f32 = 33.0;
-const DAIS_H: f32 = 3.0;
-/// Monolith ring radius, and the core's height above the dais.
-const KILN_R: f32 = 14.0;
-const CORE_Y: f32 = 13.0;
-/// The canyon: floor half-width, rim half-width, depth.
-const CANYON_FLOOR: f32 = 6.5;
-const CANYON_RIM: f32 = 13.0;
-const CANYON_DEPTH: f32 = 2.8;
-/// The ridge: crest line and height.
-const RIDGE_Z: f32 = 36.0;
-const RIDGE_H: f32 = 6.0;
+const SIZE: f32 = 180.0;
+const MID: f32 = SIZE * 0.5;
+const CENTER: Vec2 = Vec2::new(MID, MID);
+/// The kiln court: open inside `COURT_R`; the dais rises inside `DAIS_R`.
+const COURT_R: f32 = 27.0;
+const DAIS_R: f32 = 15.0;
+const DAIS_H: f32 = 2.2;
+/// Great crystals round the kiln, and the core's height above the dais.
+const KILN_R: f32 = 19.0;
+const CORE_Y: f32 = 14.0;
+const CANYON_DEPTH: f32 = 2.2;
 
-const ASH: Vec3 = Vec3::new(0.46, 0.43, 0.45);
-const GLASS: Vec3 = Vec3::new(0.07, 0.055, 0.08);
-const DEAD_GLASS: Vec3 = Vec3::new(0.11, 0.1, 0.11);
+/// A lane: (x, z) points on the west half, and its half-width. Each is
+/// mirrored onto the east half; the north and south lanes meet their
+/// mirrors at x = 90.
+type Lane = (&'static [(f32, f32)], f32);
+
+const CANYON: Lane = (
+    &[
+        (24.0, 112.0),
+        (34.0, 128.0),
+        (50.0, 140.0),
+        (70.0, 146.0),
+        (90.0, 150.0),
+    ],
+    8.0,
+);
+const MIDDLE: Lane = (
+    &[(26.0, 90.0), (44.0, 86.0), (56.0, 92.0), (66.0, 90.0)],
+    6.5,
+);
+const GALLERY: Lane = (
+    &[
+        (24.0, 68.0),
+        (34.0, 54.0),
+        (46.0, 48.0),
+        (54.0, 36.0),
+        (70.0, 30.0),
+        (90.0, 28.0),
+    ],
+    5.5,
+);
+/// Cross-cuts: canyon to middle court to gallery, and each outer lane in
+/// to the kiln court.
+const CUTS: &[Lane] = &[
+    (&[(34.0, 128.0), (40.0, 112.0), (44.0, 96.0)], 5.0),
+    (&[(44.0, 80.0), (40.0, 66.0), (34.0, 54.0)], 5.0),
+    (&[(70.0, 146.0), (74.0, 128.0), (72.0, 112.0)], 5.0),
+    (&[(70.0, 30.0), (72.0, 50.0), (70.0, 66.0)], 4.5),
+];
+/// Small courts where lanes meet: center and radius (west half; mirrored).
+const COURTS: &[((f32, f32), f32)] = &[
+    ((44.0, 88.0), 10.0),
+    ((34.0, 128.0), 8.0),
+    ((34.0, 54.0), 7.5),
+    ((90.0, 150.0), 11.0),
+    ((90.0, 28.0), 9.0),
+];
+/// The west base: an open court against the edge.
+const BASE_MIN: Vec2 = Vec2::new(3.0, 62.0);
+const BASE_MAX: Vec2 = Vec2::new(27.0, 118.0);
+
+const SLATE: Vec3 = Vec3::new(0.2, 0.2, 0.235);
+const GLASS: Vec3 = Vec3::new(0.05, 0.04, 0.065);
 const CONCRETE: Vec3 = Vec3::new(0.56, 0.57, 0.6);
 const IMPERIAL: Vec3 = Vec3::new(0.78, 0.82, 0.9);
 const STEEL: Vec3 = Vec3::new(0.32, 0.33, 0.36);
@@ -56,43 +99,59 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// The canyon's center line (z) at `x`: it bends.
-fn canyon_z(x: f32) -> f32 {
-    180.0 + 5.0 * (x * 0.034 + 0.6).sin()
+fn lanes() -> impl Iterator<Item = &'static Lane> {
+    [&CANYON, &MIDDLE, &GALLERY].into_iter().chain(CUTS.iter())
+}
+
+/// Fold a point onto the west half.
+fn west(p: Vec2) -> Vec2 {
+    Vec2::new(p.x.min(SIZE - p.x), p.y)
+}
+
+fn seg_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+fn polyline_distance(p: Vec2, pts: &[(f32, f32)]) -> f32 {
+    pts.windows(2)
+        .map(|w| seg_distance(p, Vec2::new(w[0].0, w[0].1), Vec2::new(w[1].0, w[1].1)))
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// How far a point is inside open ground (positive: open, by that much;
+/// negative: that far into the crystal).
+fn openness(p: Vec2) -> f32 {
+    let w = west(p);
+    let mut best = COURT_R - p.distance(CENTER);
+    for (pts, half) in lanes() {
+        best = best.max(half - polyline_distance(w, pts));
+    }
+    for &((x, z), r) in COURTS {
+        best = best.max(r - w.distance(Vec2::new(x, z)));
+    }
+    let q = (w - (BASE_MIN + BASE_MAX) * 0.5).abs() - (BASE_MAX - BASE_MIN) * 0.5;
+    best.max(-q.max(Vec2::ZERO).length() - q.x.max(q.y).min(0.0))
 }
 
 /// How far outside the arena a point is (0 or less: inside).
 fn edge_distance(p: Vec2) -> f32 {
-    let q = (p - Vec2::splat(SIZE * 0.5)).abs() - Vec2::splat(SIZE * 0.5);
+    let q = (p - Vec2::splat(MID)).abs() - Vec2::splat(MID);
     q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0)
 }
 
-/// Play ground: the dais, the canyon, the ridge, low swells.
+/// Play ground: the dais, the sunken canyon, a little unevenness.
 pub fn ground(x: f32, z: f32) -> f32 {
     let p = Vec2::new(x, z);
-    let dais = DAIS_H * (1.0 - smoothstep(DAIS_R, DAIS_FOOT, p.distance(CENTER)));
-    let dz = (z - canyon_z(x)).abs();
-    let canyon = -CANYON_DEPTH * (1.0 - smoothstep(CANYON_FLOOR, CANYON_RIM, dz));
-    // Gentle up the north face, steep down the south face to the edge, and a
-    // pass cut through the middle.
-    let face = if z >= RIDGE_Z {
-        1.0 - smoothstep(RIDGE_Z, RIDGE_Z + 30.0, z)
-    } else {
-        smoothstep(RIDGE_Z - 16.0, RIDGE_Z, z)
-    };
-    let pass = 1.0 - 0.7 * (-((x - CENTER.x) / 12.0).powi(2)).exp();
-    let ridge = RIDGE_H * face * pass * (0.9 + 0.1 * (x * 0.09).sin());
-    // Low swells, calm on the dais and in the canyon.
-    let calm = smoothstep(DAIS_FOOT, DAIS_FOOT + 10.0, p.distance(CENTER))
-        * smoothstep(CANYON_RIM, CANYON_RIM + 8.0, dz);
-    let swell = ((x * 0.045 + 0.3).sin() * (z * 0.052).cos() * 0.7
-        + (x * 0.11 - z * 0.07).sin() * 0.25)
-        * calm;
-    dais + canyon + ridge + swell
+    let dais = DAIS_H * (1.0 - smoothstep(DAIS_R, DAIS_R + 7.0, p.distance(CENTER)));
+    let d = polyline_distance(west(p), CANYON.0);
+    let canyon = -CANYON_DEPTH * (1.0 - smoothstep(CANYON.1 - 2.5, CANYON.1 + 4.0, d));
+    let rough = (x * 0.13).sin() * (z * 0.11).cos() * 0.25;
+    dais + canyon + rough
 }
 
-/// Ash dunes outside the arena: meets the play ground at the edge and rolls
-/// away. Inside, it hides under the play terrain.
+/// Ash flats outside the arena, rising into a crystal-studded berm.
 fn scenery_ground(x: f32, z: f32) -> f32 {
     let p = Vec2::new(x, z);
     let d = edge_distance(p);
@@ -101,15 +160,11 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
     }
     let edge = p.clamp(Vec2::ZERO, Vec2::splat(SIZE));
     let base = ground(edge.x, edge.y);
-    let along = edge.x * 0.8 + edge.y * 1.2;
-    let berm = 6.0
-        * (0.6 + 0.4 * (along * 0.05).sin())
-        * smoothstep(0.0, 14.0, d)
-        * (1.0 - 0.5 * smoothstep(20.0, 60.0, d));
-    let dunes = smoothstep(10.0, 50.0, d)
-        * (5.0 * (x * 0.017 + (z * 0.011).sin() * 2.0).sin().abs()
-            + 2.5 * ((x * 0.006 - z * 0.009).sin() + 1.0));
-    base + berm + dunes
+    let berm = 5.0 * smoothstep(0.0, 12.0, d) * (1.0 - 0.6 * smoothstep(20.0, 70.0, d));
+    let swell = smoothstep(10.0, 60.0, d)
+        * (4.0 * (x * 0.015 + (z * 0.01).sin() * 2.0).sin().abs()
+            + 2.0 * ((x * 0.005 - z * 0.008).sin() + 1.0));
+    base + berm + swell
 }
 
 impl Map {
@@ -126,66 +181,84 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
-            // Alien dusk: a low rose sun, an indigo sky, a little ash on the wind.
+            // A cold dusk: a low pale sun, a deep indigo sky, slate ground.
+            // The only warm light on this world is the plasma.
             atmosphere: crate::render::Atmosphere {
-                sun_dir: Vec3::new(-0.7, 0.36, 0.5),
-                sun_color: Vec3::new(2.6, 1.8, 1.55),
-                sky_zenith: Vec3::new(0.07, 0.07, 0.22),
-                sky_horizon: Vec3::new(0.55, 0.36, 0.45),
-                ground_color: Vec3::new(0.22, 0.18, 0.22),
-                fog_density: 0.0014,
-                wind: Vec2::new(-2.0, 1.2),
-                blowing_sand: 0.25,
-                dust: Vec3::new(0.62, 0.58, 0.62),
+                sun_dir: Vec3::new(-0.62, 0.42, 0.55),
+                sun_color: Vec3::new(1.75, 1.8, 2.1),
+                sky_zenith: Vec3::new(0.035, 0.045, 0.13),
+                sky_horizon: Vec3::new(0.26, 0.27, 0.4),
+                ground_color: Vec3::new(0.14, 0.14, 0.18),
+                fog_density: 0.0022,
+                wind: Vec2::new(-1.5, 0.8),
+                blowing_sand: 0.15,
+                dust: Vec3::new(0.4, 0.4, 0.46),
             },
             bases: Default::default(),
             factions: [Faction::Ithessar, Faction::Imperium],
-            repair_spots: vec![
-                // The canyon floor, the ridge pass, and the two groves.
-                Vec2::new(CENTER.x, canyon_z(CENTER.x)),
-                Vec2::new(CENTER.x, RIDGE_Z + 2.0),
-                Vec2::new(64.0, 140.0),
-                Vec2::new(156.0, 80.0),
-            ],
+            repair_spots: Vec::new(),
             hold_site: Some(CENTER),
             cores: Vec::new(),
+            crystals: Vec::new(),
         };
-        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 111, 111, ground);
-        terrain.color = ASH;
+        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
+        terrain.color = SLATE;
         terrain.material = Material::Sand;
         map.terrain = Some(terrain);
         let mut rng = Rng::new(0x1735_5a12);
 
-        map.kiln_ring(&mut rng);
-        map.canyon(&mut rng);
-        map.ridge_crest(&mut rng);
-        map.groves(&mut rng);
-        map.ithessar_gate(&mut rng);
-        map.imperium_foothold(&mut rng);
+        map.kiln_court(&mut rng);
+        map.warren(&mut rng);
+        map.river();
+        map.ithessar_base();
+        map.imperium_base(&mut rng);
         map.kiln_spawns();
         map.perimeter(false);
         map.kiln_horizon(&mut rng);
         map
     }
 
-    /// The kiln: six monoliths on the dais, leaning in, a seam of plasma up
-    /// each, holding the core between their tips. Low shards ring the dais
-    /// edge as cover on the way up.
-    fn kiln_ring(&mut self, rng: &mut Rng) {
+    /// One crystal standing on the ground at `at`: `h` tall, `r` thick,
+    /// tipped `lean` radians toward `dir` (a ground direction).
+    #[allow(clippy::too_many_arguments)]
+    fn crystal(
+        &mut self,
+        at: Vec2,
+        h: f32,
+        r: f32,
+        dir: Vec2,
+        lean: f32,
+        lit: bool,
+        rng: &mut Rng,
+    ) {
+        let g = self.ground_height(at.x, at.y);
+        let d = dir.normalize_or(Vec2::X);
+        let axis = Vec3::new(d.x * lean.sin(), lean.cos(), d.y * lean.sin()) * (h + 1.2);
+        self.crystals.push(Crystal {
+            base: Vec3::new(at.x, g - 1.2, at.y),
+            axis,
+            radius: r,
+            sides: 5 + (rng.next_u64() % 3) as u32,
+            seed: rng.next_u64() as u32,
+            color: GLASS * rng.range(0.85, 1.2),
+            lit,
+            solid: true,
+        });
+    }
+
+    /// The kiln: six great crystals on the edge of the dais leaning in, a
+    /// seam of plasma up each, holding the core between their tips. A few
+    /// low crystals on the court for cover.
+    fn kiln_court(&mut self, rng: &mut Rng) {
         let mut prongs = Vec::new();
         for i in 0..6 {
             let a = i as f32 / 6.0 * TAU + PI / 6.0;
             let out = Vec2::new(a.cos(), a.sin());
             let at = CENTER + out * KILN_R;
-            let g = self.ground_height(at.x, at.y);
-            let (h, lean) = (rng.range(17.0, 19.0), -0.5);
-            self.monolith(at, a, Vec2::new(1.7, 1.3), g - 1.0, g + h, lean, true);
-            // Where its tip ends up: the box turns about its middle.
-            let mid = (h + 1.0) * 0.5;
-            let tip = Vec3::new(at.x, g - 1.0 + mid, at.y)
-                + Vec3::new(out.x, 0.0, out.y) * (mid * lean.sin())
-                + Vec3::Y * mid * lean.cos();
-            prongs.push(tip);
+            let (h, lean) = (rng.range(21.0, 23.0), 0.55);
+            self.crystal(at, h, 2.4, -out, lean, true, rng);
+            let c = self.crystals.last().unwrap();
+            prongs.push(c.base + c.axis * 0.95);
         }
         let g = self.ground_height(CENTER.x, CENTER.y);
         self.cores.push(Core {
@@ -193,248 +266,157 @@ impl Map {
             radius: 3.6,
             prongs,
         });
-        // A glowing ring set into the dais floor under the core.
-        self.ring_glow(CENTER, 6.0, g, 0.5);
-        // Breastworks of short shards round the dais rim, between the
-        // monoliths, with gaps to drive through.
+        self.ring_glow(CENTER, 7.0, g, 0.5);
+        // Low cover on the court, between the great crystals: something to
+        // duck behind on the way up to the dais.
         for i in 0..6 {
             let a = i as f32 / 6.0 * TAU;
-            let at = CENTER + Vec2::new(a.cos(), a.sin()) * (DAIS_R - 1.0);
-            self.spires(at, 2, 2.4, rng.range(2.5, 3.5), rng);
+            let out = Vec2::new(a.cos(), a.sin());
+            let at = CENTER + out * (DAIS_R + 2.5);
+            self.crystal(at, rng.range(2.6, 3.4), 1.3, out, 0.25, i % 2 == 0, rng);
+            let beside = at + Vec2::new(-out.y, out.x) * 2.2;
+            self.crystal(beside, rng.range(1.6, 2.2), 0.9, out, 0.4, false, rng);
         }
     }
 
-    /// The glass canyon: a plasma river down the floor, crystal walls along
-    /// both rims with breaks every so often, and a few shards on the floor.
-    fn canyon(&mut self, rng: &mut Rng) {
-        // The river: short glowing segments following the bend.
-        let mut x = 6.0;
-        while x < SIZE - 6.0 {
-            let (z0, z1) = (canyon_z(x), canyon_z(x + 5.0));
-            let mid = Vec2::new(x + 2.5, (z0 + z1) * 0.5);
-            let dir = Vec2::new(5.0, z1 - z0);
-            let g = self.ground_height(mid.x, mid.y);
-            self.oboxes.push(OBox {
-                center: mid,
-                yaw: dir.x.atan2(dir.y),
-                half: Vec2::new(0.8, dir.length() * 0.5 + 0.05),
-                y0: g - 0.3,
-                y1: g + 0.03,
-                color: PLASMA * 0.8,
-                side_mat: Material::Glow,
-                top_mat: Material::Glow,
-                solid: false,
-                ..OBox::default()
-            });
-            x += 5.0;
-        }
-        // Rim walls: runs of leaning slabs, broken for ways in. The breaks
-        // line up with the groves and the dais so every lane can drop in.
-        let breaks = [30.0, 68.0, 110.0, 152.0, 190.0];
-        for side in [-1.0f32, 1.0] {
-            let mut x = 8.0;
-            while x < SIZE - 8.0 {
-                if breaks.iter().any(|b| (x - b).abs() < 8.0) {
-                    x += 3.0;
+    /// Crystal everywhere that isn't a lane, court or base: tall along the
+    /// lane edges so they read as walls (and block sight), leaning out over
+    /// the lanes; sparser and bigger deeper in. Placed on the west half and
+    /// mirrored, so both sides fight in the same warren.
+    fn warren(&mut self, rng: &mut Rng) {
+        let step = 4.2;
+        for ix in 0..((MID / step) as usize + 1) {
+            for iz in 0..((SIZE / step) as usize + 1) {
+                let p = Vec2::new(ix as f32 * step, iz as f32 * step)
+                    + Vec2::new(rng.range(-1.2, 1.2), rng.range(-1.2, 1.2));
+                if p.x > MID - 0.5 || p.x < -2.0 || p.y < -2.0 || p.y > SIZE + 2.0 {
                     continue;
                 }
-                let z = canyon_z(x) + side * (CANYON_RIM + 1.0);
-                // Lean out over the canyon a little: walls, not fences.
-                let a = if side > 0.0 { FRAC_PI_2 } else { -FRAC_PI_2 };
-                let at = Vec2::new(x, z);
-                let g = self.ground_height(at.x, at.y);
-                let h = if rng.chance(0.2) {
-                    rng.range(8.0, 11.0)
-                } else {
-                    rng.range(3.0, 6.5)
-                };
-                let seam = h > 7.0 || rng.chance(0.25);
-                self.monolith(
-                    at,
-                    a + rng.range(-0.15, 0.15),
-                    Vec2::new(rng.range(1.8, 3.4), rng.range(0.7, 1.1)),
-                    g - 0.8,
-                    g + h,
-                    -rng.range(0.08, 0.2),
-                    seam,
+                let depth = -openness(p);
+                if depth < 2.2 {
+                    continue;
+                }
+                // Deep inside, only now and then: a big one to break the skyline.
+                if depth > 10.0 && !rng.chance(0.18) {
+                    continue;
+                }
+                // Lean out over whichever way is open.
+                let e = 1.0;
+                let grad = Vec2::new(
+                    openness(p + Vec2::X * e) - openness(p - Vec2::X * e),
+                    openness(p + Vec2::Y * e) - openness(p - Vec2::Y * e),
                 );
-                x += rng.range(5.0, 9.0);
+                let edge = depth < 6.0;
+                let r = (depth - 1.0).min(if edge { 2.4 } else { 4.5 }) * rng.range(0.75, 1.0);
+                let h = if edge {
+                    rng.range(6.0, 11.0)
+                } else {
+                    rng.range(8.0, 18.0)
+                };
+                let lean = if edge {
+                    rng.range(0.08, 0.28)
+                } else {
+                    rng.range(0.0, 0.2)
+                };
+                let lit = edge && rng.chance(0.22);
+                let dir = if grad.length() > 0.01 {
+                    grad
+                } else {
+                    Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0))
+                };
+                let mirror = |q: Vec2| Vec2::new(SIZE - q.x, q.y);
+                let flip = |d: Vec2| Vec2::new(-d.x, d.y);
+                let seed = rng.next_u64();
+                for (q, d) in [(p, dir), (mirror(p), flip(dir))] {
+                    let mut r1 = Rng::new(seed);
+                    self.crystal(q, h, r.max(0.8), d, lean, lit, &mut r1);
+                }
+                // Edge walls get a small chip at their foot, so the wall
+                // isn't a clean line.
+                if edge && rng.chance(0.4) {
+                    let off = dir.normalize_or(Vec2::X) * (r * 0.9);
+                    let (ch, cr) = (rng.range(1.2, 2.5), rng.range(0.5, 0.9));
+                    let seed = rng.next_u64();
+                    if openness(p + off) < 3.0 {
+                        for (q, d) in [(p + off, dir), (mirror(p + off), flip(dir))] {
+                            let mut r1 = Rng::new(seed);
+                            self.crystal(q, ch, cr, d, 0.5, false, &mut r1);
+                        }
+                    }
+                }
             }
-        }
-        // A few broken shards on the floor to weave round.
-        for k in 0..6 {
-            let x = 22.0 + k as f32 * 35.0 + rng.range(-4.0, 4.0);
-            let at = Vec2::new(x, canyon_z(x) + rng.range(-3.0, 3.0));
-            self.spires(at, 2, 1.6, rng.range(2.5, 4.0), rng);
         }
     }
 
-    /// Fallen monoliths along the ridge crest: long, low cover with a view
-    /// over the field. Dead ones: no seam, the crystal gone grey.
-    fn ridge_crest(&mut self, rng: &mut Rng) {
-        for x in [28.0f32, 62.0, 158.0, 192.0] {
-            let at = Vec2::new(x + rng.range(-3.0, 3.0), RIDGE_Z + rng.range(1.0, 4.0));
-            let g = self.ground_height(at.x, at.y);
-            self.oboxes.push(OBox {
-                center: at,
-                yaw: FRAC_PI_2 + rng.range(-0.3, 0.3),
-                half: Vec2::new(1.3, rng.range(6.0, 8.0)),
-                y0: g - 0.8,
-                y1: g + 1.9,
-                color: DEAD_GLASS,
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
-                ..OBox::default()
-            });
-            // Its broken-off tip, standing where it fell.
-            let tip = at + Vec2::new(rng.range(-9.0, 9.0), rng.range(3.0, 6.0));
-            let gt = self.ground_height(tip.x, tip.y);
-            self.oboxes.push(OBox {
-                center: tip,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(1.0, 0.9),
-                y0: gt - 0.6,
-                y1: gt + 2.4,
-                color: DEAD_GLASS,
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
-                ..OBox::default()
-            });
-        }
-        // The pass: two spires flanking it, still lit.
-        for s in [-1.0f32, 1.0] {
-            let at = Vec2::new(CENTER.x + s * 13.0, RIDGE_Z);
-            let g = self.ground_height(at.x, at.y);
-            let a = if s > 0.0 { 0.0 } else { PI };
-            self.monolith(at, a, Vec2::new(1.3, 1.0), g - 0.8, g + 10.0, -0.25, true);
+    /// The river of plasma down the canyon floor.
+    fn river(&mut self) {
+        for east in [false, true] {
+            for w in CANYON.0.windows(2) {
+                let flip = |x: f32, z: f32| {
+                    if east {
+                        Vec2::new(SIZE - x, z)
+                    } else {
+                        Vec2::new(x, z)
+                    }
+                };
+                let (a, b) = (flip(w[0].0, w[0].1), flip(w[1].0, w[1].1));
+                let steps = (a.distance(b) / 4.0).ceil() as usize;
+                for k in 0..steps {
+                    let p0 = a.lerp(b, k as f32 / steps as f32);
+                    let p1 = a.lerp(b, (k + 1) as f32 / steps as f32);
+                    let mid = (p0 + p1) * 0.5;
+                    let dir = p1 - p0;
+                    let g = self.ground_height(mid.x, mid.y);
+                    self.oboxes.push(OBox {
+                        center: mid,
+                        yaw: dir.x.atan2(dir.y),
+                        half: Vec2::new(0.9, dir.length() * 0.5 + 0.1),
+                        y0: g - 0.3,
+                        y1: g + 0.03,
+                        color: PLASMA * 0.8,
+                        side_mat: Material::Glow,
+                        top_mat: Material::Glow,
+                        solid: false,
+                        ..OBox::default()
+                    });
+                }
+            }
         }
     }
 
-    /// Spire groves between each base and the dais (mirrored), and loose
-    /// spires across the field.
-    fn groves(&mut self, rng: &mut Rng) {
-        for (cx, flip) in [(62.0f32, 1.0f32), (158.0, -1.0)] {
-            let spots = [
-                (0.0, 0.0),
-                (10.0, 14.0),
-                (-8.0, -16.0),
-                (14.0, -6.0),
-                (-12.0, 10.0),
-            ];
-            let mut r = Rng::new(0x9e0e);
-            for (dx, dz) in spots {
-                let at = Vec2::new(cx + dx * flip, CENTER.y + dz * flip);
-                self.spires(at, 3, 3.2, r.range(5.0, 8.5), &mut r);
-            }
-        }
-        // Loose spires, placed in mirrored pairs.
-        let mut placed = 0;
-        let mut tries = 0;
-        while placed < 4 && tries < 200 {
-            tries += 1;
-            let at = Vec2::new(rng.range(40.0, 100.0), rng.range(52.0, 165.0));
-            let clear = at.distance(CENTER) > DAIS_FOOT + 4.0
-                && (at.y - canyon_z(at.x)).abs() > CANYON_RIM + 6.0
-                && !self.oboxes.iter().any(|o| o.solid && o.distance(at) < 9.0);
-            if !clear {
-                continue;
-            }
-            let h = rng.range(3.5, 6.0);
-            let mirror = Vec2::new(SIZE - at.x, SIZE - at.y);
-            for p in [at, mirror] {
-                let mut r = Rng::new(placed as u64 * 31 + 7);
-                self.spires(p, 2, 2.0, h, &mut r);
-            }
-            placed += 1;
-        }
-    }
-
-    /// The Ithessar side: two arches of leaning spires over the way out of
-    /// the base, a crescent of tall slabs behind it, glowing pads to drop
-    /// onto, lanterns.
-    fn ithessar_gate(&mut self, rng: &mut Rng) {
-        // Arches over the two ways out (north-east and south-east of base).
-        for z in [CENTER.y + 24.0, CENTER.y - 24.0] {
-            for s in [-1.0f32, 1.0] {
-                let at = Vec2::new(34.0, z + s * 6.5);
-                let g = self.ground_height(at.x, at.y);
-                let a = if s > 0.0 { FRAC_PI_2 } else { -FRAC_PI_2 };
-                self.monolith(at, a, Vec2::new(1.1, 0.9), g - 1.0, g + 12.0, -0.42, true);
-            }
-            let g = self.ground_height(34.0, z);
-            self.lantern(Vec3::new(34.0, g + 12.5, z), 1.0);
-        }
-        // The crescent: tall slabs along the west edge, backing the base.
-        for k in 0..9 {
-            let z = CENTER.y - 48.0 + k as f32 * 12.0;
-            let at = Vec2::new(5.0 + (k as f32 - 4.0).powi(2) * 0.25, z);
-            let g = self.ground_height(at.x, at.y);
-            let h = rng.range(9.0, 15.0) - (k as f32 - 4.0).abs();
-            self.monolith(
-                at,
-                PI,
-                Vec2::new(1.4, 1.0),
-                g - 1.0,
-                g + h,
-                -0.18,
-                k % 2 == 0,
-            );
-        }
-        // Screens: low walls of crystal across the field, where the Imperium
-        // put its prefab walls on the other side.
-        for k in 0..6 {
-            let z = SIZE - (50.0 + k as f32 * 24.0) + rng.range(-3.0, 3.0);
-            let at = Vec2::new(SIZE - 172.0 - (k % 2) as f32 * 6.0, z);
-            let g = self.ground_height(at.x, at.y);
-            self.oboxes.push(OBox {
-                center: at,
-                yaw: rng.range(-0.2, 0.2),
-                half: Vec2::new(0.7, 5.0),
-                y0: g - 0.5,
-                y1: g + 2.2,
-                color: GLASS,
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
-                ..OBox::default()
-            });
-            // A seam along its top.
-            self.oboxes.push(OBox {
-                center: at,
-                half: Vec2::new(0.76, 4.4),
-                y0: g + 1.7,
-                y1: g + 1.85,
-                color: PLASMA,
-                side_mat: Material::Glow,
-                top_mat: Material::Glow,
-                solid: false,
-                ..self.oboxes[self.oboxes.len() - 1]
-            });
-        }
-        // Drop pads: glowing rings where pilots come in.
+    /// The Ithessar base: glowing drop rings, lanterns over the ways out.
+    fn ithessar_base(&mut self) {
         for &p in &[
-            Vec2::new(14.0, CENTER.y - 12.0),
-            Vec2::new(14.0, CENTER.y + 12.0),
-            Vec2::new(20.0, CENTER.y),
+            Vec2::new(12.0, MID - 14.0),
+            Vec2::new(12.0, MID + 14.0),
+            Vec2::new(18.0, MID),
         ] {
             let g = self.ground_height(p.x, p.y);
             self.ring_glow(p, 3.0, g, 0.35);
         }
+        for &(x, z) in &[(24.0, 112.0), (26.0, 90.0), (24.0, 68.0)] {
+            let g = self.ground_height(x, z);
+            self.cores.push(Core {
+                at: Vec3::new(x, g + 9.0, z),
+                radius: 0.9,
+                prongs: Vec::new(),
+            });
+        }
     }
 
-    /// The Imperium side: drop pods, prefab walls, floodlight masts, and a
-    /// dropship that came down short, out in the field (cover for both).
-    fn imperium_foothold(&mut self, rng: &mut Rng) {
-        // Drop pods: squat octagons (two crossed boxes) with a cap.
-        for &(x, z) in &[(198.0, 56.0), (198.0, 164.0), (184.0, 110.0)] {
+    /// The Imperium's breach on the east edge: drop pods, prefab walls,
+    /// floodlights. Built in the base court, so it costs no one cover.
+    fn imperium_base(&mut self, rng: &mut Rng) {
+        for &(x, z) in &[(170.0, 66.0), (170.0, 114.0)] {
             let at = Vec2::new(x, z);
             let g = self.ground_height(x, z);
             for yaw in [0.0, PI / 4.0] {
                 self.oboxes.push(OBox {
                     center: at,
                     yaw,
-                    half: Vec2::splat(2.6),
+                    half: Vec2::splat(2.4),
                     y0: g - 0.6,
-                    y1: g + 5.0,
+                    y1: g + 4.6,
                     color: IMPERIAL,
                     side_mat: Material::Painted,
                     top_mat: Material::Painted,
@@ -445,26 +427,25 @@ impl Map {
             self.oboxes.push(OBox {
                 center: at,
                 yaw: PI / 8.0,
-                half: Vec2::splat(1.6),
-                y0: g + 5.0,
-                y1: g + 6.3,
+                half: Vec2::splat(1.5),
+                y0: g + 4.6,
+                y1: g + 5.8,
                 color: STEEL,
                 side_mat: Material::Rust,
                 top_mat: Material::Rust,
                 ..OBox::default()
             });
         }
-        // Prefab walls in short staggered runs, facing the dais.
-        for k in 0..6 {
-            let z = 50.0 + k as f32 * 24.0 + rng.range(-3.0, 3.0);
-            let at = Vec2::new(172.0 + (k % 2) as f32 * 6.0, z);
+        for k in 0..2 {
+            let z = MID - 10.0 + k as f32 * 20.0 + rng.range(-1.0, 1.0);
+            let at = Vec2::new(SIZE - 22.0, z);
             let g = self.ground_height(at.x, at.y);
             self.oboxes.push(OBox {
                 center: at,
-                yaw: rng.range(-0.2, 0.2),
-                half: Vec2::new(0.7, 5.0),
+                yaw: rng.range(-0.15, 0.15),
+                half: Vec2::new(0.6, 3.2),
                 y0: g - 0.5,
-                y1: g + 2.2,
+                y1: g + 2.0,
                 color: CONCRETE,
                 side_mat: Material::Concrete,
                 top_mat: Material::Concrete,
@@ -472,14 +453,13 @@ impl Map {
                 ..OBox::default()
             });
         }
-        // Floodlight masts: a steel pole with a lamp head lit toward the field.
-        for &(x, z) in &[(216.0, 92.0), (216.0, 128.0), (188.0, 66.0), (188.0, 154.0)] {
+        for &(x, z) in &[(177.0, 76.0), (177.0, 104.0)] {
             let g = self.ground_height(x, z);
             self.oboxes.push(OBox {
                 center: Vec2::new(x, z),
-                half: Vec2::splat(0.25),
+                half: Vec2::splat(0.22),
                 y0: g - 0.5,
-                y1: g + 11.0,
+                y1: g + 10.0,
                 color: STEEL,
                 side_mat: Material::Rust,
                 top_mat: Material::Rust,
@@ -488,9 +468,9 @@ impl Map {
             self.oboxes.push(OBox {
                 center: Vec2::new(x - 0.4, z),
                 yaw: FRAC_PI_2,
-                half: Vec2::new(1.2, 0.35),
-                y0: g + 10.6,
-                y1: g + 11.5,
+                half: Vec2::new(1.1, 0.32),
+                y0: g + 9.6,
+                y1: g + 10.4,
                 color: FLOODLIGHT,
                 side_mat: Material::Glow,
                 top_mat: Material::Glow,
@@ -498,248 +478,125 @@ impl Map {
                 ..OBox::default()
             });
         }
-        // The dropship: down short of the foothold, nose ploughed in, one
-        // wing torn off and lying beside it.
-        let at = Vec2::new(150.0, 150.0);
-        let yaw: f32 = 0.55;
-        let g = self.ground_height(at.x, at.y);
-        let fwd = Vec2::new(yaw.sin(), yaw.cos());
-        let right = Vec2::new(fwd.y, -fwd.x);
-        self.oboxes.push(OBox {
-            center: at,
-            yaw,
-            half: Vec2::new(3.2, 11.0),
-            y0: g - 1.5,
-            y1: g + 4.0,
-            color: IMPERIAL * 0.85,
-            side_mat: Material::Painted,
-            top_mat: Material::Painted,
-            tilt: 0.08,
-            chip: 0.4,
-            ..OBox::default()
-        });
-        self.oboxes.push(OBox {
-            center: at - fwd * 9.0,
-            yaw,
-            half: Vec2::new(2.4, 2.5),
-            y0: g + 1.0,
-            y1: g + 6.0,
-            color: STEEL,
-            side_mat: Material::Rust,
-            top_mat: Material::Rust,
-            ..OBox::default()
-        });
-        self.oboxes.push(OBox {
-            center: at + right * 6.5 - fwd * 2.0,
-            yaw: yaw + 0.2,
-            half: Vec2::new(4.0, 2.2),
-            y0: g - 0.3,
-            y1: g + 0.6,
-            color: IMPERIAL * 0.8,
-            side_mat: Material::Painted,
-            top_mat: Material::Painted,
-            chip: 0.5,
-            ..OBox::default()
-        });
-        self.oboxes.push(OBox {
-            center: at - right * 10.0 + fwd * 3.0,
-            yaw: yaw + 1.1,
-            half: Vec2::new(4.2, 2.0),
-            y0: g - 0.4,
-            y1: g + 0.8,
-            color: IMPERIAL * 0.75,
-            side_mat: Material::Painted,
-            top_mat: Material::Painted,
-            tilt: 0.12,
-            chip: 0.6,
-            ..OBox::default()
-        });
-        // Its twin on the Ithessar side: a great spire, fallen across the
-        // field the same way (same cover, mirrored).
-        let at = Vec2::new(SIZE - 150.0, SIZE - 150.0);
-        let g = self.ground_height(at.x, at.y);
-        self.oboxes.push(OBox {
-            center: at,
-            yaw,
-            half: Vec2::new(2.6, 12.0),
-            y0: g - 1.2,
-            y1: g + 3.6,
-            color: DEAD_GLASS,
-            side_mat: Material::Vhaal,
-            top_mat: Material::Vhaal,
-            tilt: -0.06,
-            ..OBox::default()
-        });
-        for k in 0..3 {
-            let p = at + right * (5.5 + k as f32 * 1.5) + fwd * (k as f32 * 4.0 - 4.0);
-            let gp = self.ground_height(p.x, p.y);
-            self.oboxes.push(OBox {
-                center: p,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(0.9, 0.8),
-                y0: gp - 0.5,
-                y1: gp + 1.4 + k as f32 * 0.5,
-                color: DEAD_GLASS,
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
-                ..OBox::default()
-            });
-        }
     }
 
-    /// Bases at the west and east edges, and places for bots to roam to:
-    /// the dais, the canyon, the ridge, the groves.
+    /// Bases at the west and east edges; roam points in every lane and
+    /// court; repair crates in the side courts and where the outer lanes meet.
     fn kiln_spawns(&mut self) {
-        for (side, xs) in [(0, [12.0, 20.0]), (1, [SIZE - 12.0, SIZE - 20.0])] {
+        for (side, xs) in [(0, [9.0, 17.0]), (1, [SIZE - 9.0, SIZE - 17.0])] {
             for x in xs {
                 for k in 0..9 {
-                    self.bases[side].push(Vec2::new(x, CENTER.y - 40.0 + k as f32 * 10.0));
+                    self.bases[side].push(Vec2::new(x, MID - 24.0 + k as f32 * 6.0));
                 }
             }
         }
-        let mut spots = vec![CENTER + Vec2::new(0.0, 8.0), CENTER + Vec2::new(0.0, -8.0)];
-        for x in [40.0, 80.0, 110.0, 140.0, 180.0] {
-            spots.push(Vec2::new(x, canyon_z(x)));
-            spots.push(Vec2::new(x, RIDGE_Z + 6.0));
+        let mut spots = vec![CENTER + Vec2::new(0.0, 9.0), CENTER + Vec2::new(0.0, -9.0)];
+        for (pts, _) in lanes() {
+            for &(x, z) in pts.iter() {
+                spots.push(Vec2::new(x, z));
+                spots.push(Vec2::new(SIZE - x, z));
+            }
         }
-        for (dx, dz) in [
-            (-48.0, 0.0),
-            (48.0, 0.0),
-            (-30.0, 34.0),
-            (30.0, -34.0),
-            (-30.0, -34.0),
-            (30.0, 34.0),
-        ] {
-            spots.push(CENTER + Vec2::new(dx, dz));
-        }
-        let blocked = |p: Vec2, m: &Map| m.oboxes.iter().any(|o| o.solid && o.distance(p) < 4.5);
-        self.open_spots = spots.into_iter().filter(|&p| !blocked(p, self)).collect();
+        spots.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+        spots.dedup_by(|a, b| a.distance(*b) < 3.0);
+        let spots: Vec<Vec2> = spots.into_iter().filter(|&p| self.clear(p, 3.5)).collect();
+        self.open_spots = spots;
+        self.repair_spots = vec![
+            Vec2::new(44.0, 88.0),
+            Vec2::new(SIZE - 44.0, 88.0),
+            Vec2::new(MID, 150.0),
+            Vec2::new(MID, 28.0),
+        ];
         for side in 0..2 {
             let base = std::mem::take(&mut self.bases[side]);
-            self.bases[side] = base.into_iter().filter(|&p| !blocked(p, self)).collect();
+            self.bases[side] = base.into_iter().filter(|&p| self.clear(p, 3.5)).collect();
         }
     }
 
-    /// Beyond the edge: ash dunes, the Ithessar's great spires standing on
-    /// the horizon with seams lit, and another kept sun hanging among them.
+    /// Nothing solid within `r` of a ground point.
+    fn clear(&self, p: Vec2, r: f32) -> bool {
+        !self.oboxes.iter().any(|o| o.solid && o.distance(p) < r)
+            && !self.crystals.iter().any(|c| c.solid && c.distance(p) < r)
+    }
+
+    /// Beyond the edge: ash flats, crystal thickets on the berm, the great
+    /// spires of Ithessar country on the horizon, and another kept sun.
     fn kiln_horizon(&mut self, rng: &mut Rng) {
         let (cell, reach) = (4.0f32, 560.0f32);
         let n = ((SIZE + 2.0 * reach) / cell) as usize + 1;
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, scenery_ground);
-        t.color = ASH * 0.95;
+        t.color = SLATE * 0.9;
         t.material = Material::Sand;
         self.scenery_terrain = Some(t);
 
-        let first = self.oboxes.len();
-        // Great spires in a loose ring, tallest to the west (Ithessar country).
-        for k in 0..22 {
-            let a = k as f32 / 22.0 * TAU + rng.range(-0.1, 0.1);
-            let d = rng.range(260.0, 480.0);
-            let c = CENTER + Vec2::new(a.cos(), a.sin()) * d;
-            let west = (-a.cos()).max(0.0);
-            let h = rng.range(40.0, 80.0) + 70.0 * west;
-            let g = scenery_ground(c.x, c.y);
-            let w = rng.range(5.0, 11.0);
-            let lean = rng.range(-0.18, 0.18);
-            let seam = rng.chance(0.6);
-            self.monolith(c, a, Vec2::new(w, w * 0.8), g - 5.0, g + h, lean, seam);
-            // Some stand in pairs, a shorter one leaning in against the first.
-            if rng.chance(0.45) {
-                let side = Vec2::new(-a.sin(), a.cos()) * w * 2.6;
-                let h2 = h * rng.range(0.45, 0.7);
-                self.monolith(
-                    c + side,
-                    a + FRAC_PI_2,
-                    Vec2::new(w * 0.7, w * 0.6),
-                    g - 5.0,
-                    g + h2,
-                    -0.35,
-                    true,
-                );
-            }
-        }
-        // Low crystal outcrops nearer in, half drowned in ash.
-        for _ in 0..26 {
+        // Thickets on the berm, so the warren seems to go on.
+        for _ in 0..260 {
             let a = rng.range(0.0, TAU);
-            let d = rng.range(30.0, 200.0);
-            let c = CENTER + Vec2::new(a.cos(), a.sin()) * (SIZE * 0.72 + d);
-            if edge_distance(c) < 16.0 {
+            let d = rng.range(4.0, 60.0);
+            let c = CENTER + Vec2::new(a.cos(), a.sin()) * (MID * 1.15 + d);
+            if edge_distance(c) < 3.0 {
                 continue;
             }
-            let h = rng.range(4.0, 14.0);
-            let mut r = Rng::new(rng.next_u64());
-            self.spires(c, 3, 4.0, h, &mut r);
+            let g = scenery_ground(c.x, c.y);
+            let h = rng.range(6.0, 20.0);
+            let lean = rng.range(0.0, 0.3);
+            let tilt = Vec3::new(
+                rng.range(-1.0, 1.0) * lean,
+                1.0,
+                rng.range(-1.0, 1.0) * lean,
+            );
+            self.crystals.push(Crystal {
+                base: Vec3::new(c.x, g - 1.5, c.y),
+                axis: tilt.normalize() * h,
+                radius: rng.range(1.5, 4.5),
+                sides: 5 + (rng.next_u64() % 3) as u32,
+                seed: rng.next_u64() as u32,
+                color: GLASS,
+                lit: rng.chance(0.15),
+                solid: false,
+            });
         }
-        for o in &mut self.oboxes[first..] {
-            o.solid = false;
+        // The great spires, tallest to the west.
+        for k in 0..18 {
+            let a = k as f32 / 18.0 * TAU + rng.range(-0.12, 0.12);
+            let d = rng.range(230.0, 440.0);
+            let c = CENTER + Vec2::new(a.cos(), a.sin()) * d;
+            let westness = (-a.cos()).max(0.0);
+            let h = rng.range(45.0, 90.0) + 80.0 * westness;
+            let g = scenery_ground(c.x, c.y);
+            let lean = rng.range(-0.2, 0.2);
+            self.crystals.push(Crystal {
+                base: Vec3::new(c.x, g - 6.0, c.y),
+                axis: Vec3::new(lean, 1.0, rng.range(-0.15, 0.15)).normalize() * h,
+                radius: rng.range(7.0, 14.0),
+                sides: 5 + (rng.next_u64() % 3) as u32,
+                seed: rng.next_u64() as u32,
+                color: GLASS,
+                lit: rng.chance(0.7),
+                solid: false,
+            });
+            // Some in pairs: a shorter one leaning against it.
+            if rng.chance(0.5) {
+                let p = c + Vec2::new(-a.sin(), a.cos()) * rng.range(14.0, 22.0);
+                let to = (c - p).normalize();
+                self.crystals.push(Crystal {
+                    base: Vec3::new(p.x, scenery_ground(p.x, p.y) - 6.0, p.y),
+                    axis: Vec3::new(to.x * 0.45, 1.0, to.y * 0.45).normalize() * h * 0.6,
+                    radius: rng.range(5.0, 9.0),
+                    sides: 6,
+                    seed: rng.next_u64() as u32,
+                    color: GLASS,
+                    lit: true,
+                    solid: false,
+                });
+            }
         }
-        // The other sun, far off to the north-west, among the tall spires.
-        let far = CENTER + Vec2::new(-330.0, 260.0);
+        let far = CENTER + Vec2::new(-320.0, 250.0);
         self.cores.push(Core {
-            at: Vec3::new(far.x, scenery_ground(far.x, far.y) + 140.0, far.y),
+            at: Vec3::new(far.x, scenery_ground(far.x, far.y) + 150.0, far.y),
             radius: 26.0,
             prongs: Vec::new(),
         });
-    }
-
-    /// A worked-crystal monolith at `at` facing `a` (its local +z points that
-    /// way): footprint `half`, from `y0` to `y1`, tipped by `lean` (negative
-    /// leans its top back toward -z). With `seam`, a band of plasma runs up
-    /// its sides.
-    #[allow(clippy::too_many_arguments)]
-    fn monolith(&mut self, at: Vec2, a: f32, half: Vec2, y0: f32, y1: f32, lean: f32, seam: bool) {
-        let yaw = FRAC_PI_2 - a;
-        self.oboxes.push(OBox {
-            center: at,
-            yaw,
-            half,
-            y0,
-            y1,
-            color: GLASS,
-            side_mat: Material::Vhaal,
-            top_mat: Material::Vhaal,
-            tilt: lean,
-            ..OBox::default()
-        });
-        if seam {
-            // Slightly proud of the faces across x, inset at the ends.
-            let h = y1 - y0;
-            self.oboxes.push(OBox {
-                center: at,
-                yaw,
-                half: Vec2::new(half.x + 0.06, (half.y * 0.15).max(0.12)),
-                y0: y0 + (h * 0.15).min(2.0),
-                y1: y1 - (h * 0.08).min(1.2),
-                color: PLASMA,
-                side_mat: Material::Glow,
-                top_mat: Material::Glow,
-                tilt: lean,
-                solid: false,
-                ..OBox::default()
-            });
-        }
-    }
-
-    /// `n` spires rooted round `at`, leaning outward: `width` thick, up to
-    /// `height` tall. Every other one carries a seam.
-    fn spires(&mut self, at: Vec2, n: usize, width: f32, height: f32, rng: &mut Rng) {
-        for i in 0..n {
-            let a = i as f32 / n as f32 * TAU + rng.range(-0.4, 0.4);
-            let out = Vec2::new(a.cos(), a.sin());
-            let p = at + out * width * rng.range(0.3, 0.7);
-            let g = self.ground_height(p.x, p.y);
-            let w = width * rng.range(0.3, 0.45);
-            let h = height * rng.range(0.6, 1.0);
-            self.monolith(
-                p,
-                a,
-                Vec2::new(w * 0.6, w * 0.45),
-                g - 0.8,
-                g + h,
-                rng.range(0.12, 0.3),
-                i % 2 == 0,
-            );
-        }
     }
 
     /// A ring of glowing segments set into the ground (visual only).
@@ -762,15 +619,6 @@ impl Map {
             });
         }
     }
-
-    /// A small kept sun on top of something: a lantern.
-    fn lantern(&mut self, at: Vec3, radius: f32) {
-        self.cores.push(Core {
-            at,
-            radius,
-            prongs: Vec::new(),
-        });
-    }
 }
 
 #[cfg(test)]
@@ -779,10 +627,10 @@ mod tests {
     use crate::ai::NavGrid;
 
     #[test]
-    fn every_spawn_reaches_the_dais_and_both_lanes() {
+    fn every_spawn_reaches_the_kiln_and_all_three_lanes() {
         let m = Map::kiln();
         assert!(
-            m.open_spots.len() >= 12,
+            m.open_spots.len() >= 20,
             "{} open spots",
             m.open_spots.len()
         );
@@ -791,9 +639,11 @@ mod tests {
         }
         let nav = NavGrid::build(&m);
         let goals = [
-            CENTER + Vec2::new(0.0, 8.0),
-            Vec2::new(CENTER.x, canyon_z(CENTER.x)),
-            Vec2::new(CENTER.x, RIDGE_Z + 4.0),
+            CENTER + Vec2::new(0.0, 9.0),
+            Vec2::new(MID, 150.0),
+            Vec2::new(MID, 28.0),
+            Vec2::new(44.0, 88.0),
+            Vec2::new(SIZE - 44.0, 88.0),
         ];
         for &p in m.open_spots.iter().chain(m.bases.iter().flatten()) {
             for g in goals {
@@ -803,13 +653,53 @@ mod tests {
     }
 
     #[test]
-    fn the_core_floats_between_the_monoliths() {
+    fn lanes_are_clear_of_crystal() {
+        let m = Map::kiln();
+        for (pts, half) in lanes() {
+            for w in pts.windows(2) {
+                let (a, b) = (Vec2::new(w[0].0, w[0].1), Vec2::new(w[1].0, w[1].1));
+                for k in 0..=8 {
+                    let p = a.lerp(b, k as f32 / 8.0);
+                    for q in [p, Vec2::new(SIZE - p.x, p.y)] {
+                        assert!(m.clear(q, (half - 2.5).max(1.5)), "lane blocked at {q}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sightlines_are_short() {
+        // From the middle lane, the gallery and the cross-cuts, most
+        // directions hit crystal within 60 m: this is a close-quarters map.
+        // (The canyon and the kiln court see further, on purpose.)
+        let w = crate::sim::World::empty(Map::kiln());
+        let mut long = 0;
+        let mut total = 0;
+        for (pts, _) in [&MIDDLE, &GALLERY].into_iter().chain(CUTS.iter()) {
+            for &(x, z) in pts.iter() {
+                let g = w.map.ground_height(x, z);
+                for k in 0..16 {
+                    let a = k as f32 / 16.0 * TAU;
+                    let d = Vec3::new(a.cos(), 0.0, a.sin());
+                    total += 1;
+                    if w.raycast(Vec3::new(x, g + 2.0, z), d, 200.0) > 60.0 {
+                        long += 1;
+                    }
+                }
+            }
+        }
+        assert!(long * 5 < total, "{long} of {total} sightlines over 60 m");
+    }
+
+    #[test]
+    fn the_core_floats_between_the_great_crystals() {
         let m = Map::kiln();
         let c = &m.cores[0];
         assert_eq!(c.prongs.len(), 6);
         for p in &c.prongs {
             let flat = Vec2::new(p.x - c.at.x, p.z - c.at.z).length();
-            assert!(flat < KILN_R - 4.0, "tip {flat} m out");
+            assert!(flat < KILN_R - 5.0, "tip {flat} m out");
             assert!(
                 (p.y - c.at.y).abs() < 6.0,
                 "tip at {}, core at {}",
@@ -817,54 +707,6 @@ mod tests {
                 c.at.y
             );
         }
-    }
-
-    #[test]
-    fn the_play_ground_is_drivable_where_it_matters() {
-        // Dais slopes and canyon banks are climbable; only the ridge's back
-        // drop is steep.
-        let slope = |x: f32, z: f32| {
-            let e = 0.5;
-            let gx = (ground(x + e, z) - ground(x - e, z)) / (2.0 * e);
-            let gz = (ground(x, z + e) - ground(x, z - e)) / (2.0 * e);
-            Vec2::new(gx, gz).length()
-        };
-        for k in 0..64 {
-            let a = k as f32 / 64.0 * TAU;
-            for r in [DAIS_R + 2.0, (DAIS_R + DAIS_FOOT) * 0.5, DAIS_FOOT - 2.0] {
-                let p = CENTER + Vec2::new(a.cos(), a.sin()) * r;
-                assert!(slope(p.x, p.y) < 0.5, "dais too steep at {p}");
-            }
-        }
-        for x in (10..210).step_by(10) {
-            let x = x as f32;
-            for dz in [-10.0, -8.0, 8.0, 10.0] {
-                assert!(
-                    slope(x, canyon_z(x) + dz) < 0.65,
-                    "canyon bank too steep at {x}"
-                );
-            }
-            assert!(
-                slope(x, RIDGE_Z + 15.0) < 0.4,
-                "ridge face too steep at {x}"
-            );
-        }
-    }
-
-    #[test]
-    fn both_halves_have_about_the_same_cover() {
-        let m = Map::kiln();
-        let area = |west: bool| -> f32 {
-            m.oboxes
-                .iter()
-                .filter(|o| o.solid && (o.center.x < CENTER.x) == west)
-                // The field, not the bases (those differ on purpose).
-                .filter(|o| o.center.x > 38.0 && o.center.x < SIZE - 38.0)
-                .map(|o| o.half.x * o.half.y * 4.0)
-                .sum()
-        };
-        let (w, e) = (area(true), area(false));
-        assert!((w - e).abs() / w.max(e) < 0.3, "west {w} vs east {e}");
     }
 
     #[test]
@@ -883,8 +725,8 @@ mod play {
     use crate::combat::Match;
     use crate::sim::Command;
 
-    /// A full 6v6 round's opening on the Kiln: both sides score, and every
-    /// bot gets out of its base and into the fight. Slow (run with
+    /// Two minutes of a 6v6 round on the Kiln: both sides score, and every
+    /// bot gets out of its base and keeps moving. Slow (run with
     /// `--ignored --release`).
     #[test]
     #[ignore]
@@ -897,9 +739,9 @@ mod play {
             .map(|t| Vec2::new(t.pos.x, t.pos.z))
             .collect();
         let mut furthest = vec![0.0f32; start.len()];
-        let mut stuck_time = vec![0.0f32; start.len()];
+        let mut still = vec![0u32; start.len()];
         let mut last = start.clone();
-        let steps = (90.0 / crate::game::DT) as usize;
+        let steps = (120.0 / crate::game::DT) as usize;
         for k in 0..steps {
             m.step(Command::default(), false);
             if k % 120 == 0 {
@@ -907,17 +749,18 @@ mod play {
                     let p = Vec2::new(t.pos.x, t.pos.z);
                     furthest[i] = furthest[i].max(p.distance(start[i]));
                     if m.fighters[i].alive && p.distance(last[i]) < 0.5 {
-                        stuck_time[i] += 1.0;
+                        still[i] += 1;
                     }
                     last[i] = p;
                 }
             }
         }
         let (a, b) = (m.score(0), m.score(1));
-        eprintln!("score {a} : {b}; furthest {furthest:?}; still {stuck_time:?}");
+        eprintln!("score {a} : {b}; furthest {furthest:?}; still (s) {still:?}");
         assert!(a > 0 && b > 0, "score {a} : {b}");
         for i in 1..furthest.len() {
-            assert!(furthest[i] > 40.0, "bot {i} only got {} m out", furthest[i]);
+            assert!(furthest[i] > 35.0, "bot {i} only got {} m out", furthest[i]);
+            assert!(still[i] < 40, "bot {i} sat still {} s", still[i]);
         }
     }
 }

@@ -365,6 +365,129 @@ pub struct Map {
     /// Ithessar cores: plasma held in the air between crystal monoliths.
     /// Drawn (and animated) with the effects.
     pub cores: Vec<Core>,
+    /// Faceted crystals (Ithessar ground).
+    pub crystals: Vec<Crystal>,
+}
+
+/// A worked crystal: an irregular faceted prism from a base sunk in the
+/// ground, along its axis, narrowing to a point. Blocks tanks and shots
+/// (which glance off its faces) unless `solid` is false.
+#[derive(Clone, Copy, Debug)]
+pub struct Crystal {
+    pub base: Vec3,
+    /// Base to tip.
+    pub axis: Vec3,
+    pub radius: f32,
+    pub sides: u32,
+    /// Varies the facets.
+    pub seed: u32,
+    pub color: Vec3,
+    /// A seam of plasma up one face.
+    pub lit: bool,
+    pub solid: bool,
+}
+
+impl Crystal {
+    /// Cross-section rings from base to tip, `sides` points each. Every
+    /// vertex keeps its own radial and angular jitter all the way up, so the
+    /// facets run the full length like knapped glass.
+    pub fn rings(&self) -> Vec<Vec<Vec3>> {
+        let len = self.axis.length().max(0.01);
+        let d = self.axis / len;
+        let side = if d.y.abs() > 0.9 { Vec3::X } else { Vec3::Y };
+        let a = d.cross(side).normalize();
+        let b = d.cross(a);
+        let n = self.sides.max(3) as usize;
+        let hash = |k: u32| {
+            let h =
+                (self.seed.wrapping_mul(2_654_435_761) ^ k.wrapping_mul(40_503)).wrapping_mul(97);
+            (h % 1000) as f32 / 1000.0
+        };
+        let jit: Vec<(f32, f32)> = (0..n as u32)
+            .map(|k| (0.82 + 0.3 * hash(k), (hash(k + 100) - 0.5) * 0.5))
+            .collect();
+        let tip_lean = (hash(200) - 0.5) * 0.3;
+        [
+            (0.0f32, 1.0f32),
+            (0.5, 0.96),
+            (0.76, 0.74),
+            (0.9, 0.36),
+            (1.0, 0.04),
+        ]
+        .iter()
+        .map(|&(t, r)| {
+            let c = self.base + self.axis * t + a * tip_lean * self.radius * t * t;
+            (0..n)
+                .map(|k| {
+                    let (rj, aj) = jit[k];
+                    let ang = (k as f32 + aj) / n as f32 * std::f32::consts::TAU + t * 0.15;
+                    c + (a * ang.cos() + b * ang.sin()) * self.radius * r * rj
+                })
+                .collect()
+        })
+        .collect()
+    }
+
+    /// Every vertex (for the collider).
+    pub fn points(&self) -> Vec<Vec3> {
+        self.rings().into_iter().flatten().collect()
+    }
+
+    /// Ground-plane circles covering the part of it a tank could hit (up to
+    /// `reach` above `ground`): (center, radius).
+    pub fn footprint(&self, ground: f32, reach: f32) -> Vec<(Vec2, f32)> {
+        (0..=4)
+            .filter_map(|i| {
+                let t = i as f32 / 4.0 * 0.6;
+                let p = self.base + self.axis * t;
+                (p.y < ground + reach).then(|| (Vec2::new(p.x, p.z), self.radius * (1.0 - t * 0.3)))
+            })
+            .collect()
+    }
+
+    /// Distance from a ground point to its footprint (0 inside).
+    pub fn distance(&self, p: Vec2) -> f32 {
+        self.footprint(self.base.y.max(-100.0) + 1.5, 4.0)
+            .iter()
+            .map(|(c, r)| (c.distance(p) - r).max(0.0))
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    /// Append its mesh: dark worked crystal, and a seam of plasma up one
+    /// face if it's lit.
+    pub fn mesh(&self, m: &mut crate::render::mesh::MeshData) {
+        use crate::tank::model::{Skin, round};
+        let c = self.color;
+        let skin = Skin::new(
+            c.extend(Material::Vhaal.id()),
+            (c * 1.3).extend(Material::Vhaal.id()),
+        );
+        let rings = self.rings();
+        // Every facet the same glass (no lighter chamfer faces).
+        round(m, &rings, 0.0, skin);
+        if self.lit {
+            // Up the middle of face 0, from near the ground to near the tip,
+            // standing just proud of it.
+            let glow = crate::tank::ithessar::PLASMA.extend(Material::Glow.id());
+            let (lo, hi) = (0usize, 3usize);
+            let mid = |r: &Vec<Vec3>, f: f32| r[0].lerp(r[1], f);
+            for w in rings[lo..=hi].windows(2) {
+                let (p0, p1, p2, p3) = (
+                    mid(&w[0], 0.42),
+                    mid(&w[0], 0.58),
+                    mid(&w[1], 0.58),
+                    mid(&w[1], 0.42),
+                );
+                let mut nrm = (p1 - p0).cross(p3 - p0).normalize_or_zero();
+                let center = (w[0].iter().copied().sum::<Vec3>()) / w[0].len() as f32;
+                if nrm.dot(p0 - center) < 0.0 {
+                    nrm = -nrm;
+                }
+                let lift = nrm * 0.03;
+                m.quad([p0 + lift, p1 + lift, p2 + lift, p3 + lift], nrm, glow);
+            }
+        }
+    }
 }
 
 /// A ball of plasma held in the air between crystal monoliths.
@@ -425,6 +548,7 @@ impl Map {
             repair_spots: Vec::new(),
             hold_site: None,
             cores: Vec::new(),
+            crystals: Vec::new(),
         };
 
         // Ring road around the inner city.
@@ -821,6 +945,7 @@ impl Map {
             repair_spots: Vec::new(),
             hold_site: None,
             cores: Vec::new(),
+            crystals: Vec::new(),
         }
     }
 
@@ -854,6 +979,7 @@ impl Map {
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
             hold_site: None,
             cores: Vec::new(),
+            crystals: Vec::new(),
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.
