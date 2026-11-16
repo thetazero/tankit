@@ -1,6 +1,7 @@
-//! Procedural city arena: BSP-split blocks separated by roads, filled with
-//! buildings, plazas with cover, and small parks. Everything is axis-aligned
-//! boxes so collision, line of sight and navigation stay trivial.
+//! Arena geometry. `Map::generate` builds the procedural city (BSP-split
+//! blocks separated by roads, filled with buildings, plazas with cover, and
+//! small parks); `Map::proving_ground` is a hand-built physics test course.
+//! Shapes are boxes, wedges (ramps), and an optional heightfield ground.
 
 use glam::{Vec2, Vec3};
 
@@ -47,6 +48,88 @@ pub struct VisBox {
     pub top_mat: f32,
 }
 
+/// Which way a wedge's slope climbs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rise {
+    PosX,
+    NegX,
+    PosZ,
+    NegZ,
+}
+
+/// A ramp: rectangular footprint, flat bottom at `base_y`, sloped top that
+/// climbs from 0 to `height` in the `rise` direction. Solid and drivable.
+#[derive(Clone, Copy, Debug)]
+pub struct Wedge {
+    pub min: Vec2,
+    pub max: Vec2,
+    pub base_y: f32,
+    pub height: f32,
+    pub rise: Rise,
+    pub color: Vec3,
+}
+
+impl Wedge {
+    /// Corners: [low0, low1, high_base0, high_base1, high_top0, high_top1].
+    pub fn points(&self) -> [Vec3; 6] {
+        let (a, b, y0, y1) = (self.min, self.max, self.base_y, self.base_y + self.height);
+        let p = |x: f32, z: f32, y: f32| Vec3::new(x, y, z);
+        match self.rise {
+            Rise::PosX => [p(a.x, a.y, y0), p(a.x, b.y, y0), p(b.x, a.y, y0), p(b.x, b.y, y0), p(b.x, a.y, y1), p(b.x, b.y, y1)],
+            Rise::NegX => [p(b.x, a.y, y0), p(b.x, b.y, y0), p(a.x, a.y, y0), p(a.x, b.y, y0), p(a.x, a.y, y1), p(a.x, b.y, y1)],
+            Rise::PosZ => [p(a.x, a.y, y0), p(b.x, a.y, y0), p(a.x, b.y, y0), p(b.x, b.y, y0), p(a.x, b.y, y1), p(b.x, b.y, y1)],
+            Rise::NegZ => [p(a.x, b.y, y0), p(b.x, b.y, y0), p(a.x, a.y, y0), p(b.x, a.y, y0), p(a.x, a.y, y1), p(b.x, a.y, y1)],
+        }
+    }
+
+    /// Faces as point-index polygons (convex), for rendering.
+    pub const FACES: [&'static [usize]; 5] = [&[0, 1, 5, 4], &[2, 3, 5, 4], &[0, 1, 3, 2], &[0, 2, 4], &[1, 3, 5]];
+}
+
+/// Heightfield ground. Heights are stored row-major, z rows then x columns.
+#[derive(Clone, Debug)]
+pub struct Terrain {
+    pub origin: Vec2,
+    pub cell: f32,
+    pub nx: usize,
+    pub nz: usize,
+    pub heights: Vec<f32>,
+    pub color: Vec3,
+    pub material: f32,
+}
+
+impl Terrain {
+    pub fn from_fn(origin: Vec2, cell: f32, nx: usize, nz: usize, f: impl Fn(f32, f32) -> f32) -> Terrain {
+        let mut heights = Vec::with_capacity(nx * nz);
+        for iz in 0..nz {
+            for ix in 0..nx {
+                heights.push(f(origin.x + ix as f32 * cell, origin.y + iz as f32 * cell));
+            }
+        }
+        Terrain { origin, cell, nx, nz, heights, color: Vec3::new(0.36, 0.5, 0.28), material: mat::GRASS }
+    }
+
+    pub fn size(&self) -> Vec2 {
+        Vec2::new((self.nx - 1) as f32, (self.nz - 1) as f32) * self.cell
+    }
+
+    pub fn at(&self, ix: usize, iz: usize) -> f32 {
+        self.heights[iz * self.nx + ix]
+    }
+
+    /// Bilinear height (close to, not exactly, the collider's triangles).
+    pub fn height_at(&self, x: f32, z: f32) -> f32 {
+        let g = (Vec2::new(x, z) - self.origin) / self.cell;
+        let gx = g.x.clamp(0.0, (self.nx - 1) as f32 - 0.001);
+        let gz = g.y.clamp(0.0, (self.nz - 1) as f32 - 0.001);
+        let (ix, iz) = (gx as usize, gz as usize);
+        let (fx, fz) = (gx - ix as f32, gz - iz as f32);
+        let h0 = self.at(ix, iz) * (1.0 - fx) + self.at(ix + 1, iz) * fx;
+        let h1 = self.at(ix, iz + 1) * (1.0 - fx) + self.at(ix + 1, iz + 1) * fx;
+        h0 * (1.0 - fz) + h1 * fz
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tree {
     pub pos: Vec3,
@@ -80,15 +163,20 @@ impl CellRect {
     }
 }
 
+#[derive(Clone)]
 pub struct Map {
     /// Arena spans [0, size] on x and z.
     pub size: f32,
     pub solids: Vec<Solid>,
     pub boxes: Vec<VisBox>,
     pub trees: Vec<Tree>,
+    pub wedges: Vec<Wedge>,
+    pub terrain: Option<Terrain>,
     pub roads: Vec<CellRect>,
     /// Open road positions usable for spawns and pickups.
     pub open_spots: Vec<Vec2>,
+    /// Fixed spawn heading; None means face the map center.
+    pub spawn_yaw: Option<f32>,
 }
 
 const MIN_BLOCK: i32 = 4;
@@ -115,8 +203,11 @@ impl Map {
             solids: Vec::new(),
             boxes: Vec::new(),
             trees: Vec::new(),
+            wedges: Vec::new(),
+            terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
+            spawn_yaw: None,
         };
 
         // Ring road around the inner city.
@@ -396,6 +487,139 @@ impl Map {
 
     pub fn center(&self) -> Vec2 {
         Vec2::splat(self.size * 0.5)
+    }
+
+    /// Flat ground and nothing else (the showroom yard).
+    pub fn empty(size: f32) -> Map {
+        Map {
+            size,
+            solids: Vec::new(),
+            boxes: Vec::new(),
+            trees: Vec::new(),
+            wedges: Vec::new(),
+            terrain: None,
+            roads: Vec::new(),
+            open_spots: vec![Vec2::ZERO],
+            spawn_yaw: Some(0.0),
+        }
+    }
+
+    /// Ground height at a point (terrain if present, else flat 0).
+    pub fn ground_height(&self, x: f32, z: f32) -> f32 {
+        self.terrain.as_ref().map_or(0.0, |t| t.height_at(x, z))
+    }
+
+    /// Hand-built physics test course: kickers at several angles with landing
+    /// ramps, a raised platform with a ramp up and a drop off, speed bumps,
+    /// stairs, rolling hills and a crater. Spawns face the obstacle lanes.
+    pub fn proving_ground() -> Map {
+        let size = 200.0;
+        let mut map = Map {
+            size,
+            solids: Vec::new(),
+            boxes: Vec::new(),
+            trees: Vec::new(),
+            wedges: Vec::new(),
+            terrain: None,
+            roads: Vec::new(),
+            open_spots: Vec::new(),
+            // Every lane runs along +z.
+            spawn_yaw: Some(0.0),
+        };
+
+        // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.
+        map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, |x, z| {
+            let east = ((x - 100.0) / 20.0).clamp(0.0, 1.0);
+            let hills = (x * 0.06).sin() * (z * 0.05).cos() * 3.0 + (x * 0.13 + z * 0.07).sin() * 1.2;
+            let mound = 7.0 * (-((x - 160.0).powi(2) + (z - 50.0).powi(2)) / 300.0).exp();
+            let crater_d = ((x - 155.0).powi(2) + (z - 150.0).powi(2)).sqrt();
+            let crater = if crater_d < 22.0 {
+                -5.0 * (1.0 - (crater_d / 22.0).powi(2)) + 2.0 * (-(crater_d - 22.0).powi(2) / 10.0).exp()
+            } else {
+                2.0 * (-(crater_d - 22.0).powi(2) / 10.0).exp()
+            };
+            // Fade to flat near the walls so terrain never pokes over them.
+            let edge = (x.min(200.0 - x).min(z).min(200.0 - z) / 15.0).clamp(0.0, 1.0);
+            east * edge * (hills.max(-1.5) + 1.5 + mound + crater)
+        }));
+
+        let concrete = Vec3::new(0.62, 0.60, 0.56);
+        let orange = Vec3::new(0.86, 0.48, 0.18);
+        let blue = Vec3::new(0.30, 0.46, 0.70);
+
+        // Lanes run along +z. Each lane: a kicker, then a landing ramp after a gap.
+        let lanes = [(12.0f32, 14.0f32, orange), (32.0, 22.0, orange), (52.0, 30.0, orange)];
+        for (x, deg, color) in lanes {
+            let h = 1.6;
+            let len = h / deg.to_radians().tan();
+            let z0 = 40.0;
+            map.wedges.push(Wedge {
+                min: Vec2::new(x - 4.0, z0),
+                max: Vec2::new(x + 4.0, z0 + len),
+                base_y: 0.0,
+                height: h,
+                rise: Rise::PosZ,
+                color,
+            });
+            // Landing ramp, same height as the kicker, after a gap sized to about
+            // 70% of the flight distance at top speed so a full-speed jump clears it
+            // and lands on the down slope.
+            let (v, g) = (15.0f32, crate::sim::GRAVITY);
+            let flight = 2.0 * v * deg.to_radians().sin() / g * v * deg.to_radians().cos();
+            let land_z = z0 + len + flight * 0.7;
+            map.wedges.push(Wedge {
+                min: Vec2::new(x - 5.0, land_z),
+                max: Vec2::new(x + 5.0, land_z + 14.0),
+                base_y: 0.0,
+                height: h,
+                rise: Rise::NegZ,
+                color: concrete,
+            });
+            map.open_spots.push(Vec2::new(x, 12.0));
+        }
+
+        // Raised platform: long ramp up from the south, a steep side ramp on the
+        // west, a gentler ramp down on the east, and open drops everywhere else.
+        let (px0, px1, pz0, pz1, ph) = (72.0, 88.0, 70.0, 100.0, 3.5);
+        map.add_block(Vec3::new(px0, 0.0, pz0), Vec3::new(px1, ph, pz1), concrete);
+        map.wedges.push(Wedge { min: Vec2::new(px0, pz0 - 30.0), max: Vec2::new(px1, pz0), base_y: 0.0, height: ph, rise: Rise::PosZ, color: blue });
+        map.wedges.push(Wedge { min: Vec2::new(px0 - 9.0, pz0 + 4.0), max: Vec2::new(px0, pz0 + 14.0), base_y: 0.0, height: ph, rise: Rise::PosX, color: blue });
+        map.wedges.push(Wedge { min: Vec2::new(px1, pz0 + 16.0), max: Vec2::new(px1 + 12.0, pz0 + 26.0), base_y: 0.0, height: ph, rise: Rise::NegX, color: blue });
+        map.open_spots.push(Vec2::new(80.0, 20.0));
+
+        // Speed bumps: back-to-back wedge pairs across a lane.
+        for i in 0..6 {
+            let z = 120.0 + i as f32 * 9.0;
+            for (rise, z0, z1) in [(Rise::PosZ, z, z + 1.2), (Rise::NegZ, z + 1.2, z + 2.4)] {
+                map.wedges.push(Wedge { min: Vec2::new(6.0, z0), max: Vec2::new(18.0, z1), base_y: 0.0, height: 0.35, rise, color: Vec3::new(0.85, 0.75, 0.2) });
+            }
+        }
+        map.open_spots.push(Vec2::new(12.0, 105.0));
+
+        // Stairs: 0.25 m steps up to a 2 m ledge.
+        for i in 0..8 {
+            let z = 120.0 + i as f32 * 2.0;
+            let top = 0.25 * (i + 1) as f32;
+            map.add_block(Vec3::new(28.0, 0.0, z), Vec3::new(40.0, top, 200.0 - 50.0), concrete * (0.9 + 0.02 * i as f32));
+        }
+        map.open_spots.push(Vec2::new(34.0, 105.0));
+
+        // Scattered blocks to bump into.
+        for (x, z, s) in [(60.0, 130.0, 1.5), (66.0, 140.0, 1.0), (56.0, 150.0, 2.0), (70.0, 160.0, 1.2)] {
+            map.add_block(Vec3::new(x - s, 0.0, z - s), Vec3::new(x + s, s * 2.0, z + s), Vec3::new(0.70, 0.30, 0.22));
+        }
+
+        // Hills / crater spawns.
+        map.open_spots.push(Vec2::new(120.0, 20.0));
+        map.open_spots.push(Vec2::new(150.0, 110.0));
+
+        map.perimeter_walls();
+        map
+    }
+
+    fn add_block(&mut self, min: Vec3, max: Vec3, color: Vec3) {
+        self.boxes.push(VisBox { min, max, color, side_mat: mat::PLAIN, top_mat: mat::PAVING });
+        self.solids.push(Solid { min, max });
     }
 }
 

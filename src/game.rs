@@ -18,6 +18,11 @@ impl Clock {
         self.accumulator -= steps as f32 * DT;
         steps
     }
+
+    /// How far (0..1) real time has run past the last sim step, for interpolation.
+    pub fn alpha(&self) -> f32 {
+        (self.accumulator / DT).clamp(0.0, 1.0)
+    }
 }
 
 /// Scripted input for headless runs: drive around the block so screenshots

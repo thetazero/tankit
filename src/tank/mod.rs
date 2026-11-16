@@ -4,7 +4,7 @@
 pub mod model;
 pub mod track;
 
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::render::Renderer;
 use crate::render::mesh::{Instance, MeshData, MeshId};
@@ -53,7 +53,6 @@ struct HullArt {
     sprocket: MeshId,
     idler: MeshId,
     running: Running,
-    belt: Belt,
     links: usize,
     mount: Vec3,
 }
@@ -94,7 +93,6 @@ impl TankArt {
                     sprocket: r.add_mesh(&sprocket),
                     idler: r.add_mesh(&idler),
                     running: run,
-                    belt,
                     links,
                     mount: h.mount,
                 }
@@ -129,35 +127,45 @@ impl TankArt {
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
 
-        // Running gear stays on the ground; the body above rides the suspension.
-        let base = Mat4::from_translation(t.pos3()) * Mat4::from_rotation_y(t.yaw);
-        let speed = t.speed().abs();
-        let rumble = ((t.track_dist[0] + t.track_dist[1]) * 7.0).sin() * 0.008 * (speed / 15.0).min(1.0);
-        let sprung = base
-            * Mat4::from_translation(Vec3::new(0.0, 0.85 + rumble, 0.0))
-            * Mat4::from_rotation_x(t.pitch)
-            * Mat4::from_rotation_z(t.roll)
-            * Mat4::from_translation(Vec3::NEG_Y * 0.85);
+        // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
+        let base = Mat4::from_rotation_translation(t.rot, t.pos);
+        let sprung = base;
         out.push((hull.body, Instance::new(sprung, tint)));
 
         let run = &hull.running;
+        let per_side = run.road.len();
         for (side, sign) in [(0usize, 1.0f32), (1, -1.0)] {
             let dist = t.track_dist[side];
+            // Road wheels ride their suspension; the belt wraps whatever shape that makes.
+            let road: Vec<Wheel> = run
+                .road
+                .iter()
+                .enumerate()
+                .map(|(k, w)| {
+                    let lift = t.wheel_lift.get(side * per_side + k).copied().unwrap_or(0.0);
+                    Wheel { center: w.center + Vec2::new(0.0, lift), radius: w.radius }
+                })
+                .collect();
+            let mut wheels = road.clone();
+            wheels.push(run.sprocket);
+            wheels.push(run.idler);
+            let belt = Belt::new(&wheels, LINK_HALF);
+
             // Mirror the -x side so wheel hubs and link details face outward.
             let flip = Mat4::from_scale(Vec3::new(sign, 1.0, 1.0));
             let x = sign * run.track_x;
             let wheel = |w: &Wheel| {
                 base * Mat4::from_translation(Vec3::new(x, w.center.y, w.center.x)) * flip * Mat4::from_rotation_x(dist / w.radius)
             };
-            for w in &run.road {
+            for w in &road {
                 out.push((hull.road, Instance::new(wheel(w), tint)));
             }
             out.push((hull.sprocket, Instance::new(wheel(&run.sprocket), tint)));
             out.push((hull.idler, Instance::new(wheel(&run.idler), tint)));
 
-            let pitch = hull.belt.length() / hull.links as f32;
+            let pitch = belt.length() / hull.links as f32;
             for i in 0..hull.links {
-                let p = hull.belt.at(i as f32 * pitch + dist);
+                let p = belt.at(i as f32 * pitch + dist);
                 // Link frame: x across, y = outward normal, z = along the belt.
                 let ny = Vec3::new(0.0, p.normal.y, p.normal.x);
                 let nz = Vec3::X.cross(ny);
@@ -226,6 +234,24 @@ mod tests {
             let belt = Belt::new(&wheels, LINK_HALF);
             let lowest = (0..200).map(|i| belt.at(belt.length() * i as f32 / 200.0).pos.y).fold(f32::INFINITY, f32::min);
             assert!((lowest - LINK_HALF).abs() < 0.01, "tread bottom at {lowest}");
+        }
+    }
+
+    #[test]
+    fn physics_chassis_matches_the_art() {
+        use crate::sim::{Chassis, HullKind};
+        for (kind, h) in [(HullKind::Lancer, model::lancer()), (HullKind::Bastion, model::bastion())] {
+            let c = Chassis::of(kind);
+            let r = &h.running;
+            assert_eq!(c.track_x, r.track_x, "{kind:?}");
+            assert_eq!(c.track_width, r.track_width, "{kind:?}");
+            let road: Vec<f32> = r.road.iter().map(|w| w.center.x).collect();
+            assert_eq!(c.road_z, road.as_slice(), "{kind:?}");
+            assert!((c.road_y - r.road[0].center.y).abs() < 1e-6 && (c.road_r - r.road[0].radius).abs() < 1e-6);
+            // Front and rear end wheels (sprocket or idler, whichever sits at that end).
+            let (front, rear) = if r.sprocket.center.x > 0.0 { (r.sprocket, r.idler) } else { (r.idler, r.sprocket) };
+            assert_eq!(c.front, (front.center.x, front.center.y, front.radius), "{kind:?} front");
+            assert_eq!(c.rear, (rear.center.x, rear.center.y, rear.radius), "{kind:?} rear");
         }
     }
 

@@ -9,7 +9,7 @@ use glam::Vec2;
 
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
-use crate::sim::{World, dir2};
+use crate::sim::Tank;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Painter, TextStyle, theme};
 
@@ -29,8 +29,8 @@ impl Hud {
         Hud { speed: 0.0, heading: 0.0, initialized: false }
     }
 
-    pub fn draw(&mut self, world: &World, seed: u64, camera: &Camera, width: f32, height: f32, dt: f32) -> Vec<UiVertex> {
-        let tank = &world.tanks[0];
+    /// `tank` is the player's tank as drawn this frame (interpolated).
+    pub fn draw(&mut self, tank: &Tank, seed: u64, camera: &Camera, width: f32, height: f32, dt: f32) -> Vec<UiVertex> {
         let speed = tank.speed().abs() * 3.6;
         let max_speed = tank.hull.max_speed * 3.6;
         // Turning right (negative yaw) should read as an increasing compass heading.
@@ -62,8 +62,8 @@ impl Hud {
 
         // Crosshair where the turret points; the gap kicks open when firing.
         let vp = camera.view_proj(width / height);
-        let aim = dir2(tank.turret_yaw());
-        let aim_point = tank.pos3() + glam::Vec3::new(aim.x, 0.0, aim.y) * 40.0 + glam::Vec3::Y * 1.7;
+        // Where the gun actually points, including hull tilt.
+        let aim_point = tank.pos + tank.up() * (tank.chassis.hull_top + 0.4) + tank.turret_dir() * 40.0;
         if let Some((x, y)) = project(vp, aim_point, width, height) {
             let kick = (-tank.since_fire * 12.0).exp();
             widgets::crosshair(&mut p, Vec2::new(x, y) / scale, kick, theme::FG);
@@ -92,17 +92,20 @@ impl Hud {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::World;
     use crate::render::Camera;
     use glam::Vec3;
 
     #[test]
     fn draws_at_any_size() {
-        let world = World::new(21);
+        let world = World::new(crate::map::Map::generate(21), 0);
         let t = &world.tanks[0];
-        let camera = Camera { pos: t.pos3() + Vec3::new(0.0, 6.0, -10.0), target: t.pos3(), fov_y: 1.1 };
+        // Chase-camera framing: behind the turret, looking where it points.
+        let d = t.turret_dir();
+        let camera = Camera { pos: t.pos - d * 10.0 + Vec3::Y * 6.0, target: t.pos + d * 6.0, fov_y: 1.1 };
         let mut hud = Hud::new();
         for (w, h) in [(1600.0, 900.0), (800.0, 600.0), (3840.0, 2160.0)] {
-            let v = hud.draw(&world, 21, &camera, w, h, 1.0 / 60.0);
+            let v = hud.draw(t, 21, &camera, w, h, 1.0 / 60.0);
             assert!(!v.is_empty());
             // A little slack for halos and anti-aliasing at the screen edge.
             assert!(v.iter().all(|v| v.pos[0] > -4.0 && v.pos[0] < w + 4.0 && v.pos[1] > -4.0 && v.pos[1] < h + 4.0));
