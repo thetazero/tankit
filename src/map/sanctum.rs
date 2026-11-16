@@ -21,7 +21,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::{DEFAULT_SIDES, GlowPath, Map, OBox, Terrain};
+use super::{Ambient, DEFAULT_SIDES, GlowPath, Map, OBox, Terrain};
 use crate::render::material::Material;
 use crate::rng::Rng;
 
@@ -489,6 +489,7 @@ impl Map {
             fall_y: Some(FALL_Y),
             hold_name: "ALTAR",
             sculpted: crate::render::mesh::MeshData::default(),
+            sounds: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 151, 151, ground);
         terrain.color = SAND;
@@ -1163,6 +1164,7 @@ impl Map {
             ..OBox::default()
         });
         self.resonant_crystals(CENTER, 1.5, 6, 2.0, 4.5, rng);
+        self.sound(Ambient::Altar, Vec3::new(CENTER.x, 4.0, CENTER.y));
         // A line of light down the nave from the door to the altar.
         let path: Vec<Vec3> = (0..=12)
             .map(|k| {
@@ -1278,6 +1280,7 @@ impl Map {
             });
         }
         // The bell in the belfry.
+        self.sound(Ambient::Bell, Vec3::new(bt.x, 25.5, bt.y));
         for (r, y0, y1) in [(0.6f32, 26.2, 27.4), (1.0, 24.8, 26.2), (1.25, 24.4, 24.8)] {
             self.oboxes.push(OBox {
                 center: bt,
@@ -1372,7 +1375,9 @@ impl Map {
             (Vec2::new(176.0, 220.0), 4, 1.8, 4.0),
             (Vec2::new(130.0, 72.0), 4, 1.8, 4.0),
         ] {
-            self.resonant_crystals(p, self.ground_height(p.x, p.y), n, w, ht, rng);
+            let g = self.ground_height(p.x, p.y);
+            self.resonant_crystals(p, g, n, w, ht, rng);
+            self.sound(Ambient::Shrine, Vec3::new(p.x, g + ht * 0.5, p.y));
         }
         // Low stone walls on each side's approach: cover on the run in.
         for (c, yaw, len) in [

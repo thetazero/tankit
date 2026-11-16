@@ -4,10 +4,14 @@
 //! revs follow the belts and throttle, track clatter at the rate links meet
 //! the sprockets, a turret ring motor, and the laser's buzz or the flamer's
 //! roar while they fire; where a beam lands it sizzles, and a broken Vigil's
-//! light sings out of its cracks, and a spawn shield hums while it's up, and air rushes past a falling tank.
-//! Discrete moments (shots, impacts, armour hits, kills, repairs, a tank
-//! ramming something, landing hard or going over) come out of the match as [`Sound`] events and play
-//! as one-shots; a beam lighting, letting go and striking a hull are spotted
+//! light sings out of its cracks, a spawn shield hums while it's up, and air
+//! rushes past a falling tank; in the garage the bay's turntable turns under
+//! the tank. The map's places make their own sounds as you near them
+//! (crystals, furnaces, banners...), ducking under the fight. Discrete
+//! moments (shots, impacts, armour hits, kills, repairs, a beam cooled and
+//! ready, a tank ramming something, landing hard or going over) come out of
+//! the match as [`Sound`] events and play as one-shots; a beam lighting,
+//! letting go and striking a hull, and your hull running low, are spotted
 //! here, frame to frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
@@ -36,8 +40,11 @@ use crate::render::Camera;
 
 use dsp::Noise;
 use mixer::{Mixer, OneShot};
+pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
-use sounds::{Play, arrival, beam, guns, hits, hold, knocks, repair, shield, ui, vigil};
+use sounds::{
+    Play, arrival, beam, garage, guns, hits, hold, hull, knocks, places, repair, shield, ui, vigil,
+};
 use voice::Layer;
 
 /// Distance at which a sound is at half its close-up loudness, m. Past it
@@ -51,6 +58,8 @@ const EARSHOT: f32 = 400.0;
 const PAN_WIDTH: f32 = 0.8;
 /// Wind level under everything.
 const WIND: f32 = 0.05;
+/// The garage's cues: a little over the menu clicks (0.8), they're events.
+pub(crate) const GARAGE_GAIN: f32 = 0.9;
 /// A blow to your own hull, as against someone else's: you're inside it.
 const OWN_HULL: f32 = 1.6;
 
@@ -121,6 +130,7 @@ pub struct Audio {
     time: f32,
     flames: guns::Flames,
     beams: beam::Moments,
+    warning: hull::Warning,
 }
 
 impl Audio {
@@ -140,6 +150,7 @@ impl Audio {
             time: 0.0,
             flames: Default::default(),
             beams: Default::default(),
+            warning: Default::default(),
         }
     }
 
@@ -152,6 +163,7 @@ impl Audio {
             time: 0.0,
             flames: Default::default(),
             beams: Default::default(),
+            warning: Default::default(),
         }
     }
 
@@ -185,6 +197,25 @@ impl Audio {
         });
     }
 
+    /// Something done in the garage: a part bought or refused, a kit swapped.
+    pub fn garage(&mut self, cue: GarageCue) {
+        let layers = garage::cue(cue);
+        self.with(|m| {
+            m.play(OneShot {
+                layers,
+                pitch: 1.0,
+                gain: GARAGE_GAIN,
+                pan: 0.0,
+                air: 16_000.0,
+            })
+        });
+    }
+
+    /// The bay's turntable turning (while the bay is on screen) or not.
+    pub fn set_turntable(&self, on: bool) {
+        self.with(|m| m.set_turntable(if on { 1.0 } else { 0.0 }));
+    }
+
     /// Once a frame: play what happened in the match since last frame and set
     /// every tank's loops. `live` is false while the world is frozen (paused).
     pub fn update(&mut self, game: &Match, sounds: &[Sound], cam: &Camera, live: bool, dt: f32) {
@@ -204,14 +235,19 @@ impl Audio {
         }
         if live {
             shots.extend(self.beams.update(game, &ears, &mut self.noise));
+            if let Some(p) = self.warning.update(game, self.time) {
+                shots.push(Placed::EVERYWHERE.shot(p.layers, p.gain, p.pitch));
+            }
         }
         let params = tank::params(game, &ears, &self.flames, self.time, live);
         let burns = beam::burns(game, &ears);
+        let places = places::params(&game.world.map, &ears);
         self.with(|m| {
             m.set_world(if live { 1.0 } else { 0.0 });
             m.set_wind(WIND);
             m.set_tanks(&params);
             m.set_burns(&burns);
+            m.set_places(&places);
             for s in shots {
                 m.play(s);
             }
@@ -226,6 +262,7 @@ impl Audio {
             Sound::Arrival { tank, faction, at } => arrival::arrival(tank, faction, at, jitter),
 
             Sound::Overheat { tank, at } => beam::overheat(tank, at, jitter),
+            Sound::BeamReady { tank, at } => beam::ready(tank, at)?,
 
             Sound::Shot { tank, turret, at } => {
                 self.flames.shot(tank, turret, at, self.time, jitter)?
@@ -241,6 +278,8 @@ impl Audio {
             Sound::Knock(k) => knocks::knock(k, jitter),
 
             Sound::Repair { at } => repair::repair(at),
+            Sound::RepairDrop { at } => repair::drop(at),
+            Sound::RepairLanded { at } => repair::landed(at),
 
             Sound::ShieldDown { tank, at } => shield::down(tank, at),
 

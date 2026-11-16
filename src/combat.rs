@@ -502,8 +502,21 @@ pub enum Sound {
     Repair {
         at: Vec3,
     },
+    /// A repair crate released high over its spot, its canopy opening.
+    RepairDrop {
+        at: Vec3,
+    },
+    /// A repair crate touched down, ready to pick up.
+    RepairLanded {
+        at: Vec3,
+    },
     /// A beam locked out hot.
     Overheat {
+        tank: usize,
+        at: Vec3,
+    },
+    /// An overheated beam has cooled right down: it can fire again.
+    BeamReady {
         tank: usize,
         at: Vec3,
     },
@@ -815,8 +828,14 @@ impl Match {
                         self.beam(i, range);
                     } else {
                         f.heat = (f.heat - COOL_RATE * DT / capacity).max(0.0);
-                        if f.heat == 0.0 {
+                        if f.heat == 0.0 && f.overheated {
                             f.overheated = false;
+                            if f.alive {
+                                self.sounds.push(Sound::BeamReady {
+                                    tank: i,
+                                    at: muzzle(&self.world.tanks[i]),
+                                });
+                            }
                         }
                     }
                 }
@@ -1374,6 +1393,12 @@ impl Match {
             f.since_repair = 0.0;
             self.blasts.push(Blast::new(at, BlastKind::Repair));
             self.sounds.push(Sound::Repair { at });
+        }
+        for (m, at) in self.repairs.moments.drain(..) {
+            self.sounds.push(match m {
+                crate::repair::Moment::Released => Sound::RepairDrop { at },
+                crate::repair::Moment::Landed => Sound::RepairLanded { at },
+            });
         }
     }
 
@@ -2345,6 +2370,7 @@ mod tests {
             m.step(Command::default(), true);
         }
         assert!(m.fighters[0].overheated);
+        m.sounds.clear();
         // Still holding the trigger: nothing comes out while it cools.
         m.step(Command::default(), true);
         assert!(m.fighters[0].beam.is_none());
@@ -2359,6 +2385,13 @@ mod tests {
         }
         assert!(!m.fighters[0].overheated);
         assert!(m.fighters[0].beam.is_some());
+        // Cooled right down: you hear it's ready, once.
+        let ready = m
+            .sounds
+            .iter()
+            .filter(|s| matches!(s, Sound::BeamReady { tank: 0, .. }))
+            .count();
+        assert_eq!(ready, 1);
     }
 
     #[test]

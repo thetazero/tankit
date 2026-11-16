@@ -15,7 +15,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::{Map, OBox, Terrain};
+use super::{Ambient, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::rng::Rng;
@@ -121,6 +121,7 @@ impl Map {
             terrain: None,
             scenery_terrain: None,
             sculpted: crate::render::mesh::MeshData::default(),
+            sounds: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
             // Overcast and smoky: a flat pale sun through grey haze.
@@ -159,7 +160,19 @@ impl Map {
         map.foundry_spawns();
         map.perimeter(false);
         map.foundry_horizon(&mut rng);
+        map.foundry_sounds();
         map
+    }
+
+    /// What sounds here: the crucible still roaring in the smelter, and the
+    /// wrecked presses over the lines, still twitching.
+    fn foundry_sounds(&mut self) {
+        self.sound(Ambient::Furnace, Vec3::new(CENTER.x, 2.5, CENTER.y));
+        for &lz in &LINES {
+            for x in [77.0, SIZE - 77.0] {
+                self.sound(Ambient::Machine, Vec3::new(x, 4.0, lz));
+            }
+        }
     }
 
     /// A plain box, on both sides of the map (mirrored) unless it sits on

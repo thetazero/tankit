@@ -58,8 +58,19 @@ impl RepairDrop {
     }
 }
 
+/// Something a spot did that you can hear.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Moment {
+    /// A crate released high overhead, its canopy snapping open.
+    Released,
+    /// A crate hit the ground, ready to pick up.
+    Landed,
+}
+
 pub struct Repairs {
     pub drops: Vec<RepairDrop>,
+    /// What spots did in the steps since this was last drained, and where.
+    pub moments: Vec<(Moment, Vec3)>,
 }
 
 impl Repairs {
@@ -75,7 +86,10 @@ impl Repairs {
                 age: 0.0,
             })
             .collect();
-        Repairs { drops }
+        Repairs {
+            drops,
+            moments: Vec::new(),
+        }
     }
 
     /// Advance every spot by `dt`. A landed crate goes to the nearest tank on
@@ -89,6 +103,7 @@ impl Repairs {
         let mut picked = Vec::new();
         for d in &mut self.drops {
             d.age += dt;
+            let was = d.state;
             d.state = match d.state {
                 State::Waiting(t) if t - dt <= 0.0 => {
                     d.age = 0.0;
@@ -99,6 +114,15 @@ impl Repairs {
                 State::Falling(h) => State::Falling(h - FALL_SPEED * dt),
                 State::Landed(t) => State::Landed(t + dt),
             };
+            match (was, d.state) {
+                (State::Waiting(_), State::Falling(_)) => self
+                    .moments
+                    .push((Moment::Released, d.crate_pos().unwrap())),
+                (State::Falling(_), State::Landed(_)) => {
+                    self.moments.push((Moment::Landed, d.crate_pos().unwrap()))
+                }
+                _ => {}
+            }
             let State::Landed(_) = d.state else { continue };
             let base = Vec3::new(d.at.x, d.ground, d.at.y);
             let taker = tanks
@@ -264,5 +288,28 @@ mod tests {
         assert_eq!(picked.len(), 1);
         assert_eq!(picked[0].0, 0);
         assert_eq!(r.drops[0].state, State::Waiting(COOLDOWN));
+    }
+
+    /// A crate is heard twice on its way in: once as it releases, up high,
+    /// and once as it lands; nothing while it waits, falls or sits.
+    #[test]
+    fn release_and_landing_are_moments() {
+        let map = Map::yard(200.0);
+        let mut r = Repairs::new(&map);
+        let dt = 0.1;
+        let mut seen = Vec::new();
+        let secs = FIRST_DROP + DROP_HEIGHT / FALL_SPEED + 5.0;
+        for _ in 0..(secs / dt) as usize {
+            r.step(dt, &[], |_| true);
+            for (m, at) in r.moments.drain(..) {
+                if at.x == r.drops[0].at.x && at.z == r.drops[0].at.y {
+                    seen.push((m, at.y - r.drops[0].ground));
+                }
+            }
+        }
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[0].0, Moment::Released);
+        assert!(seen[0].1 > DROP_HEIGHT - 1.0, "{seen:?}");
+        assert_eq!(seen[1], (Moment::Landed, 0.0));
     }
 }

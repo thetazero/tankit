@@ -19,6 +19,9 @@
 //!   [`super::tank::TankParams`]: add the field, set it in `tank::params`,
 //!   and add the loop to `tank::Loops` and `Loops::each`. Sounds not tied to
 //!   a tank (like [`wind`]) render straight into the mixer's world bus.
+//! - **A sound a place on the map makes** (a crystal, a furnace, a banner)
+//!   is a [`crate::map::Ambient`] kind, put on the map with `Map::sound`
+//!   where the thing is built, and voiced in [`places`].
 //! - **Tests and `--ignored` demos that write `docs/audio/*.wav`** go in the
 //!   family's own `tests` module, using `audio::testkit`.
 //!
@@ -30,10 +33,13 @@
 pub mod arrival;
 pub mod beam;
 pub mod engine;
+pub mod garage;
 pub mod guns;
 pub mod hits;
 pub mod hold;
+pub mod hull;
 pub mod knocks;
+pub mod places;
 pub mod repair;
 pub mod shield;
 pub mod tracks;

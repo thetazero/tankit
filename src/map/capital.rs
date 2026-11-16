@@ -23,7 +23,7 @@ use glam::{Mat3, Quat, Vec2, Vec3};
 
 use super::landmarks::Rig;
 use super::ruins::{self, Drift, Style};
-use super::{Map, OBox, Terrain};
+use super::{Ambient, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::rng::Rng;
@@ -163,6 +163,7 @@ impl Map {
             fall_y: None,
             hold_name: "ROTUNDA",
             sculpted: crate::render::mesh::MeshData::default(),
+            sounds: Vec::new(),
         };
         let mut rng = Rng::new(0xC4_917A);
         let mut drifts = map.districts(&mut rng);
@@ -258,6 +259,7 @@ impl Map {
     /// A banner in `color`; `emblem` puts the Imperium's disc on it (only
     /// theirs carry it).
     fn side_banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32, color: Vec3, emblem: bool) {
+        self.sound(Ambient::Banner, top - Vec3::Y * len * 0.4);
         let n = Vec3::new(out.x, 0.0, out.y).normalize();
         let right = Vec3::Y.cross(n).normalize();
         let rig = Rig {
@@ -326,6 +328,10 @@ impl Map {
     fn rotunda(&mut self, rng: &mut Rng) -> Vec<Drift> {
         let mut drifts = Vec::new();
         let base = PLAZA_H;
+        self.sound(
+            Ambient::Dome,
+            Vec3::new(CENTER.x, base + DRUM_H * 0.6, CENTER.y),
+        );
         let segs = 40;
         let collapsed = |a: f32| {
             let d = (a - PI * 0.25 + PI).rem_euclid(TAU) - PI;

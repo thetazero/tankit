@@ -7,7 +7,7 @@
 
 use glam::{Vec2, Vec3};
 
-use super::{Map, OBox};
+use super::{Ambient, Map, OBox};
 use crate::render::material::Material;
 use crate::rng::Rng;
 
@@ -49,6 +49,10 @@ impl Map {
     pub(super) fn cable(&mut self, a: Vec3, b: Vec3, sag: f32) {
         let n = 8;
         let at = |t: f32| a.lerp(b, t) - Vec3::Y * sag * 4.0 * t * (1.0 - t);
+        // Long spans sing in the wind; a short drop to a roof doesn't.
+        if a.distance(b) > 6.0 {
+            self.sound(Ambient::Cable, at(0.5));
+        }
         for k in 0..n {
             let (t0, t1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
             self.segment(
@@ -475,6 +479,7 @@ impl Map {
     /// counter and a few crates. `yaw`: the front faces local +z.
     pub(super) fn stall(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
         let g = self.ground_height(at.x, at.y);
+        self.sound(Ambient::Cloth, Vec3::new(at.x, g + 2.2, at.y));
         let wood = Vec3::new(0.45, 0.35, 0.24) * rng.range(0.85, 1.1);
         let cloths = [
             Vec3::new(0.66, 0.24, 0.18), // faded red

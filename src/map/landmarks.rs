@@ -8,7 +8,7 @@
 
 use glam::{Vec2, Vec3};
 
-use super::{Map, OBox};
+use super::{Ambient, Map, OBox};
 use crate::render::material::Material;
 use crate::rng::Rng;
 
@@ -108,6 +108,8 @@ impl Map {
         };
         let hw = width * 0.5;
         let intact = len * rng.range(0.72, 0.82);
+        let mid = root + dir * intact * 0.6;
+        self.sound(Ambient::Hull, Vec3::new(mid.x, deck_y, mid.y));
         let yaw = dir.x.atan2(dir.y);
         // Stringers: two steel beams the planks sit on (solid: they carry tanks).
         for s in [-hw + 0.4, hw - 0.4] {
@@ -461,6 +463,7 @@ impl Map {
     /// bow-ward. One solid box for collision.
     pub(super) fn boat(&mut self, rng: &mut Rng, at: Vec2, dir: Vec2, len: f32) {
         let g = self.ground_height(at.x, at.y);
+        self.sound(Ambient::Hull, Vec3::new(at.x, g + 1.5, at.y));
         let yaw = dir.x.atan2(dir.y);
         let list = rng.range(0.12, 0.28) * if rng.chance(0.5) { 1.0 } else { -1.0 };
         let beam = len * 0.2;
@@ -873,6 +876,7 @@ impl Map {
     /// Returns the top of the stern (engine deck), where a drift can lead up.
     pub(super) fn war_machine(&mut self, rng: &mut Rng, at: Vec3, yaw: f32) -> Vec3 {
         use glam::Quat;
+        self.sound(Ambient::Hull, at + Vec3::Y * 2.0);
         let rig = Rig {
             pos: at,
             rot: Quat::from_rotation_y(yaw)
