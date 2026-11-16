@@ -477,15 +477,15 @@ fn hull(p: HullSpec) -> HullModel {
     // Finish: spine and deck in paint, shoulders darker steel, sides paint
     // with alternating tone, prow plates a shade lighter.
     let skin = |row: usize, col: usize| {
-        let mid = 5; // the ring has 11 points: col 4..6 straddle the spine
-        let d = (col as i32 - mid as i32).unsigned_abs() as usize;
+        let mid: i32 = 5; // the ring has 11 points: col 4..6 straddle the spine
+        let d = (col as i32 - mid).unsigned_abs() as usize;
         let base = match d {
             0 | 1 => PAINT,
             2 => CARBON_LIGHT,
             3 => PAINT,
             _ => CARBON_LIGHT,
         };
-        let k = if (row + d) % 2 == 0 { 1.0 } else { 0.86 };
+        let k = if (row + d).is_multiple_of(2) { 1.0 } else { 0.86 };
         let k = if row >= 4 { k * 1.08 } else { k };
         shade(base, k)
     };
@@ -659,7 +659,7 @@ fn head(p: &HeadSpec) -> MeshData {
     let skin = |row: usize, col: usize| {
         let d = (col as i32 - 4).unsigned_abs() as usize;
         let base = if d <= 1 || d == 3 { PAINT } else { CARBON_LIGHT };
-        shade(base, if (row + d) % 2 == 0 { 1.0 } else { 0.87 })
+        shade(base, if (row + d).is_multiple_of(2) { 1.0 } else { 0.87 })
     };
     shell(&mut m, &stations, 0.055, 0.02, 0.022, skin);
 
