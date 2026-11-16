@@ -101,6 +101,7 @@ impl Frame<'_> {
             side_mat: material,
             top_mat: material,
             tilt: 0.0,
+            roll: 0.0,
             solid,
             // Masonry and concrete pieces get knocked edges (visual only).
             chip: if material == Material::Plaster || material == Material::Concrete {
@@ -177,6 +178,7 @@ impl Frame<'_> {
             side_mat: Material::Concrete,
             top_mat: Material::Concrete,
             tilt: angle,
+            roll: 0.0,
             solid: true,
             chip: 0.0,
             broken: false,
@@ -198,6 +200,7 @@ impl Frame<'_> {
             side_mat: Material::Rubble,
             top_mat: Material::Rubble,
             tilt: rng.range(-0.5, 0.5),
+            roll: 0.0,
             solid: false,
             chip: 0.0,
             broken: false,
