@@ -5,6 +5,7 @@
 
 use super::dsp::{OnePole, Smooth, pan_gains};
 use super::sounds::beam::{BurnParams, BurnVoice};
+use super::sounds::garage::Turntable;
 use super::sounds::wind::Wind;
 use super::tank::{TankParams, TankVoice};
 use super::voice::{Layer, Voice};
@@ -45,6 +46,8 @@ pub struct Mixer {
     /// World sounds (loops and wind) fade out while paused.
     world: Smooth,
     wind: Wind,
+    /// The garage bay's turntable, while the bay is shown.
+    turntable: Turntable,
     seed: u32,
     /// The world loops' buffer, kept so the audio thread doesn't allocate.
     scratch: Vec<f32>,
@@ -60,6 +63,7 @@ impl Mixer {
             master: Smooth::new(0.0),
             world: Smooth::new(0.0),
             wind: Wind::new(),
+            turntable: Turntable::new(),
             seed: 1,
             scratch: Vec::new(),
         }
@@ -75,6 +79,11 @@ impl Mixer {
 
     pub fn set_wind(&mut self, gain: f32) {
         self.wind.set(gain);
+    }
+
+    /// The bay turntable's loudness: 0 off .. 1 (it eases in and out).
+    pub fn set_turntable(&mut self, gain: f32) {
+        self.turntable.set(gain);
     }
 
     pub fn set_tanks(&mut self, params: &[TankParams]) {
@@ -154,6 +163,7 @@ impl Mixer {
             }
         }
         self.wind.render(&mut world, sr, &k);
+        self.turntable.render(&mut world, sr, &k);
         let world_coef = Smooth::coef(0.15, sr);
         for (o, w) in out.chunks_exact_mut(2).zip(world.chunks_exact(2)) {
             let g = self.world.next(world_coef);

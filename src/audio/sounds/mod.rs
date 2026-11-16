@@ -30,6 +30,7 @@
 pub mod arrival;
 pub mod beam;
 pub mod engine;
+pub mod garage;
 pub mod guns;
 pub mod hits;
 pub mod hold;
