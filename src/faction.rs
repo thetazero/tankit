@@ -71,11 +71,12 @@ impl Faction {
         }
     }
 
-    /// The hulls this side's bots drive: the Ithessar their own, everyone
-    /// else the Imperium's tracked hulls (until they have hulls of their own).
+    /// The hulls this side's bots drive: their own, or the Imperium's tracked
+    /// hulls for the machines (until they have hulls of their own).
     pub fn hulls(self) -> &'static [HullKind] {
         match self {
             Faction::Ithessar => &[HullKind::Sethuun],
+            Faction::Resonant => &[HullKind::Vigil],
             _ => &[HullKind::Lancer, HullKind::Bastion],
         }
     }

@@ -3,6 +3,7 @@
 
 pub mod ithessar;
 pub mod model;
+pub mod resonant;
 pub mod track;
 
 use std::f32::consts::FRAC_PI_2;
@@ -14,6 +15,7 @@ use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::sim::{HullKind, Tank, TurretKind};
 use ithessar::HoverModel;
 use model::{HullModel, Rig, Running, TurretModel};
+use resonant::VigilModel;
 use track::{Belt, Wheel};
 
 /// Target spacing between tread links.
@@ -25,7 +27,17 @@ const LINK_HALF: f32 = 0.04;
 pub struct KitMeshes {
     hulls: Vec<(HullModel, [MeshData; 4])>,
     hover: HoverModel,
+    /// Vigil's extras (its body and running gear are `hulls[2]`).
+    vigil: VigilParts,
     turrets: Vec<TurretModel>,
+}
+
+/// Everything of the Vigil that isn't its tracked body.
+struct VigilParts {
+    light: MeshData,
+    plates: [MeshData; 2],
+    bell: MeshData,
+    bell_pivot: Vec3,
 }
 
 impl KitMeshes {
@@ -40,9 +52,26 @@ impl KitMeshes {
             ];
             (h, parts)
         };
+        let VigilModel {
+            hull: vigil_hull,
+            light,
+            plates,
+            bell,
+            bell_pivot,
+        } = resonant::vigil();
         KitMeshes {
-            hulls: vec![hull(model::lancer()), hull(model::bastion())],
+            hulls: vec![
+                hull(model::lancer()),
+                hull(model::bastion()),
+                hull(vigil_hull),
+            ],
             hover: ithessar::sethuun(),
+            vigil: VigilParts {
+                light,
+                plates,
+                bell,
+                bell_pivot,
+            },
             // Same order as `TurretKind::ALL`.
             turrets: vec![
                 model::lance(),
@@ -64,6 +93,11 @@ impl KitMeshes {
             .sum();
         let o = &self.hover;
         let h = h + [&o.body, &o.glow, &o.emitter, &o.lens, &o.shard]
+            .iter()
+            .map(|m| m.indices.len())
+            .sum::<usize>();
+        let g = &self.vigil;
+        let h = h + [&g.light, &g.plates[0], &g.plates[1], &g.bell]
             .iter()
             .map(|m| m.indices.len())
             .sum::<usize>();
@@ -98,6 +132,13 @@ struct HoverArt {
     mount: Vec3,
 }
 
+struct VigilArt {
+    light: MeshId,
+    plates: [MeshId; 2],
+    bell: MeshId,
+    bell_pivot: Vec3,
+}
+
 struct TurretArt {
     kind: TurretKind,
     head: MeshId,
@@ -114,6 +155,7 @@ struct TurretArt {
 pub struct TankArt {
     hulls: Vec<HullArt>,
     hover: HoverArt,
+    vigil: VigilArt,
     turrets: Vec<TurretArt>,
 }
 
@@ -130,6 +172,13 @@ impl TankArt {
             shards: o.shards.clone(),
             emitter_y: o.emitter_y,
             mount: o.mount,
+        };
+        let g = &kit.vigil;
+        let vigil = VigilArt {
+            light: r.add_mesh(&g.light),
+            plates: [r.add_mesh(&g.plates[0]), r.add_mesh(&g.plates[1])],
+            bell: r.add_mesh(&g.bell),
+            bell_pivot: g.bell_pivot,
         };
         let hulls = kit
             .hulls
@@ -172,6 +221,7 @@ impl TankArt {
         TankArt {
             hulls,
             hover,
+            vigil,
             turrets,
         }
     }
@@ -188,6 +238,11 @@ impl TankArt {
             HullKind::Lancer => self.tracked(&self.hulls[0], t, base, out),
             HullKind::Bastion => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
+            HullKind::Vigil => {
+                let mount = self.tracked(&self.hulls[2], t, base, out);
+                self.vigil(t, base, out);
+                mount
+            }
         };
         self.turret(turret, t, mount, out);
     }
@@ -263,6 +318,60 @@ impl TankArt {
         }
 
         sprung * Mat4::from_translation(hull.mount)
+    }
+
+    /// The Vigil's crystal light, floating plates and bell. The light breathes
+    /// and burns brighter under throttle; on a husk it gutters and fades and
+    /// the plates hang crooked; on a wreck it's out and the plates have fallen.
+    fn vigil(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
+        let g = &self.vigil;
+        let tint = t.color.extend(0.0);
+        let time = t.age;
+        let effort = (t.belt[0].abs().max(t.belt[1].abs()) / t.hull.max_speed).min(1.0);
+        // Light strength, and how far the plates have let go (0 held .. 1 fallen).
+        let (glow, slack) = match (t.dead, t.husk) {
+            (true, _) => (0.0, 1.0),
+            (false, Some(s)) => {
+                // Gutters: stutters on and off, weaker as it fades.
+                let flick = ((time * 23.0).sin() * (time * 37.0).sin()).abs();
+                (s * (1.2 + 2.6 * flick), 0.35 + 0.4 * (1.0 - s))
+            }
+            (false, None) => (2.2 + 0.4 * (time * 2.2).sin() + effort * 1.0, 0.0),
+        };
+        if glow > 0.0 {
+            out.push((g.light, Instance::new(base, Vec4::new(1.0, 1.0, 1.0, glow))));
+        } else {
+            out.push((
+                g.light,
+                Instance::new(base, Vec4::new(0.12, 0.12, 0.14, 0.0)),
+            ));
+        }
+        for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
+            // Held: a slow float. Let go: sagging out and down, tipped over.
+            let bob = 0.025 * (time * 1.7 + k as f32 * 1.9).sin() * (1.0 - slack);
+            let drop = Vec3::new(side * 0.12 * slack, -0.32 * slack + bob, 0.0);
+            let tip = Mat4::from_translation(Vec3::new(side * 1.3, 1.3, 0.0))
+                * Mat4::from_rotation_z(-side * 0.35 * slack)
+                * Mat4::from_rotation_x(0.06 * slack * if k == 0 { 1.0 } else { -1.0 })
+                * Mat4::from_translation(Vec3::new(side * -1.3, -1.3, 0.0));
+            out.push((
+                g.plates[k],
+                Instance::new(base * Mat4::from_translation(drop) * tip, tint),
+            ));
+        }
+        // The bell swings back as it pulls away and sways as it goes.
+        let local_v = t.rot.inverse() * t.vel;
+        let lean = (local_v.z / t.hull.max_speed).clamp(-1.0, 1.0) * 0.35;
+        let sway = (time * 3.1).sin() * (0.05 + 0.12 * effort);
+        let roll = (local_v.x * 0.05).clamp(-0.3, 0.3) + (time * 2.3).cos() * 0.04;
+        let hang = if t.dead { 0.0 } else { 1.0 };
+        let swing = Mat4::from_translation(g.bell_pivot)
+            * Mat4::from_rotation_x(-(lean + sway) * hang)
+            * Mat4::from_rotation_z(roll * hang);
+        out.push((
+            g.bell,
+            Instance::new(base * swing, Vec4::new(1.0, 1.0, 1.0, 0.0)),
+        ));
     }
 
     /// The Ithessar hover hull: the carapace banked into its turn, six
