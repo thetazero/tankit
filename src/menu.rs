@@ -36,7 +36,7 @@ pub enum Screen {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
-    /// Start mission `MISSIONS[i]`, hired by its side `.1` (0 or 1).
+    /// Start mission `MISSIONS[i]`, hired by its side `.1`.
     Deploy(usize, usize),
     Garage,
     Setting(Change),
@@ -130,9 +130,17 @@ impl Menu {
             },
             (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
             (Screen::Missions, Nav::Up | Nav::Down) => {
-                self.mission = step(self.mission, MISSIONS.len(), nav)
+                self.mission = step(self.mission, MISSIONS.len(), nav);
+                self.side %= MISSIONS[self.mission].sides.len();
             }
-            (Screen::Missions, Nav::Left | Nav::Right) => self.side = 1 - self.side,
+            (Screen::Missions, Nav::Left | Nav::Right) => {
+                let n = MISSIONS[self.mission].sides.len();
+                self.side = if nav == Nav::Right {
+                    (self.side + 1) % n
+                } else {
+                    (self.side + n - 1) % n
+                };
+            }
             (Screen::Missions, Nav::Select) => {
                 return Some(Action::Deploy(self.mission, self.side));
             }
@@ -207,13 +215,20 @@ impl Menu {
                 y += names.len() as f32 * 30.0 + 14.0;
 
                 let m = &MISSIONS[self.mission];
-                let (employer, against) = (m.sides[self.side], m.sides[1 - self.side]);
+                let employer = m.sides[self.side];
+                let against = m
+                    .sides
+                    .iter()
+                    .filter(|&&f| f != employer)
+                    .map(|f| f.name())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 let s = profile.standing(employer);
                 for (k, v) in [
                     ("CONTRACT", m.contract.name().to_string()),
                     ("MAP", m.map.to_string()),
                     ("EMPLOYER", format!("< {} >", employer.name())),
-                    ("AGAINST", against.name().to_string()),
+                    ("AGAINST", against),
                     (
                         "THEIR TRUST",
                         format!("T{}  {} / {}", s.level, s.into, s.span),

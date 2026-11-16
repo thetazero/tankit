@@ -62,8 +62,8 @@ impl Map {
                 fog_density: 0.0024,
                 ..crate::render::Atmosphere::default()
             },
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             // Just outside the crater rim: a quick patch-up, in the open.
             repair_spots: vec![
                 CENTER + Vec2::new(0.0, 33.0),

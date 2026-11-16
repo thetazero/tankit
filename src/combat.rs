@@ -448,8 +448,9 @@ pub struct Match {
     /// Audible events since the app last took them.
     pub sounds: Vec<Sound>,
     pub repairs: Repairs,
-    /// Side 0 and side 1.
-    pub factions: [Faction; 2],
+    /// Side 0 (the player's) and the rest: two on most maps, more in a
+    /// free-for-all.
+    pub factions: Vec<Faction>,
     pub time_left: f32,
     pub phase: Phase,
     pub contract: Contract,
@@ -464,14 +465,15 @@ pub struct Match {
 }
 
 impl Match {
-    /// A fresh round on `map` with `bots` bots, dealt to the enemy side first
-    /// and then alternately (so an odd count makes even teams). The player
+    /// A fresh round on `map` with `bots` bots, dealt round the sides
+    /// starting after the player's (so filling every side but one short by
+    /// the player makes even teams). The player
     /// starts at their side's base, or at spawn point `spawn` on maps without
     /// bases.
     pub fn new(map: Map, spawn: usize, bots: usize, seed: u64) -> Match {
         let nav = NavGrid::build(&map);
         let repairs = Repairs::new(&map);
-        let factions = map.factions;
+        let factions = map.factions.clone();
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
         world.tanks[0].color = TANK_PAINT;
@@ -482,7 +484,7 @@ impl Match {
         let mut fighters = vec![fighter(0, max_health(world.tanks[0].hull_kind))];
         let mut brains = vec![None];
         for b in 0..bots {
-            let team = (b + 1) % 2;
+            let team = (b + 1) % factions.len();
             // Each side drives its own faction's hulls, too.
             let hulls = factions[team].hulls();
             let hull = hulls[(rng.f32() * hulls.len() as f32) as usize % hulls.len()];
@@ -551,10 +553,13 @@ impl Match {
         self.hold.as_ref().map_or(0.0, |h| h.own[i])
     }
 
-    /// The side ahead on score, or None while level.
+    /// The side ahead on score, or None while the lead is shared.
     pub fn leader(&self) -> Option<usize> {
-        let (a, b) = (self.score(0), self.score(1));
-        (a != b).then_some(if a > b { 0 } else { 1 })
+        let scores: Vec<u32> = (0..self.factions.len()).map(|t| self.score(t)).collect();
+        let best = *scores.iter().max()?;
+        let mut top = (0..scores.len()).filter(|&t| scores[t] == best);
+        let first = top.next()?;
+        top.next().is_none().then_some(first)
     }
 
     /// Fighter indices by standing: most time on the site (under Hold), then
@@ -1195,7 +1200,8 @@ impl Match {
             core_instances(c, self.world.time, out);
         }
         if let Some(h) = &self.hold {
-            h.instances(self.world.time, self.factions.map(|f| f.paint()), out);
+            let paint: Vec<Vec3> = self.factions.iter().map(|f| f.paint()).collect();
+            h.instances(self.world.time, &paint, out);
         }
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
@@ -1548,7 +1554,12 @@ fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     let pick = scored[rng.index(scored.len().min(4))].1;
-    let enemy_base = &map.bases[1 - team];
+    // Face the enemy base on a two-sided map; with more sides (or no
+    // bases), the middle.
+    let enemy_base = match map.bases.len() {
+        2 => &map.bases[1 - team],
+        _ => &Vec::new(),
+    };
     let look = if enemy_base.is_empty() {
         map.center()
     } else {
@@ -1570,6 +1581,38 @@ mod tests {
 
     fn arena(bots: usize) -> Match {
         Match::new(Map::generate(21), 0, bots, 21)
+    }
+
+    /// A free-for-all: all four factions on a generated city.
+    fn four_sides(bots: usize) -> Match {
+        let mut map = Map::generate(21);
+        map.factions = Faction::ALL.to_vec();
+        map.bases = Map::no_bases(&map.factions);
+        Match::new(map, 0, bots, 21)
+    }
+
+    #[test]
+    fn four_sides_deal_even_teams_and_need_a_sole_leader() {
+        let mut m = four_sides(15);
+        for t in 0..4 {
+            assert_eq!(m.fighters.iter().filter(|f| f.team == t).count(), 4);
+        }
+        assert_eq!(m.leader(), None);
+        let by_team = |m: &Match, t: usize| {
+            (0..m.fighters.len())
+                .find(|&i| m.fighters[i].team == t)
+                .unwrap()
+        };
+        let (a, b) = (by_team(&m, 2), by_team(&m, 3));
+        m.fighters[a].kills = 3;
+        assert_eq!(m.leader(), Some(2));
+        m.fighters[b].kills = 3;
+        assert_eq!(m.leader(), None, "a shared lead is no leader");
+        // The player's side trails the tie: a loss, not a draw.
+        assert_eq!(
+            crate::economy::Payout::of(&m).outcome,
+            crate::economy::Outcome::Lost
+        );
     }
 
     #[test]

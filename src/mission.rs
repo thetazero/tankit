@@ -35,7 +35,7 @@ pub struct Mission {
     /// Tanks per side, the player included.
     pub team_size: usize,
     /// Who hires you, and who you're sent against (the map's sides).
-    pub sides: [Faction; 2],
+    pub sides: &'static [Faction],
     pub brief: &'static str,
 }
 
@@ -47,7 +47,7 @@ pub const MISSIONS: &[Mission] = &[
         map_kind: MapKind::Saltmarket,
         seed: 0,
         team_size: 6,
-        sides: [Faction::Imperium, Faction::Resonant],
+        sides: &[Faction::Imperium, Faction::Resonant],
         brief: "PAID PER KILL. MOST KILLS FOR YOUR SIDE TAKES THE TOWN",
     },
     Mission {
@@ -57,7 +57,7 @@ pub const MISSIONS: &[Mission] = &[
         map_kind: MapKind::ShardFlats,
         seed: 0,
         team_size: 6,
-        sides: [Faction::Imperium, Faction::Resonant],
+        sides: &[Faction::Imperium, Faction::Resonant],
         brief: "SECURE THE DEPOSIT. PAID FOR YOUR TIME ON IT",
     },
     Mission {
@@ -67,19 +67,20 @@ pub const MISSIONS: &[Mission] = &[
         map_kind: MapKind::Kiln,
         seed: 0,
         team_size: 6,
-        sides: [Faction::Ithessar, Faction::Imperium],
+        sides: &[Faction::Ithessar, Faction::Imperium],
         brief: "THE ITHESSAR HIRE YOU TO HOLD THE IMPERIUM OFF THEIR KILN. PAID PER KILL",
     },
 ];
 
 impl Mission {
-    /// Bots to fill both sides around the player.
+    /// Bots to fill every side around the player.
     pub fn bots(&self) -> usize {
-        2 * self.team_size - 1
+        self.sides.len() * self.team_size - 1
     }
 
+    /// "6 V 6", or "4 V 4 V 4 V 4" with four sides.
     pub fn teams(&self) -> String {
-        format!("{0} V {0}", self.team_size)
+        vec![self.team_size.to_string(); self.sides.len()].join(" V ")
     }
 
     pub fn round_time(&self) -> String {

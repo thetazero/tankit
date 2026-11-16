@@ -492,8 +492,8 @@ impl Map {
                 blowing_sand: 1.0,
                 dust: Vec3::new(0.74, 0.62, 0.45),
             },
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             // Repair crates come down in exposed places worth fighting over:
             // the market square, the reservoir bed, the ridge, the dam's foot.
             repair_spots: vec![
@@ -1252,7 +1252,7 @@ impl Map {
                 .filter(|&p| clear(p, m))
                 .collect()
         };
-        self.bases = [line(&[206.0, 214.0], self), line(&[6.0, 11.0], self)];
+        self.bases = vec![line(&[206.0, 214.0], self), line(&[6.0, 11.0], self)];
     }
 }
 

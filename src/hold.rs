@@ -1,7 +1,7 @@
 //! Hold contract (king of the hill, side against side): one site per map,
 //! a crystal deposit (`Map::hold_site`, else the open spot nearest the
-//! middle). A side with tanks in the ring and the other side's none holds
-//! it and banks time; both in it contest it and nobody scores. First side to
+//! middle). A side with tanks in the ring and no other side's holds it and
+//! banks time; two or more sides in it contest it and nobody scores. First side to
 //! `TARGET` seconds held ends the round, otherwise the clock does.
 //!
 //! Each tank's own time in the ring while its side holds is kept too: it
@@ -31,7 +31,7 @@ pub enum Control {
     Open,
     /// Only this side's tanks are in it.
     Held(usize),
-    /// Both sides are in it.
+    /// More than one side is in it.
     Contested,
 }
 
@@ -39,7 +39,7 @@ pub struct Hold {
     pub at: Vec2,
     pub ground: f32,
     /// Seconds each side has held the site this round.
-    pub held: [f32; 2],
+    pub held: Vec<f32>,
     /// Seconds each tank has spent on the site while its side held it.
     pub own: Vec<f32>,
     pub control: Control,
@@ -49,6 +49,7 @@ pub struct Hold {
 
 impl Hold {
     pub fn new(map: &Map, tanks: usize) -> Hold {
+        let sides = map.factions.len();
         let at = map.hold_site.unwrap_or_else(|| {
             let c = map.center();
             map.open_spots
@@ -66,7 +67,7 @@ impl Hold {
         Hold {
             at,
             ground: map.ground_height(at.x, at.y),
-            held: [0.0; 2],
+            held: vec![0.0; sides],
             own: vec![0.0; tanks],
             control: Control::Open,
             dash_y,
@@ -91,12 +92,13 @@ impl Hold {
             .filter_map(|i| side(i).map(|s| (i, s)))
             .filter(|&(i, _)| self.inside(tanks[i].pos))
             .collect();
-        let present = [0, 1].map(|s| on.iter().any(|&(_, t)| t == s));
-        self.control = match present {
-            [false, false] => Control::Open,
-            [true, false] => Control::Held(0),
-            [false, true] => Control::Held(1),
-            [true, true] => Control::Contested,
+        let mut present: Vec<usize> = on.iter().map(|&(_, s)| s).collect();
+        present.sort_unstable();
+        present.dedup();
+        self.control = match present[..] {
+            [] => Control::Open,
+            [s] => Control::Held(s),
+            _ => Control::Contested,
         };
         let Control::Held(s) = self.control else {
             return None;
@@ -110,13 +112,13 @@ impl Hold {
 
     /// The side that has reached `TARGET`.
     pub fn winner(&self) -> Option<usize> {
-        (0..2).find(|&s| self.held[s] >= TARGET)
+        (0..self.held.len()).find(|&s| self.held[s] >= TARGET)
     }
 
     /// The ring painted on the ground and its four marker posts, tinted by
     /// who has it: plain paint when open, the holding side's paint,
     /// flickering orange when contested.
-    pub fn instances(&self, time: f32, paint: [Vec3; 2], out: &mut Vec<(MeshId, Instance)>) {
+    pub fn instances(&self, time: f32, paint: &[Vec3], out: &mut Vec<(MeshId, Instance)>) {
         let plain = Vec3::new(0.86, 0.82, 0.72);
         let (color, glow) = match self.control {
             Control::Open => (plain, 0.0),
@@ -183,6 +185,7 @@ fn ring_dir(f: f32) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::game::DT;
     use crate::sim::World;
 
@@ -206,6 +209,26 @@ mod tests {
         w.tanks[i].pos = Vec3::new(p.x, h.ground + 0.5, p.y);
     }
 
+    #[test]
+    fn any_two_sides_on_the_site_contest_it() {
+        let (mut w, mut h) = world_with(3);
+        h.held = vec![0.0; 4];
+        for i in 0..3 {
+            put(&mut w, &h, i, Vec2::new(i as f32, 0.0));
+        }
+        // Sides 2 alone, then 2 and 3: held, then contested.
+        let side = |only: bool| {
+            move |i: usize| match i {
+                0 => Some(2),
+                _ if only => None,
+                _ => Some(3),
+            }
+        };
+        assert_eq!(h.step(0.5, &w.tanks, side(true)), Some(2));
+        assert_eq!(h.held[2], 0.5);
+        assert_eq!(h.step(0.5, &w.tanks, side(false)), None);
+        assert_eq!(h.control, Control::Contested);
+    }
     /// Tanks 0 and 1 on side 0, the rest on side 1.
     fn sides(i: usize) -> Option<usize> {
         Some(if i < 2 { 0 } else { 1 })

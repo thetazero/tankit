@@ -38,7 +38,7 @@ tankit [OPTIONS]
   --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
-  --employer <faction>    which of the map's two sides hires you (default: its first);
+  --employer <faction>    which of the map's sides hires you (default: its first);
                           your trust in the match goes to them
   --shot <out.png>        render offscreen and save
   --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
@@ -69,7 +69,7 @@ pub struct Args {
     pub spawn: usize,
     pub bots: usize,
     pub contract: mission::Contract,
-    /// Which of the map's sides hires you (0 or 1).
+    /// Which of the map's sides hires you.
     pub side: usize,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
@@ -102,8 +102,8 @@ impl Args {
 
     pub fn map(&self) -> map::Map {
         let mut m = make_map(self.seed, self.map);
-        if self.side == 1 {
-            m.swap_sides();
+        if self.side > 0 {
+            m.swap_sides(self.side);
         }
         m
     }
@@ -348,10 +348,13 @@ fn parse_args() -> Result<Args> {
         None => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
-                "--employer: nobody hires {} here; this map is {} against {}",
+                "--employer: nobody hires {} here; this map is {}",
                 f.name(),
-                sides[0].name(),
-                sides[1].name()
+                sides
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<_>>()
+                    .join(" against ")
             )
         })?,
     };

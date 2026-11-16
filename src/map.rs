@@ -504,10 +504,11 @@ pub struct Map {
     pub spawn_yaw: Option<f32>,
     /// Sun, sky and haze.
     pub atmosphere: crate::render::Atmosphere,
-    /// Each side's spawn spots, for team fights (both empty: spawn anywhere).
-    pub bases: [Vec<Vec2>; 2],
-    /// Who fights here: side 0 (the player's) and side 1.
-    pub factions: [Faction; 2],
+    /// Each side's spawn spots, one per faction (all empty: spawn anywhere).
+    pub bases: Vec<Vec<Vec2>>,
+    /// Who fights here: side 0 (the player's), then the others. Two sides
+    /// on most maps; free-for-all maps field more.
+    pub factions: Vec<Faction>,
     /// Where repair crates parachute in (see `repair`).
     pub repair_spots: Vec<Vec2>,
     /// The Hold contract's site; `None` picks the open spot nearest the middle (see `hold`).
@@ -722,10 +723,16 @@ const BUILDING_COLORS: [[f32; 3]; 8] = [
 ];
 
 impl Map {
-    /// Put the player on side 1: the two factions trade places, bases and all.
-    pub fn swap_sides(&mut self) {
-        self.factions.swap(0, 1);
-        self.bases.swap(0, 1);
+    /// Put the player on side `side`: it trades places with side 0, bases
+    /// and all.
+    pub fn swap_sides(&mut self, side: usize) {
+        self.factions.swap(0, side);
+        self.bases.swap(0, side);
+    }
+
+    /// No bases: one empty spawn list per side (spawn anywhere).
+    pub fn no_bases(factions: &[Faction]) -> Vec<Vec<Vec2>> {
+        vec![Vec::new(); factions.len()]
     }
 
     pub fn generate(seed: u64) -> Map {
@@ -744,8 +751,8 @@ impl Map {
             open_spots: Vec::new(),
             spawn_yaw: None,
             atmosphere: crate::render::Atmosphere::default(),
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             repair_spots: Vec::new(),
             hold_site: None,
             cores: Vec::new(),
@@ -1142,8 +1149,8 @@ impl Map {
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
             atmosphere: crate::render::Atmosphere::default(),
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             repair_spots: Vec::new(),
             hold_site: None,
             cores: Vec::new(),
@@ -1176,8 +1183,8 @@ impl Map {
             // Every lane runs along +z.
             spawn_yaw: Some(0.0),
             atmosphere: crate::render::Atmosphere::default(),
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
             hold_site: None,
@@ -1351,7 +1358,7 @@ impl Map {
 /// next pick as far as possible from those already taken.
 /// Team bases on a map with no hand-placed ones: the open spots in the west
 /// and east quarters.
-fn split_bases(spots: &[Vec2], size: f32) -> [Vec<Vec2>; 2] {
+fn split_bases(spots: &[Vec2], size: f32) -> Vec<Vec<Vec2>> {
     let side = |west: bool| {
         spots
             .iter()
@@ -1359,7 +1366,7 @@ fn split_bases(spots: &[Vec2], size: f32) -> [Vec<Vec2>; 2] {
             .filter(|p| (p.x < size * 0.25) == west && (p.x > size * 0.75) != west)
             .collect()
     };
-    [side(true), side(false)]
+    vec![side(true), side(false)]
 }
 
 fn spread_spots(spots: &[Vec2], center: Vec2, n: usize) -> Vec<Vec2> {
