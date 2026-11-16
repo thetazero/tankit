@@ -547,6 +547,8 @@ pub struct Tank {
     prev_rot: Quat,
     prev_turret_rel: f32,
     prev_track_dist: [f32; 2],
+    /// What the hull has been feeling, for [`Knock`]s.
+    feel: Feel,
 }
 
 impl Tank {
@@ -630,6 +632,8 @@ pub struct World {
     pub tanks: Vec<Tank>,
     pub physics: PhysicsWorld,
     pub time: f32,
+    /// The knocks tanks took in the last step.
+    pub knocks: Vec<Knock>,
 }
 
 impl World {
@@ -661,6 +665,7 @@ impl World {
             tanks: Vec::new(),
             physics,
             time: 0.0,
+            knocks: Vec::new(),
         }
     }
 
@@ -714,6 +719,7 @@ impl World {
             prev_rot: Quat::IDENTITY,
             prev_turret_rel: 0.0,
             prev_track_dist: [0.0; 2],
+            feel: Feel::default(),
         };
         sync_from_body(&mut t, &self.physics);
         t.snapshot();
@@ -778,6 +784,7 @@ impl World {
         t.belt = [0.0; 2];
         t.parked = true;
         t.flipped_time = 0.0;
+        t.feel = Feel::default();
         sync_from_body(t, &self.physics);
         t.snapshot();
     }
@@ -813,10 +820,122 @@ impl World {
             t.since_fire += DT;
             t.age += DT;
         }
-        self.physics.step();
         for t in &mut self.tanks {
-            sync_from_body(t, &self.physics);
-            recover_if_flipped(t, &mut self.physics);
+            t.feel.vel = self.physics.bodies[t.body].linvel();
+        }
+        self.physics.step();
+        self.knocks.clear();
+        for i in 0..self.tanks.len() {
+            sync_from_body(&mut self.tanks[i], &self.physics);
+            self.feel(i);
+            recover_if_flipped(&mut self.tanks[i], &mut self.physics);
+        }
+    }
+
+    /// What tank `i` felt in the step just taken: the speed the contact
+    /// solver took off it (a wall, another tank, the ground coming up under
+    /// its belly), touching down after a drop, or going over onto its side.
+    fn feel(&mut self, i: usize) {
+        let colliders: Vec<ColliderHandle> = self.tanks.iter().map(|t| t.collider).collect();
+        let t = &mut self.tanks[i];
+        let pose = *self.physics.bodies[t.body].position();
+        // Gravity and the track model's own forces are in `feel.vel`, so
+        // what's left is what the solver did: contacts.
+        let jolt = t.vel - t.feel.vel + Vec3::Y * GRAVITY * DT;
+        let (mut sum, mut weight, mut rammed) = (Vec3::ZERO, 0.0, false);
+        for pair in self.physics.contact_pairs_with(t.collider) {
+            let PairContacts::Rigid(rc) = &pair.contacts else {
+                continue;
+            };
+            let ours_first = pair.collider1 == t.collider;
+            let other = if ours_first {
+                pair.collider2
+            } else {
+                pair.collider1
+            };
+            for m in rc.solver_manifolds() {
+                for p in &m.points {
+                    if p.data.impulse <= 0.0 {
+                        continue;
+                    }
+                    let local = if ours_first { p.local_p1 } else { p.local_p2 };
+                    sum += pose.transform_point(local) * p.data.impulse;
+                    weight += p.data.impulse;
+                    rammed |= colliders.contains(&other);
+                }
+            }
+        }
+        let at = if weight > 0.0 { sum / weight } else { t.pos };
+
+        let (grounded, up, pos, speed) = (t.grounded(), t.up(), t.pos, t.vel.length());
+        let f = &mut t.feel;
+        f.since_land += DT;
+        if jolt.length() > JOLT_MIN {
+            if f.jolt == Vec3::ZERO {
+                f.at = at;
+            }
+            f.jolt += jolt;
+            f.rammed |= rammed;
+        } else if f.jolt != Vec3::ZERO {
+            let strength = f.jolt.length();
+            let flat = Vec2::new(f.jolt.x, f.jolt.z).length();
+            let kind = if f.rammed {
+                Some(KnockKind::Tank)
+            } else if flat > f.jolt.y.abs() {
+                Some(KnockKind::Wall)
+            } else if f.since_land > LAND_HOLD {
+                // A belly slam (cresting a rise, coming down nose first).
+                Some(KnockKind::Land)
+            } else {
+                // The touchdown already sounded for this.
+                None
+            };
+            if let Some(kind) = kind.filter(|_| strength > KNOCK_MIN) {
+                if kind == KnockKind::Land {
+                    f.since_land = 0.0;
+                }
+                self.knocks.push(Knock {
+                    tank: i,
+                    kind,
+                    at: f.at,
+                    strength,
+                });
+            }
+            f.jolt = Vec3::ZERO;
+            f.rammed = false;
+        }
+
+        if grounded {
+            if f.air > AIR_MIN && f.drop > KNOCK_MIN && f.since_land > LAND_HOLD {
+                f.since_land = 0.0;
+                self.knocks.push(Knock {
+                    tank: i,
+                    kind: KnockKind::Land,
+                    at: pos - up * 0.5,
+                    strength: f.drop,
+                });
+            }
+            f.air = 0.0;
+            f.drop = 0.0;
+        } else {
+            f.air += DT;
+            f.drop = f.drop.max(-f.vel.y);
+        }
+
+        if !f.tipped && up.y < TIPPED {
+            f.tipped = true;
+            let spin = self.physics.bodies[t.body].angvel().length();
+            let strength = spin * 2.0 + speed;
+            if strength > KNOCK_MIN {
+                self.knocks.push(Knock {
+                    tank: i,
+                    kind: KnockKind::Tip,
+                    at: pos,
+                    strength,
+                });
+            }
+        } else if f.tipped && up.y > UPRIGHT {
+            f.tipped = false;
         }
     }
 
@@ -1472,6 +1591,61 @@ fn turret(t: &mut Tank, cmd: &Command, dt: f32) {
             t.turret_centering = false;
         }
     }
+}
+
+/// A run of steps where the contact solver takes more than this off a
+/// tank's speed, each step, is a knock, m/s. Resting and driving over
+/// ordinary ground stay well under it.
+const JOLT_MIN: f32 = 0.25;
+/// Weaker knocks than this (speed lost, m/s) make no sound.
+const KNOCK_MIN: f32 = 2.0;
+/// Off the ground at least this long before touching down is a landing, s.
+const AIR_MIN: f32 = 0.12;
+/// After a landing, the next is a separate one only this much later, s.
+const LAND_HOLD: f32 = 0.3;
+/// The hull's up axis below this (y) has gone over onto its side, and back
+/// above `UPRIGHT` it's back on its tracks.
+const TIPPED: f32 = 0.3;
+const UPRIGHT: f32 = 0.8;
+
+/// Something a tank ran into, came down on, or fell over, this step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Knock {
+    pub tank: usize,
+    pub kind: KnockKind,
+    /// Where it hit.
+    pub at: Vec3,
+    /// How hard: speed it lost, m/s (for `Tip`, how fast it went over).
+    pub strength: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnockKind {
+    /// A wall, a rock, anything static.
+    Wall,
+    /// Another tank (each of the two feels it).
+    Tank,
+    /// Coming down on the ground: a drop, a jump, a belly slam.
+    Land,
+    /// Going over onto its side or roof.
+    Tip,
+}
+
+/// Per tank, between steps.
+#[derive(Clone, Copy, Debug, Default)]
+struct Feel {
+    /// Velocity going into the solve.
+    vel: Vec3,
+    /// Speed the solver has taken off over this run of jolts, where it
+    /// started, and whether another tank was in it.
+    jolt: Vec3,
+    at: Vec3,
+    rammed: bool,
+    /// Seconds off the ground, and the fastest it sank meanwhile, m/s.
+    air: f32,
+    drop: f32,
+    since_land: f32,
+    tipped: bool,
 }
 
 /// Upside down or on its side for a while: put it back on its tracks.

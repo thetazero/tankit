@@ -4,14 +4,15 @@
 //! revs follow the belts and throttle, track clatter at the rate links meet
 //! the sprockets, a turret ring motor, and the laser's buzz or the flamer's
 //! roar while they fire; where a beam lands it sizzles, and a broken Vigil's
-//! light sings out of its cracks, and a spawn shield hums while it's up; in
-//! the garage the bay's turntable turns under the tank. The map's places
-//! make their own sounds as you near them (crystals, furnaces, banners...),
-//! ducking under the fight. Discrete moments (shots, impacts, armour hits,
-//! kills, repairs, a beam cooled and ready, the round starting, counting
-//! down and ending) come out of the match as [`Sound`] events and play as
-//! one-shots; a beam lighting, letting go and striking a hull, and your hull
-//! running low, are spotted here, frame to frame.
+//! light sings out of its cracks, a spawn shield hums while it's up, and air
+//! rushes past a falling tank; in the garage the bay's turntable turns under
+//! the tank. The map's places make their own sounds as you near them
+//! (crystals, furnaces, banners...), ducking under the fight. Discrete
+//! moments (shots, impacts, armour hits, kills, repairs, a beam cooled and
+//! ready, a tank ramming something, landing hard or going over, the round
+//! starting, counting down and ending) come out of the match as [`Sound`]
+//! events and play as one-shots; a beam lighting, letting go and striking a
+//! hull, and your hull running low, are spotted here, frame to frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
@@ -42,7 +43,8 @@ use mixer::{Mixer, OneShot};
 pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
 use sounds::{
-    Play, arrival, beam, garage, guns, hits, hold, hull, places, repair, round, shield, ui, vigil,
+    Play, arrival, beam, garage, guns, hits, hold, hull, knocks, places, repair, round, shield, ui,
+    vigil,
 };
 use voice::Layer;
 
@@ -273,6 +275,8 @@ impl Audio {
             Sound::Kill { at } => hits::kill(at, jitter),
 
             Sound::Hold(cue) => hold::cue(cue),
+
+            Sound::Knock(k) => knocks::knock(k, jitter),
 
             Sound::Repair { at } => repair::repair(at),
             Sound::RepairDrop { at } => repair::drop(at),

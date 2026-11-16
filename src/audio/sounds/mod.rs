@@ -38,6 +38,7 @@ pub mod guns;
 pub mod hits;
 pub mod hold;
 pub mod hull;
+pub mod knocks;
 pub mod places;
 pub mod repair;
 pub mod round;
