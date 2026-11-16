@@ -472,11 +472,15 @@ impl Pause {
         y += 44.0;
         if let Some(i) = self.settings {
             settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
-            label(
+            hint_row(
                 &mut p,
+                &mut hits,
                 Vec2::new(x, min.y + size.y - 34.0),
-                "ENTER TOGGLE    A/D VOLUME    ESC BACK",
-                Align::Left,
+                &[
+                    ("ENTER", "TOGGLE", Some(Nav::Select)),
+                    ("A/D", "VOLUME", None),
+                    ("ESC", "BACK", Some(Nav::Back)),
+                ],
             );
             return Layer {
                 verts: p.finish(),
@@ -708,6 +712,26 @@ fn hints(
     }
 }
 
+/// Key hints on one line from `at`, the ones that do something clickable.
+fn hint_row(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, keys: &[(&str, &str, Option<Nav>)]) {
+    let mut x = at.x;
+    for (key, what, nav) in keys {
+        let mut k = TextStyle::LABEL;
+        k.color = theme::FG;
+        let kw = p.text(Vec2::new(x, at.y), key, &k, Align::Left);
+        let w = kw + 6.0 + label(p, Vec2::new(x + kw + 6.0, at.y), what, Align::Left);
+        if let Some(nav) = nav {
+            hits.add(
+                p,
+                Vec2::new(x - 4.0, at.y - 3.0),
+                Vec2::new(w + 8.0, 14.0),
+                Hit::Key(*nav),
+            );
+        }
+        x += w + 24.0;
+    }
+}
+
 pub fn kit_name(kit: Loadout) -> String {
     format!(
         "{} · {}",
@@ -898,6 +922,9 @@ mod tests {
             click(&mut p, Hit::Row(0)).1,
             Some(PauseAction::Setting(Change::Toggle(0)))
         );
+        // The footer's ESC BACK leaves settings, like the key.
+        click(&mut p, Hit::Key(Nav::Back));
+        assert_eq!(p.settings, None);
     }
 
     #[test]

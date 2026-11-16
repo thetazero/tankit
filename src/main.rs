@@ -9,6 +9,7 @@ mod game;
 mod garage;
 mod hold;
 mod hud;
+mod keys;
 mod map;
 mod menu;
 mod mission;
@@ -559,7 +560,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         game.glow_particles(1.0, &mut frame.particles);
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
-            let ui = hud.draw(&game, &tanks, &camera, w, h, game::DT, false);
+            let ui = hud
+                .draw(&game, &tanks, &camera, w, h, game::DT, false)
+                .verts;
             frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
