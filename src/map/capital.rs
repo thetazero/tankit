@@ -786,6 +786,36 @@ impl Map {
     fn avenue(&mut self, rng: &mut Rng, dir: Vec2) {
         let side = Vec2::new(-dir.y, dir.x);
         let start = PLAZA_HALF + PLAZA_RAMP + 4.0;
+        // The processional way: big worn stone slabs down the middle.
+        let (len, across) = (6.0, 4);
+        let width = (AVENUE_HALF - 3.0) * 2.0;
+        let mut d = start - 2.0;
+        let mut row = 0;
+        while d < MID - 4.0 {
+            for j in 0..across {
+                let off = -width * 0.5 + (j as f32 + 0.5) * width / across as f32;
+                let c = CENTER + dir * (d + len * 0.5) + side * off;
+                let half = Vec2::new(
+                    (dir * len * 0.48 + side * width / across as f32 * 0.48)
+                        .x
+                        .abs(),
+                    (dir * len * 0.48 + side * width / across as f32 * 0.48)
+                        .y
+                        .abs(),
+                );
+                let shade = 0.74 + 0.06 * (((row * 5 + j * 3) % 4) as f32 / 3.0);
+                self.slab(
+                    Vec3::new(c.x - half.x, -0.1, c.y - half.y),
+                    Vec3::new(c.x + half.x, 0.05, c.y + half.y),
+                    0.0,
+                    STONE * shade,
+                    Material::Concrete,
+                    false,
+                );
+            }
+            d += len;
+            row += 1;
+        }
         let mut d = start;
         let mut k = 0;
         while d < MID - 12.0 {
@@ -860,6 +890,21 @@ impl Map {
             }
         };
         let top = Vec3::new(0.0, plinth + 0.3, 0.0);
+        if state < 0.8 {
+            // The raised hand holds a standard, the emblem's disc on top.
+            let hand = rig.point(top + Vec3::new(0.95, 4.6, 0.15));
+            let tip = hand + Vec3::Y * 3.2;
+            self.pipe(
+                hand - Vec3::Y * 4.4,
+                tip,
+                0.07,
+                GOLD * 0.8,
+                Material::Metal,
+                false,
+            );
+            let n = Vec3::new(face.x, 0.0, face.y);
+            self.disc(tip + Vec3::Y * 0.5, n * 0.05, 0.5, GOLD, Material::Metal);
+        }
         if state < 0.6 {
             figure(&rig, self, top, Quat::IDENTITY, true);
         } else if state < 0.8 {
@@ -882,7 +927,9 @@ impl Map {
             Material::Painted,
             true,
         );
-        let a = Vec3::new(along.x, 0.0, along.y);
+        // Crossbar across the avenue, so the banner faces down it: you see
+        // it driving either way.
+        let a = Vec3::new(-along.y, 0.0, along.x);
         let top = Vec3::new(at.x, h - 0.4, at.y);
         self.pipe(
             top - a * 1.4,
@@ -892,8 +939,7 @@ impl Map {
             Material::Metal,
             false,
         );
-        // The banner hangs in the avenue's direction, facing across it.
-        let face = Vec2::new(-along.y, along.x);
+        let face = along;
         self.banner(
             top - Vec3::Y * 0.1 - Vec3::new(face.x, 0.0, face.y) * 0.12,
             face,
