@@ -14,6 +14,7 @@ cargo run --release                          # play a deathmatch round (random m
 cargo run --release -- --bots 7              # more opponents (0-7)
 cargo run --release -- --seed 21             # play a specific map
 cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
+cargo run --release -- --map saltmarket      # Saltmarket: desert town on a dry reservoir (blockout)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
 cargo run --release -- --hull bastion --turret maul   # start with a different loadout
 cargo run --release -- --seed 21 --garage --hull bastion --time 2 --shot garage.png   # garage open, Bastion picked

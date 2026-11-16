@@ -18,14 +18,14 @@ use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullKind, HullStats, TurretKind};
 use crate::tank::TankArt;
-use crate::{ShowroomArgs, make_map, showroom};
+use crate::{MapKind, ShowroomArgs, make_map, showroom};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
 
 struct App {
     seed: u64,
-    proving: bool,
+    map_kind: MapKind,
     spawn: usize,
     bots: usize,
     window: Option<Arc<Window>>,
@@ -53,7 +53,7 @@ struct App {
 
 pub fn run(
     seed: u64,
-    proving: bool,
+    map_kind: MapKind,
     spawn: usize,
     bots: usize,
     loadout: garage::Loadout,
@@ -61,7 +61,7 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut game = Match::new(make_map(seed, proving), spawn, if showroom.is_some() { 0 } else { bots }, seed);
+    let mut game = Match::new(make_map(seed, map_kind), spawn, if showroom.is_some() { 0 } else { bots }, seed);
     if showroom.is_some() {
         game.world = showroom::world();
     } else {
@@ -70,7 +70,7 @@ pub fn run(
     }
     let mut app = App {
         seed,
-        proving,
+        map_kind,
         spawn,
         bots,
         window: None,
@@ -163,7 +163,7 @@ impl App {
     /// Start a new round on the current map settings, keeping the player's tank kit.
     fn restart(&mut self) {
         let (hull, turret) = self.queued();
-        self.game = Match::new(make_map(self.seed, self.proving), self.spawn, self.bots, self.seed.wrapping_add(self.spawn as u64));
+        self.game = Match::new(make_map(self.seed, self.map_kind), self.spawn, self.bots, self.seed.wrapping_add(self.spawn as u64));
         self.game.set_player_hull(hull);
         self.game.world.tanks[0].turret_kind = turret;
         self.cam = ChaseCam::new();
@@ -223,7 +223,7 @@ impl App {
             // New random map.
             KeyCode::F5 if self.showroom.is_none() => {
                 self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
-                self.proving = false;
+                self.map_kind = MapKind::City;
                 self.restart();
                 log::info!("map seed {}", self.seed);
             }
