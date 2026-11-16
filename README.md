@@ -14,6 +14,9 @@ cargo run --release                          # play (random map)
 cargo run --release -- --seed 21             # play a specific map
 cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
+cargo run --release -- --showroom            # every hull x turret combo, animated, orbiting camera
+cargo run --release -- --showroom --focus 0 --dist 8 --orbit 120 --time 3 --shot tank.png
+cargo run --release -- --map proving --spawn 2 --straight --time 1.2 --frames 90 --shot clip/f.png   # frame sequence
 cargo test
 ```
 
@@ -28,6 +31,34 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | Z / X | rotate turret left / right (it turns with the hull) |
 | C | swing turret back to center |
 | PageUp / PageDown | camera height |
+| Space | fire (no projectiles yet: recoil kicks the hull, muzzle flash) |
+| 1 / 2 | cycle hull / turret |
 | R | respawn at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
 | Esc | quit |
+
+## Tank kit
+
+Tanks are procedural (`src/tank/`), assembled from beveled armor plates and
+chamfered lofted solids, so they read as built from panels. Two hulls
+(Lancer: light wedge; Bastion: heavy, segmented skirts) and two turrets
+(Lance: long rail cannon; Maul: twin short cannons) mix freely. Light plates
+take the team color; dark composite, metal and the orange light strips don't.
+
+Animated: separate tread links running around the wheels at each side's own
+speed (so a pivot turn counter-rotates them), spinning road wheels and
+sprockets, turret yaw, gun pitch, barrel recoil with muzzle flash (twin guns
+alternate), hull pitch/roll and a little rumble, and pulsing light strips.
+Surface detail (carbon weave, panel seams, edge wear) is in the shader,
+materials 6–11 in `scene.wgsl`.
+
+## Physics
+
+Tanks are rapier3d rigid bodies with honest gravity and contacts. The
+tank-specific part (`src/sim.rs`) is the track model: a spring ray per road
+wheel carries the weight, and every point where a track touches the world
+(road wheels, or the swept-up track run around the sprocket and idler) pushes
+along the belt's direction of travel there, limited by friction times that
+contact's load. Climbing, pivot turns, and skid steering all come out of that.
+Road wheels and the tread belt in the art follow the suspension.
+

@@ -488,6 +488,21 @@ impl Map {
         Vec2::splat(self.size * 0.5)
     }
 
+    /// Flat ground and nothing else (the showroom yard).
+    pub fn empty(size: f32) -> Map {
+        Map {
+            size,
+            solids: Vec::new(),
+            boxes: Vec::new(),
+            trees: Vec::new(),
+            wedges: Vec::new(),
+            terrain: None,
+            roads: Vec::new(),
+            open_spots: vec![Vec2::ZERO],
+            spawn_yaw: Some(0.0),
+        }
+    }
+
     /// Ground height at a point (terrain if present, else flat 0).
     pub fn ground_height(&self, x: f32, z: f32) -> f32 {
         self.terrain.as_ref().map_or(0.0, |t| t.height_at(x, z))
@@ -548,7 +563,7 @@ impl Map {
             // Landing ramp, same height as the kicker, after a gap sized to about
             // 70% of the flight distance at top speed so a full-speed jump clears it
             // and lands on the down slope.
-            let (v, g) = (15.0f32, 20.0f32);
+            let (v, g) = (15.0f32, crate::sim::GRAVITY);
             let flight = 2.0 * v * deg.to_radians().sin() / g * v * deg.to_radians().cos();
             let land_z = z0 + len + flight * 0.7;
             map.wedges.push(Wedge {

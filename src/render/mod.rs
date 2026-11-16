@@ -501,6 +501,12 @@ impl Renderer {
         }
     }
 
+    /// Register a mesh for instanced drawing.
+    pub fn add_mesh(&mut self, mesh: &MeshData) -> MeshId {
+        self.meshes.push(GpuMesh::new(&self.device, mesh, "mesh"));
+        MeshId(self.meshes.len() as u32 - 1)
+    }
+
     /// Upload world geometry that never moves (drawn with an identity transform).
     pub fn set_static_mesh(&mut self, mesh: &MeshData) {
         self.static_mesh = Some(GpuMesh::new(&self.device, mesh, "static"));
@@ -653,7 +659,7 @@ impl Renderer {
             pass.draw_indexed(0..m.count, 0, 0..1);
         }
         for (id, r) in ranges {
-            let m = &self.meshes[*id as usize];
+            let m = &self.meshes[id.0 as usize];
             pass.set_vertex_buffer(0, m.vb.slice(..));
             pass.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..m.count, 0, r.clone());

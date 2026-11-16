@@ -13,7 +13,9 @@ use winit::window::{Window, WindowId};
 use crate::game::Clock;
 use crate::render::Renderer;
 use crate::scene::{self, ChaseCam};
-use crate::sim::{Command, World};
+use crate::sim::{Command, HullKind, TurretKind, World};
+use crate::tank::TankArt;
+use crate::{ShowroomArgs, make_map, showroom};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
@@ -24,6 +26,8 @@ struct App {
     spawn: usize,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    art: Option<TankArt>,
+    showroom: Option<ShowroomArgs>,
     world: World,
     cam: ChaseCam,
     clock: Clock,
@@ -33,19 +37,20 @@ struct App {
     fps_frames: u32,
 }
 
-pub fn run(seed: u64, proving: bool, spawn: usize) -> anyhow::Result<()> {
+pub fn run(seed: u64, proving: bool, spawn: usize, showroom: Option<ShowroomArgs>) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let world = World::new(make_map(seed, proving), spawn);
-    let cam = ChaseCam::new();
+    let world = if showroom.is_some() { showroom::world() } else { World::new(make_map(seed, proving), spawn) };
     let mut app = App {
         seed,
         proving,
         spawn,
         window: None,
         renderer: None,
+        art: None,
+        showroom,
         world,
-        cam,
+        cam: ChaseCam::new(),
         clock: Clock::default(),
         keys: HashSet::new(),
         last: Instant::now(),
@@ -54,10 +59,6 @@ pub fn run(seed: u64, proving: bool, spawn: usize) -> anyhow::Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
-}
-
-fn make_map(seed: u64, proving: bool) -> crate::map::Map {
-    if proving { crate::map::Map::proving_ground() } else { crate::map::Map::generate(seed) }
 }
 
 impl ApplicationHandler for App {
@@ -71,7 +72,12 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         match Renderer::new_windowed(window.clone()) {
             Ok(mut r) => {
-                r.set_static_mesh(&scene::map_mesh(&self.world.map));
+                if self.showroom.is_some() {
+                    r.set_static_mesh(&showroom::ground_mesh());
+                } else {
+                    r.set_static_mesh(&scene::map_mesh(&self.world.map));
+                }
+                self.art = Some(TankArt::upload(&mut r));
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -120,28 +126,44 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Rebuild the world on the current map settings, keeping the player's tank kit.
+    fn restart(&mut self) {
+        let (hull, turret) = (self.world.tanks[0].hull_kind, self.world.tanks[0].turret_kind);
+        self.world = World::new(make_map(self.seed, self.proving), self.spawn);
+        self.world.set_hull(0, hull);
+        self.world.tanks[0].turret_kind = turret;
+        self.cam = ChaseCam::new();
+        if let Some(r) = &mut self.renderer {
+            r.set_static_mesh(&scene::map_mesh(&self.world.map));
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
         match code {
             KeyCode::Escape => event_loop.exit(),
-            // Restart at the next spawn point (handy on the proving ground).
-            KeyCode::KeyR => {
+            // Restart at the next spawn point (cycles the proving ground lanes).
+            KeyCode::KeyR if self.showroom.is_none() => {
                 self.spawn += 1;
-                self.world = World::new(make_map(self.seed, self.proving), self.spawn);
-                self.cam = ChaseCam::new();
-                if let Some(r) = &mut self.renderer {
-                    r.set_static_mesh(&scene::map_mesh(&self.world.map));
-                }
+                self.restart();
             }
             // New random map.
-            KeyCode::F5 => {
+            KeyCode::F5 if self.showroom.is_none() => {
                 self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
-                self.world = World::new(make_map(self.seed, self.proving), self.spawn);
-                self.cam = ChaseCam::new();
-                if let Some(r) = &mut self.renderer {
-                    r.set_static_mesh(&scene::map_mesh(&self.world.map));
-                }
+                self.proving = false;
+                self.restart();
                 log::info!("map seed {}", self.seed);
             }
+            // Cycle through the tank kit.
+            KeyCode::Digit1 => {
+                let next = if self.world.tanks[0].hull_kind == HullKind::Lancer { HullKind::Bastion } else { HullKind::Lancer };
+                self.world.set_hull(0, next);
+            }
+            KeyCode::Digit2 => {
+                let t = &mut self.world.tanks[0];
+                t.turret_kind = if t.turret_kind == TurretKind::Lance { TurretKind::Maul } else { TurretKind::Lance };
+            }
+            // No projectiles yet: recoil, flash, and a real kick to the hull.
+            KeyCode::Space => self.world.fire(0),
             _ => {}
         }
     }
@@ -170,12 +192,28 @@ impl App {
 
         let cmd = self.command();
         for _ in 0..self.clock.advance(dt) {
-            self.world.step(&[cmd]);
+            if self.showroom.is_some() {
+                let cmds = showroom::commands(&self.world);
+                self.world.step(&cmds);
+                showroom::after_step(&mut self.world);
+            } else {
+                self.world.step(&[cmd]);
+            }
         }
 
-        if let Some(r) = &mut self.renderer {
-            let camera = self.cam.update(&self.world, &self.world.tanks[0], dt);
-            let scene = scene::build(&self.world, camera, r.width as f32, r.height as f32);
+        if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
+            let mut camera = self.cam.update(&self.world, &self.world.tanks[0], dt);
+            if let Some(room) = self.showroom {
+                // Slow auto-orbit; PageUp/PageDown zoom.
+                let angle = room.orbit.unwrap_or(self.world.time * 0.15);
+                camera = showroom::camera(&self.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
+            }
+            let mut scene = scene::build(&self.world, art, camera, r.width as f32, r.height as f32);
+            if self.showroom.is_some() {
+                scene.ui.clear();
+                scene.shadow_center = glam::Vec3::ZERO;
+                scene.shadow_radius = 22.0;
+            }
             r.render(&scene);
         }
 
@@ -184,9 +222,14 @@ impl App {
         if self.fps_timer >= 0.5 {
             if let Some(w) = &self.window {
                 let fps = self.fps_frames as f32 / self.fps_timer;
+                let t = &self.world.tanks[0];
                 w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  seed {}  |  WASD drive, Z/X turret, C center, PgUp/PgDn camera, R respawn, F5 new map",
-                    self.seed
+                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  wheels {}/{} +{} track contacts  |  WASD drive, Z/X turret, C center, Space fire, 1/2 swap parts, R respawn, F5 new map",
+                    t.speed(),
+                    if t.grounded() { "on ground" } else { "AIRBORNE" },
+                    t.wheels_down,
+                    t.chassis.wheel_count(),
+                    t.face_contacts,
                 ));
             }
             self.fps_timer = 0.0;

@@ -4,9 +4,12 @@ mod map;
 mod render;
 mod rng;
 mod scene;
+mod showroom;
 mod sim;
+mod tank;
 
 use anyhow::{Context, Result, bail};
+use glam::Vec3;
 
 const USAGE: &str = "\
 tankit [OPTIONS]
@@ -15,26 +18,42 @@ tankit [OPTIONS]
   --seed <n>              map seed (default: random)
   --map <city|proving>    city (default) or the physics test course
   --spawn <n>             which spawn point to start at
-  --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
-  --shot <out.png>        render one frame offscreen and save it
+  --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
   --fps <f>               frame rate for --frames (default 30)
+  --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
+  --showroom              all hull x turret combos on an open yard, orbiting camera
+  --orbit <degrees>       showroom: fixed camera angle instead of orbiting
+  --dist <meters>         showroom: camera distance (default 24)
+  --focus <0-3>           showroom: frame one tank
 ";
 
-struct Args {
-    seed: u64,
-    proving: bool,
-    spawn: usize,
+pub struct Args {
+    pub seed: u64,
+    pub proving: bool,
+    pub spawn: usize,
     straight: bool,
     shot: Option<ShotArgs>,
+    showroom: Option<ShowroomArgs>,
 }
 
 impl Args {
-    fn map(&self) -> map::Map {
-        if self.proving { map::Map::proving_ground() } else { map::Map::generate(self.seed) }
+    pub fn map(&self) -> map::Map {
+        make_map(self.seed, self.proving)
     }
+}
+
+pub fn make_map(seed: u64, proving: bool) -> map::Map {
+    if proving { map::Map::proving_ground() } else { map::Map::generate(seed) }
+}
+
+#[derive(Clone, Copy)]
+pub struct ShowroomArgs {
+    pub orbit: Option<f32>,
+    pub dist: f32,
+    pub focus: Option<usize>,
 }
 
 struct ShotArgs {
@@ -50,41 +69,46 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"))
         .init();
     let args = parse_args()?;
-    match &args.shot {
-        Some(shot) => screenshot(&args, shot),
-        None => app::run(args.seed, args.proving, args.spawn),
+    match (&args.shot, args.showroom) {
+        (Some(shot), Some(room)) => showroom_shot(shot, room),
+        (Some(shot), None) => screenshot(&args, shot),
+        (None, room) => app::run(args.seed, args.proving, args.spawn, room),
     }
 }
 
 fn parse_args() -> Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64 % 100_000;
-    let mut shot: Option<ShotArgs> = None;
+    let mut shot: Option<String> = None;
     let mut time = 1.0;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
     let (mut proving, mut spawn, mut straight) = (false, 0usize, false);
+    let mut showroom = false;
+    let mut room = ShowroomArgs { orbit: None, dist: 24.0, focus: None };
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--shot" => {
-                shot = Some(ShotArgs { out: args.next().context("--shot needs a path")?, time, width, height, frames, fps })
-            }
+            "--shot" => shot = Some(args.next().context("--shot needs a path")?),
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--map" => match args.next().as_deref() {
                 Some("city") => proving = false,
                 Some("proving") => proving = true,
                 other => bail!("--map expects city or proving, got {other:?}"),
             },
+            "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--straight" => straight = true,
+            "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
             "--fps" => fps = args.next().context("--fps needs a number")?.parse()?,
-            "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
-            "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--size" => {
                 let s = args.next().context("--size needs WxH")?;
                 let (w, h) = s.split_once('x').context("--size format is WxH")?;
                 (width, height) = (w.parse()?, h.parse()?);
             }
+            "--showroom" => showroom = true,
+            "--orbit" => room.orbit = Some(args.next().context("--orbit needs degrees")?.parse::<f32>()?.to_radians()),
+            "--dist" => room.dist = args.next().context("--dist needs meters")?.parse()?,
+            "--focus" => room.focus = Some(args.next().context("--focus needs a tank index")?.parse()?),
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -92,7 +116,22 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
-    Ok(Args { seed, proving, spawn, straight, shot: shot.map(|s| ShotArgs { time, width, height, frames, fps, ..s }) })
+    Ok(Args {
+        seed,
+        proving,
+        spawn,
+        straight,
+        shot: shot.map(|out| ShotArgs { out, time, width, height, frames, fps }),
+        showroom: showroom.then_some(room),
+    })
+}
+
+fn frame_path(shot: &ShotArgs, i: u32) -> String {
+    if shot.frames > 1 {
+        format!("{}_{i:03}.png", shot.out.trim_end_matches(".png"))
+    } else {
+        shot.out.clone()
+    }
 }
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
@@ -100,6 +139,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut cam = scene::ChaseCam::new();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&world.map));
+    let art = tank::TankArt::upload(&mut renderer);
     let command = |world: &sim::World| {
         if args.straight { sim::Command { throttle: 1.0, ..Default::default() } } else { game::autopilot(world.time) }
     };
@@ -120,20 +160,44 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if i > 0 {
             camera = advance(&mut world, &mut cam, 1.0 / shot.fps);
         }
-        let frame = scene::build(&world, camera, shot.width as f32, shot.height as f32);
-        let img = renderer.render_to_image(&frame)?;
-        let out = if shot.frames > 1 {
-            let stem = shot.out.trim_end_matches(".png");
-            format!("{stem}_{i:03}.png")
-        } else {
-            shot.out.clone()
-        };
-        img.save(&out).with_context(|| format!("save {out}"))?;
+        let frame = scene::build(&world, &art, camera, shot.width as f32, shot.height as f32);
+        let out = frame_path(shot, i);
+        renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
     let t = &world.tanks[0];
     println!(
-        "wrote {} frame(s) to {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {}",
-        shot.frames, shot.out, shot.width, shot.height, world.time, t.pos, t.up(), t.wheels_down
+        "wrote {} frame(s) to {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {} face contacts {}",
+        shot.frames, shot.out, shot.width, shot.height, world.time, t.pos, t.up(), t.wheels_down, t.face_contacts
     );
+    Ok(())
+}
+
+fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
+    let mut world = showroom::world();
+    let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
+    renderer.set_static_mesh(&showroom::ground_mesh());
+    let art = tank::TankArt::upload(&mut renderer);
+    let advance = |world: &mut sim::World, seconds: f32| {
+        for _ in 0..(seconds / game::DT).round() as u32 {
+            let cmds = showroom::commands(world);
+            world.step(&cmds);
+            showroom::after_step(world);
+        }
+    };
+    advance(&mut world, shot.time);
+    for i in 0..shot.frames {
+        if i > 0 {
+            advance(&mut world, 1.0 / shot.fps);
+        }
+        let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
+        let camera = showroom::camera(&world, angle, room.dist, room.focus);
+        let mut frame = scene::build(&world, &art, camera, shot.width as f32, shot.height as f32);
+        frame.ui.clear();
+        frame.shadow_center = Vec3::ZERO;
+        frame.shadow_radius = 22.0;
+        let out = frame_path(shot, i);
+        renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
+    }
+    println!("wrote {} frame(s) to {} (showroom, t={:.2}s)", shot.frames, shot.out, world.time);
     Ok(())
 }

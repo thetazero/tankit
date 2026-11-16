@@ -25,18 +25,21 @@ impl Instance {
     }
 }
 
-/// Unit primitives drawn with instancing. Order matches `MeshData::primitives`.
-#[allow(dead_code)] // Sphere and Gem are for effects and pickups.
+/// Handle to a mesh drawn with instancing. The first few are built-in unit
+/// primitives; more are registered at startup with `Renderer::add_mesh`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum MeshId {
+pub struct MeshId(pub u32);
+
+#[allow(dead_code)]
+impl MeshId {
     /// Unit cube centered at the origin (extent -0.5..0.5).
-    Cube = 0,
+    pub const CUBE: MeshId = MeshId(0);
     /// Radius 0.5, height 1, along +Y, centered.
-    Cylinder = 1,
+    pub const CYLINDER: MeshId = MeshId(1);
     /// Radius 0.5.
-    Sphere = 2,
+    pub const SPHERE: MeshId = MeshId(2);
     /// Octahedron gem, radius 0.5, height 1.
-    Gem = 3,
+    pub const GEM: MeshId = MeshId(3);
 }
 
 pub const MESH_COUNT: usize = 4;
@@ -91,6 +94,20 @@ impl MeshData {
             self.verts.push(Vertex { pos: p.to_array(), normal: n.to_array(), color: color.to_array() });
         }
         self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
+    /// Flat-shaded triangle whose normal faces away from `inside`.
+    pub fn facet(&mut self, p: [Vec3; 3], inside: Vec3, c: Vec4) {
+        let mut n = (p[1] - p[0]).cross(p[2] - p[0]);
+        if n.length_squared() < 1e-12 {
+            return;
+        }
+        n = n.normalize();
+        let centre = (p[0] + p[1] + p[2]) / 3.0;
+        if n.dot(centre - inside) < 0.0 {
+            n = -n;
+        }
+        self.tri(p, n, c);
     }
 
     pub fn cube() -> MeshData {
