@@ -309,6 +309,7 @@ impl Map {
     }
 
     /// A box in a lot's local frame: `min`/`max` are local footprint coords.
+    #[allow(clippy::too_many_arguments)]
     fn local_box(
         &mut self,
         lot: &OBox,
@@ -317,6 +318,7 @@ impl Map {
         y0: f32,
         y1: f32,
         color: Vec3,
+        material: f32,
     ) -> OBox {
         let (ax, az) = lot.axes();
         let mid = (min + max) * 0.5;
@@ -327,8 +329,8 @@ impl Map {
             y0,
             y1,
             color,
-            side_mat: mat::WALL,
-            top_mat: mat::ROOF,
+            side_mat: material,
+            top_mat: material,
             ..OBox::default()
         };
         self.oboxes.push(b);
@@ -369,7 +371,15 @@ impl Map {
         if roll < 0.15 {
             // Low stub, sand banked up its street face to the roof: a way up.
             let height = 2.2;
-            self.local_box(&lot, -h, h, 0.0, height, RUIN * rng.range(0.9, 1.0));
+            self.local_box(
+                &lot,
+                -h,
+                h,
+                0.0,
+                height,
+                RUIN * rng.range(0.9, 1.0),
+                mat::PLASTER,
+            );
             drifts.push(Drift {
                 b: lot,
                 axis: front_axis,
@@ -389,6 +399,7 @@ impl Map {
                     y0,
                     y0 + 0.45,
                     RUBBLE * (1.0 - 0.04 * k as f32),
+                    mat::RUBBLE,
                 );
             }
             let wall_len = h.x * rng.range(0.6, 1.4);
@@ -399,6 +410,7 @@ impl Map {
                 0.0,
                 rng.range(3.0, 6.0),
                 RUIN,
+                mat::PLASTER,
             );
         } else {
             // A real building, built then damaged (see ruins.rs).
@@ -437,6 +449,15 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            // Late afternoon on a desert world: low warm sun, dusty sky, sand haze.
+            atmosphere: crate::render::Atmosphere {
+                sun_dir: Vec3::new(0.62, 0.34, 0.42),
+                sun_color: Vec3::new(2.7, 2.1, 1.45),
+                sky_zenith: Vec3::new(0.26, 0.4, 0.62),
+                sky_horizon: Vec3::new(0.72, 0.62, 0.48),
+                ground_color: Vec3::new(0.36, 0.28, 0.19),
+                fog_density: 0.0032,
+            },
             // Repair crates come down in exposed places worth fighting over:
             // the market square, the reservoir bed, the ridge, the dam's foot.
             repair_spots: vec![
@@ -466,7 +487,7 @@ impl Map {
             ground(x, z) + drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max)
         });
         terrain.color = SAND;
-        terrain.material = mat::PLAIN;
+        terrain.material = mat::SAND;
         map.terrain = Some(terrain);
         map.market_hall();
         map.dam();
@@ -478,11 +499,28 @@ impl Map {
         map
     }
 
-    fn block_c(&mut self, min: Vec3, max: Vec3, color: Vec3) {
-        self.add_block(min, max, color);
+    fn block_c(&mut self, min: Vec3, max: Vec3, color: Vec3, material: f32) {
+        self.boxes.push(super::VisBox {
+            min,
+            max,
+            color,
+            side_mat: material,
+            top_mat: material,
+        });
+        self.solids.push(super::Solid { min, max });
     }
 
-    fn ramp(&mut self, min: Vec2, max: Vec2, base_y: f32, height: f32, rise: Rise, color: Vec3) {
+    #[allow(clippy::too_many_arguments)]
+    fn ramp(
+        &mut self,
+        min: Vec2,
+        max: Vec2,
+        base_y: f32,
+        height: f32,
+        rise: Rise,
+        color: Vec3,
+        material: f32,
+    ) {
         self.wedges.push(Wedge {
             min,
             max,
@@ -490,6 +528,7 @@ impl Map {
             height,
             rise,
             color,
+            material: Some(material),
         });
     }
 
@@ -504,18 +543,21 @@ impl Map {
                 Vec3::new(p.x - pier * 0.5, 0.0, p.y - pier * 0.5),
                 Vec3::new(p.x + pier * 0.5, roof_lo, p.y + pier * 0.5),
                 CONCRETE,
+                mat::CONCRETE,
             );
         }
         self.block_c(
             Vec3::new(c.x - half, roof_lo, c.y - half),
             Vec3::new(c.x + half, roof_hi, c.y + half),
             CONCRETE * 1.04,
+            mat::CONCRETE,
         );
         // A smaller drum on the roof stands in for the dome.
         self.block_c(
             Vec3::new(c.x - 6.0, roof_hi, c.y - 6.0),
             Vec3::new(c.x + 6.0, roof_hi + 3.5, c.y + 6.0),
             CONCRETE * 0.97,
+            mat::CONCRETE,
         );
     }
 
@@ -525,8 +567,18 @@ impl Map {
         let (z0, z1, h) = (18.0, 30.0, 5.0);
         let (x0, x1) = (150.0, SIZE - 2.0);
         let (gap0, gap1) = (182.0, 194.0);
-        self.block_c(Vec3::new(x0, 0.0, z0), Vec3::new(gap0, h, z1), DAM);
-        self.block_c(Vec3::new(gap1, 0.0, z0), Vec3::new(x1, h, z1), DAM);
+        self.block_c(
+            Vec3::new(x0, 0.0, z0),
+            Vec3::new(gap0, h, z1),
+            DAM,
+            mat::CONCRETE,
+        );
+        self.block_c(
+            Vec3::new(gap1, 0.0, z0),
+            Vec3::new(x1, h, z1),
+            DAM,
+            mat::CONCRETE,
+        );
         // Rubble spilling out of the breach.
         self.ramp(
             Vec2::new(gap0 + 1.0, z0 - 6.0),
@@ -535,6 +587,7 @@ impl Map {
             1.0,
             Rise::PosZ,
             RUBBLE,
+            mat::RUBBLE,
         );
         // Up from the town's south edge onto the west half of the dam.
         self.ramp(
@@ -544,6 +597,7 @@ impl Map {
             h,
             Rise::PosX,
             DAM * 0.95,
+            mat::CONCRETE,
         );
         // Down from the east half into the bowl.
         self.ramp(
@@ -553,6 +607,7 @@ impl Map {
             h + 2.5,
             Rise::NegZ,
             DAM * 0.95,
+            mat::CONCRETE,
         );
     }
 
@@ -561,7 +616,13 @@ impl Map {
     /// east lane, and a bus with its tires gone on the main road.
     fn street_landmarks(&mut self) -> Vec<OBox> {
         let mut placed = Vec::new();
-        let mut put = |m: &mut Map, center: Vec2, yaw: f32, half: Vec2, y1: f32, color: Vec3| {
+        let mut put = |m: &mut Map,
+                       center: Vec2,
+                       yaw: f32,
+                       half: Vec2,
+                       y1: f32,
+                       color: Vec3,
+                       material: f32| {
             let b = OBox {
                 center,
                 yaw,
@@ -569,6 +630,8 @@ impl Map {
                 y0: 0.0,
                 y1,
                 color,
+                side_mat: material,
+                top_mat: material,
                 ..OBox::default()
             };
             m.oboxes.push(b);
@@ -584,6 +647,7 @@ impl Map {
             Vec2::new(3.0, 3.0),
             3.0,
             RUST,
+            mat::RUST,
         );
         put(
             self,
@@ -592,6 +656,7 @@ impl Map {
             Vec2::new(5.0, 3.2),
             4.5,
             RUST * 1.1,
+            mat::RUST,
         );
         // The bus, pulled half onto the verge of the main road.
         let road = (Vec2::new(48.0, 121.0) - Vec2::new(30.0, 112.0)).normalize();
@@ -603,6 +668,7 @@ impl Map {
             Vec2::new(5.5, 1.3),
             3.2,
             Vec3::new(0.62, 0.52, 0.34),
+            mat::RUST,
         );
         placed
     }
@@ -616,16 +682,19 @@ impl Map {
             Vec3::new(cx - 8.0, floor - 2.0, cz - 5.0),
             Vec3::new(cx + 8.0, floor + 4.5, cz + 5.0),
             WRECK,
+            mat::RUST,
         );
         self.block_c(
             Vec3::new(cx - 3.5, floor + 4.5, cz - 3.5),
             Vec3::new(cx + 3.5, floor + 7.5, cz + 3.5),
             WRECK * 1.05,
+            mat::RUST,
         );
         self.block_c(
             Vec3::new(cx - 18.0, floor + 5.2, cz - 0.7),
             Vec3::new(cx - 3.5, floor + 6.6, cz + 0.7),
             WRECK * 0.9,
+            mat::RUST,
         );
         // A sand drift banked against its west flank: the way up.
         self.ramp(
@@ -635,6 +704,7 @@ impl Map {
             4.5,
             Rise::PosX,
             SAND,
+            mat::SAND,
         );
     }
 
@@ -649,6 +719,7 @@ impl Map {
             Vec3::new(146.0, -1.0, pz0),
             Vec3::new(176.0, 0.4, pz1),
             RUST * 0.8,
+            mat::RUST,
         );
         for x in [154.0f32, 162.0, 170.0] {
             let g = at(x, pz0);
@@ -656,11 +727,13 @@ impl Map {
                 Vec3::new(x - 0.6, g - 0.5, pz0 + 0.5),
                 Vec3::new(x + 0.6, -1.0, pz0 + 1.7),
                 RUST * 0.7,
+                mat::RUST,
             );
             self.block_c(
                 Vec3::new(x - 0.6, g - 0.5, pz1 - 1.7),
                 Vec3::new(x + 0.6, -1.0, pz1 - 0.5),
                 RUST * 0.7,
+                mat::RUST,
             );
         }
         // Pipeline: segments half sunk in the bed, with gaps to drive through.
@@ -671,6 +744,7 @@ impl Map {
                 Vec3::new(170.5, g - 0.8, z0),
                 Vec3::new(173.5, g + 1.4, z0 + 8.0),
                 RUST,
+                mat::RUST,
             );
         }
         // Stranded boats: hull block with a bow ramp, lying in the mud.
@@ -681,6 +755,7 @@ impl Map {
                 Vec3::new(x - hx, g - 0.5, z - hz),
                 Vec3::new(x + hx, g + 2.4, z + hz),
                 Vec3::new(0.44, 0.4, 0.36),
+                mat::RUST,
             );
             if along_x {
                 self.ramp(
@@ -690,6 +765,7 @@ impl Map {
                     2.9,
                     Rise::NegX,
                     SAND,
+                    mat::SAND,
                 );
             } else {
                 self.ramp(
@@ -699,6 +775,7 @@ impl Map {
                     2.9,
                     Rise::PosZ,
                     SAND,
+                    mat::SAND,
                 );
             }
         }
@@ -721,6 +798,7 @@ impl Map {
                 Vec3::new(x - w, g - 1.0, z - d),
                 Vec3::new(x + w, g + h, z + d),
                 Vec3::new(0.62, 0.52, 0.4),
+                mat::RUBBLE,
             );
         }
     }
@@ -733,12 +811,14 @@ impl Map {
             Vec3::new(142.0, g - 1.0, 212.0),
             Vec3::new(156.0, g + 2.8, 220.0),
             DAM,
+            mat::CONCRETE,
         );
         let g = at(96.0, 222.0);
         self.block_c(
             Vec3::new(95.0, g - 0.5, 221.0),
             Vec3::new(97.0, g + 11.0, 223.0),
             RUST,
+            mat::RUST,
         );
         for (x, z, w, h) in [
             (30.0f32, 220.0f32, 4.0f32, 3.0f32),
@@ -752,6 +832,7 @@ impl Map {
                 Vec3::new(x - w, g - 1.0, z - w * 0.8),
                 Vec3::new(x + w, g + h, z + w * 0.8),
                 Vec3::new(0.62, 0.52, 0.4),
+                mat::RUBBLE,
             );
         }
     }

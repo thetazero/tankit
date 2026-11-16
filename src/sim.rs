@@ -1276,6 +1276,7 @@ mod tests {
     fn jumps_and_lands_upright() {
         let mut w = flat_world();
         let kicker = Wedge {
+            material: None,
             min: Vec2::new(95.0, 120.0),
             max: Vec2::new(105.0, 124.0),
             base_y: 0.0,

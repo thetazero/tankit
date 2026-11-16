@@ -32,12 +32,16 @@ const PIER: f32 = 0.55;
 /// Width of a collapsed-floor ramp.
 const RAMP_W: f32 = 4.5;
 
-const PLASTERS: [Vec3; 5] = [
-    Vec3::new(0.80, 0.72, 0.58), // ochre
-    Vec3::new(0.78, 0.76, 0.70), // pale grey
-    Vec3::new(0.74, 0.62, 0.48), // sandstone
-    Vec3::new(0.84, 0.80, 0.70), // bleached cream
-    Vec3::new(0.70, 0.66, 0.60), // dust grey
+const PLASTERS: [Vec3; 9] = [
+    Vec3::new(0.80, 0.70, 0.52), // ochre
+    Vec3::new(0.76, 0.74, 0.69), // pale grey
+    Vec3::new(0.72, 0.58, 0.44), // sandstone
+    Vec3::new(0.86, 0.82, 0.72), // bleached cream
+    Vec3::new(0.66, 0.62, 0.57), // dust grey
+    Vec3::new(0.74, 0.47, 0.36), // faded terracotta
+    Vec3::new(0.52, 0.64, 0.66), // faded teal
+    Vec3::new(0.58, 0.62, 0.72), // faded blue
+    Vec3::new(0.80, 0.62, 0.42), // apricot
 ];
 const SLAB_C: Vec3 = Vec3::new(0.6, 0.58, 0.54);
 const RUBBLE_C: Vec3 = Vec3::new(0.62, 0.57, 0.5);
@@ -83,7 +87,7 @@ struct Frame<'a> {
 
 impl Frame<'_> {
     /// Box from local `lo` to `hi` (x, y, z).
-    fn put(&mut self, lo: Vec3, hi: Vec3, color: Vec3, solid: bool) {
+    fn put(&mut self, lo: Vec3, hi: Vec3, color: Vec3, solid: bool, material: f32) {
         let (ax, az) = self.lot.axes();
         let mid = (lo + hi) * 0.5;
         self.map.oboxes.push(OBox {
@@ -93,8 +97,8 @@ impl Frame<'_> {
             y0: lo.y,
             y1: hi.y,
             color,
-            side_mat: mat::PLAIN,
-            top_mat: mat::PLAIN,
+            side_mat: material,
+            top_mat: material,
             tilt: 0.0,
             solid,
         });
@@ -118,8 +122,8 @@ impl Frame<'_> {
             y0: y_mid - SLAB * 0.5,
             y1: y_mid + SLAB * 0.5,
             color,
-            side_mat: mat::PLAIN,
-            top_mat: mat::PAVING,
+            side_mat: mat::CONCRETE,
+            top_mat: mat::CONCRETE,
             tilt: angle,
             solid: true,
         });
@@ -136,8 +140,8 @@ impl Frame<'_> {
             y0: -s * 0.3,
             y1: s * rng.range(0.4, 0.9),
             color,
-            side_mat: mat::PLAIN,
-            top_mat: mat::PLAIN,
+            side_mat: mat::RUBBLE,
+            top_mat: mat::RUBBLE,
             tilt: rng.range(-0.5, 0.5),
             solid: false,
         });
@@ -343,28 +347,28 @@ pub(super) fn building(
                 if top_here < o0 + 0.3 {
                     // Broken off below the window: just a ragged stub of wall.
                     let (lo, hi) = span(s0, s1, y0, top_here);
-                    f.put(lo, hi, color, true);
+                    f.put(lo, hi, color, true, mat::PLASTER);
                     continue;
                 }
                 // Piers either side, each broken at its own height.
                 for (p0, p1) in [(s0, s0 + PIER), (s1 - PIER, s1)] {
                     let h = cut(at((p0 + p1) * 0.5)).min(full).max(o0.min(top_here));
                     let (lo, hi) = span(p0, p1, y0, h);
-                    f.put(lo, hi, color, true);
+                    f.put(lo, hi, color, true, mat::PLASTER);
                 }
                 // Sill under the opening.
                 if o0 > y0 + 0.01 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, y0, o0);
-                    f.put(lo, hi, color, true);
+                    f.put(lo, hi, color, true, mat::PLASTER);
                 }
                 // Wall over the opening, up to whatever height survives (jagged
                 // where it's broken: the top steps across the bay).
                 if top_here > o1 + 0.25 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, o1, top_here);
-                    f.put(lo, hi, color * 0.97, true);
+                    f.put(lo, hi, color * 0.97, true, mat::PLASTER);
                 } else if top_here > o1 - 0.2 && rng.chance(0.5) {
                     let (lo, hi) = span(s0 + PIER, s0 + PIER + bw * 0.35, o1, o1 + 0.45);
-                    f.put(lo, hi, color * 0.95, true);
+                    f.put(lo, hi, color * 0.95, true, mat::PLASTER);
                 }
             }
         }
@@ -403,6 +407,7 @@ pub(super) fn building(
                     ),
                     SLAB_C,
                     true,
+                    mat::CONCRETE,
                 );
             }
         }
@@ -416,6 +421,7 @@ pub(super) fn building(
             Vec3::new(c.x + 0.4, h, c.y + 0.4),
             color * 0.92,
             true,
+            mat::PLASTER,
         );
     }
 
