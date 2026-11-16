@@ -7,6 +7,8 @@ use glam::{Vec2, Vec3};
 
 use crate::rng::Rng;
 
+mod saltmarket;
+
 /// Size of one city-grid cell in meters.
 pub const CELL: f32 = 4.0;
 /// City grid is GRID x GRID cells.

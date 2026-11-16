@@ -20,39 +20,58 @@ tankit [OPTIONS]
 
   (no options)            play in a window
   --seed <n>              map seed (default: random)
-  --map <city|proving>    city (default) or the physics test course
+  --map <city|proving|saltmarket>
+                          city (default), the physics test course, or Saltmarket (desert town)
   --spawn <n>             which spawn point to start at
-  --bots <n>              bot opponents (default 5 on city maps, 0 on the proving ground; max 7)
+  --bots <n>              bot opponents (default 5, 0 on the proving ground; max 7)
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
+  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
   --showroom              all hull x turret combos on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
   --focus <0-3>           showroom: frame one tank
 ";
 
+/// Which arena to load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapKind {
+    /// Procedural city (seeded).
+    City,
+    /// Hand-built physics test course.
+    Proving,
+    /// Hand-built desert town on a dry reservoir.
+    Saltmarket,
+}
+
 pub struct Args {
     pub seed: u64,
-    pub proving: bool,
+    pub map: MapKind,
     pub spawn: usize,
     pub bots: usize,
     straight: bool,
+    /// Fixed screenshot camera: position and target.
+    cam: Option<(Vec3, Vec3)>,
     shot: Option<ShotArgs>,
     showroom: Option<ShowroomArgs>,
 }
 
 impl Args {
     pub fn map(&self) -> map::Map {
-        make_map(self.seed, self.proving)
+        make_map(self.seed, self.map)
     }
 }
 
-pub fn make_map(seed: u64, proving: bool) -> map::Map {
-    if proving { map::Map::proving_ground() } else { map::Map::generate(seed) }
+pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
+    match kind {
+        MapKind::City => map::Map::generate(seed),
+        MapKind::Proving => map::Map::proving_ground(),
+        MapKind::Saltmarket => map::Map::saltmarket(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -78,7 +97,7 @@ fn main() -> Result<()> {
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
         (Some(shot), None) => screenshot(&args, shot),
-        (None, room) => app::run(args.seed, args.proving, args.spawn, args.bots, room),
+        (None, room) => app::run(args.seed, args.map, args.spawn, args.bots, room),
     }
 }
 
@@ -89,8 +108,9 @@ fn parse_args() -> Result<Args> {
     let mut time = 1.0;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
-    let (mut proving, mut spawn, mut straight) = (false, 0usize, false);
+    let (mut map_kind, mut spawn, mut straight) = (MapKind::City, 0usize, false);
     let mut showroom = false;
+    let mut cam: Option<(Vec3, Vec3)> = None;
     let mut bots: Option<usize> = None;
     let mut room = ShowroomArgs { orbit: None, dist: 24.0, focus: None };
     while let Some(a) = args.next() {
@@ -98,13 +118,21 @@ fn parse_args() -> Result<Args> {
             "--shot" => shot = Some(args.next().context("--shot needs a path")?),
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--map" => match args.next().as_deref() {
-                Some("city") => proving = false,
-                Some("proving") => proving = true,
-                other => bail!("--map expects city or proving, got {other:?}"),
+                Some("city") => map_kind = MapKind::City,
+                Some("proving") => map_kind = MapKind::Proving,
+                Some("saltmarket") => map_kind = MapKind::Saltmarket,
+                other => bail!("--map expects city, proving or saltmarket, got {other:?}"),
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--bots" => bots = Some(args.next().context("--bots needs a number")?.parse()?),
             "--straight" => straight = true,
+            "--cam" => {
+                let v: Vec<f32> = args.next().context("--cam needs x,y,z,tx,ty,tz")?.split(',').map(str::parse).collect::<Result<_, _>>()?;
+                if v.len() != 6 {
+                    bail!("--cam needs six numbers: x,y,z,tx,ty,tz");
+                }
+                cam = Some((Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5])));
+            }
             "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
             "--fps" => fps = args.next().context("--fps needs a number")?.parse()?,
@@ -126,10 +154,11 @@ fn parse_args() -> Result<Args> {
     }
     Ok(Args {
         seed,
-        proving,
+        map: map_kind,
         spawn,
-        bots: bots.unwrap_or(if proving { 0 } else { 5 }),
+        bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 5 }),
         straight,
+        cam,
         shot: shot.map(|out| ShotArgs { out, time, width, height, frames, fps }),
         showroom: showroom.then_some(room),
     })
@@ -172,9 +201,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             camera = advance(&mut game, &mut cam, 1.0 / shot.fps);
         }
         let tanks = game.display_tanks(1.0);
-        let mut frame = scene::build(&game.world, &tanks, &art, camera);
+        let view = match args.cam {
+            Some((pos, target)) => render::Camera { pos, target, fov_y: 60f32.to_radians() },
+            None => camera,
+        };
+        let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
-        frame.ui = hud.draw(&game, &tanks, args.seed, &camera, shot.width as f32, shot.height as f32, game::DT, false);
+        if args.cam.is_none() {
+            frame.ui = hud.draw(&game, &tanks, args.seed, &camera, shot.width as f32, shot.height as f32, game::DT, false);
+        }
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
