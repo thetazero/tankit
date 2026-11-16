@@ -218,7 +218,10 @@ fn chunked(mesh: &MeshData) -> (MeshData, Vec<Chunk>) {
     let mut cells: std::collections::BTreeMap<(i32, i32), Vec<[u32; 3]>> = Default::default();
     for t in mesh.indices.chunks_exact(3) {
         let mid = (pos(t[0]) + pos(t[1]) + pos(t[2])) / 3.0;
-        let key = ((mid.x / CHUNK).floor() as i32, (mid.z / CHUNK).floor() as i32);
+        let key = (
+            (mid.x / CHUNK).floor() as i32,
+            (mid.z / CHUNK).floor() as i32,
+        );
         cells.entry(key).or_default().push([t[0], t[1], t[2]]);
     }
     let mut indices = Vec::with_capacity(mesh.indices.len());
@@ -1187,7 +1190,11 @@ impl Renderer {
 
     /// Time each pass on the GPU from now on, if it can; false if it can't.
     pub fn enable_gpu_timer(&mut self) -> bool {
-        if !self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        if !self
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
             return false;
         }
         let count = 2 * PASSES.len() as u32;

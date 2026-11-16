@@ -29,11 +29,7 @@ impl Timer {
     }
 
     fn report(&self) -> String {
-        let mut ms: Vec<f64> = self
-            .samples
-            .iter()
-            .map(|d| d.as_secs_f64() * 1e3)
-            .collect();
+        let mut ms: Vec<f64> = self.samples.iter().map(|d| d.as_secs_f64() * 1e3).collect();
         ms.sort_by(f64::total_cmp);
         let at = |q: f64| ms[((ms.len() - 1) as f64 * q).round() as usize];
         let mean = ms.iter().sum::<f64>() / ms.len().max(1) as f64;

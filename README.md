@@ -23,6 +23,9 @@ Any match flag (`--map`, `--seed`, `--team-size`, ...) skips the menu and drops
 straight into a round. `--shot` renders headless to a PNG instead of opening a
 window, and `--screen` does the same for a menu screen. `--wav` records a
 round's sound headless to a WAV and prints its levels.
+`--bench <seconds>` plays a round headless at 60 frames a second and prints
+what each part of the frame costs (sim, scene, HUD, each GPU pass, sound);
+`--size` sets the resolution, `--map` the map.
 
 ## Controls
 
