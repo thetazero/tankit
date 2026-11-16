@@ -50,6 +50,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            scenery_terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
