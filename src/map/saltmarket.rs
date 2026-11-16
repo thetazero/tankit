@@ -458,6 +458,10 @@ impl Map {
                 sky_horizon: Vec3::new(0.72, 0.62, 0.48),
                 ground_color: Vec3::new(0.36, 0.28, 0.19),
                 fog_density: 0.0032,
+                // Wind blows along the ripples' fall line, carrying sand.
+                wind: Vec2::new(5.0, 2.3),
+                blowing_sand: 1.0,
+                dust: Vec3::new(0.74, 0.62, 0.45),
             },
             bases: Default::default(),
             factions: DEFAULT_SIDES,

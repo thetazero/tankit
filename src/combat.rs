@@ -424,6 +424,8 @@ pub struct Match {
     pub over_for: f32,
     nav: NavGrid,
     rng: Rng,
+    /// Blowing sand, drifting dust, trickles, track dust (visual only).
+    pub ambience: crate::ambience::Ambience,
 }
 
 impl Match {
@@ -460,7 +462,9 @@ impl Match {
             fighters.push(fighter(team, max_health(hull)));
             brains.push(Some(Bot::new(seed.wrapping_add(b as u64 * 7919))));
         }
+        let ambience = crate::ambience::Ambience::new(&world.map);
         Match {
+            ambience,
             world,
             fighters,
             bots: brains,
@@ -642,6 +646,14 @@ impl Match {
 
         self.fly_shells();
         self.respawns();
+        let tanks: Vec<(&crate::sim::Tank, bool)> = self
+            .world
+            .tanks
+            .iter()
+            .zip(&self.fighters)
+            .map(|(t, f)| (t, f.alive))
+            .collect();
+        self.ambience.step(&self.world.map, self.world.time, &tanks);
         if playing {
             self.pick_up_repairs();
             self.hold_site();
