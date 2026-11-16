@@ -44,11 +44,40 @@ pub struct UiVertex {
     pub color: [f32; 4],
 }
 
+/// Sky, sun and haze for a map.
+#[derive(Clone, Copy, Debug)]
+pub struct Atmosphere {
+    /// Direction toward the sun.
+    pub sun_dir: Vec3,
+    /// Sun color times intensity (HDR).
+    pub sun_color: Vec3,
+    pub sky_zenith: Vec3,
+    pub sky_horizon: Vec3,
+    /// Bounce light from the ground (fills downward faces).
+    pub ground_color: Vec3,
+    /// Exponential haze per meter.
+    pub fog_density: f32,
+}
+
+impl Default for Atmosphere {
+    fn default() -> Atmosphere {
+        Atmosphere {
+            sun_dir: Vec3::new(0.55, 0.48, 0.4),
+            sun_color: Vec3::new(2.1, 1.9, 1.65),
+            sky_zenith: Vec3::new(0.22, 0.42, 0.78),
+            sky_horizon: Vec3::new(0.62, 0.72, 0.84),
+            ground_color: Vec3::new(0.32, 0.30, 0.27),
+            fog_density: 0.0022,
+        }
+    }
+}
+
 /// Everything the renderer needs to draw one frame.
 pub struct Scene {
     pub camera: Camera,
     pub time: f32,
     pub sun_dir: Vec3,
+    pub atmosphere: Atmosphere,
     /// World-space area the sun shadow map must cover.
     pub shadow_center: Vec3,
     pub shadow_radius: f32,
@@ -837,11 +866,11 @@ impl Renderer {
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             cam_pos: scene.camera.pos.extend(1.0).to_array(),
             sun_dir: sun.extend(0.0).to_array(),
-            sun_color: [2.1, 1.9, 1.65, 0.0],
-            sky_zenith: [0.22, 0.42, 0.78, 0.0],
-            sky_horizon: [0.62, 0.72, 0.84, 0.0],
-            ground_color: [0.32, 0.30, 0.27, 0.0],
-            params: [scene.time, 0.0022, w, h],
+            sun_color: scene.atmosphere.sun_color.extend(0.0).to_array(),
+            sky_zenith: scene.atmosphere.sky_zenith.extend(0.0).to_array(),
+            sky_horizon: scene.atmosphere.sky_horizon.extend(0.0).to_array(),
+            ground_color: scene.atmosphere.ground_color.extend(0.0).to_array(),
+            params: [scene.time, scene.atmosphere.fog_density, w, h],
         };
         self.queue
             .write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));

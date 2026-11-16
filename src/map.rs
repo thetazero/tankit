@@ -24,6 +24,20 @@ pub mod mat {
     pub const ROOF: f32 = 3.0;
     pub const GRASS: f32 = 4.0;
     pub const PAVING: f32 = 5.0;
+    // 6..12 are tank materials (tank/model.rs). World materials with
+    // procedural surface detail (scene.wgsl `world_surface`):
+    /// Wind-rippled desert sand.
+    pub const SAND: f32 = 13.0;
+    /// Sun-bleached plaster over masonry: chips, stains, grime streaks.
+    pub const PLASTER: f32 = 14.0;
+    /// Bare cast concrete: blotchy, pitted.
+    pub const CONCRETE: f32 = 15.0;
+    /// Broken masonry and stone.
+    pub const RUBBLE: f32 = 16.0;
+    /// Rusted steel.
+    pub const RUST: f32 = 17.0;
+    /// Weathered paint over steel, rusting through in patches.
+    pub const PAINTED: f32 = 18.0;
 }
 
 /// Blocking collider.
@@ -182,6 +196,8 @@ pub struct Wedge {
     pub height: f32,
     pub rise: Rise,
     pub color: Vec3,
+    /// Surface material; None picks by slope (paving on top, plain sides).
+    pub material: Option<f32>,
 }
 
 impl Wedge {
@@ -342,6 +358,8 @@ pub struct Map {
     pub open_spots: Vec<Vec2>,
     /// Fixed spawn heading; None means face the map center.
     pub spawn_yaw: Option<f32>,
+    /// Sun, sky and haze.
+    pub atmosphere: crate::render::Atmosphere,
     /// Each side's spawn spots, for team fights (both empty: spawn anywhere).
     pub bases: [Vec<Vec2>; 2],
     /// Who fights here: side 0 (the player's) and side 1.
@@ -386,6 +404,7 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            atmosphere: crate::render::Atmosphere::default(),
             bases: Default::default(),
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
@@ -769,6 +788,7 @@ impl Map {
             roads: Vec::new(),
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
+            atmosphere: crate::render::Atmosphere::default(),
             bases: Default::default(),
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
@@ -797,6 +817,7 @@ impl Map {
             open_spots: Vec::new(),
             // Every lane runs along +z.
             spawn_yaw: Some(0.0),
+            atmosphere: crate::render::Atmosphere::default(),
             bases: Default::default(),
             factions: DEFAULT_SIDES,
             // One by the jump lanes, one out on the hills.
@@ -836,6 +857,7 @@ impl Map {
             let len = h / deg.to_radians().tan();
             let z0 = 40.0;
             map.wedges.push(Wedge {
+                material: None,
                 min: Vec2::new(x - 4.0, z0),
                 max: Vec2::new(x + 4.0, z0 + len),
                 base_y: 0.0,
@@ -850,6 +872,7 @@ impl Map {
             let flight = 2.0 * v * deg.to_radians().sin() / g * v * deg.to_radians().cos();
             let land_z = z0 + len + flight * 0.7;
             map.wedges.push(Wedge {
+                material: None,
                 min: Vec2::new(x - 5.0, land_z),
                 max: Vec2::new(x + 5.0, land_z + 14.0),
                 base_y: 0.0,
@@ -865,6 +888,7 @@ impl Map {
         let (px0, px1, pz0, pz1, ph) = (72.0, 88.0, 70.0, 100.0, 3.5);
         map.add_block(Vec3::new(px0, 0.0, pz0), Vec3::new(px1, ph, pz1), concrete);
         map.wedges.push(Wedge {
+            material: None,
             min: Vec2::new(px0, pz0 - 30.0),
             max: Vec2::new(px1, pz0),
             base_y: 0.0,
@@ -873,6 +897,7 @@ impl Map {
             color: blue,
         });
         map.wedges.push(Wedge {
+            material: None,
             min: Vec2::new(px0 - 9.0, pz0 + 4.0),
             max: Vec2::new(px0, pz0 + 14.0),
             base_y: 0.0,
@@ -881,6 +906,7 @@ impl Map {
             color: blue,
         });
         map.wedges.push(Wedge {
+            material: None,
             min: Vec2::new(px1, pz0 + 16.0),
             max: Vec2::new(px1 + 12.0, pz0 + 26.0),
             base_y: 0.0,
@@ -895,6 +921,7 @@ impl Map {
             let z = 120.0 + i as f32 * 9.0;
             for (rise, z0, z1) in [(Rise::PosZ, z, z + 1.2), (Rise::NegZ, z + 1.2, z + 2.4)] {
                 map.wedges.push(Wedge {
+                    material: None,
                     min: Vec2::new(6.0, z0),
                     max: Vec2::new(18.0, z1),
                     base_y: 0.0,

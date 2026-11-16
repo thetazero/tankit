@@ -9,8 +9,6 @@ use crate::render::{Camera, Scene};
 use crate::sim::{Tank, World, apron_rects, dir2, wrap_angle};
 use crate::tank::TankArt;
 
-pub const SUN_DIR: Vec3 = Vec3::new(0.55, 0.48, 0.4);
-
 /// Static geometry for the whole arena, built once per map.
 pub fn map_mesh(map: &Map) -> MeshData {
     let mut m = MeshData::default();
@@ -46,7 +44,9 @@ pub fn map_mesh(map: &Map) -> MeshData {
                 n = -n;
             }
             // Slope faces get the paving pattern, everything else is plain.
-            let material = if n.y > 0.2 { mat::PAVING } else { mat::PLAIN };
+            let material = w
+                .material
+                .unwrap_or(if n.y > 0.2 { mat::PAVING } else { mat::PLAIN });
             let c = w.color.extend(material);
             if pts.len() == 4 {
                 m.quad([pts[0], pts[1], pts[2], pts[3]], n, c);
@@ -276,7 +276,8 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
     Scene {
         camera,
         time: world.time,
-        sun_dir: SUN_DIR,
+        sun_dir: world.map.atmosphere.sun_dir,
+        atmosphere: world.map.atmosphere,
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
