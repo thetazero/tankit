@@ -14,7 +14,7 @@ pub enum Faction {
     /// Human; a cult built around the crystals.
     Resonant,
     /// A machine faction.
-    Machines,
+    Uthenn,
     /// The aliens.
     Ithessar,
 }
@@ -23,7 +23,7 @@ impl Faction {
     pub const ALL: [Faction; 4] = [
         Faction::Imperium,
         Faction::Resonant,
-        Faction::Machines,
+        Faction::Uthenn,
         Faction::Ithessar,
     ];
 
@@ -42,7 +42,7 @@ impl Faction {
         match self {
             Faction::Imperium => "IMPERIUM",
             Faction::Resonant => "RESONANT",
-            Faction::Machines => "MACHINES",
+            Faction::Uthenn => "UTHENN",
             Faction::Ithessar => "ITHESSAR",
         }
     }
@@ -55,8 +55,8 @@ impl Faction {
             Faction::Imperium => Vec3::new(0.52, 0.05, 0.07),
             // Crystal blue.
             Faction::Resonant => Vec3::new(0.14, 0.38, 0.95),
-            // Rust orange.
-            Faction::Machines => Vec3::new(0.86, 0.46, 0.2),
+            // Laser green.
+            Faction::Uthenn => Vec3::new(0.16, 0.7, 0.3),
             // Rose, the color of their plasma cooled.
             Faction::Ithessar => Vec3::new(0.8, 0.3, 0.46),
         }
@@ -67,17 +67,17 @@ impl Faction {
         match self {
             Faction::Imperium => [0.95, 0.28, 0.26, 1.0],
             Faction::Resonant => [0.3, 0.55, 1.0, 1.0],
-            Faction::Machines => [1.0, 0.6, 0.3, 1.0],
+            Faction::Uthenn => [0.35, 1.0, 0.5, 1.0],
             Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
         }
     }
 
-    /// The hulls this side's bots drive: their own, or the Imperium's tracked
-    /// hulls for the machines (until they have hulls of their own).
+    /// The hulls this side's bots drive.
     pub fn hulls(self) -> &'static [HullKind] {
         match self {
             Faction::Ithessar => &[HullKind::Sethuun],
             Faction::Resonant => &[HullKind::Vigil],
+            Faction::Uthenn => &[HullKind::Gravis],
             _ => &[HullKind::Kataphrakt, HullKind::Kastron],
         }
     }

@@ -44,11 +44,12 @@ const ORBIT_DRIFT: f32 = 0.12;
 
 pub type Loadout = (HullKind, TurretKind);
 
-pub const HULLS: [HullKind; 4] = [
+pub const HULLS: [HullKind; 5] = [
     HullKind::Kataphrakt,
     HullKind::Kastron,
     HullKind::Sethuun,
     HullKind::Vigil,
+    HullKind::Gravis,
 ];
 pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
@@ -58,6 +59,7 @@ pub fn hull_name(k: HullKind) -> &'static str {
         HullKind::Kastron => "KASTRON",
         HullKind::Sethuun => "SETHUUN",
         HullKind::Vigil => "VIGIL",
+        HullKind::Gravis => "GRAVIS",
     }
 }
 
@@ -95,7 +97,7 @@ fn turret_of(p: Part) -> TurretKind {
     }
 }
 
-const HULL_STATS: [Stat; 6] = [
+const HULL_STATS: [Stat; 7] = [
     Stat {
         name: "ARMOR",
         unit: "HP",
@@ -131,6 +133,13 @@ const HULL_STATS: [Stat; 6] = [
         unit: "T",
         decimals: 0,
         get: |p, _| crate::sim::Chassis::of(hull_of(p)).mass / 1000.0,
+    },
+    Stat {
+        // Seconds of beam fire it adds before overheating.
+        name: "THERMAL",
+        unit: "S",
+        decimals: 1,
+        get: |p, _| crate::combat::thermal_mass(hull_of(p)),
     },
 ];
 
