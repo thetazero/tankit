@@ -339,6 +339,9 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            // Repair crates come down in exposed places worth fighting over:
+            // the market square, the reservoir bed, the ridge, the dam's foot.
+            repair_spots: vec![Vec2::new(80.0, 101.0), Vec2::new(184.0, 104.0), Vec2::new(60.0, 206.0), Vec2::new(166.0, 9.0)],
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();
@@ -540,6 +543,12 @@ mod tests {
         assert!(m.open_spots.iter().any(|p| p.x < 30.0));
         assert!(m.open_spots.iter().any(|p| p.y > 200.0));
         assert!(m.open_spots.iter().any(|p| p.x > 150.0));
+        // Repair drop zones sit on open ground (a crate has to land and be reachable).
+        for &p in &m.repair_spots {
+            assert!(m.oboxes.iter().all(|o| o.distance(p) > 4.0), "repair spot {p} touches a building");
+            assert!(m.solids.iter().all(|s| p.clamp(s.min2(), s.max2()).distance(p) > 4.0), "repair spot {p} touches a solid");
+            assert!(m.wedges.iter().all(|w| p.clamp(w.min, w.max).distance(p) > 2.0), "repair spot {p} on a ramp");
+        }
     }
 
     /// A rotated box blocks exactly where its footprint says (physics, nav and

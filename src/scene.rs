@@ -60,6 +60,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
     }
 
     road_markings(map, &mut m);
+    repair_pads(map, &mut m);
     m
 }
 
@@ -77,6 +78,25 @@ fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
         m.verts.push(v);
     }
     m.indices.extend(local.indices.iter().map(|i| i + base));
+}
+
+/// Painted drop zones where repair crates come down: a square outline with a cross.
+fn repair_pads(map: &Map, m: &mut MeshData) {
+    let paint = Vec4::new(0.5, 0.78, 0.5, mat::PLAIN);
+    for &c in &map.repair_spots {
+        let y = map.ground_height(c.x, c.y) + 0.02;
+        let mut stripe = |min: Vec2, max: Vec2| {
+            m.add_box(Vec3::new(c.x + min.x, y - 0.02, c.y + min.y), Vec3::new(c.x + max.x, y, c.y + max.y), paint, paint);
+        };
+        let (r, t) = (3.2, 0.25);
+        stripe(Vec2::new(-r, -r), Vec2::new(r, -r + t));
+        stripe(Vec2::new(-r, r - t), Vec2::new(r, r));
+        stripe(Vec2::new(-r, -r + t), Vec2::new(-r + t, r - t));
+        stripe(Vec2::new(r - t, -r + t), Vec2::new(r, r - t));
+        stripe(Vec2::new(-1.4, -0.35), Vec2::new(1.4, 0.35));
+        stripe(Vec2::new(-0.35, -1.4), Vec2::new(0.35, -0.35));
+        stripe(Vec2::new(-0.35, 0.35), Vec2::new(0.35, 1.4));
+    }
 }
 
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {

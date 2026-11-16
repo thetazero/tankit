@@ -10,6 +10,7 @@ use glam::{Vec2, Vec3};
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::combat::{FEED_TIME, Match, Phase};
+use crate::repair::State;
 use crate::sim::Tank;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Painter, TextStyle, theme, with_alpha};
@@ -115,6 +116,27 @@ impl Hud {
             p.line(o, o + Vec2::new(bw * frac.clamp(0.0, 1.0), 0.0), 2.0, fill);
         }
 
+        // Repair drop zones in view: a countdown over each empty pad, a marker over each crate.
+        for d in &m.repairs.drops {
+            let ground = Vec3::new(d.at.x, d.ground, d.at.y);
+            let (anchor, text, color) = match d.state {
+                State::Waiting(t) => (ground + Vec3::Y * 1.6, format!("REPAIR {}", t.ceil() as u32), theme::DIM),
+                _ => (d.crate_pos().unwrap_or(ground) + Vec3::Y * 2.4, "REPAIR".to_string(), theme::MEND),
+            };
+            let dist = anchor.distance(camera.pos);
+            if board || dist > 140.0 {
+                continue;
+            }
+            let Some((x, y)) = project(vp, anchor, width, height) else { continue };
+            let at = Vec2::new(x, y) / scale;
+            if at.x < 0.0 || at.x > w || at.y < 0.0 || at.y > h {
+                continue;
+            }
+            let mut s = TextStyle::LABEL;
+            s.color = with_alpha(color, color[3] * (1.0 - (dist - 100.0) / 40.0).clamp(0.0, 1.0));
+            p.text(at, &text, &s, Align::Center);
+        }
+
         // Top centre: turret heading.
         let top = Vec2::new(w * 0.5, MARGIN + 6.0);
         widgets::compass(&mut p, top, 360.0, self.heading);
@@ -143,6 +165,11 @@ impl Hud {
         let reload = crate::combat::gun(tank.turret_kind).reload;
         let ready = 1.0 - (me.reload_in / reload).clamp(0.0, 1.0);
         widgets::hairbar(&mut p, bc + Vec2::new(-130.0, -10.0), 260.0, ready, if ready >= 1.0 { theme::FG } else { theme::DIM });
+        if me.since_repair < 1.8 {
+            let mut s = TextStyle::value(10.0);
+            s.color = with_alpha(theme::MEND, (1.0 - (me.since_repair - 1.2) / 0.6).clamp(0.0, 1.0));
+            p.text(bc + Vec2::new(0.0, -78.0), &format!("+{:.0} HULL", me.repaired), &s, Align::Center);
+        }
         if me.shield > 0.0 && me.alive {
             label(&mut p, bc + Vec2::new(0.0, -60.0), "SPAWN SHIELD", Align::Center);
         }

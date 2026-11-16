@@ -6,6 +6,7 @@ mod garage;
 mod hud;
 mod map;
 mod render;
+mod repair;
 mod rng;
 mod scene;
 mod showroom;

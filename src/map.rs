@@ -245,7 +245,12 @@ pub struct Map {
     pub open_spots: Vec<Vec2>,
     /// Fixed spawn heading; None means face the map center.
     pub spawn_yaw: Option<f32>,
+    /// Where repair crates parachute in (see `repair`).
+    pub repair_spots: Vec<Vec2>,
 }
+
+/// How many repair drop spots a generated city gets.
+pub const REPAIR_SPOTS: usize = 4;
 
 const MIN_BLOCK: i32 = 4;
 const RING: i32 = 3;
@@ -277,6 +282,7 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            repair_spots: Vec::new(),
         };
 
         // Ring road around the inner city.
@@ -303,6 +309,7 @@ impl Map {
         map.perimeter_walls();
         map.backdrop(&mut rng);
         map.collect_open_spots();
+        map.repair_spots = spread_spots(&map.open_spots, map.center(), REPAIR_SPOTS);
         map
     }
 
@@ -571,6 +578,7 @@ impl Map {
             roads: Vec::new(),
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
+            repair_spots: Vec::new(),
         }
     }
 
@@ -596,6 +604,8 @@ impl Map {
             open_spots: Vec::new(),
             // Every lane runs along +z.
             spawn_yaw: Some(0.0),
+            // One by the jump lanes, one out on the hills.
+            repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.
@@ -692,6 +702,21 @@ impl Map {
         self.boxes.push(VisBox { min, max, color, side_mat: mat::PLAIN, top_mat: mat::PAVING });
         self.solids.push(Solid { min, max });
     }
+}
+
+/// `n` of `spots`, spread out: the one nearest `center` first, then each
+/// next pick as far as possible from those already taken.
+fn spread_spots(spots: &[Vec2], center: Vec2, n: usize) -> Vec<Vec2> {
+    let Some(&first) = spots.iter().min_by(|a, b| a.distance(center).total_cmp(&b.distance(center))) else {
+        return Vec::new();
+    };
+    let mut picked = vec![first];
+    while picked.len() < n.min(spots.len()) {
+        let gap = |s: &Vec2| picked.iter().map(|p| p.distance(*s)).fold(f32::INFINITY, f32::min);
+        let next = *spots.iter().max_by(|a, b| gap(a).total_cmp(&gap(b))).unwrap();
+        picked.push(next);
+    }
+    picked
 }
 
 fn crate_color(rng: &mut Rng) -> Vec3 {
