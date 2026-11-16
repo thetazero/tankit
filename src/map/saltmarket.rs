@@ -478,7 +478,15 @@ impl Map {
 }
 
 impl Map {
+    /// Saltmarket. It's the same every time (fixed seed), and building it
+    /// takes a while (thousands of pieces, then the settling pass), so it's
+    /// built once and copied.
     pub fn saltmarket() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        BUILT.get_or_init(Map::build_saltmarket).clone()
+    }
+
+    fn build_saltmarket() -> Map {
         let mut map = Map {
             size: SIZE,
             solids: Vec::new(),
@@ -699,6 +707,7 @@ impl Map {
             .filter(|&j| !fall[j])
             .map(|j| self.oboxes[j])
             .collect();
+        let standing_index = Index::new(standing.iter().enumerate());
         let terrain = self.terrain.clone();
         let ground_at = |p: Vec2| ground_under(terrain.as_ref(), p);
         // Highest standing top (or ground) under `o`, no higher than `below`.
@@ -707,7 +716,8 @@ impl Map {
                 .iter()
                 .map(|&p| ground_at(p))
                 .fold(f32::NEG_INFINITY, f32::max);
-            for b in &standing {
+            for j in standing_index.near(o, 0.1) {
+                let b = &standing[j];
                 let top = span(b).1;
                 if top <= below + 0.1 && top > floor && near(b, o, -0.05) {
                     floor = top;
@@ -730,8 +740,12 @@ impl Map {
             }
             i
         }
+        let prop_index = Index::new(props.iter().map(|&i| &self.oboxes[i]).enumerate());
         for x in 0..props.len() {
-            for y in x + 1..props.len() {
+            for y in prop_index.near(&self.oboxes[props[x]], 0.2) {
+                if y <= x {
+                    continue;
+                }
                 let (a, b) = (&self.oboxes[props[x]], &self.oboxes[props[y]]);
                 let ((a0, a1), (b0, b1)) = (span(a), span(b));
                 if a0 <= b1 + 0.1 && b0 <= a1 + 0.1 && near(a, b, 0.1) {
@@ -780,10 +794,15 @@ impl Map {
         // Nothing comes down onto a collapsed floor a tank drives up: what
         // fell there went over the edge, out of the way.
         let ramps: Vec<OBox> = standing.iter().filter(|o| o.is_ramp()).copied().collect();
+        let ramp_index = Index::new(ramps.iter().enumerate());
         let mut gone = vec![false; n];
         for &i in &order {
             let mut o = self.oboxes[i];
-            if ramps.iter().any(|r| r.overlaps(&o, 3.5)) {
+            if ramp_index
+                .near(&o, 3.6)
+                .iter()
+                .any(|&r| ramps[r].overlaps(&o, 3.5))
+            {
                 gone[i] = true;
                 continue;
             }
@@ -873,32 +892,14 @@ impl Map {
                 .fold(f32::NEG_INFINITY, f32::max);
             span[i].0 <= g + 0.1
         };
-        // Spatial grid for neighbors.
-        let cell = 8.0;
-        let key = |p: Vec2| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
-        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, o) in self.oboxes.iter().enumerate() {
-            grid.entry(key(o.center)).or_default().push(i);
-        }
+        let index = Index::new(self.oboxes.iter().enumerate());
         let neighbors = |i: usize| {
             let b = &self.oboxes[i];
-            let r = b.half.length().max(span[i].1 - span[i].0);
-            let (kx, kz) = key(b.center);
-            let reach = ((r + 12.0) / cell).ceil() as i32;
-            let mut out = Vec::new();
-            for dx in -reach..=reach {
-                for dz in -reach..=reach {
-                    for &j in grid.get(&(kx + dx, kz + dz)).into_iter().flatten() {
-                        let a = &self.oboxes[j];
-                        let close =
-                            a.center.distance(b.center) < a.half.length() + b.half.length() + 0.2;
-                        if j != i && close {
-                            out.push(j);
-                        }
-                    }
-                }
-            }
+            let mut out = index.near(b, 0.2);
+            out.retain(|&j| {
+                let a = &self.oboxes[j];
+                j != i && a.center.distance(b.center) < a.half.length() + b.half.length() + 0.2
+            });
             out
         };
         // Floors: touching slabs at one level make one plate.
@@ -1604,6 +1605,48 @@ impl Map {
                 .collect()
         };
         self.bases = vec![line(&[206.0, 214.0], self), line(&[6.0, 11.0], self)];
+    }
+}
+
+/// Pieces by where they are: each is filed under every grid cell its
+/// footprint's bounding circle covers.
+struct Index {
+    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+
+impl Index {
+    const CELL: f32 = 4.0;
+
+    fn new<'a>(pieces: impl Iterator<Item = (usize, &'a OBox)>) -> Index {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
+        for (i, o) in pieces {
+            let ((x0, z0), (x1, z1)) = Index::range(o.center, o.half.length());
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    cells.entry((x, z)).or_default().push(i);
+                }
+            }
+        }
+        Index { cells }
+    }
+
+    fn range(c: Vec2, r: f32) -> ((i32, i32), (i32, i32)) {
+        let k = |v: f32| (v / Index::CELL).floor() as i32;
+        ((k(c.x - r), k(c.y - r)), (k(c.x + r), k(c.y + r)))
+    }
+
+    /// Pieces whose footprints might come within `margin` of `o`'s.
+    fn near(&self, o: &OBox, margin: f32) -> Vec<usize> {
+        let ((x0, z0), (x1, z1)) = Index::range(o.center, o.half.length() + margin);
+        let mut out = Vec::new();
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                out.extend(self.cells.get(&(x, z)).into_iter().flatten());
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 }
 
