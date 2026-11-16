@@ -1547,16 +1547,16 @@ fn core_glow(c: &crate::map::Core, time: f32, out: &mut Vec<Particle>) {
     let r = c.radius;
     out.push(Particle::glow(
         c.at,
-        2.6 * r * breathe,
+        1.9 * r * breathe,
         PLASMA,
-        1.4,
+        0.8,
         Vec3::ZERO,
     ));
     out.push(Particle::glow(
         c.at,
-        1.4 * r * breathe,
+        0.9 * r * breathe,
         PLASMA_HOT,
-        2.2,
+        1.0,
         Vec3::ZERO,
     ));
     for k in 0..9 {
@@ -1566,9 +1566,9 @@ fn core_glow(c: &crate::map::Core, time: f32, out: &mut Vec<Particle>) {
         let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
         out.push(Particle::glow(
             p,
-            0.6 + 0.15 * (k % 2.0),
+            0.35 + 0.1 * (k % 2.0),
             PLASMA_HOT,
-            2.0,
+            1.3,
             Vec3::ZERO,
         ));
     }

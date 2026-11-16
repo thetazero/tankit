@@ -848,7 +848,7 @@ mod tests {
         let w = world();
         let p = rich();
         let mut g = Garage::new();
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         let hits = g.draw(&w.tanks[0], start, &p, 900.0).hits;
         assert!(hits.is_empty(), "closed: nothing to click");
         g.toggle(&w, &cam(&w), start);
@@ -859,15 +859,15 @@ mod tests {
             assert_eq!(id, hit);
             g.click(id, start, &p)
         };
-        let bastion = Part::Hull(HullKind::Bastion);
+        let bastion = Part::Hull(HullKind::Kastron);
         assert_eq!(
             click(&mut g, Hit::Part(bastion)),
-            Some(Event::Queue((HullKind::Bastion, TurretKind::Lance)))
+            Some(Event::Queue((HullKind::Kastron, TurretKind::Kontos)))
         );
         assert_eq!(g.focused(), bastion);
         assert_eq!(
-            click(&mut g, Hit::Part(Part::Turret(TurretKind::Maul))),
-            Some(Event::Queue((HullKind::Bastion, TurretKind::Maul)))
+            click(&mut g, Hit::Part(Part::Turret(TurretKind::Pelekys))),
+            Some(Event::Queue((HullKind::Kastron, TurretKind::Pelekys)))
         );
         assert_eq!(g.section, 1);
         assert_eq!(click(&mut g, Hit::Key(Input::Deploy)), None);
