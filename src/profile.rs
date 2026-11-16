@@ -208,6 +208,13 @@ impl Profile {
         self.standing(part.maker()).level
     }
 
+    /// Own `part` without paying for it (headless shots).
+    pub fn grant(&mut self, part: Part) {
+        if !self.owns(part) {
+            self.bought.push(part);
+        }
+    }
+
     /// Every faction trusts you this much (headless shots, tests).
     pub fn set_trust_all(&mut self, trust: u32) {
         self.trust = [trust; Faction::ALL.len()];

@@ -17,7 +17,7 @@ use crate::repair::State;
 use crate::scene::project;
 use crate::sim::Tank;
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Painter, Rgba, TextStyle, theme, with_alpha};
+use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
 
 /// What the HUD calls fighter `i`: "YOU", or its turret.
 pub fn callsign(m: &Match, i: usize) -> &'static str {
@@ -41,11 +41,22 @@ fn side_color(m: &Match, i: usize) -> Rgba {
 const REF_HEIGHT: f32 = 900.0;
 const MARGIN: f32 = 40.0;
 
+/// Something on the HUD that can be clicked: the round-over buttons.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hit {
+    /// Enter: play the round again.
+    Again,
+    /// Esc: back to the menu.
+    Menu,
+}
+
 /// Eased values so readouts glide instead of snapping.
 pub struct Hud {
     speed: f32,
     heading: f32,
     initialized: bool,
+    /// The button under the pointer, lit.
+    pub hover: Option<Hit>,
 }
 
 impl Hud {
@@ -54,6 +65,7 @@ impl Hud {
             speed: 0.0,
             heading: 0.0,
             initialized: false,
+            hover: None,
         }
     }
 
@@ -68,7 +80,7 @@ impl Hud {
         height: f32,
         dt: f32,
         scores: bool,
-    ) -> Vec<UiVertex> {
+    ) -> Layer<Hit> {
         let tank = &tanks[0];
         let me = m.player();
         let board = scores || m.phase == Phase::Over;
@@ -88,6 +100,7 @@ impl Hud {
         let scale = height / REF_HEIGHT;
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
+        let mut hits = Hits::new();
 
         widgets::corners(
             &mut p,
@@ -468,7 +481,13 @@ impl Hud {
         if board {
             // Four sides stack two rows of tables: start higher.
             let top = if m.factions.len() > 2 { 0.17 } else { 0.28 };
-            scoreboard(&mut p, m, Vec2::new(w * 0.5, h * top));
+            scoreboard(
+                &mut p,
+                &mut hits,
+                self.hover,
+                m,
+                Vec2::new(w * 0.5, h * top),
+            );
         }
 
         // Bottom left: speed.
@@ -549,13 +568,16 @@ impl Hud {
             );
         }
 
-        p.finish()
+        Layer {
+            verts: p.finish(),
+            hits,
+        }
     }
 }
 
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
-fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
+fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Match, top: Vec2) {
     let holding = m.contract == Contract::Hold;
     // Hold adds a HELD column: wider tables so it clears the tank names.
     let col = if holding { 410.0 } else { 380.0 };
@@ -683,12 +705,46 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     y += body;
     if m.phase == Phase::Over {
         contract_pay(p, m, x0, x1, y + 14.0);
-        label(
-            p,
-            Vec2::new(top.x, y + 158.0 + extra),
-            "ENTER  AGAIN     ESC  MENU",
-            Align::Center,
+        round_over_buttons(p, hits, hover, Vec2::new(top.x, y + 150.0 + extra));
+    }
+}
+
+const BUTTON_H: f32 = 26.0;
+const BUTTON_PAD: f32 = 12.0;
+const BUTTON_GAP: f32 = 16.0;
+
+/// The round-over choices, side by side and centred on `top`: buttons that
+/// click like their keys.
+fn round_over_buttons(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, top: Vec2) {
+    let buttons = [("ENTER", "AGAIN", Hit::Again), ("ESC", "MENU", Hit::Menu)];
+    let style = TextStyle::LABEL;
+    let key_gap = 10.0;
+    let width = |key: &str, what: &str| {
+        BUTTON_PAD * 2.0 + measure(key, &style) + key_gap + measure(what, &style)
+    };
+    let total = buttons.iter().map(|(k, w, _)| width(k, w)).sum::<f32>()
+        + BUTTON_GAP * (buttons.len() - 1) as f32;
+    let mut x = top.x - total * 0.5;
+    for (key, what, id) in buttons {
+        let min = Vec2::new(x, top.y);
+        let size = Vec2::new(width(key, what), BUTTON_H);
+        let fill = if hover == Some(id) { 0.16 } else { 0.07 };
+        p.rect(min, size, with_alpha(theme::FG, fill));
+        p.rect_outline(min, size, 1.0, theme::FG);
+        let ty = min.y + (BUTTON_H - style.size) * 0.5;
+        let mut k = style;
+        k.color = theme::HOT;
+        let kw = p.text(Vec2::new(min.x + BUTTON_PAD, ty), key, &k, Align::Left);
+        let mut a = style;
+        a.color = theme::FG;
+        p.text(
+            Vec2::new(min.x + BUTTON_PAD + kw + key_gap, ty),
+            what,
+            &a,
+            Align::Left,
         );
+        hits.add(p, min, size, id);
+        x += size.x + BUTTON_GAP;
     }
 }
 
@@ -830,6 +886,32 @@ mod tests {
     use glam::Vec3;
 
     #[test]
+    fn round_over_has_buttons() {
+        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        let t = &m.world.tanks[0];
+        let camera = Camera {
+            pos: t.pos + Vec3::new(0.0, 6.0, -10.0),
+            target: t.pos,
+            fov_y: 1.1,
+        };
+        let mut hud = Hud::new();
+        let draw = |hud: &mut Hud, m: &Match| {
+            hud.draw(m, &m.world.tanks, &camera, 1600.0, 900.0, 0.0, true)
+                .hits
+        };
+        // Mid-round the scoreboard has nothing to click.
+        assert!(draw(&mut hud, &m).is_empty());
+        m.phase = Phase::Over;
+        let hits = draw(&mut hud, &m);
+        for id in [Hit::Again, Hit::Menu] {
+            let at = hits.center_of(id).expect("button drawn");
+            assert_eq!(hits.at(at).map(|(h, _)| h), Some(id));
+        }
+        // Side by side, not on top of each other.
+        assert!(hits.center_of(Hit::Again).unwrap().x < hits.center_of(Hit::Menu).unwrap().x);
+    }
+
+    #[test]
     fn draws_at_any_size() {
         for contract in [Contract::Attrition, Contract::Hold] {
             draws_at_any_size_under(contract);
@@ -851,7 +933,9 @@ mod tests {
         };
         let mut hud = Hud::new();
         for (w, h) in [(1600.0, 900.0), (800.0, 600.0), (3840.0, 2160.0)] {
-            let v = hud.draw(&m, &m.world.tanks, &camera, w, h, 1.0 / 60.0, true);
+            let v = hud
+                .draw(&m, &m.world.tanks, &camera, w, h, 1.0 / 60.0, true)
+                .verts;
             assert!(!v.is_empty());
             // A little slack for halos and anti-aliasing at the screen edge.
             assert!(v.iter().all(|v| v.pos[0] > -4.0

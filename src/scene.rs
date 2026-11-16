@@ -75,12 +75,16 @@ pub fn map_mesh(map: &Map) -> MeshData {
             b.color.extend(b.top_mat.id()),
         );
     }
-    for o in &map.oboxes {
+    for o in map.oboxes.iter().filter(|o| !o.hidden) {
         add_obox(o, &mut m);
     }
     for c in &map.crystals {
         c.mesh(&mut m);
     }
+    let base = m.verts.len() as u32;
+    m.verts.extend_from_slice(&map.sculpted.verts);
+    m.indices
+        .extend(map.sculpted.indices.iter().map(|i| i + base));
     for g in &map.glow_paths {
         g.mesh(&mut m);
     }
@@ -463,6 +467,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         instances,
         particles,
         ui: Vec::new(),
+        world: true,
     }
 }
 
