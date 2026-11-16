@@ -48,6 +48,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         timeout-minutes: 3
 
+      # cpal (sound) links against ALSA on Linux.
+      - name: Install ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+        timeout-minutes: 3
+
       # Compile separately so a slow build and a hung test get distinct limits.
       - name: Build tests
         run: cargo test --locked --no-run

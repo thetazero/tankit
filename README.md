@@ -21,7 +21,8 @@ cargo test
 
 Any match flag (`--map`, `--seed`, `--team-size`, ...) skips the menu and drops
 straight into a round. `--shot` renders headless to a PNG instead of opening a
-window, and `--screen` does the same for a menu screen.
+window, and `--screen` does the same for a menu screen. `--wav` records a
+round's sound headless to a WAV and prints its levels.
 
 ## Controls
 
@@ -65,6 +66,7 @@ The window title shows the current tuning.
 | Tank kit | Procedural hulls and turrets that mix freely, built from beveled plates, with tread links, wheels, recoil and suspension all animated. Surface detail is in the shader. The Ithessar kit is its own: knapped crystal, a hover hull (Sethuun) with gimballing emitters, and turrets that charge an orb between claws (Ammeth) or spin up crystal needles (Ossrin). | `src/tank/`, `src/tank/ithessar.rs`, `src/shaders/scene.wgsl` |
 | Physics | rapier3d rigid bodies plus a track model: spring rays per road wheel carry the weight, and every track contact pushes along the belt, limited by friction times load. Climbing, pivot turns and skid steering all come out of that. The hover hull swaps the tracks for six plasma springs: thrust, braking and sideways grip all push through the cushion, so it's fast, drifts through turns and glides over low ledges. | `src/sim.rs` |
 | HUD | Hairline readouts, kill feed, name tags, XP popups and the scoreboard. | `src/hud.rs`, `src/ui/` |
+| Sound | All synthesized at runtime, no sample files. Each tank's engine, track clatter and turret motor follow its physics; each weapon has its own shot (the beam hums and the flamer roars while held); impacts, armour hits, kills, repairs and menus have one-shots. Placed by distance and side from the camera. Volume is on the settings panel. Output via `cpal` (ALSA on Linux: building needs `libasound2-dev`). | `src/audio/` |
 
 ## Screenshots
 
