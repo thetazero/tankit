@@ -5,11 +5,13 @@
 //! the sprockets, a turret ring motor, and the laser's buzz or the flamer's
 //! roar while they fire; where a beam lands it sizzles, and a broken Vigil's
 //! light sings out of its cracks, and a spawn shield hums while it's up; in
-//! the garage the bay's turntable turns under the tank. Discrete moments
-//! (shots, impacts, armour hits, kills, repairs, a beam cooled and ready) come
-//! out of the match as [`Sound`] events and play as one-shots; a beam
-//! lighting, letting go and striking a hull, and your hull running low, are
-//! spotted here, frame to frame.
+//! the garage the bay's turntable turns under the tank. The map's places
+//! make their own sounds as you near them (crystals, furnaces, banners...),
+//! ducking under the fight. Discrete moments (shots, impacts, armour hits,
+//! kills, repairs, a beam cooled and ready) come out of the match as
+//! [`Sound`] events and play as one-shots; a beam lighting, letting go and
+//! striking a hull, and your hull running low, are spotted here, frame to
+//! frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
@@ -39,7 +41,9 @@ use dsp::Noise;
 use mixer::{Mixer, OneShot};
 pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
-use sounds::{Play, arrival, beam, garage, guns, hits, hold, hull, repair, shield, ui, vigil};
+use sounds::{
+    Play, arrival, beam, garage, guns, hits, hold, hull, places, repair, shield, ui, vigil,
+};
 use voice::Layer;
 
 /// Distance at which a sound is at half its close-up loudness, m. Past it
@@ -236,11 +240,13 @@ impl Audio {
         }
         let params = tank::params(game, &ears, &self.flames, self.time, live);
         let burns = beam::burns(game, &ears);
+        let places = places::params(&game.world.map, &ears);
         self.with(|m| {
             m.set_world(if live { 1.0 } else { 0.0 });
             m.set_wind(WIND);
             m.set_tanks(&params);
             m.set_burns(&burns);
+            m.set_places(&places);
             for s in shots {
                 m.play(s);
             }
