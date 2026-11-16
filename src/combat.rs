@@ -29,8 +29,13 @@ pub const RESPAWN_TIME: f32 = 4.0;
 pub const TANK_PAINT: Vec3 = Vec3::ONE;
 /// Freshly spawned tanks can't be hurt (and bots ignore them) for this long.
 pub const SPAWN_SHIELD: f32 = 2.0;
-/// Imperium cannon shell speed, m/s.
-pub const SHELL_SPEED: f32 = 160.0;
+/// Imperium cannon shots land the moment they're fired (a raycast); this is
+/// only how fast the tracer they leave is drawn flying to where they landed, m/s.
+pub const TRACER_SPEED: f32 = 1500.0;
+/// How far an Imperium shot reaches: corner to corner of the biggest map, m.
+pub const CANNON_RANGE: f32 = 500.0;
+/// Length of that tracer's streak, m: about a frame's flight.
+const TRACER_STREAK: f32 = 22.0;
 /// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
@@ -91,6 +96,10 @@ pub struct ShellSpec {
     /// Random aim jitter per shot, radians.
     pub spread: f32,
     pub look: Look,
+    /// Lands the instant it's fired, along a straight line out to its range
+    /// (`speed * life`): no travel time to lead, nothing to dodge. What flies
+    /// afterwards is only its tracer, which hits nothing.
+    pub instant: bool,
 }
 
 /// How a projectile is drawn, and how hard it lands.
@@ -144,10 +153,12 @@ impl Gun {
         }
     }
 
-    /// Projectile speed for leading a target (a beam lands instantly).
+    /// Projectile speed for leading a target (beams and instant shots land
+    /// at once).
     pub fn speed(&self) -> f32 {
         match self.action {
             Action::Beam { .. } => f32::INFINITY,
+            Action::Shell(s) if s.instant => f32::INFINITY,
             Action::Shell(s) => s.speed,
         }
     }
@@ -156,6 +167,7 @@ impl Gun {
     pub fn gravity(&self) -> f32 {
         match self.action {
             Action::Beam { .. } => 0.0,
+            Action::Shell(s) if s.instant => 0.0,
             Action::Shell(s) => s.gravity * GRAVITY,
         }
     }
@@ -163,22 +175,24 @@ impl Gun {
 
 pub fn gun(kind: TurretKind) -> Gun {
     let cannon = ShellSpec {
-        speed: SHELL_SPEED,
-        life: 1.6,
-        gravity: 1.0,
+        speed: TRACER_SPEED,
+        life: CANNON_RANGE / TRACER_SPEED,
+        gravity: 0.0,
         bounces: 0,
         spread: 0.0,
         look: Look::Tracer,
+        instant: true,
     };
     match kind {
-        // Imperium long rail cannon: hits hard, slow.
+        // Imperium long rail cannon: hits hard, slow to reload, lands instantly.
         TurretKind::Kontos => Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
             action: Action::Shell(cannon),
         },
-        // Imperium twin short guns: light hits, alternating barrels, fast.
+        // Imperium twin short guns: light hits, alternating barrels, fast;
+        // land instantly too.
         TurretKind::Pelekys => Gun {
             damage: 15.0,
             reload: 0.5,
@@ -198,6 +212,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 3,
                 spread: 0.0,
                 look: Look::Plasma { size: 1.3 },
+                instant: false,
             }),
         },
         // Ithessar: three crystal needles spinning up into a stream of darts.
@@ -212,6 +227,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 0,
                 spread: 0.014,
                 look: Look::Bolt { size: 1.0 },
+                instant: false,
             }),
         },
         // Uthenn: a laser that burns while held, then overheats.
@@ -236,6 +252,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 0,
                 spread: 0.11,
                 look: Look::Flame,
+                instant: false,
             }),
         },
     }
@@ -836,17 +853,27 @@ impl Match {
             turret: t.turret_kind,
             at: from,
         });
-        self.shells.push(Shell {
+        let mut shell = Shell {
             pos: from,
             prev: from,
-            vel: dir * spec.speed + t.vel,
+            // An instant shot goes exactly where the gun points.
+            vel: dir * spec.speed + if spec.instant { Vec3::ZERO } else { t.vel },
             owner: i,
             damage: g.damage * self.fighters[i].strength(),
             age: 0.0,
             spec,
             bounces: spec.bounces,
             seed: self.rng.f32(),
-        });
+        };
+        if spec.instant {
+            // Land it now, then send off a tracer that stops where it landed.
+            let reach = spec.speed * spec.life;
+            self.travel(&mut shell, dir * reach);
+            shell.spec.life = shell.pos.distance(from) / spec.speed;
+            shell.pos = from;
+            shell.prev = from;
+        }
+        self.shells.push(shell);
         // Carry the leftover fraction of a step so fast guns keep their exact rate.
         let reload = if g.spool > 0.0 {
             let spool = self.world.tanks[i].spool;
@@ -936,62 +963,76 @@ impl Match {
             s.vel.y -= s.spec.gravity * GRAVITY * DT;
             s.prev = s.pos;
             let step = s.vel * DT;
-            let len = step.length();
-            if len < 1e-6 {
+            if s.spec.instant {
+                // Already landed: only its tracer is still flying, and it
+                // stops where the shot landed.
+                let left = (s.spec.life - (s.age - DT)) / DT;
+                s.pos += step * left.clamp(0.0, 1.0);
                 return true;
             }
-            let owner = self.world.tanks[s.owner].collider;
-            let hit = self.world.physics.cast_ray_and_get_normal(
-                &Ray::new(s.pos, step / len),
-                len,
-                true,
-                QueryFilter::default().exclude_collider(owner),
-            );
-            match hit {
-                None => {
-                    s.pos += step;
-                    true
-                }
-                Some((c, ri)) => {
-                    let at = s.pos + step / len * ri.time_of_impact;
-                    s.pos = at;
-                    match self.world.tank_of(c) {
-                        Some(j) => {
-                            self.hit(s, j, at);
-                            false
-                        }
-                        None if s.bounces > 0 => {
-                            // Ricochet: mirror off the surface and carry on.
-                            let n = ri.normal;
-                            s.vel -= 2.0 * s.vel.dot(n) * n;
-                            s.pos = at + n * 0.05;
-                            s.bounces -= 1;
-                            // The skin sheds plasma at every skip.
-                            s.damage *= BOUNCE_KEEP;
+            self.travel(s, step)
+        });
+        self.shells = shells;
+    }
+
+    /// Move shell `s` by `step`, or until it hits something on the way: a
+    /// tank takes the hit, a wall stops it or (if it has bounces left) turns
+    /// it. False once it's spent.
+    fn travel(&mut self, s: &mut Shell, step: Vec3) -> bool {
+        let len = step.length();
+        if len < 1e-6 {
+            return true;
+        }
+        let owner = self.world.tanks[s.owner].collider;
+        let hit = self.world.physics.cast_ray_and_get_normal(
+            &Ray::new(s.pos, step / len),
+            len,
+            true,
+            QueryFilter::default().exclude_collider(owner),
+        );
+        match hit {
+            None => {
+                s.pos += step;
+                true
+            }
+            Some((c, ri)) => {
+                let at = s.pos + step / len * ri.time_of_impact;
+                s.pos = at;
+                match self.world.tank_of(c) {
+                    Some(j) => {
+                        self.hit(s, j, at);
+                        false
+                    }
+                    None if s.bounces > 0 => {
+                        // Ricochet: mirror off the surface and carry on.
+                        let n = ri.normal;
+                        s.vel -= 2.0 * s.vel.dot(n) * n;
+                        s.pos = at + n * 0.05;
+                        s.bounces -= 1;
+                        // The skin sheds plasma at every skip.
+                        s.damage *= BOUNCE_KEEP;
+                        self.blasts
+                            .push(Blast::new(at, impact_kind(&s.spec, false)));
+                        self.sounds.push(Sound::Bounce { at });
+                        true
+                    }
+                    None => {
+                        if s.spec.look != Look::Flame {
                             self.blasts
                                 .push(Blast::new(at, impact_kind(&s.spec, false)));
-                            self.sounds.push(Sound::Bounce { at });
-                            true
+                            self.sounds.push(Sound::Impact {
+                                at,
+                                plasma: matches!(
+                                    s.spec.look,
+                                    Look::Plasma { .. } | Look::Bolt { .. }
+                                ),
+                            });
                         }
-                        None => {
-                            if s.spec.look != Look::Flame {
-                                self.blasts
-                                    .push(Blast::new(at, impact_kind(&s.spec, false)));
-                                self.sounds.push(Sound::Impact {
-                                    at,
-                                    plasma: matches!(
-                                        s.spec.look,
-                                        Look::Plasma { .. } | Look::Bolt { .. }
-                                    ),
-                                });
-                            }
-                            false
-                        }
+                        false
                     }
                 }
             }
-        });
-        self.shells = shells;
+        }
     }
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
@@ -1451,6 +1492,12 @@ impl Match {
             };
             match s.spec.look {
                 // A streak trailing back from the shell.
+                // An instant shot's tracer covers a frame's flight in a long
+                // streak, never trailing back past the muzzle.
+                Look::Tracer if s.spec.instant => {
+                    let flown = (s.age - (1.0 - alpha) * DT).clamp(0.0, s.spec.life) * s.spec.speed;
+                    out.push(streak(0.2, flown.min(TRACER_STREAK), tracer));
+                }
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
                 // Plasma is mostly light (see `glow_particles`); only its
                 // white-hot heart is solid.
@@ -1962,6 +2009,54 @@ mod tests {
         }
     }
 
+    /// Imperium guns land on the step they fire, however far the target
+    /// is, and leave a tracer that stops where they landed.
+    #[test]
+    fn imperium_shots_land_the_moment_they_fire() {
+        for turret in [TurretKind::Kontos, TurretKind::Pelekys] {
+            let mut m = duel(turret, 90.0);
+            let hp = m.fighters[1].health;
+            m.step(Command::default(), true);
+            assert!(
+                m.fighters[1].health < hp,
+                "{turret:?}: a target 90 m off wasn't hit on the shot's own step"
+            );
+            assert_eq!(m.shells.len(), 1, "{turret:?}: the shot leaves a tracer");
+            let s = &m.shells[0];
+            let reach = s.spec.speed * s.spec.life;
+            assert!(
+                (80.0..90.0).contains(&reach),
+                "{turret:?}: tracer flies {reach:.1} m, not to the target"
+            );
+            // The tracer is only a picture: it's gone soon and hurts no one.
+            let after = m.fighters[1].health;
+            for _ in 0..(0.2 / DT) as usize {
+                m.step(Command::default(), false);
+            }
+            assert!(m.shells.is_empty());
+            assert_eq!(m.fighters[1].health, after);
+        }
+    }
+
+    /// Nothing to lead with an Imperium gun; everyone else's shells still fly.
+    #[test]
+    fn only_imperium_guns_are_instant() {
+        for &k in &TurretKind::ALL {
+            let g = gun(k);
+            let instant = matches!(k, TurretKind::Kontos | TurretKind::Pelekys);
+            match g.action {
+                Action::Shell(_) => {
+                    assert_eq!(g.speed().is_infinite(), instant, "{k:?}");
+                    if instant {
+                        assert_eq!(g.gravity(), 0.0);
+                        assert!(g.range() >= 480.0, "{k:?} can't reach across a map");
+                    }
+                }
+                Action::Beam { .. } => assert!(!instant),
+            }
+        }
+    }
+
     #[test]
     fn flame_falls_short_at_range() {
         let mut m = duel(TurretKind::Hymn, 40.0);
@@ -2080,18 +2175,18 @@ mod tests {
         );
         assert!(m.shells[0].vel.y > 0.0, "and come back up");
         assert_eq!(m.shells[0].bounces, spec.bounces - 1);
-        // Cannon shells just stop.
-        let Action::Shell(cannon) = gun(TurretKind::Kontos).action else {
+        // Darts just stop.
+        let Action::Shell(dart) = gun(TurretKind::Ossrin).action else {
             panic!();
         };
         m.shells = vec![Shell {
             pos: from,
             prev: from,
-            vel: Vec3::new(0.0, -cannon.speed, 0.0),
+            vel: Vec3::new(0.0, -dart.speed, 0.0),
             owner: 0,
             damage: 1.0,
             age: 0.0,
-            spec: cannon,
+            spec: dart,
             bounces: 0,
             seed: 0.0,
         }];
