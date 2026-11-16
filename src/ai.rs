@@ -42,7 +42,10 @@ impl NavGrid {
             }
             let (lo, hi) = (s.min2() - CLEARANCE, s.max2() + CLEARANCE);
             let c0 = ((lo / NAV_CELL).floor().max(Vec2::ZERO)).as_uvec2();
-            let c1 = (hi / NAV_CELL).ceil().as_uvec2().min(glam::UVec2::splat(n as u32));
+            let c1 = (hi / NAV_CELL)
+                .ceil()
+                .as_uvec2()
+                .min(glam::UVec2::splat(n as u32));
             for iz in c0.y as usize..c1.y as usize {
                 for ix in c0.x as usize..c1.x as usize {
                     let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
@@ -54,13 +57,20 @@ impl NavGrid {
         }
         for o in &map.oboxes {
             // Debris and drivable ramps don't block; neither does anything low or overhead.
-            if !o.solid || o.is_ramp() || o.y1 - o.y0 < 0.6 || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0 {
+            if !o.solid
+                || o.is_ramp()
+                || o.y1 - o.y0 < 0.6
+                || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0
+            {
                 continue;
             }
             let reach = o.half.length() + CLEARANCE;
             let (lo, hi) = (o.center - Vec2::splat(reach), o.center + Vec2::splat(reach));
             let c0 = ((lo / NAV_CELL).floor().max(Vec2::ZERO)).as_uvec2();
-            let c1 = (hi / NAV_CELL).ceil().as_uvec2().min(glam::UVec2::splat(n as u32));
+            let c1 = (hi / NAV_CELL)
+                .ceil()
+                .as_uvec2()
+                .min(glam::UVec2::splat(n as u32));
             for iz in c0.y as usize..c1.y as usize {
                 for ix in c0.x as usize..c1.x as usize {
                     let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
@@ -70,12 +80,19 @@ impl NavGrid {
                 }
             }
         }
-        NavGrid { nx: n, nz: n, blocked }
+        NavGrid {
+            nx: n,
+            nz: n,
+            blocked,
+        }
     }
 
     fn cell(&self, p: Vec2) -> (usize, usize) {
         let c = (p / NAV_CELL).floor();
-        (c.x.clamp(0.0, self.nx as f32 - 1.0) as usize, c.y.clamp(0.0, self.nz as f32 - 1.0) as usize)
+        (
+            c.x.clamp(0.0, self.nx as f32 - 1.0) as usize,
+            c.y.clamp(0.0, self.nz as f32 - 1.0) as usize,
+        )
     }
 
     fn center(&self, (ix, iz): (usize, usize)) -> Vec2 {
@@ -126,17 +143,25 @@ impl NavGrid {
     /// Waypoints from `from` to `to` (excluding the start), string-pulled so
     /// bots cut straight across open ground. Empty if unreachable.
     pub fn path(&self, from: Vec2, to: Vec2) -> Vec<Vec2> {
-        let (Some(start), Some(goal)) = (self.nearest_open(from), self.nearest_open(to)) else { return Vec::new() };
+        let (Some(start), Some(goal)) = (self.nearest_open(from), self.nearest_open(to)) else {
+            return Vec::new();
+        };
         let idx = |c: (usize, usize)| c.1 * self.nx + c.0;
         let h = |c: (usize, usize)| {
-            let (dx, dz) = ((c.0 as f32 - goal.0 as f32).abs(), (c.1 as f32 - goal.1 as f32).abs());
+            let (dx, dz) = (
+                (c.0 as f32 - goal.0 as f32).abs(),
+                (c.1 as f32 - goal.1 as f32).abs(),
+            );
             dx.max(dz) + (std::f32::consts::SQRT_2 - 1.0) * dx.min(dz)
         };
         let mut g = vec![f32::INFINITY; self.nx * self.nz];
         let mut came = vec![usize::MAX; self.nx * self.nz];
         let mut open = BinaryHeap::new();
         g[idx(start)] = 0.0;
-        open.push(Node { f: h(start), cell: start });
+        open.push(Node {
+            f: h(start),
+            cell: start,
+        });
         let mut found = false;
         while let Some(Node { cell, f }) = open.pop() {
             if cell == goal {
@@ -147,7 +172,16 @@ impl NavGrid {
             if f > gc + h(cell) + 1e-3 {
                 continue;
             }
-            for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            for (dx, dz) in [
+                (1i32, 0i32),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1, 1),
+                (1, -1),
+                (-1, 1),
+                (-1, -1),
+            ] {
                 let (x, z) = (cell.0 as i32 + dx, cell.1 as i32 + dz);
                 if x < 0 || z < 0 || x >= self.nx as i32 || z >= self.nz as i32 {
                     continue;
@@ -164,11 +198,19 @@ impl NavGrid {
                         continue;
                     }
                 }
-                let cost = gc + if dx != 0 && dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                let cost = gc
+                    + if dx != 0 && dz != 0 {
+                        std::f32::consts::SQRT_2
+                    } else {
+                        1.0
+                    };
                 if cost < g[idx(n)] {
                     g[idx(n)] = cost;
                     came[idx(n)] = idx(cell);
-                    open.push(Node { f: cost + h(n), cell: n });
+                    open.push(Node {
+                        f: cost + h(n),
+                        cell: n,
+                    });
                 }
             }
         }
@@ -282,7 +324,14 @@ impl Bot {
     }
 
     /// Decide this step's controls for tank `me`. Returns (command, wants to fire).
-    pub fn think(&mut self, me: usize, world: &World, contacts: &[Contact], nav: &NavGrid, dt: f32) -> (Command, bool) {
+    pub fn think(
+        &mut self,
+        me: usize,
+        world: &World,
+        contacts: &[Contact],
+        nav: &NavGrid,
+        dt: f32,
+    ) -> (Command, bool) {
         let t = &world.tanks[me];
         let my2 = flat(t.pos);
         let eye = t.pos + Vec3::Y * t.gun_height();
@@ -318,7 +367,8 @@ impl Bot {
         }
 
         let target = self.target.map(|j| &world.tanks[j]);
-        let visible = target.is_some_and(|o| t.pos.distance(o.pos) < SIGHT && can_see(world, eye, o));
+        let visible =
+            target.is_some_and(|o| t.pos.distance(o.pos) < SIGHT && can_see(world, eye, o));
         if visible {
             self.seen_for += dt;
             self.last_seen = target.map(|o| flat(o.pos));
@@ -353,7 +403,11 @@ impl Bot {
         if let Some(&wp) = self.path.first() {
             let err = wrap_angle(yaw_of(wp - my2) - t.yaw());
             cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
-            cmd.throttle = if err.abs() > 1.1 { 0.15 } else { 1.0 - err.abs() * 0.5 };
+            cmd.throttle = if err.abs() > 1.1 {
+                0.15
+            } else {
+                1.0 - err.abs() * 0.5
+            };
         }
         if close {
             // In a fight at close range: stop advancing and jink back and forth.
@@ -449,7 +503,10 @@ mod tests {
         assert!(path.last().unwrap().distance(b) < 3.0);
         let mut prev = a;
         for &p in &path {
-            assert!(nav.clear_line(prev, p) || prev == a, "path cuts through a block");
+            assert!(
+                nav.clear_line(prev, p) || prev == a,
+                "path cuts through a block"
+            );
             prev = p;
         }
     }
@@ -461,7 +518,11 @@ mod tests {
         // Spawns sit on road cells; there must be open nav ground right next to each.
         for &p in &map.open_spots {
             let c = nav.nearest_open(p).expect("spawn with no open ground");
-            assert!(nav.center(c).distance(p) < 2.5, "spawn {p} is {} m from open ground", nav.center(c).distance(p));
+            assert!(
+                nav.center(c).distance(p) < 2.5,
+                "spawn {p} is {} m from open ground",
+                nav.center(c).distance(p)
+            );
         }
     }
 
@@ -477,6 +538,10 @@ mod tests {
             let (cmd, _) = bot.think(0, &w, &contacts, &nav, DT);
             w.step(&[cmd]);
         }
-        assert!(w.tanks[0].pos.distance(start) > 15.0, "bot only moved {:.1} m", w.tanks[0].pos.distance(start));
+        assert!(
+            w.tanks[0].pos.distance(start) > 15.0,
+            "bot only moved {:.1} m",
+            w.tanks[0].pos.distance(start)
+        );
     }
 }

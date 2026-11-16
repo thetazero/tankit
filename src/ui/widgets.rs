@@ -11,8 +11,21 @@ use super::{Align, Painter, Rgba, TextStyle, theme, with_alpha};
 /// Faint L-brackets at the four corners of a box.
 pub fn corners(p: &mut Painter, min: Vec2, max: Vec2, len: f32, color: Rgba) {
     let (x0, y0, x1, y1) = (min.x, min.y, max.x, max.y);
-    for (c, dx, dy) in [(Vec2::new(x0, y0), 1.0, 1.0), (Vec2::new(x1, y0), -1.0, 1.0), (Vec2::new(x0, y1), 1.0, -1.0), (Vec2::new(x1, y1), -1.0, -1.0)] {
-        p.polyline(&[c + Vec2::new(0.0, dy * len), c, c + Vec2::new(dx * len, 0.0)], 1.0, color);
+    for (c, dx, dy) in [
+        (Vec2::new(x0, y0), 1.0, 1.0),
+        (Vec2::new(x1, y0), -1.0, 1.0),
+        (Vec2::new(x0, y1), 1.0, -1.0),
+        (Vec2::new(x1, y1), -1.0, -1.0),
+    ] {
+        p.polyline(
+            &[
+                c + Vec2::new(0.0, dy * len),
+                c,
+                c + Vec2::new(dx * len, 0.0),
+            ],
+            1.0,
+            color,
+        );
     }
 }
 
@@ -24,7 +37,12 @@ pub fn label(p: &mut Painter, pos: Vec2, text: &str, align: Align) -> f32 {
 pub fn hairbar(p: &mut Painter, pos: Vec2, width: f32, frac: f32, fill: Rgba) {
     let end = pos + Vec2::new(width, 0.0);
     p.line(pos, end, 1.0, theme::DIM);
-    p.line(end - Vec2::new(0.0, 4.0), end + Vec2::new(0.0, 4.0), 1.0, theme::DIM);
+    p.line(
+        end - Vec2::new(0.0, 4.0),
+        end + Vec2::new(0.0, 4.0),
+        1.0,
+        theme::DIM,
+    );
     let f = frac.clamp(0.0, 1.0);
     if f > 0.0 {
         p.line(pos, pos + Vec2::new(width * f, 0.0), 2.0, fill);
@@ -32,7 +50,14 @@ pub fn hairbar(p: &mut Painter, pos: Vec2, width: f32, frac: f32, fill: Rgba) {
 }
 
 /// A row of outlined segments, the first `lit` filled. `hot` marks one segment in the combat colour.
-pub fn segments(p: &mut Painter, pos: Vec2, width: f32, count: usize, lit: usize, hot: Option<usize>) {
+pub fn segments(
+    p: &mut Painter,
+    pos: Vec2,
+    width: f32,
+    count: usize,
+    lit: usize,
+    hot: Option<usize>,
+) {
     let gap = 3.0;
     let w = (width - gap * (count as f32 - 1.0)) / count as f32;
     for i in 0..count {
@@ -77,7 +102,14 @@ pub fn digit_roll(value: f32, place: u32) -> (u32, f32) {
 
 /// Fixed-width number whose digits roll like a mechanical counter. Leading
 /// zeros are drawn faint. `value` may be fractional; feed it an eased value.
-pub fn odometer(p: &mut Painter, pos: Vec2, value: f32, digits: u32, style: &TextStyle, align: Align) -> f32 {
+pub fn odometer(
+    p: &mut Painter,
+    pos: Vec2,
+    value: f32,
+    digits: u32,
+    style: &TextStyle,
+    align: Align,
+) -> f32 {
     let advance = super::measure("0", style) + style.tracking;
     let total = advance * digits as f32 - style.tracking;
     let x0 = match align {
@@ -96,10 +128,23 @@ pub fn odometer(p: &mut Painter, pos: Vec2, value: f32, digits: u32, style: &Tex
         if place >= lead_end.max(1) {
             s.color = theme::FAINT;
         }
-        p.set_clip(Some((Vec2::new(x - pad, pos.y - pad), Vec2::new(x + advance, pos.y + style.size + pad))));
-        p.text(Vec2::new(x, pos.y - roll * row), &d.to_string(), &s, Align::Left);
+        p.set_clip(Some((
+            Vec2::new(x - pad, pos.y - pad),
+            Vec2::new(x + advance, pos.y + style.size + pad),
+        )));
+        p.text(
+            Vec2::new(x, pos.y - roll * row),
+            &d.to_string(),
+            &s,
+            Align::Left,
+        );
         if roll > 0.0 {
-            p.text(Vec2::new(x, pos.y + (1.0 - roll) * row), &((d + 1) % 10).to_string(), &s, Align::Left);
+            p.text(
+                Vec2::new(x, pos.y + (1.0 - roll) * row),
+                &((d + 1) % 10).to_string(),
+                &s,
+                Align::Left,
+            );
         }
         p.set_clip(None);
     }
@@ -126,10 +171,21 @@ pub fn compass(p: &mut Painter, center: Vec2, width: f32, heading: f32) {
     let mut deg = first;
     while (deg as f32) <= heading + span * 0.5 {
         let x = center.x + (deg as f32 - heading) * px_per_deg;
-        let fade = (1.0 - ((x - center.x).abs() / half)).clamp(0.0, 1.0).powf(0.7);
+        let fade = (1.0 - ((x - center.x).abs() / half))
+            .clamp(0.0, 1.0)
+            .powf(0.7);
         let norm = deg.rem_euclid(360);
-        let (h, c) = if norm % 30 == 0 { (8.0, theme::DIM) } else { (4.0, theme::FAINT) };
-        p.line(Vec2::new(x, center.y), Vec2::new(x, center.y + h), 1.0, with_alpha(c, fade));
+        let (h, c) = if norm % 30 == 0 {
+            (8.0, theme::DIM)
+        } else {
+            (4.0, theme::FAINT)
+        };
+        p.line(
+            Vec2::new(x, center.y),
+            Vec2::new(x, center.y + h),
+            1.0,
+            with_alpha(c, fade),
+        );
         if norm % 30 == 0 {
             let text = match norm {
                 0 => "N".to_string(),
@@ -140,14 +196,34 @@ pub fn compass(p: &mut Painter, center: Vec2, width: f32, heading: f32) {
             };
             let mut s = TextStyle::LABEL;
             s.tracking = 1.5;
-            s.color = with_alpha(if norm % 90 == 0 { theme::FG } else { theme::DIM }, fade);
+            s.color = with_alpha(
+                if norm % 90 == 0 {
+                    theme::FG
+                } else {
+                    theme::DIM
+                },
+                fade,
+            );
             p.text(Vec2::new(x, center.y + 13.0), &text, &s, Align::Center);
         }
         deg += 5;
     }
-    p.line(Vec2::new(center.x - half, center.y), Vec2::new(center.x + half, center.y), 1.0, theme::FAINT);
+    p.line(
+        Vec2::new(center.x - half, center.y),
+        Vec2::new(center.x + half, center.y),
+        1.0,
+        theme::FAINT,
+    );
     // Caret above the strip.
-    p.polyline(&[center + Vec2::new(-4.0, -7.0), center + Vec2::new(0.0, -2.0), center + Vec2::new(4.0, -7.0)], 1.2, theme::FG);
+    p.polyline(
+        &[
+            center + Vec2::new(-4.0, -7.0),
+            center + Vec2::new(0.0, -2.0),
+            center + Vec2::new(4.0, -7.0),
+        ],
+        1.2,
+        theme::FG,
+    );
 }
 
 /// Top-down hull outline with the turret and barrel at `turret_rel` radians
@@ -203,7 +279,14 @@ mod tests {
         let mut p = Painter::new(1.0);
         compass(&mut p, Vec2::new(400.0, 40.0), 360.0, 359.0);
         turret_gauge(&mut p, Vec2::new(100.0, 100.0), 0.5);
-        odometer(&mut p, Vec2::ZERO, 49.5, 3, &TextStyle::value(20.0), Align::Left);
+        odometer(
+            &mut p,
+            Vec2::ZERO,
+            49.5,
+            3,
+            &TextStyle::value(20.0),
+            Align::Left,
+        );
         assert!(!p.finish().is_empty());
     }
 }

@@ -25,6 +25,12 @@ const SHELL_LIFE: f32 = 1.6;
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
+/// XP for each enemy the player kills, paid the moment it dies.
+pub const KILL_XP: u32 = 10;
+/// XP bonus for finishing the round on top.
+pub const WIN_XP: u32 = 25;
+/// How long an XP popup stays on screen, seconds.
+pub const XP_POP_TIME: f32 = 2.0;
 
 pub const BOT_NAMES: [&str; 7] = ["VEGA", "KITE", "ONYX", "RUST", "MOTH", "FLINT", "SABLE"];
 const BOT_COLORS: [Vec3; 7] = [
@@ -47,9 +53,15 @@ pub struct Gun {
 pub fn gun(kind: TurretKind) -> Gun {
     match kind {
         // Long rail cannon: hits hard, slow.
-        TurretKind::Lance => Gun { damage: 38.0, reload: 1.4 },
+        TurretKind::Lance => Gun {
+            damage: 38.0,
+            reload: 1.4,
+        },
         // Twin short guns: light hits, alternating barrels, fast.
-        TurretKind::Maul => Gun { damage: 15.0, reload: 0.5 },
+        TurretKind::Maul => Gun {
+            damage: 15.0,
+            reload: 0.5,
+        },
     }
 }
 
@@ -124,7 +136,12 @@ pub struct Blast {
 
 impl Blast {
     fn new(pos: Vec3, kind: BlastKind) -> Blast {
-        Blast { pos, kind, age: 0.0, drift: Vec3::ZERO }
+        Blast {
+            pos,
+            kind,
+            age: 0.0,
+            drift: Vec3::ZERO,
+        }
     }
 }
 
@@ -146,6 +163,13 @@ pub struct Kill {
     pub age: f32,
 }
 
+/// XP the player just earned, for the HUD popup.
+pub struct XpPop {
+    pub amount: u32,
+    pub reason: &'static str,
+    pub age: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
     Playing,
@@ -159,6 +183,9 @@ pub struct Match {
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
+    /// XP the player has earned this match (kills plus the win bonus).
+    pub xp: u32,
+    pub xp_pops: Vec<XpPop>,
     pub repairs: Repairs,
     pub time_left: f32,
     pub phase: Phase,
@@ -176,8 +203,16 @@ impl Match {
         let mut fighters = vec![fighter("YOU", max_health(world.tanks[0].hull_kind))];
         let mut brains = vec![None];
         for b in 0..bots.min(BOT_NAMES.len()) {
-            let hull = if rng.chance(0.5) { HullKind::Lancer } else { HullKind::Bastion };
-            let turret = if rng.chance(0.5) { TurretKind::Lance } else { TurretKind::Maul };
+            let hull = if rng.chance(0.5) {
+                HullKind::Lancer
+            } else {
+                HullKind::Bastion
+            };
+            let turret = if rng.chance(0.5) {
+                TurretKind::Lance
+            } else {
+                TurretKind::Maul
+            };
             let (at, yaw) = spawn_point(&world, &mut rng, None);
             world.spawn_tank(BOT_COLORS[b], at, yaw, hull, turret);
             fighters.push(fighter(BOT_NAMES[b], max_health(hull)));
@@ -190,6 +225,8 @@ impl Match {
             shells: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
+            xp: 0,
+            xp_pops: Vec::new(),
             repairs,
             time_left: ROUND_TIME,
             phase: Phase::Playing,
@@ -205,7 +242,13 @@ impl Match {
     /// Fighter indices by standing: most kills, then fewest deaths.
     pub fn standings(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.fighters.len()).collect();
-        order.sort_by_key(|&i| (std::cmp::Reverse(self.fighters[i].kills), self.fighters[i].deaths, i));
+        order.sort_by_key(|&i| {
+            (
+                std::cmp::Reverse(self.fighters[i].kills),
+                self.fighters[i].deaths,
+                i,
+            )
+        });
         order
     }
 
@@ -225,12 +268,20 @@ impl Match {
                 self.time_left = 0.0;
                 self.phase = Phase::Over;
                 self.shells.clear();
+                if self.standings()[0] == 0 {
+                    self.award(WIN_XP, "ROUND WON");
+                }
             }
         }
         let playing = self.phase == Phase::Playing;
 
-        let contacts: Vec<Contact> =
-            self.fighters.iter().map(|f| Contact { targetable: f.alive && f.shield <= 0.0 }).collect();
+        let contacts: Vec<Contact> = self
+            .fighters
+            .iter()
+            .map(|f| Contact {
+                targetable: f.alive && f.shield <= 0.0,
+            })
+            .collect();
         let mut cmds = Vec::with_capacity(self.fighters.len());
         let mut triggers = Vec::with_capacity(self.fighters.len());
         for i in 0..self.fighters.len() {
@@ -272,6 +323,10 @@ impl Match {
             k.age += DT;
         }
         self.feed.retain(|k| k.age < FEED_TIME);
+        for x in &mut self.xp_pops {
+            x.age += DT;
+        }
+        self.xp_pops.retain(|x| x.age < XP_POP_TIME);
     }
 
     /// Elevate each gun onto a tank roughly along its line of fire (Tanki-style
@@ -292,7 +347,9 @@ impl Match {
                 let to = aim - eye;
                 let flat = Vec2::new(to.x, to.z);
                 let d = flat.length();
-                if !(2.0..=ASSIST_RANGE).contains(&d) || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE {
+                if !(2.0..=ASSIST_RANGE).contains(&d)
+                    || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE
+                {
                     continue;
                 }
                 if !ai::can_see(&self.world, eye, o) {
@@ -317,7 +374,14 @@ impl Match {
         let g = gun(t.turret_kind);
         let dir = t.gun_dir();
         let muzzle = t.pos + t.up() * t.gun_height() + dir * 2.6;
-        self.shells.push(Shell { pos: muzzle, prev: muzzle, vel: dir * SHELL_SPEED + t.vel, owner: i, damage: g.damage, age: 0.0 });
+        self.shells.push(Shell {
+            pos: muzzle,
+            prev: muzzle,
+            vel: dir * SHELL_SPEED + t.vel,
+            owner: i,
+            damage: g.damage,
+            age: 0.0,
+        });
         self.fighters[i].reload_in = g.reload;
         self.world.fire(i);
         if let Some(b) = &mut self.bots[i] {
@@ -365,7 +429,10 @@ impl Match {
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
         self.blasts.push(Blast::new(at, BlastKind::Hit));
         // A shove through the hull's centre: felt, but never enough to roll it.
-        let (mass, center) = (self.world.tanks[j].chassis.mass, self.world.tanks[j].pos + self.world.tanks[j].up() * 0.8);
+        let (mass, center) = (
+            self.world.tanks[j].chassis.mass,
+            self.world.tanks[j].pos + self.world.tanks[j].up() * 0.8,
+        );
         let shove = s.vel.normalize_or_zero() * Vec3::new(1.0, 0.3, 1.0);
         self.world.push(j, shove * mass * 0.35, center);
         let v = &mut self.fighters[j];
@@ -389,23 +456,45 @@ impl Match {
         v.killed_by = Some(killer);
         if killer != victim {
             self.fighters[killer].kills += 1;
+            if killer == 0 {
+                self.award(KILL_XP, "KILL");
+            }
         }
-        self.feed.push(Kill { killer, victim, age: 0.0 });
+        self.feed.push(Kill {
+            killer,
+            victim,
+            age: 0.0,
+        });
         let t = &self.world.tanks[victim];
         let (pos, mass) = (t.pos, t.chassis.mass);
-        self.blasts.push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
+        self.blasts
+            .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
         // Pop the wreck up and give it a lazy tumble.
         let off = Vec3::new(self.rng.range(-0.6, 0.6), 0.0, self.rng.range(-0.6, 0.6));
         self.world.push(victim, Vec3::Y * mass * 4.5, pos + off);
-        self.world.spin(victim, Vec3::new(self.rng.range(-1.0, 1.0), 0.0, self.rng.range(-1.0, 1.0)) * mass * 1.2);
+        self.world.spin(
+            victim,
+            Vec3::new(self.rng.range(-1.0, 1.0), 0.0, self.rng.range(-1.0, 1.0)) * mass * 1.2,
+        );
         if let Some(b) = &mut self.bots[victim] {
             b.reset();
         }
     }
 
+    fn award(&mut self, amount: u32, reason: &'static str) {
+        self.xp += amount;
+        self.xp_pops.push(XpPop {
+            amount,
+            reason,
+            age: 0.0,
+        });
+    }
+
     fn pick_up_repairs(&mut self) {
         let (fighters, tanks) = (&self.fighters, &self.world.tanks);
-        let picked = self.repairs.step(DT, tanks, |i| fighters[i].alive && fighters[i].health < max_health(tanks[i].hull_kind));
+        let picked = self.repairs.step(DT, tanks, |i| {
+            fighters[i].alive && fighters[i].health < max_health(tanks[i].hull_kind)
+        });
         for (i, at) in picked {
             let max = max_health(self.world.tanks[i].hull_kind);
             let f = &mut self.fighters[i];
@@ -430,7 +519,10 @@ impl Match {
                 let off = Vec3::new(self.rng.range(-1.0, 1.0), 0.0, self.rng.range(-1.0, 1.0));
                 let p = self.world.tanks[i].pos + Vec3::Y * 1.2 + off;
                 let drift = off * 1.5 + Vec3::Y * self.rng.range(3.5, 5.5);
-                self.blasts.push(Blast { drift, ..Blast::new(p, BlastKind::Smoke) });
+                self.blasts.push(Blast {
+                    drift,
+                    ..Blast::new(p, BlastKind::Smoke)
+                });
             }
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
@@ -476,28 +568,70 @@ impl Match {
             let q = Quat::from_rotation_arc(Vec3::Y, d);
             // A streak trailing back from the shell.
             let len = 3.2;
-            out.push((MeshId::GEM, Instance::new(Mat4::from_scale_rotation_translation(Vec3::new(0.22, len, 0.22), q, p - d * len * 0.5), tracer)));
+            out.push((
+                MeshId::GEM,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::new(0.22, len, 0.22),
+                        q,
+                        p - d * len * 0.5,
+                    ),
+                    tracer,
+                ),
+            ));
         }
         for b in &self.blasts {
             let f = b.age / b.life();
             let (mesh, size, color) = match b.kind {
-                BlastKind::Impact => (MeshId::SPHERE, 0.4 + f * 1.4, Vec4::new(1.0, 0.75, 0.4, 3.0 * (1.0 - f))),
-                BlastKind::Hit => (MeshId::SPHERE, 0.6 + f * 2.2, Vec4::new(1.0, 0.45, 0.15, 3.5 * (1.0 - f))),
+                BlastKind::Impact => (
+                    MeshId::SPHERE,
+                    0.4 + f * 1.4,
+                    Vec4::new(1.0, 0.75, 0.4, 3.0 * (1.0 - f)),
+                ),
+                BlastKind::Hit => (
+                    MeshId::SPHERE,
+                    0.6 + f * 2.2,
+                    Vec4::new(1.0, 0.45, 0.15, 3.5 * (1.0 - f)),
+                ),
                 BlastKind::Kill => {
                     // Fireball swells then collapses.
                     let s = (f * 4.0).min(1.0) * (1.0 - f).sqrt();
-                    (MeshId::SPHERE, 0.5 + s * 7.0, Vec4::new(1.0, 0.5 + 0.3 * (1.0 - f), 0.15, 4.0 * (1.0 - f * f)))
+                    (
+                        MeshId::SPHERE,
+                        0.5 + s * 7.0,
+                        Vec4::new(1.0, 0.5 + 0.3 * (1.0 - f), 0.15, 4.0 * (1.0 - f * f)),
+                    )
                 }
-                BlastKind::Repair => (MeshId::SPHERE, 1.0 + f * 4.0, Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f))),
+                BlastKind::Repair => (
+                    MeshId::SPHERE,
+                    1.0 + f * 4.0,
+                    Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f)),
+                ),
                 BlastKind::Smoke => {
                     let s = (f * 4.0).min(1.0) * (1.0 - f);
                     let c = 0.12 + f * 0.15;
                     let p = b.pos + b.drift * f;
-                    out.push((MeshId::SPHERE, Instance::new(Mat4::from_scale_rotation_translation(Vec3::splat(s * 1.3), Quat::IDENTITY, p), Vec4::new(c, c, c, 0.0))));
+                    out.push((
+                        MeshId::SPHERE,
+                        Instance::new(
+                            Mat4::from_scale_rotation_translation(
+                                Vec3::splat(s * 1.3),
+                                Quat::IDENTITY,
+                                p,
+                            ),
+                            Vec4::new(c, c, c, 0.0),
+                        ),
+                    ));
                     continue;
                 }
             };
-            out.push((mesh, Instance::new(Mat4::from_scale_rotation_translation(Vec3::splat(size), Quat::IDENTITY, b.pos), color)));
+            out.push((
+                mesh,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(Vec3::splat(size), Quat::IDENTITY, b.pos),
+                    color,
+                ),
+            ));
         }
     }
 }
@@ -534,12 +668,24 @@ fn spawn_point(world: &World, rng: &mut Rng, me: Option<(usize, &[Fighter])>) ->
         .collect();
     let mut scored: Vec<(f32, Vec2)> = spots
         .iter()
-        .map(|&s| (others.iter().map(|o| o.distance(s)).fold(f32::INFINITY, f32::min), s))
+        .map(|&s| {
+            (
+                others
+                    .iter()
+                    .map(|o| o.distance(s))
+                    .fold(f32::INFINITY, f32::min),
+                s,
+            )
+        })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     let pick = scored[rng.index(scored.len().min(4))].1;
     let to_center = world.map.center() - pick;
-    let yaw = if to_center.length_squared() > 1.0 { yaw_of(to_center) } else { rng.range(0.0, std::f32::consts::TAU) };
+    let yaw = if to_center.length_squared() > 1.0 {
+        yaw_of(to_center)
+    } else {
+        rng.range(0.0, std::f32::consts::TAU)
+    };
     (pick, yaw)
 }
 
@@ -570,8 +716,10 @@ mod tests {
         // A dummy straight ahead of the player.
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
-        m.world.spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter("DUMMY", max_health(HullKind::Lancer)));
+        m.world
+            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
+        m.fighters
+            .push(fighter("DUMMY", max_health(HullKind::Lancer)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -583,9 +731,42 @@ mod tests {
         for _ in 0..(6.0 / DT) as usize {
             m.step(Command::default(), true);
         }
-        assert!(m.fighters[1].deaths >= 1, "dummy has {} hp left", m.fighters[1].health);
+        assert!(
+            m.fighters[1].deaths >= 1,
+            "dummy has {} hp left",
+            m.fighters[1].health
+        );
         assert_eq!(m.fighters[0].kills, m.fighters[1].deaths);
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
+        // Paid per kill, on the spot.
+        assert_eq!(m.xp, m.fighters[0].kills * KILL_XP);
+    }
+
+    #[test]
+    fn bots_killing_bots_pays_the_player_nothing() {
+        let mut m = arena(2);
+        m.kill(1, 2);
+        m.kill(0, 0);
+        assert_eq!(m.xp, 0);
+        m.kill(0, 1);
+        assert_eq!(m.xp, KILL_XP);
+        assert_eq!(m.xp_pops.len(), 1, "one popup, for the player's own kill");
+    }
+
+    #[test]
+    fn winning_the_round_pays_a_bonus() {
+        let mut m = arena(1);
+        m.fighters[0].kills = 1;
+        m.time_left = DT * 0.5;
+        m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.xp, WIN_XP);
+        // Losing pays nothing extra.
+        let mut m = arena(1);
+        m.fighters[1].kills = 1;
+        m.time_left = DT * 0.5;
+        m.step(Command::default(), false);
+        assert_eq!(m.xp, 0);
     }
 
     #[test]
@@ -606,7 +787,11 @@ mod tests {
     fn queued_kit_is_fitted_at_respawn() {
         let mut m = arena(1);
         // Whatever the player has now, queue the other hull.
-        let hull = if m.world.tanks[0].hull_kind == HullKind::Bastion { HullKind::Lancer } else { HullKind::Bastion };
+        let hull = if m.world.tanks[0].hull_kind == HullKind::Bastion {
+            HullKind::Lancer
+        } else {
+            HullKind::Bastion
+        };
         let kit = (hull, TurretKind::Maul);
         m.fighters[0].next_kit = Some(kit);
         // Not while alive.
@@ -620,7 +805,10 @@ mod tests {
             m.step(Command::default(), false);
         }
         assert!(m.fighters[0].alive);
-        assert_eq!((m.world.tanks[0].hull_kind, m.world.tanks[0].turret_kind), kit);
+        assert_eq!(
+            (m.world.tanks[0].hull_kind, m.world.tanks[0].turret_kind),
+            kit
+        );
         assert_eq!(m.fighters[0].health, max_health(kit.0));
         assert_eq!(m.fighters[0].next_kit, None);
     }
@@ -650,8 +838,13 @@ mod tests {
         d.state = crate::repair::State::Falling(0.01);
         m.step(Command::default(), false);
         m.step(Command::default(), false);
-        assert_eq!(m.fighters[0].health, 10.0 + max * crate::repair::HEAL_FRACTION);
-        assert!(matches!(m.repairs.drops[0].state, crate::repair::State::Waiting(t) if t > crate::repair::COOLDOWN - 0.1));
+        assert_eq!(
+            m.fighters[0].health,
+            10.0 + max * crate::repair::HEAL_FRACTION
+        );
+        assert!(
+            matches!(m.repairs.drops[0].state, crate::repair::State::Waiting(t) if t > crate::repair::COOLDOWN - 0.1)
+        );
         assert!(m.blasts.iter().any(|b| b.kind == BlastKind::Repair));
     }
 
@@ -674,6 +867,9 @@ mod tests {
             m.step(Command::default(), false);
         }
         let kills: u32 = m.fighters.iter().map(|f| f.kills).sum();
-        assert!(kills >= 2, "only {kills} kills in a minute of bot deathmatch");
+        assert!(
+            kills >= 2,
+            "only {kills} kills in a minute of bot deathmatch"
+        );
     }
 }

@@ -61,8 +61,11 @@ pub(super) struct Drift {
 impl Drift {
     pub fn height_at(&self, p: Vec2) -> f32 {
         let q = self.b.local_point(p);
-        let (along, across, half_along, half_across) =
-            if self.axis == 0 { (q.x, q.y, self.b.half.x, self.b.half.y) } else { (q.y, q.x, self.b.half.y, self.b.half.x) };
+        let (along, across, half_along, half_across) = if self.axis == 0 {
+            (q.x, q.y, self.b.half.x, self.b.half.y)
+        } else {
+            (q.y, q.x, self.b.half.y, self.b.half.x)
+        };
         let d = along * self.sign - half_along;
         if d < -0.5 || d > self.run {
             return 0.0;
@@ -155,7 +158,13 @@ enum Damage {
 /// Build one ruined building on `lot` (footprint in the world). `front` is the
 /// local face toward the street: (axis, sign). Returns heaps for the terrain.
 /// `clear` says whether a world point is free ground (no other building).
-pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f32), clear: &dyn Fn(Vec2) -> bool) -> Vec<Drift> {
+pub(super) fn building(
+    map: &mut Map,
+    rng: &mut Rng,
+    lot: OBox,
+    front: (usize, f32),
+    clear: &dyn Fn(Vec2) -> bool,
+) -> Vec<Drift> {
     let mut drifts = Vec::new();
     let half = lot.half;
     let color = PLASTERS[rng.index(PLASTERS.len())] * rng.range(0.94, 1.04);
@@ -166,7 +175,13 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
         x if x < 0.85 => Damage::Heavy,
         _ => Damage::Gutted,
     };
-    let floor_y = |k: usize| if k == 0 { 0.0 } else { GROUND_H + (k - 1) as f32 * STOREY_H };
+    let floor_y = |k: usize| {
+        if k == 0 {
+            0.0
+        } else {
+            GROUND_H + (k - 1) as f32 * STOREY_H
+        }
+    };
     let top_y = floor_y(storeys);
 
     // The bite: from a random direction, deeper on that side.
@@ -184,12 +199,24 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
         let side = smoothstep(-0.3, 0.9, n.dot(bite_dir));
         let wobble = ((p.x * 1.7 + noise_seed).sin() * (p.y * 1.3 - noise_seed).cos()) * 0.8;
         let base = top_y - bite_depth * side + wobble;
-        if damage == Damage::Gutted { (base * 0.6 + top_y * 0.4 * (1.0 - side)).max(2.0) } else { base.max(1.0) }
+        if damage == Damage::Gutted {
+            (base * 0.6 + top_y * 0.4 * (1.0 - side)).max(2.0)
+        } else {
+            base.max(1.0)
+        }
     };
 
     // The face most exposed to the bite: where things fell.
-    let (fall_axis, fall_sign) = if bite_dir.x.abs() / half.x > bite_dir.y.abs() / half.y { (0, bite_dir.x.signum()) } else { (1, bite_dir.y.signum()) };
-    let fall_out = if fall_axis == 0 { Vec2::new(fall_sign, 0.0) } else { Vec2::new(0.0, fall_sign) };
+    let (fall_axis, fall_sign) = if bite_dir.x.abs() / half.x > bite_dir.y.abs() / half.y {
+        (0, bite_dir.x.signum())
+    } else {
+        (1, bite_dir.y.signum())
+    };
+    let fall_out = if fall_axis == 0 {
+        Vec2::new(fall_sign, 0.0)
+    } else {
+        Vec2::new(0.0, fall_sign)
+    };
     let face_half = if fall_axis == 0 { half.x } else { half.y };
     let across_half = if fall_axis == 0 { half.y } else { half.x };
 
@@ -204,31 +231,49 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
     let angle = rng.range(0.36, 0.42);
     let len = GROUND_H / angle.sin();
     let lateral_t = rng.range(-0.25, 0.25);
-    let faces = [front, (front.0, -front.1), (1 - front.0, 1.0), (1 - front.0, -1.0)];
-    let ramp = faces.iter().filter(|_| wants_ramp).find_map(|&(axis, sign)| {
-        let out = if axis == 0 { Vec2::new(sign, 0.0) } else { Vec2::new(0.0, sign) };
-        let (face, across_half) = if axis == 0 { (half.x, half.y) } else { (half.y, half.x) };
-        if across_half < RAMP_W * 0.5 + 1.0 {
-            return None;
-        }
-        let across = Vec2::new(out.y.abs(), out.x.abs());
-        let top = out * (face - 2.5) + across * lateral_t * (across_half - RAMP_W * 0.5);
-        if cut(top) < GROUND_H + 0.2 {
-            return None;
-        }
-        // The ramp's foot plus a short run-up lands on free ground.
-        let (ax, az) = lot.axes();
-        let reach = len * angle.cos() + 3.5;
-        let free = (0..=10).all(|i| {
-            let local = top + out * (2.5 + reach * i as f32 / 10.0);
-            [-0.4f32, 0.0, 0.4].iter().all(|&s| {
-                let p = local + across * s * RAMP_W;
-                p.dot(out) < face + 0.5 || clear(lot.center + ax * p.x + az * p.y)
-            })
+    let faces = [
+        front,
+        (front.0, -front.1),
+        (1 - front.0, 1.0),
+        (1 - front.0, -1.0),
+    ];
+    let ramp = faces
+        .iter()
+        .filter(|_| wants_ramp)
+        .find_map(|&(axis, sign)| {
+            let out = if axis == 0 {
+                Vec2::new(sign, 0.0)
+            } else {
+                Vec2::new(0.0, sign)
+            };
+            let (face, across_half) = if axis == 0 {
+                (half.x, half.y)
+            } else {
+                (half.y, half.x)
+            };
+            if across_half < RAMP_W * 0.5 + 1.0 {
+                return None;
+            }
+            let across = Vec2::new(out.y.abs(), out.x.abs());
+            let top = out * (face - 2.5) + across * lateral_t * (across_half - RAMP_W * 0.5);
+            if cut(top) < GROUND_H + 0.2 {
+                return None;
+            }
+            // The ramp's foot plus a short run-up lands on free ground.
+            let (ax, az) = lot.axes();
+            let reach = len * angle.cos() + 3.5;
+            let free = (0..=10).all(|i| {
+                let local = top + out * (2.5 + reach * i as f32 / 10.0);
+                [-0.4f32, 0.0, 0.4].iter().all(|&s| {
+                    let p = local + across * s * RAMP_W;
+                    p.dot(out) < face + 0.5 || clear(lot.center + ax * p.x + az * p.y)
+                })
+            });
+            free.then_some((out, top))
         });
-        free.then_some((out, top))
+    let (ramp_out, ramp_face) = ramp.map_or((Vec2::X, half.x), |(out, _)| {
+        (out, if out.x != 0.0 { half.x } else { half.y })
     });
-    let (ramp_out, ramp_face) = ramp.map_or((Vec2::X, half.x), |(out, _)| (out, if out.x != 0.0 { half.x } else { half.y }));
     let across_dir = Vec2::new(ramp_out.y.abs(), ramp_out.x.abs());
     let ramp = ramp.map(|(_, top)| (top, angle, len));
     // In the ramp's path: within its width (plus room) and between the face and its top.
@@ -250,13 +295,23 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
         let bw = len / bays as f32;
         let street = (axis, sign) == front;
         // Local point on this wall at position s along it.
-        let at = |s: f32| if axis == 0 { Vec2::new(off, s) } else { Vec2::new(s, off) };
+        let at = |s: f32| {
+            if axis == 0 {
+                Vec2::new(off, s)
+            } else {
+                Vec2::new(s, off)
+            }
+        };
         // Box spanning wall positions s0..s1 between heights y0..y1.
         let span = |s0: f32, s1: f32, y0: f32, y1: f32| {
             let (a, b) = (at(s0), at(s1));
             let lo = Vec3::new(a.x.min(b.x), y0, a.y.min(b.y));
             let hi = Vec3::new(a.x.max(b.x), y1, a.y.max(b.y));
-            let t = Vec3::new(if axis == 0 { WALL_T * 0.5 } else { 0.0 }, 0.0, if axis == 1 { WALL_T * 0.5 } else { 0.0 });
+            let t = Vec3::new(
+                if axis == 0 { WALL_T * 0.5 } else { 0.0 },
+                0.0,
+                if axis == 1 { WALL_T * 0.5 } else { 0.0 },
+            );
             (lo - t, hi + t)
         };
         for k in 0..storeys {
@@ -316,7 +371,8 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
     }
 
     // Floor slabs on a grid of cells; ragged where the bite reaches.
-    let cells = (Vec2::new((half.x * 2.0 / 3.0).ceil(), (half.y * 2.0 / 3.0).ceil())).max(Vec2::ONE);
+    let cells =
+        (Vec2::new((half.x * 2.0 / 3.0).ceil(), (half.y * 2.0 / 3.0).ceil())).max(Vec2::ONE);
     let (nx, nz) = (cells.x as usize, cells.y as usize);
     let cell = half * 2.0 / cells;
     for k in 1..=storeys {
@@ -326,14 +382,25 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
                 let lo = Vec2::new(-half.x + ix as f32 * cell.x, -half.y + iz as f32 * cell.y);
                 let c = lo + cell * 0.5;
                 // The slab at height y exists if the storey below it still reaches it.
-                if cut(c) < y + 0.2 || (damage == Damage::Gutted && rng.chance(0.45)) || (k == 1 && in_ramp_path(c)) {
+                if cut(c) < y + 0.2
+                    || (damage == Damage::Gutted && rng.chance(0.45))
+                    || (k == 1 && in_ramp_path(c))
+                {
                     continue;
                 }
                 let edge = cut(c) < y + 2.0;
-                let shrink = if edge { Vec2::new(rng.range(0.0, 0.8), rng.range(0.0, 0.8)) } else { Vec2::ZERO };
+                let shrink = if edge {
+                    Vec2::new(rng.range(0.0, 0.8), rng.range(0.0, 0.8))
+                } else {
+                    Vec2::ZERO
+                };
                 f.put(
                     Vec3::new(lo.x + shrink.x, y - SLAB, lo.y + shrink.y),
-                    Vec3::new(lo.x + cell.x - shrink.x * 0.3, y, lo.y + cell.y - shrink.y * 0.3),
+                    Vec3::new(
+                        lo.x + cell.x - shrink.x * 0.3,
+                        y,
+                        lo.y + cell.y - shrink.y * 0.3,
+                    ),
                     SLAB_C,
                     true,
                 );
@@ -344,22 +411,48 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
     for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
         let c = Vec2::new(sx * (half.x - 0.35), sz * (half.y - 0.35));
         let h = cut(c).min(top_y + 0.9);
-        f.put(Vec3::new(c.x - 0.4, 0.0, c.y - 0.4), Vec3::new(c.x + 0.4, h, c.y + 0.4), color * 0.92, true);
+        f.put(
+            Vec3::new(c.x - 0.4, 0.0, c.y - 0.4),
+            Vec3::new(c.x + 0.4, h, c.y + 0.4),
+            color * 0.92,
+            true,
+        );
     }
 
     // The collapsed floor section (placed before the walls so it can carve its way).
     if let Some((top, angle, len)) = ramp {
-        f.sloped_slab(Vec3::new(top.x, GROUND_H, top.y), ramp_out, RAMP_W, len, angle, SLAB_C * 0.95);
+        f.sloped_slab(
+            Vec3::new(top.x, GROUND_H, top.y),
+            ramp_out,
+            RAMP_W,
+            len,
+            angle,
+            SLAB_C * 0.95,
+        );
     }
 
     // Rubble heaped at the foot of the damage, and loose debris around it.
     if damage != Damage::Light {
-        drifts.push(Drift { b: lot, axis: fall_axis, sign: fall_sign, height: rng.range(1.0, 1.8), run: rng.range(4.0, 6.5) });
+        drifts.push(Drift {
+            b: lot,
+            axis: fall_axis,
+            sign: fall_sign,
+            height: rng.range(1.0, 1.8),
+            run: rng.range(4.0, 6.5),
+        });
         for _ in 0..rng.int(8, 16) {
             let along = rng.range(-across_half, across_half);
             let out = rng.range(-1.0, 5.0);
-            let p = fall_out * (face_half + out) + Vec2::new(fall_out.y.abs(), fall_out.x.abs()) * along;
-            let (size, c) = (rng.range(0.4, 1.3), if rng.chance(0.5) { color * 0.9 } else { RUBBLE_C });
+            let p = fall_out * (face_half + out)
+                + Vec2::new(fall_out.y.abs(), fall_out.x.abs()) * along;
+            let (size, c) = (
+                rng.range(0.4, 1.3),
+                if rng.chance(0.5) {
+                    color * 0.9
+                } else {
+                    RUBBLE_C
+                },
+            );
             f.chunk(rng, p, size, c);
         }
     }
@@ -371,7 +464,13 @@ pub(super) fn building(map: &mut Map, rng: &mut Rng, lot: OBox, front: (usize, f
     }
     // Sand blown up against the street face.
     if rng.chance(0.5) {
-        drifts.push(Drift { b: lot, axis: front.0, sign: front.1, height: 0.8, run: 3.5 });
+        drifts.push(Drift {
+            b: lot,
+            axis: front.0,
+            sign: front.1,
+            height: 0.8,
+            run: 3.5,
+        });
     }
     drifts
 }
