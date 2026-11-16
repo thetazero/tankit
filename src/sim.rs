@@ -129,12 +129,15 @@ impl Chassis {
         self.rest_len() + SUSPENSION_SAG
     }
 
-    /// Convex collider: belly just above the ground, ends swept up around the
+    /// Convex collider: belly above the road wheels' travel, ends swept up around the
     /// sprocket and idler like the real track run, hull box on top.
     pub fn collider_points(&self) -> Vec<Vec3> {
         let mut pts = Vec::new();
         let x = self.track_x + self.track_width * 0.5;
-        let belly = 0.1;
+        // The road wheels (suspension rays) handle anything up to their travel.
+        // The collider's bottom sits at the top of that travel, so kerbs and
+        // small bumps go through the springs instead of popping off a hull corner.
+        let belly = self.road_y - self.road_r + SUSPENSION_TRAVEL_UP;
         let (z_lo, z_hi) = (self.road_z[0], self.road_z[self.road_z.len() - 1]);
         for sx in [-x, x] {
             pts.push(Vec3::new(sx, belly, z_lo));
@@ -206,8 +209,6 @@ pub struct HullStats {
     pub grip_lat: f32,
     /// Sideways grip while steering (tracks scrub to let the hull swing).
     pub grip_lat_turning: f32,
-    /// Grip of the track run against edges and walls (steel on concrete).
-    pub grip_edge: f32,
     /// Max turret rotation speed relative to the hull, rad/s.
     pub turret_speed: f32,
     /// How fast the turret spins up to full speed, rad/s².
@@ -227,7 +228,6 @@ impl HullStats {
         grip_long: 1.6,
         grip_lat: 1.3,
         grip_lat_turning: 0.7,
-        grip_edge: 0.8,
         turret_speed: 2.0,
         turret_accel: 12.0,
     };
@@ -243,7 +243,6 @@ impl HullStats {
         grip_long: 1.6,
         grip_lat: 1.4,
         grip_lat_turning: 0.85,
-        grip_edge: 0.8,
         turret_speed: 1.5,
         turret_accel: 8.0,
     };
@@ -666,6 +665,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
         for m in rc.solver_manifolds() {
             // Manifold normal points from collider1 to collider2; we want it pointing into the tank.
             let normal = if ours_first { -m.data.normal } else { m.data.normal };
+            // Only the belt surface (bottom run, the curves around the end wheels,
+            // the top run) can drive. The outer side of a track is a plain slab:
+            // touching a wall with it must not drive the tank up the wall.
+            let normal_local = pose.rotation.inverse() * normal;
+            if normal_local.x.abs() > 0.5 {
+                continue;
+            }
             for p in &m.points {
                 let local = if ours_first { p.local_p1 } else { p.local_p2 };
                 let on_track = local.x.abs() >= track_inner && local.y < 1.1;
@@ -675,10 +681,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 contacts.push(TrackContact {
                     point: pose.transform_point(local),
                     normal,
-                    load: p.data.impulse / DT,
+                    // A collision makes a huge, brief contact force. That's the
+                    // physics engine's job; traction only ever sees weight-scale
+                    // loads, or one hard bump would fling the tank with the belt.
+                    load: (p.data.impulse / DT).min(mass * GRAVITY),
                     side: if local.x > 0.0 { 0 } else { 1 },
                     push: pose.rotation * c.belt_push(local),
-                    grip: t.hull.grip_edge,
+                    grip: t.hull.grip_long,
                 });
             }
         }
@@ -1224,6 +1233,7 @@ mod tests {
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
     }
 }
+
 
 
 

@@ -163,6 +163,7 @@ impl CellRect {
     }
 }
 
+#[derive(Clone)]
 pub struct Map {
     /// Arena spans [0, size] on x and z.
     pub size: f32,
