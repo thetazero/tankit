@@ -93,6 +93,29 @@ impl NavGrid {
                 }
             }
         }
+        // Crystals: wherever they stand low enough to hit.
+        for c in map.crystals.iter().filter(|c| c.solid) {
+            let g = map.ground_height(c.base.x, c.base.z);
+            for (p, r) in c.footprint(g, 3.0) {
+                let reach = r + CLEARANCE;
+                let c0 = (((p - Vec2::splat(reach)) / NAV_CELL)
+                    .floor()
+                    .max(Vec2::ZERO))
+                .as_uvec2();
+                let c1 = ((p + Vec2::splat(reach)) / NAV_CELL)
+                    .ceil()
+                    .as_uvec2()
+                    .min(glam::UVec2::splat(n as u32));
+                for iz in c0.y as usize..c1.y as usize {
+                    for ix in c0.x as usize..c1.x as usize {
+                        let cc = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
+                        if cc.distance(p) <= reach {
+                            blocked[iz * n + ix] = true;
+                        }
+                    }
+                }
+            }
+        }
         // Ground too steep to drive up (cliffs, steep banks).
         if let Some(t) = &map.terrain {
             for iz in 0..n {

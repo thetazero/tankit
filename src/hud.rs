@@ -335,12 +335,22 @@ impl Hud {
         let bc = Vec2::new(w * 0.5, h - MARGIN);
         let max_hp = me.max_health(&m.world.tanks[0]);
         let segs = 12;
-        let lit = ((me.health / max_hp) * segs as f32).ceil() as usize;
+        // A husk (broken Vigil running on): the bar is the strength it has left.
+        let (fill, name, value) = if me.is_husk() {
+            (me.strength(), "HUSK", format!("{:.0}", me.husk.ceil()))
+        } else {
+            (
+                me.health / max_hp,
+                "HULL",
+                format!("{:.0}", me.health.max(0.0)),
+            )
+        };
+        let lit = (fill * segs as f32).ceil() as usize;
         let hot = (me.since_hit < 0.3 && lit < segs).then_some(lit);
-        label(&mut p, bc + Vec2::new(-130.0, -40.0), "HULL", Align::Left);
+        label(&mut p, bc + Vec2::new(-130.0, -40.0), name, Align::Left);
         p.text(
             bc + Vec2::new(130.0, -42.0),
-            &format!("{:.0}", me.health.max(0.0)),
+            &value,
             &TextStyle::value(10.0),
             Align::Right,
         );

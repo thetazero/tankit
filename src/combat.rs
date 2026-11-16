@@ -23,6 +23,9 @@ use crate::sim::{Command, GRAVITY, HullKind, Tank, TurretKind, World, wrap_angle
 
 pub const ROUND_TIME: f32 = 300.0;
 pub const RESPAWN_TIME: f32 = 4.0;
+/// Tanks wear their own paint, not their side's color: sides are told apart
+/// by their markers on the HUD.
+pub const TANK_PAINT: Vec3 = Vec3::ONE;
 /// Freshly spawned tanks can't be hurt (and bots ignore them) for this long.
 pub const SPAWN_SHIELD: f32 = 2.0;
 /// Imperium cannon shell speed, m/s.
@@ -31,6 +34,10 @@ pub const SHELL_SPEED: f32 = 160.0;
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
+/// A broken Vigil keeps running: at full strength for this long, s...
+pub const HUSK_STRONG: f32 = 2.0;
+/// ...then its speed and firepower fade out over this long, s.
+pub const HUSK_FADE: f32 = 3.0;
 /// Trust with your employer for each enemy the player kills, paid the moment it dies.
 pub const KILL_TRUST: u32 = 10;
 /// How long a trust popup stays on screen, seconds.
@@ -98,6 +105,9 @@ pub enum Look {
 /// Ithessar plasma.
 const PLASMA: Vec3 = crate::tank::ithessar::PLASMA;
 const PLASMA_HOT: Vec3 = crate::tank::ithessar::PLASMA_HOT;
+/// Resonant crystal light (husks, their burst).
+const CRYSTAL: Vec3 = crate::tank::resonant::CRYSTAL_LIGHT;
+const CRYSTAL_HOT: Vec3 = crate::tank::resonant::CRYSTAL_LIGHT_HOT;
 /// Machine laser.
 const LASER: Vec3 = Vec3::new(1.0, 0.12, 0.08);
 
@@ -220,6 +230,8 @@ pub fn max_health(kind: HullKind) -> f32 {
         HullKind::Bastion => 160.0,
         // Light: speed is its armor.
         HullKind::Sethuun => 90.0,
+        // Light: the crystal is its armor (it keeps running once broken).
+        HullKind::Vigil => 85.0,
     }
 }
 
@@ -257,11 +269,29 @@ pub struct Fighter {
     pub next_levels: Option<Levels>,
     /// Hull points of damage this tank has dealt to others this round.
     pub damage_dealt: f32,
+    /// Seconds a broken Vigil has left to run; 0 while whole. A husk is
+    /// already counted dead (the kill is paid) and can't be hurt.
+    pub husk: f32,
 }
 
 impl Fighter {
     pub fn max_health(&self, t: &Tank) -> f32 {
         self.levels.max_health(t.hull_kind)
+    }
+
+    /// Running on, broken (Vigil).
+    pub fn is_husk(&self) -> bool {
+        self.husk > 0.0
+    }
+
+    /// How much of its speed and firepower a tank has: 1, or a husk's
+    /// strength fading out to 0.
+    pub fn strength(&self) -> f32 {
+        if self.is_husk() {
+            (self.husk / HUSK_FADE).min(1.0)
+        } else {
+            1.0
+        }
     }
 }
 
@@ -292,6 +322,10 @@ pub enum BlastKind {
     Repair,
     /// Plasma bursting, `size` m across (Ithessar shots).
     Plasma(f32),
+    /// Crystal light bursting out of a Vigil as it breaks, `size` m across.
+    Shatter(f32),
+    /// A mote of crystal light leaking off a husk, drifting up.
+    Mote,
 }
 
 /// Damage an Ithessar orb keeps through each skip.
@@ -334,7 +368,8 @@ impl Blast {
             BlastKind::Kill => 1.1,
             BlastKind::Smoke => 1.6,
             BlastKind::Repair => 0.7,
-            BlastKind::Plasma(size) => 0.25 + size * 0.15,
+            BlastKind::Plasma(size) | BlastKind::Shatter(size) => 0.25 + size * 0.15,
+            BlastKind::Mote => 0.9,
         }
     }
 }
@@ -439,7 +474,7 @@ impl Match {
         let factions = map.factions;
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
-        world.tanks[0].color = factions[0].paint();
+        world.tanks[0].color = TANK_PAINT;
         if !world.map.bases[0].is_empty() {
             let (at, yaw) = spawn_point(&world, &mut rng, 0, &[]);
             world.teleport(0, at, yaw);
@@ -458,7 +493,7 @@ impl Match {
                 .map(|j| (fighters[j].team, flat(world.tanks[j].pos)))
                 .collect();
             let (at, yaw) = spawn_point(&world, &mut rng, team, &placed);
-            world.spawn_tank(factions[team].paint(), at, yaw, hull, turret);
+            world.spawn_tank(TANK_PAINT, at, yaw, hull, turret);
             fighters.push(fighter(team, max_health(hull)));
             brains.push(Some(Bot::new(seed.wrapping_add(b as u64 * 7919))));
         }
@@ -573,7 +608,7 @@ impl Match {
             .fighters
             .iter()
             .map(|f| Contact {
-                targetable: f.alive && f.shield <= 0.0,
+                targetable: f.alive && f.shield <= 0.0 && !f.is_husk(),
                 team: f.team,
             })
             .collect();
@@ -586,11 +621,18 @@ impl Match {
                 Some(bot) => bot.think(i, &self.world, &contacts, objective, &self.nav, DT),
                 None => (player, fire),
             };
-            cmds.push(c);
+            // A husk's drive fades with it.
+            let s = self.fighters[i].strength();
+            cmds.push(Command {
+                throttle: c.throttle * s,
+                steer: c.steer * s.sqrt(),
+                ..c
+            });
             triggers.push(f);
         }
 
         self.world.step(&cmds);
+        self.husks();
         self.aim_assist();
 
         for (i, &trigger) in triggers.iter().enumerate() {
@@ -687,6 +729,7 @@ impl Match {
             for j in 0..n {
                 if j == i
                     || !self.fighters[j].alive
+                    || self.fighters[j].is_husk()
                     || self.fighters[j].team == self.fighters[i].team
                 {
                     continue;
@@ -743,7 +786,7 @@ impl Match {
             prev: from,
             vel: dir * spec.speed + t.vel,
             owner: i,
-            damage: g.damage,
+            damage: g.damage * self.fighters[i].strength(),
             age: 0.0,
             spec,
             bounces: spec.bounces,
@@ -786,6 +829,7 @@ impl Match {
             .levels
             .gun(self.world.tanks[i].turret_kind)
             .damage
+            * self.fighters[i].strength()
             * DT;
         match victim {
             Some(j) => self.damage(i, j, dmg),
@@ -906,7 +950,7 @@ impl Match {
             return;
         }
         let v = &mut self.fighters[j];
-        if !v.alive || v.shield > 0.0 || self.phase != Phase::Playing {
+        if !v.alive || v.shield > 0.0 || v.is_husk() || self.phase != Phase::Playing {
             return;
         }
         let dealt = amount.min(v.health);
@@ -922,14 +966,13 @@ impl Match {
         }
     }
 
+    /// `victim` is destroyed: the kill is paid now. A Vigil doesn't go down
+    /// yet; it runs on as a husk and is wrecked when that runs out.
     fn kill(&mut self, killer: usize, victim: usize) {
         let v = &mut self.fighters[victim];
         v.health = 0.0;
-        v.alive = false;
         v.deaths += 1;
-        v.respawn_in = RESPAWN_TIME;
         v.killed_by = Some(killer);
-        self.world.tanks[victim].dead = true;
         if killer != victim {
             self.fighters[killer].kills += 1;
             if killer == 0 {
@@ -943,12 +986,40 @@ impl Match {
             age: 0.0,
         });
         let t = &self.world.tanks[victim];
+        if t.hull_kind == HullKind::Vigil {
+            // The crystal won't let it stop: its shell cracks and the light
+            // pours out, but it keeps going.
+            let at = t.pos + t.up() * 1.3;
+            self.fighters[victim].husk = HUSK_STRONG + HUSK_FADE;
+            self.world.tanks[victim].husk = Some(1.0);
+            self.blasts.push(Blast::new(at, BlastKind::Shatter(3.0)));
+            self.sounds.push(Sound::Kill { at });
+            return;
+        }
+        self.wreck(victim);
+    }
+
+    /// `victim` goes down for good: a wreck until it respawns.
+    fn wreck(&mut self, victim: usize) {
+        let v = &mut self.fighters[victim];
+        v.alive = false;
+        v.husk = 0.0;
+        v.respawn_in = RESPAWN_TIME;
+        self.world.tanks[victim].dead = true;
+        self.world.tanks[victim].husk = None;
+        let t = &self.world.tanks[victim];
         let (pos, mass) = (t.pos, t.chassis.mass);
-        self.blasts
-            .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
-        self.sounds.push(Sound::Kill {
-            at: pos + Vec3::Y * 1.2,
-        });
+        if t.hull_kind == HullKind::Vigil {
+            // The last of the light goes out.
+            self.blasts
+                .push(Blast::new(pos + t.up() * 1.3, BlastKind::Shatter(1.5)));
+        } else {
+            self.blasts
+                .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
+            self.sounds.push(Sound::Kill {
+                at: pos + Vec3::Y * 1.2,
+            });
+        }
         if t.chassis.hover {
             // The field lets go: its plasma bursts out of the split spine.
             self.blasts
@@ -963,6 +1034,40 @@ impl Match {
         );
         if let Some(b) = &mut self.bots[victim] {
             b.reset();
+        }
+    }
+
+    /// Run down every husk's time: light leaks out of its cracks, and when
+    /// the time is up it's wrecked.
+    fn husks(&mut self) {
+        for i in 0..self.fighters.len() {
+            if !self.fighters[i].is_husk() {
+                continue;
+            }
+            let before = self.fighters[i].husk;
+            self.fighters[i].husk -= DT;
+            let s = self.fighters[i].strength();
+            self.world.tanks[i].husk = Some(s);
+            // Motes of light leak out, fewer as it fades.
+            let every = 0.06 / s.max(0.25);
+            if (before / every).floor() != (self.fighters[i].husk / every).floor() {
+                let t = &self.world.tanks[i];
+                let off = t.rot
+                    * Vec3::new(
+                        self.rng.range(-1.4, 1.4),
+                        self.rng.range(0.6, 1.6),
+                        self.rng.range(-2.0, 2.0),
+                    );
+                let drift = off.normalize_or_zero() * self.rng.range(0.5, 1.5)
+                    + Vec3::Y * self.rng.range(1.5, 3.5);
+                self.blasts.push(Blast {
+                    drift,
+                    ..Blast::new(t.pos + off, BlastKind::Mote)
+                });
+            }
+            if self.fighters[i].husk <= 0.0 {
+                self.wreck(i);
+            }
         }
     }
 
@@ -998,7 +1103,9 @@ impl Match {
     fn pick_up_repairs(&mut self) {
         let (fighters, tanks) = (&self.fighters, &self.world.tanks);
         let picked = self.repairs.step(DT, tanks, |i| {
-            fighters[i].alive && fighters[i].health < fighters[i].max_health(&tanks[i])
+            fighters[i].alive
+                && !fighters[i].is_husk()
+                && fighters[i].health < fighters[i].max_health(&tanks[i])
         });
         for (i, at) in picked {
             let max = self.fighters[i].max_health(&self.world.tanks[i]);
@@ -1072,6 +1179,9 @@ impl Match {
                 if !f.alive {
                     t.color *= 0.12;
                     t.since_fire = 10.0;
+                } else if f.is_husk() {
+                    // Cracked and dark, lit only by what leaks out of it.
+                    t.color *= 0.3;
                 }
                 t
             })
@@ -1237,7 +1347,12 @@ impl Match {
                     1.0 + f * 4.0,
                     Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f)),
                 ),
-                BlastKind::Plasma(size) => {
+                BlastKind::Plasma(size) | BlastKind::Shatter(size) => {
+                    let (cool, hot) = if matches!(b.kind, BlastKind::Shatter(_)) {
+                        (CRYSTAL, CRYSTAL_HOT)
+                    } else {
+                        (PLASMA, PLASMA_HOT)
+                    };
                     // The skin bursts: a flash that swells and thins out, and
                     // droplets thrown out in a ring that arc and wink out.
                     let seed = (b.pos.x * 12.9898 + b.pos.z * 78.233).sin() * 43758.5;
@@ -1257,7 +1372,7 @@ impl Match {
                                     q,
                                     p,
                                 ),
-                                PLASMA_HOT.extend(4.0),
+                                hot.extend(4.0),
                             ),
                         ));
                     }
@@ -1269,14 +1384,30 @@ impl Match {
                                 Quat::IDENTITY,
                                 b.pos,
                             ),
-                            PLASMA_HOT.extend(5.0),
+                            hot.extend(5.0),
                         ),
                     ));
                     (
                         MeshId::SPHERE,
                         size * (0.6 + f * 1.6) * (1.0 - f * f),
-                        PLASMA.extend(1.0 + 2.0 * (1.0 - f)),
+                        cool.extend(1.0 + 2.0 * (1.0 - f)),
                     )
+                }
+                BlastKind::Mote => {
+                    let p = b.pos + b.drift * f;
+                    let s = 0.18 * (1.0 - f);
+                    out.push((
+                        MeshId::GEM,
+                        Instance::new(
+                            Mat4::from_scale_rotation_translation(
+                                Vec3::new(s, s * 2.5, s),
+                                Quat::from_rotation_y(f * 6.0),
+                                p,
+                            ),
+                            CRYSTAL_HOT.extend(4.0 * (1.0 - f)),
+                        ),
+                    ));
+                    continue;
                 }
                 BlastKind::Smoke => {
                     let s = (f * 4.0).min(1.0) * (1.0 - f);
@@ -1382,6 +1513,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         levels: Levels::default(),
         next_levels: None,
         damage_dealt: 0.0,
+        husk: 0.0,
     }
 }
 
@@ -1506,6 +1638,36 @@ mod tests {
             m.step(Command::default(), false);
         }
         m
+    }
+
+    /// Holding the trigger keeps a shell gun firing at its reload rate.
+    #[test]
+    fn held_trigger_keeps_firing() {
+        for turret in [
+            TurretKind::Lance,
+            TurretKind::Maul,
+            TurretKind::Ammeth,
+            TurretKind::Ossrin,
+            TurretKind::Hymn,
+        ] {
+            let mut m = duel(turret, 200.0);
+            let reload = gun(turret).reload.max(DT);
+            let secs = 6.0;
+            let mut shots = 0;
+            for _ in 0..(secs / DT) as usize {
+                m.step(Command::default(), true);
+                shots += m
+                    .sounds
+                    .drain(..)
+                    .filter(|s| matches!(s, Sound::Shot { tank: 0, .. }))
+                    .count();
+            }
+            let most = (secs / reload) as usize + 1;
+            assert!(
+                shots >= 3 && shots <= most,
+                "{turret:?}: {shots} shots in {secs}s (reload {reload})"
+            );
+        }
     }
 
     /// Every faction's turret can kill a tank in front of it at close range.
@@ -1664,6 +1826,8 @@ mod tests {
     #[test]
     fn dead_tanks_respawn_with_full_health() {
         let mut m = arena(1);
+        // A Lancer: a Vigil would run on as a husk first.
+        m.world.set_hull(1, HullKind::Lancer);
         m.fighters[1].shield = 0.0;
         m.kill(0, 1);
         assert!(!m.fighters[1].alive);
@@ -1673,6 +1837,60 @@ mod tests {
         assert!(m.fighters[1].alive);
         assert_eq!(m.fighters[1].health, max_health(m.world.tanks[1].hull_kind));
         assert!(m.fighters[1].shield > 0.0);
+    }
+
+    /// A broken Vigil is paid as a kill at once, but runs on as a husk that
+    /// can't be hurt, at full strength and then fading, before it's wrecked.
+    #[test]
+    fn vigil_runs_on_as_a_husk() {
+        let mut m = duel(TurretKind::Lance, 20.0);
+        m.world.set_hull(1, HullKind::Vigil);
+        m.damage(0, 1, 1000.0);
+        let f = &m.fighters[1];
+        assert_eq!(
+            (f.deaths, m.fighters[0].kills),
+            (1, 1),
+            "the kill is paid at once"
+        );
+        assert!(f.alive && f.is_husk());
+        assert_eq!(f.strength(), 1.0);
+        // Untouchable while it runs.
+        m.damage(0, 1, 1000.0);
+        assert_eq!((m.fighters[1].deaths, m.fighters[0].kills), (1, 1));
+        for _ in 0..((HUSK_STRONG + 0.1) / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        let s = m.fighters[1].strength();
+        assert!(m.fighters[1].alive && s < 1.0 && s > 0.8, "fading: {s}");
+        for _ in 0..(HUSK_FADE / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(!m.fighters[1].alive, "wrecked once its time runs out");
+        assert!(!m.fighters[1].is_husk());
+        assert_eq!(m.fighters[1].deaths, 1, "one death, not two");
+        assert_eq!(m.world.tanks[1].husk, None);
+    }
+
+    /// Other hulls just die.
+    #[test]
+    fn other_hulls_do_not_run_on() {
+        let mut m = duel(TurretKind::Lance, 20.0);
+        m.damage(0, 1, 1000.0);
+        assert!(!m.fighters[1].alive);
+        assert!(!m.fighters[1].is_husk());
+    }
+
+    /// A fading husk's shots hit softer.
+    #[test]
+    fn husk_firepower_fades() {
+        let mut m = duel(TurretKind::Lance, 20.0);
+        m.world.set_hull(0, HullKind::Vigil);
+        m.fighters[0].husk = HUSK_FADE * 0.5;
+        m.fighters[0].reload_in = 0.0;
+        m.shoot(0);
+        let full = gun(TurretKind::Lance).damage;
+        let dealt = m.shells.last().unwrap().damage;
+        assert!((dealt - full * 0.5).abs() < 1e-3, "{dealt} of {full}");
     }
 
     #[test]
@@ -1795,13 +2013,13 @@ mod tests {
     }
 
     #[test]
-    fn odd_bot_counts_make_even_teams_in_faction_colors() {
+    fn odd_bot_counts_make_even_teams_in_their_own_paint() {
         let m = arena(11);
         for team in 0..2 {
             let side: Vec<usize> = (0..12).filter(|&i| m.fighters[i].team == team).collect();
             assert_eq!(side.len(), 6);
             for i in side {
-                assert_eq!(m.world.tanks[i].color, m.factions[team].paint());
+                assert_eq!(m.world.tanks[i].color, TANK_PAINT);
             }
         }
         assert_eq!(m.fighters[0].team, 0);
@@ -1853,7 +2071,7 @@ mod tests {
             max_health(m.world.tanks[ally].hull_kind)
         );
         m.hit(&shell(0), enemy, Vec3::ZERO);
-        assert!(!m.fighters[enemy].alive);
+        assert_eq!(m.fighters[enemy].deaths, 1);
         assert_eq!(m.score(0), 1);
         assert_eq!(m.leader(), Some(0));
     }
