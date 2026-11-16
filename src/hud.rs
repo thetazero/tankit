@@ -9,6 +9,7 @@
 use glam::{Vec2, Vec3};
 
 use crate::combat::{FEED_TIME, Match, Phase, XP_POP_TIME};
+use crate::economy::{Outcome, Payout};
 use crate::render::{Camera, UiVertex};
 use crate::repair::State;
 use crate::scene::project;
@@ -496,11 +497,12 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let width = col * 2.0 + gap;
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
-    let height = if m.phase == Phase::Over { 168.0 } else { 84.0 } + rows * 22.0;
+    let backdrop = [0.02, 0.02, 0.025, 0.7];
+    let height = if m.phase == Phase::Over { 362.0 } else { 84.0 } + rows * 22.0;
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
         Vec2::new(width + 48.0, height),
-        [0.0, 0.0, 0.0, 0.45],
+        backdrop,
     );
     widgets::corners(
         p,
@@ -587,12 +589,67 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     }
     y += 56.0 + rows * 22.0;
     if m.phase == Phase::Over {
+        contract_pay(p, m, x0, x1, y + 14.0);
         label(
             p,
-            Vec2::new(top.x, y + 8.0),
+            Vec2::new(top.x, y + 158.0),
             "ENTER  AGAIN     ESC  MENU",
             Align::Center,
         );
+    }
+}
+
+/// Seconds after the round ends before the pay lines start, and between them.
+const PAY_DELAY: f32 = 0.6;
+const PAY_STEP: f32 = 0.35;
+
+/// The contract's crystal pay, line by line, then the total counting up.
+fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
+    let pay = Payout::of(m);
+    let t = m.over_for - PAY_DELAY;
+    label(p, Vec2::new(x0, y), "CONTRACT PAY", Align::Left);
+    label(p, Vec2::new(x1, y), "CR", Align::Right);
+    y += 14.0;
+    p.line(Vec2::new(x0, y), Vec2::new(x1, y), 1.0, theme::FAINT);
+    y += 10.0;
+    let lines = [
+        ("COMPLETION".to_string(), pay.completion),
+        (
+            match pay.outcome {
+                Outcome::Won => "VICTORY",
+                Outcome::Draw => "DRAW",
+                Outcome::Lost => "DEFEAT",
+            }
+            .to_string(),
+            pay.victory,
+        ),
+        (
+            format!("CONTRIBUTION  {:.0} HP", pay.damage),
+            pay.contribution,
+        ),
+        (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
+    ];
+    let n = lines.len() as f32;
+    for (i, (what, amount)) in lines.iter().enumerate() {
+        let a = ((t - i as f32 * PAY_STEP) / 0.2).clamp(0.0, 1.0);
+        if a > 0.0 {
+            let mut s = TextStyle::value(10.0);
+            s.color = with_alpha(theme::FG, a * 0.9);
+            let mut l = TextStyle::LABEL;
+            l.color = with_alpha(theme::DIM, a);
+            p.text(Vec2::new(x0, y + 1.0), what, &l, Align::Left);
+            p.text(Vec2::new(x1, y), &amount.to_string(), &s, Align::Right);
+        }
+        y += 18.0;
+    }
+    // The total rolls up once the lines are in.
+    let roll = ((t - n * PAY_STEP) / 1.0).clamp(0.0, 1.0);
+    if roll > 0.0 {
+        let shown = (pay.total() as f32 * (1.0 - (1.0 - roll).powi(3))).round() as u32;
+        let mut s = TextStyle::value(14.0);
+        s.color = theme::HOT;
+        label(p, Vec2::new(x0, y + 5.0), "TOTAL", Align::Left);
+        p.text(Vec2::new(x1, y), &format!("+{shown}"), &s, Align::Right);
     }
 }
 

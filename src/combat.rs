@@ -9,6 +9,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier3d::prelude::{QueryFilter, Ray};
 
 use crate::ai::{self, Bot, Contact, NavGrid};
+use crate::economy::Levels;
 use crate::faction::Faction;
 use crate::game::DT;
 use crate::map::Map;
@@ -29,8 +30,6 @@ const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
 /// XP for each enemy the player kills, paid the moment it dies.
 pub const KILL_XP: u32 = 10;
-/// XP bonus for being on the winning side.
-pub const WIN_XP: u32 = 25;
 /// How long an XP popup stays on screen, seconds.
 pub const XP_POP_TIME: f32 = 2.0;
 
@@ -87,11 +86,16 @@ pub struct Fighter {
     /// Seconds since this tank last picked up a repair crate, and how much it mended.
     pub since_repair: f32,
     pub repaired: f32,
+    /// Part upgrade levels (bots stay at M0), and new levels to fit at the next respawn.
+    pub levels: Levels,
+    pub next_levels: Option<Levels>,
+    /// Hull points of damage this tank has dealt to others this round.
+    pub damage_dealt: f32,
 }
 
 impl Fighter {
     pub fn max_health(&self, t: &Tank) -> f32 {
-        max_health(t.hull_kind)
+        self.levels.max_health(t.hull_kind)
     }
 }
 
@@ -183,6 +187,8 @@ pub struct Match {
     pub factions: [Faction; 2],
     pub time_left: f32,
     pub phase: Phase,
+    /// Seconds since the round ended (the results screen counts up with it).
+    pub over_for: f32,
     nav: NavGrid,
     rng: Rng,
 }
@@ -238,6 +244,7 @@ impl Match {
             factions,
             time_left: ROUND_TIME,
             phase: Phase::Playing,
+            over_for: 0.0,
             nav,
             rng,
         }
@@ -278,9 +285,16 @@ impl Match {
     /// Swap the player's hull, keeping health as a fraction of the new maximum.
     pub fn set_player_hull(&mut self, kind: HullKind) {
         let f = &mut self.fighters[0];
-        let frac = f.health / max_health(self.world.tanks[0].hull_kind);
+        let frac = f.health / f.levels.max_health(self.world.tanks[0].hull_kind);
         self.world.set_hull(0, kind);
-        f.health = frac * max_health(kind);
+        f.health = frac * f.levels.max_health(kind);
+    }
+
+    /// Set the player's upgrade levels now, at full health (before a round starts).
+    pub fn set_player_levels(&mut self, levels: Levels) {
+        let f = &mut self.fighters[0];
+        f.levels = levels;
+        f.health = levels.max_health(self.world.tanks[0].hull_kind);
     }
 
     /// One fixed step. `player` drives tank 0; `fire` is the trigger held.
@@ -291,10 +305,9 @@ impl Match {
                 self.time_left = 0.0;
                 self.phase = Phase::Over;
                 self.shells.clear();
-                if self.leader() == Some(0) {
-                    self.award(WIN_XP, "ROUND WON");
-                }
             }
+        } else {
+            self.over_for += DT;
         }
         let playing = self.phase == Phase::Playing;
 
@@ -398,7 +411,7 @@ impl Match {
 
     fn shoot(&mut self, i: usize) {
         let t = &self.world.tanks[i];
-        let g = gun(t.turret_kind);
+        let g = self.fighters[i].levels.gun(t.turret_kind);
         let dir = t.gun_dir();
         let muzzle = t.pos + t.up() * t.gun_height() + dir * 2.6;
         self.shells.push(Shell {
@@ -471,9 +484,14 @@ impl Match {
         if !v.alive || v.shield > 0.0 || self.phase != Phase::Playing {
             return;
         }
+        let dealt = s.damage.min(v.health);
         v.health -= s.damage;
         v.since_hit = 0.0;
-        self.fighters[s.owner].since_dealt = 0.0;
+        let owner = &mut self.fighters[s.owner];
+        owner.since_dealt = 0.0;
+        if s.owner != j {
+            owner.damage_dealt += dealt;
+        }
         if self.fighters[j].health <= 0.0 {
             self.kill(s.owner, j);
         }
@@ -525,10 +543,10 @@ impl Match {
     fn pick_up_repairs(&mut self) {
         let (fighters, tanks) = (&self.fighters, &self.world.tanks);
         let picked = self.repairs.step(DT, tanks, |i| {
-            fighters[i].alive && fighters[i].health < max_health(tanks[i].hull_kind)
+            fighters[i].alive && fighters[i].health < fighters[i].max_health(&tanks[i])
         });
         for (i, at) in picked {
-            let max = max_health(self.world.tanks[i].hull_kind);
+            let max = self.fighters[i].max_health(&self.world.tanks[i]);
             let f = &mut self.fighters[i];
             let before = f.health;
             f.health = (f.health + max * crate::repair::HEAL_FRACTION).min(max);
@@ -563,6 +581,9 @@ impl Match {
                 self.world.set_hull(i, hull);
                 self.world.tanks[i].turret_kind = turret;
             }
+            if let Some(levels) = self.fighters[i].next_levels.take() {
+                self.fighters[i].levels = levels;
+            }
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
                 .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
@@ -572,7 +593,7 @@ impl Match {
             self.world.teleport(i, at, yaw);
             let f = &mut self.fighters[i];
             f.alive = true;
-            f.health = max_health(self.world.tanks[i].hull_kind);
+            f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
             f.shield = SPAWN_SHIELD;
             f.reload_in = 0.5;
         }
@@ -689,6 +710,9 @@ fn fighter(team: usize, health: f32) -> Fighter {
         next_kit: None,
         since_repair: 10.0,
         repaired: 0.0,
+        levels: Levels::default(),
+        next_levels: None,
+        damage_dealt: 0.0,
     }
 }
 
@@ -780,6 +804,12 @@ mod tests {
             m.fighters[1].health
         );
         assert_eq!(m.fighters[0].kills, m.fighters[1].deaths);
+        // Damage counted as dealt, capped at what the target had left.
+        let dealt = m.fighters[0].damage_dealt;
+        assert!(
+            dealt > 0.0
+                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Lancer)
+        );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
         assert_eq!(m.xp, m.fighters[0].kills * KILL_XP);
@@ -797,19 +827,34 @@ mod tests {
     }
 
     #[test]
-    fn winning_the_round_pays_a_bonus() {
+    fn round_end_starts_the_results_clock() {
         let mut m = arena(1);
-        m.fighters[0].kills = 1;
         m.time_left = DT * 0.5;
         m.step(Command::default(), false);
         assert_eq!(m.phase, Phase::Over);
-        assert_eq!(m.xp, WIN_XP);
-        // Losing pays nothing extra.
-        let mut m = arena(1);
-        m.fighters[1].kills = 1;
-        m.time_left = DT * 0.5;
         m.step(Command::default(), false);
-        assert_eq!(m.xp, 0);
+        assert!(m.over_for > 0.0);
+    }
+
+    #[test]
+    fn upgrades_fit_at_the_next_respawn() {
+        let mut m = arena(1);
+        let mut up = Levels::default();
+        up.set(crate::economy::Part::Hull(m.world.tanks[0].hull_kind), 2);
+        m.fighters[0].next_levels = Some(up);
+        let before = m.fighters[0].max_health(&m.world.tanks[0]);
+        m.step(Command::default(), false);
+        assert_eq!(
+            m.fighters[0].max_health(&m.world.tanks[0]),
+            before,
+            "not while alive"
+        );
+        m.kill(1, 0);
+        for _ in 0..(RESPAWN_TIME / DT) as usize + 2 {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[0].alive);
+        assert!(m.fighters[0].health > before);
     }
 
     #[test]
@@ -959,15 +1004,14 @@ mod tests {
         m.time_left = DT * 0.5;
         m.step(Command::default(), false);
         assert_eq!(m.phase, Phase::Over);
-        assert_eq!(m.xp, WIN_XP);
-        // Level: a draw, no bonus.
-        let mut m = arena(3);
-        m.fighters[ally].kills = 2;
-        m.fighters[enemy].kills = 2;
-        m.time_left = DT * 0.5;
-        m.step(Command::default(), false);
+        assert_eq!(m.leader(), Some(0));
+        assert_eq!(
+            crate::economy::Payout::of(&m).outcome,
+            crate::economy::Outcome::Won
+        );
+        // Level: a draw.
+        m.fighters[enemy].kills = 3;
         assert_eq!(m.leader(), None);
-        assert_eq!(m.xp, 0);
     }
 
     #[test]

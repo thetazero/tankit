@@ -665,13 +665,15 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
             None,
         );
     }
-    for o in &map.oboxes {
+    for o in map.oboxes.iter().filter(|o| o.solid) {
         let hy = (o.y1 - o.y0) * 0.5;
+        // Ramps (collapsed slabs) grip like ground; walls are slick-ish.
+        let friction = if o.is_ramp() { ground_friction } else { 0.4 };
         physics.insert_collider(
             ColliderBuilder::cuboid(o.half.x, hy, o.half.y)
-                .translation(Vec3::new(o.center.x, o.y0 + hy, o.center.y))
-                .rotation(Vec3::new(0.0, o.yaw, 0.0))
-                .friction(0.4),
+                .translation(o.center3())
+                .rotation(o.rotation().to_scaled_axis())
+                .friction(friction),
             None,
         );
     }

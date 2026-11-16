@@ -1,7 +1,7 @@
 //! Missions: a map plus a contract (game mode). Only one for now.
 
 use crate::MapKind;
-use crate::combat::{KILL_XP, ROUND_TIME, WIN_XP};
+use crate::combat::{KILL_XP, ROUND_TIME};
 use crate::faction::Faction;
 
 pub struct Mission {
@@ -46,7 +46,7 @@ impl Mission {
     }
 
     pub fn pay(&self) -> String {
-        format!("{KILL_XP} XP PER KILL  +{WIN_XP} WIN")
+        format!("CRYSTALS · {KILL_XP} XP PER KILL")
     }
 }
 

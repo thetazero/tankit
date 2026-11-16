@@ -2,14 +2,16 @@
 //! saved as JSON in the OS data directory (`~/.local/share/tankit/profile.json`
 //! on Linux) whenever it changes, so there's no save button.
 //!
-//! Rank is derived from XP. Later ranks will unlock parts; for now it's just
-//! tracked and shown.
+//! Rank is derived from XP and decides which parts are for sale. Crystals,
+//! paid for finished contracts, buy parts and upgrades.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::garage::{self, Loadout};
+use crate::economy::{Levels, PARTS, Part, upgrade_cost};
+use crate::garage::Loadout;
 use crate::sim::{HullKind, TurretKind};
 
 /// XP from one rank to the next: 100, then 50 more for each rank after.
@@ -47,18 +49,39 @@ impl Rank {
     }
 }
 
-/// What's on disk. Parts are stored by name so the file stays readable.
-#[derive(Serialize, Deserialize)]
+/// What's on disk. Parts are stored by name so the file stays readable;
+/// fields added later default, so older profiles still load.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
 struct Saved {
     xp: u32,
+    crystals: u32,
     hull: String,
     turret: String,
+    /// Bought parts (starters are always owned).
+    owned: Vec<String>,
+    /// Upgrade level by part name; missing means M0.
+    levels: BTreeMap<String, u8>,
+}
+
+/// Why a purchase didn't go through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Refusal {
+    Owned,
+    NotOwned,
+    Rank(u32),
+    Crystals(u32),
+    MaxLevel,
 }
 
 pub struct Profile {
     pub xp: u32,
+    pub crystals: u32,
     /// The kit you deploy in (and respawn in, until the garage changes it).
     pub loadout: Loadout,
+    /// Bought parts, starters not included.
+    bought: Vec<Part>,
+    pub levels: Levels,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
     path: Option<PathBuf>,
 }
@@ -68,7 +91,10 @@ impl Profile {
     pub fn in_memory() -> Profile {
         Profile {
             xp: 0,
+            crystals: 0,
             loadout: (HullKind::Lancer, TurretKind::Lance),
+            bought: Vec::new(),
+            levels: Levels::default(),
             path: None,
         }
     }
@@ -85,19 +111,7 @@ impl Profile {
         };
         match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<Saved>(&text) {
-                Ok(s) => {
-                    p.xp = s.xp;
-                    let hull = garage::HULLS
-                        .iter()
-                        .find(|&&k| garage::hull_name(k).eq_ignore_ascii_case(&s.hull));
-                    let turret = garage::TURRETS
-                        .iter()
-                        .find(|&&k| garage::turret_name(k).eq_ignore_ascii_case(&s.turret));
-                    p.loadout = (
-                        hull.copied().unwrap_or(p.loadout.0),
-                        turret.copied().unwrap_or(p.loadout.1),
-                    );
-                }
+                Ok(s) => p.restore(s),
                 Err(e) => log::warn!("profile {} unreadable, starting fresh: {e}", path.display()),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -108,14 +122,90 @@ impl Profile {
         p
     }
 
+    fn restore(&mut self, s: Saved) {
+        self.xp = s.xp;
+        self.crystals = s.crystals;
+        self.bought = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
+        for (name, level) in &s.levels {
+            if let Some(part) = Part::by_name(name) {
+                self.levels.set(part, *level);
+            }
+        }
+        // Only deploy in parts you own (older profiles predate buying).
+        if let Some(Part::Hull(h)) = Part::by_name(&s.hull).filter(|&p| self.owns(p)) {
+            self.loadout.0 = h;
+        }
+        if let Some(Part::Turret(t)) = Part::by_name(&s.turret).filter(|&p| self.owns(p)) {
+            self.loadout.1 = t;
+        }
+    }
+
     pub fn rank(&self) -> Rank {
         Rank::of(self.xp)
+    }
+
+    pub fn owns(&self, part: Part) -> bool {
+        part.price().is_none() || self.bought.contains(&part)
+    }
+
+    pub fn owns_kit(&self, kit: Loadout) -> bool {
+        self.owns(Part::Hull(kit.0)) && self.owns(Part::Turret(kit.1))
+    }
+
+    /// Can `part` be bought right now? Its price if so.
+    pub fn can_buy(&self, part: Part) -> Result<u32, Refusal> {
+        let Some(price) = part.price().filter(|_| !self.owns(part)) else {
+            return Err(Refusal::Owned);
+        };
+        if self.rank().rank < price.rank {
+            return Err(Refusal::Rank(price.rank));
+        }
+        if self.crystals < price.crystals {
+            return Err(Refusal::Crystals(price.crystals));
+        }
+        Ok(price.crystals)
+    }
+
+    pub fn buy(&mut self, part: Part) -> Result<(), Refusal> {
+        let cost = self.can_buy(part)?;
+        self.crystals -= cost;
+        self.bought.push(part);
+        self.save();
+        Ok(())
+    }
+
+    /// Can `part` be upgraded right now? The cost if so.
+    pub fn can_upgrade(&self, part: Part) -> Result<u32, Refusal> {
+        if !self.owns(part) {
+            return Err(Refusal::NotOwned);
+        }
+        let cost = upgrade_cost(self.levels.of(part)).ok_or(Refusal::MaxLevel)?;
+        if self.crystals < cost {
+            return Err(Refusal::Crystals(cost));
+        }
+        Ok(cost)
+    }
+
+    pub fn upgrade(&mut self, part: Part) -> Result<(), Refusal> {
+        let cost = self.can_upgrade(part)?;
+        self.crystals -= cost;
+        self.levels.set(part, self.levels.of(part) + 1);
+        self.save();
+        Ok(())
     }
 
     /// Bank XP and save.
     pub fn add_xp(&mut self, xp: u32) {
         if xp > 0 {
             self.xp += xp;
+            self.save();
+        }
+    }
+
+    /// Bank contract pay and save.
+    pub fn add_crystals(&mut self, crystals: u32) {
+        if crystals > 0 {
+            self.crystals += crystals;
             self.save();
         }
     }
@@ -136,10 +226,18 @@ impl Profile {
     }
 
     fn write(&self, path: &Path) -> anyhow::Result<()> {
+        let name = |p: Part| p.name().to_ascii_lowercase();
         let saved = Saved {
             xp: self.xp,
-            hull: garage::hull_name(self.loadout.0).to_ascii_lowercase(),
-            turret: garage::turret_name(self.loadout.1).to_ascii_lowercase(),
+            crystals: self.crystals,
+            hull: name(Part::Hull(self.loadout.0)),
+            turret: name(Part::Turret(self.loadout.1)),
+            owned: self.bought.iter().map(|&p| name(p)).collect(),
+            levels: PARTS
+                .iter()
+                .filter(|&&p| self.levels.of(p) > 0)
+                .map(|&p| (name(p), self.levels.of(p)))
+                .collect(),
         };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -193,16 +291,51 @@ mod tests {
 
         let mut p = Profile::load(path.clone());
         assert_eq!(p.xp, 0);
-        p.add_xp(30);
-        p.set_loadout((HullKind::Bastion, TurretKind::Maul));
+        p.add_xp(300);
+        p.add_crystals(2000);
+        p.buy(MAUL).unwrap();
+        p.upgrade(MAUL).unwrap();
+        p.set_loadout((HullKind::Lancer, TurretKind::Maul));
 
         let back = Profile::load(path.clone());
-        assert_eq!(back.xp, 30);
-        assert_eq!(back.loadout, (HullKind::Bastion, TurretKind::Maul));
+        assert_eq!(back.xp, 300);
+        assert_eq!(back.crystals, p.crystals);
+        assert!(back.owns(MAUL));
+        assert_eq!(back.levels.of(MAUL), 1);
+        assert_eq!(back.loadout, (HullKind::Lancer, TurretKind::Maul));
+
+        // An older profile (no crystals, deploying in a part it never bought) still loads.
+        std::fs::write(&path, r#"{"xp": 40, "hull": "bastion", "turret": "lance"}"#).unwrap();
+        let old = Profile::load(path.clone());
+        assert_eq!((old.xp, old.crystals), (40, 0));
+        assert_eq!(old.loadout, (HullKind::Lancer, TurretKind::Lance));
 
         // A corrupt file starts a fresh pilot rather than failing.
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(Profile::load(path).xp, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const MAUL: Part = Part::Turret(TurretKind::Maul);
+
+    #[test]
+    fn buying_needs_rank_and_crystals() {
+        let mut p = Profile::in_memory();
+        assert!(p.owns(Part::Hull(HullKind::Lancer)));
+        assert!(!p.owns(MAUL));
+        let price = MAUL.price().unwrap();
+        assert_eq!(p.buy(MAUL), Err(Refusal::Rank(price.rank)));
+        p.xp = 10_000;
+        assert_eq!(p.buy(MAUL), Err(Refusal::Crystals(price.crystals)));
+        assert_eq!(p.upgrade(MAUL), Err(Refusal::NotOwned));
+        p.crystals = price.crystals;
+        p.buy(MAUL).unwrap();
+        assert_eq!(p.crystals, 0);
+        assert_eq!(p.buy(MAUL), Err(Refusal::Owned));
+        p.crystals = 100_000;
+        for _ in 0..crate::economy::MAX_LEVEL {
+            p.upgrade(MAUL).unwrap();
+        }
+        assert_eq!(p.upgrade(MAUL), Err(Refusal::MaxLevel));
     }
 }

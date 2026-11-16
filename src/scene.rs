@@ -86,15 +86,9 @@ pub fn map_mesh(map: &Map) -> MeshData {
 /// A box turned about +y: built as an axis-aligned box at the origin, then rotated into place.
 fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
     let mut local = MeshData::default();
-    let h = Vec3::new(o.half.x, 0.0, o.half.y);
-    local.add_box(
-        Vec3::new(-h.x, o.y0, -h.z),
-        Vec3::new(h.x, o.y1, h.z),
-        o.color.extend(o.side_mat),
-        o.color.extend(o.top_mat),
-    );
-    let xf = Mat4::from_translation(Vec3::new(o.center.x, 0.0, o.center.y))
-        * Mat4::from_rotation_y(o.yaw);
+    let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
+    local.add_box(-h, h, o.color.extend(o.side_mat), o.color.extend(o.top_mat));
+    let xf = Mat4::from_rotation_translation(o.rotation(), o.center3());
     let base = m.verts.len() as u32;
     for v in &local.verts {
         let mut v = *v;

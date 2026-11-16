@@ -1,6 +1,7 @@
 mod ai;
 mod app;
 mod combat;
+mod economy;
 mod faction;
 mod game;
 mod garage;
@@ -41,8 +42,10 @@ tankit [OPTIONS]
   --hull <lancer|bastion> player hull (default lancer)
   --turret <lance|maul>   player turret (default lance)
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
-  --screen <menu|missions|pause>  (with --shot) render that menu screen
-  --xp <n>                (with --shot --screen) pilot XP to show
+  --screen <menu|missions|pause|results>  (with --shot) render that screen
+  --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
+  --xp <n>                (with --shot) pilot XP for menu, garage and pause shots
+  --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --showroom              all hull x turret combos on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
@@ -62,6 +65,7 @@ pub struct Args {
     garage: bool,
     screen: Option<Screen>,
     xp: u32,
+    crystals: u32,
     straight: bool,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
@@ -70,6 +74,14 @@ pub struct Args {
 }
 
 impl Args {
+    /// An in-memory pilot for headless shots (never saved).
+    fn profile(&self) -> profile::Profile {
+        let mut p = profile::Profile::in_memory();
+        p.xp = self.xp;
+        p.crystals = self.crystals;
+        p
+    }
+
     pub fn map(&self) -> map::Map {
         make_map(self.seed, self.map)
     }
@@ -106,6 +118,7 @@ enum Screen {
     Menu,
     Missions,
     Pause,
+    Results,
 }
 
 struct ShotArgs {
@@ -159,7 +172,7 @@ fn parse_args() -> Result<Args> {
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let mut xp = 0;
+    let (mut xp, mut crystals) = (0, 0);
     let mut room = ShowroomArgs {
         orbit: None,
         dist: 24.0,
@@ -231,10 +244,14 @@ fn parse_args() -> Result<Args> {
                     Some("menu") => Screen::Menu,
                     Some("missions") => Screen::Missions,
                     Some("pause") => Screen::Pause,
-                    other => bail!("--screen expects menu, missions or pause, got {other:?}"),
+                    Some("results") => Screen::Results,
+                    other => {
+                        bail!("--screen expects menu, missions, pause or results, got {other:?}")
+                    }
                 })
             }
             "--xp" => xp = args.next().context("--xp needs a number")?.parse()?,
+            "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--showroom" => showroom = true,
             "--orbit" => {
                 room.orbit = Some(
@@ -266,6 +283,7 @@ fn parse_args() -> Result<Args> {
         garage,
         screen,
         xp,
+        crystals,
         straight,
         cam,
         shot: shot.map(|out| ShotArgs {
@@ -295,6 +313,11 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     } else {
         game.set_player_hull(args.loadout.0);
         game.world.tanks[0].turret_kind = args.loadout.1;
+    }
+    let profile = args.profile();
+    game.set_player_levels(profile.levels);
+    if args.screen == Some(Screen::Results) {
+        game.time_left = (shot.time - 3.0).max(0.1);
     }
     let mut cam = scene::ChaseCam::new();
     let mut garage = garage::Garage::new();
@@ -342,7 +365,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         let mut tanks = game.display_tanks(1.0);
         let driven = tanks[0].clone();
-        garage.preview(&mut tanks[0], args.loadout);
+        garage.preview(&mut tanks[0]);
         let view = match args.cam {
             Some((pos, target)) => render::Camera {
                 pos,
@@ -356,11 +379,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, h);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                let mut profile = profile::Profile::in_memory();
-                profile.xp = args.xp;
                 frame
                     .ui
                     .extend(menu::Pause::new().draw(&profile, game.xp, w, h));
@@ -412,8 +433,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
 
 /// The main menu or mission select over the menu backdrop, headless.
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
-    let mut profile = profile::Profile::in_memory();
-    profile.xp = args.xp;
+    let mut profile = args.profile();
     profile.loadout = args.loadout;
     let mut game = app::menu_match(profile.loadout);
     let mut menu = menu::Menu::new();
