@@ -33,24 +33,10 @@ pub fn hull_name(k: HullKind) -> &'static str {
     }
 }
 
-fn hull_blurb(k: HullKind) -> &'static str {
-    match k {
-        HullKind::Lancer => "LIGHT WEDGE HULL",
-        HullKind::Bastion => "HEAVY, SEGMENTED SKIRTS",
-    }
-}
-
 pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
         TurretKind::Lance => "LANCE",
         TurretKind::Maul => "MAUL",
-    }
-}
-
-fn turret_blurb(k: TurretKind) -> &'static str {
-    match k {
-        TurretKind::Lance => "LONG RAIL CANNON",
-        TurretKind::Maul => "TWIN SHORT CANNONS",
     }
 }
 
@@ -284,8 +270,8 @@ impl Garage {
         p.line(Vec2::new(x, y), Vec2::new(x + PANEL_W, y), 1.0, theme::FAINT);
         y += 26.0;
 
-        let hulls: Vec<_> = HULLS.iter().map(|&k| (Part::Hull(k), hull_name(k), hull_blurb(k))).collect();
-        let turrets: Vec<_> = TURRETS.iter().map(|&k| (Part::Turret(k), turret_name(k), turret_blurb(k))).collect();
+        let hulls: Vec<_> = HULLS.iter().map(|&k| (Part::Hull(k), hull_name(k))).collect();
+        let turrets: Vec<_> = TURRETS.iter().map(|&k| (Part::Turret(k), turret_name(k))).collect();
         let sections = [
             ("01", "HULL", hulls, Part::Hull(tank.hull_kind), Part::Hull(self.entry.0), &HULL_STATS[..]),
             ("02", "TURRET", turrets, Part::Turret(tank.turret_kind), Part::Turret(self.entry.1), &TURRET_STATS[..]),
@@ -299,12 +285,12 @@ impl Garage {
             label(&mut p, Vec2::new(x + PANEL_W, y), &format!("{}/{}", index_of(items, *current) + 1, items.len()), Align::Right);
             y += 20.0;
 
-            for (part, item, blurb) in items {
+            for (part, item) in items {
                 let selected = part == current;
                 if selected {
                     // Bar beside the selected part; brightest in the focused section.
                     let c = if focused { theme::FG } else { theme::DIM };
-                    p.line(Vec2::new(x - 14.0, y - 2.0), Vec2::new(x - 14.0, y + 30.0), 2.0, c);
+                    p.line(Vec2::new(x - 14.0, y - 3.0), Vec2::new(x - 14.0, y + 18.0), 2.0, c);
                     if focused {
                         p.polyline(&[Vec2::new(x + PANEL_W - 8.0, y + 2.0), Vec2::new(x + PANEL_W - 3.0, y + 7.5), Vec2::new(x + PANEL_W - 8.0, y + 13.0)], 1.2, c);
                     }
@@ -315,11 +301,7 @@ impl Garage {
                 if part == was && !selected {
                     label(&mut p, Vec2::new(x + PANEL_W - 16.0, y + 4.0), "WAS", Align::Right);
                 }
-                let mut b = TextStyle::LABEL;
-                b.tracking = 2.5;
-                b.color = if selected { theme::DIM } else { theme::FAINT };
-                p.text(Vec2::new(x, y + 21.0), blurb, &b, Align::Left);
-                y += 44.0;
+                y += 30.0;
             }
 
             y += 4.0;
@@ -353,7 +335,7 @@ impl Garage {
     }
 }
 
-fn index_of(items: &[(Part, &str, &str)], part: Part) -> usize {
+fn index_of(items: &[(Part, &str)], part: Part) -> usize {
     items.iter().position(|i| i.0 == part).unwrap_or(0)
 }
 
