@@ -33,6 +33,7 @@ pub mod engine;
 pub mod guns;
 pub mod hits;
 pub mod hold;
+pub mod hull;
 pub mod repair;
 pub mod shield;
 pub mod tracks;
