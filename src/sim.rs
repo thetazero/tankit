@@ -905,6 +905,14 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
         let hy = (o.y1 - o.y0) * 0.5;
         // Ramps (collapsed slabs) grip like ground; walls are slick-ish.
         let friction = if o.is_ramp() { ground_friction } else { 0.4 };
+        // A rock is drawn as a lump inside its box: collide with the lump.
+        if let Some(b) = o
+            .rock_points()
+            .and_then(|p| ColliderBuilder::convex_hull(&p))
+        {
+            physics.insert_collider(b.friction(friction), None);
+            continue;
+        }
         physics.insert_collider(
             ColliderBuilder::cuboid(o.half.x, hy, o.half.y)
                 .translation(o.center3())
@@ -2300,6 +2308,73 @@ mod hover_tests {
             w.tanks[0].pos.y < -0.4,
             "still floating at {}",
             w.tanks[0].pos.y
+        );
+    }
+}
+
+#[cfg(test)]
+mod rock_tests {
+    use super::*;
+    use crate::map::OBox;
+    use crate::render::material::Material;
+
+    /// A rock (heavily chipped rubble) is drawn as an irregular lump inside
+    /// its box. Shots and tanks must meet that lump: no invisible box
+    /// corners round it, and no driving into it.
+    #[test]
+    fn rocks_collide_along_the_shape_drawn() {
+        let mut map = Map::empty(100.0);
+        let rock = OBox {
+            center: Vec2::new(50.0, 50.0),
+            yaw: 0.4,
+            half: Vec2::new(5.0, 4.0),
+            y0: 0.0,
+            y1: 4.0,
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
+            chip: 0.9,
+            ..OBox::default()
+        };
+        let shadow = rock.shadow();
+        map.oboxes.push(rock);
+        let w = World::empty(map);
+        let c = Vec2::new(50.0, 50.0);
+        // The hull's distance from the center along a direction.
+        let edge = |d: Vec2| {
+            let mut t = 0.0;
+            while shadow.iter().enumerate().all(|(i, &a)| {
+                let b = shadow[(i + 1) % shadow.len()];
+                (b - a).perp_dot(c + d * t - a) >= 0.0
+            }) {
+                t += 0.01;
+            }
+            t
+        };
+        for k in 0..64 {
+            let a = k as f32 / 64.0 * TAU;
+            let d = Vec2::new(a.cos(), a.sin());
+            // Just above the ground, where the rock is widest: its foot.
+            let from = c + d * 20.0;
+            let hit = w.raycast(
+                Vec3::new(from.x, 0.01, from.y),
+                -Vec3::new(d.x, 0.0, d.y),
+                40.0,
+            );
+            let at = 20.0 - hit;
+            let want = edge(d);
+            assert!(
+                (at - want).abs() < 0.1,
+                "heading {a:.2}: hit {at:.2} m out, the rock's foot is {want:.2} m out"
+            );
+        }
+        // Box corners are well outside the rock: a shot past one flies on.
+        let corner = Vec2::new(4.8, 3.8);
+        let (s, co) = 0.4f32.sin_cos();
+        let corner = c + Vec2::new(co * corner.x + s * corner.y, -s * corner.x + co * corner.y);
+        let down = w.raycast(Vec3::new(corner.x, 10.0, corner.y), -Vec3::Y, 10.5);
+        assert!(
+            down > 9.95,
+            "a box corner of empty air stopped a ray at {down:.2} (ground is at 10)"
         );
     }
 }

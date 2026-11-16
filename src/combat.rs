@@ -258,6 +258,18 @@ pub fn heat_capacity(hull: HullKind, turret_mass: f32) -> f32 {
     thermal_mass(hull) + turret_mass
 }
 
+/// How close to the ground under it a tank that went over the edge has to
+/// be to count as having hit the floor, m (a hover hull rides ~1 m up).
+const LANDED_CLEARANCE: f32 = 2.5;
+
+/// A tank past the fall line has hit bottom: it's down near the ground under
+/// it, or sitting still on something (a rock, another wreck). Not while it's
+/// still dropping past the cliff face, so the fall plays out to the floor.
+fn landed(map: &Map, t: &Tank) -> bool {
+    let clearance = t.pos.y - map.ground_height(t.pos.x, t.pos.z);
+    clearance < LANDED_CLEARANCE || (t.grounded() && t.vel.y > -1.0)
+}
+
 /// A beam's damage multiplier at distance `d` out of `range`.
 pub fn beam_falloff(d: f32, range: f32) -> f32 {
     let x = ((d / range - BEAM_FULL) / (1.0 - BEAM_FULL)).clamp(0.0, 1.0);
@@ -1124,15 +1136,17 @@ impl Match {
         }
     }
 
-    /// Over the edge (a mesa map): dead on impact. Whoever hit it last in the
-    /// last few seconds knocked it off and gets the kill.
+    /// Over the edge (a mesa map): dead on impact, once it hits the floor
+    /// (`landed`), not as it drops past the fall line. Whoever hit it last in
+    /// the last few seconds knocked it off and gets the kill.
     fn falls(&mut self) {
         let Some(fall_y) = self.world.map.fall_y else {
             return;
         };
         for i in 0..self.fighters.len() {
             let f = &self.fighters[i];
-            if !f.alive || f.is_husk() || self.world.tanks[i].pos.y > fall_y {
+            let t = &self.world.tanks[i];
+            if !f.alive || f.is_husk() || t.pos.y > fall_y || !landed(&self.world.map, t) {
                 continue;
             }
             let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
@@ -2337,6 +2351,67 @@ mod tests {
         );
         assert_eq!(m.fighters[0].deaths, 1);
         assert_eq!(m.fighters[1].kills, 1, "the last hit knocked it off");
+    }
+
+    /// Drop tank `i` from the mesa's height over the desert floor, run until
+    /// it dies (or `secs` pass), and give the lowest height above the floor it
+    /// was still alive at, the height it died at, and how far it fell.
+    fn drop_from_the_mesa(m: &mut Match, i: usize, secs: f32) -> (f32, Option<f32>, f32) {
+        let at = Vec2::new(150.0, 285.0);
+        m.world.teleport(i, at, 0.0);
+        let floor = m.world.map.ground_height(at.x, at.y);
+        let b = &mut m.world.physics.bodies[m.world.tanks[i].body];
+        b.set_translation(Vec3::new(at.x, 0.5, at.y), true);
+        let (mut alive_low, mut died_at) = (f32::INFINITY, None);
+        let deaths = m.fighters[i].deaths;
+        for _ in 0..(secs / DT) as usize {
+            m.step(Command::default(), false);
+            let h = m.world.tanks[i].pos.y - floor;
+            if m.fighters[i].deaths > deaths {
+                died_at = Some(h);
+                break;
+            }
+            alive_low = alive_low.min(h);
+        }
+        (alive_low, died_at, 0.5 - floor)
+    }
+
+    /// Over the edge, it falls the whole way and blows up on the floor, not
+    /// in mid-air as it passes the fall line.
+    #[test]
+    fn a_tank_that_goes_over_dies_on_the_floor_not_in_the_air() {
+        let mut m = Match::new(Map::sanctum(), 0, 0, 1);
+        m.fighters[0].shield = 0.0;
+        m.world.set_hull(0, HullKind::Kataphrakt);
+        let (alive_low, died_at, drop) = drop_from_the_mesa(&mut m, 0, 6.0);
+        assert!(drop > 25.0, "only a {drop} m drop");
+        let died_at = died_at.expect("never died");
+        assert!(died_at < LANDED_CLEARANCE, "died {died_at:.1} m up");
+        assert!(alive_low < 3.0, "only fell to {alive_low:.1} m up alive");
+        assert!(!m.fighters[0].alive);
+    }
+
+    /// Bots and hover hulls too, and a Vigil runs on at the bottom.
+    #[test]
+    fn every_hull_falls_all_the_way_bots_included() {
+        for hull in crate::garage::HULLS {
+            let mut m = Match::new(Map::sanctum(), 0, 1, 1);
+            for f in &mut m.fighters {
+                f.shield = 0.0;
+            }
+            m.world.set_hull(1, hull);
+            let (_, died_at, _) = drop_from_the_mesa(&mut m, 1, 6.0);
+            let died_at = died_at.unwrap_or_else(|| panic!("{hull:?} never died"));
+            assert!(
+                died_at < LANDED_CLEARANCE,
+                "{hull:?} died {died_at:.1} m up"
+            );
+            if hull == HullKind::Vigil {
+                assert!(m.fighters[1].alive && m.fighters[1].is_husk());
+            } else {
+                assert!(!m.fighters[1].alive, "{hull:?}");
+            }
+        }
     }
 
     /// A Vigil that goes over runs on at the bottom, as it does anywhere.

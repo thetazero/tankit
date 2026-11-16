@@ -29,7 +29,7 @@ const SIZE: f32 = 300.0;
 const CENTER: Vec2 = Vec2::new(150.0, 150.0);
 /// The desert floor under the mesa.
 const LOW: f32 = -40.0;
-/// Below this you've gone over the edge: dead.
+/// Below this you've gone over the edge: dead when you hit the floor.
 pub const FALL_Y: f32 = -10.0;
 
 const SAND: Vec3 = Vec3::new(0.78, 0.66, 0.5);

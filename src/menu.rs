@@ -78,7 +78,31 @@ fn volume_click(settings: &Settings, frac: f32) -> Change {
     Change::Volume(to - settings.volume as i32)
 }
 
-const MAIN_ITEMS: [&str; 4] = ["MISSIONS", "GARAGE", "SETTINGS", "QUIT"];
+/// A row on a menu list.
+#[derive(Clone, Copy)]
+enum Item {
+    /// Leads to another screen: a chevron when selected.
+    Opens(&'static str),
+    /// Acts straight away and takes you out (of the match, or the game): set
+    /// apart under a rule, with what it does spelled out on the right, and
+    /// lit hot when selected.
+    Leaves(&'static str, &'static str),
+}
+
+impl Item {
+    fn name(self) -> &'static str {
+        match self {
+            Item::Opens(n) | Item::Leaves(n, _) => n,
+        }
+    }
+}
+
+const MAIN_ITEMS: [Item; 4] = [
+    Item::Opens("MISSIONS"),
+    Item::Opens("GARAGE"),
+    Item::Opens("SETTINGS"),
+    Item::Leaves("QUIT", "CLOSES THE GAME"),
+];
 
 /// Picks one toggle out of the settings.
 type Flag = fn(&mut Settings) -> &mut bool;
@@ -264,8 +288,7 @@ impl Menu {
 
         match self.screen {
             Screen::Main => {
-                rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor);
-                y += MAIN_ITEMS.len() as f32 * 30.0 + 20.0;
+                y += rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor) + 20.0;
                 label(&mut p, Vec2::new(x, y), "DEPLOYING IN", Align::Left);
                 y += 16.0;
                 p.text(
@@ -281,7 +304,14 @@ impl Menu {
                     h,
                     &[
                         ("W/S", "SELECT", None),
-                        ("ENTER", "OPEN", Some(Nav::Select)),
+                        (
+                            "ENTER",
+                            match MAIN_ITEMS[self.cursor] {
+                                Item::Opens(_) => "OPEN",
+                                Item::Leaves(name, _) => name,
+                            },
+                            Some(Nav::Select),
+                        ),
                     ],
                 );
             }
@@ -294,8 +324,8 @@ impl Menu {
                     Align::Right,
                 );
                 y += 20.0;
-                let names: Vec<&str> = Faction::ALL.iter().map(|f| f.name()).collect();
-                rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.faction);
+                let names: Vec<Item> = Faction::ALL.iter().map(|f| Item::Opens(f.name())).collect();
+                let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.faction);
                 for (i, f) in Faction::ALL.iter().enumerate() {
                     // Their emblem, in their colour, beside the chevron.
                     emblem::emblem(
@@ -307,7 +337,7 @@ impl Menu {
                         f.ui(),
                     );
                 }
-                y += names.len() as f32 * 30.0 + 14.0;
+                y += drawn + 14.0;
 
                 let f = self.employer();
                 let s = profile.standing(f);
@@ -361,9 +391,11 @@ impl Menu {
                     Align::Right,
                 );
                 y += 20.0;
-                let names: Vec<&str> = work.iter().map(|&i| MISSIONS[i].name).collect();
-                rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission);
-                y += names.len() as f32 * 30.0 + 14.0;
+                let names: Vec<Item> = work
+                    .iter()
+                    .map(|&i| Item::Opens(MISSIONS[i].name))
+                    .collect();
+                y += rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission) + 14.0;
 
                 let m = &MISSIONS[work[self.mission]];
                 let against = m
@@ -482,7 +514,12 @@ pub enum PauseAction {
     Quit,
 }
 
-const PAUSE_ITEMS: [&str; 4] = ["RESUME", "SETTINGS", "EXIT TO MENU", "QUIT"];
+const PAUSE_ITEMS: [Item; 4] = [
+    Item::Opens("RESUME"),
+    Item::Opens("SETTINGS"),
+    Item::Leaves("EXIT TO MENU", "ENDS THE MATCH"),
+    Item::Leaves("QUIT", "CLOSES THE GAME"),
+];
 
 pub struct Pause {
     cursor: usize,
@@ -596,14 +633,13 @@ impl Pause {
                 hits,
             };
         }
-        rows(
+        y += rows(
             &mut p,
             &mut hits,
             Vec2::new(x, y),
             &PAUSE_ITEMS,
             self.cursor,
-        );
-        y += PAUSE_ITEMS.len() as f32 * 30.0 + 8.0;
+        ) + 8.0;
         p.line(
             Vec2::new(x, y),
             Vec2::new(x + PANEL_W, y),
@@ -767,34 +803,71 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
     );
 }
 
-/// A selectable list, with the garage's bar-and-chevron marker on the selected row.
-fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[&str], selected: usize) {
-    for (i, item) in items.iter().enumerate() {
-        let y = at.y + i as f32 * 30.0;
+/// Gap above the rule that sets the leaving rows apart.
+const LEAVE_GAP: f32 = 14.0;
+
+/// A selectable list, with the garage's bar-and-chevron marker on the selected
+/// row. Rows that leave sit under a rule, say what they do, and have no
+/// chevron. Returns the height drawn.
+fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selected: usize) -> f32 {
+    let mut y = at.y;
+    let mut ruled = false;
+    for (i, &item) in items.iter().enumerate() {
+        let leaves = matches!(item, Item::Leaves(..));
+        if leaves && !ruled && i > 0 {
+            ruled = true;
+            let ry = y + LEAVE_GAP * 0.5 - 8.0;
+            p.line(
+                Vec2::new(at.x, ry),
+                Vec2::new(at.x + PANEL_W, ry),
+                1.0,
+                theme::FAINT,
+            );
+            y += LEAVE_GAP;
+        }
         garage::row_hit(p, hits, Vec2::new(at.x, y), 30.0, Hit::Row(i));
         let on = i == selected;
+        let lit = match (on, leaves) {
+            (true, true) => theme::HOT,
+            (true, false) => theme::FG,
+            (false, _) => theme::DIM,
+        };
         if on {
             p.line(
                 Vec2::new(at.x - 14.0, y - 3.0),
                 Vec2::new(at.x - 14.0, y + 18.0),
                 2.0,
-                theme::FG,
-            );
-            let cx = at.x + PANEL_W;
-            p.polyline(
-                &[
-                    Vec2::new(cx - 8.0, y + 2.0),
-                    Vec2::new(cx - 3.0, y + 7.5),
-                    Vec2::new(cx - 8.0, y + 13.0),
-                ],
-                1.2,
-                theme::FG,
+                lit,
             );
         }
+        match item {
+            Item::Opens(_) if on => {
+                let cx = at.x + PANEL_W;
+                p.polyline(
+                    &[
+                        Vec2::new(cx - 8.0, y + 2.0),
+                        Vec2::new(cx - 3.0, y + 7.5),
+                        Vec2::new(cx - 8.0, y + 13.0),
+                    ],
+                    1.2,
+                    theme::FG,
+                );
+            }
+            Item::Opens(_) => {}
+            Item::Leaves(_, what) => {
+                let mut s = TextStyle::LABEL;
+                if on {
+                    s.color = theme::HOT;
+                }
+                p.text(Vec2::new(at.x + PANEL_W, y + 4.0), what, &s, Align::Right);
+            }
+        }
         let mut s = TextStyle::value(15.0);
-        s.color = if on { theme::FG } else { theme::DIM };
-        p.text(Vec2::new(at.x, y), item, &s, Align::Left);
+        s.color = lit;
+        p.text(Vec2::new(at.x, y), item.name(), &s, Align::Left);
+        y += 30.0;
     }
+    y - at.y
 }
 
 /// A detail line, key on the left and value on the right; a value too long to

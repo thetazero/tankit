@@ -2,6 +2,7 @@ mod ai;
 mod ambience;
 mod app;
 mod audio;
+mod bay;
 mod combat;
 mod economy;
 mod faction;
@@ -502,6 +503,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
+    let bay_art = bay::BayArt::upload(&mut renderer);
     let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
         if args.garage {
@@ -566,10 +568,23 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             },
             None => camera,
         };
-        let mut frame = scene::build(&game.world, &tanks, &art, view);
-        game.effect_instances(1.0, &mut frame.instances);
-        frame.particles.extend(game.ambience.particles());
-        game.glow_particles(1.0, &mut frame.particles);
+        let mut frame = if garage.in_bay() && args.cam.is_none() {
+            let view = garage.bay_camera(shot.width as f32 / shot.height as f32);
+            bay::scene(
+                &art,
+                &bay_art,
+                &tanks[0],
+                garage.spin(),
+                game.world.time,
+                view,
+            )
+        } else {
+            let mut frame = scene::build(&game.world, &tanks, &art, view);
+            game.effect_instances(1.0, &mut frame.instances);
+            frame.particles.extend(game.ambience.particles());
+            game.glow_particles(1.0, &mut frame.particles);
+            frame
+        };
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud
