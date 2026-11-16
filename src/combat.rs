@@ -41,10 +41,16 @@ pub const TRUST_POP_TIME: f32 = 2.0;
 pub struct Gun {
     /// Per shot; for a beam, per second of contact.
     pub damage: f32,
-    /// Seconds between shots (0 for a beam).
+    /// Seconds between shots (0 for a beam). For a spin-up gun, at full spin.
     pub reload: f32,
+    /// Spin-up guns: seconds of holding the trigger from still to full spin.
+    /// They fire from the first moment, but slowly (`SPOOL_FLOOR`). 0: none.
+    pub spool: f32,
     pub action: Action,
 }
+
+/// A spin-up gun's fire rate when it's barely turning, as a fraction of full.
+pub const SPOOL_FLOOR: f32 = 0.3;
 
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -81,14 +87,17 @@ pub struct ShellSpec {
 pub enum Look {
     /// Orange cannon tracer streak.
     Tracer,
-    /// A glowing ball of plasma, `size` m across.
+    /// A ball of plasma, `size` m across, held in its own skin.
     Plasma { size: f32 },
+    /// A dart of plasma, `size` m long.
+    Bolt { size: f32 },
     /// A puff of crystal fire that swells as it flies.
     Flame,
 }
 
-/// Sorn plasma glow.
-const PLASMA: Vec3 = Vec3::new(0.1, 1.0, 0.5);
+/// Ithessar plasma.
+const PLASMA: Vec3 = crate::tank::ithessar::PLASMA;
+const PLASMA_HOT: Vec3 = crate::tank::ithessar::PLASMA_HOT;
 /// Machine laser.
 const LASER: Vec3 = Vec3::new(1.0, 0.12, 0.08);
 
@@ -138,44 +147,50 @@ pub fn gun(kind: TurretKind) -> Gun {
         TurretKind::Lance => Gun {
             damage: 38.0,
             reload: 1.4,
+            spool: 0.0,
             action: Action::Shell(cannon),
         },
         // Imperium twin short guns: light hits, alternating barrels, fast.
         TurretKind::Maul => Gun {
             damage: 15.0,
             reload: 0.5,
+            spool: 0.0,
             action: Action::Shell(cannon),
         },
-        // Sorn: a big slow orb of plasma that skips off walls and ground.
-        TurretKind::Wisp => Gun {
-            damage: 30.0,
-            reload: 1.1,
+        // Ithessar: an orb of plasma charged in a crystal cradle. Slow, and it
+        // skips off walls and ground, a little weaker each time.
+        TurretKind::Ammeth => Gun {
+            damage: 32.0,
+            reload: 1.2,
+            spool: 0.0,
             action: Action::Shell(ShellSpec {
-                speed: 42.0,
-                life: 3.2,
+                speed: 38.0,
+                life: 3.4,
                 gravity: 0.0,
                 bounces: 3,
                 spread: 0.0,
-                look: Look::Plasma { size: 2.0 },
+                look: Look::Plasma { size: 1.3 },
             }),
         },
-        // Sorn: three barrels taking turns, a stream of small slow bolts.
-        TurretKind::Triad => Gun {
-            damage: 7.0,
-            reload: 0.2,
+        // Ithessar: three crystal needles spinning up into a stream of darts.
+        TurretKind::Ossrin => Gun {
+            damage: 6.0,
+            reload: 0.11,
+            spool: 1.1,
             action: Action::Shell(ShellSpec {
-                speed: 55.0,
-                life: 1.8,
+                speed: 68.0,
+                life: 1.4,
                 gravity: 0.0,
                 bounces: 0,
-                spread: 0.012,
-                look: Look::Plasma { size: 1.0 },
+                spread: 0.014,
+                look: Look::Bolt { size: 1.0 },
             }),
         },
         // Machines: a laser that burns while held, then overheats.
         TurretKind::Lumen => Gun {
             damage: 34.0,
             reload: 0.0,
+            spool: 0.0,
             action: Action::Beam {
                 range: 85.0,
                 heat_time: 3.0,
@@ -186,6 +201,7 @@ pub fn gun(kind: TurretKind) -> Gun {
         TurretKind::Hymn => Gun {
             damage: 1.0,
             reload: 1.0 / 60.0,
+            spool: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 24.0,
                 life: 0.65,
@@ -202,6 +218,8 @@ pub fn max_health(kind: HullKind) -> f32 {
     match kind {
         HullKind::Lancer => 110.0,
         HullKind::Bastion => 160.0,
+        // Light: speed is its armor.
+        HullKind::Sethuun => 90.0,
     }
 }
 
@@ -272,6 +290,21 @@ pub enum BlastKind {
     Smoke,
     /// Green flash where a repair crate was picked up.
     Repair,
+    /// Plasma bursting, `size` m across (Ithessar shots).
+    Plasma(f32),
+}
+
+/// Damage an Ithessar orb keeps through each skip.
+const BOUNCE_KEEP: f32 = 0.85;
+
+/// The burst a shot makes where it lands (on a tank: `hit`).
+fn impact_kind(spec: &ShellSpec, hit: bool) -> BlastKind {
+    match spec.look {
+        Look::Plasma { size } => BlastKind::Plasma(size * if hit { 1.6 } else { 1.0 }),
+        Look::Bolt { size } => BlastKind::Plasma(size * if hit { 0.9 } else { 0.6 }),
+        _ if hit => BlastKind::Hit,
+        _ => BlastKind::Impact,
+    }
 }
 
 pub struct Blast {
@@ -301,6 +334,7 @@ impl Blast {
             BlastKind::Kill => 1.1,
             BlastKind::Smoke => 1.6,
             BlastKind::Repair => 0.7,
+            BlastKind::Plasma(size) => 0.25 + size * 0.15,
         }
     }
 }
@@ -368,11 +402,9 @@ impl Match {
         let mut brains = vec![None];
         for b in 0..bots {
             let team = (b + 1) % 2;
-            let hull = if rng.chance(0.5) {
-                HullKind::Lancer
-            } else {
-                HullKind::Bastion
-            };
+            // Each side drives its own faction's hulls, too.
+            let hulls = factions[team].hulls();
+            let hull = hulls[(rng.f32() * hulls.len() as f32) as usize % hulls.len()];
             // Each side fields its own faction's guns.
             let guns = factions[team].turrets();
             let turret = guns[rng.index(guns.len())];
@@ -538,6 +570,17 @@ impl Match {
                     }
                 }
                 Action::Shell(_) => {
+                    let g = gun(self.world.tanks[i].turret_kind);
+                    if g.spool > 0.0 {
+                        // Spin up while the trigger is held; run down slower.
+                        let t = &mut self.world.tanks[i];
+                        t.spool = if trigger && f.alive {
+                            (t.spool + DT / g.spool).min(1.0)
+                        } else {
+                            (t.spool - DT / (g.spool * 1.6)).max(0.0)
+                        };
+                        t.spin += DT * (1.5 + 26.0 * t.spool);
+                    }
                     if trigger && f.alive && f.reload_in <= 0.0 {
                         self.shoot(i);
                     }
@@ -638,8 +681,14 @@ impl Match {
             seed: self.rng.f32(),
         });
         // Carry the leftover fraction of a step so fast guns keep their exact rate.
+        let reload = if g.spool > 0.0 {
+            let spool = self.world.tanks[i].spool;
+            g.reload / (SPOOL_FLOOR + (1.0 - SPOOL_FLOOR) * spool)
+        } else {
+            g.reload
+        };
         let f = &mut self.fighters[i];
-        f.reload_in = f.reload_in.max(-DT) + g.reload;
+        f.reload_in = f.reload_in.max(-DT) + reload;
         if spec.look != Look::Flame {
             // A flamethrower pours: no per-puff kick or muzzle flash.
             self.world.fire(i);
@@ -720,12 +769,16 @@ impl Match {
                             s.vel -= 2.0 * s.vel.dot(n) * n;
                             s.pos = at + n * 0.05;
                             s.bounces -= 1;
-                            self.blasts.push(Blast::new(at, BlastKind::Impact));
+                            // The skin sheds plasma at every skip.
+                            s.damage *= BOUNCE_KEEP;
+                            self.blasts
+                                .push(Blast::new(at, impact_kind(&s.spec, false)));
                             true
                         }
                         None => {
                             if s.spec.look != Look::Flame {
-                                self.blasts.push(Blast::new(at, BlastKind::Impact));
+                                self.blasts
+                                    .push(Blast::new(at, impact_kind(&s.spec, false)));
                             }
                             false
                         }
@@ -740,12 +793,13 @@ impl Match {
         // No friendly fire: an ally just stops the shot.
         if self.fighters[j].team == self.fighters[s.owner].team {
             if s.spec.look != Look::Flame {
-                self.blasts.push(Blast::new(at, BlastKind::Impact));
+                self.blasts
+                    .push(Blast::new(at, impact_kind(&s.spec, false)));
             }
             return;
         }
         if s.spec.look != Look::Flame {
-            self.blasts.push(Blast::new(at, BlastKind::Hit));
+            self.blasts.push(Blast::new(at, impact_kind(&s.spec, true)));
             // A shove through the hull's centre, scaled by how hard the shot
             // hits: felt, but never enough to roll it.
             let (mass, center) = (
@@ -789,6 +843,7 @@ impl Match {
         v.deaths += 1;
         v.respawn_in = RESPAWN_TIME;
         v.killed_by = Some(killer);
+        self.world.tanks[victim].dead = true;
         if killer != victim {
             self.fighters[killer].kills += 1;
             if killer == 0 {
@@ -804,6 +859,11 @@ impl Match {
         let (pos, mass) = (t.pos, t.chassis.mass);
         self.blasts
             .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
+        if t.chassis.hover {
+            // The field lets go: its plasma bursts out of the split spine.
+            self.blasts
+                .push(Blast::new(pos + t.up() * 1.3, BlastKind::Plasma(3.5)));
+        }
         // Pop the wreck up and give it a lazy tumble.
         let off = Vec3::new(self.rng.range(-0.6, 0.6), 0.0, self.rng.range(-0.6, 0.6));
         self.world.push(victim, Vec3::Y * mass * 4.5, pos + off);
@@ -896,6 +956,7 @@ impl Match {
             let team = self.fighters[i].team;
             let (at, yaw) = spawn_point(&self.world, &mut self.rng, team, &living);
             self.world.teleport(i, at, yaw);
+            self.world.tanks[i].dead = false;
             let f = &mut self.fighters[i];
             f.alive = true;
             f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
@@ -926,6 +987,9 @@ impl Match {
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
+        for c in &self.world.map.cores {
+            core_instances(c, self.world.time, out);
+        }
         if let Some(h) = &self.hold {
             h.instances(self.world.time, self.factions.map(|f| f.paint()), out);
         }
@@ -963,12 +1027,36 @@ impl Match {
             match s.spec.look {
                 // A streak trailing back from the shell.
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
-                // A shimmering core with a soft halo and a short wake.
+                // An orb in its own skin: a white-hot heart, a rose shell that
+                // shivers, a comet tail of shed plasma, and two motes circling
+                // it. It shrinks a little at every skip.
                 Look::Plasma { size } => {
-                    let wobble = 1.0 + 0.12 * (s.age * 40.0 + s.seed * 6.0).sin();
-                    out.push(ball(p, size * wobble, PLASMA.extend(3.0)));
-                    out.push(ball(p, size * 0.45, Vec4::new(0.7, 1.0, 0.85, 5.0)));
-                    out.push(streak(size * 0.5, size * 2.5, PLASMA.extend(2.0)));
+                    let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
+                    let size = size * (1.0 - 0.18 * spent);
+                    let wobble = 1.0 + 0.1 * (s.age * 38.0 + s.seed * 6.0).sin();
+                    out.push(ball(p, size * wobble, PLASMA.extend(2.2)));
+                    out.push(ball(p, size * 0.5, PLASMA_HOT.extend(5.0)));
+                    for k in 1..4 {
+                        let k = k as f32;
+                        out.push(ball(
+                            p - d * size * 0.55 * k,
+                            size * (0.7 - 0.17 * k),
+                            PLASMA.extend(2.4 - 0.4 * k),
+                        ));
+                    }
+                    let side = d.any_orthonormal_vector();
+                    for k in 0..2 {
+                        let a = s.age * 14.0 + s.seed * 6.0 + k as f32 * std::f32::consts::PI;
+                        let off = Quat::from_axis_angle(d, a) * side * size * 0.75;
+                        out.push(ball(p + off, size * 0.14, PLASMA_HOT.extend(4.0)));
+                    }
+                }
+                // A dart: hot needle inside a rose streak.
+                Look::Bolt { size } => {
+                    out.push(streak(0.45 * size, 2.4 * size, PLASMA.extend(2.2)));
+                    out.push(streak(0.16 * size, 1.8 * size, PLASMA_HOT.extend(4.0)));
+                    out.push(ball(p, 0.55 * size, PLASMA.extend(2.2)));
+                    out.push(ball(p, 0.28 * size, PLASMA_HOT.extend(4.0)));
                 }
                 // Crystal fire: white-hot at the nozzle, swelling into violet, then gone.
                 Look::Flame => {
@@ -1055,6 +1143,47 @@ impl Match {
                     1.0 + f * 4.0,
                     Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f)),
                 ),
+                BlastKind::Plasma(size) => {
+                    // The skin bursts: a flash that swells and thins out, and
+                    // droplets thrown out in a ring that arc and wink out.
+                    let seed = (b.pos.x * 12.9898 + b.pos.z * 78.233).sin() * 43758.5;
+                    let spin = seed.fract() * std::f32::consts::TAU;
+                    let n = 7;
+                    for k in 0..n {
+                        let a = spin + k as f32 / n as f32 * std::f32::consts::TAU;
+                        let out_dir = Vec3::new(a.cos(), 0.6 + 0.4 * (a * 3.0).sin(), a.sin());
+                        let travel = size * 2.2 * (1.0 - (1.0 - f).powi(2));
+                        let p = b.pos + out_dir * travel - Vec3::Y * f * f * size * 1.5;
+                        let q = Quat::from_rotation_arc(Vec3::Y, out_dir.normalize());
+                        out.push((
+                            MeshId::GEM,
+                            Instance::new(
+                                Mat4::from_scale_rotation_translation(
+                                    Vec3::new(0.12, 0.6, 0.12) * size * (1.0 - f),
+                                    q,
+                                    p,
+                                ),
+                                PLASMA_HOT.extend(4.0),
+                            ),
+                        ));
+                    }
+                    out.push((
+                        MeshId::SPHERE,
+                        Instance::new(
+                            Mat4::from_scale_rotation_translation(
+                                Vec3::splat(size * 0.7 * (1.0 - f)),
+                                Quat::IDENTITY,
+                                b.pos,
+                            ),
+                            PLASMA_HOT.extend(5.0),
+                        ),
+                    ));
+                    (
+                        MeshId::SPHERE,
+                        size * (0.6 + f * 1.6) * (1.0 - f * f),
+                        PLASMA.extend(1.0 + 2.0 * (1.0 - f)),
+                    )
+                }
                 BlastKind::Smoke => {
                     let s = (f * 4.0).min(1.0) * (1.0 - f);
                     let c = 0.12 + f * 0.15;
@@ -1078,6 +1207,59 @@ impl Match {
                 Instance::new(
                     Mat4::from_scale_rotation_translation(Vec3::splat(size), Quat::IDENTITY, b.pos),
                     color,
+                ),
+            ));
+        }
+    }
+}
+
+/// An Ithessar core: a ball of plasma that breathes, motes circling it on
+/// tilted orbits, and arcs jumping to it from the monoliths that hold it.
+pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, Instance)>) {
+    let breathe = 1.0 + 0.05 * (time * 1.7).sin() + 0.02 * (time * 5.3).sin();
+    let r = c.radius;
+    let ball = |at: Vec3, d: f32, color: Vec4| {
+        (
+            MeshId::SPHERE,
+            Instance::new(
+                Mat4::from_scale_rotation_translation(Vec3::splat(d), Quat::IDENTITY, at),
+                color,
+            ),
+        )
+    };
+    out.push(ball(c.at, 2.0 * r * breathe, PLASMA.extend(2.2)));
+    out.push(ball(c.at, 1.25 * r * breathe, PLASMA_HOT.extend(4.5)));
+    for k in 0..9 {
+        let k = k as f32;
+        let tilt = Quat::from_rotation_x(0.5 + k * 0.7) * Quat::from_rotation_z(k * 1.3);
+        let a = time * (0.6 + 0.07 * k) + k * 2.4;
+        let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
+        out.push(ball(p, 0.35 + 0.08 * (k % 2.0), PLASMA_HOT.extend(4.0)));
+    }
+    for (k, &tip) in c.prongs.iter().enumerate() {
+        let beat = (time * 6.0 + k as f32 * 1.9).sin() + (time * 13.0 + k as f32).sin() * 0.5;
+        if beat < 0.6 {
+            continue;
+        }
+        let to = c.at - tip;
+        let len = to.length() - r * 0.9;
+        let dir = to / to.length();
+        let q = Quat::from_rotation_arc(Vec3::Y, dir);
+        // Two strokes, a little apart: a crooked arc.
+        let bend = q * Vec3::X * 0.4 * (time * 31.0 + k as f32).sin();
+        for (from, l, w) in [
+            (tip, len * 0.55, 0.22),
+            (tip + dir * len * 0.5 + bend, len * 0.5, 0.18),
+        ] {
+            out.push((
+                MeshId::GEM,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::new(w, l, w),
+                        q,
+                        from + dir * l * 0.5,
+                    ),
+                    PLASMA_HOT.extend(4.0),
                 ),
             ));
         }
@@ -1292,8 +1474,8 @@ mod tests {
     #[test]
     fn plasma_orbs_bounce_off_the_ground() {
         let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
-        let Action::Shell(spec) = gun(TurretKind::Wisp).action else {
-            panic!("Wisp fires shells");
+        let Action::Shell(spec) = gun(TurretKind::Ammeth).action else {
+            panic!("Ammeth fires shells");
         };
         let t = &m.world.tanks[0];
         let from = t.pos + Vec3::new(8.0, 3.0, 8.0);

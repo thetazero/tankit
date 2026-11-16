@@ -16,7 +16,8 @@ on purpose.
 
 A **mercenary pilot**, remote-linked into each chassis, working for whoever
 pays. Losing a chassis just drops the link; the next contract drops you a new
-one. That's the in-world reason for respawns.
+one. That's the in-world reason for respawns. What the pilot is, is left
+deliberately vague.
 
 ## Factions
 
@@ -27,7 +28,7 @@ Four sides. Any of them can hire you.
 | **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. |
 | **The Resonant** | Human. A cult built around the crystals. The crystals answer: pilots who carry them see a moment ahead, ruined machines keep running, shells bend away. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. |
 | **The machines** | A machine faction (name and origin TBD). Machines hire mercenaries too. |
-| **The Sorn** | The aliens (nature TBD). Their weapons throw slow, glowing plasma. |
+| **The Ithessar** | The aliens. They shape plasma with crystal: their machines float on it, their weapons throw it. |
 
 ## Factions vs. gameplay
 
@@ -44,13 +45,14 @@ play. Factions are the world, never a lock on your build. They show up as:
 - **Part makers**: every turret has a maker, and parts from different makers
   mix freely. Each maker has its own kind of weapon:
   - **Imperium**: conventional guns firing fast shells (Lance, Maul).
-  - **Sorn**: slow plasma (Wisp's orbs bounce off walls; Triad's three
-    barrels fire a rapid stream).
+  - **Ithessar**: slow plasma (Ammeth's orbs skip off walls; Ossrin's
+    needles spin up into a stream).
   - **Machines**: a laser beam that burns while held, then overheats (Lumen).
   - **Resonant**: the strange weapons, starting with a short-range crystal
     flamethrower (Hymn). Later maybe shields, drains, phasing.
 
-  Hulls are basic kit that every side fields.
+  Hulls are basic kit that every side fields, except the Ithessar's, which
+  hover (Sethuun).
 
 ## Crystals
 
@@ -75,7 +77,7 @@ A devastated town in a desert.
 
 ## Open
 
-- The machine faction's name; the nature of the machines and the Sorn.
+- The machine faction's name; the nature of the machines and the Ithessar.
 - How the war started, and what keeps it going.
 - The first map's world and what happened there.
 - Who made the hulls.

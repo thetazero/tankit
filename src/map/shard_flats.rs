@@ -8,11 +8,12 @@
 //! - diagonals: four wrecked extractor pads (concrete slabs with ramps)
 //! - west and east edges: the two sides' bases
 
+use crate::render::material::Material;
 use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
-use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge, mat};
+use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge};
 use crate::rng::Rng;
 
 const SIZE: f32 = 200.0;
@@ -68,10 +69,11 @@ impl Map {
                 CENTER + Vec2::new(-28.6, -16.5),
             ],
             hold_site: Some(CENTER),
+            cores: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, ground);
         terrain.color = SAND;
-        terrain.material = mat::PLAIN;
+        terrain.material = Material::Plain;
         map.terrain = Some(terrain);
         let mut rng = Rng::new(0x5a2d_f1a7);
 

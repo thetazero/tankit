@@ -60,6 +60,16 @@ pub const MISSIONS: &[Mission] = &[
         sides: [Faction::Imperium, Faction::Resonant],
         brief: "SECURE THE DEPOSIT. PAID FOR YOUR TIME ON IT",
     },
+    Mission {
+        name: "KEPT FIRE",
+        contract: Contract::Attrition,
+        map: "THE KILN",
+        map_kind: MapKind::Kiln,
+        seed: 0,
+        team_size: 6,
+        sides: [Faction::Ithessar, Faction::Imperium],
+        brief: "THE ITHESSAR HIRE YOU TO HOLD THE IMPERIUM OFF THEIR KILN. PAID PER KILL",
+    },
 ];
 
 impl Mission {

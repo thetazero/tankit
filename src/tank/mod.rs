@@ -1,15 +1,19 @@
 //! Tank visuals: the modular kit (hulls x turrets) uploaded once, and the
 //! per-frame instance list for an animated tank.
 
+pub mod ithessar;
 pub mod model;
 pub mod track;
+
+use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::render::Renderer;
 use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::sim::{HullKind, Tank, TurretKind};
-use model::{HullModel, Running, TurretModel};
+use ithessar::HoverModel;
+use model::{HullModel, Rig, Running, TurretModel};
 use track::{Belt, Wheel};
 
 /// Target spacing between tread links.
@@ -20,6 +24,7 @@ const LINK_HALF: f32 = 0.04;
 /// CPU-side meshes for the whole kit, before upload.
 pub struct KitMeshes {
     hulls: Vec<(HullModel, [MeshData; 4])>,
+    hover: HoverModel,
     turrets: Vec<TurretModel>,
 }
 
@@ -37,12 +42,13 @@ impl KitMeshes {
         };
         KitMeshes {
             hulls: vec![hull(model::lancer()), hull(model::bastion())],
+            hover: ithessar::sethuun(),
             // Same order as `TurretKind::ALL`.
             turrets: vec![
                 model::lance(),
                 model::maul(),
-                model::wisp(),
-                model::triad(),
+                ithessar::ammeth(),
+                ithessar::ossrin(),
                 model::lumen(),
                 model::hymn(),
             ],
@@ -56,6 +62,11 @@ impl KitMeshes {
             .iter()
             .map(|(h, p)| h.body.indices.len() + p.iter().map(|m| m.indices.len()).sum::<usize>())
             .sum();
+        let o = &self.hover;
+        let h = h + [&o.body, &o.glow, &o.emitter, &o.lens, &o.shard]
+            .iter()
+            .map(|m| m.indices.len())
+            .sum::<usize>();
         let t: usize = self
             .turrets
             .iter()
@@ -76,7 +87,19 @@ struct HullArt {
     mount: Vec3,
 }
 
+struct HoverArt {
+    body: MeshId,
+    glow: MeshId,
+    emitter: MeshId,
+    lens: MeshId,
+    shard: MeshId,
+    shards: Vec<(Vec3, f32)>,
+    emitter_y: f32,
+    mount: Vec3,
+}
+
 struct TurretArt {
+    kind: TurretKind,
     head: MeshId,
     mantlet: MeshId,
     barrel: MeshId,
@@ -84,17 +107,30 @@ struct TurretArt {
     barrels: Vec<Vec3>,
     muzzle: f32,
     recoil: f32,
+    rig: Rig,
 }
 
 /// The tank kit on the GPU.
 pub struct TankArt {
     hulls: Vec<HullArt>,
+    hover: HoverArt,
     turrets: Vec<TurretArt>,
 }
 
 impl TankArt {
     pub fn upload(r: &mut Renderer) -> TankArt {
         let kit = KitMeshes::build();
+        let o = &kit.hover;
+        let hover = HoverArt {
+            body: r.add_mesh(&o.body),
+            glow: r.add_mesh(&o.glow),
+            emitter: r.add_mesh(&o.emitter),
+            lens: r.add_mesh(&o.lens),
+            shard: r.add_mesh(&o.shard),
+            shards: o.shards.clone(),
+            emitter_y: o.emitter_y,
+            mount: o.mount,
+        };
         let hulls = kit
             .hulls
             .into_iter()
@@ -120,7 +156,10 @@ impl TankArt {
         let turrets = kit
             .turrets
             .into_iter()
-            .map(|t| TurretArt {
+            .zip(TurretKind::ALL)
+            .map(|(t, kind)| TurretArt {
+                kind,
+                rig: t.rig,
                 head: r.add_mesh(&t.head),
                 mantlet: r.add_mesh(&t.mantlet),
                 barrel: r.add_mesh(&t.barrel),
@@ -130,24 +169,40 @@ impl TankArt {
                 recoil: t.recoil,
             })
             .collect();
-        TankArt { hulls, turrets }
+        TankArt {
+            hulls,
+            hover,
+            turrets,
+        }
     }
 
     /// Append every instance needed to draw `t` this frame.
     pub fn instances(&self, t: &Tank, out: &mut Vec<(MeshId, Instance)>) {
-        let hull = &self.hulls[match t.hull_kind {
-            HullKind::Lancer => 0,
-            HullKind::Bastion => 1,
-        }];
         let turret = &self.turrets[TurretKind::ALL
             .iter()
             .position(|&k| k == t.turret_kind)
             .unwrap_or(0)];
-        let tint = t.color.extend(0.0);
-        let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
-
         // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
         let base = Mat4::from_rotation_translation(t.rot, t.pos);
+        let mount = match t.hull_kind {
+            HullKind::Lancer => self.tracked(&self.hulls[0], t, base, out),
+            HullKind::Bastion => self.tracked(&self.hulls[1], t, base, out),
+            HullKind::Sethuun => self.hovering(t, base, out),
+        };
+        self.turret(turret, t, mount, out);
+    }
+
+    /// A tracked hull: body, wheels on their suspension, and the belt of
+    /// links wrapped round them. Returns the turret ring's transform.
+    fn tracked(
+        &self,
+        hull: &HullArt,
+        t: &Tank,
+        base: Mat4,
+        out: &mut Vec<(MeshId, Instance)>,
+    ) -> Mat4 {
+        let tint = t.color.extend(0.0);
+        let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let sprung = base;
         out.push((hull.body, Instance::new(sprung, tint)));
 
@@ -207,34 +262,260 @@ impl TankArt {
             }
         }
 
-        // Turret yaws on the hull's ring; the gun pitches about its trunnion.
-        let tm = sprung * Mat4::from_translation(hull.mount) * Mat4::from_rotation_y(t.turret_rel);
+        sprung * Mat4::from_translation(hull.mount)
+    }
+
+    /// The Ithessar hover hull: the carapace banked into its turn, six
+    /// emitters gimballing with the thrust and firing plasma at the ground,
+    /// and loose crystals bobbing in the field. Returns the turret ring.
+    fn hovering(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) -> Mat4 {
+        let h = &self.hover;
+        let c = t.chassis;
+        let tint = t.color.extend(0.0);
+        let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
+        let alive = t.color.max_element() > 0.2;
+        let body =
+            base * Mat4::from_rotation_z(t.lean) * Mat4::from_translation(Vec3::Y * ithessar::RIDE);
+        out.push((h.body, Instance::new(body, tint)));
+        if !alive {
+            // A wreck: the field is gone, the crystals lie where they fell.
+            for (i, &(at, len)) in h.shards.iter().enumerate() {
+                let fall = Vec3::new(at.x * 0.8, 0.35 + i as f32 * 0.05, at.z * 0.9);
+                let q = Quat::from_rotation_z(FRAC_PI_2 * if at.x > 0.0 { -1.0 } else { 1.0 });
+                out.push((
+                    h.shard,
+                    Instance::new(
+                        body * Mat4::from_scale_rotation_translation(Vec3::splat(len), q, fall),
+                        Vec4::new(0.2, 0.2, 0.2, 0.0),
+                    ),
+                ));
+            }
+            for i in 0..c.wheel_count() {
+                let m = c.mount(i);
+                let at = Vec3::new(m.x, h.emitter_y, m.z);
+                out.push((
+                    h.emitter,
+                    Instance::new(body * Mat4::from_translation(at), plain),
+                ));
+            }
+            return body * Mat4::from_translation(h.mount);
+        }
+
+        let time = t.age;
+        // The core breathes, and burns brighter under throttle.
+        let effort = (t.belt[0].abs() / t.hull.max_speed).min(1.0);
+        let pulse = 2.4 + 0.5 * (time * 2.6).sin() + effort * 1.2;
+        out.push((h.glow, Instance::new(body, Vec4::new(1.0, 1.0, 1.0, pulse))));
+
+        // Emitters tilt against the motion (thrust vectoring); each lens burns
+        // brighter the harder it's pushing.
+        let local_v = t.rot.inverse() * t.vel;
+        let tilt_x = (local_v.z * 0.025).clamp(-0.35, 0.35);
+        let tilt_z = (-local_v.x * 0.04).clamp(-0.3, 0.3);
+        for i in 0..c.wheel_count() {
+            let m = c.mount(i);
+            let at = Vec3::new(m.x, h.emitter_y, m.z);
+            let gimbal = Mat4::from_translation(at)
+                * Mat4::from_rotation_x(tilt_x)
+                * Mat4::from_rotation_z(tilt_z);
+            out.push((h.emitter, Instance::new(body * gimbal, plain)));
+            let lift = t.wheel_lift.get(i).copied().unwrap_or(0.0);
+            let load = ((lift + ithessar_sag()) / ithessar_sag()).clamp(0.0, 2.0);
+            let flicker = 0.85 + 0.15 * (time * 37.0 + i as f32 * 2.3).sin();
+            out.push((
+                h.lens,
+                Instance::new(
+                    body * gimbal,
+                    Vec4::new(1.0, 1.0, 1.0, 2.5 + load * 1.5 * flicker),
+                ),
+            ));
+        }
+
+        // Loose crystals: each bobs on its own beat and turns slowly; at
+        // speed they trail back a little, held on a spring.
+        for (i, &(at, len)) in h.shards.iter().enumerate() {
+            let ph = i as f32 * 1.7;
+            let bob = Vec3::Y * (time * 1.4 + ph).sin() * 0.09;
+            let drag = Vec3::new(-local_v.x, 0.0, -local_v.z) * 0.012;
+            let spin = Quat::from_rotation_y(time * (0.4 + i as f32 * 0.13) + ph)
+                * Quat::from_rotation_x(0.2 * (time * 0.9 + ph).sin());
+            out.push((
+                h.shard,
+                Instance::new(
+                    body * Mat4::from_scale_rotation_translation(
+                        Vec3::splat(len),
+                        spin,
+                        at + bob + drag - Vec3::Y * len * 0.5,
+                    ),
+                    plain,
+                ),
+            ));
+        }
+        body * Mat4::from_translation(h.mount)
+    }
+
+    /// Turret yaws on the hull's ring; the gun pitches about its trunnion.
+    fn turret(&self, turret: &TurretArt, t: &Tank, mount: Mat4, out: &mut Vec<(MeshId, Instance)>) {
+        let tint = t.color.extend(0.0);
+        let alive = t.color.max_element() > 0.2;
+        let tm = mount * Mat4::from_rotation_y(t.turret_rel);
         out.push((turret.head, Instance::new(tm, tint)));
         let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-t.gun_pitch);
         out.push((turret.mantlet, Instance::new(gun, tint)));
 
+        let plasma = turret.kind.maker() == crate::faction::Faction::Ithessar;
         let fired = t.fire_barrel % turret.barrels.len();
         let (kick, flash) = recoil_curve(t.since_fire);
-        for (i, &o) in turret.barrels.iter().enumerate() {
-            let back = if i == fired {
-                kick * turret.recoil
-            } else {
-                0.0
-            };
-            out.push((
-                turret.barrel,
-                Instance::new(gun * Mat4::from_translation(o - Vec3::Z * back), tint),
-            ));
-            if i == fired && flash > 0.0 {
-                muzzle_flash(
-                    gun * Mat4::from_translation(o + Vec3::Z * (turret.muzzle - back)),
-                    flash,
-                    t.since_fire,
-                    out,
-                );
+        match turret.rig {
+            Rig::Recoil => {
+                for (i, &o) in turret.barrels.iter().enumerate() {
+                    let back = if i == fired {
+                        kick * turret.recoil
+                    } else {
+                        0.0
+                    };
+                    out.push((
+                        turret.barrel,
+                        Instance::new(gun * Mat4::from_translation(o - Vec3::Z * back), tint),
+                    ));
+                    if i == fired && flash > 0.0 {
+                        let at = gun * Mat4::from_translation(o + Vec3::Z * (turret.muzzle - back));
+                        if plasma {
+                            plasma_flash(at, flash, out);
+                        } else {
+                            muzzle_flash(at, flash, t.since_fire, out);
+                        }
+                    }
+                }
+            }
+            Rig::Cradle { orb, size } => {
+                // Claws spring open as the orb leaves, then settle; while the
+                // gun recharges the orb gathers between them.
+                let reload = crate::combat::gun(turret.kind).reload;
+                let charge = (t.since_fire / reload).clamp(0.0, 1.0);
+                let open = 0.42 * kick + 0.03 * (t.age * 3.0).sin();
+                for &o in &turret.barrels {
+                    let out_dir = Vec3::new(o.x, o.y, 0.0).normalize_or_zero();
+                    let roll = out_dir.y.atan2(out_dir.x) - FRAC_PI_2;
+                    let axis = Vec3::Z.cross(out_dir).normalize_or_zero();
+                    let m = gun
+                        * Mat4::from_translation(o)
+                        * Mat4::from_axis_angle(axis, -open)
+                        * Mat4::from_rotation_z(roll);
+                    out.push((turret.barrel, Instance::new(m, tint)));
+                }
+                if alive && t.since_fire > 0.04 {
+                    let c = gun * Mat4::from_translation(Vec3::Z * orb);
+                    let full = charge >= 1.0;
+                    let s = size
+                        * (0.2 + 0.8 * charge.powf(0.6))
+                        * if full {
+                            1.0 + 0.06 * (t.age * 13.0).sin()
+                        } else {
+                            1.0
+                        };
+                    out.push((
+                        MeshId::SPHERE,
+                        Instance::new(
+                            c * Mat4::from_scale(Vec3::splat(s)),
+                            ithessar::PLASMA.extend(2.6 + charge * 1.5),
+                        ),
+                    ));
+                    out.push((
+                        MeshId::SPHERE,
+                        Instance::new(
+                            c * Mat4::from_scale(Vec3::splat(s * 0.5)),
+                            ithessar::PLASMA_HOT.extend(5.0),
+                        ),
+                    ));
+                    // Arcs from each claw's tip into the orb, flickering.
+                    for (k, &o) in turret.barrels.iter().enumerate() {
+                        let beat = (t.age * 23.0 + k as f32 * 2.1).sin();
+                        if beat < 0.1 - charge {
+                            continue;
+                        }
+                        let tip = o * 0.9 + Vec3::Z * (orb + 0.15);
+                        let to = Vec3::Z * orb - tip;
+                        let len = to.length();
+                        let q = Quat::from_rotation_arc(Vec3::Y, to / len);
+                        out.push((
+                            MeshId::GEM,
+                            Instance::new(
+                                gun * Mat4::from_scale_rotation_translation(
+                                    Vec3::new(0.06, len, 0.06),
+                                    q,
+                                    tip + to * 0.5,
+                                ),
+                                ithessar::PLASMA_HOT.extend(4.0),
+                            ),
+                        ));
+                    }
+                }
+            }
+            Rig::Spinner => {
+                let turn = Mat4::from_rotation_z(t.spin);
+                for (i, &o) in turret.barrels.iter().enumerate() {
+                    out.push((
+                        turret.barrel,
+                        Instance::new(gun * turn * Mat4::from_translation(o), tint),
+                    ));
+                    // Each needle's tip glows with the spin.
+                    if alive && t.spool > 0.02 {
+                        let tip = gun * turn * Mat4::from_translation(o + Vec3::Z * turret.muzzle);
+                        let hot = if i == fired { flash } else { 0.0 };
+                        out.push((
+                            MeshId::SPHERE,
+                            Instance::new(
+                                tip * Mat4::from_scale(Vec3::splat(
+                                    0.1 + 0.12 * t.spool + 0.3 * hot,
+                                )),
+                                ithessar::PLASMA_HOT.extend(2.0 + 3.0 * t.spool),
+                            ),
+                        ));
+                    }
+                }
+                if flash > 0.0 {
+                    let o = turret.barrels[fired];
+                    let at = gun * turn * Mat4::from_translation(o + Vec3::Z * turret.muzzle);
+                    plasma_flash(at, flash * 0.7, out);
+                }
             }
         }
     }
+}
+
+fn ithessar_sag() -> f32 {
+    crate::sim::HOVER_SAG
+}
+
+/// Plasma leaving a crystal: a hot white bead in a rose bloom, and a short
+/// spike forward. No smoke, no fire.
+fn plasma_flash(at: Mat4, f: f32, out: &mut Vec<(MeshId, Instance)>) {
+    out.push((
+        MeshId::SPHERE,
+        Instance::new(
+            at * Mat4::from_scale(Vec3::splat(0.25 + 0.7 * f)),
+            ithessar::PLASMA.extend(3.0 * f + 1.0),
+        ),
+    ));
+    out.push((
+        MeshId::SPHERE,
+        Instance::new(
+            at * Mat4::from_scale(Vec3::splat(0.35 * f + 0.05)),
+            ithessar::PLASMA_HOT.extend(5.0),
+        ),
+    ));
+    out.push((
+        MeshId::GEM,
+        Instance::new(
+            at * Mat4::from_scale_rotation_translation(
+                Vec3::new(0.18, 1.4, 0.18) * f,
+                Quat::from_rotation_x(FRAC_PI_2),
+                Vec3::Z * 0.6 * f,
+            ),
+            ithessar::PLASMA_HOT.extend(4.0),
+        ),
+    ));
 }
 
 /// (barrel travel 0..1, flash 0..1) for a time since firing.

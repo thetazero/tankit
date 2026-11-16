@@ -368,7 +368,7 @@ mod tests {
         let back = Profile::load(path.clone());
         assert_eq!(back.trust_of(Faction::Imperium), 300);
         assert_eq!(back.trust_of(Faction::Resonant), 40);
-        assert_eq!(back.trust_of(Faction::Sorn), 0);
+        assert_eq!(back.trust_of(Faction::Ithessar), 0);
         assert_eq!(back.crystals, p.crystals);
         assert!(back.owns(MAUL));
         assert_eq!(back.levels.of(MAUL), 1);
