@@ -339,6 +339,17 @@ const HOVER_BELLY_GAP: f32 = 0.42;
 /// Beyond full extension the cushion still steers and thrusts, fading out
 /// over this much more height (cresting a dune doesn't cut the drive).
 const HOVER_REACH: f32 = 0.9;
+/// Ground slope (radians) the cushion holds on fully, and the slope past
+/// which it gets no footing at all.
+const HOVER_FIRM: f32 = 40.0 * PI / 180.0;
+const HOVER_STEEP: f32 = 55.0 * PI / 180.0;
+/// Hover attitude hold (see `hover`): stiffness and damping per radian of
+/// tilt, the cap on the angular acceleration it gives, and how much of it
+/// still works with the whole cushion on the ground.
+const HOVER_LEVEL_K: f32 = 40.0;
+const HOVER_LEVEL_DAMP: f32 = 10.0;
+const HOVER_LEVEL_MAX: f32 = 30.0;
+const HOVER_LEVEL_ON_CUSHION: f32 = 0.25;
 /// Seconds upside down (and slow) before the tank rights itself.
 const FLIP_RECOVER_TIME: f32 = 2.5;
 
@@ -1279,7 +1290,9 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
 
     let mut hits: Vec<Option<(Vec3, Vec3, f32)>> = vec![None; n];
     {
-        let filter = QueryFilter::default().exclude_rigid_body(t.body);
+        // The cushion pushes off the ground, not off other tanks: riding up
+        // onto a hull it ran into launched it end over end.
+        let filter = QueryFilter::only_fixed();
         let qp = physics.query_pipeline_with_filter(filter);
         for (i, hit) in hits.iter_mut().enumerate() {
             let origin = pose.transform_point(c.mount(i));
@@ -1309,7 +1322,12 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
         };
         t.wheel_lift[i] = c.rest_len() - toi;
         let compression = c.free_len() - toi;
-        let w = (1.0 - (toi - c.free_len()).max(0.0) / HOVER_REACH).clamp(0.0, 1.0);
+        // A face too steep to drive up gives the emitter nothing to stand
+        // on: otherwise the cushion holds the hull against gravity on it
+        // and thrusts up it, and the hull climbs a crystal and rolls off.
+        let footing =
+            ((nrm.y - HOVER_STEEP.cos()) / (HOVER_FIRM.cos() - HOVER_STEEP.cos())).clamp(0.0, 1.0);
+        let w = (1.0 - (toi - c.free_len()).max(0.0) / HOVER_REACH).clamp(0.0, 1.0) * footing;
         grip += w / n as f32;
         ground_n += nrm * w;
         if compression > 0.0 {
@@ -1317,7 +1335,7 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
             // Past the belly gap the hull is about to scrape: stiffen hard.
             let over = (compression - HOVER_SAG - HOVER_BELLY_GAP * 0.8).max(0.0);
             let v_along = b.velocity_at_point(origin).dot(up);
-            let force = (k * compression + k * 6.0 * over - damp * v_along).max(0.0);
+            let force = (k * compression + k * 6.0 * over - damp * v_along).max(0.0) * footing;
             b.apply_impulse_at_point(up * force * DT, origin, true);
         }
     }
@@ -1374,6 +1392,22 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     let dw = (want - w).clamp(-h.steer_accel * DT, h.steer_accel * DT) * grip;
     let inertia = c.inertia().y;
     b.apply_torque_impulse(up * inertia * dw, true);
+
+    // Attitude hold: the emitters gimbal to keep the hull level. On the
+    // cushion the springs do that; as it loses the ground (off a crest, up
+    // over a wreck or another tank's prow) the emitters swing to hold it, so
+    // it lands on its belly instead of going end over end. Capped, so a hit
+    // or a hard landing still knocks it about.
+    let target = (gn * grip + Vec3::Y * (1.0 - grip)).normalize_or(Vec3::Y);
+    let tilt = up.cross(target);
+    let wv = b.angvel();
+    let w_tip = wv - up * wv.dot(up);
+    let level = (1.0 - grip).max(HOVER_LEVEL_ON_CUSHION);
+    let alpha = (tilt * HOVER_LEVEL_K - w_tip * HOVER_LEVEL_DAMP) * level;
+    let alpha = alpha.clamp_length_max(HOVER_LEVEL_MAX);
+    let local = pose.rotation.inverse() * alpha;
+    let torque = pose.rotation * (local * c.inertia());
+    b.apply_torque_impulse(torque * DT, true);
 
     // Bank into the turn, more the faster it goes.
     let bank = (w * v_f * 0.014).clamp(-0.14, 0.14);
