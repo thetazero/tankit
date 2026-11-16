@@ -9,6 +9,21 @@ use crate::map::Map;
 use crate::rng::Rng;
 
 pub const TANK_RADIUS: f32 = 2.3;
+/// Distance between the track center lines, for per-side tread speed.
+const TRACK_SPAN: f32 = 2.5;
+
+/// Which kit parts a tank is built from (see `tank::model`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HullKind {
+    Lancer,
+    Bastion,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurretKind {
+    Lance,
+    Maul,
+}
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Command {
@@ -50,20 +65,30 @@ impl HullStats {
 
 #[derive(Clone, Debug)]
 pub struct Tank {
+    /// Team color; tints the light armor plates.
     pub color: Vec3,
+    pub hull_kind: HullKind,
+    pub turret_kind: TurretKind,
     pub hull: HullStats,
     pub pos: Vec2,
     pub vel: Vec2,
     pub yaw: f32,
     pub yaw_rate: f32,
     pub turret_yaw: f32,
+    /// Gun elevation in radians (positive = up).
+    pub gun_pitch: f32,
 
-    // Visual-only suspension state.
+    // Visual-only animation state.
     pub pitch: f32,
     pub pitch_vel: f32,
     pub roll: f32,
     pub roll_vel: f32,
-    pub track_phase: f32,
+    /// Distance each tread has travelled: [left (+x), right (-x)].
+    pub track_dist: [f32; 2],
+    /// Seconds since the gun last fired (drives recoil and muzzle flash).
+    pub since_fire: f32,
+    /// Which barrel fired last (twin guns alternate).
+    pub fire_barrel: usize,
 }
 
 impl Tank {
@@ -76,12 +101,26 @@ impl Tank {
             yaw,
             yaw_rate: 0.0,
             turret_yaw: yaw,
+            gun_pitch: 0.0,
+            hull_kind: HullKind::Lancer,
+            turret_kind: TurretKind::Lance,
             pitch: 0.0,
             pitch_vel: 0.0,
             roll: 0.0,
             roll_vel: 0.0,
-            track_phase: 0.0,
+            track_dist: [0.0; 2],
+            since_fire: 10.0,
+            fire_barrel: 0,
         }
+    }
+
+    /// Visual side of firing: recoil, muzzle flash, and a kick to the hull.
+    pub fn fire_fx(&mut self) {
+        self.since_fire = 0.0;
+        self.fire_barrel += 1;
+        let rel = self.turret_yaw - self.yaw;
+        self.pitch_vel -= rel.cos() * 0.9;
+        self.roll_vel += rel.sin() * 0.7;
     }
 
     pub fn forward(&self) -> Vec2 {
@@ -110,7 +149,7 @@ impl World {
         let mut rng = Rng::new(seed.wrapping_mul(31).wrapping_add(7));
         let spawn = map.open_spots[rng.index(map.open_spots.len())];
         let to_center = map.center() - spawn;
-        let player = Tank::new(Vec3::new(0.30, 0.62, 0.30), spawn, yaw_of(to_center));
+        let player = Tank::new(Vec3::new(0.92, 0.93, 0.95), spawn, yaw_of(to_center));
         World { map, tanks: vec![player], time: 0.0 }
     }
 
@@ -203,7 +242,11 @@ fn drive(t: &mut Tank, cmd: &Command, dt: f32) {
     let left2 = Vec2::new(fwd2.y, -fwd2.x);
     t.vel = fwd2 * new_long + left2 * new_lat;
     t.pos += t.vel * dt;
-    t.track_phase += new_long * dt;
+    // A turning tank's treads run at different speeds (the inner one can reverse).
+    let half = TRACK_SPAN * 0.5;
+    t.track_dist[0] += (new_long - t.yaw_rate * half) * dt;
+    t.track_dist[1] += (new_long + t.yaw_rate * half) * dt;
+    t.since_fire += dt;
 
     // Turret slews toward the commanded aim at a limited rate.
     let diff = wrap_angle(cmd.aim_yaw - t.turret_yaw);

@@ -1,0 +1,81 @@
+//! Showroom: every hull x turret combination on an open yard, each running a
+//! different animation (pivot turns, driving, turret sweeps, firing), with an
+//! orbiting camera. `--showroom` opens it in the window or for `--shot`.
+
+use glam::{Vec2, Vec3, Vec4};
+
+use crate::game::DT;
+use crate::map::mat;
+use crate::render::Camera;
+use crate::render::mesh::MeshData;
+use crate::sim::{Command, HullKind, Tank, TurretKind, World};
+
+pub const SPOTS: [Vec2; 4] = [Vec2::new(-5.0, -4.0), Vec2::new(5.0, -4.0), Vec2::new(-5.0, 5.0), Vec2::new(5.0, 5.0)];
+
+pub fn world(seed: u64) -> World {
+    let mut w = World::new(seed);
+    w.map.solids.clear();
+    let looks = [
+        (HullKind::Lancer, TurretKind::Lance, Vec3::new(0.92, 0.93, 0.95)),
+        (HullKind::Bastion, TurretKind::Maul, Vec3::new(0.95, 0.42, 0.32)),
+        (HullKind::Lancer, TurretKind::Maul, Vec3::new(0.4, 0.62, 0.95)),
+        (HullKind::Bastion, TurretKind::Lance, Vec3::new(0.95, 0.8, 0.35)),
+    ];
+    w.tanks = looks
+        .iter()
+        .zip(SPOTS)
+        .map(|(&(h, tu, c), p)| {
+            let mut t = Tank::new(c, p, 0.4);
+            t.hull_kind = h;
+            t.turret_kind = tu;
+            t
+        })
+        .collect();
+    w
+}
+
+/// Scripted inputs: tank 0 pivots in place, tank 1 shuttles back and forth,
+/// the other two stay put sweeping their turrets.
+pub fn commands(w: &World) -> Vec<Command> {
+    let t = w.time;
+    w.tanks
+        .iter()
+        .enumerate()
+        .map(|(i, tank)| match i {
+            0 => Command { throttle: 0.0, steer: (t * 0.6).sin().signum() * ((t * 0.6).sin().abs() > 0.3) as i32 as f32, aim_yaw: tank.yaw + (t * 0.5).sin() * 0.6 },
+            1 => Command { throttle: (t * 0.8).sin() * 0.45, steer: 0.0, aim_yaw: tank.yaw + 0.3 },
+            _ => Command { throttle: 0.0, steer: 0.0, aim_yaw: 0.4 + (t * 0.4 + i as f32).sin() * 1.2 },
+        })
+        .collect()
+}
+
+/// Things the sim doesn't drive yet: gun elevation and firing.
+pub fn after_step(w: &mut World) {
+    let t = w.time;
+    for (i, tank) in w.tanks.iter_mut().enumerate() {
+        tank.gun_pitch = 0.06 + (t * 0.7 + i as f32 * 1.3).sin() * 0.1;
+        let (period, off) = (2.2 + i as f32 * 0.35, i as f32 * 0.6);
+        if ((t + off) / period).floor() != ((t - DT + off) / period).floor() {
+            tank.fire_fx();
+        }
+    }
+}
+
+/// Orbit around the yard (or one tank when `focus` is set).
+pub fn camera(w: &World, angle: f32, dist: f32, focus: Option<usize>) -> Camera {
+    let target = match focus {
+        Some(i) => w.tanks[i.min(w.tanks.len() - 1)].pos3() + Vec3::Y * 1.2,
+        None => Vec3::new(0.0, 1.0, 0.5),
+    };
+    let pos = target + Vec3::new(angle.sin() * dist, dist * 0.38, angle.cos() * dist);
+    Camera { pos, target, fov_y: 50f32.to_radians() }
+}
+
+pub fn ground_mesh() -> MeshData {
+    let mut m = MeshData::default();
+    let asphalt = Vec4::new(0.17, 0.17, 0.18, mat::ASPHALT);
+    m.add_box(Vec3::new(-150.0, -0.2, -150.0), Vec3::new(150.0, -0.02, 150.0), asphalt, asphalt);
+    let pave = Vec4::new(0.6, 0.57, 0.52, mat::PAVING);
+    m.add_box(Vec3::new(-14.0, -0.1, -13.0), Vec3::new(14.0, 0.0, 14.0), pave, pave);
+    m
+}

@@ -1,14 +1,13 @@
 //! Turns simulation state into renderer input: the static map mesh, tank
 //! instances, the chase camera, and the HUD.
 
-use std::f32::consts::FRAC_PI_2;
-
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::map::{Map, mat};
-use crate::render::mesh::{Instance, MeshData, MeshId};
+use crate::render::mesh::MeshData;
 use crate::render::{Camera, Scene, UiVertex};
 use crate::sim::{Tank, World, dir2};
+use crate::tank::TankArt;
 
 pub const SUN_DIR: Vec3 = Vec3::new(0.55, 0.48, 0.4);
 
@@ -108,51 +107,10 @@ impl ChaseCam {
     }
 }
 
-pub fn tank_instances(t: &Tank, out: &mut Vec<(MeshId, Instance)>) {
-    let root = Mat4::from_translation(t.pos3())
-        * Mat4::from_rotation_y(t.yaw)
-        // Pivot suspension tilt around the hull center.
-        * Mat4::from_translation(Vec3::Y * 0.6)
-        * Mat4::from_rotation_x(t.pitch)
-        * Mat4::from_rotation_z(t.roll)
-        * Mat4::from_translation(Vec3::Y * -0.6);
-    let part = |m: Mat4, size: Vec3, pos: Vec3| m * Mat4::from_scale_rotation_translation(size, Quat::IDENTITY, pos);
-    let color = t.color.extend(0.0);
-    let dark = Vec4::new(0.11, 0.11, 0.12, 0.0);
-    let trim = (t.color * 0.6).extend(0.0);
-
-    // Hull: main body, sloped-looking front plate, tracks with moving tread blocks.
-    out.push((MeshId::Cube, Instance::new(part(root, Vec3::new(2.7, 0.75, 4.4), Vec3::new(0.0, 0.95, 0.0)), color)));
-    out.push((MeshId::Cube, Instance::new(part(root, Vec3::new(2.5, 0.35, 0.6), Vec3::new(0.0, 0.75, 2.35)), trim)));
-    for side in [-1.0f32, 1.0] {
-        let x = side * 1.42;
-        out.push((MeshId::Cube, Instance::new(part(root, Vec3::new(0.62, 0.85, 4.8), Vec3::new(x, 0.48, 0.0)), dark)));
-        let n = 7;
-        for i in 0..n {
-            let z = ((i as f32 / n as f32 + t.track_phase / 4.8).rem_euclid(1.0) - 0.5) * 4.6;
-            out.push((
-                MeshId::Cube,
-                Instance::new(part(root, Vec3::new(0.66, 0.08, 0.22), Vec3::new(x, 0.92, z)), Vec4::new(0.2, 0.2, 0.21, 0.0)),
-            ));
-        }
-    }
-
-    // Turret rotates independently of the hull.
-    let turret = root * Mat4::from_translation(Vec3::new(0.0, 1.32, -0.3)) * Mat4::from_rotation_y(t.turret_yaw - t.yaw);
-    let turret_color = (t.color * 1.12).min(Vec3::ONE).extend(0.0);
-    out.push((MeshId::Cylinder, Instance::new(part(turret, Vec3::new(2.1, 0.22, 2.1), Vec3::new(0.0, 0.11, 0.0)), dark)));
-    out.push((MeshId::Cube, Instance::new(part(turret, Vec3::new(2.0, 0.8, 2.6), Vec3::new(0.0, 0.62, 0.1)), turret_color)));
-    out.push((MeshId::Cube, Instance::new(part(turret, Vec3::new(1.6, 0.16, 0.9), Vec3::new(0.0, 1.06, -0.6)), trim)));
-    let barrel = turret * Mat4::from_translation(Vec3::new(0.0, 0.62, 1.3)) * Mat4::from_rotation_x(FRAC_PI_2);
-    out.push((MeshId::Cylinder, Instance::new(part(barrel, Vec3::new(0.5, 0.5, 0.5), Vec3::new(0.0, 0.2, 0.0)), dark)));
-    out.push((MeshId::Cylinder, Instance::new(part(barrel, Vec3::new(0.28, 2.9, 0.28), Vec3::new(0.0, 1.45, 0.0)), dark)));
-    out.push((MeshId::Cylinder, Instance::new(part(barrel, Vec3::new(0.4, 0.45, 0.4), Vec3::new(0.0, 2.85, 0.0)), dark)));
-}
-
-pub fn build(world: &World, camera: Camera, width: f32, height: f32) -> Scene {
+pub fn build(world: &World, art: &TankArt, camera: Camera, width: f32, height: f32) -> Scene {
     let mut instances = Vec::new();
     for t in &world.tanks {
-        tank_instances(t, &mut instances);
+        art.instances(t, &mut instances);
     }
 
     let mut ui = Vec::new();
