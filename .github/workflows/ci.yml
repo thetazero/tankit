@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    # Hard ceiling for the whole job; a cold run takes ~70s on a hosted runner.
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 2
+
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 2
+
+      - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 3
+
+      # Compile separately so a slow build and a hung test get distinct limits.
+      - name: Build tests
+        run: cargo test --locked --no-run
+        timeout-minutes: 6
+
+      # Unit tests finish in well under a second; anything near this limit is a hang.
+      - name: Run tests
+        run: cargo test --locked
+        timeout-minutes: 2
