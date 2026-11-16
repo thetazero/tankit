@@ -154,7 +154,7 @@ impl Chassis {
         front: (2.75, 1.25, 0.0),
         rear: (-2.55, 1.3, 0.0),
         hull_half_x: 1.4,
-        hull_top: 1.8,
+        hull_top: 1.7,
         hull_z: (-2.3, 2.1),
         center_of_mass: Vec3::new(0.0, 1.25, 0.0),
         hover: true,

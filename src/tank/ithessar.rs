@@ -18,8 +18,8 @@ use crate::render::mesh::MeshData;
 
 /// Worked crystal: the Ithessar's armor.
 pub const VHAAL: Skin = Skin::new(
-    Vec4::new(0.075, 0.05, 0.09, Material::Vhaal.id()),
-    Vec4::new(0.2, 0.12, 0.22, Material::Vhaal.id()),
+    Vec4::new(0.04, 0.03, 0.05, Material::Vhaal.id()),
+    Vec4::new(0.13, 0.08, 0.15, Material::Vhaal.id()),
 );
 /// Loose crystal held in the field: dimly lit from inside.
 const SHARD: Skin = Skin::new(
@@ -39,8 +39,8 @@ const CRADLE: Skin = Skin::new(
 
 /// Plasma color for the parts drawn as emissive instances (unlit, color
 /// times the instance's glow strength).
-pub const PLASMA: Vec3 = Vec3::new(1.0, 0.36, 0.62);
-pub const PLASMA_HOT: Vec3 = Vec3::new(1.0, 0.82, 0.9);
+pub const PLASMA: Vec3 = Vec3::new(1.0, 0.16, 0.52);
+pub const PLASMA_HOT: Vec3 = Vec3::new(1.0, 0.7, 0.86);
 
 fn glow_color(c: Vec3) -> Skin {
     let c = c.extend(0.0);
@@ -82,14 +82,16 @@ fn jitter(i: usize, k: usize) -> f32 {
 fn half_section(i: usize, z: f32, w: f32, belly: f32, top: f32, slot: f32) -> Vec<Vec3> {
     let h = top - belly;
     let span = w - slot;
+    // A wedge: tall at the spine, the roof falling away to a sharp outer
+    // edge low on the flank, a shallow keel underneath.
     let pts = [
-        Vec2::new(slot, belly + 0.2 * h),
-        Vec2::new(slot, top - 0.1 * h),
-        Vec2::new(slot + 0.3 * span, top),
-        Vec2::new(slot + 0.74 * span, top - 0.24 * h),
-        Vec2::new(w, belly + 0.42 * h),
-        Vec2::new(slot + 0.82 * span, belly + 0.06 * h),
-        Vec2::new(slot + 0.32 * span, belly),
+        Vec2::new(slot, belly + 0.22 * h),
+        Vec2::new(slot, top),
+        Vec2::new(slot + 0.35 * span, top - 0.12 * h),
+        Vec2::new(slot + 0.78 * span, belly + 0.5 * h),
+        Vec2::new(w, belly + 0.24 * h),
+        Vec2::new(slot + 0.8 * span, belly + 0.04 * h),
+        Vec2::new(slot + 0.3 * span, belly),
     ];
     pts.iter()
         .enumerate()
@@ -100,14 +102,14 @@ fn half_section(i: usize, z: f32, w: f32, belly: f32, top: f32, slot: f32) -> Ve
 /// Stations along the hull: (z, half-width, belly, top, slot).
 const STATIONS: [(f32, f32, f32, f32, f32); 8] = [
     (2.85, 0.2, 0.66, 0.8, 0.04),
-    (2.3, 0.66, 0.5, 1.04, 0.07),
-    (1.3, 1.14, 0.42, 1.28, 0.11),
-    (0.0, 1.38, 0.4, 1.4, 0.14),
-    (-1.25, 1.36, 0.42, 1.46, 0.16),
-    (-2.1, 1.14, 0.5, 1.54, 0.18),
-    (-2.65, 0.82, 0.68, 1.56, 0.2),
+    (2.3, 0.66, 0.5, 1.0, 0.07),
+    (1.3, 1.16, 0.42, 1.2, 0.11),
+    (0.0, 1.4, 0.4, 1.3, 0.14),
+    (-1.25, 1.38, 0.42, 1.36, 0.16),
+    (-1.95, 1.14, 0.58, 1.42, 0.18),
+    (-2.55, 0.74, 0.92, 1.46, 0.2),
     // The tail sweeps up and narrows to a blade.
-    (-3.05, 0.42, 1.05, 1.5, 0.2),
+    (-3.1, 0.32, 1.22, 1.46, 0.2),
 ];
 
 /// Carapace surface at (z, fraction of the way from slot to the outer edge),
@@ -151,7 +153,7 @@ pub fn sethuun() -> HoverModel {
     solid(
         &mut body,
         &[
-            at_z(&super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04), -2.45),
+            at_z(&super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04), -1.9),
             at_z(&super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04), 2.4),
         ],
         0.03,
@@ -163,33 +165,15 @@ pub fn sethuun() -> HoverModel {
     plate2(
         &mut body,
         [
-            v(0.3, 1.52, -1.05),
-            v(0.62, 1.48, -1.95),
-            v(0.86, 2.3, -3.35),
-            v(0.52, 2.22, -2.75),
+            v(0.26, 1.54, -1.15),
+            v(0.46, 1.5, -2.0),
+            v(0.62, 2.35, -3.4),
+            v(0.4, 2.28, -2.8),
         ],
         0.07,
         v(0.0, 1.0, -1.8),
         PAINT,
     );
-    // Cheek plates on the prow: the side's color from the front, too.
-    for z in [(1.0f32, 1.75f32), (1.85, 2.35)] {
-        let (w0, _, top0, _) = station_at(z.0);
-        let (w1, _, top1, _) = station_at(z.1);
-        plate2(
-            &mut body,
-            [
-                v(0.45 * w0, top0 - 0.02, z.0),
-                v(0.86 * w0, top0 - 0.25, z.0),
-                v(0.86 * w1, top1 - 0.25, z.1),
-                v(0.45 * w1, top1 - 0.02, z.1),
-            ],
-            0.04,
-            v(0.0, 0.6, (z.0 + z.1) * 0.5),
-            PAINT,
-        );
-    }
-
     // Glow: the core along the spine, and three vents down each flank.
     let mut glow = MeshData::default();
     let core = glow_color(PLASMA);
@@ -200,7 +184,7 @@ pub fn sethuun() -> HoverModel {
             at_z(&ngon(6, 0.05, Vec2::new(0.0, 0.9)), 2.5),
             at_z(&ngon(6, 0.12, Vec2::new(0.0, 0.98)), 1.7),
             at_z(&ngon(6, 0.13, Vec2::new(0.0, 1.0)), -1.6),
-            at_z(&ngon(6, 0.06, Vec2::new(0.0, 0.98)), -2.5),
+            at_z(&ngon(6, 0.12, Vec2::new(0.0, 1.0)), -2.6),
         ],
         0.0,
         core,
@@ -219,13 +203,14 @@ pub fn sethuun() -> HoverModel {
         for s in [1.0f32, -1.0] {
             let (w0, b0, t0, sl0) = station_at(z);
             let (w1, b1, t1, sl1) = station_at(z + 0.32);
-            // On the facet below the outer edge, standing just proud of it.
+            // On the falling facet above the outer edge.
             let pt = |w: f32, b: f32, t: f32, sl: f32, f: f32, z: f32| {
                 let h = t - b;
-                let top = Vec2::new(w, b + 0.42 * h);
-                let low = Vec2::new(sl + 0.82 * (w - sl), b + 0.06 * h);
+                let top = Vec2::new(sl + 0.78 * (w - sl), b + 0.5 * h);
+                let low = Vec2::new(w, b + 0.24 * h);
                 let p = top.lerp(low, f);
-                v((p.x + 0.015) * s, p.y, z)
+                // Just proud of the facet (it faces out and up).
+                v((p.x + 0.012) * s, p.y + 0.012, z)
             };
             plate(
                 &mut glow,
@@ -276,14 +261,11 @@ pub fn sethuun() -> HoverModel {
         lens,
         shard: loose,
         shards: vec![
-            // Off the fin tips.
-            (v(0.98, 2.75, -3.62), 0.6),
-            (v(-0.98, 2.75, -3.62), 0.6),
             // The eye ahead of the prow.
             (v(0.0, 1.0, 3.3), 0.5),
         ],
         emitter_y: 0.36,
-        mount: v(0.0, 1.38, -0.15),
+        mount: v(0.0, 1.3, -0.15),
     }
 }
 

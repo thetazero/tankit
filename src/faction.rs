@@ -38,8 +38,8 @@ impl Faction {
             Faction::Resonant => Vec3::new(0.12, 0.78, 0.70),
             // Rust orange.
             Faction::Machines => Vec3::new(0.86, 0.46, 0.2),
-            // Dusk violet.
-            Faction::Ithessar => Vec3::new(0.62, 0.5, 0.88),
+            // Rose, the color of their plasma cooled.
+            Faction::Ithessar => Vec3::new(0.8, 0.3, 0.46),
         }
     }
 
@@ -49,7 +49,7 @@ impl Faction {
             Faction::Imperium => [0.62, 0.78, 1.0, 1.0],
             Faction::Resonant => [0.25, 0.95, 0.82, 1.0],
             Faction::Machines => [1.0, 0.6, 0.3, 1.0],
-            Faction::Ithessar => [0.78, 0.65, 1.0, 1.0],
+            Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
         }
     }
 

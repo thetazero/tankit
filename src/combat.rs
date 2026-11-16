@@ -1025,7 +1025,7 @@ impl Match {
                     let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
                     let size = size * (1.0 - 0.18 * spent);
                     let wobble = 1.0 + 0.1 * (s.age * 38.0 + s.seed * 6.0).sin();
-                    out.push(ball(p, size * wobble, PLASMA.extend(2.8)));
+                    out.push(ball(p, size * wobble, PLASMA.extend(2.2)));
                     out.push(ball(p, size * 0.5, PLASMA_HOT.extend(5.0)));
                     for k in 1..4 {
                         let k = k as f32;
@@ -1044,9 +1044,10 @@ impl Match {
                 }
                 // A dart: hot needle inside a rose streak.
                 Look::Bolt { size } => {
-                    out.push(streak(0.34 * size, 2.0 * size, PLASMA.extend(2.6)));
-                    out.push(streak(0.13 * size, 1.5 * size, PLASMA_HOT.extend(5.0)));
-                    out.push(ball(p, 0.3 * size, PLASMA_HOT.extend(4.0)));
+                    out.push(streak(0.45 * size, 2.4 * size, PLASMA.extend(2.2)));
+                    out.push(streak(0.16 * size, 1.8 * size, PLASMA_HOT.extend(4.0)));
+                    out.push(ball(p, 0.55 * size, PLASMA.extend(2.2)));
+                    out.push(ball(p, 0.28 * size, PLASMA_HOT.extend(4.0)));
                 }
                 // Crystal fire: white-hot at the nozzle, swelling into violet, then gone.
                 Look::Flame => {
