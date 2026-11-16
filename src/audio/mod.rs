@@ -27,8 +27,11 @@ use crate::sim::{HullKind, TurretKind};
 use dsp::Noise;
 pub use mixer::{Mixer, OneShot, TankParams};
 
-/// Distance at which a sound is at half its close-up loudness, m.
-const REF_DIST: f32 = 8.0;
+/// Distance at which a sound is at half its close-up loudness, m. Past it
+/// loudness falls with the square of distance (12 dB per doubling): the chase
+/// camera's own tank (about 10 m off) is about 5 dB down, a fight 100 m away about
+/// 30 dB under it, and one across the map faint.
+const REF_DIST: f32 = 12.0;
 /// Past this nothing is heard, m.
 const EARSHOT: f32 = 400.0;
 /// How far a sound can swing to one side (1 would be hard-panned).
@@ -74,13 +77,14 @@ impl Listener {
     pub fn place(&self, at: Vec3) -> Placed {
         let to = at - self.pos;
         let d = to.length();
-        let gain = REF_DIST / (REF_DIST + d) * (1.0 - d / EARSHOT).clamp(0.0, 1.0);
+        let fade = (1.0 - d / EARSHOT).clamp(0.0, 1.0);
+        let gain = 1.0 / (1.0 + (d / REF_DIST).powi(2)) * fade;
         let pan = if d > 0.5 {
             to.dot(self.right) / d * PAN_WIDTH
         } else {
             0.0
         };
-        let air = (16_000.0 / (1.0 + d / 35.0)).max(900.0);
+        let air = (16_000.0 / (1.0 + d / 20.0)).max(600.0);
         Placed { gain, pan, air }
     }
 }
@@ -413,6 +417,28 @@ mod tests {
         assert!(near.gain > 3.0 * far.gain);
         assert!(near.air > far.air);
         assert_eq!(e.place(Vec3::new(0.0, 0.0, -EARSHOT - 1.0)).gain, 0.0);
+    }
+
+    /// Issue #77: distant fights were too loud. Your own tank sits about 10 m
+    /// from the chase camera; a fight 100 m off should be ~30 dB under it and
+    /// one across the map (200 m) fainter still.
+    #[test]
+    fn distant_fights_are_faint() {
+        let e = ears();
+        let db = |d: f32| 20.0 * e.place(Vec3::new(0.0, 0.0, -d)).gain.log10();
+        let own = db(10.0);
+        assert!(own > -6.0, "own tank {own:.1} dB");
+        assert!(own - db(30.0) > 10.0);
+        assert!(
+            own - db(100.0) > 28.0,
+            "100 m only {:.1} dB down",
+            own - db(100.0)
+        );
+        assert!(
+            own - db(200.0) > 40.0,
+            "200 m only {:.1} dB down",
+            own - db(200.0)
+        );
     }
 
     /// A real bot battle, recorded: loud enough to hear, never clipping hard.

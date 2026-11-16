@@ -74,8 +74,12 @@ struct TankVoice {
     clank_b: Svf,
     rumble: Svf,
     // Turret motor, beam, flame.
+    /// Ring-gear tooth phase, the traverse drive's hum phase.
     motor: f32,
+    motor_hum: f32,
     motor_lp: Svf,
+    motor_a: Svf,
+    motor_b: Svf,
     beam_a: f32,
     beam_b: f32,
     beam_tone: f32,
@@ -113,7 +117,10 @@ impl TankVoice {
             clank_b: Svf::default(),
             rumble: Svf::default(),
             motor: 0.0,
+            motor_hum: 0.0,
             motor_lp: Svf::default(),
+            motor_a: Svf::default(),
+            motor_b: Svf::default(),
             beam_a: 0.0,
             beam_b: 0.0,
             beam_tone: 0.0,
@@ -204,13 +211,27 @@ impl TankVoice {
                     + rumble * (tread / 8.0).min(1.0) * 0.9;
             }
 
-            // Turret ring motor: a geared whine.
+            // Turret traverse: a heavy ring gear grinding round. Teeth meet tens
+            // of times a second, so they're heard as a ratchet, not a pitch; under
+            // them a low grind and a near-steady drive hum. Nothing tonal in the
+            // voice range (a pitched whine that rose with speed sounded like a scream).
             let mut motor = 0.0;
             if turret > 0.01 {
-                self.motor = (self.motor + (150.0 + 260.0 * turret) / sr).fract();
-                let saw = self.motor * 2.0 - 1.0;
-                let whine = self.motor_lp.run(saw, 1400.0, 1.2, sr).low;
-                motor = (whine * 0.6 + (self.motor * TAU * 4.0).sin() * 0.15) * turret * 0.22;
+                self.motor += (14.0 + 26.0 * turret) / sr;
+                let mut tooth = 0.0;
+                if self.motor >= 1.0 {
+                    self.motor -= 1.0;
+                    tooth = 0.6 + 0.8 * self.noise.unit();
+                }
+                let x = tooth + n * 0.02;
+                let clack = self.motor_a.run(x, 520.0, 4.0, sr).band * 0.5
+                    + self.motor_b.run(x, 1350.0, 6.0, sr).band * 0.3;
+                let grind = self.motor_lp.run(n, 260.0 + 120.0 * turret, 0.8, sr).low
+                    * (0.7 + 0.6 * (1.0 - self.motor));
+                self.motor_hum = (self.motor_hum + (46.0 + 8.0 * turret) / sr).fract();
+                let hum =
+                    (self.motor_hum * TAU).sin() * 0.5 + (self.motor_hum * TAU * 2.0).sin() * 0.25;
+                motor = (clack * 1.6 + grind * 2.4 + hum * 0.25) * turret.sqrt() * 0.3;
             }
 
             // Laser beam: a detuned buzz with a warbling top that climbs as it heats.
