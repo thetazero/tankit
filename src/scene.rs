@@ -253,28 +253,84 @@ fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
     }
 }
 
-/// Painted drop zones where repair crates come down: a square outline with a cross.
+/// Drop zones where repair crates come down, glowing in the crate cross's
+/// green: a dashed landing ring round a plus. Laid on the ground like a
+/// decal, following the terrain, so nothing sinks into a slope.
 fn repair_pads(map: &Map, m: &mut MeshData) {
-    let paint = Vec4::new(0.5, 0.78, 0.5, Material::Plain.id());
+    let ring = Vec3::new(0.12, 0.42, 0.2).extend(Material::Glow.id());
+    let plus = Vec3::new(0.16, 0.55, 0.26).extend(Material::Glow.id());
     for &c in &map.repair_spots {
-        let y = map.ground_height(c.x, c.y) + 0.02;
-        let mut stripe = |min: Vec2, max: Vec2| {
-            m.add_box(
-                Vec3::new(c.x + min.x, y - 0.02, c.y + min.y),
-                Vec3::new(c.x + max.x, y, c.y + max.y),
-                paint,
-                paint,
-            );
+        let mut quad = |p: [Vec2; 4], col: Vec4| {
+            for t in [[p[0], p[1], p[2]], [p[0], p[2], p[3]]] {
+                decal_tri(map, m, t.map(|q| c + q), col);
+            }
         };
-        let (r, t) = (3.2, 0.25);
-        stripe(Vec2::new(-r, -r), Vec2::new(r, -r + t));
-        stripe(Vec2::new(-r, r - t), Vec2::new(r, r));
-        stripe(Vec2::new(-r, -r + t), Vec2::new(-r + t, r - t));
-        stripe(Vec2::new(r - t, -r + t), Vec2::new(r, r - t));
-        stripe(Vec2::new(-1.4, -0.35), Vec2::new(1.4, 0.35));
-        stripe(Vec2::new(-0.35, -1.4), Vec2::new(0.35, -0.35));
-        stripe(Vec2::new(-0.35, 0.35), Vec2::new(0.35, 1.4));
+        // Ring: dashes round the edge, where the crate's footprint will be ringed.
+        let (r0, r1, dashes) = (3.0f32, 3.4f32, 16);
+        let step = std::f32::consts::TAU / dashes as f32;
+        for i in 0..dashes {
+            let a0 = i as f32 * step;
+            let at = |r: f32, a: f32| Vec2::new(a.cos(), a.sin()) * r;
+            // Each dash is built from short pieces so it bends round the circle.
+            let pieces = 3;
+            let span = step * 0.6;
+            for k in 0..pieces {
+                let a = a0 + span * k as f32 / pieces as f32;
+                let b = a0 + span * (k + 1) as f32 / pieces as f32;
+                quad([at(r0, a), at(r0, b), at(r1, b), at(r1, a)], ring);
+            }
+        }
+        // Plus, matching the cross on the crate.
+        let (l, w) = (1.5f32, 0.4f32);
+        quad(
+            [
+                Vec2::new(-l, -w),
+                Vec2::new(l, -w),
+                Vec2::new(l, w),
+                Vec2::new(-l, w),
+            ],
+            plus,
+        );
+        for s in [-1.0f32, 1.0] {
+            let (a, b) = (w * s, l * s);
+            quad(
+                [
+                    Vec2::new(-w, a),
+                    Vec2::new(w, a),
+                    Vec2::new(w, b),
+                    Vec2::new(-w, b),
+                ],
+                plus,
+            );
+        }
     }
+}
+
+/// A flat triangle (in xz) laid on the ground: split until its pieces are
+/// small next to the terrain's bumps, each corner lifted just off the ground.
+fn decal_tri(map: &Map, m: &mut MeshData, p: [Vec2; 3], c: Vec4) {
+    const MAX_EDGE: f32 = 0.5;
+    const LIFT: f32 = 0.05;
+    let longest = (0..3)
+        .max_by(|&i, &j| {
+            let li = p[i].distance_squared(p[(i + 1) % 3]);
+            let lj = p[j].distance_squared(p[(j + 1) % 3]);
+            li.total_cmp(&lj)
+        })
+        .unwrap();
+    let (a, b, o) = (p[longest], p[(longest + 1) % 3], p[(longest + 2) % 3]);
+    if a.distance(b) > MAX_EDGE {
+        let mid = (a + b) * 0.5;
+        decal_tri(map, m, [a, mid, o], c);
+        decal_tri(map, m, [mid, b, o], c);
+        return;
+    }
+    let lay = |q: Vec2| Vec3::new(q.x, map.ground_height(q.x, q.y) + LIFT, q.y);
+    m.facet(
+        [lay(a), lay(b), lay(o)],
+        lay((a + b + o) / 3.0) - Vec3::Y,
+        c,
+    );
 }
 
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
