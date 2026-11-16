@@ -71,15 +71,10 @@ fn parse_args() -> Result<Args> {
 fn screenshot(seed: u64, args: ShotArgs) -> Result<()> {
     let mut world = sim::World::new(seed);
     let mut cam = scene::ChaseCam::new();
-    cam.yaw = world.tanks[0].yaw;
     let steps = (args.time / game::DT).round() as u32;
     let mut camera = cam.update(&world, &world.tanks[0], game::DT);
     for _ in 0..steps {
-        let mut cmd = game::autopilot(world.time);
-        // Camera trails the hull so the shot looks like someone driving.
-        cam.yaw = sim::wrap_angle(cam.yaw + sim::wrap_angle(world.tanks[0].yaw - cam.yaw) * 0.02);
-        cmd.aim_yaw = cam.yaw;
-        world.step(&[cmd]);
+        world.step(&[game::autopilot(world.time)]);
         camera = cam.update(&world, &world.tanks[0], game::DT);
     }
     let mut renderer = render::Renderer::new_headless(args.width, args.height)?;

@@ -26,7 +26,9 @@ pub fn autopilot(time: f32) -> crate::sim::Command {
     crate::sim::Command {
         throttle: if (time % 6.0) < 5.0 { 1.0 } else { -0.6 },
         steer: (time * 0.7).sin() * 0.8,
-        aim_yaw: 0.0,
+        // Sweep the turret back and forth.
+        turret: (time * 0.5).sin(),
+        center_turret: false,
     }
 }
 
