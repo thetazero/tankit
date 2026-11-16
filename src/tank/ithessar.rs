@@ -166,20 +166,30 @@ pub fn sethuun() -> HoverModel {
         VHAAL,
     );
 
-    // Tail fins: two broad blades rising off the rear quarters, in the
-    // side's color, raked back like a ray's.
-    plate2(
-        &mut body,
-        [
-            v(0.26, 1.54, -1.15),
-            v(0.46, 1.5, -2.0),
-            v(0.62, 2.35, -3.4),
-            v(0.4, 2.28, -2.8),
-        ],
-        0.07,
-        v(0.0, 1.0, -1.8),
-        PAINT,
-    );
+    // The side's color: panels laid along each half's roof, from behind the
+    // turret to the stern (where the chase camera sees them), and a pair
+    // flanking the prow. Flat on the crystal so nothing snags the gun.
+    let roof = |z: f32, f: f32| {
+        let (w, b, t, sl) = station_at(z);
+        let span = w - sl;
+        let h = t - b;
+        let p = Vec2::new(sl + 0.04, t).lerp(Vec2::new(sl + 0.35 * span, t - 0.12 * h), f);
+        v(p.x, p.y + 0.02, z)
+    };
+    for (z0, z1) in [(-1.0f32, -2.45f32), (2.25, 1.15)] {
+        plate2(
+            &mut body,
+            [
+                roof(z0, 0.15),
+                roof(z0, 0.95),
+                roof(z1, 0.95),
+                roof(z1, 0.15),
+            ],
+            0.03,
+            v(0.0, 0.6, (z0 + z1) * 0.5),
+            PAINT,
+        );
+    }
     // Glow: the core along the spine, and three vents down each flank.
     let mut glow = MeshData::default();
     let core = glow_color(PLASMA);
