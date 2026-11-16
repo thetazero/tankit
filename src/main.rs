@@ -31,10 +31,11 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|capital>
+  --map <saltmarket|sanctum|kiln|capital|foundry>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), or the Capital
-                          (Imperium city, all four factions)
+                          (Imperium city, all four factions), or the Foundry (a wrecked
+                          Uthenn tungsten cube factory)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
@@ -121,6 +122,8 @@ pub enum MapKind {
     Kiln,
     /// An Imperium city, half ruined round a domed rotunda: four sides.
     Capital,
+    /// The Foundry: a wrecked Uthenn tungsten cube factory.
+    Foundry,
 }
 
 pub fn make_map(kind: MapKind) -> map::Map {
@@ -129,6 +132,7 @@ pub fn make_map(kind: MapKind) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::Capital => map::Map::capital(),
+        MapKind::Foundry => map::Map::foundry(),
     }
 }
 
@@ -242,8 +246,11 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("capital") => map_kind = MapKind::Capital,
+                Some("foundry") => map_kind = MapKind::Foundry,
                 other => {
-                    bail!("--map expects saltmarket, sanctum, kiln or capital, got {other:?}")
+                    bail!(
+                        "--map expects saltmarket, sanctum, kiln, capital or foundry, got {other:?}"
+                    )
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,

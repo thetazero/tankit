@@ -1,4 +1,5 @@
-//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln)
+//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln,
+//! the Capital, the Foundry)
 //! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
@@ -8,6 +9,7 @@ use glam::{Vec2, Vec3};
 use crate::faction::Faction;
 
 mod capital;
+mod foundry;
 mod kiln;
 mod landmarks;
 mod props;
