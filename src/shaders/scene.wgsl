@@ -16,6 +16,10 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var shadow_tex: texture_depth_2d;
 @group(1) @binding(1) var shadow_samp: sampler_comparison;
+// Procedural surface detail (render/surface.rs): layer 0 = normal xy, height,
+// cavity; layer 1 = albedo variation, roughness offset, wear, grime streaks.
+@group(1) @binding(2) var surf_tex: texture_2d_array<f32>;
+@group(1) @binding(3) var surf_samp: sampler;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -37,6 +41,10 @@ struct VOut {
     // Object-space position and normal, so surface detail sticks to moving parts.
     @location(4) lpos: vec3<f32>,
     @location(5) lnormal: vec3<f32>,
+    // The part's axes in world space, to rotate object-space normal detail.
+    @location(6) ax: vec3<f32>,
+    @location(7) ay: vec3<f32>,
+    @location(8) az: vec3<f32>,
 };
 
 @vertex
@@ -51,6 +59,9 @@ fn vs_main(v: VIn) -> VOut {
     out.tint = v.tint;
     out.lpos = v.pos;
     out.lnormal = v.normal;
+    out.ax = v.m0.xyz;
+    out.ay = v.m1.xyz;
+    out.az = v.m2.xyz;
     return out;
 }
 
@@ -246,6 +257,68 @@ fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
     let f = 1.0 - exp(-d * g.params.y);
     let dir = normalize(wpos - g.cam_pos.xyz);
     return mix(c, sky_color(vec3<f32>(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), f);
+}
+
+// Surface detail for a fragment, sampled triplanar in object space (no UVs
+// needed; detail moves with the part). Two octaves: `scale` texels per
+// meter, and 3.8x finer so narrow faces (plate edges, bevels) carry detail too.
+struct Detail {
+    // Perturbed world-space normal.
+    normal: vec3<f32>,
+    // Albedo variation, roughness offset, wear, grime (0.5 neutral for r/g).
+    masks: vec4<f32>,
+    fine: vec4<f32>,
+    // 1 = open, lower in crevices.
+    cavity: f32,
+};
+
+// Must be called in uniform control flow (it samples textures).
+fn surface_detail(lpos: vec3<f32>, lnormal: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>, az: vec3<f32>, scale: f32, bump: f32) -> Detail {
+    let ln = normalize(lnormal);
+    var tw = pow(abs(ln), vec3<f32>(4.0));
+    tw = tw / (tw.x + tw.y + tw.z);
+    let tp = lpos * scale;
+    let tq = lpos * scale * 3.8;
+    let sx = textureSample(surf_tex, surf_samp, tp.zy, 0);
+    let sy = textureSample(surf_tex, surf_samp, tp.xz, 0);
+    let sz = textureSample(surf_tex, surf_samp, tp.xy, 0);
+    let fx = textureSample(surf_tex, surf_samp, tq.zy, 0).xy * 2.0 - 1.0;
+    let fy = textureSample(surf_tex, surf_samp, tq.xz, 0).xy * 2.0 - 1.0;
+    let fz = textureSample(surf_tex, surf_samp, tq.xy, 0).xy * 2.0 - 1.0;
+    var d: Detail;
+    d.masks = textureSample(surf_tex, surf_samp, tp.zy, 1) * tw.x + textureSample(surf_tex, surf_samp, tp.xz, 1) * tw.y
+        + textureSample(surf_tex, surf_samp, tp.xy, 1) * tw.z;
+    d.fine = textureSample(surf_tex, surf_samp, tq.zy, 1) * tw.x + textureSample(surf_tex, surf_samp, tq.xz, 1) * tw.y
+        + textureSample(surf_tex, surf_samp, tq.xy, 1) * tw.z;
+    d.cavity = sx.a * tw.x + sy.a * tw.y + sz.a * tw.z;
+    let tx = sx.xy * 2.0 - 1.0;
+    let ty = sy.xy * 2.0 - 1.0;
+    let tz = sz.xy * 2.0 - 1.0;
+    let n_obj = normalize(
+        ln + bump * (tw.x * vec3<f32>(0.0, tx.y, tx.x) + tw.y * vec3<f32>(ty.x, 0.0, ty.y) + tw.z * vec3<f32>(tz.x, tz.y, 0.0))
+            + bump * 0.7 * (tw.x * vec3<f32>(0.0, fx.y, fx.x) + tw.y * vec3<f32>(fy.x, 0.0, fy.y) + tw.z * vec3<f32>(fz.x, fz.y, 0.0)),
+    );
+    d.normal = normalize(normalize(ax) * n_obj.x + normalize(ay) * n_obj.y + normalize(az) * n_obj.z);
+    return d;
+}
+
+// GGX / Smith / Schlick specular, scaled by pi to match this renderer's
+// un-normalized Lambert diffuse.
+fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    let h = normalize(v + l);
+    let nl = max(dot(n, l), 0.0);
+    let nv = max(dot(n, v), 0.001);
+    let nh = max(dot(n, h), 0.0);
+    let vh = max(dot(v, h), 0.0);
+    let a = max(rough * rough, 0.002);
+    let a2 = a * a;
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let d = a2 / (3.14159 * dd * dd);
+    let k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    let gv = nv / (nv * (1.0 - k) + k);
+    let gl = nl / (nl * (1.0 - k) + k);
+    let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+    return d * gv * gl * f / (4.0 * nv * max(nl, 0.001)) * 3.14159;
 }
 
 @fragment
