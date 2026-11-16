@@ -219,32 +219,32 @@ pub struct HullStats {
 
 impl HullStats {
     pub const LANCER: Self = Self {
-        max_speed: 15.0,
-        reverse_speed: 9.0,
-        accel: 13.0,
-        power_knee: 9.0,
-        brake: 20.0,
-        rolling: 0.8,
-        turn_rate: 3.6,
+        max_speed: 13.0,
+        reverse_speed: 7.5,
+        accel: 11.0,
+        power_knee: 8.0,
+        brake: 24.0,
+        rolling: 1.4,
+        turn_rate: 3.0,
         steer_accel: 20.0,
-        grip_long: 1.6,
-        grip_lat: 1.3,
-        turret_speed: 2.0,
-        turret_accel: 12.0,
+        grip_long: 1.9,
+        grip_lat: 1.7,
+        turret_speed: 1.7,
+        turret_accel: 10.0,
     };
     pub const BASTION: Self = Self {
-        max_speed: 11.5,
-        reverse_speed: 7.0,
-        accel: 9.0,
-        power_knee: 6.5,
-        brake: 16.0,
-        rolling: 0.8,
-        turn_rate: 2.5,
+        max_speed: 10.0,
+        reverse_speed: 6.0,
+        accel: 7.5,
+        power_knee: 5.5,
+        brake: 20.0,
+        rolling: 1.4,
+        turn_rate: 2.1,
         steer_accel: 14.0,
-        grip_long: 1.6,
-        grip_lat: 1.4,
-        turret_speed: 1.5,
-        turret_accel: 8.0,
+        grip_long: 1.9,
+        grip_lat: 1.8,
+        turret_speed: 1.25,
+        turret_accel: 7.0,
     };
 
     pub fn of(kind: HullKind) -> HullStats {
@@ -1075,7 +1075,7 @@ mod tests {
         run(&mut w, Command::default(), 1.0);
         run(&mut w, throttle(1.0), 0.5);
         let early = w.tanks[0].speed();
-        assert!(early > 5.0, "sluggish start: {early} m/s after 0.5 s");
+        assert!(early > 0.33 * HullStats::LANCER.max_speed, "sluggish start: {early} m/s after 0.5 s");
         assert!(w.tanks[0].up().y > 0.98, "wheelie: {:?}", w.tanks[0].up());
         run(&mut w, throttle(1.0), 2.5);
         let s = w.tanks[0].speed();
@@ -1110,7 +1110,7 @@ mod tests {
             turned += wrap_angle(y - last);
             last = y;
         }
-        assert!(turned > PI, "only turned {:.0} degrees in 1.6 s", turned.to_degrees());
+        assert!(turned > 0.8 * PI, "only turned {:.0} degrees in 1.6 s", turned.to_degrees());
         let drift = Vec2::new(w.tanks[0].pos.x - p0.x, w.tanks[0].pos.z - p0.z).length();
         assert!(drift < 0.6, "pivot wandered {drift} m");
     }
@@ -1174,7 +1174,7 @@ mod tests {
     fn every_kicker_lane_is_clearable_at_full_speed() {
         for lane in 0..3 {
             let mut w = World::new(Map::proving_ground(), lane);
-            run(&mut w, throttle(1.0), 6.0);
+            run(&mut w, throttle(1.0), 7.0);
             let t = &w.tanks[0];
             assert!(t.pos.z > 80.0, "lane {lane}: stopped at z={} (crashed into the landing ramp?)", t.pos.z);
             assert!(t.up().y > 0.95, "lane {lane}: not upright");
@@ -1322,7 +1322,7 @@ mod tests {
             w.tanks[0].pos.distance(p0)
         };
         let slide = distance(Vec3::new(6.0, 0.0, 0.0), 0.0);
-        assert!(coast > 15.0, "coasting from 6 m/s only rolled {coast} m");
+        assert!(coast > 12.0, "coasting from 6 m/s only rolled {coast} m");
         assert!(slide < 3.0, "sliding sideways from 6 m/s went {slide} m");
     }
 
