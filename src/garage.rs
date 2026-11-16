@@ -1,7 +1,8 @@
-//! In-battle garage: press G mid-match to park, swing the camera round your
-//! tank, and pick the hull and turret for your next respawn. The tank you're
-//! driving doesn't change; the orbit camera shows the picked kit as a
-//! preview. Deploying keeps the pick queued, reverting puts back what was
+//! Garage: from the main menu, or G mid-match to park and swing the camera
+//! round your tank. Pick the hull and turret for your next respawn, and buy
+//! or upgrade parts with crystals. The tank you're driving doesn't change;
+//! the orbit camera shows the highlighted kit as a preview (parts you don't
+//! own too). Deploying keeps the pick queued, reverting puts back what was
 //! queued when you came in.
 //!
 //! Drawn in the hairline style, as a panel on the left over a soft dark
@@ -9,7 +10,8 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat;
+use crate::economy::{Levels, Part};
+use crate::profile::{Profile, Refusal};
 use crate::render::{Camera, UiVertex};
 use crate::sim::{HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::ui::widgets::{self, label};
@@ -49,18 +51,13 @@ struct Stat {
     name: &'static str,
     unit: &'static str,
     decimals: usize,
-    get: fn(Part) -> f32,
+    /// The stat for a part at the given upgrade levels.
+    get: fn(Part, &Levels) -> f32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Part {
-    Hull(HullKind),
-    Turret(TurretKind),
-}
-
-fn hull_of(p: Part) -> HullStats {
+fn hull_of(p: Part) -> HullKind {
     match p {
-        Part::Hull(k) => HullStats::of(k),
+        Part::Hull(k) => k,
         Part::Turret(_) => unreachable!(),
     }
 }
@@ -77,43 +74,37 @@ const HULL_STATS: [Stat; 6] = [
         name: "ARMOR",
         unit: "HP",
         decimals: 0,
-        get: |p| match p {
-            Part::Hull(k) => combat::max_health(k),
-            Part::Turret(_) => unreachable!(),
-        },
+        get: |p, l| l.max_health(hull_of(p)),
     },
     Stat {
         name: "TOP SPEED",
         unit: "KM/H",
         decimals: 0,
-        get: |p| hull_of(p).max_speed * 3.6,
+        get: |p, _| HullStats::of(hull_of(p)).max_speed * 3.6,
     },
     Stat {
         name: "ACCEL",
         unit: "M/S2",
         decimals: 1,
-        get: |p| hull_of(p).accel,
+        get: |p, _| HullStats::of(hull_of(p)).accel,
     },
     Stat {
         name: "TURN",
         unit: "°/S",
         decimals: 0,
-        get: |p| hull_of(p).turn_rate.to_degrees(),
+        get: |p, _| HullStats::of(hull_of(p)).turn_rate.to_degrees(),
     },
     Stat {
         name: "TRAVERSE",
         unit: "°/S",
         decimals: 0,
-        get: |p| hull_of(p).turret_speed.to_degrees(),
+        get: |p, _| HullStats::of(hull_of(p)).turret_speed.to_degrees(),
     },
     Stat {
         name: "MASS",
         unit: "T",
         decimals: 0,
-        get: |p| match p {
-            Part::Hull(k) => crate::sim::Chassis::of(k).mass / 1000.0,
-            Part::Turret(_) => unreachable!(),
-        },
+        get: |p, _| crate::sim::Chassis::of(hull_of(p)).mass / 1000.0,
     },
 ];
 
@@ -122,20 +113,20 @@ const TURRET_STATS: [Stat; 3] = [
         name: "DAMAGE",
         unit: "HP",
         decimals: 0,
-        get: |p| combat::gun(turret_of(p)).damage,
+        get: |p, l| l.gun(turret_of(p)).damage,
     },
     Stat {
         name: "FIRE RATE",
         unit: "/MIN",
         decimals: 0,
-        get: |p| 60.0 / combat::gun(turret_of(p)).reload,
+        get: |p, l| 60.0 / l.gun(turret_of(p)).reload,
     },
     Stat {
         name: "DPS",
         unit: "HP/S",
         decimals: 0,
-        get: |p| {
-            let g = combat::gun(turret_of(p));
+        get: |p, l| {
+            let g = l.gun(turret_of(p));
             g.damage / g.reload
         },
     },
@@ -148,10 +139,21 @@ pub enum Input {
     Down,
     Left,
     Right,
+    /// Buy the highlighted part, or upgrade it if owned.
+    Act,
     /// Keep the loadout and drive off.
     Deploy,
     /// Put back the loadout from when the garage opened, and close.
     Revert,
+}
+
+/// What the app should do about a key press in the garage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Event {
+    /// Queue this kit for the next respawn.
+    Queue(Loadout),
+    Buy(Part),
+    Upgrade(Part),
 }
 
 pub struct Garage {
@@ -160,6 +162,9 @@ pub struct Garage {
     blend: f32,
     /// 0 = hull, 1 = turret.
     section: usize,
+    /// The highlighted parts. Owned picks are queued as you go; parts you
+    /// don't own can be highlighted (and previewed) but not queued.
+    view: Loadout,
     /// Queued loadout when the garage opened (the revert target).
     entry: Loadout,
     /// Orbit camera angle around the tank (world yaw of the camera's offset).
@@ -170,11 +175,13 @@ pub struct Garage {
 
 impl Garage {
     pub fn new() -> Garage {
+        let start = (HullKind::Lancer, TurretKind::Lance);
         Garage {
             open: false,
             blend: 0.0,
             section: 0,
-            entry: (HullKind::Lancer, TurretKind::Lance),
+            view: start,
+            entry: start,
             orbit: 0.0,
             orbit_goal: 0.0,
         }
@@ -189,6 +196,15 @@ impl Garage {
         smooth(self.blend)
     }
 
+    /// The highlighted part in the focused section.
+    fn focused(&self) -> Part {
+        if self.section == 0 {
+            Part::Hull(self.view.0)
+        } else {
+            Part::Turret(self.view.1)
+        }
+    }
+
     /// Open on the player's tank (index 0) with `queued` as the pick, or close.
     pub fn toggle(&mut self, world: &World, camera: &Camera, queued: Loadout) {
         if self.open {
@@ -198,6 +214,7 @@ impl Garage {
         let t = &world.tanks[0];
         self.open = true;
         self.entry = queued;
+        self.view = queued;
         // Start the orbit where the chase camera is (unless we're mid-transition) and swing round to the front.
         if self.blend <= 0.0 {
             let off = camera.pos - t.pos;
@@ -211,13 +228,12 @@ impl Garage {
         self.open = false;
     }
 
-    /// Handle a key while open, given the loadout queued for the next respawn.
-    /// Returns the new loadout to queue, if it changed.
-    pub fn input(&mut self, input: Input, current: Loadout) -> Option<Loadout> {
+    /// Handle a key while open, given the loadout queued for the next respawn
+    /// and the pilot's profile (what they own).
+    pub fn input(&mut self, input: Input, queued: Loadout, profile: &Profile) -> Option<Event> {
         if !self.open {
             return None;
         }
-        let (hull, turret) = current;
         // Wrapping step through a list of `n`.
         let next = |i: usize, n: usize| {
             if input == Input::Down {
@@ -226,29 +242,52 @@ impl Garage {
                 (i + n - 1) % n
             }
         };
-        let want = match input {
+        match input {
             Input::Left | Input::Right => {
                 self.section = 1 - self.section;
-                current
-            }
-            Input::Up | Input::Down if self.section == 0 => {
-                let i = HULLS.iter().position(|&h| h == hull).unwrap_or(0);
-                (HULLS[next(i, HULLS.len())], turret)
+                None
             }
             Input::Up | Input::Down => {
-                let i = TURRETS.iter().position(|&k| k == turret).unwrap_or(0);
-                (hull, TURRETS[next(i, TURRETS.len())])
+                if self.section == 0 {
+                    let i = HULLS.iter().position(|&h| h == self.view.0).unwrap_or(0);
+                    self.view.0 = HULLS[next(i, HULLS.len())];
+                } else {
+                    let i = TURRETS.iter().position(|&k| k == self.view.1).unwrap_or(0);
+                    self.view.1 = TURRETS[next(i, TURRETS.len())];
+                }
+                self.queue_view(queued, profile)
             }
+            Input::Act if profile.owns(self.focused()) => Some(Event::Upgrade(self.focused())),
+            Input::Act => Some(Event::Buy(self.focused())),
             Input::Deploy => {
                 self.open = false;
-                current
+                None
             }
             Input::Revert => {
                 self.open = false;
-                self.entry
+                (self.entry != queued).then_some(Event::Queue(self.entry))
             }
+        }
+    }
+
+    /// After a purchase: queue the highlighted part if it's owned now.
+    pub fn bought(&mut self, queued: Loadout, profile: &Profile) -> Option<Event> {
+        self.queue_view(queued, profile)
+    }
+
+    /// The highlighted parts that are owned, on top of what's queued.
+    fn queue_view(&self, queued: Loadout, profile: &Profile) -> Option<Event> {
+        let hull = if profile.owns(Part::Hull(self.view.0)) {
+            self.view.0
+        } else {
+            queued.0
         };
-        (want != current).then_some(want)
+        let turret = if profile.owns(Part::Turret(self.view.1)) {
+            self.view.1
+        } else {
+            queued.1
+        };
+        ((hull, turret) != queued).then_some(Event::Queue((hull, turret)))
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -297,14 +336,15 @@ impl Garage {
     }
 
     /// The player's tank as drawn while the garage is open: wearing the
-    /// queued kit, so you see what you'll respawn in.
-    pub fn preview(&self, tank: &mut Tank, queued: Loadout) {
-        if self.blend < 0.5 || (tank.hull_kind, tank.turret_kind) == queued {
+    /// highlighted kit, so you see what you'd respawn in (or could buy).
+    pub fn preview(&self, tank: &mut Tank) {
+        let kit = self.view;
+        if self.blend < 0.5 || (tank.hull_kind, tank.turret_kind) == kit {
             return;
         }
-        let chassis = crate::sim::Chassis::of(queued.0);
-        tank.hull_kind = queued.0;
-        tank.turret_kind = queued.1;
+        let chassis = crate::sim::Chassis::of(kit.0);
+        tank.hull_kind = kit.0;
+        tank.turret_kind = kit.1;
         tank.chassis = chassis;
         tank.wheel_lift.resize(chassis.wheel_count(), 0.0);
     }
@@ -316,6 +356,7 @@ impl Garage {
         mut hud: Vec<UiVertex>,
         tank: &Tank,
         queued: Loadout,
+        profile: &Profile,
         height: f32,
     ) -> Vec<UiVertex> {
         let fade = 1.0 - self.presence();
@@ -325,11 +366,17 @@ impl Garage {
         if fade <= 0.0 {
             hud.clear();
         }
-        hud.extend(self.draw(tank, queued, height));
+        hud.extend(self.draw(tank, queued, profile, height));
         hud
     }
 
-    pub fn draw(&self, tank: &Tank, queued: Loadout, height: f32) -> Vec<UiVertex> {
+    pub fn draw(
+        &self,
+        tank: &Tank,
+        queued: Loadout,
+        profile: &Profile,
+        height: f32,
+    ) -> Vec<UiVertex> {
         let e = smooth(self.blend);
         if e <= 0.0 {
             return Vec::new();
@@ -337,13 +384,20 @@ impl Garage {
         let scale = height / REF_HEIGHT;
         let h = REF_HEIGHT;
         let mut p = Painter::new(scale);
+        let levels = &profile.levels;
 
         backdrop(&mut p, h);
 
         let x = PANEL_X - (1.0 - e) * 30.0;
         let mut y = 72.0;
         label(&mut p, Vec2::new(x, y), "GARAGE", Align::Left);
-        label(&mut p, Vec2::new(x + PANEL_W, y), "LOADOUT", Align::Right);
+        let cw = label(&mut p, Vec2::new(x + PANEL_W, y), "CR", Align::Right);
+        p.text(
+            Vec2::new(x + PANEL_W - cw - 8.0, y - 2.0),
+            &profile.crystals.to_string(),
+            &TextStyle::value(11.0),
+            Align::Right,
+        );
         y += 18.0;
         let title = format!("{} · {}", hull_name(queued.0), turret_name(queued.1));
         p.text(
@@ -353,17 +407,14 @@ impl Garage {
             Align::Left,
         );
         y += 30.0;
-        let pending = queued != (tank.hull_kind, tank.turret_kind);
-        label(
-            &mut p,
-            Vec2::new(x, y),
-            if pending {
-                "FITTED ON NEXT RESPAWN"
-            } else {
-                "IN USE"
-            },
-            Align::Left,
-        );
+        let status = if !profile.owns_kit(self.view) {
+            "PREVIEW · NOT OWNED"
+        } else if queued != (tank.hull_kind, tank.turret_kind) {
+            "FITTED ON NEXT RESPAWN"
+        } else {
+            "IN USE"
+        };
+        label(&mut p, Vec2::new(x, y), status, Align::Left);
         y += 20.0;
         p.line(
             Vec2::new(x, y),
@@ -373,20 +424,14 @@ impl Garage {
         );
         y += 26.0;
 
-        let hulls: Vec<_> = HULLS
-            .iter()
-            .map(|&k| (Part::Hull(k), hull_name(k)))
-            .collect();
-        let turrets: Vec<_> = TURRETS
-            .iter()
-            .map(|&k| (Part::Turret(k), turret_name(k)))
-            .collect();
+        let hulls: Vec<Part> = HULLS.iter().map(|&k| Part::Hull(k)).collect();
+        let turrets: Vec<Part> = TURRETS.iter().map(|&k| Part::Turret(k)).collect();
         let sections = [
             (
                 "01",
                 "HULL",
                 hulls,
-                Part::Hull(queued.0),
+                Part::Hull(self.view.0),
                 Part::Hull(tank.hull_kind),
                 &HULL_STATS[..],
             ),
@@ -394,7 +439,7 @@ impl Garage {
                 "02",
                 "TURRET",
                 turrets,
-                Part::Turret(queued.1),
+                Part::Turret(self.view.1),
                 Part::Turret(tank.turret_kind),
                 &TURRET_STATS[..],
             ),
@@ -408,13 +453,18 @@ impl Garage {
             label(
                 &mut p,
                 Vec2::new(x + PANEL_W, y),
-                &format!("{}/{}", index_of(items, *current) + 1, items.len()),
+                &format!(
+                    "{}/{}",
+                    items.iter().position(|q| q == current).unwrap_or(0) + 1,
+                    items.len()
+                ),
                 Align::Right,
             );
             y += 20.0;
 
-            for (part, item) in items {
+            for part in items {
                 let selected = part == current;
+                let owned = profile.owns(*part);
                 if selected {
                     // Bar beside the selected part; brightest in the focused section.
                     let c = if focused { theme::FG } else { theme::DIM };
@@ -437,23 +487,48 @@ impl Garage {
                     }
                 }
                 let mut s = TextStyle::value(15.0);
-                s.color = if selected { theme::FG } else { theme::DIM };
-                p.text(Vec2::new(x, y), item, &s, Align::Left);
-                if part == in_use && !selected {
+                s.color = if selected && owned {
+                    theme::FG
+                } else if selected || owned {
+                    theme::DIM
+                } else {
+                    theme::FAINT
+                };
+                let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
+                // Upgrade level after the name; price or lock on the right.
+                if owned {
                     label(
                         &mut p,
-                        Vec2::new(x + PANEL_W - 16.0, y + 4.0),
-                        "IN USE",
-                        Align::Right,
+                        Vec2::new(x + nw + 12.0, y + 4.0),
+                        &format!("M{}", levels.of(*part)),
+                        Align::Left,
                     );
+                }
+                let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
+                if part == in_use && !selected {
+                    label(&mut p, right, "IN USE", Align::Right);
+                } else if let Some(price) = part.price().filter(|_| !owned) {
+                    let tag = if profile.rank().rank < price.rank {
+                        format!("RANK {}", price.rank)
+                    } else {
+                        format!("{} CR", price.crystals)
+                    };
+                    label(&mut p, right, &tag, Align::Right);
                 }
                 y += 30.0;
             }
 
             y += 4.0;
-            let parts: Vec<Part> = items.iter().map(|i| i.0).collect();
             for stat in stats.iter() {
-                draw_stat(&mut p, Vec2::new(x, y), stat, *current, *in_use, &parts);
+                draw_stat(
+                    &mut p,
+                    Vec2::new(x, y),
+                    stat,
+                    *current,
+                    *in_use,
+                    items,
+                    levels,
+                );
                 y += 22.0;
             }
             y += 26.0;
@@ -468,8 +543,16 @@ impl Garage {
             }
         }
 
-        // Key hints along the bottom of the panel.
-        let mut hy = h - 100.0;
+        // What E does for the highlighted part, then the key hints.
+        let mut hy = h - 128.0;
+        let (act, ready) = action(self.focused(), profile);
+        let mut k = TextStyle::LABEL;
+        k.color = if ready { theme::HOT } else { theme::DIM };
+        p.text(Vec2::new(x, hy), "E", &k, Align::Left);
+        let mut a = TextStyle::LABEL;
+        a.color = if ready { theme::FG } else { theme::DIM };
+        p.text(Vec2::new(x + 70.0, hy), &act, &a, Align::Left);
+        hy += 28.0;
         for (key, what) in [
             ("W/S", "CHANGE PART"),
             ("A/D", "HULL / TURRET"),
@@ -488,6 +571,25 @@ impl Garage {
             vert.color[3] *= e;
         }
         v
+    }
+}
+
+/// What buying or upgrading `part` would do, and whether it can right now.
+fn action(part: Part, profile: &Profile) -> (String, bool) {
+    if profile.owns(part) {
+        let next = profile.levels.of(part) + 1;
+        match profile.can_upgrade(part) {
+            Ok(cost) => (format!("UPGRADE TO M{next} · {cost} CR"), true),
+            Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO M{next} · NEED {cost} CR"), false),
+            Err(_) => ("FULLY UPGRADED".to_string(), false),
+        }
+    } else {
+        match profile.can_buy(part) {
+            Ok(cost) => (format!("BUY · {cost} CR"), true),
+            Err(Refusal::Rank(r)) => (format!("FOR SALE AT RANK {r}"), false),
+            Err(Refusal::Crystals(cost)) => (format!("BUY · NEED {cost} CR"), false),
+            Err(_) => (String::new(), false),
+        }
     }
 }
 
@@ -531,18 +633,19 @@ pub fn backdrop(p: &mut Painter, h: f32) {
     );
 }
 
-fn index_of(items: &[(Part, &str)], part: Part) -> usize {
-    items.iter().position(|i| i.0 == part).unwrap_or(0)
-}
-
 /// Label, bar scaled to the kit's best, value; a faint tick where the part in use sits.
-fn draw_stat(p: &mut Painter, pos: Vec2, stat: &Stat, current: Part, in_use: Part, kit: &[Part]) {
-    let best = kit
-        .iter()
-        .map(|&k| (stat.get)(k))
-        .fold(0.0f32, f32::max)
-        .max(1e-3);
-    let frac = |part: Part| (stat.get)(part) / (best * 1.2);
+fn draw_stat(
+    p: &mut Painter,
+    pos: Vec2,
+    stat: &Stat,
+    current: Part,
+    in_use: Part,
+    kit: &[Part],
+    levels: &Levels,
+) {
+    let get = |part: Part| (stat.get)(part, levels);
+    let best = kit.iter().map(|&k| get(k)).fold(0.0f32, f32::max).max(1e-3);
+    let frac = |part: Part| get(part) / (best * 1.2);
     label(p, pos + Vec2::new(0.0, 1.0), stat.name, Align::Left);
     let bar = pos + Vec2::new(110.0, 5.0);
     let bar_w = 132.0;
@@ -556,7 +659,7 @@ fn draw_stat(p: &mut Painter, pos: Vec2, stat: &Stat, current: Part, in_use: Par
             theme::DIM,
         );
     }
-    let v = (stat.get)(current);
+    let v = get(current);
     let text = format!("{v:.prec$}", prec = stat.decimals);
     let right = pos + Vec2::new(PANEL_W, 0.0);
     let uw = if stat.unit.is_empty() {
@@ -594,38 +697,72 @@ mod tests {
         }
     }
 
+    /// A pilot who owns everything.
+    fn rich() -> Profile {
+        let mut p = Profile::in_memory();
+        p.xp = 100_000;
+        p.crystals = 100_000;
+        for part in crate::economy::PARTS {
+            let _ = p.buy(part);
+        }
+        p
+    }
+
     #[test]
     fn picks_and_cancels() {
         let w = world();
+        let p = rich();
         let mut g = Garage::new();
         let start = (HullKind::Lancer, TurretKind::Lance);
         // Closed: input does nothing.
-        assert_eq!(g.input(Input::Down, start), None);
+        assert_eq!(g.input(Input::Down, start, &p), None);
 
         g.toggle(&w, &cam(&w), start);
-        let l = g.input(Input::Down, start).unwrap();
-        assert_eq!(l, (HullKind::Bastion, TurretKind::Lance));
-        assert_eq!(g.input(Input::Right, l), None);
-        let l = g.input(Input::Up, l).unwrap();
-        assert_eq!(l, (HullKind::Bastion, TurretKind::Maul));
-        assert_eq!(g.input(Input::Revert, l), Some(start));
+        let l = (HullKind::Bastion, TurretKind::Lance);
+        assert_eq!(g.input(Input::Down, start, &p), Some(Event::Queue(l)));
+        assert_eq!(g.input(Input::Right, l, &p), None);
+        let l2 = (HullKind::Bastion, TurretKind::Maul);
+        assert_eq!(g.input(Input::Up, l, &p), Some(Event::Queue(l2)));
+        assert_eq!(g.input(Input::Revert, l2, &p), Some(Event::Queue(start)));
         assert!(!g.is_open());
 
         // Reopens on the section it was left on (turret): go back to the hull.
         g.toggle(&w, &cam(&w), start);
-        g.input(Input::Left, start);
-        let l = g.input(Input::Down, start).unwrap();
-        assert_eq!(g.input(Input::Deploy, l), None);
+        g.input(Input::Left, start, &p);
+        assert!(g.input(Input::Down, start, &p).is_some());
+        assert_eq!(g.input(Input::Deploy, l, &p), None);
         assert!(!g.is_open());
     }
 
     #[test]
-    fn preview_wears_the_queued_kit() {
+    fn unowned_parts_preview_but_dont_queue() {
+        let w = world();
+        let mut p = Profile::in_memory();
+        let mut g = Garage::new();
+        let start = (HullKind::Lancer, TurretKind::Lance);
+        g.toggle(&w, &cam(&w), start);
+        g.input(Input::Right, start, &p);
+        // Maul isn't owned: highlighted and previewed, not queued; E asks to buy it.
+        assert_eq!(g.input(Input::Down, start, &p), None);
+        assert_eq!(g.view, (HullKind::Lancer, TurretKind::Maul));
+        let maul = Part::Turret(TurretKind::Maul);
+        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(maul)));
+        // Once bought it queues; E on an owned part upgrades.
+        p.xp = 100_000;
+        p.crystals = 100_000;
+        p.buy(maul).unwrap();
+        let kit = (HullKind::Lancer, TurretKind::Maul);
+        assert_eq!(g.bought(start, &p), Some(Event::Queue(kit)));
+        assert_eq!(g.input(Input::Act, kit, &p), Some(Event::Upgrade(maul)));
+    }
+
+    #[test]
+    fn preview_wears_the_highlighted_kit() {
         let w = world();
         let mut g = Garage::new();
         let kit = (HullKind::Bastion, TurretKind::Maul);
         let mut t = w.tanks[0].clone();
-        g.preview(&mut t, kit);
+        g.preview(&mut t);
         assert_eq!(
             t.hull_kind,
             HullKind::Lancer,
@@ -633,7 +770,7 @@ mod tests {
         );
         g.toggle(&w, &cam(&w), kit);
         g.update(1.0);
-        g.preview(&mut t, kit);
+        g.preview(&mut t);
         assert_eq!((t.hull_kind, t.turret_kind), kit);
         assert_eq!(
             t.wheel_lift.len(),
@@ -665,11 +802,12 @@ mod tests {
         let w = world();
         let mut g = Garage::new();
         let kit = (HullKind::Bastion, TurretKind::Maul);
-        assert!(g.draw(&w.tanks[0], kit, 900.0).is_empty());
+        let p = Profile::in_memory();
+        assert!(g.draw(&w.tanks[0], kit, &p, 900.0).is_empty());
         g.toggle(&w, &cam(&w), kit);
         g.update(1.0);
         for (wd, ht) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
-            let v = g.draw(&w.tanks[0], kit, ht);
+            let v = g.draw(&w.tanks[0], kit, &p, ht);
             assert!(!v.is_empty());
             assert!(v.iter().all(|v| v.pos[0] > -4.0
                 && v.pos[0] < wd + 4.0

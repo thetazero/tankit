@@ -16,6 +16,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::combat::{Match, Phase};
+use crate::economy::{Part, Payout};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hud::Hud;
@@ -24,7 +25,7 @@ use crate::mission::MISSIONS;
 use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
-use crate::sim::{Command, HullKind, HullStats, TurretKind};
+use crate::sim::{Command, HullStats};
 use crate::tank::TankArt;
 use crate::{MapKind, ShowroomArgs, make_map, showroom};
 
@@ -71,6 +72,8 @@ struct App {
     profile: Profile,
     /// How much of `game.xp` is already banked into the profile.
     banked: u32,
+    /// Whether this round's contract pay has been banked.
+    paid: bool,
     menu: Menu,
     pause: Pause,
     /// Main menu camera angle around the parked tank.
@@ -103,7 +106,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         }
     };
     let loadout = launch.loadout.unwrap_or(profile.loadout);
-    let game = if launch.showroom.is_some() {
+    let mut game = if launch.showroom.is_some() {
         let mut m = Match::new(
             make_map(launch.seed, launch.map_kind),
             launch.spawn,
@@ -123,6 +126,9 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
             loadout,
         )
     };
+    if launch.showroom.is_none() {
+        game.set_player_levels(profile.levels);
+    }
     let menu_orbit = garage::front_angle(&game.world.tanks[0]);
     let mut app = App {
         seed: launch.seed,
@@ -141,6 +147,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         game,
         profile,
         banked: 0,
+        paid: false,
         menu: Menu::new(),
         pause: Pause::new(),
         menu_orbit,
@@ -257,7 +264,9 @@ impl App {
     /// Swap in a new match (or menu backdrop) and reset everything tied to the old one.
     fn load(&mut self, game: Match) {
         self.game = game;
+        self.game.set_player_levels(self.profile.levels);
         self.banked = 0;
+        self.paid = false;
         self.cam = ChaseCam::new();
         self.hud = Hud::new();
         self.garage = Garage::new();
@@ -325,6 +334,47 @@ impl App {
         self.profile.set_loadout(kit);
     }
 
+    fn garage_event(&mut self, event: garage::Event) {
+        match event {
+            garage::Event::Queue(kit) => self.queue(kit),
+            // Refusals need no handling: the garage already shows why E won't work.
+            garage::Event::Buy(part) => {
+                if self.profile.buy(part).is_ok() {
+                    log::info!("bought {}", part.name());
+                    if let Some(garage::Event::Queue(kit)) =
+                        self.garage.bought(self.queued(), &self.profile)
+                    {
+                        self.queue(kit);
+                    }
+                }
+            }
+            garage::Event::Upgrade(part) => {
+                if self.profile.upgrade(part).is_ok() {
+                    log::info!(
+                        "upgraded {} to M{}",
+                        part.name(),
+                        self.profile.levels.of(part)
+                    );
+                    // Like a kit change: now in the menu, at the next respawn in battle.
+                    if self.mode == Mode::Menu {
+                        self.game.set_player_levels(self.profile.levels);
+                    } else {
+                        self.game.fighters[0].next_levels = Some(self.profile.levels);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The next owned part after `current` in `list`, for the 1/2 quick-cycle keys.
+    fn next_owned<T: Copy + PartialEq>(&self, list: &[T], current: T, part: fn(T) -> Part) -> T {
+        let i = list.iter().position(|&k| k == current).unwrap_or(0);
+        (1..=list.len())
+            .map(|d| list[(i + d) % list.len()])
+            .find(|&k| self.profile.owns(part(k)))
+            .unwrap_or(current)
+    }
+
     fn nav(code: KeyCode) -> Option<Nav> {
         Some(match code {
             KeyCode::KeyW | KeyCode::ArrowUp => Nav::Up,
@@ -344,10 +394,11 @@ impl App {
                 KeyCode::KeyD | KeyCode::ArrowRight => garage::Input::Right,
                 KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::KeyG => garage::Input::Deploy,
                 KeyCode::Escape => garage::Input::Revert,
+                KeyCode::KeyE => garage::Input::Act,
                 _ => return,
             };
-            if let Some(kit) = self.garage.input(input, self.queued()) {
-                self.queue(kit);
+            if let Some(event) = self.garage.input(input, self.queued(), &self.profile) {
+                self.garage_event(event);
             }
             return;
         }
@@ -418,24 +469,13 @@ impl App {
             // Quick-cycle the kit queued for the next respawn.
             KeyCode::Digit1 => {
                 let (hull, turret) = self.queued();
-                self.queue((
-                    if hull == HullKind::Lancer {
-                        HullKind::Bastion
-                    } else {
-                        HullKind::Lancer
-                    },
-                    turret,
-                ));
+                self.queue((self.next_owned(&garage::HULLS, hull, Part::Hull), turret));
             }
             KeyCode::Digit2 => {
                 let (hull, turret) = self.queued();
                 self.queue((
                     hull,
-                    if turret == TurretKind::Lance {
-                        TurretKind::Maul
-                    } else {
-                        TurretKind::Lance
-                    },
+                    self.next_owned(&garage::TURRETS, turret, Part::Turret),
                 ));
             }
             // Live tuning: sideways grip and turn rate.
@@ -507,10 +547,20 @@ impl App {
             }
         }
 
-        // Paid the moment it's earned.
+        // XP is paid the moment it's earned; crystals when the contract is done.
         if self.game.xp > self.banked {
             self.profile.add_xp(self.game.xp - self.banked);
             self.banked = self.game.xp;
+        }
+        if self.mode == Mode::Playing
+            && self.showroom.is_none()
+            && self.game.phase == Phase::Over
+            && !self.paid
+        {
+            let pay = Payout::of(&self.game);
+            self.profile.add_crystals(pay.total());
+            self.paid = true;
+            log::info!("contract paid {} CR ({pay:?})", pay.total());
         }
 
         // Respawned (in the new kit) or round over: back to battle.
@@ -549,7 +599,7 @@ impl App {
                     .camera(camera, &self.game.world, &tanks[0], w / h);
             }
             let driven = tanks[0].clone();
-            self.garage.preview(&mut tanks[0], queued);
+            self.garage.preview(&mut tanks[0]);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
                 let angle = room.orbit.unwrap_or(self.game.world.time * 0.15);
@@ -571,14 +621,14 @@ impl App {
                         let mut ui = self
                             .menu
                             .draw(&self.profile, h, 1.0 - self.garage.presence());
-                        ui.extend(self.garage.draw(&driven, queued, h));
+                        ui.extend(self.garage.draw(&driven, queued, &self.profile, h));
                         ui
                     }
                     Mode::Playing => {
                         let hud = self
                             .hud
                             .draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
-                        self.garage.overlay(hud, &driven, queued, h)
+                        self.garage.overlay(hud, &driven, queued, &self.profile, h)
                     }
                     Mode::Paused => {
                         let mut ui = menu::dim(
