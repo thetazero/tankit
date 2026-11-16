@@ -1,5 +1,5 @@
 //! Small immediate-mode drawing kit for the 2D overlay: anti-aliased lines,
-//! rects, a stroke font, and a few hairline widgets (see `widgets`). Output is
+//! rects, text (see `font`), and a few hairline widgets (see `widgets`). Output is
 //! plain `UiVertex` triangles for the existing UI pipeline.
 //!
 //! Coordinates are logical pixels at a 900 px tall reference screen; `scale`
@@ -14,7 +14,7 @@ pub mod widgets;
 
 use glam::Vec2;
 
-use crate::render::{NO_UV, UiVertex};
+use crate::render::{NO_SDF, NO_UV, UiVertex};
 
 pub type Rgba = [f32; 4];
 
@@ -22,12 +22,15 @@ pub type Rgba = [f32; 4];
 pub mod theme {
     use super::Rgba;
     pub const FG: Rgba = [0.94, 0.91, 0.86, 0.95];
-    pub const DIM: Rgba = [0.94, 0.91, 0.86, 0.5];
+    pub const DIM: Rgba = [0.94, 0.91, 0.86, 0.6];
     pub const FAINT: Rgba = [0.94, 0.91, 0.86, 0.24];
     pub const HOT: Rgba = [1.0, 0.42, 0.16, 1.0];
     /// Repair crates and hull mended by them.
     pub const MEND: Rgba = [0.45, 1.0, 0.58, 1.0];
     pub const HALO: Rgba = [0.0, 0.0, 0.0, 0.4];
+    /// Fill behind boxes of text (scoreboard, pause, garage): dark and nearly
+    /// opaque, so the battle behind never competes with what's written on it.
+    pub const PANEL: Rgba = [0.03, 0.03, 0.035, 0.94];
     /// Extra halo width on each side, logical px.
     pub const HALO_PX: f32 = 1.5;
 }
@@ -49,16 +52,16 @@ pub struct TextStyle {
     pub size: f32,
     /// Extra space after each glyph, logical px.
     pub tracking: f32,
-    /// Stroke width, logical px.
+    /// Boldness: 1.0 is the font's own weight, each 0.1 above thickens strokes by 0.05 px.
     pub weight: f32,
     pub color: Rgba,
 }
 
 impl TextStyle {
-    /// Small wide-spaced caps for labels.
+    /// Small letter-spaced caps for labels.
     pub const LABEL: TextStyle = TextStyle {
-        size: 8.0,
-        tracking: 4.0,
+        size: 8.5,
+        tracking: 1.6,
         weight: 1.0,
         color: theme::DIM,
     };
@@ -66,7 +69,7 @@ impl TextStyle {
     pub fn value(size: f32) -> TextStyle {
         TextStyle {
             size,
-            tracking: size * 0.28,
+            tracking: size * 0.06,
             weight: 1.2,
             color: theme::FG,
         }
@@ -267,6 +270,7 @@ impl Painter {
             pos: [x, y],
             color: tint,
             uv: [u, w],
+            sdf: NO_SDF,
         };
         self.verts.extend_from_slice(&[
             v(a.x, a.y, u0.x, u0.y),
@@ -291,6 +295,7 @@ impl Painter {
             pos: [x, y],
             color,
             uv: NO_UV,
+            sdf: NO_SDF,
         };
         self.under.extend_from_slice(&[
             v(x0, y0, left),
@@ -317,51 +322,121 @@ impl Painter {
         );
     }
 
-    /// Draws `text` with its top edge at `pos.y`, aligned around `pos.x`. Returns its width.
+    /// Draws `text` with its top edge (the top of the capitals) at `pos.y`,
+    /// aligned around `pos.x`. Returns its width.
     pub fn text(&mut self, pos: Vec2, text: &str, style: &TextStyle, align: Align) -> f32 {
         let w = measure(text, style);
-        let mut x = match align {
+        let x = match align {
             Align::Left => pos.x,
             Align::Center => pos.x - w * 0.5,
             Align::Right => pos.x - w,
         };
-        let u = style.size / font::HEIGHT;
-        for c in text.chars() {
-            let Some(g) = font::glyph(c) else {
-                x += 3.0 * u + style.tracking;
+        let f = font::font();
+        let em = style.size / f.cap_height;
+        let baseline = pos.y + style.size;
+        let s = self.scale;
+        // Heavier styles thicken the strokes a touch; the halo is a soft dark rim around them.
+        let dilate = (style.weight - 1.0) * 0.5 * s;
+        for (pen, g) in layout(text, style) {
+            if g.size == Vec2::ZERO {
                 continue;
-            };
-            for stroke in &g.strokes {
-                let pts: Vec<Vec2> = stroke
-                    .iter()
-                    .map(|p| Vec2::new(x, pos.y) + *p * u)
-                    .collect();
-                if pts.len() == 2 && pts[0].distance(pts[1]) < style.weight {
-                    // Dots: a tiny square reads better than a stub of line.
-                    let d = style.weight.max(1.2);
-                    self.rect(
-                        (pts[0] + pts[1]) * 0.5 - d * 0.5,
-                        Vec2::splat(d),
-                        style.color,
-                    );
-                } else {
-                    self.polyline(&pts, style.weight, style.color);
-                }
             }
-            x += g.width * u + style.tracking;
+            let min = Vec2::new(x + pen, baseline) + g.offset * em;
+            let size = g.size * em;
+            if let Some((hc, hw)) = self.halo {
+                // Darker than a line's: letters are small and busy, and need more to stand on.
+                let halo = with_alpha(hc, (style.color[3] * 1.5).min(1.0));
+                // Narrower than a line's halo: a wide one fills the gaps between small letters.
+                let sdf = [dilate + 0.35 * hw * s, (0.8 * hw * s).max(1.0)];
+                self.glyph_quad(true, min, size, g, halo, sdf);
+            }
+            self.glyph_quad(false, min, size, g, style.color, [dilate, 1.0]);
         }
         w
     }
+
+    /// One glyph's atlas cell at `min`/`size` (logical px), clipped like a rect.
+    fn glyph_quad(
+        &mut self,
+        under: bool,
+        min: Vec2,
+        size: Vec2,
+        g: &font::Glyph,
+        color: Rgba,
+        sdf: [f32; 2],
+    ) {
+        let Some((cmin, csize)) = clip_rect(min, size, self.clip) else {
+            return;
+        };
+        let uv_at = |p: Vec2| g.uv_min + (g.uv_max - g.uv_min) * ((p - min) / size);
+        let (u0, u1) = (uv_at(cmin), uv_at(cmin + csize));
+        let s = self.scale;
+        let (a, b) = (cmin * s, (cmin + csize) * s);
+        let v = |x: f32, y: f32, u: f32, w: f32| UiVertex {
+            pos: [x, y],
+            color,
+            uv: [u, w],
+            sdf,
+        };
+        let out = if under {
+            &mut self.under
+        } else {
+            &mut self.verts
+        };
+        out.extend_from_slice(&[
+            v(a.x, a.y, u0.x, u0.y),
+            v(b.x, a.y, u1.x, u0.y),
+            v(b.x, b.y, u1.x, u1.y),
+            v(a.x, a.y, u0.x, u0.y),
+            v(b.x, b.y, u1.x, u1.y),
+            v(a.x, b.y, u0.x, u1.y),
+        ]);
+    }
+}
+
+/// Each glyph of `text` with its pen position (logical px from the start):
+/// advances, kerning and tracking. Characters the font lacks count as spaces.
+fn layout<'a>(text: &str, style: &TextStyle) -> Vec<(f32, &'a font::Glyph)> {
+    let f = font::font();
+    let em = style.size / f.cap_height;
+    let mut out = Vec::new();
+    let mut x = 0.0;
+    let mut prev: Option<&font::Glyph> = None;
+    for c in text.chars() {
+        let Some(g) = f.glyph(c) else {
+            x += f.space * em + style.tracking;
+            prev = None;
+            continue;
+        };
+        if let Some(p) = prev {
+            x += f.kern(p, g) * em;
+        }
+        out.push((x, g));
+        x += g.advance * em + style.tracking;
+        prev = Some(g);
+    }
+    out
 }
 
 /// Width of `text` in logical px (no trailing tracking).
 pub fn measure(text: &str, style: &TextStyle) -> f32 {
-    let u = style.size / font::HEIGHT;
+    let f = font::font();
+    let em = style.size / f.cap_height;
     let mut w = 0.0;
+    let mut prev: Option<&font::Glyph> = None;
     let mut n = 0;
     for c in text.chars() {
-        w += font::glyph(c).map_or(3.0, |g| g.width) * u + style.tracking;
         n += 1;
+        let Some(g) = f.glyph(c) else {
+            w += f.space * em + style.tracking;
+            prev = None;
+            continue;
+        };
+        if let Some(p) = prev {
+            w += f.kern(p, g) * em;
+        }
+        w += g.advance * em + style.tracking;
+        prev = Some(g);
     }
     if n > 0 { w - style.tracking } else { 0.0 }
 }
@@ -412,6 +487,7 @@ fn push_rect(out: &mut Vec<UiVertex>, min: Vec2, size: Vec2, color: Rgba) {
         pos: [x, y],
         color,
         uv: NO_UV,
+        sdf: NO_SDF,
     };
     let (x0, y0, x1, y1) = (min.x, min.y, min.x + size.x, min.y + size.y);
     out.extend_from_slice(&[
@@ -451,6 +527,7 @@ fn push_line(out: &mut Vec<UiVertex>, a: Vec2, b: Vec2, width: f32, color: Rgba)
             pos: p.into(),
             color: c,
             uv: NO_UV,
+            sdf: NO_SDF,
         };
         let (p00, p01, p10, p11) = (a + n * o0, b + n * o0, a + n * o1, b + n * o1);
         out.extend_from_slice(&[
@@ -517,13 +594,20 @@ mod tests {
     #[test]
     fn measure_matches_drawn_advance() {
         let s = TextStyle::value(12.0);
-        // "10": widths 4 + 4 grid units at 2 px each, plus one tracking gap.
-        assert!((measure("10", &s) - (16.0 + s.tracking)).abs() < 1e-4);
+        let f = font::font();
+        let em = 12.0 / f.cap_height;
+        // "10": two tabular digits plus one tracking gap.
+        let digit = f.glyph('0').unwrap().advance * em;
+        assert!((measure("10", &s) - (2.0 * digit + s.tracking)).abs() < 1e-3);
         assert_eq!(measure("", &s), 0.0);
+        // Lowercase is set in capitals.
+        assert_eq!(measure("kontos", &s), measure("KONTOS", &s));
         let mut p = Painter::new(1.0);
         assert_eq!(
             p.text(Vec2::ZERO, "10", &s, Align::Right),
             measure("10", &s)
         );
+        // Each glyph: a halo quad under it and the glyph itself, six vertices each.
+        assert_eq!(p.finish().len(), 2 * 2 * 6);
     }
 }

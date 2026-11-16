@@ -456,7 +456,7 @@ impl Pause {
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
         let size = Vec2::new(PANEL_W + 48.0, 350.0);
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
-        p.rect(min, size, [0.03, 0.03, 0.035, 0.9]);
+        p.rect(min, size, theme::PANEL);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
 
         let x = min.x + 24.0;
