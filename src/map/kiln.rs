@@ -87,8 +87,8 @@ const COURTS: &[((f32, f32), f32)] = &[
 const BASE_MIN: Vec2 = Vec2::new(3.0, 62.0);
 const BASE_MAX: Vec2 = Vec2::new(27.0, 118.0);
 
-const SLATE: Vec3 = Vec3::new(0.2, 0.2, 0.235);
-const GLASS: Vec3 = Vec3::new(0.028, 0.04, 0.07);
+const SLATE: Vec3 = Vec3::new(0.19, 0.2, 0.22);
+const GLASS: Vec3 = Vec3::new(0.02, 0.065, 0.17);
 const CONCRETE: Vec3 = Vec3::new(0.56, 0.57, 0.6);
 const IMPERIAL: Vec3 = Vec3::new(0.78, 0.82, 0.9);
 const STEEL: Vec3 = Vec3::new(0.32, 0.33, 0.36);
@@ -186,9 +186,9 @@ impl Map {
             atmosphere: crate::render::Atmosphere {
                 sun_dir: Vec3::new(-0.62, 0.42, 0.55),
                 sun_color: Vec3::new(1.75, 1.8, 2.1),
-                sky_zenith: Vec3::new(0.035, 0.045, 0.13),
-                sky_horizon: Vec3::new(0.26, 0.27, 0.4),
-                ground_color: Vec3::new(0.14, 0.14, 0.18),
+                sky_zenith: Vec3::new(0.025, 0.04, 0.12),
+                sky_horizon: Vec3::new(0.2, 0.26, 0.38),
+                ground_color: Vec3::new(0.12, 0.14, 0.18),
                 fog_density: 0.0022,
                 wind: Vec2::new(-1.5, 0.8),
                 blowing_sand: 0.15,
