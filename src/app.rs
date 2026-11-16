@@ -13,7 +13,9 @@ use winit::window::{Window, WindowId};
 use crate::game::Clock;
 use crate::render::Renderer;
 use crate::scene::{self, ChaseCam};
-use crate::sim::{Command, World};
+use crate::sim::{Command, HullKind, TurretKind, World};
+use crate::tank::TankArt;
+use crate::{ShowroomArgs, showroom};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
@@ -22,6 +24,8 @@ struct App {
     seed: u64,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    art: Option<TankArt>,
+    showroom: Option<ShowroomArgs>,
     world: World,
     cam: ChaseCam,
     clock: Clock,
@@ -31,15 +35,17 @@ struct App {
     fps_frames: u32,
 }
 
-pub fn run(seed: u64) -> anyhow::Result<()> {
+pub fn run(seed: u64, showroom: Option<ShowroomArgs>) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let world = World::new(seed);
+    let world = if showroom.is_some() { showroom::world(seed) } else { World::new(seed) };
     let cam = ChaseCam::new();
     let mut app = App {
         seed,
         window: None,
         renderer: None,
+        art: None,
+        showroom,
         world,
         cam,
         clock: Clock::default(),
@@ -63,7 +69,12 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         match Renderer::new_windowed(window.clone()) {
             Ok(mut r) => {
-                r.set_static_mesh(&scene::map_mesh(&self.world.map));
+                if self.showroom.is_some() {
+                    r.set_static_mesh(&showroom::ground_mesh());
+                } else {
+                    r.set_static_mesh(&scene::map_mesh(&self.world.map));
+                }
+                self.art = Some(TankArt::upload(&mut r));
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -125,6 +136,17 @@ impl App {
                 }
                 log::info!("map seed {}", self.seed);
             }
+            // Cycle through the tank kit.
+            KeyCode::Digit1 => {
+                let t = &mut self.world.tanks[0];
+                t.hull_kind = if t.hull_kind == HullKind::Lancer { HullKind::Bastion } else { HullKind::Lancer };
+            }
+            KeyCode::Digit2 => {
+                let t = &mut self.world.tanks[0];
+                t.turret_kind = if t.turret_kind == TurretKind::Lance { TurretKind::Maul } else { TurretKind::Lance };
+            }
+            // Visual only until shooting lands: recoil, flash, hull kick.
+            KeyCode::Space => self.world.tanks[0].fire_fx(),
             _ => {}
         }
     }
@@ -153,12 +175,28 @@ impl App {
 
         let cmd = self.command();
         for _ in 0..self.clock.advance(dt) {
-            self.world.step(&[cmd]);
+            if self.showroom.is_some() {
+                let cmds = showroom::commands(&self.world);
+                self.world.step(&cmds);
+                showroom::after_step(&mut self.world);
+            } else {
+                self.world.step(&[cmd]);
+            }
         }
 
-        if let Some(r) = &mut self.renderer {
-            let camera = self.cam.update(&self.world, &self.world.tanks[0], dt);
-            let scene = scene::build(&self.world, camera, r.width as f32, r.height as f32);
+        if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
+            let mut camera = self.cam.update(&self.world, &self.world.tanks[0], dt);
+            if let Some(room) = self.showroom {
+                // Slow auto-orbit; PageUp/PageDown zoom.
+                let angle = room.orbit.unwrap_or(self.world.time * 0.15);
+                camera = showroom::camera(&self.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
+            }
+            let mut scene = scene::build(&self.world, art, camera, r.width as f32, r.height as f32);
+            if self.showroom.is_some() {
+                scene.ui.clear();
+                scene.shadow_center = glam::Vec3::ZERO;
+                scene.shadow_radius = 22.0;
+            }
             r.render(&scene);
         }
 
@@ -168,7 +206,7 @@ impl App {
             if let Some(w) = &self.window {
                 let fps = self.fps_frames as f32 / self.fps_timer;
                 w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  seed {}  |  WASD drive, Z/X turret, C center, PgUp/PgDn camera, F5 new map",
+                    "tankit  |  {fps:.0} fps  |  seed {}  |  WASD drive, Z/X turret, C center, Space fire, 1/2 swap parts, PgUp/PgDn camera, F5 new map",
                     self.seed
                 ));
             }

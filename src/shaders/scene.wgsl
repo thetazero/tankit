@@ -34,6 +34,9 @@ struct VOut {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) tint: vec4<f32>,
+    // Object-space position and normal, so surface detail sticks to moving parts.
+    @location(4) lpos: vec3<f32>,
+    @location(5) lnormal: vec3<f32>,
 };
 
 @vertex
@@ -46,6 +49,8 @@ fn vs_main(v: VIn) -> VOut {
     out.normal = (model * vec4<f32>(v.normal, 0.0)).xyz;
     out.color = v.color;
     out.tint = v.tint;
+    out.lpos = v.pos;
+    out.lnormal = v.normal;
     return out;
 }
 
@@ -84,7 +89,92 @@ struct Surface {
     rough: f32,
     ao: f32,
     emissive: vec3<f32>,
+    metal: f32,
 };
+
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Project object-space position onto the plane facing the dominant normal axis.
+fn plane_uv(p: vec3<f32>, n: vec3<f32>) -> vec2<f32> {
+    let a = abs(n);
+    if (a.x > a.y && a.x > a.z) {
+        return p.zy;
+    } else if (a.y > a.z) {
+        return p.xz;
+    }
+    return p.xy;
+}
+
+// Antialiased thin line mask for a periodic coordinate (1 on the line).
+// `w` is the screen-space derivative of x (derivatives must be taken in uniform control flow).
+fn grid_line(x: f32, width: f32, w: f32) -> f32 {
+    let d = abs(fract(x + 0.5) - 0.5);
+    return 1.0 - smoothstep(width, width + w * 1.5, d);
+}
+
+// Tank materials (ids 6..11) work in object space, so they move with the part.
+fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, duv: vec2<f32>) -> Surface {
+    var s: Surface;
+    s.albedo = base;
+    s.rough = 0.5;
+    s.ao = 1.0;
+    s.emissive = vec3<f32>(0.0);
+    s.metal = 0.0;
+    let uv = plane_uv(lpos, ln);
+    // Grime collects low on the vehicle.
+    let grime = mix(0.72, 1.0, smoothstep(0.1, 1.1, wpos.y));
+    if (m == 6) {
+        // Dark composite: fine diagonal weave plus faint panel seams.
+        let q = uv * 22.0;
+        let weave = step(0.5, fract((q.x + q.y) * 0.5)) * 0.5 + step(0.5, fract((q.x - q.y) * 0.5)) * 0.5;
+        let fade = 1.0 - clamp(length(duv * 22.0) * 0.6, 0.0, 1.0);
+        s.albedo = base * (1.0 + (weave - 0.5) * 0.22 * fade) * grime;
+        let seams = max(grid_line(uv.x * 0.9, 0.006, duv.x * 0.9), grid_line(uv.y * 0.9 + 0.3, 0.006, duv.y * 0.9));
+        s.albedo *= 1.0 - seams * 0.4;
+        s.rough = 0.38 + 0.15 * noise2(uv * 9.0);
+    } else if (m == 7 || m == 11) {
+        // Painted armor (team color via tint). Worn edges (11) show bare metal through scuffs.
+        let n = noise2(uv * 7.0) * 0.6 + noise2(uv * 23.0) * 0.4;
+        s.albedo = base * (0.92 + 0.1 * n) * grime;
+        s.rough = 0.42;
+        if (m == 11) {
+            let wear = smoothstep(0.55, 0.68, noise2(uv * 14.0 + 3.1) * 0.7 + noise2(uv * 41.0) * 0.3);
+            s.albedo = mix(s.albedo, vec3<f32>(0.42, 0.42, 0.44), wear);
+            s.metal = wear * 0.8;
+            s.rough = mix(0.42, 0.3, wear);
+        }
+        // Small scratches.
+        let scratch = smoothstep(0.86, 0.92, noise2(vec2<f32>(uv.x * 60.0, uv.y * 4.0)));
+        s.albedo = mix(s.albedo, s.albedo * 0.8, scratch * 0.3);
+    } else if (m == 8) {
+        // Track steel: dark, worn bright on ridges facing outward.
+        let n = noise2(uv * 30.0);
+        s.albedo = base * (0.8 + 0.4 * n) * grime;
+        s.metal = 0.6;
+        s.rough = 0.55;
+    } else if (m == 9) {
+        // Light strip: slow pulse running along the hull.
+        let pulse = 0.75 + 0.25 * sin(g.params.x * 3.0 - lpos.z * 1.5 + lpos.x * 0.7);
+        s.albedo = base * 0.2;
+        s.emissive = base * 2.2 * pulse;
+    } else if (m == 10) {
+        // Bare gunmetal: brushed along the part's long axis.
+        let brush = noise2(vec2<f32>(uv.x * 3.0, uv.y * 80.0));
+        s.albedo = base * (0.85 + 0.25 * brush);
+        s.metal = 0.9;
+        s.rough = 0.28 + 0.1 * brush;
+    }
+    return s;
+}
 
 // Procedural surface detail keyed by material id.
 fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>) -> Surface {
@@ -93,6 +183,7 @@ fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>) -> Surface {
     s.rough = 0.6;
     s.ao = 1.0;
     s.emissive = vec3<f32>(0.0);
+    s.metal = 0.0;
     let m = i32(round(id));
     if (m == 1) {
         // Building wall: window grid with floor bands, a few windows lit.
@@ -160,8 +251,18 @@ fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
-    let base = v.color.rgb * v.tint.rgb;
-    let s = surface(v.color.a, base, v.wpos, n);
+    let m = i32(round(v.color.a));
+    let is_tank = m >= 6 && m <= 11;
+    // On tanks the instance tint is the team color and only affects paint.
+    let paint = m == 7 || m == 11;
+    let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
+    let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
+    var s: Surface;
+    if (is_tank) {
+        s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
+    } else {
+        s = surface(v.color.a, base, v.wpos, n);
+    }
 
     let l = normalize(g.sun_dir.xyz);
     let view = normalize(g.cam_pos.xyz - v.wpos);
@@ -175,9 +276,15 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
 
     let sky_amb = mix(g.sky_horizon.rgb, g.sky_zenith.rgb, 0.35);
     let hemi = mix(g.ground_color.rgb, sky_amb, n.y * 0.5 + 0.5);
-    var c = s.albedo * hemi * 0.5 * s.ao;
-    c += (s.albedo + spec * fresnel * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
-    c += hemi * fresnel * 0.15 * (1.0 - s.rough);
+    // Metals: tinted specular, darker diffuse, and a sky/ground reflection.
+    let spec_col = mix(vec3<f32>(1.0), s.albedo * 1.6, s.metal);
+    let f = mix(fresnel, 0.6 + 0.4 * fresnel, s.metal);
+    let diffuse = s.albedo * (1.0 - s.metal * 0.75);
+    let r = reflect(-view, n);
+    let env = mix(g.ground_color.rgb * 0.7, mix(g.sky_horizon.rgb, g.sky_zenith.rgb, clamp(r.y, 0.0, 1.0)), smoothstep(-0.15, 0.15, r.y));
+    var c = diffuse * hemi * 0.5 * s.ao;
+    c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
+    c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
     c += s.emissive;
 
     // Emissive instances (effects, pickups) replace lighting with their own glow.
