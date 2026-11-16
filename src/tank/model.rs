@@ -756,7 +756,8 @@ pub fn kataphrakt() -> HullModel {
         let up = (top - low).normalize();
         let out = up.cross(Vec3::X).normalize();
         let out = if out.y < 0.0 { -out } else { out };
-        emblem(&mut m, top.lerp(low, 0.5), up, out, 0.5, GILT);
+        // High on the plate and stood off it: the deck rises through its lower half.
+        emblem(&mut m, top.lerp(low, 0.3) + out * 0.04, up, out, 0.5, GILT);
     }
     // Nose: armored beak under the glacis.
     plate(

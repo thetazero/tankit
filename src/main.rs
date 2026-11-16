@@ -47,7 +47,7 @@ tankit [OPTIONS]
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
-  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
+  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
   --hull <kataphrakt|kastron|sethuun>  player hull (default kataphrakt; sethuun hovers)
   --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
                           lumen (machines), hymn (Resonant); default kontos
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
         return record_wav(&args, out, *seconds);
     }
     match (&args.shot, args.showroom) {
-        (Some(shot), Some(room)) => showroom_shot(shot, room),
+        (Some(shot), Some(room)) => showroom_shot(shot, room, args.cam),
         (Some(shot), None)
             if matches!(
                 args.screen,
@@ -598,7 +598,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     Ok(())
 }
 
-fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
+fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs, cam: Option<(Vec3, Vec3)>) -> Result<()> {
     let mut world = showroom::world();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&showroom::ground_mesh());
@@ -616,7 +616,14 @@ fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
             advance(&mut world, 1.0 / shot.fps);
         }
         let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
-        let camera = showroom::camera(&world, angle, room.dist, room.focus);
+        let camera = match cam {
+            Some((pos, target)) => render::Camera {
+                pos,
+                target,
+                fov_y: 60f32.to_radians(),
+            },
+            None => showroom::camera(&world, angle, room.dist, room.focus),
+        };
         let mut frame = scene::build(&world, &world.tanks, &art, camera);
         frame.shadow_center = Vec3::ZERO;
         frame.shadow_radius = 22.0;
