@@ -11,6 +11,7 @@ use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
+use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, TextStyle, theme};
 
@@ -310,12 +311,41 @@ impl Menu {
                         );
                     }
                     label(&mut p, Vec2::new(x, y + 1.0), k, Align::Left);
-                    p.text(
-                        Vec2::new(x + PANEL_W, y),
-                        &v,
-                        &TextStyle::value(11.0),
-                        Align::Right,
-                    );
+                    let style = TextStyle::value(11.0);
+                    let right = Vec2::new(x + PANEL_W, y);
+                    match k {
+                        "EMPLOYER" => {
+                            // "< [emblem] NAME >"
+                            let tail = format!("{} >", employer.name());
+                            let mut at = right;
+                            at.x -= p.text(at, &tail, &style, Align::Right)
+                                + emblem::mark_width(&style);
+                            emblem::mark(&mut p, at, employer, &style);
+                            p.text(
+                                at - Vec2::new(style.tracking, 0.0),
+                                "<",
+                                &style,
+                                Align::Right,
+                            );
+                        }
+                        "AGAINST" => {
+                            let mut style = style;
+                            let mut at = right;
+                            for (i, &f) in
+                                m.sides.iter().filter(|&&f| f != employer).rev().enumerate()
+                            {
+                                if i > 0 {
+                                    style.color = theme::FG;
+                                    at.x -= p.text(at, " · ", &style, Align::Right);
+                                }
+                                style.color = f.ui();
+                                at.x -= emblem::faction_name(&mut p, at, f, &style, Align::Right);
+                            }
+                        }
+                        _ => {
+                            p.text(right, &v, &style, Align::Right);
+                        }
+                    }
                     y += 22.0;
                 }
                 y += 8.0;
@@ -472,11 +502,15 @@ impl Pause {
         y += 44.0;
         if let Some(i) = self.settings {
             settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
-            label(
+            hint_row(
                 &mut p,
+                &mut hits,
                 Vec2::new(x, min.y + size.y - 34.0),
-                "ENTER TOGGLE    A/D VOLUME    ESC BACK",
-                Align::Left,
+                &[
+                    ("ENTER", "TOGGLE", Some(Nav::Select)),
+                    ("A/D", "VOLUME", None),
+                    ("ESC", "BACK", Some(Nav::Back)),
+                ],
             );
             return Layer {
                 verts: p.finish(),
@@ -507,16 +541,18 @@ impl Pause {
         );
         y += 20.0;
         let r = profile.standing(employer);
-        label(
+        emblem::tagged(
             &mut p,
             Vec2::new(x, y + 1.0),
+            employer,
             &format!("{} T{}", employer.name(), r.level),
+            &TextStyle::LABEL,
             Align::Left,
         );
         widgets::hairbar(
             &mut p,
-            Vec2::new(x + 110.0, y + 5.0),
-            PANEL_W - 110.0,
+            Vec2::new(x + 132.0, y + 5.0),
+            PANEL_W - 132.0,
             r.progress(),
             theme::FG,
         );
@@ -621,11 +657,11 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
         let s = profile.standing(f);
         let mut name = TextStyle::value(11.0);
         name.color = f.ui();
-        p.text(Vec2::new(at.x, y), f.name(), &name, Align::Left);
+        emblem::faction_name(p, Vec2::new(at.x, y), f, &name, Align::Left);
         widgets::hairbar(
             p,
-            Vec2::new(at.x + 110.0, y + 6.0),
-            PANEL_W - 110.0 - 36.0,
+            Vec2::new(at.x + 136.0, y + 6.0),
+            PANEL_W - 136.0 - 36.0,
             s.progress(),
             if profile.trust_of(f) > 0 {
                 theme::FG
@@ -705,6 +741,26 @@ fn hints(
             );
         }
         y += 14.0;
+    }
+}
+
+/// Key hints on one line from `at`, the ones that do something clickable.
+fn hint_row(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, keys: &[(&str, &str, Option<Nav>)]) {
+    let mut x = at.x;
+    for (key, what, nav) in keys {
+        let mut k = TextStyle::LABEL;
+        k.color = theme::FG;
+        let kw = p.text(Vec2::new(x, at.y), key, &k, Align::Left);
+        let w = kw + 6.0 + label(p, Vec2::new(x + kw + 6.0, at.y), what, Align::Left);
+        if let Some(nav) = nav {
+            hits.add(
+                p,
+                Vec2::new(x - 4.0, at.y - 3.0),
+                Vec2::new(w + 8.0, 14.0),
+                Hit::Key(*nav),
+            );
+        }
+        x += w + 24.0;
     }
 }
 
@@ -898,6 +954,9 @@ mod tests {
             click(&mut p, Hit::Row(0)).1,
             Some(PauseAction::Setting(Change::Toggle(0)))
         );
+        // The footer's ESC BACK leaves settings, like the key.
+        click(&mut p, Hit::Key(Nav::Back));
+        assert_eq!(p.settings, None);
     }
 
     #[test]

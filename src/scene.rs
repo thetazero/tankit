@@ -75,7 +75,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
             b.color.extend(b.top_mat.id()),
         );
     }
-    for o in &map.oboxes {
+    for o in map.oboxes.iter().filter(|o| !o.hidden) {
         add_obox(o, &mut m);
     }
     for c in &map.crystals {

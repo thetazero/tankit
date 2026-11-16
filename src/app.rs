@@ -5,7 +5,7 @@
 //! again and Esc goes back to the menu. Trust is banked into the pilot profile
 //! the moment it's earned, and the profile saves itself on every change.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,11 +16,13 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::audio::{self, Audio};
+use crate::bay::{self, BayArt};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hud::{self, Hud};
+use crate::keys;
 use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::Profile;
@@ -42,6 +44,7 @@ enum UiHit {
     Menu(menu::Hit),
     Pause(menu::Hit),
     Garage(garage::Hit),
+    Hud(hud::Hit),
 }
 
 /// What the window is showing.
@@ -82,6 +85,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     art: Option<TankArt>,
+    bay: Option<BayArt>,
     showroom: Option<ShowroomArgs>,
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
@@ -104,6 +108,8 @@ struct App {
     player_alive: bool,
     clock: Clock,
     keys: HashSet<KeyCode>,
+    /// What each key held down pressed, so its release lets go of the same thing.
+    held: HashMap<PhysicalKey, KeyCode>,
     /// Mouse pointer in window pixels, while it's over the window.
     pointer: Option<glam::Vec2>,
     /// What can be clicked, as of the last frame drawn.
@@ -166,6 +172,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         window: None,
         renderer: None,
         art: None,
+        bay: None,
         showroom: launch.showroom,
         game,
         profile,
@@ -182,6 +189,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         player_alive: true,
         clock: Clock::default(),
         keys: HashSet::new(),
+        held: HashMap::new(),
         pointer: None,
         hits: Hits::new(),
         tune_grip: 1.0,
@@ -250,6 +258,7 @@ impl ApplicationHandler for App {
                     r.set_static_mesh(&scene::map_mesh(&self.game.world.map));
                 }
                 self.art = Some(TankArt::upload(&mut r));
+                self.bay = Some(BayArt::upload(&mut r));
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -266,7 +275,12 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
-                let PhysicalKey::Code(code) = event.physical_key else {
+                // Release what this key pressed, even if what it means changed meanwhile.
+                let code = match event.state {
+                    ElementState::Pressed => keys::code(event.physical_key, &event.logical_key),
+                    ElementState::Released => self.held.remove(&event.physical_key),
+                };
+                let Some(code) = code else {
                     return;
                 };
                 match event.state {
@@ -274,6 +288,7 @@ impl ApplicationHandler for App {
                         if !event.repeat {
                             self.on_key(code, event_loop);
                         }
+                        self.held.insert(event.physical_key, code);
                         self.keys.insert(code);
                     }
                     ElementState::Released => {
@@ -299,7 +314,10 @@ impl ApplicationHandler for App {
                 button,
                 ..
             } => self.on_click(button, event_loop),
-            WindowEvent::Focused(false) => self.keys.clear(),
+            WindowEvent::Focused(false) => {
+                self.keys.clear();
+                self.held.clear();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -578,6 +596,12 @@ impl App {
             Some(UiHit::Garage(h)) => Some(h),
             _ => None,
         });
+        let hud = match hit {
+            Some(UiHit::Hud(h)) => Some(h),
+            _ => None,
+        };
+        let lit = hud.is_some() && hud != self.hud.hover;
+        self.hud.hover = hud;
         let Some(hit) = hit else {
             return;
         };
@@ -586,6 +610,7 @@ impl App {
             UiHit::Pause(h) => self.pause.hover(h),
             // Garage hover only lights the row: a click previews it.
             UiHit::Garage(_) => false,
+            UiHit::Hud(_) => lit,
         };
         if moved {
             self.audio.ui(audio::Ui::Move);
@@ -622,6 +647,13 @@ impl App {
                 self.nav_sound(nav);
                 self.pause_action(action, event_loop);
             }
+            UiHit::Hud(h) => self.on_key(
+                match h {
+                    hud::Hit::Again => KeyCode::Enter,
+                    hud::Hit::Menu => KeyCode::Escape,
+                },
+                event_loop,
+            ),
             UiHit::Garage(h) => {
                 self.garage_sound(match h {
                     garage::Hit::Key(input) => input,
@@ -738,7 +770,7 @@ impl App {
         }
         let queued = self.queued();
         let scores = self.held(&[KeyCode::Tab]);
-        if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
+        if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
             let alpha = if self.mode == Mode::Paused {
                 1.0
@@ -776,12 +808,25 @@ impl App {
                     room.focus,
                 );
             }
-            let mut scene = scene::build(&self.game.world, &tanks, art, camera);
-            self.game.effect_instances(alpha, &mut scene.instances);
-            // Ambient motion happens around wherever the camera is.
-            self.game.ambience.focus = camera.pos;
-            scene.particles.extend(self.game.ambience.particles());
-            self.game.glow_particles(alpha, &mut scene.particles);
+            let mut scene = if self.garage.in_bay() {
+                let view = self.garage.bay_camera(w / h);
+                bay::scene(
+                    art,
+                    bay,
+                    &tanks[0],
+                    self.garage.spin(),
+                    self.game.world.time,
+                    view,
+                )
+            } else {
+                let mut scene = scene::build(&self.game.world, &tanks, art, camera);
+                self.game.effect_instances(alpha, &mut scene.instances);
+                // Ambient motion happens around wherever the camera is.
+                self.game.ambience.focus = camera.pos;
+                scene.particles.extend(self.game.ambience.particles());
+                self.game.glow_particles(alpha, &mut scene.particles);
+                scene
+            };
             if self.showroom.is_some() {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
@@ -805,14 +850,24 @@ impl App {
                     }
                     Mode::Playing => {
                         let hud = self.hud.draw(&self.game, &tanks, &camera, w, h, dt, scores);
-                        let layer = self
-                            .garage
-                            .overlay(hud, &driven, queued, &self.profile, w, h);
-                        (layer.verts, layer.hits.map(UiHit::Garage))
+                        let layer =
+                            self.garage
+                                .overlay(hud.verts, &driven, queued, &self.profile, w, h);
+                        // The garage covers the HUD while it's open.
+                        let mut hits = if self.garage.is_open() {
+                            Hits::new()
+                        } else {
+                            hud.hits.map(UiHit::Hud)
+                        };
+                        hits.extend(layer.hits.map(UiHit::Garage));
+                        (layer.verts, hits)
                     }
                     Mode::Paused => {
-                        let mut ui =
-                            menu::dim(self.hud.draw(&self.game, &tanks, &camera, w, h, 0.0, false));
+                        let mut ui = menu::dim(
+                            self.hud
+                                .draw(&self.game, &tanks, &camera, w, h, 0.0, false)
+                                .verts,
+                        );
                         let pause = self.pause.draw(
                             &self.profile,
                             self.game.factions[0],
