@@ -81,6 +81,10 @@ pub fn map_mesh(map: &Map) -> MeshData {
     for c in &map.crystals {
         c.mesh(&mut m);
     }
+    let base = m.verts.len() as u32;
+    m.verts.extend_from_slice(&map.sculpted.verts);
+    m.indices
+        .extend(map.sculpted.indices.iter().map(|i| i + base));
     for g in &map.glow_paths {
         g.mesh(&mut m);
     }

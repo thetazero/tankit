@@ -486,6 +486,9 @@ pub struct Map {
     pub fall_y: Option<f32>,
     /// What the Hold site is called on the HUD.
     pub hold_name: &'static str,
+    /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
+    /// drawn as they are, never collide.
+    pub sculpted: crate::render::mesh::MeshData,
 }
 
 /// A glowing ribbon on the ground: a bright core fading out to its edges.
@@ -757,6 +760,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            sculpted: crate::render::mesh::MeshData::default(),
         }
     }
 
