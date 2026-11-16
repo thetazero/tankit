@@ -22,7 +22,7 @@ pub enum Filt {
 }
 
 /// One layer of a one-shot.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Layer {
     pub src: Src,
     /// Oscillator pitch, start and end, Hz.
@@ -251,6 +251,58 @@ pub const REPAIR: &[Layer] = &[
         ..sine(1320.0, 1320.0, 1.0, 0.5, 0.18)
     },
     ring(140.0, 0.12, 0.3),
+];
+
+/// The beam lights: a zap that leaps up in pitch out of a crack of static
+/// and a thump of the emitter charging.
+pub const BEAM_ON: &[Layer] = &[
+    sine(260.0, 1500.0, 0.04, 0.1, 0.3),
+    sine(520.0, 3000.0, 0.04, 0.05, 0.1),
+    noise(Filt::High, 2600.0, 2600.0, 0.1, 0.02, 0.6),
+    Layer {
+        src: Src::Crackle(900.0),
+        filt: Filt::Band,
+        cutoff: (3500.0, 2200.0),
+        sweep: 0.08,
+        q: 1.2,
+        decay: 0.09,
+        gain: 0.45,
+        ..L
+    },
+    sine(95.0, 55.0, 0.05, 0.08, 0.4),
+];
+
+/// Trigger let go: the beam winds down, a falling zap and a fizz.
+pub const BEAM_OFF: &[Layer] = &[
+    sine(1300.0, 200.0, 0.06, 0.14, 0.22),
+    Layer {
+        q: 1.5,
+        ..noise(Filt::Band, 3000.0, 700.0, 0.08, 0.1, 0.3)
+    },
+];
+
+/// A beam strikes a hull: hit as hard as a shell (the blow, a crunch), then
+/// the plate sizzles and pings as it takes the heat.
+pub const SCORCH: &[Layer] = &[
+    sine(120.0, 50.0, 0.03, 0.06, 0.5),
+    noise(Filt::Low, 2200.0, 300.0, 0.04, 0.09, 1.0),
+    Layer {
+        src: Src::Crackle(1800.0),
+        filt: Filt::Band,
+        cutoff: (2400.0, 1200.0),
+        sweep: 0.1,
+        q: 0.9,
+        decay: 0.12,
+        gain: 0.35,
+        ..L
+    },
+    ring(1470.0, 0.3, 0.12),
+    ring(2290.0, 0.22, 0.08),
+    ring(3720.0, 0.15, 0.05),
+    Layer {
+        attack: 0.015,
+        ..noise(Filt::High, 3500.0, 3500.0, 0.1, 0.25, 0.25)
+    },
 ];
 
 /// The beam locks out: a steam hiss as the emitter powers down.
@@ -746,7 +798,7 @@ fn layer(l: &Layer, s: &mut LayerState, noise: &mut Noise, t: f32, pitch: f32, s
 mod tests {
     use super::*;
 
-    const ALL: [&[Layer]; 19] = [
+    const ALL: [&[Layer]; 22] = [
         KONTOS,
         PELEKYS,
         WISP,
@@ -755,6 +807,9 @@ mod tests {
         SPLASH,
         BOUNCE,
         HIT,
+        SCORCH,
+        BEAM_ON,
+        BEAM_OFF,
         KILL,
         REPAIR,
         OVERHEAT,

@@ -343,6 +343,8 @@ pub struct Fighter {
     pub overheated: bool,
     /// Where this tank's beam ends this step, while it's firing one.
     pub beam: Option<Vec3>,
+    /// What that beam is burning (for the sound of it).
+    pub burning: Burn,
     /// Part upgrade levels (bots stay at M0), and new levels to fit at the next respawn.
     pub levels: Levels,
     pub next_levels: Option<Levels>,
@@ -511,6 +513,17 @@ pub enum Sound {
         faction: Faction,
         at: Vec3,
     },
+}
+
+/// What a beam's far end is touching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Burn {
+    /// Nothing within range: it fades out in the air.
+    Air,
+    /// A wall, the ground, a crate.
+    Surface,
+    /// This tank's hull.
+    Tank(usize),
 }
 
 /// Most sound events kept if nobody drains them (headless runs, tests).
@@ -699,9 +712,11 @@ impl Match {
         let contacts: Vec<Contact> = self
             .fighters
             .iter()
-            .map(|f| Contact {
+            .zip(&self.world.tanks)
+            .map(|(f, t)| Contact {
                 targetable: f.alive && f.shield <= 0.0 && !f.is_husk(),
                 team: f.team,
+                health: f.health / f.max_health(t),
             })
             .collect();
         let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
@@ -744,6 +759,7 @@ impl Match {
             f.since_dealt += DT;
             f.since_repair += DT;
             f.beam = None;
+            f.burning = Burn::Air;
             match gun(self.world.tanks[i].turret_kind).action {
                 Action::Beam {
                     range,
@@ -945,6 +961,11 @@ impl Match {
             None => (from + dir * range, None, range),
         };
         self.fighters[i].beam = Some(end);
+        self.fighters[i].burning = match (hit, victim) {
+            (_, Some(j)) => Burn::Tank(j),
+            (Some(_), None) => Burn::Surface,
+            (None, None) => Burn::Air,
+        };
         let dmg = self.fighters[i]
             .levels
             .gun(self.world.tanks[i].turret_kind)
@@ -1896,6 +1917,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         heat: 0.0,
         overheated: false,
         beam: None,
+        burning: Burn::Air,
         levels: Levels::default(),
         next_levels: None,
         damage_dealt: 0.0,
@@ -1904,7 +1926,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
 }
 
 /// Where tank `t`'s shots leave the gun.
-fn muzzle(t: &Tank) -> Vec3 {
+pub(crate) fn muzzle(t: &Tank) -> Vec3 {
     t.pos + t.up() * t.gun_height() + t.gun_dir() * 2.6
 }
 

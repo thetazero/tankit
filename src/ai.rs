@@ -14,7 +14,7 @@ use glam::{Vec2, Vec3};
 
 use crate::map::Map;
 use crate::rng::Rng;
-use crate::sim::{Command, Tank, World, wrap_angle, yaw_of};
+use crate::sim::{Command, Tank, TurretKind, World, wrap_angle, yaw_of};
 
 /// Nav cell size, m. Fine enough that narrow gaps between cover show up.
 const NAV_CELL: f32 = 2.0;
@@ -24,8 +24,10 @@ const CLEARANCE: f32 = 2.2;
 pub const SIGHT: f32 = 130.0;
 /// Bots open fire inside this range.
 const FIRE_RANGE: f32 = 110.0;
-/// Preferred fighting distance: bots stop closing in here.
-const STANDOFF: f32 = 24.0;
+/// Guns shorter-ranged than this brawl: they charge in to fight.
+const BRAWL_RANGE: f32 = 40.0;
+/// Below this share of health, ranged bots fight from further out.
+const WOUNDED: f32 = 0.35;
 /// With an objective, bots leave it to chase an enemy only this close.
 const GUARD_CHASE: f32 = 40.0;
 
@@ -340,6 +342,27 @@ pub struct Contact {
     pub targetable: bool,
     /// Which side it's on; bots only hunt the other one.
     pub team: usize,
+    /// Share of full health left, 0..1.
+    pub health: f32,
+}
+
+/// The distance a gun is best fought at, m: where it hits hard and reliably
+/// but the enemy isn't on top of it.
+pub fn ideal_range(kind: TurretKind) -> f32 {
+    match kind {
+        // Rail cannon: lands instantly at any range; keep well back.
+        TurretKind::Kontos => 75.0,
+        // Light, fast twin guns: middle distance.
+        TurretKind::Pelekys => 45.0,
+        // Slow orbs: close enough that they're hard to sidestep.
+        TurretKind::Ammeth => 50.0,
+        // Spraying darts: their spread wants it fairly close.
+        TurretKind::Ossrin => 42.0,
+        // The beam is at full strength out to 40% of its range.
+        TurretKind::Lumen => 55.0,
+        // Flamethrower: right up against them.
+        TurretKind::Hymn => 8.0,
+    }
 }
 
 /// One bot's memory between steps.
@@ -360,6 +383,16 @@ pub struct Bot {
     /// Side-to-side jink while fighting.
     jink: f32,
     jink_in: f32,
+    /// Holding at range and circling the target (ranged guns), rather than closing in.
+    engaged: bool,
+    /// Which way round the target it circles, ±1.
+    strafe: f32,
+    strafe_in: f32,
+    /// Driving forwards (1) or backwards (-1) while circling.
+    drive_sign: f32,
+    /// Angle off the straight line to the target it approaches along, so
+    /// bots hunting one enemy come at it from different sides.
+    flank: f32,
     roam: Option<Vec2>,
     /// Patrol point inside the objective's ring.
     post: Option<Vec2>,
@@ -371,6 +404,8 @@ impl Bot {
     pub fn new(seed: u64) -> Bot {
         let mut rng = Rng::new(seed);
         let jink = if rng.chance(0.5) { 1.0 } else { -1.0 };
+        let strafe = if rng.chance(0.5) { 1.0 } else { -1.0 };
+        let flank = rng.range(-0.9, 0.9);
         Bot {
             rng,
             path: Vec::new(),
@@ -385,6 +420,11 @@ impl Bot {
             reverse_steer: 1.0,
             jink,
             jink_in: 2.0,
+            engaged: false,
+            strafe,
+            strafe_in: 2.0,
+            drive_sign: 1.0,
+            flank,
             roam: None,
             post: None,
             plans: 0,
@@ -401,6 +441,8 @@ impl Bot {
         self.reverse_for = 0.0;
         self.roam = None;
         self.post = None;
+        self.engaged = false;
+        self.flank = self.rng.range(-0.9, 0.9);
     }
 
     /// Decide this step's controls for tank `me`, with an optional objective
@@ -416,8 +458,16 @@ impl Bot {
     ) -> (Command, bool) {
         let t = &world.tanks[me];
         let g = crate::combat::gun(t.turret_kind);
-        // Short-range guns (the flamethrower) have to close in before they stop to fight.
-        let standoff = STANDOFF.min(g.range() * 0.6);
+        // Short-range guns (the flamethrower) have to close in before they
+        // stop to fight. Everything else picks a distance that suits it and
+        // fights from there, further out when hurt.
+        let brawler = g.range() < BRAWL_RANGE;
+        let reach = FIRE_RANGE.min(g.range());
+        let mut ideal = ideal_range(t.turret_kind).min(reach * 0.8);
+        if !brawler && contacts[me].health < WOUNDED {
+            ideal = (ideal * 1.35).min(reach * 0.9);
+        }
+        let standoff = ideal.max(g.range() * 0.6).min(reach);
         let my2 = flat(t.pos);
         let eye = t.pos + Vec3::Y * t.gun_height();
 
@@ -465,16 +515,41 @@ impl Bot {
             self.seen_for = 0.0;
         }
 
-        // Where to drive: at the target (or where it was last seen), else roam.
-        // With an objective: to the site, leaving it only for enemies close by
-        // or on it.
+        // In a fight at range: stop closing once inside the gun's band, and
+        // only give it up if the target gets well out of it or out of sight.
+        let target_d = target.map_or(f32::INFINITY, |o| flat(o.pos).distance(my2));
+        self.engaged = !brawler
+            && visible
+            && target_d < reach
+            && target_d < ideal * if self.engaged { 1.5 } else { 1.2 };
+
+        // Where a ranged bot goes to fight `o` from: at its ideal range, on
+        // its own side of the target, swung round by its flank angle. Once
+        // there with no sight of it, straight at it to find it.
+        let flank = self.flank;
+        let approach = |o: Vec2| -> Vec2 {
+            if brawler {
+                return o;
+            }
+            let back = (my2 - o).try_normalize().unwrap_or(Vec2::X);
+            let spot = o + Vec2::from_angle(flank).rotate(back) * ideal * 0.9;
+            if !visible && spot.distance(my2) < 10.0 {
+                o
+            } else {
+                spot
+            }
+        };
+
+        // Where to drive: to fight the target (or where it was last seen),
+        // else roam. With an objective: to the site, leaving it only for
+        // enemies close by or on it.
         let goal = match (objective, target) {
             (Some((c, r)), t) => {
                 let chase = t.map(|o| flat(o.pos)).filter(|&p| {
                     visible && (p.distance(my2) < GUARD_CHASE || p.distance(c) < r + 8.0)
                 });
                 match chase {
-                    Some(p) => p,
+                    Some(p) => approach(p),
                     None => {
                         if self.post.is_some_and(|p| p.distance(my2) < 4.0) {
                             self.post = None;
@@ -494,7 +569,7 @@ impl Bot {
                     }
                 }
             }
-            (None, Some(o)) => flat(o.pos),
+            (None, Some(o)) => approach(flat(o.pos)),
             (None, None) => *self.roam.get_or_insert_with(|| {
                 world.map.open_spots[self.rng.index(world.map.open_spots.len())]
             }),
@@ -526,8 +601,7 @@ impl Bot {
 
         // Driving.
         let mut cmd = Command::default();
-        let dist = goal.distance(my2);
-        let close = visible && dist < standoff;
+        let close = brawler && visible && target_d < standoff;
         if let Some(&wp) = self.path.first() {
             let err = wrap_angle(yaw_of(wp - my2) - t.yaw());
             cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
@@ -546,6 +620,9 @@ impl Bot {
             }
             cmd.throttle = self.jink * 0.7;
             cmd.steer *= 0.3;
+        }
+        if let (true, Some(o)) = (self.engaged, target) {
+            cmd = self.circle(t, flat(o.pos), ideal, objective, nav, dt);
         }
 
         // Stuck against something: back off with the wheel turned, then replan.
@@ -608,6 +685,77 @@ impl Bot {
             _ => cmd.center_turret = true,
         }
         (cmd, fire)
+    }
+
+    /// Controls for holding a ranged fight with a target at `tp`: slide
+    /// sideways round it (hard to hit, never parked), backing off when it
+    /// gets too close and easing in when it drifts too far. With an
+    /// objective, it leans back towards the site when it strays off it.
+    fn circle(
+        &mut self,
+        t: &Tank,
+        tp: Vec2,
+        ideal: f32,
+        objective: Option<(Vec2, f32)>,
+        nav: &NavGrid,
+        dt: f32,
+    ) -> Command {
+        let my2 = flat(t.pos);
+        let to = tp - my2;
+        let d = to.length();
+        let to = to / d.max(1e-3);
+        let radial = if d < ideal * 0.7 {
+            -1.2
+        } else if d > ideal * 1.1 {
+            0.6
+        } else {
+            0.0
+        };
+        let home = objective
+            .filter(|&(c, r)| c.distance(my2) > r * 0.8)
+            .map_or(Vec2::ZERO, |(c, _)| (c - my2).normalize_or_zero() * 0.8);
+
+        self.strafe_in -= dt;
+        if self.strafe_in <= 0.0 {
+            self.strafe = -self.strafe;
+            self.strafe_in = self.rng.range(1.8, 4.0);
+        }
+        let dir_for = |s: f32| (to.perp() * s + to * radial + home).normalize_or_zero();
+        let open = |dir: Vec2| dir != Vec2::ZERO && nav.clear_line(my2, my2 + dir * 7.0);
+        let mut dir = dir_for(self.strafe);
+        if !open(dir) {
+            // Wall that way: slide the other way round instead.
+            if open(dir_for(-self.strafe)) {
+                self.strafe = -self.strafe;
+                self.strafe_in = self.rng.range(1.8, 4.0);
+                dir = dir_for(self.strafe);
+            } else if open(-to) && d < ideal {
+                dir = -to;
+            } else {
+                // Boxed in: sit and shoot.
+                return Command::default();
+            }
+        }
+
+        // Tracks drive either way: take whichever end of the hull is nearer
+        // the way to go, with some slack so it doesn't dither between them.
+        let ahead = wrap_angle(yaw_of(dir) - t.yaw());
+        let behind = wrap_angle(ahead + std::f32::consts::PI);
+        let current = if self.drive_sign > 0.0 { ahead } else { behind };
+        if current.abs() > std::f32::consts::FRAC_PI_2 + 0.4 {
+            self.drive_sign = -self.drive_sign;
+        }
+        let err = if self.drive_sign > 0.0 { ahead } else { behind };
+        Command {
+            steer: (err * 2.5).clamp(-1.0, 1.0),
+            throttle: self.drive_sign
+                * if err.abs() > 1.0 {
+                    0.2
+                } else {
+                    0.85 - err.abs() * 0.4
+                },
+            ..Command::default()
+        }
     }
 
     /// Called when this bot's shot actually leaves the barrel.
@@ -698,12 +846,99 @@ mod tests {
         let contacts = [Contact {
             targetable: false,
             team: 0,
+            health: 1.0,
         }];
         for _ in 0..(3.0 / DT) as usize {
             let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
             w.step(&[cmd]);
         }
         assert!(bot.plans <= 3, "{} path searches in 3 s", bot.plans);
+    }
+
+    /// Bot 0 with `turret` against a parked enemy `start` m away on open
+    /// ground, for `secs`: the distance between them and the bot's position,
+    /// sampled every step.
+    fn standoff_track(turret: TurretKind, start: f32, secs: f32) -> Vec<(f32, Vec2)> {
+        let map = Map::empty(400.0);
+        let nav = NavGrid::build(&map);
+        let mut w = World::empty(map);
+        let hull = crate::sim::HullKind::Kataphrakt;
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(200.0, 200.0 - start),
+            0.0,
+            hull,
+            turret,
+        );
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(200.0, 200.0),
+            0.0,
+            hull,
+            TurretKind::Kontos,
+        );
+        let mut bot = Bot::new(7);
+        let contacts = [0, 1].map(|team| Contact {
+            targetable: true,
+            team,
+            health: 1.0,
+        });
+        let mut out = Vec::new();
+        for _ in 0..(secs / DT) as usize {
+            let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
+            w.step(&[cmd, Command::default()]);
+            let p = flat(w.tanks[0].pos);
+            out.push((p.distance(flat(w.tanks[1].pos)), p));
+        }
+        out
+    }
+
+    fn standoff(turret: TurretKind, start: f32, secs: f32) -> Vec<f32> {
+        standoff_track(turret, start, secs)
+            .into_iter()
+            .map(|(d, _)| d)
+            .collect()
+    }
+
+    /// Ranged guns don't charge: a rail cannon closes from long range to its
+    /// band and holds it, never driving into the enemy's face.
+    #[test]
+    fn ranged_bots_hold_their_distance() {
+        let d = standoff(TurretKind::Kontos, 120.0, 20.0);
+        let (min, end) = (
+            d.iter().cloned().fold(f32::MAX, f32::min),
+            *d.last().unwrap(),
+        );
+        assert!(min > 45.0, "rail cannon closed to {min:.1} m");
+        assert!(
+            end < 100.0,
+            "rail cannon never closed in: still {end:.1} m off"
+        );
+    }
+
+    /// Started on top of the enemy, a ranged bot backs out to fighting range.
+    #[test]
+    fn ranged_bots_back_off_when_crowded() {
+        let d = standoff(TurretKind::Pelekys, 12.0, 15.0);
+        let end = *d.last().unwrap();
+        assert!(end > 25.0, "twin guns still crowded at {end:.1} m");
+    }
+
+    /// Ranged bots keep moving while they fight, so they're hard to hit.
+    #[test]
+    fn ranged_bots_dont_park() {
+        let track = standoff_track(TurretKind::Lumen, 55.0, 10.0);
+        assert!(track.iter().all(|&(d, _)| d > 30.0), "laser closed in");
+        let driven: f32 = track.windows(2).map(|w| w[0].1.distance(w[1].1)).sum();
+        assert!(driven > 25.0, "laser only drove {driven:.1} m in 10 s");
+    }
+
+    /// The flamethrower still has to get right up close.
+    #[test]
+    fn flamethrowers_close_in() {
+        let d = standoff(TurretKind::Hymn, 80.0, 20.0);
+        let end = *d.last().unwrap();
+        assert!(end < 16.0, "flamethrower stayed {end:.1} m off");
     }
 
     /// A bot with nobody to fight drives somewhere: it roams and actually moves.
@@ -716,6 +951,7 @@ mod tests {
         let contacts = [Contact {
             targetable: false,
             team: 0,
+            health: 1.0,
         }];
         for _ in 0..(8.0 / DT) as usize {
             let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
