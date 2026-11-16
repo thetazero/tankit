@@ -130,12 +130,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     };
     let loadout = launch.loadout.unwrap_or(profile.loadout);
     let mut game = if launch.showroom.is_some() {
-        let mut m = Match::new(
-            make_map(launch.seed, launch.map_kind),
-            launch.spawn,
-            0,
-            launch.seed,
-        );
+        let mut m = Match::new(make_map(launch.map_kind), launch.spawn, 0, launch.seed);
         m.world = showroom::world();
         m
     } else if launch.menu {
@@ -211,7 +206,7 @@ pub fn new_match(
     contract: Contract,
     kit: garage::Loadout,
 ) -> Match {
-    let mut map = make_map(seed, map_kind);
+    let mut map = make_map(map_kind);
     if side == 1 {
         map.swap_sides();
     }
@@ -511,21 +506,10 @@ impl App {
                 self.spawn += 1;
                 self.restart();
             }
-            // Restart at the next spawn point (cycles the proving ground lanes).
+            // Restart at the next spawn point.
             KeyCode::KeyR if self.showroom.is_none() => {
                 self.spawn += 1;
                 self.restart();
-            }
-            // New random map.
-            KeyCode::F5 if self.showroom.is_none() => {
-                self.seed = self
-                    .seed
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407)
-                    >> 16;
-                self.map_kind = MapKind::City;
-                self.restart();
-                log::info!("map seed {}", self.seed);
             }
             // Quick-cycle the kit queued for the next respawn.
             KeyCode::Digit1 => {
@@ -805,17 +789,13 @@ impl App {
                         (ui, hits)
                     }
                     Mode::Playing => {
-                        let hud = self
-                            .hud
-                            .draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
+                        let hud = self.hud.draw(&self.game, &tanks, &camera, w, h, dt, scores);
                         let layer = self.garage.overlay(hud, &driven, queued, &self.profile, h);
                         (layer.verts, layer.hits.map(UiHit::Garage))
                     }
                     Mode::Paused => {
-                        let mut ui = menu::dim(
-                            self.hud
-                                .draw(&self.game, &tanks, self.seed, &camera, w, h, 0.0, false),
-                        );
+                        let mut ui =
+                            menu::dim(self.hud.draw(&self.game, &tanks, &camera, w, h, 0.0, false));
                         let pause = self.pause.draw(
                             &self.profile,
                             self.game.factions[0],

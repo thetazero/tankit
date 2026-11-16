@@ -16,7 +16,7 @@ use crate::map::Map;
 use crate::rng::Rng;
 use crate::sim::{Command, Tank, World, wrap_angle, yaw_of};
 
-/// Nav cell size, m. Finer than the city grid so narrow gaps between cover show up.
+/// Nav cell size, m. Fine enough that narrow gaps between cover show up.
 const NAV_CELL: f32 = 2.0;
 /// How far obstacles are grown so paths keep a hull's width off walls.
 const CLEARANCE: f32 = 2.2;
@@ -602,12 +602,12 @@ mod tests {
     use crate::game::DT;
 
     #[test]
-    fn paths_avoid_buildings_on_a_city_map() {
-        let map = Map::generate(21);
+    fn paths_avoid_buildings() {
+        let map = Map::saltmarket();
         let nav = NavGrid::build(&map);
         let (a, b) = (map.open_spots[0], *map.open_spots.last().unwrap());
         let path = nav.path(a, b);
-        assert!(!path.is_empty(), "no path across the city");
+        assert!(!path.is_empty(), "no path across the town");
         assert!(path.last().unwrap().distance(b) < 3.0);
         let mut prev = a;
         for &p in &path {
@@ -621,16 +621,17 @@ mod tests {
 
     #[test]
     fn spawn_spots_are_open() {
-        let map = Map::generate(7);
-        let nav = NavGrid::build(&map);
-        // Spawns sit on road cells; there must be open nav ground right next to each.
-        for &p in &map.open_spots {
-            let c = nav.nearest_open(p).expect("spawn with no open ground");
-            assert!(
-                nav.center(c).distance(p) < 2.5,
-                "spawn {p} is {} m from open ground",
-                nav.center(c).distance(p)
-            );
+        for map in [Map::saltmarket(), Map::shard_flats(), Map::kiln()] {
+            let nav = NavGrid::build(&map);
+            // There must be open nav ground right next to each spawn.
+            for &p in &map.open_spots {
+                let c = nav.nearest_open(p).expect("spawn with no open ground");
+                assert!(
+                    nav.center(c).distance(p) < 2.5,
+                    "spawn {p} is {} m from open ground",
+                    nav.center(c).distance(p)
+                );
+            }
         }
     }
 
@@ -677,7 +678,7 @@ mod tests {
     /// A bot with nobody to fight drives somewhere: it roams and actually moves.
     #[test]
     fn lone_bot_roams() {
-        let mut w = World::new(Map::generate(21), 0);
+        let mut w = World::new(Map::saltmarket(), 0);
         let nav = NavGrid::build(&w.map);
         let mut bot = Bot::new(1);
         let start = w.tanks[0].pos;
