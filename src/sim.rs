@@ -85,6 +85,10 @@ pub struct Tank {
     pub turret_rate: f32,
     /// Gun elevation in radians (positive = up).
     pub gun_pitch: f32,
+    /// Visual-only: the gun's stabilizer lags behind hull pitching, so the
+    /// elevation ram is always working a little.
+    pub gun_sway: f32,
+    pub gun_sway_vel: f32,
 
     // Visual-only animation state.
     pub pitch: f32,
@@ -111,6 +115,8 @@ impl Tank {
             turret_rel: 0.0,
             turret_rate: 0.0,
             gun_pitch: 0.0,
+            gun_sway: 0.0,
+            gun_sway_vel: 0.0,
             hull_kind: HullKind::Lancer,
             turret_kind: TurretKind::Lance,
             pitch: 0.0,
@@ -129,6 +135,7 @@ impl Tank {
         self.fire_barrel += 1;
         let rel = self.turret_rel;
         self.pitch_vel -= rel.cos() * 0.9;
+        self.gun_sway_vel += 1.4;
         self.roll_vel += rel.sin() * 0.7;
     }
 
@@ -294,6 +301,8 @@ fn drive(t: &mut Tank, cmd: &Command, dt: f32) {
     let roll_target = (new_long * t.yaw_rate * 0.012).clamp(-0.08, 0.08);
     spring(&mut t.pitch, &mut t.pitch_vel, pitch_target, 140.0, 11.0, dt);
     spring(&mut t.roll, &mut t.roll_vel, roll_target, 160.0, 12.0, dt);
+    // Stabilizer: holds the gun against hull pitch, but lags and overshoots a little.
+    spring(&mut t.gun_sway, &mut t.gun_sway_vel, -t.pitch * 0.8, 70.0, 7.0, dt);
 }
 
 fn spring(x: &mut f32, v: &mut f32, target: f32, k: f32, c: f32, dt: f32) {

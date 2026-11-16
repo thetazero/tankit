@@ -15,17 +15,21 @@ use crate::render::mesh::MeshData;
 
 /// Material ids understood by `tank_surface` in scene.wgsl.
 pub mod mat {
-    /// Dark composite with a fine weave.
-    pub const CARBON: f32 = 6.0;
-    /// Light armor paint; multiplied by the team color.
+    /// Bare rolled/cast armor steel, mottled and weathered.
+    pub const STEEL: f32 = 6.0;
+    /// Weathered paint over steel; takes a muted team color.
     pub const PAINT: f32 = 7.0;
     pub const TREAD: f32 = 8.0;
-    /// Pulsing emissive light strip.
-    pub const GLOW: f32 = 9.0;
+    /// Machined metal: rods, axles, pins.
     pub const METAL: f32 = 10.0;
-    /// Paint on chamfered edges, worn through to metal in places.
+    /// Paint on chamfered edges, chipped through to steel.
     pub const WORN: f32 = 11.0;
+    /// Vision blocks and sensor glass: dark, glossy, never emissive.
+    pub const LENS: f32 = 12.0;
 }
+
+// Design direction (docs/design-direction.md): solid weathered gunmetal,
+// blunt chunky shapes, nothing glows on the machine itself.
 
 #[derive(Clone, Copy)]
 pub struct Skin {
@@ -33,15 +37,14 @@ pub struct Skin {
     edge: Vec4,
 }
 
-pub const CARBON: Skin = Skin { face: Vec4::new(0.034, 0.037, 0.042, mat::CARBON), edge: Vec4::new(0.09, 0.095, 0.1, mat::CARBON) };
-pub const CARBON_LIGHT: Skin =
-    Skin { face: Vec4::new(0.075, 0.08, 0.088, mat::CARBON), edge: Vec4::new(0.15, 0.16, 0.17, mat::CARBON) };
-pub const PAINT: Skin = Skin { face: Vec4::new(0.9, 0.9, 0.9, mat::PAINT), edge: Vec4::new(0.9, 0.9, 0.9, mat::WORN) };
-pub const METAL: Skin = Skin { face: Vec4::new(0.36, 0.37, 0.39, mat::METAL), edge: Vec4::new(0.5, 0.5, 0.52, mat::METAL) };
-pub const TREAD: Skin = Skin { face: Vec4::new(0.15, 0.15, 0.16, mat::TREAD), edge: Vec4::new(0.24, 0.24, 0.25, mat::TREAD) };
-pub const RUBBER: Skin = Skin { face: Vec4::new(0.06, 0.06, 0.065, mat::CARBON), edge: Vec4::new(0.1, 0.1, 0.11, mat::CARBON) };
-pub const GLOW: Skin = Skin { face: Vec4::new(1.0, 0.2, 0.03, mat::GLOW), edge: Vec4::new(1.0, 0.2, 0.03, mat::GLOW) };
-pub const BORE: Skin = Skin { face: Vec4::new(0.01, 0.01, 0.012, mat::CARBON), edge: Vec4::new(0.01, 0.01, 0.012, mat::CARBON) };
+pub const CARBON: Skin = Skin { face: Vec4::new(0.075, 0.076, 0.08, mat::STEEL), edge: Vec4::new(0.15, 0.15, 0.15, mat::STEEL) };
+pub const CARBON_LIGHT: Skin = Skin { face: Vec4::new(0.12, 0.12, 0.12, mat::STEEL), edge: Vec4::new(0.21, 0.21, 0.2, mat::STEEL) };
+pub const PAINT: Skin = Skin { face: Vec4::new(0.3, 0.29, 0.27, mat::PAINT), edge: Vec4::new(0.3, 0.29, 0.27, mat::WORN) };
+pub const METAL: Skin = Skin { face: Vec4::new(0.3, 0.3, 0.31, mat::METAL), edge: Vec4::new(0.4, 0.4, 0.4, mat::METAL) };
+pub const TREAD: Skin = Skin { face: Vec4::new(0.1, 0.1, 0.1, mat::TREAD), edge: Vec4::new(0.18, 0.18, 0.18, mat::TREAD) };
+pub const RUBBER: Skin = Skin { face: Vec4::new(0.07, 0.07, 0.07, mat::STEEL), edge: Vec4::new(0.1, 0.1, 0.1, mat::STEEL) };
+pub const LENS: Skin = Skin { face: Vec4::new(0.03, 0.035, 0.04, mat::LENS), edge: Vec4::new(0.03, 0.035, 0.04, mat::LENS) };
+pub const BORE: Skin = Skin { face: Vec4::new(0.01, 0.01, 0.012, mat::STEEL), edge: Vec4::new(0.01, 0.01, 0.012, mat::STEEL) };
 
 // ---------------------------------------------------------------------------
 // Shape kit
@@ -188,6 +191,8 @@ pub fn round(m: &mut MeshData, rings: &[Vec<Vec3>], bevel: f32, skin: Skin) {
 /// An armor plate: `top` is its outer face (4 corners, in order), extruded
 /// `t` toward `inside`. Corners are cut and the outer face is beveled.
 pub fn plate(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin) {
+    // Thick, solid plates: nothing should read as sheet metal.
+    let t = t * 1.5;
     let mut n = (top[2] - top[0]).cross(top[3] - top[1]).normalize_or_zero();
     let c = (top[0] + top[1] + top[2] + top[3]) * 0.25;
     if n.dot(c - inside) < 0.0 {
@@ -349,6 +354,8 @@ pub struct HullModel {
     pub running: Running,
     /// Turret ring position.
     pub mount: Vec3,
+    /// Height of the suspension shock mounts on the hull side.
+    pub shock_top: f32,
 }
 
 /// Light, sleek hull: a low wedge with sharp white fender plates sweeping
@@ -392,25 +399,16 @@ pub fn lancer() -> HullModel {
     // Dark inner fender liners under the white plates (visible from the front).
     plate2(&mut m, [v(0.94, 1.43, -2.2), v(1.6, 1.25, -2.2), v(1.6, 1.25, 1.9), v(0.94, 1.43, 1.9)], 0.04, inside, CARBON);
 
-    // Layered side skirts: white, dark, white, overlapping like real panels,
-    // with raked lower edges so the side silhouette stays angular.
-    let skirt = |z0: f32, z1: f32, x: f32, low0: f32, low1: f32| {
-        [v(x, 1.27, z0), v(x, 1.27, z1), v(x + 0.08, low1, z1), v(x + 0.08, low0, z0)]
-    };
-    plate2(&mut m, skirt(-2.32, -0.75, 1.64, 1.02, 0.78), 0.05, inside, PAINT);
-    plate2(&mut m, skirt(-0.85, 0.55, 1.69, 0.72, 0.72), 0.05, inside, CARBON_LIGHT);
-    plate2(&mut m, skirt(0.45, 1.8, 1.64, 0.78, 1.1), 0.05, inside, PAINT);
-    // Angled armor wedge bridging the front skirt and the claw.
+    // No side skirts: the suspension arms and shocks stay exposed.
+    // Blunt armor wedge bridging the fender and the front plate.
     plate2(&mut m, [v(1.62, 1.27, 1.75), v(1.5, 1.05, 2.3), v(1.52, 0.86, 2.2), v(1.72, 1.1, 1.75)], 0.05, inside, CARBON_LIGHT);
-    // Light strip along the dark middle skirt.
-    plate2(&mut m, [v(1.75, 1.12, -0.6), v(1.75, 1.12, 0.3), v(1.757, 1.06, 0.3), v(1.757, 1.06, -0.6)], 0.015, inside, GLOW);
 
     // Raised glacis plate with twin light bars.
     plate(&mut m, [v(-0.6, 1.42, 1.1), v(0.6, 1.42, 1.1), v(0.42, 1.11, 2.38), v(-0.42, 1.11, 2.38)], 0.06, inside, CARBON_LIGHT);
-    plate2(&mut m, [v(0.2, 1.46, 1.25), v(0.42, 1.46, 1.25), v(0.36, 1.32, 1.8), v(0.2, 1.32, 1.8)], 0.02, inside, GLOW);
+    plate2(&mut m, [v(0.2, 1.46, 1.25), v(0.42, 1.46, 1.25), v(0.36, 1.32, 1.8), v(0.2, 1.32, 1.8)], 0.02, inside, LENS);
     // Nose: armored beak under the glacis.
     plate(&mut m, [v(-0.66, 1.0, 2.5), v(0.66, 1.0, 2.5), v(0.5, 0.62, 2.62), v(-0.5, 0.62, 2.62)], 0.06, inside, PAINT);
-    plate2(&mut m, [v(0.3, 0.92, 2.6), v(0.5, 0.9, 2.6), v(0.47, 0.82, 2.63), v(0.3, 0.84, 2.63)], 0.015, inside, GLOW);
+    plate2(&mut m, [v(0.3, 0.92, 2.6), v(0.5, 0.9, 2.6), v(0.47, 0.82, 2.63), v(0.3, 0.84, 2.63)], 0.015, inside, LENS);
 
     // Engine deck: grille well with metal slats behind the turret.
     block(&mut m, v(-0.85, 1.38, -2.05), v(0.85, 1.45, -1.3), 0.02, CARBON);
@@ -419,7 +417,7 @@ pub fn lancer() -> HullModel {
         block(&mut m, v(-0.8, 1.43, z), v(0.8, 1.48, z + 0.07), 0.012, METAL);
     }
     // Tail lights and exhaust boxes on the rear plate.
-    plate2(&mut m, [v(0.7, 1.24, -2.45), v(1.15, 1.24, -2.45), v(1.15, 1.18, -2.45), v(0.7, 1.18, -2.45)], 0.015, inside, GLOW);
+    plate2(&mut m, [v(0.7, 1.24, -2.45), v(1.15, 1.24, -2.45), v(1.15, 1.18, -2.45), v(0.7, 1.18, -2.45)], 0.015, inside, LENS);
     block2(&mut m, v(0.25, 0.7, -2.5), v(0.6, 0.9, -2.3), 0.03, METAL);
 
     HullModel {
@@ -432,6 +430,7 @@ pub fn lancer() -> HullModel {
             road: [-1.35f32, -0.45, 0.45, 1.35].iter().map(|&z| Wheel { center: Vec2::new(z, 0.38), radius: 0.3 }).collect(),
         },
         mount: v(0.0, 1.42, -0.3),
+        shock_top: 1.2,
     }
 }
 
@@ -471,7 +470,7 @@ pub fn bastion() -> HullModel {
     // Bull-nose lower plate with light slits.
     plate(&mut m, [v(-1.25, 1.12, 2.62), v(1.25, 1.12, 2.62), v(1.05, 0.6, 2.72), v(-1.05, 0.6, 2.72)], 0.08, inside, PAINT);
     for s in [-1.0f32, 1.0] {
-        plate(&mut m, [v(s * 0.35, 1.0, 2.68), v(s * 0.8, 1.0, 2.68), v(s * 0.78, 0.94, 2.69), v(s * 0.35, 0.94, 2.69)], 0.015, inside, GLOW);
+        plate(&mut m, [v(s * 0.35, 1.0, 2.68), v(s * 0.8, 1.0, 2.68), v(s * 0.78, 0.94, 2.69), v(s * 0.35, 0.94, 2.69)], 0.015, inside, LENS);
     }
 
     // Four heavy skirt panels per side, alternately stood off.
@@ -479,9 +478,10 @@ pub fn bastion() -> HullModel {
         let z0 = -2.35 + i as f32 * 1.12;
         let z1 = z0 + 1.2;
         let x = if i % 2 == 0 { 1.66 } else { 1.71 };
-        let low = if i == 3 { 0.62 } else { 0.5 };
+        // Short upper skirts leave the suspension below them exposed.
+        let low = if i == 3 { 1.08 } else { 1.02 };
         let skin = if i == 1 { CARBON_LIGHT } else { PAINT };
-        plate2(&mut m, [v(x, 1.42, z0), v(x, 1.42, z1), v(x + 0.07, low, z1 - 0.12 * (i == 3) as i32 as f32), v(x + 0.07, 0.5, z0)], 0.08, inside, skin);
+        plate2(&mut m, [v(x, 1.42, z0), v(x, 1.42, z1), v(x + 0.07, low, z1 - 0.12 * (i == 3) as i32 as f32), v(x + 0.07, 1.02, z0)], 0.08, inside, skin);
         // Bolt heads along the top edge.
         for b in 0..3 {
             let z = z0 + 0.25 + b as f32 * 0.35;
@@ -492,7 +492,7 @@ pub fn bastion() -> HullModel {
             }
         }
     }
-    plate2(&mut m, [v(1.81, 1.18, -1.1), v(1.81, 1.18, -0.2), v(1.815, 1.12, -0.2), v(1.815, 1.12, -1.1)], 0.015, inside, GLOW);
+    plate2(&mut m, [v(1.81, 1.18, -1.1), v(1.81, 1.18, -0.2), v(1.815, 1.12, -0.2), v(1.815, 1.12, -1.1)], 0.015, inside, LENS);
     // Top of the skirts: armored mud guard shelf.
     plate2(&mut m, [v(1.36, 1.6, -2.4), v(1.8, 1.45, -2.4), v(1.8, 1.45, 2.2), v(1.36, 1.6, 2.2)], 0.06, inside, CARBON_LIGHT);
 
@@ -505,7 +505,7 @@ pub fn bastion() -> HullModel {
         block(&mut m, v(-0.4, 1.64, z), v(0.4, 1.7, z + 0.07), 0.012, METAL);
     }
     // Rear lights and exhausts.
-    plate2(&mut m, [v(0.9, 1.45, -2.5), v(1.35, 1.45, -2.5), v(1.35, 1.38, -2.5), v(0.9, 1.38, -2.5)], 0.015, inside, GLOW);
+    plate2(&mut m, [v(0.9, 1.45, -2.5), v(1.35, 1.45, -2.5), v(1.35, 1.38, -2.5), v(0.9, 1.38, -2.5)], 0.015, inside, LENS);
     for s in [-1.0f32, 1.0] {
         round(&mut m, &[at_z(&ngon(8, 0.11, Vec2::new(s * 0.5, 0.95)), -2.55), at_z(&ngon(8, 0.11, Vec2::new(s * 0.5, 0.95)), -2.3)], 0.02, METAL);
     }
@@ -520,6 +520,7 @@ pub fn bastion() -> HullModel {
             road: [-1.6f32, -0.8, 0.0, 0.8, 1.6].iter().map(|&z| Wheel { center: Vec2::new(z, 0.4), radius: 0.32 }).collect(),
         },
         mount: v(0.0, 1.62, -0.2),
+        shock_top: 1.02,
     }
 }
 
@@ -541,10 +542,36 @@ pub struct TurretModel {
     pub muzzle: f32,
     /// How far a barrel slides back when it fires.
     pub recoil: f32,
+    /// Elevation ram: anchored on the turret (turret space), pushing a lug on the gun (gun space).
+    pub ram_anchor: Vec3,
+    pub ram_lug: Vec3,
 }
 
+/// Recoil cylinder housings on the cradle; matching rods ride on the barrel.
+fn recoil_housings(m: &mut MeshData, at: &[Vec3]) {
+    for &p in at {
+        round(m, &[at_z(&ngon(10, 0.06, Vec2::new(p.x, p.y)), -0.1), at_z(&ngon(10, 0.06, Vec2::new(p.x, p.y)), 0.42)], 0.015, CARBON_LIGHT);
+    }
+}
+
+fn recoil_rods(m: &mut MeshData, at: &[Vec3]) {
+    for &p in at {
+        round(m, &[at_z(&ngon(8, 0.028, Vec2::new(p.x, p.y)), 0.2), at_z(&ngon(8, 0.028, Vec2::new(p.x, p.y)), 0.9)], 0.0, METAL);
+        block(m, v(p.x - 0.05, p.y - 0.05, 0.85), v(p.x + 0.05, p.y + 0.05, 0.98), 0.015, METAL);
+    }
+}
+
+/// Turret race with an exposed ring gear: the teeth turn with the turret.
 fn turret_ring(m: &mut MeshData) {
     round(m, &[at_y(&ngon(16, 0.86, Vec2::ZERO), -0.05), at_y(&ngon(16, 0.82, Vec2::ZERO), 0.12)], 0.02, CARBON);
+    for i in 0..32 {
+        let a = i as f32 / 32.0 * TAU;
+        let d = Vec2::new(a.cos(), a.sin());
+        let side = Vec2::new(-d.y, d.x) * 0.035;
+        let (b0, b1) = (d * 0.84, d * 0.93);
+        let tooth = [b0 - side, b0 + side, b1 + side * 0.5, b1 - side * 0.5];
+        round(m, &[at_y(&tooth, -0.04), at_y(&tooth, 0.04)], 0.006, METAL);
+    }
 }
 
 /// Long-barrel rail cannon: faceted wedge head, white cheek armor, glowing
@@ -570,13 +597,12 @@ pub fn lance() -> TurretModel {
     // Raised roof panel and a sensor pod with an eye.
     plate(&mut head, [v(-0.55, 0.86, -0.85), v(0.55, 0.86, -0.85), v(0.5, 0.86, 0.3), v(-0.5, 0.86, 0.3)], 0.05, inside, CARBON_LIGHT);
     block(&mut head, v(0.25, 0.86, -1.0), v(0.62, 1.1, -0.55), 0.04, CARBON);
-    plate(&mut head, [v(0.32, 1.05, -0.54), v(0.55, 1.05, -0.54), v(0.55, 0.92, -0.54), v(0.32, 0.92, -0.54)], 0.015, inside, GLOW);
-    // Rear antenna fins.
-    for s in [-1.0f32, 1.0] {
-        plate(&mut head, [v(s * 0.3, 0.86, -1.3), v(s * 0.3, 0.86, -0.95), v(s * 0.34, 1.25, -1.15), v(s * 0.34, 1.25, -1.32)], 0.03, v(0.0, 0.5, -1.1), PAINT);
-    }
+    plate(&mut head, [v(0.32, 1.05, -0.54), v(0.55, 1.05, -0.54), v(0.55, 0.92, -0.54), v(0.32, 0.92, -0.54)], 0.015, inside, LENS);
+    // Blunt periscope housing with a vision block.
+    block(&mut head, v(-0.42, 0.86, -1.2), v(-0.1, 1.06, -0.9), 0.04, CARBON_LIGHT);
+    plate(&mut head, [v(-0.38, 1.02, -0.89), v(-0.14, 1.02, -0.89), v(-0.14, 0.94, -0.89), v(-0.38, 0.94, -0.89)], 0.015, inside, LENS);
     // Rear light bar.
-    plate(&mut head, [v(-0.3, 0.5, -1.36), v(0.3, 0.5, -1.36), v(0.3, 0.44, -1.36), v(-0.3, 0.44, -1.36)], 0.015, inside, GLOW);
+    plate(&mut head, [v(-0.3, 0.5, -1.36), v(0.3, 0.5, -1.36), v(0.3, 0.44, -1.36), v(-0.3, 0.44, -1.36)], 0.015, inside, LENS);
 
     let mut mantlet = MeshData::default();
     solid(&mut mantlet, &[at_z(&rect(Vec2::ZERO, Vec2::new(0.28, 0.24), 0.07), -0.3), at_z(&rect(Vec2::ZERO, Vec2::new(0.24, 0.2), 0.06), 0.32)], 0.03, CARBON);
@@ -595,19 +621,34 @@ pub fn lance() -> TurretModel {
     for i in 0..3 {
         let z = 1.55 + i as f32 * 0.5;
         solid(&mut barrel, &[at_z(&oct(0.185), z), at_z(&oct(0.185), z + 0.36)], 0.025, CARBON);
-        for s in [-1.0f32, 1.0] {
-            let x = s * 0.178;
-            plate(&mut barrel, [v(x, 0.035, z + 0.06), v(x, 0.035, z + 0.3), v(x, -0.035, z + 0.3), v(x, -0.035, z + 0.06)], 0.01, Vec3::new(0.0, 0.0, z), GLOW);
-        }
+
     }
     // Hex muzzle with a dark bore.
     solid(&mut barrel, &[at_z(&ngon(6, 0.24, Vec2::ZERO), 3.08), at_z(&ngon(6, 0.27, Vec2::ZERO), 3.5)], 0.03, CARBON);
     round(&mut barrel, &[at_z(&ngon(10, 0.12, Vec2::ZERO), 3.4), at_z(&ngon(10, 0.12, Vec2::ZERO), 3.505)], 0.0, BORE);
+    // Muzzle brake ports.
     for s in [-1.0f32, 1.0] {
-        plate(&mut barrel, [v(s * 0.25, 0.04, 3.15), v(s * 0.25, 0.04, 3.42), v(s * 0.25, -0.04, 3.42), v(s * 0.25, -0.04, 3.15)], 0.01, Vec3::new(0.0, 0.0, 3.3), GLOW);
+        block(&mut barrel, v(s * 0.2 - 0.03, -0.05, 3.18), v(s * 0.2 + 0.07, 0.05, 3.3), 0.015, BORE);
     }
 
-    TurretModel { head, mantlet, barrel, pivot: v(0.0, 0.45, 0.88), barrels: vec![Vec3::ZERO], muzzle: 3.55, recoil: 0.45 }
+    let cyl = [v(-0.24, 0.17, 0.0), v(0.24, 0.17, 0.0)];
+    recoil_housings(&mut mantlet, &cyl);
+    recoil_rods(&mut barrel, &cyl);
+    // Lug for the elevation ram on top of the cradle.
+    block(&mut mantlet, v(-0.06, 0.2, 0.0), v(0.06, 0.34, 0.2), 0.02, METAL);
+    block(&mut head, v(-0.1, 0.84, -0.32), v(0.1, 0.98, -0.12), 0.02, METAL);
+
+    TurretModel {
+        head,
+        mantlet,
+        barrel,
+        pivot: v(0.0, 0.45, 0.88),
+        barrels: vec![Vec3::ZERO],
+        muzzle: 3.55,
+        recoil: 0.45,
+        ram_anchor: v(0.0, 0.92, -0.22),
+        ram_lug: v(0.0, 0.3, 0.1),
+    }
 }
 
 /// Twin short cannons in a wide, low turret with big shoulder plates.
@@ -629,12 +670,12 @@ pub fn maul() -> TurretModel {
     plate2(&mut head, [v(0.5, 0.82, -1.0), v(0.5, 0.82, 0.68), v(1.1, 0.5, 0.56), v(1.1, 0.5, -0.94)], 0.08, inside, PAINT);
     plate2(&mut head, [v(1.1, 0.48, -0.9), v(1.1, 0.48, 0.5), v(1.06, 0.12, 0.45), v(1.06, 0.12, -0.85)], 0.06, inside, CARBON_LIGHT);
     plate(&mut head, [v(-0.48, 0.8, 0.66), v(0.48, 0.8, 0.66), v(0.44, 0.6, 1.04), v(-0.44, 0.6, 1.04)], 0.06, inside, PAINT);
-    plate(&mut head, [v(-0.55, 0.5, 1.03), v(0.55, 0.5, 1.03), v(0.55, 0.45, 1.03), v(-0.55, 0.45, 1.03)], 0.015, inside, GLOW);
+    plate(&mut head, [v(-0.55, 0.5, 1.03), v(0.55, 0.5, 1.03), v(0.55, 0.45, 1.03), v(-0.55, 0.45, 1.03)], 0.015, inside, LENS);
     // Ammo drum housing at the back.
     solid(&mut head, &[at_x(&ngon(8, 0.32, Vec2::new(-1.2, 0.5)), -0.55), at_x(&ngon(8, 0.32, Vec2::new(-1.2, 0.5)), 0.55)], 0.04, CARBON_LIGHT);
     plate(&mut head, [v(-0.5, 0.86, -1.42), v(0.5, 0.86, -1.42), v(0.5, 0.86, -1.0), v(-0.5, 0.86, -1.0)], 0.03, v(0.0, 0.4, -1.2), PAINT);
     for s in [-1.0f32, 1.0] {
-        plate(&mut head, [v(s * 0.57, 0.62, -1.15), v(s * 0.57, 0.62, -0.95), v(s * 0.57, 0.38, -0.95), v(s * 0.57, 0.38, -1.15)], 0.015, v(0.0, 0.5, -1.2), GLOW);
+        plate(&mut head, [v(s * 0.57, 0.62, -1.15), v(s * 0.57, 0.62, -0.95), v(s * 0.57, 0.38, -0.95), v(s * 0.57, 0.38, -1.15)], 0.015, v(0.0, 0.5, -1.2), LENS);
     }
 
     let mut mantlet = MeshData::default();
@@ -642,10 +683,16 @@ pub fn maul() -> TurretModel {
     round(&mut mantlet, &[at_x(&ngon(10, 0.1, Vec2::ZERO), -0.72), at_x(&ngon(10, 0.1, Vec2::ZERO), 0.72)], 0.02, METAL);
     plate(&mut mantlet, [v(-0.12, 0.22, -0.2), v(0.12, 0.22, -0.2), v(0.12, 0.22, 0.25), v(-0.12, 0.22, 0.25)], 0.03, Vec3::ZERO, PAINT);
 
+    for s in [-1.0f32, 1.0] {
+        recoil_housings(&mut mantlet, &[v(s * 0.34, 0.27, 0.0)]);
+    }
+    block(&mut mantlet, v(-0.06, 0.2, 0.05), v(0.06, 0.34, 0.25), 0.02, METAL);
+    block(&mut head, v(-0.1, 0.8, 0.15), v(0.1, 0.92, 0.35), 0.02, METAL);
+
     let mut barrel = MeshData::default();
+    recoil_rods(&mut barrel, &[v(0.0, 0.27, 0.0)]);
     let sq = |h: f32| rect(Vec2::ZERO, Vec2::splat(h), h * 0.3);
     solid(&mut barrel, &[at_z(&sq(0.17), 0.1), at_z(&sq(0.16), 1.45)], 0.03, CARBON);
-    plate(&mut barrel, [v(-0.05, 0.172, 0.4), v(0.05, 0.172, 0.4), v(0.05, 0.172, 1.2), v(-0.05, 0.172, 1.2)], 0.01, Vec3::ZERO, GLOW);
     plate(&mut barrel, [v(-0.17, 0.17, 0.3), v(-0.07, 0.17, 0.3), v(-0.07, 0.17, 1.3), v(-0.17, 0.17, 1.3)], 0.02, Vec3::ZERO, PAINT);
     round(&mut barrel, &[at_z(&ngon(8, 0.105, Vec2::ZERO), 1.4), at_z(&ngon(8, 0.1, Vec2::ZERO), 2.45)], 0.0, METAL);
     solid(&mut barrel, &[at_z(&sq(0.15), 2.4), at_z(&sq(0.16), 2.78)], 0.025, CARBON);
@@ -659,5 +706,55 @@ pub fn maul() -> TurretModel {
         barrels: vec![v(-0.34, 0.0, 0.0), v(0.34, 0.0, 0.0)],
         muzzle: 2.82,
         recoil: 0.35,
+        ram_anchor: v(0.0, 0.88, 0.25),
+        ram_lug: v(0.0, 0.3, 0.15),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Exposed machinery (drawn between moving frames each frame)
+
+/// Nominal suspension arm length; instances stretch it slightly to fit.
+pub const ARM_LEN: f32 = 0.4;
+/// Hydraulic cylinder and rod lengths (they telescope over each other).
+pub const CYL_LEN: f32 = 0.32;
+pub const ROD_LEN: f32 = 0.36;
+
+/// Suspension arm along +z from its pivot (z = 0) to the wheel hub (z = ARM_LEN).
+pub fn arm() -> MeshData {
+    let mut m = MeshData::default();
+    solid(&mut m, &[at_z(&rect(Vec2::ZERO, Vec2::new(0.04, 0.065), 0.02), 0.0), at_z(&rect(Vec2::ZERO, Vec2::new(0.04, 0.05), 0.018), ARM_LEN)], 0.012, CARBON_LIGHT);
+    for z in [0.0, ARM_LEN] {
+        round(&mut m, &[at_x(&ngon(10, 0.085, Vec2::new(z, 0.0)), -0.055), at_x(&ngon(10, 0.085, Vec2::new(z, 0.0)), 0.055)], 0.015, METAL);
+    }
+    m
+}
+
+/// Hydraulic cylinder body along +z from its mount eye.
+pub fn cylinder() -> MeshData {
+    let mut m = MeshData::default();
+    round(&mut m, &[at_x(&ngon(8, 0.045, Vec2::ZERO), -0.04), at_x(&ngon(8, 0.045, Vec2::ZERO), 0.04)], 0.01, METAL);
+    round(&mut m, &[at_z(&ngon(10, 0.055, Vec2::ZERO), 0.02), at_z(&ngon(10, 0.055, Vec2::ZERO), CYL_LEN)], 0.012, CARBON);
+    round(&mut m, &[at_z(&ngon(10, 0.062, Vec2::ZERO), CYL_LEN - 0.05), at_z(&ngon(10, 0.062, Vec2::ZERO), CYL_LEN)], 0.01, METAL);
+    m
+}
+
+/// Polished piston rod along +z from its eye.
+pub fn rod() -> MeshData {
+    let mut m = MeshData::default();
+    round(&mut m, &[at_x(&ngon(8, 0.04, Vec2::ZERO), -0.035), at_x(&ngon(8, 0.04, Vec2::ZERO), 0.035)], 0.01, METAL);
+    round(&mut m, &[at_z(&ngon(8, 0.024, Vec2::ZERO), 0.0), at_z(&ngon(8, 0.024, Vec2::ZERO), ROD_LEN)], 0.0, METAL);
+    m
+}
+
+/// Coil spring over a shock, unit length along +z: drawn scaled to the
+/// shock's current length so it visibly compresses.
+pub fn spring() -> MeshData {
+    let mut m = MeshData::default();
+    let coils = 6;
+    for i in 0..coils {
+        let z = 0.1 + i as f32 / (coils - 1) as f32 * 0.8;
+        round(&mut m, &[at_z(&ngon(12, 0.075, Vec2::ZERO), z - 0.025), at_z(&ngon(12, 0.075, Vec2::ZERO), z + 0.025)], 0.01, PAINT);
+    }
+    m
 }

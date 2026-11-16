@@ -121,57 +121,67 @@ fn grid_line(x: f32, width: f32, w: f32) -> f32 {
     return 1.0 - smoothstep(width, width + w * 1.5, d);
 }
 
-// Tank materials (ids 6..11) work in object space, so they move with the part.
-fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, duv: vec2<f32>) -> Surface {
+// Tank materials (ids 6..12) work in object space, so detail moves with the part.
+// Direction (docs/design-direction.md): weathered solid gunmetal, dust and
+// wear; nothing on the machine glows.
+fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, wn: vec3<f32>, duv: vec2<f32>) -> Surface {
     var s: Surface;
     s.albedo = base;
-    s.rough = 0.5;
+    s.rough = 0.6;
     s.ao = 1.0;
     s.emissive = vec3<f32>(0.0);
     s.metal = 0.0;
     let uv = plane_uv(lpos, ln);
+    let mottle = noise2(uv * 2.3) * 0.5 + noise2(uv * 7.0) * 0.3 + noise2(uv * 23.0) * 0.2;
     // Grime collects low on the vehicle.
-    let grime = mix(0.72, 1.0, smoothstep(0.1, 1.1, wpos.y));
+    let grime = mix(0.62, 1.0, smoothstep(0.1, 1.2, wpos.y));
     if (m == 6) {
-        // Dark composite: fine diagonal weave plus faint panel seams.
-        let q = uv * 22.0;
-        let weave = step(0.5, fract((q.x + q.y) * 0.5)) * 0.5 + step(0.5, fract((q.x - q.y) * 0.5)) * 0.5;
-        let fade = 1.0 - clamp(length(duv * 22.0) * 0.6, 0.0, 1.0);
-        s.albedo = base * (1.0 + (weave - 0.5) * 0.22 * fade) * grime;
+        // Rolled armor steel: mottled, pitted, faint plate seams.
+        s.albedo = base * (0.75 + 0.5 * mottle) * grime;
+        let pits = smoothstep(0.78, 0.86, noise2(uv * 55.0));
+        s.albedo *= 1.0 - pits * 0.35;
         let seams = max(grid_line(uv.x * 0.9, 0.006, duv.x * 0.9), grid_line(uv.y * 0.9 + 0.3, 0.006, duv.y * 0.9));
-        s.albedo *= 1.0 - seams * 0.4;
-        s.rough = 0.38 + 0.15 * noise2(uv * 9.0);
+        s.albedo *= 1.0 - seams * 0.35;
+        s.metal = 0.45;
+        s.rough = 0.62 + 0.15 * mottle;
     } else if (m == 7 || m == 11) {
-        // Painted armor (team color via tint). Worn edges (11) show bare metal through scuffs.
-        let n = noise2(uv * 7.0) * 0.6 + noise2(uv * 23.0) * 0.4;
-        s.albedo = base * (0.92 + 0.1 * n) * grime;
-        s.rough = 0.42;
-        if (m == 11) {
-            let wear = smoothstep(0.55, 0.68, noise2(uv * 14.0 + 3.1) * 0.7 + noise2(uv * 41.0) * 0.3);
-            s.albedo = mix(s.albedo, vec3<f32>(0.42, 0.42, 0.44), wear);
-            s.metal = wear * 0.8;
-            s.rough = mix(0.42, 0.3, wear);
-        }
-        // Small scratches.
+        // Weathered paint (muted team color via tint). Edges (11) are chipped to bare steel.
+        s.albedo = base * (0.8 + 0.35 * mottle) * grime;
+        s.rough = 0.78;
+        let chip_edge = select(0.0, 1.0, m == 11);
+        let chips = smoothstep(0.74 - chip_edge * 0.24, 0.8 - chip_edge * 0.24, noise2(uv * 16.0 + 3.1) * 0.65 + noise2(uv * 47.0) * 0.35);
+        s.albedo = mix(s.albedo, vec3<f32>(0.13, 0.13, 0.13) * (0.8 + 0.4 * mottle), chips);
+        s.metal = chips * 0.6;
+        s.rough = mix(s.rough, 0.5, chips);
+        // Scratches and rain streaks.
         let scratch = smoothstep(0.86, 0.92, noise2(vec2<f32>(uv.x * 60.0, uv.y * 4.0)));
-        s.albedo = mix(s.albedo, s.albedo * 0.8, scratch * 0.3);
+        let streak = smoothstep(0.55, 0.9, noise2(vec2<f32>(uv.x * 14.0, uv.y * 0.8)));
+        s.albedo *= (1.0 - scratch * 0.25) * (1.0 - streak * 0.18);
     } else if (m == 8) {
-        // Track steel: dark, worn bright on ridges facing outward.
-        let n = noise2(uv * 30.0);
-        s.albedo = base * (0.8 + 0.4 * n) * grime;
+        // Track steel: dark, polished bright where it meets the ground.
+        s.albedo = base * (0.7 + 0.6 * noise2(uv * 30.0)) * grime;
         s.metal = 0.6;
-        s.rough = 0.55;
-    } else if (m == 9) {
-        // Light strip: slow pulse running along the hull.
-        let pulse = 0.75 + 0.25 * sin(g.params.x * 3.0 - lpos.z * 1.5 + lpos.x * 0.7);
-        s.albedo = base * 0.2;
-        s.emissive = base * 2.2 * pulse;
+        s.rough = 0.6;
     } else if (m == 10) {
-        // Bare gunmetal: brushed along the part's long axis.
+        // Machined metal (rods, pins, axles): the only shiny parts, kept dull-ish.
         let brush = noise2(vec2<f32>(uv.x * 3.0, uv.y * 80.0));
         s.albedo = base * (0.85 + 0.25 * brush);
-        s.metal = 0.9;
-        s.rough = 0.28 + 0.1 * brush;
+        s.metal = 0.85;
+        s.rough = 0.35 + 0.12 * brush;
+    } else if (m == 12) {
+        // Vision blocks: dark glass, a little dust.
+        s.albedo = base;
+        s.metal = 0.3;
+        s.rough = 0.12;
+    }
+    // Dust settles on upward-facing surfaces and is kicked up onto the lower hull.
+    if (m != 10 && m != 12) {
+        let up = smoothstep(0.35, 0.95, wn.y);
+        let low = 1.0 - smoothstep(0.2, 1.0, wpos.y);
+        let d = clamp((up * 0.3 + low * 0.35) * (0.3 + 0.9 * noise2(uv * 5.0 + 7.0)), 0.0, 0.5);
+        s.albedo = mix(s.albedo, vec3<f32>(0.24, 0.21, 0.17), d);
+        s.rough = mix(s.rough, 0.95, d);
+        s.metal *= 1.0 - d;
     }
     return s;
 }
@@ -252,14 +262,19 @@ fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
     let m = i32(round(v.color.a));
-    let is_tank = m >= 6 && m <= 11;
-    // On tanks the instance tint is the team color and only affects paint.
+    let is_tank = m >= 6 && m <= 12 && m != 9;
+    // On tanks the instance tint is the team color; it only affects paint, and
+    // muted, so bright color stays reserved for combat effects.
     let paint = m == 7 || m == 11;
-    let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
+    let team = mix(vec3<f32>(dot(v.tint.rgb, vec3<f32>(0.3, 0.55, 0.15))), v.tint.rgb, 0.6);
+    var base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
+    if (is_tank && paint) {
+        base = v.color.rgb * team;
+    }
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
     var s: Surface;
     if (is_tank) {
-        s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
+        s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, n, duv);
     } else {
         s = surface(v.color.a, base, v.wpos, n);
     }

@@ -56,6 +56,42 @@ struct HullArt {
     belt: Belt,
     links: usize,
     mount: Vec3,
+    suspension: Vec<Strut>,
+}
+
+/// One road wheel's exposed suspension, for the +x side (mirrored for -x).
+/// The pivot and shock top ride with the hull; the hub stays on the track.
+struct Strut {
+    /// Hub in the ground frame.
+    hub: Vec3,
+    /// Arm pivot and shock top in the hull (sprung) frame.
+    pivot: Vec3,
+    top: Vec3,
+}
+
+impl Strut {
+    fn layout(run: &Running, top_y: f32) -> Vec<Strut> {
+        let x = run.track_x + run.track_width * 0.5 + 0.08;
+        run.road
+            .iter()
+            .map(|w| {
+                // Arms point from a pivot nearer the hull's middle out to the wheel.
+                let dz = if w.center.x > 0.0 { -0.3 } else { 0.3 };
+                let hub = Vec3::new(x, w.center.y, w.center.x);
+                let pivot = hub + Vec3::new(0.0, 0.26, dz);
+                let top = Vec3::new(x, top_y, w.center.x + dz * 0.15);
+                Strut { hub, pivot, top }
+            })
+            .collect()
+    }
+}
+
+/// Shared machinery meshes.
+struct Machinery {
+    arm: MeshId,
+    cylinder: MeshId,
+    rod: MeshId,
+    spring: MeshId,
 }
 
 struct TurretArt {
@@ -66,12 +102,15 @@ struct TurretArt {
     barrels: Vec<Vec3>,
     muzzle: f32,
     recoil: f32,
+    ram_anchor: Vec3,
+    ram_lug: Vec3,
 }
 
 /// The tank kit on the GPU.
 pub struct TankArt {
     hulls: Vec<HullArt>,
     turrets: Vec<TurretArt>,
+    mech: Machinery,
 }
 
 impl TankArt {
@@ -87,6 +126,7 @@ impl TankArt {
                 wheels.push(run.idler);
                 let belt = Belt::new(&wheels, LINK_HALF);
                 let links = (belt.length() / LINK_PITCH).round() as usize;
+                let suspension = Strut::layout(&run, h.shock_top);
                 HullArt {
                     body: r.add_mesh(&h.body),
                     link: r.add_mesh(&link),
@@ -97,6 +137,7 @@ impl TankArt {
                     belt,
                     links,
                     mount: h.mount,
+                    suspension,
                 }
             })
             .collect();
@@ -111,9 +152,17 @@ impl TankArt {
                 barrels: t.barrels,
                 muzzle: t.muzzle,
                 recoil: t.recoil,
+                ram_anchor: t.ram_anchor,
+                ram_lug: t.ram_lug,
             })
             .collect();
-        TankArt { hulls, turrets }
+        let mech = Machinery {
+            arm: r.add_mesh(&model::arm()),
+            cylinder: r.add_mesh(&model::cylinder()),
+            rod: r.add_mesh(&model::rod()),
+            spring: r.add_mesh(&model::spring()),
+        };
+        TankArt { hulls, turrets, mech }
     }
 
     /// Append every instance needed to draw `t` this frame.
@@ -164,13 +213,33 @@ impl TankArt {
                 let m = Mat4::from_cols(Vec4::X, ny.extend(0.0), nz.extend(0.0), Vec3::new(x, p.pos.y, p.pos.x).extend(1.0));
                 out.push((hull.link, Instance::new(base * m * flip, plain)));
             }
+
+            // Suspension: arms swing and shocks telescope as the hull moves on its springs.
+            let across = base.transform_vector3(Vec3::X);
+            let mx = |v: Vec3| Vec3::new(v.x * sign, v.y, v.z);
+            for st in &hull.suspension {
+                let hub = base.transform_point3(mx(st.hub));
+                let pivot = sprung.transform_point3(mx(st.pivot));
+                let top = sprung.transform_point3(mx(st.top));
+                let reach = hub - pivot;
+                let arm = aim(pivot, reach, across) * Mat4::from_scale(Vec3::new(1.0, 1.0, reach.length() / model::ARM_LEN));
+                out.push((self.mech.arm, Instance::new(arm, plain)));
+                let low = pivot + reach * 0.55;
+                self.hydraulic(top, low, across, 1.0, tint, out);
+                let span = low - top;
+                let coil = aim(low, -span, across) * Mat4::from_scale(Vec3::new(1.0, 1.0, span.length()));
+                out.push((self.mech.spring, Instance::new(coil, tint)));
+            }
         }
 
         // Turret yaws on the hull's ring; the gun pitches about its trunnion.
         let tm = sprung * Mat4::from_translation(hull.mount) * Mat4::from_rotation_y(t.turret_rel);
         out.push((turret.head, Instance::new(tm, tint)));
-        let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-t.gun_pitch);
+        let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-(t.gun_pitch + t.gun_sway));
         out.push((turret.mantlet, Instance::new(gun, tint)));
+        // Elevation ram between the turret roof and the gun cradle.
+        let across = tm.transform_vector3(Vec3::X);
+        self.hydraulic(tm.transform_point3(turret.ram_anchor), gun.transform_point3(turret.ram_lug), across, 1.35, tint, out);
 
         let fired = t.fire_barrel % turret.barrels.len();
         let (kick, flash) = recoil_curve(t.since_fire);
@@ -182,6 +251,23 @@ impl TankArt {
             }
         }
     }
+}
+
+impl TankArt {
+    /// A cylinder anchored at `a` and its rod anchored at `b`, telescoping between them.
+    fn hydraulic(&self, a: Vec3, b: Vec3, across: Vec3, scale: f32, tint: Vec4, out: &mut Vec<(MeshId, Instance)>) {
+        let s = Mat4::from_scale(Vec3::splat(scale));
+        out.push((self.mech.cylinder, Instance::new(aim(a, b - a, across) * s, tint)));
+        out.push((self.mech.rod, Instance::new(aim(b, a - b, across) * s, tint)));
+    }
+}
+
+/// Frame at `origin` whose +z points along `dir`, with x kept close to `across`.
+fn aim(origin: Vec3, dir: Vec3, across: Vec3) -> Mat4 {
+    let z = dir.normalize_or_zero();
+    let x = (across - z * across.dot(z)).normalize_or_zero();
+    let y = z.cross(x);
+    Mat4::from_cols(x.extend(0.0), y.extend(0.0), z.extend(0.0), origin.extend(1.0))
 }
 
 /// (barrel travel 0..1, flash 0..1) for a time since firing.
