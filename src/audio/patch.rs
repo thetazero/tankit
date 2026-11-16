@@ -458,6 +458,126 @@ pub const KINDLE_RESONANT: &[Layer] = &[
     },
 ];
 
+/// The Vigil's bell, a tone under the arrival's: hum, prime, minor third,
+/// fifth, nominal, twelfth, Hz.
+const VIGIL_BELL: [f32; 6] = [147.0, 294.0, 353.0, 441.0, 588.0, 882.0];
+
+/// A Vigil breaking: the crystal shell cracks (a sharp snap, a shower of
+/// glass, a few high crystal rings), the light rushes out with a rising
+/// breath, and the bell is struck hard and left to ring.
+pub const SHATTER: &[Layer] = &[
+    // The snap, and the blow that cracked it.
+    noise(Filt::High, 3200.0, 3200.0, 0.1, 0.012, 0.7),
+    sine(95.0, 42.0, 0.08, 0.2, 0.55),
+    noise(Filt::Low, 1600.0, 220.0, 0.06, 0.18, 0.5),
+    // Glass: a shower of tinkling shards and the crystal singing as it splits.
+    Layer {
+        src: Src::Crackle(900.0),
+        filt: Filt::Band,
+        cutoff: (5200.0, 3400.0),
+        sweep: 0.3,
+        q: 2.5,
+        decay: 0.35,
+        gain: 0.4,
+        delay: 0.01,
+        ..L
+    },
+    sine(2870.0, 2850.0, 0.5, 0.3, 0.07),
+    sine(3910.0, 3880.0, 0.5, 0.22, 0.05),
+    sine(5230.0, 5190.0, 0.5, 0.15, 0.04),
+    // The light pouring out: a breath of air rising through the cracks.
+    Layer {
+        attack: 0.08,
+        q: 3.0,
+        ..noise(Filt::Band, 1800.0, 6500.0, 0.4, 0.45, 0.22)
+    },
+    // The bell, struck hard.
+    Layer {
+        delay: 0.03,
+        ..ring(VIGIL_BELL[0], 1.5, 0.32)
+    },
+    Layer {
+        delay: 0.03,
+        ..ring(VIGIL_BELL[1], 1.3, 0.32)
+    },
+    Layer {
+        delay: 0.03,
+        ..ring(VIGIL_BELL[2], 1.0, 0.2)
+    },
+    Layer {
+        delay: 0.03,
+        ..ring(VIGIL_BELL[3], 0.8, 0.15)
+    },
+    Layer {
+        delay: 0.03,
+        ..ring(VIGIL_BELL[4], 0.6, 0.13)
+    },
+    Layer {
+        delay: 0.03,
+        ..ring(VIGIL_BELL[5], 0.35, 0.08)
+    },
+];
+
+/// A husk's bell tolling while it runs on. The shell is cracked, so the bell
+/// is too: its prime has a split twin a few Hz off, and the two beat.
+pub const TOLL: &[Layer] = &[
+    ring(VIGIL_BELL[0], 1.1, 0.24),
+    ring(VIGIL_BELL[1], 0.9, 0.2),
+    ring(VIGIL_BELL[1] + 3.5, 0.9, 0.13),
+    ring(VIGIL_BELL[2], 0.7, 0.13),
+    ring(VIGIL_BELL[3], 0.55, 0.1),
+    ring(VIGIL_BELL[4], 0.4, 0.08),
+    // The clapper, and a glint of crystal answering it.
+    noise(Filt::High, 3000.0, 3000.0, 0.1, 0.008, 0.18),
+    sine(2870.0, 2850.0, 0.5, 0.25, 0.03),
+];
+
+/// A husk going out: one last toll that chokes off, its partials sagging, as
+/// the light drains away in a falling shimmer and the crystal falls in on
+/// itself. No explosion: it doesn't burn, it goes dark.
+pub const GUTTER: &[Layer] = &[
+    // The choked toll.
+    sine(VIGIL_BELL[0], VIGIL_BELL[0] * 0.75, 0.7, 0.8, 0.26),
+    sine(VIGIL_BELL[1], VIGIL_BELL[1] * 0.75, 0.6, 0.55, 0.22),
+    sine(VIGIL_BELL[2], VIGIL_BELL[2] * 0.75, 0.5, 0.35, 0.12),
+    sine(VIGIL_BELL[3], VIGIL_BELL[3] * 0.75, 0.4, 0.25, 0.08),
+    noise(Filt::High, 3000.0, 3000.0, 0.1, 0.008, 0.15),
+    // The light draining: a shimmer falling from bright to nothing.
+    Layer {
+        attack: 0.05,
+        ..sine(3400.0, 380.0, 0.45, 0.5, 0.07)
+    },
+    Layer {
+        attack: 0.05,
+        ..sine(4450.0, 500.0, 0.45, 0.45, 0.045)
+    },
+    Layer {
+        attack: 0.05,
+        q: 4.0,
+        ..noise(Filt::Band, 6000.0, 900.0, 0.4, 0.5, 0.12)
+    },
+    // The crystal falling in, and the dead hull settling.
+    Layer {
+        src: Src::Crackle(500.0),
+        filt: Filt::Band,
+        cutoff: (4200.0, 1500.0),
+        sweep: 0.4,
+        q: 2.0,
+        decay: 0.4,
+        gain: 0.35,
+        delay: 0.08,
+        ..L
+    },
+    Layer {
+        delay: 0.1,
+        ..sine(70.0, 34.0, 0.12, 0.3, 0.5)
+    },
+    Layer {
+        delay: 0.1,
+        ..noise(Filt::Low, 900.0, 150.0, 0.2, 0.35, 0.4)
+    },
+];
+
 /// Uthenn arrival, the hull made: a laser frame's hum, tungsten cubes
 /// clunking into the volume, and the scan plane's rising sweep (0.9 s).
 pub const BUILD_UTHENN: &[Layer] = &[
@@ -691,7 +811,7 @@ fn layer(l: &Layer, s: &mut LayerState, noise: &mut Noise, t: f32, pitch: f32, s
 mod tests {
     use super::*;
 
-    const ALL: [&[Layer]; 22] = [
+    const ALL: [&[Layer]; 25] = [
         KONTOS,
         PELEKYS,
         WISP,
@@ -714,6 +834,9 @@ mod tests {
         KINDLE_RESONANT,
         BUILD_UTHENN,
         DESCEND_ITHESSAR,
+        SHATTER,
+        TOLL,
+        GUTTER,
     ];
 
     /// Every sound renders finite, audible, bounded, and actually ends.

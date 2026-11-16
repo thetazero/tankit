@@ -50,6 +50,8 @@ const FALL_CREDIT: f32 = 6.0;
 pub const HUSK_STRONG: f32 = 2.0;
 /// ...then its speed and firepower fade out over this long, s.
 pub const HUSK_FADE: f32 = 3.0;
+/// A husk's cracked bell tolls this often while it runs, s.
+pub const HUSK_TOLL: f32 = 1.25;
 /// Trust with your employer for each enemy the player kills, paid the moment it dies.
 pub const KILL_TRUST: u32 = 10;
 /// How long a trust popup stays on screen, seconds.
@@ -505,6 +507,20 @@ pub enum Sound {
     Confirm,
     /// The player's link came back in a fresh chassis.
     Link,
+    /// A Vigil's crystal shell cracking open: glass, a rush of light, and
+    /// its bell struck hard.
+    Shatter {
+        at: Vec3,
+    },
+    /// A husk's cracked bell tolling as it runs on, `strength` 1..0.
+    Toll {
+        at: Vec3,
+        strength: f32,
+    },
+    /// A husk going out: the bell chokes and the crystal falls in.
+    Gutter {
+        at: Vec3,
+    },
     /// A tank arriving (spawn or respawn), its team's way.
     Arrival {
         tank: usize,
@@ -1177,7 +1193,7 @@ impl Match {
             self.fighters[victim].husk = HUSK_STRONG + HUSK_FADE;
             self.world.tanks[victim].husk = Some(1.0);
             self.blasts.push(Blast::new(at, BlastKind::Shatter(3.0)));
-            self.sounds.push(Sound::Kill { at });
+            self.sounds.push(Sound::Shatter { at });
             return;
         }
         self.wreck(victim);
@@ -1195,8 +1211,9 @@ impl Match {
         let (pos, mass) = (t.pos, t.chassis.mass);
         if t.hull_kind == HullKind::Vigil {
             // The last of the light goes out.
-            self.blasts
-                .push(Blast::new(pos + t.up() * 1.3, BlastKind::Shatter(1.5)));
+            let at = pos + t.up() * 1.3;
+            self.blasts.push(Blast::new(at, BlastKind::Shatter(1.5)));
+            self.sounds.push(Sound::Gutter { at });
         } else {
             self.blasts
                 .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
@@ -1250,6 +1267,19 @@ impl Match {
             self.fighters[i].husk -= DT;
             let s = self.fighters[i].strength();
             self.world.tanks[i].husk = Some(s);
+            // Its bell tolls as it goes, each a little weaker; the last is
+            // the one it goes out on (`wreck`).
+            let run = HUSK_STRONG + HUSK_FADE;
+            let (was, now) = (run - before, run - self.fighters[i].husk);
+            if (was / HUSK_TOLL).floor() != (now / HUSK_TOLL).floor()
+                && self.fighters[i].husk > HUSK_TOLL * 0.5
+            {
+                let t = &self.world.tanks[i];
+                self.sounds.push(Sound::Toll {
+                    at: t.pos + t.up() * 1.3,
+                    strength: s,
+                });
+            }
             // Motes of light leak out, fewer as it fades.
             let every = 0.06 / s.max(0.25);
             if (before / every).floor() != (self.fighters[i].husk / every).floor() {
@@ -2447,6 +2477,78 @@ mod tests {
         assert!(!m.fighters[1].is_husk());
         assert_eq!(m.fighters[1].deaths, 1, "one death, not two");
         assert_eq!(m.world.tanks[1].husk, None);
+    }
+
+    /// Issue #115: a Vigil breaking, running on and going out each sound like
+    /// the Resonant: the shell shatters (not a generic blast), its bell tolls
+    /// weaker and weaker as the husk runs, and it gutters out at the end.
+    #[test]
+    fn a_vigil_rings_as_it_breaks_and_goes_out() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        m.world.set_hull(1, HullKind::Vigil);
+        m.sounds.clear();
+        m.damage(0, 1, 1000.0);
+        let breaking = std::mem::take(&mut m.sounds);
+        assert!(breaking.iter().any(|s| matches!(s, Sound::Shatter { .. })));
+        assert!(!breaking.iter().any(|s| matches!(s, Sound::Kill { .. })));
+        let mut tolls = Vec::new();
+        let mut gutters = 0;
+        for _ in 0..((HUSK_STRONG + HUSK_FADE + 0.2) / DT) as usize {
+            m.step(Command::default(), false);
+            for s in m.sounds.drain(..) {
+                match s {
+                    Sound::Toll { strength, .. } => tolls.push(strength),
+                    Sound::Gutter { .. } => gutters += 1,
+                    Sound::Kill { .. } | Sound::Shatter { .. } => panic!("blew up again"),
+                    _ => {}
+                }
+            }
+        }
+        assert!(!m.fighters[1].alive);
+        assert_eq!(gutters, 1, "goes out once");
+        assert_eq!(tolls.len(), 3, "tolls {tolls:?}");
+        assert!(
+            tolls.windows(2).all(|w| w[1] <= w[0]) && tolls[2] < tolls[0],
+            "each toll weaker: {tolls:?}"
+        );
+    }
+
+    /// Record a Vigil breaking 12 m in front of the player, running on as a
+    /// husk and going out, as the player hears it, to `$VIGIL_WAV`
+    /// (`docs/audio/vigil-husk.wav` in the PR for #115).
+    #[test]
+    #[ignore]
+    fn record_a_vigil_going_out() {
+        const RATE: u32 = 48_000;
+        let mut m = duel(TurretKind::Kontos, 12.0);
+        m.world.set_hull(1, HullKind::Vigil);
+        let mut audio = crate::audio::Audio::offline(RATE);
+        audio.set_volume(0.8);
+        let mut cam = crate::scene::ChaseCam::new();
+        let mut out = Vec::new();
+        let mut owed = 0.0;
+        // Let the arrivals ring out first.
+        for _ in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        m.sounds.clear();
+        for n in 0..(9.0 / DT) as usize {
+            if n == (0.5 / DT) as usize {
+                m.damage(0, 1, 1000.0);
+            }
+            m.step(Command::default(), false);
+            let camera = cam.update(&m.world, &m.world.tanks[0], DT);
+            let sounds = std::mem::take(&mut m.sounds);
+            audio.update(&m, &sounds, &camera, true, DT);
+            owed += RATE as f32 * DT;
+            let k = owed as usize;
+            owed -= k as f32;
+            let start = out.len();
+            out.resize(start + k * 2, 0.0);
+            audio.render(&mut out[start..]);
+        }
+        let path = std::env::var("VIGIL_WAV").unwrap_or("vigil-husk.wav".into());
+        std::fs::write(path, crate::audio::wav(&out, RATE)).unwrap();
     }
 
     /// Other hulls just die.
