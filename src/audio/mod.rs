@@ -238,6 +238,8 @@ impl Audio {
             Sound::Hold(cue) => hold::cue(cue),
 
             Sound::Repair { at } => repair::repair(at),
+            Sound::RepairDrop { at } => repair::drop(at),
+            Sound::RepairLanded { at } => repair::landed(at),
 
             Sound::ShieldDown { tank, at } => shield::down(tank, at),
 
