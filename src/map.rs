@@ -10,6 +10,7 @@ use crate::faction::Faction;
 use crate::rng::Rng;
 
 mod kiln;
+mod props;
 mod ruins;
 mod saltmarket;
 mod shard_flats;
@@ -72,6 +73,8 @@ pub struct OBox {
     pub chip: f32,
     /// The top is a broken edge, not a finished one: drawn jagged.
     pub broken: bool,
+    /// A drivable ramp (set explicitly; a tilted log is not a ramp).
+    pub ramp: bool,
 }
 
 impl Default for OBox {
@@ -89,6 +92,7 @@ impl Default for OBox {
             solid: true,
             chip: 0.0,
             broken: false,
+            ramp: false,
         }
     }
 }
@@ -105,8 +109,9 @@ impl OBox {
     }
 
     /// A sloped slab a tank can drive (gentle tilt).
+    /// A sloped slab tanks drive up (gets ground friction, doesn't block bots).
     pub fn is_ramp(&self) -> bool {
-        self.tilt.abs() > 0.05 && self.tilt.abs() < 0.5
+        self.ramp
     }
 
     /// Local axes on the ground plane: (right, forward), as world xz directions.

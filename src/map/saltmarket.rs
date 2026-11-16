@@ -529,6 +529,7 @@ impl Map {
         terrain.material = Material::Sand;
         map.terrain = Some(terrain);
         map.market_hall();
+        map.traces(&mut rng);
         map.dam();
         map.landmarks();
         map.reservoir_cover(&mut rng);
@@ -1109,6 +1110,117 @@ impl Map {
                 Vec3::new(0.62, 0.52, 0.4),
                 Material::Rubble,
             );
+        }
+    }
+
+    /// Traces of the people who lived here (see props.rs): power poles with
+    /// cables along the main roads, burned-out cars, market stalls around the
+    /// hall, dead palms.
+    fn traces(&mut self, rng: &mut Rng) {
+        let hall = SQUARE_C;
+        // Free ground: clear of buildings, collapsed-floor approaches, repair pads.
+        let free = |m: &Map, p: Vec2, r: f32| {
+            m.oboxes.iter().filter(|o| o.solid).all(|o| {
+                let reach = if o.is_ramp() { r + 7.0 } else { r };
+                o.distance(p) > reach
+            }) && m
+                .solids
+                .iter()
+                .all(|s| p.clamp(s.min2(), s.max2()).distance(p) > r)
+                && m.repair_spots.iter().all(|q| q.distance(p) > 5.0)
+                && bowl_sdf(p) > 4.0
+                && edge_distance(p) < -6.0
+        };
+
+        // Power poles along one side of the main roads, wired to their neighbors.
+        for (pts, w) in ROADS.iter().take(4) {
+            let mut last: Option<[Vec3; 2]> = None;
+            for seg in pts.windows(2) {
+                let (a, b) = (Vec2::from(seg[0]), Vec2::from(seg[1]));
+                let dir = (b - a).normalize();
+                let nrm = Vec2::new(-dir.y, dir.x);
+                let len = a.distance(b);
+                let mut t = 6.0;
+                while t < len {
+                    let p = a + dir * t + nrm * (w * 0.5 + 1.4);
+                    t += 22.0;
+                    if !free(self, p, 1.2) {
+                        last = None;
+                        continue;
+                    }
+                    let tops = self.pole(rng, p, dir);
+                    if let (Some(prev), Some(now)) = (last, tops)
+                        && prev[0].distance(now[0]) < 32.0
+                    {
+                        for k in 0..2 {
+                            let sag = rng.range(0.4, 1.0);
+                            self.cable(prev[k], now[k], sag);
+                        }
+                    }
+                    last = tops;
+                }
+            }
+        }
+
+        // Burned-out cars, some slewed across the road.
+        let mut cars = 0;
+        for _ in 0..300 {
+            if cars >= 11 {
+                break;
+            }
+            let (pts, w) = ROADS[rng.index(ROADS.len())];
+            let k = rng.index(pts.len() - 1);
+            let (a, b) = (Vec2::from(pts[k]), Vec2::from(pts[k + 1]));
+            let dir = (b - a).normalize();
+            let nrm = Vec2::new(-dir.y, dir.x);
+            let p = a.lerp(b, rng.range(0.15, 0.85)) + nrm * rng.range(-0.3, 0.3) * w;
+            if !free(self, p, 3.2) || p.distance(hall) < SQUARE_R + 2.0 {
+                continue;
+            }
+            let yaw = dir.x.atan2(dir.y)
+                + if rng.chance(0.3) {
+                    rng.range(-1.2, 1.2)
+                } else {
+                    rng.range(-0.15, 0.15)
+                };
+            self.car(rng, p, yaw);
+            cars += 1;
+        }
+
+        // Market stalls along the hall's sides, clear of the drive-through.
+        for side in 0..4 {
+            let a = side as f32 * std::f32::consts::FRAC_PI_2;
+            let out = Vec2::new(a.cos(), a.sin());
+            let along = Vec2::new(-out.y, out.x);
+            for s in [-1.0f32, 1.0] {
+                let p = hall + out * 15.5 + along * s * 7.5;
+                if !free(self, p, 2.6) {
+                    continue;
+                }
+                self.stall(rng, p, out.x.atan2(out.y));
+            }
+        }
+
+        // Dead palms: a ring around the square, a few along the main road.
+        let mut palms = 0;
+        for _ in 0..200 {
+            if palms >= 9 {
+                break;
+            }
+            let p = if palms < 5 {
+                let a = rng.range(0.0, std::f32::consts::TAU);
+                hall + Vec2::new(a.cos(), a.sin()) * rng.range(18.5, 21.0)
+            } else {
+                let (pts, w) = ROADS[0];
+                let k = rng.index(pts.len() - 1);
+                let (a, b) = (Vec2::from(pts[k]), Vec2::from(pts[k + 1]));
+                let nrm = (b - a).normalize().perp();
+                a.lerp(b, rng.f32()) - nrm * (w * 0.5 + 1.2)
+            };
+            if free(self, p, 1.5) {
+                self.palm(rng, p);
+                palms += 1;
+            }
         }
     }
 
