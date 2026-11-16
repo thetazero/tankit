@@ -471,6 +471,10 @@ pub struct TrustPop {
 }
 
 /// Something audible that happened this step. The app drains these into the audio.
+///
+/// A new variant goes next to its family's others (or the event it's most
+/// like), not at the end, so sound PRs don't all edit the same lines; see
+/// `audio/sounds/mod.rs`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Sound {
     Shot {
