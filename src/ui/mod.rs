@@ -122,6 +122,21 @@ impl Painter {
         push_rect(&mut self.verts, min * s, size * s, color);
     }
 
+    /// Rect fading horizontally from `left` to `right` colour, no halo (for backdrops).
+    pub fn gradient_h(&mut self, min: Vec2, size: Vec2, left: Rgba, right: Rgba) {
+        let s = self.scale;
+        let (x0, y0, x1, y1) = (min.x * s, min.y * s, (min.x + size.x) * s, (min.y + size.y) * s);
+        let v = |x: f32, y: f32, color: Rgba| UiVertex { pos: [x, y], color };
+        self.under.extend_from_slice(&[
+            v(x0, y0, left),
+            v(x1, y0, right),
+            v(x1, y1, right),
+            v(x0, y0, left),
+            v(x1, y1, right),
+            v(x0, y1, left),
+        ]);
+    }
+
     pub fn rect_outline(&mut self, min: Vec2, size: Vec2, width: f32, color: Rgba) {
         let max = min + size;
         self.polyline(&[min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y), min], width, color);

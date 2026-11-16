@@ -179,6 +179,20 @@ impl Hud {
         label(&mut p, br + Vec2::new(-84.0, -62.0), "TURRET", Align::Right);
         p.text(br + Vec2::new(-84.0, -48.0), &format!("{:03}{side}", rel.abs()), &TextStyle::value(14.0), Align::Right);
 
+        // Bottom centre: how to get to the garage.
+        let mut key = TextStyle::LABEL;
+        key.color = theme::FG;
+        let hint = Vec2::new(w * 0.5, h - MARGIN - 8.0);
+        let gw = crate::ui::measure("GARAGE", &TextStyle::LABEL);
+        p.text(hint - Vec2::new(gw * 0.5 + 10.0, 0.0), "G", &key, Align::Right);
+        label(&mut p, hint, "GARAGE", Align::Center);
+        // Above it: the kit queued for the next respawn, if any.
+        if let Some((hull, turret)) = me.next_kit {
+            let kit = format!("{} · {}", crate::garage::hull_name(hull), crate::garage::turret_name(turret));
+            label(&mut p, hint - Vec2::new(0.0, 30.0), "NEXT SPAWN", Align::Center);
+            p.text(hint - Vec2::new(0.0, 18.0), &kit, &TextStyle::value(10.0), Align::Center);
+        }
+
         p.finish()
     }
 }
