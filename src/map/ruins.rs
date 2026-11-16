@@ -101,7 +101,57 @@ impl Frame<'_> {
             top_mat: material,
             tilt: 0.0,
             solid,
+            // Masonry and concrete pieces get knocked edges (visual only).
+            chip: if material == mat::PLASTER || material == mat::CONCRETE {
+                0.22
+            } else {
+                0.0
+            },
+            broken: false,
         });
+    }
+
+    /// A piece whose top is a broken edge: drawn jagged, with rebar sticking
+    /// out of it where it's long enough to have had some.
+    fn put_broken(&mut self, rng: &mut Rng, lo: Vec3, hi: Vec3, color: Vec3, material: f32) {
+        self.put(lo, hi, color, true, material);
+        if let Some(o) = self.map.oboxes.last_mut() {
+            o.broken = true;
+        }
+        let size = hi - lo;
+        let along_x = size.x >= size.z;
+        let len = size.x.max(size.z);
+        if len < 1.0 || !rng.chance(0.6) {
+            return;
+        }
+        let rods = rng.int(1, (len / 0.7).clamp(1.0, 4.0) as i32);
+        for _ in 0..rods {
+            let t = rng.range(0.15, 0.85);
+            let p = if along_x {
+                Vec3::new(
+                    lo.x + size.x * t,
+                    0.0,
+                    (lo.z + hi.z) * 0.5 + rng.range(-0.08, 0.08),
+                )
+            } else {
+                Vec3::new(
+                    (lo.x + hi.x) * 0.5 + rng.range(-0.08, 0.08),
+                    0.0,
+                    lo.z + size.z * t,
+                )
+            };
+            let h = rng.range(0.3, 0.8);
+            self.put(
+                Vec3::new(p.x - 0.025, hi.y - 0.45, p.z - 0.025),
+                Vec3::new(p.x + 0.025, hi.y + h, p.z + 0.025),
+                Vec3::new(0.32, 0.2, 0.13),
+                false,
+                mat::RUST,
+            );
+            if let Some(o) = self.map.oboxes.last_mut() {
+                o.tilt = rng.range(-0.35, 0.35);
+            }
+        }
     }
 
     /// A slab of width `w` and length `len` that starts at local point `top`
@@ -126,6 +176,8 @@ impl Frame<'_> {
             top_mat: mat::CONCRETE,
             tilt: angle,
             solid: true,
+            chip: 0.0,
+            broken: false,
         });
     }
 
@@ -144,6 +196,8 @@ impl Frame<'_> {
             top_mat: mat::RUBBLE,
             tilt: rng.range(-0.5, 0.5),
             solid: false,
+            chip: 0.0,
+            broken: false,
         });
     }
 }
@@ -232,7 +286,8 @@ pub(super) fn building(
     // face first), so there's room to drive at it. Picked as (out direction,
     // top point, angle, length).
     let wants_ramp = damage != Damage::Light && storeys >= 2 && rng.chance(0.75);
-    let angle = rng.range(0.36, 0.42);
+    // 17-21 degrees: steeper ones are too much for the light hull to climb reliably.
+    let angle = rng.range(0.3, 0.36);
     let len = GROUND_H / angle.sin();
     let lateral_t = rng.range(-0.25, 0.25);
     let faces = [
@@ -241,6 +296,18 @@ pub(super) fn building(
         (1 - front.0, 1.0),
         (1 - front.0, -1.0),
     ];
+    // Ramps already built nearby (with their run-up): a new one must not
+    // come down onto them.
+    let others: Vec<OBox> = map
+        .oboxes
+        .iter()
+        .filter(|o| o.solid && o.is_ramp() && o.center.distance(lot.center) < 40.0)
+        .map(|o| OBox {
+            half: o.half + Vec2::new(1.5, 6.0),
+            center: o.center + o.axes().1 * 3.0,
+            ..*o
+        })
+        .collect();
     let ramp = faces
         .iter()
         .filter(|_| wants_ramp)
@@ -270,7 +337,10 @@ pub(super) fn building(
                 let local = top + out * (2.5 + reach * i as f32 / 10.0);
                 [-0.4f32, 0.0, 0.4].iter().all(|&s| {
                     let p = local + across * s * RAMP_W;
-                    p.dot(out) < face + 0.5 || clear(lot.center + ax * p.x + az * p.y)
+                    p.dot(out) < face + 0.5 || {
+                        let w = lot.center + ax * p.x + az * p.y;
+                        clear(w) && others.iter().all(|o| o.distance(w) > 1.0)
+                    }
                 })
             });
             free.then_some((out, top))
@@ -343,8 +413,10 @@ pub(super) fn building(
                 // tops the last storey).
                 let full = if k + 1 == storeys { y1 + 0.9 } else { y1 };
                 let top_here = cut(mid).min(full);
-                if k <= 1 && in_ramp_path(mid) {
-                    continue; // torn out where the floor came down
+                // Torn out where the floor came down: any bay touching the path.
+                let touches = (0..=4).any(|q| in_ramp_path(at(s0 + (s1 - s0) * q as f32 / 4.0)));
+                if k <= 1 && touches {
+                    continue;
                 }
                 if top_here < y0 + 0.4 {
                     continue;
@@ -353,14 +425,18 @@ pub(super) fn building(
                 if top_here < o0 + 0.3 {
                     // Broken off below the window: just a ragged stub of wall.
                     let (lo, hi) = span(s0, s1, y0, top_here);
-                    f.put(lo, hi, color, true, mat::PLASTER);
+                    f.put_broken(rng, lo, hi, color, mat::PLASTER);
                     continue;
                 }
                 // Piers either side, each broken at its own height.
                 for (p0, p1) in [(s0, s0 + PIER), (s1 - PIER, s1)] {
                     let h = cut(at((p0 + p1) * 0.5)).min(full).max(o0.min(top_here));
                     let (lo, hi) = span(p0, p1, y0, h);
-                    f.put(lo, hi, color, true, mat::PLASTER);
+                    if h < full - 0.05 {
+                        f.put_broken(rng, lo, hi, color, mat::PLASTER);
+                    } else {
+                        f.put(lo, hi, color, true, mat::PLASTER);
+                    }
                 }
                 // Sill under the opening.
                 if o0 > y0 + 0.01 {
@@ -371,10 +447,14 @@ pub(super) fn building(
                 // where it's broken: the top steps across the bay).
                 if top_here > o1 + 0.25 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, o1, top_here);
-                    f.put(lo, hi, color * 0.97, true, mat::PLASTER);
+                    if top_here < full - 0.05 {
+                        f.put_broken(rng, lo, hi, color * 0.97, mat::PLASTER);
+                    } else {
+                        f.put(lo, hi, color * 0.97, true, mat::PLASTER);
+                    }
                 } else if top_here > o1 - 0.2 && rng.chance(0.5) {
                     let (lo, hi) = span(s0 + PIER, s0 + PIER + bw * 0.35, o1, o1 + 0.45);
-                    f.put(lo, hi, color * 0.95, true, mat::PLASTER);
+                    f.put_broken(rng, lo, hi, color * 0.95, mat::PLASTER);
                 }
             }
         }
@@ -428,15 +508,20 @@ pub(super) fn building(
     // Corner columns up to the broken height.
     for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
         let c = Vec2::new(sx * (half.x - 0.35), sz * (half.y - 0.35));
+        if in_ramp_path(c) {
+            continue;
+        }
         // A touch taller than the walls it sits in, so their tops never coincide.
         let h = cut(c).min(top_y + 0.9) + 0.07;
-        f.put(
+        let (lo, hi) = (
             Vec3::new(c.x - 0.4, 0.0, c.y - 0.4),
             Vec3::new(c.x + 0.4, h, c.y + 0.4),
-            color * 0.92,
-            true,
-            mat::PLASTER,
         );
+        if cut(c) < top_y + 0.85 {
+            f.put_broken(rng, lo, hi, color * 0.92, mat::PLASTER);
+        } else {
+            f.put(lo, hi, color * 0.92, true, mat::PLASTER);
+        }
     }
 
     // The collapsed floor section (placed before the walls so it can carve its way).
@@ -449,17 +534,35 @@ pub(super) fn building(
             angle,
             SLAB_C * 0.95,
         );
+        // A landing at the top joins the ramp to the floor that's left (the
+        // floor right behind it was carved away with the ramp's path).
+        let back = top - ramp_out * 3.2;
+        let lo = top.min(back) - across_dir * (RAMP_W * 0.5);
+        let hi = top.max(back) + across_dir * (RAMP_W * 0.5);
+        f.put(
+            // 3 cm thicker than the floor both ways so its faces never coincide with a slab's.
+            Vec3::new(lo.x, GROUND_H - SLAB - 0.03, lo.y),
+            Vec3::new(hi.x, GROUND_H + 0.03, hi.y),
+            SLAB_C,
+            true,
+            mat::CONCRETE,
+        );
     }
 
     // Rubble heaped at the foot of the damage, and loose debris around it.
     if damage != Damage::Light {
-        drifts.push(Drift {
-            b: lot,
-            axis: fall_axis,
-            sign: fall_sign,
-            height: rng.range(1.0, 1.8),
-            run: rng.range(4.0, 6.5),
-        });
+        // Not where a collapsed floor comes down: the heap would tip tanks
+        // off the side of the ramp.
+        let heap = (rng.range(1.0, 1.8), rng.range(4.0, 6.5));
+        if !(ramp.is_some() && ramp_out == fall_out) {
+            drifts.push(Drift {
+                b: lot,
+                axis: fall_axis,
+                sign: fall_sign,
+                height: heap.0,
+                run: heap.1,
+            });
+        }
         for _ in 0..rng.int(8, 16) {
             let along = rng.range(-across_half, across_half);
             let out = rng.range(-1.0, 5.0);

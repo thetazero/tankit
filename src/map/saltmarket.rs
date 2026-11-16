@@ -499,6 +499,13 @@ impl Map {
         map.ridge();
         map.spawns();
         map.perimeter_walls();
+        // Everything masonry is knocked about a bit (visual only).
+        for o in &mut map.oboxes {
+            let masonry = [mat::PLASTER, mat::CONCRETE, mat::RUBBLE].contains(&o.side_mat);
+            if o.solid && o.tilt == 0.0 && o.chip == 0.0 && masonry {
+                o.chip = 0.25;
+            }
+        }
         map.separate_coplanar_faces();
         map
     }
@@ -531,6 +538,28 @@ impl Map {
     }
 
     fn block_c(&mut self, min: Vec3, max: Vec3, color: Vec3, material: f32) {
+        // Masonry and stone are worn rotated boxes (chipped, visual only);
+        // rocks get bigger chips so they read as stone, not blocks.
+        if [mat::CONCRETE, mat::RUBBLE, mat::PLASTER].contains(&material) {
+            let size = max - min;
+            self.oboxes.push(OBox {
+                center: Vec2::new(min.x + max.x, min.z + max.z) * 0.5,
+                half: Vec2::new(size.x, size.z) * 0.5,
+                y0: min.y,
+                y1: max.y,
+                color,
+                side_mat: material,
+                top_mat: material,
+                // Big blocks get bigger chips (a fixed size reads as perfect at scale).
+                chip: if material == mat::RUBBLE {
+                    0.9
+                } else {
+                    (0.3 + 0.08 * size.x.min(size.z)).min(1.0)
+                },
+                ..OBox::default()
+            });
+            return;
+        }
         self.boxes.push(super::VisBox {
             min,
             max,
@@ -1169,6 +1198,12 @@ mod tests {
                     ..Default::default()
                 }]);
                 top = top.max(w.tanks[0].pos.y);
+            }
+            if top <= super::ruins::FIRST_FLOOR - 0.6 {
+                eprintln!(
+                    "stuck: ramp at {:?} yaw {} tilt {}, foot {foot}, top y={top}, end {:?}",
+                    r.center, r.yaw, r.tilt, w.tanks[0].pos
+                );
             }
             if top > super::ruins::FIRST_FLOOR - 0.6 {
                 climbed += 1;
