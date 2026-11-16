@@ -9,10 +9,10 @@
 //! the tank. The map's places make their own sounds as you near them
 //! (crystals, furnaces, banners...), ducking under the fight. Discrete
 //! moments (shots, impacts, armour hits, kills, repairs, a beam cooled and
-//! ready, a tank ramming something, landing hard or going over) come out of
-//! the match as [`Sound`] events and play as one-shots; a beam lighting,
-//! letting go and striking a hull, and your hull running low, are spotted
-//! here, frame to frame.
+//! ready, a tank ramming something, landing hard or going over, the round
+//! starting, counting down and ending) come out of the match as [`Sound`]
+//! events and play as one-shots; a beam lighting, letting go and striking a
+//! hull, and your hull running low, are spotted here, frame to frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
@@ -43,7 +43,8 @@ use mixer::{Mixer, OneShot};
 pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
 use sounds::{
-    Play, arrival, beam, garage, guns, hits, hold, hull, knocks, places, repair, shield, ui, vigil,
+    Play, arrival, beam, garage, guns, hits, hold, hull, knocks, places, repair, round, shield, ui,
+    vigil,
 };
 use voice::Layer;
 
@@ -280,6 +281,8 @@ impl Audio {
             Sound::Repair { at } => repair::repair(at),
             Sound::RepairDrop { at } => repair::drop(at),
             Sound::RepairLanded { at } => repair::landed(at),
+
+            Sound::Round(cue) => round::cue(cue),
 
             Sound::ShieldDown { tank, at } => shield::down(tank, at),
 

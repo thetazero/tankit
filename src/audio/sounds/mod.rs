@@ -41,6 +41,7 @@ pub mod hull;
 pub mod knocks;
 pub mod places;
 pub mod repair;
+pub mod round;
 pub mod shield;
 pub mod tracks;
 pub mod turret;
