@@ -1,7 +1,8 @@
 //! In-battle garage: press G mid-match to park, swing the camera round your
-//! tank, and swap its hull and turret. Picking a part fits it to the tank
-//! right away so you see it from the orbit camera; deploying keeps it,
-//! reverting puts back what you came in with.
+//! tank, and pick the hull and turret for your next respawn. The tank you're
+//! driving doesn't change; the orbit camera shows the picked kit as a
+//! preview. Deploying keeps the pick queued, reverting puts back what was
+//! queued when you came in.
 //!
 //! Drawn in the hairline style, as a panel on the left over a soft dark
 //! backdrop, the tank framed in the space to its right.
@@ -129,7 +130,7 @@ pub struct Garage {
     blend: f32,
     /// 0 = hull, 1 = turret.
     section: usize,
-    /// Loadout when the garage opened (revert target, and the faint "was" ticks on the bars).
+    /// Queued loadout when the garage opened (the revert target).
     entry: Loadout,
     /// Orbit camera angle around the tank (world yaw of the camera's offset).
     orbit: f32,
@@ -158,15 +159,15 @@ impl Garage {
         smooth(self.blend)
     }
 
-    /// Open on the player's tank (index 0), or close keeping the loadout.
-    pub fn toggle(&mut self, world: &World, camera: &Camera) {
+    /// Open on the player's tank (index 0) with `queued` as the pick, or close.
+    pub fn toggle(&mut self, world: &World, camera: &Camera, queued: Loadout) {
         if self.open {
             self.open = false;
             return;
         }
         let t = &world.tanks[0];
         self.open = true;
-        self.entry = (t.hull_kind, t.turret_kind);
+        self.entry = queued;
         // Start the orbit where the chase camera is (unless we're mid-transition) and swing round to the front.
         if self.blend <= 0.0 {
             let off = camera.pos - t.pos;
@@ -181,8 +182,8 @@ impl Garage {
         self.open = false;
     }
 
-    /// Handle a key while open. Returns the loadout to fit to the player's
-    /// tank, if it changed; the caller applies it (so health etc. carry over).
+    /// Handle a key while open, given the loadout queued for the next respawn.
+    /// Returns the new loadout to queue, if it changed.
     pub fn input(&mut self, input: Input, current: Loadout) -> Option<Loadout> {
         if !self.open {
             return None;
@@ -256,8 +257,22 @@ impl Garage {
         }
     }
 
+    /// The player's tank as drawn while the garage is open: wearing the
+    /// queued kit, so you see what you'll respawn in.
+    pub fn preview(&self, tank: &mut Tank, queued: Loadout) {
+        if self.blend < 0.5 || (tank.hull_kind, tank.turret_kind) == queued {
+            return;
+        }
+        let chassis = crate::sim::Chassis::of(queued.0);
+        tank.hull_kind = queued.0;
+        tank.turret_kind = queued.1;
+        tank.chassis = chassis;
+        tank.wheel_lift.resize(chassis.wheel_count(), 0.0);
+    }
+
     /// The battle HUD faded out as the garage comes in, with the garage panel on top.
-    pub fn overlay(&self, mut hud: Vec<UiVertex>, tank: &Tank, height: f32) -> Vec<UiVertex> {
+    /// `tank` is the one being driven, `queued` the kit for the next respawn.
+    pub fn overlay(&self, mut hud: Vec<UiVertex>, tank: &Tank, queued: Loadout, height: f32) -> Vec<UiVertex> {
         let fade = 1.0 - self.presence();
         for v in &mut hud {
             v.color[3] *= fade;
@@ -265,11 +280,11 @@ impl Garage {
         if fade <= 0.0 {
             hud.clear();
         }
-        hud.extend(self.draw(tank, height));
+        hud.extend(self.draw(tank, queued, height));
         hud
     }
 
-    pub fn draw(&self, tank: &Tank, height: f32) -> Vec<UiVertex> {
+    pub fn draw(&self, tank: &Tank, queued: Loadout, height: f32) -> Vec<UiVertex> {
         let e = smooth(self.blend);
         if e <= 0.0 {
             return Vec::new();
@@ -289,19 +304,22 @@ impl Garage {
         label(&mut p, Vec2::new(x, y), "GARAGE", Align::Left);
         label(&mut p, Vec2::new(x + PANEL_W, y), "LOADOUT", Align::Right);
         y += 18.0;
-        let title = format!("{} · {}", hull_name(tank.hull_kind), turret_name(tank.turret_kind));
+        let title = format!("{} · {}", hull_name(queued.0), turret_name(queued.1));
         p.text(Vec2::new(x, y), &title, &TextStyle::value(20.0), Align::Left);
-        y += 40.0;
+        y += 30.0;
+        let pending = queued != (tank.hull_kind, tank.turret_kind);
+        label(&mut p, Vec2::new(x, y), if pending { "FITTED ON NEXT RESPAWN" } else { "IN USE" }, Align::Left);
+        y += 20.0;
         p.line(Vec2::new(x, y), Vec2::new(x + PANEL_W, y), 1.0, theme::FAINT);
         y += 26.0;
 
         let hulls: Vec<_> = HULLS.iter().map(|&k| (Part::Hull(k), hull_name(k))).collect();
         let turrets: Vec<_> = TURRETS.iter().map(|&k| (Part::Turret(k), turret_name(k))).collect();
         let sections = [
-            ("01", "HULL", hulls, Part::Hull(tank.hull_kind), Part::Hull(self.entry.0), &HULL_STATS[..]),
-            ("02", "TURRET", turrets, Part::Turret(tank.turret_kind), Part::Turret(self.entry.1), &TURRET_STATS[..]),
+            ("01", "HULL", hulls, Part::Hull(queued.0), Part::Hull(tank.hull_kind), &HULL_STATS[..]),
+            ("02", "TURRET", turrets, Part::Turret(queued.1), Part::Turret(tank.turret_kind), &TURRET_STATS[..]),
         ];
-        for (si, (num, name, items, current, was, stats)) in sections.iter().enumerate() {
+        for (si, (num, name, items, current, in_use, stats)) in sections.iter().enumerate() {
             let focused = si == self.section;
             let head = if focused { theme::FG } else { theme::DIM };
             let mut s = TextStyle::LABEL;
@@ -323,8 +341,8 @@ impl Garage {
                 let mut s = TextStyle::value(15.0);
                 s.color = if selected { theme::FG } else { theme::DIM };
                 p.text(Vec2::new(x, y), item, &s, Align::Left);
-                if part == was && !selected {
-                    label(&mut p, Vec2::new(x + PANEL_W - 16.0, y + 4.0), "WAS", Align::Right);
+                if part == in_use && !selected {
+                    label(&mut p, Vec2::new(x + PANEL_W - 16.0, y + 4.0), "IN USE", Align::Right);
                 }
                 y += 30.0;
             }
@@ -332,7 +350,7 @@ impl Garage {
             y += 4.0;
             let parts: Vec<Part> = items.iter().map(|i| i.0).collect();
             for stat in stats.iter() {
-                draw_stat(&mut p, Vec2::new(x, y), stat, *current, *was, &parts);
+                draw_stat(&mut p, Vec2::new(x, y), stat, *current, *in_use, &parts);
                 y += 22.0;
             }
             y += 26.0;
@@ -344,7 +362,7 @@ impl Garage {
 
         // Key hints along the bottom of the panel.
         let mut hy = h - 100.0;
-        for (key, what) in [("W/S", "CHANGE PART"), ("A/D", "HULL / TURRET"), ("ENTER", "DEPLOY"), ("ESC", "REVERT")] {
+        for (key, what) in [("W/S", "CHANGE PART"), ("A/D", "HULL / TURRET"), ("ENTER", "DEPLOY"), ("ESC", "CANCEL")] {
             let mut k = TextStyle::LABEL;
             k.color = theme::FG;
             p.text(Vec2::new(x, hy), key, &k, Align::Left);
@@ -364,16 +382,16 @@ fn index_of(items: &[(Part, &str)], part: Part) -> usize {
     items.iter().position(|i| i.0 == part).unwrap_or(0)
 }
 
-/// Label, bar scaled to the kit's best, value; a faint tick where the "was" part sits.
-fn draw_stat(p: &mut Painter, pos: Vec2, stat: &Stat, current: Part, was: Part, kit: &[Part]) {
+/// Label, bar scaled to the kit's best, value; a faint tick where the part in use sits.
+fn draw_stat(p: &mut Painter, pos: Vec2, stat: &Stat, current: Part, in_use: Part, kit: &[Part]) {
     let best = kit.iter().map(|&k| (stat.get)(k)).fold(0.0f32, f32::max).max(1e-3);
     let frac = |part: Part| (stat.get)(part) / (best * 1.2);
     label(p, pos + Vec2::new(0.0, 1.0), stat.name, Align::Left);
     let bar = pos + Vec2::new(110.0, 5.0);
     let bar_w = 132.0;
     widgets::hairbar(p, bar, bar_w, frac(current), theme::FG);
-    if was != current {
-        let tx = bar.x + bar_w * frac(was).clamp(0.0, 1.0);
+    if in_use != current {
+        let tx = bar.x + bar_w * frac(in_use).clamp(0.0, 1.0);
         p.line(Vec2::new(tx, bar.y - 5.0), Vec2::new(tx, bar.y + 5.0), 1.0, theme::DIM);
     }
     let v = (stat.get)(current);
@@ -402,14 +420,14 @@ mod tests {
     }
 
     #[test]
-    fn swaps_parts_and_reverts() {
+    fn picks_and_cancels() {
         let w = world();
         let mut g = Garage::new();
         let start = (HullKind::Lancer, TurretKind::Lance);
         // Closed: input does nothing.
         assert_eq!(g.input(Input::Down, start), None);
 
-        g.toggle(&w, &cam(&w));
+        g.toggle(&w, &cam(&w), start);
         let l = g.input(Input::Down, start).unwrap();
         assert_eq!(l, (HullKind::Bastion, TurretKind::Lance));
         assert_eq!(g.input(Input::Right, l), None);
@@ -419,11 +437,28 @@ mod tests {
         assert!(!g.is_open());
 
         // Reopens on the section it was left on (turret): go back to the hull.
-        g.toggle(&w, &cam(&w));
+        g.toggle(&w, &cam(&w), start);
         g.input(Input::Left, start);
         let l = g.input(Input::Down, start).unwrap();
         assert_eq!(g.input(Input::Deploy, l), None);
         assert!(!g.is_open());
+    }
+
+    #[test]
+    fn preview_wears_the_queued_kit() {
+        let w = world();
+        let mut g = Garage::new();
+        let kit = (HullKind::Bastion, TurretKind::Maul);
+        let mut t = w.tanks[0].clone();
+        g.preview(&mut t, kit);
+        assert_eq!(t.hull_kind, HullKind::Lancer, "closed garage leaves the tank alone");
+        g.toggle(&w, &cam(&w), kit);
+        g.update(1.0);
+        g.preview(&mut t, kit);
+        assert_eq!((t.hull_kind, t.turret_kind), kit);
+        assert_eq!(t.wheel_lift.len(), crate::sim::Chassis::of(HullKind::Bastion).wheel_count());
+        // The real tank is untouched.
+        assert_eq!(w.tanks[0].hull_kind, HullKind::Lancer);
     }
 
     #[test]
@@ -433,7 +468,7 @@ mod tests {
         let c = cam(&w);
         let t = &w.tanks[0];
         assert_eq!(g.camera(c, &w, t, 16.0 / 9.0).pos, c.pos);
-        g.toggle(&w, &c);
+        g.toggle(&w, &c, (HullKind::Lancer, TurretKind::Lance));
         for _ in 0..120 {
             g.update(1.0 / 60.0);
         }
@@ -447,11 +482,12 @@ mod tests {
     fn draws_on_screen_at_any_size() {
         let w = world();
         let mut g = Garage::new();
-        assert!(g.draw(&w.tanks[0], 900.0).is_empty());
-        g.toggle(&w, &cam(&w));
+        let kit = (HullKind::Bastion, TurretKind::Maul);
+        assert!(g.draw(&w.tanks[0], kit, 900.0).is_empty());
+        g.toggle(&w, &cam(&w), kit);
         g.update(1.0);
         for (wd, ht) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
-            let v = g.draw(&w.tanks[0], ht);
+            let v = g.draw(&w.tanks[0], kit, ht);
             assert!(!v.is_empty());
             assert!(v.iter().all(|v| v.pos[0] > -4.0 && v.pos[0] < wd + 4.0 && v.pos[1] > -4.0 && v.pos[1] < ht + 4.0));
         }

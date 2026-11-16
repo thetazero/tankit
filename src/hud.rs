@@ -186,6 +186,12 @@ impl Hud {
         let gw = crate::ui::measure("GARAGE", &TextStyle::LABEL);
         p.text(hint - Vec2::new(gw * 0.5 + 10.0, 0.0), "G", &key, Align::Right);
         label(&mut p, hint, "GARAGE", Align::Center);
+        // Above it: the kit queued for the next respawn, if any.
+        if let Some((hull, turret)) = me.next_kit {
+            let kit = format!("{} · {}", crate::garage::hull_name(hull), crate::garage::turret_name(turret));
+            label(&mut p, hint - Vec2::new(0.0, 30.0), "NEXT SPAWN", Align::Center);
+            p.text(hint - Vec2::new(0.0, 18.0), &kit, &TextStyle::value(10.0), Align::Center);
+        }
 
         p.finish()
     }

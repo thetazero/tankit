@@ -32,7 +32,7 @@ tankit [OPTIONS]
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --hull <lancer|bastion> player hull (default lancer)
   --turret <lance|maul>   player turret (default lance)
-  --garage                (with --shot) open the garage at the start
+  --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --showroom              all hull x turret combos on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
@@ -164,8 +164,12 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
-    game.set_player_hull(args.loadout.0);
-    game.world.tanks[0].turret_kind = args.loadout.1;
+    if args.garage {
+        game.fighters[0].next_kit = Some(args.loadout);
+    } else {
+        game.set_player_hull(args.loadout.0);
+        game.world.tanks[0].turret_kind = args.loadout.1;
+    }
     let mut cam = scene::ChaseCam::new();
     let mut garage = garage::Garage::new();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
@@ -185,7 +189,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let advance = |m: &mut combat::Match, cam: &mut scene::ChaseCam, garage: &mut garage::Garage, seconds: f32| {
         let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         if args.garage && !garage.is_open() {
-            garage.toggle(&m.world, &camera);
+            garage.toggle(&m.world, &camera, args.loadout);
         }
         for _ in 0..(seconds / game::DT).round() as u32 {
             let cmd = command(&m.world);
@@ -201,12 +205,14 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if i > 0 {
             camera = advance(&mut game, &mut cam, &mut garage, 1.0 / shot.fps);
         }
-        let tanks = game.display_tanks(1.0);
+        let mut tanks = game.display_tanks(1.0);
+        let driven = tanks[0].clone();
+        garage.preview(&mut tanks[0], args.loadout);
         let mut frame = scene::build(&game.world, &tanks, &art, camera);
         game.effect_instances(1.0, &mut frame.instances);
         let (w, h) = (shot.width as f32, shot.height as f32);
         let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-        frame.ui = garage.overlay(ui, &tanks[0], h);
+        frame.ui = garage.overlay(ui, &driven, args.loadout, h);
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
