@@ -43,6 +43,7 @@ tankit [OPTIONS]
                           game mode: team deathmatch (default) or hold the site
   --employer <faction>    which of the map's sides hires you (default: its first);
                           your trust in the match goes to them
+                          (with --screen factions|missions: whose missions the menu shows)
   --shot <out.png>        render offscreen and save
   --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
   --time <seconds>        simulated time before the shot (default 1)
@@ -58,7 +59,7 @@ tankit [OPTIONS]
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
-  --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
+  --screen <menu|factions|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
   --trust <n>             (with --shot) trust with every faction for menu, garage and pause shots
@@ -77,6 +78,8 @@ pub struct Args {
     pub contract: mission::Contract,
     /// Which of the map's sides hires you.
     pub side: usize,
+    /// --employer, for menu shots.
+    employer: Option<faction::Faction>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -157,6 +160,7 @@ pub struct ShowroomArgs {
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Menu,
+    Factions,
     Missions,
     Settings,
     Pause,
@@ -186,7 +190,7 @@ fn main() -> Result<()> {
         (Some(shot), None)
             if matches!(
                 args.screen,
-                Some(Screen::Menu | Screen::Missions | Screen::Settings)
+                Some(Screen::Menu | Screen::Factions | Screen::Missions | Screen::Settings)
             ) =>
         {
             menu_shot(&args, shot)
@@ -337,13 +341,14 @@ fn parse_args() -> Result<Args> {
             "--screen" => {
                 screen = Some(match args.next().as_deref() {
                     Some("menu") => Screen::Menu,
+                    Some("factions") => Screen::Factions,
                     Some("missions") => Screen::Missions,
                     Some("settings") => Screen::Settings,
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, settings, pause or results, got {other:?}"
+                            "--screen expects menu, factions, missions, settings, pause or results, got {other:?}"
                         )
                     }
                 })
@@ -372,8 +377,14 @@ fn parse_args() -> Result<Args> {
         }
     }
     let sides = make_map(map_kind).factions;
+    let menu_shot = matches!(
+        screen,
+        Some(Screen::Menu | Screen::Factions | Screen::Missions | Screen::Settings)
+    );
     let side = match employer {
         None => 0,
+        // The menu picks the employer first; any faction will do.
+        Some(_) if menu_shot => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
                 "--employer: nobody hires {} here; this map is {}",
@@ -389,6 +400,7 @@ fn parse_args() -> Result<Args> {
     Ok(Args {
         seed,
         side,
+        employer,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -624,8 +636,14 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = app::menu_match(profile.loadout);
     let mut menu = menu::Menu::new();
     match args.screen {
-        Some(Screen::Missions) => {
+        Some(Screen::Factions | Screen::Missions) => {
             menu.input(menu::Nav::Select);
+            if let Some(f) = args.employer {
+                menu.pick_employer(f);
+            }
+            if args.screen == Some(Screen::Missions) {
+                menu.input(menu::Nav::Select);
+            }
         }
         Some(Screen::Settings) => {
             menu.input(menu::Nav::Down);
