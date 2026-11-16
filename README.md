@@ -36,13 +36,14 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 
 ## Tank kit
 
-Tanks are procedural (`src/tank/`). Hulls and turrets are faceted carapaces
-built from panels (`shell()` in `model.rs`): cross-section stations from
-tail to prow, every facet between two stations is its own thick plate, with
-a dark gap and its rear edge lapping over the plate behind. Lancer/Bastion
-and Lance/Maul are proportions and gun fits on shared forms, and mix freely.
-The look follows `docs/design-direction.md`: near-monochrome dusty gunmetal,
-a dark underside, nothing glowing except the muzzle flash.
+Tanks are procedural (`src/tank/`) and constructed from their armor
+plates: each face of the form is one thick plate (V-bow glacis on a center
+ridge, lower glacis, creased sloped sides, cheeks, fenders, overlapping
+skirts, roof, rear deck, rear), meeting its neighbors at edges where the
+form turns, over a dark core. Turrets the same way: a ridged roof, raked
+cheeks, and flanks that bulge to a widest line and undercut below it.
+Lancer/Bastion and Lance/Maul are proportions and gun fits on shared forms,
+and mix freely. The look follows `docs/design-direction.md`.
 
 Machinery that moves with the tank:
 - tread links run around the wheels at each side's own speed

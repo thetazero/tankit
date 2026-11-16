@@ -12,12 +12,13 @@ story or any specific designs.
   distance, or from its shadow alone. Get there through proportion contrast: a
   dense, compact core with a few long, straight elements (barrels, blades,
   legs). Keep it low and long, with strong horizontal lines.
-- **Built from panels.** The shape itself is made of panels: a faceted
-  carapace of separate thick plates, each at its own angle, with dark gaps
-  between them and edges lapping over their neighbors. Not a box with plates
-  stuck on, and not a stack of shrinking plates. Vary panel sizes: long
-  plates on long runs, smaller ones where the form turns (prow, shoulders).
-  Never a uniform grid.
+- **Constructed from plates.** The plates *are* the structure: each face of
+  the form is one thick plate, the way welded armor is built, and panel lines
+  exist only where the form actually turns (a ridge, a crease, a chine).
+  Plates meet at their edges with visible thickness, and the dominant ones
+  (glacis, cheeks) lap over their neighbors. Get complexity from the form
+  itself: V-bows, creases, bulges and undercuts. Never subdivide a surface
+  into a grid, and never stick plates on top of a finished shape.
 - **Detail in three scales.** Big: the silhouette. Medium: layered plates,
   hatches, bins, louvers, rails, spread over the whole body. Small: tight
   clusters (cupola periscopes, latches, hooks, bolts) at a few focal points.
