@@ -19,7 +19,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::{Core, Crystal, GlowPath, Map, OBox, Terrain};
+use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::rng::Rng;
@@ -202,6 +202,7 @@ impl Map {
             fall_y: None,
             hold_name: "DEPOSIT",
             sculpted: crate::render::mesh::MeshData::default(),
+            sounds: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
         terrain.color = SLATE;
@@ -217,7 +218,37 @@ impl Map {
         map.kiln_spawns();
         map.perimeter(false);
         map.kiln_horizon(&mut rng);
+        map.kiln_sounds();
         map
+    }
+
+    /// What sounds here: every lit crystal in the arena, the cores held
+    /// between crystal tips, and the plasma river down the canyon.
+    fn kiln_sounds(&mut self) {
+        let inside = |p: Vec3| (0.0..=SIZE).contains(&p.x) && (0.0..=SIZE).contains(&p.z);
+        let mut found = Vec::new();
+        for c in self.crystals.iter().filter(|c| c.lit) {
+            found.push((Ambient::Crystal, c.base + c.axis * 0.35));
+        }
+        for c in &self.cores {
+            found.push((Ambient::Core, c.at));
+        }
+        // Along the river, one every 14 m of its length.
+        for g in self.glow_paths.iter().filter(|g| g.points.len() >= 4) {
+            let mut owed = 0.0;
+            for w in g.points.windows(2) {
+                owed += w[0].distance(w[1]);
+                if owed >= 14.0 {
+                    owed = 0.0;
+                    found.push((Ambient::River, w[1] + Vec3::Y * 0.5));
+                }
+            }
+        }
+        for (kind, at) in found {
+            if inside(at) {
+                self.sound(kind, at);
+            }
+        }
     }
 
     /// One crystal standing on the ground at `at`: `h` tall, `r` thick,
