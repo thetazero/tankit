@@ -1,5 +1,5 @@
 //! The sides of the war (see docs/setting.md). Every faction makes turrets;
-//! the two human factions also field teams (the machines and the Sorn come
+//! the two human factions also field teams (the machines and the Ithessar come
 //! later as sides).
 
 use glam::Vec3;
@@ -16,7 +16,7 @@ pub enum Faction {
     /// A machine faction.
     Machines,
     /// The aliens.
-    Sorn,
+    Ithessar,
 }
 
 impl Faction {
@@ -25,7 +25,7 @@ impl Faction {
             Faction::Imperium => "IMPERIUM",
             Faction::Resonant => "RESONANT",
             Faction::Machines => "MACHINES",
-            Faction::Sorn => "SORN",
+            Faction::Ithessar => "ITHESSAR",
         }
     }
 
@@ -39,7 +39,7 @@ impl Faction {
             // Rust orange.
             Faction::Machines => Vec3::new(0.86, 0.46, 0.2),
             // Dusk violet.
-            Faction::Sorn => Vec3::new(0.62, 0.5, 0.88),
+            Faction::Ithessar => Vec3::new(0.62, 0.5, 0.88),
         }
     }
 
@@ -49,7 +49,7 @@ impl Faction {
             Faction::Imperium => [0.62, 0.78, 1.0, 1.0],
             Faction::Resonant => [0.25, 0.95, 0.82, 1.0],
             Faction::Machines => [1.0, 0.6, 0.3, 1.0],
-            Faction::Sorn => [0.78, 0.65, 1.0, 1.0],
+            Faction::Ithessar => [0.78, 0.65, 1.0, 1.0],
         }
     }
 

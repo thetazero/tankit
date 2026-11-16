@@ -181,6 +181,16 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         let pulse = 0.75 + 0.25 * sin(g.params.x * 3.0 - lpos.z * 1.5 + lpos.x * 0.7);
         s.albedo = base * 0.2;
         s.emissive = base * 2.2 * pulse;
+    } else if (m == MAT_VHAAL) {
+        // Ithessar worked crystal: near-black and glassy, with a faint
+        // clouded depth and rare flecks of trapped plasma deep inside.
+        let n = noise2(uv * 4.0) * 0.6 + noise2(uv * 13.0) * 0.4;
+        s.albedo = base * (0.75 + 0.5 * n);
+        s.rough = 0.1 + 0.12 * n;
+        s.metal = 0.45;
+        let fleck = smoothstep(0.9, 0.97, noise2(uv * 47.0 + vec2<f32>(lpos.y * 5.0, 0.0)));
+        let flick = 0.6 + 0.4 * sin(g.params.x * 2.0 + lpos.z * 3.0);
+        s.emissive = vec3<f32>(1.0, 0.36, 0.62) * fleck * 0.35 * flick;
     } else if (m == MAT_METAL) {
         // Bare gunmetal: brushed along the part's long axis.
         let brush = noise2(vec2<f32>(uv.x * 3.0, uv.y * 80.0));
@@ -424,7 +434,7 @@ fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>)
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
     let m = i32(round(v.color.a));
-    let is_tank = m == MAT_CARBON || m == MAT_PAINT || m == MAT_TREAD || m == MAT_GLOW || m == MAT_METAL || m == MAT_WORN;
+    let is_tank = m == MAT_CARBON || m == MAT_PAINT || m == MAT_TREAD || m == MAT_GLOW || m == MAT_METAL || m == MAT_WORN || m == MAT_VHAAL;
     // On tanks the instance tint is the team color and only affects paint.
     let paint = m == MAT_PAINT || m == MAT_WORN;
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);

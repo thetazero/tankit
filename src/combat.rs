@@ -87,7 +87,7 @@ pub enum Look {
     Flame,
 }
 
-/// Sorn plasma glow.
+/// Ithessar plasma glow.
 const PLASMA: Vec3 = Vec3::new(0.1, 1.0, 0.5);
 /// Machine laser.
 const LASER: Vec3 = Vec3::new(1.0, 0.12, 0.08);
@@ -146,8 +146,8 @@ pub fn gun(kind: TurretKind) -> Gun {
             reload: 0.5,
             action: Action::Shell(cannon),
         },
-        // Sorn: a big slow orb of plasma that skips off walls and ground.
-        TurretKind::Wisp => Gun {
+        // Ithessar: a big slow orb of plasma that skips off walls and ground.
+        TurretKind::Ammeth => Gun {
             damage: 30.0,
             reload: 1.1,
             action: Action::Shell(ShellSpec {
@@ -159,8 +159,8 @@ pub fn gun(kind: TurretKind) -> Gun {
                 look: Look::Plasma { size: 2.0 },
             }),
         },
-        // Sorn: three barrels taking turns, a stream of small slow bolts.
-        TurretKind::Triad => Gun {
+        // Ithessar: three barrels taking turns, a stream of small slow bolts.
+        TurretKind::Ossrin => Gun {
             damage: 7.0,
             reload: 0.2,
             action: Action::Shell(ShellSpec {
@@ -202,6 +202,8 @@ pub fn max_health(kind: HullKind) -> f32 {
     match kind {
         HullKind::Lancer => 110.0,
         HullKind::Bastion => 160.0,
+        // Light: speed is its armor.
+        HullKind::Sethuun => 90.0,
     }
 }
 
@@ -1292,8 +1294,8 @@ mod tests {
     #[test]
     fn plasma_orbs_bounce_off_the_ground() {
         let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
-        let Action::Shell(spec) = gun(TurretKind::Wisp).action else {
-            panic!("Wisp fires shells");
+        let Action::Shell(spec) = gun(TurretKind::Ammeth).action else {
+            panic!("Ammeth fires shells");
         };
         let t = &m.world.tanks[0];
         let from = t.pos + Vec3::new(8.0, 3.0, 8.0);

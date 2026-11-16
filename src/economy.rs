@@ -14,13 +14,14 @@ pub enum Part {
     Turret(TurretKind),
 }
 
-pub const PARTS: [Part; 8] = [
+pub const PARTS: [Part; 9] = [
     Part::Hull(HullKind::Lancer),
     Part::Hull(HullKind::Bastion),
+    Part::Hull(HullKind::Sethuun),
     Part::Turret(TurretKind::Lance),
     Part::Turret(TurretKind::Maul),
-    Part::Turret(TurretKind::Wisp),
-    Part::Turret(TurretKind::Triad),
+    Part::Turret(TurretKind::Ammeth),
+    Part::Turret(TurretKind::Ossrin),
     Part::Turret(TurretKind::Lumen),
     Part::Turret(TurretKind::Hymn),
 ];
@@ -34,6 +35,12 @@ impl Part {
     }
 
     pub fn by_name(name: &str) -> Option<Part> {
+        // Saves from before the Ithessar turrets were renamed.
+        let name = match name.to_ascii_uppercase().as_str() {
+            "WISP" => "AMMETH",
+            "TRIAD" => "OSSRIN",
+            _ => name,
+        };
         PARTS
             .into_iter()
             .find(|p| p.name().eq_ignore_ascii_case(name))
@@ -56,15 +63,19 @@ impl Part {
                 rank: 3,
                 crystals: 900,
             }),
+            Part::Hull(HullKind::Sethuun) => Some(Price {
+                rank: 3,
+                crystals: 850,
+            }),
             Part::Turret(TurretKind::Hymn) => Some(Price {
                 rank: 2,
                 crystals: 600,
             }),
-            Part::Turret(TurretKind::Triad) => Some(Price {
+            Part::Turret(TurretKind::Ossrin) => Some(Price {
                 rank: 3,
                 crystals: 750,
             }),
-            Part::Turret(TurretKind::Wisp) => Some(Price {
+            Part::Turret(TurretKind::Ammeth) => Some(Price {
                 rank: 4,
                 crystals: 900,
             }),
