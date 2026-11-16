@@ -16,12 +16,14 @@ cargo test
 
 ## Controls
 
-| Input | Action |
+Tanki-style: the camera rides behind the turret, and the turret is turned with keys.
+
+| Key | Action |
 |---|---|
 | W/S or ↑/↓ | throttle / reverse |
 | A/D or ←/→ | turn hull |
-| Mouse (click to capture) | aim turret / orbit camera, vertical = camera height |
-| Q/E or Z/X | rotate turret with keys |
-| C | snap aim back over the hull |
+| Z / X | rotate turret left / right (it turns with the hull) |
+| C | swing turret back to center |
+| PageUp / PageDown | camera height |
 | F5 | new random map |
-| Esc | release mouse, press again to quit |
+| Esc | quit |
