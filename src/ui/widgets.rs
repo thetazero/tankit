@@ -208,7 +208,7 @@ pub fn compass(p: &mut Painter, center: Vec2, width: f32, heading: f32) {
                 n => format!("{n:03}"),
             };
             let mut s = TextStyle::LABEL;
-            s.tracking = 1.5;
+            s.tracking = 0.8;
             s.color = with_alpha(
                 if norm % 90 == 0 {
                     theme::FG

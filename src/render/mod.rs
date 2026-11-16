@@ -43,12 +43,18 @@ impl Camera {
 pub struct UiVertex {
     pub pos: [f32; 2],
     pub color: [f32; 4],
-    /// Where in the thumbnail atlas to sample (0..1), or negative for a flat colour.
+    /// Where in the thumbnail atlas to sample (0..1), or negative for a flat
+    /// colour. For text, where in the font atlas instead.
     pub uv: [f32; 2],
+    /// Text only: how far to grow the glyph's outline and how wide its edge
+    /// ramp is, both in screen px. A zero ramp means this isn't text.
+    pub sdf: [f32; 2],
 }
 
 /// UV for a flat-coloured UI vertex (no texture).
 pub const NO_UV: [f32; 2] = [-1.0, -1.0];
+/// `sdf` for anything that isn't text.
+pub const NO_SDF: [f32; 2] = [0.0, 0.0];
 
 /// Sky, sun and haze for a map.
 #[derive(Clone, Copy, Debug)]
@@ -414,7 +420,26 @@ impl Renderer {
         });
         let ui_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ui"),
-            entries: &[uniform_entry(0, wgpu::ShaderStages::VERTEX)],
+            entries: &[
+                uniform_entry(0, wgpu::ShaderStages::VERTEX),
+                // The font's distance-field atlas and its (mipmapped) sampler.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
 
         let layout = |bgls: &[Option<&wgpu::BindGroupLayout>]| {
@@ -644,7 +669,7 @@ impl Renderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<UiVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x2, 3 => Float32x2],
                 })],
             },
             primitive: Default::default(),
@@ -684,13 +709,31 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let font_view = make_font_atlas(&device, &queue);
+        let font_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("font"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
         let ui_globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ui globals"),
             layout: &ui_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: ui_globals_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ui_globals_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&font_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&font_sampler),
+                },
+            ],
         });
 
         let shadow_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -1380,6 +1423,50 @@ fn upload_surface_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     })
+}
+
+/// The UI font's distance-field atlas, all mips uploaded.
+fn make_font_atlas(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let font = crate::ui::font::font();
+    let (w, h) = font.atlas_size;
+    let levels = font.atlas_pixels();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("font atlas"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, data) in levels.iter().enumerate() {
+        let (lw, lh) = (w >> level, h >> level);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(lw),
+                rows_per_image: Some(lh),
+            },
+            wgpu::Extent3d {
+                width: lw,
+                height: lh,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// A thumbnail atlas of `size` px and the UI bind group that samples it.
