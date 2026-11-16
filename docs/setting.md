@@ -43,7 +43,7 @@ play. Factions are the world, never a lock on your build. They show up as:
 - **Map owners**: whose territory a map is.
 - **Part makers**: every hull and turret has a maker, and parts from
   different makers mix freely. Each maker has its own kind of weapon:
-  - **Imperium**: conventional guns firing fast shells (Lance, Maul).
+  - **Imperium**: conventional guns firing fast shells (Kontos, Pelekys).
   - **Ithessar**: slow plasma (Ammeth's orbs skip off walls; Ossrin's
     needles spin up into a stream).
   - **Machines**: a laser beam that burns while held, then overheats (Lumen).
@@ -51,7 +51,7 @@ play. Factions are the world, never a lock on your build. They show up as:
     breathes short-range blue crystal fire. Later maybe shields, drains,
     phasing.
 
-  Hulls: the Imperium make the tracked ones (Lancer, Bastion), the Ithessar
+  Hulls: the Imperium make the tracked ones (Kataphrakt, Kastron), the Ithessar
   one that hovers (Sethuun). The Resonant and the machines will get their
   own.
 

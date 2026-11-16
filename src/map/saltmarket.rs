@@ -1410,8 +1410,8 @@ mod tests {
                 Vec3::ONE,
                 foot,
                 up.x.atan2(up.y),
-                HullKind::Lancer,
-                TurretKind::Lance,
+                HullKind::Kataphrakt,
+                TurretKind::Kontos,
             );
             let mut top = 0.0f32;
             for _ in 0..(6.0 / crate::game::DT) as usize {

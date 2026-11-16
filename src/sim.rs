@@ -26,8 +26,8 @@ pub const GRAVITY: f32 = 9.81;
 /// Which kit parts a tank is built from (see `tank::model`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HullKind {
-    Lancer,
-    Bastion,
+    Kataphrakt,
+    Kastron,
     /// Ithessar: rides a plasma cushion instead of tracks.
     Sethuun,
 }
@@ -35,9 +35,9 @@ pub enum HullKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurretKind {
     /// Imperium rail cannon.
-    Lance,
+    Kontos,
     /// Imperium twin autocannon.
-    Maul,
+    Pelekys,
     /// Ithessar plasma orb that bounces off walls.
     Ammeth,
     /// Ithessar three-barrel rapid plasma.
@@ -52,7 +52,7 @@ impl HullKind {
     pub fn maker(self) -> crate::faction::Faction {
         use crate::faction::Faction;
         match self {
-            HullKind::Lancer | HullKind::Bastion => Faction::Imperium,
+            HullKind::Kataphrakt | HullKind::Kastron => Faction::Imperium,
             HullKind::Sethuun => Faction::Ithessar,
         }
     }
@@ -61,8 +61,8 @@ impl HullKind {
 impl TurretKind {
     /// Every turret, grouped by maker. Also the kit's art order.
     pub const ALL: [TurretKind; 6] = [
-        TurretKind::Lance,
-        TurretKind::Maul,
+        TurretKind::Kontos,
+        TurretKind::Pelekys,
         TurretKind::Ammeth,
         TurretKind::Ossrin,
         TurretKind::Lumen,
@@ -72,7 +72,7 @@ impl TurretKind {
     pub fn maker(self) -> crate::faction::Faction {
         use crate::faction::Faction;
         match self {
-            TurretKind::Lance | TurretKind::Maul => Faction::Imperium,
+            TurretKind::Kontos | TurretKind::Pelekys => Faction::Imperium,
             TurretKind::Ammeth | TurretKind::Ossrin => Faction::Ithessar,
             TurretKind::Lumen => Faction::Machines,
             TurretKind::Hymn => Faction::Resonant,
@@ -84,9 +84,9 @@ impl TurretKind {
     pub fn recoil(self) -> f32 {
         match self {
             // Long rail cannon: one big slam.
-            TurretKind::Lance => 2.2,
+            TurretKind::Kontos => 2.2,
             // Twin short guns: smaller kicks, more often.
-            TurretKind::Maul => 1.3,
+            TurretKind::Pelekys => 1.3,
             // Plasma has little mass: a soft push.
             TurretKind::Ammeth => 0.8,
             TurretKind::Ossrin => 0.35,
@@ -122,7 +122,7 @@ pub struct Chassis {
 }
 
 impl Chassis {
-    pub const LANCER: Chassis = Chassis {
+    pub const KATAPHRAKT: Chassis = Chassis {
         mass: 18_000.0,
         track_x: 1.22,
         track_width: 0.56,
@@ -137,7 +137,7 @@ impl Chassis {
         center_of_mass: Vec3::new(0.0, 0.65, -0.1),
         hover: false,
     };
-    pub const BASTION: Chassis = Chassis {
+    pub const KASTRON: Chassis = Chassis {
         mass: 28_000.0,
         track_x: 1.28,
         track_width: 0.64,
@@ -172,8 +172,8 @@ impl Chassis {
 
     pub fn of(kind: HullKind) -> &'static Chassis {
         match kind {
-            HullKind::Lancer => &Chassis::LANCER,
-            HullKind::Bastion => &Chassis::BASTION,
+            HullKind::Kataphrakt => &Chassis::KATAPHRAKT,
+            HullKind::Kastron => &Chassis::KASTRON,
             HullKind::Sethuun => &Chassis::SETHUUN,
         }
     }
@@ -354,7 +354,7 @@ pub struct HullStats {
 }
 
 impl HullStats {
-    pub const LANCER: Self = Self {
+    pub const KATAPHRAKT: Self = Self {
         max_speed: 13.0,
         reverse_speed: 7.5,
         accel: 11.0,
@@ -369,7 +369,7 @@ impl HullStats {
         turret_accel: 2.6,
         turret_brake: 10.0,
     };
-    pub const BASTION: Self = Self {
+    pub const KASTRON: Self = Self {
         max_speed: 10.0,
         reverse_speed: 6.0,
         accel: 7.5,
@@ -407,8 +407,8 @@ impl HullStats {
 
     pub fn of(kind: HullKind) -> HullStats {
         match kind {
-            HullKind::Lancer => HullStats::LANCER,
-            HullKind::Bastion => HullStats::BASTION,
+            HullKind::Kataphrakt => HullStats::KATAPHRAKT,
+            HullKind::Kastron => HullStats::KASTRON,
             HullKind::Sethuun => HullStats::SETHUUN,
         }
     }
@@ -564,8 +564,8 @@ impl World {
             Vec3::new(0.92, 0.93, 0.95),
             spot,
             yaw,
-            HullKind::Lancer,
-            TurretKind::Lance,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
         );
         w
     }
@@ -1482,7 +1482,7 @@ mod tests {
     /// worst vertical velocity change in one step, airborne fraction).
     fn ride(map: Map, start: Vec2, yaw: f32, hull: HullKind, seconds: f32) -> (f32, f32, f32, f32) {
         let mut w = World::empty(map);
-        w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Lance);
+        w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Kontos);
         run(&mut w, Command::default(), 1.0);
         let (mut sum, mut peak, mut jolt, mut air, mut n) =
             (0.0f32, 0.0f32, 0.0f32, 0usize, 0usize);
@@ -1508,14 +1508,14 @@ mod tests {
     /// transfer) without lifting it off its tracks.
     #[test]
     fn rides_level_under_power() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             let mut w = World::empty(flat_world().map);
             w.spawn_tank(
                 Vec3::ONE,
                 Vec2::new(100.0, 20.0),
                 0.0,
                 hull,
-                TurretKind::Lance,
+                TurretKind::Kontos,
             );
             run(&mut w, Command::default(), 2.0);
             let (mut pitch, mut height) = (0.0f32, 0.0f32);
@@ -1542,7 +1542,7 @@ mod tests {
     /// suspension soaks them up instead of throwing the tank in the air.
     #[test]
     fn suspension_soaks_up_bumps() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             let bumps = ride(
                 Map::proving_ground(),
                 Vec2::new(12.0, 108.0),
@@ -1610,7 +1610,7 @@ mod tests {
 
     #[test]
     fn settles_level_on_its_wheels() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             let mut w = flat_world();
             w.set_hull(0, hull);
             run(&mut w, Command::default(), 3.0);
@@ -1632,14 +1632,14 @@ mod tests {
         run(&mut w, throttle(1.0), 0.5);
         let early = w.tanks[0].speed();
         assert!(
-            early > 0.33 * HullStats::LANCER.max_speed,
+            early > 0.33 * HullStats::KATAPHRAKT.max_speed,
             "sluggish start: {early} m/s after 0.5 s"
         );
         assert!(w.tanks[0].up().y > 0.98, "wheelie: {:?}", w.tanks[0].up());
         run(&mut w, throttle(1.0), 2.5);
         let s = w.tanks[0].speed();
         assert!(
-            (s - HullStats::LANCER.max_speed).abs() < 0.5,
+            (s - HullStats::KATAPHRAKT.max_speed).abs() < 0.5,
             "top speed {s}"
         );
     }
@@ -1813,7 +1813,7 @@ mod tests {
     /// Kerbs, steps and low ledges never stop a tank, from a standstill or at speed.
     #[test]
     fn low_ledges_never_stop_you() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             for h in [0.25, 0.5, 0.8] {
                 assert!(
                     climbs(h, Vec2::new(100.0, 106.5), 0.0, hull),
@@ -1836,7 +1836,7 @@ mod tests {
     #[test]
     fn walls_still_block() {
         assert!(
-            !climbs(2.0, Vec2::new(100.0, 80.0), 0.0, HullKind::Lancer),
+            !climbs(2.0, Vec2::new(100.0, 80.0), 0.0, HullKind::Kataphrakt),
             "drove up a wall"
         );
     }
@@ -1866,7 +1866,7 @@ mod tests {
     #[test]
     fn turret_spins_up_slowly_and_stops_quickly() {
         let mut w = flat_world();
-        let h = HullStats::LANCER;
+        let h = HullStats::KATAPHRAKT;
         run(
             &mut w,
             Command {
@@ -2095,7 +2095,7 @@ mod tests {
             w.step(&[Command::default()]);
             pitch = pitch.max(w.tanks[0].forward().y.asin().to_degrees());
         }
-        // Lance fires forward: the nose kicks up as the hull rocks back.
+        // Kontos fires forward: the nose kicks up as the hull rocks back.
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
     }
 }

@@ -48,9 +48,9 @@ tankit [OPTIONS]
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
-  --hull <lancer|bastion|sethuun>  player hull (default lancer; sethuun hovers)
-  --turret <name>         player turret: lance maul (Imperium), ammeth ossrin (Ithessar),
-                          lumen (machines), hymn (Resonant); default lance
+  --hull <kataphrakt|kastron|sethuun>  player hull (default kataphrakt; sethuun hovers)
+  --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
+                          lumen (machines), hymn (Resonant); default kontos
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
@@ -210,7 +210,7 @@ fn parse_args() -> Result<Args> {
     let mut bots: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
-    let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
+    let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
@@ -296,14 +296,14 @@ fn parse_args() -> Result<Args> {
                 loadout.0 = *garage::HULLS
                     .iter()
                     .find(|&&k| garage::hull_name(k) == name)
-                    .context("--hull expects lancer, bastion or sethuun")?;
+                    .context("--hull expects kataphrakt, kastron or sethuun")?;
             }
             "--turret" => {
                 let name = args.next().unwrap_or_default().to_ascii_uppercase();
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects lance, maul, ammeth, ossrin, lumen or hymn")?;
+                    .context("--turret expects kontos, pelekys, ammeth, ossrin, lumen or hymn")?;
             }
             "--garage" => garage = true,
             "--screen" => {

@@ -50,8 +50,8 @@ impl Faction {
     /// Tint for the tank's light armor plates.
     pub fn paint(self) -> Vec3 {
         match self {
-            // Pale, cold grey-white.
-            Faction::Imperium => Vec3::new(0.80, 0.86, 0.98),
+            // Deep crimson (gold trim comes from the models).
+            Faction::Imperium => Vec3::new(0.52, 0.05, 0.07),
             // Crystal blue.
             Faction::Resonant => Vec3::new(0.14, 0.38, 0.95),
             // Rust orange.
@@ -64,7 +64,7 @@ impl Faction {
     /// HUD color: scores, kill feed, health bars over tanks.
     pub fn ui(self) -> Rgba {
         match self {
-            Faction::Imperium => [0.62, 0.78, 1.0, 1.0],
+            Faction::Imperium => [0.95, 0.28, 0.26, 1.0],
             Faction::Resonant => [0.3, 0.55, 1.0, 1.0],
             Faction::Machines => [1.0, 0.6, 0.3, 1.0],
             Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
@@ -76,7 +76,7 @@ impl Faction {
     pub fn hulls(self) -> &'static [HullKind] {
         match self {
             Faction::Ithessar => &[HullKind::Sethuun],
-            _ => &[HullKind::Lancer, HullKind::Bastion],
+            _ => &[HullKind::Kataphrakt, HullKind::Kastron],
         }
     }
 

@@ -7,7 +7,7 @@
 //! guns around their pitch pivot.
 
 use crate::render::material::Material;
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 use glam::{Vec2, Vec3, Vec4};
 
@@ -50,9 +50,15 @@ pub const RUBBER: Skin = Skin {
     face: Vec4::new(0.06, 0.06, 0.065, Material::Carbon.id()),
     edge: Vec4::new(0.1, 0.1, 0.11, Material::Carbon.id()),
 };
+/// Imperium light strips: warm gold.
 pub const GLOW: Skin = Skin {
-    face: Vec4::new(1.0, 0.2, 0.03, Material::Glow.id()),
-    edge: Vec4::new(1.0, 0.2, 0.03, Material::Glow.id()),
+    face: Vec4::new(1.0, 0.6, 0.16, Material::Glow.id()),
+    edge: Vec4::new(1.0, 0.6, 0.16, Material::Glow.id()),
+};
+/// Imperium gold: the emblem and trim.
+pub const GILT: Skin = Skin {
+    face: Vec4::new(0.95, 0.68, 0.26, Material::Metal.id()),
+    edge: Vec4::new(1.0, 0.82, 0.45, Material::Metal.id()),
 };
 pub const BORE: Skin = Skin {
     face: Vec4::new(0.01, 0.01, 0.012, Material::Carbon.id()),
@@ -250,6 +256,78 @@ pub fn plate(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin)
     let outer = cut_quad(top, k);
     let inner: Vec<Vec3> = outer.iter().map(|&p| p - n * t).collect();
     solid(m, &[inner, outer], (t * 0.3).min(0.025), skin);
+}
+
+/// The Imperium's emblem, a haloed crown over a ringed planet, raised in
+/// relief on a surface. `c` is its center on the surface, `up` points to the
+/// top of the emblem, `out` away from the surface; `size` is about half its
+/// height. Built from convex pieces so every cap triangulates cleanly.
+pub fn emblem(m: &mut MeshData, c: Vec3, up: Vec3, out: Vec3, size: f32, skin: Skin) {
+    let out = out.normalize();
+    let up = (up - out * up.dot(out)).normalize();
+    let right = up.cross(out);
+    let t = 0.025;
+    // A flat convex piece at height `lift` above the surface.
+    let mut piece = |p: &[Vec2], lift: f32| {
+        let at = |h: f32| -> Vec<Vec3> {
+            p.iter()
+                .map(|q| c + (right * q.x + up * q.y) * size + out * h)
+                .collect()
+        };
+        solid(m, &[at(lift - t), at(lift)], 0.004, skin);
+    };
+    let planet = Vec2::new(0.0, -0.3);
+    piece(&ngon(14, 0.3, planet), 0.02);
+    // The planet's ring: its front half, standing proud of the planet.
+    let arc = |r: Vec2, w: f32, center: Vec2, a0: f32, a1: f32, n: usize| -> Vec<[Vec2; 4]> {
+        (0..n)
+            .map(|i| {
+                let (a, b) = (
+                    a0 + (a1 - a0) * i as f32 / n as f32,
+                    a0 + (a1 - a0) * (i + 1) as f32 / n as f32,
+                );
+                let pt =
+                    |a: f32, k: f32| center + Vec2::new(a.cos() * (r.x + k), a.sin() * (r.y + k));
+                [pt(a, -w), pt(b, -w), pt(b, w), pt(a, w)]
+            })
+            .collect()
+    };
+    for q in arc(
+        Vec2::new(0.56, 0.13),
+        0.035,
+        planet,
+        PI * 0.96,
+        PI * 2.04,
+        12,
+    ) {
+        piece(&q, 0.035);
+    }
+    // Crown: a band and three points.
+    piece(
+        &rect(Vec2::new(0.0, 0.1), Vec2::new(0.26, 0.05), 0.01),
+        0.02,
+    );
+    for (x, h) in [(-0.2, 0.36), (0.0, 0.44), (0.2, 0.36)] {
+        piece(
+            &[
+                Vec2::new(x - 0.07, 0.15),
+                Vec2::new(x + 0.07, 0.15),
+                Vec2::new(x, h),
+            ],
+            0.02,
+        );
+    }
+    // Halo: an arch over the crown.
+    for q in arc(
+        Vec2::new(0.38, 0.32),
+        0.025,
+        Vec2::new(0.0, 0.14),
+        0.0,
+        PI,
+        14,
+    ) {
+        piece(&q, 0.02);
+    }
 }
 
 /// Axis-aligned beveled box.
@@ -507,7 +585,7 @@ pub struct HullModel {
 
 /// Light, sleek hull: a low wedge with sharp white fender plates sweeping
 /// forward over the sprockets and a dark composite core.
-pub fn lancer() -> HullModel {
+pub fn kataphrakt() -> HullModel {
     let mut m = MeshData::default();
     let inside = v(0.0, 0.8, 0.0);
 
@@ -659,7 +737,7 @@ pub fn lancer() -> HullModel {
         GLOW,
     );
 
-    // Raised glacis plate with twin light bars.
+    // Raised glacis plate, carrying the emblem.
     plate(
         &mut m,
         [
@@ -672,18 +750,14 @@ pub fn lancer() -> HullModel {
         inside,
         CARBON_LIGHT,
     );
-    plate2(
-        &mut m,
-        [
-            v(0.2, 1.46, 1.25),
-            v(0.42, 1.46, 1.25),
-            v(0.36, 1.32, 1.8),
-            v(0.2, 1.32, 1.8),
-        ],
-        0.02,
-        inside,
-        GLOW,
-    );
+    // The emblem in gold on the glacis.
+    {
+        let (top, low) = (v(0.0, 1.42, 1.1), v(0.0, 1.11, 2.38));
+        let up = (top - low).normalize();
+        let out = up.cross(Vec3::X).normalize();
+        let out = if out.y < 0.0 { -out } else { out };
+        emblem(&mut m, top.lerp(low, 0.5), up, out, 0.5, GILT);
+    }
     // Nose: armored beak under the glacis.
     plate(
         &mut m,
@@ -770,7 +844,7 @@ pub fn lancer() -> HullModel {
 
 /// Heavy hull: taller and boxier, with thick segmented skirts, a bull-nose
 /// front plate and more hardware on the deck.
-pub fn bastion() -> HullModel {
+pub fn kastron() -> HullModel {
     let mut m = MeshData::default();
     let inside = v(0.0, 0.9, 0.0);
 
@@ -823,6 +897,14 @@ pub fn bastion() -> HullModel {
         inside,
         CARBON_LIGHT,
     );
+    // The emblem in gold on the bull nose, between the light slits.
+    {
+        let (top, low) = (v(0.0, 1.12, 2.62), v(0.0, 0.6, 2.72));
+        let up = (top - low).normalize();
+        let out = up.cross(Vec3::X).normalize();
+        let out = if out.z < 0.0 { -out } else { out };
+        emblem(&mut m, top.lerp(low, 0.5), up, out, 0.45, GILT);
+    }
     // Bull-nose lower plate with light slits.
     plate(
         &mut m,
@@ -1048,7 +1130,7 @@ pub(crate) fn turret_ring(m: &mut MeshData) {
 
 /// Long-barrel rail cannon: faceted wedge head, white cheek armor, glowing
 /// coil slots along the barrel.
-pub fn lance() -> TurretModel {
+pub fn kontos() -> TurretModel {
     let mut head = MeshData::default();
     let inside = v(0.0, 0.45, -0.2);
     turret_ring(&mut head);
@@ -1120,6 +1202,8 @@ pub fn lance() -> TurretModel {
         inside,
         GLOW,
     );
+    // The emblem in gold on the roof, reading from behind.
+    emblem(&mut head, v(0.0, 0.86, -0.15), Vec3::Z, Vec3::Y, 0.6, GILT);
     // Rear antenna fins.
     for s in [-1.0f32, 1.0] {
         plate(
@@ -1271,7 +1355,7 @@ pub fn lance() -> TurretModel {
 }
 
 /// Twin short cannons in a wide, low turret with big shoulder plates.
-pub fn maul() -> TurretModel {
+pub fn pelekys() -> TurretModel {
     let mut head = MeshData::default();
     let inside = v(0.0, 0.4, -0.2);
     turret_ring(&mut head);
@@ -1334,6 +1418,8 @@ pub fn maul() -> TurretModel {
         inside,
         GLOW,
     );
+    // The emblem in gold on the roof between the shoulder plates.
+    emblem(&mut head, v(0.0, 0.72, -0.15), Vec3::Z, Vec3::Y, 0.55, GILT);
     // Ammo drum housing at the back.
     solid(
         &mut head,
@@ -1473,7 +1559,7 @@ pub fn maul() -> TurretModel {
 }
 
 // ---------------------------------------------------------------------------
-// Faction turrets. The Imperium builds the plated Lance and Maul above; the
+// Faction turrets. The Imperium builds the plated Kontos and Pelekys above; the
 // others below each have their own shape language and glow color.
 
 /// Machine laser red.

@@ -38,9 +38,9 @@ pub fn world() -> World {
             let h = if tu.maker() == crate::faction::Faction::Ithessar {
                 HullKind::Sethuun
             } else if i % 2 == 0 {
-                HullKind::Lancer
+                HullKind::Kataphrakt
             } else {
-                HullKind::Bastion
+                HullKind::Kastron
             };
             (h, tu, colors[i])
         })

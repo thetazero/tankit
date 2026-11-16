@@ -144,14 +144,14 @@ pub fn gun(kind: TurretKind) -> Gun {
     };
     match kind {
         // Imperium long rail cannon: hits hard, slow.
-        TurretKind::Lance => Gun {
+        TurretKind::Kontos => Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
             action: Action::Shell(cannon),
         },
         // Imperium twin short guns: light hits, alternating barrels, fast.
-        TurretKind::Maul => Gun {
+        TurretKind::Pelekys => Gun {
             damage: 15.0,
             reload: 0.5,
             spool: 0.0,
@@ -216,8 +216,8 @@ pub fn gun(kind: TurretKind) -> Gun {
 
 pub fn max_health(kind: HullKind) -> f32 {
     match kind {
-        HullKind::Lancer => 110.0,
-        HullKind::Bastion => 160.0,
+        HullKind::Kataphrakt => 110.0,
+        HullKind::Kastron => 160.0,
         // Light: speed is its armor.
         HullKind::Sethuun => 90.0,
     }
@@ -1458,9 +1458,15 @@ mod tests {
         // A dummy straight ahead of the player.
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
-        m.world
-            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -1482,7 +1488,7 @@ mod tests {
         let dealt = m.fighters[0].damage_dealt;
         assert!(
             dealt > 0.0
-                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Lancer)
+                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Kataphrakt)
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
@@ -1495,9 +1501,15 @@ mod tests {
         m.world.tanks[0].turret_kind = turret;
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist;
-        m.world
-            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -1530,7 +1542,7 @@ mod tests {
         for _ in 0..(3.0 / DT) as usize {
             m.step(Command::default(), true);
         }
-        assert_eq!(m.fighters[1].health, max_health(HullKind::Lancer));
+        assert_eq!(m.fighters[1].health, max_health(HullKind::Kataphrakt));
         assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
     }
 
@@ -1595,7 +1607,7 @@ mod tests {
         assert!(m.shells[0].vel.y > 0.0, "and come back up");
         assert_eq!(m.shells[0].bounces, spec.bounces - 1);
         // Cannon shells just stop.
-        let Action::Shell(cannon) = gun(TurretKind::Lance).action else {
+        let Action::Shell(cannon) = gun(TurretKind::Kontos).action else {
             panic!();
         };
         m.shells = vec![Shell {
@@ -1679,12 +1691,12 @@ mod tests {
     fn queued_kit_is_fitted_at_respawn() {
         let mut m = arena(1);
         // Whatever the player has now, queue the other hull.
-        let hull = if m.world.tanks[0].hull_kind == HullKind::Bastion {
-            HullKind::Lancer
+        let hull = if m.world.tanks[0].hull_kind == HullKind::Kastron {
+            HullKind::Kataphrakt
         } else {
-            HullKind::Bastion
+            HullKind::Kastron
         };
-        let kit = (hull, TurretKind::Maul);
+        let kit = (hull, TurretKind::Pelekys);
         m.fighters[0].next_kit = Some(kit);
         // Not while alive.
         for _ in 0..30 {
@@ -1839,7 +1851,7 @@ mod tests {
             owner,
             damage: 1000.0,
             age: 0.0,
-            spec: match gun(TurretKind::Lance).action {
+            spec: match gun(TurretKind::Kontos).action {
                 Action::Shell(spec) => spec,
                 Action::Beam { .. } => unreachable!(),
             },

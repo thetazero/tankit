@@ -193,8 +193,8 @@ mod tests {
                 Vec3::ONE,
                 Vec2::ZERO,
                 0.0,
-                crate::sim::HullKind::Lancer,
-                crate::sim::TurretKind::Lance,
+                crate::sim::HullKind::Kataphrakt,
+                crate::sim::TurretKind::Kontos,
             );
         }
         let h = Hold::new(&w.map, n);

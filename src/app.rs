@@ -758,7 +758,10 @@ mod tests {
     #[test]
     fn side_one_puts_the_player_with_the_other_faction() {
         let m = &MISSIONS[0];
-        let kit = (crate::sim::HullKind::Lancer, crate::sim::TurretKind::Lance);
+        let kit = (
+            crate::sim::HullKind::Kataphrakt,
+            crate::sim::TurretKind::Kontos,
+        );
         let a = new_match(m.seed, m.map_kind, 0, 0, 3, m.contract, kit);
         let b = new_match(m.seed, m.map_kind, 1, 0, 3, m.contract, kit);
         assert_eq!(a.factions, m.sides);

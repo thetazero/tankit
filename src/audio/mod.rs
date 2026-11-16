@@ -193,8 +193,8 @@ impl Audio {
         {
             Sound::Shot { tank, turret, at } => {
                 let layers = match turret {
-                    TurretKind::Lance => patch::LANCE,
-                    TurretKind::Maul => patch::MAUL,
+                    TurretKind::Kontos => patch::KONTOS,
+                    TurretKind::Pelekys => patch::PELEKYS,
                     TurretKind::Ammeth => patch::WISP,
                     TurretKind::Ossrin => patch::TRIAD,
                     TurretKind::Hymn => {
@@ -271,7 +271,7 @@ impl Audio {
                     beam: f.is_some_and(|f| f.beam.is_some()) as u8 as f32,
                     heat: f.map_or(0.0, |f| f.heat),
                     flame: flaming as u8 as f32,
-                    heavy: t.hull_kind == HullKind::Bastion,
+                    heavy: t.hull_kind == HullKind::Kastron,
                     hover: t.chassis.hover,
                 }
             })

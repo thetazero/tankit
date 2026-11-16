@@ -18,11 +18,11 @@ pub enum Part {
 }
 
 pub const PARTS: [Part; 9] = [
-    Part::Hull(HullKind::Lancer),
-    Part::Hull(HullKind::Bastion),
+    Part::Hull(HullKind::Kataphrakt),
+    Part::Hull(HullKind::Kastron),
     Part::Hull(HullKind::Sethuun),
-    Part::Turret(TurretKind::Lance),
-    Part::Turret(TurretKind::Maul),
+    Part::Turret(TurretKind::Kontos),
+    Part::Turret(TurretKind::Pelekys),
     Part::Turret(TurretKind::Ammeth),
     Part::Turret(TurretKind::Ossrin),
     Part::Turret(TurretKind::Lumen),
@@ -38,10 +38,14 @@ impl Part {
     }
 
     pub fn by_name(name: &str) -> Option<Part> {
-        // Saves from before the Ithessar turrets were renamed.
+        // Saves from before the Ithessar and Imperium parts were renamed.
         let name = match name.to_ascii_uppercase().as_str() {
             "WISP" => "AMMETH",
             "TRIAD" => "OSSRIN",
+            "LANCER" => "KATAPHRAKT",
+            "BASTION" => "KASTRON",
+            "LANCE" => "KONTOS",
+            "MAUL" => "PELEKYS",
             _ => name,
         };
         PARTS
@@ -65,12 +69,12 @@ impl Part {
     /// starter part, owned from the start.
     pub fn price(self) -> Option<Price> {
         match self {
-            Part::Hull(HullKind::Lancer) | Part::Turret(TurretKind::Lance) => None,
-            Part::Turret(TurretKind::Maul) => Some(Price {
+            Part::Hull(HullKind::Kataphrakt) | Part::Turret(TurretKind::Kontos) => None,
+            Part::Turret(TurretKind::Pelekys) => Some(Price {
                 standing: 2,
                 crystals: 500,
             }),
-            Part::Hull(HullKind::Bastion) => Some(Price {
+            Part::Hull(HullKind::Kastron) => Some(Price {
                 standing: 3,
                 crystals: 900,
             }),
@@ -216,17 +220,17 @@ mod tests {
     #[test]
     fn upgrades_scale_stats() {
         let mut l = Levels::default();
-        let base = l.max_health(HullKind::Lancer);
-        let g0 = l.gun(TurretKind::Lance);
-        l.set(Part::Hull(HullKind::Lancer), 2);
-        l.set(Part::Turret(TurretKind::Lance), 9);
-        assert_eq!(l.of(Part::Turret(TurretKind::Lance)), MAX_LEVEL);
-        assert!(l.max_health(HullKind::Lancer) > base);
+        let base = l.max_health(HullKind::Kataphrakt);
+        let g0 = l.gun(TurretKind::Kontos);
+        l.set(Part::Hull(HullKind::Kataphrakt), 2);
+        l.set(Part::Turret(TurretKind::Kontos), 9);
+        assert_eq!(l.of(Part::Turret(TurretKind::Kontos)), MAX_LEVEL);
+        assert!(l.max_health(HullKind::Kataphrakt) > base);
         assert_eq!(
-            l.max_health(HullKind::Bastion),
-            combat::max_health(HullKind::Bastion)
+            l.max_health(HullKind::Kastron),
+            combat::max_health(HullKind::Kastron)
         );
-        let g = l.gun(TurretKind::Lance);
+        let g = l.gun(TurretKind::Kontos);
         assert!(g.damage > g0.damage && g.reload < g0.reload);
         assert_eq!(upgrade_cost(MAX_LEVEL), None);
     }
