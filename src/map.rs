@@ -5,6 +5,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::faction::Faction;
 use crate::rng::Rng;
 
 mod ruins;
@@ -359,9 +360,16 @@ pub struct Map {
     pub spawn_yaw: Option<f32>,
     /// Sun, sky and haze.
     pub atmosphere: crate::render::Atmosphere,
+    /// Each side's spawn spots, for team fights (both empty: spawn anywhere).
+    pub bases: [Vec<Vec2>; 2],
+    /// Who fights here: side 0 (the player's) and side 1.
+    pub factions: [Faction; 2],
     /// Where repair crates parachute in (see `repair`).
     pub repair_spots: Vec<Vec2>,
 }
+
+/// The matchup on maps that don't name their own.
+pub const DEFAULT_SIDES: [Faction; 2] = [Faction::Imperium, Faction::Resonant];
 
 /// How many repair drop spots a generated city gets.
 pub const REPAIR_SPOTS: usize = 4;
@@ -397,6 +405,8 @@ impl Map {
             open_spots: Vec::new(),
             spawn_yaw: None,
             atmosphere: crate::render::Atmosphere::default(),
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
         };
 
@@ -449,6 +459,7 @@ impl Map {
         map.perimeter_walls();
         map.backdrop(&mut rng);
         map.collect_open_spots();
+        map.bases = split_bases(&map.open_spots, map.size);
         map.repair_spots = spread_spots(&map.open_spots, map.center(), REPAIR_SPOTS);
         map
     }
@@ -778,6 +789,8 @@ impl Map {
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
             atmosphere: crate::render::Atmosphere::default(),
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
         }
     }
@@ -805,6 +818,8 @@ impl Map {
             // Every lane runs along +z.
             spawn_yaw: Some(0.0),
             atmosphere: crate::render::Atmosphere::default(),
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
         };
@@ -966,6 +981,19 @@ impl Map {
 
 /// `n` of `spots`, spread out: the one nearest `center` first, then each
 /// next pick as far as possible from those already taken.
+/// Team bases on a map with no hand-placed ones: the open spots in the west
+/// and east quarters.
+fn split_bases(spots: &[Vec2], size: f32) -> [Vec<Vec2>; 2] {
+    let side = |west: bool| {
+        spots
+            .iter()
+            .copied()
+            .filter(|p| (p.x < size * 0.25) == west && (p.x > size * 0.75) != west)
+            .collect()
+    };
+    [side(true), side(false)]
+}
+
 fn spread_spots(spots: &[Vec2], center: Vec2, n: usize) -> Vec<Vec2> {
     let Some(&first) = spots
         .iter()
