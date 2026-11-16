@@ -532,6 +532,8 @@ pub enum Sound {
         tank: usize,
         at: Vec3,
     },
+    /// A tank ran into a wall or another tank, came down hard, or went over.
+    Knock(crate::sim::Knock),
     /// A tank arriving (spawn or respawn), its team's way.
     Arrival {
         tank: usize,
@@ -764,6 +766,8 @@ impl Match {
         }
 
         self.world.step(&cmds);
+        self.sounds
+            .extend(self.world.knocks.iter().map(|&k| Sound::Knock(k)));
         self.falls();
         self.husks();
         self.aim_assist();
