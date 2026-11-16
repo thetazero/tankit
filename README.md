@@ -53,7 +53,13 @@ Rendering for vehicles: procedural surface textures are generated at startup
 blotching, roughness variation, grime streaks; tileable, mipmapped) and
 sampled triplanar in each part's object space, so they need no UVs and move
 with the part. Lighting on vehicles is physically based (GGX highlights,
-metal-tinted reflections, roughness-blurred sky reflection). The look follows `docs/design-direction.md`.
+metal-tinted reflections, roughness-blurred sky reflection). A finer second
+texture octave keeps narrow faces (plate edges, bevels) detailed; bevels chip
+through to bare steel in patches.
+
+Ambient occlusion: screen-space (`shaders/ssao.wgsl`, a pass between the
+scene and post) for contact between separate parts, the ground and the city,
+on top of the per-vertex bake for small parts. The look follows `docs/design-direction.md`.
 
 Machinery that moves with the tank:
 - tread links run around the wheels at each side's own speed

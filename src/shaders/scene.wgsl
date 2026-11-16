@@ -135,7 +135,7 @@ fn grid_line(x: f32, width: f32, w: f32) -> f32 {
 // Tank materials (ids 6..12) work in object space, so detail moves with the part.
 // Direction (docs/design-direction.md): weathered solid gunmetal, dust and
 // wear; nothing on the machine glows.
-fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, wn: vec3<f32>, duv: vec2<f32>, masks: vec4<f32>, cavity: f32) -> Surface {
+fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, wn: vec3<f32>, duv: vec2<f32>, masks: vec4<f32>, fine: vec4<f32>, cavity: f32) -> Surface {
     var s: Surface;
     s.albedo = base;
     s.rough = 0.6;
@@ -169,10 +169,12 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         s.metal = mix(s.metal, 0.85, wear);
         s.rough = mix(s.rough, 0.28, wear);
         if (m == 11) {
-            // Bevels: paint rubbed through to bright steel, catching the light.
-            s.albedo = mix(s.albedo * 1.4, vec3<f32>(0.32, 0.31, 0.3), 0.5);
-            s.metal = 0.6;
-            s.rough = 0.3;
+            // Bevels: paint chipped through to bright steel in patches, not a
+            // uniform strip.
+            let chip = smoothstep(0.42, 0.58, fine.r * 0.7 + fine.b * 0.6);
+            s.albedo = mix(s.albedo * 0.95, vec3<f32>(0.34, 0.33, 0.31) * (0.8 + 0.4 * fine.g), chip);
+            s.metal = mix(s.metal, 0.8, chip);
+            s.rough = mix(s.rough, 0.3, chip);
         }
     } else if (m == 8) {
         // Track steel, polished where it meets the ground.
@@ -193,8 +195,8 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
     // Texture detail common to all tank finishes: blotchy tone, uneven sheen,
     // grime streaking down vertical faces, dirt in the cavities.
     if (m != 12 && m != 10) {
-        s.albedo *= 0.72 + 0.56 * masks.r;
-        s.rough = clamp(s.rough + (masks.g - 0.5) * 0.6, 0.12, 0.95);
+        s.albedo *= (0.72 + 0.56 * masks.r) * (0.86 + 0.28 * fine.r);
+        s.rough = clamp(s.rough + (masks.g - 0.5) * 0.6 + (fine.g - 0.5) * 0.25, 0.12, 0.95);
         let vertical = 1.0 - abs(wn.y);
         s.albedo *= 1.0 - 0.5 * masks.a * vertical;
         s.rough = mix(s.rough, 0.9, masks.a * vertical * 0.6);
@@ -339,14 +341,23 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let tX = sX.xy * 2.0 - 1.0;
     let tY = sY.xy * 2.0 - 1.0;
     let tZ = sZ.xy * 2.0 - 1.0;
+    // Second, finer octave so narrow faces (plate edges, bevels) carry detail too.
+    let tq = v.lpos * 3.4;
+    let fX = textureSample(surf_tex, surf_samp, tq.zy, 0).xy * 2.0 - 1.0;
+    let fY = textureSample(surf_tex, surf_samp, tq.xz, 0).xy * 2.0 - 1.0;
+    let fZ = textureSample(surf_tex, surf_samp, tq.xy, 0).xy * 2.0 - 1.0;
+    let fine = textureSample(surf_tex, surf_samp, tq.zy, 1) * tw.x + textureSample(surf_tex, surf_samp, tq.xz, 1) * tw.y + textureSample(surf_tex, surf_samp, tq.xy, 1) * tw.z;
     let bump = 0.3;
-    let n_obj = normalize(ln0 + bump * (tw.x * vec3<f32>(0.0, tX.y, tX.x) + tw.y * vec3<f32>(tY.x, 0.0, tY.y) + tw.z * vec3<f32>(tZ.x, tZ.y, 0.0)));
+    let fbump = 0.22;
+    let n_obj = normalize(ln0
+        + bump * (tw.x * vec3<f32>(0.0, tX.y, tX.x) + tw.y * vec3<f32>(tY.x, 0.0, tY.y) + tw.z * vec3<f32>(tZ.x, tZ.y, 0.0))
+        + fbump * (tw.x * vec3<f32>(0.0, fX.y, fX.x) + tw.y * vec3<f32>(fY.x, 0.0, fY.y) + tw.z * vec3<f32>(fZ.x, fZ.y, 0.0)));
     let n_detail = normalize(normalize(v.ax) * n_obj.x + normalize(v.ay) * n_obj.y + normalize(v.az) * n_obj.z);
 
     var s: Surface;
     if (is_tank) {
         n = n_detail;
-        s = tank_surface(m, base, v.lpos, ln0, v.wpos, n, duv, masks, cavity);
+        s = tank_surface(m, base, v.lpos, ln0, v.wpos, n, duv, masks, fine, cavity);
     } else {
         s = surface(v.color.a, base, v.wpos, n);
     }

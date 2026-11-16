@@ -39,17 +39,34 @@ impl KitMeshes {
             hulls: vec![hull(model::lancer()), hull(model::bastion())],
             turrets: vec![model::lance(), model::maul()],
         };
-        // Bake contact shadows into every part: joints, creases and overhangs go dark.
+        // Bake contact shadows into every part. Neighboring parts are separate
+        // instances, so each bake also sees them as occluders: the hull sees a
+        // turret on its ring and the tracks under its sides, the turret sees
+        // the hull roof under it.
+        let lance_head = kit.turrets[0].head.clone();
         for (h, parts) in &mut kit.hulls {
-            h.body.bake_ao(0.45, 0.6, 0.3);
+            let mut occ = MeshData::default();
+            occ.append_keep(&lance_head, glam::Mat4::from_translation(h.mount));
+            let r = &h.running;
+            for s in [-1.0f32, 1.0] {
+                let x = s * r.track_x;
+                let (z0, z1) = (r.idler.center.x.min(r.sprocket.center.x) - 0.4, r.idler.center.x.max(r.sprocket.center.x) + 0.4);
+                occ.add_box(glam::Vec3::new(x - r.track_width * 0.5, 0.0, z0), glam::Vec3::new(x + r.track_width * 0.5, 1.05, z1), glam::Vec4::ONE, glam::Vec4::ONE);
+            }
+            h.body.bake_ao_with(&occ, 0.8, 1.8, 0.15);
             for part in parts.iter_mut() {
-                part.bake_ao(0.12, 0.6, 0.45);
+                part.bake_ao(0.15, 1.4, 0.35);
             }
         }
+        // The hull roof under every turret.
+        let mut roof = MeshData::default();
+        roof.add_box(glam::Vec3::new(-2.0, -0.4, -2.5), glam::Vec3::new(2.0, 0.0, 2.5), glam::Vec4::ONE, glam::Vec4::ONE);
         for t in &mut kit.turrets {
-            t.head.bake_ao(0.4, 0.6, 0.3);
-            t.mantlet.bake_ao(0.2, 0.6, 0.4);
-            t.barrel.bake_ao(0.15, 0.6, 0.45);
+            t.head.bake_ao_with(&roof, 0.7, 1.8, 0.15);
+            let mut head_in_gun = MeshData::default();
+            head_in_gun.append_keep(&t.head, glam::Mat4::from_translation(-t.pivot));
+            t.mantlet.bake_ao_with(&head_in_gun, 0.3, 1.4, 0.3);
+            t.barrel.bake_ao(0.2, 1.4, 0.35);
         }
         kit
     }

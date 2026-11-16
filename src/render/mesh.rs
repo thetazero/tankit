@@ -96,6 +96,18 @@ impl MeshData {
         self.indices.extend(other.indices.iter().map(|i| i + base));
     }
 
+    /// Append another mesh transformed by `m`, keeping its own colors and materials.
+    pub fn append_keep(&mut self, other: &MeshData, m: Mat4) {
+        let base = self.verts.len() as u32;
+        let nm = Mat3::from_mat4(m).inverse().transpose();
+        for v in &other.verts {
+            let p = m.transform_point3(Vec3::from(v.pos));
+            let n = (nm * Vec3::from(v.normal)).normalize_or_zero();
+            self.verts.push(Vertex { pos: p.to_array(), normal: n.to_array(), ..*v });
+        }
+        self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
     /// Flat-shaded triangle whose normal faces away from `inside`.
     pub fn facet(&mut self, p: [Vec3; 3], inside: Vec3, c: Vec4) {
         let mut n = (p[1] - p[0]).cross(p[2] - p[0]);
@@ -115,13 +127,21 @@ impl MeshData {
     /// joints, creases, overhangs). Uses a spatial hash over triangle
     /// centroids, so it's fast enough to run at startup.
     pub fn bake_ao(&mut self, radius: f32, strength: f32, floor: f32) {
+        self.bake_ao_with(&MeshData::default(), radius, strength, floor);
+    }
+
+    /// Like `bake_ao`, but `others` also casts occlusion (neighboring parts
+    /// drawn as separate instances: the turret over the deck, the tracks under
+    /// the hull sides) without being modified.
+    pub fn bake_ao_with(&mut self, others: &MeshData, radius: f32, strength: f32, floor: f32) {
         use std::collections::HashMap;
         let cell = radius;
         let key = |p: Vec3| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32, (p.z / cell).floor() as i32);
         let mut tris: Vec<(Vec3, Vec3, f32)> = Vec::with_capacity(self.indices.len() / 3);
         let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
-        for t in self.indices.chunks_exact(3) {
-            let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from(self.verts[i as usize].pos));
+        let all = self.indices.chunks_exact(3).map(|t| (t, &self.verts)).chain(others.indices.chunks_exact(3).map(|t| (t, &others.verts)));
+        for (t, verts) in all {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from(verts[i as usize].pos));
             let cr = (b - a).cross(c - a);
             let area = cr.length() * 0.5;
             if area < 1e-7 {

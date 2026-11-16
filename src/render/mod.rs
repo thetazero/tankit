@@ -20,6 +20,7 @@ use mesh::{Instance, MeshData, MeshId, Vertex};
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADOW_SIZE: u32 = 4096;
+const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -98,6 +99,9 @@ impl GpuMesh {
 struct Targets {
     hdr_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
+    ao_view: wgpu::TextureView,
+    /// Depth for the SSAO pass.
+    ao_bg: wgpu::BindGroup,
     post_bg: wgpu::BindGroup,
 }
 
@@ -122,6 +126,8 @@ pub struct Renderer {
     ui_globals_buf: wgpu::Buffer,
     ui_globals_bg: wgpu::BindGroup,
     post_bgl: wgpu::BindGroupLayout,
+    ao_bgl: wgpu::BindGroupLayout,
+    ao_pipe: wgpu::RenderPipeline,
     linear_sampler: wgpu::Sampler,
     targets: Targets,
 
@@ -267,7 +273,30 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
+        });
+        let ao_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ssao depth"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
         });
         let ui_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ui"),
@@ -284,6 +313,7 @@ impl Renderer {
         let scene_layout = layout(&[Some(&globals_bgl), Some(&shadow_bgl)]);
         let globals_layout = layout(&[Some(&globals_bgl)]);
         let post_layout = layout(&[Some(&post_bgl)]);
+        let ao_layout = layout(&[Some(&globals_bgl), Some(&ao_bgl)]);
         let ui_layout = layout(&[Some(&ui_bgl)]);
 
         let vertex_layouts = [
@@ -369,6 +399,27 @@ impl Renderer {
                 entry_point: Some("fs_sky"),
                 compilation_options: Default::default(),
                 targets: &[Some(HDR_FORMAT.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let ao_src = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ssao.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/ssao.wgsl").into()),
+        });
+        let ao_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ssao"),
+            layout: Some(&ao_layout),
+            vertex: wgpu::VertexState { module: &ao_src, entry_point: Some("vs_ao"), compilation_options: Default::default(), buffers: &[] },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &ao_src,
+                entry_point: Some("fs_ao"),
+                compilation_options: Default::default(),
+                targets: &[Some(AO_FORMAT.into())],
             }),
             multiview_mask: None,
             cache: None,
@@ -495,7 +546,7 @@ impl Renderer {
             ..Default::default()
         });
 
-        let targets = make_targets(&device, &post_bgl, &linear_sampler, width, height);
+        let targets = make_targets(&device, &post_bgl, &ao_bgl, &linear_sampler, width, height);
         let meshes = MeshData::primitives().iter().map(|m| GpuMesh::new(&device, m, "primitive")).collect();
         let instance_cap = 1024;
         let instance_buf = make_buffer(&device, "instances", instance_cap * std::mem::size_of::<Instance>(), wgpu::BufferUsages::VERTEX);
@@ -521,6 +572,8 @@ impl Renderer {
             ui_globals_buf,
             ui_globals_bg,
             post_bgl,
+            ao_bgl,
+            ao_pipe,
             linear_sampler,
             targets,
             meshes,
@@ -554,7 +607,7 @@ impl Renderer {
             config.height = height;
             surface.configure(&self.device, config);
         }
-        self.targets = make_targets(&self.device, &self.post_bgl, &self.linear_sampler, width, height);
+        self.targets = make_targets(&self.device, &self.post_bgl, &self.ao_bgl, &self.linear_sampler, width, height);
     }
 
     /// Render to the window surface.
@@ -729,7 +782,7 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -742,6 +795,26 @@ impl Renderer {
             self.draw_geometry(&mut pass, &ranges);
             pass.set_pipeline(&self.sky_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ssao"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.targets.ao_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.ao_pipe);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_bind_group(1, &self.targets.ao_bg, &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -818,6 +891,7 @@ fn upload_surface_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::
 fn make_targets(
     device: &wgpu::Device,
     post_bgl: &wgpu::BindGroupLayout,
+    ao_bgl: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     width: u32,
     height: u32,
@@ -835,17 +909,26 @@ fn make_targets(
         })
     };
     let hdr = tex("hdr", HDR_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
-    let depth = tex("depth", DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let depth = tex("depth", DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+    let ao = tex("ssao", AO_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
     let hdr_view = hdr.create_view(&Default::default());
+    let depth_view = depth.create_view(&Default::default());
+    let ao_view = ao.create_view(&Default::default());
+    let ao_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ssao depth"),
+        layout: ao_bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth_view) }],
+    });
     let post_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("post"),
         layout: post_bgl,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&hdr_view) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&ao_view) },
         ],
     });
-    Targets { hdr_view, depth_view: depth.create_view(&Default::default()), post_bg }
+    Targets { hdr_view, depth_view, ao_view, ao_bg, post_bg }
 }
 
 fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
