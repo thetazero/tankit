@@ -41,7 +41,8 @@ tankit [OPTIONS]
   --hull <lancer|bastion> player hull (default lancer)
   --turret <lance|maul>   player turret (default lance)
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
-  --screen <menu|missions|pause|results>  (with --shot) render that screen
+  --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
+  --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
   --xp <n>                (with --shot) pilot XP for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
@@ -65,6 +66,7 @@ pub struct Args {
     screen: Option<Screen>,
     xp: u32,
     crystals: u32,
+    debug: bool,
     straight: bool,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
@@ -78,6 +80,7 @@ impl Args {
         let mut p = profile::Profile::in_memory();
         p.xp = self.xp;
         p.crystals = self.crystals;
+        p.settings.debug = self.debug;
         p
     }
 
@@ -116,6 +119,7 @@ pub struct ShowroomArgs {
 enum Screen {
     Menu,
     Missions,
+    Settings,
     Pause,
     Results,
 }
@@ -137,7 +141,12 @@ fn main() -> Result<()> {
     let args = parse_args()?;
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
-        (Some(shot), None) if matches!(args.screen, Some(Screen::Menu | Screen::Missions)) => {
+        (Some(shot), None)
+            if matches!(
+                args.screen,
+                Some(Screen::Menu | Screen::Missions | Screen::Settings)
+            ) =>
+        {
             menu_shot(&args, shot)
         }
         (Some(shot), None) => screenshot(&args, shot),
@@ -172,6 +181,7 @@ fn parse_args() -> Result<Args> {
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
     let (mut xp, mut crystals) = (0, 0);
+    let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
         dist: 24.0,
@@ -236,15 +246,19 @@ fn parse_args() -> Result<Args> {
                 screen = Some(match args.next().as_deref() {
                     Some("menu") => Screen::Menu,
                     Some("missions") => Screen::Missions,
+                    Some("settings") => Screen::Settings,
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
                     other => {
-                        bail!("--screen expects menu, missions, pause or results, got {other:?}")
+                        bail!(
+                            "--screen expects menu, missions, settings, pause or results, got {other:?}"
+                        )
                     }
                 })
             }
             "--xp" => xp = args.next().context("--xp needs a number")?.parse()?,
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
+            "--debug" => debug = true,
             "--showroom" => showroom = true,
             "--orbit" => {
                 room.orbit = Some(
@@ -277,6 +291,7 @@ fn parse_args() -> Result<Args> {
         screen,
         xp,
         crystals,
+        debug,
         straight,
         cam,
         shot: shot.map(|out| ShotArgs {
@@ -379,6 +394,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     .ui
                     .extend(menu::Pause::new().draw(&profile, game.xp, w, h));
             }
+            if profile.settings.debug {
+                frame.ui.extend(hud::fps_counter(0.0, w, h));
+            }
         }
         let out = frame_path(shot, i);
         renderer
@@ -420,8 +438,16 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     profile.loadout = args.loadout;
     let mut game = app::menu_match(profile.loadout);
     let mut menu = menu::Menu::new();
-    if args.screen == Some(Screen::Missions) {
-        menu.input(menu::Nav::Select);
+    match args.screen {
+        Some(Screen::Missions) => {
+            menu.input(menu::Nav::Select);
+        }
+        Some(Screen::Settings) => {
+            menu.input(menu::Nav::Down);
+            menu.input(menu::Nav::Down);
+            menu.input(menu::Nav::Select);
+        }
+        _ => {}
     }
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
@@ -435,6 +461,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
     frame.ui = menu.draw(&profile, h, 1.0);
+    if profile.settings.debug {
+        frame.ui.extend(hud::fps_counter(0.0, w, h));
+    }
     renderer
         .render_to_image(&frame)?
         .save(&shot.out)

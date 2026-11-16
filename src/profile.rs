@@ -62,6 +62,15 @@ struct Saved {
     owned: Vec<String>,
     /// Upgrade level by part name; missing means M0.
     levels: BTreeMap<String, u8>,
+    settings: Settings,
+}
+
+/// Player options from the settings panel, saved with the profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Debug overlay: an FPS counter in the corner.
+    pub debug: bool,
 }
 
 /// Why a purchase didn't go through.
@@ -82,6 +91,7 @@ pub struct Profile {
     /// Bought parts, starters not included.
     bought: Vec<Part>,
     pub levels: Levels,
+    pub settings: Settings,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
     path: Option<PathBuf>,
 }
@@ -95,6 +105,7 @@ impl Profile {
             loadout: (HullKind::Lancer, TurretKind::Lance),
             bought: Vec::new(),
             levels: Levels::default(),
+            settings: Settings::default(),
             path: None,
         }
     }
@@ -125,6 +136,7 @@ impl Profile {
     fn restore(&mut self, s: Saved) {
         self.xp = s.xp;
         self.crystals = s.crystals;
+        self.settings = s.settings;
         self.bought = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
         for (name, level) in &s.levels {
             if let Some(part) = Part::by_name(name) {
@@ -218,6 +230,14 @@ impl Profile {
         }
     }
 
+    /// Change the settings and save.
+    pub fn set_settings(&mut self, settings: Settings) {
+        if settings != self.settings {
+            self.settings = settings;
+            self.save();
+        }
+    }
+
     fn save(&self) {
         let Some(path) = &self.path else { return };
         if let Err(e) = self.write(path) {
@@ -238,6 +258,7 @@ impl Profile {
                 .filter(|&&p| self.levels.of(p) > 0)
                 .map(|&p| (name(p), self.levels.of(p)))
                 .collect(),
+            settings: self.settings,
         };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -296,6 +317,7 @@ mod tests {
         p.buy(MAUL).unwrap();
         p.upgrade(MAUL).unwrap();
         p.set_loadout((HullKind::Lancer, TurretKind::Maul));
+        p.set_settings(Settings { debug: true });
 
         let back = Profile::load(path.clone());
         assert_eq!(back.xp, 300);
@@ -303,12 +325,14 @@ mod tests {
         assert!(back.owns(MAUL));
         assert_eq!(back.levels.of(MAUL), 1);
         assert_eq!(back.loadout, (HullKind::Lancer, TurretKind::Maul));
+        assert!(back.settings.debug);
 
         // An older profile (no crystals, deploying in a part it never bought) still loads.
         std::fs::write(&path, r#"{"xp": 40, "hull": "bastion", "turret": "lance"}"#).unwrap();
         let old = Profile::load(path.clone());
         assert_eq!((old.xp, old.crystals), (40, 0));
         assert_eq!(old.loadout, (HullKind::Lancer, TurretKind::Lance));
+        assert!(!old.settings.debug);
 
         // A corrupt file starts a fresh pilot rather than failing.
         std::fs::write(&path, "not json").unwrap();

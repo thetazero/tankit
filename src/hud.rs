@@ -582,6 +582,22 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
     }
 }
 
+/// The debug overlay's frame rate, small in the top right corner above the HUD brackets.
+pub fn fps_counter(fps: f32, width: f32, height: f32) -> Vec<UiVertex> {
+    let scale = height / REF_HEIGHT;
+    let w = width / scale;
+    let mut p = Painter::new(scale);
+    let mut s = TextStyle::LABEL;
+    s.color = theme::FG;
+    p.text(
+        Vec2::new(w - 24.0, 4.0),
+        &format!("{fps:.0} FPS"),
+        &s,
+        Align::Right,
+    );
+    p.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

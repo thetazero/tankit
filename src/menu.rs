@@ -1,4 +1,4 @@
-//! Main menu, mission select and the pause menu, in the hairline style.
+//! Main menu, mission select, settings and the pause menu, in the hairline style.
 //!
 //! The main menu and mission select sit in the same left-hand panel as the
 //! garage, over the first mission's map with your tank parked in it. The
@@ -8,7 +8,7 @@ use glam::Vec2;
 
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::MISSIONS;
-use crate::profile::Profile;
+use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Painter, TextStyle, theme};
@@ -28,6 +28,7 @@ pub enum Nav {
 pub enum Screen {
     Main,
     Missions,
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,15 +36,34 @@ pub enum Action {
     /// Start mission `MISSIONS[i]`.
     Deploy(usize),
     Garage,
+    /// Flip the settings toggle `SETTINGS[i]`.
+    Toggle(usize),
     Quit,
 }
 
-const MAIN_ITEMS: [&str; 3] = ["MISSIONS", "GARAGE", "QUIT"];
+const MAIN_ITEMS: [&str; 4] = ["MISSIONS", "GARAGE", "SETTINGS", "QUIT"];
+
+/// Picks one toggle out of the settings.
+type Flag = fn(&mut Settings) -> &mut bool;
+
+/// The settings panel's toggles: name, a line on what it does, and where it lives.
+pub const SETTINGS: [(&str, &str, Flag); 1] =
+    [("DEBUG MODE", "FPS COUNTER IN THE TOP RIGHT CORNER", |s| {
+        &mut s.debug
+    })];
+
+/// `settings` with toggle `i` flipped.
+pub fn toggled(mut settings: Settings, i: usize) -> Settings {
+    let flag = (SETTINGS[i].2)(&mut settings);
+    *flag = !*flag;
+    settings
+}
 
 pub struct Menu {
     pub screen: Screen,
     cursor: usize,
     mission: usize,
+    setting: usize,
 }
 
 impl Menu {
@@ -52,6 +72,7 @@ impl Menu {
             screen: Screen::Main,
             cursor: 0,
             mission: 0,
+            setting: 0,
         }
     }
 
@@ -63,6 +84,7 @@ impl Menu {
             (Screen::Main, Nav::Select) => match self.cursor {
                 0 => self.screen = Screen::Missions,
                 1 => return Some(Action::Garage),
+                2 => self.screen = Screen::Settings,
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back) => {}
@@ -71,6 +93,11 @@ impl Menu {
             }
             (Screen::Missions, Nav::Select) => return Some(Action::Deploy(self.mission)),
             (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Settings, Nav::Up | Nav::Down) => {
+                self.setting = step(self.setting, SETTINGS.len(), nav)
+            }
+            (Screen::Settings, Nav::Select) => return Some(Action::Toggle(self.setting)),
+            (Screen::Settings, Nav::Back) => self.screen = Screen::Main,
         }
         None
     }
@@ -161,6 +188,17 @@ impl Menu {
                     &[("W/S", "SELECT"), ("ENTER", "DEPLOY"), ("ESC", "BACK")],
                 );
             }
+            Screen::Settings => {
+                label(&mut p, Vec2::new(x, y), "03  SETTINGS", Align::Left);
+                y += 20.0;
+                settings_rows(&mut p, Vec2::new(x, y), &profile.settings, self.setting);
+                hints(
+                    &mut p,
+                    x,
+                    h,
+                    &[("W/S", "SELECT"), ("ENTER", "TOGGLE"), ("ESC", "BACK")],
+                );
+            }
         }
         fade(p.finish(), alpha)
     }
@@ -169,34 +207,46 @@ impl Menu {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PauseAction {
     Resume,
+    /// Flip the settings toggle `SETTINGS[i]`.
+    Toggle(usize),
     ExitToMenu,
     Quit,
 }
 
-const PAUSE_ITEMS: [&str; 3] = ["RESUME", "EXIT TO MENU", "QUIT"];
+const PAUSE_ITEMS: [&str; 4] = ["RESUME", "SETTINGS", "EXIT TO MENU", "QUIT"];
 
 pub struct Pause {
     cursor: usize,
+    /// The settings list is open in the box, on this toggle.
+    settings: Option<usize>,
 }
 
 impl Pause {
     pub fn new() -> Pause {
-        Pause { cursor: 0 }
+        Pause {
+            cursor: 0,
+            settings: None,
+        }
     }
 
     pub fn input(&mut self, nav: Nav) -> Option<PauseAction> {
+        if let Some(i) = &mut self.settings {
+            match nav {
+                Nav::Up | Nav::Down => *i = step(*i, SETTINGS.len(), nav),
+                Nav::Back => self.settings = None,
+                Nav::Select => return Some(PauseAction::Toggle(*i)),
+            }
+            return None;
+        }
         match nav {
             Nav::Up | Nav::Down => self.cursor = step(self.cursor, PAUSE_ITEMS.len(), nav),
             Nav::Back => return Some(PauseAction::Resume),
-            Nav::Select => {
-                return Some(
-                    [
-                        PauseAction::Resume,
-                        PauseAction::ExitToMenu,
-                        PauseAction::Quit,
-                    ][self.cursor],
-                );
-            }
+            Nav::Select => match self.cursor {
+                0 => return Some(PauseAction::Resume),
+                1 => self.settings = Some(0),
+                2 => return Some(PauseAction::ExitToMenu),
+                _ => return Some(PauseAction::Quit),
+            },
         }
         None
     }
@@ -207,7 +257,7 @@ impl Pause {
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
-        let size = Vec2::new(PANEL_W + 48.0, 320.0);
+        let size = Vec2::new(PANEL_W + 48.0, 350.0);
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
         p.rect(min, size, [0.03, 0.03, 0.035, 0.9]);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
@@ -216,13 +266,23 @@ impl Pause {
         let mut y = min.y + 28.0;
         label(&mut p, Vec2::new(x, y), "LINK HELD", Align::Left);
         y += 18.0;
-        p.text(
-            Vec2::new(x, y),
-            "PAUSED",
-            &TextStyle::value(20.0),
-            Align::Left,
-        );
+        let title = if self.settings.is_some() {
+            "SETTINGS"
+        } else {
+            "PAUSED"
+        };
+        p.text(Vec2::new(x, y), title, &TextStyle::value(20.0), Align::Left);
         y += 44.0;
+        if let Some(i) = self.settings {
+            settings_rows(&mut p, Vec2::new(x, y), &profile.settings, i);
+            label(
+                &mut p,
+                Vec2::new(x, min.y + size.y - 34.0),
+                "ENTER TOGGLE    ESC BACK",
+                Align::Left,
+            );
+            return p.finish();
+        }
         rows(&mut p, Vec2::new(x, y), &PAUSE_ITEMS, self.cursor);
         y += PAUSE_ITEMS.len() as f32 * 30.0 + 8.0;
         p.line(
@@ -262,6 +322,33 @@ impl Pause {
             Align::Left,
         );
         p.finish()
+    }
+}
+
+/// The settings toggles: each a row with a checkbox, and under it what it does.
+fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize) {
+    for (i, (name, what, flag)) in SETTINGS.iter().enumerate() {
+        let y = at.y + i as f32 * 44.0;
+        let on = i == selected;
+        if on {
+            p.line(
+                Vec2::new(at.x - 14.0, y - 3.0),
+                Vec2::new(at.x - 14.0, y + 18.0),
+                2.0,
+                theme::FG,
+            );
+        }
+        let mut s = TextStyle::value(15.0);
+        s.color = if on { theme::FG } else { theme::DIM };
+        p.text(Vec2::new(at.x, y), name, &s, Align::Left);
+        let mut copy = *settings;
+        widgets::checkbox(
+            p,
+            Vec2::new(at.x + PANEL_W - 14.0, y + 1.0),
+            14.0,
+            *flag(&mut copy),
+        );
+        label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
     }
 }
 
@@ -377,6 +464,11 @@ mod tests {
         assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), Some(Action::Garage));
         assert_eq!(m.input(Nav::Down), None);
+        assert_eq!(m.input(Nav::Select), None);
+        assert_eq!(m.screen, Screen::Settings);
+        assert_eq!(m.input(Nav::Select), Some(Action::Toggle(0)));
+        m.input(Nav::Back);
+        assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), Some(Action::Quit));
         // Wraps round to MISSIONS, which opens the mission list.
         m.input(Nav::Down);
@@ -393,6 +485,11 @@ mod tests {
         assert_eq!(p.input(Nav::Back), Some(PauseAction::Resume));
         assert_eq!(p.input(Nav::Select), Some(PauseAction::Resume));
         p.input(Nav::Down);
+        assert_eq!(p.input(Nav::Select), None);
+        assert_eq!(p.input(Nav::Select), Some(PauseAction::Toggle(0)));
+        // Esc closes settings, then resumes.
+        assert_eq!(p.input(Nav::Back), None);
+        p.input(Nav::Down);
         assert_eq!(p.input(Nav::Select), Some(PauseAction::ExitToMenu));
         p.input(Nav::Down);
         assert_eq!(p.input(Nav::Select), Some(PauseAction::Quit));
@@ -402,12 +499,16 @@ mod tests {
     fn draws_on_screen_at_any_size() {
         let profile = Profile::in_memory();
         let mut m = Menu::new();
-        for screen in [Screen::Main, Screen::Missions] {
+        let mut settings = Pause::new();
+        settings.input(Nav::Down);
+        settings.input(Nav::Select);
+        for screen in [Screen::Main, Screen::Missions, Screen::Settings] {
             m.screen = screen;
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
                 for v in [
                     m.draw(&profile, h, 1.0),
                     Pause::new().draw(&profile, 30, w, h),
+                    settings.draw(&profile, 30, w, h),
                 ] {
                     assert!(!v.is_empty());
                     assert!(v.iter().all(|v| v.pos[0] > -4.0
@@ -418,5 +519,12 @@ mod tests {
             }
         }
         assert!(m.draw(&profile, 900.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn debug_toggle() {
+        let s = toggled(Settings::default(), 0);
+        assert!(s.debug);
+        assert!(!toggled(s, 0).debug);
     }
 }
