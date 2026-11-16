@@ -174,6 +174,7 @@ impl Map {
         map.terrain = Some(terrain);
         map.plaza_paving();
         map.plaza_ring_cover(&mut rng);
+        map.fountains(&mut rng);
         map.colonnade(&mut rng);
         for (k, &dir) in AXES.iter().enumerate() {
             map.avenue(&mut rng, dir);
@@ -605,12 +606,54 @@ impl Map {
         drifts
     }
 
+    /// A dry fountain in each corner of the plaza: a low round basin wall
+    /// with a broken obelisk standing in it. Cover on the open paving.
+    fn fountains(&mut self, rng: &mut Rng) {
+        for k in 0..4 {
+            let a = PI * 0.25 + k as f32 * FRAC_PI_2;
+            let c = CENTER + Vec2::new(a.cos(), a.sin()) * 62.0;
+            let (r, segs) = (6.0, 16);
+            for i in 0..segs {
+                let t = (i as f32 + 0.5) / segs as f32 * TAU;
+                let p = c + Vec2::new(t.cos(), t.sin()) * r;
+                let half = r * PI / segs as f32 * 1.05;
+                self.slab(
+                    Vec3::new(p.x - half, PLAZA_H - 0.1, p.y - 0.45),
+                    Vec3::new(p.x + half, PLAZA_H + 1.2, p.y + 0.45),
+                    -t + FRAC_PI_2,
+                    STONE * 0.9,
+                    Material::Concrete,
+                    true,
+                );
+                self.oboxes.last_mut().unwrap().chip = 0.01;
+            }
+            let h = rng.range(3.0, 6.0);
+            self.slab(
+                Vec3::new(c.x - 1.2, PLAZA_H, c.y - 1.2),
+                Vec3::new(c.x + 1.2, PLAZA_H + 1.0, c.y + 1.2),
+                0.0,
+                STONE * 0.85,
+                Material::Concrete,
+                true,
+            );
+            self.slab(
+                Vec3::new(c.x - 0.7, PLAZA_H + 1.0, c.y - 0.7),
+                Vec3::new(c.x + 0.7, PLAZA_H + 1.0 + h, c.y + 0.7),
+                a,
+                STONE * 0.95,
+                Material::Concrete,
+                true,
+            );
+            self.oboxes.last_mut().unwrap().broken = true;
+        }
+    }
+
     /// The open ground round the plaza: stubs of broken wall, concrete
     /// blocks and fallen column drums for cover, kept off the avenues.
     fn plaza_ring_cover(&mut self, rng: &mut Rng) {
         let mut placed: Vec<Vec2> = Vec::new();
         let mut tries = 0;
-        while placed.len() < 56 && tries < 3000 {
+        while placed.len() < 120 && tries < 6000 {
             tries += 1;
             let p = Vec2::new(rng.range(0.0, SIZE), rng.range(0.0, SIZE));
             let d = p - CENTER;
@@ -618,7 +661,7 @@ impl Map {
             if !(PLAZA_RAMP + 3.0..PLAZA_RAMP + 24.0).contains(&s)
                 || d.x.abs() < AVENUE_HALF + 3.0
                 || d.y.abs() < AVENUE_HALF + 3.0
-                || placed.iter().any(|q| q.distance(p) < 11.0)
+                || placed.iter().any(|q| q.distance(p) < 8.5)
             {
                 continue;
             }
@@ -633,7 +676,7 @@ impl Map {
                     self.oboxes.push(OBox {
                         center: p,
                         yaw,
-                        half: Vec2::new(rng.range(3.0, 6.0), 0.45),
+                        half: Vec2::new(rng.range(3.5, 7.5), 0.5),
                         y0: -0.2,
                         y1: h,
                         color: CONCRETES[rng.index(CONCRETES.len())],
