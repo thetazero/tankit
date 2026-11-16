@@ -22,15 +22,7 @@ pub const SPOTS: [Vec2; 6] = [
 
 pub fn world() -> World {
     let mut w = World::empty(Map::empty(100.0));
-    // Every turret once, on alternating hulls.
-    let colors = [
-        Vec3::new(0.92, 0.93, 0.95),
-        Vec3::new(0.95, 0.42, 0.32),
-        Vec3::new(0.4, 0.62, 0.95),
-        Vec3::new(0.95, 0.8, 0.35),
-        Vec3::new(0.5, 0.82, 0.5),
-        Vec3::new(0.75, 0.5, 0.9),
-    ];
+    // Every turret once, on alternating hulls, each in its kit's own paint.
     let looks: Vec<(HullKind, TurretKind, Vec3)> = TurretKind::ALL
         .iter()
         .enumerate()
@@ -40,11 +32,11 @@ pub fn world() -> World {
             } else if tu.maker() == crate::faction::Faction::Resonant {
                 HullKind::Vigil
             } else if i % 2 == 0 {
-                HullKind::Lancer
+                HullKind::Kataphrakt
             } else {
-                HullKind::Bastion
+                HullKind::Kastron
             };
-            (h, tu, colors[i])
+            (h, tu, crate::combat::TANK_PAINT)
         })
         .collect();
     for (&(h, tu, c), p) in looks.iter().zip(SPOTS) {

@@ -154,14 +154,14 @@ pub fn gun(kind: TurretKind) -> Gun {
     };
     match kind {
         // Imperium long rail cannon: hits hard, slow.
-        TurretKind::Lance => Gun {
+        TurretKind::Kontos => Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
             action: Action::Shell(cannon),
         },
         // Imperium twin short guns: light hits, alternating barrels, fast.
-        TurretKind::Maul => Gun {
+        TurretKind::Pelekys => Gun {
             damage: 15.0,
             reload: 0.5,
             spool: 0.0,
@@ -226,8 +226,8 @@ pub fn gun(kind: TurretKind) -> Gun {
 
 pub fn max_health(kind: HullKind) -> f32 {
     match kind {
-        HullKind::Lancer => 110.0,
-        HullKind::Bastion => 160.0,
+        HullKind::Kataphrakt => 110.0,
+        HullKind::Kastron => 160.0,
         // Light: speed is its armor.
         HullKind::Sethuun => 90.0,
         // Light: the crystal is its armor (it keeps running once broken).
@@ -1590,9 +1590,15 @@ mod tests {
         // A dummy straight ahead of the player.
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
-        m.world
-            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -1614,7 +1620,7 @@ mod tests {
         let dealt = m.fighters[0].damage_dealt;
         assert!(
             dealt > 0.0
-                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Lancer)
+                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Kataphrakt)
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
@@ -1627,9 +1633,15 @@ mod tests {
         m.world.tanks[0].turret_kind = turret;
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist;
-        m.world
-            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -1644,8 +1656,8 @@ mod tests {
     #[test]
     fn held_trigger_keeps_firing() {
         for turret in [
-            TurretKind::Lance,
-            TurretKind::Maul,
+            TurretKind::Kontos,
+            TurretKind::Pelekys,
             TurretKind::Ammeth,
             TurretKind::Ossrin,
             TurretKind::Hymn,
@@ -1692,7 +1704,7 @@ mod tests {
         for _ in 0..(3.0 / DT) as usize {
             m.step(Command::default(), true);
         }
-        assert_eq!(m.fighters[1].health, max_health(HullKind::Lancer));
+        assert_eq!(m.fighters[1].health, max_health(HullKind::Kataphrakt));
         assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
     }
 
@@ -1757,7 +1769,7 @@ mod tests {
         assert!(m.shells[0].vel.y > 0.0, "and come back up");
         assert_eq!(m.shells[0].bounces, spec.bounces - 1);
         // Cannon shells just stop.
-        let Action::Shell(cannon) = gun(TurretKind::Lance).action else {
+        let Action::Shell(cannon) = gun(TurretKind::Kontos).action else {
             panic!();
         };
         m.shells = vec![Shell {
@@ -1826,8 +1838,8 @@ mod tests {
     #[test]
     fn dead_tanks_respawn_with_full_health() {
         let mut m = arena(1);
-        // A Lancer: a Vigil would run on as a husk first.
-        m.world.set_hull(1, HullKind::Lancer);
+        // A Kataphrakt: a Vigil would run on as a husk first.
+        m.world.set_hull(1, HullKind::Kataphrakt);
         m.fighters[1].shield = 0.0;
         m.kill(0, 1);
         assert!(!m.fighters[1].alive);
@@ -1843,7 +1855,7 @@ mod tests {
     /// can't be hurt, at full strength and then fading, before it's wrecked.
     #[test]
     fn vigil_runs_on_as_a_husk() {
-        let mut m = duel(TurretKind::Lance, 20.0);
+        let mut m = duel(TurretKind::Kontos, 20.0);
         m.world.set_hull(1, HullKind::Vigil);
         m.damage(0, 1, 1000.0);
         let f = &m.fighters[1];
@@ -1874,7 +1886,7 @@ mod tests {
     /// Other hulls just die.
     #[test]
     fn other_hulls_do_not_run_on() {
-        let mut m = duel(TurretKind::Lance, 20.0);
+        let mut m = duel(TurretKind::Kontos, 20.0);
         m.damage(0, 1, 1000.0);
         assert!(!m.fighters[1].alive);
         assert!(!m.fighters[1].is_husk());
@@ -1883,12 +1895,12 @@ mod tests {
     /// A fading husk's shots hit softer.
     #[test]
     fn husk_firepower_fades() {
-        let mut m = duel(TurretKind::Lance, 20.0);
+        let mut m = duel(TurretKind::Kontos, 20.0);
         m.world.set_hull(0, HullKind::Vigil);
         m.fighters[0].husk = HUSK_FADE * 0.5;
         m.fighters[0].reload_in = 0.0;
         m.shoot(0);
-        let full = gun(TurretKind::Lance).damage;
+        let full = gun(TurretKind::Kontos).damage;
         let dealt = m.shells.last().unwrap().damage;
         assert!((dealt - full * 0.5).abs() < 1e-3, "{dealt} of {full}");
     }
@@ -1897,12 +1909,12 @@ mod tests {
     fn queued_kit_is_fitted_at_respawn() {
         let mut m = arena(1);
         // Whatever the player has now, queue the other hull.
-        let hull = if m.world.tanks[0].hull_kind == HullKind::Bastion {
-            HullKind::Lancer
+        let hull = if m.world.tanks[0].hull_kind == HullKind::Kastron {
+            HullKind::Kataphrakt
         } else {
-            HullKind::Bastion
+            HullKind::Kastron
         };
-        let kit = (hull, TurretKind::Maul);
+        let kit = (hull, TurretKind::Pelekys);
         m.fighters[0].next_kit = Some(kit);
         // Not while alive.
         for _ in 0..30 {
@@ -2057,7 +2069,7 @@ mod tests {
             owner,
             damage: 1000.0,
             age: 0.0,
-            spec: match gun(TurretKind::Lance).action {
+            spec: match gun(TurretKind::Kontos).action {
                 Action::Shell(spec) => spec,
                 Action::Beam { .. } => unreachable!(),
             },

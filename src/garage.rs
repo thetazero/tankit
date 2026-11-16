@@ -30,8 +30,8 @@ const ORBIT_DRIFT: f32 = 0.12;
 pub type Loadout = (HullKind, TurretKind);
 
 pub const HULLS: [HullKind; 4] = [
-    HullKind::Lancer,
-    HullKind::Bastion,
+    HullKind::Kataphrakt,
+    HullKind::Kastron,
     HullKind::Sethuun,
     HullKind::Vigil,
 ];
@@ -39,8 +39,8 @@ pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
-        HullKind::Lancer => "LANCER",
-        HullKind::Bastion => "BASTION",
+        HullKind::Kataphrakt => "KATAPHRAKT",
+        HullKind::Kastron => "KASTRON",
         HullKind::Sethuun => "SETHUUN",
         HullKind::Vigil => "VIGIL",
     }
@@ -48,8 +48,8 @@ pub fn hull_name(k: HullKind) -> &'static str {
 
 pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
-        TurretKind::Lance => "LANCE",
-        TurretKind::Maul => "MAUL",
+        TurretKind::Kontos => "KONTOS",
+        TurretKind::Pelekys => "PELEKYS",
         TurretKind::Ammeth => "AMMETH",
         TurretKind::Ossrin => "OSSRIN",
         TurretKind::Lumen => "LUMEN",
@@ -184,7 +184,7 @@ pub struct Garage {
 
 impl Garage {
     pub fn new() -> Garage {
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         Garage {
             open: false,
             blend: 0.0,
@@ -504,13 +504,39 @@ impl Garage {
                     theme::FAINT
                 };
                 let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
-                // Upgrade level and the part's maker after the name; price or lock on the right.
-                let maker = part.maker().name();
-                let note = if owned {
-                    format!("M{}  {maker}", levels.of(*part))
+                // Price or lock (or IN USE) on the right; upgrade level and
+                // the part's maker after the name, the maker dropped when a
+                // long name leaves it no room.
+                let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
+                let tag = if part == in_use && !selected {
+                    Some("IN USE".to_string())
                 } else {
-                    maker.to_string()
+                    part.price().filter(|_| !owned).map(|price| {
+                        if profile.standing_for(*part) < price.standing {
+                            format!("TRUST {}", price.standing)
+                        } else {
+                            format!("{} CR", price.crystals)
+                        }
+                    })
                 };
+                let room = right.x
+                    - tag
+                        .as_deref()
+                        .map_or(0.0, |t| crate::ui::measure(t, &TextStyle::LABEL) + 12.0)
+                    - (x + nw + 12.0);
+                let maker = part.maker().name();
+                let level = format!("M{}", levels.of(*part));
+                let note = [
+                    if owned {
+                        format!("{level}  {maker}")
+                    } else {
+                        maker.to_string()
+                    },
+                    if owned { level } else { String::new() },
+                ]
+                .into_iter()
+                .find(|n| crate::ui::measure(n, &TextStyle::LABEL) <= room)
+                .unwrap_or_default();
                 if !note.is_empty() {
                     label(
                         &mut p,
@@ -519,15 +545,7 @@ impl Garage {
                         Align::Left,
                     );
                 }
-                let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
-                if part == in_use && !selected {
-                    label(&mut p, right, "IN USE", Align::Right);
-                } else if let Some(price) = part.price().filter(|_| !owned) {
-                    let tag = if profile.standing_for(*part) < price.standing {
-                        format!("TRUST {}", price.standing)
-                    } else {
-                        format!("{} CR", price.crystals)
-                    };
+                if let Some(tag) = tag {
                     label(&mut p, right, &tag, Align::Right);
                 }
                 y += 30.0;
@@ -728,16 +746,16 @@ mod tests {
         let w = world();
         let p = rich();
         let mut g = Garage::new();
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         // Closed: input does nothing.
         assert_eq!(g.input(Input::Down, start, &p), None);
 
         g.toggle(&w, &cam(&w), start);
-        let l = (HullKind::Bastion, TurretKind::Lance);
+        let l = (HullKind::Kastron, TurretKind::Kontos);
         assert_eq!(g.input(Input::Down, start, &p), Some(Event::Queue(l)));
         assert_eq!(g.input(Input::Right, l, &p), None);
         // The list wraps: up from the first turret is the last one.
-        let l2 = (HullKind::Bastion, *TURRETS.last().unwrap());
+        let l2 = (HullKind::Kastron, *TURRETS.last().unwrap());
         assert_eq!(g.input(Input::Up, l, &p), Some(Event::Queue(l2)));
         assert_eq!(g.input(Input::Revert, l2, &p), Some(Event::Queue(start)));
         assert!(!g.is_open());
@@ -755,33 +773,33 @@ mod tests {
         let w = world();
         let mut p = Profile::in_memory();
         let mut g = Garage::new();
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         g.toggle(&w, &cam(&w), start);
         g.input(Input::Right, start, &p);
-        // Maul isn't owned: highlighted and previewed, not queued; E asks to buy it.
+        // Pelekys isn't owned: highlighted and previewed, not queued; E asks to buy it.
         assert_eq!(g.input(Input::Down, start, &p), None);
-        assert_eq!(g.view, (HullKind::Lancer, TurretKind::Maul));
-        let maul = Part::Turret(TurretKind::Maul);
-        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(maul)));
+        assert_eq!(g.view, (HullKind::Kataphrakt, TurretKind::Pelekys));
+        let pelekys = Part::Turret(TurretKind::Pelekys);
+        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(pelekys)));
         // Once bought it queues; E on an owned part upgrades.
         p.set_trust_all(100_000);
         p.crystals = 100_000;
-        p.buy(maul).unwrap();
-        let kit = (HullKind::Lancer, TurretKind::Maul);
+        p.buy(pelekys).unwrap();
+        let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);
         assert_eq!(g.bought(start, &p), Some(Event::Queue(kit)));
-        assert_eq!(g.input(Input::Act, kit, &p), Some(Event::Upgrade(maul)));
+        assert_eq!(g.input(Input::Act, kit, &p), Some(Event::Upgrade(pelekys)));
     }
 
     #[test]
     fn preview_wears_the_highlighted_kit() {
         let w = world();
         let mut g = Garage::new();
-        let kit = (HullKind::Bastion, TurretKind::Maul);
+        let kit = (HullKind::Kastron, TurretKind::Pelekys);
         let mut t = w.tanks[0].clone();
         g.preview(&mut t);
         assert_eq!(
             t.hull_kind,
-            HullKind::Lancer,
+            HullKind::Kataphrakt,
             "closed garage leaves the tank alone"
         );
         g.toggle(&w, &cam(&w), kit);
@@ -790,10 +808,10 @@ mod tests {
         assert_eq!((t.hull_kind, t.turret_kind), kit);
         assert_eq!(
             t.wheel_lift.len(),
-            crate::sim::Chassis::of(HullKind::Bastion).wheel_count()
+            crate::sim::Chassis::of(HullKind::Kastron).wheel_count()
         );
         // The real tank is untouched.
-        assert_eq!(w.tanks[0].hull_kind, HullKind::Lancer);
+        assert_eq!(w.tanks[0].hull_kind, HullKind::Kataphrakt);
     }
 
     #[test]
@@ -803,7 +821,7 @@ mod tests {
         let c = cam(&w);
         let t = &w.tanks[0];
         assert_eq!(g.camera(c, &w, t, 16.0 / 9.0).pos, c.pos);
-        g.toggle(&w, &c, (HullKind::Lancer, TurretKind::Lance));
+        g.toggle(&w, &c, (HullKind::Kataphrakt, TurretKind::Kontos));
         for _ in 0..120 {
             g.update(1.0 / 60.0);
         }
@@ -817,7 +835,7 @@ mod tests {
     fn draws_on_screen_at_any_size() {
         let w = world();
         let mut g = Garage::new();
-        let kit = (HullKind::Bastion, TurretKind::Maul);
+        let kit = (HullKind::Kastron, TurretKind::Pelekys);
         let p = Profile::in_memory();
         assert!(g.draw(&w.tanks[0], kit, &p, 900.0).is_empty());
         g.toggle(&w, &cam(&w), kit);

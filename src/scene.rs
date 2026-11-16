@@ -433,7 +433,7 @@ impl ChaseCam {
         // Firing kicks the camera back and up for a moment.
         let shots = tank.fire_barrel.saturating_sub(self.shots_seen).min(4);
         self.shots_seen = tank.fire_barrel;
-        let per_shot = tank.turret_kind.recoil() / TurretKind::Lance.recoil();
+        let per_shot = tank.turret_kind.recoil() / TurretKind::Kontos.recoil();
         self.kick = (self.kick * (-dt * 14.0).exp() + shots as f32 * per_shot).min(1.0);
         self.kick_shown += (self.kick - self.kick_shown) * (1.0 - (-dt * 40.0).exp());
         let kick = self.kick_shown;

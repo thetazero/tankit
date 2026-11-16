@@ -138,7 +138,7 @@ impl Profile {
         Profile {
             trust: [0; Faction::ALL.len()],
             crystals: 0,
-            loadout: (HullKind::Lancer, TurretKind::Lance),
+            loadout: (HullKind::Kataphrakt, TurretKind::Kontos),
             bought: Vec::new(),
             levels: Levels::default(),
             settings: Settings::default(),
@@ -377,9 +377,9 @@ mod tests {
         p.add_trust(Faction::Imperium, 300);
         p.add_trust(Faction::Resonant, 40);
         p.add_crystals(2000);
-        p.buy(MAUL).unwrap();
-        p.upgrade(MAUL).unwrap();
-        p.set_loadout((HullKind::Lancer, TurretKind::Maul));
+        p.buy(PELEKYS).unwrap();
+        p.upgrade(PELEKYS).unwrap();
+        p.set_loadout((HullKind::Kataphrakt, TurretKind::Pelekys));
         p.set_settings(Settings {
             debug: true,
             volume: 3,
@@ -390,9 +390,9 @@ mod tests {
         assert_eq!(back.trust_of(Faction::Resonant), 40);
         assert_eq!(back.trust_of(Faction::Ithessar), 0);
         assert_eq!(back.crystals, p.crystals);
-        assert!(back.owns(MAUL));
-        assert_eq!(back.levels.of(MAUL), 1);
-        assert_eq!(back.loadout, (HullKind::Lancer, TurretKind::Maul));
+        assert!(back.owns(PELEKYS));
+        assert_eq!(back.levels.of(PELEKYS), 1);
+        assert_eq!(back.loadout, (HullKind::Kataphrakt, TurretKind::Pelekys));
         assert!(back.settings.debug);
         assert_eq!(back.settings.volume, 3);
 
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(old.trust_of(Faction::Imperium), 40);
         assert_eq!(old.trust_of(Faction::Resonant), 0);
         assert_eq!(old.crystals, 0);
-        assert_eq!(old.loadout, (HullKind::Lancer, TurretKind::Lance));
+        assert_eq!(old.loadout, (HullKind::Kataphrakt, TurretKind::Kontos));
         assert!(!old.settings.debug);
         // Profiles from before sound get the default volume, not silence.
         assert_eq!(old.settings.volume, Settings::default().volume);
@@ -414,46 +414,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    const MAUL: Part = Part::Turret(TurretKind::Maul);
+    const PELEKYS: Part = Part::Turret(TurretKind::Pelekys);
 
     #[test]
     fn buying_needs_trust_and_crystals() {
         let mut p = Profile::in_memory();
-        assert!(p.owns(Part::Hull(HullKind::Lancer)));
-        assert!(!p.owns(MAUL));
-        let price = MAUL.price().unwrap();
+        assert!(p.owns(Part::Hull(HullKind::Kataphrakt)));
+        assert!(!p.owns(PELEKYS));
+        let price = PELEKYS.price().unwrap();
         let locked = Err(Refusal::Trust(Faction::Imperium, price.standing));
-        assert_eq!(p.buy(MAUL), locked);
+        assert_eq!(p.buy(PELEKYS), locked);
         // Trust with someone else doesn't sell you Imperium guns.
         p.add_trust(Faction::Resonant, 10_000);
-        assert_eq!(p.buy(MAUL), locked);
+        assert_eq!(p.buy(PELEKYS), locked);
         p.add_trust(Faction::Imperium, 10_000);
-        assert_eq!(p.buy(MAUL), Err(Refusal::Crystals(price.crystals)));
-        assert_eq!(p.upgrade(MAUL), Err(Refusal::NotOwned));
+        assert_eq!(p.buy(PELEKYS), Err(Refusal::Crystals(price.crystals)));
+        assert_eq!(p.upgrade(PELEKYS), Err(Refusal::NotOwned));
         p.crystals = price.crystals;
-        p.buy(MAUL).unwrap();
+        p.buy(PELEKYS).unwrap();
         assert_eq!(p.crystals, 0);
-        assert_eq!(p.buy(MAUL), Err(Refusal::Owned));
+        assert_eq!(p.buy(PELEKYS), Err(Refusal::Owned));
         p.crystals = 100_000;
         for _ in 0..crate::economy::MAX_LEVEL {
-            p.upgrade(MAUL).unwrap();
+            p.upgrade(PELEKYS).unwrap();
         }
-        assert_eq!(p.upgrade(MAUL), Err(Refusal::MaxLevel));
+        assert_eq!(p.upgrade(PELEKYS), Err(Refusal::MaxLevel));
     }
 
     /// Hulls have makers too: only their maker's trust puts them up for sale.
     #[test]
     fn hulls_sell_on_their_makers_trust() {
-        let bastion = Part::Hull(HullKind::Bastion);
-        let need = bastion.price().unwrap().standing;
+        let kastron = Part::Hull(HullKind::Kastron);
+        let need = kastron.price().unwrap().standing;
         let mut p = Profile::in_memory();
         p.crystals = 100_000;
         p.add_trust(Faction::Resonant, 10_000);
         assert_eq!(
-            p.can_buy(bastion),
+            p.can_buy(kastron),
             Err(Refusal::Trust(Faction::Imperium, need))
         );
         p.add_trust(Faction::Imperium, 10_000);
-        assert!(p.can_buy(bastion).is_ok());
+        assert!(p.can_buy(kastron).is_ok());
     }
 }
