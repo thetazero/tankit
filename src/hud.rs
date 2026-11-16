@@ -268,26 +268,46 @@ impl Hud {
             Align::Center,
         );
         let sy = top.y + 58.0;
-        for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
-            let f = m.factions[team];
-            let mut s = TextStyle::value(16.0);
-            s.color = f.ui();
-            p.text(
-                Vec2::new(top.x + dir * 14.0, sy),
-                &m.score(team).to_string(),
-                &s,
-                align,
+        let sides = m.factions.len();
+        if sides == 2 {
+            for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
+                let f = m.factions[team];
+                let mut s = TextStyle::value(16.0);
+                s.color = f.ui();
+                p.text(
+                    Vec2::new(top.x + dir * 14.0, sy),
+                    &m.score(team).to_string(),
+                    &s,
+                    align,
+                );
+                let mut l = TextStyle::LABEL;
+                l.color = with_alpha(f.ui(), 0.8);
+                p.text(Vec2::new(top.x + dir * 52.0, sy + 6.0), f.name(), &l, align);
+            }
+            p.line(
+                Vec2::new(top.x, sy + 2.0),
+                Vec2::new(top.x, sy + 14.0),
+                1.0,
+                theme::FAINT,
             );
-            let mut l = TextStyle::LABEL;
-            l.color = with_alpha(f.ui(), 0.8);
-            p.text(Vec2::new(top.x + dir * 52.0, sy + 6.0), f.name(), &l, align);
+        } else {
+            // Free-for-all: every side's score in a row, yours first.
+            let step = 110.0;
+            for (team, &f) in m.factions.iter().enumerate() {
+                let x = top.x + (team as f32 - (sides - 1) as f32 * 0.5) * step;
+                let mut s = TextStyle::value(16.0);
+                s.color = f.ui();
+                p.text(
+                    Vec2::new(x, sy),
+                    &m.score(team).to_string(),
+                    &s,
+                    Align::Center,
+                );
+                let mut l = TextStyle::LABEL;
+                l.color = with_alpha(f.ui(), 0.8);
+                p.text(Vec2::new(x, sy + 20.0), f.name(), &l, Align::Center);
+            }
         }
-        p.line(
-            Vec2::new(top.x, sy + 2.0),
-            Vec2::new(top.x, sy + 14.0),
-            1.0,
-            theme::FAINT,
-        );
         if let Some(hd) = &m.hold
             && !board
         {
@@ -302,7 +322,12 @@ impl Hud {
                     let mut s = TextStyle::LABEL;
                     s.color = hold_color(m, hd.control);
                     let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
-                    p.text(at, &format!("DEPOSIT  {d:.0} M"), &s, Align::Center);
+                    p.text(
+                        at,
+                        &format!("{}  {d:.0} M", m.world.map.hold_name),
+                        &s,
+                        Align::Center,
+                    );
                 }
             }
         }
@@ -441,7 +466,9 @@ impl Hud {
         }
 
         if board {
-            scoreboard(&mut p, m, Vec2::new(w * 0.5, h * 0.28));
+            // Four sides stack two rows of tables: start higher.
+            let top = if m.factions.len() > 2 { 0.17 } else { 0.28 };
+            scoreboard(&mut p, m, Vec2::new(w * 0.5, h * top));
         }
 
         // Bottom left: speed.
@@ -526,27 +553,33 @@ impl Hud {
     }
 }
 
-/// Two standings tables side by side (your side on the left), with a winner
-/// banner once the round is over.
+/// Each side's standings table, two to a row (your side first, top left),
+/// with a winner banner once the round is over.
 fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let holding = m.contract == Contract::Hold;
     // Hold adds a HELD column: wider tables so it clears the tank names.
-    let col = if holding { 380.0 } else { 330.0 };
+    let col = if holding { 410.0 } else { 380.0 };
     let gap = 48.0;
-    let rows = (0..2)
+    let sides = m.factions.len();
+    let rows = (0..sides)
         .map(|t| m.fighters.iter().filter(|f| f.team == t).count())
         .max()
         .unwrap_or(0) as f32;
+    // Tables stack two to a row.
+    let block = 56.0 + rows * 22.0;
+    let block_gap = 24.0;
+    let blocks = sides.div_ceil(2) as f32;
+    let body = blocks * block + (blocks - 1.0) * block_gap;
     let width = col * 2.0 + gap;
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = [0.02, 0.02, 0.025, 0.7];
     let extra = if holding { 18.0 } else { 0.0 };
     let height = if m.phase == Phase::Over {
-        362.0 + extra
+        306.0 + extra
     } else {
-        84.0
-    } + rows * 22.0;
+        28.0
+    } + body;
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
         Vec2::new(width + 48.0, height),
@@ -581,12 +614,13 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         y += 84.0;
     }
     let order = m.standings();
-    for team in 0..2 {
-        let (a, b) = if team == 0 {
+    for team in 0..sides {
+        let (a, b) = if team % 2 == 0 {
             (x0, x0 + col)
         } else {
             (x1 - col, x1)
         };
+        let y = y + (team / 2) as f32 * (block + block_gap);
         let f = m.factions[team];
         let mut name = TextStyle::value(12.0);
         name.color = f.ui();
@@ -646,7 +680,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
             ty += 22.0;
         }
     }
-    y += 56.0 + rows * 22.0;
+    y += body;
     if m.phase == Phase::Over {
         contract_pay(p, m, x0, x1, y + 14.0);
         label(
@@ -662,7 +696,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
 /// side's bar grows left from the middle, theirs right.
 fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     let status = match hd.control {
-        Control::Open => "DEPOSIT OPEN".to_string(),
+        Control::Open => format!("{} OPEN", m.world.map.hold_name),
         Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
         Control::Contested => "CONTESTED".to_string(),
     };
@@ -742,8 +776,12 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
         ),
         (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
     ];
-    let hold = (m.contract == Contract::Hold)
-        .then(|| (format!("ON THE DEPOSIT  {:.0} S", pay.held), pay.hold));
+    let hold = (m.contract == Contract::Hold).then(|| {
+        (
+            format!("ON THE {}  {:.0} S", m.world.map.hold_name, pay.held),
+            pay.hold,
+        )
+    });
     let lines: Vec<_> = lines.into_iter().chain(hold).collect();
     let n = lines.len() as f32;
     for (i, (what, amount)) in lines.iter().enumerate() {

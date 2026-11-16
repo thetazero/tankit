@@ -61,7 +61,7 @@ pub struct Launch {
     pub spawn: usize,
     pub bots: usize,
     pub contract: Contract,
-    /// Which of the map's sides hires you (0 or 1).
+    /// Which of the map's sides hires you.
     pub side: usize,
     /// Starting kit; `None` uses the profile's.
     pub loadout: Option<garage::Loadout>,
@@ -207,8 +207,8 @@ pub fn new_match(
     kit: garage::Loadout,
 ) -> Match {
     let mut map = make_map(map_kind);
-    if side == 1 {
-        map.swap_sides();
+    if side > 0 {
+        map.swap_sides(side);
     }
     let mut m = Match::new(map, spawn, bots, seed.wrapping_add(spawn as u64));
     m.set_contract(contract);

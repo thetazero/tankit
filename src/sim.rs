@@ -1606,7 +1606,7 @@ mod tests {
     fn open_spots_are_drivable() {
         for (name, m) in [
             ("saltmarket", Map::saltmarket()),
-            ("shard flats", Map::shard_flats()),
+            ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
         ] {
             assert!(!m.open_spots.is_empty(), "{name}: no open spots");

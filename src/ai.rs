@@ -31,6 +31,8 @@ const GUARD_CHASE: f32 = 40.0;
 
 /// Steepest ground (rise over run) bots will path across.
 const MAX_SLOPE: f32 = 0.7;
+/// On a mesa, bots keep this far back from the edge, m.
+const EDGE_MARGIN: f32 = 7.0;
 
 pub struct NavGrid {
     nx: usize,
@@ -126,6 +128,24 @@ impl NavGrid {
                     let gx = (h(Vec2::new(e, 0.0)) - h(Vec2::new(-e, 0.0))) / (2.0 * e);
                     let gz = (h(Vec2::new(0.0, e)) - h(Vec2::new(0.0, -e))) / (2.0 * e);
                     if Vec2::new(gx, gz).length() > MAX_SLOPE {
+                        blocked[iz * n + ix] = true;
+                    }
+                }
+            }
+        }
+        // A mesa: keep well back from the edge, wherever the ground drops
+        // away within reach.
+        if let Some(fall_y) = map.fall_y {
+            let drop = fall_y * 0.3;
+            for iz in 0..n {
+                for ix in 0..n {
+                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
+                    let near_edge = (0..12).any(|k| {
+                        let a = k as f32 / 12.0 * std::f32::consts::TAU;
+                        let p = c + Vec2::new(a.cos(), a.sin()) * EDGE_MARGIN;
+                        map.ground_height(p.x, p.y) < drop
+                    });
+                    if near_edge || map.ground_height(c.x, c.y) < drop {
                         blocked[iz * n + ix] = true;
                     }
                 }
@@ -559,6 +579,17 @@ impl Bot {
             }
         }
 
+        // On a mesa: never drive at the edge, whatever else says to (jinking,
+        // backing off something). Brake, and back away from it.
+        if let Some(fall_y) = world.map.fall_y {
+            let dir = flat(t.forward()).normalize_or_zero() * cmd.throttle.signum();
+            let ahead = my2 + dir * (4.0 + t.speed().abs() * 0.8);
+            if cmd.throttle != 0.0 && world.map.ground_height(ahead.x, ahead.y) < fall_y * 0.3 {
+                cmd.throttle = -cmd.throttle.signum() * 0.6;
+                self.reverse_for = 0.0;
+            }
+        }
+
         // Aiming: lead the target a little, with a per-shot error.
         let mut fire = false;
         match target {
@@ -621,7 +652,7 @@ mod tests {
 
     #[test]
     fn spawn_spots_are_open() {
-        for map in [Map::saltmarket(), Map::shard_flats(), Map::kiln()] {
+        for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
             let nav = NavGrid::build(&map);
             // There must be open nav ground right next to each spawn.
             for &p in &map.open_spots {

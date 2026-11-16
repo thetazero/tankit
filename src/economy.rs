@@ -189,10 +189,12 @@ pub struct Payout {
 impl Payout {
     pub fn of(m: &Match) -> Payout {
         let me = m.player();
+        // A draw only if your side shares the lead; trailing a tie is a loss.
+        let best = (0..m.factions.len()).map(|t| m.score(t)).max().unwrap_or(0);
         let outcome = match m.leader() {
-            None => Outcome::Draw,
             Some(t) if t == me.team => Outcome::Won,
-            Some(_) => Outcome::Lost,
+            None if m.score(me.team) == best => Outcome::Draw,
+            _ => Outcome::Lost,
         };
         Payout {
             completion: COMPLETION,

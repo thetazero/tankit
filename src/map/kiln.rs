@@ -192,13 +192,15 @@ impl Map {
                 blowing_sand: 0.15,
                 dust: Vec3::new(0.4, 0.4, 0.46),
             },
-            bases: Default::default(),
-            factions: [Faction::Ithessar, Faction::Imperium],
+            bases: Map::no_bases(&[Faction::Ithessar, Faction::Imperium]),
+            factions: [Faction::Ithessar, Faction::Imperium].to_vec(),
             repair_spots: Vec::new(),
             hold_site: Some(CENTER),
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
         terrain.color = SLATE;

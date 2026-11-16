@@ -35,6 +35,8 @@ pub const SHELL_SPEED: f32 = 160.0;
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
+/// Knocked off the edge this soon after a hit: the hit gets the kill, s.
+const FALL_CREDIT: f32 = 6.0;
 /// A broken Vigil keeps running: at full strength for this long, s...
 pub const HUSK_STRONG: f32 = 2.0;
 /// ...then its speed and firepower fade out over this long, s.
@@ -290,8 +292,9 @@ pub struct Fighter {
     pub deaths: u32,
     /// Who killed this tank last (for the death screen).
     pub killed_by: Option<usize>,
-    /// Seconds since this tank last took a hit.
+    /// Seconds since this tank last took a hit, and who hit it.
     pub since_hit: f32,
+    pub hit_by: Option<usize>,
     /// Seconds since this tank last landed a hit on someone.
     pub since_dealt: f32,
     /// Kit to fit at the next respawn (picked in the garage).
@@ -488,8 +491,9 @@ pub struct Match {
     /// Audible events since the app last took them.
     pub sounds: Vec<Sound>,
     pub repairs: Repairs,
-    /// Side 0 and side 1.
-    pub factions: [Faction; 2],
+    /// Side 0 (the player's) and the rest: two on most maps, more in a
+    /// free-for-all.
+    pub factions: Vec<Faction>,
     pub time_left: f32,
     pub phase: Phase,
     pub contract: Contract,
@@ -504,14 +508,15 @@ pub struct Match {
 }
 
 impl Match {
-    /// A fresh round on `map` with `bots` bots, dealt to the enemy side first
-    /// and then alternately (so an odd count makes even teams). The player
+    /// A fresh round on `map` with `bots` bots, dealt round the sides
+    /// starting after the player's (so filling every side but one short by
+    /// the player makes even teams). The player
     /// starts at their side's base, or at spawn point `spawn` on maps without
     /// bases.
     pub fn new(map: Map, spawn: usize, bots: usize, seed: u64) -> Match {
         let nav = NavGrid::build(&map);
         let repairs = Repairs::new(&map);
-        let factions = map.factions;
+        let factions = map.factions.clone();
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
         world.tanks[0].color = TANK_PAINT;
@@ -522,7 +527,7 @@ impl Match {
         let mut fighters = vec![fighter(0, max_health(world.tanks[0].hull_kind))];
         let mut brains = vec![None];
         for b in 0..bots {
-            let team = (b + 1) % 2;
+            let team = (b + 1) % factions.len();
             // Each side drives its own faction's hulls, too.
             let hulls = factions[team].hulls();
             let hull = hulls[(rng.f32() * hulls.len() as f32) as usize % hulls.len()];
@@ -591,10 +596,13 @@ impl Match {
         self.hold.as_ref().map_or(0.0, |h| h.own[i])
     }
 
-    /// The side ahead on score, or None while level.
+    /// The side ahead on score, or None while the lead is shared.
     pub fn leader(&self) -> Option<usize> {
-        let (a, b) = (self.score(0), self.score(1));
-        (a != b).then_some(if a > b { 0 } else { 1 })
+        let scores: Vec<u32> = (0..self.factions.len()).map(|t| self.score(t)).collect();
+        let best = *scores.iter().max()?;
+        let mut top = (0..scores.len()).filter(|&t| scores[t] == best);
+        let first = top.next()?;
+        top.next().is_none().then_some(first)
     }
 
     /// Fighter indices by standing: most time on the site (under Hold), then
@@ -672,6 +680,7 @@ impl Match {
         }
 
         self.world.step(&cmds);
+        self.falls();
         self.husks();
         self.aim_assist();
 
@@ -1025,6 +1034,9 @@ impl Match {
         let dealt = amount.min(v.health);
         v.health -= amount;
         v.since_hit = 0.0;
+        if owner != j {
+            v.hit_by = Some(owner);
+        }
         let o = &mut self.fighters[owner];
         o.since_dealt = 0.0;
         if owner != j {
@@ -1103,6 +1115,22 @@ impl Match {
         );
         if let Some(b) = &mut self.bots[victim] {
             b.reset();
+        }
+    }
+
+    /// Over the edge (a mesa map): dead on impact. Whoever hit it last in the
+    /// last few seconds knocked it off and gets the kill.
+    fn falls(&mut self) {
+        let Some(fall_y) = self.world.map.fall_y else {
+            return;
+        };
+        for i in 0..self.fighters.len() {
+            let f = &self.fighters[i];
+            if !f.alive || f.is_husk() || self.world.tanks[i].pos.y > fall_y {
+                continue;
+            }
+            let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
+            self.kill(killer, i);
         }
     }
 
@@ -1228,6 +1256,7 @@ impl Match {
             f.alive = true;
             f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
             f.shield = SPAWN_SHIELD;
+            f.hit_by = None;
             f.reload_in = 0.5;
             f.heat = 0.0;
             f.overheated = false;
@@ -1380,7 +1409,8 @@ impl Match {
             core_instances(c, self.world.time, out);
         }
         if let Some(h) = &self.hold {
-            h.instances(self.world.time, self.factions.map(|f| f.paint()), out);
+            let paint: Vec<Vec3> = self.factions.iter().map(|f| f.paint()).collect();
+            h.instances(self.world.time, &paint, out);
         }
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
@@ -1694,6 +1724,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         deaths: 0,
         killed_by: None,
         since_hit: 10.0,
+        hit_by: None,
         since_dealt: 10.0,
         next_kit: None,
         since_repair: 10.0,
@@ -1739,7 +1770,12 @@ fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     let pick = scored[rng.index(scored.len().min(4))].1;
-    let enemy_base = &map.bases[1 - team];
+    // Face the enemy base on a two-sided map; with more sides (or no
+    // bases), the middle.
+    let enemy_base = match map.bases.len() {
+        2 => &map.bases[1 - team],
+        _ => &Vec::new(),
+    };
     let look = if enemy_base.is_empty() {
         map.center()
     } else {
@@ -1762,6 +1798,36 @@ mod tests {
     /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
         Match::new(Map::saltmarket(), 0, bots, 21)
+    }
+
+    /// A free-for-all: all four factions, in the Capital.
+    fn four_sides(bots: usize) -> Match {
+        let map = Map::capital();
+        Match::new(map, 0, bots, 21)
+    }
+
+    #[test]
+    fn four_sides_deal_even_teams_and_need_a_sole_leader() {
+        let mut m = four_sides(15);
+        for t in 0..4 {
+            assert_eq!(m.fighters.iter().filter(|f| f.team == t).count(), 4);
+        }
+        assert_eq!(m.leader(), None);
+        let by_team = |m: &Match, t: usize| {
+            (0..m.fighters.len())
+                .find(|&i| m.fighters[i].team == t)
+                .unwrap()
+        };
+        let (a, b) = (by_team(&m, 2), by_team(&m, 3));
+        m.fighters[a].kills = 3;
+        assert_eq!(m.leader(), Some(2));
+        m.fighters[b].kills = 3;
+        assert_eq!(m.leader(), None, "a shared lead is no leader");
+        // The player's side trails the tie: a loss, not a draw.
+        assert_eq!(
+            crate::economy::Payout::of(&m).outcome,
+            crate::economy::Outcome::Lost
+        );
     }
 
     #[test]
@@ -2243,10 +2309,48 @@ mod tests {
         assert_eq!(m.leader(), Some(0));
     }
 
+    /// Off the mesa's edge: dead when it drops past the fall line, and the
+    /// kill goes to whoever hit it last.
+    #[test]
+    fn falling_off_the_edge_kills() {
+        let mut m = Match::new(Map::sanctum(), 0, 1, 1);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        m.world.set_hull(0, HullKind::Kataphrakt);
+        m.damage(1, 0, 1.0);
+        // Out over the desert floor, well clear of the cliff.
+        m.world.teleport(0, Vec2::new(150.0, 285.0), 0.0);
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(
+            !m.fighters[0].alive,
+            "still alive at y {}",
+            m.world.tanks[0].pos.y
+        );
+        assert_eq!(m.fighters[0].deaths, 1);
+        assert_eq!(m.fighters[1].kills, 1, "the last hit knocked it off");
+    }
+
+    /// A Vigil that goes over runs on at the bottom, as it does anywhere.
+    #[test]
+    fn a_vigil_that_falls_runs_on() {
+        let mut m = Match::new(Map::sanctum(), 0, 0, 1);
+        m.fighters[0].shield = 0.0;
+        m.world.set_hull(0, HullKind::Vigil);
+        m.world.teleport(0, Vec2::new(150.0, 285.0), 0.0);
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[0].alive && m.fighters[0].is_husk());
+        assert_eq!(m.fighters[0].deaths, 1);
+    }
+
     /// Under Hold, bots of both sides go for the site and someone holds it.
     #[test]
     fn bots_go_for_the_hold_site() {
-        let mut m = Match::new(Map::shard_flats(), 0, 5, 5);
+        let mut m = Match::new(Map::sanctum(), 0, 5, 5);
         m.set_contract(Contract::Hold);
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;
@@ -2279,7 +2383,7 @@ mod tests {
 
     #[test]
     fn each_side_spawns_at_its_own_base() {
-        for map in [Map::saltmarket(), Map::shard_flats(), Map::kiln()] {
+        for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
             let m = Match::new(map, 0, 11, 5);
             for (i, f) in m.fighters.iter().enumerate() {
                 let p = Vec2::new(m.world.tanks[i].pos.x, m.world.tanks[i].pos.z);
