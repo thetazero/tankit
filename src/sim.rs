@@ -339,7 +339,6 @@ const HOVER_BELLY_GAP: f32 = 0.42;
 /// Beyond full extension the cushion still steers and thrusts, fading out
 /// over this much more height (cresting a dune doesn't cut the drive).
 const HOVER_REACH: f32 = 0.9;
-/// Seconds upside down (and slow) before the tank rights itself.
 /// Ground slope (radians) the cushion holds on fully, and the slope past
 /// which it gets no footing at all.
 const HOVER_FIRM: f32 = 40.0 * PI / 180.0;
@@ -351,6 +350,7 @@ const HOVER_LEVEL_K: f32 = 40.0;
 const HOVER_LEVEL_DAMP: f32 = 10.0;
 const HOVER_LEVEL_MAX: f32 = 30.0;
 const HOVER_LEVEL_ON_CUSHION: f32 = 0.25;
+/// Seconds upside down (and slow) before the tank rights itself.
 const FLIP_RECOVER_TIME: f32 = 2.5;
 
 #[derive(Clone, Copy, Default, Debug)]
