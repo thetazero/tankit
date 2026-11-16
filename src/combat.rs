@@ -1508,6 +1508,36 @@ mod tests {
         m
     }
 
+    /// Holding the trigger keeps a shell gun firing at its reload rate.
+    #[test]
+    fn held_trigger_keeps_firing() {
+        for turret in [
+            TurretKind::Lance,
+            TurretKind::Maul,
+            TurretKind::Ammeth,
+            TurretKind::Ossrin,
+            TurretKind::Hymn,
+        ] {
+            let mut m = duel(turret, 200.0);
+            let reload = gun(turret).reload.max(DT);
+            let secs = 6.0;
+            let mut shots = 0;
+            for _ in 0..(secs / DT) as usize {
+                m.step(Command::default(), true);
+                shots += m
+                    .sounds
+                    .drain(..)
+                    .filter(|s| matches!(s, Sound::Shot { tank: 0, .. }))
+                    .count();
+            }
+            let most = (secs / reload) as usize + 1;
+            assert!(
+                shots >= 3 && shots <= most,
+                "{turret:?}: {shots} shots in {secs}s (reload {reload})"
+            );
+        }
+    }
+
     /// Every faction's turret can kill a tank in front of it at close range.
     #[test]
     fn every_turret_kills_at_close_range() {
