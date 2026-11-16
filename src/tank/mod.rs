@@ -5,6 +5,7 @@ pub mod ithessar;
 pub mod model;
 pub mod resonant;
 pub mod track;
+pub mod uthenn;
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -53,6 +54,7 @@ impl KitMeshes {
                 hull(model::kataphrakt()),
                 hull(model::kastron()),
                 hull(vigil_hull),
+                hull(uthenn::gravis()),
             ],
             hover: ithessar::sethuun(),
             vigil,
@@ -232,6 +234,7 @@ impl TankArt {
             HullKind::Kataphrakt => self.tracked(&self.hulls[0], t, base, out),
             HullKind::Kastron => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
+            HullKind::Gravis => self.tracked(&self.hulls[3], t, base, out),
             HullKind::Vigil => {
                 let mount = self.tracked(&self.hulls[2], t, base, out);
                 self.vigil(t, base, out);

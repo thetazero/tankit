@@ -65,13 +65,14 @@ pub enum Action {
     /// Fires projectiles.
     Shell(ShellSpec),
     /// A hitscan beam for as long as the trigger is held, until it overheats.
+    /// Firing makes one unit of heat a second; the tank holds as much as its
+    /// hull's and turret's thermal mass together (`heat_capacity`), and sheds
+    /// it at the flat `COOL_RATE`. Once overheated the beam stays locked until
+    /// it has cooled all the way.
     Beam {
         range: f32,
-        /// Seconds of continuous fire from cold to overheated.
-        heat_time: f32,
-        /// Seconds to cool from fully hot back to zero. Once overheated the
-        /// beam stays locked until it has cooled all the way.
-        cool_time: f32,
+        /// The turret's share of the heat capacity: seconds of fire.
+        thermal_mass: f32,
     },
 }
 
@@ -115,8 +116,16 @@ const PLASMA_HOT: Vec3 = crate::tank::ithessar::PLASMA_HOT;
 /// Resonant crystal light (husks, their burst).
 const CRYSTAL: Vec3 = crate::tank::resonant::CRYSTAL_LIGHT;
 const CRYSTAL_HOT: Vec3 = crate::tank::resonant::CRYSTAL_LIGHT_HOT;
-/// Machine laser.
-const LASER: Vec3 = Vec3::new(1.0, 0.12, 0.08);
+/// Uthenn laser green.
+const LASER: Vec3 = Vec3::new(0.2, 1.0, 0.35);
+/// Heat a beam sheds per second, the same for every tank.
+pub const COOL_RATE: f32 = 1.35;
+/// A beam does full damage out to this fraction of its range...
+const BEAM_FULL: f32 = 0.4;
+/// ...and this fraction of it at full range.
+const BEAM_FAR: f32 = 0.6;
+/// A beam bends onto an enemy this close (radians) to where it's aimed.
+const BEAM_ASSIST: f32 = 0.035;
 
 impl Gun {
     pub fn dps(&self) -> f32 {
@@ -203,15 +212,14 @@ pub fn gun(kind: TurretKind) -> Gun {
                 look: Look::Bolt { size: 1.0 },
             }),
         },
-        // Machines: a laser that burns while held, then overheats.
+        // Uthenn: a laser that burns while held, then overheats.
         TurretKind::Lumen => Gun {
             damage: 34.0,
             reload: 0.0,
             spool: 0.0,
             action: Action::Beam {
-                range: 85.0,
-                heat_time: 3.0,
-                cool_time: 2.2,
+                range: 160.0,
+                thermal_mass: 1.6,
             },
         },
         // Resonant: a short gout of crystal fire; deadly up close, nothing at range.
@@ -231,6 +239,29 @@ pub fn gun(kind: TurretKind) -> Gun {
     }
 }
 
+/// Seconds of beam fire a hull's bulk soaks up before it overheats (the
+/// turret adds its own `thermal_mass`).
+pub fn thermal_mass(kind: HullKind) -> f32 {
+    match kind {
+        HullKind::Kataphrakt => 1.4,
+        HullKind::Kastron => 2.2,
+        HullKind::Sethuun => 1.0,
+        HullKind::Vigil => 1.1,
+        HullKind::Gravis => 3.6,
+    }
+}
+
+/// Heat a tank can hold before its beam overheats: hull plus turret.
+pub fn heat_capacity(hull: HullKind, turret_mass: f32) -> f32 {
+    thermal_mass(hull) + turret_mass
+}
+
+/// A beam's damage multiplier at distance `d` out of `range`.
+pub fn beam_falloff(d: f32, range: f32) -> f32 {
+    let x = ((d / range - BEAM_FULL) / (1.0 - BEAM_FULL)).clamp(0.0, 1.0);
+    1.0 + (BEAM_FAR - 1.0) * x
+}
+
 pub fn max_health(kind: HullKind) -> f32 {
     match kind {
         HullKind::Kataphrakt => 110.0,
@@ -239,6 +270,8 @@ pub fn max_health(kind: HullKind) -> f32 {
         HullKind::Sethuun => 90.0,
         // Light: the crystal is its armor (it keeps running once broken).
         HullKind::Vigil => 85.0,
+        // Heavy: the most armor, and the most thermal mass.
+        HullKind::Gravis => 210.0,
     }
 }
 
@@ -653,11 +686,11 @@ impl Match {
             match gun(self.world.tanks[i].turret_kind).action {
                 Action::Beam {
                     range,
-                    heat_time,
-                    cool_time,
+                    thermal_mass,
                 } => {
+                    let capacity = heat_capacity(self.world.tanks[i].hull_kind, thermal_mass);
                     if trigger && f.alive && !f.overheated {
-                        f.heat += DT / heat_time;
+                        f.heat += DT / capacity;
                         if f.heat >= 1.0 {
                             f.heat = 1.0;
                             f.overheated = true;
@@ -668,7 +701,7 @@ impl Match {
                         }
                         self.beam(i, range);
                     } else {
-                        f.heat = (f.heat - DT / cool_time).max(0.0);
+                        f.heat = (f.heat - COOL_RATE * DT / capacity).max(0.0);
                         if f.heat == 0.0 {
                             f.overheated = false;
                         }
@@ -817,19 +850,22 @@ impl Match {
         }
     }
 
-    /// One step of tank `i`'s beam: burn whatever it touches first.
+    /// One step of tank `i`'s beam: burn whatever it touches first, harder
+    /// up close. It bends onto an enemy just off its line.
     fn beam(&mut self, i: usize, range: f32) {
         let t = &self.world.tanks[i];
-        let (from, dir) = (muzzle(t), t.gun_dir());
+        let from = muzzle(t);
+        let dir = self.beam_assist(i, from, t.gun_dir(), range);
+        let t = &self.world.tanks[i];
         let hit = self.world.physics.cast_ray(
             &Ray::new(from, dir),
             range,
             true,
             QueryFilter::default().exclude_collider(t.collider),
         );
-        let (end, victim) = match hit {
-            Some((c, toi)) => (from + dir * toi, self.world.tank_of(c)),
-            None => (from + dir * range, None),
+        let (end, victim, d) = match hit {
+            Some((c, toi)) => (from + dir * toi, self.world.tank_of(c), toi),
+            None => (from + dir * range, None, range),
         };
         self.fighters[i].beam = Some(end);
         let dmg = self.fighters[i]
@@ -837,6 +873,7 @@ impl Match {
             .gun(self.world.tanks[i].turret_kind)
             .damage
             * self.fighters[i].strength()
+            * beam_falloff(d, range)
             * DT;
         match victim {
             Some(j) => self.damage(i, j, dmg),
@@ -847,6 +884,31 @@ impl Match {
                 }
             }
         }
+    }
+
+    /// Where tank `i`'s beam goes: `dir`, or straight onto the visible enemy
+    /// closest (by angle, within `BEAM_ASSIST`) to it.
+    fn beam_assist(&self, i: usize, from: Vec3, dir: Vec3, range: f32) -> Vec3 {
+        let mut best: Option<(f32, Vec3)> = None;
+        for (j, o) in self.world.tanks.iter().enumerate() {
+            let f = &self.fighters[j];
+            if j == i || !f.alive || f.is_husk() || f.team == self.fighters[i].team {
+                continue;
+            }
+            let to = o.pos + o.up() * (o.chassis.hull_top * 0.6) - from;
+            let d = to.length();
+            if !(2.0..=range).contains(&d) {
+                continue;
+            }
+            let off = dir.angle_between(to / d);
+            if off > BEAM_ASSIST || best.is_some_and(|(b, _)| off >= b) {
+                continue;
+            }
+            if ai::can_see(&self.world, from, o) {
+                best = Some((off, to / d));
+            }
+        }
+        best.map_or(dir, |(_, d)| d)
     }
 
     fn fly_shells(&mut self) {
@@ -1385,7 +1447,7 @@ impl Match {
                 }
             }
         }
-        // Laser beams: a hot core inside a wider red glow, and a burn spot where it lands.
+        // Laser beams: a hot core inside a wider green glow, and a burn spot where it lands.
         for (f, t) in self.fighters.iter().zip(&self.world.tanks) {
             let Some(end) = f.beam else { continue };
             let from = muzzle(t);
@@ -1398,7 +1460,7 @@ impl Match {
             let flicker = 1.0 + 0.15 * (self.world.time * 70.0).sin();
             for (w, c) in [
                 (0.32 * flicker, LASER.extend(2.2)),
-                (0.1, Vec4::new(1.0, 0.75, 0.7, 4.5)),
+                (0.1, Vec4::new(0.75, 1.0, 0.8, 4.5)),
             ] {
                 out.push((
                     MeshId::CYLINDER,
@@ -1420,7 +1482,7 @@ impl Match {
                         Quat::IDENTITY,
                         end,
                     ),
-                    Vec4::new(1.0, 0.45, 0.3, 4.0),
+                    Vec4::new(0.4, 1.0, 0.5, 4.0),
                 ),
             ));
         }
@@ -1838,17 +1900,65 @@ mod tests {
         assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
     }
 
+    /// Damage per second of beam contact at distance `dist`.
+    fn beam_dps_at(dist: f32) -> f32 {
+        let mut m = duel(TurretKind::Lumen, dist);
+        let hp = m.fighters[1].health;
+        for _ in 0..30 {
+            m.step(Command::default(), true);
+        }
+        (hp - m.fighters[1].health) / (30.0 * DT)
+    }
+
+    #[test]
+    fn beam_hurts_less_far_away_but_still_hurts() {
+        // The duel yard only reaches 95 m out; past that, check the curve.
+        let near = beam_dps_at(30.0);
+        let far = beam_dps_at(95.0);
+        assert!(near > 0.0, "near {near}");
+        let want = near * beam_falloff(95.0, 160.0);
+        assert!((far - want).abs() < near * 0.05, "near {near}, far {far}");
+        assert!(far < near * 0.95, "near {near}, far {far}");
+        assert_eq!(beam_falloff(50.0, 160.0), 1.0);
+        assert!((beam_falloff(160.0, 160.0) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn beam_bends_onto_a_target_just_off_its_line() {
+        let mut m = duel(TurretKind::Lumen, 80.0);
+        // Swing the turret a little off the target: a narrow miss.
+        m.world.tanks[0].turret_rel += 0.02;
+        let hp = m.fighters[1].health;
+        for _ in 0..10 {
+            m.step(Command::default(), true);
+        }
+        assert!(m.fighters[1].health < hp);
+        // Well off the line it misses.
+        let mut m = duel(TurretKind::Lumen, 80.0);
+        m.world.tanks[0].turret_rel += 0.2;
+        let hp = m.fighters[1].health;
+        for _ in 0..10 {
+            m.step(Command::default(), true);
+        }
+        assert_eq!(m.fighters[1].health, hp);
+    }
+
+    #[test]
+    fn heavier_hulls_hold_the_beam_longer() {
+        let t = 1.6;
+        assert!(heat_capacity(HullKind::Gravis, t) > heat_capacity(HullKind::Kastron, t));
+        assert!(heat_capacity(HullKind::Kastron, t) > heat_capacity(HullKind::Kataphrakt, t));
+        assert!(heat_capacity(HullKind::Kataphrakt, t) > heat_capacity(HullKind::Sethuun, t));
+    }
+
     #[test]
     fn beam_overheats_and_locks_until_cool() {
         let mut m = duel(TurretKind::Lumen, 60.0);
-        let Action::Beam {
-            heat_time,
-            cool_time,
-            ..
-        } = gun(TurretKind::Lumen).action
-        else {
+        let Action::Beam { thermal_mass, .. } = gun(TurretKind::Lumen).action else {
             panic!("Lumen is a beam");
         };
+        let heat_time = heat_capacity(m.world.tanks[0].hull_kind, thermal_mass);
+        let cool_time = heat_time / COOL_RATE;
         for _ in 0..((heat_time + 0.1) / DT) as usize {
             m.step(Command::default(), true);
         }

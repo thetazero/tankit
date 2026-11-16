@@ -351,7 +351,7 @@ pub(crate) fn plate2(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, ski
     plate(m, mirror(top), t, inside * Vec3::new(-1.0, 1.0, 1.0), skin);
 }
 
-fn block2(m: &mut MeshData, min: Vec3, max: Vec3, bevel: f32, skin: Skin) {
+pub(crate) fn block2(m: &mut MeshData, min: Vec3, max: Vec3, bevel: f32, skin: Skin) {
     block(m, min, max, bevel, skin);
     block(
         m,
@@ -1562,10 +1562,10 @@ pub fn pelekys() -> TurretModel {
 // Faction turrets. The Imperium builds the plated Kontos and Pelekys above; the
 // others below each have their own shape language and glow color.
 
-/// Machine laser red.
-const LASER_GLOW: Skin = Skin {
-    face: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
-    edge: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
+/// Uthenn laser green.
+pub(crate) const LASER_GLOW: Skin = Skin {
+    face: Vec4::new(0.12, 1.0, 0.3, Material::Glow.id()),
+    edge: Vec4::new(0.12, 1.0, 0.3, Material::Glow.id()),
 };
 /// Resonant crystal blue.
 pub(crate) const CRYSTAL: Skin = Skin {
@@ -1598,8 +1598,8 @@ pub(crate) fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, s
     );
 }
 
-/// Machine laser: a blocky, asymmetric housing stacked with heat-sink fins,
-/// and a long focusing rod ending in a red lens.
+/// Uthenn laser: a blocky, asymmetric housing stacked with heat-sink fins,
+/// and a long focusing rod ending in a green lens.
 pub fn lumen() -> TurretModel {
     let mut head = MeshData::default();
     let inside = v(0.0, 0.45, -0.2);
@@ -1626,14 +1626,14 @@ pub fn lumen() -> TurretModel {
         v(-0.78, 0.15, -1.0),
         v(-0.3, 0.98, 0.1),
         0.04,
-        PAINT,
+        super::uthenn::SHELL,
     );
     block(
         &mut head,
         v(0.3, 0.78, -0.9),
         v(0.72, 0.9, 0.6),
         0.03,
-        PAINT,
+        super::uthenn::SHELL,
     );
     // Heat-sink fins: a stack of thin metal plates down the right flank.
     for k in 0..7 {
