@@ -102,8 +102,7 @@ emblem and sent down from orbit.
 **They hire mercenaries** for the same reason as everyone else: they want to
 win.
 
-**The emblem:** a haloed crown over a ringed planet. The empire watches
-from above.
+**The emblem:** a planet under a halo: a gold disc with an arch over it.
 
 **Color:** deep crimson and gold.
 

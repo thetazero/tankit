@@ -258,75 +258,69 @@ pub fn plate(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin)
     solid(m, &[inner, outer], (t * 0.3).min(0.025), skin);
 }
 
-/// The Imperium's emblem, a haloed crown over a ringed planet, raised in
-/// relief on a surface. `c` is its center on the surface, `up` points to the
-/// top of the emblem, `out` away from the surface; `size` is about half its
-/// height. Built from convex pieces so every cap triangulates cleanly.
+/// The Imperium's emblem, a planet under a halo: a domed disc with an arch
+/// over it that tapers to points at both ends. Raised in relief on a
+/// surface: `c` is its center on the surface, `up` points to the top of the
+/// emblem, `out` away from the surface; `size` is about half its height.
+/// Each part is one continuous mesh, so there are no seams.
 pub fn emblem(m: &mut MeshData, c: Vec3, up: Vec3, out: Vec3, size: f32, skin: Skin) {
     let out = out.normalize();
     let up = (up - out * up.dot(out)).normalize();
     let right = up.cross(out);
-    let t = 0.025;
-    // A flat convex piece at height `lift` above the surface.
-    let mut piece = |p: &[Vec2], lift: f32| {
-        let at = |h: f32| -> Vec<Vec3> {
-            p.iter()
-                .map(|q| c + (right * q.x + up * q.y) * size + out * h)
-                .collect()
-        };
-        solid(m, &[at(lift - t), at(lift)], 0.004, skin);
+    // A point in emblem units (`q` across the face, `h` off the surface).
+    let at = |q: Vec2, h: f32| c + (right * q.x + up * q.y + out * h) * size;
+    let base = -0.02 / size;
+    let below = c - out;
+
+    // Planet: a shallow dome, walled at its edge.
+    let (pc, pr, n) = (Vec2::new(0.0, -0.17), 0.48, 36);
+    let rings = [(1.0, 0.07), (0.8, 0.1), (0.5, 0.12), (0.0, 0.13)];
+    let dir = |i: usize| {
+        let a = i as f32 / n as f32 * TAU;
+        Vec2::new(a.cos(), a.sin())
     };
-    let planet = Vec2::new(0.0, -0.3);
-    piece(&ngon(14, 0.3, planet), 0.02);
-    // The planet's ring: its front half, standing proud of the planet.
-    let arc = |r: Vec2, w: f32, center: Vec2, a0: f32, a1: f32, n: usize| -> Vec<[Vec2; 4]> {
-        (0..n)
-            .map(|i| {
-                let (a, b) = (
-                    a0 + (a1 - a0) * i as f32 / n as f32,
-                    a0 + (a1 - a0) * (i + 1) as f32 / n as f32,
-                );
-                let pt =
-                    |a: f32, k: f32| center + Vec2::new(a.cos() * (r.x + k), a.sin() * (r.y + k));
-                [pt(a, -w), pt(b, -w), pt(b, w), pt(a, w)]
-            })
-            .collect()
-    };
-    for q in arc(
-        Vec2::new(0.56, 0.13),
-        0.035,
-        planet,
-        PI * 0.96,
-        PI * 2.04,
-        12,
-    ) {
-        piece(&q, 0.035);
+    for i in 0..n {
+        let (d0, d1) = (dir(i), dir(i + 1));
+        let wall = [at(pc + d0 * pr, base), at(pc + d1 * pr, base)];
+        let rim = [at(pc + d0 * pr, rings[0].1), at(pc + d1 * pr, rings[0].1)];
+        let centre = at(pc, 0.0);
+        m.facet([wall[0], wall[1], rim[1]], centre, skin.edge);
+        m.facet([wall[0], rim[1], rim[0]], centre, skin.edge);
+        for w in rings.windows(2) {
+            let (r0, h0) = w[0];
+            let (r1, h1) = w[1];
+            let a0 = at(pc + d0 * pr * r0, h0);
+            let a1 = at(pc + d1 * pr * r0, h0);
+            let b0 = at(pc + d0 * pr * r1, h1);
+            let b1 = at(pc + d1 * pr * r1, h1);
+            m.facet([a0, a1, b1], below, skin.face);
+            m.facet([a0, b1, b0], below, skin.face);
+        }
     }
-    // Crown: a band and three points.
-    piece(
-        &rect(Vec2::new(0.0, 0.1), Vec2::new(0.26, 0.05), 0.01),
-        0.02,
-    );
-    for (x, h) in [(-0.2, 0.36), (0.0, 0.44), (0.2, 0.36)] {
-        piece(
-            &[
-                Vec2::new(x - 0.07, 0.15),
-                Vec2::new(x + 0.07, 0.15),
-                Vec2::new(x, h),
-            ],
-            0.02,
-        );
-    }
-    // Halo: an arch over the crown.
-    for q in arc(
-        Vec2::new(0.38, 0.32),
-        0.025,
-        Vec2::new(0.0, 0.14),
-        0.0,
-        PI,
-        14,
-    ) {
-        piece(&q, 0.02);
+
+    // Halo: an arch over the planet, widest at the top, tapering to points.
+    let (r, wmax, h, segs) = (0.76, 0.075, 0.09, 40);
+    let (a0, a1) = (PI * 0.07, PI * 0.93);
+    let pts: Vec<(Vec2, Vec2)> = (0..=segs)
+        .map(|i| {
+            let s = i as f32 / segs as f32;
+            let a = a0 + (a1 - a0) * s;
+            let d = Vec2::new(a.cos(), a.sin());
+            let w = wmax * (PI * s).sin().sqrt().max(0.02);
+            (pc + d * (r - w), pc + d * (r + w))
+        })
+        .collect();
+    for k in 0..segs {
+        let ((i0, o0), (i1, o1)) = (pts[k], pts[k + 1]);
+        let mid = at((i0 + o0 + i1 + o1) * 0.25, h * 0.5);
+        let (ti0, to0, ti1, to1) = (at(i0, h), at(o0, h), at(i1, h), at(o1, h));
+        m.facet([ti0, to0, to1], below, skin.face);
+        m.facet([ti0, to1, ti1], below, skin.face);
+        for (p0, p1) in [(i0, i1), (o0, o1)] {
+            let (b0, b1, t0, t1) = (at(p0, base), at(p1, base), at(p0, h), at(p1, h));
+            m.facet([b0, b1, t1], mid, skin.edge);
+            m.facet([b0, t1, t0], mid, skin.edge);
+        }
     }
 }
 
@@ -904,7 +898,7 @@ pub fn kastron() -> HullModel {
         let up = (top - low).normalize();
         let out = up.cross(Vec3::X).normalize();
         let out = if out.z < 0.0 { -out } else { out };
-        emblem(&mut m, top.lerp(low, 0.5), up, out, 0.45, GILT);
+        emblem(&mut m, top.lerp(low, 0.42), up, out, 0.42, GILT);
     }
     // Bull-nose lower plate with light slits.
     plate(
