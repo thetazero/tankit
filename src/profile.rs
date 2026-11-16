@@ -35,7 +35,11 @@ impl Rank {
             left -= rank_span(rank);
             rank += 1;
         }
-        Rank { rank, into: left, span: rank_span(rank) }
+        Rank {
+            rank,
+            into: left,
+            span: rank_span(rank),
+        }
     }
 
     pub fn progress(&self) -> f32 {
@@ -62,7 +66,11 @@ pub struct Profile {
 impl Profile {
     /// A fresh pilot that is never written to disk.
     pub fn in_memory() -> Profile {
-        Profile { xp: 0, loadout: (HullKind::Lancer, TurretKind::Lance), path: None }
+        Profile {
+            xp: 0,
+            loadout: (HullKind::Lancer, TurretKind::Lance),
+            path: None,
+        }
     }
 
     pub fn default_path() -> Option<PathBuf> {
@@ -71,18 +79,30 @@ impl Profile {
 
     /// Load from `path`, or start a fresh pilot there if it's missing or unreadable.
     pub fn load(path: PathBuf) -> Profile {
-        let mut p = Profile { path: Some(path.clone()), ..Profile::in_memory() };
+        let mut p = Profile {
+            path: Some(path.clone()),
+            ..Profile::in_memory()
+        };
         match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<Saved>(&text) {
                 Ok(s) => {
                     p.xp = s.xp;
-                    let hull = garage::HULLS.iter().find(|&&k| garage::hull_name(k).eq_ignore_ascii_case(&s.hull));
-                    let turret = garage::TURRETS.iter().find(|&&k| garage::turret_name(k).eq_ignore_ascii_case(&s.turret));
-                    p.loadout = (hull.copied().unwrap_or(p.loadout.0), turret.copied().unwrap_or(p.loadout.1));
+                    let hull = garage::HULLS
+                        .iter()
+                        .find(|&&k| garage::hull_name(k).eq_ignore_ascii_case(&s.hull));
+                    let turret = garage::TURRETS
+                        .iter()
+                        .find(|&&k| garage::turret_name(k).eq_ignore_ascii_case(&s.turret));
+                    p.loadout = (
+                        hull.copied().unwrap_or(p.loadout.0),
+                        turret.copied().unwrap_or(p.loadout.1),
+                    );
                 }
                 Err(e) => log::warn!("profile {} unreadable, starting fresh: {e}", path.display()),
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => log::info!("new pilot profile at {}", path.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                log::info!("new pilot profile at {}", path.display())
+            }
             Err(e) => log::warn!("profile {} unreadable, starting fresh: {e}", path.display()),
         }
         p
@@ -138,10 +158,31 @@ mod tests {
 
     #[test]
     fn rank_ladder() {
-        assert_eq!(Rank::of(0), Rank { rank: 1, into: 0, span: 100 });
+        assert_eq!(
+            Rank::of(0),
+            Rank {
+                rank: 1,
+                into: 0,
+                span: 100
+            }
+        );
         assert_eq!(Rank::of(99).rank, 1);
-        assert_eq!(Rank::of(100), Rank { rank: 2, into: 0, span: 150 });
-        assert_eq!(Rank::of(260), Rank { rank: 3, into: 10, span: 200 });
+        assert_eq!(
+            Rank::of(100),
+            Rank {
+                rank: 2,
+                into: 0,
+                span: 150
+            }
+        );
+        assert_eq!(
+            Rank::of(260),
+            Rank {
+                rank: 3,
+                into: 10,
+                span: 200
+            }
+        );
     }
 
     #[test]

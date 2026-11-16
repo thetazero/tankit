@@ -21,7 +21,10 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(model: Mat4, tint: Vec4) -> Instance {
-        Instance { model: model.to_cols_array_2d(), tint: tint.to_array() }
+        Instance {
+            model: model.to_cols_array_2d(),
+            tint: tint.to_array(),
+        }
     }
 }
 
@@ -54,17 +57,28 @@ pub struct MeshData {
 
 impl MeshData {
     pub fn primitives() -> [MeshData; MESH_COUNT] {
-        [MeshData::cube(), MeshData::cylinder(20), MeshData::sphere(16, 10), MeshData::gem(), MeshData::canopy(12, 5)]
+        [
+            MeshData::cube(),
+            MeshData::cylinder(20),
+            MeshData::sphere(16, 10),
+            MeshData::gem(),
+            MeshData::canopy(12, 5),
+        ]
     }
 
     fn vert(&mut self, p: Vec3, n: Vec3, c: Vec4) -> u32 {
-        self.verts.push(Vertex { pos: p.to_array(), normal: n.to_array(), color: c.to_array() });
+        self.verts.push(Vertex {
+            pos: p.to_array(),
+            normal: n.to_array(),
+            color: c.to_array(),
+        });
         self.verts.len() as u32 - 1
     }
 
     pub fn quad(&mut self, p: [Vec3; 4], n: Vec3, c: Vec4) {
         let i: Vec<u32> = p.iter().map(|&p| self.vert(p, n, c)).collect();
-        self.indices.extend_from_slice(&[i[0], i[1], i[2], i[0], i[2], i[3]]);
+        self.indices
+            .extend_from_slice(&[i[0], i[1], i[2], i[0], i[2], i[3]]);
     }
 
     pub fn tri(&mut self, p: [Vec3; 3], n: Vec3, c: Vec4) {
@@ -78,12 +92,66 @@ impl MeshData {
     pub fn add_box(&mut self, min: Vec3, max: Vec3, side: Vec4, top: Vec4) {
         let (a, b) = (min, max);
         let c = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
-        self.quad([c(b.x, a.y, a.z), c(b.x, b.y, a.z), c(b.x, b.y, b.z), c(b.x, a.y, b.z)], Vec3::X, side);
-        self.quad([c(a.x, a.y, b.z), c(a.x, b.y, b.z), c(a.x, b.y, a.z), c(a.x, a.y, a.z)], Vec3::NEG_X, side);
-        self.quad([c(a.x, a.y, b.z), c(b.x, a.y, b.z), c(b.x, b.y, b.z), c(a.x, b.y, b.z)], Vec3::Z, side);
-        self.quad([c(b.x, a.y, a.z), c(a.x, a.y, a.z), c(a.x, b.y, a.z), c(b.x, b.y, a.z)], Vec3::NEG_Z, side);
-        self.quad([c(a.x, b.y, a.z), c(a.x, b.y, b.z), c(b.x, b.y, b.z), c(b.x, b.y, a.z)], Vec3::Y, top);
-        self.quad([c(a.x, a.y, a.z), c(b.x, a.y, a.z), c(b.x, a.y, b.z), c(a.x, a.y, b.z)], Vec3::NEG_Y, side);
+        self.quad(
+            [
+                c(b.x, a.y, a.z),
+                c(b.x, b.y, a.z),
+                c(b.x, b.y, b.z),
+                c(b.x, a.y, b.z),
+            ],
+            Vec3::X,
+            side,
+        );
+        self.quad(
+            [
+                c(a.x, a.y, b.z),
+                c(a.x, b.y, b.z),
+                c(a.x, b.y, a.z),
+                c(a.x, a.y, a.z),
+            ],
+            Vec3::NEG_X,
+            side,
+        );
+        self.quad(
+            [
+                c(a.x, a.y, b.z),
+                c(b.x, a.y, b.z),
+                c(b.x, b.y, b.z),
+                c(a.x, b.y, b.z),
+            ],
+            Vec3::Z,
+            side,
+        );
+        self.quad(
+            [
+                c(b.x, a.y, a.z),
+                c(a.x, a.y, a.z),
+                c(a.x, b.y, a.z),
+                c(b.x, b.y, a.z),
+            ],
+            Vec3::NEG_Z,
+            side,
+        );
+        self.quad(
+            [
+                c(a.x, b.y, a.z),
+                c(a.x, b.y, b.z),
+                c(b.x, b.y, b.z),
+                c(b.x, b.y, a.z),
+            ],
+            Vec3::Y,
+            top,
+        );
+        self.quad(
+            [
+                c(a.x, a.y, a.z),
+                c(b.x, a.y, a.z),
+                c(b.x, a.y, b.z),
+                c(a.x, a.y, b.z),
+            ],
+            Vec3::NEG_Y,
+            side,
+        );
     }
 
     /// Append another mesh transformed by `m`, recoloring it with `color` (rgb + material id).
@@ -93,7 +161,11 @@ impl MeshData {
         for v in &other.verts {
             let p = m.transform_point3(Vec3::from(v.pos));
             let n = (nm * Vec3::from(v.normal)).normalize_or_zero();
-            self.verts.push(Vertex { pos: p.to_array(), normal: n.to_array(), color: color.to_array() });
+            self.verts.push(Vertex {
+                pos: p.to_array(),
+                normal: n.to_array(),
+                color: color.to_array(),
+            });
         }
         self.indices.extend(other.indices.iter().map(|i| i + base));
     }
@@ -135,7 +207,8 @@ impl MeshData {
             m.vert(p1 - up, n1, w);
             m.vert(p1 + up, n1, w);
             m.vert(p0 + up, n0, w);
-            m.indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 3, b + 2]);
+            m.indices
+                .extend_from_slice(&[b, b + 2, b + 1, b, b + 3, b + 2]);
             m.tri([up, p1 + up, p0 + up], Vec3::Y, w);
             m.tri([-up, p0 - up, p1 - up], Vec3::NEG_Y, w);
         }
@@ -186,7 +259,10 @@ impl MeshData {
     /// Half an ellipsoid, open underneath, in alternating white and orange gores.
     pub fn canopy(gores: u32, rings: u32) -> MeshData {
         let mut m = MeshData::default();
-        let colors = [Vec4::new(0.92, 0.9, 0.84, 0.0), Vec4::new(0.9, 0.42, 0.14, 0.0)];
+        let colors = [
+            Vec4::new(0.92, 0.9, 0.84, 0.0),
+            Vec4::new(0.9, 0.42, 0.14, 0.0),
+        ];
         let point = |g: u32, r: u32| {
             let th = g as f32 / gores as f32 * std::f32::consts::TAU;
             let phi = r as f32 / rings as f32 * std::f32::consts::FRAC_PI_2;
@@ -200,8 +276,14 @@ impl MeshData {
                 let (b, nb) = point(g, r + 1);
                 let (cc, nc) = point(g + 1, r + 1);
                 let (d, nd) = point(g + 1, r);
-                let i = [m.vert(a, na, c), m.vert(b, nb, c), m.vert(cc, nc, c), m.vert(d, nd, c)];
-                m.indices.extend_from_slice(&[i[0], i[1], i[2], i[0], i[2], i[3]]);
+                let i = [
+                    m.vert(a, na, c),
+                    m.vert(b, nb, c),
+                    m.vert(cc, nc, c),
+                    m.vert(d, nd, c),
+                ];
+                m.indices
+                    .extend_from_slice(&[i[0], i[1], i[2], i[0], i[2], i[3]]);
             }
         }
         m

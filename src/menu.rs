@@ -48,19 +48,27 @@ pub struct Menu {
 
 impl Menu {
     pub fn new() -> Menu {
-        Menu { screen: Screen::Main, cursor: 0, mission: 0 }
+        Menu {
+            screen: Screen::Main,
+            cursor: 0,
+            mission: 0,
+        }
     }
 
     pub fn input(&mut self, nav: Nav) -> Option<Action> {
         match (self.screen, nav) {
-            (Screen::Main, Nav::Up | Nav::Down) => self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav),
+            (Screen::Main, Nav::Up | Nav::Down) => {
+                self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav)
+            }
             (Screen::Main, Nav::Select) => match self.cursor {
                 0 => self.screen = Screen::Missions,
                 1 => return Some(Action::Garage),
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back) => {}
-            (Screen::Missions, Nav::Up | Nav::Down) => self.mission = step(self.mission, MISSIONS.len(), nav),
+            (Screen::Missions, Nav::Up | Nav::Down) => {
+                self.mission = step(self.mission, MISSIONS.len(), nav)
+            }
             (Screen::Missions, Nav::Select) => return Some(Action::Deploy(self.mission)),
             (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
         }
@@ -83,11 +91,21 @@ impl Menu {
         label(&mut p, Vec2::new(x, y), "MERCENARY LINK", Align::Left);
         label(&mut p, Vec2::new(x + PANEL_W, y), "ONLINE", Align::Right);
         y += 18.0;
-        p.text(Vec2::new(x, y), "TANKIT", &TextStyle::value(28.0), Align::Left);
+        p.text(
+            Vec2::new(x, y),
+            "TANKIT",
+            &TextStyle::value(28.0),
+            Align::Left,
+        );
         y += 52.0;
         pilot(&mut p, Vec2::new(x, y), profile);
         y += 64.0;
-        p.line(Vec2::new(x, y), Vec2::new(x + PANEL_W, y), 1.0, theme::FAINT);
+        p.line(
+            Vec2::new(x, y),
+            Vec2::new(x + PANEL_W, y),
+            1.0,
+            theme::FAINT,
+        );
         y += 26.0;
 
         match self.screen {
@@ -96,12 +114,22 @@ impl Menu {
                 y += MAIN_ITEMS.len() as f32 * 30.0 + 20.0;
                 label(&mut p, Vec2::new(x, y), "DEPLOYING IN", Align::Left);
                 y += 16.0;
-                p.text(Vec2::new(x, y), &kit_name(profile.loadout), &TextStyle::value(12.0), Align::Left);
+                p.text(
+                    Vec2::new(x, y),
+                    &kit_name(profile.loadout),
+                    &TextStyle::value(12.0),
+                    Align::Left,
+                );
                 hints(&mut p, x, h, &[("W/S", "SELECT"), ("ENTER", "OPEN")]);
             }
             Screen::Missions => {
                 label(&mut p, Vec2::new(x, y), "01  MISSIONS", Align::Left);
-                label(&mut p, Vec2::new(x + PANEL_W, y), &format!("{}/{}", self.mission + 1, MISSIONS.len()), Align::Right);
+                label(
+                    &mut p,
+                    Vec2::new(x + PANEL_W, y),
+                    &format!("{}/{}", self.mission + 1, MISSIONS.len()),
+                    Align::Right,
+                );
                 y += 20.0;
                 let names: Vec<&str> = MISSIONS.iter().map(|m| m.name).collect();
                 rows(&mut p, Vec2::new(x, y), &names, self.mission);
@@ -116,12 +144,22 @@ impl Menu {
                     ("PAY", m.pay()),
                 ] {
                     label(&mut p, Vec2::new(x, y + 1.0), k, Align::Left);
-                    p.text(Vec2::new(x + PANEL_W, y), &v, &TextStyle::value(11.0), Align::Right);
+                    p.text(
+                        Vec2::new(x + PANEL_W, y),
+                        &v,
+                        &TextStyle::value(11.0),
+                        Align::Right,
+                    );
                     y += 22.0;
                 }
                 y += 8.0;
                 label(&mut p, Vec2::new(x, y), m.brief, Align::Left);
-                hints(&mut p, x, h, &[("W/S", "SELECT"), ("ENTER", "DEPLOY"), ("ESC", "BACK")]);
+                hints(
+                    &mut p,
+                    x,
+                    h,
+                    &[("W/S", "SELECT"), ("ENTER", "DEPLOY"), ("ESC", "BACK")],
+                );
             }
         }
         fade(p.finish(), alpha)
@@ -151,7 +189,13 @@ impl Pause {
             Nav::Up | Nav::Down => self.cursor = step(self.cursor, PAUSE_ITEMS.len(), nav),
             Nav::Back => return Some(PauseAction::Resume),
             Nav::Select => {
-                return Some([PauseAction::Resume, PauseAction::ExitToMenu, PauseAction::Quit][self.cursor]);
+                return Some(
+                    [
+                        PauseAction::Resume,
+                        PauseAction::ExitToMenu,
+                        PauseAction::Quit,
+                    ][self.cursor],
+                );
             }
         }
         None
@@ -172,18 +216,44 @@ impl Pause {
         let mut y = min.y + 28.0;
         label(&mut p, Vec2::new(x, y), "LINK HELD", Align::Left);
         y += 18.0;
-        p.text(Vec2::new(x, y), "PAUSED", &TextStyle::value(20.0), Align::Left);
+        p.text(
+            Vec2::new(x, y),
+            "PAUSED",
+            &TextStyle::value(20.0),
+            Align::Left,
+        );
         y += 44.0;
         rows(&mut p, Vec2::new(x, y), &PAUSE_ITEMS, self.cursor);
         y += PAUSE_ITEMS.len() as f32 * 30.0 + 8.0;
-        p.line(Vec2::new(x, y), Vec2::new(x + PANEL_W, y), 1.0, theme::FAINT);
+        p.line(
+            Vec2::new(x, y),
+            Vec2::new(x + PANEL_W, y),
+            1.0,
+            theme::FAINT,
+        );
         y += 16.0;
         label(&mut p, Vec2::new(x, y + 1.0), "THIS MATCH", Align::Left);
-        p.text(Vec2::new(x + PANEL_W, y), &format!("+{match_xp} XP"), &TextStyle::value(11.0), Align::Right);
+        p.text(
+            Vec2::new(x + PANEL_W, y),
+            &format!("+{match_xp} XP"),
+            &TextStyle::value(11.0),
+            Align::Right,
+        );
         y += 20.0;
         let r = profile.rank();
-        label(&mut p, Vec2::new(x, y + 1.0), &format!("RANK {}", r.rank), Align::Left);
-        widgets::hairbar(&mut p, Vec2::new(x + 110.0, y + 5.0), PANEL_W - 110.0, r.progress(), theme::FG);
+        label(
+            &mut p,
+            Vec2::new(x, y + 1.0),
+            &format!("RANK {}", r.rank),
+            Align::Left,
+        );
+        widgets::hairbar(
+            &mut p,
+            Vec2::new(x + 110.0, y + 5.0),
+            PANEL_W - 110.0,
+            r.progress(),
+            theme::FG,
+        );
         p.finish()
     }
 }
@@ -192,11 +262,26 @@ impl Pause {
 fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
     let r = profile.rank();
     label(p, at, "PILOT RANK", Align::Left);
-    label(p, at + Vec2::new(PANEL_W, 0.0), &format!("{} XP", profile.xp), Align::Right);
-    p.text(at + Vec2::new(0.0, 16.0), &r.rank.to_string(), &TextStyle::value(20.0), Align::Left);
+    label(
+        p,
+        at + Vec2::new(PANEL_W, 0.0),
+        &format!("{} XP", profile.xp),
+        Align::Right,
+    );
+    p.text(
+        at + Vec2::new(0.0, 16.0),
+        &r.rank.to_string(),
+        &TextStyle::value(20.0),
+        Align::Left,
+    );
     let bar = at + Vec2::new(56.0, 28.0);
     widgets::hairbar(p, bar, PANEL_W - 56.0, r.progress(), theme::FG);
-    label(p, at + Vec2::new(PANEL_W, 38.0), &format!("{} / {} TO RANK {}", r.into, r.span, r.rank + 1), Align::Right);
+    label(
+        p,
+        at + Vec2::new(PANEL_W, 38.0),
+        &format!("{} / {} TO RANK {}", r.into, r.span, r.rank + 1),
+        Align::Right,
+    );
 }
 
 /// A selectable list, with the garage's bar-and-chevron marker on the selected row.
@@ -205,9 +290,22 @@ fn rows(p: &mut Painter, at: Vec2, items: &[&str], selected: usize) {
         let y = at.y + i as f32 * 30.0;
         let on = i == selected;
         if on {
-            p.line(Vec2::new(at.x - 14.0, y - 3.0), Vec2::new(at.x - 14.0, y + 18.0), 2.0, theme::FG);
+            p.line(
+                Vec2::new(at.x - 14.0, y - 3.0),
+                Vec2::new(at.x - 14.0, y + 18.0),
+                2.0,
+                theme::FG,
+            );
             let cx = at.x + PANEL_W;
-            p.polyline(&[Vec2::new(cx - 8.0, y + 2.0), Vec2::new(cx - 3.0, y + 7.5), Vec2::new(cx - 8.0, y + 13.0)], 1.2, theme::FG);
+            p.polyline(
+                &[
+                    Vec2::new(cx - 8.0, y + 2.0),
+                    Vec2::new(cx - 3.0, y + 7.5),
+                    Vec2::new(cx - 8.0, y + 13.0),
+                ],
+                1.2,
+                theme::FG,
+            );
         }
         let mut s = TextStyle::value(15.0);
         s.color = if on { theme::FG } else { theme::DIM };
@@ -227,11 +325,19 @@ fn hints(p: &mut Painter, x: f32, h: f32, keys: &[(&str, &str)]) {
 }
 
 pub fn kit_name(kit: Loadout) -> String {
-    format!("{} · {}", garage::hull_name(kit.0), garage::turret_name(kit.1))
+    format!(
+        "{} · {}",
+        garage::hull_name(kit.0),
+        garage::turret_name(kit.1)
+    )
 }
 
 fn step(i: usize, n: usize, nav: Nav) -> usize {
-    if nav == Nav::Down { (i + 1) % n } else { (i + n - 1) % n }
+    if nav == Nav::Down {
+        (i + 1) % n
+    } else {
+        (i + n - 1) % n
+    }
 }
 
 /// The battle HUD knocked back under the pause menu.
@@ -284,9 +390,15 @@ mod tests {
         for screen in [Screen::Main, Screen::Missions] {
             m.screen = screen;
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
-                for v in [m.draw(&profile, h, 1.0), Pause::new().draw(&profile, 30, w, h)] {
+                for v in [
+                    m.draw(&profile, h, 1.0),
+                    Pause::new().draw(&profile, 30, w, h),
+                ] {
                     assert!(!v.is_empty());
-                    assert!(v.iter().all(|v| v.pos[0] > -4.0 && v.pos[0] < w + 4.0 && v.pos[1] > -4.0 && v.pos[1] < h + 4.0));
+                    assert!(v.iter().all(|v| v.pos[0] > -4.0
+                        && v.pos[0] < w + 4.0
+                        && v.pos[1] > -4.0
+                        && v.pos[1] < h + 4.0));
                 }
             }
         }

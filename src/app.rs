@@ -104,13 +104,24 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     };
     let loadout = launch.loadout.unwrap_or(profile.loadout);
     let game = if launch.showroom.is_some() {
-        let mut m = Match::new(make_map(launch.seed, launch.map_kind), launch.spawn, 0, launch.seed);
+        let mut m = Match::new(
+            make_map(launch.seed, launch.map_kind),
+            launch.spawn,
+            0,
+            launch.seed,
+        );
         m.world = showroom::world();
         m
     } else if launch.menu {
         menu_match(loadout)
     } else {
-        new_match(launch.seed, launch.map_kind, launch.spawn, launch.bots, loadout)
+        new_match(
+            launch.seed,
+            launch.map_kind,
+            launch.spawn,
+            launch.bots,
+            loadout,
+        )
     };
     let menu_orbit = garage::front_angle(&game.world.tanks[0]);
     let mut app = App {
@@ -118,7 +129,11 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         map_kind: launch.map_kind,
         spawn: launch.spawn,
         bots: launch.bots,
-        mode: if launch.menu && launch.showroom.is_none() { Mode::Menu } else { Mode::Playing },
+        mode: if launch.menu && launch.showroom.is_none() {
+            Mode::Menu
+        } else {
+            Mode::Playing
+        },
         window: None,
         renderer: None,
         art: None,
@@ -147,8 +162,19 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
 }
 
 /// A round with the player in `kit`.
-pub fn new_match(seed: u64, map_kind: MapKind, spawn: usize, bots: usize, kit: garage::Loadout) -> Match {
-    let mut m = Match::new(make_map(seed, map_kind), spawn, bots, seed.wrapping_add(spawn as u64));
+pub fn new_match(
+    seed: u64,
+    map_kind: MapKind,
+    spawn: usize,
+    bots: usize,
+    kit: garage::Loadout,
+) -> Match {
+    let mut m = Match::new(
+        make_map(seed, map_kind),
+        spawn,
+        bots,
+        seed.wrapping_add(spawn as u64),
+    );
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
@@ -194,7 +220,9 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
-                let PhysicalKey::Code(code) = event.physical_key else { return };
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
                 match event.state {
                     ElementState::Pressed => {
                         if !event.repeat {
@@ -242,14 +270,26 @@ impl App {
     /// Start a new round on the current map settings, keeping the player's queued kit.
     fn restart(&mut self) {
         let kit = self.queued();
-        self.load(new_match(self.seed, self.map_kind, self.spawn, self.bots, kit));
+        self.load(new_match(
+            self.seed,
+            self.map_kind,
+            self.spawn,
+            self.bots,
+            kit,
+        ));
         self.mode = Mode::Playing;
     }
 
     fn start_mission(&mut self, i: usize) {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots);
-        self.load(new_match(self.seed, self.map_kind, self.spawn, self.bots, self.profile.loadout));
+        self.load(new_match(
+            self.seed,
+            self.map_kind,
+            self.spawn,
+            self.bots,
+            self.profile.loadout,
+        ));
         self.mode = Mode::Playing;
         log::info!("deployed: {} ({}, {})", m.name, m.mode, m.map);
     }
@@ -264,7 +304,10 @@ impl App {
     /// The player's kit for the next respawn (the current one if nothing is queued).
     fn queued(&self) -> garage::Loadout {
         let t = &self.game.world.tanks[0];
-        self.game.player().next_kit.unwrap_or((t.hull_kind, t.turret_kind))
+        self.game
+            .player()
+            .next_kit
+            .unwrap_or((t.hull_kind, t.turret_kind))
     }
 
     /// Pick the kit for the next respawn. In a match it's queued for the next
@@ -350,7 +393,9 @@ impl App {
                 }
             }
             // Play the round again once the clock has run out.
-            KeyCode::Enter | KeyCode::NumpadEnter if self.showroom.is_none() && self.game.phase == Phase::Over => {
+            KeyCode::Enter | KeyCode::NumpadEnter
+                if self.showroom.is_none() && self.game.phase == Phase::Over =>
+            {
                 self.spawn += 1;
                 self.restart();
             }
@@ -361,7 +406,11 @@ impl App {
             }
             // New random map.
             KeyCode::F5 if self.showroom.is_none() => {
-                self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
+                self.seed = self
+                    .seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407)
+                    >> 16;
                 self.map_kind = MapKind::City;
                 self.restart();
                 log::info!("map seed {}", self.seed);
@@ -369,11 +418,25 @@ impl App {
             // Quick-cycle the kit queued for the next respawn.
             KeyCode::Digit1 => {
                 let (hull, turret) = self.queued();
-                self.queue((if hull == HullKind::Lancer { HullKind::Bastion } else { HullKind::Lancer }, turret));
+                self.queue((
+                    if hull == HullKind::Lancer {
+                        HullKind::Bastion
+                    } else {
+                        HullKind::Lancer
+                    },
+                    turret,
+                ));
             }
             KeyCode::Digit2 => {
                 let (hull, turret) = self.queued();
-                self.queue((hull, if turret == TurretKind::Lance { TurretKind::Maul } else { TurretKind::Lance }));
+                self.queue((
+                    hull,
+                    if turret == TurretKind::Lance {
+                        TurretKind::Maul
+                    } else {
+                        TurretKind::Lance
+                    },
+                ));
             }
             // Live tuning: sideways grip and turn rate.
             KeyCode::BracketLeft => self.tune_grip *= 0.9,
@@ -394,10 +457,18 @@ impl App {
         if self.garage.is_open() || self.mode != Mode::Playing {
             return Command::default();
         }
-        let axis = |pos: &[KeyCode], neg: &[KeyCode]| (self.held(pos) as i32 - self.held(neg) as i32) as f32;
+        let axis = |pos: &[KeyCode], neg: &[KeyCode]| {
+            (self.held(pos) as i32 - self.held(neg) as i32) as f32
+        };
         Command {
-            throttle: axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]),
-            steer: axis(&[KeyCode::KeyA, KeyCode::ArrowLeft], &[KeyCode::KeyD, KeyCode::ArrowRight]),
+            throttle: axis(
+                &[KeyCode::KeyW, KeyCode::ArrowUp],
+                &[KeyCode::KeyS, KeyCode::ArrowDown],
+            ),
+            steer: axis(
+                &[KeyCode::KeyA, KeyCode::ArrowLeft],
+                &[KeyCode::KeyD, KeyCode::ArrowRight],
+            ),
             turret: axis(&[KeyCode::KeyZ], &[KeyCode::KeyX]),
             center_turret: self.held(&[KeyCode::KeyC]),
         }
@@ -408,7 +479,8 @@ impl App {
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
 
-        let tilt = (self.held(&[KeyCode::PageUp]) as i32 - self.held(&[KeyCode::PageDown]) as i32) as f32;
+        let tilt =
+            (self.held(&[KeyCode::PageUp]) as i32 - self.held(&[KeyCode::PageDown]) as i32) as f32;
         self.cam.tilt = (self.cam.tilt + tilt * CAM_TILT_SPEED * dt).clamp(0.0, 1.0);
 
         // Apply live tuning on top of the hull's base stats (survives hull swaps).
@@ -420,7 +492,8 @@ impl App {
         }
 
         let cmd = self.command();
-        let fire = self.held(&[KeyCode::Space]) && !self.garage.is_open() && self.mode == Mode::Playing;
+        let fire =
+            self.held(&[KeyCode::Space]) && !self.garage.is_open() && self.mode == Mode::Playing;
         if self.mode != Mode::Paused {
             for _ in 0..self.clock.advance(dt) {
                 if self.showroom.is_some() {
@@ -442,7 +515,9 @@ impl App {
 
         // Respawned (in the new kit) or round over: back to battle.
         let alive = self.game.player().alive;
-        if self.mode == Mode::Playing && ((alive && !self.player_alive) || self.game.phase != Phase::Playing) {
+        if self.mode == Mode::Playing
+            && ((alive && !self.player_alive) || self.game.phase != Phase::Playing)
+        {
             self.garage.close();
         }
         self.player_alive = alive;
@@ -453,24 +528,37 @@ impl App {
         let scores = self.held(&[KeyCode::Tab]);
         if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
             let (w, h) = (r.width as f32, r.height as f32);
-            let alpha = if self.mode == Mode::Paused { 1.0 } else { self.clock.alpha() };
+            let alpha = if self.mode == Mode::Paused {
+                1.0
+            } else {
+                self.clock.alpha()
+            };
             let mut tanks = self.game.display_tanks(alpha);
             let mut camera = match (self.mode, self.camera) {
-                (Mode::Menu, _) => garage::orbit_camera(&self.game.world, &tanks[0], self.menu_orbit, w / h),
+                (Mode::Menu, _) => {
+                    garage::orbit_camera(&self.game.world, &tanks[0], self.menu_orbit, w / h)
+                }
                 // Frozen: hold the last frame's view.
                 (Mode::Paused, Some(c)) => c,
                 _ => self.cam.update(&self.game.world, &tanks[0], dt),
             };
             if self.mode != Mode::Paused {
                 self.garage.update(dt);
-                camera = self.garage.camera(camera, &self.game.world, &tanks[0], w / h);
+                camera = self
+                    .garage
+                    .camera(camera, &self.game.world, &tanks[0], w / h);
             }
             let driven = tanks[0].clone();
             self.garage.preview(&mut tanks[0], queued);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
                 let angle = room.orbit.unwrap_or(self.game.world.time * 0.15);
-                camera = showroom::camera(&self.game.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
+                camera = showroom::camera(
+                    &self.game.world,
+                    angle,
+                    room.dist * (0.6 + self.cam.tilt),
+                    room.focus,
+                );
             }
             let mut scene = scene::build(&self.game.world, &tanks, art, camera);
             self.game.effect_instances(alpha, &mut scene.instances);
@@ -480,16 +568,23 @@ impl App {
             } else {
                 scene.ui = match self.mode {
                     Mode::Menu => {
-                        let mut ui = self.menu.draw(&self.profile, h, 1.0 - self.garage.presence());
+                        let mut ui = self
+                            .menu
+                            .draw(&self.profile, h, 1.0 - self.garage.presence());
                         ui.extend(self.garage.draw(&driven, queued, h));
                         ui
                     }
                     Mode::Playing => {
-                        let hud = self.hud.draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
+                        let hud = self
+                            .hud
+                            .draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
                         self.garage.overlay(hud, &driven, queued, h)
                     }
                     Mode::Paused => {
-                        let mut ui = menu::dim(self.hud.draw(&self.game, &tanks, self.seed, &camera, w, h, 0.0, false));
+                        let mut ui = menu::dim(
+                            self.hud
+                                .draw(&self.game, &tanks, self.seed, &camera, w, h, 0.0, false),
+                        );
                         ui.extend(self.pause.draw(&self.profile, self.game.xp, w, h));
                         ui
                     }

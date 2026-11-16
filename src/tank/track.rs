@@ -41,7 +41,13 @@ impl Belt {
         // Clockwise in (z, y), so the bottom run goes backward as s grows.
         pts.reverse();
         // Start at the rearmost point of the bottom run for stable indexing.
-        let start = (0..pts.len()).min_by(|&a, &b| (pts[a].y, pts[a].x).partial_cmp(&(pts[b].y, pts[b].x)).unwrap()).unwrap();
+        let start = (0..pts.len())
+            .min_by(|&a, &b| {
+                (pts[a].y, pts[a].x)
+                    .partial_cmp(&(pts[b].y, pts[b].x))
+                    .unwrap()
+            })
+            .unwrap();
         pts.rotate_left(start);
         let mut cum = vec![0.0];
         for i in 0..pts.len() {
@@ -65,7 +71,11 @@ impl Belt {
         };
         let (a, b) = (self.pts[i], self.pts[(i + 1) % self.pts.len()]);
         let seg = self.cum[i + 1] - self.cum[i];
-        let t = if seg > 1e-6 { (s - self.cum[i]) / seg } else { 0.0 };
+        let t = if seg > 1e-6 {
+            (s - self.cum[i]) / seg
+        } else {
+            0.0
+        };
         let pos = a.lerp(b, t);
         // Smooth the normal over a short window so links rotate evenly around wheels.
         let ahead = self.raw(s + 0.04);
@@ -86,7 +96,14 @@ impl Belt {
         };
         let (a, b) = (self.pts[i], self.pts[(i + 1) % self.pts.len()]);
         let seg = self.cum[i + 1] - self.cum[i];
-        a.lerp(b, if seg > 1e-6 { (s - self.cum[i]) / seg } else { 0.0 })
+        a.lerp(
+            b,
+            if seg > 1e-6 {
+                (s - self.cum[i]) / seg
+            } else {
+                0.0
+            },
+        )
     }
 }
 
@@ -119,8 +136,20 @@ mod tests {
     use super::*;
 
     fn belt() -> Belt {
-        let w = |z, y, r| Wheel { center: Vec2::new(z, y), radius: r };
-        Belt::new(&[w(2.0, 0.6, 0.38), w(-2.0, 0.6, 0.34), w(1.0, 0.4, 0.32), w(0.0, 0.4, 0.32), w(-1.0, 0.4, 0.32)], 0.04)
+        let w = |z, y, r| Wheel {
+            center: Vec2::new(z, y),
+            radius: r,
+        };
+        Belt::new(
+            &[
+                w(2.0, 0.6, 0.38),
+                w(-2.0, 0.6, 0.34),
+                w(1.0, 0.4, 0.32),
+                w(0.0, 0.4, 0.32),
+                w(-1.0, 0.4, 0.32),
+            ],
+            0.04,
+        )
     }
 
     #[test]
@@ -132,7 +161,11 @@ mod tests {
             let (p0, p1) = (b.at(s), b.at(s + 0.05));
             // On the bottom run (between the outer road wheels), growing s heads toward -z.
             if p0.pos.y < 0.05 && p0.pos.x.abs() < 0.9 && p1.pos.y < 0.05 {
-                assert!((p0.pos.y - 0.04).abs() < 0.01, "bottom of belt at y={}", p0.pos.y);
+                assert!(
+                    (p0.pos.y - 0.04).abs() < 0.01,
+                    "bottom of belt at y={}",
+                    p0.pos.y
+                );
                 assert!(p1.pos.x < p0.pos.x, "bottom run should move backward");
                 assert!(p0.normal.y < -0.9, "bottom normal points down");
                 checked += 1;

@@ -80,7 +80,12 @@ impl Repairs {
 
     /// Advance every spot by `dt`. A landed crate goes to the nearest tank on
     /// it for which `wants` is true; returns (tank, crate position) per pickup.
-    pub fn step(&mut self, dt: f32, tanks: &[Tank], wants: impl Fn(usize) -> bool) -> Vec<(usize, Vec3)> {
+    pub fn step(
+        &mut self,
+        dt: f32,
+        tanks: &[Tank],
+        wants: impl Fn(usize) -> bool,
+    ) -> Vec<(usize, Vec3)> {
         let mut picked = Vec::new();
         for d in &mut self.drops {
             d.age += dt;
@@ -100,7 +105,9 @@ impl Repairs {
                 .iter()
                 .enumerate()
                 .filter(|(i, t)| {
-                    Vec2::new(t.pos.x, t.pos.z).distance(d.at) < PICKUP_RADIUS && (t.pos.y - d.ground).abs() < 3.0 && wants(*i)
+                    Vec2::new(t.pos.x, t.pos.z).distance(d.at) < PICKUP_RADIUS
+                        && (t.pos.y - d.ground).abs() < 3.0
+                        && wants(*i)
                 })
                 .min_by(|a, b| a.1.pos.distance(base).total_cmp(&b.1.pos.distance(base)));
             if let Some((i, _)) = taker {
@@ -122,19 +129,32 @@ impl Repairs {
             // Swing under the canopy like a pendulum while falling; settles in
             // the first seconds after release.
             let settle = 1.0 - (-d.age * 0.8).exp();
-            let sway = if landed.is_some() { Quat::IDENTITY } else {
+            let sway = if landed.is_some() {
+                Quat::IDENTITY
+            } else {
                 let a = 0.12 * settle;
-                Quat::from_rotation_x((d.age * 1.3).sin() * a) * Quat::from_rotation_z((d.age * 1.1 + 1.0).sin() * a)
+                Quat::from_rotation_x((d.age * 1.3).sin() * a)
+                    * Quat::from_rotation_z((d.age * 1.1 + 1.0).sin() * a)
             };
             let pivot = base + Vec3::Y * CHUTE_RISE;
-            let frame = Mat4::from_translation(pivot) * Mat4::from_quat(sway) * Mat4::from_translation(-Vec3::Y * CHUTE_RISE);
+            let frame = Mat4::from_translation(pivot)
+                * Mat4::from_quat(sway)
+                * Mat4::from_translation(-Vec3::Y * CHUTE_RISE);
             let spin = Quat::from_rotation_y(d.at.x * 0.37 + d.at.y * 0.11);
 
             // The crate: olive box with a glowing green cross on the top and every side.
             let box_c = Vec3::Y * CRATE * 0.5;
-            let crate_m = frame * Mat4::from_scale_rotation_translation(Vec3::splat(CRATE), spin, box_c);
-            out.push((MeshId::CUBE, Instance::new(crate_m, Vec4::new(0.36, 0.4, 0.27, 0.0))));
-            let pulse = if landed.is_some() { 1.6 + 0.8 * (time * 4.0).sin() } else { 1.2 };
+            let crate_m =
+                frame * Mat4::from_scale_rotation_translation(Vec3::splat(CRATE), spin, box_c);
+            out.push((
+                MeshId::CUBE,
+                Instance::new(crate_m, Vec4::new(0.36, 0.4, 0.27, 0.0)),
+            ));
+            let pulse = if landed.is_some() {
+                1.6 + 0.8 * (time * 4.0).sin()
+            } else {
+                1.2
+            };
             let glow = Vec4::new(0.35, 1.0, 0.5, pulse);
             let faces = [
                 Quat::IDENTITY,
@@ -147,7 +167,13 @@ impl Repairs {
                 for bar in [Vec3::new(0.62, 0.04, 0.18), Vec3::new(0.18, 0.04, 0.62)] {
                     let q = spin * f;
                     let p = box_c + q * Vec3::Y * (CRATE * 0.5 + 0.01);
-                    out.push((MeshId::CUBE, Instance::new(frame * Mat4::from_scale_rotation_translation(bar * CRATE, q, p), glow)));
+                    out.push((
+                        MeshId::CUBE,
+                        Instance::new(
+                            frame * Mat4::from_scale_rotation_translation(bar * CRATE, q, p),
+                            glow,
+                        ),
+                    ));
                 }
             }
 
@@ -160,10 +186,14 @@ impl Repairs {
             }
             let ease = k * k * (3.0 - 2.0 * k);
             let side = spin * Vec3::X;
-            let chute_c = Vec3::Y * (CHUTE_RISE - 0.6 + (0.05 - CHUTE_RISE + 0.6) * ease) + side * 2.2 * ease;
+            let chute_c =
+                Vec3::Y * (CHUTE_RISE - 0.6 + (0.05 - CHUTE_RISE + 0.6) * ease) + side * 2.2 * ease;
             let chute_s = Vec3::new(4.6 - 1.0 * ease, 2.3 - 2.1 * ease, 4.6 - 1.0 * ease) * gone;
             let chute_m = frame * Mat4::from_scale_rotation_translation(chute_s, spin, chute_c);
-            out.push((MeshId::CANOPY, Instance::new(chute_m, Vec4::new(1.0, 1.0, 1.0, 0.0))));
+            out.push((
+                MeshId::CANOPY,
+                Instance::new(chute_m, Vec4::new(1.0, 1.0, 1.0, 0.0)),
+            ));
 
             // Cords from the crate's top corners to the canopy rim, while it's up.
             if landed.is_none() {
@@ -173,8 +203,15 @@ impl Repairs {
                     let (a, b) = (frame.transform_point3(a), frame.transform_point3(b));
                     let dir = b - a;
                     let q = Quat::from_rotation_arc(Vec3::Y, dir.normalize());
-                    let m = Mat4::from_scale_rotation_translation(Vec3::new(0.04, dir.length(), 0.04), q, (a + b) * 0.5);
-                    out.push((MeshId::CUBE, Instance::new(m, Vec4::new(0.85, 0.82, 0.74, 0.0))));
+                    let m = Mat4::from_scale_rotation_translation(
+                        Vec3::new(0.04, dir.length(), 0.04),
+                        q,
+                        (a + b) * 0.5,
+                    );
+                    out.push((
+                        MeshId::CUBE,
+                        Instance::new(m, Vec4::new(0.85, 0.82, 0.74, 0.0)),
+                    ));
                 }
             }
         }
