@@ -221,7 +221,14 @@ impl Map {
             } else {
                 Vec3::new(at.x, g, at.y) + Vec3::Y * h * t + bend * (t * t) * h * 0.18
             };
-            self.segment(p, q, 0.2 - 0.04 * t, trunk, Material::Wood, k < 3);
+            self.segment(
+                p,
+                q,
+                0.2 - 0.04 * t,
+                trunk,
+                Material::Wood,
+                k < 3 && !fallen,
+            );
             p = q;
         }
         // Dry fronds drooping from the crown (or splayed on the sand).
@@ -273,7 +280,7 @@ impl Map {
                 0.06,
                 wood,
                 Material::Wood,
-                true,
+                false,
             );
         }
         // Cloth roof: sloped from back to front, sometimes torn half away.
@@ -314,6 +321,7 @@ impl Map {
             side_mat: Material::Wood,
             top_mat: Material::Wood,
             chip: 0.08,
+            solid: false,
             ..OBox::default()
         });
         // Crates stacked beside it.
@@ -331,7 +339,7 @@ impl Map {
                 side_mat: Material::Wood,
                 top_mat: Material::Wood,
                 chip: 0.05,
-                solid: k == 0,
+                solid: false,
                 ..OBox::default()
             });
         }

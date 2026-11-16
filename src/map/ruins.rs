@@ -75,8 +75,13 @@ impl Drift {
         if d < -0.5 || d > self.run {
             return 0.0;
         }
-        let lateral = 1.0 - smoothstep(half_across * 0.6, half_across + 2.0, across.abs());
-        self.height * (1.0 - d.max(0.0) / self.run).powf(0.8) * lateral
+        // Smooth all round: rolls in from the street and tapers off past the
+        // building's corners over a distance like its run, so it never makes
+        // a ramp-ended kicker for tanks driving along the street.
+        let taper = self.run.max(4.0) * 0.6;
+        let lateral = 1.0 - smoothstep(half_across * 0.5, half_across + taper, across.abs());
+        let out = 1.0 - smoothstep(0.0, self.run, d.max(0.0));
+        self.height * out * lateral
     }
 }
 
@@ -557,7 +562,7 @@ pub(super) fn building(
     if damage != Damage::Light {
         // Not where a collapsed floor comes down: the heap would tip tanks
         // off the side of the ramp.
-        let heap = (rng.range(1.0, 1.8), rng.range(4.0, 6.5));
+        let heap = (rng.range(0.7, 1.1), rng.range(6.0, 9.0));
         if !(ramp.is_some() && ramp_out == fall_out) {
             drifts.push(Drift {
                 b: lot,

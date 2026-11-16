@@ -546,8 +546,25 @@ impl Map {
                 o.chip = 0.25;
             }
         }
+        map.drop_tiny_hitboxes();
         map.separate_coplanar_faces();
         map
+    }
+
+    /// Small things on the ground (wall stubs, rubble lumps lower than a road
+    /// wheel's travel, thin specks) shouldn't stop or jolt a tank: they keep
+    /// their looks but lose their colliders. Taller pieces stay solid and the
+    /// suspension takes them.
+    fn drop_tiny_hitboxes(&mut self) {
+        for o in &mut self.oboxes {
+            let g = ground(o.center.x, o.center.y);
+            let on_ground = o.y0 <= g + 0.3;
+            let low = o.y1 - g < 0.45;
+            let speck = o.half.x.max(o.half.y) < 0.35 && o.y1 - g < 1.2;
+            if o.solid && !o.ramp && o.tilt == 0.0 && on_ground && (low || speck) {
+                o.solid = false;
+            }
+        }
     }
 
     /// Pieces built flush against each other share face planes, which flicker
