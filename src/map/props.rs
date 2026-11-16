@@ -110,9 +110,14 @@ impl Map {
         ])
     }
 
-    /// A burned-out car: shell, roof, bare rims. Mostly charred and rusted;
-    /// some still show their paint.
+    /// An abandoned sedan: a low body with bumpers and lamps, a narrower
+    /// cabin under a roof with raked, glassless windscreens, dark wheel
+    /// arches and round wheels, sand banked against its flanks. Most are
+    /// burned out, rusted and sitting on bare rims; the rest keep faded
+    /// paint and their tires. The front faces local +z.
     pub(super) fn car(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+        const DUST: Vec3 = Vec3::new(0.72, 0.62, 0.45);
         let g = self.ground_height(at.x, at.y);
         let burnt = rng.chance(0.65);
         let (color, mat) = if burnt {
@@ -124,80 +129,303 @@ impl Map {
             let paints = [
                 Vec3::new(0.62, 0.66, 0.68),
                 Vec3::new(0.55, 0.22, 0.18),
-                Vec3::new(0.78, 0.74, 0.62),
                 Vec3::new(0.3, 0.42, 0.5),
+                Vec3::new(0.4, 0.5, 0.36),
             ];
-            (paints[rng.index(paints.len())], Material::Painted)
+            // Sun-faded and dusty.
+            (
+                paints[rng.index(paints.len())].lerp(DUST, rng.range(0.15, 0.3)),
+                Material::Painted,
+            )
         };
+        let dark = Vec3::splat(0.035);
         let base = OBox {
             center: at,
             yaw,
             ..OBox::default()
         };
         let (ax, az) = base.axes();
-        let part = |m: &mut Map,
-                    off: Vec2,
-                    half: Vec2,
-                    y0: f32,
-                    y1: f32,
-                    c: Vec3,
-                    mt: Material,
-                    solid: bool| {
+        let world = |x: f32, z: f32| at + ax * x + az * z;
+        // A burned car sits low on its bare rims.
+        let (rim, sink) = if burnt { (0.27, 0.1) } else { (0.34, 0.0) };
+        let lo = 0.3 - sink;
+        let belt = 0.88 - sink;
+        let top = 1.38 - sink;
+
+        struct Part {
+            x: f32,
+            z: f32,
+            half: Vec2,
+            y0: f32,
+            y1: f32,
+            color: Vec3,
+            mat: Material,
+            turn: f32,
+            tilt: f32,
+            roll: f32,
+            solid: bool,
+        }
+        let part = |m: &mut Map, p: Part| {
             m.oboxes.push(OBox {
-                center: at + ax * off.x + az * off.y,
-                yaw,
-                half,
-                y0: g + y0,
-                y1: g + y1,
-                color: c,
-                side_mat: mt,
-                top_mat: mt,
-                solid,
-                chip: 0.12,
+                center: world(p.x, p.z),
+                yaw: yaw + p.turn,
+                half: p.half,
+                y0: g + p.y0,
+                y1: g + p.y1,
+                color: p.color,
+                side_mat: p.mat,
+                top_mat: p.mat,
+                tilt: p.tilt,
+                roll: p.roll,
+                solid: p.solid,
+                chip: if p.solid { 0.08 } else { 0.0 },
                 ..OBox::default()
             });
         };
-        part(
-            self,
-            Vec2::ZERO,
-            Vec2::new(0.9, 2.15),
-            0.18,
-            0.95,
+        let flat = |x: f32, z: f32, hx: f32, hz: f32, y0: f32, y1: f32, color: Vec3, mat| Part {
+            x,
+            z,
+            half: Vec2::new(hx, hz),
+            y0,
+            y1,
             color,
             mat,
-            true,
-        );
+            turn: 0.0,
+            tilt: 0.0,
+            roll: 0.0,
+            solid: false,
+        };
+
+        // Body (the collider): hood, doors, trunk.
         part(
             self,
-            Vec2::new(0.0, -0.2),
-            Vec2::new(0.78, 1.15),
-            0.95,
-            1.45,
-            color * 0.9,
-            mat,
-            false,
+            Part {
+                solid: true,
+                ..flat(0.0, 0.0, 0.9, 2.2, lo, belt, color, mat)
+            },
         );
-        // Blown-out windows: a dark interior showing through.
-        part(
-            self,
-            Vec2::new(0.0, -0.2),
-            Vec2::new(0.8, 1.17),
-            1.0,
-            1.35,
-            Vec3::splat(0.04),
-            Material::Rubble,
-            false,
-        );
-        for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        // Wheel arches: dark recesses the wheels sit in.
+        for sz in [-1.0f32, 1.0] {
             part(
                 self,
-                Vec2::new(sx * 0.92, sz * 1.35),
-                Vec2::new(0.08, 0.32),
+                flat(
+                    0.0,
+                    sz * 1.35,
+                    0.91,
+                    0.42,
+                    lo,
+                    lo + rim + 0.12,
+                    dark,
+                    Material::Rubble,
+                ),
+            );
+        }
+        // Bumpers (some lost) and the grille between the headlamps.
+        let trim = if burnt {
+            Vec3::splat(0.13)
+        } else {
+            Vec3::splat(0.42)
+        };
+        for sz in [-1.0f32, 1.0] {
+            if rng.chance(0.15) {
+                continue;
+            }
+            // Some hang off at one end.
+            let roll = if rng.chance(0.2) {
+                rng.range(-0.12, 0.12)
+            } else {
+                0.0
+            };
+            part(
+                self,
+                Part {
+                    roll,
+                    ..flat(0.0, sz * 2.26, 0.93, 0.08, lo, lo + 0.2, trim, mat)
+                },
+            );
+        }
+        part(
+            self,
+            flat(
                 0.0,
-                0.62,
-                Vec3::splat(0.12),
-                Material::Rust,
-                false,
+                2.205,
+                0.5,
+                0.02,
+                lo + 0.22,
+                belt - 0.12,
+                dark,
+                Material::Rubble,
+            ),
+        );
+        // Lamps: pale headlamps (empty sockets when burned), red tail lamps.
+        let head = if burnt {
+            dark
+        } else {
+            Vec3::new(0.82, 0.8, 0.7)
+        };
+        let tail = if burnt {
+            dark
+        } else {
+            Vec3::new(0.45, 0.08, 0.06)
+        };
+        for sx in [-1.0f32, 1.0] {
+            part(
+                self,
+                flat(
+                    sx * 0.68,
+                    2.21,
+                    0.15,
+                    0.02,
+                    belt - 0.24,
+                    belt - 0.1,
+                    head,
+                    Material::Plain,
+                ),
+            );
+            part(
+                self,
+                flat(
+                    sx * 0.7,
+                    -2.21,
+                    0.13,
+                    0.02,
+                    belt - 0.26,
+                    belt - 0.1,
+                    tail,
+                    Material::Plain,
+                ),
+            );
+        }
+
+        // The cabin: windows long gone, a dark interior showing through
+        // between the pillars.
+        let (front, back) = (0.25f32, -0.95f32); // roof edges
+        let (shield, rear) = (0.85f32, -1.6f32); // where the screens meet the body
+        part(
+            self,
+            flat(
+                0.0,
+                (front + back) * 0.5,
+                0.68,
+                (front - back) * 0.5,
+                belt,
+                top - 0.05,
+                dark,
+                Material::Rubble,
+            ),
+        );
+        let screen = |m: &mut Map, z0: f32, z1: f32| {
+            // A slab from (z0, belt) up to (z1, top).
+            let (run, rise) = (z1 - z0, top - belt);
+            let len = (run * run + rise * rise).sqrt();
+            let ym = (belt + top) * 0.5;
+            part(
+                m,
+                Part {
+                    tilt: -(rise / run).atan(),
+                    ..flat(
+                        0.0,
+                        (z0 + z1) * 0.5,
+                        0.66,
+                        len * 0.5,
+                        ym - 0.03,
+                        ym + 0.03,
+                        dark,
+                        Material::Rubble,
+                    )
+                },
+            );
+        };
+        screen(self, shield, front);
+        screen(self, rear, back);
+        // Roof, and the pillars holding it up.
+        let roof = color * 0.92;
+        part(
+            self,
+            flat(
+                0.0,
+                (front + back) * 0.5,
+                0.72,
+                (front - back) * 0.5 + 0.04,
+                top - 0.06,
+                top + 0.02,
+                roof,
+                mat,
+            ),
+        );
+        for sx in [-1.0f32, 1.0] {
+            let pillar = |m: &mut Map, z0: f32, z1: f32, r: f32| {
+                let a = world(sx * 0.69, z0);
+                let b = world(sx * 0.69, z1);
+                m.segment(
+                    Vec3::new(a.x, g + belt, a.y),
+                    Vec3::new(b.x, g + top - 0.03, b.y),
+                    r,
+                    roof,
+                    mat,
+                    false,
+                );
+            };
+            pillar(self, shield, front, 0.05);
+            pillar(self, rear, back, 0.09);
+            part(
+                self,
+                flat(sx * 0.69, -0.38, 0.035, 0.06, belt, top - 0.03, roof, mat),
+            );
+        }
+
+        // Wheels: four bars rolled 45° apart make an octagon, axle along
+        // local x.
+        let (tire, tire_mat) = if burnt {
+            (Vec3::new(0.24, 0.17, 0.13), Material::Rust)
+        } else {
+            (Vec3::splat(0.07), Material::Rubble)
+        };
+        let hub = if burnt {
+            Vec3::new(0.3, 0.22, 0.16)
+        } else {
+            Vec3::splat(0.5)
+        };
+        for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let wheel = |m: &mut Map, x: f32, r: f32, w: f32, c: Vec3, mt: Material| {
+                let k = r * (FRAC_PI_4 * 0.5).tan();
+                for roll in [0.0, FRAC_PI_4, FRAC_PI_2, 3.0 * FRAC_PI_4] {
+                    part(
+                        m,
+                        Part {
+                            half: Vec2::new(r, w),
+                            turn: FRAC_PI_2,
+                            roll,
+                            ..flat(x, sz * 1.35, 0.0, 0.0, rim - k, rim + k, c, mt)
+                        },
+                    );
+                }
+            };
+            wheel(self, sx * 0.82, rim, 0.12, tire, tire_mat);
+            wheel(self, sx * 0.95, rim * 0.55, 0.015, hub, Material::Painted);
+        }
+
+        // Sand blown up against one or both flanks.
+        for sx in [-1.0f32, 1.0] {
+            if !rng.chance(0.6) {
+                continue;
+            }
+            let h = rng.range(0.15, 0.35);
+            part(
+                self,
+                Part {
+                    roll: -sx * rng.range(0.28, 0.4),
+                    ..flat(
+                        sx * 1.2,
+                        rng.range(-0.6, 0.6),
+                        0.8,
+                        rng.range(1.2, 1.9),
+                        -0.5,
+                        h,
+                        DUST * rng.range(0.95, 1.05),
+                        Material::Sand,
+                    )
+                },
             );
         }
     }
