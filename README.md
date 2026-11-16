@@ -8,7 +8,20 @@ Plain Rust: `winit` + `wgpu`, no engine.
 ## Run
 
 ```sh
-cargo run --release              # play in a window (Esc quits)
-cargo run --release -- --shot out.png --time 5 --size 1600x900   # headless frame to PNG
+cargo run --release                          # play (random map)
+cargo run --release -- --seed 21             # play a specific map
+cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
 cargo test
 ```
+
+## Controls
+
+| Input | Action |
+|---|---|
+| W/S or ↑/↓ | throttle / reverse |
+| A/D or ←/→ | turn hull |
+| Mouse (click to capture) | aim turret / orbit camera, vertical = camera height |
+| Q/E or Z/X | rotate turret with keys |
+| C | snap aim back over the hull |
+| F5 | new random map |
+| Esc | release mouse, press again to quit |

@@ -1,7 +1,10 @@
 mod app;
-mod demo;
 mod game;
+mod map;
 mod render;
+mod rng;
+mod scene;
+mod sim;
 
 use anyhow::{Context, Result, bail};
 
@@ -9,10 +12,16 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            play in a window
+  --seed <n>              map seed (default: random)
   --shot <out.png>        render one frame offscreen and save it
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
 ";
+
+struct Args {
+    seed: u64,
+    shot: Option<ShotArgs>,
+}
 
 struct ShotArgs {
     out: String,
@@ -24,14 +33,16 @@ struct ShotArgs {
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"))
         .init();
-    match parse_args()? {
-        Some(shot) => screenshot(shot),
-        None => app::run(),
+    let args = parse_args()?;
+    match args.shot {
+        Some(shot) => screenshot(args.seed, shot),
+        None => app::run(args.seed),
     }
 }
 
-fn parse_args() -> Result<Option<ShotArgs>> {
+fn parse_args() -> Result<Args> {
     let mut args = std::env::args().skip(1);
+    let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64 % 100_000;
     let mut shot: Option<ShotArgs> = None;
     let mut time = 1.0;
     let (mut width, mut height) = (1600, 900);
@@ -40,6 +51,7 @@ fn parse_args() -> Result<Option<ShotArgs>> {
             "--shot" => {
                 shot = Some(ShotArgs { out: args.next().context("--shot needs a path")?, time, width, height })
             }
+            "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--size" => {
                 let s = args.next().context("--size needs WxH")?;
@@ -53,20 +65,28 @@ fn parse_args() -> Result<Option<ShotArgs>> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
-    Ok(shot.map(|s| ShotArgs { time, width, height, ..s }))
+    Ok(Args { seed, shot: shot.map(|s| ShotArgs { time, width, height, ..s }) })
 }
 
-fn screenshot(args: ShotArgs) -> Result<()> {
-    let mut game = game::Game::default();
+fn screenshot(seed: u64, args: ShotArgs) -> Result<()> {
+    let mut world = sim::World::new(seed);
+    let mut cam = scene::ChaseCam::new();
+    cam.yaw = world.tanks[0].yaw;
     let steps = (args.time / game::DT).round() as u32;
+    let mut camera = cam.update(&world, &world.tanks[0], game::DT);
     for _ in 0..steps {
-        game.step();
+        let mut cmd = game::autopilot(world.time);
+        // Camera trails the hull so the shot looks like someone driving.
+        cam.yaw = sim::wrap_angle(cam.yaw + sim::wrap_angle(world.tanks[0].yaw - cam.yaw) * 0.02);
+        cmd.aim_yaw = cam.yaw;
+        world.step(&[cmd]);
+        camera = cam.update(&world, &world.tanks[0], game::DT);
     }
     let mut renderer = render::Renderer::new_headless(args.width, args.height)?;
-    renderer.set_static_mesh(&demo::static_mesh());
-    let scene = demo::scene(game.time(), args.width as f32, args.height as f32);
-    let img = renderer.render_to_image(&scene)?;
+    renderer.set_static_mesh(&scene::map_mesh(&world.map));
+    let frame = scene::build(&world, camera, args.width as f32, args.height as f32);
+    let img = renderer.render_to_image(&frame)?;
     img.save(&args.out).with_context(|| format!("save {}", args.out))?;
-    println!("wrote {} ({}x{}, t={:.2}s)", args.out, args.width, args.height, game.time());
+    println!("wrote {} ({}x{}, seed {seed}, t={:.2}s)", args.out, args.width, args.height, world.time);
     Ok(())
 }

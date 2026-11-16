@@ -26,6 +26,7 @@ impl Instance {
 }
 
 /// Unit primitives drawn with instancing. Order matches `MeshData::primitives`.
+#[allow(dead_code)] // Sphere and Gem are for effects and pickups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MeshId {
     /// Unit cube centered at the origin (extent -0.5..0.5).
