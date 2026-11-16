@@ -5,7 +5,7 @@
 
 use super::Play;
 use crate::audio::voice::{Filt, Layer, noise, sine};
-use crate::combat::Match;
+use crate::combat::{Match, Phase};
 
 /// Below this share of its full hull a tank is low.
 pub const LOW: f32 = 0.3;
@@ -34,7 +34,8 @@ impl Warning {
         let f = &game.fighters[0];
         let frac = f.health / f.max_health(&game.world.tanks[0]);
         // A husk is past its hull, and has its own bell.
-        let low = f.alive && !f.is_husk() && frac < LOW;
+        // Once the round is over the fight is too: no warning over the results.
+        let low = game.phase == Phase::Playing && f.alive && !f.is_husk() && frac < LOW;
         let was = std::mem::replace(&mut self.low, low);
         if !low {
             return None;
@@ -57,35 +58,45 @@ impl Warning {
     }
 }
 
-/// Hull under a third: two falling notes of an alarm, a hollow square-ish
-/// tone (odd harmonics) so small speakers carry it.
+/// One partial of the warning's buzzer: a steady tone that swells in over
+/// `attack` and is gone within a tenth of a second or so. The swell and the
+/// quick, even fall keep it a "bup" rather than a ping (a sine struck at
+/// once and left to ring, falling in pitch, is sonar).
+const fn tone(f: f32, attack: f32, decay: f32, gain: f32, delay: f32) -> Layer {
+    Layer {
+        attack,
+        delay,
+        ..sine(f, f, 0.1, decay, gain)
+    }
+}
+
+/// Hull under a third: two falling notes of a low buzzer, a hollow
+/// square-ish tone (odd harmonics) so small speakers carry it, low enough
+/// not to sting.
 pub const ALERT: &[Layer] = &[
-    sine(988.0, 988.0, 0.1, 0.1, 0.3),
-    sine(2964.0, 2964.0, 0.1, 0.06, 0.08),
-    Layer {
-        delay: 0.17,
-        ..sine(740.0, 740.0, 0.1, 0.14, 0.32)
-    },
-    Layer {
-        delay: 0.17,
-        ..sine(2220.0, 2220.0, 0.1, 0.08, 0.09)
-    },
+    tone(392.0, 0.012, 0.07, 0.26, 0.0),
+    tone(1176.0, 0.012, 0.05, 0.08, 0.0),
+    tone(1960.0, 0.012, 0.04, 0.035, 0.0),
+    tone(294.0, 0.012, 0.07, 0.28, 0.2),
+    tone(882.0, 0.012, 0.06, 0.09, 0.2),
+    tone(1470.0, 0.012, 0.05, 0.04, 0.2),
 ];
 
-/// While low: a heartbeat, its two beats a dull thump with a short low bleep
-/// on top (the thump alone vanishes on a laptop).
+/// While low: a heartbeat, its two beats a dull thump with a short, soft
+/// buzz on top in the buzzer's voice (the thump alone vanishes on a laptop).
 pub const PULSE: &[Layer] = &[
     sine(90.0, 50.0, 0.05, 0.07, 0.45),
     noise(Filt::Low, 600.0, 200.0, 0.03, 0.03, 0.25),
-    sine(660.0, 620.0, 0.05, 0.05, 0.14),
+    tone(196.0, 0.015, 0.04, 0.12, 0.0),
+    tone(588.0, 0.015, 0.03, 0.07, 0.0),
+    tone(980.0, 0.015, 0.025, 0.035, 0.0),
     Layer {
         delay: 0.17,
         ..sine(80.0, 45.0, 0.05, 0.06, 0.32)
     },
-    Layer {
-        delay: 0.17,
-        ..sine(620.0, 580.0, 0.05, 0.04, 0.09)
-    },
+    tone(196.0, 0.015, 0.035, 0.08, 0.17),
+    tone(588.0, 0.015, 0.025, 0.045, 0.17),
+    tone(980.0, 0.015, 0.02, 0.022, 0.17),
 ];
 
 #[cfg(test)]
@@ -154,6 +165,31 @@ mod tests {
         g.fighters[0].alive = false;
         hull(&mut g, 0.0);
         assert!(run(&mut w, &g, 8.0, 3.0).is_empty());
+    }
+
+    /// The round over, the warning stops, even mid-pulse with the hull low.
+    #[test]
+    fn quiet_once_the_round_is_over() {
+        let mut g = game();
+        let mut w = Warning::default();
+        hull(&mut g, 0.1);
+        assert!(!run(&mut w, &g, 0.0, 2.0).is_empty());
+        g.phase = Phase::Over;
+        assert!(run(&mut w, &g, 2.0, 5.0).is_empty());
+    }
+
+    /// Nothing like a sonar ping: no partial rings on (each is gone, -60 dB,
+    /// within half a second), and every tone above the thump swells in and
+    /// holds its pitch instead of being struck and sliding down.
+    #[test]
+    fn not_a_ping() {
+        for l in PULSE.iter().chain(ALERT) {
+            assert!(l.attack + l.decay * 6.9 < 0.55, "rings: {}", l.freq.0);
+            if l.freq.0 > 150.0 && l.src == crate::audio::voice::Src::Sine {
+                assert_eq!(l.freq.0, l.freq.1, "slides like a ping");
+                assert!(l.attack >= 0.01, "struck like a ping: {}", l.freq.0);
+            }
+        }
     }
 
     /// The nearer to nothing, the faster the heart.
