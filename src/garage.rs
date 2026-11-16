@@ -70,7 +70,7 @@ const ORBIT_DIST: f32 = 8.5;
 const ORBIT_HEIGHT: f32 = 2.6;
 const ORBIT_DRIFT: f32 = 0.12;
 /// The bay's turntable (rad/s).
-const SPIN_RATE: f32 = 0.16;
+pub const SPIN_RATE: f32 = 0.16;
 /// Past this much open, the bay is shown instead of the battlefield.
 const BAY_AT: f32 = 0.5;
 /// The longest hull (track end to track end, m) the bay camera frames

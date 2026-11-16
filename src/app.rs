@@ -421,12 +421,47 @@ impl App {
         self.profile.set_loadout(kit);
     }
 
-    fn garage_event(&mut self, event: garage::Event) {
+    /// A garage key or button pressed, and what it asks for: play its sound
+    /// and do it. E (equip or buy) has a sound of its own for what it did;
+    /// everything else clicks like a menu.
+    fn garage_acted(&mut self, input: garage::Input, event: Option<garage::Event>) {
+        match (input, event) {
+            (garage::Input::Act, Some(event)) => self.garage_event(event, true),
+            (_, event) => {
+                self.garage_sound(input);
+                if let Some(event) = event {
+                    self.garage_event(event, false);
+                }
+            }
+        }
+    }
+
+    /// Do what the garage asked. `voiced`: play the depot bay's sound for
+    /// it (a swap or a purchase), not just the menu click already played.
+    fn garage_event(&mut self, event: garage::Event, voiced: bool) {
         match event {
-            garage::Event::Queue(kit) => self.queue(kit),
-            // Refusals need no handling: the garage already shows why E won't work.
+            garage::Event::Queue(kit) => {
+                if voiced {
+                    let swap = if kit.0 != self.queued().0 {
+                        audio::GarageCue::Hull
+                    } else {
+                        audio::GarageCue::Turret
+                    };
+                    self.audio.garage(swap);
+                }
+                self.queue(kit)
+            }
+            // Refusals need no handling beyond the buzz: the garage already shows why E won't work.
             garage::Event::Buy(part) => {
-                if self.profile.buy(part).is_ok() {
+                let bought = self.profile.buy(part).is_ok();
+                if voiced {
+                    self.audio.garage(if bought {
+                        audio::GarageCue::Bought
+                    } else {
+                        audio::GarageCue::Refused
+                    });
+                }
+                if bought {
                     log::info!("bought {}", part.name());
                     if let Some(garage::Event::Queue(kit)) =
                         self.garage.bought(self.queued(), &self.profile)
@@ -488,10 +523,8 @@ impl App {
                 KeyCode::Tab | KeyCode::KeyQ => garage::Input::Switch,
                 _ => return,
             };
-            self.garage_sound(input);
-            if let Some(event) = self.garage.input(input, self.queued(), &self.profile) {
-                self.garage_event(event);
-            }
+            let event = self.garage.input(input, self.queued(), &self.profile);
+            self.garage_acted(input, event);
             return;
         }
         match self.mode {
@@ -655,13 +688,12 @@ impl App {
                 event_loop,
             ),
             UiHit::Garage(h) => {
-                self.garage_sound(match h {
+                let input = match h {
                     garage::Hit::Key(input) => input,
                     garage::Hit::Part(_) | garage::Hit::Tab(_) => garage::Input::Down,
-                });
-                if let Some(event) = self.garage.click(h, self.queued(), &self.profile) {
-                    self.garage_event(event);
-                }
+                };
+                let event = self.garage.click(h, self.queued(), &self.profile);
+                self.garage_acted(input, event);
             }
         }
     }
@@ -887,6 +919,7 @@ impl App {
             }
             r.render(&scene);
             self.camera = Some(camera);
+            self.audio.set_turntable(self.garage.in_bay());
             let sounds = std::mem::take(&mut self.game.sounds);
             self.audio
                 .update(&self.game, &sounds, &camera, self.mode != Mode::Paused, dt);

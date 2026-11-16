@@ -502,6 +502,14 @@ pub enum Sound {
     Repair {
         at: Vec3,
     },
+    /// A repair crate released high over its spot, its canopy opening.
+    RepairDrop {
+        at: Vec3,
+    },
+    /// A repair crate touched down, ready to pick up.
+    RepairLanded {
+        at: Vec3,
+    },
     /// A beam locked out hot.
     Overheat {
         tank: usize,
@@ -1381,6 +1389,12 @@ impl Match {
             f.since_repair = 0.0;
             self.blasts.push(Blast::new(at, BlastKind::Repair));
             self.sounds.push(Sound::Repair { at });
+        }
+        for (m, at) in self.repairs.moments.drain(..) {
+            self.sounds.push(match m {
+                crate::repair::Moment::Released => Sound::RepairDrop { at },
+                crate::repair::Moment::Landed => Sound::RepairLanded { at },
+            });
         }
     }
 
