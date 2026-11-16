@@ -55,6 +55,26 @@ impl NavGrid {
                 }
             }
         }
+        for o in &map.oboxes {
+            if o.y1 - o.y0 < 0.6 || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0 {
+                continue;
+            }
+            let reach = o.half.length() + CLEARANCE;
+            let (lo, hi) = (o.center - Vec2::splat(reach), o.center + Vec2::splat(reach));
+            let c0 = ((lo / NAV_CELL).floor().max(Vec2::ZERO)).as_uvec2();
+            let c1 = (hi / NAV_CELL)
+                .ceil()
+                .as_uvec2()
+                .min(glam::UVec2::splat(n as u32));
+            for iz in c0.y as usize..c1.y as usize {
+                for ix in c0.x as usize..c1.x as usize {
+                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
+                    if o.distance(c) <= CLEARANCE {
+                        blocked[iz * n + ix] = true;
+                    }
+                }
+            }
+        }
         NavGrid {
             nx: n,
             nz: n,

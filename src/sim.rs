@@ -665,6 +665,16 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
             None,
         );
     }
+    for o in &map.oboxes {
+        let hy = (o.y1 - o.y0) * 0.5;
+        physics.insert_collider(
+            ColliderBuilder::cuboid(o.half.x, hy, o.half.y)
+                .translation(Vec3::new(o.center.x, o.y0 + hy, o.center.y))
+                .rotation(Vec3::new(0.0, o.yaw, 0.0))
+                .friction(0.4),
+            None,
+        );
+    }
     // Low visual slabs (sidewalks, plazas, lawns) are real curbs to roll over.
     for b in &map.boxes {
         let h = b.max.y - b.min.y;
