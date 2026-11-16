@@ -405,6 +405,8 @@ pub fn ammeth() -> TurretModel {
     let r = 0.34;
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel: claw,
         pivot: v(0.0, 0.5, 0.55),
@@ -539,6 +541,8 @@ pub fn ossrin() -> TurretModel {
     let r = 0.17;
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel: needle,
         pivot: v(0.0, 0.44, 0.62),

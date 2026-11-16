@@ -20,6 +20,8 @@ use crate::ui::{Align, Hits, Layer, Painter, TextStyle, theme};
 const REF_HEIGHT: f32 = 900.0;
 pub const PANEL_X: f32 = 64.0;
 pub const PANEL_W: f32 = 340.0;
+/// Height of a part's row in the lists.
+const PART_PITCH: f32 = 27.0;
 /// Open/close transition speed (1 / seconds).
 const BLEND_RATE: f32 = 2.5;
 /// Orbit camera: distance, height and slow drift around the tank (rad/s).
@@ -29,11 +31,12 @@ const ORBIT_DRIFT: f32 = 0.12;
 
 pub type Loadout = (HullKind, TurretKind);
 
-pub const HULLS: [HullKind; 4] = [
+pub const HULLS: [HullKind; 5] = [
     HullKind::Kataphrakt,
     HullKind::Kastron,
     HullKind::Sethuun,
     HullKind::Vigil,
+    HullKind::Gravis,
 ];
 pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
@@ -43,6 +46,7 @@ pub fn hull_name(k: HullKind) -> &'static str {
         HullKind::Kastron => "KASTRON",
         HullKind::Sethuun => "SETHUUN",
         HullKind::Vigil => "VIGIL",
+        HullKind::Gravis => "GRAVIS",
     }
 }
 
@@ -80,7 +84,7 @@ fn turret_of(p: Part) -> TurretKind {
     }
 }
 
-const HULL_STATS: [Stat; 6] = [
+const HULL_STATS: [Stat; 7] = [
     Stat {
         name: "ARMOR",
         unit: "HP",
@@ -116,6 +120,13 @@ const HULL_STATS: [Stat; 6] = [
         unit: "T",
         decimals: 0,
         get: |p, _| crate::sim::Chassis::of(hull_of(p)).mass / 1000.0,
+    },
+    Stat {
+        // Seconds of beam fire it adds before overheating.
+        name: "THERMAL",
+        unit: "S",
+        decimals: 1,
+        get: |p, _| crate::combat::thermal_mass(hull_of(p)),
     },
 ];
 
@@ -495,7 +506,7 @@ impl Garage {
             y += 20.0;
 
             for part in items {
-                row_hit(&p, &mut hits, Vec2::new(x, y), 30.0, Hit::Part(*part));
+                row_hit(&p, &mut hits, Vec2::new(x, y), PART_PITCH, Hit::Part(*part));
                 let selected = part == current;
                 let owned = profile.owns(*part);
                 if selected {
@@ -572,7 +583,7 @@ impl Garage {
                 if let Some(tag) = tag {
                     label(&mut p, right, &tag, Align::Right);
                 }
-                y += 30.0;
+                y += PART_PITCH;
             }
 
             y += 4.0;

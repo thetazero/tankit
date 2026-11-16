@@ -5,6 +5,7 @@ pub mod ithessar;
 pub mod model;
 pub mod resonant;
 pub mod track;
+pub mod uthenn;
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -53,6 +54,7 @@ impl KitMeshes {
                 hull(model::kataphrakt()),
                 hull(model::kastron()),
                 hull(vigil_hull),
+                hull(uthenn::gravis()),
             ],
             hover: ithessar::sethuun(),
             vigil,
@@ -62,7 +64,7 @@ impl KitMeshes {
                 model::pelekys(),
                 ithessar::ammeth(),
                 ithessar::ossrin(),
-                model::lumen(),
+                uthenn::lumen(),
                 model::hymn(),
             ],
         }
@@ -97,6 +99,8 @@ impl KitMeshes {
 
 struct HullArt {
     body: MeshId,
+    /// Uthenn heat lights, if the hull has any.
+    heat_light: Option<MeshId>,
     link: MeshId,
     road: MeshId,
     sprocket: MeshId,
@@ -129,6 +133,8 @@ struct VigilArt {
 struct TurretArt {
     kind: TurretKind,
     head: MeshId,
+    head_light: Option<MeshId>,
+    barrel_light: Option<MeshId>,
     mantlet: MeshId,
     barrel: MeshId,
     pivot: Vec3,
@@ -185,6 +191,7 @@ impl TankArt {
                 let links = (belt.length() / LINK_PITCH).round() as usize;
                 HullArt {
                     body: r.add_mesh(&h.body),
+                    heat_light: light_mesh(r, &h.heat_light),
                     link: r.add_mesh(&link),
                     road: r.add_mesh(&road),
                     sprocket: r.add_mesh(&sprocket),
@@ -203,6 +210,8 @@ impl TankArt {
                 kind,
                 rig: t.rig,
                 head: r.add_mesh(&t.head),
+                head_light: light_mesh(r, &t.head_light),
+                barrel_light: light_mesh(r, &t.barrel_light),
                 mantlet: r.add_mesh(&t.mantlet),
                 barrel: r.add_mesh(&t.barrel),
                 pivot: t.pivot,
@@ -232,6 +241,7 @@ impl TankArt {
             HullKind::Kataphrakt => self.tracked(&self.hulls[0], t, base, out),
             HullKind::Kastron => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
+            HullKind::Gravis => self.tracked(&self.hulls[3], t, base, out),
             HullKind::Vigil => {
                 let mount = self.tracked(&self.hulls[2], t, base, out);
                 self.vigil(t, base, out);
@@ -254,6 +264,9 @@ impl TankArt {
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let sprung = base;
         out.push((hull.body, Instance::new(sprung, tint)));
+        if let Some(light) = hull.heat_light {
+            out.push((light, Instance::new(sprung, heat_tint(t))));
+        }
 
         let run = &hull.running;
         let per_side = run.road.len();
@@ -488,6 +501,9 @@ impl TankArt {
         let alive = t.color.max_element() > 0.2;
         let tm = mount * Mat4::from_rotation_y(t.turret_rel);
         out.push((turret.head, Instance::new(tm, tint)));
+        if let Some(light) = turret.head_light {
+            out.push((light, Instance::new(tm, heat_tint(t))));
+        }
         let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-t.gun_pitch);
         out.push((turret.mantlet, Instance::new(gun, tint)));
 
@@ -502,10 +518,15 @@ impl TankArt {
                     } else {
                         0.0
                     };
-                    out.push((
-                        turret.barrel,
-                        Instance::new(gun * Mat4::from_translation(o - Vec3::Z * back), tint),
-                    ));
+                    let bm = gun * Mat4::from_translation(o - Vec3::Z * back);
+                    out.push((turret.barrel, Instance::new(bm, tint)));
+                    if let Some(light) = turret.barrel_light {
+                        out.push((light, Instance::new(bm, heat_tint(t))));
+                    }
+                    if t.beaming && !t.dead {
+                        let at = bm.transform_point3(Vec3::Z * turret.muzzle);
+                        beam_flare(at, t, glow);
+                    }
                     if i == fired && flash > 0.0 {
                         let at = gun * Mat4::from_translation(o + Vec3::Z * (turret.muzzle - back));
                         if plasma {
@@ -792,4 +813,35 @@ mod tests {
         assert!(recoil_curve(1.0).0 < 0.05);
         assert_eq!(recoil_curve(0.5).1, 0.0);
     }
+}
+
+/// A model's heat lights on the GPU, if it has any.
+fn light_mesh(r: &mut Renderer, m: &MeshData) -> Option<MeshId> {
+    (!m.indices.is_empty()).then(|| r.add_mesh(m))
+}
+
+/// Tint and glow strength for a tank's heat lights.
+fn heat_tint(t: &Tank) -> Vec4 {
+    uthenn::heat_glow(t.heat, t.overheated, t.dead, t.age)
+}
+
+/// Light gathered at the lens while the beam is on: a shimmering green
+/// halo round a white-hot core, hotter as the gun heats.
+fn beam_flare(at: Vec3, t: &Tank, glow: &mut Vec<Particle>) {
+    let shimmer = 1.0 + 0.18 * (t.age * 53.0).sin() * (t.age * 29.0).sin();
+    let hot = 1.0 + t.heat;
+    glow.push(Particle::glow(
+        at,
+        0.75 * shimmer,
+        uthenn::LASER_LIGHT,
+        1.6 * hot,
+        Vec3::ZERO,
+    ));
+    glow.push(Particle::glow(
+        at,
+        0.3 * shimmer,
+        Vec3::new(0.85, 1.0, 0.9),
+        2.4 * hot,
+        Vec3::ZERO,
+    ));
 }

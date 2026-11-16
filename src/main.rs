@@ -49,9 +49,9 @@ tankit [OPTIONS]
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
-  --hull <kataphrakt|kastron|sethuun>  player hull (default kataphrakt; sethuun hovers)
+  --hull <kataphrakt|kastron|sethuun|vigil|gravis>  player hull (default kataphrakt; sethuun hovers)
   --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
-                          lumen (machines), hymn (Resonant); default kontos
+                          lumen (Uthenn), hymn (Resonant); default kontos
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter

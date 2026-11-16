@@ -31,6 +31,8 @@ pub fn world() -> World {
                 HullKind::Sethuun
             } else if tu.maker() == crate::faction::Faction::Resonant {
                 HullKind::Vigil
+            } else if tu.maker() == crate::faction::Faction::Uthenn {
+                HullKind::Gravis
             } else if i % 2 == 0 {
                 HullKind::Kataphrakt
             } else {
