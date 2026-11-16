@@ -131,9 +131,11 @@ Half ruined where the war has reached them, and still hung with crimson.
 
 ## Uthenn
 
-A splinter from the aliens, not the humans. Something like a
-paperclip maximizer, left ambiguous. How the Ithessar feel about them is
-unknown; "Uthenn" is the Ithessar word for it.
+A splinter from the aliens, not the humans. Paperclip maximizers: what
+they make is tungsten cubes. How the Ithessar feel about them is unknown;
+"Uthenn" is the Ithessar word for it.
+
+**The Foundry:** one of their tungsten cube factories, destroyed.
 
 ## Crystals
 
