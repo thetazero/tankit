@@ -2,10 +2,13 @@
 //! desert world (see docs/setting.md). Attrition only.
 //!
 //! Blockout layout, 240 m square (+x east, +z north):
-//! - Town (west two thirds): a street grid around a central market square,
-//!   with the market hall (drive-through: four piers and a roof) in the middle.
-//!   Lots are intact blocks, gutted shells you can drive into, low ruined
-//!   stubs with sand drifted against them (ramps onto the roofs), or rubble.
+//! - Town (west two thirds): a hand-drawn road network (bends, T-junctions,
+//!   loops, old-town alleys around a market square). Buildings line every
+//!   road turned to face it, with varied frontages, depths and setbacks, then
+//!   infill behind them: standing (some stepped), gutted shells with jagged
+//!   broken tops and a breach toward the street, low stubs with sand banked up
+//!   to the roof (terrain drifts), or stepped rubble heaps. The market hall
+//!   (drive-through: four piers and a roof) stands in the square.
 //! - Reservoir bed (east third): a bowl ~6 m deep with gentle shores, so you
 //!   can drive in and out anywhere. Open, long sight lines. A half-buried war
 //!   machine sits in it as cover and landmark.
@@ -17,7 +20,7 @@
 
 use glam::{Vec2, Vec3};
 
-use super::{Map, Rise, Terrain, Wedge, mat};
+use super::{Map, OBox, Rise, Terrain, Wedge, mat};
 use crate::rng::Rng;
 
 const SIZE: f32 = 240.0;
@@ -61,15 +64,267 @@ pub fn ground(x: f32, z: f32) -> f32 {
     bowl + ridge + west
 }
 
-/// Streets: (lo, hi) bands along each axis. E-W avenues (z) and N-S streets (x).
-const AVENUES: [(f32, f32); 4] = [(36.0, 46.0), (70.0, 79.0), (112.0, 128.0), (158.0, 166.0)];
-const STREETS: [(f32, f32); 4] = [(26.0, 34.0), (52.0, 62.0), (94.0, 106.0), (128.0, 136.0)];
-/// Town extents.
-const TOWN_X: (f32, f32) = (12.0, 146.0);
-const TOWN_Z: (f32, f32) = (16.0, 196.0);
 /// Market square (open, holds the hall).
 const SQUARE_MIN: Vec2 = Vec2::new(62.0, 100.0);
 const SQUARE_MAX: Vec2 = Vec2::new(98.0, 140.0);
+
+/// Roads: hand-drawn polylines (x, z) and full width. They bend, meet at
+/// T-junctions and loop back on each other: no grid.
+const ROADS: &[(&[(f32, f32)], f32)] = &[
+    // Main road: west gate, kinking into the market square.
+    (&[(4.0, 108.0), (30.0, 112.0), (48.0, 121.0), (64.0, 121.0)], 12.0),
+    // Square down to the reservoir shore.
+    (&[(96.0, 119.0), (116.0, 113.0), (134.0, 122.0), (152.0, 130.0)], 11.0),
+    // Square north, winding up toward the ridge.
+    (&[(81.0, 139.0), (76.0, 160.0), (86.0, 180.0), (102.0, 196.0), (112.0, 208.0)], 10.0),
+    // Square south to the dam ramp.
+    (&[(78.0, 101.0), (70.0, 80.0), (80.0, 58.0), (100.0, 42.0), (124.0, 30.0), (140.0, 24.0)], 11.0),
+    // West lane.
+    (&[(8.0, 56.0), (34.0, 68.0), (52.0, 84.0), (66.0, 104.0)], 8.0),
+    // North-east lane.
+    (&[(96.0, 134.0), (112.0, 150.0), (124.0, 168.0), (132.0, 190.0)], 7.0),
+    // South-west lane.
+    (&[(20.0, 22.0), (44.0, 40.0), (68.0, 64.0)], 8.0),
+    // East lane past the water tower, back down to the south road.
+    (&[(116.0, 113.0), (126.0, 94.0), (130.0, 72.0), (124.0, 52.0), (110.0, 40.0)], 8.0),
+    // North-west loop.
+    (&[(30.0, 112.0), (24.0, 138.0), (34.0, 162.0), (54.0, 176.0), (78.0, 166.0)], 8.0),
+    // Old-town alleys hugging the square.
+    (&[(64.0, 121.0), (60.0, 140.0), (70.0, 152.0), (81.0, 139.0)], 6.0),
+    (&[(96.0, 119.0), (104.0, 102.0), (92.0, 90.0), (78.0, 101.0)], 6.0),
+];
+/// Market square: open ground around the hall.
+const SQUARE_C: Vec2 = Vec2::new(80.0, 120.0);
+const SQUARE_R: f32 = 21.0;
+/// Town extents (buildings stay inside).
+const TOWN_MIN: Vec2 = Vec2::new(10.0, 12.0);
+const TOWN_MAX: Vec2 = Vec2::new(150.0, 200.0);
+
+/// A sand drift banked against one face of a building, raising the terrain.
+#[derive(Clone, Copy)]
+struct Drift {
+    b: OBox,
+    /// Which face: local +x, -x, +z, -z as (axis 0/1, sign).
+    axis: usize,
+    sign: f32,
+    height: f32,
+    run: f32,
+}
+
+impl Drift {
+    fn height_at(&self, p: Vec2) -> f32 {
+        let q = self.b.to_local(p);
+        let (along, across, half_along, half_across) =
+            if self.axis == 0 { (q.x, q.y, self.b.half.x, self.b.half.y) } else { (q.y, q.x, self.b.half.y, self.b.half.x) };
+        let d = along * self.sign - half_along;
+        if d < -0.5 || d > self.run {
+            return 0.0;
+        }
+        let lateral = 1.0 - smoothstep(half_across * 0.6, half_across + 2.0, across.abs());
+        self.height * (1.0 - d.max(0.0) / self.run).powf(0.8) * lateral
+    }
+}
+
+struct RoadNet {
+    /// Dense samples along every road: (point, half width, direction).
+    samples: Vec<(Vec2, f32, Vec2)>,
+}
+
+impl RoadNet {
+    fn new() -> RoadNet {
+        let mut samples = Vec::new();
+        for (pts, w) in ROADS {
+            for seg in pts.windows(2) {
+                let (a, b) = (Vec2::from(seg[0]), Vec2::from(seg[1]));
+                let len = a.distance(b);
+                let dir = (b - a) / len;
+                let n = (len / 1.5).ceil() as usize;
+                for i in 0..=n {
+                    samples.push((a.lerp(b, i as f32 / n as f32), w * 0.5, dir));
+                }
+            }
+        }
+        RoadNet { samples }
+    }
+
+    /// True if the footprint stays `margin` clear of every road.
+    fn clear(&self, b: &OBox, margin: f32) -> bool {
+        self.samples.iter().all(|&(p, half, _)| b.distance(p) > half + margin)
+    }
+
+    /// Direction of the nearest road.
+    fn nearest_dir(&self, p: Vec2) -> Vec2 {
+        self.samples.iter().min_by(|a, b| a.0.distance_squared(p).total_cmp(&b.0.distance_squared(p))).unwrap().2
+    }
+}
+
+/// Yaw that turns a box's local +x along `dir` (xz).
+fn yaw_along(dir: Vec2) -> f32 {
+    (-dir.y).atan2(dir.x)
+}
+
+impl Map {
+    /// The town: buildings lining every road, turned to face it, with varied
+    /// frontages, depths and setbacks, then infill behind them. Returns the
+    /// sand drifts to bank against them.
+    fn town(&mut self, rng: &mut Rng, reserved: &[OBox]) -> Vec<Drift> {
+        let roads = RoadNet::new();
+        let mut lots: Vec<OBox> = Vec::new();
+        let fits = |b: &OBox, lots: &[OBox]| {
+            let inside = b.corners().iter().all(|c| c.cmpge(TOWN_MIN).all() && c.cmple(TOWN_MAX).all());
+            inside
+                && b.corners().iter().all(|&c| bowl_sdf(c) > 6.0 && c.distance(SQUARE_C) > SQUARE_R)
+                && b.center.distance(SQUARE_C) > SQUARE_R + 4.0
+                && roads.clear(b, 0.8)
+                && lots.iter().chain(reserved).all(|o| !o.overlaps(b, 1.0))
+        };
+        let footprint = |center: Vec2, yaw: f32, front: f32, depth: f32| OBox {
+            center,
+            yaw,
+            half: Vec2::new(front * 0.5, depth * 0.5),
+            y0: 0.0,
+            y1: 1.0,
+            color: CONCRETE,
+            side_mat: mat::WALL,
+            top_mat: mat::ROOF,
+        };
+
+        // Frontage: walk each road on both sides.
+        for (pts, w) in ROADS {
+            for seg in pts.windows(2) {
+                let (a, b) = (Vec2::from(seg[0]), Vec2::from(seg[1]));
+                let len = a.distance(b);
+                let dir = (b - a) / len;
+                let nrm = Vec2::new(-dir.y, dir.x);
+                for side in [-1.0f32, 1.0] {
+                    let mut t = rng.range(0.0, 4.0);
+                    while t < len {
+                        let front = rng.range(7.0, 14.0);
+                        let depth = rng.range(8.0, 15.0);
+                        let setback = rng.range(0.8, 3.0);
+                        let p = a + dir * (t + front * 0.5);
+                        let c = p + nrm * side * (w * 0.5 + setback + depth * 0.5);
+                        // Old towns aren't square: a little twist off the road line.
+                        let yaw = yaw_along(dir) + rng.range(-0.06, 0.06);
+                        let b = footprint(c, yaw, front, depth);
+                        if fits(&b, &lots) {
+                            lots.push(b);
+                        }
+                        t += front + rng.range(1.0, 3.5);
+                    }
+                }
+            }
+        }
+        // Infill behind the frontage, aligned to the nearest road.
+        for i in 0..4000 {
+            let c = Vec2::new(rng.range(TOWN_MIN.x, TOWN_MAX.x), rng.range(TOWN_MIN.y, TOWN_MAX.y));
+            let yaw = yaw_along(roads.nearest_dir(c)) + rng.range(-0.12, 0.12);
+            // Big buildings first, then smaller ones squeezed into the gaps.
+            let s = if i < 1500 { rng.range(8.0, 14.0) } else { rng.range(5.0, 9.0) };
+            let b = footprint(c, yaw, s, s * rng.range(0.7, 1.4));
+            if fits(&b, &lots) {
+                lots.push(b);
+            }
+        }
+
+        let mut drifts = Vec::new();
+        for lot in lots {
+            self.ruin(rng, lot, &roads, &mut drifts);
+        }
+        drifts
+    }
+
+    /// A box in a lot's local frame: `min`/`max` are local footprint coords.
+    fn local_box(&mut self, lot: &OBox, min: Vec2, max: Vec2, y0: f32, y1: f32, color: Vec3) -> OBox {
+        let (ax, az) = lot.axes();
+        let mid = (min + max) * 0.5;
+        let b = OBox {
+            center: lot.center + ax * mid.x + az * mid.y,
+            yaw: lot.yaw,
+            half: (max - min) * 0.5,
+            y0,
+            y1,
+            color,
+            side_mat: mat::WALL,
+            top_mat: mat::ROOF,
+        };
+        self.oboxes.push(b);
+        b
+    }
+
+    /// One building: standing (sometimes stepped), a gutted shell with a
+    /// jagged broken top and a breach toward the street, a low stub with sand
+    /// banked up to its roof, or a collapsed rubble heap you can drive over.
+    fn ruin(&mut self, rng: &mut Rng, lot: OBox, roads: &RoadNet, drifts: &mut Vec<Drift>) {
+        let h = lot.half;
+        // Which local face looks at the nearest road (the street front).
+        let to_road = {
+            let p = roads.samples.iter().min_by(|a, b| a.0.distance_squared(lot.center).total_cmp(&b.0.distance_squared(lot.center))).unwrap().0;
+            lot.to_local(p)
+        };
+        let (front_axis, front_sign) = if (to_road.x / h.x).abs() > (to_road.y / h.y).abs() { (0, to_road.x.signum()) } else { (1, to_road.y.signum()) };
+        let roll = rng.f32();
+        if roll < 0.2 {
+            let height = rng.range(7.0, 13.0);
+            let c = CONCRETE * rng.range(0.92, 1.05);
+            self.local_box(&lot, -h, h, 0.0, height, c);
+            if rng.chance(0.5) {
+                // Upper storey set back from the street.
+                let inset = Vec2::splat(rng.range(1.5, 3.0));
+                self.local_box(&lot, -h + inset, h - inset, height, height + rng.range(2.5, 4.0), c * 0.97);
+            }
+            drifts.push(Drift { b: lot, axis: front_axis, sign: front_sign, height: 1.0, run: 4.0 });
+        } else if roll < 0.55 {
+            // Gutted shell. Each wall is split into pieces of different heights
+            // (a jagged broken top); the street wall has a breach to drive in.
+            let (t, base_h) = (1.0, rng.range(5.0, 9.0));
+            let c = RUIN * rng.range(0.9, 1.05);
+            for (axis, sign) in [(0usize, 1.0f32), (0, -1.0), (1, 1.0), (1, -1.0)] {
+                let len = if axis == 0 { h.y } else { h.x } * 2.0;
+                let breach = axis == front_axis && sign == front_sign;
+                let pieces = if len > 10.0 { 3 } else { 2 };
+                for k in 0..pieces {
+                    let (s0, s1) = (-len * 0.5 + len * k as f32 / pieces as f32, -len * 0.5 + len * (k + 1) as f32 / pieces as f32);
+                    if breach && k == pieces / 2 {
+                        continue; // the gap you drive through
+                    }
+                    let top = base_h * rng.range(0.45, 1.0);
+                    let (lo, hi) = if axis == 0 {
+                        let x = sign * (h.x - t * 0.5);
+                        (Vec2::new(x - t * 0.5, s0), Vec2::new(x + t * 0.5, s1))
+                    } else {
+                        let z = sign * (h.y - t * 0.5);
+                        (Vec2::new(s0, z - t * 0.5), Vec2::new(s1, z + t * 0.5))
+                    };
+                    self.local_box(&lot, lo, hi, 0.0, top, c);
+                }
+            }
+            // A fallen floor slab leaning in one corner.
+            if rng.chance(0.5) {
+                let q = h * 0.45;
+                self.local_box(&lot, Vec2::new(-q.x, -q.y), Vec2::new(0.0, 0.0), 0.0, 0.5, RUBBLE);
+            }
+        } else if roll < 0.8 {
+            // Low stub, sand banked up its street face to the roof.
+            let height = 2.2;
+            self.local_box(&lot, -h, h, 0.0, height, RUIN * rng.range(0.9, 1.0));
+            drifts.push(Drift { b: lot, axis: front_axis, sign: front_sign, height: height + 0.15, run: 8.0 });
+        } else {
+            // Collapsed: a stepped rubble heap (each step low enough to climb)
+            // and one wall stub still standing.
+            for (k, s) in [1.0f32, 0.72, 0.45].iter().enumerate() {
+                let y0 = k as f32 * 0.45;
+                self.local_box(&lot, -h * *s, h * *s, y0, y0 + 0.45, RUBBLE * (1.0 - 0.04 * k as f32));
+            }
+            let wall_len = h.x * rng.range(0.6, 1.4);
+            self.local_box(&lot, Vec2::new(-h.x, h.y - 1.0), Vec2::new(-h.x + wall_len, h.y), 0.0, rng.range(3.0, 6.0), RUIN);
+        }
+        // Wind-blown sand against a random back wall.
+        if rng.chance(0.4) {
+            drifts.push(Drift { b: lot, axis: rng.index(2), sign: if rng.chance(0.5) { 1.0 } else { -1.0 }, height: 0.9, run: 3.5 });
+        }
+    }
+}
 
 impl Map {
     pub fn saltmarket() -> Map {
@@ -79,18 +334,28 @@ impl Map {
             boxes: Vec::new(),
             trees: Vec::new(),
             wedges: Vec::new(),
+            oboxes: Vec::new(),
             terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
         };
-        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 121, 121, ground);
+        let mut rng = Rng::new(0x5a17_3a2c);
+        let reserved = map.street_landmarks();
+        let mut drifts = map.town(&mut rng, &reserved);
+        for b in &reserved {
+            // The fallen water tank gets sand banked up one side: a way on top.
+            if b.y1 > 4.0 && b.y1 < 5.0 {
+                drifts.push(Drift { b: *b, axis: 0, sign: -1.0, height: b.y1, run: 9.0 });
+            }
+        }
+        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 121, 121, |x, z| {
+            let p = Vec2::new(x, z);
+            ground(x, z) + drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max)
+        });
         terrain.color = SAND;
         terrain.material = mat::PLAIN;
         map.terrain = Some(terrain);
-
-        let mut rng = Rng::new(0x5a17_3a2c);
-        map.town(&mut rng);
         map.market_hall();
         map.dam();
         map.landmarks();
@@ -107,112 +372,6 @@ impl Map {
 
     fn ramp(&mut self, min: Vec2, max: Vec2, base_y: f32, height: f32, rise: Rise, color: Vec3) {
         self.wedges.push(Wedge { min, max, base_y, height, rise, color });
-    }
-
-    /// Fill each town block (between streets, outside the square) with lots.
-    fn town(&mut self, rng: &mut Rng) {
-        // Block edges along each axis: town edge, street bands, town edge.
-        let edges = |bands: &[(f32, f32)], (lo, hi): (f32, f32)| {
-            let mut spans = Vec::new();
-            let mut start = lo;
-            for &(a, b) in bands {
-                spans.push((start, a));
-                start = b;
-            }
-            spans.push((start, hi));
-            spans
-        };
-        let xs = edges(&STREETS, TOWN_X);
-        let zs = edges(&AVENUES, TOWN_Z);
-        for &(x0, x1) in &xs {
-            for &(z0, z1) in &zs {
-                let (bmin, bmax) = (Vec2::new(x0, z0), Vec2::new(x1, z1));
-                // The square is open ground.
-                let overlap = bmin.cmplt(SQUARE_MAX).all() && bmax.cmpgt(SQUARE_MIN).all();
-                if overlap || (x1 - x0) < 6.0 || (z1 - z0) < 6.0 {
-                    continue;
-                }
-                self.lots(rng, bmin + Vec2::splat(1.0), bmax - Vec2::splat(1.0));
-            }
-        }
-    }
-
-    /// Split a block into 1-3 lots with alleys and build a ruin on each.
-    fn lots(&mut self, rng: &mut Rng, min: Vec2, max: Vec2) {
-        let size = max - min;
-        let along_x = size.x >= size.y;
-        let long = if along_x { size.x } else { size.y };
-        let n = if long > 26.0 { 3 } else if long > 14.0 { 2 } else { 1 };
-        let alley = 4.5;
-        let len = (long - alley * (n - 1) as f32) / n as f32;
-        for i in 0..n {
-            let a = i as f32 * (len + alley);
-            let (lmin, lmax) = if along_x {
-                (Vec2::new(min.x + a, min.y), Vec2::new(min.x + a + len, max.y))
-            } else {
-                (Vec2::new(min.x, min.y + a), Vec2::new(max.x, min.y + a + len))
-            };
-            self.ruin(rng, lmin, lmax);
-        }
-    }
-
-    /// One building lot: intact, gutted shell, low stub with a sand drift, or rubble.
-    fn ruin(&mut self, rng: &mut Rng, min: Vec2, max: Vec2) {
-        let roll = rng.f32();
-        let lo = |y: f32| Vec3::new(min.x, y, min.y);
-        let hi = |y: f32| Vec3::new(max.x, y, max.y);
-        if roll < 0.22 {
-            // Still standing.
-            let h = rng.range(8.0, 14.0);
-            self.block_c(lo(0.0), hi(h), CONCRETE * rng.range(0.92, 1.05));
-        } else if roll < 0.55 {
-            // Gutted shell: four walls with breaches big enough to drive through.
-            let (h, t) = (rng.range(4.5, 8.0), 1.0);
-            let breach = rng.index(4);
-            let c = RUIN * rng.range(0.92, 1.05);
-            let walls = [
-                (Vec3::new(min.x, 0.0, min.y), Vec3::new(max.x, h, min.y + t)),
-                (Vec3::new(min.x, 0.0, max.y - t), Vec3::new(max.x, h, max.y)),
-                (Vec3::new(min.x, 0.0, min.y), Vec3::new(min.x + t, h, max.y)),
-                (Vec3::new(max.x - t, 0.0, min.y), Vec3::new(max.x, h, max.y)),
-            ];
-            for (k, (a, b)) in walls.into_iter().enumerate() {
-                if k == breach || (k == (breach + 2) % 4 && rng.chance(0.5)) {
-                    // Breached wall: two stubs with a 6 m gap in the middle.
-                    let mid = (a + b) * 0.5;
-                    let gap = 3.2;
-                    if (b.x - a.x) > (b.z - a.z) {
-                        self.block_c(a, Vec3::new(mid.x - gap, b.y * 0.6, b.z), c);
-                        self.block_c(Vec3::new(mid.x + gap, a.y, a.z), Vec3::new(b.x, b.y * 0.8, b.z), c);
-                    } else {
-                        self.block_c(a, Vec3::new(b.x, b.y * 0.6, mid.z - gap), c);
-                        self.block_c(Vec3::new(a.x, a.y, mid.z + gap), Vec3::new(b.x, b.y * 0.8, b.z), c);
-                    }
-                } else {
-                    self.block_c(a, b, c);
-                }
-            }
-        } else if roll < 0.8 {
-            // Low stub with sand drifted up one side: a ramp onto the roof.
-            let h = 2.2;
-            self.block_c(lo(0.0), hi(h), RUIN * rng.range(0.9, 1.0));
-            let w = max - min;
-            let run = 7.0;
-            let (rmin, rmax, rise) = match rng.index(4) {
-                0 => (Vec2::new(min.x - run, min.y + w.y * 0.2), Vec2::new(min.x, max.y - w.y * 0.2), Rise::PosX),
-                1 => (Vec2::new(max.x, min.y + w.y * 0.2), Vec2::new(max.x + run, max.y - w.y * 0.2), Rise::NegX),
-                2 => (Vec2::new(min.x + w.x * 0.2, min.y - run), Vec2::new(max.x - w.x * 0.2, min.y), Rise::PosZ),
-                _ => (Vec2::new(min.x + w.x * 0.2, max.y), Vec2::new(max.x - w.x * 0.2, max.y + run), Rise::NegZ),
-            };
-            self.ramp(rmin, rmax, 0.0, h, rise, SAND);
-        } else {
-            // Collapsed: a rubble pile (two ramps meeting at a crest) and a wall stub.
-            let mid = (min + max) * 0.5;
-            let h = rng.range(1.6, 2.6);
-            self.ramp(Vec2::new(min.x, min.y), Vec2::new(mid.x, max.y), 0.0, h, Rise::PosX, RUBBLE);
-            self.ramp(Vec2::new(mid.x, min.y), Vec2::new(max.x, max.y), 0.0, h, Rise::NegX, RUBBLE);
-            self.block_c(Vec3::new(min.x, 0.0, max.y - 1.0), Vec3::new(min.x + (max.x - min.x) * 0.4, rng.range(3.0, 6.0), max.y), RUIN);
-        }
     }
 
     /// The market hall: a big drive-through landmark in the square. Four piers
@@ -245,16 +404,29 @@ impl Map {
         self.ramp(Vec2::new(205.0, z1), Vec2::new(217.0, z1 + 16.0), -2.5, h + 2.5, Rise::NegZ, DAM * 0.95);
     }
 
+    /// Landmarks standing in the streets, placed before the buildings so the
+    /// town fills in around them: the toppled water tower lying across the
+    /// east lane, and a bus with its tires gone on the main road.
+    fn street_landmarks(&mut self) -> Vec<OBox> {
+        let mut placed = Vec::new();
+        let mut put = |m: &mut Map, center: Vec2, yaw: f32, half: Vec2, y1: f32, color: Vec3| {
+            let b = OBox { center, yaw, half, y0: 0.0, y1, color, side_mat: mat::PLAIN, top_mat: mat::PLAIN };
+            m.oboxes.push(b);
+            placed.push(b);
+        };
+        // Water tower: the stump of its legs beside the lane, and the tank
+        // lying across the road where it fell.
+        let lane = (Vec2::new(130.0, 72.0) - Vec2::new(126.0, 94.0)).normalize();
+        put(self, Vec2::new(140.0, 84.0), yaw_along(lane), Vec2::new(3.0, 3.0), 3.0, RUST);
+        put(self, Vec2::new(129.0, 82.0), yaw_along(Vec2::new(lane.y, -lane.x)) + 0.3, Vec2::new(5.0, 3.2), 4.5, RUST * 1.1);
+        // The bus, pulled half onto the verge of the main road.
+        let road = (Vec2::new(48.0, 121.0) - Vec2::new(30.0, 112.0)).normalize();
+        let nrm = Vec2::new(-road.y, road.x);
+        put(self, Vec2::new(39.0, 116.5) + nrm * 3.5, yaw_along(road), Vec2::new(5.5, 1.3), 3.2, Vec3::new(0.62, 0.52, 0.34));
+        placed
+    }
+
     fn landmarks(&mut self) {
-        // Toppled water tower: the base stump, and the tank lying in the street
-        // with its shaft as a ramp up onto it.
-        self.block_c(Vec3::new(128.0, 0.0, 48.0), Vec3::new(134.0, 3.0, 54.0), RUST);
-        self.ramp(Vec2::new(128.5, 54.0), Vec2::new(133.5, 66.0), 0.0, 4.5, Rise::PosZ, RUST * 0.9);
-        self.block_c(Vec3::new(126.0, 0.0, 66.0), Vec3::new(136.0, 4.5, 73.0), RUST * 1.1);
-
-        // A bus with its tires gone, across a street.
-        self.block_c(Vec3::new(57.5, 0.0, 88.0), Vec3::new(60.5, 3.2, 99.0), Vec3::new(0.62, 0.52, 0.34));
-
         // The half-buried war machine in the reservoir bed: hull sunk into the
         // floor, turret on top, the gun barrel reaching west toward the town.
         let floor = -BOWL_DEPTH;
@@ -331,9 +503,10 @@ impl Map {
             Vec2::new(90.0, 8.0),
         ];
         let mut spots: Vec<Vec2> = drops.to_vec();
-        for &(sx0, sx1) in &STREETS {
-            for &(az0, az1) in &AVENUES {
-                spots.push(Vec2::new((sx0 + sx1) * 0.5, (az0 + az1) * 0.5));
+        // Roam points along every road.
+        for (pts, _) in ROADS {
+            for seg in pts.windows(2) {
+                spots.push((Vec2::from(seg[0]) + Vec2::from(seg[1])) * 0.5);
             }
         }
         spots.push((SQUARE_MIN + SQUARE_MAX) * 0.5 + Vec2::new(0.0, -16.0));
@@ -344,7 +517,8 @@ impl Map {
             m.solids.iter().all(|s| {
                 let c = p.clamp(s.min2(), s.max2());
                 c.distance(p) >= TANK_CLEAR + 0.5
-            }) && m.wedges.iter().all(|w| {
+            }) && m.oboxes.iter().all(|o| o.distance(p) >= TANK_CLEAR + 0.5)
+                && m.wedges.iter().all(|w| {
                 let c = p.clamp(w.min, w.max);
                 c.distance(p) >= TANK_CLEAR
             })
@@ -366,6 +540,36 @@ mod tests {
         assert!(m.open_spots.iter().any(|p| p.x < 30.0));
         assert!(m.open_spots.iter().any(|p| p.y > 200.0));
         assert!(m.open_spots.iter().any(|p| p.x > 150.0));
+    }
+
+    /// A rotated box blocks exactly where its footprint says (physics, nav and
+    /// rendering all share OBox's rotation convention).
+    #[test]
+    fn rotated_boxes_collide_where_they_are() {
+        let mut map = Map::empty(100.0);
+        let b = OBox { center: Vec2::new(50.0, 50.0), yaw: 0.7, half: Vec2::new(6.0, 2.0), y0: 0.0, y1: 4.0, color: CONCRETE, side_mat: mat::WALL, top_mat: mat::ROOF };
+        map.oboxes.push(b);
+        let w = crate::sim::World::empty(map);
+        for k in 0..16 {
+            let a = k as f32 / 16.0 * std::f32::consts::TAU;
+            let dir = Vec2::new(a.cos(), a.sin());
+            let origin = b.center - dir * 20.0;
+            let hit = w.raycast(Vec3::new(origin.x, 1.0, origin.y), Vec3::new(dir.x, 0.0, dir.y), 40.0);
+            // Expected: first point along the ray inside the footprint.
+            let expect = (0..4000).map(|i| i as f32 * 0.01).find(|&t| b.distance(origin + dir * t) == 0.0).unwrap();
+            assert!((hit - expect).abs() < 0.05, "angle {a}: hit at {hit}, footprint at {expect}");
+        }
+    }
+
+    #[test]
+    fn town_is_not_a_grid() {
+        let m = Map::saltmarket();
+        assert!(m.oboxes.len() > 150, "only {} town pieces", m.oboxes.len());
+        // Plenty of distinct building orientations.
+        let mut yaws: Vec<i32> = m.oboxes.iter().map(|o| ((o.yaw.rem_euclid(std::f32::consts::FRAC_PI_2)) * 20.0) as i32).collect();
+        yaws.sort();
+        yaws.dedup();
+        assert!(yaws.len() > 10, "only {} distinct orientations", yaws.len());
     }
 
     #[test]

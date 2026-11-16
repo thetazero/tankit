@@ -49,6 +49,9 @@ pub fn map_mesh(map: &Map) -> MeshData {
     for b in &map.boxes {
         m.add_box(b.min, b.max, b.color.extend(b.side_mat), b.color.extend(b.top_mat));
     }
+    for o in &map.oboxes {
+        add_obox(o, &mut m);
+    }
 
     let sphere = MeshData::sphere(12, 8);
     for t in &map.trees {
@@ -58,6 +61,22 @@ pub fn map_mesh(map: &Map) -> MeshData {
 
     road_markings(map, &mut m);
     m
+}
+
+/// A box turned about +y: built as an axis-aligned box at the origin, then rotated into place.
+fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
+    let mut local = MeshData::default();
+    let h = Vec3::new(o.half.x, 0.0, o.half.y);
+    local.add_box(Vec3::new(-h.x, o.y0, -h.z), Vec3::new(h.x, o.y1, h.z), o.color.extend(o.side_mat), o.color.extend(o.top_mat));
+    let xf = Mat4::from_translation(Vec3::new(o.center.x, 0.0, o.center.y)) * Mat4::from_rotation_y(o.yaw);
+    let base = m.verts.len() as u32;
+    for v in &local.verts {
+        let mut v = *v;
+        v.pos = xf.transform_point3(Vec3::from(v.pos)).to_array();
+        v.normal = xf.transform_vector3(Vec3::from(v.normal)).to_array();
+        m.verts.push(v);
+    }
+    m.indices.extend(local.indices.iter().map(|i| i + base));
 }
 
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {

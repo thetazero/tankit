@@ -50,6 +50,70 @@ pub struct VisBox {
     pub top_mat: f32,
 }
 
+/// A solid box turned about the vertical axis (buildings and walls that
+/// don't line up with the world grid). Blocking and visible.
+#[derive(Clone, Copy, Debug)]
+pub struct OBox {
+    /// Footprint center on the ground plane (x, z).
+    pub center: Vec2,
+    /// Rotation about +y, radians (local +x turns toward +z... standard glam rotation_y).
+    pub yaw: f32,
+    /// Footprint half extents along the box's local x and z.
+    pub half: Vec2,
+    pub y0: f32,
+    pub y1: f32,
+    pub color: Vec3,
+    pub side_mat: f32,
+    pub top_mat: f32,
+}
+
+impl OBox {
+    /// Local axes on the ground plane: (right, forward), as world xz directions.
+    pub fn axes(&self) -> (Vec2, Vec2) {
+        // glam's rotation_y maps local +x to (cos, -sin) and +z to (sin, cos) in xz.
+        let (s, c) = self.yaw.sin_cos();
+        (Vec2::new(c, -s), Vec2::new(s, c))
+    }
+
+    /// World point (x, z) in the box's local footprint frame.
+    pub fn to_local(&self, p: Vec2) -> Vec2 {
+        let (ax, az) = self.axes();
+        let d = p - self.center;
+        Vec2::new(d.dot(ax), d.dot(az))
+    }
+
+    /// Distance from a ground point to the footprint (0 inside).
+    pub fn distance(&self, p: Vec2) -> f32 {
+        let q = self.to_local(p).abs() - self.half;
+        q.max(Vec2::ZERO).length()
+    }
+
+    /// Footprint corners in world xz, counter-clockwise.
+    pub fn corners(&self) -> [Vec2; 4] {
+        let (ax, az) = self.axes();
+        let (x, z) = (ax * self.half.x, az * self.half.y);
+        [self.center - x - z, self.center + x - z, self.center + x + z, self.center - x + z]
+    }
+
+    /// Footprints overlap (separating axis test), with `margin` of required gap.
+    pub fn overlaps(&self, o: &OBox, margin: f32) -> bool {
+        let (a0, a1) = self.axes();
+        let (b0, b1) = o.axes();
+        for axis in [a0, a1, b0, b1] {
+            let proj = |b: &OBox| {
+                let cs = b.corners().map(|c| c.dot(axis));
+                (cs.iter().copied().fold(f32::INFINITY, f32::min), cs.iter().copied().fold(f32::NEG_INFINITY, f32::max))
+            };
+            let (lo0, hi0) = proj(self);
+            let (lo1, hi1) = proj(o);
+            if hi0 + margin < lo1 || hi1 + margin < lo0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// Which way a wedge's slope climbs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Rise {
@@ -173,6 +237,8 @@ pub struct Map {
     pub boxes: Vec<VisBox>,
     pub trees: Vec<Tree>,
     pub wedges: Vec<Wedge>,
+    /// Rotated solid boxes (blocking and visible).
+    pub oboxes: Vec<OBox>,
     pub terrain: Option<Terrain>,
     pub roads: Vec<CellRect>,
     /// Open road positions usable for spawns and pickups.
@@ -206,6 +272,7 @@ impl Map {
             boxes: Vec::new(),
             trees: Vec::new(),
             wedges: Vec::new(),
+            oboxes: Vec::new(),
             terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
@@ -499,6 +566,7 @@ impl Map {
             boxes: Vec::new(),
             trees: Vec::new(),
             wedges: Vec::new(),
+            oboxes: Vec::new(),
             terrain: None,
             roads: Vec::new(),
             open_spots: vec![Vec2::ZERO],
@@ -522,6 +590,7 @@ impl Map {
             boxes: Vec::new(),
             trees: Vec::new(),
             wedges: Vec::new(),
+            oboxes: Vec::new(),
             terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
