@@ -396,6 +396,8 @@ impl Renderer {
         let globals_layout = layout(&[Some(&globals_bgl)]);
         let post_layout = layout(&[Some(&post_bgl)]);
         let ao_layout = layout(&[Some(&globals_bgl), Some(&ao_bgl)]);
+        // Particles also read scene depth, to fade out where they meet geometry.
+        let particle_layout = layout(&[Some(&globals_bgl), Some(&shadow_bgl), Some(&ao_bgl)]);
         let ui_layout = layout(&[Some(&ui_bgl)]);
 
         let vertex_layouts = [
@@ -503,7 +505,7 @@ impl Renderer {
         });
         let particle_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("particles"),
-            layout: Some(&scene_layout),
+            layout: Some(&particle_layout),
             vertex: wgpu::VertexState {
                 module: &particle_src,
                 entry_point: Some("vs_particle"),
@@ -1076,13 +1078,37 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
-            if self.particle_count > 0 {
-                pass.set_pipeline(&self.particle_pipe);
-                pass.set_bind_group(0, &self.globals_bg, &[]);
-                pass.set_bind_group(1, &self.shadow_bg, &[]);
-                pass.set_vertex_buffer(0, self.particle_buf.slice(..));
-                pass.draw(0..6, 0..self.particle_count);
-            }
+        }
+
+        // Particles in their own pass with depth read-only, so they can also
+        // sample it and fade out where they cut into geometry.
+        if self.particle_count > 0 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("particles"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.targets.hdr_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.targets.depth_view,
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.particle_pipe);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_bind_group(1, &self.shadow_bg, &[]);
+            pass.set_bind_group(2, &self.targets.ao_bg, &[]);
+            pass.set_vertex_buffer(0, self.particle_buf.slice(..));
+            pass.draw(0..6, 0..self.particle_count);
         }
 
         {

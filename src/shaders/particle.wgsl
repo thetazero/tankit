@@ -17,6 +17,17 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var shadow_tex: texture_depth_2d;
 @group(1) @binding(1) var shadow_samp: sampler_comparison;
+@group(2) @binding(0) var depth_tex: texture_depth_2d;
+
+// Distance from the camera to the opaque scene behind this pixel.
+fn scene_dist(frag: vec2<f32>) -> f32 {
+    let s = vec2<i32>(textureDimensions(depth_tex));
+    let q = clamp(vec2<i32>(frag), vec2<i32>(0), s - 1);
+    let d = textureLoad(depth_tex, q, 0);
+    let ndc = vec2<f32>(frag.x / f32(s.x) * 2.0 - 1.0, 1.0 - frag.y / f32(s.y) * 2.0);
+    let w = g.inv_view_proj * vec4<f32>(ndc, d, 1.0);
+    return distance(w.xyz / w.w, g.cam_pos.xyz);
+}
 
 // In the sun (1) or in shadow (0): a single tap is enough for soft blobs.
 fn sunlit(wpos: vec3<f32>) -> f32 {
@@ -42,6 +53,7 @@ struct POut {
     @location(1) color: vec4<f32>,
     @location(2) wpos: vec3<f32>,
     @location(3) streak: f32,
+    @location(4) size: f32,
 };
 
 @vertex
@@ -71,6 +83,7 @@ fn vs_particle(@builtin(vertex_index) i: u32, p: PIn) -> POut {
     o.color = p.color;
     o.wpos = w;
     o.streak = select(0.0, 1.0, sl > 0.01);
+    o.size = p.size;
     return o;
 }
 
@@ -78,9 +91,16 @@ fn vs_particle(@builtin(vertex_index) i: u32, p: PIn) -> POut {
 fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     let r2 = dot(v.uv, v.uv);
     // Round puffs: soft all over. Streaks: solid across, tapering at the ends.
-    let puff = (1.0 - r2) * (1.0 - r2);
+    let k = max(1.0 - r2, 0.0);
+    let puff = k * k;
     let line = (1.0 - v.uv.x * v.uv.x) * (1.0 - abs(v.uv.y));
-    let soft = max(mix(puff, line, v.streak), 0.0);
+    let soft0 = max(mix(puff, line, v.streak), 0.0);
+    // Soft particles: fade out as the quad nears the ground or a hull it
+    // cuts into, so no straight edge shows where it's clipped.
+    let d = distance(v.wpos, g.cam_pos.xyz);
+    let gap = scene_dist(v.clip.xy) - d;
+    let fade = clamp(gap / clamp(v.size * 0.6, 0.05, 2.0), 0.0, 1.0);
+    let soft = soft0 * fade;
     if (soft <= 0.0) {
         discard;
     }
@@ -89,7 +109,6 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     let fill = mix(g.ground_color.rgb, g.sky_horizon.rgb, 0.6) * 0.55;
     var c = v.color.rgb * (sun + fill);
     // Same haze as the scene.
-    let d = distance(v.wpos, g.cam_pos.xyz);
     let f = 1.0 - exp(-d * g.params.y);
     c = mix(c, g.sky_horizon.rgb, f);
     return vec4<f32>(c, v.color.a * soft);
