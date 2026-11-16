@@ -42,7 +42,6 @@ const RUIN: Vec3 = Vec3::new(0.66, 0.62, 0.55);
 const RUBBLE: Vec3 = Vec3::new(0.6, 0.56, 0.5);
 const DAM: Vec3 = Vec3::new(0.6, 0.58, 0.54);
 const RUST: Vec3 = Vec3::new(0.5, 0.36, 0.24);
-const WRECK: Vec3 = Vec3::new(0.36, 0.34, 0.31);
 
 /// Signed distance to the reservoir's rounded-rectangle outline (negative inside).
 fn bowl_sdf(p: Vec2) -> f32 {
@@ -505,6 +504,8 @@ impl Map {
             ],
             hold_site: None,
             cores: Vec::new(),
+            crystals: Vec::new(),
+            glow_paths: Vec::new(),
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();
@@ -528,9 +529,9 @@ impl Map {
         terrain.color = SAND;
         terrain.material = Material::Sand;
         map.terrain = Some(terrain);
-        map.market_hall();
+        map.market_hall(&mut rng);
         map.traces(&mut rng);
-        map.dam();
+        map.dam(&mut rng);
         map.landmarks();
         map.reservoir_cover(&mut rng);
         map.ridge();
@@ -700,51 +701,17 @@ impl Map {
 
     /// The market hall: a big drive-through landmark in the square. Four piers
     /// carry a roof slab high enough to drive under.
-    fn market_hall(&mut self) {
-        let c = (SQUARE_MIN + SQUARE_MAX) * 0.5;
-        let (half, pier, roof_lo, roof_hi) = (12.0, 5.0, 7.5, 9.5);
-        for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-            let p = c + Vec2::new(sx, sz) * (half - pier * 0.5);
-            self.block_c(
-                Vec3::new(p.x - pier * 0.5, 0.0, p.y - pier * 0.5),
-                Vec3::new(p.x + pier * 0.5, roof_lo, p.y + pier * 0.5),
-                CONCRETE,
-                Material::Concrete,
-            );
-        }
-        self.block_c(
-            Vec3::new(c.x - half, roof_lo, c.y - half),
-            Vec3::new(c.x + half, roof_hi, c.y + half),
-            CONCRETE * 1.04,
-            Material::Concrete,
-        );
-        // A smaller drum on the roof stands in for the dome.
-        self.block_c(
-            Vec3::new(c.x - 6.0, roof_hi, c.y - 6.0),
-            Vec3::new(c.x + 6.0, roof_hi + 3.5, c.y + 6.0),
-            CONCRETE * 0.97,
-            Material::Concrete,
-        );
+    fn market_hall(&mut self, rng: &mut Rng) {
+        self.market(rng, (SQUARE_MIN + SQUARE_MAX) * 0.5);
     }
 
     /// The dam across the reservoir's south end: 5 m high, breached in the
     /// middle, with a ramp up from the town and a ramp down into the bowl.
-    fn dam(&mut self) {
+    fn dam(&mut self, rng: &mut Rng) {
         let (z0, z1, h) = (18.0, 30.0, 5.0);
         let (x0, x1) = (150.0, SIZE - 2.0);
         let (gap0, gap1) = (182.0, 194.0);
-        self.block_c(
-            Vec3::new(x0, 0.0, z0),
-            Vec3::new(gap0, h, z1),
-            DAM,
-            Material::Concrete,
-        );
-        self.block_c(
-            Vec3::new(gap1, 0.0, z0),
-            Vec3::new(x1, h, z1),
-            DAM,
-            Material::Concrete,
-        );
+        self.concrete_dam(rng, x0, x1, z0, z1, h, (gap0, gap1));
         // Rubble spilling out of the breach.
         self.ramp(
             Vec2::new(gap0 + 1.0, z0 - 6.0),
@@ -967,35 +934,20 @@ impl Map {
     }
 
     fn landmarks(&mut self) {
-        // The half-buried war machine in the reservoir bed: hull sunk into the
-        // floor, turret on top, the gun barrel reaching west toward the town.
+        // The war machine, sunk nose-first into the reservoir bed, gun
+        // toward the town.
         let floor = -BOWL_DEPTH;
         let (cx, cz) = (200.0, 150.0);
-        self.block_c(
-            Vec3::new(cx - 8.0, floor - 2.0, cz - 5.0),
-            Vec3::new(cx + 8.0, floor + 4.5, cz + 5.0),
-            WRECK,
-            Material::Rust,
-        );
-        self.block_c(
-            Vec3::new(cx - 3.5, floor + 4.5, cz - 3.5),
-            Vec3::new(cx + 3.5, floor + 7.5, cz + 3.5),
-            WRECK * 1.05,
-            Material::Rust,
-        );
-        self.block_c(
-            Vec3::new(cx - 18.0, floor + 5.2, cz - 0.7),
-            Vec3::new(cx - 3.5, floor + 6.6, cz + 0.7),
-            WRECK * 0.9,
-            Material::Rust,
-        );
-        // A sand drift banked against its west flank: the way up.
+        let mut wrng = Rng::new(0x3a77);
+        let deck = self.war_machine(&mut wrng, Vec3::new(cx, floor + 1.0, cz), -1.75);
+        // A sand drift banked against its stern: the way up onto the engine
+        // deck.
         self.ramp(
-            Vec2::new(cx - 15.0, cz - 4.0),
-            Vec2::new(cx - 8.0, cz + 4.0),
-            floor,
-            4.5,
-            Rise::PosX,
+            Vec2::new(deck.x + 0.5, deck.z - 3.0),
+            Vec2::new(deck.x + 10.0, deck.z + 3.0),
+            floor - 0.3,
+            deck.y - floor + 0.2,
+            Rise::NegX,
             SAND,
             Material::Sand,
         );
@@ -1006,72 +958,15 @@ impl Map {
     /// boats and rock outcrops.
     fn reservoir_cover(&mut self, rng: &mut Rng) {
         let at = |x: f32, z: f32| ground(x, z);
-        // Pier: a deck at town level running out over the shore, on piles.
-        let (pz0, pz1) = (136.0, 142.0);
-        self.block_c(
-            Vec3::new(146.0, -1.0, pz0),
-            Vec3::new(176.0, 0.4, pz1),
-            RUST * 0.8,
-            Material::Rust,
-        );
-        for x in [154.0f32, 162.0, 170.0] {
-            let g = at(x, pz0);
-            self.block_c(
-                Vec3::new(x - 0.6, g - 0.5, pz0 + 0.5),
-                Vec3::new(x + 0.6, -1.0, pz0 + 1.7),
-                RUST * 0.7,
-                Material::Rust,
-            );
-            self.block_c(
-                Vec3::new(x - 0.6, g - 0.5, pz1 - 1.7),
-                Vec3::new(x + 0.6, -1.0, pz1 - 0.5),
-                RUST * 0.7,
-                Material::Rust,
-            );
-        }
-        // Pipeline: segments half sunk in the bed, with gaps to drive through.
+        // Pier: a timber deck at town level running out over the shore.
+        self.pier(rng, Vec2::new(146.0, 139.0), Vec2::X, 31.0, 6.0, 0.4);
+        // Pipeline: runs half sunk in the bed, with gaps to drive through.
         for i in 0..6 {
-            let z0 = 55.0 + i as f32 * 11.0;
-            let g = at(172.0, z0 + 4.0);
-            self.block_c(
-                Vec3::new(170.5, g - 0.8, z0),
-                Vec3::new(173.5, g + 1.4, z0 + 8.0),
-                RUST,
-                Material::Rust,
-            );
+            self.pipeline_run(rng, Vec2::new(172.0, 55.0 + i as f32 * 11.0), 8.0, 1.1);
         }
-        // Stranded boats: hull block with a bow ramp, lying in the mud.
-        for (x, z, along_x) in [(213.0f32, 70.0f32, false), (180.0, 188.0, true)] {
-            let g = at(x, z);
-            let (hx, hz) = if along_x { (6.0, 2.2) } else { (2.2, 6.0) };
-            self.block_c(
-                Vec3::new(x - hx, g - 0.5, z - hz),
-                Vec3::new(x + hx, g + 2.4, z + hz),
-                Vec3::new(0.44, 0.4, 0.36),
-                Material::Rust,
-            );
-            if along_x {
-                self.ramp(
-                    Vec2::new(x + hx, z - hz),
-                    Vec2::new(x + hx + 4.0, z + hz),
-                    g - 0.5,
-                    2.9,
-                    Rise::NegX,
-                    SAND,
-                    Material::Sand,
-                );
-            } else {
-                self.ramp(
-                    Vec2::new(x - hz, z - hx - 4.0),
-                    Vec2::new(x + hz, z - hx),
-                    g - 0.5,
-                    2.9,
-                    Rise::PosZ,
-                    SAND,
-                    Material::Sand,
-                );
-            }
-        }
+        // Stranded boats, listing in the mud.
+        self.boat(rng, Vec2::new(213.0, 70.0), Vec2::Y, 12.0);
+        self.boat(rng, Vec2::new(180.0, 188.0), Vec2::new(-1.0, 0.0), 12.0);
         // Rock outcrops.
         for (x, z) in [
             (196.0f32, 92.0f32),
