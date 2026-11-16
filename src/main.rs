@@ -4,6 +4,7 @@ mod app;
 mod arrival;
 mod audio;
 mod bay;
+mod bench;
 mod combat;
 mod economy;
 mod faction;
@@ -47,6 +48,8 @@ tankit [OPTIONS]
   --employer <faction>    which of the map's sides hires you (default: its first);
                           your trust in the match goes to them
                           (with --screen factions|missions: whose missions the menu shows)
+  --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
+                          and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
   --shot <out.png>        render offscreen and save
   --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
   --time <seconds>        simulated time before the shot (default 1)
@@ -103,6 +106,8 @@ pub struct Args {
     shot: Option<ShotArgs>,
     /// Record sound to this WAV, for this many seconds.
     wav: Option<(String, f32)>,
+    /// Benchmark this many seconds of a round, after this much warmup.
+    bench: Option<(f32, f32, u32, u32)>,
     showroom: Option<ShowroomArgs>,
 }
 
@@ -185,6 +190,13 @@ fn main() -> Result<()> {
     )
     .init();
     let args = parse_args()?;
+    if let Some((warmup, seconds, w, h)) = args.bench {
+        let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+        game.set_contract(args.contract);
+        game.set_player_hull(args.loadout.0);
+        game.world.tanks[0].turret_kind = args.loadout.1;
+        return bench::run(game, w, h, warmup, seconds);
+    }
     if let Some((out, seconds)) = &args.wav {
         return record_wav(&args, out, *seconds);
     }
@@ -230,6 +242,7 @@ fn parse_args() -> Result<Args> {
         % 100_000;
     let mut shot: Option<String> = None;
     let mut wav: Option<String> = None;
+    let mut bench: Option<f32> = None;
     let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
@@ -316,6 +329,7 @@ fn parse_args() -> Result<Args> {
                 cam = Some((Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5])));
             }
             "--time" => time = Some(args.next().context("--time needs seconds")?.parse()?),
+            "--bench" => bench = Some(args.next().context("--bench needs seconds")?.parse()?),
             "--wav" => wav = Some(args.next().context("--wav needs a path")?),
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
             "--fps" => fps = args.next().context("--fps needs a number")?.parse()?,
@@ -422,6 +436,7 @@ fn parse_args() -> Result<Args> {
         straight,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
+        bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
         shot: shot.map(|out| ShotArgs {
             out,
             time: time.unwrap_or(1.0),

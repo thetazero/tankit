@@ -39,15 +39,26 @@ pub struct SvfOut {
 pub struct Svf {
     ic1: f32,
     ic2: f32,
+    /// The cutoff, q and rate the coefficients below were worked out for:
+    /// most filters sit still, and a tangent every sample is costly.
+    at: (f32, f32, f32),
+    k: f32,
+    a1: f32,
+    a2: f32,
+    a3: f32,
 }
 
 impl Svf {
     pub fn run(&mut self, x: f32, cutoff: f32, q: f32, sr: f32) -> SvfOut {
-        let g = (PI * cutoff.clamp(10.0, sr * 0.45) / sr).tan();
-        let k = 1.0 / q.max(0.05);
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let a2 = g * a1;
-        let a3 = g * a2;
+        if self.at != (cutoff, q, sr) {
+            let g = (PI * cutoff.clamp(10.0, sr * 0.45) / sr).tan();
+            self.k = 1.0 / q.max(0.05);
+            self.a1 = 1.0 / (1.0 + g * (g + self.k));
+            self.a2 = g * self.a1;
+            self.a3 = g * self.a2;
+            self.at = (cutoff, q, sr);
+        }
+        let (k, a1, a2, a3) = (self.k, self.a1, self.a2, self.a3);
         let v3 = x - self.ic2;
         let v1 = a1 * self.ic1 + a2 * v3;
         let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
@@ -65,6 +76,9 @@ impl Svf {
 #[derive(Clone, Copy, Default)]
 pub struct OnePole {
     y: f32,
+    /// The cutoff and rate `coef` was last worked out for, and the result.
+    at: (f32, f32),
+    coef: f32,
 }
 
 impl OnePole {
@@ -76,6 +90,16 @@ impl OnePole {
     pub fn run(&mut self, x: f32, coef: f32) -> f32 {
         self.y += (x - self.y) * coef;
         self.y
+    }
+
+    /// [`OnePole::run`] at `cutoff` Hz, working the coefficient out again
+    /// only when the cutoff moves.
+    pub fn run_at(&mut self, x: f32, cutoff: f32, sr: f32) -> f32 {
+        if self.at != (cutoff, sr) {
+            self.coef = OnePole::coef(cutoff, sr);
+            self.at = (cutoff, sr);
+        }
+        self.run(x, self.coef)
     }
 }
 
@@ -116,8 +140,58 @@ impl Smooth {
     }
 
     pub fn next(&mut self, coef: f32) -> f32 {
-        self.value += (self.target - self.value) * coef;
+        let gap = self.target - self.value;
+        // Land on the target rather than creep at it forever: a value easing
+        // to zero would otherwise sink into subnormal floats, which are
+        // about a hundred times slower to multiply.
+        self.value = if gap.abs() < 1e-7 {
+            self.target
+        } else {
+            self.value + gap * coef
+        };
         self.value
+    }
+}
+
+/// While alive, the CPU flushes subnormal floats to zero (x86: FTZ and DAZ
+/// in MXCSR); the old mode comes back on drop. Every filter and fade ringing
+/// down to silence passes through subnormals, where each multiply costs
+/// around a hundred times more, so the mixer renders under one of these.
+/// Values that small are far below anything audible.
+pub struct FlushDenormals {
+    #[cfg(target_arch = "x86_64")]
+    old: u32,
+}
+
+impl FlushDenormals {
+    #[cfg(target_arch = "x86_64")]
+    pub fn new() -> FlushDenormals {
+        // FTZ is bit 15, DAZ bit 6.
+        const FTZ_DAZ: u32 = (1 << 15) | (1 << 6);
+        let mut old = 0u32;
+        // SAFETY: reading and writing MXCSR only changes how this thread
+        // rounds subnormal floats; every x86_64 CPU has SSE.
+        unsafe {
+            std::arch::asm!("stmxcsr [{}]", in(reg) &mut old, options(nostack));
+            let new = old | FTZ_DAZ;
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &new, options(nostack, readonly));
+        }
+        FlushDenormals { old }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn new() -> FlushDenormals {
+        FlushDenormals {}
+    }
+}
+
+impl Drop for FlushDenormals {
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: puts back the mode read in `new`.
+        unsafe {
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &self.old, options(nostack, readonly));
+        }
     }
 }
 
@@ -128,6 +202,33 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
         a.cos() * std::f32::consts::SQRT_2,
         a.sin() * std::f32::consts::SQRT_2,
     )
+}
+
+/// [`pan_gains`] for a pan that mostly sits still: worked out again only
+/// when it moves.
+#[derive(Clone, Copy)]
+pub struct Panner {
+    at: f32,
+    gains: (f32, f32),
+}
+
+impl Default for Panner {
+    fn default() -> Panner {
+        Panner {
+            at: f32::NAN,
+            gains: (1.0, 1.0),
+        }
+    }
+}
+
+impl Panner {
+    pub fn gains(&mut self, pan: f32) -> (f32, f32) {
+        if self.at != pan {
+            self.gains = pan_gains(pan);
+            self.at = pan;
+        }
+        self.gains
+    }
 }
 
 #[cfg(test)]

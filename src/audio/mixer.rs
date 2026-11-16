@@ -4,7 +4,7 @@
 //! The game thread only sets targets; everything eases toward them here.
 //! What each loop sounds like lives with its family in `sounds/`.
 
-use super::dsp::{OnePole, Smooth, pan_gains};
+use super::dsp::{FlushDenormals, OnePole, Smooth, pan_gains};
 use super::sounds::beam::{BurnParams, BurnVoice};
 use super::sounds::garage::Turntable;
 use super::sounds::places::{PlaceParams, PlaceVoice};
@@ -177,6 +177,7 @@ impl Mixer {
 
     /// Fill `out` with interleaved stereo frames.
     pub fn render(&mut self, out: &mut [f32]) {
+        let _flush = FlushDenormals::new();
         out.fill(0.0);
         let sr = self.sr;
         let k = Coefs {

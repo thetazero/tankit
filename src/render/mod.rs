@@ -161,6 +161,23 @@ struct GpuMesh {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
     count: u32,
+    /// A sphere round every vertex, in the mesh's own space.
+    center: Vec3,
+    radius: f32,
+}
+
+/// The six planes of a view-projection's frustum (wgpu depth 0..1), each
+/// normalized so its distance tests are in world units.
+fn frustum(m: Mat4) -> [Vec4; 6] {
+    let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
+    [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| p / p.truncate().length())
+}
+
+/// Whether a sphere at `center` of `radius` is at least partly inside `planes`.
+fn in_frustum(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
+    planes
+        .iter()
+        .all(|p| p.truncate().dot(center) + p.w >= -radius)
 }
 
 impl GpuMesh {
@@ -177,8 +194,84 @@ impl GpuMesh {
                 usage: wgpu::BufferUsages::INDEX,
             }),
             count: m.indices.len() as u32,
+            center: bounds(m).0,
+            radius: bounds(m).1,
         }
     }
+}
+
+/// One ground cell of the static mesh: its triangles' indices, and a sphere
+/// round them.
+struct Chunk {
+    indices: std::ops::Range<u32>,
+    center: Vec3,
+    radius: f32,
+}
+
+/// Ground cell size for [`chunked`], meters.
+const CHUNK: f32 = 24.0;
+
+/// `mesh` with its triangles regrouped by the ground cell their middle is
+/// in, and each cell's range.
+fn chunked(mesh: &MeshData) -> (MeshData, Vec<Chunk>) {
+    let pos = |i: u32| Vec3::from(mesh.verts[i as usize].pos);
+    let mut cells: std::collections::BTreeMap<(i32, i32), Vec<[u32; 3]>> = Default::default();
+    for t in mesh.indices.chunks_exact(3) {
+        let mid = (pos(t[0]) + pos(t[1]) + pos(t[2])) / 3.0;
+        let key = (
+            (mid.x / CHUNK).floor() as i32,
+            (mid.z / CHUNK).floor() as i32,
+        );
+        cells.entry(key).or_default().push([t[0], t[1], t[2]]);
+    }
+    let mut indices = Vec::with_capacity(mesh.indices.len());
+    let mut chunks = Vec::with_capacity(cells.len());
+    for tris in cells.values() {
+        let start = indices.len() as u32;
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for &i in tris.iter().flatten() {
+            lo = lo.min(pos(i));
+            hi = hi.max(pos(i));
+            indices.push(i);
+        }
+        let center = (lo + hi) * 0.5;
+        let radius = tris
+            .iter()
+            .flatten()
+            .map(|&i| pos(i).distance(center))
+            .fold(0.0, f32::max);
+        chunks.push(Chunk {
+            indices: start..indices.len() as u32,
+            center,
+            radius,
+        });
+    }
+    let out = MeshData {
+        verts: mesh.verts.clone(),
+        indices,
+    };
+    (out, chunks)
+}
+
+/// The middle of a mesh's box and the farthest vertex from it.
+fn bounds(m: &MeshData) -> (Vec3, f32) {
+    let (lo, hi) = m.verts.iter().fold(
+        (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+        |(lo, hi), v| {
+            let p = Vec3::from(v.pos);
+            (lo.min(p), hi.max(p))
+        },
+    );
+    if m.verts.is_empty() {
+        return (Vec3::ZERO, 0.0);
+    }
+    let center = (lo + hi) * 0.5;
+    let radius = m
+        .verts
+        .iter()
+        .map(|v| Vec3::from(v.pos).distance(center))
+        .fold(0.0, f32::max);
+    (center, radius)
 }
 
 /// Size-dependent render targets.
@@ -200,6 +293,9 @@ pub struct Renderer {
     pub height: u32,
 
     scene_pipe: wgpu::RenderPipeline,
+    /// Depth-only scene geometry, drawn before `scene_pipe` so the costly
+    /// shading runs once per pixel instead of once per overlapping surface.
+    prepass_pipe: wgpu::RenderPipeline,
     shadow_pipe: wgpu::RenderPipeline,
     sky_pipe: wgpu::RenderPipeline,
     particle_pipe: wgpu::RenderPipeline,
@@ -212,7 +308,16 @@ pub struct Renderer {
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     shadow_bg: wgpu::BindGroup,
+    shadow_tex: wgpu::Texture,
     shadow_view: wgpu::TextureView,
+    /// The static world's shadow depth on its own, for the light it was
+    /// drawn for and the world mesh it was drawn from. In a match neither
+    /// moves, so each frame copies this in and draws only what moves on top.
+    shadow_cache: Option<(Mat4, u64, wgpu::Texture, wgpu::TextureView)>,
+    /// Bumped each time the static world mesh changes.
+    static_gen: u64,
+    /// The sun's view-projection for the frame being drawn.
+    light_view_proj: Mat4,
     ui_globals_buf: wgpu::Buffer,
     ui_globals_bg: wgpu::BindGroup,
     post_bgl: wgpu::BindGroupLayout,
@@ -223,6 +328,9 @@ pub struct Renderer {
 
     meshes: Vec<GpuMesh>,
     static_mesh: Option<GpuMesh>,
+    /// The static mesh's triangles, grouped into ground cells (index ranges
+    /// with a bounding sphere each), so the camera draws only cells in view.
+    chunks: Vec<Chunk>,
     instance_buf: wgpu::Buffer,
     instance_cap: usize,
     ui_buf: wgpu::Buffer,
@@ -235,6 +343,23 @@ pub struct Renderer {
     thumb_tex: Option<wgpu::Texture>,
     /// Render targets and colour texture for one thumbnail, kept between calls.
     thumb_targets: Option<((u32, u32), Targets, wgpu::Texture)>,
+    /// GPU timestamps around each pass, for `--bench` (when the GPU has them).
+    timer: Option<GpuTimer>,
+}
+
+/// Instance ranges to draw, by mesh.
+type Ranges = Vec<(MeshId, std::ops::Range<u32>)>;
+
+/// The passes `encode` times, in order.
+pub const PASSES: [&str; 6] = ["shadow", "prepass", "scene", "particles", "ssao", "post+ui"];
+
+/// Timestamp queries around each pass, and the buffers to read them back.
+struct GpuTimer {
+    queries: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    readback: wgpu::Buffer,
+    /// Nanoseconds per timestamp tick.
+    period: f32,
 }
 
 impl Renderer {
@@ -516,7 +641,9 @@ impl Renderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+            // The depth prepass has already laid down the nearest surface:
+            // shade only that one.
+            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::LessEqual)),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &scene_src,
@@ -524,6 +651,28 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[Some(HDR_FORMAT.into())],
             }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // The same vertex shader as `scene_pipe`, so both land on exactly the
+        // same depths.
+        let prepass_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("depth prepass"),
+            layout: Some(&scene_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_src,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &vertex_layouts,
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+            multisample: Default::default(),
+            fragment: None,
             multiview_mask: None,
             cache: None,
         });
@@ -747,7 +896,9 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let shadow_view = shadow_tex.create_view(&Default::default());
@@ -834,6 +985,7 @@ impl Renderer {
             width,
             height,
             scene_pipe,
+            prepass_pipe,
             shadow_pipe,
             sky_pipe,
             particle_pipe,
@@ -845,7 +997,11 @@ impl Renderer {
             globals_buf,
             globals_bg,
             shadow_bg,
+            shadow_tex,
             shadow_view,
+            shadow_cache: None,
+            static_gen: 0,
+            light_view_proj: Mat4::IDENTITY,
             ui_globals_buf,
             ui_globals_bg,
             post_bgl,
@@ -855,6 +1011,7 @@ impl Renderer {
             targets,
             meshes,
             static_mesh: None,
+            chunks: Vec::new(),
             instance_buf,
             instance_cap,
             ui_buf,
@@ -864,6 +1021,7 @@ impl Renderer {
             thumb_size: (1, 1),
             thumb_tex: None,
             thumb_targets: None,
+            timer: None,
         }
     }
 
@@ -965,7 +1123,10 @@ impl Renderer {
 
     /// Upload world geometry that never moves (drawn with an identity transform).
     pub fn set_static_mesh(&mut self, mesh: &MeshData) {
-        self.static_mesh = Some(GpuMesh::new(&self.device, mesh, "static"));
+        let (mesh, chunks) = chunked(mesh);
+        self.chunks = chunks;
+        self.static_mesh = Some(GpuMesh::new(&self.device, &mesh, "static"));
+        self.static_gen += 1;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -1014,6 +1175,129 @@ impl Renderer {
         self.encode(scene, &view, &mut encoder);
         self.queue.submit([encoder.finish()]);
         self.queue.present(tex);
+    }
+
+    /// Triangles in the static world mesh, and in one draw of `scene`'s instances.
+    pub fn triangles(&self, scene: &Scene) -> (u32, u64) {
+        let world = self.static_mesh.as_ref().map_or(0, |m| m.count / 3);
+        let moving = scene
+            .instances
+            .iter()
+            .map(|(id, _)| (self.meshes[id.0 as usize].count / 3) as u64)
+            .sum();
+        (world, moving)
+    }
+
+    /// Time each pass on the GPU from now on, if it can; false if it can't.
+    pub fn enable_gpu_timer(&mut self) -> bool {
+        if !self
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            return false;
+        }
+        let count = 2 * PASSES.len() as u32;
+        let size = count as u64 * 8;
+        self.timer = Some(GpuTimer {
+            queries: self.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("pass times"),
+                ty: wgpu::QueryType::Timestamp,
+                count,
+            }),
+            resolve: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("pass times"),
+                size,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            readback: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("pass times readback"),
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+            period: self.queue.get_timestamp_period(),
+        });
+        true
+    }
+
+    fn timestamps(&self, pass: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        self.timer
+            .as_ref()
+            .map(|t| wgpu::RenderPassTimestampWrites {
+                query_set: &t.queries,
+                beginning_of_pass_write_index: Some(2 * pass),
+                end_of_pass_write_index: Some(2 * pass + 1),
+            })
+    }
+
+    /// Render offscreen and wait for the GPU to finish (the `--bench` timer).
+    /// Returns the CPU time spent encoding and submitting, then the time
+    /// spent waiting on the GPU after that.
+    pub fn render_timed(
+        &mut self,
+        scene: &Scene,
+    ) -> Result<(std::time::Duration, std::time::Duration)> {
+        let start = std::time::Instant::now();
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bench"),
+            size: wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("bench"),
+            });
+        self.encode(scene, &view, &mut encoder);
+        if let Some(t) = &self.timer {
+            encoder.resolve_query_set(&t.queries, 0..2 * PASSES.len() as u32, &t.resolve, 0);
+            encoder.copy_buffer_to_buffer(&t.resolve, 0, &t.readback, 0, None);
+        }
+        self.queue.submit([encoder.finish()]);
+        let cpu = start.elapsed();
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| anyhow!("poll: {e:?}"))?;
+        Ok((cpu, start.elapsed() - cpu))
+    }
+
+    /// Each pass's GPU time in milliseconds for the last [`Renderer::render_timed`]
+    /// (0 for a pass that was skipped), if the timer is on.
+    pub fn pass_times(&self) -> Result<Option<[f32; PASSES.len()]>> {
+        let Some(t) = &self.timer else {
+            return Ok(None);
+        };
+        t.readback
+            .map_async(wgpu::MapMode::Read, .., |r| r.expect("map pass times"));
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| anyhow!("poll: {e:?}"))?;
+        let mut out = [0.0; PASSES.len()];
+        {
+            let data = t
+                .readback
+                .get_mapped_range(..)
+                .map_err(|e| anyhow!("map: {e:?}"))?;
+            let ticks: &[u64] = bytemuck::cast_slice(&data);
+            for (i, o) in out.iter_mut().enumerate() {
+                let (a, b) = (ticks[2 * i], ticks[2 * i + 1]);
+                *o = b.saturating_sub(a) as f32 * t.period / 1e6;
+            }
+        }
+        t.readback.unmap();
+        Ok(Some(out))
     }
 
     /// Render offscreen and read the result back as an image.
@@ -1087,20 +1371,73 @@ impl Renderer {
         Ok(img)
     }
 
-    fn upload(&mut self, scene: &Scene) -> Vec<(MeshId, std::ops::Range<u32>)> {
-        // Slot 0 is the identity instance for the static mesh; the rest are grouped by mesh.
+    /// Upload this frame's instances, particles, UI and globals. Returns the
+    /// instance ranges to draw for the camera, then for the sun's shadow map:
+    /// each holds only the instances inside that view.
+    fn upload(&mut self, scene: &Scene) -> (Ranges, Ranges, Vec<std::ops::Range<u32>>) {
+        let (w, h) = (self.width as f32, self.height as f32);
+        let view_proj = scene.camera.view_proj(w / h);
+        let sun = scene.sun_dir.normalize();
+        let r = scene.shadow_radius;
+        let light_view = look_at_mat4(
+            scene.shadow_center + sun * (r * 2.0),
+            scene.shadow_center,
+            Vec3::Y,
+        );
+        let light_proj = proj::orthographic(-r, r, -r, r, 1.0, r * 4.0);
+        let light_view_proj = light_proj * light_view;
+
+        // Slot 0 is the identity instance for the static mesh; then what the
+        // camera sees, then what the sun sees, each grouped by mesh.
         let mut sorted: Vec<&(MeshId, Instance)> = scene.instances.iter().collect();
         sorted.sort_by_key(|(id, _)| *id);
-        let mut data = Vec::with_capacity(sorted.len() + 1);
+        let spheres: Vec<(Vec3, f32)> = sorted
+            .iter()
+            .map(|(id, inst)| {
+                let m = &self.meshes[id.0 as usize];
+                let model = Mat4::from_cols_array_2d(&inst.model);
+                let scale = model
+                    .x_axis
+                    .truncate()
+                    .length()
+                    .max(model.y_axis.truncate().length())
+                    .max(model.z_axis.truncate().length());
+                (model.transform_point3(m.center), m.radius * scale)
+            })
+            .collect();
+        let mut data = Vec::with_capacity(2 * sorted.len() + 1);
         data.push(Instance::new(Mat4::IDENTITY, Vec4::new(1.0, 1.0, 1.0, 0.0)));
-        let mut ranges: Vec<(MeshId, std::ops::Range<u32>)> = Vec::new();
-        for (id, inst) in sorted {
-            let i = data.len() as u32;
-            match ranges.last_mut() {
-                Some((last, r)) if last == id => r.end = i + 1,
-                _ => ranges.push((*id, i..i + 1)),
+        let mut pick = |planes: [Vec4; 6]| {
+            let mut ranges = Ranges::new();
+            for ((id, inst), &(c, r)) in sorted.iter().zip(&spheres) {
+                if !in_frustum(&planes, c, r) {
+                    continue;
+                }
+                let i = data.len() as u32;
+                match ranges.last_mut() {
+                    Some((last, r)) if last == id && r.end == i => r.end = i + 1,
+                    _ => ranges.push((*id, i..i + 1)),
+                }
+                data.push(*inst);
             }
-            data.push(*inst);
+            ranges
+        };
+        let seen = pick(frustum(view_proj));
+        let shadowed = pick(frustum(light_view_proj));
+        self.light_view_proj = light_view_proj;
+        // The static world's cells in view, neighbours merged into one draw.
+        let planes = frustum(view_proj);
+        let mut world: Vec<std::ops::Range<u32>> = Vec::new();
+        if scene.world {
+            for c in &self.chunks {
+                if !in_frustum(&planes, c.center, c.radius) {
+                    continue;
+                }
+                match world.last_mut() {
+                    Some(r) if r.end == c.indices.start => r.end = c.indices.end,
+                    _ => world.push(c.indices.clone()),
+                }
+            }
         }
         if data.len() > self.instance_cap {
             self.instance_cap = data.len().next_power_of_two();
@@ -1146,19 +1483,9 @@ impl Renderer {
                 .write_buffer(&self.ui_buf, 0, bytemuck::cast_slice(&scene.ui));
         }
 
-        let (w, h) = (self.width as f32, self.height as f32);
-        let view_proj = scene.camera.view_proj(w / h);
-        let sun = scene.sun_dir.normalize();
-        let r = scene.shadow_radius;
-        let light_view = look_at_mat4(
-            scene.shadow_center + sun * (r * 2.0),
-            scene.shadow_center,
-            Vec3::Y,
-        );
-        let light_proj = proj::orthographic(-r, r, -r, r, 1.0, r * 4.0);
         let globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
-            light_view_proj: (light_proj * light_view).to_cols_array_2d(),
+            light_view_proj: light_view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             cam_pos: scene.camera.pos.extend(1.0).to_array(),
             sun_dir: sun.extend(0.0).to_array(),
@@ -1188,20 +1515,22 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&[w, h, 0.0, 0.0]),
         );
-        ranges
+        (seen, shadowed, world)
     }
 
     fn draw_geometry<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         ranges: &[(MeshId, std::ops::Range<u32>)],
-        world: bool,
+        world: &[std::ops::Range<u32>],
     ) {
         pass.set_vertex_buffer(1, self.instance_buf.slice(..));
-        if let Some(m) = self.static_mesh.as_ref().filter(|_| world) {
+        if let Some(m) = self.static_mesh.as_ref().filter(|_| !world.is_empty()) {
             pass.set_vertex_buffer(0, m.vb.slice(..));
             pass.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..m.count, 0, 0..1);
+            for r in world {
+                pass.draw_indexed(r.clone(), 0, 0..1);
+            }
         }
         for (id, r) in ranges {
             let m = &self.meshes[id.0 as usize];
@@ -1211,20 +1540,44 @@ impl Renderer {
         }
     }
 
-    fn encode(
-        &mut self,
-        scene: &Scene,
-        out: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        let ranges = self.upload(scene);
-
+    /// Draw the static world's shadow depth into the cache, unless it's
+    /// already there for this light and this world.
+    fn refresh_shadow_cache(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let key = (self.light_view_proj, self.static_gen);
+        if self
+            .shadow_cache
+            .as_ref()
+            .is_some_and(|(m, g, _, _)| (*m, *g) == key)
+        {
+            return;
+        }
+        let (tex, view) = match self.shadow_cache.take() {
+            Some((_, _, tex, view)) => (tex, view),
+            None => {
+                let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("static shadow"),
+                    size: wgpu::Extent3d {
+                        width: SHADOW_SIZE,
+                        height: SHADOW_SIZE,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: DEPTH_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = tex.create_view(&Default::default());
+                (tex, view)
+            }
+        };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow"),
+                label: Some("static shadow"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_view,
+                    view: &view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1237,7 +1590,87 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            self.draw_geometry(&mut pass, &ranges, scene.world);
+            let all = self.static_mesh.as_ref().map_or(0, |m| m.count);
+            self.draw_geometry(&mut pass, &[], &[0..all]);
+        }
+        self.shadow_cache = Some((key.0, key.1, tex, view));
+    }
+
+    fn encode(
+        &mut self,
+        scene: &Scene,
+        out: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let (seen, shadowed, world) = self.upload(scene);
+
+        // The world's own shadow comes from the cache when it still fits.
+        let cached = scene.world && self.static_mesh.is_some();
+        if cached {
+            self.refresh_shadow_cache(encoder);
+            let (_, _, tex, _) = self.shadow_cache.as_ref().expect("just refreshed");
+            encoder.copy_texture_to_texture(
+                tex.as_image_copy(),
+                self.shadow_tex.as_image_copy(),
+                wgpu::Extent3d {
+                    width: SHADOW_SIZE,
+                    height: SHADOW_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("shadow"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: if cached {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: self.timestamps(0),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.shadow_pipe);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            // Uncached, the sun sees the whole world.
+            let all = self.static_mesh.as_ref().map_or(0, |m| m.count);
+            let sun_world = if scene.world && !cached {
+                vec![0..all]
+            } else {
+                Vec::new()
+            };
+            self.draw_geometry(&mut pass, &shadowed, &sun_world);
+        }
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("depth prepass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.targets.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: self.timestamps(1),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.prepass_pipe);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_bind_group(1, &self.shadow_bg, &[]);
+            self.draw_geometry(&mut pass, &seen, &world);
         }
 
         {
@@ -1255,19 +1688,19 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.timestamps(2),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.scene_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_bind_group(1, &self.shadow_bg, &[]);
-            self.draw_geometry(&mut pass, &ranges, scene.world);
+            self.draw_geometry(&mut pass, &seen, &world);
             pass.set_pipeline(&self.sky_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
@@ -1292,7 +1725,7 @@ impl Renderer {
                     depth_ops: None,
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.timestamps(3),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1317,7 +1750,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: self.timestamps(4),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1340,7 +1773,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: self.timestamps(5),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1591,7 +2024,8 @@ fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)
     log::info!("GPU: {} ({:?})", info.name, info.backend);
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("tankit"),
-        required_features: wgpu::Features::empty(),
+        // Timestamps only feed `--bench`; ask for them where they're free to have.
+        required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
         required_limits: wgpu::Limits::default(),
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: wgpu::MemoryHints::Performance,

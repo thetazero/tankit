@@ -15,7 +15,7 @@
 use std::f32::consts::TAU;
 
 use crate::audio::Listener;
-use crate::audio::dsp::{Noise, OnePole, Smooth, Svf, pan_gains};
+use crate::audio::dsp::{Noise, OnePole, Panner, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::map::{Ambient, Map};
 
@@ -97,6 +97,7 @@ pub struct PlaceVoice {
     pan: Smooth,
     air: Smooth,
     air_lp: OnePole,
+    panner: Panner,
     s: State,
 }
 
@@ -124,6 +125,7 @@ impl PlaceVoice {
             pan: Smooth::new(0.0),
             air: Smooth::new(8000.0),
             air_lp: OnePole::default(),
+            panner: Panner::default(),
             s,
         }
     }
@@ -149,8 +151,8 @@ impl PlaceVoice {
             let pan = self.pan.next(k.slow);
             let air = self.air.next(k.slow);
             let x = self.s.next(self.kind, sr);
-            let x = self.air_lp.run(x, OnePole::coef(air, sr)) * gain;
-            let (l, r) = pan_gains(pan);
+            let x = self.air_lp.run_at(x, air, sr) * gain;
+            let (l, r) = self.panner.gains(pan);
             frame[0] += x * l;
             frame[1] += x * r;
         }
