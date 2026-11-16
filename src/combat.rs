@@ -471,6 +471,12 @@ pub enum Sound {
     Confirm,
     /// The player's link came back in a fresh chassis.
     Link,
+    /// A tank arriving (spawn or respawn), its team's way.
+    Arrival {
+        tank: usize,
+        faction: Faction,
+        at: Vec3,
+    },
 }
 
 /// Most sound events kept if nobody drains them (headless runs, tests).
@@ -692,6 +698,13 @@ impl Match {
             let f = &mut self.fighters[i];
             f.reload_in -= DT;
             f.shield -= DT;
+            if f.alive && f.arrived == 0.0 {
+                self.sounds.push(Sound::Arrival {
+                    tank: i,
+                    faction: self.factions[f.team],
+                    at: self.world.tanks[i].pos,
+                });
+            }
             f.arrived += DT;
             f.since_hit += DT;
             f.since_dealt += DT;
@@ -1959,6 +1972,37 @@ mod tests {
             m.step(Command::default(), false);
         }
         m
+    }
+
+    /// Every tank's arrival is heard once, its team's way: all of them at the
+    /// round start, and a tank again when it respawns.
+    #[test]
+    fn arrivals_sound_once_per_spawn() {
+        let mut m = four_sides(7);
+        let n = m.fighters.len();
+        let mut heard = vec![0; n];
+        let mut count = |m: &mut Match, heard: &mut Vec<usize>| {
+            for s in m.sounds.drain(..) {
+                if let Sound::Arrival { tank, faction, .. } = s {
+                    assert_eq!(faction, m.factions[m.fighters[tank].team]);
+                    heard[tank] += 1;
+                }
+            }
+        };
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+            count(&mut m, &mut heard);
+        }
+        assert!(heard.iter().all(|&h| h == 1), "{heard:?}");
+        for side in Faction::ALL {
+            assert!(m.fighters.iter().any(|f| m.factions[f.team] == side));
+        }
+        m.kill(1, 0);
+        for _ in 0..((RESPAWN_TIME + 0.2) / DT) as usize {
+            m.step(Command::default(), false);
+            count(&mut m, &mut heard);
+        }
+        assert_eq!(heard[0], 2, "{heard:?}");
     }
 
     /// Holding the trigger keeps a shell gun firing at its reload rate.
