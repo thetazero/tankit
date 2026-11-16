@@ -52,6 +52,10 @@ fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(1.0);
     }
     let p = world_at(px);
+    // Past the fade below, AO is fully off: skip the samples.
+    if (length(g.cam_pos.xyz - p) >= 80.0) {
+        return vec4<f32>(1.0);
+    }
     // Normal from depth: pick the neighbor on each axis that's closer, so
     // silhouette edges don't produce garbage normals.
     let r = world_at(px + vec2<i32>(1, 0)) - p;

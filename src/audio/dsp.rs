@@ -116,8 +116,58 @@ impl Smooth {
     }
 
     pub fn next(&mut self, coef: f32) -> f32 {
-        self.value += (self.target - self.value) * coef;
+        let gap = self.target - self.value;
+        // Land on the target rather than creep at it forever: a value easing
+        // to zero would otherwise sink into subnormal floats, which are
+        // about a hundred times slower to multiply.
+        self.value = if gap.abs() < 1e-7 {
+            self.target
+        } else {
+            self.value + gap * coef
+        };
         self.value
+    }
+}
+
+/// While alive, the CPU flushes subnormal floats to zero (x86: FTZ and DAZ
+/// in MXCSR); the old mode comes back on drop. Every filter and fade ringing
+/// down to silence passes through subnormals, where each multiply costs
+/// around a hundred times more, so the mixer renders under one of these.
+/// Values that small are far below anything audible.
+pub struct FlushDenormals {
+    #[cfg(target_arch = "x86_64")]
+    old: u32,
+}
+
+impl FlushDenormals {
+    #[cfg(target_arch = "x86_64")]
+    pub fn new() -> FlushDenormals {
+        // FTZ is bit 15, DAZ bit 6.
+        const FTZ_DAZ: u32 = (1 << 15) | (1 << 6);
+        let mut old = 0u32;
+        // SAFETY: reading and writing MXCSR only changes how this thread
+        // rounds subnormal floats; every x86_64 CPU has SSE.
+        unsafe {
+            std::arch::asm!("stmxcsr [{}]", in(reg) &mut old, options(nostack));
+            let new = old | FTZ_DAZ;
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &new, options(nostack, readonly));
+        }
+        FlushDenormals { old }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn new() -> FlushDenormals {
+        FlushDenormals {}
+    }
+}
+
+impl Drop for FlushDenormals {
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: puts back the mode read in `new`.
+        unsafe {
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &self.old, options(nostack, readonly));
+        }
     }
 }
 
