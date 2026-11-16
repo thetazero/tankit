@@ -731,6 +731,37 @@ impl Map {
         }
     }
 
+    /// A big mass broken off at the top, drawn as what's left of the next
+    /// floor: stubs of wall and column standing on its flat top. (The
+    /// renderer's jagged `broken` top is for thin pieces; on a wide top its
+    /// fan of slivers shades into a starburst.)
+    fn ragged_top(&mut self, rng: &mut Rng, o: &OBox) {
+        let (ax, az) = o.axes();
+        let stubs = 3 + (o.half.x * o.half.y / 40.0).min(4.0) as usize;
+        for _ in 0..stubs {
+            let half = Vec2::new(
+                rng.range(0.3, (o.half.x * 0.3).clamp(0.4, 2.5)),
+                rng.range(0.3, (o.half.y * 0.3).clamp(0.4, 2.5)),
+            );
+            let q = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)) * (o.half - half);
+            self.oboxes.push(OBox {
+                center: o.center + ax * q.x + az * q.y,
+                yaw: o.yaw,
+                half,
+                y0: o.y1 - 0.05,
+                y1: o.y1 + rng.range(0.6, 3.2),
+                color: o.color * rng.range(0.9, 1.0),
+                side_mat: o.side_mat,
+                top_mat: o.top_mat,
+                solid: false,
+                // Small enough that the jagged top reads as broken, not a fan.
+                broken: half.max_element() < 1.0,
+                chip: 0.01,
+                ..OBox::default()
+            });
+        }
+    }
+
     /// A round column with a square base and capital, standing at `at`.
     fn column(&mut self, at: Vec3, r: f32, h: f32, broken: bool) {
         self.slab(
@@ -1027,7 +1058,8 @@ impl Map {
                 0.01,
             );
             if broken {
-                self.oboxes.last_mut().unwrap().broken = true;
+                let o = *self.oboxes.last().unwrap();
+                self.ragged_top(rng, &o);
                 continue;
             }
             // Half columns on the pier faces, both ways.
@@ -1298,7 +1330,8 @@ impl Map {
                 true,
             );
             if shelled && y1 < top {
-                self.oboxes.last_mut().unwrap().broken = true;
+                let o = *self.oboxes.last().unwrap();
+                self.ragged_top(rng, &o);
             }
             // Ribbon windows round each floor (front and back faces).
             let mut y = lift + 1.6;
@@ -1618,16 +1651,19 @@ impl Map {
             // Darker than the city inside: they sit back in the haze.
             let color = CONCRETES[rng.index(CONCRETES.len())] * rng.range(0.6, 0.75);
             let broken = rng.f32() < 0.35;
-            self.oboxes.push(OBox {
+            let tower = OBox {
                 y0: 0.0,
                 y1: h,
                 color,
                 side_mat: Material::Concrete,
                 top_mat: Material::Concrete,
                 solid: false,
-                broken,
                 ..lot
-            });
+            };
+            self.oboxes.push(tower);
+            if broken {
+                self.ragged_top(rng, &tower);
+            }
             // Ribbon windows on the faces toward the city, for the nearer
             // ones (the far ones are haze).
             if far < 140.0 {
