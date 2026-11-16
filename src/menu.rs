@@ -99,7 +99,7 @@ impl Menu {
         );
         y += 52.0;
         pilot(&mut p, Vec2::new(x, y), profile);
-        y += 64.0;
+        y += 88.0;
         p.line(
             Vec2::new(x, y),
             Vec2::new(x + PANEL_W, y),
@@ -139,7 +139,9 @@ impl Menu {
                 for (k, v) in [
                     ("CONTRACT", m.mode.to_string()),
                     ("MAP", m.map.to_string()),
-                    ("OPPONENTS", m.bots.to_string()),
+                    ("EMPLOYER", m.sides[0].name().to_string()),
+                    ("AGAINST", m.sides[1].name().to_string()),
+                    ("TEAMS", m.teams()),
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
                 ] {
@@ -207,7 +209,7 @@ impl Pause {
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
-        let size = Vec2::new(PANEL_W + 48.0, 300.0);
+        let size = Vec2::new(PANEL_W + 48.0, 320.0);
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
         p.rect(min, size, [0.03, 0.03, 0.035, 0.9]);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
@@ -254,6 +256,13 @@ impl Pause {
             r.progress(),
             theme::FG,
         );
+        y += 22.0;
+        label(
+            &mut p,
+            Vec2::new(x, y),
+            "LEAVING FORFEITS THE CONTRACT PAY",
+            Align::Left,
+        );
         p.finish()
     }
 }
@@ -280,6 +289,14 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
         p,
         at + Vec2::new(PANEL_W, 38.0),
         &format!("{} / {} TO RANK {}", r.into, r.span, r.rank + 1),
+        Align::Right,
+    );
+    label(p, at + Vec2::new(0.0, 62.0), "CRYSTALS", Align::Left);
+    let cw = label(p, at + Vec2::new(PANEL_W, 62.0), "CR", Align::Right);
+    p.text(
+        at + Vec2::new(PANEL_W - cw - 8.0, 60.0),
+        &profile.crystals.to_string(),
+        &TextStyle::value(12.0),
         Align::Right,
     );
 }

@@ -1,6 +1,8 @@
 mod ai;
 mod app;
 mod combat;
+mod economy;
+mod faction;
 mod game;
 mod garage;
 mod hud;
@@ -24,12 +26,12 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map --spawn --bots --hull --turret skips the menu and drops straight into a match
+  any of --seed --map --spawn --team-size --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
   --map <city|proving|saltmarket>
                           city (default), the physics test course, or Saltmarket (desert town)
   --spawn <n>             which spawn point to start at
-  --bots <n>              bot opponents (default 5, 0 on the proving ground; max 7)
+  --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -41,8 +43,10 @@ tankit [OPTIONS]
   --turret <name>         player turret: lance maul (Imperium), wisp triad (Sorn),
                           lumen (machines), hymn (Resonant); default lance
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
-  --screen <menu|missions|pause>  (with --shot) render that menu screen
-  --xp <n>                (with --shot --screen) pilot XP to show
+  --screen <menu|missions|pause|results>  (with --shot) render that screen
+  --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
+  --xp <n>                (with --shot) pilot XP for menu, garage and pause shots
+  --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
@@ -62,6 +66,7 @@ pub struct Args {
     garage: bool,
     screen: Option<Screen>,
     xp: u32,
+    crystals: u32,
     straight: bool,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
@@ -70,6 +75,14 @@ pub struct Args {
 }
 
 impl Args {
+    /// An in-memory pilot for headless shots (never saved).
+    fn profile(&self) -> profile::Profile {
+        let mut p = profile::Profile::in_memory();
+        p.xp = self.xp;
+        p.crystals = self.crystals;
+        p
+    }
+
     pub fn map(&self) -> map::Map {
         make_map(self.seed, self.map)
     }
@@ -106,6 +119,7 @@ enum Screen {
     Menu,
     Missions,
     Pause,
+    Results,
 }
 
 struct ShotArgs {
@@ -159,7 +173,7 @@ fn parse_args() -> Result<Args> {
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let mut xp = 0;
+    let (mut xp, mut crystals) = (0, 0);
     let mut room = ShowroomArgs {
         orbit: None,
         dist: 24.0,
@@ -168,7 +182,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = args.next() {
         if matches!(
             a.as_str(),
-            "--seed" | "--map" | "--spawn" | "--bots" | "--hull" | "--turret"
+            "--seed" | "--map" | "--spawn" | "--team-size" | "--hull" | "--turret"
         ) {
             play = true;
         }
@@ -183,7 +197,13 @@ fn parse_args() -> Result<Args> {
                 other => bail!("--map expects city, proving or saltmarket, got {other:?}"),
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
-            "--bots" => bots = Some(args.next().context("--bots needs a number")?.parse()?),
+            "--team-size" => {
+                let n: usize = args.next().context("--team-size needs a number")?.parse()?;
+                if n == 0 {
+                    bail!("--team-size must be at least 1");
+                }
+                bots = Some(2 * n - 1);
+            }
             "--straight" => straight = true,
             "--cam" => {
                 let v: Vec<f32> = args
@@ -225,10 +245,14 @@ fn parse_args() -> Result<Args> {
                     Some("menu") => Screen::Menu,
                     Some("missions") => Screen::Missions,
                     Some("pause") => Screen::Pause,
-                    other => bail!("--screen expects menu, missions or pause, got {other:?}"),
+                    Some("results") => Screen::Results,
+                    other => {
+                        bail!("--screen expects menu, missions, pause or results, got {other:?}")
+                    }
                 })
             }
             "--xp" => xp = args.next().context("--xp needs a number")?.parse()?,
+            "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--showroom" => showroom = true,
             "--orbit" => {
                 room.orbit = Some(
@@ -253,13 +277,14 @@ fn parse_args() -> Result<Args> {
         seed,
         map: map_kind,
         spawn,
-        bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 5 }),
+        bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 11 }),
         loadout,
         kit_given,
         play,
         garage,
         screen,
         xp,
+        crystals,
         straight,
         cam,
         shot: shot.map(|out| ShotArgs {
@@ -289,6 +314,11 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     } else {
         game.set_player_hull(args.loadout.0);
         game.world.tanks[0].turret_kind = args.loadout.1;
+    }
+    let profile = args.profile();
+    game.set_player_levels(profile.levels);
+    if args.screen == Some(Screen::Results) {
+        game.time_left = (shot.time - 3.0).max(0.1);
     }
     let mut cam = scene::ChaseCam::new();
     let mut garage = garage::Garage::new();
@@ -336,7 +366,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         let mut tanks = game.display_tanks(1.0);
         let driven = tanks[0].clone();
-        garage.preview(&mut tanks[0], args.loadout);
+        garage.preview(&mut tanks[0]);
         let view = match args.cam {
             Some((pos, target)) => render::Camera {
                 pos,
@@ -350,11 +380,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, h);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                let mut profile = profile::Profile::in_memory();
-                profile.xp = args.xp;
                 frame
                     .ui
                     .extend(menu::Pause::new().draw(&profile, game.xp, w, h));
@@ -368,17 +396,27 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     }
     let world = &game.world;
     let t = &world.tanks[0];
-    let board: Vec<String> = game
-        .standings()
-        .iter()
-        .map(|&i| {
-            format!(
-                "{} {}/{}",
-                game.fighters[i].name, game.fighters[i].kills, game.fighters[i].deaths
-            )
-        })
-        .collect();
-    println!("score (kills/deaths): {}", board.join(", "));
+    for team in 0..2 {
+        let board: Vec<String> = game
+            .standings()
+            .into_iter()
+            .filter(|&i| game.fighters[i].team == team)
+            .map(|i| {
+                format!(
+                    "{} {}/{}",
+                    hud::callsign(&game, i),
+                    game.fighters[i].kills,
+                    game.fighters[i].deaths
+                )
+            })
+            .collect();
+        println!(
+            "{} {} (kills/deaths): {}",
+            game.factions[team].name(),
+            game.score(team),
+            board.join(", ")
+        );
+    }
     println!(
         "wrote {} frame(s) to {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {} face contacts {}",
         shot.frames,
@@ -396,8 +434,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
 
 /// The main menu or mission select over the menu backdrop, headless.
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
-    let mut profile = profile::Profile::in_memory();
-    profile.xp = args.xp;
+    let mut profile = args.profile();
     profile.loadout = args.loadout;
     let mut game = app::menu_match(profile.loadout);
     let mut menu = menu::Menu::new();

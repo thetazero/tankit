@@ -30,27 +30,6 @@ pub enum HullKind {
     Bastion,
 }
 
-/// Who builds a part (see docs/setting.md). Parts from different makers mix freely.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Faction {
-    Imperium,
-    /// The aliens.
-    Sorn,
-    Machines,
-    Resonant,
-}
-
-impl Faction {
-    pub fn name(self) -> &'static str {
-        match self {
-            Faction::Imperium => "IMPERIUM",
-            Faction::Sorn => "SORN",
-            Faction::Machines => "MACHINES",
-            Faction::Resonant => "RESONANT",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurretKind {
     /// Imperium rail cannon.
@@ -78,7 +57,8 @@ impl TurretKind {
         TurretKind::Hymn,
     ];
 
-    pub fn maker(self) -> Faction {
+    pub fn maker(self) -> crate::faction::Faction {
+        use crate::faction::Faction;
         match self {
             TurretKind::Lance | TurretKind::Maul => Faction::Imperium,
             TurretKind::Wisp | TurretKind::Triad => Faction::Sorn,
@@ -720,13 +700,15 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
             None,
         );
     }
-    for o in &map.oboxes {
+    for o in map.oboxes.iter().filter(|o| o.solid) {
         let hy = (o.y1 - o.y0) * 0.5;
+        // Ramps (collapsed slabs) grip like ground; walls are slick-ish.
+        let friction = if o.is_ramp() { ground_friction } else { 0.4 };
         physics.insert_collider(
             ColliderBuilder::cuboid(o.half.x, hy, o.half.y)
-                .translation(Vec3::new(o.center.x, o.y0 + hy, o.center.y))
-                .rotation(Vec3::new(0.0, o.yaw, 0.0))
-                .friction(0.4),
+                .translation(o.center3())
+                .rotation(o.rotation().to_scaled_axis())
+                .friction(friction),
             None,
         );
     }
@@ -1329,6 +1311,7 @@ mod tests {
     fn jumps_and_lands_upright() {
         let mut w = flat_world();
         let kicker = Wedge {
+            material: None,
             min: Vec2::new(95.0, 120.0),
             max: Vec2::new(105.0, 124.0),
             base_y: 0.0,

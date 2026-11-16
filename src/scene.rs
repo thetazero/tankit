@@ -9,8 +9,6 @@ use crate::render::{Camera, Scene};
 use crate::sim::{Tank, World, apron_rects, dir2, wrap_angle};
 use crate::tank::TankArt;
 
-pub const SUN_DIR: Vec3 = Vec3::new(0.55, 0.48, 0.4);
-
 /// Static geometry for the whole arena, built once per map.
 pub fn map_mesh(map: &Map) -> MeshData {
     let mut m = MeshData::default();
@@ -46,7 +44,9 @@ pub fn map_mesh(map: &Map) -> MeshData {
                 n = -n;
             }
             // Slope faces get the paving pattern, everything else is plain.
-            let material = if n.y > 0.2 { mat::PAVING } else { mat::PLAIN };
+            let material = w
+                .material
+                .unwrap_or(if n.y > 0.2 { mat::PAVING } else { mat::PLAIN });
             let c = w.color.extend(material);
             if pts.len() == 4 {
                 m.quad([pts[0], pts[1], pts[2], pts[3]], n, c);
@@ -86,15 +86,9 @@ pub fn map_mesh(map: &Map) -> MeshData {
 /// A box turned about +y: built as an axis-aligned box at the origin, then rotated into place.
 fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
     let mut local = MeshData::default();
-    let h = Vec3::new(o.half.x, 0.0, o.half.y);
-    local.add_box(
-        Vec3::new(-h.x, o.y0, -h.z),
-        Vec3::new(h.x, o.y1, h.z),
-        o.color.extend(o.side_mat),
-        o.color.extend(o.top_mat),
-    );
-    let xf = Mat4::from_translation(Vec3::new(o.center.x, 0.0, o.center.y))
-        * Mat4::from_rotation_y(o.yaw);
+    let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
+    local.add_box(-h, h, o.color.extend(o.side_mat), o.color.extend(o.top_mat));
+    let xf = Mat4::from_rotation_translation(o.rotation(), o.center3());
     let base = m.verts.len() as u32;
     for v in &local.verts {
         let mut v = *v;
@@ -282,7 +276,8 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
     Scene {
         camera,
         time: world.time,
-        sun_dir: SUN_DIR,
+        sun_dir: world.map.atmosphere.sun_dir,
+        atmosphere: world.map.atmosphere,
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,

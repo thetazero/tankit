@@ -56,7 +56,12 @@ impl NavGrid {
             }
         }
         for o in &map.oboxes {
-            if o.y1 - o.y0 < 0.6 || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0 {
+            // Debris and drivable ramps don't block; neither does anything low or overhead.
+            if !o.solid
+                || o.is_ramp()
+                || o.y1 - o.y0 < 0.6
+                || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0
+            {
                 continue;
             }
             let reach = o.half.length() + CLEARANCE;
@@ -262,6 +267,8 @@ impl PartialOrd for Node {
 pub struct Contact {
     /// Alive and not spawn-protected: worth shooting at.
     pub targetable: bool,
+    /// Which side it's on; bots only hunt the other one.
+    pub team: usize,
 }
 
 /// One bot's memory between steps.
@@ -283,6 +290,8 @@ pub struct Bot {
     jink: f32,
     jink_in: f32,
     roam: Option<Vec2>,
+    /// Path searches run so far (each one can cost a whole-grid search).
+    plans: u32,
 }
 
 impl Bot {
@@ -304,6 +313,7 @@ impl Bot {
             jink,
             jink_in: 2.0,
             roam: None,
+            plans: 0,
         }
     }
 
@@ -341,7 +351,7 @@ impl Bot {
             self.retarget_in = 0.4;
             let mut best: Option<(usize, f32)> = None;
             for (j, o) in world.tanks.iter().enumerate() {
-                if j == me || !contacts[j].targetable {
+                if j == me || !contacts[j].targetable || contacts[j].team == contacts[me].team {
                     continue;
                 }
                 let d = t.pos.distance(o.pos);
@@ -385,10 +395,20 @@ impl Bot {
             self.roam = None;
         }
 
+        // Replan on a timer. A failed plan (goal cut off, e.g. up on a roof)
+        // waits for the timer too: each try searches the whole grid.
         self.replan_in -= dt;
-        if self.replan_in <= 0.0 || self.path.is_empty() {
+        if self.replan_in <= 0.0 {
             self.replan_in = 1.0 + self.rng.f32() * 0.5;
             self.path = nav.path(my2, goal);
+            self.plans += 1;
+            if self.path.is_empty() {
+                // Unreachable: give up on that roam spot; head straight for a target.
+                self.roam = None;
+                if target.is_some() {
+                    self.path.push(goal);
+                }
+            }
         }
         while self.path.len() > 1 && self.path[0].distance(my2) < 4.0 {
             self.path.remove(0);
@@ -524,6 +544,46 @@ mod tests {
         }
     }
 
+    /// Walled into a pocket, every roam spot is out of reach, and each failed
+    /// search covers the whole grid: the bot must wait for its replan timer
+    /// instead of searching again every step (that made big matches crawl).
+    #[test]
+    fn unreachable_goals_dont_replan_every_step() {
+        let mut map = Map::empty(100.0);
+        map.open_spots = vec![Vec2::new(20.0, 20.0), Vec2::new(30.0, 80.0)];
+        // A sealed 16 m pen around (70, 70).
+        for (min, max) in [
+            (Vec2::new(60.0, 60.0), Vec2::new(80.0, 62.0)),
+            (Vec2::new(60.0, 78.0), Vec2::new(80.0, 80.0)),
+            (Vec2::new(60.0, 60.0), Vec2::new(62.0, 80.0)),
+            (Vec2::new(78.0, 60.0), Vec2::new(80.0, 80.0)),
+        ] {
+            map.solids.push(crate::map::Solid {
+                min: Vec3::new(min.x, 0.0, min.y),
+                max: Vec3::new(max.x, 4.0, max.y),
+            });
+        }
+        let nav = NavGrid::build(&map);
+        let mut w = World::empty(map);
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(70.0, 70.0),
+            0.0,
+            crate::sim::HullKind::Lancer,
+            crate::sim::TurretKind::Lance,
+        );
+        let mut bot = Bot::new(3);
+        let contacts = [Contact {
+            targetable: false,
+            team: 0,
+        }];
+        for _ in 0..(3.0 / DT) as usize {
+            let (cmd, _) = bot.think(0, &w, &contacts, &nav, DT);
+            w.step(&[cmd]);
+        }
+        assert!(bot.plans <= 3, "{} path searches in 3 s", bot.plans);
+    }
+
     /// A bot with nobody to fight drives somewhere: it roams and actually moves.
     #[test]
     fn lone_bot_roams() {
@@ -531,7 +591,10 @@ mod tests {
         let nav = NavGrid::build(&w.map);
         let mut bot = Bot::new(1);
         let start = w.tanks[0].pos;
-        let contacts = [Contact { targetable: false }];
+        let contacts = [Contact {
+            targetable: false,
+            team: 0,
+        }];
         for _ in 0..(8.0 / DT) as usize {
             let (cmd, _) = bot.think(0, &w, &contacts, &nav, DT);
             w.step(&[cmd]);

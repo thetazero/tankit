@@ -5,8 +5,10 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::faction::Faction;
 use crate::rng::Rng;
 
+mod ruins;
 mod saltmarket;
 
 /// Size of one city-grid cell in meters.
@@ -22,6 +24,20 @@ pub mod mat {
     pub const ROOF: f32 = 3.0;
     pub const GRASS: f32 = 4.0;
     pub const PAVING: f32 = 5.0;
+    // 6..12 are tank materials (tank/model.rs). World materials with
+    // procedural surface detail (scene.wgsl `world_surface`):
+    /// Wind-rippled desert sand.
+    pub const SAND: f32 = 13.0;
+    /// Sun-bleached plaster over masonry: chips, stains, grime streaks.
+    pub const PLASTER: f32 = 14.0;
+    /// Bare cast concrete: blotchy, pitted.
+    pub const CONCRETE: f32 = 15.0;
+    /// Broken masonry and stone.
+    pub const RUBBLE: f32 = 16.0;
+    /// Rusted steel.
+    pub const RUST: f32 = 17.0;
+    /// Weathered paint over steel, rusting through in patches.
+    pub const PAINTED: f32 = 18.0;
 }
 
 /// Blocking collider.
@@ -50,8 +66,10 @@ pub struct VisBox {
     pub top_mat: f32,
 }
 
-/// A solid box turned about the vertical axis (buildings and walls that
-/// don't line up with the world grid). Blocking and visible.
+/// A box turned about the vertical axis (buildings and walls that don't line
+/// up with the world grid), optionally tilted about its own local x axis
+/// (collapsed slabs that slope to the ground). Visible; blocking unless
+/// `solid` is false (small debris).
 #[derive(Clone, Copy, Debug)]
 pub struct OBox {
     /// Footprint center on the ground plane (x, z).
@@ -65,9 +83,46 @@ pub struct OBox {
     pub color: Vec3,
     pub side_mat: f32,
     pub top_mat: f32,
+    /// Rotation about the box's local x axis after the yaw, radians: positive
+    /// tips its local +z end down. The box turns about its own center.
+    pub tilt: f32,
+    /// Collides and blocks navigation. Debris is visual only.
+    pub solid: bool,
+}
+
+impl Default for OBox {
+    fn default() -> OBox {
+        OBox {
+            center: Vec2::ZERO,
+            yaw: 0.0,
+            half: Vec2::ONE,
+            y0: 0.0,
+            y1: 1.0,
+            color: Vec3::ONE,
+            side_mat: mat::PLAIN,
+            top_mat: mat::PLAIN,
+            tilt: 0.0,
+            solid: true,
+        }
+    }
 }
 
 impl OBox {
+    /// Full rotation: yaw about +y, then tilt about the local x axis.
+    pub fn rotation(&self) -> glam::Quat {
+        glam::Quat::from_rotation_y(self.yaw) * glam::Quat::from_rotation_x(self.tilt)
+    }
+
+    /// Box center in 3D.
+    pub fn center3(&self) -> Vec3 {
+        Vec3::new(self.center.x, (self.y0 + self.y1) * 0.5, self.center.y)
+    }
+
+    /// A sloped slab a tank can drive (gentle tilt).
+    pub fn is_ramp(&self) -> bool {
+        self.tilt.abs() > 0.05 && self.tilt.abs() < 0.5
+    }
+
     /// Local axes on the ground plane: (right, forward), as world xz directions.
     pub fn axes(&self) -> (Vec2, Vec2) {
         // glam's rotation_y maps local +x to (cos, -sin) and +z to (sin, cos) in xz.
@@ -141,6 +196,8 @@ pub struct Wedge {
     pub height: f32,
     pub rise: Rise,
     pub color: Vec3,
+    /// Surface material; None picks by slope (paving on top, plain sides).
+    pub material: Option<f32>,
 }
 
 impl Wedge {
@@ -301,9 +358,18 @@ pub struct Map {
     pub open_spots: Vec<Vec2>,
     /// Fixed spawn heading; None means face the map center.
     pub spawn_yaw: Option<f32>,
+    /// Sun, sky and haze.
+    pub atmosphere: crate::render::Atmosphere,
+    /// Each side's spawn spots, for team fights (both empty: spawn anywhere).
+    pub bases: [Vec<Vec2>; 2],
+    /// Who fights here: side 0 (the player's) and side 1.
+    pub factions: [Faction; 2],
     /// Where repair crates parachute in (see `repair`).
     pub repair_spots: Vec<Vec2>,
 }
+
+/// The matchup on maps that don't name their own.
+pub const DEFAULT_SIDES: [Faction; 2] = [Faction::Imperium, Faction::Resonant];
 
 /// How many repair drop spots a generated city gets.
 pub const REPAIR_SPOTS: usize = 4;
@@ -338,6 +404,9 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            atmosphere: crate::render::Atmosphere::default(),
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
         };
 
@@ -390,6 +459,7 @@ impl Map {
         map.perimeter_walls();
         map.backdrop(&mut rng);
         map.collect_open_spots();
+        map.bases = split_bases(&map.open_spots, map.size);
         map.repair_spots = spread_spots(&map.open_spots, map.center(), REPAIR_SPOTS);
         map
     }
@@ -718,6 +788,9 @@ impl Map {
             roads: Vec::new(),
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
+            atmosphere: crate::render::Atmosphere::default(),
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
         }
     }
@@ -744,6 +817,9 @@ impl Map {
             open_spots: Vec::new(),
             // Every lane runs along +z.
             spawn_yaw: Some(0.0),
+            atmosphere: crate::render::Atmosphere::default(),
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
         };
@@ -781,6 +857,7 @@ impl Map {
             let len = h / deg.to_radians().tan();
             let z0 = 40.0;
             map.wedges.push(Wedge {
+                material: None,
                 min: Vec2::new(x - 4.0, z0),
                 max: Vec2::new(x + 4.0, z0 + len),
                 base_y: 0.0,
@@ -795,6 +872,7 @@ impl Map {
             let flight = 2.0 * v * deg.to_radians().sin() / g * v * deg.to_radians().cos();
             let land_z = z0 + len + flight * 0.7;
             map.wedges.push(Wedge {
+                material: None,
                 min: Vec2::new(x - 5.0, land_z),
                 max: Vec2::new(x + 5.0, land_z + 14.0),
                 base_y: 0.0,
@@ -810,6 +888,7 @@ impl Map {
         let (px0, px1, pz0, pz1, ph) = (72.0, 88.0, 70.0, 100.0, 3.5);
         map.add_block(Vec3::new(px0, 0.0, pz0), Vec3::new(px1, ph, pz1), concrete);
         map.wedges.push(Wedge {
+            material: None,
             min: Vec2::new(px0, pz0 - 30.0),
             max: Vec2::new(px1, pz0),
             base_y: 0.0,
@@ -818,6 +897,7 @@ impl Map {
             color: blue,
         });
         map.wedges.push(Wedge {
+            material: None,
             min: Vec2::new(px0 - 9.0, pz0 + 4.0),
             max: Vec2::new(px0, pz0 + 14.0),
             base_y: 0.0,
@@ -826,6 +906,7 @@ impl Map {
             color: blue,
         });
         map.wedges.push(Wedge {
+            material: None,
             min: Vec2::new(px1, pz0 + 16.0),
             max: Vec2::new(px1 + 12.0, pz0 + 26.0),
             base_y: 0.0,
@@ -840,6 +921,7 @@ impl Map {
             let z = 120.0 + i as f32 * 9.0;
             for (rise, z0, z1) in [(Rise::PosZ, z, z + 1.2), (Rise::NegZ, z + 1.2, z + 2.4)] {
                 map.wedges.push(Wedge {
+                    material: None,
                     min: Vec2::new(6.0, z0),
                     max: Vec2::new(18.0, z1),
                     base_y: 0.0,
@@ -899,6 +981,19 @@ impl Map {
 
 /// `n` of `spots`, spread out: the one nearest `center` first, then each
 /// next pick as far as possible from those already taken.
+/// Team bases on a map with no hand-placed ones: the open spots in the west
+/// and east quarters.
+fn split_bases(spots: &[Vec2], size: f32) -> [Vec<Vec2>; 2] {
+    let side = |west: bool| {
+        spots
+            .iter()
+            .copied()
+            .filter(|p| (p.x < size * 0.25) == west && (p.x > size * 0.75) != west)
+            .collect()
+    };
+    [side(true), side(false)]
+}
+
 fn spread_spots(spots: &[Vec2], center: Vec2, n: usize) -> Vec<Vec2> {
     let Some(&first) = spots
         .iter()

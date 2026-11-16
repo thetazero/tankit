@@ -35,7 +35,8 @@ Gameplay stays **arcade tanks**: any hull with any turret, unlocked through
 play. Factions are the world, never a lock on your build. They show up as:
 
 - **Employers**: who the contract is for.
-- **Enemies**: who the bots are and how they look.
+- **Enemies**: who the bots are, how they look, and the guns they bring (each
+  side's bots use its own faction's turrets).
 - **Map owners**: whose territory a map is.
 - **Part makers**: every turret has a maker, and parts from different makers
   mix freely. Each maker has its own kind of weapon:
@@ -56,8 +57,8 @@ loop.
 
 ## Modes are contracts
 
-- **Attrition** (deathmatch): dropped into a battle, paid per kill until your
-  chassis is lost.
+- **Attrition** (team deathmatch): hired by one side and dropped into its
+  battle, paid per kill. The side with more kills when the clock runs out wins.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,
   carry crystals to your extraction point, deny the enemy theirs. Carrying
   crystals makes you a little stronger, but they resonate, so everyone can see

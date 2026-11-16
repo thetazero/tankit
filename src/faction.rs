@@ -1,0 +1,63 @@
+//! The sides of the war (see docs/setting.md). Every faction makes turrets;
+//! the two human factions also field teams (the machines and the Sorn come
+//! later as sides).
+
+use glam::Vec3;
+
+use crate::sim::TurretKind;
+use crate::ui::Rgba;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Faction {
+    /// Human; automated war machines commanded from orbit.
+    Imperium,
+    /// Human; a cult built around the crystals.
+    Resonant,
+    /// A machine faction.
+    Machines,
+    /// The aliens.
+    Sorn,
+}
+
+impl Faction {
+    pub fn name(self) -> &'static str {
+        match self {
+            Faction::Imperium => "IMPERIUM",
+            Faction::Resonant => "RESONANT",
+            Faction::Machines => "MACHINES",
+            Faction::Sorn => "SORN",
+        }
+    }
+
+    /// Tint for the tank's light armor plates.
+    pub fn paint(self) -> Vec3 {
+        match self {
+            // Pale, cold grey-white.
+            Faction::Imperium => Vec3::new(0.80, 0.86, 0.98),
+            // Crystal teal.
+            Faction::Resonant => Vec3::new(0.12, 0.78, 0.70),
+            // Rust orange.
+            Faction::Machines => Vec3::new(0.86, 0.46, 0.2),
+            // Dusk violet.
+            Faction::Sorn => Vec3::new(0.62, 0.5, 0.88),
+        }
+    }
+
+    /// HUD color: scores, kill feed, health bars over tanks.
+    pub fn ui(self) -> Rgba {
+        match self {
+            Faction::Imperium => [0.62, 0.78, 1.0, 1.0],
+            Faction::Resonant => [0.25, 0.95, 0.82, 1.0],
+            Faction::Machines => [1.0, 0.6, 0.3, 1.0],
+            Faction::Sorn => [0.78, 0.65, 1.0, 1.0],
+        }
+    }
+
+    /// The turrets this faction makes (and its bots fight with).
+    pub fn turrets(self) -> Vec<TurretKind> {
+        TurretKind::ALL
+            .into_iter()
+            .filter(|k| k.maker() == self)
+            .collect()
+    }
+}
