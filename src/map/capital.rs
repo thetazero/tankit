@@ -143,7 +143,7 @@ impl Map {
             // A cold, hazy morning: pale sun low in the east, ash in the air.
             atmosphere: crate::render::Atmosphere {
                 sun_dir: Vec3::new(0.66, 0.36, -0.4),
-                sun_color: Vec3::new(2.15, 1.95, 1.7),
+                sun_color: Vec3::new(2.05, 1.95, 1.8),
                 sky_zenith: Vec3::new(0.28, 0.34, 0.44),
                 sky_horizon: Vec3::new(0.6, 0.6, 0.58),
                 ground_color: Vec3::new(0.26, 0.25, 0.24),
@@ -1526,14 +1526,30 @@ impl Map {
         self.repair_spots = repairs.into_iter().filter(|&p| clear(self, p)).collect();
     }
 
-    /// Beyond the edge the city goes on: concrete towers and slabs (some
-    /// broken off), leaving the avenues' vistas open. Visual only.
+    /// Beyond the edge the city goes on, on flat ground out to the haze:
+    /// concrete towers and slabs, banded with dark ribbon windows on the
+    /// faces toward the city, some broken off, taller the further out. The
+    /// avenues' vistas stay open, each closed far off by a great tower
+    /// hung with crimson. Visual only.
     fn skyline(&mut self, rng: &mut Rng) {
+        // Flat ground from the edge out past the far plane, matching the
+        // play ground at the edge (grid lines on 0 and SIZE); under the
+        // arena it sinks out of sight.
+        let (cell, reach) = (4.0f32, 560.0f32);
+        let n = ((SIZE + 2.0 * reach) / cell) as usize + 1;
+        let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
+            let inside = x > 0.01 && z > 0.01 && x < SIZE - 0.01 && z < SIZE - 0.01;
+            if inside { -8.0 } else { 0.0 }
+        });
+        t.color = GROUND;
+        t.material = Material::Concrete;
+        self.scenery_terrain = Some(t);
+
         let mut placed: Vec<OBox> = Vec::new();
-        for _ in 0..900 {
+        for _ in 0..1600 {
             let p = Vec2::new(
-                rng.range(-160.0, SIZE + 160.0),
-                rng.range(-160.0, SIZE + 160.0),
+                rng.range(-320.0, SIZE + 320.0),
+                rng.range(-320.0, SIZE + 320.0),
             );
             let outside = p.x < -24.0 || p.y < -24.0 || p.x > SIZE + 24.0 || p.y > SIZE + 24.0;
             let d = p - CENTER;
@@ -1541,20 +1557,24 @@ impl Map {
             if !outside || vista {
                 continue;
             }
-            let far = ((p - CENTER).abs().max_element() - MID).max(0.0);
+            let far = (d.abs().max_element() - MID).max(0.0);
+            // Thinner out in the haze.
+            if rng.f32() < far / 400.0 {
+                continue;
+            }
             let half = Vec2::new(rng.range(7.0, 18.0), rng.range(7.0, 18.0));
             let lot = OBox {
                 center: p,
                 half,
-                yaw: if rng.f32() < 0.5 { 0.0 } else { FRAC_PI_2 },
                 ..OBox::default()
             };
-            if placed.iter().any(|o| o.overlaps(&lot, 4.0)) {
+            if placed.iter().any(|o| o.overlaps(&lot, 5.0)) {
                 continue;
             }
-            let h = rng.range(10.0, 26.0) + far * rng.range(0.1, 0.35);
+            let h = rng.range(10.0, 26.0) + far * rng.range(0.1, 0.3);
             // Darker than the city inside: they sit back in the haze.
             let color = CONCRETES[rng.index(CONCRETES.len())] * rng.range(0.6, 0.75);
+            let broken = rng.f32() < 0.35;
             self.oboxes.push(OBox {
                 y0: 0.0,
                 y1: h,
@@ -1562,10 +1582,73 @@ impl Map {
                 side_mat: Material::Concrete,
                 top_mat: Material::Concrete,
                 solid: false,
-                broken: rng.f32() < 0.35,
+                broken,
                 ..lot
             });
+            // Ribbon windows on the faces toward the city, for the nearer
+            // ones (the far ones are haze).
+            if far < 140.0 {
+                let toward = Vec2::new(-d.x.signum(), -d.y.signum());
+                let mut y = 3.0;
+                while y + 2.5 < h - if broken { 3.0 } else { 0.0 } {
+                    for (axis, sign) in [(0, toward.x), (1, toward.y)] {
+                        let (c, hh) = if axis == 0 {
+                            (
+                                p + Vec2::new(sign * (half.x + 0.05), 0.0),
+                                Vec2::new(0.08, half.y - 1.0),
+                            )
+                        } else {
+                            (
+                                p + Vec2::new(0.0, sign * (half.y + 0.05)),
+                                Vec2::new(half.x - 1.0, 0.08),
+                            )
+                        };
+                        self.oboxes.push(OBox {
+                            center: c,
+                            half: hh,
+                            y0: y,
+                            y1: y + 1.1,
+                            color: CONCRETE_DARK * 0.5,
+                            side_mat: Material::Concrete,
+                            top_mat: Material::Concrete,
+                            solid: false,
+                            ..OBox::default()
+                        });
+                    }
+                    y += 3.6;
+                }
+            }
             placed.push(lot);
+        }
+
+        // At the end of each vista, far out: a great tower, crimson down
+        // its face.
+        for dir in AXES {
+            let p = CENTER + dir * (MID + 220.0);
+            let side = Vec2::new(-dir.y, dir.x);
+            let half = (side * 16.0 + dir * 12.0).abs();
+            let h = 110.0;
+            self.oboxes.push(OBox {
+                center: p,
+                half,
+                y0: 0.0,
+                y1: h,
+                color: CONCRETE * 0.7,
+                side_mat: Material::Concrete,
+                top_mat: Material::Concrete,
+                solid: false,
+                ..OBox::default()
+            });
+            let face = Vec3::new(p.x, 0.0, p.y)
+                - Vec3::new(dir.x, 0.0, dir.y) * (half.dot(dir.abs()) + 0.1);
+            self.side_banner(
+                Vec3::new(face.x, h - 6.0, face.z),
+                -dir,
+                14.0,
+                70.0,
+                CRIMSON,
+                true,
+            );
         }
     }
 }
