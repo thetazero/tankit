@@ -25,6 +25,8 @@ pub mod theme {
     pub const DIM: Rgba = [0.94, 0.91, 0.86, 0.5];
     pub const FAINT: Rgba = [0.94, 0.91, 0.86, 0.24];
     pub const HOT: Rgba = [1.0, 0.42, 0.16, 1.0];
+    /// Repair crates and hull mended by them.
+    pub const MEND: Rgba = [0.45, 1.0, 0.58, 1.0];
     pub const HALO: Rgba = [0.0, 0.0, 0.0, 0.4];
     /// Extra halo width on each side, logical px.
     pub const HALO_PX: f32 = 1.5;

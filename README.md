@@ -82,6 +82,16 @@ skips the menu and drops straight into a round, for testing.
 Code: `src/menu.rs` (main menu, mission select, pause), `src/mission.rs`,
 `src/profile.rs`, XP in `src/combat.rs`, the state machine in `src/app.rs`.
 
+## Repair drops
+
+Every map has fixed drop zones (four spread across a city, two on the proving
+ground), painted on the road as a green square with a cross. Each zone runs its
+own counter: the first crate comes down 12 s into the round (later zones
+staggered by 6 s), floats in on a parachute from 40 m, and sits there until a
+damaged tank drives over it, which mends half its hull. The zone then counts
+down 30 s to its next drop. The HUD shows `REPAIR <seconds>` over empty zones in
+view and `REPAIR` over crates; tanks at full health drive straight through.
+
 ## Garage
 
 Press **G** mid-battle (alive or waiting to respawn), or pick **Garage** in the main menu. The tank parks where

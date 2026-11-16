@@ -9,6 +9,7 @@ mod menu;
 mod mission;
 mod profile;
 mod render;
+mod repair;
 mod rng;
 mod scene;
 mod showroom;
