@@ -116,6 +116,7 @@ impl Frame<'_> {
             },
             broken: false,
             ramp: false,
+            hidden: false,
         });
     }
 
@@ -188,6 +189,7 @@ impl Frame<'_> {
             chip: 0.0,
             broken: false,
             ramp: true,
+            hidden: false,
         });
     }
 
@@ -210,6 +212,7 @@ impl Frame<'_> {
             chip: 0.0,
             broken: false,
             ramp: false,
+            hidden: false,
         });
     }
 }

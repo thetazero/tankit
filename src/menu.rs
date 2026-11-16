@@ -11,6 +11,7 @@ use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{self, MISSIONS};
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
+use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, TextStyle, measure, theme};
 
@@ -296,10 +297,13 @@ impl Menu {
                 let names: Vec<&str> = Faction::ALL.iter().map(|f| f.name()).collect();
                 rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.faction);
                 for (i, f) in Faction::ALL.iter().enumerate() {
-                    // A swatch of their colour beside the chevron.
-                    p.rect(
-                        Vec2::new(x + PANEL_W - 26.0, y + i as f32 * 30.0 + 4.0),
-                        Vec2::new(6.0, 6.0),
+                    // Their emblem, in their colour, beside the chevron.
+                    emblem::emblem(
+                        &mut p,
+                        *f,
+                        Vec2::new(x + PANEL_W - 26.0, y + i as f32 * 30.0 + 7.5),
+                        13.0,
+                        1.2,
                         f.ui(),
                     );
                 }
@@ -383,7 +387,45 @@ impl Menu {
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
                 ] {
-                    y = detail(&mut p, Vec2::new(x, y), k, &v);
+                    let style = TextStyle::value(11.0);
+                    let others: Vec<Faction> =
+                        m.sides.iter().copied().filter(|&f| f != employer).collect();
+                    let sep = measure(" · ", &style);
+                    let width = match k {
+                        "EMPLOYER" => emblem::tagged_width(employer.name(), &style),
+                        "AGAINST" => {
+                            others
+                                .iter()
+                                .map(|f| emblem::tagged_width(f.name(), &style))
+                                .sum::<f32>()
+                                + sep * others.len().saturating_sub(1) as f32
+                        }
+                        _ => measure(&v, &style),
+                    };
+                    let right = detail_key(&mut p, Vec2::new(x, y), k, width);
+                    match k {
+                        "EMPLOYER" => {
+                            let mut style = style;
+                            style.color = employer.ui();
+                            emblem::faction_name(&mut p, right, employer, &style, Align::Right);
+                        }
+                        "AGAINST" => {
+                            let mut style = style;
+                            let mut at = right;
+                            for (i, &f) in others.iter().rev().enumerate() {
+                                if i > 0 {
+                                    style.color = theme::FG;
+                                    at.x -= p.text(at, " · ", &style, Align::Right);
+                                }
+                                style.color = f.ui();
+                                at.x -= emblem::faction_name(&mut p, at, f, &style, Align::Right);
+                            }
+                        }
+                        _ => {
+                            p.text(right, &v, &style, Align::Right);
+                        }
+                    }
+                    y = right.y + 22.0;
                 }
                 y += 8.0;
                 let brief = m.briefs[m.side_of(employer)];
@@ -539,11 +581,15 @@ impl Pause {
         y += 44.0;
         if let Some(i) = self.settings {
             settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
-            label(
+            hint_row(
                 &mut p,
+                &mut hits,
                 Vec2::new(x, min.y + size.y - 34.0),
-                "ENTER TOGGLE    A/D VOLUME    ESC BACK",
-                Align::Left,
+                &[
+                    ("ENTER", "TOGGLE", Some(Nav::Select)),
+                    ("A/D", "VOLUME", None),
+                    ("ESC", "BACK", Some(Nav::Back)),
+                ],
             );
             return Layer {
                 verts: p.finish(),
@@ -574,16 +620,18 @@ impl Pause {
         );
         y += 20.0;
         let r = profile.standing(employer);
-        label(
+        emblem::tagged(
             &mut p,
             Vec2::new(x, y + 1.0),
+            employer,
             &format!("{} T{}", employer.name(), r.level),
+            &TextStyle::LABEL,
             Align::Left,
         );
         widgets::hairbar(
             &mut p,
-            Vec2::new(x + 110.0, y + 5.0),
-            PANEL_W - 110.0,
+            Vec2::new(x + 132.0, y + 5.0),
+            PANEL_W - 132.0,
             r.progress(),
             theme::FG,
         );
@@ -688,11 +736,11 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
         let s = profile.standing(f);
         let mut name = TextStyle::value(11.0);
         name.color = f.ui();
-        p.text(Vec2::new(at.x, y), f.name(), &name, Align::Left);
+        emblem::faction_name(p, Vec2::new(at.x, y), f, &name, Align::Left);
         widgets::hairbar(
             p,
-            Vec2::new(at.x + 110.0, y + 6.0),
-            PANEL_W - 110.0 - 36.0,
+            Vec2::new(at.x + 136.0, y + 6.0),
+            PANEL_W - 136.0 - 36.0,
             s.progress(),
             if profile.trust_of(f) > 0 {
                 theme::FG
@@ -753,12 +801,19 @@ fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[&str], selecte
 /// sit beside its key drops onto the line below. Returns where the next one goes.
 fn detail(p: &mut Painter, at: Vec2, key: &str, value: &str) -> f32 {
     let style = TextStyle::value(11.0);
+    let right = detail_key(p, at, key, measure(value, &style));
+    p.text(right, value, &style, Align::Right);
+    right.y + 22.0
+}
+
+/// A detail line's key; returns where a value `width` wide goes, right-aligned:
+/// beside the key if it fits, else on the line below.
+fn detail_key(p: &mut Painter, at: Vec2, key: &str, width: f32) -> Vec2 {
     let gap = 8.0;
-    let beside = measure(key, &TextStyle::LABEL) + gap + measure(value, &style) <= PANEL_W;
+    let beside = measure(key, &TextStyle::LABEL) + gap + width <= PANEL_W;
     label(p, at + Vec2::new(0.0, 1.0), key, Align::Left);
     let y = if beside { at.y } else { at.y + 16.0 };
-    p.text(Vec2::new(at.x + PANEL_W, y), value, &style, Align::Right);
-    y + 22.0
+    Vec2::new(at.x + PANEL_W, y)
 }
 
 /// Small label text, `words` spaced and wrapped to the panel's width.
@@ -805,6 +860,26 @@ fn hints(
             );
         }
         y += 14.0;
+    }
+}
+
+/// Key hints on one line from `at`, the ones that do something clickable.
+fn hint_row(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, keys: &[(&str, &str, Option<Nav>)]) {
+    let mut x = at.x;
+    for (key, what, nav) in keys {
+        let mut k = TextStyle::LABEL;
+        k.color = theme::FG;
+        let kw = p.text(Vec2::new(x, at.y), key, &k, Align::Left);
+        let w = kw + 6.0 + label(p, Vec2::new(x + kw + 6.0, at.y), what, Align::Left);
+        if let Some(nav) = nav {
+            hits.add(
+                p,
+                Vec2::new(x - 4.0, at.y - 3.0),
+                Vec2::new(w + 8.0, 14.0),
+                Hit::Key(*nav),
+            );
+        }
+        x += w + 24.0;
     }
 }
 
@@ -1019,6 +1094,9 @@ mod tests {
             click(&mut p, Hit::Row(0)).1,
             Some(PauseAction::Setting(Change::Toggle(0)))
         );
+        // The footer's ESC BACK leaves settings, like the key.
+        click(&mut p, Hit::Key(Nav::Back));
+        assert_eq!(p.settings, None);
     }
 
     #[test]
