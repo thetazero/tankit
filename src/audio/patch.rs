@@ -179,15 +179,39 @@ pub const BOUNCE: &[Layer] = &[
     noise(Filt::High, 4000.0, 4000.0, 0.1, 0.02, 0.18),
 ];
 
-/// A round striking armour: a clang over a thud.
+/// A round striking armour: one crunch. All noise, no pitched ring: any
+/// tone that hangs on, however low, reads as a ping off a can.
 pub const HIT: &[Layer] = &[
-    ring(420.0, 0.32, 0.3),
-    ring(1088.0, 0.24, 0.24),
-    ring(1730.0, 0.17, 0.18),
-    ring(2650.0, 0.11, 0.12),
-    ring(3900.0, 0.07, 0.08),
-    noise(Filt::High, 2000.0, 2000.0, 0.1, 0.015, 0.6),
-    sine(130.0, 60.0, 0.05, 0.08, 0.5),
+    // A thump too short to have a pitch.
+    sine(110.0, 45.0, 0.03, 0.06, 0.6),
+    // The blow: low-passed noise that closes fast.
+    noise(Filt::Low, 1800.0, 250.0, 0.04, 0.1, 1.3),
+    Layer {
+        q: 0.6,
+        ..noise(Filt::Band, 500.0, 250.0, 0.08, 0.12, 0.8)
+    },
+    // The crunch: a dense burst of grinding clicks.
+    Layer {
+        src: Src::Crackle(2500.0),
+        filt: Filt::Band,
+        cutoff: (1200.0, 600.0),
+        sweep: 0.08,
+        q: 0.8,
+        decay: 0.09,
+        gain: 0.5,
+        ..L
+    },
+    // Grit settling after it.
+    Layer {
+        src: Src::Crackle(600.0),
+        filt: Filt::Band,
+        cutoff: (2000.0, 900.0),
+        q: 1.0,
+        decay: 0.18,
+        gain: 0.3,
+        delay: 0.01,
+        ..L
+    },
 ];
 
 /// A tank blowing up.
@@ -462,6 +486,30 @@ mod tests {
         let tail = band(&x[(0.25 * sr) as usize..], 150.0, 900.0, sr);
         let body = band(&x, 150.0, 900.0, sr);
         assert!(tail > 0.08 * body, "kontos stops dead: {:.3}", tail / body);
+    }
+
+    /// Getting hit sounded like a tin can: long bright partials above 1 kHz.
+    /// A round hitting thick armour is a low crunch that dies quickly.
+    #[test]
+    fn hits_crunch_not_ping() {
+        let sr = 48_000.0;
+        let mut v = Voice::new(HIT, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+        let mut buf = vec![0.0; 2 * (v.len * sr) as usize];
+        v.render(&mut buf, sr);
+        let x: Vec<f32> = buf.iter().step_by(2).copied().collect();
+        let body = band(&x, 100.0, 900.0, sr);
+        let ping = band(&x, 1000.0, 6000.0, sr);
+        assert!(body > 3.0 * ping, "body {body:.2}, ping {ping:.2}");
+        // No bright ring hanging on after the strike.
+        let tail = band(&x[(0.15 * sr) as usize..], 1000.0, 6000.0, sr);
+        assert!(tail < 0.02 * ping, "rings on: {:.3}", tail / ping);
+        // A crunch, not a ping: no pitched layer lasts long enough to hear
+        // as a note.
+        for l in HIT {
+            if l.src == Src::Sine {
+                assert!(l.decay <= 0.06, "a tone rings for {} s", l.decay);
+            }
+        }
     }
 
     #[test]
