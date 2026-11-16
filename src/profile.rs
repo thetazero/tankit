@@ -217,10 +217,6 @@ impl Profile {
         part.price().is_none() || self.bought.contains(&part)
     }
 
-    pub fn owns_kit(&self, kit: Loadout) -> bool {
-        self.owns(Part::Hull(kit.0)) && self.owns(Part::Turret(kit.1))
-    }
-
     /// Can `part` be bought right now? Its price if so.
     pub fn can_buy(&self, part: Part) -> Result<u32, Refusal> {
         let Some(price) = part.price().filter(|_| !self.owns(part)) else {
