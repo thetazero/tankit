@@ -476,9 +476,8 @@ impl World {
         t.turret_rel = 0.0;
         t.turret_rate = 0.0;
         t.gun_pitch = 0.0;
-        t.track_speed = [0.0; 2];
-        t.drive_speed = 0.0;
-        t.drive_turn = 0.0;
+        t.belt = [0.0; 2];
+        t.parked = true;
         t.flipped_time = 0.0;
         sync_from_body(t, &self.physics);
         t.snapshot();
@@ -814,6 +813,7 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     } else if t.parked {
         // The parking brake holds the belts until the driver touches the controls.
         t.belt = [0.0; 2];
+        t.parked = true;
     } else {
         // Coasting: only rolling resistance and engine drag slow the belts.
         let step = dv(mass * h.rolling * 0.5);
