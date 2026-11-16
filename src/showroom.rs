@@ -80,7 +80,7 @@ pub fn ground_mesh() -> MeshData {
     let mut m = MeshData::default();
     let asphalt = Vec4::new(0.17, 0.17, 0.18, mat::ASPHALT);
     m.add_box(Vec3::new(-150.0, -0.2, -150.0), Vec3::new(150.0, -0.02, 150.0), asphalt, asphalt);
-    let pave = Vec4::new(0.6, 0.57, 0.52, mat::PAVING);
+    let pave = Vec4::new(0.4, 0.36, 0.3, mat::PAVING);
     m.add_box(Vec3::new(-14.0, -0.1, -13.0), Vec3::new(14.0, 0.0, 14.0), pave, pave);
     m
 }

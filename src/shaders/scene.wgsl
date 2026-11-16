@@ -134,7 +134,7 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
     let uv = plane_uv(lpos, ln);
     let mottle = noise2(uv * 2.3) * 0.5 + noise2(uv * 7.0) * 0.3 + noise2(uv * 23.0) * 0.2;
     // Grime collects low on the vehicle.
-    let grime = mix(0.62, 1.0, smoothstep(0.1, 1.2, wpos.y));
+    let grime = mix(0.5, 1.0, smoothstep(0.15, 1.3, wpos.y));
     if (m == 6) {
         // Bare armor steel: big clean surfaces, only a soft mottle.
         s.albedo = base * (0.88 + 0.24 * mottle) * grime;
@@ -165,6 +165,12 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         s.metal = 0.3;
         s.rough = 0.12;
     }
+    // Value hierarchy: lit top planes, a dark dense underside. Downward faces
+    // and everything low on the vehicle lose most of their ambient light.
+    let under = smoothstep(0.05, -0.6, wn.y);
+    let low_ao = mix(0.3, 1.0, smoothstep(0.2, 1.3, wpos.y));
+    s.albedo *= 1.0 - under * 0.45;
+    s.ao = low_ao * (1.0 - under * 0.5);
     // An even film of fine dust over everything, a little heavier on top and low down.
     if (m != 12) {
         let up = smoothstep(0.3, 0.95, wn.y);

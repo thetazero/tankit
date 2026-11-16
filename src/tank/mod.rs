@@ -36,8 +36,8 @@ impl KitMeshes {
             (h, parts)
         };
         KitMeshes {
-            hulls: vec![hull(model::lancer().stretched()), hull(model::bastion().stretched())],
-            turrets: vec![model::lance().stretched(), model::maul().stretched()],
+            hulls: vec![hull(model::lancer()), hull(model::bastion())],
+            turrets: vec![model::lance(), model::maul()],
         }
     }
 
@@ -93,7 +93,6 @@ struct Machinery {
     arm: MeshId,
     cylinder: MeshId,
     rod: MeshId,
-    spring: MeshId,
 }
 
 struct TurretArt {
@@ -162,7 +161,6 @@ impl TankArt {
             arm: r.add_mesh(&model::arm()),
             cylinder: r.add_mesh(&model::cylinder()),
             rod: r.add_mesh(&model::rod()),
-            spring: r.add_mesh(&model::spring()),
         };
         TankArt { hulls, turrets, mech }
     }
@@ -228,9 +226,6 @@ impl TankArt {
                 out.push((self.mech.arm, Instance::new(arm, plain)));
                 let low = pivot + reach * 0.55;
                 self.hydraulic(top, low, across, 1.0, tint, out);
-                let span = low - top;
-                let coil = aim(low, -span, across) * Mat4::from_scale(Vec3::new(1.0, 1.0, span.length()));
-                out.push((self.mech.spring, Instance::new(coil, tint)));
             }
         }
 
