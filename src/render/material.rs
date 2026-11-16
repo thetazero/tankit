@@ -55,6 +55,10 @@ pub enum Material {
     // Tanks again.
     /// Ithessar worked crystal: dark, glassy, flecked deep inside.
     Vhaal,
+    /// Sun-faded fabric (awnings, stall roofs).
+    Cloth,
+    /// Dry, sun-cracked timber (poles, palms, stalls, crates).
+    Wood,
 }
 
 impl Material {
@@ -79,6 +83,8 @@ impl Material {
         Material::Rust,
         Material::Painted,
         Material::Vhaal,
+        Material::Cloth,
+        Material::Wood,
     ];
 
     /// What goes in the vertex color's alpha channel.
@@ -108,6 +114,8 @@ impl Material {
             Material::Rust => "RUST",
             Material::Painted => "PAINTED",
             Material::Vhaal => "VHAAL",
+            Material::Cloth => "CLOTH",
+            Material::Wood => "WOOD",
         }
     }
 
