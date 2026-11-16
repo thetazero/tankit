@@ -34,6 +34,8 @@ pub struct TankParams {
     pub heat: f32,
     /// Flamethrower pouring (0/1).
     pub flame: f32,
+    /// A broken Vigil running on: how much light still pours out, 0..1.
+    pub husk: f32,
     /// Heavy hull: a deeper, slower engine.
     pub heavy: bool,
     /// Rides a plasma cushion: a field hum instead of an engine and tracks.
@@ -60,6 +62,7 @@ struct TankVoice {
     beam: Smooth,
     heat: Smooth,
     flame: Smooth,
+    husk: Smooth,
     heavy: bool,
     hover: bool,
     noise: Noise,
@@ -89,8 +92,23 @@ struct TankVoice {
     flame_crackle: Svf,
     flame_hiss: Svf,
     flame_wobble: OnePole,
+    // Husk light: crystal partials, each swelling at its own slow rate.
+    husk_tone: [f32; 4],
+    husk_swell: [f32; 4],
+    husk_hum: f32,
+    husk_air: Svf,
+    husk_tick: Svf,
     air_lp: OnePole,
 }
+
+/// A husk's crystal partials (Hz, inharmonic like struck glass), their
+/// levels and how fast each swells and ebbs (Hz).
+const HUSK_PARTIALS: [(f32, f32, f32); 4] = [
+    (1870.0, 0.3, 0.7),
+    (2350.0, 0.25, 1.1),
+    (2960.0, 0.2, 1.6),
+    (3720.0, 0.15, 2.3),
+];
 
 impl TankVoice {
     fn new(seed: u32) -> TankVoice {
@@ -105,6 +123,7 @@ impl TankVoice {
             beam: Smooth::new(0.0),
             heat: Smooth::new(0.0),
             flame: Smooth::new(0.0),
+            husk: Smooth::new(0.0),
             heavy: false,
             hover: false,
             noise: Noise::new(seed.wrapping_mul(2654435761).max(1)),
@@ -130,6 +149,11 @@ impl TankVoice {
             flame_crackle: Svf::default(),
             flame_hiss: Svf::default(),
             flame_wobble: OnePole::default(),
+            husk_tone: [0.0; 4],
+            husk_swell: [0.0, 0.25, 0.5, 0.75],
+            husk_hum: 0.0,
+            husk_air: Svf::default(),
+            husk_tick: Svf::default(),
             air_lp: OnePole::default(),
         }
     }
@@ -145,6 +169,7 @@ impl TankVoice {
         self.beam.target = p.beam;
         self.heat.target = p.heat;
         self.flame.target = p.flame;
+        self.husk.target = p.husk;
         self.heavy = p.heavy;
         self.hover = p.hover;
     }
@@ -171,6 +196,7 @@ impl TankVoice {
             let beam = self.beam.next(k.snap);
             let heat = self.heat.next(k.fast);
             let flame = self.flame.next(k.fast);
+            let husk = self.husk.next(k.slow);
             let n = self.noise.next();
 
             // Engine: a pulse per firing stroke, each cylinder a little different.
@@ -267,7 +293,34 @@ impl TankVoice {
                 fire = (roar * 1.1 + hiss * 0.35 + crackle * 0.6) * flame * 0.6;
             }
 
-            let mix = engine * 0.55 + tracks + motor + buzz + fire;
+            // A husk: blue light pouring out of its cracks, heard as glass
+            // singing (a few crystal partials, each swelling and ebbing), a
+            // breath of air, the faint hum of its bell, and the tick of the
+            // cracks still spreading. It sags flat as the light fades.
+            let mut light = 0.0;
+            if husk > 0.001 {
+                let sag = 0.9 + 0.1 * husk;
+                let mut glass = 0.0;
+                for (j, &(f, g, rate)) in HUSK_PARTIALS.iter().enumerate() {
+                    self.husk_tone[j] = (self.husk_tone[j] + f * sag / sr).fract();
+                    self.husk_swell[j] = (self.husk_swell[j] + rate / sr).fract();
+                    let swell = 0.5 + 0.5 * (self.husk_swell[j] * TAU).sin();
+                    glass += (self.husk_tone[j] * TAU).sin() * g * swell * swell;
+                }
+                let breath = 0.5 + 0.5 * (self.husk_swell[0] * TAU * 0.5).cos();
+                let pour = self.husk_air.run(n, 3800.0 + 2400.0 * breath, 2.5, sr).band;
+                self.husk_hum = (self.husk_hum + 147.0 * sag / sr).fract();
+                let hum = (self.husk_hum * TAU).sin();
+                let crack = if self.noise.unit() < 18.0 * husk / sr {
+                    0.6 + self.noise.unit()
+                } else {
+                    0.0
+                };
+                let tick = self.husk_tick.run(crack, 5600.0, 9.0, sr).band;
+                light = (glass * 0.35 + pour * 0.4 + hum * 0.08 + tick * 0.5) * husk;
+            }
+
+            let mix = engine * 0.55 + tracks + motor + buzz + fire + light;
             let x = self.air_lp.run(mix, OnePole::coef(air, sr)) * gain;
             let (l, r) = pan_gains(pan);
             frame[0] += x * l;
@@ -523,6 +576,32 @@ mod tests {
         assert!(rms(&l) > 10.0 * rms(&r));
     }
 
+    /// A husk's light sings: bright and audible at full strength, fading
+    /// with it.
+    #[test]
+    fn a_husk_sings_and_fades() {
+        let level = |husk: f32| {
+            let mut m = Mixer::new(48_000.0);
+            m.set_master(1.0);
+            m.set_world(1.0);
+            m.set_tanks(&[TankParams {
+                gain: 1.0,
+                air: 16_000.0,
+                husk,
+                ..TankParams::default()
+            }]);
+            rms(&settle(&mut m))
+        };
+        // Over the idling engine, which runs on underneath.
+        let idle = level(0.0);
+        let (full, faint) = (level(1.0) - idle, level(0.2) - idle);
+        assert!(full > 0.02, "full {full}, idle {idle}");
+        assert!(
+            faint < full * 0.4 && faint > 0.0,
+            "full {full}, faint {faint}"
+        );
+    }
+
     #[test]
     fn pause_fades_loops_but_not_one_shots() {
         let mut m = Mixer::new(48_000.0);
@@ -559,6 +638,7 @@ mod tests {
             beam: 1.0,
             heat: 1.0,
             flame: 1.0,
+            husk: 1.0,
             heavy: true,
             ..driving(1.0)
         };
