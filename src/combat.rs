@@ -710,9 +710,11 @@ impl Match {
         let contacts: Vec<Contact> = self
             .fighters
             .iter()
-            .map(|f| Contact {
+            .zip(&self.world.tanks)
+            .map(|(f, t)| Contact {
                 targetable: f.alive && f.shield <= 0.0 && !f.is_husk(),
                 team: f.team,
+                health: f.health / f.max_health(t),
             })
             .collect();
         let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
