@@ -85,32 +85,46 @@ const fn ring(f: f32, decay: f32, gain: f32) -> Layer {
     sine(f, f * 0.98, 0.4, decay, gain)
 }
 
-/// Imperium rail cannon: a deep slam, a sharp crack and a rail's zing.
+/// Imperium rail cannon: a heavy gun's report. A falling slam (with its
+/// overtones, so small speakers still hear the drop), a whump of blast that
+/// closes fast, only milliseconds of crack, then a long rolling rumble and its
+/// echo. Kept out of the 1-5 kHz band where a snare drum's wires live.
 pub const KONTOS: &[Layer] = &[
-    sine(120.0, 40.0, 0.06, 0.2, 0.6),
-    noise(Filt::Low, 6000.0, 500.0, 0.12, 0.24, 0.85),
+    sine(110.0, 38.0, 0.07, 0.3, 0.5),
+    sine(220.0, 76.0, 0.07, 0.18, 0.35),
+    sine(330.0, 114.0, 0.07, 0.1, 0.2),
+    noise(Filt::Low, 3000.0, 380.0, 0.04, 0.3, 1.3),
     Layer {
-        q: 1.0,
-        ..noise(Filt::Band, 1100.0, 700.0, 0.1, 0.15, 0.6)
+        q: 0.6,
+        ..noise(Filt::Band, 700.0, 300.0, 0.15, 0.35, 0.9)
     },
-    noise(Filt::High, 2500.0, 2500.0, 0.1, 0.02, 0.7),
-    sine(3400.0, 900.0, 0.1, 0.14, 0.12),
+    noise(Filt::High, 1800.0, 1800.0, 0.1, 0.006, 0.35),
     Layer {
-        attack: 0.01,
-        ..noise(Filt::Low, 420.0, 110.0, 0.4, 0.6, 0.4)
+        attack: 0.02,
+        ..noise(Filt::Low, 650.0, 180.0, 0.5, 0.9, 0.8)
     },
+    Layer {
+        delay: 0.18,
+        attack: 0.03,
+        ..noise(Filt::Low, 380.0, 120.0, 0.4, 0.7, 0.25)
+    },
+    sine(2600.0, 800.0, 0.08, 0.08, 0.05),
 ];
 
-/// Imperium twin autocannon: shorter, punchier.
+/// Imperium twin autocannon: the same report, shorter and punchier.
 pub const PELEKYS: &[Layer] = &[
-    sine(150.0, 55.0, 0.04, 0.1, 0.6),
-    noise(Filt::Low, 5000.0, 600.0, 0.06, 0.11, 0.7),
+    sine(130.0, 48.0, 0.05, 0.14, 0.5),
+    sine(260.0, 96.0, 0.05, 0.08, 0.3),
+    noise(Filt::Low, 3200.0, 420.0, 0.03, 0.15, 1.2),
     Layer {
-        q: 1.2,
-        ..noise(Filt::Band, 1400.0, 900.0, 0.06, 0.08, 0.45)
+        q: 0.6,
+        ..noise(Filt::Band, 800.0, 350.0, 0.08, 0.16, 0.7)
     },
-    noise(Filt::High, 3000.0, 3000.0, 0.1, 0.012, 0.45),
-    noise(Filt::Low, 320.0, 160.0, 0.2, 0.28, 0.22),
+    noise(Filt::High, 2200.0, 2200.0, 0.1, 0.005, 0.3),
+    Layer {
+        attack: 0.01,
+        ..noise(Filt::Low, 600.0, 170.0, 0.3, 0.4, 0.5)
+    },
 ];
 
 /// Sorn orb launcher: a falling, hollow "thoom".
@@ -165,15 +179,39 @@ pub const BOUNCE: &[Layer] = &[
     noise(Filt::High, 4000.0, 4000.0, 0.1, 0.02, 0.18),
 ];
 
-/// A round striking armour: a clang over a thud.
+/// A round striking armour: one crunch. All noise, no pitched ring: any
+/// tone that hangs on, however low, reads as a ping off a can.
 pub const HIT: &[Layer] = &[
-    ring(420.0, 0.32, 0.3),
-    ring(1088.0, 0.24, 0.24),
-    ring(1730.0, 0.17, 0.18),
-    ring(2650.0, 0.11, 0.12),
-    ring(3900.0, 0.07, 0.08),
-    noise(Filt::High, 2000.0, 2000.0, 0.1, 0.015, 0.6),
-    sine(130.0, 60.0, 0.05, 0.08, 0.5),
+    // A thump too short to have a pitch.
+    sine(110.0, 45.0, 0.03, 0.06, 0.6),
+    // The blow: low-passed noise that closes fast.
+    noise(Filt::Low, 1800.0, 250.0, 0.04, 0.1, 1.3),
+    Layer {
+        q: 0.6,
+        ..noise(Filt::Band, 500.0, 250.0, 0.08, 0.12, 0.8)
+    },
+    // The crunch: a dense burst of grinding clicks.
+    Layer {
+        src: Src::Crackle(2500.0),
+        filt: Filt::Band,
+        cutoff: (1200.0, 600.0),
+        sweep: 0.08,
+        q: 0.8,
+        decay: 0.09,
+        gain: 0.5,
+        ..L
+    },
+    // Grit settling after it.
+    Layer {
+        src: Src::Crackle(600.0),
+        filt: Filt::Band,
+        cutoff: (2000.0, 900.0),
+        q: 1.0,
+        decay: 0.18,
+        gain: 0.3,
+        delay: 0.01,
+        ..L
+    },
 ];
 
 /// A tank blowing up.
@@ -638,6 +676,70 @@ mod tests {
             assert!(peak > 0.02, "sound {i} silent: {peak}");
             assert!(peak < 4.0, "sound {i} too hot: {peak}");
             assert!(v.len < 12.0, "sound {i} too long: {}", v.len);
+        }
+    }
+
+    /// Energy of `x` between `lo` and `hi` Hz (two 2-pole filters: a rough band).
+    fn band(x: &[f32], lo: f32, hi: f32, sr: f32) -> f32 {
+        let (mut a, mut b) = (Svf::default(), Svf::default());
+        x.iter()
+            .map(|&s| {
+                let y = b.run(a.run(s, lo, 0.7, sr).high, hi, 0.7, sr).low;
+                y * y
+            })
+            .sum()
+    }
+
+    /// Issue #77: the Imperium guns sounded like a snare drum. Their slam sat
+    /// below what small speakers play, leaving a burst of 1-5 kHz noise. A
+    /// cannon's audible body is low-mid, and its report rolls on.
+    #[test]
+    fn imperium_guns_boom_not_snap() {
+        let sr = 48_000.0;
+        for (name, layers) in [("kontos", KONTOS), ("pelekys", PELEKYS)] {
+            let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+            let mut buf = vec![0.0; 2 * (v.len * sr) as usize];
+            v.render(&mut buf, sr);
+            let x: Vec<f32> = buf.iter().step_by(2).copied().collect();
+            let body = band(&x, 150.0, 900.0, sr);
+            let snare = band(&x, 1500.0, 6000.0, sr);
+            // The old patches scored 0.9 and 2.7 here.
+            assert!(
+                body > 4.0 * snare,
+                "{name}: body {body:.2}, snare {snare:.2}"
+            );
+        }
+        // The main gun's report rolls on (the old one was 0.05 here).
+        let mut v = Voice::new(KONTOS, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+        let mut buf = vec![0.0; 2 * (v.len * sr) as usize];
+        v.render(&mut buf, sr);
+        let x: Vec<f32> = buf.iter().step_by(2).copied().collect();
+        let tail = band(&x[(0.25 * sr) as usize..], 150.0, 900.0, sr);
+        let body = band(&x, 150.0, 900.0, sr);
+        assert!(tail > 0.08 * body, "kontos stops dead: {:.3}", tail / body);
+    }
+
+    /// Getting hit sounded like a tin can: long bright partials above 1 kHz.
+    /// A round hitting thick armour is a low crunch that dies quickly.
+    #[test]
+    fn hits_crunch_not_ping() {
+        let sr = 48_000.0;
+        let mut v = Voice::new(HIT, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+        let mut buf = vec![0.0; 2 * (v.len * sr) as usize];
+        v.render(&mut buf, sr);
+        let x: Vec<f32> = buf.iter().step_by(2).copied().collect();
+        let body = band(&x, 100.0, 900.0, sr);
+        let ping = band(&x, 1000.0, 6000.0, sr);
+        assert!(body > 3.0 * ping, "body {body:.2}, ping {ping:.2}");
+        // No bright ring hanging on after the strike.
+        let tail = band(&x[(0.15 * sr) as usize..], 1000.0, 6000.0, sr);
+        assert!(tail < 0.02 * ping, "rings on: {:.3}", tail / ping);
+        // A crunch, not a ping: no pitched layer lasts long enough to hear
+        // as a note.
+        for l in HIT {
+            if l.src == Src::Sine {
+                assert!(l.decay <= 0.06, "a tone rings for {} s", l.decay);
+            }
         }
     }
 
