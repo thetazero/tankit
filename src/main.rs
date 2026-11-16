@@ -1,5 +1,6 @@
 mod app;
 mod game;
+mod hud;
 mod map;
 mod render;
 mod rng;
@@ -7,6 +8,7 @@ mod scene;
 mod showroom;
 mod sim;
 mod tank;
+mod ui;
 
 use anyhow::{Context, Result, bail};
 use glam::Vec3;
@@ -140,6 +142,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&world.map));
     let art = tank::TankArt::upload(&mut renderer);
+    let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
         if args.straight { sim::Command { throttle: 1.0, ..Default::default() } } else { game::autopilot(world.time) }
     };
@@ -160,7 +163,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if i > 0 {
             camera = advance(&mut world, &mut cam, 1.0 / shot.fps);
         }
-        let frame = scene::build(&world, &world.tanks, &art, camera, shot.width as f32, shot.height as f32);
+        let mut frame = scene::build(&world, &world.tanks, &art, camera);
+        frame.ui = hud.draw(&world.tanks[0], args.seed, &camera, shot.width as f32, shot.height as f32, game::DT);
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
@@ -191,8 +195,7 @@ fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
         }
         let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
         let camera = showroom::camera(&world, angle, room.dist, room.focus);
-        let mut frame = scene::build(&world, &world.tanks, &art, camera, shot.width as f32, shot.height as f32);
-        frame.ui.clear();
+        let mut frame = scene::build(&world, &world.tanks, &art, camera);
         frame.shadow_center = Vec3::ZERO;
         frame.shadow_radius = 22.0;
         let out = frame_path(shot, i);

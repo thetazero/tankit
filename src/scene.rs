@@ -1,11 +1,11 @@
 //! Turns simulation state into renderer input: the static map mesh, tank
-//! instances, the chase camera, and the HUD.
+//! instances and the chase camera. The HUD lives in `hud`.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::map::{Map, Terrain, Wedge, mat};
 use crate::render::mesh::{MeshData, Vertex};
-use crate::render::{Camera, Scene, UiVertex};
+use crate::render::{Camera, Scene};
 use crate::sim::{Tank, World, apron_rects, dir2, wrap_angle};
 use crate::tank::TankArt;
 
@@ -162,29 +162,13 @@ impl ChaseCam {
     }
 }
 
-/// `tanks` is what to draw (usually `world.tanks`, interpolated for display).
-pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera, width: f32, height: f32) -> Scene {
+/// The 3D part of a frame. `tanks` is what to draw (usually `world.tanks`,
+/// interpolated for display). `ui` starts empty; the caller adds the HUD.
+pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Scene {
     let mut instances = Vec::new();
     for t in tanks {
         art.instances(t, &mut instances);
     }
-
-    let mut ui = Vec::new();
-    let player = &tanks[0];
-    let vp = camera.view_proj(width / height);
-
-    // Crosshair sits where the turret actually points (including hull tilt).
-    let aim_point = player.pos + player.up() * (player.chassis.hull_top + 0.4) + player.turret_dir() * 40.0;
-    if let Some((x, y)) = project(vp, aim_point, width, height) {
-        crosshair(&mut ui, x, y);
-    }
-
-    // Speed bar, bottom center.
-    let frac = (player.speed().abs() / player.hull.max_speed).min(1.0);
-    let (bw, bh) = (220.0, 8.0);
-    let (bx, by) = (width * 0.5 - bw * 0.5, height - 40.0);
-    push_rect(&mut ui, bx - 2.0, by - 2.0, bw + 4.0, bh + 4.0, [0.0, 0.0, 0.0, 0.45]);
-    push_rect(&mut ui, bx, by, bw * frac, bh, [0.95, 0.85, 0.35, 0.9]);
 
     Scene {
         camera,
@@ -193,29 +177,16 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera, width
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
-        ui,
+        ui: Vec::new(),
     }
 }
 
-fn project(vp: Mat4, p: Vec3, w: f32, h: f32) -> Option<(f32, f32)> {
+/// World point to screen pixels, or `None` if it's behind the camera.
+pub fn project(vp: Mat4, p: Vec3, w: f32, h: f32) -> Option<(f32, f32)> {
     let c = vp * p.extend(1.0);
     if c.w <= 0.01 {
         return None;
     }
     let ndc = c.truncate() / c.w;
     Some(((ndc.x * 0.5 + 0.5) * w, (0.5 - ndc.y * 0.5) * h))
-}
-
-fn crosshair(ui: &mut Vec<UiVertex>, x: f32, y: f32) {
-    let (shadow, white) = ([0.0, 0.0, 0.0, 0.5], [1.0, 1.0, 1.0, 0.9]);
-    for (c, o) in [(shadow, 1.0), (white, 0.0)] {
-        for (dx, dy, w, h) in [(-14.0, -1.0, 9.0, 2.0), (5.0, -1.0, 9.0, 2.0), (-1.0, -14.0, 2.0, 9.0), (-1.0, 5.0, 2.0, 9.0)] {
-            push_rect(ui, x + dx + o, y + dy + o, w, h, c);
-        }
-    }
-}
-
-pub fn push_rect(ui: &mut Vec<UiVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    let v = |px, py| UiVertex { pos: [px, py], color };
-    ui.extend_from_slice(&[v(x, y), v(x + w, y), v(x + w, y + h), v(x, y), v(x + w, y + h), v(x, y + h)]);
 }

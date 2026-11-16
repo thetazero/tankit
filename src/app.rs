@@ -11,6 +11,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::game::Clock;
+use crate::hud::Hud;
 use crate::render::Renderer;
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullKind, HullStats, TurretKind, World};
@@ -30,6 +31,7 @@ struct App {
     showroom: Option<ShowroomArgs>,
     world: World,
     cam: ChaseCam,
+    hud: Hud,
     clock: Clock,
     keys: HashSet<KeyCode>,
     /// Live tuning (player tank): sideways grip multiplier and turn-rate offset.
@@ -54,6 +56,7 @@ pub fn run(seed: u64, proving: bool, spawn: usize, showroom: Option<ShowroomArgs
         showroom,
         world,
         cam: ChaseCam::new(),
+        hud: Hud::new(),
         clock: Clock::default(),
         keys: HashSet::new(),
         tune_grip: 1.0,
@@ -138,6 +141,7 @@ impl App {
         self.world.set_hull(0, hull);
         self.world.tanks[0].turret_kind = turret;
         self.cam = ChaseCam::new();
+        self.hud = Hud::new();
         if let Some(r) = &mut self.renderer {
             r.set_static_mesh(&scene::map_mesh(&self.world.map));
         }
@@ -230,11 +234,12 @@ impl App {
                 let angle = room.orbit.unwrap_or(self.world.time * 0.15);
                 camera = showroom::camera(&self.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
             }
-            let mut scene = scene::build(&self.world, &tanks, art, camera, r.width as f32, r.height as f32);
+            let mut scene = scene::build(&self.world, &tanks, art, camera);
             if self.showroom.is_some() {
-                scene.ui.clear();
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
+            } else {
+                scene.ui = self.hud.draw(&tanks[0], self.seed, &camera, r.width as f32, r.height as f32, dt);
             }
             r.render(&scene);
         }
