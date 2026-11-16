@@ -7,6 +7,7 @@ use glam::{Vec2, Vec3};
 
 use crate::rng::Rng;
 
+mod ruins;
 mod saltmarket;
 
 /// Size of one city-grid cell in meters.
@@ -50,8 +51,10 @@ pub struct VisBox {
     pub top_mat: f32,
 }
 
-/// A solid box turned about the vertical axis (buildings and walls that
-/// don't line up with the world grid). Blocking and visible.
+/// A box turned about the vertical axis (buildings and walls that don't line
+/// up with the world grid), optionally tilted about its own local x axis
+/// (collapsed slabs that slope to the ground). Visible; blocking unless
+/// `solid` is false (small debris).
 #[derive(Clone, Copy, Debug)]
 pub struct OBox {
     /// Footprint center on the ground plane (x, z).
@@ -65,9 +68,46 @@ pub struct OBox {
     pub color: Vec3,
     pub side_mat: f32,
     pub top_mat: f32,
+    /// Rotation about the box's local x axis after the yaw, radians: positive
+    /// tips its local +z end down. The box turns about its own center.
+    pub tilt: f32,
+    /// Collides and blocks navigation. Debris is visual only.
+    pub solid: bool,
+}
+
+impl Default for OBox {
+    fn default() -> OBox {
+        OBox {
+            center: Vec2::ZERO,
+            yaw: 0.0,
+            half: Vec2::ONE,
+            y0: 0.0,
+            y1: 1.0,
+            color: Vec3::ONE,
+            side_mat: mat::PLAIN,
+            top_mat: mat::PLAIN,
+            tilt: 0.0,
+            solid: true,
+        }
+    }
 }
 
 impl OBox {
+    /// Full rotation: yaw about +y, then tilt about the local x axis.
+    pub fn rotation(&self) -> glam::Quat {
+        glam::Quat::from_rotation_y(self.yaw) * glam::Quat::from_rotation_x(self.tilt)
+    }
+
+    /// Box center in 3D.
+    pub fn center3(&self) -> Vec3 {
+        Vec3::new(self.center.x, (self.y0 + self.y1) * 0.5, self.center.y)
+    }
+
+    /// A sloped slab a tank can drive (gentle tilt).
+    pub fn is_ramp(&self) -> bool {
+        self.tilt.abs() > 0.05 && self.tilt.abs() < 0.5
+    }
+
     /// Local axes on the ground plane: (right, forward), as world xz directions.
     pub fn axes(&self) -> (Vec2, Vec2) {
         // glam's rotation_y maps local +x to (cos, -sin) and +z to (sin, cos) in xz.

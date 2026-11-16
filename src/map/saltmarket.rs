@@ -20,6 +20,7 @@
 
 use glam::{Vec2, Vec3};
 
+use super::ruins::{self, Drift};
 use super::{Map, OBox, Rise, Terrain, Wedge, mat};
 use crate::rng::Rng;
 
@@ -165,34 +166,6 @@ const SQUARE_R: f32 = 21.0;
 const TOWN_MIN: Vec2 = Vec2::new(10.0, 12.0);
 const TOWN_MAX: Vec2 = Vec2::new(150.0, 200.0);
 
-/// A sand drift banked against one face of a building, raising the terrain.
-#[derive(Clone, Copy)]
-struct Drift {
-    b: OBox,
-    /// Which face: local +x, -x, +z, -z as (axis 0/1, sign).
-    axis: usize,
-    sign: f32,
-    height: f32,
-    run: f32,
-}
-
-impl Drift {
-    fn height_at(&self, p: Vec2) -> f32 {
-        let q = self.b.local_point(p);
-        let (along, across, half_along, half_across) = if self.axis == 0 {
-            (q.x, q.y, self.b.half.x, self.b.half.y)
-        } else {
-            (q.y, q.x, self.b.half.y, self.b.half.x)
-        };
-        let d = along * self.sign - half_along;
-        if d < -0.5 || d > self.run {
-            return 0.0;
-        }
-        let lateral = 1.0 - smoothstep(half_across * 0.6, half_across + 2.0, across.abs());
-        self.height * (1.0 - d.max(0.0) / self.run).powf(0.8) * lateral
-    }
-}
-
 struct RoadNet {
     /// Dense samples along every road: (point, half width, direction).
     samples: Vec<(Vec2, f32, Vec2)>,
@@ -266,6 +239,7 @@ impl Map {
             color: CONCRETE,
             side_mat: mat::WALL,
             top_mat: mat::ROOF,
+            ..OBox::default()
         };
 
         // Frontage: walk each road on both sides.
@@ -314,8 +288,22 @@ impl Map {
         }
 
         let mut drifts = Vec::new();
-        for lot in lots {
-            self.ruin(rng, lot, &roads, &mut drifts);
+        for (i, lot) in lots.iter().enumerate() {
+            // Ground in front of a collapsed floor must be free of other buildings.
+            let others: Vec<OBox> = lots
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .map(|(_, o)| *o)
+                .chain(reserved.iter().copied())
+                .collect();
+            let clear = |p: Vec2| {
+                others.iter().all(|o| o.distance(p) > 1.5)
+                    && bowl_sdf(p) > 2.0
+                    && p.cmpgt(Vec2::splat(6.0)).all()
+                    && p.cmplt(Vec2::splat(SIZE - 6.0)).all()
+            };
+            self.ruin(rng, *lot, &roads, &clear, &mut drifts);
         }
         drifts
     }
@@ -341,6 +329,7 @@ impl Map {
             color,
             side_mat: mat::WALL,
             top_mat: mat::ROOF,
+            ..OBox::default()
         };
         self.oboxes.push(b);
         b
@@ -349,7 +338,14 @@ impl Map {
     /// One building: standing (sometimes stepped), a gutted shell with a
     /// jagged broken top and a breach toward the street, a low stub with sand
     /// banked up to its roof, or a collapsed rubble heap you can drive over.
-    fn ruin(&mut self, rng: &mut Rng, lot: OBox, roads: &RoadNet, drifts: &mut Vec<Drift>) {
+    fn ruin(
+        &mut self,
+        rng: &mut Rng,
+        lot: OBox,
+        roads: &RoadNet,
+        clear: &dyn Fn(Vec2) -> bool,
+        drifts: &mut Vec<Drift>,
+    ) {
         let h = lot.half;
         // Which local face looks at the nearest road (the street front).
         let to_road = {
@@ -370,71 +366,8 @@ impl Map {
             (1, to_road.y.signum())
         };
         let roll = rng.f32();
-        if roll < 0.2 {
-            let height = rng.range(7.0, 13.0);
-            let c = CONCRETE * rng.range(0.92, 1.05);
-            self.local_box(&lot, -h, h, 0.0, height, c);
-            if rng.chance(0.5) {
-                // Upper storey set back from the street.
-                let inset = Vec2::splat(rng.range(1.5, 3.0));
-                self.local_box(
-                    &lot,
-                    -h + inset,
-                    h - inset,
-                    height,
-                    height + rng.range(2.5, 4.0),
-                    c * 0.97,
-                );
-            }
-            drifts.push(Drift {
-                b: lot,
-                axis: front_axis,
-                sign: front_sign,
-                height: 1.0,
-                run: 4.0,
-            });
-        } else if roll < 0.55 {
-            // Gutted shell. Each wall is split into pieces of different heights
-            // (a jagged broken top); the street wall has a breach to drive in.
-            let (t, base_h) = (1.0, rng.range(5.0, 9.0));
-            let c = RUIN * rng.range(0.9, 1.05);
-            for (axis, sign) in [(0usize, 1.0f32), (0, -1.0), (1, 1.0), (1, -1.0)] {
-                let len = if axis == 0 { h.y } else { h.x } * 2.0;
-                let breach = axis == front_axis && sign == front_sign;
-                let pieces = if len > 10.0 { 3 } else { 2 };
-                for k in 0..pieces {
-                    let (s0, s1) = (
-                        -len * 0.5 + len * k as f32 / pieces as f32,
-                        -len * 0.5 + len * (k + 1) as f32 / pieces as f32,
-                    );
-                    if breach && k == pieces / 2 {
-                        continue; // the gap you drive through
-                    }
-                    let top = base_h * rng.range(0.45, 1.0);
-                    let (lo, hi) = if axis == 0 {
-                        let x = sign * (h.x - t * 0.5);
-                        (Vec2::new(x - t * 0.5, s0), Vec2::new(x + t * 0.5, s1))
-                    } else {
-                        let z = sign * (h.y - t * 0.5);
-                        (Vec2::new(s0, z - t * 0.5), Vec2::new(s1, z + t * 0.5))
-                    };
-                    self.local_box(&lot, lo, hi, 0.0, top, c);
-                }
-            }
-            // A fallen floor slab leaning in one corner.
-            if rng.chance(0.5) {
-                let q = h * 0.45;
-                self.local_box(
-                    &lot,
-                    Vec2::new(-q.x, -q.y),
-                    Vec2::new(0.0, 0.0),
-                    0.0,
-                    0.5,
-                    RUBBLE,
-                );
-            }
-        } else if roll < 0.8 {
-            // Low stub, sand banked up its street face to the roof.
+        if roll < 0.15 {
+            // Low stub, sand banked up its street face to the roof: a way up.
             let height = 2.2;
             self.local_box(&lot, -h, h, 0.0, height, RUIN * rng.range(0.9, 1.0));
             drifts.push(Drift {
@@ -444,9 +377,9 @@ impl Map {
                 height: height + 0.15,
                 run: 8.0,
             });
-        } else {
-            // Collapsed: a stepped rubble heap (each step low enough to climb)
-            // and one wall stub still standing.
+        } else if roll < 0.25 {
+            // Collapsed to a stepped rubble heap (each step low enough to climb),
+            // one wall stub still standing.
             for (k, s) in [1.0f32, 0.72, 0.45].iter().enumerate() {
                 let y0 = k as f32 * 0.45;
                 self.local_box(
@@ -467,6 +400,16 @@ impl Map {
                 rng.range(3.0, 6.0),
                 RUIN,
             );
+        } else {
+            // A real building, built then damaged (see ruins.rs).
+            drifts.extend(ruins::building(
+                self,
+                rng,
+                lot,
+                (front_axis, front_sign),
+                clear,
+            ));
+            return;
         }
         // Wind-blown sand against a random back wall.
         if rng.chance(0.4) {
@@ -626,8 +569,7 @@ impl Map {
                 y0: 0.0,
                 y1,
                 color,
-                side_mat: mat::PLAIN,
-                top_mat: mat::PLAIN,
+                ..OBox::default()
             };
             m.oboxes.push(b);
             placed.push(b);
@@ -904,6 +846,7 @@ mod tests {
             color: CONCRETE,
             side_mat: mat::WALL,
             top_mat: mat::ROOF,
+            ..OBox::default()
         };
         map.oboxes.push(b);
         let w = crate::sim::World::empty(map);
@@ -926,6 +869,63 @@ mod tests {
                 "angle {a}: hit at {hit}, footprint at {expect}"
             );
         }
+    }
+
+    #[test]
+    fn ruins_have_ramps_and_stay_affordable() {
+        let m = Map::saltmarket();
+        let ramps = m.oboxes.iter().filter(|o| o.solid && o.is_ramp()).count();
+        let solid = m.oboxes.iter().filter(|o| o.solid).count();
+        eprintln!(
+            "saltmarket: {} pieces ({solid} solid), {ramps} collapsed-floor ramps",
+            m.oboxes.len()
+        );
+        assert!(ramps >= 5, "only {ramps} collapsed floors to drive up");
+        assert!(solid < 12_000, "{solid} solid pieces is too many colliders");
+    }
+
+    /// Tanks really can drive up the collapsed floors into the first storey.
+    #[test]
+    fn collapsed_floors_are_drivable() {
+        use crate::sim::{Command, HullKind, TurretKind, World};
+        let map = Map::saltmarket();
+        let ramps: Vec<OBox> = map
+            .oboxes
+            .iter()
+            .filter(|o| o.solid && o.is_ramp())
+            .copied()
+            .collect();
+        let mut climbed = 0;
+        let tried = ramps.len();
+        for r in ramps.iter().take(tried) {
+            let down = r.axes().1; // local +z runs down the slope
+            let foot = r.center + down * (r.half.y * r.tilt.cos() + 5.0);
+            let up = -down;
+            let mut w = World::empty(map.clone());
+            w.spawn_tank(
+                Vec3::ONE,
+                foot,
+                up.x.atan2(up.y),
+                HullKind::Lancer,
+                TurretKind::Lance,
+            );
+            let mut top = 0.0f32;
+            for _ in 0..(6.0 / crate::game::DT) as usize {
+                w.step(&[Command {
+                    throttle: 1.0,
+                    ..Default::default()
+                }]);
+                top = top.max(w.tanks[0].pos.y);
+            }
+            if top > super::ruins::FIRST_FLOOR - 0.6 {
+                climbed += 1;
+            }
+        }
+        eprintln!("climbed {climbed} of {tried} collapsed floors");
+        assert!(
+            climbed == tried,
+            "only {climbed} of {tried} collapsed floors could be driven up"
+        );
     }
 
     #[test]
