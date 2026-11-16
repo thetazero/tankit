@@ -164,7 +164,7 @@ impl Menu {
 
                 let m = &MISSIONS[self.mission];
                 for (k, v) in [
-                    ("CONTRACT", m.mode.to_string()),
+                    ("CONTRACT", m.contract.name().to_string()),
                     ("MAP", m.map.to_string()),
                     ("EMPLOYER", m.sides[0].name().to_string()),
                     ("AGAINST", m.sides[1].name().to_string()),

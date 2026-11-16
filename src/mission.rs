@@ -1,13 +1,33 @@
-//! Missions: a map plus a contract (game mode). Only one for now.
+//! Missions: one map per contract (game mode).
 
 use crate::MapKind;
 use crate::combat::{KILL_XP, ROUND_TIME};
 use crate::faction::Faction;
+use crate::hold;
+
+/// What a mission pays you for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Contract {
+    /// Team deathmatch: paid per kill, most kills for your side wins.
+    #[default]
+    Attrition,
+    /// King of the hill: secure a crystal deposit; the side that holds it
+    /// longest wins.
+    Hold,
+}
+
+impl Contract {
+    pub fn name(self) -> &'static str {
+        match self {
+            Contract::Attrition => "ATTRITION",
+            Contract::Hold => "HOLD",
+        }
+    }
+}
 
 pub struct Mission {
     pub name: &'static str,
-    /// The contract: what you're paid for.
-    pub mode: &'static str,
+    pub contract: Contract,
     pub map: &'static str,
     pub map_kind: MapKind,
     /// Map seed (only matters for procedural maps).
@@ -19,16 +39,28 @@ pub struct Mission {
     pub brief: &'static str,
 }
 
-pub const MISSIONS: &[Mission] = &[Mission {
-    name: "DEAD TOWN",
-    mode: "ATTRITION",
-    map: "SALTMARKET",
-    map_kind: MapKind::Saltmarket,
-    seed: 0,
-    team_size: 6,
-    sides: [Faction::Imperium, Faction::Resonant],
-    brief: "PAID PER KILL. MOST KILLS FOR YOUR SIDE TAKES THE TOWN",
-}];
+pub const MISSIONS: &[Mission] = &[
+    Mission {
+        name: "DEAD TOWN",
+        contract: Contract::Attrition,
+        map: "SALTMARKET",
+        map_kind: MapKind::Saltmarket,
+        seed: 0,
+        team_size: 6,
+        sides: [Faction::Imperium, Faction::Resonant],
+        brief: "PAID PER KILL. MOST KILLS FOR YOUR SIDE TAKES THE TOWN",
+    },
+    Mission {
+        name: "CRYSTAL VEIN",
+        contract: Contract::Hold,
+        map: "SHARD FLATS",
+        map_kind: MapKind::ShardFlats,
+        seed: 0,
+        team_size: 6,
+        sides: [Faction::Imperium, Faction::Resonant],
+        brief: "SECURE THE DEPOSIT. PAID FOR YOUR TIME ON IT",
+    },
+];
 
 impl Mission {
     /// Bots to fill both sides around the player.
@@ -42,11 +74,18 @@ impl Mission {
 
     pub fn round_time(&self) -> String {
         let s = ROUND_TIME as u32;
-        format!("{}:{:02}", s / 60, s % 60)
+        let clock = format!("{}:{:02}", s / 60, s % 60);
+        match self.contract {
+            Contract::Attrition => clock,
+            Contract::Hold => format!("{clock} OR {:.0} S HELD", hold::TARGET),
+        }
     }
 
     pub fn pay(&self) -> String {
-        format!("CRYSTALS · {KILL_XP} XP PER KILL")
+        match self.contract {
+            Contract::Attrition => format!("CRYSTALS · {KILL_XP} XP PER KILL"),
+            Contract::Hold => format!("CRYSTALS · {} XP / {:.0} S", hold::HOLD_XP, hold::XP_EVERY),
+        }
     }
 }
 
@@ -58,6 +97,19 @@ mod tests {
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
             assert_eq!(m.sides, crate::make_map(m.seed, m.map_kind).factions);
+        }
+    }
+
+    #[test]
+    fn one_map_per_contract() {
+        for (i, a) in MISSIONS.iter().enumerate() {
+            for b in &MISSIONS[i + 1..] {
+                assert_ne!(
+                    a.map_kind, b.map_kind,
+                    "{} and {} share a map",
+                    a.name, b.name
+                );
+            }
         }
     }
 }

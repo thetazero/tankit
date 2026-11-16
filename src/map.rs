@@ -10,6 +10,7 @@ use crate::rng::Rng;
 
 mod ruins;
 mod saltmarket;
+mod shard_flats;
 
 /// Size of one city-grid cell in meters.
 pub const CELL: f32 = 4.0;
@@ -366,6 +367,8 @@ pub struct Map {
     pub factions: [Faction; 2],
     /// Where repair crates parachute in (see `repair`).
     pub repair_spots: Vec<Vec2>,
+    /// The Hold contract's site; `None` picks the open spot nearest the middle (see `hold`).
+    pub hold_site: Option<Vec2>,
 }
 
 /// The matchup on maps that don't name their own.
@@ -408,6 +411,7 @@ impl Map {
             bases: Default::default(),
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
+            hold_site: None,
         };
 
         // Ring road around the inner city.
@@ -792,6 +796,7 @@ impl Map {
             bases: Default::default(),
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
+            hold_site: None,
         }
     }
 
@@ -822,6 +827,7 @@ impl Map {
             factions: DEFAULT_SIDES,
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
+            hold_site: None,
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.

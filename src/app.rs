@@ -21,7 +21,7 @@ use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hud::{self, Hud};
 use crate::menu::{self, Menu, Nav, Pause, PauseAction};
-use crate::mission::MISSIONS;
+use crate::mission::{Contract, MISSIONS};
 use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
@@ -50,6 +50,7 @@ pub struct Launch {
     pub map_kind: MapKind,
     pub spawn: usize,
     pub bots: usize,
+    pub contract: Contract,
     /// Starting kit; `None` uses the profile's.
     pub loadout: Option<garage::Loadout>,
     /// Open on the main menu (otherwise straight into a match with the settings above).
@@ -62,6 +63,7 @@ struct App {
     map_kind: MapKind,
     spawn: usize,
     bots: usize,
+    contract: Contract,
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -125,6 +127,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
             launch.map_kind,
             launch.spawn,
             launch.bots,
+            launch.contract,
             loadout,
         )
     };
@@ -137,6 +140,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         map_kind: launch.map_kind,
         spawn: launch.spawn,
         bots: launch.bots,
+        contract: launch.contract,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -171,12 +175,13 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A round with the player in `kit`.
+/// A round under `contract` with the player in `kit`.
 pub fn new_match(
     seed: u64,
     map_kind: MapKind,
     spawn: usize,
     bots: usize,
+    contract: Contract,
     kit: garage::Loadout,
 ) -> Match {
     let mut m = Match::new(
@@ -185,6 +190,7 @@ pub fn new_match(
         bots,
         seed.wrapping_add(spawn as u64),
     );
+    m.set_contract(contract);
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
@@ -192,7 +198,8 @@ pub fn new_match(
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    let mut m = new_match(MISSIONS[0].seed, MISSIONS[0].map_kind, 0, 0, kit);
+    let first = &MISSIONS[0];
+    let mut m = new_match(first.seed, first.map_kind, 0, 0, Contract::Attrition, kit);
     m.time_left = f32::INFINITY;
     m
 }
@@ -287,6 +294,7 @@ impl App {
             self.map_kind,
             self.spawn,
             self.bots,
+            self.contract,
             kit,
         ));
         self.mode = Mode::Playing;
@@ -295,15 +303,17 @@ impl App {
     fn start_mission(&mut self, i: usize) {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
+        self.contract = m.contract;
         self.load(new_match(
             self.seed,
             self.map_kind,
             self.spawn,
             self.bots,
+            self.contract,
             self.profile.loadout,
         ));
         self.mode = Mode::Playing;
-        log::info!("deployed: {} ({}, {})", m.name, m.mode, m.map);
+        log::info!("deployed: {} ({}, {})", m.name, m.contract.name(), m.map);
     }
 
     fn back_to_menu(&mut self) {

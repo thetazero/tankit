@@ -5,6 +5,7 @@ mod economy;
 mod faction;
 mod game;
 mod garage;
+mod hold;
 mod hud;
 mod map;
 mod menu;
@@ -26,12 +27,15 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map --spawn --team-size --hull --turret skips the menu and drops straight into a match
+  any of --seed --map --spawn --team-size --contract --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket>
-                          city (default), the physics test course, or Saltmarket (desert town)
+  --map <city|proving|saltmarket|shards>
+                          city (default), the physics test course, Saltmarket (desert town),
+                          or Shard Flats (crystal deposit, the Hold map)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
+  --contract <attrition|hold>
+                          game mode: team deathmatch (default) or hold the site
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -58,6 +62,7 @@ pub struct Args {
     pub map: MapKind,
     pub spawn: usize,
     pub bots: usize,
+    pub contract: mission::Contract,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -99,6 +104,8 @@ pub enum MapKind {
     Proving,
     /// Hand-built desert town on a dry reservoir.
     Saltmarket,
+    /// Placeholder: open flats around a crystal deposit (the Hold map).
+    ShardFlats,
 }
 
 pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
@@ -106,6 +113,7 @@ pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
         MapKind::City => map::Map::generate(seed),
         MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
+        MapKind::ShardFlats => map::Map::shard_flats(),
     }
 }
 
@@ -156,6 +164,7 @@ fn main() -> Result<()> {
             map_kind: args.map,
             spawn: args.spawn,
             bots: args.bots,
+            contract: args.contract,
             loadout: args.kit_given.then_some(args.loadout),
             menu: !args.play,
             showroom,
@@ -177,6 +186,7 @@ fn parse_args() -> Result<Args> {
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut bots: Option<usize> = None;
+    let mut contract = mission::Contract::Attrition;
     let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
@@ -191,7 +201,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = args.next() {
         if matches!(
             a.as_str(),
-            "--seed" | "--map" | "--spawn" | "--team-size" | "--hull" | "--turret"
+            "--seed" | "--map" | "--spawn" | "--team-size" | "--contract" | "--hull" | "--turret"
         ) {
             play = true;
         }
@@ -203,7 +213,8 @@ fn parse_args() -> Result<Args> {
                 Some("city") => map_kind = MapKind::City,
                 Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
-                other => bail!("--map expects city, proving or saltmarket, got {other:?}"),
+                Some("shards") => map_kind = MapKind::ShardFlats,
+                other => bail!("--map expects city, proving, saltmarket or shards, got {other:?}"),
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--team-size" => {
@@ -213,6 +224,11 @@ fn parse_args() -> Result<Args> {
                 }
                 bots = Some(2 * n - 1);
             }
+            "--contract" => match args.next().as_deref() {
+                Some("attrition") => contract = mission::Contract::Attrition,
+                Some("hold") => contract = mission::Contract::Hold,
+                other => bail!("--contract expects attrition or hold, got {other:?}"),
+            },
             "--straight" => straight = true,
             "--cam" => {
                 let v: Vec<f32> = args
@@ -291,6 +307,7 @@ fn parse_args() -> Result<Args> {
         map: map_kind,
         spawn,
         bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 11 }),
+        contract,
         loadout,
         kit_given,
         play,
@@ -323,6 +340,7 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+    game.set_contract(args.contract);
     if args.garage {
         game.fighters[0].next_kit = Some(args.loadout);
     } else {

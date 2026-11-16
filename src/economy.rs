@@ -1,7 +1,7 @@
 //! Crystals: what contracts pay and what parts cost.
 //!
 //! A finished contract pays crystals (completion, your side's victory,
-//! contribution, kill bounty); XP stays for actions in the match. Crystals buy parts (which
+//! contribution, kill bounty, and your time on the site under Hold); XP stays for actions in the match. Crystals buy parts (which
 //! pilot rank unlocks for sale) and upgrade them through M0..M3.
 
 use crate::combat::{self, Gun, Match};
@@ -110,6 +110,8 @@ const COMPLETION: u32 = 50;
 const VICTORY: u32 = 100;
 const DAMAGE_PER_CRYSTAL: f32 = 10.0;
 const BOUNTY: u32 = 15;
+/// Hold contract: crystals per second of your own on the site.
+const HOLD_PER_SECOND: f32 = 1.0;
 
 /// The player's pay for a finished round, line by line.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,6 +124,9 @@ pub struct Payout {
     pub contribution: u32,
     pub kills: u32,
     pub bounty: u32,
+    /// Seconds of your own on the site, under the Hold contract.
+    pub held: f32,
+    pub hold: u32,
 }
 
 impl Payout {
@@ -144,11 +149,13 @@ impl Payout {
             contribution: (me.damage_dealt / DAMAGE_PER_CRYSTAL) as u32,
             kills: me.kills,
             bounty: me.kills * BOUNTY,
+            held: m.held(0),
+            hold: (m.held(0) * HOLD_PER_SECOND) as u32,
         }
     }
 
     pub fn total(&self) -> u32 {
-        self.completion + self.victory + self.contribution + self.bounty
+        self.completion + self.victory + self.contribution + self.bounty + self.hold
     }
 }
 
@@ -209,5 +216,21 @@ mod tests {
         m.fighters[0].kills = enemy_kills;
         let p = Payout::of(&m);
         assert_eq!((p.outcome, p.victory), (Outcome::Draw, VICTORY / 2));
+    }
+
+    #[test]
+    fn hold_pays_for_your_time_on_the_site_and_your_side_holding_longest() {
+        let mut m = Match::new(crate::map::Map::generate(21), 0, 3, 21);
+        m.set_contract(crate::mission::Contract::Hold);
+        for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
+            f.kills = 5;
+        }
+        let h = m.hold.as_mut().unwrap();
+        h.held[0] = 50.0;
+        h.own[0] = 40.0;
+        let p = Payout::of(&m);
+        assert_eq!(p.outcome, Outcome::Won, "time held beats kills");
+        assert_eq!(p.hold, (40.0 * HOLD_PER_SECOND) as u32);
+        assert_eq!(p.total(), COMPLETION + VICTORY + p.hold);
     }
 }

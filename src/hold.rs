@@ -1,0 +1,281 @@
+//! Hold contract (king of the hill, side against side): one site per map,
+//! a crystal deposit (`Map::hold_site`, else the open spot nearest the
+//! middle). A side with tanks in the ring and the other side's none holds
+//! it and banks time; both in it contest it and nobody scores. First side to
+//! `TARGET` seconds held ends the round, otherwise the clock does.
+//!
+//! Each tank's own time in the ring while its side holds is kept too: it
+//! orders the scoreboard and pays the player's HOLD line.
+
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+
+use crate::map::Map;
+use crate::render::mesh::{Instance, MeshId};
+use crate::sim::Tank;
+
+/// Ring radius, m.
+pub const RADIUS: f32 = 13.0;
+/// Seconds held by one side that win the round outright.
+pub const TARGET: f32 = 120.0;
+/// The player earns `HOLD_XP` for every `XP_EVERY` seconds of their own on the site.
+pub const XP_EVERY: f32 = 10.0;
+pub const HOLD_XP: u32 = 5;
+/// Tanks further than this above or below the ring's ground (a roof, a ledge) don't count.
+const REACH_Y: f32 = 4.0;
+const DASHES: usize = 40;
+const POSTS: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    /// Nobody in the ring.
+    Open,
+    /// Only this side's tanks are in it.
+    Held(usize),
+    /// Both sides are in it.
+    Contested,
+}
+
+pub struct Hold {
+    pub at: Vec2,
+    pub ground: f32,
+    /// Seconds each side has held the site this round.
+    pub held: [f32; 2],
+    /// Seconds each tank has spent on the site while its side held it.
+    pub own: Vec<f32>,
+    pub control: Control,
+    /// Ground height under each dash of the ring.
+    dash_y: Vec<f32>,
+}
+
+impl Hold {
+    pub fn new(map: &Map, tanks: usize) -> Hold {
+        let at = map.hold_site.unwrap_or_else(|| {
+            let c = map.center();
+            map.open_spots
+                .iter()
+                .copied()
+                .min_by(|a, b| a.distance_squared(c).total_cmp(&b.distance_squared(c)))
+                .unwrap_or(c)
+        });
+        let dash_y = (0..DASHES)
+            .map(|i| {
+                let p = at + ring_dir(i as f32 / DASHES as f32) * RADIUS;
+                map.ground_height(p.x, p.y)
+            })
+            .collect();
+        Hold {
+            at,
+            ground: map.ground_height(at.x, at.y),
+            held: [0.0; 2],
+            own: vec![0.0; tanks],
+            control: Control::Open,
+            dash_y,
+        }
+    }
+
+    /// Is a tank at `p` inside the ring?
+    pub fn inside(&self, p: Vec3) -> bool {
+        Vec2::new(p.x, p.z).distance(self.at) < RADIUS && (p.y - self.ground).abs() < REACH_Y
+    }
+
+    /// Advance by `dt`. `side(i)` is tank `i`'s side, or `None` if it doesn't
+    /// count (a wreck). Returns the side holding, if any.
+    pub fn step(
+        &mut self,
+        dt: f32,
+        tanks: &[Tank],
+        side: impl Fn(usize) -> Option<usize>,
+    ) -> Option<usize> {
+        self.own.resize(tanks.len(), 0.0);
+        let on: Vec<(usize, usize)> = (0..tanks.len())
+            .filter_map(|i| side(i).map(|s| (i, s)))
+            .filter(|&(i, _)| self.inside(tanks[i].pos))
+            .collect();
+        let present = [0, 1].map(|s| on.iter().any(|&(_, t)| t == s));
+        self.control = match present {
+            [false, false] => Control::Open,
+            [true, false] => Control::Held(0),
+            [false, true] => Control::Held(1),
+            [true, true] => Control::Contested,
+        };
+        let Control::Held(s) = self.control else {
+            return None;
+        };
+        self.held[s] = (self.held[s] + dt).min(TARGET);
+        for &(i, _) in &on {
+            self.own[i] += dt;
+        }
+        Some(s)
+    }
+
+    /// The side that has reached `TARGET`.
+    pub fn winner(&self) -> Option<usize> {
+        (0..2).find(|&s| self.held[s] >= TARGET)
+    }
+
+    /// The ring painted on the ground and its four marker posts, tinted by
+    /// who has it: plain paint when open, the holding side's paint,
+    /// flickering orange when contested.
+    pub fn instances(&self, time: f32, paint: [Vec3; 2], out: &mut Vec<(MeshId, Instance)>) {
+        let plain = Vec3::new(0.86, 0.82, 0.72);
+        let (color, glow) = match self.control {
+            Control::Open => (plain, 0.0),
+            Control::Held(s) => (paint[s], 0.9),
+            Control::Contested => (
+                Vec3::new(1.0, 0.55, 0.25),
+                if (time * 5.0).fract() < 0.5 { 1.2 } else { 0.3 },
+            ),
+        };
+        let dash_len = std::f32::consts::TAU * RADIUS / DASHES as f32 * 0.55;
+        for (i, &y) in self.dash_y.iter().enumerate() {
+            let f = i as f32 / DASHES as f32;
+            let p = self.at + ring_dir(f) * RADIUS;
+            // Long side along the ring's tangent.
+            let q = Quat::from_rotation_y(-f * std::f32::consts::TAU);
+            out.push((
+                MeshId::CUBE,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::new(0.35, 0.06, dash_len),
+                        q,
+                        Vec3::new(p.x, y + 0.03, p.y),
+                    ),
+                    color.extend(glow * 0.6),
+                ),
+            ));
+        }
+        for k in 0..POSTS {
+            let i = k * DASHES / POSTS;
+            let p = self.at + ring_dir(i as f32 / DASHES as f32) * RADIUS;
+            let y = self.dash_y[i];
+            out.push((
+                MeshId::CYLINDER,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::new(0.22, 2.4, 0.22),
+                        Quat::IDENTITY,
+                        Vec3::new(p.x, y + 1.2, p.y),
+                    ),
+                    Vec4::new(0.2, 0.2, 0.21, 0.0),
+                ),
+            ));
+            out.push((
+                MeshId::GEM,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::splat(0.45),
+                        Quat::from_rotation_y(time * 1.5),
+                        Vec3::new(p.x, y + 2.7, p.y),
+                    ),
+                    color.extend(0.4 + glow),
+                ),
+            ));
+        }
+    }
+}
+
+/// Point on the unit circle a fraction `f` of the way round.
+fn ring_dir(f: f32) -> Vec2 {
+    let a = f * std::f32::consts::TAU;
+    Vec2::new(a.sin(), a.cos())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::DT;
+    use crate::sim::World;
+
+    fn world_with(n: usize) -> (World, Hold) {
+        let mut w = World::new(Map::proving_ground(), 0);
+        for _ in 1..n {
+            w.spawn_tank(
+                Vec3::ONE,
+                Vec2::ZERO,
+                0.0,
+                crate::sim::HullKind::Lancer,
+                crate::sim::TurretKind::Lance,
+            );
+        }
+        let h = Hold::new(&w.map, n);
+        (w, h)
+    }
+
+    fn put(w: &mut World, h: &Hold, i: usize, off: Vec2) {
+        let p = h.at + off;
+        w.tanks[i].pos = Vec3::new(p.x, h.ground + 0.5, p.y);
+    }
+
+    /// Tanks 0 and 1 on side 0, the rest on side 1.
+    fn sides(i: usize) -> Option<usize> {
+        Some(if i < 2 { 0 } else { 1 })
+    }
+
+    #[test]
+    fn one_side_alone_holds_and_banks_time() {
+        let (mut w, mut h) = world_with(3);
+        put(&mut w, &h, 0, Vec2::new(2.0, 0.0));
+        put(&mut w, &h, 1, Vec2::new(-4.0, 3.0));
+        put(&mut w, &h, 2, Vec2::new(RADIUS + 10.0, 0.0));
+        for _ in 0..60 {
+            assert_eq!(h.step(DT, &w.tanks, sides), Some(0));
+        }
+        assert_eq!(h.control, Control::Held(0));
+        assert!((h.held[0] - 60.0 * DT).abs() < 1e-4);
+        assert_eq!(h.held[1], 0.0);
+        // Both allies on the site get the time.
+        assert!((h.own[0] - 60.0 * DT).abs() < 1e-4 && h.own[0] == h.own[1]);
+        assert_eq!(h.own[2], 0.0);
+    }
+
+    #[test]
+    fn both_sides_in_the_ring_contest_it() {
+        let (mut w, mut h) = world_with(3);
+        put(&mut w, &h, 0, Vec2::new(2.0, 0.0));
+        put(&mut w, &h, 2, Vec2::new(-3.0, 1.0));
+        put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 0.0));
+        assert_eq!(h.step(DT, &w.tanks, sides), None);
+        assert_eq!(h.control, Control::Contested);
+        assert_eq!(h.held, [0.0, 0.0]);
+        // An enemy wreck in the ring doesn't count.
+        assert_eq!(
+            h.step(DT, &w.tanks, |i| if i == 2 { None } else { sides(i) }),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn tanks_overhead_dont_count() {
+        let (mut w, mut h) = world_with(1);
+        put(&mut w, &h, 0, Vec2::ZERO);
+        w.tanks[0].pos.y += 8.0;
+        assert_eq!(h.step(DT, &w.tanks, sides), None);
+        assert_eq!(h.control, Control::Open);
+    }
+
+    #[test]
+    fn reaching_the_target_wins() {
+        let (mut w, mut h) = world_with(3);
+        put(&mut w, &h, 2, Vec2::ZERO);
+        put(&mut w, &h, 0, Vec2::new(RADIUS + 10.0, 0.0));
+        put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 5.0));
+        h.held[1] = TARGET - DT * 0.5;
+        assert_eq!(h.winner(), None);
+        h.step(DT, &w.tanks, sides);
+        assert_eq!(h.winner(), Some(1));
+        assert_eq!(h.held[1], TARGET);
+    }
+
+    #[test]
+    fn shard_flats_site_is_the_deposit_with_room_to_drive_in_the_ring() {
+        let m = Map::shard_flats();
+        let h = Hold::new(&m, 1);
+        assert_eq!(Some(h.at), m.hold_site);
+        let nav = crate::ai::NavGrid::build(&m);
+        // The shards fill the middle; most of the ring around them is open.
+        let open = (0..32)
+            .filter(|&i| !nav.is_blocked(h.at + ring_dir(i as f32 / 32.0) * RADIUS * 0.7))
+            .count();
+        assert!(open >= 24, "only {open}/32 points in the ring are drivable");
+    }
+}
