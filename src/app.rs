@@ -11,8 +11,9 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::game::Clock;
+use crate::garage::{self, Garage};
 use crate::hud::Hud;
-use crate::render::Renderer;
+use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullKind, HullStats, TurretKind, World};
 use crate::tank::TankArt;
@@ -32,6 +33,9 @@ struct App {
     world: World,
     cam: ChaseCam,
     hud: Hud,
+    garage: Garage,
+    /// Last frame's camera (the garage starts its orbit from it).
+    camera: Option<Camera>,
     clock: Clock,
     keys: HashSet<KeyCode>,
     /// Live tuning (player tank): sideways grip multiplier and turn-rate offset.
@@ -42,10 +46,23 @@ struct App {
     fps_frames: u32,
 }
 
-pub fn run(seed: u64, proving: bool, spawn: usize, showroom: Option<ShowroomArgs>) -> anyhow::Result<()> {
+pub fn run(
+    seed: u64,
+    proving: bool,
+    spawn: usize,
+    loadout: (HullKind, TurretKind),
+    showroom: Option<ShowroomArgs>,
+) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let world = if showroom.is_some() { showroom::world() } else { World::new(make_map(seed, proving), spawn) };
+    let world = if showroom.is_some() {
+        showroom::world()
+    } else {
+        let mut w = World::new(make_map(seed, proving), spawn);
+        w.set_hull(0, loadout.0);
+        w.tanks[0].turret_kind = loadout.1;
+        w
+    };
     let mut app = App {
         seed,
         proving,
@@ -57,6 +74,8 @@ pub fn run(seed: u64, proving: bool, spawn: usize, showroom: Option<ShowroomArgs
         world,
         cam: ChaseCam::new(),
         hud: Hud::new(),
+        garage: Garage::new(),
+        camera: None,
         clock: Clock::default(),
         keys: HashSet::new(),
         tune_grip: 1.0,
@@ -142,13 +161,33 @@ impl App {
         self.world.tanks[0].turret_kind = turret;
         self.cam = ChaseCam::new();
         self.hud = Hud::new();
+        self.garage = Garage::new();
         if let Some(r) = &mut self.renderer {
             r.set_static_mesh(&scene::map_mesh(&self.world.map));
         }
     }
 
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
+        if self.garage.is_open() {
+            let input = match code {
+                KeyCode::KeyW | KeyCode::ArrowUp => garage::Input::Up,
+                KeyCode::KeyS | KeyCode::ArrowDown => garage::Input::Down,
+                KeyCode::KeyA | KeyCode::ArrowLeft => garage::Input::Left,
+                KeyCode::KeyD | KeyCode::ArrowRight => garage::Input::Right,
+                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::KeyG => garage::Input::Deploy,
+                KeyCode::Escape => garage::Input::Revert,
+                _ => return,
+            };
+            self.garage.input(input, &mut self.world);
+            return;
+        }
         match code {
+            // Garage: park and swap hull / turret mid-battle.
+            KeyCode::KeyG if self.showroom.is_none() => {
+                if let Some(cam) = self.camera {
+                    self.garage.toggle(&self.world, &cam);
+                }
+            }
             KeyCode::Escape => event_loop.exit(),
             // Restart at the next spawn point (cycles the proving ground lanes).
             KeyCode::KeyR if self.showroom.is_none() => {
@@ -188,6 +227,10 @@ impl App {
     }
 
     fn command(&self) -> Command {
+        // Parked in the garage.
+        if self.garage.is_open() {
+            return Command::default();
+        }
         let axis = |pos: &[KeyCode], neg: &[KeyCode]| (self.held(pos) as i32 - self.held(neg) as i32) as f32;
         Command {
             throttle: axis(&[KeyCode::KeyW, KeyCode::ArrowUp], &[KeyCode::KeyS, KeyCode::ArrowDown]),
@@ -228,6 +271,8 @@ impl App {
             let alpha = self.clock.alpha();
             let tanks: Vec<_> = self.world.tanks.iter().map(|t| t.interpolated(alpha)).collect();
             let mut camera = self.cam.update(&self.world, &tanks[0], dt);
+            self.garage.update(dt);
+            camera = self.garage.camera(camera, &self.world, &tanks[0], r.width as f32 / r.height as f32);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
                 let angle = room.orbit.unwrap_or(self.world.time * 0.15);
@@ -238,9 +283,12 @@ impl App {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
             } else {
-                scene.ui = self.hud.draw(&tanks[0], self.seed, &camera, r.width as f32, r.height as f32, dt);
+                let (w, h) = (r.width as f32, r.height as f32);
+                let hud = self.hud.draw(&tanks[0], self.seed, &camera, w, h, dt);
+                scene.ui = self.garage.overlay(hud, &tanks[0], h);
             }
             r.render(&scene);
+            self.camera = Some(camera);
         }
 
         self.fps_timer += dt;
@@ -250,7 +298,7 @@ impl App {
                 let fps = self.fps_frames as f32 / self.fps_timer;
                 let t = &self.world.tanks[0];
                 w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2} ([ ])  turn {:.1} rad/s (; ')  Backspace reset  |  WASD, Z/X/C turret, Space fire, 1/2 parts, R respawn",
+                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2} ([ ])  turn {:.1} rad/s (; ')  Backspace reset  |  WASD, Z/X/C turret, Space fire, G garage, R respawn",
                     t.speed(),
                     if t.grounded() { "ground" } else { "AIR" },
                     self.tune_grip,
