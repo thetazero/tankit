@@ -15,23 +15,25 @@ use crate::render::mesh::MeshData;
 
 /// Uthenn laser light: the beam, the muzzle flare, and their glow when cool.
 pub const LASER_LIGHT: Vec3 = Vec3::new(0.2, 1.0, 0.35);
-/// The same light run white-hot, as the heat nears its limit.
-const LASER_HOT: Vec3 = Vec3::new(0.85, 1.0, 0.9);
+/// The heat lights at rest (deeper) and near the limit (full, saturated
+/// green: pushing it toward white just reads as faded in the desert sun).
+const HEAT_COOL: Vec3 = Vec3::new(0.06, 0.55, 0.18);
+const HEAT_HOT: Vec3 = Vec3::new(0.25, 1.0, 0.38);
 /// Heat lights are white in the mesh; the instance tints them (see `heat_glow`).
 const HEAT: Skin = Skin::new(Vec4::new(1.0, 1.0, 1.0, 0.0), Vec4::new(1.0, 1.0, 1.0, 0.0));
 /// Lumen is built a size up from the other turrets.
 const LUMEN_SCALE: f32 = 1.2;
 
-/// The tint (rgb) and glow strength (a) of a tank's heat lights: green at
-/// rest, brighter and whiter as the beam heats, guttering while it's locked
+/// The tint (rgb) and glow strength (a) of a tank's heat lights: deep green
+/// at rest, brighter as the beam heats, guttering while it's locked
 /// out hot, dark on a wreck.
 pub fn heat_glow(heat: f32, overheated: bool, dead: bool, time: f32) -> Vec4 {
     if dead {
         return Vec4::new(0.05, 0.07, 0.06, 0.0);
     }
     let h = heat.clamp(0.0, 1.0);
-    let color = LASER_LIGHT.lerp(LASER_HOT, h * h);
-    let mut strength = 1.3 + 2.4 * h;
+    let color = HEAT_COOL.lerp(HEAT_HOT, h);
+    let mut strength = 1.6 + 0.8 * h * h;
     if overheated {
         let flick = ((time * 31.0).sin() * (time * 17.0).sin()).abs();
         strength *= 0.25 + 0.75 * flick;
