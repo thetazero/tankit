@@ -16,6 +16,7 @@ use crate::game::DT;
 use crate::hold::{self, Hold};
 use crate::map::Map;
 use crate::mission::Contract;
+use crate::render::Particle;
 use crate::render::mesh::{Instance, MeshId};
 use crate::repair::Repairs;
 use crate::rng::Rng;
@@ -100,6 +101,12 @@ pub enum Look {
     Bolt { size: f32 },
     /// A puff of crystal fire that swells as it flies.
     Flame,
+}
+
+/// An Ammeth orb shrinks a little at every skip.
+fn plasma_shrink(s: &Shell) -> f32 {
+    let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
+    1.0 - 0.18 * spent
 }
 
 /// Ithessar plasma.
@@ -1188,6 +1195,125 @@ impl Match {
             .collect()
     }
 
+    /// Plasma's light: soft additive glow for shells in flight and the
+    /// bursts they leave, drawn in the particle pass.
+    pub fn glow_particles(&self, alpha: f32, out: &mut Vec<Particle>) {
+        let glow = |at: Vec3, size: f32, color: Vec3, strength: f32, stretch: Vec3| Particle {
+            pos: at.to_array(),
+            size,
+            color: color.extend(1.0).to_array(),
+            stretch: stretch.to_array(),
+            glow: strength,
+        };
+        for s in &self.shells {
+            let p = s.prev.lerp(s.pos, alpha);
+            let d = s.vel.normalize_or_zero();
+            // Fades in over the first few hundredths so it leaves the muzzle
+            // rather than appearing in front of it.
+            let born = (s.age / 0.04).min(1.0);
+            match s.spec.look {
+                // An orb held in its own skin: a halo that shivers, a white
+                // heart, a comet tail of shed plasma behind it, and two motes
+                // circling. It shrinks a little at every skip.
+                Look::Plasma { size } => {
+                    let size = size * plasma_shrink(s);
+                    let shiver = 1.0 + 0.12 * (s.age * 38.0 + s.seed * 6.0).sin();
+                    out.push(glow(p, size * 2.2 * shiver, PLASMA, 1.6 * born, Vec3::ZERO));
+                    out.push(glow(p, size * 0.9, PLASMA_HOT, 2.4 * born, Vec3::ZERO));
+                    // The tail, stretched along the flight path.
+                    out.push(glow(
+                        p - d * size * 1.6,
+                        size * 0.7,
+                        PLASMA,
+                        1.1 * born,
+                        d * 2.5,
+                    ));
+                    for k in 1..5 {
+                        let k = k as f32;
+                        let flick = 0.8 + 0.2 * (s.age * 27.0 + k * 2.3 + s.seed * 9.0).sin();
+                        out.push(glow(
+                            p - d * size * 0.8 * k,
+                            size * (1.1 - 0.18 * k),
+                            PLASMA,
+                            (1.2 - 0.25 * k) * flick * born,
+                            Vec3::ZERO,
+                        ));
+                    }
+                    let side = d.any_orthonormal_vector();
+                    for k in 0..2 {
+                        let a = s.age * 14.0 + s.seed * 6.0 + k as f32 * std::f32::consts::PI;
+                        let off = Quat::from_axis_angle(d, a) * side * size * 0.9;
+                        out.push(glow(
+                            p + off,
+                            size * 0.3,
+                            PLASMA_HOT,
+                            1.8 * born,
+                            Vec3::ZERO,
+                        ));
+                    }
+                }
+                // A dart: a long rose streak around a hot head.
+                Look::Bolt { size } => {
+                    out.push(glow(
+                        p - d * size * 1.6,
+                        size * 0.38,
+                        PLASMA,
+                        2.4 * born,
+                        d * 6.0,
+                    ));
+                    out.push(glow(
+                        p - d * size * 0.5,
+                        size * 0.16,
+                        PLASMA_HOT,
+                        2.6 * born,
+                        d * 5.0,
+                    ));
+                    out.push(glow(p, size * 0.5, PLASMA, 1.6 * born, Vec3::ZERO));
+                }
+                _ => {}
+            }
+        }
+        // Where plasma bursts: the skin pops in a flash of light that swells
+        // and fades, throwing droplets out in a ring that arc and wink out.
+        for b in &self.blasts {
+            let BlastKind::Plasma(size) = b.kind else {
+                continue;
+            };
+            let f = b.age / b.life();
+            let fade = (1.0 - f) * (1.0 - f);
+            out.push(glow(
+                b.pos,
+                size * (1.6 + 2.4 * f),
+                PLASMA,
+                2.5 * fade,
+                Vec3::ZERO,
+            ));
+            out.push(glow(
+                b.pos,
+                size * (0.8 + 0.6 * f),
+                PLASMA_HOT,
+                3.0 * fade,
+                Vec3::ZERO,
+            ));
+            let seed = (b.pos.x * 12.9898 + b.pos.z * 78.233).sin() * 43758.5;
+            let spin = seed.fract() * std::f32::consts::TAU;
+            let n = 7;
+            for k in 0..n {
+                let a = spin + k as f32 / n as f32 * std::f32::consts::TAU;
+                let dir = Vec3::new(a.cos(), 0.6 + 0.4 * (a * 3.0).sin(), a.sin()).normalize();
+                let travel = size * 2.2 * (1.0 - (1.0 - f).powi(2));
+                let at = b.pos + dir * travel - Vec3::Y * f * f * size * 1.5;
+                out.push(glow(
+                    at,
+                    size * 0.18,
+                    PLASMA_HOT,
+                    2.5 * (1.0 - f),
+                    dir * 2.0,
+                ));
+            }
+        }
+    }
+
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
@@ -1231,36 +1357,17 @@ impl Match {
             match s.spec.look {
                 // A streak trailing back from the shell.
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
-                // An orb in its own skin: a white-hot heart, a rose shell that
-                // shivers, a comet tail of shed plasma, and two motes circling
-                // it. It shrinks a little at every skip.
+                // Plasma is mostly light (see `glow_particles`); only its
+                // white-hot heart is solid.
                 Look::Plasma { size } => {
-                    let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
-                    let size = size * (1.0 - 0.18 * spent);
-                    let wobble = 1.0 + 0.1 * (s.age * 38.0 + s.seed * 6.0).sin();
-                    out.push(ball(p, size * wobble, PLASMA.extend(2.2)));
-                    out.push(ball(p, size * 0.5, PLASMA_HOT.extend(5.0)));
-                    for k in 1..4 {
-                        let k = k as f32;
-                        out.push(ball(
-                            p - d * size * 0.55 * k,
-                            size * (0.7 - 0.17 * k),
-                            PLASMA.extend(2.4 - 0.4 * k),
-                        ));
-                    }
-                    let side = d.any_orthonormal_vector();
-                    for k in 0..2 {
-                        let a = s.age * 14.0 + s.seed * 6.0 + k as f32 * std::f32::consts::PI;
-                        let off = Quat::from_axis_angle(d, a) * side * size * 0.75;
-                        out.push(ball(p + off, size * 0.14, PLASMA_HOT.extend(4.0)));
-                    }
+                    out.push(ball(
+                        p,
+                        size * plasma_shrink(s) * 0.26,
+                        PLASMA_HOT.extend(6.0),
+                    ));
                 }
-                // A dart: hot needle inside a rose streak.
                 Look::Bolt { size } => {
-                    out.push(streak(0.45 * size, 2.4 * size, PLASMA.extend(2.2)));
-                    out.push(streak(0.16 * size, 1.8 * size, PLASMA_HOT.extend(4.0)));
-                    out.push(ball(p, 0.55 * size, PLASMA.extend(2.2)));
-                    out.push(ball(p, 0.28 * size, PLASMA_HOT.extend(4.0)));
+                    out.push(streak(0.06 * size, 1.4 * size, PLASMA_HOT.extend(6.0)));
                 }
                 // Crystal fire: white-hot at the nozzle, swelling into blue, then gone.
                 Look::Flame => {
@@ -1347,12 +1454,10 @@ impl Match {
                     1.0 + f * 4.0,
                     Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f)),
                 ),
-                BlastKind::Plasma(size) | BlastKind::Shatter(size) => {
-                    let (cool, hot) = if matches!(b.kind, BlastKind::Shatter(_)) {
-                        (CRYSTAL, CRYSTAL_HOT)
-                    } else {
-                        (PLASMA, PLASMA_HOT)
-                    };
+                // Plasma bursts are all light (`glow_particles`).
+                BlastKind::Plasma(_) => continue,
+                BlastKind::Shatter(size) => {
+                    let (cool, hot) = (CRYSTAL, CRYSTAL_HOT);
                     // The skin bursts: a flash that swells and thins out, and
                     // droplets thrown out in a ring that arc and wink out.
                     let seed = (b.pos.x * 12.9898 + b.pos.z * 78.233).sin() * 43758.5;
