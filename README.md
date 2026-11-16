@@ -3,6 +3,8 @@
 Single-player arcade tank arena shooter: fast tanks, dense procedurally
 generated city maps, bots, and an XP + crystals progression loop.
 
+Look: rugged, solid metal, exposed machinery — see [docs/design-direction.md](docs/design-direction.md).
+
 Plain Rust: `winit` + `wgpu`, no engine.
 
 ## Run
