@@ -100,6 +100,64 @@ impl Default for OBox {
     }
 }
 
+/// Cheap deterministic random stream for visual detail (and the shapes that
+/// must match it, like a rock's collider).
+pub(crate) struct Hash(u32);
+
+impl Hash {
+    pub(crate) fn of(p: Vec3) -> Hash {
+        let mut h = (p.x * 73.1).to_bits()
+            ^ (p.y * 19.7).to_bits().rotate_left(11)
+            ^ (p.z * 41.3).to_bits().rotate_left(22);
+        h ^= h >> 15;
+        Hash(h.wrapping_mul(0x2c1b_3c6d) | 1)
+    }
+    pub(crate) fn f(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        (self.0 >> 8) as f32 / 16_777_216.0
+    }
+}
+
+/// A rock's shape, in its box's local frame (centered): an irregular ring
+/// round the foot, tapering to a lumpy top round a peak. Both the mesh and
+/// the collider are built from it, so tanks hit the rock they see.
+pub struct RockShape {
+    /// Foot outline, counter-clockwise, with how far each point's top drops (0..1).
+    pub ring: Vec<(Vec2, f32)>,
+    /// How much narrower the top ring is than the foot.
+    pub taper: f32,
+    pub peak: Vec3,
+    /// Half the box height.
+    pub hy: f32,
+}
+
+impl RockShape {
+    pub fn bottom(&self, p: Vec2) -> Vec3 {
+        Vec3::new(p.x, -self.hy, p.y)
+    }
+
+    pub fn top(&self, p: Vec2, drop: f32) -> Vec3 {
+        Vec3::new(
+            p.x * self.taper,
+            self.hy - drop * self.hy * 0.5,
+            p.y * self.taper,
+        )
+    }
+
+    /// Every vertex of the rock (local frame): its convex hull is the rock.
+    pub fn points(&self) -> Vec<Vec3> {
+        let mut out: Vec<Vec3> = self
+            .ring
+            .iter()
+            .flat_map(|&(p, d)| [self.bottom(p), self.top(p, d)])
+            .collect();
+        out.push(self.peak);
+        out
+    }
+}
+
 /// Convex hull of points on the ground plane, counter-clockwise (Andrew's
 /// monotone chain).
 fn convex_hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
@@ -182,6 +240,46 @@ impl OBox {
         Vec2::new(d.dot(ax), d.dot(az))
     }
 
+    /// Heavily chipped rubble is drawn as a rock, not a box (see `rock`).
+    pub fn is_rock(&self) -> bool {
+        self.chip >= 0.6 && self.side_mat == Material::Rubble
+    }
+
+    /// The rock this box is drawn as, if it's one: an irregular outline
+    /// inside the box, tapering to a lumpy top.
+    pub fn rock(&self) -> Option<RockShape> {
+        if !self.is_rock() {
+            return None;
+        }
+        let mut rng = Hash::of(Vec3::new(self.center.x, self.y0 + self.y1, self.center.y));
+        let (hx, hz) = (self.half.x, self.half.y);
+        let hy = (self.y1 - self.y0) * 0.5;
+        let n = 7 + (rng.f() * 3.0) as usize;
+        let phase = rng.f() * 6.28;
+        let ring = (0..n)
+            .map(|k| {
+                let a = k as f32 / n as f32 * std::f32::consts::TAU + phase + (rng.f() - 0.5) * 0.4;
+                let rad = 0.75 + 0.25 * rng.f();
+                (Vec2::new(a.cos() * hx, a.sin() * hz) * rad, rng.f())
+            })
+            .collect();
+        let taper = 0.55 + 0.2 * rng.f();
+        let peak = Vec3::new((rng.f() - 0.5) * hx * 0.3, hy, (rng.f() - 0.5) * hz * 0.3);
+        Some(RockShape {
+            ring,
+            taper,
+            peak,
+            hy,
+        })
+    }
+
+    /// The rock's vertices in world space, if this box is a rock.
+    pub fn rock_points(&self) -> Option<Vec<Vec3>> {
+        let (c, r) = (self.center3(), self.rotation());
+        self.rock()
+            .map(|rock| rock.points().into_iter().map(|p| c + r * p).collect())
+    }
+
     /// Whether the box is turned out of the upright (tilted or rolled).
     pub fn is_turned(&self) -> bool {
         self.tilt != 0.0 || self.roll != 0.0
@@ -218,6 +316,9 @@ impl OBox {
     /// The box's shadow on the ground (straight down): a convex polygon,
     /// counter-clockwise. For an upright box, its footprint.
     pub fn shadow(&self) -> Vec<Vec2> {
+        if let Some(p) = self.rock_points() {
+            return convex_hull(p.iter().map(|p| Vec2::new(p.x, p.z)).collect());
+        }
         if !self.is_turned() {
             return self.corners().to_vec();
         }
@@ -234,6 +335,10 @@ impl OBox {
     /// spire leaning out over open ground blocks around its root, not
     /// everywhere under its overhang.
     pub fn base_shadow(&self, height: f32) -> Vec<Vec2> {
+        // A rock is widest at its foot: its shadow is its base.
+        if self.is_rock() {
+            return self.shadow();
+        }
         if !self.is_turned() {
             return self.corners().to_vec();
         }
@@ -265,7 +370,7 @@ impl OBox {
     /// Distance from a ground point to the part of the box within `height`
     /// of its lowest point (0 inside).
     pub fn base_distance(&self, p: Vec2, height: f32) -> f32 {
-        if !self.is_turned() {
+        if !self.is_turned() && !self.is_rock() {
             return self.distance(p);
         }
         polygon_distance(&self.base_shadow(height), p)
@@ -275,7 +380,7 @@ impl OBox {
     /// inside). Follows tilt and roll: a standing post is a small square, not
     /// a beam as long as the post is tall.
     pub fn distance(&self, p: Vec2) -> f32 {
-        if !self.is_turned() {
+        if !self.is_turned() && !self.is_rock() {
             let q = self.local_point(p).abs() - self.half;
             return q.max(Vec2::ZERO).length();
         }
