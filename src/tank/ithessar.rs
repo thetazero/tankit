@@ -16,12 +16,14 @@ use super::model::{
 use crate::render::material::Material;
 use crate::render::mesh::MeshData;
 
-/// Worked crystal: the Ithessar's armor.
+/// Worked crystal: the Ithessar's armor. Crystal is blue; theirs is cut
+/// and dense, so it reads blue-black. The color that's theirs is the rose
+/// plasma it holds (raw blue crystal is the Resonant's).
 pub const VHAAL: Skin = Skin::new(
-    Vec4::new(0.04, 0.03, 0.05, Material::Vhaal.id()),
-    Vec4::new(0.13, 0.08, 0.15, Material::Vhaal.id()),
+    Vec4::new(0.022, 0.032, 0.055, Material::Vhaal.id()),
+    Vec4::new(0.07, 0.1, 0.17, Material::Vhaal.id()),
 );
-/// Loose crystal held in the field: dimly lit from inside.
+/// Loose crystal held in the field, lit rose by the plasma inside it.
 const SHARD: Skin = Skin::new(
     Vec4::new(0.42, 0.13, 0.3, Material::Glow.id()),
     Vec4::new(0.6, 0.22, 0.42, Material::Glow.id()),

@@ -88,7 +88,7 @@ const BASE_MIN: Vec2 = Vec2::new(3.0, 62.0);
 const BASE_MAX: Vec2 = Vec2::new(27.0, 118.0);
 
 const SLATE: Vec3 = Vec3::new(0.2, 0.2, 0.235);
-const GLASS: Vec3 = Vec3::new(0.05, 0.04, 0.065);
+const GLASS: Vec3 = Vec3::new(0.028, 0.04, 0.07);
 const CONCRETE: Vec3 = Vec3::new(0.56, 0.57, 0.6);
 const IMPERIAL: Vec3 = Vec3::new(0.78, 0.82, 0.9);
 const STEEL: Vec3 = Vec3::new(0.32, 0.33, 0.36);
