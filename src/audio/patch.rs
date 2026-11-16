@@ -86,7 +86,7 @@ const fn ring(f: f32, decay: f32, gain: f32) -> Layer {
 }
 
 /// Imperium rail cannon: a deep slam, a sharp crack and a rail's zing.
-pub const LANCE: &[Layer] = &[
+pub const KONTOS: &[Layer] = &[
     sine(120.0, 40.0, 0.06, 0.2, 0.6),
     noise(Filt::Low, 6000.0, 500.0, 0.12, 0.24, 0.85),
     Layer {
@@ -102,7 +102,7 @@ pub const LANCE: &[Layer] = &[
 ];
 
 /// Imperium twin autocannon: shorter, punchier.
-pub const MAUL: &[Layer] = &[
+pub const PELEKYS: &[Layer] = &[
     sine(150.0, 55.0, 0.04, 0.1, 0.6),
     noise(Filt::Low, 5000.0, 600.0, 0.06, 0.11, 0.7),
     Layer {
@@ -388,7 +388,7 @@ mod tests {
     use super::*;
 
     const ALL: [&[Layer]; 15] = [
-        LANCE, MAUL, WISP, TRIAD, IMPACT, SPLASH, BOUNCE, HIT, KILL, REPAIR, OVERHEAT, CONFIRM,
+        KONTOS, PELEKYS, WISP, TRIAD, IMPACT, SPLASH, BOUNCE, HIT, KILL, REPAIR, OVERHEAT, CONFIRM,
         LINK, TICK, SELECT,
     ];
 

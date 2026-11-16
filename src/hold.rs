@@ -187,14 +187,14 @@ mod tests {
     use crate::sim::World;
 
     fn world_with(n: usize) -> (World, Hold) {
-        let mut w = World::new(Map::proving_ground(), 0);
+        let mut w = World::new(Map::yard(200.0), 0);
         for _ in 1..n {
             w.spawn_tank(
                 Vec3::ONE,
                 Vec2::ZERO,
                 0.0,
-                crate::sim::HullKind::Lancer,
-                crate::sim::TurretKind::Lance,
+                crate::sim::HullKind::Kataphrakt,
+                crate::sim::TurretKind::Kontos,
             );
         }
         let h = Hold::new(&w.map, n);

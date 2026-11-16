@@ -2,7 +2,7 @@
 //! instances and the chase camera. The HUD lives in `hud`.
 
 use crate::render::material::Material;
-use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::map::{Map, Terrain, Wedge};
 use crate::render::mesh::{MeshData, Vertex};
@@ -85,17 +85,6 @@ pub fn map_mesh(map: &Map) -> MeshData {
         g.mesh(&mut m);
     }
 
-    let sphere = MeshData::sphere(12, 8);
-    for t in &map.trees {
-        let s = Vec3::new(t.radius * 2.0, t.radius * 1.7, t.radius * 2.0);
-        m.append(
-            &sphere,
-            Mat4::from_scale_rotation_translation(s, Quat::IDENTITY, t.pos),
-            Vec4::new(0.27, 0.45, 0.2, Material::Plain.id()),
-        );
-    }
-
-    road_markings(map, &mut m);
     repair_pads(map, &mut m);
     m
 }
@@ -326,53 +315,6 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
     }
 }
 
-/// Dashed center lines along each inner road, skipping intersections.
-fn road_markings(map: &Map, m: &mut MeshData) {
-    use crate::map::CELL;
-    let paint = Vec4::new(0.85, 0.78, 0.45, Material::Plain.id());
-    for (ri, r) in map.roads.iter().enumerate() {
-        let (w, h) = (r.x1 - r.x0, r.y1 - r.y0);
-        let along_x = w > h;
-        let (len_cells, cross) = if along_x { (w, h) } else { (h, w) };
-        if cross < 2 {
-            continue;
-        }
-        let mid = if along_x {
-            (r.y0 + r.y1) as f32 * 0.5 * CELL
-        } else {
-            (r.x0 + r.x1) as f32 * 0.5 * CELL
-        };
-        let start = if along_x { r.x0 } else { r.y0 } as f32 * CELL;
-        let dashes = (len_cells as f32 * CELL / 6.0) as i32;
-        for d in 0..dashes {
-            let c = start + d as f32 * 6.0 + 3.0;
-            let p = if along_x {
-                Vec2::new(c, mid)
-            } else {
-                Vec2::new(mid, c)
-            };
-            let (cx, cy) = ((p.x / CELL) as i32, (p.y / CELL) as i32);
-            let in_other = map.roads.iter().enumerate().any(|(oi, o)| {
-                oi != ri && o.contains(cx, cy) && ((o.x1 - o.x0 > o.y1 - o.y0) != along_x)
-            });
-            if in_other {
-                continue;
-            }
-            let half = if along_x {
-                Vec2::new(1.4, 0.12)
-            } else {
-                Vec2::new(0.12, 1.4)
-            };
-            m.add_box(
-                Vec3::new(p.x - half.x, 0.0, p.y - half.y),
-                Vec3::new(p.x + half.x, 0.015, p.y + half.y),
-                paint,
-                paint,
-            );
-        }
-    }
-}
-
 /// Third-person chase camera, Tanki-style: it sits behind the turret and
 /// swings with it, follows with a little lag, and pulls in when something is
 /// in the way.
@@ -426,14 +368,14 @@ impl ChaseCam {
 
         let to = desired - self.focus;
         let len = to.length();
-        let hit = world.camera_raycast(self.focus, to / len, len);
+        let hit = world.raycast(self.focus, to / len, len);
         let pos = self.focus + to / len * (hit - 0.6).max(1.5);
 
         let ahead = Vec3::new(back.x, 0.0, back.y);
         // Firing kicks the camera back and up for a moment.
         let shots = tank.fire_barrel.saturating_sub(self.shots_seen).min(4);
         self.shots_seen = tank.fire_barrel;
-        let per_shot = tank.turret_kind.recoil() / TurretKind::Lance.recoil();
+        let per_shot = tank.turret_kind.recoil() / TurretKind::Kontos.recoil();
         self.kick = (self.kick * (-dt * 14.0).exp() + shots as f32 * per_shot).min(1.0);
         self.kick_shown += (self.kick - self.kick_shown) * (1.0 - (-dt * 40.0).exp());
         let kick = self.kick_shown;
@@ -450,8 +392,9 @@ impl ChaseCam {
 /// interpolated for display). `ui` starts empty; the caller adds the HUD.
 pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Scene {
     let mut instances = Vec::new();
+    let mut particles = Vec::new();
     for t in tanks {
-        art.instances(t, &mut instances);
+        art.instances(t, &mut instances, &mut particles);
     }
 
     Scene {
@@ -462,7 +405,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
-        particles: Vec::new(),
+        particles,
         ui: Vec::new(),
     }
 }

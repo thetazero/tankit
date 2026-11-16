@@ -471,12 +471,10 @@ impl Map {
             size: SIZE,
             solids: Vec::new(),
             boxes: Vec::new(),
-            trees: Vec::new(),
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
             scenery_terrain: None,
-            roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
             // Late afternoon on a desert world: low warm sun, dusty sky, sand haze.
@@ -1375,8 +1373,8 @@ mod tests {
                 Vec3::ONE,
                 foot,
                 up.x.atan2(up.y),
-                HullKind::Lancer,
-                TurretKind::Lance,
+                HullKind::Kataphrakt,
+                TurretKind::Kontos,
             );
             let mut top = 0.0f32;
             for _ in 0..(6.0 / crate::game::DT) as usize {

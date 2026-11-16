@@ -82,7 +82,8 @@ impl Default for Atmosphere {
     }
 }
 
-/// A soft, camera-facing, alpha-blended blob (dust, blown sand).
+/// A soft, camera-facing blob: lit and alpha-blended (dust, blown sand), or
+/// self-lit and additive (plasma glow).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Particle {
@@ -94,7 +95,23 @@ pub struct Particle {
     /// Stretched along this direction (world, length = how many times longer
     /// than wide); zero for round.
     pub stretch: [f32; 3],
-    pub _pad: f32,
+    /// 0: lit and alpha-blended. Above 0: glows by itself at this strength
+    /// (color times alpha), adding light rather than covering what's behind.
+    pub glow: f32,
+}
+
+impl Particle {
+    /// Self-lit plasma light: `size` m radius, stretched along `stretch`
+    /// (zero for round), at `strength` (0 is dark).
+    pub fn glow(at: Vec3, size: f32, color: Vec3, strength: f32, stretch: Vec3) -> Particle {
+        Particle {
+            pos: at.to_array(),
+            size,
+            color: color.extend(1.0).to_array(),
+            stretch: stretch.to_array(),
+            glow: strength.max(0.0),
+        }
+    }
 }
 
 /// Everything the renderer needs to draw one frame.
@@ -525,7 +542,7 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

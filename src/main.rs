@@ -30,12 +30,12 @@ tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
-  --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket|sanctum|kiln>
-                          city (default), the physics test course, Saltmarket (desert town),
-                          the Sanctum (a Resonant church on a mesa, the Hold map), or the Kiln (Ithessar ground)
+  --seed <n>              match seed: bot brains, spawns, kits (default: random)
+  --map <saltmarket|sanctum|kiln>
+                          Saltmarket (desert town, the default), the Sanctum (a Resonant church
+                          on a mesa, the Hold map), or the Kiln (Ithessar ground)
   --spawn <n>             which spawn point to start at
-  --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
+  --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
   --employer <faction>    which of the map's two sides hires you (default: its first);
@@ -47,10 +47,10 @@ tankit [OPTIONS]
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
-  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
-  --hull <lancer|bastion|sethuun>  player hull (default lancer; sethuun hovers)
-  --turret <name>         player turret: lance maul (Imperium), ammeth ossrin (Ithessar),
-                          lumen (machines), hymn (Resonant); default lance
+  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
+  --hull <kataphrakt|kastron|sethuun>  player hull (default kataphrakt; sethuun hovers)
+  --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
+                          lumen (machines), hymn (Resonant); default kontos
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
@@ -101,7 +101,7 @@ impl Args {
     }
 
     pub fn map(&self) -> map::Map {
-        let mut m = make_map(self.seed, self.map);
+        let mut m = make_map(self.map);
         if self.side == 1 {
             m.swap_sides();
         }
@@ -112,10 +112,6 @@ impl Args {
 /// Which arena to load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapKind {
-    /// Procedural city (seeded).
-    City,
-    /// Hand-built physics test course.
-    Proving,
     /// Hand-built desert town on a dry reservoir.
     Saltmarket,
     /// The Sanctum: a Resonant church on a mesa (the Hold map).
@@ -124,10 +120,8 @@ pub enum MapKind {
     Kiln,
 }
 
-pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
+pub fn make_map(kind: MapKind) -> map::Map {
     match kind {
-        MapKind::City => map::Map::generate(seed),
-        MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
@@ -169,7 +163,7 @@ fn main() -> Result<()> {
         return record_wav(&args, out, *seconds);
     }
     match (&args.shot, args.showroom) {
-        (Some(shot), Some(room)) => showroom_shot(shot, room),
+        (Some(shot), Some(room)) => showroom_shot(shot, room, args.cam),
         (Some(shot), None)
             if matches!(
                 args.screen,
@@ -204,13 +198,13 @@ fn parse_args() -> Result<Args> {
     let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
-    let (mut map_kind, mut spawn, mut straight) = (MapKind::City, 0usize, false);
+    let (mut map_kind, mut spawn, mut straight) = (MapKind::Saltmarket, 0usize, false);
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut bots: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
-    let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
+    let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
@@ -240,13 +234,11 @@ fn parse_args() -> Result<Args> {
             "--shot" => shot = Some(args.next().context("--shot needs a path")?),
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--map" => match args.next().as_deref() {
-                Some("city") => map_kind = MapKind::City,
-                Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 other => {
-                    bail!("--map expects city, proving, saltmarket, sanctum or kiln, got {other:?}")
+                    bail!("--map expects saltmarket, sanctum or kiln, got {other:?}")
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
@@ -296,14 +288,14 @@ fn parse_args() -> Result<Args> {
                 loadout.0 = *garage::HULLS
                     .iter()
                     .find(|&&k| garage::hull_name(k) == name)
-                    .context("--hull expects lancer, bastion or sethuun")?;
+                    .context("--hull expects kataphrakt, kastron or sethuun")?;
             }
             "--turret" => {
                 let name = args.next().unwrap_or_default().to_ascii_uppercase();
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects lance, maul, ammeth, ossrin, lumen or hymn")?;
+                    .context("--turret expects kontos, pelekys, ammeth, ossrin, lumen or hymn")?;
             }
             "--garage" => garage = true,
             "--screen" => {
@@ -343,7 +335,7 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
-    let sides = make_map(seed, map_kind).factions;
+    let sides = make_map(map_kind).factions;
     let side = match employer {
         None => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
@@ -360,7 +352,7 @@ fn parse_args() -> Result<Args> {
         side,
         map: map_kind,
         spawn,
-        bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 11 }),
+        bots: bots.unwrap_or(11),
         contract,
         loadout,
         kit_given,
@@ -495,20 +487,19 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         };
         let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
-        frame.particles = game.ambience.particles();
+        frame.particles.extend(game.ambience.particles());
+        game.glow_particles(1.0, &mut frame.particles);
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
-            let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
+            let ui = hud.draw(&game, &tanks, &camera, w, h, game::DT, false);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame.ui.extend(menu::Pause::new().draw(
-                    &profile,
-                    game.factions[0],
-                    game.trust,
-                    w,
-                    h,
-                ));
+                frame.ui.extend(
+                    menu::Pause::new()
+                        .draw(&profile, game.factions[0], game.trust, w, h)
+                        .verts,
+                );
             }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));
@@ -586,7 +577,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let tanks = game.display_tanks(1.0);
     let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
-    frame.ui = menu.draw(&profile, h, 1.0);
+    frame.ui = menu.draw(&profile, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));
     }
@@ -598,7 +589,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     Ok(())
 }
 
-fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
+fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs, cam: Option<(Vec3, Vec3)>) -> Result<()> {
     let mut world = showroom::world();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&showroom::ground_mesh());
@@ -616,7 +607,14 @@ fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
             advance(&mut world, 1.0 / shot.fps);
         }
         let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
-        let camera = showroom::camera(&world, angle, room.dist, room.focus);
+        let camera = match cam {
+            Some((pos, target)) => render::Camera {
+                pos,
+                target,
+                fov_y: 60f32.to_radians(),
+            },
+            None => showroom::camera(&world, angle, room.dist, room.focus),
+        };
         let mut frame = scene::build(&world, &world.tanks, &art, camera);
         frame.shadow_center = Vec3::ZERO;
         frame.shadow_radius = 22.0;

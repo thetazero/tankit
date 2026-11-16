@@ -15,7 +15,7 @@ use crate::profile::{Profile, Refusal};
 use crate::render::{Camera, UiVertex};
 use crate::sim::{HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Painter, TextStyle, theme};
+use crate::ui::{Align, Hits, Layer, Painter, TextStyle, theme};
 
 const REF_HEIGHT: f32 = 900.0;
 pub const PANEL_X: f32 = 64.0;
@@ -30,8 +30,8 @@ const ORBIT_DRIFT: f32 = 0.12;
 pub type Loadout = (HullKind, TurretKind);
 
 pub const HULLS: [HullKind; 4] = [
-    HullKind::Lancer,
-    HullKind::Bastion,
+    HullKind::Kataphrakt,
+    HullKind::Kastron,
     HullKind::Sethuun,
     HullKind::Vigil,
 ];
@@ -39,8 +39,8 @@ pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
-        HullKind::Lancer => "LANCER",
-        HullKind::Bastion => "BASTION",
+        HullKind::Kataphrakt => "KATAPHRAKT",
+        HullKind::Kastron => "KASTRON",
         HullKind::Sethuun => "SETHUUN",
         HullKind::Vigil => "VIGIL",
     }
@@ -48,8 +48,8 @@ pub fn hull_name(k: HullKind) -> &'static str {
 
 pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
-        TurretKind::Lance => "LANCE",
-        TurretKind::Maul => "MAUL",
+        TurretKind::Kontos => "KONTOS",
+        TurretKind::Pelekys => "PELEKYS",
         TurretKind::Ammeth => "AMMETH",
         TurretKind::Ossrin => "OSSRIN",
         TurretKind::Lumen => "LUMEN",
@@ -165,6 +165,15 @@ pub enum Event {
     Upgrade(Part),
 }
 
+/// What can be clicked in the garage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hit {
+    /// Highlight (and queue, if owned) this part.
+    Part(Part),
+    /// A key hint, or the buy / upgrade line: clicking it presses the key.
+    Key(Input),
+}
+
 pub struct Garage {
     open: bool,
     /// 0 = closed .. 1 = fully open; eased toward `open`.
@@ -184,7 +193,7 @@ pub struct Garage {
 
 impl Garage {
     pub fn new() -> Garage {
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         Garage {
             open: false,
             blend: 0.0,
@@ -279,6 +288,21 @@ impl Garage {
         }
     }
 
+    /// A click on `hit`, like the key press it stands for.
+    pub fn click(&mut self, hit: Hit, queued: Loadout, profile: &Profile) -> Option<Event> {
+        match hit {
+            Hit::Key(input) => self.input(input, queued, profile),
+            Hit::Part(part) if self.open => {
+                match part {
+                    Part::Hull(k) => (self.section, self.view.0) = (0, k),
+                    Part::Turret(k) => (self.section, self.view.1) = (1, k),
+                }
+                self.queue_view(queued, profile)
+            }
+            Hit::Part(_) => None,
+        }
+    }
+
     /// After a purchase: queue the highlighted part if it's owned now.
     pub fn bought(&mut self, queued: Loadout, profile: &Profile) -> Option<Event> {
         self.queue_view(queued, profile)
@@ -330,7 +354,7 @@ impl Garage {
         let height = off.y + (ORBIT_HEIGHT - off.y) * e;
         let dir = Vec3::new(angle.sin() * dist, height, angle.cos() * dist);
         let len = dir.length();
-        let hit = world.camera_raycast(focus, dir / len, len);
+        let hit = world.raycast(focus, dir / len, len);
         let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
         // Aim left of the tank so it sits in the open space right of the panel
         // (more so on wide screens, where the panel takes less of the width).
@@ -367,7 +391,7 @@ impl Garage {
         queued: Loadout,
         profile: &Profile,
         height: f32,
-    ) -> Vec<UiVertex> {
+    ) -> Layer<Hit> {
         let fade = 1.0 - self.presence();
         for v in &mut hud {
             v.color[3] *= fade;
@@ -375,24 +399,23 @@ impl Garage {
         if fade <= 0.0 {
             hud.clear();
         }
-        hud.extend(self.draw(tank, queued, profile, height));
-        hud
+        let garage = self.draw(tank, queued, profile, height);
+        hud.extend(garage.verts);
+        Layer {
+            verts: hud,
+            hits: garage.hits,
+        }
     }
 
-    pub fn draw(
-        &self,
-        tank: &Tank,
-        queued: Loadout,
-        profile: &Profile,
-        height: f32,
-    ) -> Vec<UiVertex> {
+    pub fn draw(&self, tank: &Tank, queued: Loadout, profile: &Profile, height: f32) -> Layer<Hit> {
         let e = smooth(self.blend);
         if e <= 0.0 {
-            return Vec::new();
+            return Layer::empty();
         }
         let scale = height / REF_HEIGHT;
         let h = REF_HEIGHT;
         let mut p = Painter::new(scale);
+        let mut hits = Hits::new();
         let levels = &profile.levels;
 
         backdrop(&mut p, h);
@@ -472,6 +495,7 @@ impl Garage {
             y += 20.0;
 
             for part in items {
+                row_hit(&p, &mut hits, Vec2::new(x, y), 30.0, Hit::Part(*part));
                 let selected = part == current;
                 let owned = profile.owns(*part);
                 if selected {
@@ -504,13 +528,39 @@ impl Garage {
                     theme::FAINT
                 };
                 let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
-                // Upgrade level and the part's maker after the name; price or lock on the right.
-                let maker = part.maker().name();
-                let note = if owned {
-                    format!("M{}  {maker}", levels.of(*part))
+                // Price or lock (or IN USE) on the right; upgrade level and
+                // the part's maker after the name, the maker dropped when a
+                // long name leaves it no room.
+                let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
+                let tag = if part == in_use && !selected {
+                    Some("IN USE".to_string())
                 } else {
-                    maker.to_string()
+                    part.price().filter(|_| !owned).map(|price| {
+                        if profile.standing_for(*part) < price.standing {
+                            format!("TRUST {}", price.standing)
+                        } else {
+                            format!("{} CR", price.crystals)
+                        }
+                    })
                 };
+                let room = right.x
+                    - tag
+                        .as_deref()
+                        .map_or(0.0, |t| crate::ui::measure(t, &TextStyle::LABEL) + 12.0)
+                    - (x + nw + 12.0);
+                let maker = part.maker().name();
+                let level = format!("M{}", levels.of(*part));
+                let note = [
+                    if owned {
+                        format!("{level}  {maker}")
+                    } else {
+                        maker.to_string()
+                    },
+                    if owned { level } else { String::new() },
+                ]
+                .into_iter()
+                .find(|n| crate::ui::measure(n, &TextStyle::LABEL) <= room)
+                .unwrap_or_default();
                 if !note.is_empty() {
                     label(
                         &mut p,
@@ -519,15 +569,7 @@ impl Garage {
                         Align::Left,
                     );
                 }
-                let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
-                if part == in_use && !selected {
-                    label(&mut p, right, "IN USE", Align::Right);
-                } else if let Some(price) = part.price().filter(|_| !owned) {
-                    let tag = if profile.standing_for(*part) < price.standing {
-                        format!("TRUST {}", price.standing)
-                    } else {
-                        format!("{} CR", price.crystals)
-                    };
+                if let Some(tag) = tag {
                     label(&mut p, right, &tag, Align::Right);
                 }
                 y += 30.0;
@@ -566,18 +608,32 @@ impl Garage {
         p.text(Vec2::new(x, hy), "E", &k, Align::Left);
         let mut a = TextStyle::LABEL;
         a.color = if ready { theme::FG } else { theme::DIM };
-        p.text(Vec2::new(x + 70.0, hy), &act, &a, Align::Left);
+        let aw = p.text(Vec2::new(x + 70.0, hy), &act, &a, Align::Left);
+        hits.add(
+            &p,
+            Vec2::new(x - 4.0, hy - 3.0),
+            Vec2::new(78.0 + aw, 14.0),
+            Hit::Key(Input::Act),
+        );
         hy += 28.0;
-        for (key, what) in [
-            ("W/S", "CHANGE PART"),
-            ("A/D", "HULL / TURRET"),
-            ("ENTER", "DEPLOY"),
-            ("ESC", "CANCEL"),
+        for (key, what, input) in [
+            ("W/S", "CHANGE PART", None),
+            ("A/D", "HULL / TURRET", None),
+            ("ENTER", "DEPLOY", Some(Input::Deploy)),
+            ("ESC", "CANCEL", Some(Input::Revert)),
         ] {
             let mut k = TextStyle::LABEL;
             k.color = theme::FG;
             p.text(Vec2::new(x, hy), key, &k, Align::Left);
-            label(&mut p, Vec2::new(x + 70.0, hy), what, Align::Left);
+            let w = label(&mut p, Vec2::new(x + 70.0, hy), what, Align::Left);
+            if let Some(input) = input {
+                hits.add(
+                    &p,
+                    Vec2::new(x - 4.0, hy - 3.0),
+                    Vec2::new(78.0 + w, 14.0),
+                    Hit::Key(input),
+                );
+            }
             hy += 14.0;
         }
 
@@ -585,7 +641,11 @@ impl Garage {
         for vert in &mut v {
             vert.color[3] *= e;
         }
-        v
+        // Closing: still fading out, but nothing left to click.
+        if !self.open {
+            hits.clear();
+        }
+        Layer { verts: v, hits }
     }
 }
 
@@ -618,7 +678,7 @@ pub fn orbit_camera(world: &World, tank: &Tank, angle: f32, aspect: f32) -> Came
         angle.cos() * ORBIT_DIST,
     );
     let len = dir.length();
-    let hit = world.camera_raycast(focus, dir / len, len);
+    let hit = world.raycast(focus, dir / len, len);
     let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
     let right = (focus - pos).cross(Vec3::Y).normalize_or_zero();
     let shift = (focus - pos).length() * 0.28 * (aspect / (16.0 / 9.0)).clamp(0.6, 1.2);
@@ -633,6 +693,17 @@ pub fn orbit_camera(world: &World, tank: &Tank, angle: f32, aspect: f32) -> Came
 pub fn front_angle(tank: &Tank) -> f32 {
     let f = tank.forward();
     f.x.atan2(f.z) + 0.65
+}
+
+/// A list row's clickable area: the whole width of the panel (and the
+/// selection bar), from just above the text to the next row.
+pub fn row_hit<T: Copy>(p: &Painter, hits: &mut Hits<T>, at: Vec2, pitch: f32, id: T) {
+    hits.add(
+        p,
+        Vec2::new(at.x - 20.0, at.y - 6.0),
+        Vec2::new(PANEL_W + 20.0, pitch),
+        id,
+    );
 }
 
 /// Dark backdrop behind the left-hand panel, so the hairlines read over a bright city.
@@ -700,7 +771,7 @@ mod tests {
     use super::*;
 
     fn world() -> World {
-        World::new(crate::map::Map::generate(21), 0)
+        World::new(crate::map::Map::saltmarket(), 0)
     }
 
     fn cam(w: &World) -> Camera {
@@ -728,16 +799,16 @@ mod tests {
         let w = world();
         let p = rich();
         let mut g = Garage::new();
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         // Closed: input does nothing.
         assert_eq!(g.input(Input::Down, start, &p), None);
 
         g.toggle(&w, &cam(&w), start);
-        let l = (HullKind::Bastion, TurretKind::Lance);
+        let l = (HullKind::Kastron, TurretKind::Kontos);
         assert_eq!(g.input(Input::Down, start, &p), Some(Event::Queue(l)));
         assert_eq!(g.input(Input::Right, l, &p), None);
         // The list wraps: up from the first turret is the last one.
-        let l2 = (HullKind::Bastion, *TURRETS.last().unwrap());
+        let l2 = (HullKind::Kastron, *TURRETS.last().unwrap());
         assert_eq!(g.input(Input::Up, l, &p), Some(Event::Queue(l2)));
         assert_eq!(g.input(Input::Revert, l2, &p), Some(Event::Queue(start)));
         assert!(!g.is_open());
@@ -755,33 +826,64 @@ mod tests {
         let w = world();
         let mut p = Profile::in_memory();
         let mut g = Garage::new();
-        let start = (HullKind::Lancer, TurretKind::Lance);
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         g.toggle(&w, &cam(&w), start);
         g.input(Input::Right, start, &p);
-        // Maul isn't owned: highlighted and previewed, not queued; E asks to buy it.
+        // Pelekys isn't owned: highlighted and previewed, not queued; E asks to buy it.
         assert_eq!(g.input(Input::Down, start, &p), None);
-        assert_eq!(g.view, (HullKind::Lancer, TurretKind::Maul));
-        let maul = Part::Turret(TurretKind::Maul);
-        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(maul)));
+        assert_eq!(g.view, (HullKind::Kataphrakt, TurretKind::Pelekys));
+        let pelekys = Part::Turret(TurretKind::Pelekys);
+        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(pelekys)));
         // Once bought it queues; E on an owned part upgrades.
         p.set_trust_all(100_000);
         p.crystals = 100_000;
-        p.buy(maul).unwrap();
-        let kit = (HullKind::Lancer, TurretKind::Maul);
+        p.buy(pelekys).unwrap();
+        let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);
         assert_eq!(g.bought(start, &p), Some(Event::Queue(kit)));
-        assert_eq!(g.input(Input::Act, kit, &p), Some(Event::Upgrade(maul)));
+        assert_eq!(g.input(Input::Act, kit, &p), Some(Event::Upgrade(pelekys)));
+    }
+
+    #[test]
+    fn clicking_parts_and_hints() {
+        let w = world();
+        let p = rich();
+        let mut g = Garage::new();
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
+        let hits = g.draw(&w.tanks[0], start, &p, 900.0).hits;
+        assert!(hits.is_empty(), "closed: nothing to click");
+        g.toggle(&w, &cam(&w), start);
+        g.update(1.0);
+        let hits = g.draw(&w.tanks[0], start, &p, 900.0).hits;
+        let click = |g: &mut Garage, hit: Hit| {
+            let (id, _) = hits.at(hits.center_of(hit).unwrap()).unwrap();
+            assert_eq!(id, hit);
+            g.click(id, start, &p)
+        };
+        let bastion = Part::Hull(HullKind::Kastron);
+        assert_eq!(
+            click(&mut g, Hit::Part(bastion)),
+            Some(Event::Queue((HullKind::Kastron, TurretKind::Kontos)))
+        );
+        assert_eq!(g.focused(), bastion);
+        assert_eq!(
+            click(&mut g, Hit::Part(Part::Turret(TurretKind::Pelekys))),
+            Some(Event::Queue((HullKind::Kastron, TurretKind::Pelekys)))
+        );
+        assert_eq!(g.section, 1);
+        assert_eq!(click(&mut g, Hit::Key(Input::Deploy)), None);
+        assert!(!g.is_open());
     }
 
     #[test]
     fn preview_wears_the_highlighted_kit() {
         let w = world();
         let mut g = Garage::new();
-        let kit = (HullKind::Bastion, TurretKind::Maul);
+        let kit = (HullKind::Kastron, TurretKind::Pelekys);
         let mut t = w.tanks[0].clone();
         g.preview(&mut t);
         assert_eq!(
             t.hull_kind,
-            HullKind::Lancer,
+            HullKind::Kataphrakt,
             "closed garage leaves the tank alone"
         );
         g.toggle(&w, &cam(&w), kit);
@@ -790,10 +892,10 @@ mod tests {
         assert_eq!((t.hull_kind, t.turret_kind), kit);
         assert_eq!(
             t.wheel_lift.len(),
-            crate::sim::Chassis::of(HullKind::Bastion).wheel_count()
+            crate::sim::Chassis::of(HullKind::Kastron).wheel_count()
         );
         // The real tank is untouched.
-        assert_eq!(w.tanks[0].hull_kind, HullKind::Lancer);
+        assert_eq!(w.tanks[0].hull_kind, HullKind::Kataphrakt);
     }
 
     #[test]
@@ -803,7 +905,7 @@ mod tests {
         let c = cam(&w);
         let t = &w.tanks[0];
         assert_eq!(g.camera(c, &w, t, 16.0 / 9.0).pos, c.pos);
-        g.toggle(&w, &c, (HullKind::Lancer, TurretKind::Lance));
+        g.toggle(&w, &c, (HullKind::Kataphrakt, TurretKind::Kontos));
         for _ in 0..120 {
             g.update(1.0 / 60.0);
         }
@@ -817,13 +919,13 @@ mod tests {
     fn draws_on_screen_at_any_size() {
         let w = world();
         let mut g = Garage::new();
-        let kit = (HullKind::Bastion, TurretKind::Maul);
+        let kit = (HullKind::Kastron, TurretKind::Pelekys);
         let p = Profile::in_memory();
-        assert!(g.draw(&w.tanks[0], kit, &p, 900.0).is_empty());
+        assert!(g.draw(&w.tanks[0], kit, &p, 900.0).verts.is_empty());
         g.toggle(&w, &cam(&w), kit);
         g.update(1.0);
         for (wd, ht) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
-            let v = g.draw(&w.tanks[0], kit, &p, ht);
+            let v = g.draw(&w.tanks[0], kit, &p, ht).verts;
             assert!(!v.is_empty());
             assert!(v.iter().all(|v| v.pos[0] > -4.0
                 && v.pos[0] < wd + 4.0

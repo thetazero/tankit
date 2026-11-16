@@ -26,8 +26,8 @@ pub const GRAVITY: f32 = 9.81;
 /// Which kit parts a tank is built from (see `tank::model`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HullKind {
-    Lancer,
-    Bastion,
+    Kataphrakt,
+    Kastron,
     /// Ithessar: rides a plasma cushion instead of tracks.
     Sethuun,
     /// Resonant: a light vessel run by the crystal at its heart. Thin armor,
@@ -38,9 +38,9 @@ pub enum HullKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurretKind {
     /// Imperium rail cannon.
-    Lance,
+    Kontos,
     /// Imperium twin autocannon.
-    Maul,
+    Pelekys,
     /// Ithessar plasma orb that bounces off walls.
     Ammeth,
     /// Ithessar three-barrel rapid plasma.
@@ -55,7 +55,7 @@ impl HullKind {
     pub fn maker(self) -> crate::faction::Faction {
         use crate::faction::Faction;
         match self {
-            HullKind::Lancer | HullKind::Bastion => Faction::Imperium,
+            HullKind::Kataphrakt | HullKind::Kastron => Faction::Imperium,
             HullKind::Sethuun => Faction::Ithessar,
             HullKind::Vigil => Faction::Resonant,
         }
@@ -65,8 +65,8 @@ impl HullKind {
 impl TurretKind {
     /// Every turret, grouped by maker. Also the kit's art order.
     pub const ALL: [TurretKind; 6] = [
-        TurretKind::Lance,
-        TurretKind::Maul,
+        TurretKind::Kontos,
+        TurretKind::Pelekys,
         TurretKind::Ammeth,
         TurretKind::Ossrin,
         TurretKind::Lumen,
@@ -76,7 +76,7 @@ impl TurretKind {
     pub fn maker(self) -> crate::faction::Faction {
         use crate::faction::Faction;
         match self {
-            TurretKind::Lance | TurretKind::Maul => Faction::Imperium,
+            TurretKind::Kontos | TurretKind::Pelekys => Faction::Imperium,
             TurretKind::Ammeth | TurretKind::Ossrin => Faction::Ithessar,
             TurretKind::Lumen => Faction::Machines,
             TurretKind::Hymn => Faction::Resonant,
@@ -88,9 +88,9 @@ impl TurretKind {
     pub fn recoil(self) -> f32 {
         match self {
             // Long rail cannon: one big slam.
-            TurretKind::Lance => 2.2,
+            TurretKind::Kontos => 2.2,
             // Twin short guns: smaller kicks, more often.
-            TurretKind::Maul => 1.3,
+            TurretKind::Pelekys => 1.3,
             // Plasma has little mass: a soft push.
             TurretKind::Ammeth => 0.8,
             TurretKind::Ossrin => 0.35,
@@ -126,7 +126,7 @@ pub struct Chassis {
 }
 
 impl Chassis {
-    pub const LANCER: Chassis = Chassis {
+    pub const KATAPHRAKT: Chassis = Chassis {
         mass: 18_000.0,
         track_x: 1.22,
         track_width: 0.56,
@@ -141,7 +141,7 @@ impl Chassis {
         center_of_mass: Vec3::new(0.0, 0.65, -0.1),
         hover: false,
     };
-    pub const BASTION: Chassis = Chassis {
+    pub const KASTRON: Chassis = Chassis {
         mass: 28_000.0,
         track_x: 1.28,
         track_width: 0.64,
@@ -174,17 +174,17 @@ impl Chassis {
         hover: true,
     };
 
-    /// Resonant hull: Lancer's running gear, lighter (no armor to speak of).
+    /// Resonant hull: Kataphrakt's running gear, lighter (no armor to speak of).
     pub const VIGIL: Chassis = Chassis {
         mass: 15_000.0,
-        ..Chassis::LANCER
+        ..Chassis::KATAPHRAKT
     };
 
     pub fn of(kind: HullKind) -> &'static Chassis {
         match kind {
-            HullKind::Lancer => &Chassis::LANCER,
+            HullKind::Kataphrakt => &Chassis::KATAPHRAKT,
             HullKind::Vigil => &Chassis::VIGIL,
-            HullKind::Bastion => &Chassis::BASTION,
+            HullKind::Kastron => &Chassis::KASTRON,
             HullKind::Sethuun => &Chassis::SETHUUN,
         }
     }
@@ -365,7 +365,7 @@ pub struct HullStats {
 }
 
 impl HullStats {
-    pub const LANCER: Self = Self {
+    pub const KATAPHRAKT: Self = Self {
         max_speed: 11.5,
         reverse_speed: 7.0,
         accel: 11.0,
@@ -380,13 +380,13 @@ impl HullStats {
         turret_accel: 2.6,
         turret_brake: 10.0,
     };
-    /// Fast: Lancer's old pace.
+    /// Fast: Kataphrakt's old pace.
     pub const VIGIL: Self = Self {
         max_speed: 13.0,
         reverse_speed: 7.5,
-        ..HullStats::LANCER
+        ..HullStats::KATAPHRAKT
     };
-    pub const BASTION: Self = Self {
+    pub const KASTRON: Self = Self {
         max_speed: 10.0,
         reverse_speed: 6.0,
         accel: 7.5,
@@ -424,8 +424,8 @@ impl HullStats {
 
     pub fn of(kind: HullKind) -> HullStats {
         match kind {
-            HullKind::Lancer => HullStats::LANCER,
-            HullKind::Bastion => HullStats::BASTION,
+            HullKind::Kataphrakt => HullStats::KATAPHRAKT,
+            HullKind::Kastron => HullStats::KASTRON,
             HullKind::Sethuun => HullStats::SETHUUN,
             HullKind::Vigil => HullStats::VIGIL,
         }
@@ -585,8 +585,8 @@ impl World {
             Vec3::new(0.92, 0.93, 0.95),
             spot,
             yaw,
-            HullKind::Lancer,
-            TurretKind::Lance,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
         );
         w
     }
@@ -766,18 +766,6 @@ impl World {
         self.physics
             .cast_ray(&ray, max, true, QueryFilter::only_fixed())
             .map_or(max, |(_, toi)| toi)
-    }
-
-    /// Like `raycast`, but also stops at tree canopies (which don't block tanks).
-    pub fn camera_raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> f32 {
-        let seg = dir * max;
-        let mut best = self.raycast(origin, dir, max) / max;
-        for tree in &self.map.trees {
-            if let Some(t) = seg_sphere(origin, seg, tree.pos, tree.radius * 1.1) {
-                best = best.min(t);
-            }
-        }
-        best * max
     }
 }
 
@@ -1440,36 +1428,13 @@ fn approach(v: f32, target: f32, delta: f32) -> f32 {
     }
 }
 
-/// Segment p + d*t, t in [0,1], vs sphere. Returns entry t (0 if starting inside).
-pub fn seg_sphere(p: Vec3, d: Vec3, c: Vec3, r: f32) -> Option<f32> {
-    let m = p - c;
-    let a = d.dot(d);
-    let b = m.dot(d);
-    let cc = m.dot(m) - r * r;
-    if cc <= 0.0 {
-        return Some(0.0);
-    }
-    let disc = b * b - a * cc;
-    if disc < 0.0 || a < 1e-12 {
-        return None;
-    }
-    let t = (-b - disc.sqrt()) / a;
-    (0.0..=1.0).contains(&t).then_some(t)
-}
-
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
 
+    /// A 200 m walled yard, the tank in the middle facing +z.
     pub fn flat_world() -> World {
-        let mut map = Map::proving_ground();
-        map.terrain = None;
-        map.wedges.clear();
-        map.solids
-            .retain(|s| s.max.x < 1.0 || s.min.x > 199.0 || s.max.z < 1.0 || s.min.z > 199.0);
-        map.boxes.clear();
-        map.open_spots = vec![Vec2::new(100.0, 100.0)];
-        World::new(map, 0)
+        World::new(Map::yard(200.0), 0)
     }
 
     pub fn run(w: &mut World, cmd: Command, seconds: f32) {
@@ -1509,7 +1474,7 @@ mod tests {
     /// worst vertical velocity change in one step, airborne fraction).
     fn ride(map: Map, start: Vec2, yaw: f32, hull: HullKind, seconds: f32) -> (f32, f32, f32, f32) {
         let mut w = World::empty(map);
-        w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Lance);
+        w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Kontos);
         run(&mut w, Command::default(), 1.0);
         let (mut sum, mut peak, mut jolt, mut air, mut n) =
             (0.0f32, 0.0f32, 0.0f32, 0usize, 0usize);
@@ -1535,14 +1500,14 @@ mod tests {
     /// transfer) without lifting it off its tracks.
     #[test]
     fn rides_level_under_power() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             let mut w = World::empty(flat_world().map);
             w.spawn_tank(
                 Vec3::ONE,
                 Vec2::new(100.0, 20.0),
                 0.0,
                 hull,
-                TurretKind::Lance,
+                TurretKind::Kontos,
             );
             run(&mut w, Command::default(), 2.0);
             let (mut pitch, mut height) = (0.0f32, 0.0f32);
@@ -1565,25 +1530,17 @@ mod tests {
         }
     }
 
-    /// Full throttle over the proving ground's speed bumps and hills: the
-    /// suspension soaks them up instead of throwing the tank in the air.
+    /// Full throttle over speed bumps and rolling hills: the suspension
+    /// soaks them up instead of throwing the tank in the air.
     #[test]
     fn suspension_soaks_up_bumps() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
-            let bumps = ride(
-                Map::proving_ground(),
-                Vec2::new(12.0, 108.0),
-                0.0,
-                hull,
-                5.0,
-            );
-            let hills = ride(
-                Map::proving_ground(),
-                Vec2::new(130.0, 20.0),
-                0.0,
-                hull,
-                8.0,
-            );
+        let mut bumpy = Map::yard(200.0);
+        bumpy.speed_bumps(6.0, 18.0, 120.0, 6);
+        let mut hilly = Map::yard(200.0);
+        hilly.hills();
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
+            let bumps = ride(bumpy.clone(), Vec2::new(12.0, 108.0), 0.0, hull, 5.0);
+            let hills = ride(hilly.clone(), Vec2::new(130.0, 20.0), 0.0, hull, 8.0);
             for (name, (rate, _, jolt, air)) in [("bumps", bumps), ("hills", hills)] {
                 assert!(
                     air < 0.02,
@@ -1607,28 +1564,19 @@ mod tests {
     }
 
     #[test]
-    fn map_is_deterministic() {
-        let (a, b) = (Map::generate(42), Map::generate(42));
-        assert_eq!(a.solids.len(), b.solids.len());
-        assert_eq!(a.boxes.len(), b.boxes.len());
-        assert!(
-            a.solids.len() > 20,
-            "expected a dense map, got {} solids",
-            a.solids.len()
-        );
-    }
-
-    #[test]
     fn open_spots_are_drivable() {
-        for seed in 0..20 {
-            let m = Map::generate(seed);
-            assert!(m.open_spots.len() > 100);
+        for (name, m) in [
+            ("saltmarket", Map::saltmarket()),
+            ("sanctum", Map::sanctum()),
+            ("kiln", Map::kiln()),
+        ] {
+            assert!(!m.open_spots.is_empty(), "{name}: no open spots");
             for p in &m.open_spots {
                 for s in &m.solids {
                     let cp = p.clamp(s.min2(), s.max2());
                     assert!(
                         cp.distance(*p) >= 2.3,
-                        "seed {seed}: open spot {p} overlaps a solid"
+                        "{name}: open spot {p} overlaps a solid"
                     );
                 }
             }
@@ -1637,7 +1585,7 @@ mod tests {
 
     #[test]
     fn settles_level_on_its_wheels() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             let mut w = flat_world();
             w.set_hull(0, hull);
             run(&mut w, Command::default(), 3.0);
@@ -1659,14 +1607,14 @@ mod tests {
         run(&mut w, throttle(1.0), 0.5);
         let early = w.tanks[0].speed();
         assert!(
-            early > 0.33 * HullStats::LANCER.max_speed,
+            early > 0.33 * HullStats::KATAPHRAKT.max_speed,
             "sluggish start: {early} m/s after 0.5 s"
         );
         assert!(w.tanks[0].up().y > 0.98, "wheelie: {:?}", w.tanks[0].up());
         run(&mut w, throttle(1.0), 2.5);
         let s = w.tanks[0].speed();
         assert!(
-            (s - HullStats::LANCER.max_speed).abs() < 0.5,
+            (s - HullStats::KATAPHRAKT.max_speed).abs() < 0.5,
             "top speed {s}"
         );
     }
@@ -1713,16 +1661,12 @@ mod tests {
 
     #[test]
     fn holds_position_on_slope() {
-        let mut map = Map::proving_ground();
+        let mut map = Map::yard(200.0);
         // A uniform 20 degree slope rising along +x; tank parked across it.
         let grade = 20f32.to_radians().tan();
         map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, move |x, _| {
             x * grade
         }));
-        map.wedges.clear();
-        map.solids.clear();
-        map.boxes.clear();
-        map.open_spots = vec![Vec2::new(100.0, 100.0)];
         let mut w = World::new(map, 0);
         run(&mut w, Command::default(), 2.0);
         let p0 = w.tanks[0].pos;
@@ -1772,23 +1716,28 @@ mod tests {
     }
 
     #[test]
-    fn every_kicker_lane_is_clearable_at_full_speed() {
-        for lane in 0..3 {
-            let mut w = World::new(Map::proving_ground(), lane);
+    fn kickers_are_clearable_at_full_speed() {
+        for deg in [14.0, 22.0, 30.0] {
+            let mut map = Map::yard(200.0);
+            let past = map.kicker_lane(100.0, 40.0, deg);
+            map.open_spots = vec![Vec2::new(100.0, 12.0)];
+            let mut w = World::new(map, 0);
             run(&mut w, throttle(1.0), 7.0);
             let t = &w.tanks[0];
             assert!(
-                t.pos.z > 80.0,
-                "lane {lane}: stopped at z={} (crashed into the landing ramp?)",
+                t.pos.z > past,
+                "{deg} deg kicker: stopped at z={} before the end of the landing ramp at {past}",
                 t.pos.z
             );
-            assert!(t.up().y > 0.95, "lane {lane}: not upright");
+            assert!(t.up().y > 0.95, "{deg} deg kicker: not upright");
         }
     }
 
     #[test]
     fn heightfield_matches_terrain_heights() {
-        let mut w = World::new(Map::proving_ground(), 0);
+        let mut map = Map::yard(200.0);
+        map.hills();
+        let mut w = World::new(map, 0);
         w.physics.step();
         let t = w.map.terrain.clone().unwrap();
         for (x, z) in [(130.0, 40.0), (160.0, 50.0), (155.0, 150.0), (170.0, 120.0)] {
@@ -1804,7 +1753,10 @@ mod tests {
 
     #[test]
     fn rolls_over_speed_bumps_and_stairs() {
-        let mut w = World::new(Map::proving_ground(), 0);
+        let mut map = Map::yard(200.0);
+        map.speed_bumps(6.0, 18.0, 120.0, 6);
+        map.stairs(28.0, 40.0, 120.0);
+        let mut w = World::new(map, 0);
         for spot in [Vec2::new(12.0, 105.0), Vec2::new(34.0, 105.0)] {
             place(&mut w, Vec3::new(spot.x, 0.2, spot.y), Quat::IDENTITY);
             run(&mut w, Command::default(), 1.0);
@@ -1840,7 +1792,7 @@ mod tests {
     /// Kerbs, steps and low ledges never stop a tank, from a standstill or at speed.
     #[test]
     fn low_ledges_never_stop_you() {
-        for hull in [HullKind::Lancer, HullKind::Bastion] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
             for h in [0.25, 0.5, 0.8] {
                 assert!(
                     climbs(h, Vec2::new(100.0, 106.5), 0.0, hull),
@@ -1863,15 +1815,17 @@ mod tests {
     #[test]
     fn walls_still_block() {
         assert!(
-            !climbs(2.0, Vec2::new(100.0, 80.0), 0.0, HullKind::Lancer),
+            !climbs(2.0, Vec2::new(100.0, 80.0), 0.0, HullKind::Kataphrakt),
             "drove up a wall"
         );
     }
 
     #[test]
     fn crosses_stairs_side_on() {
-        // The stairs block from the proving ground, approached from its side.
-        let mut w = World::new(Map::proving_ground(), 0);
+        // Stairs, approached from the side.
+        let mut map = Map::yard(200.0);
+        map.stairs(28.0, 40.0, 120.0);
+        let mut w = World::new(map, 0);
         // At z=121.5 the side face is the first two steps: 0.25 m, then 0.5 m.
         place(
             &mut w,
@@ -1893,7 +1847,7 @@ mod tests {
     #[test]
     fn turret_spins_up_slowly_and_stops_quickly() {
         let mut w = flat_world();
-        let h = HullStats::LANCER;
+        let h = HullStats::KATAPHRAKT;
         run(
             &mut w,
             Command {
@@ -2122,7 +2076,7 @@ mod tests {
             w.step(&[Command::default()]);
             pitch = pitch.max(w.tanks[0].forward().y.asin().to_degrees());
         }
-        // Lance fires forward: the nose kicks up as the hull rocks back.
+        // Kontos fires forward: the nose kicks up as the hull rocks back.
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
     }
 }

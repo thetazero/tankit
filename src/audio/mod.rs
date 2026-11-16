@@ -193,8 +193,8 @@ impl Audio {
         {
             Sound::Shot { tank, turret, at } => {
                 let layers = match turret {
-                    TurretKind::Lance => patch::LANCE,
-                    TurretKind::Maul => patch::MAUL,
+                    TurretKind::Kontos => patch::KONTOS,
+                    TurretKind::Pelekys => patch::PELEKYS,
                     TurretKind::Ammeth => patch::WISP,
                     TurretKind::Ossrin => patch::TRIAD,
                     TurretKind::Hymn => {
@@ -271,7 +271,7 @@ impl Audio {
                     beam: f.is_some_and(|f| f.beam.is_some()) as u8 as f32,
                     heat: f.map_or(0.0, |f| f.heat),
                     flame: flaming as u8 as f32,
-                    heavy: t.hull_kind == HullKind::Bastion,
+                    heavy: t.hull_kind == HullKind::Kastron,
                     hover: t.chassis.hover,
                 }
             })
@@ -418,7 +418,7 @@ mod tests {
     /// A real bot battle, recorded: loud enough to hear, never clipping hard.
     #[test]
     fn a_battle_sounds_sane() {
-        let map = crate::make_map(7, crate::MapKind::City);
+        let map = crate::map::Map::saltmarket();
         let mut game = Match::new(map, 0, 5, 7);
         let buf = record(&mut game, 6.0, 24_000, 0.8, |w| {
             crate::game::autopilot(w.time)

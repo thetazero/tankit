@@ -10,8 +10,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::render::Renderer;
 use crate::render::mesh::{Instance, MeshData, MeshId};
+use crate::render::{Particle, Renderer};
 use crate::sim::{HullKind, Tank, TurretKind};
 use ithessar::HoverModel;
 use model::{HullModel, Rig, Running, TurretModel};
@@ -50,16 +50,16 @@ impl KitMeshes {
         } = resonant::vigil();
         KitMeshes {
             hulls: vec![
-                hull(model::lancer()),
-                hull(model::bastion()),
+                hull(model::kataphrakt()),
+                hull(model::kastron()),
                 hull(vigil_hull),
             ],
             hover: ithessar::sethuun(),
             vigil,
             // Same order as `TurretKind::ALL`.
             turrets: vec![
-                model::lance(),
-                model::maul(),
+                model::kontos(),
+                model::pelekys(),
                 ithessar::ammeth(),
                 ithessar::ossrin(),
                 model::lumen(),
@@ -219,8 +219,9 @@ impl TankArt {
         }
     }
 
-    /// Append every instance needed to draw `t` this frame.
-    pub fn instances(&self, t: &Tank, out: &mut Vec<(MeshId, Instance)>) {
+    /// Append every instance needed to draw `t` this frame, and its plasma
+    /// light (charging orbs, muzzle flashes) to `glow`.
+    pub fn instances(&self, t: &Tank, out: &mut Vec<(MeshId, Instance)>, glow: &mut Vec<Particle>) {
         let turret = &self.turrets[TurretKind::ALL
             .iter()
             .position(|&k| k == t.turret_kind)
@@ -228,8 +229,8 @@ impl TankArt {
         // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
         let base = Mat4::from_rotation_translation(t.rot, t.pos);
         let mount = match t.hull_kind {
-            HullKind::Lancer => self.tracked(&self.hulls[0], t, base, out),
-            HullKind::Bastion => self.tracked(&self.hulls[1], t, base, out),
+            HullKind::Kataphrakt => self.tracked(&self.hulls[0], t, base, out),
+            HullKind::Kastron => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
             HullKind::Vigil => {
                 let mount = self.tracked(&self.hulls[2], t, base, out);
@@ -237,7 +238,7 @@ impl TankArt {
                 mount
             }
         };
-        self.turret(turret, t, mount, out);
+        self.turret(turret, t, mount, out, glow);
     }
 
     /// A tracked hull: body, wheels on their suspension, and the belt of
@@ -475,7 +476,14 @@ impl TankArt {
     }
 
     /// Turret yaws on the hull's ring; the gun pitches about its trunnion.
-    fn turret(&self, turret: &TurretArt, t: &Tank, mount: Mat4, out: &mut Vec<(MeshId, Instance)>) {
+    fn turret(
+        &self,
+        turret: &TurretArt,
+        t: &Tank,
+        mount: Mat4,
+        out: &mut Vec<(MeshId, Instance)>,
+        glow: &mut Vec<Particle>,
+    ) {
         let tint = t.color.extend(0.0);
         let alive = t.color.max_element() > 0.2;
         let tm = mount * Mat4::from_rotation_y(t.turret_rel);
@@ -501,7 +509,7 @@ impl TankArt {
                     if i == fired && flash > 0.0 {
                         let at = gun * Mat4::from_translation(o + Vec3::Z * (turret.muzzle - back));
                         if plasma {
-                            plasma_flash(at, flash, out);
+                            plasma_flash(at, flash, out, glow);
                         } else {
                             muzzle_flash(at, flash, t.since_fire, out);
                         }
@@ -534,18 +542,27 @@ impl TankArt {
                         } else {
                             1.0
                         };
-                    out.push((
-                        MeshId::SPHERE,
-                        Instance::new(
-                            c * Mat4::from_scale(Vec3::splat(s)),
-                            ithessar::PLASMA.extend(2.6 + charge * 1.5),
-                        ),
+                    // The orb is light around a small white heart.
+                    let at = c.transform_point3(Vec3::ZERO);
+                    glow.push(Particle::glow(
+                        at,
+                        s * 1.7,
+                        ithessar::PLASMA,
+                        1.0 + 0.8 * charge,
+                        Vec3::ZERO,
+                    ));
+                    glow.push(Particle::glow(
+                        at,
+                        s * 0.8,
+                        ithessar::PLASMA_HOT,
+                        1.6 + charge,
+                        Vec3::ZERO,
                     ));
                     out.push((
                         MeshId::SPHERE,
                         Instance::new(
-                            c * Mat4::from_scale(Vec3::splat(s * 0.5)),
-                            ithessar::PLASMA_HOT.extend(5.0),
+                            c * Mat4::from_scale(Vec3::splat(s * 0.25)),
+                            ithessar::PLASMA_HOT.extend(6.0),
                         ),
                     ));
                     // Arcs from each claw's tip into the orb, flickering.
@@ -597,7 +614,7 @@ impl TankArt {
                 if flash > 0.0 {
                     let o = turret.barrels[fired];
                     let at = gun * turn * Mat4::from_translation(o + Vec3::Z * turret.muzzle);
-                    plasma_flash(at, flash * 0.7, out);
+                    plasma_flash(at, flash * 0.7, out, glow);
                 }
             }
         }
@@ -610,30 +627,37 @@ fn ithessar_sag() -> f32 {
 
 /// Plasma leaving a crystal: a hot white bead in a rose bloom, and a short
 /// spike forward. No smoke, no fire.
-fn plasma_flash(at: Mat4, f: f32, out: &mut Vec<(MeshId, Instance)>) {
-    out.push((
-        MeshId::SPHERE,
-        Instance::new(
-            at * Mat4::from_scale(Vec3::splat(0.25 + 0.7 * f)),
-            ithessar::PLASMA.extend(3.0 * f + 1.0),
-        ),
+fn plasma_flash(at: Mat4, f: f32, out: &mut Vec<(MeshId, Instance)>, glow: &mut Vec<Particle>) {
+    // A flash of light at the muzzle, a jet of it thrown forward, and a
+    // small white-hot heart.
+    let p = at.transform_point3(Vec3::ZERO);
+    let fwd = at.transform_vector3(Vec3::Z).normalize_or_zero();
+    glow.push(Particle::glow(
+        p,
+        0.5 + 1.0 * f,
+        ithessar::PLASMA,
+        2.2 * f,
+        Vec3::ZERO,
+    ));
+    glow.push(Particle::glow(
+        p,
+        0.3 + 0.3 * f,
+        ithessar::PLASMA_HOT,
+        2.8 * f,
+        Vec3::ZERO,
+    ));
+    glow.push(Particle::glow(
+        p + fwd * 0.7 * f,
+        0.25 * f,
+        ithessar::PLASMA_HOT,
+        2.4 * f,
+        fwd * 3.0,
     ));
     out.push((
         MeshId::SPHERE,
         Instance::new(
-            at * Mat4::from_scale(Vec3::splat(0.35 * f + 0.05)),
-            ithessar::PLASMA_HOT.extend(5.0),
-        ),
-    ));
-    out.push((
-        MeshId::GEM,
-        Instance::new(
-            at * Mat4::from_scale_rotation_translation(
-                Vec3::new(0.18, 1.4, 0.18) * f,
-                Quat::from_rotation_x(FRAC_PI_2),
-                Vec3::Z * 0.6 * f,
-            ),
-            ithessar::PLASMA_HOT.extend(4.0),
+            at * Mat4::from_scale(Vec3::splat(0.15 * f + 0.03)),
+            ithessar::PLASMA_HOT.extend(6.0),
         ),
     ));
 }
@@ -729,8 +753,8 @@ mod tests {
     fn physics_chassis_matches_the_art() {
         use crate::sim::{Chassis, HullKind};
         for (kind, h) in [
-            (HullKind::Lancer, model::lancer()),
-            (HullKind::Bastion, model::bastion()),
+            (HullKind::Kataphrakt, model::kataphrakt()),
+            (HullKind::Kastron, model::kastron()),
         ] {
             let c = Chassis::of(kind);
             let r = &h.running;

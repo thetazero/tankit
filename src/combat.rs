@@ -16,6 +16,7 @@ use crate::game::DT;
 use crate::hold::{self, Hold};
 use crate::map::Map;
 use crate::mission::Contract;
+use crate::render::Particle;
 use crate::render::mesh::{Instance, MeshId};
 use crate::repair::Repairs;
 use crate::rng::Rng;
@@ -104,6 +105,12 @@ pub enum Look {
     Flame,
 }
 
+/// An Ammeth orb shrinks a little at every skip.
+fn plasma_shrink(s: &Shell) -> f32 {
+    let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
+    1.0 - 0.18 * spent
+}
+
 /// Ithessar plasma.
 const PLASMA: Vec3 = crate::tank::ithessar::PLASMA;
 const PLASMA_HOT: Vec3 = crate::tank::ithessar::PLASMA_HOT;
@@ -156,14 +163,14 @@ pub fn gun(kind: TurretKind) -> Gun {
     };
     match kind {
         // Imperium long rail cannon: hits hard, slow.
-        TurretKind::Lance => Gun {
+        TurretKind::Kontos => Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
             action: Action::Shell(cannon),
         },
         // Imperium twin short guns: light hits, alternating barrels, fast.
-        TurretKind::Maul => Gun {
+        TurretKind::Pelekys => Gun {
             damage: 15.0,
             reload: 0.5,
             spool: 0.0,
@@ -228,8 +235,8 @@ pub fn gun(kind: TurretKind) -> Gun {
 
 pub fn max_health(kind: HullKind) -> f32 {
     match kind {
-        HullKind::Lancer => 110.0,
-        HullKind::Bastion => 160.0,
+        HullKind::Kataphrakt => 110.0,
+        HullKind::Kastron => 160.0,
         // Light: speed is its armor.
         HullKind::Sethuun => 90.0,
         // Light: the crystal is its armor (it keeps running once broken).
@@ -1212,6 +1219,122 @@ impl Match {
             .collect()
     }
 
+    /// Plasma's light: soft additive glow for shells in flight and the
+    /// bursts they leave, drawn in the particle pass.
+    pub fn glow_particles(&self, alpha: f32, out: &mut Vec<Particle>) {
+        let glow = Particle::glow;
+        for c in &self.world.map.cores {
+            core_glow(c, self.world.time, out);
+        }
+        for s in &self.shells {
+            let p = s.prev.lerp(s.pos, alpha);
+            let d = s.vel.normalize_or_zero();
+            // Fades in over the first few hundredths so it leaves the muzzle
+            // rather than appearing in front of it.
+            let born = (s.age / 0.04).min(1.0);
+            match s.spec.look {
+                // An orb held in its own skin: a halo that shivers, a white
+                // heart, a comet tail of shed plasma behind it, and two motes
+                // circling. It shrinks a little at every skip.
+                Look::Plasma { size } => {
+                    let size = size * plasma_shrink(s);
+                    let shiver = 1.0 + 0.12 * (s.age * 38.0 + s.seed * 6.0).sin();
+                    out.push(glow(p, size * 2.2 * shiver, PLASMA, 1.6 * born, Vec3::ZERO));
+                    out.push(glow(p, size * 0.9, PLASMA_HOT, 2.4 * born, Vec3::ZERO));
+                    // The tail, stretched along the flight path.
+                    out.push(glow(
+                        p - d * size * 1.6,
+                        size * 0.7,
+                        PLASMA,
+                        1.1 * born,
+                        d * 2.5,
+                    ));
+                    for k in 1..5 {
+                        let k = k as f32;
+                        let flick = 0.8 + 0.2 * (s.age * 27.0 + k * 2.3 + s.seed * 9.0).sin();
+                        out.push(glow(
+                            p - d * size * 0.8 * k,
+                            size * (1.1 - 0.18 * k),
+                            PLASMA,
+                            (1.2 - 0.25 * k) * flick * born,
+                            Vec3::ZERO,
+                        ));
+                    }
+                    let side = d.any_orthonormal_vector();
+                    for k in 0..2 {
+                        let a = s.age * 14.0 + s.seed * 6.0 + k as f32 * std::f32::consts::PI;
+                        let off = Quat::from_axis_angle(d, a) * side * size * 0.9;
+                        out.push(glow(
+                            p + off,
+                            size * 0.3,
+                            PLASMA_HOT,
+                            1.8 * born,
+                            Vec3::ZERO,
+                        ));
+                    }
+                }
+                // A dart: a long rose streak around a hot head.
+                Look::Bolt { size } => {
+                    out.push(glow(
+                        p - d * size * 1.6,
+                        size * 0.38,
+                        PLASMA,
+                        2.4 * born,
+                        d * 6.0,
+                    ));
+                    out.push(glow(
+                        p - d * size * 0.5,
+                        size * 0.16,
+                        PLASMA_HOT,
+                        2.6 * born,
+                        d * 5.0,
+                    ));
+                    out.push(glow(p, size * 0.5, PLASMA, 1.6 * born, Vec3::ZERO));
+                }
+                _ => {}
+            }
+        }
+        // Where plasma bursts: the skin pops in a flash of light that swells
+        // and fades, throwing droplets out in a ring that arc and wink out.
+        for b in &self.blasts {
+            let BlastKind::Plasma(size) = b.kind else {
+                continue;
+            };
+            let f = b.age / b.life();
+            let fade = (1.0 - f) * (1.0 - f);
+            out.push(glow(
+                b.pos,
+                size * (1.6 + 2.4 * f),
+                PLASMA,
+                2.5 * fade,
+                Vec3::ZERO,
+            ));
+            out.push(glow(
+                b.pos,
+                size * (0.8 + 0.6 * f),
+                PLASMA_HOT,
+                3.0 * fade,
+                Vec3::ZERO,
+            ));
+            let seed = (b.pos.x * 12.9898 + b.pos.z * 78.233).sin() * 43758.5;
+            let spin = seed.fract() * std::f32::consts::TAU;
+            let n = 7;
+            for k in 0..n {
+                let a = spin + k as f32 / n as f32 * std::f32::consts::TAU;
+                let dir = Vec3::new(a.cos(), 0.6 + 0.4 * (a * 3.0).sin(), a.sin()).normalize();
+                let travel = size * 2.2 * (1.0 - (1.0 - f).powi(2));
+                let at = b.pos + dir * travel - Vec3::Y * f * f * size * 1.5;
+                out.push(glow(
+                    at,
+                    size * 0.18,
+                    PLASMA_HOT,
+                    2.5 * (1.0 - f),
+                    dir * 2.0,
+                ));
+            }
+        }
+    }
+
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
@@ -1255,36 +1378,17 @@ impl Match {
             match s.spec.look {
                 // A streak trailing back from the shell.
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
-                // An orb in its own skin: a white-hot heart, a rose shell that
-                // shivers, a comet tail of shed plasma, and two motes circling
-                // it. It shrinks a little at every skip.
+                // Plasma is mostly light (see `glow_particles`); only its
+                // white-hot heart is solid.
                 Look::Plasma { size } => {
-                    let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
-                    let size = size * (1.0 - 0.18 * spent);
-                    let wobble = 1.0 + 0.1 * (s.age * 38.0 + s.seed * 6.0).sin();
-                    out.push(ball(p, size * wobble, PLASMA.extend(2.2)));
-                    out.push(ball(p, size * 0.5, PLASMA_HOT.extend(5.0)));
-                    for k in 1..4 {
-                        let k = k as f32;
-                        out.push(ball(
-                            p - d * size * 0.55 * k,
-                            size * (0.7 - 0.17 * k),
-                            PLASMA.extend(2.4 - 0.4 * k),
-                        ));
-                    }
-                    let side = d.any_orthonormal_vector();
-                    for k in 0..2 {
-                        let a = s.age * 14.0 + s.seed * 6.0 + k as f32 * std::f32::consts::PI;
-                        let off = Quat::from_axis_angle(d, a) * side * size * 0.75;
-                        out.push(ball(p + off, size * 0.14, PLASMA_HOT.extend(4.0)));
-                    }
+                    out.push(ball(
+                        p,
+                        size * plasma_shrink(s) * 0.26,
+                        PLASMA_HOT.extend(6.0),
+                    ));
                 }
-                // A dart: hot needle inside a rose streak.
                 Look::Bolt { size } => {
-                    out.push(streak(0.45 * size, 2.4 * size, PLASMA.extend(2.2)));
-                    out.push(streak(0.16 * size, 1.8 * size, PLASMA_HOT.extend(4.0)));
-                    out.push(ball(p, 0.55 * size, PLASMA.extend(2.2)));
-                    out.push(ball(p, 0.28 * size, PLASMA_HOT.extend(4.0)));
+                    out.push(streak(0.06 * size, 1.4 * size, PLASMA_HOT.extend(6.0)));
                 }
                 // Crystal fire: white-hot at the nozzle, swelling into blue, then gone.
                 Look::Flame => {
@@ -1371,12 +1475,10 @@ impl Match {
                     1.0 + f * 4.0,
                     Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f)),
                 ),
-                BlastKind::Plasma(size) | BlastKind::Shatter(size) => {
-                    let (cool, hot) = if matches!(b.kind, BlastKind::Shatter(_)) {
-                        (CRYSTAL, CRYSTAL_HOT)
-                    } else {
-                        (PLASMA, PLASMA_HOT)
-                    };
+                // Plasma bursts are all light (`glow_particles`).
+                BlastKind::Plasma(_) => continue,
+                BlastKind::Shatter(size) => {
+                    let (cool, hot) = (CRYSTAL, CRYSTAL_HOT);
                     // The skin bursts: a flash that swells and thins out, and
                     // droplets thrown out in a ring that arc and wink out.
                     let seed = (b.pos.x * 12.9898 + b.pos.z * 78.233).sin() * 43758.5;
@@ -1462,6 +1564,40 @@ impl Match {
     }
 }
 
+/// An Ithessar core's light: a breathing ball of plasma with a white-hot
+/// heart, and motes circling it on tilted orbits.
+fn core_glow(c: &crate::map::Core, time: f32, out: &mut Vec<Particle>) {
+    let breathe = 1.0 + 0.05 * (time * 1.7).sin() + 0.02 * (time * 5.3).sin();
+    let r = c.radius;
+    out.push(Particle::glow(
+        c.at,
+        1.9 * r * breathe,
+        PLASMA,
+        0.8,
+        Vec3::ZERO,
+    ));
+    out.push(Particle::glow(
+        c.at,
+        0.9 * r * breathe,
+        PLASMA_HOT,
+        1.0,
+        Vec3::ZERO,
+    ));
+    for k in 0..9 {
+        let k = k as f32;
+        let tilt = Quat::from_rotation_x(0.5 + k * 0.7) * Quat::from_rotation_z(k * 1.3);
+        let a = time * (0.6 + 0.07 * k) + k * 2.4;
+        let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
+        out.push(Particle::glow(
+            p,
+            0.35 + 0.1 * (k % 2.0),
+            PLASMA_HOT,
+            1.3,
+            Vec3::ZERO,
+        ));
+    }
+}
+
 /// An Ithessar core: a ball of plasma that breathes, motes circling it on
 /// tilted orbits, and arcs jumping to it from the monoliths that hold it.
 pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, Instance)>) {
@@ -1476,15 +1612,8 @@ pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, In
             ),
         )
     };
-    out.push(ball(c.at, 2.0 * r * breathe, PLASMA.extend(2.2)));
-    out.push(ball(c.at, 1.25 * r * breathe, PLASMA_HOT.extend(4.5)));
-    for k in 0..9 {
-        let k = k as f32;
-        let tilt = Quat::from_rotation_x(0.5 + k * 0.7) * Quat::from_rotation_z(k * 1.3);
-        let a = time * (0.6 + 0.07 * k) + k * 2.4;
-        let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
-        out.push(ball(p, 0.35 + 0.08 * (k % 2.0), PLASMA_HOT.extend(4.0)));
-    }
+    // The ball and its motes are light (`core_glow`); only the white heart is solid.
+    out.push(ball(c.at, 0.45 * r * breathe, PLASMA_HOT.extend(6.0)));
     for (k, &tip) in c.prongs.iter().enumerate() {
         let beat = (time * 6.0 + k as f32 * 1.9).sin() + (time * 13.0 + k as f32).sin() * 0.5;
         if beat < 0.6 {
@@ -1593,8 +1722,9 @@ mod tests {
     use super::*;
     use crate::sim::dir2;
 
+    /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
-        Match::new(Map::generate(21), 0, bots, 21)
+        Match::new(Map::saltmarket(), 0, bots, 21)
     }
 
     #[test]
@@ -1611,13 +1741,19 @@ mod tests {
 
     #[test]
     fn shell_hits_and_kills_a_tank_in_front() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         // A dummy straight ahead of the player.
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
-        m.world
-            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -1639,7 +1775,7 @@ mod tests {
         let dealt = m.fighters[0].damage_dealt;
         assert!(
             dealt > 0.0
-                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Lancer)
+                && dealt <= (m.fighters[1].deaths + 1) as f32 * max_health(HullKind::Kataphrakt)
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
@@ -1648,13 +1784,19 @@ mod tests {
 
     /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
     fn duel(turret: TurretKind, dist: f32) -> Match {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         m.world.tanks[0].turret_kind = turret;
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist;
-        m.world
-            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -1669,8 +1811,8 @@ mod tests {
     #[test]
     fn held_trigger_keeps_firing() {
         for turret in [
-            TurretKind::Lance,
-            TurretKind::Maul,
+            TurretKind::Kontos,
+            TurretKind::Pelekys,
             TurretKind::Ammeth,
             TurretKind::Ossrin,
             TurretKind::Hymn,
@@ -1717,7 +1859,7 @@ mod tests {
         for _ in 0..(3.0 / DT) as usize {
             m.step(Command::default(), true);
         }
-        assert_eq!(m.fighters[1].health, max_health(HullKind::Lancer));
+        assert_eq!(m.fighters[1].health, max_health(HullKind::Kataphrakt));
         assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
     }
 
@@ -1754,7 +1896,7 @@ mod tests {
 
     #[test]
     fn plasma_orbs_bounce_off_the_ground() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         let Action::Shell(spec) = gun(TurretKind::Ammeth).action else {
             panic!("Ammeth fires shells");
         };
@@ -1782,7 +1924,7 @@ mod tests {
         assert!(m.shells[0].vel.y > 0.0, "and come back up");
         assert_eq!(m.shells[0].bounces, spec.bounces - 1);
         // Cannon shells just stop.
-        let Action::Shell(cannon) = gun(TurretKind::Lance).action else {
+        let Action::Shell(cannon) = gun(TurretKind::Kontos).action else {
             panic!();
         };
         m.shells = vec![Shell {
@@ -1851,8 +1993,8 @@ mod tests {
     #[test]
     fn dead_tanks_respawn_with_full_health() {
         let mut m = arena(1);
-        // A Lancer: a Vigil would run on as a husk first.
-        m.world.set_hull(1, HullKind::Lancer);
+        // A Kataphrakt: a Vigil would run on as a husk first.
+        m.world.set_hull(1, HullKind::Kataphrakt);
         m.fighters[1].shield = 0.0;
         m.kill(0, 1);
         assert!(!m.fighters[1].alive);
@@ -1868,7 +2010,7 @@ mod tests {
     /// can't be hurt, at full strength and then fading, before it's wrecked.
     #[test]
     fn vigil_runs_on_as_a_husk() {
-        let mut m = duel(TurretKind::Lance, 20.0);
+        let mut m = duel(TurretKind::Kontos, 20.0);
         m.world.set_hull(1, HullKind::Vigil);
         m.damage(0, 1, 1000.0);
         let f = &m.fighters[1];
@@ -1899,7 +2041,7 @@ mod tests {
     /// Other hulls just die.
     #[test]
     fn other_hulls_do_not_run_on() {
-        let mut m = duel(TurretKind::Lance, 20.0);
+        let mut m = duel(TurretKind::Kontos, 20.0);
         m.damage(0, 1, 1000.0);
         assert!(!m.fighters[1].alive);
         assert!(!m.fighters[1].is_husk());
@@ -1908,12 +2050,12 @@ mod tests {
     /// A fading husk's shots hit softer.
     #[test]
     fn husk_firepower_fades() {
-        let mut m = duel(TurretKind::Lance, 20.0);
+        let mut m = duel(TurretKind::Kontos, 20.0);
         m.world.set_hull(0, HullKind::Vigil);
         m.fighters[0].husk = HUSK_FADE * 0.5;
         m.fighters[0].reload_in = 0.0;
         m.shoot(0);
-        let full = gun(TurretKind::Lance).damage;
+        let full = gun(TurretKind::Kontos).damage;
         let dealt = m.shells.last().unwrap().damage;
         assert!((dealt - full * 0.5).abs() < 1e-3, "{dealt} of {full}");
     }
@@ -1922,12 +2064,12 @@ mod tests {
     fn queued_kit_is_fitted_at_respawn() {
         let mut m = arena(1);
         // Whatever the player has now, queue the other hull.
-        let hull = if m.world.tanks[0].hull_kind == HullKind::Bastion {
-            HullKind::Lancer
+        let hull = if m.world.tanks[0].hull_kind == HullKind::Kastron {
+            HullKind::Kataphrakt
         } else {
-            HullKind::Bastion
+            HullKind::Kastron
         };
-        let kit = (hull, TurretKind::Maul);
+        let kit = (hull, TurretKind::Pelekys);
         m.fighters[0].next_kit = Some(kit);
         // Not while alive.
         for _ in 0..30 {
@@ -1961,7 +2103,7 @@ mod tests {
 
     #[test]
     fn driving_onto_a_landed_crate_repairs_the_hull() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
@@ -1985,7 +2127,7 @@ mod tests {
 
     #[test]
     fn holding_pays_trust_and_reaching_the_target_ends_the_round() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 3);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
@@ -2024,7 +2166,7 @@ mod tests {
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
-        m.world.set_hull(0, HullKind::Lancer);
+        m.world.set_hull(0, HullKind::Kataphrakt);
         m.damage(1, 0, 1.0);
         // Out over the desert floor, well clear of the cliff.
         m.world.teleport(0, Vec2::new(150.0, 285.0), 0.0);
@@ -2090,7 +2232,7 @@ mod tests {
 
     #[test]
     fn each_side_spawns_at_its_own_base() {
-        for map in [Map::generate(21), Map::saltmarket()] {
+        for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
             let m = Match::new(map, 0, 11, 5);
             for (i, f) in m.fighters.iter().enumerate() {
                 let p = Vec2::new(m.world.tanks[i].pos.x, m.world.tanks[i].pos.z);
@@ -2120,7 +2262,7 @@ mod tests {
             owner,
             damage: 1000.0,
             age: 0.0,
-            spec: match gun(TurretKind::Lance).action {
+            spec: match gun(TurretKind::Kontos).action {
                 Action::Shell(spec) => spec,
                 Action::Beam { .. } => unreachable!(),
             },
