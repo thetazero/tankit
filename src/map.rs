@@ -88,6 +88,11 @@ pub struct OBox {
     pub tilt: f32,
     /// Collides and blocks navigation. Debris is visual only.
     pub solid: bool,
+    /// Visual wear (the collider stays a box): how big the chips knocked out
+    /// of its vertical edges and corners are, in meters. 0 = clean box.
+    pub chip: f32,
+    /// The top is a broken edge, not a finished one: drawn jagged.
+    pub broken: bool,
 }
 
 impl Default for OBox {
@@ -103,6 +108,8 @@ impl Default for OBox {
             top_mat: mat::PLAIN,
             tilt: 0.0,
             solid: true,
+            chip: 0.0,
+            broken: false,
         }
     }
 }

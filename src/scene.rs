@@ -87,7 +87,11 @@ pub fn map_mesh(map: &Map) -> MeshData {
 fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
     let mut local = MeshData::default();
     let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
-    local.add_box(-h, h, o.color.extend(o.side_mat), o.color.extend(o.top_mat));
+    if o.chip > 0.0 || o.broken {
+        worn_box(o, &mut local);
+    } else {
+        local.add_box(-h, h, o.color.extend(o.side_mat), o.color.extend(o.top_mat));
+    }
     let xf = Mat4::from_rotation_translation(o.rotation(), o.center3());
     let base = m.verts.len() as u32;
     for v in &local.verts {
@@ -97,6 +101,145 @@ fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
         m.verts.push(v);
     }
     m.indices.extend(local.indices.iter().map(|i| i + base));
+}
+
+/// Cheap deterministic random stream for visual-only detail.
+struct Hash(u32);
+
+impl Hash {
+    fn of(p: Vec3) -> Hash {
+        let mut h = (p.x * 73.1).to_bits()
+            ^ (p.y * 19.7).to_bits().rotate_left(11)
+            ^ (p.z * 41.3).to_bits().rotate_left(22);
+        h ^= h >> 15;
+        Hash(h.wrapping_mul(0x2c1b_3c6d) | 1)
+    }
+    fn f(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        (self.0 >> 8) as f32 / 16_777_216.0
+    }
+}
+
+/// A box that's been knocked about (box-local coordinates, centered): chips
+/// bitten out of its vertical edges (some chamfered, some notched), corners of
+/// the top knocked down, and if `broken`, a jagged top that steps and slopes
+/// along its length. Chip faces and broken tops show raw masonry.
+fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
+    let mut rng = Hash::of(Vec3::new(o.center.x, o.y0 + o.y1, o.center.y));
+    let (hx, hz) = (o.half.x, o.half.y);
+    let hy = (o.y1 - o.y0) * 0.5;
+    let face = o.color.extend(o.side_mat);
+    let top_c = o.color.extend(o.top_mat);
+    // Broken edges expose the core: rubble-textured, a darker masonry tone.
+    let raw = (o.color * Vec3::new(0.78, 0.72, 0.66)).extend(crate::map::mat::RUBBLE);
+    let chip = o.chip.min(0.45 * hx.min(hz)).max(0.0);
+
+    // Footprint ring, counter-clockwise, with per-point top drop and whether
+    // the side face after this point is a chip face.
+    // Rocks (heavily chipped rubble): an irregular outline, tapering to a
+    // lumpy top, instead of a chipped rectangle.
+    if o.chip >= 0.6 && o.side_mat == crate::map::mat::RUBBLE {
+        let n = 7 + (rng.f() * 3.0) as usize;
+        let phase = rng.f() * 6.28;
+        let ring: Vec<(Vec2, f32)> = (0..n)
+            .map(|k| {
+                let a = k as f32 / n as f32 * std::f32::consts::TAU + phase + (rng.f() - 0.5) * 0.4;
+                let rad = 0.75 + 0.25 * rng.f();
+                (Vec2::new(a.cos() * hx, a.sin() * hz) * rad, rng.f())
+            })
+            .collect();
+        let taper = 0.55 + 0.2 * rng.f();
+        let bot = |p: Vec2| Vec3::new(p.x, -hy, p.y);
+        let top = |p: Vec2, d: f32| Vec3::new(p.x * taper, hy - d * hy * 0.5, p.y * taper);
+        let peak = Vec3::new((rng.f() - 0.5) * hx * 0.3, hy, (rng.f() - 0.5) * hz * 0.3);
+        for i in 0..n {
+            let (a, da) = ring[i];
+            let (b, db) = ring[(i + 1) % n];
+            m.facet([bot(a), bot(b), top(b, db)], Vec3::ZERO, face);
+            m.facet([bot(a), top(b, db), top(a, da)], Vec3::ZERO, face);
+            m.facet(
+                [peak, top(a, da), top(b, db)],
+                Vec3::new(0.0, -hy, 0.0),
+                top_c,
+            );
+        }
+        return;
+    }
+    let corners = [
+        Vec2::new(-hx, -hz),
+        Vec2::new(hx, -hz),
+        Vec2::new(hx, hz),
+        Vec2::new(-hx, hz),
+    ];
+    let mut ring: Vec<(Vec2, f32, bool)> = Vec::new();
+    for i in 0..4 {
+        let (prev, c, next) = (corners[(i + 3) % 4], corners[i], corners[(i + 1) % 4]);
+        let (u, w) = ((prev - c).normalize(), (next - c).normalize());
+        let roll = rng.f();
+        if chip < 0.02 || roll < 0.25 {
+            ring.push((c, 0.0, false));
+        } else if roll < 0.7 {
+            let a = chip * (0.35 + 0.65 * rng.f());
+            let drop = a * rng.f();
+            ring.push((c + u * a, drop * 0.5, true));
+            ring.push((c + w * a, drop * 0.5, false));
+        } else {
+            let (d1, d2) = (chip * (0.5 + 0.7 * rng.f()), chip * (0.5 + 0.7 * rng.f()));
+            let drop = chip * (0.5 + rng.f());
+            ring.push((c + u * d1, drop * 0.3, true));
+            ring.push((c + u * d1 + w * d2, drop, true));
+            ring.push((c + w * d2, drop * 0.3, false));
+        }
+        // Points along the edge to the next corner, so a broken top can step.
+        if o.broken {
+            let len = c.distance(next);
+            let n = (len / 0.45) as usize;
+            for k in 1..n {
+                ring.push((c + (next - c) * (k as f32 / n as f32), 0.0, false));
+            }
+        }
+    }
+    // Broken top: a smooth random profile with steps, never more than a
+    // third of the height or 0.9 m.
+    let depth = (hy * 2.0 * 0.33).min(0.9);
+    if o.broken {
+        let phase = rng.f() * 10.0;
+        let n = ring.len();
+        for (k, p) in ring.iter_mut().enumerate() {
+            let t = k as f32 / n as f32 * std::f32::consts::TAU;
+            let wave = 0.5 + 0.3 * (t * 2.0 + phase).sin() + 0.2 * (t * 5.0 + phase * 1.7).sin();
+            let step = if rng.f() < 0.3 { 0.25 } else { 0.0 };
+            p.1 = (p.1 + depth * (wave * 0.7 + step + 0.15 * rng.f())).min(depth);
+        }
+    }
+
+    let inside = Vec3::ZERO;
+    let n = ring.len();
+    let bot = |p: Vec2| Vec3::new(p.x, -hy, p.y);
+    let top = |p: Vec2, d: f32| Vec3::new(p.x, hy - d, p.y);
+    for i in 0..n {
+        let (a, da, chip_face) = ring[i];
+        let (b, db, _) = ring[(i + 1) % n];
+        let c = if chip_face { raw } else { face };
+        m.facet([bot(a), bot(b), top(b, db)], inside, c);
+        m.facet([bot(a), top(b, db), top(a, da)], inside, c);
+    }
+    // Top: a fan from a center point at the mean height.
+    let mean = ring.iter().map(|p| p.1).sum::<f32>() / n as f32;
+    let center_top = Vec3::new(0.0, hy - mean * if o.broken { 0.8 } else { 1.0 }, 0.0);
+    let tc = if o.broken { raw } else { top_c };
+    for i in 0..n {
+        let (a, da, _) = ring[i];
+        let (b, db, _) = ring[(i + 1) % n];
+        m.facet(
+            [center_top, top(a, da), top(b, db)],
+            Vec3::new(0.0, -hy, 0.0),
+            tc,
+        );
+        m.facet([Vec3::new(0.0, -hy, 0.0), bot(b), bot(a)], Vec3::ZERO, face);
+    }
 }
 
 /// Painted drop zones where repair crates come down: a square outline with a cross.
