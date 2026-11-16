@@ -33,6 +33,19 @@ pub fn label(p: &mut Painter, pos: Vec2, text: &str, align: Align) -> f32 {
     p.text(pos, text, &TextStyle::LABEL, align)
 }
 
+/// A square hairline box, filled in when `on`. `pos` is its top left.
+pub fn checkbox(p: &mut Painter, pos: Vec2, size: f32, on: bool) {
+    p.rect_outline(
+        pos,
+        Vec2::splat(size),
+        1.0,
+        if on { theme::FG } else { theme::DIM },
+    );
+    if on {
+        p.rect(pos + Vec2::splat(3.0), Vec2::splat(size - 6.0), theme::FG);
+    }
+}
+
 /// A 1 px track with a brighter 2 px fill and an end tick. `frac` in 0..1.
 pub fn hairbar(p: &mut Painter, pos: Vec2, width: f32, frac: f32, fill: Rgba) {
     let end = pos + Vec2::new(width, 0.0);

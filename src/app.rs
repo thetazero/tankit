@@ -19,9 +19,9 @@ use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
-use crate::hud::Hud;
+use crate::hud::{self, Hud};
 use crate::menu::{self, Menu, Nav, Pause, PauseAction};
-use crate::mission::MISSIONS;
+use crate::mission::{Contract, MISSIONS};
 use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
@@ -50,6 +50,7 @@ pub struct Launch {
     pub map_kind: MapKind,
     pub spawn: usize,
     pub bots: usize,
+    pub contract: Contract,
     /// Starting kit; `None` uses the profile's.
     pub loadout: Option<garage::Loadout>,
     /// Open on the main menu (otherwise straight into a match with the settings above).
@@ -62,6 +63,7 @@ struct App {
     map_kind: MapKind,
     spawn: usize,
     bots: usize,
+    contract: Contract,
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -93,6 +95,8 @@ struct App {
     last: Instant,
     fps_timer: f32,
     fps_frames: u32,
+    /// Frames per second over the last half second (the debug overlay shows it).
+    fps: f32,
 }
 
 pub fn run(launch: Launch) -> anyhow::Result<()> {
@@ -123,6 +127,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
             launch.map_kind,
             launch.spawn,
             launch.bots,
+            launch.contract,
             loadout,
         )
     };
@@ -135,6 +140,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         map_kind: launch.map_kind,
         spawn: launch.spawn,
         bots: launch.bots,
+        contract: launch.contract,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -163,17 +169,19 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         last: Instant::now(),
         fps_timer: 0.0,
         fps_frames: 0,
+        fps: 0.0,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 
-/// A round with the player in `kit`.
+/// A round under `contract` with the player in `kit`.
 pub fn new_match(
     seed: u64,
     map_kind: MapKind,
     spawn: usize,
     bots: usize,
+    contract: Contract,
     kit: garage::Loadout,
 ) -> Match {
     let mut m = Match::new(
@@ -182,6 +190,7 @@ pub fn new_match(
         bots,
         seed.wrapping_add(spawn as u64),
     );
+    m.set_contract(contract);
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
@@ -189,7 +198,8 @@ pub fn new_match(
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    let mut m = new_match(MISSIONS[0].seed, MISSIONS[0].map_kind, 0, 0, kit);
+    let first = &MISSIONS[0];
+    let mut m = new_match(first.seed, first.map_kind, 0, 0, Contract::Attrition, kit);
     m.time_left = f32::INFINITY;
     m
 }
@@ -284,6 +294,7 @@ impl App {
             self.map_kind,
             self.spawn,
             self.bots,
+            self.contract,
             kit,
         ));
         self.mode = Mode::Playing;
@@ -292,15 +303,17 @@ impl App {
     fn start_mission(&mut self, i: usize) {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
+        self.contract = m.contract;
         self.load(new_match(
             self.seed,
             self.map_kind,
             self.spawn,
             self.bots,
+            self.contract,
             self.profile.loadout,
         ));
         self.mode = Mode::Playing;
-        log::info!("deployed: {} ({}, {})", m.name, m.mode, m.map);
+        log::info!("deployed: {} ({}, {})", m.name, m.contract.name(), m.map);
     }
 
     fn back_to_menu(&mut self) {
@@ -412,6 +425,7 @@ impl App {
                             self.garage.toggle(&self.game.world, &cam, self.queued());
                         }
                     }
+                    Some(menu::Action::Toggle(i)) => self.toggle_setting(i),
                     Some(menu::Action::Quit) => event_loop.exit(),
                     None => {}
                 }
@@ -421,6 +435,7 @@ impl App {
                 let Some(nav) = Self::nav(code) else { return };
                 match self.pause.input(nav) {
                     Some(PauseAction::Resume) => self.mode = Mode::Playing,
+                    Some(PauseAction::Toggle(i)) => self.toggle_setting(i),
                     Some(PauseAction::ExitToMenu) => self.back_to_menu(),
                     Some(PauseAction::Quit) => event_loop.exit(),
                     None => {}
@@ -486,6 +501,11 @@ impl App {
             KeyCode::Backspace => (self.tune_grip, self.tune_turn) = (1.0, 0.0),
             _ => {}
         }
+    }
+
+    fn toggle_setting(&mut self, i: usize) {
+        let settings = menu::toggled(self.profile.settings, i);
+        self.profile.set_settings(settings);
     }
 
     fn held(&self, codes: &[KeyCode]) -> bool {
@@ -640,6 +660,9 @@ impl App {
                     }
                 };
             }
+            if self.profile.settings.debug {
+                scene.ui.extend(hud::fps_counter(self.fps, w, h));
+            }
             r.render(&scene);
             self.camera = Some(camera);
         }
@@ -649,6 +672,7 @@ impl App {
         if self.fps_timer >= 0.5 {
             if let Some(w) = &self.window {
                 let fps = self.fps_frames as f32 / self.fps_timer;
+                self.fps = fps;
                 let t = &self.game.world.tanks[0];
                 w.set_title(&format!(
                     "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2} ([ ])  turn {:.1} rad/s (; ')  Backspace reset  |  WASD, Z/X/C turret, Space fire, Tab scores, G garage, Esc pause",

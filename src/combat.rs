@@ -1,5 +1,6 @@
-//! Team deathmatch: two factions, five-minute rounds, the side with the most
-//! kills wins. No friendly fire; each side spawns at its own base.
+//! Team fights: two factions, five-minute rounds, no friendly fire; each side
+//! spawns at its own base. Under the Attrition contract the side with the
+//! most kills wins; under Hold, the side that holds the site longest (`hold`).
 //!
 //! Wraps the physics `World` with what a fight needs: shells in flight, hull
 //! health, kills and deaths, respawns, the round clock, and the bots. Tank 0
@@ -12,7 +13,9 @@ use crate::ai::{self, Bot, Contact, NavGrid};
 use crate::economy::Levels;
 use crate::faction::Faction;
 use crate::game::DT;
+use crate::hold::{self, Hold};
 use crate::map::Map;
+use crate::mission::Contract;
 use crate::render::mesh::{Instance, MeshId};
 use crate::repair::Repairs;
 use crate::rng::Rng;
@@ -336,6 +339,9 @@ pub struct Match {
     pub factions: [Faction; 2],
     pub time_left: f32,
     pub phase: Phase,
+    pub contract: Contract,
+    /// The site, under the Hold contract.
+    pub hold: Option<Hold>,
     /// Seconds since the round ended (the results screen counts up with it).
     pub over_for: f32,
     nav: NavGrid,
@@ -390,6 +396,8 @@ impl Match {
             repairs,
             factions,
             time_left: ROUND_TIME,
+            contract: Contract::Attrition,
+            hold: None,
             phase: Phase::Playing,
             over_for: 0.0,
             nav,
@@ -401,26 +409,45 @@ impl Match {
         &self.fighters[0]
     }
 
-    /// Kills scored by side `team`.
-    pub fn score(&self, team: usize) -> u32 {
-        self.fighters
-            .iter()
-            .filter(|f| f.team == team)
-            .map(|f| f.kills)
-            .sum()
+    /// Switch to `contract` (before the round starts).
+    pub fn set_contract(&mut self, contract: Contract) {
+        self.contract = contract;
+        self.hold =
+            (contract == Contract::Hold).then(|| Hold::new(&self.world.map, self.fighters.len()));
     }
 
-    /// The side ahead on kills, or None while level.
+    /// Side `team`'s score: kills under Attrition, whole seconds held under Hold.
+    pub fn score(&self, team: usize) -> u32 {
+        match &self.hold {
+            Some(h) => h.held[team] as u32,
+            None => self
+                .fighters
+                .iter()
+                .filter(|f| f.team == team)
+                .map(|f| f.kills)
+                .sum(),
+        }
+    }
+
+    /// Seconds tank `i` has spent on the site while its side held it (0
+    /// outside the Hold contract).
+    pub fn held(&self, i: usize) -> f32 {
+        self.hold.as_ref().map_or(0.0, |h| h.own[i])
+    }
+
+    /// The side ahead on score, or None while level.
     pub fn leader(&self) -> Option<usize> {
         let (a, b) = (self.score(0), self.score(1));
         (a != b).then_some(if a > b { 0 } else { 1 })
     }
 
-    /// Fighter indices by standing: most kills, then fewest deaths.
+    /// Fighter indices by standing: most time on the site (under Hold), then
+    /// most kills, then fewest deaths.
     pub fn standings(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.fighters.len()).collect();
         order.sort_by_key(|&i| {
             (
+                std::cmp::Reverse(self.held(i) as u32),
                 std::cmp::Reverse(self.fighters[i].kills),
                 self.fighters[i].deaths,
                 i,
@@ -466,12 +493,13 @@ impl Match {
                 team: f.team,
             })
             .collect();
+        let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
         let mut cmds = Vec::with_capacity(self.fighters.len());
         let mut triggers = Vec::with_capacity(self.fighters.len());
         for i in 0..self.fighters.len() {
             let (c, f) = match &mut self.bots[i] {
                 _ if !self.fighters[i].alive || !playing => (Command::default(), false),
-                Some(bot) => bot.think(i, &self.world, &contacts, &self.nav, DT),
+                Some(bot) => bot.think(i, &self.world, &contacts, objective, &self.nav, DT),
                 None => (player, fire),
             };
             cmds.push(c);
@@ -521,6 +549,7 @@ impl Match {
         self.respawns();
         if playing {
             self.pick_up_repairs();
+            self.hold_site();
         }
 
         for b in &mut self.blasts {
@@ -796,6 +825,26 @@ impl Match {
         });
     }
 
+    /// Bank time for the side holding the site; pay the player XP for their
+    /// own time on it, and end the round when a side reaches the target.
+    fn hold_site(&mut self) {
+        let Some(h) = &mut self.hold else { return };
+        let fighters = &self.fighters;
+        let before = h.own[0];
+        h.step(DT, &self.world.tanks, |i| {
+            fighters[i].alive.then_some(fighters[i].team)
+        });
+        let paid = (h.own[0] / hold::XP_EVERY).floor() > (before / hold::XP_EVERY).floor();
+        let won = h.winner().is_some();
+        if paid {
+            self.award(hold::HOLD_XP, "HOLDING");
+        }
+        if won {
+            self.phase = Phase::Over;
+            self.shells.clear();
+        }
+    }
+
     fn pick_up_repairs(&mut self) {
         let (fighters, tanks) = (&self.fighters, &self.world.tanks);
         let picked = self.repairs.step(DT, tanks, |i| {
@@ -877,6 +926,9 @@ impl Match {
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
+        if let Some(h) = &self.hold {
+            h.instances(self.world.time, self.factions.map(|f| f.paint()), out);
+        }
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
             let p = s.prev.lerp(s.pos, alpha);
@@ -1406,6 +1458,60 @@ mod tests {
             matches!(m.repairs.drops[0].state, crate::repair::State::Waiting(t) if t > crate::repair::COOLDOWN - 0.1)
         );
         assert!(m.blasts.iter().any(|b| b.kind == BlastKind::Repair));
+    }
+
+    #[test]
+    fn holding_pays_xp_and_reaching_the_target_ends_the_round() {
+        let mut m = Match::new(Map::proving_ground(), 0, 0, 3);
+        m.set_contract(Contract::Hold);
+        let at = m.hold.as_ref().unwrap().at;
+        m.world.teleport(0, at, 0.0);
+        m.hold.as_mut().unwrap().own[0] = hold::XP_EVERY - 0.1;
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        assert_eq!(m.xp, hold::HOLD_XP);
+        assert_eq!(m.xp_pops.last().map(|x| x.reason), Some("HOLDING"));
+        assert_eq!(m.phase, Phase::Playing);
+        m.hold.as_mut().unwrap().held[0] = hold::TARGET - 0.1;
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.leader(), Some(0));
+    }
+
+    #[test]
+    fn hold_score_is_time_held_not_kills() {
+        let mut m = arena(3);
+        m.set_contract(Contract::Hold);
+        for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
+            f.kills = 9;
+        }
+        m.hold.as_mut().unwrap().held[0] = 5.5;
+        assert_eq!((m.score(0), m.score(1)), (5, 0));
+        assert_eq!(m.leader(), Some(0));
+    }
+
+    /// Under Hold, bots of both sides go for the site and someone holds it.
+    #[test]
+    fn bots_go_for_the_hold_site() {
+        let mut m = Match::new(Map::shard_flats(), 0, 5, 5);
+        m.set_contract(Contract::Hold);
+        for _ in 0..(60.0 / DT) as usize {
+            m.fighters[0].shield = 1.0;
+            m.step(Command::default(), false);
+        }
+        let h = m.hold.as_ref().unwrap();
+        assert!(
+            h.held[0] + h.held[1] > 5.0,
+            "the site was held for only {:.1} s in a minute",
+            h.held[0] + h.held[1]
+        );
+        assert!(
+            (1..m.fighters.len()).any(|i| m.fighters[i].team == 1 && m.held(i) > 0.0),
+            "no enemy bot ever stood on a held site"
+        );
     }
 
     #[test]

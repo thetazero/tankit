@@ -10,6 +10,8 @@ use glam::{Vec2, Vec3};
 
 use crate::combat::{FEED_TIME, Match, Phase, XP_POP_TIME};
 use crate::economy::{Outcome, Payout};
+use crate::hold::{self, Control};
+use crate::mission::Contract;
 use crate::render::{Camera, UiVertex};
 use crate::repair::State;
 use crate::scene::project;
@@ -293,6 +295,24 @@ impl Hud {
             1.0,
             theme::FAINT,
         );
+        if let Some(hd) = &m.hold
+            && !board
+        {
+            hold_meter(&mut p, m, hd, Vec2::new(top.x, sy + 32.0));
+            // The site's tag, unless you're on it.
+            let anchor = Vec3::new(hd.at.x, hd.ground + 9.0, hd.at.y);
+            if !hd.inside(tank.pos)
+                && let Some((x, y)) = project(vp, anchor, width, height)
+            {
+                let at = Vec2::new(x, y) / scale;
+                if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
+                    let mut s = TextStyle::LABEL;
+                    s.color = hold_color(m, hd.control);
+                    let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
+                    p.text(at, &format!("DEPOSIT  {d:.0} M"), &s, Align::Center);
+                }
+            }
+        }
 
         // Crosshair where the turret points; the gap kicks open when firing.
         // Where the gun actually points, including hull tilt.
@@ -506,7 +526,9 @@ impl Hud {
 /// Two standings tables side by side (your side on the left), with a winner
 /// banner once the round is over.
 fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
-    let col = 330.0;
+    let holding = m.contract == Contract::Hold;
+    // Hold adds a HELD column: wider tables so it clears the tank names.
+    let col = if holding { 380.0 } else { 330.0 };
     let gap = 48.0;
     let rows = (0..2)
         .map(|t| m.fighters.iter().filter(|f| f.team == t).count())
@@ -516,7 +538,12 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = [0.02, 0.02, 0.025, 0.7];
-    let height = if m.phase == Phase::Over { 362.0 } else { 84.0 } + rows * 22.0;
+    let extra = if holding { 18.0 } else { 0.0 };
+    let height = if m.phase == Phase::Over {
+        362.0 + extra
+    } else {
+        84.0
+    } + rows * 22.0;
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
         Vec2::new(width + 48.0, height),
@@ -571,6 +598,9 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         );
         let mut ty = y + 32.0;
         label(p, Vec2::new(a, ty), "TANK", Align::Left);
+        if holding {
+            label(p, Vec2::new(b - 130.0, ty), "HELD", Align::Right);
+        }
         label(p, Vec2::new(b - 70.0, ty), "KILLS", Align::Right);
         label(p, Vec2::new(b, ty), "DEATHS", Align::Right);
         ty += 14.0;
@@ -595,6 +625,14 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
                 crate::garage::turret_name(t.turret_kind)
             );
             p.text(Vec2::new(a, ty), &kit, &s, Align::Left);
+            if holding {
+                p.text(
+                    Vec2::new(b - 130.0, ty),
+                    &format!("{:.0}", m.held(i).floor()),
+                    &s,
+                    Align::Right,
+                );
+            }
             p.text(
                 Vec2::new(b - 70.0, ty),
                 &fi.kills.to_string(),
@@ -610,10 +648,64 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         contract_pay(p, m, x0, x1, y + 14.0);
         label(
             p,
-            Vec2::new(top.x, y + 158.0),
+            Vec2::new(top.x, y + 158.0 + extra),
             "ENTER  AGAIN     ESC  MENU",
             Align::Center,
         );
+    }
+}
+
+/// Who has the site, then each side's time held against the target: your
+/// side's bar grows left from the middle, theirs right.
+fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
+    let status = match hd.control {
+        Control::Open => "DEPOSIT OPEN".to_string(),
+        Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
+        Control::Contested => "CONTESTED".to_string(),
+    };
+    let mut l = TextStyle::LABEL;
+    l.color = hold_color(m, hd.control);
+    p.text(at, &status, &l, Align::Center);
+    let half = 110.0;
+    let y = at.y + 20.0;
+    p.line(
+        Vec2::new(at.x - half, y),
+        Vec2::new(at.x + half, y),
+        1.0,
+        theme::FAINT,
+    );
+    for (side, dir) in [(0, -1.0), (1, 1.0)] {
+        let f = (hd.held[side] / hold::TARGET).clamp(0.0, 1.0);
+        if f > 0.0 {
+            p.line(
+                Vec2::new(at.x, y),
+                Vec2::new(at.x + dir * half * f, y),
+                2.0,
+                m.factions[side].ui(),
+            );
+        }
+        // Tick at each end: the target.
+        let end = at.x + dir * half;
+        p.line(
+            Vec2::new(end, y - 4.0),
+            Vec2::new(end, y + 4.0),
+            1.0,
+            theme::DIM,
+        );
+    }
+    label(
+        p,
+        Vec2::new(at.x, y + 8.0),
+        &format!("FIRST TO {:.0} S", hold::TARGET),
+        Align::Center,
+    );
+}
+
+fn hold_color(m: &Match, c: Control) -> Rgba {
+    match c {
+        Control::Held(s) => m.factions[s].ui(),
+        Control::Contested => theme::HOT,
+        Control::Open => theme::DIM,
     }
 }
 
@@ -647,6 +739,9 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
         ),
         (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
     ];
+    let hold = (m.contract == Contract::Hold)
+        .then(|| (format!("ON THE DEPOSIT  {:.0} S", pay.held), pay.hold));
+    let lines: Vec<_> = lines.into_iter().chain(hold).collect();
     let n = lines.len() as f32;
     for (i, (what, amount)) in lines.iter().enumerate() {
         let a = ((t - i as f32 * PAY_STEP) / 0.2).clamp(0.0, 1.0);
@@ -671,6 +766,22 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
     }
 }
 
+/// The debug overlay's frame rate, small in the top right corner above the HUD brackets.
+pub fn fps_counter(fps: f32, width: f32, height: f32) -> Vec<UiVertex> {
+    let scale = height / REF_HEIGHT;
+    let w = width / scale;
+    let mut p = Painter::new(scale);
+    let mut s = TextStyle::LABEL;
+    s.color = theme::FG;
+    p.text(
+        Vec2::new(w - 24.0, 4.0),
+        &format!("{fps:.0} FPS"),
+        &s,
+        Align::Right,
+    );
+    p.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,7 +790,14 @@ mod tests {
 
     #[test]
     fn draws_at_any_size() {
+        for contract in [Contract::Attrition, Contract::Hold] {
+            draws_at_any_size_under(contract);
+        }
+    }
+
+    fn draws_at_any_size_under(contract: Contract) {
         let mut m = Match::new(crate::map::Map::generate(21), 0, 11, 21);
+        m.set_contract(contract);
         m.fighters[0].alive = false;
         m.phase = Phase::Over;
         let t = &m.world.tanks[0];
