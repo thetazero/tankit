@@ -8,6 +8,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::combat;
 use crate::render::{Camera, UiVertex};
 use crate::sim::{HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::ui::widgets::{self, label};
@@ -23,6 +24,8 @@ const ORBIT_DIST: f32 = 8.5;
 const ORBIT_HEIGHT: f32 = 2.6;
 const ORBIT_DRIFT: f32 = 0.12;
 
+pub type Loadout = (HullKind, TurretKind);
+
 pub const HULLS: [HullKind; 2] = [HullKind::Lancer, HullKind::Bastion];
 pub const TURRETS: [TurretKind; 2] = [TurretKind::Lance, TurretKind::Maul];
 
@@ -37,14 +40,6 @@ pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
         TurretKind::Lance => "LANCE",
         TurretKind::Maul => "MAUL",
-    }
-}
-
-/// Gun count; checked against the turret art in tests.
-fn barrels(k: TurretKind) -> usize {
-    match k {
-        TurretKind::Lance => 1,
-        TurretKind::Maul => 2,
     }
 }
 
@@ -76,7 +71,16 @@ fn turret_of(p: Part) -> TurretKind {
     }
 }
 
-const HULL_STATS: [Stat; 5] = [
+const HULL_STATS: [Stat; 6] = [
+    Stat {
+        name: "ARMOR",
+        unit: "HP",
+        decimals: 0,
+        get: |p| match p {
+            Part::Hull(k) => combat::max_health(k),
+            Part::Turret(_) => unreachable!(),
+        },
+    },
     Stat { name: "TOP SPEED", unit: "KM/H", decimals: 0, get: |p| hull_of(p).max_speed * 3.6 },
     Stat { name: "ACCEL", unit: "M/S2", decimals: 1, get: |p| hull_of(p).accel },
     Stat { name: "TURN", unit: "°/S", decimals: 0, get: |p| hull_of(p).turn_rate.to_degrees() },
@@ -92,9 +96,18 @@ const HULL_STATS: [Stat; 5] = [
     },
 ];
 
-const TURRET_STATS: [Stat; 2] = [
-    Stat { name: "BARRELS", unit: "", decimals: 0, get: |p| barrels(turret_of(p)) as f32 },
-    Stat { name: "KICK", unit: "M/S", decimals: 1, get: |p| turret_of(p).recoil() },
+const TURRET_STATS: [Stat; 3] = [
+    Stat { name: "DAMAGE", unit: "HP", decimals: 0, get: |p| combat::gun(turret_of(p)).damage },
+    Stat { name: "FIRE RATE", unit: "/MIN", decimals: 0, get: |p| 60.0 / combat::gun(turret_of(p)).reload },
+    Stat {
+        name: "DPS",
+        unit: "HP/S",
+        decimals: 0,
+        get: |p| {
+            let g = combat::gun(turret_of(p));
+            g.damage / g.reload
+        },
+    },
 ];
 
 /// Navigation input, mapped from keys by the app.
@@ -117,7 +130,7 @@ pub struct Garage {
     /// 0 = hull, 1 = turret.
     section: usize,
     /// Loadout when the garage opened (revert target, and the faint "was" ticks on the bars).
-    entry: (HullKind, TurretKind),
+    entry: Loadout,
     /// Orbit camera angle around the tank (world yaw of the camera's offset).
     orbit: f32,
     /// Where the orbit is drifting to; starts at a front three-quarter view.
@@ -163,31 +176,43 @@ impl Garage {
         self.orbit_goal = self.orbit + wrap_angle(f.x.atan2(f.z) + 0.65 - self.orbit);
     }
 
-    pub fn input(&mut self, input: Input, world: &mut World) {
+    /// Close without touching the loadout (e.g. the player was killed).
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    /// Handle a key while open. Returns the loadout to fit to the player's
+    /// tank, if it changed; the caller applies it (so health etc. carry over).
+    pub fn input(&mut self, input: Input, current: Loadout) -> Option<Loadout> {
         if !self.open {
-            return;
+            return None;
         }
-        match input {
-            Input::Left | Input::Right => self.section = 1 - self.section,
+        let (hull, turret) = current;
+        // Wrapping step through a list of `n`.
+        let next = |i: usize, n: usize| if input == Input::Down { (i + 1) % n } else { (i + n - 1) % n };
+        let want = match input {
+            Input::Left | Input::Right => {
+                self.section = 1 - self.section;
+                current
+            }
+            Input::Up | Input::Down if self.section == 0 => {
+                let i = HULLS.iter().position(|&h| h == hull).unwrap_or(0);
+                (HULLS[next(i, HULLS.len())], turret)
+            }
             Input::Up | Input::Down => {
-                // Wrapping step through a list of `n`.
-                let next = |i: usize, n: usize| if input == Input::Down { (i + 1) % n } else { (i + n - 1) % n };
-                let t = &world.tanks[0];
-                if self.section == 0 {
-                    let i = HULLS.iter().position(|&h| h == t.hull_kind).unwrap_or(0);
-                    world.set_hull(0, HULLS[next(i, HULLS.len())]);
-                } else {
-                    let i = TURRETS.iter().position(|&k| k == t.turret_kind).unwrap_or(0);
-                    world.tanks[0].turret_kind = TURRETS[next(i, TURRETS.len())];
-                }
+                let i = TURRETS.iter().position(|&k| k == turret).unwrap_or(0);
+                (hull, TURRETS[next(i, TURRETS.len())])
             }
-            Input::Deploy => self.open = false,
-            Input::Revert => {
-                world.set_hull(0, self.entry.0);
-                world.tanks[0].turret_kind = self.entry.1;
+            Input::Deploy => {
                 self.open = false;
+                current
             }
-        }
+            Input::Revert => {
+                self.open = false;
+                self.entry
+            }
+        };
+        (want != current).then_some(want)
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -366,7 +391,6 @@ fn smooth(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tank::model;
 
     fn world() -> World {
         World::new(crate::map::Map::generate(21), 0)
@@ -378,37 +402,28 @@ mod tests {
     }
 
     #[test]
-    fn barrel_counts_match_the_art() {
-        assert_eq!(barrels(TurretKind::Lance), model::lance().barrels.len());
-        assert_eq!(barrels(TurretKind::Maul), model::maul().barrels.len());
-    }
-
-    #[test]
     fn swaps_parts_and_reverts() {
-        let mut w = world();
+        let w = world();
         let mut g = Garage::new();
-        let c = cam(&w);
+        let start = (HullKind::Lancer, TurretKind::Lance);
         // Closed: input does nothing.
-        g.input(Input::Down, &mut w);
-        assert_eq!(w.tanks[0].hull_kind, HullKind::Lancer);
+        assert_eq!(g.input(Input::Down, start), None);
 
-        g.toggle(&w, &c);
-        g.input(Input::Down, &mut w);
-        assert_eq!(w.tanks[0].hull_kind, HullKind::Bastion);
-        g.input(Input::Right, &mut w);
-        g.input(Input::Up, &mut w);
-        assert_eq!(w.tanks[0].turret_kind, TurretKind::Maul);
-        g.input(Input::Revert, &mut w);
+        g.toggle(&w, &cam(&w));
+        let l = g.input(Input::Down, start).unwrap();
+        assert_eq!(l, (HullKind::Bastion, TurretKind::Lance));
+        assert_eq!(g.input(Input::Right, l), None);
+        let l = g.input(Input::Up, l).unwrap();
+        assert_eq!(l, (HullKind::Bastion, TurretKind::Maul));
+        assert_eq!(g.input(Input::Revert, l), Some(start));
         assert!(!g.is_open());
-        assert_eq!((w.tanks[0].hull_kind, w.tanks[0].turret_kind), (HullKind::Lancer, TurretKind::Lance));
 
         // Reopens on the section it was left on (turret): go back to the hull.
-        g.toggle(&w, &c);
-        g.input(Input::Left, &mut w);
-        g.input(Input::Down, &mut w);
-        g.input(Input::Deploy, &mut w);
+        g.toggle(&w, &cam(&w));
+        g.input(Input::Left, start);
+        let l = g.input(Input::Down, start).unwrap();
+        assert_eq!(g.input(Input::Deploy, l), None);
         assert!(!g.is_open());
-        assert_eq!(w.tanks[0].hull_kind, HullKind::Bastion);
     }
 
     #[test]

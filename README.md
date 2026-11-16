@@ -10,7 +10,8 @@ Plain Rust: `winit` + `wgpu`, no engine.
 ## Run
 
 ```sh
-cargo run --release                          # play (random map)
+cargo run --release                          # play a deathmatch round (random map, 5 bots)
+cargo run --release -- --bots 7              # more opponents (0-7)
 cargo run --release -- --seed 21             # play a specific map
 cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
@@ -33,10 +34,12 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | Z / X | rotate turret left / right (it turns with the hull) |
 | C | swing turret back to center |
 | PageUp / PageDown | camera height |
-| Space | fire (no projectiles yet: recoil kicks the hull, muzzle flash) |
+| Space | fire (hold to keep firing as the gun reloads) |
+| Tab | scoreboard |
 | G | garage: park, orbit the tank, swap hull and turret (see below) |
+| Enter | next round (once the clock runs out) |
 | 1 / 2 | quick-cycle hull / turret |
-| R | respawn at the next spawn point (cycles the proving ground lanes) |
+| R | restart the round at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
 | [ / ] | live tuning: sideways grip ×0.9 / ×1.1 |
 | ; / ' | live tuning: turn rate −/+ 0.1 rad/s |
@@ -45,10 +48,11 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 
 ## Garage
 
-Press **G** mid-battle. The tank parks, the HUD fades out and the camera
-swings round to orbit it, with a panel listing the hulls and turrets and
-their stats. Parts fit to the tank as you pick them, so you see what you're
-getting.
+Press **G** mid-battle (while alive). The tank parks where it is (and
+stays a target), the HUD fades out and the camera swings round to orbit
+it, with a panel listing the hulls and turrets and their stats. Parts fit
+to the tank as you pick them; health carries over as a fraction. Dying or
+the round ending closes the garage.
 
 | Key | Action |
 |---|---|
@@ -61,6 +65,26 @@ Stat bars are scaled to the best part in the kit; a faint tick marks where
 the part you came in with sat.
 
 ![garage](docs/screenshots/garage.png)
+
+## Deathmatch
+
+Five-minute rounds, every tank for itself, most kills wins (ties go to fewer
+deaths). Tank 0 is you; the rest are bots with randomly picked kits.
+
+- **Guns** (`src/combat.rs`): shells are real projectiles (160 m/s, gravity)
+  swept against the physics world each step. Lance hits for 38 every 1.4 s;
+  Maul for 15 every 0.5 s. Lancer hulls have 110 HP, Bastion 160.
+  A hit shoves the target; a kill pops the wreck and it smokes until respawn.
+- **Vertical auto-aim:** a tank roughly along your gun line (within ~5°) gets
+  the elevation, so hills and ramps don't eat every shot.
+- **Respawn** after 4 s at the open spot farthest from the living, with 2 s of
+  spawn shield (no damage, bots ignore you).
+- **Bots** (`src/ai.rs`): A* over a 2 m nav grid built from the map's solids,
+  string-pulled into straight runs. Each bot hunts the nearest enemy
+  (preferring ones in sight), drives the path, jinks back and forth at close
+  range, backs out when stuck, leads its shots a little with a per-shot aim
+  error, and waits a short reaction time before opening fire. They drive with
+  the same `Command` as the player: no physics shortcuts.
 
 ## Tank kit
 

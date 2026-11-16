@@ -1,4 +1,6 @@
+mod ai;
 mod app;
+mod combat;
 mod game;
 mod garage;
 mod hud;
@@ -21,6 +23,7 @@ tankit [OPTIONS]
   --seed <n>              map seed (default: random)
   --map <city|proving>    city (default) or the physics test course
   --spawn <n>             which spawn point to start at
+  --bots <n>              bot opponents (default 5 on city maps, 0 on the proving ground; max 7)
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -40,7 +43,8 @@ pub struct Args {
     pub seed: u64,
     pub proving: bool,
     pub spawn: usize,
-    pub loadout: (sim::HullKind, sim::TurretKind),
+    pub bots: usize,
+    pub loadout: garage::Loadout,
     garage: bool,
     straight: bool,
     shot: Option<ShotArgs>,
@@ -80,7 +84,7 @@ fn main() -> Result<()> {
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
         (Some(shot), None) => screenshot(&args, shot),
-        (None, room) => app::run(args.seed, args.proving, args.spawn, args.loadout, room),
+        (None, room) => app::run(args.seed, args.proving, args.spawn, args.bots, args.loadout, room),
     }
 }
 
@@ -93,6 +97,7 @@ fn parse_args() -> Result<Args> {
     let (mut frames, mut fps) = (1u32, 30.0f32);
     let (mut proving, mut spawn, mut straight) = (false, 0usize, false);
     let mut showroom = false;
+    let mut bots: Option<usize> = None;
     let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
     let mut garage = false;
     let mut room = ShowroomArgs { orbit: None, dist: 24.0, focus: None };
@@ -106,6 +111,7 @@ fn parse_args() -> Result<Args> {
                 other => bail!("--map expects city or proving, got {other:?}"),
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
+            "--bots" => bots = Some(args.next().context("--bots needs a number")?.parse()?),
             "--straight" => straight = true,
             "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
@@ -139,6 +145,7 @@ fn parse_args() -> Result<Args> {
         seed,
         proving,
         spawn,
+        bots: bots.unwrap_or(if proving { 0 } else { 5 }),
         loadout,
         garage,
         straight,
@@ -156,13 +163,13 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 }
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
-    let mut world = sim::World::new(args.map(), args.spawn);
-    world.set_hull(0, args.loadout.0);
-    world.tanks[0].turret_kind = args.loadout.1;
+    let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+    game.set_player_hull(args.loadout.0);
+    game.world.tanks[0].turret_kind = args.loadout.1;
     let mut cam = scene::ChaseCam::new();
     let mut garage = garage::Garage::new();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
-    renderer.set_static_mesh(&scene::map_mesh(&world.map));
+    renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
     let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
@@ -173,34 +180,40 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     };
 
     // Simulate `seconds` more, keeping the camera in step; returns the latest camera.
+    // The autopilot holds the trigger so shots show combat.
     let aspect = shot.width as f32 / shot.height as f32;
-    let advance = |world: &mut sim::World, cam: &mut scene::ChaseCam, garage: &mut garage::Garage, seconds: f32| {
-        let mut camera = cam.update(world, &world.tanks[0], game::DT);
+    let advance = |m: &mut combat::Match, cam: &mut scene::ChaseCam, garage: &mut garage::Garage, seconds: f32| {
+        let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         if args.garage && !garage.is_open() {
-            garage.toggle(world, &camera);
+            garage.toggle(&m.world, &camera);
         }
         for _ in 0..(seconds / game::DT).round() as u32 {
-            let cmd = command(world);
-            world.step(&[cmd]);
-            camera = cam.update(world, &world.tanks[0], game::DT);
+            let cmd = command(&m.world);
+            m.step(cmd, !args.straight && !args.garage);
+            camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
             garage.update(game::DT);
         }
-        garage.camera(camera, world, &world.tanks[0], aspect)
+        garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = advance(&mut world, &mut cam, &mut garage, shot.time);
+    let mut camera = advance(&mut game, &mut cam, &mut garage, shot.time);
 
     for i in 0..shot.frames {
         if i > 0 {
-            camera = advance(&mut world, &mut cam, &mut garage, 1.0 / shot.fps);
+            camera = advance(&mut game, &mut cam, &mut garage, 1.0 / shot.fps);
         }
-        let mut frame = scene::build(&world, &world.tanks, &art, camera);
+        let tanks = game.display_tanks(1.0);
+        let mut frame = scene::build(&game.world, &tanks, &art, camera);
+        game.effect_instances(1.0, &mut frame.instances);
         let (w, h) = (shot.width as f32, shot.height as f32);
-        let ui = hud.draw(&world.tanks[0], args.seed, &camera, w, h, game::DT);
-        frame.ui = garage.overlay(ui, &world.tanks[0], h);
+        let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
+        frame.ui = garage.overlay(ui, &tanks[0], h);
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
+    let world = &game.world;
     let t = &world.tanks[0];
+    let board: Vec<String> = game.standings().iter().map(|&i| format!("{} {}/{}", game.fighters[i].name, game.fighters[i].kills, game.fighters[i].deaths)).collect();
+    println!("score (kills/deaths): {}", board.join(", "));
     println!(
         "wrote {} frame(s) to {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {} face contacts {}",
         shot.frames, shot.out, shot.width, shot.height, world.time, t.pos, t.up(), t.wheels_down, t.face_contacts
