@@ -8,9 +8,10 @@
 //! the garage the bay's turntable turns under the tank. The map's places
 //! make their own sounds as you near them (crystals, furnaces, banners...),
 //! ducking under the fight. Discrete moments (shots, impacts, armour hits,
-//! kills, repairs, the round starting, counting down and ending) come out
-//! of the match as [`Sound`] events and play as one-shots; a beam lighting,
-//! letting go and striking a hull are spotted here, frame to frame.
+//! kills, repairs, a beam cooled and ready, the round starting, counting
+//! down and ending) come out of the match as [`Sound`] events and play as
+//! one-shots; a beam lighting, letting go and striking a hull, and your hull
+//! running low, are spotted here, frame to frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
@@ -41,7 +42,7 @@ use mixer::{Mixer, OneShot};
 pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
 use sounds::{
-    Play, arrival, beam, garage, guns, hits, hold, places, repair, round, shield, ui, vigil,
+    Play, arrival, beam, garage, guns, hits, hold, hull, places, repair, round, shield, ui, vigil,
 };
 use voice::Layer;
 
@@ -128,6 +129,7 @@ pub struct Audio {
     time: f32,
     flames: guns::Flames,
     beams: beam::Moments,
+    warning: hull::Warning,
 }
 
 impl Audio {
@@ -147,6 +149,7 @@ impl Audio {
             time: 0.0,
             flames: Default::default(),
             beams: Default::default(),
+            warning: Default::default(),
         }
     }
 
@@ -159,6 +162,7 @@ impl Audio {
             time: 0.0,
             flames: Default::default(),
             beams: Default::default(),
+            warning: Default::default(),
         }
     }
 
@@ -230,6 +234,9 @@ impl Audio {
         }
         if live {
             shots.extend(self.beams.update(game, &ears, &mut self.noise));
+            if let Some(p) = self.warning.update(game, self.time) {
+                shots.push(Placed::EVERYWHERE.shot(p.layers, p.gain, p.pitch));
+            }
         }
         let params = tank::params(game, &ears, &self.flames, self.time, live);
         let burns = beam::burns(game, &ears);
@@ -254,6 +261,7 @@ impl Audio {
             Sound::Arrival { tank, faction, at } => arrival::arrival(tank, faction, at, jitter),
 
             Sound::Overheat { tank, at } => beam::overheat(tank, at, jitter),
+            Sound::BeamReady { tank, at } => beam::ready(tank, at)?,
 
             Sound::Shot { tank, turret, at } => {
                 self.flames.shot(tank, turret, at, self.time, jitter)?

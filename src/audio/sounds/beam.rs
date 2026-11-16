@@ -28,6 +28,12 @@ pub fn overheat(tank: usize, at: Vec3, jitter: f32) -> Play {
     Play::at(OVERHEAT, at, g, jitter)
 }
 
+/// An overheated beam cooled right down and ready again. Only your own: it
+/// tells you when you can fire, and a bot's would just be noise.
+pub fn ready(tank: usize, at: Vec3) -> Option<Play> {
+    (tank == 0).then(|| Play::at(READY, at, OWN_HULL, 1.0))
+}
+
 /// Per tank, as of last frame: whether its beam was on, and what it burned.
 #[derive(Default)]
 pub struct Moments {
@@ -128,6 +134,31 @@ pub const OVERHEAT: &[Layer] = &[
         ..noise(Filt::High, 1500.0, 4500.0, 0.2, 0.5, 0.3)
     },
     sine(320.0, 110.0, 0.2, 0.25, 0.22),
+];
+
+/// Cooled and ready: the emitter spinning back up in a rising whine, then
+/// two bright notes stepping up (a fifth), clean where the overheat hissed.
+pub const READY: &[Layer] = &[
+    Layer {
+        attack: 0.08,
+        ..sine(300.0, 900.0, 0.08, 0.06, 0.12)
+    },
+    Layer {
+        delay: 0.1,
+        ..sine(1046.0, 1046.0, 0.1, 0.09, 0.22)
+    },
+    Layer {
+        delay: 0.1,
+        ..sine(2092.0, 2092.0, 0.1, 0.05, 0.06)
+    },
+    Layer {
+        delay: 0.19,
+        ..sine(1568.0, 1568.0, 0.1, 0.18, 0.24)
+    },
+    Layer {
+        delay: 0.19,
+        ..sine(3136.0, 3136.0, 0.1, 0.09, 0.07)
+    },
 ];
 
 /// Laser beam: a harsh electric buzz pulsing a few times a second, fizzing
@@ -317,6 +348,7 @@ mod tests {
             ("beam_off", BEAM_OFF),
             ("scorch", SCORCH),
             ("overheat", OVERHEAT),
+            ("ready", READY),
         ]);
     }
 
@@ -355,6 +387,82 @@ mod tests {
         game.fighters[0].beam = None;
         game.fighters[0].overheated = true;
         assert!(moments(&game).is_empty(), "locked out");
+    }
+
+    /// Your beam cooled and ready is heard, over an idling engine; a bot's
+    /// says nothing.
+    #[test]
+    fn your_beam_ready_is_heard() {
+        assert!(ready(3, Vec3::ZERO).is_none());
+        let mut a = Audio::offline(24_000);
+        let e = ears();
+        let at = Vec3::new(0.0, 0.0, -10.0);
+        let own = a.one_shot(&Sound::BeamReady { tank: 0, at }, &e).unwrap();
+        let hit = a.one_shot(&Sound::Hit { at, victim: 1 }, &e).unwrap();
+        assert!(
+            own.gain > 0.8 * hit.gain,
+            "ready {}, hit {}",
+            own.gain,
+            hit.gain
+        );
+        assert!(a.one_shot(&Sound::BeamReady { tank: 2, at }, &e).is_none());
+    }
+
+    /// Writes `docs/audio/beam-ready.wav`: your beam held until it locks
+    /// out, the wait while it cools (shortened), the ready chime, and firing
+    /// again: `cargo test record_beam_ready -- --ignored`.
+    #[test]
+    #[ignore]
+    fn record_beam_ready() {
+        const SR: u32 = 48_000;
+        let e = ears();
+        let v = Settings::default().volume();
+        let mut m = Mixer::new(SR as f32);
+        m.set_master(v * v);
+        m.set_world(1.0);
+        m.set_wind(WIND);
+        let mut out = Vec::new();
+        let mut run = |m: &mut Mixer, secs: f32| {
+            let start = out.len();
+            out.resize(start + 2 * (secs * SR as f32) as usize, 0.0);
+            m.render(&mut out[start..]);
+        };
+        let own = Vec3::new(0.0, 0.0, -10.0);
+        let p = e.place(own);
+        let tank = |beam: f32, heat: f32| TankParams {
+            gain: p.gain,
+            pan: p.pan,
+            air: p.air,
+            rpm: 0.2,
+            beam: beam * carry(own.length()),
+            heat,
+            heavy: true,
+            ..TankParams::default()
+        };
+        let play = |m: &mut Mixer, s: Play| m.play(p.shot(s.layers, s.gain, s.pitch));
+        m.set_tanks(&[tank(0.0, 0.0)]);
+        run(&mut m, 0.5);
+        play(&mut m, Play::at(BEAM_ON, own, 1.0, 1.0));
+        for k in 0..40 {
+            m.set_tanks(&[tank(1.0, k as f32 / 40.0)]);
+            run(&mut m, 0.05);
+        }
+        m.set_tanks(&[tank(0.0, 1.0)]);
+        play(&mut m, overheat(0, own, 1.0));
+        run(&mut m, 2.5);
+        play(&mut m, ready(0, own).unwrap());
+        run(&mut m, 0.8);
+        play(&mut m, Play::at(BEAM_ON, own, 1.0, 1.0));
+        m.set_tanks(&[tank(1.0, 0.1)]);
+        run(&mut m, 1.0);
+        m.set_tanks(&[tank(0.0, 0.1)]);
+        play(&mut m, Play::at(BEAM_OFF, own, 0.9, 1.0));
+        run(&mut m, 0.8);
+
+        let peak = out.iter().fold(0.0f32, |a, x| a.max(x.abs()));
+        assert!(peak < 0.99, "peak {peak}");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/audio/beam-ready.wav");
+        std::fs::write(path, wav(&out, SR)).unwrap();
     }
 
     /// Being burned is as loud as being shot: your own hull, louder than
