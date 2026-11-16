@@ -343,6 +343,8 @@ pub struct Map {
     pub spawn_yaw: Option<f32>,
     /// Where repair crates parachute in (see `repair`).
     pub repair_spots: Vec<Vec2>,
+    /// The Hold contract's site; `None` picks the open spot nearest the middle (see `hold`).
+    pub hold_site: Option<Vec2>,
 }
 
 /// How many repair drop spots a generated city gets.
@@ -379,6 +381,7 @@ impl Map {
             open_spots: Vec::new(),
             spawn_yaw: None,
             repair_spots: Vec::new(),
+            hold_site: None,
         };
 
         // Ring road around the inner city.
@@ -759,6 +762,7 @@ impl Map {
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
             repair_spots: Vec::new(),
+            hold_site: None,
         }
     }
 
@@ -786,6 +790,7 @@ impl Map {
             spawn_yaw: Some(0.0),
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
+            hold_site: None,
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.

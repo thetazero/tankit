@@ -4,6 +4,7 @@ mod combat;
 mod economy;
 mod game;
 mod garage;
+mod hold;
 mod hud;
 mod map;
 mod menu;
@@ -25,12 +26,14 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map --spawn --bots --hull --turret skips the menu and drops straight into a match
+  any of --seed --map --spawn --bots --contract --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
   --map <city|proving|saltmarket>
                           city (default), the physics test course, or Saltmarket (desert town)
   --spawn <n>             which spawn point to start at
   --bots <n>              bot opponents (default 5, 0 on the proving ground; max 7)
+  --contract <attrition|hold>
+                          game mode: deathmatch (default) or hold the site
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -56,6 +59,7 @@ pub struct Args {
     pub map: MapKind,
     pub spawn: usize,
     pub bots: usize,
+    pub contract: mission::Contract,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -146,6 +150,7 @@ fn main() -> Result<()> {
             map_kind: args.map,
             spawn: args.spawn,
             bots: args.bots,
+            contract: args.contract,
             loadout: args.kit_given.then_some(args.loadout),
             menu: !args.play,
             showroom,
@@ -167,6 +172,7 @@ fn parse_args() -> Result<Args> {
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut bots: Option<usize> = None;
+    let mut contract = mission::Contract::Attrition;
     let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
@@ -180,7 +186,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = args.next() {
         if matches!(
             a.as_str(),
-            "--seed" | "--map" | "--spawn" | "--bots" | "--hull" | "--turret"
+            "--seed" | "--map" | "--spawn" | "--bots" | "--contract" | "--hull" | "--turret"
         ) {
             play = true;
         }
@@ -196,6 +202,11 @@ fn parse_args() -> Result<Args> {
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--bots" => bots = Some(args.next().context("--bots needs a number")?.parse()?),
+            "--contract" => match args.next().as_deref() {
+                Some("attrition") => contract = mission::Contract::Attrition,
+                Some("hold") => contract = mission::Contract::Hold,
+                other => bail!("--contract expects attrition or hold, got {other:?}"),
+            },
             "--straight" => straight = true,
             "--cam" => {
                 let v: Vec<f32> = args
@@ -270,6 +281,7 @@ fn parse_args() -> Result<Args> {
         map: map_kind,
         spawn,
         bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 5 }),
+        contract,
         loadout,
         kit_given,
         play,
@@ -301,6 +313,7 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+    game.set_contract(args.contract);
     if args.garage {
         game.fighters[0].next_kit = Some(args.loadout);
     } else {

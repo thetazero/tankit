@@ -137,7 +137,7 @@ impl Menu {
 
                 let m = &MISSIONS[self.mission];
                 for (k, v) in [
-                    ("CONTRACT", m.mode.to_string()),
+                    ("CONTRACT", m.contract.name().to_string()),
                     ("MAP", m.map.to_string()),
                     ("OPPONENTS", m.bots.to_string()),
                     ("ROUND", m.round_time()),

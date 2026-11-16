@@ -1,6 +1,8 @@
 //! Bot opponents: a coarse navigation grid over the map, A* paths through it,
 //! and a small brain per bot that hunts the nearest enemy, drives the path,
-//! aims with a little lead and a little error, and fires when lined up.
+//! aims with a little lead and a little error, and fires when lined up. Given
+//! an objective (the Hold site), bots make for it, fight whoever comes near
+//! it, and patrol inside the ring.
 //!
 //! Bots drive through the same `Command` as the player; they get no physics
 //! shortcuts.
@@ -24,6 +26,8 @@ pub const SIGHT: f32 = 130.0;
 const FIRE_RANGE: f32 = 110.0;
 /// Preferred fighting distance: bots stop closing in here.
 const STANDOFF: f32 = 24.0;
+/// With an objective, bots leave it to chase an enemy only this close.
+const GUARD_CHASE: f32 = 40.0;
 
 pub struct NavGrid {
     nx: usize,
@@ -288,6 +292,8 @@ pub struct Bot {
     jink: f32,
     jink_in: f32,
     roam: Option<Vec2>,
+    /// Patrol point inside the objective's ring.
+    post: Option<Vec2>,
 }
 
 impl Bot {
@@ -309,6 +315,7 @@ impl Bot {
             jink,
             jink_in: 2.0,
             roam: None,
+            post: None,
         }
     }
 
@@ -321,14 +328,17 @@ impl Bot {
         self.stuck_for = 0.0;
         self.reverse_for = 0.0;
         self.roam = None;
+        self.post = None;
     }
 
-    /// Decide this step's controls for tank `me`. Returns (command, wants to fire).
+    /// Decide this step's controls for tank `me`, with an optional objective
+    /// ring (center, radius) to hold. Returns (command, wants to fire).
     pub fn think(
         &mut self,
         me: usize,
         world: &World,
         contacts: &[Contact],
+        objective: Option<(Vec2, f32)>,
         nav: &NavGrid,
         dt: f32,
     ) -> (Command, bool) {
@@ -354,6 +364,10 @@ impl Bot {
                 if Some(j) == self.target {
                     score -= 15.0;
                 }
+                // Holding: the enemies that matter are the ones on or near the site.
+                if let Some((c, r)) = objective {
+                    score += (flat(o.pos).distance(c) - r).max(0.0) * 0.6;
+                }
                 if best.is_none_or(|(_, s)| score < s) {
                     best = Some((j, score));
                 }
@@ -377,9 +391,36 @@ impl Bot {
         }
 
         // Where to drive: at the target (or where it was last seen), else roam.
-        let goal = match (target, visible) {
-            (Some(o), _) => flat(o.pos),
-            (None, _) => *self.roam.get_or_insert_with(|| {
+        // With an objective: to the site, leaving it only for enemies close by
+        // or on it.
+        let goal = match (objective, target) {
+            (Some((c, r)), t) => {
+                let chase = t.map(|o| flat(o.pos)).filter(|&p| {
+                    visible && (p.distance(my2) < GUARD_CHASE || p.distance(c) < r + 8.0)
+                });
+                match chase {
+                    Some(p) => p,
+                    None => {
+                        if self.post.is_some_and(|p| p.distance(my2) < 4.0) {
+                            self.post = None;
+                        }
+                        *self.post.get_or_insert_with(|| {
+                            let mut p = c;
+                            for _ in 0..8 {
+                                let a = self.rng.range(0.0, std::f32::consts::TAU);
+                                let d = self.rng.range(0.0, r * 0.6);
+                                p = c + Vec2::new(a.cos(), a.sin()) * d;
+                                if !nav.is_blocked(p) {
+                                    break;
+                                }
+                            }
+                            p
+                        })
+                    }
+                }
+            }
+            (None, Some(o)) => flat(o.pos),
+            (None, None) => *self.roam.get_or_insert_with(|| {
                 world.map.open_spots[self.rng.index(world.map.open_spots.len())]
             }),
         };
@@ -535,7 +576,7 @@ mod tests {
         let start = w.tanks[0].pos;
         let contacts = [Contact { targetable: false }];
         for _ in 0..(8.0 / DT) as usize {
-            let (cmd, _) = bot.think(0, &w, &contacts, &nav, DT);
+            let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
             w.step(&[cmd]);
         }
         assert!(

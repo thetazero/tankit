@@ -1,4 +1,5 @@
-//! Deathmatch: every tank for itself, five-minute rounds, most kills wins.
+//! The match: every tank for itself, five-minute rounds. Under the Attrition
+//! contract most kills wins; under Hold, most time held on the site (`hold`).
 //!
 //! Wraps the physics `World` with what a fight needs: shells in flight, hull
 //! health, kills and deaths, respawns, the round clock, and the bots. Tank 0
@@ -10,7 +11,9 @@ use rapier3d::prelude::{QueryFilter, Ray};
 use crate::ai::{self, Bot, Contact, NavGrid};
 use crate::economy::Levels;
 use crate::game::DT;
+use crate::hold::{self, Hold};
 use crate::map::Map;
+use crate::mission::Contract;
 use crate::render::mesh::{Instance, MeshId};
 use crate::repair::Repairs;
 use crate::rng::Rng;
@@ -193,6 +196,9 @@ pub struct Match {
     pub repairs: Repairs,
     pub time_left: f32,
     pub phase: Phase,
+    pub contract: Contract,
+    /// The site, under the Hold contract.
+    pub hold: Option<Hold>,
     /// Seconds since the round ended (the results screen counts up with it).
     pub over_for: f32,
     nav: NavGrid,
@@ -236,6 +242,8 @@ impl Match {
             repairs,
             time_left: ROUND_TIME,
             phase: Phase::Playing,
+            contract: Contract::Attrition,
+            hold: None,
             over_for: 0.0,
             nav,
             rng,
@@ -246,11 +254,25 @@ impl Match {
         &self.fighters[0]
     }
 
-    /// Fighter indices by standing: most kills, then fewest deaths.
+    /// Switch to `contract` (before the round starts).
+    pub fn set_contract(&mut self, contract: Contract) {
+        self.contract = contract;
+        self.hold =
+            (contract == Contract::Hold).then(|| Hold::new(&self.world.map, self.fighters.len()));
+    }
+
+    /// Seconds fighter `i` has held the site (0 outside the Hold contract).
+    pub fn held(&self, i: usize) -> f32 {
+        self.hold.as_ref().map_or(0.0, |h| h.held[i])
+    }
+
+    /// Fighter indices by standing: most time held (under Hold), then most
+    /// kills, then fewest deaths.
     pub fn standings(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.fighters.len()).collect();
         order.sort_by_key(|&i| {
             (
+                std::cmp::Reverse((self.held(i) * 10.0) as u32),
                 std::cmp::Reverse(self.fighters[i].kills),
                 self.fighters[i].deaths,
                 i,
@@ -295,12 +317,13 @@ impl Match {
                 targetable: f.alive && f.shield <= 0.0,
             })
             .collect();
+        let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
         let mut cmds = Vec::with_capacity(self.fighters.len());
         let mut triggers = Vec::with_capacity(self.fighters.len());
         for i in 0..self.fighters.len() {
             let (c, f) = match &mut self.bots[i] {
                 _ if !self.fighters[i].alive || !playing => (Command::default(), false),
-                Some(bot) => bot.think(i, &self.world, &contacts, &self.nav, DT),
+                Some(bot) => bot.think(i, &self.world, &contacts, objective, &self.nav, DT),
                 None => (player, fire),
             };
             cmds.push(c);
@@ -326,6 +349,7 @@ impl Match {
         self.respawns();
         if playing {
             self.pick_up_repairs();
+            self.hold_site();
         }
 
         for b in &mut self.blasts {
@@ -508,6 +532,24 @@ impl Match {
         });
     }
 
+    /// Bank time for whoever is alone on the site; pay the player XP as they
+    /// hold, and end the round when someone reaches the target.
+    fn hold_site(&mut self) {
+        let Some(h) = &mut self.hold else { return };
+        let fighters = &self.fighters;
+        let before = h.held[0];
+        let paid = h.step(DT, &self.world.tanks, |i| fighters[i].alive) == Some(0)
+            && (h.held[0] / hold::XP_EVERY).floor() > (before / hold::XP_EVERY).floor();
+        let won = h.winner().is_some();
+        if paid {
+            self.award(hold::HOLD_XP, "HOLDING");
+        }
+        if won {
+            self.phase = Phase::Over;
+            self.shells.clear();
+        }
+    }
+
     fn pick_up_repairs(&mut self) {
         let (fighters, tanks) = (&self.fighters, &self.world.tanks);
         let picked = self.repairs.step(DT, tanks, |i| {
@@ -582,6 +624,9 @@ impl Match {
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
+        if let Some(h) = &self.hold {
+            h.instances(self.world.time, &self.world.tanks, out);
+        }
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
             let p = s.prev.lerp(s.pos, alpha);
@@ -891,6 +936,59 @@ mod tests {
             matches!(m.repairs.drops[0].state, crate::repair::State::Waiting(t) if t > crate::repair::COOLDOWN - 0.1)
         );
         assert!(m.blasts.iter().any(|b| b.kind == BlastKind::Repair));
+    }
+
+    #[test]
+    fn holding_alone_pays_xp_and_reaching_the_target_ends_the_round() {
+        let mut m = Match::new(Map::proving_ground(), 0, 1, 3);
+        m.set_contract(Contract::Hold);
+        let at = m.hold.as_ref().unwrap().at;
+        let (far, _) = (m.world.map.open_spots.iter())
+            .map(|&s| (s, s.distance(at)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        m.world.teleport(0, at, 0.0);
+        m.world.teleport(1, far, 0.0);
+        m.fighters[1].alive = false;
+        m.fighters[1].respawn_in = 1e9;
+        m.hold.as_mut().unwrap().held[0] = hold::XP_EVERY - 0.1;
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        assert_eq!(m.xp, hold::HOLD_XP);
+        assert_eq!(m.xp_pops.last().map(|x| x.reason), Some("HOLDING"));
+        assert_eq!(m.phase, Phase::Playing);
+        m.hold.as_mut().unwrap().held[0] = hold::TARGET - 0.1;
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.standings()[0], 0);
+    }
+
+    #[test]
+    fn hold_standings_put_time_held_over_kills() {
+        let mut m = arena(2);
+        m.set_contract(Contract::Hold);
+        m.fighters[1].kills = 9;
+        m.hold.as_mut().unwrap().held[2] = 5.0;
+        assert_eq!(m.standings(), vec![2, 1, 0]);
+    }
+
+    /// Under Hold, bots go for the site and someone gets time on it.
+    #[test]
+    fn bots_go_for_the_hold_site() {
+        let mut m = Match::new(Map::saltmarket(), 0, 4, 5);
+        m.set_contract(Contract::Hold);
+        for _ in 0..(60.0 / DT) as usize {
+            m.fighters[0].shield = 1.0;
+            m.step(Command::default(), false);
+        }
+        let held: f32 = (1..m.fighters.len()).map(|i| m.held(i)).sum();
+        assert!(
+            held > 5.0,
+            "bots held the site for only {held:.1} s in a minute"
+        );
     }
 
     #[test]

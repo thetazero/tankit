@@ -3,12 +3,16 @@
 //!
 //! Deathmatch readouts: round clock and kills top left, kill feed top right,
 //! hull and reload bottom centre, name tags over enemies, a death screen,
-//! and the scoreboard (Tab, or when the round ends).
+//! and the scoreboard (Tab, or when the round ends). Under Hold, a meter under
+//! the compass says who has the site and how close you are, and a tag marks
+//! the site in the world.
 
 use glam::{Vec2, Vec3};
 
 use crate::combat::{FEED_TIME, Match, Phase, XP_POP_TIME};
 use crate::economy::Payout;
+use crate::hold::{self, Control};
+use crate::mission::Contract;
 use crate::render::{Camera, UiVertex};
 use crate::repair::State;
 use crate::scene::project;
@@ -265,6 +269,26 @@ impl Hud {
             Align::Center,
         );
 
+        if let Some(hd) = &m.hold
+            && !board
+        {
+            hold_meter(&mut p, m, hd, top + Vec2::new(0.0, 62.0));
+            // The site's tag, unless you're on it.
+            // Above the market hall's roof, clear of the repair pad's tag.
+            let anchor = Vec3::new(hd.at.x, hd.ground + 15.0, hd.at.y);
+            if !hd.inside(tank.pos)
+                && let Some((x, y)) = project(vp, anchor, width, height)
+            {
+                let at = Vec2::new(x, y) / scale;
+                if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
+                    let mut s = TextStyle::LABEL;
+                    s.color = hold_color(hd.control);
+                    let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
+                    p.text(at, &format!("HOLD  {d:.0} M"), &s, Align::Center);
+                }
+            }
+        }
+
         // Crosshair where the turret points; the gap kicks open when firing.
         // Where the gun actually points, including hull tilt.
         let aim_point = tank.pos + tank.up() * tank.gun_height() + tank.turret_dir() * 40.0;
@@ -457,7 +481,16 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = [0.02, 0.02, 0.025, 0.7];
-    let height = if m.phase == Phase::Over { 330.0 } else { 52.0 } + rows * 22.0;
+    let extra = if m.contract == Contract::Hold {
+        18.0
+    } else {
+        0.0
+    };
+    let height = if m.phase == Phase::Over {
+        330.0 + extra
+    } else {
+        52.0
+    } + rows * 22.0;
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
         Vec2::new(width + 48.0, height),
@@ -495,7 +528,11 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         );
         y += 84.0;
     }
+    let holding = m.contract == Contract::Hold;
     label(p, Vec2::new(x0, y), "PILOT", Align::Left);
+    if holding {
+        label(p, Vec2::new(x1 - 200.0, y), "HELD", Align::Right);
+    }
     label(p, Vec2::new(x1 - 110.0, y), "KILLS", Align::Right);
     label(p, Vec2::new(x1, y), "DEATHS", Align::Right);
     y += 14.0;
@@ -513,6 +550,14 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
             &s,
             Align::Left,
         );
+        if holding {
+            p.text(
+                Vec2::new(x1 - 200.0, y),
+                &format!("{:.0}", m.held(i).floor()),
+                &s,
+                Align::Right,
+            );
+        }
         p.text(
             Vec2::new(x1 - 110.0, y),
             &f.kills.to_string(),
@@ -526,10 +571,58 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         contract_pay(p, m, x0, x1, y + 14.0);
         label(
             p,
-            Vec2::new(top.x, y + 158.0),
+            Vec2::new(top.x, y + 158.0 + extra),
             "ENTER  AGAIN     ESC  MENU",
             Align::Center,
         );
+    }
+}
+
+/// Who has the site, then your time held against the target, with a tick for
+/// the best of the rest.
+fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
+    let status = match hd.control {
+        Control::Open => "SITE OPEN".to_string(),
+        Control::Held(0) => "YOU HOLD".to_string(),
+        Control::Held(i) => format!("{} HOLDS", m.fighters[i].name),
+        Control::Contested => "CONTESTED".to_string(),
+    };
+    let mut s = TextStyle::value(11.0);
+    s.color = hold_color(hd.control);
+    p.text(at, &status, &s, Align::Center);
+    let width = 220.0;
+    let o = at + Vec2::new(-width * 0.5, 30.0);
+    let mine = hd.held[0] / hold::TARGET;
+    widgets::hairbar(p, o, width, mine, theme::HOT);
+    let rival = (1..hd.held.len()).max_by(|&a, &b| hd.held[a].total_cmp(&hd.held[b]));
+    if let Some(r) = rival.filter(|&r| hd.held[r] > 0.0) {
+        let x = o.x + width * hd.held[r] / hold::TARGET;
+        p.line(
+            Vec2::new(x, o.y - 5.0),
+            Vec2::new(x, o.y + 5.0),
+            1.5,
+            theme::FG,
+        );
+        label(
+            p,
+            o + Vec2::new(width, 10.0),
+            &format!("{} {:.0}", m.fighters[r].name, hd.held[r].floor()),
+            Align::Right,
+        );
+    }
+    label(
+        p,
+        o + Vec2::new(0.0, 10.0),
+        &format!("YOU {:.0} / {:.0}", hd.held[0].floor(), hold::TARGET),
+        Align::Left,
+    );
+}
+
+fn hold_color(c: Control) -> crate::ui::Rgba {
+    match c {
+        Control::Held(0) | Control::Contested => theme::HOT,
+        Control::Held(_) => theme::FG,
+        Control::Open => theme::DIM,
     }
 }
 
@@ -558,6 +651,9 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
         ),
         (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
     ];
+    let hold =
+        (m.contract == Contract::Hold).then(|| (format!("HOLD  {:.0} S", pay.held), pay.hold));
+    let lines: Vec<_> = lines.into_iter().chain(hold).collect();
     let n = lines.len() as f32;
     for (i, (what, amount)) in lines.iter().enumerate() {
         let a = ((t - i as f32 * PAY_STEP) / 0.2).clamp(0.0, 1.0);
@@ -590,7 +686,14 @@ mod tests {
 
     #[test]
     fn draws_at_any_size() {
+        for contract in [Contract::Attrition, Contract::Hold] {
+            draws_at_any_size_under(contract);
+        }
+    }
+
+    fn draws_at_any_size_under(contract: Contract) {
         let mut m = Match::new(crate::map::Map::generate(21), 0, 5, 21);
+        m.set_contract(contract);
         m.fighters[0].alive = false;
         m.phase = Phase::Over;
         let t = &m.world.tanks[0];

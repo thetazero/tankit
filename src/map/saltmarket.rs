@@ -445,6 +445,8 @@ impl Map {
                 Vec2::new(60.0, 206.0),
                 Vec2::new(166.0, 9.0),
             ],
+            // Hold: under the market hall's roof, between its four piers.
+            hold_site: Some((SQUARE_MIN + SQUARE_MAX) * 0.5),
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();

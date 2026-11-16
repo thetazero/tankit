@@ -1,7 +1,7 @@
 //! Crystals: what contracts pay and what parts cost.
 //!
 //! A finished contract pays crystals (completion, placement, contribution,
-//! kill bounty); XP stays for actions in the match. Crystals buy parts (which
+//! kill bounty, and time held under Hold); XP stays for actions in the match. Crystals buy parts (which
 //! pilot rank unlocks for sale) and upgrade them through M0..M3.
 
 use crate::combat::{self, Gun, Match};
@@ -109,6 +109,8 @@ const COMPLETION: u32 = 50;
 const PLACEMENT_MAX: u32 = 100;
 const DAMAGE_PER_CRYSTAL: f32 = 10.0;
 const BOUNTY: u32 = 15;
+/// Hold contract: crystals per second you held the site.
+const HOLD_PER_SECOND: f32 = 1.5;
 
 /// The player's pay for a finished round, line by line.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,6 +124,9 @@ pub struct Payout {
     pub contribution: u32,
     pub kills: u32,
     pub bounty: u32,
+    /// Seconds held, under the Hold contract.
+    pub held: f32,
+    pub hold: u32,
 }
 
 impl Payout {
@@ -144,11 +149,13 @@ impl Payout {
             contribution: (me.damage_dealt / DAMAGE_PER_CRYSTAL) as u32,
             kills: me.kills,
             bounty: me.kills * BOUNTY,
+            held: m.held(0),
+            hold: (m.held(0) * HOLD_PER_SECOND) as u32,
         }
     }
 
     pub fn total(&self) -> u32 {
-        self.completion + self.placement + self.contribution + self.bounty
+        self.completion + self.placement + self.contribution + self.bounty + self.hold
     }
 }
 
@@ -191,5 +198,17 @@ mod tests {
         }
         let p = Payout::of(&m);
         assert_eq!((p.place, p.placement), (6, 0));
+        assert_eq!(p.hold, 0);
+    }
+
+    #[test]
+    fn hold_pays_for_time_held() {
+        let mut m = Match::new(crate::map::Map::generate(21), 0, 2, 21);
+        m.set_contract(crate::mission::Contract::Hold);
+        m.hold.as_mut().unwrap().held[0] = 40.0;
+        let p = Payout::of(&m);
+        assert_eq!(p.place, 1, "time held beats kills");
+        assert_eq!(p.hold, (40.0 * HOLD_PER_SECOND) as u32);
+        assert_eq!(p.total(), COMPLETION + PLACEMENT_MAX + p.hold);
     }
 }
