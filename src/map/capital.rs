@@ -327,7 +327,8 @@ impl Map {
             })
         };
         let r_mid = ROTUNDA_R - DRUM_T * 0.5;
-        let seg_half = r_mid * PI / segs as f32 * 1.03;
+        // Wide enough that the outer faces meet: no slits between piers.
+        let seg_half = ROTUNDA_R * PI / segs as f32 * 1.02;
         for k in 0..segs {
             let a = (k as f32 + 0.5) / segs as f32 * TAU;
             let dir = Vec2::new(a.cos(), a.sin());
@@ -362,10 +363,14 @@ impl Map {
                 // A tall doorway: the lintel and wall over it only.
                 let (l, u) = wall(10.0, DRUM_H);
                 self.slab(l, u, yaw, CONCRETE, Material::Concrete, true);
+                self.oboxes.last_mut().unwrap().chip = 0.01;
                 continue;
             }
             let (l, u) = wall(0.0, DRUM_H);
             self.slab(l, u, yaw, CONCRETE, Material::Concrete, true);
+            // One continuous wall: no chipped edges opening slits between
+            // the piers (a tiny chip keeps the map-wide wear off them).
+            self.oboxes.last_mut().unwrap().chip = 0.01;
             // Buttress pilasters on every fourth pier.
             if k % 4 == 2 {
                 let p = CENTER + dir * (ROTUNDA_R + 0.6);
@@ -414,7 +419,9 @@ impl Map {
                 let a = (k as f32 + 0.5) / n as f32 * TAU;
                 let d = (a - PI * 0.25 + PI).rem_euclid(TAU) - PI;
                 // Gone over the fallen drum and up past the crown, ragged.
-                if d.abs() < 0.95 + 0.25 * rng.f32() + 0.12 * i as f32 {
+                // Widest over the fallen drum, narrowing toward the crown so
+                // the oculus ring still has dome round it.
+                if d.abs() < 1.1 + 0.25 * rng.f32() - 0.1 * i as f32 {
                     continue;
                 }
                 let radial = Vec3::new(a.cos() * phi.cos(), phi.sin(), a.sin() * phi.cos());
@@ -526,9 +533,28 @@ impl Map {
             Material::Concrete,
             true,
         );
+        // A square stele on the dais, the emblem on each face, one to
+        // greet each door.
+        let stele = 1.3;
+        self.slab(
+            Vec3::new(CENTER.x - stele, base + 1.2, CENTER.y - stele),
+            Vec3::new(CENTER.x + stele, base + 8.0, CENTER.y + stele),
+            0.0,
+            STONE * 0.95,
+            Material::Concrete,
+            true,
+        );
+        self.slab(
+            Vec3::new(CENTER.x - stele - 0.3, base + 8.0, CENTER.y - stele - 0.3),
+            Vec3::new(CENTER.x + stele + 0.3, base + 8.6, CENTER.y + stele + 0.3),
+            0.0,
+            STONE * 0.9,
+            Material::Concrete,
+            false,
+        );
         for out in AXES {
-            let at = CENTER + out * 1.2;
-            self.standing_emblem(Vec3::new(at.x, base + 4.4, at.y), out, 2.0);
+            let at = CENTER + out * (stele + 0.16);
+            self.standing_emblem(Vec3::new(at.x, base + 5.4, at.y), out, 0.62);
         }
 
         // Rubble where it fell: heaps banked against the broken wall, chunks
