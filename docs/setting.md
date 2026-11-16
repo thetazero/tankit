@@ -120,6 +120,11 @@ plated, made in bulk.
 
 **Names:** Byzantine flavored.
 
+**Their cities:** Roman scale in raw concrete. Domed rotundas, colonnades,
+triumphal arches over processional avenues, statues on plinths, all cast in
+bulk; ordinary concrete blocks and brutalist slabs on pillars around them.
+Half ruined where the war has reached them, and still hung with crimson.
+
 ## Crystals
 
 What everyone fights over: your pay, the Resonant's sacrament, and the reason
@@ -130,6 +135,8 @@ loop.
 
 - **Attrition** (team deathmatch): hired by one side and dropped into its
   battle, paid per kill. The side with more kills when the clock runs out wins.
+  Most battles are two sides; some are all four at once, every side against
+  every other.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,
   carry crystals to your extraction point, deny the enemy theirs. Carrying
   crystals makes you a little stronger, but they resonate, so everyone can see

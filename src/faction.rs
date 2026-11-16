@@ -1,6 +1,6 @@
-//! The sides of the war (see docs/setting.md). Every faction makes turrets;
-//! the two human factions also field teams (the machines and the Ithessar come
-//! later as sides).
+//! The sides of the war (see docs/setting.md). Every faction makes turrets
+//! and fields teams; most maps are two of them against each other, a
+//! free-for-all map all four.
 
 use glam::Vec3;
 

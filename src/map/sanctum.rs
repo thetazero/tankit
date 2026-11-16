@@ -152,8 +152,8 @@ impl Map {
                 fog_density: 0.0014,
                 ..crate::render::Atmosphere::default()
             },
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             // In the yards round the church, out from under its roof.
             repair_spots: vec![
                 CENTER + Vec2::new(0.0, 58.0),

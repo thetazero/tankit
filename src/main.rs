@@ -31,14 +31,15 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln>
+  --map <saltmarket|sanctum|kiln|capital>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
-                          on a mesa, the Hold map), or the Kiln (Ithessar ground)
+                          on a mesa, the Hold map), the Kiln (Ithessar ground), or the Capital
+                          (Imperium city, all four factions)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
-  --employer <faction>    which of the map's two sides hires you (default: its first);
+  --employer <faction>    which of the map's sides hires you (default: its first);
                           your trust in the match goes to them
   --shot <out.png>        render offscreen and save
   --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
@@ -69,7 +70,7 @@ pub struct Args {
     pub spawn: usize,
     pub bots: usize,
     pub contract: mission::Contract,
-    /// Which of the map's sides hires you (0 or 1).
+    /// Which of the map's sides hires you.
     pub side: usize,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
@@ -102,8 +103,8 @@ impl Args {
 
     pub fn map(&self) -> map::Map {
         let mut m = make_map(self.map);
-        if self.side == 1 {
-            m.swap_sides();
+        if self.side > 0 {
+            m.swap_sides(self.side);
         }
         m
     }
@@ -118,6 +119,8 @@ pub enum MapKind {
     Sanctum,
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
+    /// An Imperium city, half ruined round a domed rotunda: four sides.
+    Capital,
 }
 
 pub fn make_map(kind: MapKind) -> map::Map {
@@ -125,6 +128,7 @@ pub fn make_map(kind: MapKind) -> map::Map {
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
+        MapKind::Capital => map::Map::capital(),
     }
 }
 
@@ -201,7 +205,7 @@ fn parse_args() -> Result<Args> {
     let (mut map_kind, mut spawn, mut straight) = (MapKind::Saltmarket, 0usize, false);
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
-    let mut bots: Option<usize> = None;
+    let mut team_size: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
@@ -237,8 +241,9 @@ fn parse_args() -> Result<Args> {
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
+                Some("capital") => map_kind = MapKind::Capital,
                 other => {
-                    bail!("--map expects saltmarket, sanctum or kiln, got {other:?}")
+                    bail!("--map expects saltmarket, sanctum, kiln or capital, got {other:?}")
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
@@ -247,7 +252,7 @@ fn parse_args() -> Result<Args> {
                 if n == 0 {
                     bail!("--team-size must be at least 1");
                 }
-                bots = Some(2 * n - 1);
+                team_size = Some(n);
             }
             "--contract" => match args.next().as_deref() {
                 Some("attrition") => contract = mission::Contract::Attrition,
@@ -340,10 +345,13 @@ fn parse_args() -> Result<Args> {
         None => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
-                "--employer: nobody hires {} here; this map is {} against {}",
+                "--employer: nobody hires {} here; this map is {}",
                 f.name(),
-                sides[0].name(),
-                sides[1].name()
+                sides
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<_>>()
+                    .join(" against ")
             )
         })?,
     };
@@ -352,7 +360,8 @@ fn parse_args() -> Result<Args> {
         side,
         map: map_kind,
         spawn,
-        bots: bots.unwrap_or(11),
+        // Every side filled to the team size around you.
+        bots: sides.len() * team_size.unwrap_or(6) - 1,
         contract,
         loadout,
         kit_given,
@@ -513,7 +522,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     }
     let world = &game.world;
     let t = &world.tanks[0];
-    for team in 0..2 {
+    for team in 0..game.factions.len() {
         let board: Vec<String> = game
             .standings()
             .into_iter()
