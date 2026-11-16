@@ -30,8 +30,16 @@ pub const RESPAWN_TIME: f32 = 4.0;
 pub const TANK_PAINT: Vec3 = Vec3::ONE;
 /// Freshly spawned tanks can't be hurt (and bots ignore them) for this long.
 pub const SPAWN_SHIELD: f32 = 2.0;
-/// Imperium cannon shell speed, m/s.
-pub const SHELL_SPEED: f32 = 160.0;
+/// Imperium cannon shots land the moment they're fired (a raycast); this is
+/// only how fast the tracer they leave is drawn flying to where they landed, m/s.
+pub const TRACER_SPEED: f32 = 1500.0;
+/// How far an Imperium shot reaches: corner to corner of the biggest map, m.
+pub const CANNON_RANGE: f32 = 500.0;
+/// Length of that tracer's streak, m: about a frame's flight.
+const TRACER_STREAK: f32 = 22.0;
+/// ...and how long it lingers, fading, once it's reached where the shot
+/// landed, s (at close range the flight itself is shorter than a frame).
+const TRACER_FADE: f32 = 0.08;
 /// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
@@ -92,6 +100,10 @@ pub struct ShellSpec {
     /// Random aim jitter per shot, radians.
     pub spread: f32,
     pub look: Look,
+    /// Lands the instant it's fired, along a straight line out to its range
+    /// (`speed * life`): no travel time to lead, nothing to dodge. What flies
+    /// afterwards is only its tracer, which hits nothing.
+    pub instant: bool,
 }
 
 /// How a projectile is drawn, and how hard it lands.
@@ -145,10 +157,12 @@ impl Gun {
         }
     }
 
-    /// Projectile speed for leading a target (a beam lands instantly).
+    /// Projectile speed for leading a target (beams and instant shots land
+    /// at once).
     pub fn speed(&self) -> f32 {
         match self.action {
             Action::Beam { .. } => f32::INFINITY,
+            Action::Shell(s) if s.instant => f32::INFINITY,
             Action::Shell(s) => s.speed,
         }
     }
@@ -157,6 +171,7 @@ impl Gun {
     pub fn gravity(&self) -> f32 {
         match self.action {
             Action::Beam { .. } => 0.0,
+            Action::Shell(s) if s.instant => 0.0,
             Action::Shell(s) => s.gravity * GRAVITY,
         }
     }
@@ -164,22 +179,24 @@ impl Gun {
 
 pub fn gun(kind: TurretKind) -> Gun {
     let cannon = ShellSpec {
-        speed: SHELL_SPEED,
-        life: 1.6,
-        gravity: 1.0,
+        speed: TRACER_SPEED,
+        life: CANNON_RANGE / TRACER_SPEED,
+        gravity: 0.0,
         bounces: 0,
         spread: 0.0,
         look: Look::Tracer,
+        instant: true,
     };
     match kind {
-        // Imperium long rail cannon: hits hard, slow.
+        // Imperium long rail cannon: hits hard, slow to reload, lands instantly.
         TurretKind::Kontos => Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
             action: Action::Shell(cannon),
         },
-        // Imperium twin short guns: light hits, alternating barrels, fast.
+        // Imperium twin short guns: light hits, alternating barrels, fast;
+        // land instantly too.
         TurretKind::Pelekys => Gun {
             damage: 15.0,
             reload: 0.5,
@@ -199,6 +216,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 3,
                 spread: 0.0,
                 look: Look::Plasma { size: 1.3 },
+                instant: false,
             }),
         },
         // Ithessar: three crystal needles spinning up into a stream of darts.
@@ -213,6 +231,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 0,
                 spread: 0.014,
                 look: Look::Bolt { size: 1.0 },
+                instant: false,
             }),
         },
         // Uthenn: a laser that burns while held, then overheats.
@@ -237,6 +256,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 0,
                 spread: 0.11,
                 look: Look::Flame,
+                instant: false,
             }),
         },
     }
@@ -257,6 +277,18 @@ pub fn thermal_mass(kind: HullKind) -> f32 {
 /// Heat a tank can hold before its beam overheats: hull plus turret.
 pub fn heat_capacity(hull: HullKind, turret_mass: f32) -> f32 {
     thermal_mass(hull) + turret_mass
+}
+
+/// How close to the ground under it a tank that went over the edge has to
+/// be to count as having hit the floor, m (a hover hull rides ~1 m up).
+const LANDED_CLEARANCE: f32 = 2.5;
+
+/// A tank past the fall line has hit bottom: it's down near the ground under
+/// it, or sitting still on something (a rock, another wreck). Not while it's
+/// still dropping past the cliff face, so the fall plays out to the floor.
+fn landed(map: &Map, t: &Tank) -> bool {
+    let clearance = t.pos.y - map.ground_height(t.pos.x, t.pos.z);
+    clearance < LANDED_CLEARANCE || (t.grounded() && t.vel.y > -1.0)
 }
 
 /// A beam's damage multiplier at distance `d` out of `range`.
@@ -854,17 +886,27 @@ impl Match {
             turret: t.turret_kind,
             at: from,
         });
-        self.shells.push(Shell {
+        let mut shell = Shell {
             pos: from,
             prev: from,
-            vel: dir * spec.speed + t.vel,
+            // An instant shot goes exactly where the gun points.
+            vel: dir * spec.speed + if spec.instant { Vec3::ZERO } else { t.vel },
             owner: i,
             damage: g.damage * self.fighters[i].strength(),
             age: 0.0,
             spec,
             bounces: spec.bounces,
             seed: self.rng.f32(),
-        });
+        };
+        if spec.instant {
+            // Land it now, then send off a tracer that stops where it landed.
+            let reach = spec.speed * spec.life;
+            self.travel(&mut shell, dir * reach);
+            shell.spec.life = shell.pos.distance(from) / spec.speed;
+            shell.pos = from;
+            shell.prev = from;
+        }
+        self.shells.push(shell);
         // Carry the leftover fraction of a step so fast guns keep their exact rate.
         let reload = if g.spool > 0.0 {
             let spool = self.world.tanks[i].spool;
@@ -948,68 +990,84 @@ impl Match {
         let mut shells = std::mem::take(&mut self.shells);
         shells.retain_mut(|s| {
             s.age += DT;
-            if s.age > s.spec.life {
+            // An instant shot's tracer lingers a moment where it landed.
+            let fade = if s.spec.instant { TRACER_FADE } else { 0.0 };
+            if s.age > s.spec.life + fade {
                 return false;
             }
             s.vel.y -= s.spec.gravity * GRAVITY * DT;
             s.prev = s.pos;
             let step = s.vel * DT;
-            let len = step.length();
-            if len < 1e-6 {
+            if s.spec.instant {
+                // Already landed: only its tracer is still flying, and it
+                // stops where the shot landed.
+                let left = (s.spec.life - (s.age - DT)) / DT;
+                s.pos += step * left.clamp(0.0, 1.0);
                 return true;
             }
-            let owner = self.world.tanks[s.owner].collider;
-            let hit = self.world.physics.cast_ray_and_get_normal(
-                &Ray::new(s.pos, step / len),
-                len,
-                true,
-                QueryFilter::default().exclude_collider(owner),
-            );
-            match hit {
-                None => {
-                    s.pos += step;
-                    true
-                }
-                Some((c, ri)) => {
-                    let at = s.pos + step / len * ri.time_of_impact;
-                    s.pos = at;
-                    match self.world.tank_of(c) {
-                        Some(j) => {
-                            self.hit(s, j, at);
-                            false
-                        }
-                        None if s.bounces > 0 => {
-                            // Ricochet: mirror off the surface and carry on.
-                            let n = ri.normal;
-                            s.vel -= 2.0 * s.vel.dot(n) * n;
-                            s.pos = at + n * 0.05;
-                            s.bounces -= 1;
-                            // The skin sheds plasma at every skip.
-                            s.damage *= BOUNCE_KEEP;
+            self.travel(s, step)
+        });
+        self.shells = shells;
+    }
+
+    /// Move shell `s` by `step`, or until it hits something on the way: a
+    /// tank takes the hit, a wall stops it or (if it has bounces left) turns
+    /// it. False once it's spent.
+    fn travel(&mut self, s: &mut Shell, step: Vec3) -> bool {
+        let len = step.length();
+        if len < 1e-6 {
+            return true;
+        }
+        let owner = self.world.tanks[s.owner].collider;
+        let hit = self.world.physics.cast_ray_and_get_normal(
+            &Ray::new(s.pos, step / len),
+            len,
+            true,
+            QueryFilter::default().exclude_collider(owner),
+        );
+        match hit {
+            None => {
+                s.pos += step;
+                true
+            }
+            Some((c, ri)) => {
+                let at = s.pos + step / len * ri.time_of_impact;
+                s.pos = at;
+                match self.world.tank_of(c) {
+                    Some(j) => {
+                        self.hit(s, j, at);
+                        false
+                    }
+                    None if s.bounces > 0 => {
+                        // Ricochet: mirror off the surface and carry on.
+                        let n = ri.normal;
+                        s.vel -= 2.0 * s.vel.dot(n) * n;
+                        s.pos = at + n * 0.05;
+                        s.bounces -= 1;
+                        // The skin sheds plasma at every skip.
+                        s.damage *= BOUNCE_KEEP;
+                        self.blasts
+                            .push(Blast::new(at, impact_kind(&s.spec, false)));
+                        self.sounds.push(Sound::Bounce { at });
+                        true
+                    }
+                    None => {
+                        if s.spec.look != Look::Flame {
                             self.blasts
                                 .push(Blast::new(at, impact_kind(&s.spec, false)));
-                            self.sounds.push(Sound::Bounce { at });
-                            true
+                            self.sounds.push(Sound::Impact {
+                                at,
+                                plasma: matches!(
+                                    s.spec.look,
+                                    Look::Plasma { .. } | Look::Bolt { .. }
+                                ),
+                            });
                         }
-                        None => {
-                            if s.spec.look != Look::Flame {
-                                self.blasts
-                                    .push(Blast::new(at, impact_kind(&s.spec, false)));
-                                self.sounds.push(Sound::Impact {
-                                    at,
-                                    plasma: matches!(
-                                        s.spec.look,
-                                        Look::Plasma { .. } | Look::Bolt { .. }
-                                    ),
-                                });
-                            }
-                            false
-                        }
+                        false
                     }
                 }
             }
-        });
-        self.shells = shells;
+        }
     }
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
@@ -1142,15 +1200,17 @@ impl Match {
         }
     }
 
-    /// Over the edge (a mesa map): dead on impact. Whoever hit it last in the
-    /// last few seconds knocked it off and gets the kill.
+    /// Over the edge (a mesa map): dead on impact, once it hits the floor
+    /// (`landed`), not as it drops past the fall line. Whoever hit it last in
+    /// the last few seconds knocked it off and gets the kill.
     fn falls(&mut self) {
         let Some(fall_y) = self.world.map.fall_y else {
             return;
         };
         for i in 0..self.fighters.len() {
             let f = &self.fighters[i];
-            if !f.alive || f.is_husk() || self.world.tanks[i].pos.y > fall_y {
+            let t = &self.world.tanks[i];
+            if !f.alive || f.is_husk() || t.pos.y > fall_y || !landed(&self.world.map, t) {
                 continue;
             }
             let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
@@ -1315,6 +1375,31 @@ impl Match {
     /// (an arrival can draw the tank elsewhere for a moment).
     pub fn camera_tank(&self, i: usize, alpha: f32) -> Tank {
         self.world.tanks[i].interpolated(alpha)
+    }
+
+    /// Where a shot from `t` would land if it fired now, for a gun that
+    /// lands instantly (else None): the first thing along its line, or the
+    /// end of its reach.
+    pub fn instant_landing(&self, t: &Tank) -> Option<Vec3> {
+        let Action::Shell(spec) = gun(t.turret_kind).action else {
+            return None;
+        };
+        if !spec.instant {
+            return None;
+        }
+        let (from, dir) = (muzzle(t), t.gun_dir());
+        let reach = spec.speed * spec.life;
+        let toi = self
+            .world
+            .physics
+            .cast_ray(
+                &Ray::new(from, dir),
+                reach,
+                true,
+                QueryFilter::default().exclude_collider(t.collider),
+            )
+            .map_or(reach, |(_, toi)| toi);
+        Some(from + dir * toi)
     }
 
     /// The tanks to draw this frame: interpolated, with wrecks charred and
@@ -1507,6 +1592,15 @@ impl Match {
                 )
             };
             match s.spec.look {
+                // An instant shot's tracer covers a frame's flight in a long
+                // streak, never trailing back past the muzzle; once it's
+                // where the shot landed it lingers there, thinning out.
+                Look::Tracer if s.spec.instant => {
+                    let age = s.age - (1.0 - alpha) * DT;
+                    let flown = age.clamp(0.0, s.spec.life) * s.spec.speed;
+                    let fade = 1.0 - ((age - s.spec.life) / TRACER_FADE).clamp(0.0, 1.0);
+                    out.push(streak(0.2 * fade, flown.min(TRACER_STREAK), tracer));
+                }
                 // A streak trailing back from the shell.
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
                 // Plasma is mostly light (see `glow_particles`); only its
@@ -2051,6 +2145,55 @@ mod tests {
         }
     }
 
+    /// Imperium guns land on the step they fire, however far the target
+    /// is, and leave a tracer that stops where they landed.
+    #[test]
+    fn imperium_shots_land_the_moment_they_fire() {
+        for turret in [TurretKind::Kontos, TurretKind::Pelekys] {
+            let mut m = duel(turret, 90.0);
+            let hp = m.fighters[1].health;
+            m.step(Command::default(), true);
+            assert!(
+                m.fighters[1].health < hp,
+                "{turret:?}: a target 90 m off wasn't hit on the shot's own step"
+            );
+            let mine: Vec<&Shell> = m.shells.iter().filter(|s| s.owner == 0).collect();
+            assert_eq!(mine.len(), 1, "{turret:?}: the shot leaves a tracer");
+            let s = mine[0];
+            let reach = s.spec.speed * s.spec.life;
+            assert!(
+                (80.0..90.0).contains(&reach),
+                "{turret:?}: tracer flies {reach:.1} m, not to the target"
+            );
+            // The tracer is only a picture: it's gone soon and hurts no one.
+            let after = m.fighters[1].health;
+            for _ in 0..(0.2 / DT) as usize {
+                m.step(Command::default(), false);
+            }
+            assert!(m.shells.is_empty());
+            assert_eq!(m.fighters[1].health, after);
+        }
+    }
+
+    /// Nothing to lead with an Imperium gun; everyone else's shells still fly.
+    #[test]
+    fn only_imperium_guns_are_instant() {
+        for &k in &TurretKind::ALL {
+            let g = gun(k);
+            let instant = matches!(k, TurretKind::Kontos | TurretKind::Pelekys);
+            match g.action {
+                Action::Shell(_) => {
+                    assert_eq!(g.speed().is_infinite(), instant, "{k:?}");
+                    if instant {
+                        assert_eq!(g.gravity(), 0.0);
+                        assert!(g.range() >= 480.0, "{k:?} can't reach across a map");
+                    }
+                }
+                Action::Beam { .. } => assert!(!instant),
+            }
+        }
+    }
+
     #[test]
     fn flame_falls_short_at_range() {
         let mut m = duel(TurretKind::Hymn, 40.0);
@@ -2169,18 +2312,18 @@ mod tests {
         );
         assert!(m.shells[0].vel.y > 0.0, "and come back up");
         assert_eq!(m.shells[0].bounces, spec.bounces - 1);
-        // Cannon shells just stop.
-        let Action::Shell(cannon) = gun(TurretKind::Kontos).action else {
+        // Darts just stop.
+        let Action::Shell(dart) = gun(TurretKind::Ossrin).action else {
             panic!();
         };
         m.shells = vec![Shell {
             pos: from,
             prev: from,
-            vel: Vec3::new(0.0, -cannon.speed, 0.0),
+            vel: Vec3::new(0.0, -dart.speed, 0.0),
             owner: 0,
             damage: 1.0,
             age: 0.0,
-            spec: cannon,
+            spec: dart,
             bounces: 0,
             seed: 0.0,
         }];
@@ -2426,6 +2569,67 @@ mod tests {
         );
         assert_eq!(m.fighters[0].deaths, 1);
         assert_eq!(m.fighters[1].kills, 1, "the last hit knocked it off");
+    }
+
+    /// Drop tank `i` from the mesa's height over the desert floor, run until
+    /// it dies (or `secs` pass), and give the lowest height above the floor it
+    /// was still alive at, the height it died at, and how far it fell.
+    fn drop_from_the_mesa(m: &mut Match, i: usize, secs: f32) -> (f32, Option<f32>, f32) {
+        let at = Vec2::new(150.0, 285.0);
+        m.world.teleport(i, at, 0.0);
+        let floor = m.world.map.ground_height(at.x, at.y);
+        let b = &mut m.world.physics.bodies[m.world.tanks[i].body];
+        b.set_translation(Vec3::new(at.x, 0.5, at.y), true);
+        let (mut alive_low, mut died_at) = (f32::INFINITY, None);
+        let deaths = m.fighters[i].deaths;
+        for _ in 0..(secs / DT) as usize {
+            m.step(Command::default(), false);
+            let h = m.world.tanks[i].pos.y - floor;
+            if m.fighters[i].deaths > deaths {
+                died_at = Some(h);
+                break;
+            }
+            alive_low = alive_low.min(h);
+        }
+        (alive_low, died_at, 0.5 - floor)
+    }
+
+    /// Over the edge, it falls the whole way and blows up on the floor, not
+    /// in mid-air as it passes the fall line.
+    #[test]
+    fn a_tank_that_goes_over_dies_on_the_floor_not_in_the_air() {
+        let mut m = Match::new(Map::sanctum(), 0, 0, 1);
+        m.fighters[0].shield = 0.0;
+        m.world.set_hull(0, HullKind::Kataphrakt);
+        let (alive_low, died_at, drop) = drop_from_the_mesa(&mut m, 0, 6.0);
+        assert!(drop > 25.0, "only a {drop} m drop");
+        let died_at = died_at.expect("never died");
+        assert!(died_at < LANDED_CLEARANCE, "died {died_at:.1} m up");
+        assert!(alive_low < 3.0, "only fell to {alive_low:.1} m up alive");
+        assert!(!m.fighters[0].alive);
+    }
+
+    /// Bots and hover hulls too, and a Vigil runs on at the bottom.
+    #[test]
+    fn every_hull_falls_all_the_way_bots_included() {
+        for hull in crate::garage::HULLS {
+            let mut m = Match::new(Map::sanctum(), 0, 1, 1);
+            for f in &mut m.fighters {
+                f.shield = 0.0;
+            }
+            m.world.set_hull(1, hull);
+            let (_, died_at, _) = drop_from_the_mesa(&mut m, 1, 6.0);
+            let died_at = died_at.unwrap_or_else(|| panic!("{hull:?} never died"));
+            assert!(
+                died_at < LANDED_CLEARANCE,
+                "{hull:?} died {died_at:.1} m up"
+            );
+            if hull == HullKind::Vigil {
+                assert!(m.fighters[1].alive && m.fighters[1].is_husk());
+            } else {
+                assert!(!m.fighters[1].alive, "{hull:?}");
+            }
+        }
     }
 
     /// A Vigil that goes over runs on at the bottom, as it does anywhere.

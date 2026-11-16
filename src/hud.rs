@@ -13,7 +13,6 @@ use crate::economy::{Outcome, Payout};
 use crate::hold::{self, Control};
 use crate::mission::Contract;
 use crate::render::{Camera, UiVertex};
-use crate::repair::State;
 use crate::scene::project;
 use crate::sim::Tank;
 use crate::ui::emblem;
@@ -237,50 +236,9 @@ impl Hud {
             p.line(o, o + Vec2::new(bw * frac.clamp(0.0, 1.0), 0.0), 2.0, fill);
         }
 
-        // Repair drop zones in view: a countdown over each empty pad, a marker over each crate.
-        for d in &m.repairs.drops {
-            let ground = Vec3::new(d.at.x, d.ground, d.at.y);
-            let (anchor, text, color) = match d.state {
-                State::Waiting(t) => (
-                    ground + Vec3::Y * 1.6,
-                    format!("REPAIR {}", t.ceil() as u32),
-                    theme::DIM,
-                ),
-                _ => (
-                    d.crate_pos().unwrap_or(ground) + Vec3::Y * 2.4,
-                    "REPAIR".to_string(),
-                    theme::MEND,
-                ),
-            };
-            let dist = anchor.distance(camera.pos);
-            if board || dist > 140.0 {
-                continue;
-            }
-            let Some((x, y)) = project(vp, anchor, width, height) else {
-                continue;
-            };
-            let at = Vec2::new(x, y) / scale;
-            if at.x < 0.0 || at.x > w || at.y < 0.0 || at.y > h {
-                continue;
-            }
-            let mut s = TextStyle::LABEL;
-            s.color = with_alpha(
-                color,
-                color[3] * (1.0 - (dist - 100.0) / 40.0).clamp(0.0, 1.0),
-            );
-            p.text(at, &text, &s, Align::Center);
-        }
-
         // Top centre: turret heading, and under it the team score (your side on the left).
         let top = Vec2::new(w * 0.5, MARGIN + 6.0);
         widgets::compass(&mut p, top, 360.0, self.heading);
-        let hdg = self.heading.round() as u32 % 360;
-        p.text(
-            top + Vec2::new(0.0, 32.0),
-            &format!("{hdg:03}"),
-            &TextStyle::value(11.0),
-            Align::Center,
-        );
         let sy = top.y + 58.0;
         let sides = m.factions.len();
         if sides == 2 {
@@ -353,8 +311,11 @@ impl Hud {
         }
 
         // Crosshair where the turret points; the gap kicks open when firing.
-        // Where the gun actually points, including hull tilt.
-        let aim_point = tank.pos + tank.up() * tank.gun_height() + tank.turret_dir() * 40.0;
+        // Where the gun actually points, including hull tilt; for a gun that
+        // lands instantly, right where the shot would land.
+        let aim_point = m
+            .instant_landing(tank)
+            .unwrap_or_else(|| tank.pos + tank.up() * tank.gun_height() + tank.turret_dir() * 40.0);
         if me.alive
             && !board
             && let Some((x, y)) = project(vp, aim_point, width, height)
@@ -525,21 +486,6 @@ impl Hud {
         // Bottom right: turret angle relative to the hull.
         let br = Vec2::new(w - MARGIN, h - MARGIN);
         widgets::turret_gauge(&mut p, br + Vec2::new(-30.0, -30.0), tank.turret_rel);
-        let rel = tank.turret_rel.to_degrees().round() as i32;
-        let side = if rel > 0 {
-            " L"
-        } else if rel < 0 {
-            " R"
-        } else {
-            ""
-        };
-        label(&mut p, br + Vec2::new(-84.0, -62.0), "TURRET", Align::Right);
-        p.text(
-            br + Vec2::new(-84.0, -48.0),
-            &format!("{:03}{side}", rel.abs()),
-            &TextStyle::value(14.0),
-            Align::Right,
-        );
 
         // Bottom centre: how to get to the garage.
         let mut key = TextStyle::LABEL;
@@ -800,12 +746,6 @@ fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
             theme::DIM,
         );
     }
-    label(
-        p,
-        Vec2::new(at.x, y + 8.0),
-        &format!("FIRST TO {:.0} S", hold::TARGET),
-        Align::Center,
-    );
 }
 
 fn hold_color(m: &Match, c: Control) -> Rgba {
