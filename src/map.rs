@@ -1,4 +1,5 @@
-//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln)
+//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln,
+//! the Capital, the Foundry)
 //! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
@@ -8,6 +9,7 @@ use glam::{Vec2, Vec3};
 use crate::faction::Faction;
 
 mod capital;
+mod foundry;
 mod kiln;
 mod landmarks;
 mod props;
@@ -487,6 +489,9 @@ pub struct Map {
     pub fall_y: Option<f32>,
     /// What the Hold site is called on the HUD.
     pub hold_name: &'static str,
+    /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
+    /// drawn as they are, never collide.
+    pub sculpted: crate::render::mesh::MeshData,
 }
 
 /// A glowing ribbon on the ground: a bright core fading out to its edges.
@@ -758,6 +763,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            sculpted: crate::render::mesh::MeshData::default(),
         }
     }
 

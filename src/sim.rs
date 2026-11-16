@@ -33,6 +33,8 @@ pub enum HullKind {
     /// Resonant: a light vessel run by the crystal at its heart. Thin armor,
     /// but it keeps going for a few seconds after it's broken.
     Vigil,
+    /// Uthenn: big, bulky and slow, with the thermal mass to hold a beam on.
+    Gravis,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +60,7 @@ impl HullKind {
             HullKind::Kataphrakt | HullKind::Kastron => Faction::Imperium,
             HullKind::Sethuun => Faction::Ithessar,
             HullKind::Vigil => Faction::Resonant,
+            HullKind::Gravis => Faction::Uthenn,
         }
     }
 }
@@ -78,7 +81,7 @@ impl TurretKind {
         match self {
             TurretKind::Kontos | TurretKind::Pelekys => Faction::Imperium,
             TurretKind::Ammeth | TurretKind::Ossrin => Faction::Ithessar,
-            TurretKind::Lumen => Faction::Machines,
+            TurretKind::Lumen => Faction::Uthenn,
             TurretKind::Hymn => Faction::Resonant,
         }
     }
@@ -180,8 +183,26 @@ impl Chassis {
         ..Chassis::KATAPHRAKT
     };
 
+    /// Uthenn heavy hull: long, wide and tall, on six road wheels a side.
+    pub const GRAVIS: Chassis = Chassis {
+        mass: 42_000.0,
+        track_x: 1.45,
+        track_width: 0.78,
+        road_z: &[-2.2, -1.32, -0.44, 0.44, 1.32, 2.2],
+        road_y: 0.42,
+        road_r: 0.34,
+        front: (2.85, 0.74, 0.38),
+        rear: (-2.85, 0.76, 0.42),
+        hull_half_x: 1.8,
+        hull_top: 1.95,
+        hull_z: (-3.0, 2.9),
+        center_of_mass: Vec3::new(0.0, 0.75, -0.1),
+        hover: false,
+    };
+
     pub fn of(kind: HullKind) -> &'static Chassis {
         match kind {
+            HullKind::Gravis => &Chassis::GRAVIS,
             HullKind::Kataphrakt => &Chassis::KATAPHRAKT,
             HullKind::Vigil => &Chassis::VIGIL,
             HullKind::Kastron => &Chassis::KASTRON,
@@ -422,8 +443,26 @@ impl HullStats {
         turret_brake: 12.0,
     };
 
+    /// Slow and heavy: the slowest hull, slow to turn and to traverse.
+    pub const GRAVIS: Self = Self {
+        max_speed: 7.8,
+        reverse_speed: 4.5,
+        accel: 5.5,
+        power_knee: 4.5,
+        brake: 18.0,
+        rolling: 1.4,
+        turn_rate: 1.6,
+        steer_accel: 11.0,
+        grip_long: 1.9,
+        grip_lat: 1.9,
+        turret_speed: 0.8,
+        turret_accel: 1.4,
+        turret_brake: 6.0,
+    };
+
     pub fn of(kind: HullKind) -> HullStats {
         match kind {
+            HullKind::Gravis => HullStats::GRAVIS,
             HullKind::Kataphrakt => HullStats::KATAPHRAKT,
             HullKind::Kastron => HullStats::KASTRON,
             HullKind::Sethuun => HullStats::SETHUUN,
@@ -472,6 +511,11 @@ pub struct Tank {
     pub since_fire: f32,
     /// Which barrel fired last (twin guns alternate).
     pub fire_barrel: usize,
+    /// Beam guns, mirrored from the fight for the art: heat 0..1, locked
+    /// out hot, and whether the beam is on this step.
+    pub heat: f32,
+    pub overheated: bool,
+    pub beaming: bool,
     pub flipped_time: f32,
     /// Seconds since the tank was spawned (drives idle animation).
     pub age: f32,
@@ -643,6 +687,9 @@ impl World {
             track_dist: [0.0; 2],
             since_fire: 10.0,
             fire_barrel: 0,
+            heat: 0.0,
+            overheated: false,
+            beaming: false,
             flipped_time: 0.0,
             age: 0.0,
             dead: false,

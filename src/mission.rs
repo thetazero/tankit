@@ -80,6 +80,16 @@ pub const MISSIONS: &[Mission] = &[
         sides: &Faction::ALL,
         brief: "EVERY SIDE AGAINST EVERY OTHER IN THE IMPERIAL CITY. PAID PER KILL",
     },
+    Mission {
+        name: "SCRAP METAL",
+        contract: Contract::Attrition,
+        map: "THE FOUNDRY",
+        map_kind: MapKind::Foundry,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Uthenn, Faction::Imperium],
+        brief: "THE UTHENN HIRE YOU TO DRIVE THE IMPERIUM OUT OF THEIR WRECKED FOUNDRY. PAID PER KILL",
+    },
 ];
 
 impl Mission {

@@ -27,7 +27,7 @@ Four sides. Any of them can hire you.
 |---|---|
 | **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. An empire that is also a religion, Byzantine in spirit. See [The Imperium](#the-imperium). |
 | **The Resonant** | Human. A cult built around the crystals. The crystals answer: a machine with a crystal in it won't stay dead. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. See [The Resonant](#the-resonant). |
-| **The machines** | A machine faction (name and origin TBD). Machines hire mercenaries too. |
+| **Uthenn** | The machines: a splinter from the aliens. See [Uthenn](#uthenn). |
 | **The Ithessar** | The aliens. They shape plasma with crystal: their machines float on it, their weapons throw it. |
 
 ## Factions vs. gameplay
@@ -46,14 +46,18 @@ play. Factions are the world, never a lock on your build. They show up as:
   - **Imperium**: conventional guns firing fast shells (Kontos, Pelekys).
   - **Ithessar**: slow plasma (Ammeth's orbs skip off walls; Ossrin's
     needles spin up into a stream).
-  - **Machines**: a laser beam that burns while held, then overheats (Lumen).
+  - **Uthenn**: long-range beams (Lumen). A continuous beam with a small
+    amount of aim assist; damage falls off with range, but not too hard. It
+    overheats instead of reloading. Heat is tied to the tank: bigger hulls
+    and heavier turrets have more thermal mass. Cooling is a flat rate.
   - **Resonant**: the strange weapons, starting with Hymn, a censer that
     breathes short-range blue crystal fire. Later maybe shields, drains,
     phasing.
 
   Hulls: the Imperium make the tracked ones (Kataphrakt, Kastron), the Ithessar
   one that hovers (Sethuun), the Resonant a vessel that won't stay dead
-  (Vigil). The machines will get their own.
+  (Vigil), the Uthenn one that's big, bulky and slow (Gravis): tracked, very
+  sci-fi, with green accents.
 
 ## The Resonant
 
@@ -125,6 +129,14 @@ triumphal arches over processional avenues, statues on plinths, all cast in
 bulk; ordinary concrete blocks and brutalist slabs on pillars around them.
 Half ruined where the war has reached them, and still hung with crimson.
 
+## Uthenn
+
+A splinter from the aliens, not the humans. Paperclip maximizers: what
+they make is tungsten cubes. How the Ithessar feel about them is unknown;
+"Uthenn" is the Ithessar word for it.
+
+**The Foundry:** one of their tungsten cube factories, destroyed.
+
 ## Crystals
 
 What everyone fights over: your pay, the Resonant's sacrament, and the reason
@@ -152,6 +164,6 @@ A devastated town in a desert.
 
 ## Open
 
-- The machine faction's name; the nature of the machines and the Ithessar.
+- The nature of the Ithessar.
 - How the war started, and what keeps it going.
 - The first map's world and what happened there.

@@ -351,7 +351,7 @@ pub(crate) fn plate2(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, ski
     plate(m, mirror(top), t, inside * Vec3::new(-1.0, 1.0, 1.0), skin);
 }
 
-fn block2(m: &mut MeshData, min: Vec3, max: Vec3, bevel: f32, skin: Skin) {
+pub(crate) fn block2(m: &mut MeshData, min: Vec3, max: Vec3, bevel: f32, skin: Skin) {
     block(m, min, max, bevel, skin);
     block(
         m,
@@ -577,6 +577,9 @@ pub struct Running {
 
 pub struct HullModel {
     pub body: MeshData,
+    /// Light that shows the beam's heat (Uthenn): drawn emissive, tinted
+    /// by heat. Empty on other hulls.
+    pub heat_light: MeshData,
     pub running: Running,
     /// Turret ring position.
     pub mount: Vec3,
@@ -819,6 +822,7 @@ pub fn kataphrakt() -> HullModel {
 
     HullModel {
         body: m,
+        heat_light: MeshData::default(),
         running: Running {
             track_x: 1.22,
             track_width: 0.56,
@@ -1058,6 +1062,7 @@ pub fn kastron() -> HullModel {
 
     HullModel {
         body: m,
+        heat_light: MeshData::default(),
         running: Running {
             track_x: 1.28,
             track_width: 0.64,
@@ -1087,6 +1092,9 @@ pub fn kastron() -> HullModel {
 pub struct TurretModel {
     /// Rotates with turret yaw.
     pub head: MeshData,
+    /// Heat lights on the head and on the barrel (Uthenn), like `HullModel::heat_light`.
+    pub head_light: MeshData,
+    pub barrel_light: MeshData,
     /// Pitches with the gun.
     pub mantlet: MeshData,
     /// One barrel; drawn once per entry in `barrels`, slides back on recoil.
@@ -1344,6 +1352,8 @@ pub fn kontos() -> TurretModel {
 
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel,
         pivot: v(0.0, 0.45, 0.88),
@@ -1548,6 +1558,8 @@ pub fn pelekys() -> TurretModel {
 
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel,
         pivot: v(0.0, 0.38, 0.92),
@@ -1562,11 +1574,6 @@ pub fn pelekys() -> TurretModel {
 // Faction turrets. The Imperium builds the plated Kontos and Pelekys above; the
 // others below each have their own shape language and glow color.
 
-/// Machine laser red.
-const LASER_GLOW: Skin = Skin {
-    face: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
-    edge: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
-};
 /// Resonant crystal blue.
 pub(crate) const CRYSTAL: Skin = Skin {
     face: Vec4::new(0.2, 0.5, 1.0, Material::Glow.id()),
@@ -1596,157 +1603,6 @@ pub(crate) fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, s
         0.005,
         skin,
     );
-}
-
-/// Machine laser: a blocky, asymmetric housing stacked with heat-sink fins,
-/// and a long focusing rod ending in a red lens.
-pub fn lumen() -> TurretModel {
-    let mut head = MeshData::default();
-    let inside = v(0.0, 0.45, -0.2);
-    turret_ring(&mut head);
-    solid(
-        &mut head,
-        &[
-            at_z(
-                &rect(Vec2::new(0.0, 0.42), Vec2::new(0.62, 0.32), 0.05),
-                -1.2,
-            ),
-            at_z(
-                &rect(Vec2::new(0.0, 0.42), Vec2::new(0.7, 0.36), 0.06),
-                -0.3,
-            ),
-            at_z(&rect(Vec2::new(0.0, 0.4), Vec2::new(0.6, 0.3), 0.06), 0.9),
-        ],
-        0.03,
-        CARBON,
-    );
-    // Power block offset to one side, and an armored cap on the other.
-    block(
-        &mut head,
-        v(-0.78, 0.15, -1.0),
-        v(-0.3, 0.98, 0.1),
-        0.04,
-        PAINT,
-    );
-    block(
-        &mut head,
-        v(0.3, 0.78, -0.9),
-        v(0.72, 0.9, 0.6),
-        0.03,
-        PAINT,
-    );
-    // Heat-sink fins: a stack of thin metal plates down the right flank.
-    for k in 0..7 {
-        let z = -1.05 + k as f32 * 0.16;
-        block(
-            &mut head,
-            v(0.7, 0.2, z),
-            v(0.86, 0.74, z + 0.05),
-            0.01,
-            METAL,
-        );
-    }
-    // Red status slit and a rear exhaust grille.
-    plate(
-        &mut head,
-        [
-            v(-0.8, 0.8, -0.7),
-            v(-0.8, 0.8, -0.1),
-            v(-0.8, 0.72, -0.1),
-            v(-0.8, 0.72, -0.7),
-        ],
-        0.015,
-        inside,
-        LASER_GLOW,
-    );
-    plate(
-        &mut head,
-        [
-            v(-0.2, 0.62, -1.21),
-            v(0.45, 0.62, -1.21),
-            v(0.45, 0.3, -1.21),
-            v(-0.2, 0.3, -1.21),
-        ],
-        0.015,
-        inside,
-        METAL,
-    );
-
-    let mut mantlet = MeshData::default();
-    block(
-        &mut mantlet,
-        v(-0.3, -0.22, -0.35),
-        v(0.3, 0.22, 0.4),
-        0.04,
-        CARBON,
-    );
-    round(
-        &mut mantlet,
-        &[
-            at_x(&ngon(8, 0.1, Vec2::ZERO), -0.4),
-            at_x(&ngon(8, 0.1, Vec2::ZERO), 0.4),
-        ],
-        0.02,
-        METAL,
-    );
-
-    let mut barrel = MeshData::default();
-    let sq = |h: f32| rect(Vec2::ZERO, Vec2::splat(h), h * 0.35);
-    solid(
-        &mut barrel,
-        &[at_z(&sq(0.2), 0.3), at_z(&sq(0.18), 1.1)],
-        0.03,
-        CARBON_LIGHT,
-    );
-    round(
-        &mut barrel,
-        &[
-            at_z(&ngon(8, 0.07, Vec2::ZERO), 1.05),
-            at_z(&ngon(8, 0.07, Vec2::ZERO), 2.9),
-        ],
-        0.0,
-        METAL,
-    );
-    // Focusing coils along the rod.
-    for i in 0..4 {
-        let z = 1.3 + i as f32 * 0.38;
-        solid(
-            &mut barrel,
-            &[at_z(&sq(0.13), z), at_z(&sq(0.13), z + 0.12)],
-            0.015,
-            CARBON,
-        );
-    }
-    // Lens housing and the red lens.
-    solid(
-        &mut barrel,
-        &[
-            at_z(&ngon(8, 0.16, Vec2::ZERO), 2.85),
-            at_z(&ngon(8, 0.19, Vec2::ZERO), 3.15),
-        ],
-        0.02,
-        CARBON,
-    );
-    round(
-        &mut barrel,
-        &[
-            at_z(&ngon(10, 0.11, Vec2::ZERO), 3.1),
-            at_z(&ngon(10, 0.11, Vec2::ZERO), 3.16),
-        ],
-        0.0,
-        LASER_GLOW,
-    );
-
-    TurretModel {
-        head,
-        mantlet,
-        barrel,
-        pivot: v(0.0, 0.42, 0.92),
-        barrels: vec![Vec3::ZERO],
-        muzzle: 3.2,
-        rig: Rig::Recoil,
-        recoil: 0.0,
-    }
 }
 
 /// Resonant flamethrower: a rounded, painted reliquary of a head crowned with
@@ -1915,6 +1771,8 @@ pub fn hymn() -> TurretModel {
 
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel,
         pivot: v(0.0, 0.45, 0.8),

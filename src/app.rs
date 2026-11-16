@@ -459,6 +459,7 @@ impl App {
                 KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::KeyG => garage::Input::Deploy,
                 KeyCode::Escape => garage::Input::Revert,
                 KeyCode::KeyE => garage::Input::Act,
+                KeyCode::KeyU => garage::Input::Upgrade,
                 _ => return,
             };
             self.garage_sound(input);
@@ -535,7 +536,9 @@ impl App {
 
     fn garage_sound(&mut self, input: garage::Input) {
         self.audio.ui(match input {
-            garage::Input::Deploy | garage::Input::Act => audio::Ui::Select,
+            garage::Input::Deploy | garage::Input::Act | garage::Input::Upgrade => {
+                audio::Ui::Select
+            }
             garage::Input::Revert => audio::Ui::Back,
             _ => audio::Ui::Move,
         });
@@ -567,13 +570,18 @@ impl App {
 
     /// The pointer moved: whatever it's over takes the selection, as W/S would.
     fn on_hover(&mut self, at: glam::Vec2) {
-        let Some((hit, _)) = self.hits.at(at) else {
+        let hit = self.hits.at(at).map(|(h, _)| h);
+        self.garage.hover(match hit {
+            Some(UiHit::Garage(h)) => Some(h),
+            _ => None,
+        });
+        let Some(hit) = hit else {
             return;
         };
         let moved = match hit {
             UiHit::Menu(h) => self.menu.hover(h),
             UiHit::Pause(h) => self.pause.hover(h),
-            // Garage rows equip what they select, so only a click picks there.
+            // Garage hover only lights the row: a click previews it.
             UiHit::Garage(_) => false,
         };
         if moved {

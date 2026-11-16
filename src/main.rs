@@ -31,10 +31,11 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|capital>
+  --map <saltmarket|sanctum|kiln|capital|foundry>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), or the Capital
-                          (Imperium city, all four factions)
+                          (Imperium city, all four factions), or the Foundry (a wrecked
+                          Uthenn tungsten cube factory)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
@@ -49,10 +50,11 @@ tankit [OPTIONS]
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
-  --hull <kataphrakt|kastron|sethuun>  player hull (default kataphrakt; sethuun hovers)
+  --hull <kataphrakt|kastron|sethuun|vigil|gravis>  player hull (default kataphrakt; sethuun hovers)
   --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
-                          lumen (machines), hymn (Resonant); default kontos
-  --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
+                          lumen (Uthenn), hymn (Resonant); default kontos
+  --garage                (with --shot) open the garage at the start, previewing --hull/--turret
+                          (the parts of it you own are equipped, starters otherwise)
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
@@ -121,6 +123,8 @@ pub enum MapKind {
     Kiln,
     /// An Imperium city, half ruined round a domed rotunda: four sides.
     Capital,
+    /// The Foundry: a wrecked Uthenn tungsten cube factory.
+    Foundry,
 }
 
 pub fn make_map(kind: MapKind) -> map::Map {
@@ -129,6 +133,7 @@ pub fn make_map(kind: MapKind) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::Capital => map::Map::capital(),
+        MapKind::Foundry => map::Map::foundry(),
     }
 }
 
@@ -242,8 +247,11 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("capital") => map_kind = MapKind::Capital,
+                Some("foundry") => map_kind = MapKind::Foundry,
                 other => {
-                    bail!("--map expects saltmarket, sanctum, kiln or capital, got {other:?}")
+                    bail!(
+                        "--map expects saltmarket, sanctum, kiln, capital or foundry, got {other:?}"
+                    )
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
@@ -427,13 +435,26 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
     game.set_contract(args.contract);
+    let profile = args.profile();
+    // In the garage: --hull/--turret are previewed; what's owned of them is equipped.
+    let equipped = (
+        if profile.owns(economy::Part::Hull(args.loadout.0)) {
+            args.loadout.0
+        } else {
+            sim::HullKind::Kataphrakt
+        },
+        if profile.owns(economy::Part::Turret(args.loadout.1)) {
+            args.loadout.1
+        } else {
+            sim::TurretKind::Kontos
+        },
+    );
     if args.garage {
-        game.fighters[0].next_kit = Some(args.loadout);
+        game.fighters[0].next_kit = Some(equipped);
     } else {
         game.set_player_hull(args.loadout.0);
         game.world.tanks[0].turret_kind = args.loadout.1;
     }
-    let profile = args.profile();
     game.set_player_levels(profile.levels);
     if args.screen == Some(Screen::Results) {
         game.time_left = (shot.time - 3.0).max(0.1);
@@ -466,7 +487,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                    seconds: f32| {
         let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         if args.garage && !garage.is_open() {
-            garage.toggle(&m.world, &camera, args.loadout);
+            garage.toggle(&m.world, &camera, equipped);
+            garage.browse(args.loadout);
         }
         for _ in 0..(seconds / game::DT).round() as u32 {
             m.ambience.focus = args.cam.map_or(camera.pos, |c| c.0);
@@ -501,7 +523,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h).verts;
+            frame.ui = garage.overlay(ui, &driven, equipped, &profile, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
                 frame.ui.extend(

@@ -1,12 +1,13 @@
 //! Garage: from the main menu, or G mid-match to park and swing the camera
 //! round your tank. Pick the hull and turret for your next respawn, and buy
-//! or upgrade parts with crystals. The tank you're driving doesn't change;
-//! the orbit camera shows the highlighted kit as a preview (parts you don't
-//! own too). Deploying keeps the pick queued, reverting puts back what was
-//! queued when you came in.
+//! or upgrade parts with crystals. The tank you're driving doesn't change.
 //!
-//! Drawn in the hairline style, as a panel on the left over a soft dark
-//! backdrop, the tank framed in the space to its right.
+//! Browsing only previews: the orbit camera shows the highlighted kit (parts
+//! you don't own too), and nothing is equipped until you press E (equip, or
+//! buy) on a part. U upgrades the highlighted part. Deploying keeps what you
+//! equipped, cancelling puts back what was equipped when you came in.
+//!
+//! Drawn as a solid panel on the left, the tank framed in the space to its right.
 
 use glam::{Vec2, Vec3};
 
@@ -15,11 +16,25 @@ use crate::profile::{Profile, Refusal};
 use crate::render::{Camera, UiVertex};
 use crate::sim::{HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Hits, Layer, Painter, TextStyle, theme};
+use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, theme};
 
 const REF_HEIGHT: f32 = 900.0;
 pub const PANEL_X: f32 = 64.0;
 pub const PANEL_W: f32 = 340.0;
+/// The solid panel's margin around the content, and its gap from the screen edges.
+const PANEL_PAD: f32 = 28.0;
+const PANEL_TOP: f32 = 32.0;
+const ROW_PITCH: f32 = 28.0;
+const BUTTON_H: f32 = 30.0;
+/// Near-opaque so the text reads over any map.
+const PANEL_FILL: Rgba = [0.006, 0.007, 0.009, 0.95];
+const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
+const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
+/// What you'll deploy with.
+const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
+/// Parts you can't buy yet (not enough trust with their maker).
+const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
+const LOCKED_NAME: Rgba = [0.86, 0.47, 0.38, 0.5];
 /// Open/close transition speed (1 / seconds).
 const BLEND_RATE: f32 = 2.5;
 /// Orbit camera: distance, height and slow drift around the tank (rad/s).
@@ -29,11 +44,12 @@ const ORBIT_DRIFT: f32 = 0.12;
 
 pub type Loadout = (HullKind, TurretKind);
 
-pub const HULLS: [HullKind; 4] = [
+pub const HULLS: [HullKind; 5] = [
     HullKind::Kataphrakt,
     HullKind::Kastron,
     HullKind::Sethuun,
     HullKind::Vigil,
+    HullKind::Gravis,
 ];
 pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
@@ -43,6 +59,7 @@ pub fn hull_name(k: HullKind) -> &'static str {
         HullKind::Kastron => "KASTRON",
         HullKind::Sethuun => "SETHUUN",
         HullKind::Vigil => "VIGIL",
+        HullKind::Gravis => "GRAVIS",
     }
 }
 
@@ -80,7 +97,7 @@ fn turret_of(p: Part) -> TurretKind {
     }
 }
 
-const HULL_STATS: [Stat; 6] = [
+const HULL_STATS: [Stat; 7] = [
     Stat {
         name: "ARMOR",
         unit: "HP",
@@ -117,6 +134,13 @@ const HULL_STATS: [Stat; 6] = [
         decimals: 0,
         get: |p, _| crate::sim::Chassis::of(hull_of(p)).mass / 1000.0,
     },
+    Stat {
+        // Seconds of beam fire it adds before overheating.
+        name: "THERMAL",
+        unit: "S",
+        decimals: 1,
+        get: |p, _| crate::combat::thermal_mass(hull_of(p)),
+    },
 ];
 
 const TURRET_STATS: [Stat; 3] = [
@@ -146,10 +170,14 @@ const TURRET_STATS: [Stat; 3] = [
 pub enum Input {
     Up,
     Down,
+    /// Focus the hull list.
     Left,
+    /// Focus the turret list.
     Right,
-    /// Buy the highlighted part, or upgrade it if owned.
+    /// Equip the highlighted part, or buy it if it isn't owned.
     Act,
+    /// Upgrade the highlighted part (if owned).
+    Upgrade,
     /// Keep the loadout and drive off.
     Deploy,
     /// Put back the loadout from when the garage opened, and close.
@@ -168,9 +196,9 @@ pub enum Event {
 /// What can be clicked in the garage.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
-    /// Highlight (and queue, if owned) this part.
+    /// Highlight (preview) this part.
     Part(Part),
-    /// A key hint, or the buy / upgrade line: clicking it presses the key.
+    /// A button or key hint: clicking it presses the key.
     Key(Input),
 }
 
@@ -180,8 +208,7 @@ pub struct Garage {
     blend: f32,
     /// 0 = hull, 1 = turret.
     section: usize,
-    /// The highlighted parts. Owned picks are queued as you go; parts you
-    /// don't own can be highlighted (and previewed) but not queued.
+    /// The highlighted parts, previewed on the tank. Only E equips them.
     view: Loadout,
     /// Queued loadout when the garage opened (the revert target).
     entry: Loadout,
@@ -189,6 +216,8 @@ pub struct Garage {
     orbit: f32,
     /// Where the orbit is drifting to; starts at a front three-quarter view.
     orbit_goal: f32,
+    /// What the pointer is over, for hover feedback.
+    hover: Option<Hit>,
 }
 
 impl Garage {
@@ -202,6 +231,7 @@ impl Garage {
             entry: start,
             orbit: 0.0,
             orbit_goal: 0.0,
+            hover: None,
         }
     }
 
@@ -212,6 +242,16 @@ impl Garage {
     /// Eased 0..1 openness, for fading the battle HUD out.
     pub fn presence(&self) -> f32 {
         smooth(self.blend)
+    }
+
+    /// The pointer moved over `hit` (or off the garage).
+    pub fn hover(&mut self, hit: Option<Hit>) {
+        self.hover = hit;
+    }
+
+    /// Highlight `kit` (e.g. for a screenshot of a part being previewed).
+    pub fn browse(&mut self, kit: Loadout) {
+        self.view = kit;
     }
 
     /// The highlighted part in the focused section.
@@ -260,9 +300,14 @@ impl Garage {
                 (i + n - 1) % n
             }
         };
+        let part = self.focused();
         match input {
-            Input::Left | Input::Right => {
-                self.section = 1 - self.section;
+            Input::Left => {
+                self.section = 0;
+                None
+            }
+            Input::Right => {
+                self.section = 1;
                 None
             }
             Input::Up | Input::Down => {
@@ -273,10 +318,14 @@ impl Garage {
                     let i = TURRETS.iter().position(|&k| k == self.view.1).unwrap_or(0);
                     self.view.1 = TURRETS[next(i, TURRETS.len())];
                 }
-                self.queue_view(queued, profile)
+                None
             }
-            Input::Act if profile.owns(self.focused()) => Some(Event::Upgrade(self.focused())),
-            Input::Act => Some(Event::Buy(self.focused())),
+            Input::Act if profile.owns(part) => {
+                let kit = with_part(queued, part);
+                (kit != queued).then_some(Event::Queue(kit))
+            }
+            Input::Act => Some(Event::Buy(part)),
+            Input::Upgrade => profile.owns(part).then_some(Event::Upgrade(part)),
             Input::Deploy => {
                 self.open = false;
                 None
@@ -288,7 +337,7 @@ impl Garage {
         }
     }
 
-    /// A click on `hit`, like the key press it stands for.
+    /// A click on `hit`: a part row highlights it, a button presses its key.
     pub fn click(&mut self, hit: Hit, queued: Loadout, profile: &Profile) -> Option<Event> {
         match hit {
             Hit::Key(input) => self.input(input, queued, profile),
@@ -297,30 +346,17 @@ impl Garage {
                     Part::Hull(k) => (self.section, self.view.0) = (0, k),
                     Part::Turret(k) => (self.section, self.view.1) = (1, k),
                 }
-                self.queue_view(queued, profile)
+                None
             }
             Hit::Part(_) => None,
         }
     }
 
-    /// After a purchase: queue the highlighted part if it's owned now.
+    /// After a purchase: equip the part just bought (the highlighted one).
     pub fn bought(&mut self, queued: Loadout, profile: &Profile) -> Option<Event> {
-        self.queue_view(queued, profile)
-    }
-
-    /// The highlighted parts that are owned, on top of what's queued.
-    fn queue_view(&self, queued: Loadout, profile: &Profile) -> Option<Event> {
-        let hull = if profile.owns(Part::Hull(self.view.0)) {
-            self.view.0
-        } else {
-            queued.0
-        };
-        let turret = if profile.owns(Part::Turret(self.view.1)) {
-            self.view.1
-        } else {
-            queued.1
-        };
-        ((hull, turret) != queued).then_some(Event::Queue((hull, turret)))
+        let part = self.focused();
+        let kit = with_part(queued, part);
+        (profile.owns(part) && kit != queued).then_some(Event::Queue(kit))
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -419,9 +455,14 @@ impl Garage {
         let levels = &profile.levels;
 
         backdrop(&mut p, h);
-
         let x = PANEL_X - (1.0 - e) * 30.0;
-        let mut y = 72.0;
+        p.rect(
+            Vec2::new(x - PANEL_PAD, PANEL_TOP),
+            Vec2::new(PANEL_W + 2.0 * PANEL_PAD, h - 2.0 * PANEL_TOP),
+            PANEL_FILL,
+        );
+
+        let mut y = 64.0;
         label(&mut p, Vec2::new(x, y), "GARAGE", Align::Left);
         let cw = label(&mut p, Vec2::new(x + PANEL_W, y), "CR", Align::Right);
         p.text(
@@ -431,30 +472,40 @@ impl Garage {
             Align::Right,
         );
         y += 18.0;
+        // The title is what you'll deploy in; the status says what the tank is showing.
         let title = format!("{} · {}", hull_name(queued.0), turret_name(queued.1));
-        p.text(
-            Vec2::new(x, y),
-            &title,
-            &TextStyle::value(20.0),
-            Align::Left,
-        );
+        // Shrunk to fit the panel when the names are long.
+        let mut ts = TextStyle::value(20.0);
+        while ts.size > 12.0 && crate::ui::measure(&title, &ts) > PANEL_W {
+            ts = TextStyle::value(ts.size - 1.0);
+        }
+        p.text(Vec2::new(x, y + 20.0 - ts.size), &title, &ts, Align::Left);
         y += 30.0;
-        let status = if !profile.owns_kit(self.view) {
-            "PREVIEW · NOT OWNED"
+        let previewing: Vec<&str> = [
+            (self.view.0 != queued.0).then(|| hull_name(self.view.0)),
+            (self.view.1 != queued.1).then(|| turret_name(self.view.1)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let (status, color) = if !previewing.is_empty() {
+            (format!("PREVIEWING {}", previewing.join(" · ")), theme::DIM)
         } else if queued != (tank.hull_kind, tank.turret_kind) {
-            "FITTED ON NEXT RESPAWN"
+            ("EQUIPPED · FITTED ON NEXT RESPAWN".to_string(), EQUIPPED)
         } else {
-            "IN USE"
+            ("EQUIPPED".to_string(), EQUIPPED)
         };
-        label(&mut p, Vec2::new(x, y), status, Align::Left);
-        y += 20.0;
+        let mut s = TextStyle::LABEL;
+        s.color = color;
+        p.text(Vec2::new(x, y), &status, &s, Align::Left);
+        y += 18.0;
         p.line(
             Vec2::new(x, y),
             Vec2::new(x + PANEL_W, y),
             1.0,
             theme::FAINT,
         );
-        y += 26.0;
+        y += 18.0;
 
         let hulls: Vec<Part> = HULLS.iter().map(|&k| Part::Hull(k)).collect();
         let turrets: Vec<Part> = TURRETS.iter().map(|&k| Part::Turret(k)).collect();
@@ -464,6 +515,7 @@ impl Garage {
                 "HULL",
                 hulls,
                 Part::Hull(self.view.0),
+                Part::Hull(queued.0),
                 Part::Hull(tank.hull_kind),
                 &HULL_STATS[..],
             ),
@@ -472,15 +524,17 @@ impl Garage {
                 "TURRET",
                 turrets,
                 Part::Turret(self.view.1),
+                Part::Turret(queued.1),
                 Part::Turret(tank.turret_kind),
                 &TURRET_STATS[..],
             ),
         ];
-        for (si, (num, name, items, current, in_use, stats)) in sections.iter().enumerate() {
+        for (si, (num, name, items, current, equipped, in_use, stats)) in
+            sections.iter().enumerate()
+        {
             let focused = si == self.section;
-            let head = if focused { theme::FG } else { theme::DIM };
             let mut s = TextStyle::LABEL;
-            s.color = head;
+            s.color = if focused { theme::FG } else { theme::DIM };
             p.text(Vec2::new(x, y), &format!("{num}  {name}"), &s, Align::Left);
             label(
                 &mut p,
@@ -495,84 +549,17 @@ impl Garage {
             y += 20.0;
 
             for part in items {
-                row_hit(&p, &mut hits, Vec2::new(x, y), 30.0, Hit::Part(*part));
-                let selected = part == current;
-                let owned = profile.owns(*part);
-                if selected {
-                    // Bar beside the selected part; brightest in the focused section.
-                    let c = if focused { theme::FG } else { theme::DIM };
-                    p.line(
-                        Vec2::new(x - 14.0, y - 3.0),
-                        Vec2::new(x - 14.0, y + 18.0),
-                        2.0,
-                        c,
-                    );
-                    if focused {
-                        p.polyline(
-                            &[
-                                Vec2::new(x + PANEL_W - 8.0, y + 2.0),
-                                Vec2::new(x + PANEL_W - 3.0, y + 7.5),
-                                Vec2::new(x + PANEL_W - 8.0, y + 13.0),
-                            ],
-                            1.2,
-                            c,
-                        );
-                    }
-                }
-                let mut s = TextStyle::value(15.0);
-                s.color = if selected && owned {
-                    theme::FG
-                } else if selected || owned {
-                    theme::DIM
-                } else {
-                    theme::FAINT
-                };
-                let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
-                // Price or lock (or IN USE) on the right; upgrade level and
-                // the part's maker after the name, the maker dropped when a
-                // long name leaves it no room.
-                let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
-                let tag = if part == in_use && !selected {
-                    Some("IN USE".to_string())
-                } else {
-                    part.price().filter(|_| !owned).map(|price| {
-                        if profile.standing_for(*part) < price.standing {
-                            format!("TRUST {}", price.standing)
-                        } else {
-                            format!("{} CR", price.crystals)
-                        }
-                    })
-                };
-                let room = right.x
-                    - tag
-                        .as_deref()
-                        .map_or(0.0, |t| crate::ui::measure(t, &TextStyle::LABEL) + 12.0)
-                    - (x + nw + 12.0);
-                let maker = part.maker().name();
-                let level = format!("M{}", levels.of(*part));
-                let note = [
-                    if owned {
-                        format!("{level}  {maker}")
-                    } else {
-                        maker.to_string()
-                    },
-                    if owned { level } else { String::new() },
-                ]
-                .into_iter()
-                .find(|n| crate::ui::measure(n, &TextStyle::LABEL) <= room)
-                .unwrap_or_default();
-                if !note.is_empty() {
-                    label(
-                        &mut p,
-                        Vec2::new(x + nw + 12.0, y + 4.0),
-                        &note,
-                        Align::Left,
-                    );
-                }
-                if let Some(tag) = tag {
-                    label(&mut p, right, &tag, Align::Right);
-                }
-                y += 30.0;
+                self.draw_row(
+                    &mut p,
+                    &mut hits,
+                    Vec2::new(x, y),
+                    *part,
+                    part == current,
+                    focused,
+                    part == equipped,
+                    profile,
+                );
+                y += ROW_PITCH;
             }
 
             y += 4.0;
@@ -586,38 +573,49 @@ impl Garage {
                     items,
                     levels,
                 );
-                y += 22.0;
+                y += 20.0;
             }
-            y += 26.0;
             if si == 0 {
+                y += 4.0;
                 p.line(
-                    Vec2::new(x, y - 14.0),
-                    Vec2::new(x + PANEL_W, y - 14.0),
+                    Vec2::new(x, y),
+                    Vec2::new(x + PANEL_W, y),
                     1.0,
                     theme::FAINT,
                 );
-                y += 12.0;
+                y += 18.0;
             }
         }
 
-        // What E does for the highlighted part, then the key hints.
-        let mut hy = h - 128.0;
-        let (act, ready) = action(self.focused(), profile);
-        let mut k = TextStyle::LABEL;
-        k.color = if ready { theme::HOT } else { theme::DIM };
-        p.text(Vec2::new(x, hy), "E", &k, Align::Left);
-        let mut a = TextStyle::LABEL;
-        a.color = if ready { theme::FG } else { theme::DIM };
-        let aw = p.text(Vec2::new(x + 70.0, hy), &act, &a, Align::Left);
-        hits.add(
-            &p,
-            Vec2::new(x - 4.0, hy - 3.0),
-            Vec2::new(78.0 + aw, 14.0),
-            Hit::Key(Input::Act),
+        // Buttons for the highlighted part: equip / buy, then upgrade.
+        let part = self.focused();
+        let mut by = h - 196.0;
+        let (act, ready) = primary_action(part, queued, profile);
+        self.button(
+            &mut p,
+            &mut hits,
+            Vec2::new(x, by),
+            "E",
+            &act,
+            ready,
+            Input::Act,
         );
-        hy += 28.0;
+        by += BUTTON_H + 8.0;
+        if let Some((up, ready)) = upgrade_action(part, profile) {
+            self.button(
+                &mut p,
+                &mut hits,
+                Vec2::new(x, by),
+                "U",
+                &up,
+                ready,
+                Input::Upgrade,
+            );
+        }
+
+        let mut hy = h - 106.0;
         for (key, what, input) in [
-            ("W/S", "CHANGE PART", None),
+            ("W/S", "BROWSE", None),
             ("A/D", "HULL / TURRET", None),
             ("ENTER", "DEPLOY", Some(Input::Deploy)),
             ("ESC", "CANCEL", Some(Input::Revert)),
@@ -647,25 +645,211 @@ impl Garage {
         }
         Layer { verts: v, hits }
     }
+
+    /// One part in a list: a filled band when highlighted (brighter in the
+    /// focused list), its name coloured by whether you own it, can buy it or
+    /// are locked out, and on the right EQUIPPED, a price or a lock.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_row(
+        &self,
+        p: &mut Painter,
+        hits: &mut Hits<Hit>,
+        at: Vec2,
+        part: Part,
+        selected: bool,
+        focused: bool,
+        equipped: bool,
+        profile: &Profile,
+    ) {
+        let (x, y) = (at.x, at.y);
+        let band_min = Vec2::new(x - PANEL_PAD + 4.0, y - 7.0);
+        let band = Vec2::new(PANEL_W + 2.0 * PANEL_PAD - 8.0, ROW_PITCH - 2.0);
+        hits.add(p, band_min, band, Hit::Part(part));
+        p.set_halo(None);
+        if selected {
+            let fill = if focused { SELECT_FILL } else { HOVER_FILL };
+            p.rect(band_min, band, fill);
+            let bar = if focused { theme::FG } else { theme::DIM };
+            p.rect(band_min, Vec2::new(3.0, band.y), bar);
+        } else if self.hover == Some(Hit::Part(part)) {
+            p.rect(band_min, band, HOVER_FILL);
+        }
+        p.set_halo(Some((theme::HALO, theme::HALO_PX)));
+
+        let owned = profile.owns(part);
+        let price = part.price().filter(|_| !owned);
+        let locked = price.is_some_and(|pr| profile.standing_for(part) < pr.standing);
+        let mut s = TextStyle::value(15.0);
+        s.color = if owned {
+            theme::FG
+        } else if locked {
+            LOCKED_NAME
+        } else {
+            theme::DIM
+        };
+        let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
+
+        // Right-hand tag, then the upgrade level and maker after the name in
+        // whatever room is left.
+        let right = Vec2::new(x + PANEL_W - 16.0, y + 4.0);
+        let mut tag_w = 0.0;
+        let mut tag = |p: &mut Painter, text: &str, color: Rgba| {
+            let mut t = TextStyle::LABEL;
+            t.color = color;
+            tag_w = p.text(right, text, &t, Align::Right);
+        };
+        if equipped {
+            tag(p, "EQUIPPED", EQUIPPED);
+        } else if let Some(price) = price {
+            if locked {
+                tag(p, &format!("TRUST {}", price.standing), LOCKED);
+                padlock(p, right - Vec2::new(tag_w + 16.0, 1.0), LOCKED);
+                tag_w += 18.0;
+            } else {
+                let afford = profile.crystals >= price.crystals;
+                let c = if afford { theme::FG } else { theme::DIM };
+                tag(p, &format!("{} CR", price.crystals), c);
+            }
+        }
+        if selected && focused {
+            p.polyline(
+                &[
+                    Vec2::new(x + PANEL_W - 8.0, y + 2.0),
+                    Vec2::new(x + PANEL_W - 3.0, y + 7.5),
+                    Vec2::new(x + PANEL_W - 8.0, y + 13.0),
+                ],
+                1.2,
+                theme::FG,
+            );
+        }
+        let room = right.x - if tag_w > 0.0 { tag_w + 12.0 } else { 0.0 } - (x + nw + 12.0);
+        let maker = part.maker().name();
+        let level = format!("M{}", profile.levels.of(part));
+        let note = [
+            if owned {
+                format!("{level}  {maker}")
+            } else {
+                maker.to_string()
+            },
+            if owned { level } else { String::new() },
+        ]
+        .into_iter()
+        .find(|n| crate::ui::measure(n, &TextStyle::LABEL) <= room)
+        .unwrap_or_default();
+        if !note.is_empty() {
+            label(p, Vec2::new(x + nw + 12.0, y + 4.0), &note, Align::Left);
+        }
+    }
+
+    /// A full-width button: key on the left, what it does after it. Disabled
+    /// ones are drawn faint and still say why (and can't be clicked).
+    #[allow(clippy::too_many_arguments)]
+    fn button(
+        &self,
+        p: &mut Painter,
+        hits: &mut Hits<Hit>,
+        at: Vec2,
+        key: &str,
+        text: &str,
+        ready: bool,
+        input: Input,
+    ) {
+        let size = Vec2::new(PANEL_W, BUTTON_H);
+        let min = at - Vec2::new(0.0, 0.0);
+        let hovered = ready && self.hover == Some(Hit::Key(input));
+        p.set_halo(None);
+        if ready {
+            p.rect(min, size, if hovered { SELECT_FILL } else { HOVER_FILL });
+        }
+        p.set_halo(Some((theme::HALO, theme::HALO_PX)));
+        p.rect_outline(min, size, 1.0, if ready { theme::FG } else { theme::FAINT });
+        let ty = min.y + (BUTTON_H - TextStyle::LABEL.size) * 0.5;
+        let mut k = TextStyle::LABEL;
+        k.color = if ready { theme::HOT } else { theme::DIM };
+        p.text(Vec2::new(min.x + 12.0, ty), key, &k, Align::Left);
+        let mut a = TextStyle::LABEL;
+        a.color = if ready { theme::FG } else { theme::DIM };
+        p.text(Vec2::new(min.x + 36.0, ty), text, &a, Align::Left);
+        if ready {
+            hits.add(p, min, size, Hit::Key(input));
+        }
+    }
 }
 
-/// What buying or upgrading `part` would do, and whether it can right now.
-fn action(part: Part, profile: &Profile) -> (String, bool) {
+/// `kit` with `part` swapped in.
+fn with_part(kit: Loadout, part: Part) -> Loadout {
+    match part {
+        Part::Hull(k) => (k, kit.1),
+        Part::Turret(k) => (kit.0, k),
+    }
+}
+
+/// A small padlock, `at` its top left (about 10 × 11 px).
+fn padlock(p: &mut Painter, at: Vec2, color: Rgba) {
+    p.arc(
+        at + Vec2::new(5.0, 5.0),
+        3.0,
+        std::f32::consts::PI,
+        std::f32::consts::TAU,
+        1.2,
+        color,
+    );
+    p.line(
+        at + Vec2::new(2.0, 5.0),
+        at + Vec2::new(2.0, 6.0),
+        1.2,
+        color,
+    );
+    p.line(
+        at + Vec2::new(8.0, 5.0),
+        at + Vec2::new(8.0, 6.0),
+        1.2,
+        color,
+    );
+    p.rect(at + Vec2::new(0.0, 6.0), Vec2::new(10.0, 6.0), color);
+}
+
+/// What E does for `part` (equip it, or buy it), and whether it can right now.
+fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bool) {
     if profile.owns(part) {
-        let next = profile.levels.of(part) + 1;
-        match profile.can_upgrade(part) {
-            Ok(cost) => (format!("UPGRADE TO M{next} · {cost} CR"), true),
-            Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO M{next} · NEED {cost} CR"), false),
-            Err(_) => ("FULLY UPGRADED".to_string(), false),
+        if with_part(queued, part) == queued {
+            ("EQUIPPED".to_string(), false)
+        } else {
+            (format!("EQUIP {}", part.name()), true)
         }
     } else {
         match profile.can_buy(part) {
             Ok(cost) => (format!("BUY · {cost} CR"), true),
-            Err(Refusal::Trust(f, s)) => (format!("{} SELLS AT TRUST {s}", f.name()), false),
+            Err(Refusal::Trust(f, s)) => {
+                let have = profile.standing_for(part);
+                // The longest that fits the button.
+                let text = [
+                    format!("LOCKED · {} TRUST {s} · YOU {have}", f.name()),
+                    format!("NEEDS {} TRUST {s} · YOU {have}", f.name()),
+                    format!("NEEDS TRUST {s} · YOU {have}"),
+                ]
+                .into_iter()
+                .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
+                .unwrap_or_default();
+                (text, false)
+            }
             Err(Refusal::Crystals(cost)) => (format!("BUY · NEED {cost} CR"), false),
             Err(_) => (String::new(), false),
         }
     }
+}
+
+/// What U does for `part`, if it's owned, and whether it can right now.
+fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
+    if !profile.owns(part) {
+        return None;
+    }
+    let next = profile.levels.of(part) + 1;
+    Some(match profile.can_upgrade(part) {
+        Ok(cost) => (format!("UPGRADE TO M{next} · {cost} CR"), true),
+        Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO M{next} · NEED {cost} CR"), false),
+        Err(_) => ("FULLY UPGRADED".to_string(), false),
+    })
 }
 
 /// A slow orbit around `tank` at the garage's framing (tank right of the
@@ -795,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn picks_and_cancels() {
+    fn browsing_previews_and_e_equips() {
         let w = world();
         let p = rich();
         let mut g = Garage::new();
@@ -804,47 +988,63 @@ mod tests {
         assert_eq!(g.input(Input::Down, start, &p), None);
 
         g.toggle(&w, &cam(&w), start);
+        // Browsing highlights without equipping.
+        assert_eq!(g.input(Input::Down, start, &p), None);
+        assert_eq!(g.view, (HullKind::Kastron, TurretKind::Kontos));
         let l = (HullKind::Kastron, TurretKind::Kontos);
-        assert_eq!(g.input(Input::Down, start, &p), Some(Event::Queue(l)));
-        assert_eq!(g.input(Input::Right, l, &p), None);
+        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Queue(l)));
+        // E on the equipped part does nothing.
+        assert_eq!(g.input(Input::Act, l, &p), None);
+        // A and D pick a list, they don't toggle.
+        g.input(Input::Right, l, &p);
+        g.input(Input::Right, l, &p);
+        assert_eq!(g.section, 1);
         // The list wraps: up from the first turret is the last one.
+        assert_eq!(g.input(Input::Up, l, &p), None);
         let l2 = (HullKind::Kastron, *TURRETS.last().unwrap());
-        assert_eq!(g.input(Input::Up, l, &p), Some(Event::Queue(l2)));
+        assert_eq!(g.input(Input::Act, l, &p), Some(Event::Queue(l2)));
+        assert_eq!(
+            g.input(Input::Upgrade, l2, &p),
+            Some(Event::Upgrade(Part::Turret(*TURRETS.last().unwrap())))
+        );
         assert_eq!(g.input(Input::Revert, l2, &p), Some(Event::Queue(start)));
         assert!(!g.is_open());
 
-        // Reopens on the section it was left on (turret): go back to the hull.
         g.toggle(&w, &cam(&w), start);
         g.input(Input::Left, start, &p);
-        assert!(g.input(Input::Down, start, &p).is_some());
-        assert_eq!(g.input(Input::Deploy, l, &p), None);
+        assert_eq!(g.section, 0);
+        assert_eq!(g.input(Input::Deploy, start, &p), None);
         assert!(!g.is_open());
     }
 
     #[test]
-    fn unowned_parts_preview_but_dont_queue() {
+    fn unowned_parts_preview_and_e_buys() {
         let w = world();
         let mut p = Profile::in_memory();
         let mut g = Garage::new();
         let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         g.toggle(&w, &cam(&w), start);
         g.input(Input::Right, start, &p);
-        // Pelekys isn't owned: highlighted and previewed, not queued; E asks to buy it.
+        // Pelekys isn't owned: highlighted and previewed; E asks to buy it, U does nothing.
         assert_eq!(g.input(Input::Down, start, &p), None);
         assert_eq!(g.view, (HullKind::Kataphrakt, TurretKind::Pelekys));
         let pelekys = Part::Turret(TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(pelekys)));
-        // Once bought it queues; E on an owned part upgrades.
+        assert_eq!(g.input(Input::Upgrade, start, &p), None);
+        // Once bought it's equipped.
         p.set_trust_all(100_000);
         p.crystals = 100_000;
         p.buy(pelekys).unwrap();
         let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);
         assert_eq!(g.bought(start, &p), Some(Event::Queue(kit)));
-        assert_eq!(g.input(Input::Act, kit, &p), Some(Event::Upgrade(pelekys)));
+        assert_eq!(
+            g.input(Input::Upgrade, kit, &p),
+            Some(Event::Upgrade(pelekys))
+        );
     }
 
     #[test]
-    fn clicking_parts_and_hints() {
+    fn clicking_parts_and_buttons() {
         let w = world();
         let p = rich();
         let mut g = Garage::new();
@@ -853,25 +1053,40 @@ mod tests {
         assert!(hits.is_empty(), "closed: nothing to click");
         g.toggle(&w, &cam(&w), start);
         g.update(1.0);
-        let hits = g.draw(&w.tanks[0], start, &p, 900.0).hits;
         let click = |g: &mut Garage, hit: Hit| {
+            let hits = g.draw(&w.tanks[0], start, &p, 900.0).hits;
             let (id, _) = hits.at(hits.center_of(hit).unwrap()).unwrap();
             assert_eq!(id, hit);
             g.click(id, start, &p)
         };
-        let bastion = Part::Hull(HullKind::Kastron);
+        let kastron = Part::Hull(HullKind::Kastron);
+        // A click previews, it doesn't equip.
+        assert_eq!(click(&mut g, Hit::Part(kastron)), None);
+        assert_eq!(g.focused(), kastron);
         assert_eq!(
-            click(&mut g, Hit::Part(bastion)),
+            click(&mut g, Hit::Key(Input::Act)),
             Some(Event::Queue((HullKind::Kastron, TurretKind::Kontos)))
         );
-        assert_eq!(g.focused(), bastion);
         assert_eq!(
             click(&mut g, Hit::Part(Part::Turret(TurretKind::Pelekys))),
-            Some(Event::Queue((HullKind::Kastron, TurretKind::Pelekys)))
+            None
         );
         assert_eq!(g.section, 1);
         assert_eq!(click(&mut g, Hit::Key(Input::Deploy)), None);
         assert!(!g.is_open());
+    }
+
+    #[test]
+    fn disabled_buttons_cant_be_clicked() {
+        let w = world();
+        let p = Profile::in_memory();
+        let mut g = Garage::new();
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
+        g.toggle(&w, &cam(&w), start);
+        g.update(1.0);
+        // The starter hull is equipped: nothing for E to do.
+        let hits = g.draw(&w.tanks[0], start, &p, 900.0).hits;
+        assert!(hits.center_of(Hit::Key(Input::Act)).is_none());
     }
 
     #[test]
