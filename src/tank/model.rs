@@ -7,7 +7,7 @@
 //! guns around their pitch pivot.
 
 use crate::render::material::Material;
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 use glam::{Vec2, Vec3, Vec4};
 
@@ -38,6 +38,11 @@ pub const PAINT: Skin = Skin {
     face: Vec4::new(0.9, 0.9, 0.9, Material::Paint.id()),
     edge: Vec4::new(0.9, 0.9, 0.9, Material::Worn.id()),
 };
+/// Imperium armor: deep crimson, worn to metal on the edges.
+pub const CRIMSON: Skin = Skin {
+    face: Vec4::new(0.5, 0.045, 0.06, Material::Paint.id()),
+    edge: Vec4::new(0.5, 0.045, 0.06, Material::Worn.id()),
+};
 pub const METAL: Skin = Skin {
     face: Vec4::new(0.36, 0.37, 0.39, Material::Metal.id()),
     edge: Vec4::new(0.5, 0.5, 0.52, Material::Metal.id()),
@@ -50,9 +55,15 @@ pub const RUBBER: Skin = Skin {
     face: Vec4::new(0.06, 0.06, 0.065, Material::Carbon.id()),
     edge: Vec4::new(0.1, 0.1, 0.11, Material::Carbon.id()),
 };
+/// Imperium light strips: warm gold.
 pub const GLOW: Skin = Skin {
-    face: Vec4::new(1.0, 0.2, 0.03, Material::Glow.id()),
-    edge: Vec4::new(1.0, 0.2, 0.03, Material::Glow.id()),
+    face: Vec4::new(1.0, 0.6, 0.16, Material::Glow.id()),
+    edge: Vec4::new(1.0, 0.6, 0.16, Material::Glow.id()),
+};
+/// Imperium gold: the emblem and trim.
+pub const GILT: Skin = Skin {
+    face: Vec4::new(0.95, 0.68, 0.26, Material::Metal.id()),
+    edge: Vec4::new(1.0, 0.82, 0.45, Material::Metal.id()),
 };
 pub const BORE: Skin = Skin {
     face: Vec4::new(0.01, 0.01, 0.012, Material::Carbon.id()),
@@ -250,6 +261,72 @@ pub fn plate(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin)
     let outer = cut_quad(top, k);
     let inner: Vec<Vec3> = outer.iter().map(|&p| p - n * t).collect();
     solid(m, &[inner, outer], (t * 0.3).min(0.025), skin);
+}
+
+/// The Imperium's emblem, a planet under a halo: a domed disc with an arch
+/// over it that tapers to points at both ends. Raised in relief on a
+/// surface: `c` is its center on the surface, `up` points to the top of the
+/// emblem, `out` away from the surface; `size` is about half its height.
+/// Each part is one continuous mesh, so there are no seams.
+pub fn emblem(m: &mut MeshData, c: Vec3, up: Vec3, out: Vec3, size: f32, skin: Skin) {
+    let out = out.normalize();
+    let up = (up - out * up.dot(out)).normalize();
+    let right = up.cross(out);
+    // A point in emblem units (`q` across the face, `h` off the surface).
+    let at = |q: Vec2, h: f32| c + (right * q.x + up * q.y + out * h) * size;
+    let base = -0.02 / size;
+    let below = c - out;
+
+    // Planet: a shallow dome, walled at its edge.
+    let (pc, pr, n) = (Vec2::new(0.0, -0.17), 0.48, 36);
+    let rings = [(1.0, 0.07), (0.8, 0.1), (0.5, 0.12), (0.0, 0.13)];
+    let dir = |i: usize| {
+        let a = i as f32 / n as f32 * TAU;
+        Vec2::new(a.cos(), a.sin())
+    };
+    for i in 0..n {
+        let (d0, d1) = (dir(i), dir(i + 1));
+        let wall = [at(pc + d0 * pr, base), at(pc + d1 * pr, base)];
+        let rim = [at(pc + d0 * pr, rings[0].1), at(pc + d1 * pr, rings[0].1)];
+        let centre = at(pc, 0.0);
+        m.facet([wall[0], wall[1], rim[1]], centre, skin.edge);
+        m.facet([wall[0], rim[1], rim[0]], centre, skin.edge);
+        for w in rings.windows(2) {
+            let (r0, h0) = w[0];
+            let (r1, h1) = w[1];
+            let a0 = at(pc + d0 * pr * r0, h0);
+            let a1 = at(pc + d1 * pr * r0, h0);
+            let b0 = at(pc + d0 * pr * r1, h1);
+            let b1 = at(pc + d1 * pr * r1, h1);
+            m.facet([a0, a1, b1], below, skin.face);
+            m.facet([a0, b1, b0], below, skin.face);
+        }
+    }
+
+    // Halo: an arch over the planet, widest at the top, tapering to points.
+    let (r, wmax, h, segs) = (0.76, 0.075, 0.09, 40);
+    let (a0, a1) = (PI * 0.07, PI * 0.93);
+    let pts: Vec<(Vec2, Vec2)> = (0..=segs)
+        .map(|i| {
+            let s = i as f32 / segs as f32;
+            let a = a0 + (a1 - a0) * s;
+            let d = Vec2::new(a.cos(), a.sin());
+            let w = wmax * (PI * s).sin().sqrt().max(0.02);
+            (pc + d * (r - w), pc + d * (r + w))
+        })
+        .collect();
+    for k in 0..segs {
+        let ((i0, o0), (i1, o1)) = (pts[k], pts[k + 1]);
+        let mid = at((i0 + o0 + i1 + o1) * 0.25, h * 0.5);
+        let (ti0, to0, ti1, to1) = (at(i0, h), at(o0, h), at(i1, h), at(o1, h));
+        m.facet([ti0, to0, to1], below, skin.face);
+        m.facet([ti0, to1, ti1], below, skin.face);
+        for (p0, p1) in [(i0, i1), (o0, o1)] {
+            let (b0, b1, t0, t1) = (at(p0, base), at(p1, base), at(p0, h), at(p1, h));
+            m.facet([b0, b1, t1], mid, skin.edge);
+            m.facet([b0, t1, t0], mid, skin.edge);
+        }
+    }
 }
 
 /// Axis-aligned beveled box.
@@ -507,7 +584,7 @@ pub struct HullModel {
 
 /// Light, sleek hull: a low wedge with sharp white fender plates sweeping
 /// forward over the sprockets and a dark composite core.
-pub fn lancer() -> HullModel {
+pub fn kataphrakt() -> HullModel {
     let mut m = MeshData::default();
     let inside = v(0.0, 0.8, 0.0);
 
@@ -548,7 +625,7 @@ pub fn lancer() -> HullModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -560,7 +637,7 @@ pub fn lancer() -> HullModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -572,7 +649,7 @@ pub fn lancer() -> HullModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Claw plates angling down over the front of the sprockets.
     plate2(
@@ -585,7 +662,7 @@ pub fn lancer() -> HullModel {
         ],
         0.065,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Dark inner fender liners under the white plates (visible from the front).
     plate2(
@@ -616,7 +693,7 @@ pub fn lancer() -> HullModel {
         skirt(-2.32, -0.75, 1.64, 1.02, 0.78),
         0.05,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -630,7 +707,7 @@ pub fn lancer() -> HullModel {
         skirt(0.45, 1.8, 1.64, 0.78, 1.1),
         0.05,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Angled armor wedge bridging the front skirt and the claw.
     plate2(
@@ -659,7 +736,7 @@ pub fn lancer() -> HullModel {
         GLOW,
     );
 
-    // Raised glacis plate with twin light bars.
+    // Raised glacis plate, carrying the emblem.
     plate(
         &mut m,
         [
@@ -672,18 +749,15 @@ pub fn lancer() -> HullModel {
         inside,
         CARBON_LIGHT,
     );
-    plate2(
-        &mut m,
-        [
-            v(0.2, 1.46, 1.25),
-            v(0.42, 1.46, 1.25),
-            v(0.36, 1.32, 1.8),
-            v(0.2, 1.32, 1.8),
-        ],
-        0.02,
-        inside,
-        GLOW,
-    );
+    // The emblem in gold on the glacis.
+    {
+        let (top, low) = (v(0.0, 1.42, 1.1), v(0.0, 1.11, 2.38));
+        let up = (top - low).normalize();
+        let out = up.cross(Vec3::X).normalize();
+        let out = if out.y < 0.0 { -out } else { out };
+        // High on the plate and stood off it: the deck rises through its lower half.
+        emblem(&mut m, top.lerp(low, 0.3) + out * 0.04, up, out, 0.5, GILT);
+    }
     // Nose: armored beak under the glacis.
     plate(
         &mut m,
@@ -695,7 +769,7 @@ pub fn lancer() -> HullModel {
         ],
         0.06,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -770,7 +844,7 @@ pub fn lancer() -> HullModel {
 
 /// Heavy hull: taller and boxier, with thick segmented skirts, a bull-nose
 /// front plate and more hardware on the deck.
-pub fn bastion() -> HullModel {
+pub fn kastron() -> HullModel {
     let mut m = MeshData::default();
     let inside = v(0.0, 0.9, 0.0);
 
@@ -809,7 +883,7 @@ pub fn bastion() -> HullModel {
         ],
         0.08,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate(
         &mut m,
@@ -823,6 +897,14 @@ pub fn bastion() -> HullModel {
         inside,
         CARBON_LIGHT,
     );
+    // The emblem in gold on the bull nose, between the light slits.
+    {
+        let (top, low) = (v(0.0, 1.12, 2.62), v(0.0, 0.6, 2.72));
+        let up = (top - low).normalize();
+        let out = up.cross(Vec3::X).normalize();
+        let out = if out.z < 0.0 { -out } else { out };
+        emblem(&mut m, top.lerp(low, 0.42), up, out, 0.42, GILT);
+    }
     // Bull-nose lower plate with light slits.
     plate(
         &mut m,
@@ -834,7 +916,7 @@ pub fn bastion() -> HullModel {
         ],
         0.08,
         inside,
-        PAINT,
+        CRIMSON,
     );
     for s in [-1.0f32, 1.0] {
         plate(
@@ -857,7 +939,7 @@ pub fn bastion() -> HullModel {
         let z1 = z0 + 1.2;
         let x = if i % 2 == 0 { 1.66 } else { 1.71 };
         let low = if i == 3 { 0.62 } else { 0.5 };
-        let skin = if i == 1 { CARBON_LIGHT } else { PAINT };
+        let skin = if i == 1 { CARBON_LIGHT } else { CRIMSON };
         plate2(
             &mut m,
             [
@@ -930,7 +1012,7 @@ pub fn bastion() -> HullModel {
         ],
         0.03,
         inside + Vec3::Y,
-        PAINT,
+        CRIMSON,
     );
     block(
         &mut m,
@@ -1048,7 +1130,7 @@ pub(crate) fn turret_ring(m: &mut MeshData) {
 
 /// Long-barrel rail cannon: faceted wedge head, white cheek armor, glowing
 /// coil slots along the barrel.
-pub fn lance() -> TurretModel {
+pub fn kontos() -> TurretModel {
     let mut head = MeshData::default();
     let inside = v(0.0, 0.45, -0.2);
     turret_ring(&mut head);
@@ -1074,7 +1156,7 @@ pub fn lance() -> TurretModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut head,
@@ -1086,7 +1168,7 @@ pub fn lance() -> TurretModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Raised roof panel and a sensor pod with an eye.
     plate(
@@ -1120,6 +1202,8 @@ pub fn lance() -> TurretModel {
         inside,
         GLOW,
     );
+    // The emblem in gold on the roof, reading from behind.
+    emblem(&mut head, v(0.0, 0.86, -0.15), Vec3::Z, Vec3::Y, 0.6, GILT);
     // Rear antenna fins.
     for s in [-1.0f32, 1.0] {
         plate(
@@ -1132,7 +1216,7 @@ pub fn lance() -> TurretModel {
             ],
             0.03,
             v(0.0, 0.5, -1.1),
-            PAINT,
+            CRIMSON,
         );
     }
     // Rear light bar.
@@ -1180,7 +1264,7 @@ pub fn lance() -> TurretModel {
             ],
             0.07,
             Vec3::ZERO,
-            PAINT,
+            CRIMSON,
         );
     }
 
@@ -1271,7 +1355,7 @@ pub fn lance() -> TurretModel {
 }
 
 /// Twin short cannons in a wide, low turret with big shoulder plates.
-pub fn maul() -> TurretModel {
+pub fn pelekys() -> TurretModel {
     let mut head = MeshData::default();
     let inside = v(0.0, 0.4, -0.2);
     turret_ring(&mut head);
@@ -1296,7 +1380,7 @@ pub fn maul() -> TurretModel {
         ],
         0.08,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut head,
@@ -1320,7 +1404,7 @@ pub fn maul() -> TurretModel {
         ],
         0.06,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate(
         &mut head,
@@ -1334,6 +1418,8 @@ pub fn maul() -> TurretModel {
         inside,
         GLOW,
     );
+    // The emblem in gold on the roof between the shoulder plates.
+    emblem(&mut head, v(0.0, 0.72, -0.15), Vec3::Z, Vec3::Y, 0.55, GILT);
     // Ammo drum housing at the back.
     solid(
         &mut head,
@@ -1354,7 +1440,7 @@ pub fn maul() -> TurretModel {
         ],
         0.03,
         v(0.0, 0.4, -1.2),
-        PAINT,
+        CRIMSON,
     );
     for s in [-1.0f32, 1.0] {
         plate(
@@ -1400,7 +1486,7 @@ pub fn maul() -> TurretModel {
         ],
         0.03,
         Vec3::ZERO,
-        PAINT,
+        CRIMSON,
     );
 
     let mut barrel = MeshData::default();
@@ -1433,7 +1519,7 @@ pub fn maul() -> TurretModel {
         ],
         0.02,
         Vec3::ZERO,
-        PAINT,
+        CRIMSON,
     );
     round(
         &mut barrel,
@@ -1473,7 +1559,7 @@ pub fn maul() -> TurretModel {
 }
 
 // ---------------------------------------------------------------------------
-// Faction turrets. The Imperium builds the plated Lance and Maul above; the
+// Faction turrets. The Imperium builds the plated Kontos and Pelekys above; the
 // others below each have their own shape language and glow color.
 
 /// Machine laser red.

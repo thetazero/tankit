@@ -47,10 +47,10 @@ tankit [OPTIONS]
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
-  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
-  --hull <lancer|bastion|sethuun>  player hull (default lancer; sethuun hovers)
-  --turret <name>         player turret: lance maul (Imperium), ammeth ossrin (Ithessar),
-                          lumen (machines), hymn (Resonant); default lance
+  --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
+  --hull <kataphrakt|kastron|sethuun>  player hull (default kataphrakt; sethuun hovers)
+  --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
+                          lumen (machines), hymn (Resonant); default kontos
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
         return record_wav(&args, out, *seconds);
     }
     match (&args.shot, args.showroom) {
-        (Some(shot), Some(room)) => showroom_shot(shot, room),
+        (Some(shot), Some(room)) => showroom_shot(shot, room, args.cam),
         (Some(shot), None)
             if matches!(
                 args.screen,
@@ -210,7 +210,7 @@ fn parse_args() -> Result<Args> {
     let mut bots: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
-    let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
+    let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
@@ -296,14 +296,14 @@ fn parse_args() -> Result<Args> {
                 loadout.0 = *garage::HULLS
                     .iter()
                     .find(|&&k| garage::hull_name(k) == name)
-                    .context("--hull expects lancer, bastion or sethuun")?;
+                    .context("--hull expects kataphrakt, kastron or sethuun")?;
             }
             "--turret" => {
                 let name = args.next().unwrap_or_default().to_ascii_uppercase();
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects lance, maul, ammeth, ossrin, lumen or hymn")?;
+                    .context("--turret expects kontos, pelekys, ammeth, ossrin, lumen or hymn")?;
             }
             "--garage" => garage = true,
             "--screen" => {
@@ -500,16 +500,14 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame.ui.extend(menu::Pause::new().draw(
-                    &profile,
-                    game.factions[0],
-                    game.trust,
-                    w,
-                    h,
-                ));
+                frame.ui.extend(
+                    menu::Pause::new()
+                        .draw(&profile, game.factions[0], game.trust, w, h)
+                        .verts,
+                );
             }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));
@@ -587,7 +585,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let tanks = game.display_tanks(1.0);
     let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
-    frame.ui = menu.draw(&profile, h, 1.0);
+    frame.ui = menu.draw(&profile, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));
     }
@@ -599,7 +597,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     Ok(())
 }
 
-fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
+fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs, cam: Option<(Vec3, Vec3)>) -> Result<()> {
     let mut world = showroom::world();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&showroom::ground_mesh());
@@ -617,7 +615,14 @@ fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
             advance(&mut world, 1.0 / shot.fps);
         }
         let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
-        let camera = showroom::camera(&world, angle, room.dist, room.focus);
+        let camera = match cam {
+            Some((pos, target)) => render::Camera {
+                pos,
+                target,
+                fov_y: 60f32.to_radians(),
+            },
+            None => showroom::camera(&world, angle, room.dist, room.focus),
+        };
         let mut frame = scene::build(&world, &world.tanks, &art, camera);
         frame.shadow_center = Vec3::ZERO;
         frame.shadow_radius = 22.0;

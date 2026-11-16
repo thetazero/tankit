@@ -25,7 +25,7 @@ Four sides. Any of them can hire you.
 
 | Faction | Who they are |
 |---|---|
-| **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. |
+| **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. An empire that is also a religion, Byzantine in spirit. See [The Imperium](#the-imperium). |
 | **The Resonant** | Human. A cult built around the crystals. The crystals answer: a machine with a crystal in it won't stay dead. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. See [The Resonant](#the-resonant). |
 | **The machines** | A machine faction (name and origin TBD). Machines hire mercenaries too. |
 | **The Ithessar** | The aliens. They shape plasma with crystal: their machines float on it, their weapons throw it. |
@@ -43,7 +43,7 @@ play. Factions are the world, never a lock on your build. They show up as:
 - **Map owners**: whose territory a map is.
 - **Part makers**: every hull and turret has a maker, and parts from
   different makers mix freely. Each maker has its own kind of weapon:
-  - **Imperium**: conventional guns firing fast shells (Lance, Maul).
+  - **Imperium**: conventional guns firing fast shells (Kontos, Pelekys).
   - **Ithessar**: slow plasma (Ammeth's orbs skip off walls; Ossrin's
     needles spin up into a stream).
   - **Machines**: a laser beam that burns while held, then overheats (Lumen).
@@ -51,7 +51,7 @@ play. Factions are the world, never a lock on your build. They show up as:
     breathes short-range blue crystal fire. Later maybe shields, drains,
     phasing.
 
-  Hulls: the Imperium make the tracked ones (Lancer, Bastion), the Ithessar
+  Hulls: the Imperium make the tracked ones (Kataphrakt, Kastron), the Ithessar
   one that hovers (Sethuun), the Resonant a vessel that won't stay dead
   (Vigil). The machines will get their own.
 
@@ -95,6 +95,30 @@ hung at its flank: purifying blue crystal fire, short range, deadly up close.
 
 **Color:** crystal blue, in their light and on the HUD. Their machines are
 worn ivory and gilt; no tank wears its side's color.
+
+## The Imperium
+
+**An empire that is also a religion.** Byzantine in spirit: there is an
+Emperor, the state is sacred, and everything is done with ceremony that
+long ago stopped needing a reason. Ritual for its own sake.
+
+**Not the Resonant.** The Resonant worship the crystal; the Imperium worships
+the Imperium. Their machines are mass-made and identical, stamped with the
+emblem and sent down from orbit.
+
+**They hire mercenaries** for the same reason as everyone else: they want to
+win.
+
+**The emblem:** a planet under a halo: a gold disc with an arch over it.
+
+**Color:** deep crimson and gold.
+
+**Where the ritual shows:** on maps, subtly. Banners and cloth in crimson,
+gold mosaic, small shrines, the emblem on walls and pods. Their machines
+are crimson with gold light and the emblem in gilt, but otherwise clean,
+plated, made in bulk.
+
+**Names:** Byzantine flavored.
 
 ## Crystals
 

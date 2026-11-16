@@ -50,16 +50,16 @@ impl KitMeshes {
         } = resonant::vigil();
         KitMeshes {
             hulls: vec![
-                hull(model::lancer()),
-                hull(model::bastion()),
+                hull(model::kataphrakt()),
+                hull(model::kastron()),
                 hull(vigil_hull),
             ],
             hover: ithessar::sethuun(),
             vigil,
             // Same order as `TurretKind::ALL`.
             turrets: vec![
-                model::lance(),
-                model::maul(),
+                model::kontos(),
+                model::pelekys(),
                 ithessar::ammeth(),
                 ithessar::ossrin(),
                 model::lumen(),
@@ -228,8 +228,8 @@ impl TankArt {
         // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
         let base = Mat4::from_rotation_translation(t.rot, t.pos);
         let mount = match t.hull_kind {
-            HullKind::Lancer => self.tracked(&self.hulls[0], t, base, out),
-            HullKind::Bastion => self.tracked(&self.hulls[1], t, base, out),
+            HullKind::Kataphrakt => self.tracked(&self.hulls[0], t, base, out),
+            HullKind::Kastron => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
             HullKind::Vigil => {
                 let mount = self.tracked(&self.hulls[2], t, base, out);
@@ -729,8 +729,8 @@ mod tests {
     fn physics_chassis_matches_the_art() {
         use crate::sim::{Chassis, HullKind};
         for (kind, h) in [
-            (HullKind::Lancer, model::lancer()),
-            (HullKind::Bastion, model::bastion()),
+            (HullKind::Kataphrakt, model::kataphrakt()),
+            (HullKind::Kastron, model::kastron()),
         ] {
             let c = Chassis::of(kind);
             let r = &h.running;

@@ -73,6 +73,100 @@ impl TextStyle {
     }
 }
 
+/// A clickable rectangle in window pixels, recorded while drawing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit<T> {
+    pub min: Vec2,
+    pub max: Vec2,
+    pub id: T,
+}
+
+/// The clickable areas a component drew this frame, later ones on top.
+/// Recording them in `draw`, from the same rects that were drawn, keeps the
+/// click targets in step with the layout without repeating it anywhere.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hits<T>(Vec<Hit<T>>);
+
+impl<T> Default for Hits<T> {
+    fn default() -> Self {
+        Hits(Vec::new())
+    }
+}
+
+impl<T: Copy> Hits<T> {
+    pub fn new() -> Hits<T> {
+        Hits::default()
+    }
+
+    /// Mark a logical-px rect drawn by `p` as `id`.
+    pub fn add(&mut self, p: &Painter, min: Vec2, size: Vec2, id: T) {
+        self.0.push(Hit {
+            min: min * p.scale,
+            max: (min + size) * p.scale,
+            id,
+        });
+    }
+
+    /// The topmost area under `at` (window px), and where in it `at` falls (0..1 on each axis).
+    pub fn at(&self, at: Vec2) -> Option<(T, Vec2)> {
+        self.0
+            .iter()
+            .rev()
+            .find(|h| at.cmpge(h.min).all() && at.cmplt(h.max).all())
+            .map(|h| (h.id, (at - h.min) / (h.max - h.min).max(Vec2::splat(1e-3))))
+    }
+
+    /// The centre of the topmost area marked `id`, in window px.
+    pub fn center_of(&self, id: T) -> Option<Vec2>
+    where
+        T: PartialEq,
+    {
+        let h = self.0.iter().rev().find(|h| h.id == id)?;
+        Some((h.min + h.max) * 0.5)
+    }
+
+    pub fn map<U>(self, f: impl Fn(T) -> U) -> Hits<U> {
+        Hits(
+            self.0
+                .into_iter()
+                .map(|h| Hit {
+                    min: h.min,
+                    max: h.max,
+                    id: f(h.id),
+                })
+                .collect(),
+        )
+    }
+
+    /// `other`'s areas, on top of these.
+    pub fn extend(&mut self, other: Hits<T>) {
+        self.0.extend(other.0);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// What a component drew: its triangles and where it can be clicked.
+pub struct Layer<T> {
+    pub verts: Vec<UiVertex>,
+    pub hits: Hits<T>,
+}
+
+impl<T> Layer<T> {
+    pub fn empty() -> Layer<T> {
+        Layer {
+            verts: Vec::new(),
+            hits: Hits::default(),
+        }
+    }
+}
+
 pub struct Painter {
     pub scale: f32,
     halo: Option<(Rgba, f32)>,
@@ -345,6 +439,19 @@ mod tests {
         let v = p.finish();
         assert_eq!(v[0].color[0], theme::HALO[0]);
         assert_eq!(v[18 + 1].color[0], theme::FG[0]);
+    }
+
+    #[test]
+    fn hits_are_in_window_pixels_topmost_first() {
+        let p = Painter::new(2.0);
+        let mut hits = Hits::new();
+        hits.add(&p, Vec2::ZERO, Vec2::splat(10.0), 1);
+        hits.add(&p, Vec2::splat(5.0), Vec2::splat(10.0), 2);
+        assert_eq!(hits.at(Vec2::new(4.0, 4.0)), Some((1, Vec2::splat(0.2))));
+        // Overlap: the later one wins.
+        assert_eq!(hits.at(Vec2::splat(15.0)).map(|h| h.0), Some(2));
+        assert_eq!(hits.at(Vec2::splat(31.0)), None);
+        assert_eq!(hits.map(|i| i * 10).at(Vec2::ONE).map(|h| h.0), Some(10));
     }
 
     #[test]
