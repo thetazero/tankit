@@ -19,7 +19,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::{Core, Crystal, Map, OBox, Terrain};
+use super::{Core, Crystal, GlowPath, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::rng::Rng;
@@ -200,6 +200,7 @@ impl Map {
             hold_site: Some(CENTER),
             cores: Vec::new(),
             crystals: Vec::new(),
+            glow_paths: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
         terrain.color = SLATE;
@@ -209,7 +210,7 @@ impl Map {
 
         map.kiln_court(&mut rng);
         map.warren(&mut rng);
-        map.river();
+        map.river(&mut rng);
         map.ithessar_base();
         map.imperium_base(&mut rng);
         map.kiln_spawns();
@@ -348,40 +349,65 @@ impl Map {
         }
     }
 
-    /// The river of plasma down the canyon floor.
-    fn river(&mut self) {
-        for east in [false, true] {
-            for w in CANYON.0.windows(2) {
-                let flip = |x: f32, z: f32| {
-                    if east {
-                        Vec2::new(SIZE - x, z)
-                    } else {
-                        Vec2::new(x, z)
-                    }
-                };
-                let (a, b) = (flip(w[0].0, w[0].1), flip(w[1].0, w[1].1));
-                let steps = (a.distance(b) / 4.0).ceil() as usize;
-                for k in 0..steps {
-                    let p0 = a.lerp(b, k as f32 / steps as f32);
-                    let p1 = a.lerp(b, (k + 1) as f32 / steps as f32);
-                    let mid = (p0 + p1) * 0.5;
-                    let dir = p1 - p0;
-                    let g = self.ground_height(mid.x, mid.y);
-                    self.oboxes.push(OBox {
-                        center: mid,
-                        yaw: dir.x.atan2(dir.y),
-                        half: Vec2::new(0.9, dir.length() * 0.5 + 0.1),
-                        y0: g - 0.3,
-                        y1: g + 0.03,
-                        color: PLASMA * 0.8,
-                        side_mat: Material::Glow,
-                        top_mat: Material::Glow,
-                        solid: false,
-                        ..OBox::default()
-                    });
-                }
+    /// Plasma showing through cracks in the canyon floor: one jagged
+    /// fissure the length of the canyon, with branches splitting off it.
+    fn river(&mut self, rng: &mut Rng) {
+        // The whole canyon: the west half, then its mirror back out east.
+        let mut ctrl: Vec<Vec2> = CANYON.0.iter().map(|&(x, z)| Vec2::new(x, z)).collect();
+        let east: Vec<Vec2> = ctrl
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|p| Vec2::new(SIZE - p.x, p.y))
+            .collect();
+        ctrl.extend(east);
+        // Walk it in short straight steps, kinked sideways: a crack, not a curve.
+        let mut line = Vec::new();
+        for w in ctrl.windows(2) {
+            let steps = (w[0].distance(w[1]) / 1.8).ceil() as usize;
+            for k in 0..steps {
+                let p = w[0].lerp(w[1], k as f32 / steps as f32);
+                let d = (w[1] - w[0]).normalize();
+                line.push(p + Vec2::new(-d.y, d.x) * rng.range(-0.7, 0.7));
             }
         }
+        let width = |rng: &mut Rng, base: f32| base * rng.range(0.6, 1.3);
+        let main_w: Vec<f32> = line.iter().map(|_| width(rng, 0.16)).collect();
+        self.crack(&line, main_w);
+        // Branches: every so often a smaller crack splits off at an angle,
+        // narrowing to nothing.
+        let mut i = 4;
+        while i + 2 < line.len() {
+            let d = (line[i + 1] - line[i - 1]).normalize();
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let mut dir = (d * 0.6 + Vec2::new(-d.y, d.x) * side).normalize();
+            let mut p = line[i];
+            let n = 3 + (rng.next_u64() % 4) as usize;
+            let mut pts = vec![p];
+            for _ in 0..n {
+                dir = (dir + Vec2::new(rng.range(-0.5, 0.5), rng.range(-0.5, 0.5))).normalize();
+                p += dir * rng.range(1.0, 1.8);
+                pts.push(p);
+            }
+            let ws = (0..pts.len())
+                .map(|k| 0.12 * (1.0 - k as f32 / pts.len() as f32) + 0.02)
+                .collect();
+            self.crack(&pts, ws);
+            i += 3 + (rng.next_u64() % 4) as usize;
+        }
+    }
+
+    /// A glowing crack along `pts` (ground points) with half-widths `widths`.
+    fn crack(&mut self, pts: &[Vec2], widths: Vec<f32>) {
+        let points = pts
+            .iter()
+            .map(|p| Vec3::new(p.x, self.ground_height(p.x, p.y) + 0.05, p.y))
+            .collect();
+        self.glow_paths.push(GlowPath {
+            points,
+            widths,
+            color: PLASMA,
+        });
     }
 
     /// The Ithessar base: glowing drop rings, lanterns over the ways out.

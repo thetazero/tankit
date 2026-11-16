@@ -374,6 +374,57 @@ pub struct Map {
     pub cores: Vec<Core>,
     /// Faceted crystals (Ithessar ground).
     pub crystals: Vec<Crystal>,
+    /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
+    pub glow_paths: Vec<GlowPath>,
+}
+
+/// A glowing ribbon on the ground: a bright core fading out to its edges.
+/// Drawn as one continuous strip, so the glow's pulse runs along it.
+#[derive(Clone, Debug)]
+pub struct GlowPath {
+    /// Center line, already at ground height.
+    pub points: Vec<Vec3>,
+    /// Half-width at each point.
+    pub widths: Vec<f32>,
+    pub color: Vec3,
+}
+
+impl GlowPath {
+    /// Append its mesh: a hot core band and dimmer bands to each side.
+    pub fn mesh(&self, m: &mut crate::render::mesh::MeshData) {
+        let n = self.points.len();
+        if n < 2 {
+            return;
+        }
+        // (offset across as a fraction of the half-width, brightness)
+        let bands = [(-1.0f32, 0.45f32), (-0.35, 1.0), (0.35, 1.0), (1.0, 0.45)];
+        let side = |i: usize| {
+            let a = self.points[i.saturating_sub(1)];
+            let b = self.points[(i + 1).min(n - 1)];
+            let d = Vec2::new(b.x - a.x, b.z - a.z).normalize_or_zero();
+            Vec3::new(-d.y, 0.0, d.x)
+        };
+        for i in 0..n - 1 {
+            let (s0, s1) = (side(i), side(i + 1));
+            for w in bands.windows(2) {
+                let (f0, c0) = w[0];
+                let (f1, c1) = w[1];
+                let col = self.color * (c0 + c1) * 0.5;
+                let c = col.extend(Material::Glow.id());
+                let p = |j: usize, s: Vec3, f: f32| self.points[j] + s * self.widths[j] * f;
+                m.quad(
+                    [
+                        p(i, s0, f0),
+                        p(i + 1, s1, f0),
+                        p(i + 1, s1, f1),
+                        p(i, s0, f1),
+                    ],
+                    Vec3::Y,
+                    c,
+                );
+            }
+        }
+    }
 }
 
 /// A worked crystal: an irregular faceted prism from a base sunk in the
@@ -556,6 +607,7 @@ impl Map {
             hold_site: None,
             cores: Vec::new(),
             crystals: Vec::new(),
+            glow_paths: Vec::new(),
         };
 
         // Ring road around the inner city.
@@ -953,6 +1005,7 @@ impl Map {
             hold_site: None,
             cores: Vec::new(),
             crystals: Vec::new(),
+            glow_paths: Vec::new(),
         }
     }
 
@@ -987,6 +1040,7 @@ impl Map {
             hold_site: None,
             cores: Vec::new(),
             crystals: Vec::new(),
+            glow_paths: Vec::new(),
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.
