@@ -65,14 +65,19 @@ impl NavGrid {
         for o in &map.oboxes {
             // Debris and drivable ramps don't block; neither does anything low or overhead.
             // (A tall leaning spire is tilted like a ramp, but it's a wall.)
+            // Measured as the piece actually stands (tilted, rolled): a
+            // standing post is tall and narrow, not a beam lying flat.
+            let (y0, y1) = o.y_range();
             if !o.solid
                 || (o.is_ramp() && o.y1 - o.y0 < 1.5)
-                || o.y1 - o.y0 < 0.6
-                || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0
+                || y1 - y0 < 0.6
+                || y0 > map.ground_height(o.center.x, o.center.y) + 1.0
             {
                 continue;
             }
-            let reach = o.half.length() + CLEARANCE;
+            let reach = o.half.length().max((y1 - y0) * 0.5) + CLEARANCE;
+            // What's under a tank's height from the piece's lowest point.
+            const TANK_HEIGHT: f32 = 3.0;
             let (lo, hi) = (o.center - Vec2::splat(reach), o.center + Vec2::splat(reach));
             let c0 = ((lo / NAV_CELL).floor().max(Vec2::ZERO)).as_uvec2();
             let c1 = (hi / NAV_CELL)
@@ -82,7 +87,7 @@ impl NavGrid {
             for iz in c0.y as usize..c1.y as usize {
                 for ix in c0.x as usize..c1.x as usize {
                     let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
-                    if o.distance(c) <= CLEARANCE {
+                    if o.base_distance(c, TANK_HEIGHT) <= CLEARANCE {
                         blocked[iz * n + ix] = true;
                     }
                 }

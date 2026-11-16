@@ -102,6 +102,56 @@ impl Default for OBox {
     }
 }
 
+/// Convex hull of points on the ground plane, counter-clockwise (Andrew's
+/// monotone chain).
+fn convex_hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    if pts.len() < 3 {
+        return pts;
+    }
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a - o).perp_dot(b - o);
+    let mut hull: Vec<Vec2> = Vec::new();
+    for pass in 0..2 {
+        let start = hull.len();
+        for k in 0..pts.len() {
+            let p = if pass == 0 {
+                pts[k]
+            } else {
+                pts[pts.len() - 1 - k]
+            };
+            while hull.len() >= start + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+    }
+    hull
+}
+
+/// Distance from `p` to a convex counter-clockwise polygon (0 inside).
+fn polygon_distance(poly: &[Vec2], p: Vec2) -> f32 {
+    match poly.len() {
+        0 => return f32::MAX,
+        1 => return poly[0].distance(p),
+        _ => {}
+    }
+    let n = poly.len();
+    let mut inside = n >= 3;
+    let mut best = f32::MAX;
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (b - a).perp_dot(p - a) < 0.0 {
+            inside = false;
+        }
+        let t = ((p - a).dot(b - a) / (b - a).length_squared().max(1e-9)).clamp(0.0, 1.0);
+        best = best.min(p.distance(a + (b - a) * t));
+    }
+    if inside { 0.0 } else { best }
+}
+
 impl OBox {
     /// Full rotation: yaw about +y, then tilt about the local x axis.
     pub fn rotation(&self) -> glam::Quat {
@@ -115,7 +165,6 @@ impl OBox {
         Vec3::new(self.center.x, (self.y0 + self.y1) * 0.5, self.center.y)
     }
 
-    /// A sloped slab a tank can drive (gentle tilt).
     /// A sloped slab tanks drive up (gets ground friction, doesn't block bots).
     pub fn is_ramp(&self) -> bool {
         self.ramp
@@ -135,10 +184,104 @@ impl OBox {
         Vec2::new(d.dot(ax), d.dot(az))
     }
 
-    /// Distance from a ground point to the footprint (0 inside).
+    /// Whether the box is turned out of the upright (tilted or rolled).
+    pub fn is_turned(&self) -> bool {
+        self.tilt != 0.0 || self.roll != 0.0
+    }
+
+    /// The eight corners in world space.
+    pub fn corners3(&self) -> [Vec3; 8] {
+        let (c, r) = (self.center3(), self.rotation());
+        let h = Vec3::new(self.half.x, (self.y1 - self.y0) * 0.5, self.half.y);
+        let mut out = [Vec3::ZERO; 8];
+        for (k, o) in out.iter_mut().enumerate() {
+            let s = Vec3::new(
+                if k & 1 == 0 { -1.0 } else { 1.0 },
+                if k & 2 == 0 { -1.0 } else { 1.0 },
+                if k & 4 == 0 { -1.0 } else { 1.0 },
+            );
+            *o = c + r * (h * s);
+        }
+        out
+    }
+
+    /// Lowest and highest points of the box as it actually stands.
+    pub fn y_range(&self) -> (f32, f32) {
+        if !self.is_turned() {
+            return (self.y0, self.y1);
+        }
+        self.corners3()
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p.y), hi.max(p.y))
+            })
+    }
+
+    /// The box's shadow on the ground (straight down): a convex polygon,
+    /// counter-clockwise. For an upright box, its footprint.
+    pub fn shadow(&self) -> Vec<Vec2> {
+        if !self.is_turned() {
+            return self.corners().to_vec();
+        }
+        convex_hull(
+            self.corners3()
+                .iter()
+                .map(|p| Vec2::new(p.x, p.z))
+                .collect(),
+        )
+    }
+
+    /// The shadow of only the part of the box from its lowest point up to
+    /// `height` above it: what a tank on the ground actually runs into. A
+    /// spire leaning out over open ground blocks around its root, not
+    /// everywhere under its overhang.
+    pub fn base_shadow(&self, height: f32) -> Vec<Vec2> {
+        if !self.is_turned() {
+            return self.corners().to_vec();
+        }
+        let c = self.corners3();
+        let lo = c.iter().fold(f32::MAX, |m, p| m.min(p.y));
+        let hi = lo + height;
+        let mut pts: Vec<Vec2> = c
+            .iter()
+            .filter(|p| p.y <= hi)
+            .map(|p| Vec2::new(p.x, p.z))
+            .collect();
+        for i in 0..8 {
+            for bit in [1, 2, 4] {
+                let j = i ^ bit;
+                if j < i {
+                    continue;
+                }
+                let (a, b) = (c[i], c[j]);
+                if (a.y - hi) * (b.y - hi) < 0.0 {
+                    let t = (hi - a.y) / (b.y - a.y);
+                    let q = a.lerp(b, t);
+                    pts.push(Vec2::new(q.x, q.z));
+                }
+            }
+        }
+        convex_hull(pts)
+    }
+
+    /// Distance from a ground point to the part of the box within `height`
+    /// of its lowest point (0 inside).
+    pub fn base_distance(&self, p: Vec2, height: f32) -> f32 {
+        if !self.is_turned() {
+            return self.distance(p);
+        }
+        polygon_distance(&self.base_shadow(height), p)
+    }
+
+    /// Distance from a ground point to the box's shadow on the ground (0
+    /// inside). Follows tilt and roll: a standing post is a small square, not
+    /// a beam as long as the post is tall.
     pub fn distance(&self, p: Vec2) -> f32 {
-        let q = self.local_point(p).abs() - self.half;
-        q.max(Vec2::ZERO).length()
+        if !self.is_turned() {
+            let q = self.local_point(p).abs() - self.half;
+            return q.max(Vec2::ZERO).length();
+        }
+        polygon_distance(&self.shadow(), p)
     }
 
     /// Footprint corners in world xz, counter-clockwise.
@@ -1160,5 +1303,49 @@ fn split_lots(r: CellRect, rng: &mut Rng, lots: &mut Vec<CellRect>, depth: u32) 
         let s = rng.int(r.y0 + min_part, r.y1 - min_part - alley);
         split_lots(CellRect { y1: s, ..r }, rng, lots, depth + 1);
         split_lots(CellRect { y0: s + alley, ..r }, rng, lots, depth + 1);
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    /// A post stood upright (a segment tipped up) blocks a small square, not
+    /// a strip as long as the post is tall.
+    #[test]
+    fn standing_post_has_a_small_footprint() {
+        let post = OBox {
+            center: Vec2::new(10.0, 10.0),
+            tilt: -std::f32::consts::FRAC_PI_2,
+            half: Vec2::new(0.3, 4.0),
+            y0: 3.7,
+            y1: 4.3,
+            ..OBox::default()
+        };
+        assert!(post.distance(Vec2::new(10.0, 13.0)) > 2.0);
+        assert!(post.distance(Vec2::new(10.0, 10.1)) == 0.0);
+        let (lo, hi) = post.y_range();
+        assert!(lo < 0.1 && hi > 7.9, "stands 0..8 m, got {lo}..{hi}");
+    }
+
+    /// A spire leaning far out blocks around its root; tanks can drive
+    /// under the overhang.
+    #[test]
+    fn leaning_spire_blocks_only_near_its_root() {
+        let spire = OBox {
+            center: Vec2::ZERO,
+            tilt: -0.9,
+            half: Vec2::new(0.5, 6.0),
+            y0: 4.5,
+            y1: 5.5,
+            ..OBox::default()
+        };
+        let shadow_far = spire.distance(Vec2::new(0.0, 3.5));
+        let base_far = spire.base_distance(Vec2::new(0.0, 3.5), 3.0);
+        assert_eq!(shadow_far, 0.0, "under the spire's shadow");
+        assert!(
+            base_far > 0.5,
+            "but clear of what a tank would hit ({base_far})"
+        );
     }
 }
