@@ -1,0 +1,208 @@
+//! Turns simulation state into renderer input: the static map mesh, tank
+//! instances, the chase camera, and the HUD.
+
+use std::f32::consts::FRAC_PI_2;
+
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+
+use crate::map::{Map, mat};
+use crate::render::mesh::{Instance, MeshData, MeshId};
+use crate::render::{Camera, Scene, UiVertex};
+use crate::sim::{Tank, World, dir2};
+
+pub const SUN_DIR: Vec3 = Vec3::new(0.55, 0.48, 0.4);
+
+/// Static geometry for the whole arena, built once per map.
+pub fn map_mesh(map: &Map) -> MeshData {
+    let mut m = MeshData::default();
+    let pad = 120.0;
+    let asphalt = Vec4::new(0.17, 0.17, 0.18, mat::ASPHALT);
+    m.add_box(Vec3::new(-pad, -0.2, -pad), Vec3::new(map.size + pad, 0.0, map.size + pad), asphalt, asphalt);
+
+    for b in &map.boxes {
+        m.add_box(b.min, b.max, b.color.extend(b.side_mat), b.color.extend(b.top_mat));
+    }
+
+    let sphere = MeshData::sphere(12, 8);
+    for t in &map.trees {
+        let s = Vec3::new(t.radius * 2.0, t.radius * 1.7, t.radius * 2.0);
+        m.append(&sphere, Mat4::from_scale_rotation_translation(s, Quat::IDENTITY, t.pos), Vec4::new(0.27, 0.45, 0.2, mat::PLAIN));
+    }
+
+    road_markings(map, &mut m);
+    m
+}
+
+/// Dashed center lines along each inner road, skipping intersections.
+fn road_markings(map: &Map, m: &mut MeshData) {
+    use crate::map::CELL;
+    let paint = Vec4::new(0.85, 0.78, 0.45, mat::PLAIN);
+    for (ri, r) in map.roads.iter().enumerate() {
+        let (w, h) = (r.x1 - r.x0, r.y1 - r.y0);
+        let along_x = w > h;
+        let (len_cells, cross) = if along_x { (w, h) } else { (h, w) };
+        if cross < 2 {
+            continue;
+        }
+        let mid = if along_x { (r.y0 + r.y1) as f32 * 0.5 * CELL } else { (r.x0 + r.x1) as f32 * 0.5 * CELL };
+        let start = if along_x { r.x0 } else { r.y0 } as f32 * CELL;
+        let dashes = (len_cells as f32 * CELL / 6.0) as i32;
+        for d in 0..dashes {
+            let c = start + d as f32 * 6.0 + 3.0;
+            let p = if along_x { Vec2::new(c, mid) } else { Vec2::new(mid, c) };
+            let (cx, cy) = ((p.x / CELL) as i32, (p.y / CELL) as i32);
+            let in_other = map.roads.iter().enumerate().any(|(oi, o)| {
+                oi != ri && o.contains(cx, cy) && ((o.x1 - o.x0 > o.y1 - o.y0) != along_x)
+            });
+            if in_other {
+                continue;
+            }
+            let half = if along_x { Vec2::new(1.4, 0.12) } else { Vec2::new(0.12, 1.4) };
+            m.add_box(
+                Vec3::new(p.x - half.x, 0.0, p.y - half.y),
+                Vec3::new(p.x + half.x, 0.015, p.y + half.y),
+                paint,
+                paint,
+            );
+        }
+    }
+}
+
+/// Third-person chase camera. Yaw comes from the player's aim; it follows the
+/// tank with a little lag and pulls in when a building is in the way.
+pub struct ChaseCam {
+    pub yaw: f32,
+    /// 0 = low behind the tank, 1 = high overhead-ish.
+    pub tilt: f32,
+    focus: Vec3,
+    initialized: bool,
+}
+
+impl ChaseCam {
+    pub fn new() -> ChaseCam {
+        ChaseCam { yaw: 0.0, tilt: 0.35, focus: Vec3::ZERO, initialized: false }
+    }
+
+    pub fn update(&mut self, world: &World, tank: &Tank, dt: f32) -> Camera {
+        let anchor = tank.pos3() + Vec3::Y * 2.2;
+        if !self.initialized {
+            self.focus = anchor;
+            self.initialized = true;
+        }
+        self.focus = self.focus.lerp(anchor, 1.0 - (-dt * 14.0).exp());
+
+        let tilt = self.tilt.clamp(0.0, 1.0);
+        let dist = 9.0 + tilt * 3.0;
+        let height = 2.5 + tilt * 6.0;
+        let back = dir2(self.yaw);
+        let back3 = Vec3::new(-back.x, 0.0, -back.y);
+        let desired = self.focus + back3 * dist + Vec3::Y * height;
+
+        let to = desired - self.focus;
+        let len = to.length();
+        let hit = world.camera_raycast(self.focus, to / len, len);
+        let pos = self.focus + to / len * (hit - 0.6).max(1.5);
+
+        let ahead = Vec3::new(back.x, 0.0, back.y);
+        Camera { pos, target: self.focus + ahead * 6.0 + Vec3::Y * 0.5, fov_y: 65f32.to_radians() }
+    }
+}
+
+pub fn tank_instances(t: &Tank, out: &mut Vec<(MeshId, Instance)>) {
+    let root = Mat4::from_translation(t.pos3())
+        * Mat4::from_rotation_y(t.yaw)
+        // Pivot suspension tilt around the hull center.
+        * Mat4::from_translation(Vec3::Y * 0.6)
+        * Mat4::from_rotation_x(t.pitch)
+        * Mat4::from_rotation_z(t.roll)
+        * Mat4::from_translation(Vec3::Y * -0.6);
+    let part = |m: Mat4, size: Vec3, pos: Vec3| m * Mat4::from_scale_rotation_translation(size, Quat::IDENTITY, pos);
+    let color = t.color.extend(0.0);
+    let dark = Vec4::new(0.11, 0.11, 0.12, 0.0);
+    let trim = (t.color * 0.6).extend(0.0);
+
+    // Hull: main body, sloped-looking front plate, tracks with moving tread blocks.
+    out.push((MeshId::Cube, Instance::new(part(root, Vec3::new(2.7, 0.75, 4.4), Vec3::new(0.0, 0.95, 0.0)), color)));
+    out.push((MeshId::Cube, Instance::new(part(root, Vec3::new(2.5, 0.35, 0.6), Vec3::new(0.0, 0.75, 2.35)), trim)));
+    for side in [-1.0f32, 1.0] {
+        let x = side * 1.42;
+        out.push((MeshId::Cube, Instance::new(part(root, Vec3::new(0.62, 0.85, 4.8), Vec3::new(x, 0.48, 0.0)), dark)));
+        let n = 7;
+        for i in 0..n {
+            let z = ((i as f32 / n as f32 + t.track_phase / 4.8).rem_euclid(1.0) - 0.5) * 4.6;
+            out.push((
+                MeshId::Cube,
+                Instance::new(part(root, Vec3::new(0.66, 0.08, 0.22), Vec3::new(x, 0.92, z)), Vec4::new(0.2, 0.2, 0.21, 0.0)),
+            ));
+        }
+    }
+
+    // Turret rotates independently of the hull.
+    let turret = root * Mat4::from_translation(Vec3::new(0.0, 1.32, -0.3)) * Mat4::from_rotation_y(t.turret_yaw - t.yaw);
+    let turret_color = (t.color * 1.12).min(Vec3::ONE).extend(0.0);
+    out.push((MeshId::Cylinder, Instance::new(part(turret, Vec3::new(2.1, 0.22, 2.1), Vec3::new(0.0, 0.11, 0.0)), dark)));
+    out.push((MeshId::Cube, Instance::new(part(turret, Vec3::new(2.0, 0.8, 2.6), Vec3::new(0.0, 0.62, 0.1)), turret_color)));
+    out.push((MeshId::Cube, Instance::new(part(turret, Vec3::new(1.6, 0.16, 0.9), Vec3::new(0.0, 1.06, -0.6)), trim)));
+    let barrel = turret * Mat4::from_translation(Vec3::new(0.0, 0.62, 1.3)) * Mat4::from_rotation_x(FRAC_PI_2);
+    out.push((MeshId::Cylinder, Instance::new(part(barrel, Vec3::new(0.5, 0.5, 0.5), Vec3::new(0.0, 0.2, 0.0)), dark)));
+    out.push((MeshId::Cylinder, Instance::new(part(barrel, Vec3::new(0.28, 2.9, 0.28), Vec3::new(0.0, 1.45, 0.0)), dark)));
+    out.push((MeshId::Cylinder, Instance::new(part(barrel, Vec3::new(0.4, 0.45, 0.4), Vec3::new(0.0, 2.85, 0.0)), dark)));
+}
+
+pub fn build(world: &World, camera: Camera, width: f32, height: f32) -> Scene {
+    let mut instances = Vec::new();
+    for t in &world.tanks {
+        tank_instances(t, &mut instances);
+    }
+
+    let mut ui = Vec::new();
+    let player = &world.tanks[0];
+    let vp = camera.view_proj(width / height);
+
+    // Crosshair sits where the turret actually points, so turret lag is visible.
+    let aim_dir = dir2(player.turret_yaw);
+    let aim_point = player.pos3() + Vec3::new(aim_dir.x, 0.0, aim_dir.y) * 40.0 + Vec3::Y * 1.7;
+    if let Some((x, y)) = project(vp, aim_point, width, height) {
+        crosshair(&mut ui, x, y);
+    }
+
+    // Speed bar, bottom center.
+    let frac = (player.speed().abs() / player.hull.max_speed).min(1.0);
+    let (bw, bh) = (220.0, 8.0);
+    let (bx, by) = (width * 0.5 - bw * 0.5, height - 40.0);
+    push_rect(&mut ui, bx - 2.0, by - 2.0, bw + 4.0, bh + 4.0, [0.0, 0.0, 0.0, 0.45]);
+    push_rect(&mut ui, bx, by, bw * frac, bh, [0.95, 0.85, 0.35, 0.9]);
+
+    Scene {
+        camera,
+        time: world.time,
+        sun_dir: SUN_DIR,
+        shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
+        shadow_radius: world.map.size * 0.75,
+        instances,
+        ui,
+    }
+}
+
+fn project(vp: Mat4, p: Vec3, w: f32, h: f32) -> Option<(f32, f32)> {
+    let c = vp * p.extend(1.0);
+    if c.w <= 0.01 {
+        return None;
+    }
+    let ndc = c.truncate() / c.w;
+    Some(((ndc.x * 0.5 + 0.5) * w, (0.5 - ndc.y * 0.5) * h))
+}
+
+fn crosshair(ui: &mut Vec<UiVertex>, x: f32, y: f32) {
+    let (shadow, white) = ([0.0, 0.0, 0.0, 0.5], [1.0, 1.0, 1.0, 0.9]);
+    for (c, o) in [(shadow, 1.0), (white, 0.0)] {
+        for (dx, dy, w, h) in [(-14.0, -1.0, 9.0, 2.0), (5.0, -1.0, 9.0, 2.0), (-1.0, -14.0, 2.0, 9.0), (-1.0, 5.0, 2.0, 9.0)] {
+            push_rect(ui, x + dx + o, y + dy + o, w, h, c);
+        }
+    }
+}
+
+pub fn push_rect(ui: &mut Vec<UiVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+    let v = |px, py| UiVertex { pos: [px, py], color };
+    ui.extend_from_slice(&[v(x, y), v(x + w, y), v(x + w, y + h), v(x, y), v(x + w, y + h), v(x, y + h)]);
+}
