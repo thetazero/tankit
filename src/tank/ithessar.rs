@@ -10,8 +10,8 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use glam::{Vec2, Vec3, Vec4};
 
 use super::model::{
-    METAL, PAINT, Rig, Skin, TurretModel, at_y, at_z, ngon, plate, plate2, round, shard,
-    solid, turret_ring, v,
+    METAL, PAINT, Rig, Skin, TurretModel, at_y, at_z, ngon, plate, plate2, round, shard, solid,
+    turret_ring, v,
 };
 use crate::render::material::Material;
 use crate::render::mesh::MeshData;
@@ -153,8 +153,14 @@ pub fn sethuun() -> HoverModel {
     solid(
         &mut body,
         &[
-            at_z(&super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04), -1.9),
-            at_z(&super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04), 2.4),
+            at_z(
+                &super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04),
+                -1.9,
+            ),
+            at_z(
+                &super::model::rect(Vec2::new(0.0, 0.62), Vec2::new(0.13, 0.2), 0.04),
+                2.4,
+            ),
         ],
         0.03,
         VHAAL,
@@ -313,7 +319,11 @@ pub fn ammeth() -> TurretModel {
         v(0.0, 0.4, -0.6),
         PAINT,
     );
-    for (x, lean, len) in [(0.0f32, 0.0f32, 0.75f32), (0.2, 0.35, 0.5), (-0.2, -0.35, 0.5)] {
+    for (x, lean, len) in [
+        (0.0f32, 0.0f32, 0.75f32),
+        (0.2, 0.35, 0.5),
+        (-0.2, -0.35, 0.5),
+    ] {
         shard(
             &mut head,
             v(x, 0.6, -0.85),
@@ -339,7 +349,10 @@ pub fn ammeth() -> TurretModel {
     );
     round(
         &mut mantlet,
-        &[at_z(&ngon(6, 0.2, Vec2::ZERO), 0.44), at_z(&ngon(6, 0.2, Vec2::ZERO), 0.48)],
+        &[
+            at_z(&ngon(6, 0.2, Vec2::ZERO), 0.44),
+            at_z(&ngon(6, 0.2, Vec2::ZERO), 0.48),
+        ],
         0.0,
         SEAM,
     );
@@ -450,7 +463,10 @@ pub fn ossrin() -> TurretModel {
     let mut mantlet = MeshData::default();
     round(
         &mut mantlet,
-        &[at_z(&ngon(8, 0.09, Vec2::ZERO), -0.5), at_z(&ngon(8, 0.09, Vec2::ZERO), 1.9)],
+        &[
+            at_z(&ngon(8, 0.09, Vec2::ZERO), -0.5),
+            at_z(&ngon(8, 0.09, Vec2::ZERO), 1.9),
+        ],
         0.01,
         METAL,
     );
@@ -473,17 +489,33 @@ pub fn ossrin() -> TurretModel {
             let t = Vec2::new(-d.y, d.x);
             let (i0, o0) = (d * (r - 0.08), d * r);
             let half = 0.19;
-            let quad = |rr: Vec2| [rr - t * half * rr.length() / r, rr + t * half * rr.length() / r];
+            let quad = |rr: Vec2| {
+                [
+                    rr - t * half * rr.length() / r,
+                    rr + t * half * rr.length() / r,
+                ]
+            };
             let [a0, a1] = quad(i0);
             let [b0, b1] = quad(o0);
             let ring = |zz: f32| -> Vec<Vec3> {
-                [a0, a1, b1, b0].iter().map(|p| Vec3::new(p.x, p.y, zz)).collect()
+                [a0, a1, b1, b0]
+                    .iter()
+                    .map(|p| Vec3::new(p.x, p.y, zz))
+                    .collect()
             };
-            solid(&mut mantlet, &[ring(z - 0.07), ring(z + 0.07)], 0.015, CRADLE);
+            solid(
+                &mut mantlet,
+                &[ring(z - 0.07), ring(z + 0.07)],
+                0.015,
+                CRADLE,
+            );
         }
         round(
             &mut mantlet,
-            &[at_z(&ngon(12, r - 0.08, Vec2::ZERO), z - 0.03), at_z(&ngon(12, r - 0.08, Vec2::ZERO), z + 0.03)],
+            &[
+                at_z(&ngon(12, r - 0.08, Vec2::ZERO), z - 0.03),
+                at_z(&ngon(12, r - 0.08, Vec2::ZERO), z + 0.03),
+            ],
             0.0,
             SEAM,
         );

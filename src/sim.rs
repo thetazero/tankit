@@ -190,7 +190,12 @@ impl Chassis {
 
     /// Ray length with the spring fully extended.
     pub fn free_len(&self) -> f32 {
-        self.rest_len() + if self.hover { HOVER_SAG } else { SUSPENSION_SAG }
+        self.rest_len()
+            + if self.hover {
+                HOVER_SAG
+            } else {
+                SUSPENSION_SAG
+            }
     }
 
     /// Convex collider: belly above the road wheels' travel, ends swept up around the
@@ -232,7 +237,10 @@ impl Chassis {
         let belly = self.road_y - HOVER_BELLY_GAP;
         let (fz, fy, _) = self.front;
         let (rz, ry, _) = self.rear;
-        let (z_lo, z_hi) = (self.road_z[0] - 0.3, self.road_z[self.road_z.len() - 1] + 0.1);
+        let (z_lo, z_hi) = (
+            self.road_z[0] - 0.3,
+            self.road_z[self.road_z.len() - 1] + 0.1,
+        );
         let mut pts = Vec::new();
         for sx in [-1.0, 1.0] {
             let w = self.hull_half_x;
@@ -1219,7 +1227,11 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 h.reverse_speed
             };
         let thrust = h.accel * (h.power_knee / v_f.abs().max(h.power_knee));
-        let limit = if v_f * throttle < -0.5 { h.brake } else { thrust };
+        let limit = if v_f * throttle < -0.5 {
+            h.brake
+        } else {
+            thrust
+        };
         ((target - v_f) / DT).clamp(-limit, limit)
     } else if t.parked {
         // Station-keeping: hold position, even on a slope.
@@ -1965,7 +1977,11 @@ mod hover_tests {
         // Belly clear of the ground, hull level, not drifting.
         assert!((t.pos.y - 0.0).abs() < 0.2, "rides at {}", t.pos.y);
         assert!(t.up().y > 0.99);
-        assert!(t.pos.distance(start) < 0.3, "drifted {}", t.pos.distance(start));
+        assert!(
+            t.pos.distance(start) < 0.3,
+            "drifted {}",
+            t.pos.distance(start)
+        );
         assert_eq!(t.wheels_down, 6);
     }
 
@@ -2013,6 +2029,10 @@ mod hover_tests {
         let mut w = hover_world();
         w.tanks[0].dead = true;
         run(&mut w, Command::default(), 2.0);
-        assert!(w.tanks[0].pos.y < -0.4, "still floating at {}", w.tanks[0].pos.y);
+        assert!(
+            w.tanks[0].pos.y < -0.4,
+            "still floating at {}",
+            w.tanks[0].pos.y
+        );
     }
 }

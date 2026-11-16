@@ -29,9 +29,9 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket|shards>
+  --map <city|proving|saltmarket|shards|kiln>
                           city (default), the physics test course, Saltmarket (desert town),
-                          or Shard Flats (crystal deposit, the Hold map)
+                          Shard Flats (crystal deposit, the Hold map), or the Kiln (Ithessar ground)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
   --contract <attrition|hold>
@@ -107,6 +107,8 @@ pub enum MapKind {
     Saltmarket,
     /// Placeholder: open flats around a crystal deposit (the Hold map).
     ShardFlats,
+    /// Ithessar ground: crystal monoliths holding a plasma core.
+    Kiln,
 }
 
 pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
@@ -115,6 +117,7 @@ pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
         MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::ShardFlats => map::Map::shard_flats(),
+        MapKind::Kiln => map::Map::kiln(),
     }
 }
 
@@ -215,7 +218,10 @@ fn parse_args() -> Result<Args> {
                 Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("shards") => map_kind = MapKind::ShardFlats,
-                other => bail!("--map expects city, proving, saltmarket or shards, got {other:?}"),
+                Some("kiln") => map_kind = MapKind::Kiln,
+                other => {
+                    bail!("--map expects city, proving, saltmarket, shards or kiln, got {other:?}")
+                }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--team-size" => {

@@ -4,7 +4,7 @@
 
 use glam::Vec3;
 
-use crate::sim::TurretKind;
+use crate::sim::{HullKind, TurretKind};
 use crate::ui::Rgba;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,6 +50,15 @@ impl Faction {
             Faction::Resonant => [0.25, 0.95, 0.82, 1.0],
             Faction::Machines => [1.0, 0.6, 0.3, 1.0],
             Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
+        }
+    }
+
+    /// The hulls this side's bots drive. Only the Ithessar build their own;
+    /// everyone else fields the common tracked kit.
+    pub fn hulls(self) -> &'static [HullKind] {
+        match self {
+            Faction::Ithessar => &[HullKind::Sethuun],
+            _ => &[HullKind::Lancer, HullKind::Bastion],
         }
     }
 

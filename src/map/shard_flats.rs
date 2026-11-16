@@ -69,6 +69,7 @@ impl Map {
                 CENTER + Vec2::new(-28.6, -16.5),
             ],
             hold_site: Some(CENTER),
+            cores: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, ground);
         terrain.color = SAND;

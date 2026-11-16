@@ -194,7 +194,13 @@ impl TankArt {
 
     /// A tracked hull: body, wheels on their suspension, and the belt of
     /// links wrapped round them. Returns the turret ring's transform.
-    fn tracked(&self, hull: &HullArt, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) -> Mat4 {
+    fn tracked(
+        &self,
+        hull: &HullArt,
+        t: &Tank,
+        base: Mat4,
+        out: &mut Vec<(MeshId, Instance)>,
+    ) -> Mat4 {
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let sprung = base;
@@ -268,7 +274,8 @@ impl TankArt {
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let alive = t.color.max_element() > 0.2;
-        let body = base * Mat4::from_rotation_z(t.lean) * Mat4::from_translation(Vec3::Y * ithessar::RIDE);
+        let body =
+            base * Mat4::from_rotation_z(t.lean) * Mat4::from_translation(Vec3::Y * ithessar::RIDE);
         out.push((h.body, Instance::new(body, tint)));
         if !alive {
             // A wreck: the field is gone, the crystals lie where they fell.
@@ -286,7 +293,10 @@ impl TankArt {
             for i in 0..c.wheel_count() {
                 let m = c.mount(i);
                 let at = Vec3::new(m.x, h.emitter_y, m.z);
-                out.push((h.emitter, Instance::new(body * Mat4::from_translation(at), plain)));
+                out.push((
+                    h.emitter,
+                    Instance::new(body * Mat4::from_translation(at), plain),
+                ));
             }
             return body * Mat4::from_translation(h.mount);
         }
@@ -397,7 +407,8 @@ impl TankArt {
                 if alive && t.since_fire > 0.04 {
                     let c = gun * Mat4::from_translation(Vec3::Z * orb);
                     let full = charge >= 1.0;
-                    let s = size * (0.2 + 0.8 * charge.powf(0.6))
+                    let s = size
+                        * (0.2 + 0.8 * charge.powf(0.6))
                         * if full {
                             1.0 + 0.06 * (t.age * 13.0).sin()
                         } else {
@@ -455,7 +466,9 @@ impl TankArt {
                         out.push((
                             MeshId::SPHERE,
                             Instance::new(
-                                tip * Mat4::from_scale(Vec3::splat(0.1 + 0.12 * t.spool + 0.3 * hot)),
+                                tip * Mat4::from_scale(Vec3::splat(
+                                    0.1 + 0.12 * t.spool + 0.3 * hot,
+                                )),
                                 ithessar::PLASMA_HOT.extend(2.0 + 3.0 * t.spool),
                             ),
                         ));

@@ -470,6 +470,7 @@ impl Map {
                 Vec2::new(166.0, 9.0),
             ],
             hold_site: None,
+            cores: Vec::new(),
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();

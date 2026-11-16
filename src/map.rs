@@ -9,6 +9,7 @@ use glam::{Vec2, Vec3};
 use crate::faction::Faction;
 use crate::rng::Rng;
 
+mod kiln;
 mod ruins;
 mod saltmarket;
 mod shard_flats;
@@ -353,6 +354,18 @@ pub struct Map {
     pub repair_spots: Vec<Vec2>,
     /// The Hold contract's site; `None` picks the open spot nearest the middle (see `hold`).
     pub hold_site: Option<Vec2>,
+    /// Ithessar cores: plasma held in the air between crystal monoliths.
+    /// Drawn (and animated) with the effects.
+    pub cores: Vec<Core>,
+}
+
+/// A ball of plasma held in the air between crystal monoliths.
+#[derive(Clone, Debug)]
+pub struct Core {
+    pub at: Vec3,
+    pub radius: f32,
+    /// The monoliths' tips that hold it (arcs jump from them to the core).
+    pub prongs: Vec<Vec3>,
 }
 
 /// The matchup on maps that don't name their own.
@@ -396,6 +409,7 @@ impl Map {
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
             hold_site: None,
+            cores: Vec::new(),
         };
 
         // Ring road around the inner city.
@@ -781,6 +795,7 @@ impl Map {
             factions: DEFAULT_SIDES,
             repair_spots: Vec::new(),
             hold_site: None,
+            cores: Vec::new(),
         }
     }
 
@@ -812,6 +827,7 @@ impl Map {
             // One by the jump lanes, one out on the hills.
             repair_spots: vec![Vec2::new(22.0, 24.0), Vec2::new(125.0, 35.0)],
             hold_site: None,
+            cores: Vec::new(),
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.

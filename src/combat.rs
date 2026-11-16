@@ -402,11 +402,9 @@ impl Match {
         let mut brains = vec![None];
         for b in 0..bots {
             let team = (b + 1) % 2;
-            let hull = if rng.chance(0.5) {
-                HullKind::Lancer
-            } else {
-                HullKind::Bastion
-            };
+            // Each side drives its own faction's hulls, too.
+            let hulls = factions[team].hulls();
+            let hull = hulls[(rng.f32() * hulls.len() as f32) as usize % hulls.len()];
             // Each side fields its own faction's guns.
             let guns = factions[team].turrets();
             let turret = guns[rng.index(guns.len())];
@@ -773,12 +771,14 @@ impl Match {
                             s.bounces -= 1;
                             // The skin sheds plasma at every skip.
                             s.damage *= BOUNCE_KEEP;
-                            self.blasts.push(Blast::new(at, impact_kind(&s.spec, false)));
+                            self.blasts
+                                .push(Blast::new(at, impact_kind(&s.spec, false)));
                             true
                         }
                         None => {
                             if s.spec.look != Look::Flame {
-                                self.blasts.push(Blast::new(at, impact_kind(&s.spec, false)));
+                                self.blasts
+                                    .push(Blast::new(at, impact_kind(&s.spec, false)));
                             }
                             false
                         }
@@ -793,7 +793,8 @@ impl Match {
         // No friendly fire: an ally just stops the shot.
         if self.fighters[j].team == self.fighters[s.owner].team {
             if s.spec.look != Look::Flame {
-                self.blasts.push(Blast::new(at, impact_kind(&s.spec, false)));
+                self.blasts
+                    .push(Blast::new(at, impact_kind(&s.spec, false)));
             }
             return;
         }
@@ -858,6 +859,11 @@ impl Match {
         let (pos, mass) = (t.pos, t.chassis.mass);
         self.blasts
             .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
+        if t.chassis.hover {
+            // The field lets go: its plasma bursts out of the split spine.
+            self.blasts
+                .push(Blast::new(pos + t.up() * 1.3, BlastKind::Plasma(3.5)));
+        }
         // Pop the wreck up and give it a lazy tumble.
         let off = Vec3::new(self.rng.range(-0.6, 0.6), 0.0, self.rng.range(-0.6, 0.6));
         self.world.push(victim, Vec3::Y * mass * 4.5, pos + off);
@@ -981,6 +987,9 @@ impl Match {
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
+        for c in &self.world.map.cores {
+            core_instances(c, self.world.time, out);
+        }
         if let Some(h) = &self.hold {
             h.instances(self.world.time, self.factions.map(|f| f.paint()), out);
         }
@@ -1198,6 +1207,59 @@ impl Match {
                 Instance::new(
                     Mat4::from_scale_rotation_translation(Vec3::splat(size), Quat::IDENTITY, b.pos),
                     color,
+                ),
+            ));
+        }
+    }
+}
+
+/// An Ithessar core: a ball of plasma that breathes, motes circling it on
+/// tilted orbits, and arcs jumping to it from the monoliths that hold it.
+pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, Instance)>) {
+    let breathe = 1.0 + 0.05 * (time * 1.7).sin() + 0.02 * (time * 5.3).sin();
+    let r = c.radius;
+    let ball = |at: Vec3, d: f32, color: Vec4| {
+        (
+            MeshId::SPHERE,
+            Instance::new(
+                Mat4::from_scale_rotation_translation(Vec3::splat(d), Quat::IDENTITY, at),
+                color,
+            ),
+        )
+    };
+    out.push(ball(c.at, 2.0 * r * breathe, PLASMA.extend(2.2)));
+    out.push(ball(c.at, 1.25 * r * breathe, PLASMA_HOT.extend(4.5)));
+    for k in 0..9 {
+        let k = k as f32;
+        let tilt = Quat::from_rotation_x(0.5 + k * 0.7) * Quat::from_rotation_z(k * 1.3);
+        let a = time * (0.6 + 0.07 * k) + k * 2.4;
+        let p = c.at + tilt * Vec3::new(a.cos(), 0.0, a.sin()) * r * (1.45 + 0.1 * (k % 3.0));
+        out.push(ball(p, 0.35 + 0.08 * (k % 2.0), PLASMA_HOT.extend(4.0)));
+    }
+    for (k, &tip) in c.prongs.iter().enumerate() {
+        let beat = (time * 6.0 + k as f32 * 1.9).sin() + (time * 13.0 + k as f32).sin() * 0.5;
+        if beat < 0.6 {
+            continue;
+        }
+        let to = c.at - tip;
+        let len = to.length() - r * 0.9;
+        let dir = to / to.length();
+        let q = Quat::from_rotation_arc(Vec3::Y, dir);
+        // Two strokes, a little apart: a crooked arc.
+        let bend = q * Vec3::X * 0.4 * (time * 31.0 + k as f32).sin();
+        for (from, l, w) in [
+            (tip, len * 0.55, 0.22),
+            (tip + dir * len * 0.5 + bend, len * 0.5, 0.18),
+        ] {
+            out.push((
+                MeshId::GEM,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::new(w, l, w),
+                        q,
+                        from + dir * l * 0.5,
+                    ),
+                    PLASMA_HOT.extend(4.0),
                 ),
             ));
         }
