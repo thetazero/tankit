@@ -293,7 +293,13 @@ pub(super) fn building(
 
     // Walls, storey by storey, bay by bay.
     for (axis, sign) in [(0usize, 1.0f32), (0, -1.0), (1, 1.0), (1, -1.0)] {
-        let len = if axis == 0 { half.y } else { half.x } * 2.0;
+        // The walls along x (axis 1) stop inside the cross walls so the corner
+        // pieces don't overlap (coplanar faces z-fight).
+        let len = if axis == 0 {
+            half.y * 2.0
+        } else {
+            half.x * 2.0 - WALL_T * 2.0 - 0.02
+        };
         let off = sign * ((if axis == 0 { half.x } else { half.y }) - WALL_T * 0.5);
         let bays = ((len / BAY).round() as usize).max(1);
         let bw = len / bays as f32;
@@ -384,6 +390,9 @@ pub(super) fn building(
         for iz in 0..nz {
             for ix in 0..nx {
                 let lo = Vec2::new(-half.x + ix as f32 * cell.x, -half.y + iz as f32 * cell.y);
+                // Slabs span between the walls, not over them (so slab and wall
+                // tops never coincide).
+                let inner = half - Vec2::splat(WALL_T + 0.02);
                 let c = lo + cell * 0.5;
                 // The slab at height y exists if the storey below it still reaches it.
                 if cut(c) < y + 0.2
@@ -399,11 +408,15 @@ pub(super) fn building(
                     Vec2::ZERO
                 };
                 f.put(
-                    Vec3::new(lo.x + shrink.x, y - SLAB, lo.y + shrink.y),
                     Vec3::new(
-                        lo.x + cell.x - shrink.x * 0.3,
+                        (lo.x + shrink.x).max(-inner.x),
+                        y - SLAB,
+                        (lo.y + shrink.y).max(-inner.y),
+                    ),
+                    Vec3::new(
+                        (lo.x + cell.x - shrink.x * 0.3).min(inner.x),
                         y,
-                        lo.y + cell.y - shrink.y * 0.3,
+                        (lo.y + cell.y - shrink.y * 0.3).min(inner.y),
                     ),
                     SLAB_C,
                     true,
@@ -415,7 +428,8 @@ pub(super) fn building(
     // Corner columns up to the broken height.
     for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
         let c = Vec2::new(sx * (half.x - 0.35), sz * (half.y - 0.35));
-        let h = cut(c).min(top_y + 0.9);
+        // A touch taller than the walls it sits in, so their tops never coincide.
+        let h = cut(c).min(top_y + 0.9) + 0.07;
         f.put(
             Vec3::new(c.x - 0.4, 0.0, c.y - 0.4),
             Vec3::new(c.x + 0.4, h, c.y + 0.4),

@@ -39,10 +39,12 @@ fn fs_post(v: PostOut) -> @location(0) vec4<f32> {
         }
     }
     c *= ao / 25.0;
-    c = aces(c * 0.8);
-    // Gentle saturation boost keeps the palette punchy after tonemapping.
+    // Exposure, filmic tonemap, then a little contrast (an S-curve) and
+    // saturation so the image doesn't sit washed out in the mid-greys.
+    c = aces(c * 0.68);
+    c = mix(c, c * c * (3.0 - 2.0 * c), 0.3);
     let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-    c = mix(vec3<f32>(luma), c, 1.15);
+    c = max(mix(vec3<f32>(luma), c, 1.3), vec3<f32>(0.0));
     let q = v.uv - 0.5;
     c *= 1.0 - dot(q, q) * 0.45;
     return vec4<f32>(c, 1.0);

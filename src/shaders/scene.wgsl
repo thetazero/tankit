@@ -321,8 +321,18 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
     if (m == 13) {
         // Sand: wind ripples across the flats, darker crusted hardpan in
         // patches, cracked dry mud on the reservoir floor.
-        let warp = noise2(wpos.xz * 0.06) * 6.0;
-        let ripple = sin((wpos.x * 0.92 + wpos.z * 0.38) * 2.6 + warp);
+        // Ripples: two trains at different angles and wavelengths, bent by
+        // large-scale warping, faded in and out in patches, with the sharp
+        // crest and long gentle back slope real wind ripples have.
+        let warp = vec2<f32>(noise2(wpos.xz * 0.045), noise2(wpos.xz * 0.045 + 17.0)) * 9.0;
+        let q = wpos.xz + warp;
+        let ph1 = fract((q.x * 0.9 + q.y * 0.42) * 0.42 + noise2(q * 0.3) * 0.6);
+        let ph2 = fract((q.x * 0.35 - q.y * 0.94) * 0.31 + noise2(q * 0.21 + 5.0) * 0.8);
+        let r1 = pow(ph1, 3.0) * 2.0 - 0.6;
+        let r2 = pow(ph2, 3.0) * 2.0 - 0.6;
+        let m1 = smoothstep(0.35, 0.7, noise2(wpos.xz * 0.05 + 3.0));
+        let m2 = smoothstep(0.45, 0.8, noise2(wpos.xz * 0.04 + 41.0));
+        let ripple = (r1 * m1 + r2 * m2 * (1.0 - m1 * 0.6)) * 0.8;
         let flat_ = smoothstep(0.85, 0.98, up);
         let hardpan = smoothstep(0.55, 0.75, noise2(wpos.xz * 0.035) * 0.7 + blotch * 0.3);
         s.albedo = base * (0.92 + 0.1 * ripple * flat_ + 0.22 * (blotch - 0.5) + 0.1 * (grain - 0.5));
@@ -359,13 +369,23 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
     } else if (m == 17) {
         // Rusted steel: orange-brown bloom, flaking dark scale, a little bare
         // metal where it's been scraped.
-        let bloom = vec3<f32>(0.5, 0.24, 0.1) * (0.7 + 0.6 * grain);
+        let bloom = vec3<f32>(0.4, 0.24, 0.14) * (0.7 + 0.6 * grain);
         s.albedo = mix(base, bloom, smoothstep(0.25, 0.75, blotch + 0.2 * grain));
         s.albedo *= 1.0 - 0.4 * smoothstep(0.55, 0.75, d.fine.b);
         let bare = smoothstep(0.7, 0.85, d.masks.b);
         s.albedo = mix(s.albedo, vec3<f32>(0.4, 0.39, 0.37), bare);
         s.metal = bare * 0.8;
         s.rough = mix(0.8, 0.4, bare);
+    }
+    if (m == 18) {
+        // Weathered paint over steel: faded and blotchy, rust breaking through
+        // in patches (worse low down) and running down from them.
+        s.albedo = base * (0.8 + 0.3 * blotch) * (0.94 + 0.12 * grain);
+        let low = 1.0 - smoothstep(0.0, 1.8, wpos.y);
+        let rust = smoothstep(0.62, 0.8, blotch * 0.55 + d.fine.b * 0.45 + low * 0.25);
+        s.albedo = mix(s.albedo, vec3<f32>(0.36, 0.22, 0.13) * (0.7 + 0.6 * grain), rust);
+        s.albedo *= 1.0 - 0.3 * smoothstep(0.5, 0.85, d.masks.a) * vertical;
+        s.rough = mix(0.65, 0.85, rust);
     }
     // Sand settles on everything that faces up.
     if (m != 13) {
@@ -406,7 +426,7 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
     let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);
-    let is_world_detail = m >= 13 && m <= 17;
+    let is_world_detail = m >= 13 && m <= 18;
     var s: Surface;
     if (is_tank) {
         s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
@@ -443,9 +463,9 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
         let nv = max(dot(n, view), 0.0);
         c = (kd + ggx_spec(n, view, l, s.rough, f0v)) * g.sun_color.rgb * ndl * sh;
         let fr = f0v + (max(vec3<f32>(1.0 - s.rough), f0v) - f0v) * pow(1.0 - nv, 5.0);
-        c += kd * hemi * 0.5 * s.ao + env * fr * s.ao * 0.4;
+        c += kd * hemi * 0.36 * s.ao + env * fr * s.ao * 0.4;
     } else {
-        c = diffuse * hemi * 0.5 * s.ao;
+        c = diffuse * hemi * 0.36 * s.ao;
         c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
         c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
     }

@@ -35,6 +35,8 @@ pub mod mat {
     pub const RUBBLE: f32 = 16.0;
     /// Rusted steel.
     pub const RUST: f32 = 17.0;
+    /// Weathered paint over steel, rusting through in patches.
+    pub const PAINTED: f32 = 18.0;
 }
 
 /// Blocking collider.

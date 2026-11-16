@@ -496,7 +496,35 @@ impl Map {
         map.ridge();
         map.spawns();
         map.perimeter_walls();
+        map.separate_coplanar_faces();
         map
+    }
+
+    /// Pieces built flush against each other share face planes, which flicker
+    /// (z-fight). Grow each piece by a different few millimeters (cycling
+    /// through 11 sizes, so neighbors built one after another always differ)
+    /// so no two faces are ever exactly coplanar. Invisible at play scale.
+    fn separate_coplanar_faces(&mut self) {
+        // Sideways, upward and downward offsets cycle independently (13 steps of
+        // 1 mm), so neighboring pieces never share a face plane.
+        let side = |i: usize| 0.002 + 0.00045 * ((i * 11) % 29) as f32;
+        let up = |i: usize| 0.002 + 0.00045 * ((i * 13 + 3) % 29) as f32;
+        let down = |i: usize| 0.002 + 0.00045 * ((i * 17 + 8) % 29) as f32;
+        for (i, o) in self.oboxes.iter_mut().enumerate() {
+            o.half += Vec2::splat(side(i));
+            o.y1 += up(i);
+            // Bottoms in the air (slab undersides, upper storeys) too; ones on
+            // the ground stay put.
+            if o.y0 > ground(o.center.x, o.center.y) + 0.05 {
+                o.y0 -= down(i);
+            }
+        }
+        let n = self.oboxes.len();
+        for (k, b) in self.boxes.iter_mut().enumerate() {
+            let (e, u) = (side(n + k), up(n + k));
+            b.min -= Vec3::new(e, 0.0, e);
+            b.max += Vec3::new(e, u, e);
+        }
     }
 
     fn block_c(&mut self, min: Vec3, max: Vec3, color: Vec3, material: f32) {
@@ -645,32 +673,158 @@ impl Map {
             Vec2::new(140.0, 84.0),
             yaw_along(lane),
             Vec2::new(3.0, 3.0),
-            3.0,
-            RUST,
-            mat::RUST,
+            0.8,
+            DAM,
+            mat::CONCRETE,
         );
+        let footing = OBox {
+            center: Vec2::new(140.0, 84.0),
+            yaw: yaw_along(lane),
+            half: Vec2::splat(3.0),
+            ..OBox::default()
+        };
+        let (fx, fz) = footing.axes();
+        for (sx, sz, h) in [
+            (-1.0f32, -1.0f32, 3.2f32),
+            (1.0, -1.0, 2.1),
+            (-1.0, 1.0, 1.4),
+            (1.0, 1.0, 2.7),
+        ] {
+            let c = footing.center + fx * sx * 2.2 + fz * sz * 2.2;
+            self.oboxes.push(OBox {
+                center: c,
+                yaw: footing.yaw,
+                half: Vec2::splat(0.35),
+                y0: 0.8,
+                y1: 0.8 + h,
+                color: RUST,
+                side_mat: mat::RUST,
+                top_mat: mat::RUST,
+                ..OBox::default()
+            });
+        }
         put(
             self,
             Vec2::new(129.0, 82.0),
             yaw_along(Vec2::new(lane.y, -lane.x)) + 0.3,
             Vec2::new(5.0, 3.2),
             4.5,
-            RUST * 1.1,
-            mat::RUST,
+            Vec3::new(0.58, 0.68, 0.64),
+            mat::PAINTED,
         );
+        // Riveted bands around the fallen tank.
+        let tank = *placed.last().unwrap();
+        let (tx, tz) = tank.axes();
+        for k in [-3.6f32, -1.2, 1.2, 3.6] {
+            self.oboxes.push(OBox {
+                center: tank.center + tx * k,
+                yaw: tank.yaw,
+                half: Vec2::new(0.22, tank.half.y + 0.07),
+                y0: -0.1,
+                y1: tank.y1 + 0.07,
+                color: RUST * 0.8,
+                side_mat: mat::RUST,
+                top_mat: mat::RUST,
+                ..OBox::default()
+            });
+        }
+        let _ = tz;
         // The bus, pulled half onto the verge of the main road.
         let road = (Vec2::new(48.0, 121.0) - Vec2::new(30.0, 112.0)).normalize();
         let nrm = Vec2::new(-road.y, road.x);
-        put(
-            self,
-            Vec2::new(39.0, 116.5) + nrm * 3.5,
-            yaw_along(road),
-            Vec2::new(5.5, 1.3),
-            3.2,
-            Vec3::new(0.62, 0.52, 0.34),
-            mat::RUST,
-        );
+        let bus = OBox {
+            center: Vec2::new(39.0, 116.5) + nrm * 3.5,
+            yaw: yaw_along(road),
+            half: Vec2::new(5.5, 1.3),
+            y0: 0.0,
+            y1: 2.8,
+            ..OBox::default()
+        };
+        placed.push(bus);
+        self.bus(bus);
         placed
+    }
+
+    /// A bus with its tires long gone: lower body, window pillars over a dark
+    /// gutted interior, roof, and bare wheel rims. `b` is its footprint.
+    fn bus(&mut self, b: OBox) {
+        let (ax, az) = b.axes();
+        let paint = Vec3::new(0.56, 0.66, 0.74); // faded blue
+        let cream = Vec3::new(0.84, 0.8, 0.68);
+        let dark = Vec3::new(0.12, 0.11, 0.1);
+        let part = |m: &mut Map, lo: Vec3, hi: Vec3, color: Vec3, material: f32, solid: bool| {
+            let mid = (lo + hi) * 0.5;
+            m.oboxes.push(OBox {
+                center: b.center + ax * mid.x + az * mid.z,
+                yaw: b.yaw,
+                half: Vec2::new((hi.x - lo.x) * 0.5, (hi.z - lo.z) * 0.5),
+                y0: lo.y,
+                y1: hi.y,
+                color,
+                side_mat: material,
+                top_mat: material,
+                solid,
+                ..OBox::default()
+            });
+        };
+        let (l, w) = (b.half.x, b.half.y);
+        part(
+            self,
+            Vec3::new(-l, 0.45, -w),
+            Vec3::new(l, 1.5, w),
+            paint,
+            mat::PAINTED,
+            true,
+        );
+        part(
+            self,
+            Vec3::new(-l + 0.3, 0.12, -w + 0.15),
+            Vec3::new(l - 0.3, 0.45, w - 0.15),
+            dark,
+            mat::RUST,
+            true,
+        );
+        part(
+            self,
+            Vec3::new(-l + 0.15, 1.45, -w + 0.2),
+            Vec3::new(l - 0.15, 2.5, w - 0.2),
+            dark,
+            mat::RUBBLE,
+            false,
+        );
+        let pillars = 9;
+        for i in 0..pillars {
+            let x = -l + 0.1 + i as f32 * (2.0 * l - 0.3) / (pillars - 1) as f32;
+            part(
+                self,
+                Vec3::new(x, 1.5, -w),
+                Vec3::new(x + 0.18, 2.55, w),
+                cream,
+                mat::PAINTED,
+                false,
+            );
+        }
+        part(
+            self,
+            Vec3::new(-l, 2.55, -w),
+            Vec3::new(l, 2.8, w),
+            cream,
+            mat::PAINTED,
+            true,
+        );
+        for sx in [-3.4f32, 3.4] {
+            for sz in [-1.0f32, 1.0] {
+                let z = sz * (w + 0.02);
+                part(
+                    self,
+                    Vec3::new(sx - 0.4, 0.0, z.min(z - sz * 0.25)),
+                    Vec3::new(sx + 0.4, 0.8, z.max(z - sz * 0.25)),
+                    dark * 2.5,
+                    mat::RUST,
+                    false,
+                );
+            }
+        }
     }
 
     fn landmarks(&mut self) {
@@ -1006,6 +1160,118 @@ mod tests {
         assert!(
             climbed == tried,
             "only {climbed} of {tried} collapsed floors could be driven up"
+        );
+    }
+
+    /// No two pieces have overlapping coplanar faces pointing the same way:
+    /// those z-fight (flicker) on screen.
+    #[test]
+    fn no_z_fighting() {
+        let m = Map::saltmarket();
+        let mut boxes: Vec<OBox> = m.oboxes.iter().filter(|o| o.tilt == 0.0).copied().collect();
+        for b in &m.boxes {
+            boxes.push(OBox {
+                center: Vec2::new((b.min.x + b.max.x) * 0.5, (b.min.z + b.max.z) * 0.5),
+                half: Vec2::new((b.max.x - b.min.x) * 0.5, (b.max.z - b.min.z) * 0.5),
+                y0: b.min.y,
+                y1: b.max.y,
+                ..OBox::default()
+            });
+        }
+        // Faces in a box's own frame: (axis 0=x,1=y,2=z, sign).
+        let face = |b: &OBox, axis: usize, sign: f32| -> (Vec3, f32, [Vec2; 2]) {
+            let (ax, az) = b.axes();
+            let ax3 = Vec3::new(ax.x, 0.0, ax.y);
+            let az3 = Vec3::new(az.x, 0.0, az.y);
+            let c = Vec3::new(b.center.x, (b.y0 + b.y1) * 0.5, b.center.y);
+            let hy = (b.y1 - b.y0) * 0.5;
+            let (n, h) = match axis {
+                0 => (ax3, b.half.x),
+                1 => (Vec3::Y, hy),
+                _ => (az3, b.half.y),
+            };
+            let n = n * sign;
+            let p = c + n * h;
+            (n, n.dot(p), [Vec2::ZERO, Vec2::ZERO])
+        };
+        // Overlap test of two coplanar faces via 2D rects in the shared plane (same yaw only).
+        let rect = |b: &OBox, axis: usize, e1: Vec3, e2: Vec3| -> (Vec2, Vec2) {
+            let (ax, az) = b.axes();
+            let ax3 = Vec3::new(ax.x, 0.0, ax.y);
+            let az3 = Vec3::new(az.x, 0.0, az.y);
+            let c = Vec3::new(b.center.x, (b.y0 + b.y1) * 0.5, b.center.y);
+            let hy = (b.y1 - b.y0) * 0.5;
+            let corners: Vec<Vec3> = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                .iter()
+                .map(|&(u, v)| match axis {
+                    0 => c + Vec3::Y * hy * u + az3 * b.half.y * v,
+                    1 => c + ax3 * b.half.x * u + az3 * b.half.y * v,
+                    _ => c + ax3 * b.half.x * u + Vec3::Y * hy * v,
+                })
+                .collect();
+            let p: Vec<Vec2> = corners
+                .iter()
+                .map(|q| Vec2::new(q.dot(e1), q.dot(e2)))
+                .collect();
+            let lo = p.iter().fold(Vec2::splat(f32::INFINITY), |a, &b| a.min(b));
+            let hi = p
+                .iter()
+                .fold(Vec2::splat(f32::NEG_INFINITY), |a, &b| a.max(b));
+            (lo, hi)
+        };
+        let mut fights = Vec::new();
+        for i in 0..boxes.len() {
+            for j in i + 1..boxes.len() {
+                let (a, b) = (&boxes[i], &boxes[j]);
+                if a.center.distance(b.center) > a.half.length() + b.half.length() + 0.1 {
+                    continue;
+                }
+                let dy = (a.yaw - b.yaw).rem_euclid(std::f32::consts::FRAC_PI_2);
+                if dy > 1e-3 && dy < std::f32::consts::FRAC_PI_2 - 1e-3 {
+                    continue;
+                }
+                for axis in 0..3 {
+                    for sign in [-1.0f32, 1.0] {
+                        let (na, da, _) = face(a, axis, sign);
+                        for axis_b in 0..3 {
+                            for sign_b in [-1.0f32, 1.0] {
+                                let (nb, db, _) = face(b, axis_b, sign_b);
+                                if na.dot(nb) < 0.999 || (da - db).abs() > 3e-4 {
+                                    continue;
+                                }
+                                // Bottoms resting on (or buried in) the ground are never seen.
+                                if na.y < -0.5 && a.y0 <= ground(a.center.x, a.center.y) + 0.05 {
+                                    continue;
+                                }
+                                // In-plane axes aligned with the boxes (they share a yaw).
+                                let (ax2, _) = a.axes();
+                                let e1 = if na.y.abs() > 0.5 {
+                                    Vec3::new(ax2.x, 0.0, ax2.y)
+                                } else {
+                                    Vec3::Y
+                                };
+                                let e2 = na.cross(e1).normalize();
+                                let (alo, ahi) = rect(a, axis, e1, e2);
+                                let (blo, bhi) = rect(b, axis_b, e1, e2);
+                                let ov = (ahi.min(bhi) - alo.max(blo)).max(Vec2::ZERO);
+                                if ov.x > 0.02 && ov.y > 0.02 {
+                                    fights.push((a.center, b.center));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{} z-fighting face pairs; first: {:?}",
+            fights.len(),
+            fights.iter().take(5).collect::<Vec<_>>()
+        );
+        assert!(
+            fights.is_empty(),
+            "{} pairs of coplanar overlapping faces",
+            fights.len()
         );
     }
 
