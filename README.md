@@ -35,6 +35,9 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | 1 / 2 | cycle hull / turret |
 | R | respawn at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
+| [ / ] | live tuning: sideways grip ×0.9 / ×1.1 |
+| ; / ' | live tuning: turn rate −/+ 0.1 rad/s |
+| Backspace | reset live tuning |
 | Esc | quit |
 
 ## Tank kit
