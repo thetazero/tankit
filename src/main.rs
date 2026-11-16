@@ -27,7 +27,7 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map --spawn --team-size --contract --hull --turret skips the menu and drops straight into a match
+  any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
   --map <city|proving|saltmarket|shards>
                           city (default), the physics test course, Saltmarket (desert town),
@@ -36,6 +36,8 @@ tankit [OPTIONS]
   --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
+  --employer <faction>    which of the map's two sides hires you (default: its first);
+                          your trust in the match goes to them
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -50,7 +52,7 @@ tankit [OPTIONS]
   --screen <menu|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
-  --xp <n>                (with --shot) pilot XP for menu, garage and pause shots
+  --trust <n>             (with --shot) trust with every faction for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
@@ -64,6 +66,8 @@ pub struct Args {
     pub spawn: usize,
     pub bots: usize,
     pub contract: mission::Contract,
+    /// Which of the map's sides hires you (0 or 1).
+    pub side: usize,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -71,7 +75,7 @@ pub struct Args {
     play: bool,
     garage: bool,
     screen: Option<Screen>,
-    xp: u32,
+    trust: u32,
     crystals: u32,
     debug: bool,
     straight: bool,
@@ -85,14 +89,18 @@ impl Args {
     /// An in-memory pilot for headless shots (never saved).
     fn profile(&self) -> profile::Profile {
         let mut p = profile::Profile::in_memory();
-        p.xp = self.xp;
+        p.set_trust_all(self.trust);
         p.crystals = self.crystals;
         p.settings.debug = self.debug;
         p
     }
 
     pub fn map(&self) -> map::Map {
-        make_map(self.seed, self.map)
+        let mut m = make_map(self.seed, self.map);
+        if self.side == 1 {
+            m.swap_sides();
+        }
+        m
     }
 }
 
@@ -166,6 +174,7 @@ fn main() -> Result<()> {
             spawn: args.spawn,
             bots: args.bots,
             contract: args.contract,
+            side: args.side,
             loadout: args.kit_given.then_some(args.loadout),
             menu: !args.play,
             showroom,
@@ -188,11 +197,12 @@ fn parse_args() -> Result<Args> {
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut bots: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
+    let mut employer: Option<faction::Faction> = None;
     let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
     let mut garage = false;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let (mut xp, mut crystals) = (0, 0);
+    let (mut trust, mut crystals) = (0, 0);
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -202,7 +212,14 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = args.next() {
         if matches!(
             a.as_str(),
-            "--seed" | "--map" | "--spawn" | "--team-size" | "--contract" | "--hull" | "--turret"
+            "--seed"
+                | "--map"
+                | "--spawn"
+                | "--team-size"
+                | "--contract"
+                | "--employer"
+                | "--hull"
+                | "--turret"
         ) {
             play = true;
         }
@@ -230,6 +247,13 @@ fn parse_args() -> Result<Args> {
                 Some("hold") => contract = mission::Contract::Hold,
                 other => bail!("--contract expects attrition or hold, got {other:?}"),
             },
+            "--employer" => {
+                let name = args.next().unwrap_or_default();
+                employer =
+                    Some(faction::Faction::by_name(&name).with_context(|| {
+                        format!("--employer expects a faction name, got {name:?}")
+                    })?);
+            }
             "--straight" => straight = true,
             "--cam" => {
                 let v: Vec<f32> = args
@@ -280,7 +304,7 @@ fn parse_args() -> Result<Args> {
                     }
                 })
             }
-            "--xp" => xp = args.next().context("--xp needs a number")?.parse()?,
+            "--trust" => trust = args.next().context("--trust needs a number")?.parse()?,
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
@@ -303,8 +327,21 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
+    let sides = make_map(seed, map_kind).factions;
+    let side = match employer {
+        None => 0,
+        Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
+            format!(
+                "--employer: nobody hires {} here; this map is {} against {}",
+                f.name(),
+                sides[0].name(),
+                sides[1].name()
+            )
+        })?,
+    };
     Ok(Args {
         seed,
+        side,
         map: map_kind,
         spawn,
         bots: bots.unwrap_or(if map_kind == MapKind::Proving { 0 } else { 11 }),
@@ -314,7 +351,7 @@ fn parse_args() -> Result<Args> {
         play,
         garage,
         screen,
-        xp,
+        trust,
         crystals,
         debug,
         straight,
@@ -416,9 +453,13 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame
-                    .ui
-                    .extend(menu::Pause::new().draw(&profile, game.xp, w, h));
+                frame.ui.extend(menu::Pause::new().draw(
+                    &profile,
+                    game.factions[0],
+                    game.trust,
+                    w,
+                    h,
+                ));
             }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));

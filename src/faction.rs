@@ -20,6 +20,24 @@ pub enum Faction {
 }
 
 impl Faction {
+    pub const ALL: [Faction; 4] = [
+        Faction::Imperium,
+        Faction::Resonant,
+        Faction::Machines,
+        Faction::Sorn,
+    ];
+
+    /// Position in `ALL`, for per-faction tables (trust).
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn by_name(name: &str) -> Option<Faction> {
+        Faction::ALL
+            .into_iter()
+            .find(|f| f.name().eq_ignore_ascii_case(name))
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Faction::Imperium => "IMPERIUM",

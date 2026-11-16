@@ -17,9 +17,9 @@ use crate::sim::Tank;
 pub const RADIUS: f32 = 13.0;
 /// Seconds held by one side that win the round outright.
 pub const TARGET: f32 = 120.0;
-/// The player earns `HOLD_XP` for every `XP_EVERY` seconds of their own on the site.
-pub const XP_EVERY: f32 = 10.0;
-pub const HOLD_XP: u32 = 5;
+/// The player earns `HOLD_TRUST` for every `TRUST_EVERY` seconds of their own on the site.
+pub const TRUST_EVERY: f32 = 10.0;
+pub const HOLD_TRUST: u32 = 5;
 /// Tanks further than this above or below the ring's ground (a roof, a ledge) don't count.
 const REACH_Y: f32 = 4.0;
 const DASHES: usize = 40;

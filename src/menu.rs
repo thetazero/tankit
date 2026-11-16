@@ -6,6 +6,7 @@
 
 use glam::Vec2;
 
+use crate::faction::Faction;
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
@@ -22,6 +23,8 @@ pub enum Nav {
     Down,
     Select,
     Back,
+    Left,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,8 +36,8 @@ pub enum Screen {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
-    /// Start mission `MISSIONS[i]`.
-    Deploy(usize),
+    /// Start mission `MISSIONS[i]`, hired by its side `.1` (0 or 1).
+    Deploy(usize, usize),
     Garage,
     /// Flip the settings toggle `SETTINGS[i]`.
     Toggle(usize),
@@ -63,6 +66,8 @@ pub struct Menu {
     pub screen: Screen,
     cursor: usize,
     mission: usize,
+    /// Which of the mission's sides you're taking the contract from.
+    side: usize,
     setting: usize,
 }
 
@@ -72,6 +77,7 @@ impl Menu {
             screen: Screen::Main,
             cursor: 0,
             mission: 0,
+            side: 0,
             setting: 0,
         }
     }
@@ -87,17 +93,21 @@ impl Menu {
                 2 => self.screen = Screen::Settings,
                 _ => return Some(Action::Quit),
             },
-            (Screen::Main, Nav::Back) => {}
+            (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
             (Screen::Missions, Nav::Up | Nav::Down) => {
                 self.mission = step(self.mission, MISSIONS.len(), nav)
             }
-            (Screen::Missions, Nav::Select) => return Some(Action::Deploy(self.mission)),
+            (Screen::Missions, Nav::Left | Nav::Right) => self.side = 1 - self.side,
+            (Screen::Missions, Nav::Select) => {
+                return Some(Action::Deploy(self.mission, self.side));
+            }
             (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
             (Screen::Settings, Nav::Up | Nav::Down) => {
                 self.setting = step(self.setting, SETTINGS.len(), nav)
             }
             (Screen::Settings, Nav::Select) => return Some(Action::Toggle(self.setting)),
             (Screen::Settings, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Settings, Nav::Left | Nav::Right) => {}
         }
         None
     }
@@ -126,7 +136,7 @@ impl Menu {
         );
         y += 52.0;
         pilot(&mut p, Vec2::new(x, y), profile);
-        y += 88.0;
+        y += PILOT_H;
         p.line(
             Vec2::new(x, y),
             Vec2::new(x + PANEL_W, y),
@@ -163,11 +173,17 @@ impl Menu {
                 y += names.len() as f32 * 30.0 + 14.0;
 
                 let m = &MISSIONS[self.mission];
+                let (employer, against) = (m.sides[self.side], m.sides[1 - self.side]);
+                let s = profile.standing(employer);
                 for (k, v) in [
                     ("CONTRACT", m.contract.name().to_string()),
                     ("MAP", m.map.to_string()),
-                    ("EMPLOYER", m.sides[0].name().to_string()),
-                    ("AGAINST", m.sides[1].name().to_string()),
+                    ("EMPLOYER", format!("< {} >", employer.name())),
+                    ("AGAINST", against.name().to_string()),
+                    (
+                        "THEIR TRUST",
+                        format!("T{}  {} / {}", s.level, s.into, s.span),
+                    ),
                     ("TEAMS", m.teams()),
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
@@ -187,7 +203,12 @@ impl Menu {
                     &mut p,
                     x,
                     h,
-                    &[("W/S", "SELECT"), ("ENTER", "DEPLOY"), ("ESC", "BACK")],
+                    &[
+                        ("W/S", "SELECT"),
+                        ("A/D", "EMPLOYER"),
+                        ("ENTER", "DEPLOY"),
+                        ("ESC", "BACK"),
+                    ],
                 );
             }
             Screen::Settings => {
@@ -236,6 +257,7 @@ impl Pause {
             match nav {
                 Nav::Up | Nav::Down => *i = step(*i, SETTINGS.len(), nav),
                 Nav::Back => self.settings = None,
+                Nav::Left | Nav::Right => {}
                 Nav::Select => return Some(PauseAction::Toggle(*i)),
             }
             return None;
@@ -243,6 +265,7 @@ impl Pause {
         match nav {
             Nav::Up | Nav::Down => self.cursor = step(self.cursor, PAUSE_ITEMS.len(), nav),
             Nav::Back => return Some(PauseAction::Resume),
+            Nav::Left | Nav::Right => {}
             Nav::Select => match self.cursor {
                 0 => return Some(PauseAction::Resume),
                 1 => self.settings = Some(0),
@@ -253,8 +276,16 @@ impl Pause {
         None
     }
 
-    /// Dims the battle and draws the box. `match_xp` is what this match has paid so far.
-    pub fn draw(&self, profile: &Profile, match_xp: u32, width: f32, height: f32) -> Vec<UiVertex> {
+    /// Dims the battle and draws the box. `match_trust` is what this match has
+    /// earned you with `employer` so far.
+    pub fn draw(
+        &self,
+        profile: &Profile,
+        employer: Faction,
+        match_trust: u32,
+        width: f32,
+        height: f32,
+    ) -> Vec<UiVertex> {
         let scale = height / REF_HEIGHT;
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
@@ -297,16 +328,16 @@ impl Pause {
         label(&mut p, Vec2::new(x, y + 1.0), "THIS MATCH", Align::Left);
         p.text(
             Vec2::new(x + PANEL_W, y),
-            &format!("+{match_xp} XP"),
+            &format!("+{match_trust} TRUST"),
             &TextStyle::value(11.0),
             Align::Right,
         );
         y += 20.0;
-        let r = profile.rank();
+        let r = profile.standing(employer);
         label(
             &mut p,
             Vec2::new(x, y + 1.0),
-            &format!("RANK {}", r.rank),
+            &format!("{} T{}", employer.name(), r.level),
             Align::Left,
         );
         widgets::hairbar(
@@ -354,34 +385,44 @@ fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize
     }
 }
 
-/// Pilot rank, XP bar and totals.
+/// Height of the pilot block.
+const PILOT_H: f32 = 18.0 + Faction::ALL.len() as f32 * ROW_H + 40.0;
+const ROW_H: f32 = 20.0;
+
+/// Each faction's trust in you (standing and the bar to the next), then crystals.
 fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
-    let r = profile.rank();
-    label(p, at, "PILOT RANK", Align::Left);
-    label(
-        p,
-        at + Vec2::new(PANEL_W, 0.0),
-        &format!("{} XP", profile.xp),
-        Align::Right,
-    );
+    label(p, at, "TRUST", Align::Left);
+    label(p, at + Vec2::new(PANEL_W, 0.0), "STANDING", Align::Right);
+    let mut y = at.y + 18.0;
+    for f in Faction::ALL {
+        let s = profile.standing(f);
+        let mut name = TextStyle::value(11.0);
+        name.color = f.ui();
+        p.text(Vec2::new(at.x, y), f.name(), &name, Align::Left);
+        widgets::hairbar(
+            p,
+            Vec2::new(at.x + 110.0, y + 6.0),
+            PANEL_W - 110.0 - 36.0,
+            s.progress(),
+            if profile.trust_of(f) > 0 {
+                theme::FG
+            } else {
+                theme::FAINT
+            },
+        );
+        p.text(
+            Vec2::new(at.x + PANEL_W, y),
+            &format!("T{}", s.level),
+            &TextStyle::value(11.0),
+            Align::Right,
+        );
+        y += ROW_H;
+    }
+    let cy = y + 10.0 - at.y;
+    label(p, at + Vec2::new(0.0, cy + 2.0), "CRYSTALS", Align::Left);
+    let cw = label(p, at + Vec2::new(PANEL_W, cy + 2.0), "CR", Align::Right);
     p.text(
-        at + Vec2::new(0.0, 16.0),
-        &r.rank.to_string(),
-        &TextStyle::value(20.0),
-        Align::Left,
-    );
-    let bar = at + Vec2::new(56.0, 28.0);
-    widgets::hairbar(p, bar, PANEL_W - 56.0, r.progress(), theme::FG);
-    label(
-        p,
-        at + Vec2::new(PANEL_W, 38.0),
-        &format!("{} / {} TO RANK {}", r.into, r.span, r.rank + 1),
-        Align::Right,
-    );
-    label(p, at + Vec2::new(0.0, 62.0), "CRYSTALS", Align::Left);
-    let cw = label(p, at + Vec2::new(PANEL_W, 62.0), "CR", Align::Right);
-    p.text(
-        at + Vec2::new(PANEL_W - cw - 8.0, 60.0),
+        at + Vec2::new(PANEL_W - cw - 8.0, cy),
         &profile.crystals.to_string(),
         &TextStyle::value(12.0),
         Align::Right,
@@ -476,7 +517,12 @@ mod tests {
         m.input(Nav::Down);
         assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Missions);
-        assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0)));
+        assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0, 0)));
+        // A/D takes the contract from the other side instead.
+        assert_eq!(m.input(Nav::Right), None);
+        assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0, 1)));
+        m.input(Nav::Left);
+        assert_eq!(m.input(Nav::Select), Some(Action::Deploy(0, 0)));
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
     }
@@ -509,8 +555,8 @@ mod tests {
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
                 for v in [
                     m.draw(&profile, h, 1.0),
-                    Pause::new().draw(&profile, 30, w, h),
-                    settings.draw(&profile, 30, w, h),
+                    Pause::new().draw(&profile, Faction::Imperium, 30, w, h),
+                    settings.draw(&profile, Faction::Imperium, 30, w, h),
                 ] {
                     assert!(!v.is_empty());
                     assert!(v.iter().all(|v| v.pos[0] > -4.0

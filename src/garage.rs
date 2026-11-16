@@ -520,8 +520,8 @@ impl Garage {
                 if part == in_use && !selected {
                     label(&mut p, right, "IN USE", Align::Right);
                 } else if let Some(price) = part.price().filter(|_| !owned) {
-                    let tag = if profile.rank().rank < price.rank {
-                        format!("RANK {}", price.rank)
+                    let tag = if profile.standing_for(*part) < price.standing {
+                        format!("TRUST {}", price.standing)
                     } else {
                         format!("{} CR", price.crystals)
                     };
@@ -598,7 +598,8 @@ fn action(part: Part, profile: &Profile) -> (String, bool) {
     } else {
         match profile.can_buy(part) {
             Ok(cost) => (format!("BUY · {cost} CR"), true),
-            Err(Refusal::Rank(r)) => (format!("FOR SALE AT RANK {r}"), false),
+            Err(Refusal::Trust(Some(f), s)) => (format!("{} SELLS AT TRUST {s}", f.name()), false),
+            Err(Refusal::Trust(None, s)) => (format!("SOLD AT TRUST {s} WITH ANY SIDE"), false),
             Err(Refusal::Crystals(cost)) => (format!("BUY · NEED {cost} CR"), false),
             Err(_) => (String::new(), false),
         }
@@ -712,7 +713,7 @@ mod tests {
     /// A pilot who owns everything.
     fn rich() -> Profile {
         let mut p = Profile::in_memory();
-        p.xp = 100_000;
+        p.set_trust_all(100_000);
         p.crystals = 100_000;
         for part in crate::economy::PARTS {
             let _ = p.buy(part);
@@ -761,7 +762,7 @@ mod tests {
         let maul = Part::Turret(TurretKind::Maul);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(maul)));
         // Once bought it queues; E on an owned part upgrades.
-        p.xp = 100_000;
+        p.set_trust_all(100_000);
         p.crystals = 100_000;
         p.buy(maul).unwrap();
         let kit = (HullKind::Lancer, TurretKind::Maul);

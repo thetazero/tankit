@@ -2,7 +2,7 @@
 //!
 //! The loop: main menu (missions, garage, quit) → a mission's match → Esc
 //! pauses (resume, exit to menu, quit) → when the round ends, Enter plays it
-//! again and Esc goes back to the menu. XP is banked into the pilot profile
+//! again and Esc goes back to the menu. Trust is banked into the pilot profile
 //! the moment it's earned, and the profile saves itself on every change.
 
 use std::collections::HashSet;
@@ -51,6 +51,8 @@ pub struct Launch {
     pub spawn: usize,
     pub bots: usize,
     pub contract: Contract,
+    /// Which of the map's sides hires you (0 or 1).
+    pub side: usize,
     /// Starting kit; `None` uses the profile's.
     pub loadout: Option<garage::Loadout>,
     /// Open on the main menu (otherwise straight into a match with the settings above).
@@ -64,6 +66,8 @@ struct App {
     spawn: usize,
     bots: usize,
     contract: Contract,
+    /// Which of the map's sides hired you.
+    side: usize,
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -72,7 +76,7 @@ struct App {
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
     profile: Profile,
-    /// How much of `game.xp` is already banked into the profile.
+    /// How much of `game.trust` is already banked into the profile.
     banked: u32,
     /// Whether this round's contract pay has been banked.
     paid: bool,
@@ -125,6 +129,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         new_match(
             launch.seed,
             launch.map_kind,
+            launch.side,
             launch.spawn,
             launch.bots,
             launch.contract,
@@ -141,6 +146,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         spawn: launch.spawn,
         bots: launch.bots,
         contract: launch.contract,
+        side: launch.side,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -175,21 +181,21 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A round under `contract` with the player in `kit`.
+/// A round under `contract`, hired by the map's side `side`, with the player in `kit`.
 pub fn new_match(
     seed: u64,
     map_kind: MapKind,
+    side: usize,
     spawn: usize,
     bots: usize,
     contract: Contract,
     kit: garage::Loadout,
 ) -> Match {
-    let mut m = Match::new(
-        make_map(seed, map_kind),
-        spawn,
-        bots,
-        seed.wrapping_add(spawn as u64),
-    );
+    let mut map = make_map(seed, map_kind);
+    if side == 1 {
+        map.swap_sides();
+    }
+    let mut m = Match::new(map, spawn, bots, seed.wrapping_add(spawn as u64));
     m.set_contract(contract);
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
@@ -199,7 +205,15 @@ pub fn new_match(
 /// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
 pub fn menu_match(kit: garage::Loadout) -> Match {
     let first = &MISSIONS[0];
-    let mut m = new_match(first.seed, first.map_kind, 0, 0, Contract::Attrition, kit);
+    let mut m = new_match(
+        first.seed,
+        first.map_kind,
+        0,
+        0,
+        0,
+        Contract::Attrition,
+        kit,
+    );
     m.time_left = f32::INFINITY;
     m
 }
@@ -292,6 +306,7 @@ impl App {
         self.load(new_match(
             self.seed,
             self.map_kind,
+            self.side,
             self.spawn,
             self.bots,
             self.contract,
@@ -300,20 +315,28 @@ impl App {
         self.mode = Mode::Playing;
     }
 
-    fn start_mission(&mut self, i: usize) {
+    /// Start mission `MISSIONS[i]`, hired by its side `side`.
+    fn start_mission(&mut self, i: usize, side: usize) {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
-        self.contract = m.contract;
+        (self.contract, self.side) = (m.contract, side);
         self.load(new_match(
             self.seed,
             self.map_kind,
+            self.side,
             self.spawn,
             self.bots,
             self.contract,
             self.profile.loadout,
         ));
         self.mode = Mode::Playing;
-        log::info!("deployed: {} ({}, {})", m.name, m.contract.name(), m.map);
+        log::info!(
+            "deployed: {} ({}, {}) for the {}",
+            m.name,
+            m.contract.name(),
+            m.map,
+            m.sides[side].name()
+        );
     }
 
     fn back_to_menu(&mut self) {
@@ -394,6 +417,8 @@ impl App {
             KeyCode::KeyS | KeyCode::ArrowDown => Nav::Down,
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Nav::Select,
             KeyCode::Escape | KeyCode::Backspace => Nav::Back,
+            KeyCode::KeyA | KeyCode::ArrowLeft => Nav::Left,
+            KeyCode::KeyD | KeyCode::ArrowRight => Nav::Right,
             _ => return None,
         })
     }
@@ -419,7 +444,7 @@ impl App {
             Mode::Menu => {
                 let Some(nav) = Self::nav(code) else { return };
                 match self.menu.input(nav) {
-                    Some(menu::Action::Deploy(i)) => self.start_mission(i),
+                    Some(menu::Action::Deploy(i, side)) => self.start_mission(i, side),
                     Some(menu::Action::Garage) => {
                         if let Some(cam) = self.camera {
                             self.garage.toggle(&self.game.world, &cam, self.queued());
@@ -567,10 +592,12 @@ impl App {
             }
         }
 
-        // XP is paid the moment it's earned; crystals when the contract is done.
-        if self.game.xp > self.banked {
-            self.profile.add_xp(self.game.xp - self.banked);
-            self.banked = self.game.xp;
+        // Trust is paid the moment it's earned, to whoever hired you; crystals
+        // when the contract is done.
+        if self.game.trust > self.banked {
+            self.profile
+                .add_trust(self.game.factions[0], self.game.trust - self.banked);
+            self.banked = self.game.trust;
         }
         if self.mode == Mode::Playing
             && self.showroom.is_none()
@@ -655,7 +682,13 @@ impl App {
                             self.hud
                                 .draw(&self.game, &tanks, self.seed, &camera, w, h, 0.0, false),
                         );
-                        ui.extend(self.pause.draw(&self.profile, self.game.xp, w, h));
+                        ui.extend(self.pause.draw(
+                            &self.profile,
+                            self.game.factions[0],
+                            self.game.trust,
+                            w,
+                            h,
+                        ));
                         ui
                     }
                 };
@@ -685,5 +718,24 @@ impl App {
             self.fps_timer = 0.0;
             self.fps_frames = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::faction::Faction;
+
+    /// Hired by side 1, the player fights for that faction from its bases.
+    #[test]
+    fn side_one_puts_the_player_with_the_other_faction() {
+        let m = &MISSIONS[0];
+        let kit = (crate::sim::HullKind::Lancer, crate::sim::TurretKind::Lance);
+        let a = new_match(m.seed, m.map_kind, 0, 0, 3, m.contract, kit);
+        let b = new_match(m.seed, m.map_kind, 1, 0, 3, m.contract, kit);
+        assert_eq!(a.factions, m.sides);
+        assert_eq!(b.factions, [m.sides[1], m.sides[0]]);
+        assert_eq!(b.world.map.bases[0], a.world.map.bases[1]);
+        assert_eq!(b.world.tanks[0].color, Faction::Resonant.paint());
     }
 }

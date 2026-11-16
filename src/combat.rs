@@ -31,10 +31,10 @@ pub const SHELL_SPEED: f32 = 160.0;
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
-/// XP for each enemy the player kills, paid the moment it dies.
-pub const KILL_XP: u32 = 10;
-/// How long an XP popup stays on screen, seconds.
-pub const XP_POP_TIME: f32 = 2.0;
+/// Trust with your employer for each enemy the player kills, paid the moment it dies.
+pub const KILL_TRUST: u32 = 10;
+/// How long a trust popup stays on screen, seconds.
+pub const TRUST_POP_TIME: f32 = 2.0;
 
 /// Weapon numbers per turret.
 #[derive(Clone, Copy)]
@@ -311,8 +311,8 @@ pub struct Kill {
     pub age: f32,
 }
 
-/// XP the player just earned, for the HUD popup.
-pub struct XpPop {
+/// Trust the player just earned, for the HUD popup.
+pub struct TrustPop {
     pub amount: u32,
     pub reason: &'static str,
     pub age: f32,
@@ -331,9 +331,9 @@ pub struct Match {
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
-    /// XP the player has earned this match (kills plus the win bonus).
-    pub xp: u32,
-    pub xp_pops: Vec<XpPop>,
+    /// Trust the player has earned with their side (`factions[0]`) this match.
+    pub trust: u32,
+    pub trust_pops: Vec<TrustPop>,
     pub repairs: Repairs,
     /// Side 0 and side 1.
     pub factions: [Faction; 2],
@@ -391,8 +391,8 @@ impl Match {
             shells: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
-            xp: 0,
-            xp_pops: Vec::new(),
+            trust: 0,
+            trust_pops: Vec::new(),
             repairs,
             factions,
             time_left: ROUND_TIME,
@@ -560,10 +560,10 @@ impl Match {
             k.age += DT;
         }
         self.feed.retain(|k| k.age < FEED_TIME);
-        for x in &mut self.xp_pops {
+        for x in &mut self.trust_pops {
             x.age += DT;
         }
-        self.xp_pops.retain(|x| x.age < XP_POP_TIME);
+        self.trust_pops.retain(|x| x.age < TRUST_POP_TIME);
     }
 
     /// Elevate each gun onto a tank roughly along its line of fire (Tanki-style
@@ -792,7 +792,7 @@ impl Match {
         if killer != victim {
             self.fighters[killer].kills += 1;
             if killer == 0 {
-                self.award(KILL_XP, "KILL");
+                self.award(KILL_TRUST, "KILL");
             }
         }
         self.feed.push(Kill {
@@ -817,15 +817,15 @@ impl Match {
     }
 
     fn award(&mut self, amount: u32, reason: &'static str) {
-        self.xp += amount;
-        self.xp_pops.push(XpPop {
+        self.trust += amount;
+        self.trust_pops.push(TrustPop {
             amount,
             reason,
             age: 0.0,
         });
     }
 
-    /// Bank time for the side holding the site; pay the player XP for their
+    /// Bank time for the side holding the site; pay the player trust for their
     /// own time on it, and end the round when a side reaches the target.
     fn hold_site(&mut self) {
         let Some(h) = &mut self.hold else { return };
@@ -834,10 +834,10 @@ impl Match {
         h.step(DT, &self.world.tanks, |i| {
             fighters[i].alive.then_some(fighters[i].team)
         });
-        let paid = (h.own[0] / hold::XP_EVERY).floor() > (before / hold::XP_EVERY).floor();
+        let paid = (h.own[0] / hold::TRUST_EVERY).floor() > (before / hold::TRUST_EVERY).floor();
         let won = h.winner().is_some();
         if paid {
-            self.award(hold::HOLD_XP, "HOLDING");
+            self.award(hold::HOLD_TRUST, "HOLDING");
         }
         if won {
             self.phase = Phase::Over;
@@ -1210,7 +1210,7 @@ mod tests {
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
-        assert_eq!(m.xp, m.fighters[0].kills * KILL_XP);
+        assert_eq!(m.trust, m.fighters[0].kills * KILL_TRUST);
     }
 
     /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
@@ -1344,10 +1344,14 @@ mod tests {
         let mut m = arena(2);
         m.kill(1, 2);
         m.kill(0, 0);
-        assert_eq!(m.xp, 0);
+        assert_eq!(m.trust, 0);
         m.kill(0, 1);
-        assert_eq!(m.xp, KILL_XP);
-        assert_eq!(m.xp_pops.len(), 1, "one popup, for the player's own kill");
+        assert_eq!(m.trust, KILL_TRUST);
+        assert_eq!(
+            m.trust_pops.len(),
+            1,
+            "one popup, for the player's own kill"
+        );
     }
 
     #[test]
@@ -1461,17 +1465,17 @@ mod tests {
     }
 
     #[test]
-    fn holding_pays_xp_and_reaching_the_target_ends_the_round() {
+    fn holding_pays_trust_and_reaching_the_target_ends_the_round() {
         let mut m = Match::new(Map::proving_ground(), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
-        m.hold.as_mut().unwrap().own[0] = hold::XP_EVERY - 0.1;
+        m.hold.as_mut().unwrap().own[0] = hold::TRUST_EVERY - 0.1;
         for _ in 0..30 {
             m.step(Command::default(), false);
         }
-        assert_eq!(m.xp, hold::HOLD_XP);
-        assert_eq!(m.xp_pops.last().map(|x| x.reason), Some("HOLDING"));
+        assert_eq!(m.trust, hold::HOLD_TRUST);
+        assert_eq!(m.trust_pops.last().map(|x| x.reason), Some("HOLDING"));
         assert_eq!(m.phase, Phase::Playing);
         m.hold.as_mut().unwrap().held[0] = hold::TARGET - 0.1;
         for _ in 0..30 {

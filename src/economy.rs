@@ -1,10 +1,13 @@
 //! Crystals: what contracts pay and what parts cost.
 //!
 //! A finished contract pays crystals (completion, your side's victory,
-//! contribution, kill bounty, and your time on the site under Hold); XP stays for actions in the match. Crystals buy parts (which
-//! pilot rank unlocks for sale) and upgrade them through M0..M3.
+//! contribution, kill bounty, and your time on the site under Hold); trust
+//! with your employer is paid for actions in the match. Crystals buy parts
+//! (which standing with their maker puts up for sale) and upgrade them
+//! through M0..M3.
 
 use crate::combat::{self, Gun, Match};
+use crate::faction::Faction;
 use crate::sim::{HullKind, TurretKind};
 
 /// A hull or a turret.
@@ -43,33 +46,42 @@ impl Part {
         PARTS.iter().position(|&p| p == self).unwrap_or(0)
     }
 
-    /// What it costs to buy, and the pilot rank it's for sale at. `None`: a
+    /// Who makes it, and so whose trust puts it up for sale. `None`: hulls,
+    /// basic kit every side fields.
+    pub fn maker(self) -> Option<Faction> {
+        match self {
+            Part::Hull(_) => None,
+            Part::Turret(k) => Some(k.maker()),
+        }
+    }
+
+    /// What it costs to buy, and the standing with its maker it's for sale at. `None`: a
     /// starter part, owned from the start.
     pub fn price(self) -> Option<Price> {
         match self {
             Part::Hull(HullKind::Lancer) | Part::Turret(TurretKind::Lance) => None,
             Part::Turret(TurretKind::Maul) => Some(Price {
-                rank: 2,
+                standing: 2,
                 crystals: 500,
             }),
             Part::Hull(HullKind::Bastion) => Some(Price {
-                rank: 3,
+                standing: 3,
                 crystals: 900,
             }),
             Part::Turret(TurretKind::Hymn) => Some(Price {
-                rank: 2,
+                standing: 2,
                 crystals: 600,
             }),
             Part::Turret(TurretKind::Triad) => Some(Price {
-                rank: 3,
+                standing: 3,
                 crystals: 750,
             }),
             Part::Turret(TurretKind::Wisp) => Some(Price {
-                rank: 4,
+                standing: 4,
                 crystals: 900,
             }),
             Part::Turret(TurretKind::Lumen) => Some(Price {
-                rank: 4,
+                standing: 4,
                 crystals: 1000,
             }),
         }
@@ -78,7 +90,7 @@ impl Part {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Price {
-    pub rank: u32,
+    pub standing: u32,
     pub crystals: u32,
 }
 
