@@ -35,7 +35,9 @@ pub fn world() -> World {
         .iter()
         .enumerate()
         .map(|(i, &tu)| {
-            let h = if i % 2 == 0 {
+            let h = if tu.maker() == crate::faction::Faction::Ithessar {
+                HullKind::Sethuun
+            } else if i % 2 == 0 {
                 HullKind::Lancer
             } else {
                 HullKind::Bastion
@@ -85,6 +87,12 @@ pub fn after_step(w: &mut World) {
     let t = w.time;
     for i in 0..w.tanks.len() {
         w.tanks[i].gun_pitch = 0.06 + (t * 0.7 + i as f32 * 1.3).sin() * 0.1;
+        // Spin-up guns wind up and down on a slow cycle.
+        if crate::combat::gun(w.tanks[i].turret_kind).spool > 0.0 {
+            let tk = &mut w.tanks[i];
+            tk.spool = (0.5 - 0.5 * (t * 0.8).cos()).clamp(0.0, 1.0);
+            tk.spin += DT * (1.5 + 26.0 * tk.spool);
+        }
         let (period, off) = (2.2 + i as f32 * 0.35, i as f32 * 0.6);
         if ((t + off) / period).floor() != ((t - DT + off) / period).floor() {
             w.fire(i);

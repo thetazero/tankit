@@ -51,6 +51,10 @@ pub enum Material {
     Rust,
     /// Weathered paint over steel, rusting through in patches.
     Painted,
+
+    // Tanks again.
+    /// Ithessar worked crystal: dark, glassy, flecked deep inside.
+    Vhaal,
 }
 
 impl Material {
@@ -74,6 +78,7 @@ impl Material {
         Material::Rubble,
         Material::Rust,
         Material::Painted,
+        Material::Vhaal,
     ];
 
     /// What goes in the vertex color's alpha channel.
@@ -102,6 +107,7 @@ impl Material {
             Material::Rubble => "RUBBLE",
             Material::Rust => "RUST",
             Material::Painted => "PAINTED",
+            Material::Vhaal => "VHAAL",
         }
     }
 

@@ -29,13 +29,14 @@ const ORBIT_DRIFT: f32 = 0.12;
 
 pub type Loadout = (HullKind, TurretKind);
 
-pub const HULLS: [HullKind; 2] = [HullKind::Lancer, HullKind::Bastion];
+pub const HULLS: [HullKind; 3] = [HullKind::Lancer, HullKind::Bastion, HullKind::Sethuun];
 pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
         HullKind::Lancer => "LANCER",
         HullKind::Bastion => "BASTION",
+        HullKind::Sethuun => "SETHUUN",
     }
 }
 
@@ -43,8 +44,8 @@ pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
         TurretKind::Lance => "LANCE",
         TurretKind::Maul => "MAUL",
-        TurretKind::Wisp => "WISP",
-        TurretKind::Triad => "TRIAD",
+        TurretKind::Ammeth => "AMMETH",
+        TurretKind::Ossrin => "OSSRIN",
         TurretKind::Lumen => "LUMEN",
         TurretKind::Hymn => "HYMN",
     }

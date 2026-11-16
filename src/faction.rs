@@ -1,10 +1,10 @@
 //! The sides of the war (see docs/setting.md). Every faction makes turrets;
-//! the two human factions also field teams (the machines and the Sorn come
+//! the two human factions also field teams (the machines and the Ithessar come
 //! later as sides).
 
 use glam::Vec3;
 
-use crate::sim::TurretKind;
+use crate::sim::{HullKind, TurretKind};
 use crate::ui::Rgba;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -16,7 +16,7 @@ pub enum Faction {
     /// A machine faction.
     Machines,
     /// The aliens.
-    Sorn,
+    Ithessar,
 }
 
 impl Faction {
@@ -25,7 +25,7 @@ impl Faction {
             Faction::Imperium => "IMPERIUM",
             Faction::Resonant => "RESONANT",
             Faction::Machines => "MACHINES",
-            Faction::Sorn => "SORN",
+            Faction::Ithessar => "ITHESSAR",
         }
     }
 
@@ -38,8 +38,8 @@ impl Faction {
             Faction::Resonant => Vec3::new(0.12, 0.78, 0.70),
             // Rust orange.
             Faction::Machines => Vec3::new(0.86, 0.46, 0.2),
-            // Dusk violet.
-            Faction::Sorn => Vec3::new(0.62, 0.5, 0.88),
+            // Rose, the color of their plasma cooled.
+            Faction::Ithessar => Vec3::new(0.8, 0.3, 0.46),
         }
     }
 
@@ -49,7 +49,16 @@ impl Faction {
             Faction::Imperium => [0.62, 0.78, 1.0, 1.0],
             Faction::Resonant => [0.25, 0.95, 0.82, 1.0],
             Faction::Machines => [1.0, 0.6, 0.3, 1.0],
-            Faction::Sorn => [0.78, 0.65, 1.0, 1.0],
+            Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
+        }
+    }
+
+    /// The hulls this side's bots drive. Only the Ithessar build their own;
+    /// everyone else fields the common tracked kit.
+    pub fn hulls(self) -> &'static [HullKind] {
+        match self {
+            Faction::Ithessar => &[HullKind::Sethuun],
+            _ => &[HullKind::Lancer, HullKind::Bastion],
         }
     }
 

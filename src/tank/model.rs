@@ -20,6 +20,12 @@ pub struct Skin {
     edge: Vec4,
 }
 
+impl Skin {
+    pub const fn new(face: Vec4, edge: Vec4) -> Skin {
+        Skin { face, edge }
+    }
+}
+
 pub const CARBON: Skin = Skin {
     face: Vec4::new(0.034, 0.037, 0.042, Material::Carbon.id()),
     edge: Vec4::new(0.09, 0.095, 0.1, Material::Carbon.id()),
@@ -258,12 +264,12 @@ fn mirror(p: [Vec3; 4]) -> [Vec3; 4] {
     p.map(|v| Vec3::new(-v.x, v.y, v.z))
 }
 
-fn v(x: f32, y: f32, z: f32) -> Vec3 {
+pub(crate) fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, y, z)
 }
 
 /// A plate and its mirror image on the other side.
-fn plate2(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin) {
+pub(crate) fn plate2(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin) {
     plate(m, top, t, inside, skin);
     plate(m, mirror(top), t, inside * Vec3::new(-1.0, 1.0, 1.0), skin);
 }
@@ -1011,9 +1017,24 @@ pub struct TurretModel {
     pub muzzle: f32,
     /// How far a barrel slides back when it fires.
     pub recoil: f32,
+    /// How the barrels move.
+    pub rig: Rig,
 }
 
-fn turret_ring(m: &mut MeshData) {
+/// How a turret's barrels animate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rig {
+    /// Each barrel slides back when it fires.
+    Recoil,
+    /// The barrels are prongs set round the gun axis: they splay open when
+    /// it fires, and a plasma orb `size` across charges between them, `orb`
+    /// along the axis, as the gun reloads.
+    Cradle { orb: f32, size: f32 },
+    /// The barrel set turns about the gun axis with the tank's `spin`.
+    Spinner,
+}
+
+pub(crate) fn turret_ring(m: &mut MeshData) {
     round(
         m,
         &[
@@ -1244,6 +1265,7 @@ pub fn lance() -> TurretModel {
         pivot: v(0.0, 0.45, 0.88),
         barrels: vec![Vec3::ZERO],
         muzzle: 3.55,
+        rig: Rig::Recoil,
         recoil: 0.8,
     }
 }
@@ -1445,6 +1467,7 @@ pub fn maul() -> TurretModel {
         pivot: v(0.0, 0.38, 0.92),
         barrels: vec![v(-0.34, 0.0, 0.0), v(0.34, 0.0, 0.0)],
         muzzle: 2.82,
+        rig: Rig::Recoil,
         recoil: 0.6,
     }
 }
@@ -1453,11 +1476,6 @@ pub fn maul() -> TurretModel {
 // Faction turrets. The Imperium builds the plated Lance and Maul above; the
 // others below each have their own shape language and glow color.
 
-/// Sorn plasma glow.
-const SORN_GLOW: Skin = Skin {
-    face: Vec4::new(0.25, 1.0, 0.6, Material::Glow.id()),
-    edge: Vec4::new(0.25, 1.0, 0.6, Material::Glow.id()),
-};
 /// Machine laser red.
 const LASER_GLOW: Skin = Skin {
     face: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
@@ -1469,27 +1487,8 @@ const CRYSTAL: Skin = Skin {
     edge: Vec4::new(0.8, 0.55, 1.0, Material::Glow.id()),
 };
 
-/// An oval dome lofted from horizontal rings: half extents `rx` x `rz` at
-/// `y0`, rising `h`, centered at z = `cz`.
-fn dome(m: &mut MeshData, rx: f32, rz: f32, cz: f32, y0: f32, h: f32, skin: Skin) {
-    let steps = 5;
-    let rings: Vec<Vec<Vec3>> = (0..=steps)
-        .map(|i| {
-            let f = i as f32 / steps as f32;
-            // Quarter-ellipse profile, with a small flat cap on top.
-            let r = (1.0 - f * f).sqrt().max(0.18);
-            let y = y0 + h * (f * std::f32::consts::FRAC_PI_2).sin();
-            ngon(18, 1.0, Vec2::ZERO)
-                .iter()
-                .map(|p| Vec3::new(p.x * rx * r, y, cz + p.y * rz * r))
-                .collect()
-        })
-        .collect();
-    round(m, &rings, 0.02, skin);
-}
-
 /// A crystal shard: a hexagonal prism from `base` along `dir`, tapering to a point.
-fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, skin: Skin) {
+pub(crate) fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, skin: Skin) {
     let d = dir.normalize();
     let side = if d.y.abs() > 0.9 { Vec3::X } else { Vec3::Y };
     let a = d.cross(side).normalize();
@@ -1511,207 +1510,6 @@ fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, skin: Skin) 
         0.005,
         skin,
     );
-}
-
-/// Sorn orb launcher: a smooth shell of a head with glowing seams, and one
-/// fat emitter that throws bouncing plasma.
-pub fn wisp() -> TurretModel {
-    let mut head = MeshData::default();
-    turret_ring(&mut head);
-    dome(&mut head, 0.95, 1.2, -0.15, 0.1, 0.72, CARBON);
-    // A painted carapace over the top, and a glowing seam band around the dome.
-    dome(&mut head, 0.7, 0.85, -0.3, 0.55, 0.38, PAINT);
-    round(
-        &mut head,
-        &[
-            at_y(&ngon(18, 1.0, Vec2::ZERO), 0.0)
-                .iter()
-                .map(|p| Vec3::new(p.x * 0.97, 0.34, -0.15 + p.z * 1.22))
-                .collect(),
-            at_y(&ngon(18, 1.0, Vec2::ZERO), 0.0)
-                .iter()
-                .map(|p| Vec3::new(p.x * 0.95, 0.4, -0.15 + p.z * 1.2))
-                .collect(),
-        ],
-        0.0,
-        SORN_GLOW,
-    );
-    // Two swept-back fins.
-    for s in [-1.0f32, 1.0] {
-        plate(
-            &mut head,
-            [
-                v(s * 0.45, 0.8, -0.6),
-                v(s * 0.45, 0.85, -0.95),
-                v(s * 0.6, 1.25, -1.45),
-                v(s * 0.6, 1.15, -1.1),
-            ],
-            0.04,
-            v(0.0, 0.6, -0.9),
-            CARBON_LIGHT,
-        );
-    }
-
-    let mut mantlet = MeshData::default();
-    round(
-        &mut mantlet,
-        &[
-            at_z(&ngon(12, 0.2, Vec2::ZERO), -0.4),
-            at_z(&ngon(12, 0.36, Vec2::ZERO), -0.15),
-            at_z(&ngon(12, 0.36, Vec2::ZERO), 0.2),
-            at_z(&ngon(12, 0.26, Vec2::ZERO), 0.42),
-        ],
-        0.02,
-        CARBON,
-    );
-
-    let mut barrel = MeshData::default();
-    let c = |r: f32| ngon(14, r, Vec2::ZERO);
-    round(
-        &mut barrel,
-        &[
-            at_z(&c(0.22), 0.3),
-            at_z(&c(0.27), 0.9),
-            at_z(&c(0.25), 1.7),
-        ],
-        0.02,
-        CARBON_LIGHT,
-    );
-    // Glowing containment rings, then a flared bell around a bright core.
-    for i in 0..3 {
-        let z = 0.75 + i as f32 * 0.32;
-        round(
-            &mut barrel,
-            &[at_z(&c(0.3), z), at_z(&c(0.3), z + 0.09)],
-            0.0,
-            SORN_GLOW,
-        );
-    }
-    round(
-        &mut barrel,
-        &[
-            at_z(&c(0.26), 1.65),
-            at_z(&c(0.4), 2.0),
-            at_z(&c(0.43), 2.1),
-        ],
-        0.02,
-        CARBON,
-    );
-    round(
-        &mut barrel,
-        &[at_z(&c(0.3), 2.0), at_z(&c(0.3), 2.11)],
-        0.0,
-        SORN_GLOW,
-    );
-
-    TurretModel {
-        head,
-        mantlet,
-        barrel,
-        pivot: v(0.0, 0.5, 0.85),
-        barrels: vec![Vec3::ZERO],
-        muzzle: 2.15,
-        recoil: 0.3,
-    }
-}
-
-/// Sorn rapid plasma: a long low shell with three thin barrels in a triangle
-/// that fire in turn.
-pub fn triad() -> TurretModel {
-    let mut head = MeshData::default();
-    turret_ring(&mut head);
-    dome(&mut head, 0.85, 1.35, -0.1, 0.1, 0.6, CARBON);
-    dome(&mut head, 0.55, 1.0, -0.2, 0.45, 0.3, PAINT);
-    // Glowing gill slits down each flank.
-    for s in [-1.0f32, 1.0] {
-        for k in 0..3 {
-            let z = -0.7 + k as f32 * 0.28;
-            plate(
-                &mut head,
-                [
-                    v(s * 0.8, 0.42, z),
-                    v(s * 0.8, 0.42, z + 0.14),
-                    v(s * 0.83, 0.22, z + 0.2),
-                    v(s * 0.83, 0.22, z + 0.06),
-                ],
-                0.015,
-                v(0.0, 0.35, z),
-                SORN_GLOW,
-            );
-        }
-    }
-    // A sensor crest on top.
-    plate(
-        &mut head,
-        [
-            v(0.0, 0.75, -1.1),
-            v(0.0, 0.8, 0.4),
-            v(0.0, 1.0, -0.1),
-            v(0.0, 1.05, -0.9),
-        ],
-        0.05,
-        v(0.3, 0.5, -0.4),
-        CARBON_LIGHT,
-    );
-
-    let mut mantlet = MeshData::default();
-    // Triangular collar around the barrel cluster.
-    round(
-        &mut mantlet,
-        &[
-            at_z(&ngon(3, 0.42, Vec2::ZERO), -0.35),
-            at_z(&ngon(3, 0.46, Vec2::ZERO), 0.1),
-            at_z(&ngon(3, 0.4, Vec2::ZERO), 0.35),
-        ],
-        0.06,
-        CARBON,
-    );
-    round(
-        &mut mantlet,
-        &[
-            at_z(&ngon(9, 0.1, Vec2::ZERO), 0.3),
-            at_z(&ngon(9, 0.1, Vec2::ZERO), 0.4),
-        ],
-        0.0,
-        SORN_GLOW,
-    );
-
-    let mut barrel = MeshData::default();
-    let c = |r: f32| ngon(10, r, Vec2::ZERO);
-    round(
-        &mut barrel,
-        &[at_z(&c(0.09), 0.2), at_z(&c(0.08), 2.1)],
-        0.0,
-        CARBON_LIGHT,
-    );
-    round(
-        &mut barrel,
-        &[at_z(&c(0.12), 0.9), at_z(&c(0.12), 1.15)],
-        0.01,
-        CARBON,
-    );
-    round(
-        &mut barrel,
-        &[at_z(&c(0.11), 2.05), at_z(&c(0.11), 2.25)],
-        0.0,
-        SORN_GLOW,
-    );
-
-    let r = 0.17;
-    TurretModel {
-        head,
-        mantlet,
-        barrel,
-        pivot: v(0.0, 0.42, 0.95),
-        barrels: (0..3)
-            .map(|k| {
-                let a = std::f32::consts::FRAC_PI_2 + k as f32 / 3.0 * TAU;
-                v(a.cos() * r, a.sin() * r, 0.0)
-            })
-            .collect(),
-        muzzle: 2.3,
-        recoil: 0.25,
-    }
 }
 
 /// Machine laser: a blocky, asymmetric housing stacked with heat-sink fins,
@@ -1860,6 +1658,7 @@ pub fn lumen() -> TurretModel {
         pivot: v(0.0, 0.42, 0.92),
         barrels: vec![Vec3::ZERO],
         muzzle: 3.2,
+        rig: Rig::Recoil,
         recoil: 0.0,
     }
 }
@@ -2009,6 +1808,7 @@ pub fn hymn() -> TurretModel {
         pivot: v(0.0, 0.45, 0.8),
         barrels: vec![Vec3::ZERO],
         muzzle: 1.85,
+        rig: Rig::Recoil,
         recoil: 0.0,
     }
 }
