@@ -17,10 +17,11 @@ pub enum Part {
     Turret(TurretKind),
 }
 
-pub const PARTS: [Part; 9] = [
+pub const PARTS: [Part; 10] = [
     Part::Hull(HullKind::Kataphrakt),
     Part::Hull(HullKind::Kastron),
     Part::Hull(HullKind::Sethuun),
+    Part::Hull(HullKind::Vigil),
     Part::Turret(TurretKind::Kontos),
     Part::Turret(TurretKind::Pelekys),
     Part::Turret(TurretKind::Ammeth),
@@ -79,6 +80,10 @@ impl Part {
                 crystals: 900,
             }),
             Part::Hull(HullKind::Sethuun) => Some(Price {
+                standing: 3,
+                crystals: 850,
+            }),
+            Part::Hull(HullKind::Vigil) => Some(Price {
                 standing: 3,
                 crystals: 850,
             }),

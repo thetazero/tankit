@@ -52,8 +52,8 @@ play. Factions are the world, never a lock on your build. They show up as:
     phasing.
 
   Hulls: the Imperium make the tracked ones (Kataphrakt, Kastron), the Ithessar
-  one that hovers (Sethuun). The Resonant and the machines will get their
-  own.
+  one that hovers (Sethuun), the Resonant a vessel that won't stay dead
+  (Vigil). The machines will get their own.
 
 ## The Resonant
 
@@ -82,12 +82,19 @@ like it shouldn't work.
 **They won't stay dead.** A machine with a crystal in it keeps running after
 it's broken: dark, cracked, blue pouring out of it, still driving and
 firing, for a few moments before it finally goes. This is the faction's one
-miracle in play.
+miracle in play. The Vigil is that vessel: no armor to speak of (the crystal
+is its armor), fast. A narrow keel between bare tracks, its plates floating
+well clear of it on shafts of light, a pointed-arch prow like a lectern, and
+over the stern a gilt arch with the bell hung in it and the crystal floating
+beneath, turning.
+Broken, it's paid as a kill at once but runs on untouchable, at full
+strength for a moment and then fading out.
 
-**Their weapon is fire.** Hymn is a censer: purifying blue crystal fire,
-short range, deadly up close.
+**Their weapon is fire.** Hymn is a reliquary crowned with crystal, a censer
+hung at its flank: purifying blue crystal fire, short range, deadly up close.
 
-**Color:** crystal blue, everywhere they show up.
+**Color:** crystal blue, in their light and on the HUD. Their machines are
+worn ivory and gilt; no tank wears its side's color.
 
 ## The Imperium
 
@@ -107,8 +114,8 @@ win.
 **Color:** deep crimson and gold.
 
 **Where the ritual shows:** on maps, subtly. Banners and cloth in crimson,
-gold mosaic, small shrines, the emblem on walls and pods. Their tanks change
-a little (crimson and gold trim, the emblem), but they stay clean,
+gold mosaic, small shrines, the emblem on walls and pods. Their machines
+are crimson with gold light and the emblem in gilt, but otherwise clean,
 plated, made in bulk.
 
 **Names:** Byzantine flavored.

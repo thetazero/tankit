@@ -62,6 +62,31 @@ impl Map {
         }
     }
 
+    /// A solid disc (wheel, hub) centered on `c`, its axle along `axis`
+    /// (whose length is half the disc's thickness): six strips across it,
+    /// turned 30 degrees apart, fill a 12-sided face. Their faces are staggered
+    /// a few millimeters so the overlaps never share a plane.
+    pub(super) fn disc(&mut self, c: Vec3, axis: Vec3, r: f32, color: Vec3, material: Material) {
+        let step = std::f32::consts::PI / 6.0;
+        let apothem = r * (step * 0.5).cos();
+        let half_side = r * (step * 0.5).sin();
+        for k in 0..6 {
+            let e = axis.normalize() * (axis.length() + 0.003 * k as f32);
+            self.segment(
+                c - e,
+                c + e,
+                half_side + 0.002 * k as f32,
+                color,
+                material,
+                false,
+            );
+            if let Some(o) = self.oboxes.last_mut() {
+                o.roll = k as f32 * step;
+                o.half.x = apothem + 0.002 * k as f32;
+            }
+        }
+    }
+
     /// A timber pier from `root` (on the shore, deck at `deck_y`) running
     /// `len` along `dir`, `width` wide. Planks with gaps on two stringers,
     /// round piles in pairs down to the ground with cross-bracing, a railing
@@ -130,7 +155,9 @@ impl Map {
             let plank_w = rng.range(0.24, 0.29);
             self.oboxes.push(OBox {
                 center: Vec2::new(c.x, c.z),
-                yaw: yaw + std::f32::consts::FRAC_PI_2 + skew,
+                // Local x across the pier: planks lie across it, and a
+                // tilt droops them about that axis.
+                yaw: yaw + skew,
                 half: Vec2::new(hw + rng.range(-0.15, 0.1), plank_w * 0.5),
                 y0,
                 y1: y0 + 0.07,
@@ -581,5 +608,452 @@ impl Map {
             Material::Wood,
             false,
         );
+    }
+}
+
+/// Places parts in an object's own frame (any orientation): positions and
+/// rotations are converted to the map's yaw/tilt/roll boxes.
+pub(super) struct Rig {
+    pub pos: Vec3,
+    pub rot: glam::Quat,
+}
+
+impl Rig {
+    pub fn point(&self, local: Vec3) -> Vec3 {
+        self.pos + self.rot * local
+    }
+
+    /// A box centered at `local`, half extents `half` (x, y, z), turned by
+    /// `local_rot` within the rig.
+    #[allow(clippy::too_many_arguments)]
+    pub fn part(
+        &self,
+        map: &mut Map,
+        local: Vec3,
+        half: Vec3,
+        local_rot: glam::Quat,
+        color: Vec3,
+        material: Material,
+        solid: bool,
+        chip: f32,
+    ) {
+        let c = self.point(local);
+        let (yaw, tilt, roll) = (self.rot * local_rot).to_euler(glam::EulerRot::YXZ);
+        map.oboxes.push(OBox {
+            center: Vec2::new(c.x, c.z),
+            yaw,
+            tilt,
+            roll,
+            half: Vec2::new(half.x, half.z),
+            y0: c.y - half.y,
+            y1: c.y + half.y,
+            color,
+            side_mat: material,
+            top_mat: material,
+            solid,
+            chip,
+            ..OBox::default()
+        });
+    }
+}
+
+impl Map {
+    /// The market hall: a covered market under a concrete roof on a colonnade
+    /// of round columns (wide enough apart to drive between), one corner of
+    /// the roof collapsed into the hall, a ribbed dome on a windowed drum with
+    /// a hole blown in it, stalls inside.
+    pub(super) fn market(&mut self, rng: &mut Rng, c: Vec2) {
+        let (half, col_h, slab) = (12.0f32, 7.5f32, 0.6f32);
+        let roof = col_h + slab;
+        let stone = Vec3::new(0.82, 0.78, 0.68);
+        // Columns every 6 m around the edge, with a capital.
+        let mut cols = Vec::new();
+        for i in 0..=4 {
+            let t = -half + i as f32 * 6.0;
+            for p in [
+                Vec2::new(t, -half),
+                Vec2::new(t, half),
+                Vec2::new(-half, t),
+                Vec2::new(half, t),
+            ] {
+                if !cols.iter().any(|q: &Vec2| q.distance(p) < 0.5) {
+                    cols.push(p);
+                }
+            }
+        }
+        // The collapsed corner (+x, +z): its columns are broken stumps.
+        let fallen = |p: Vec2| p.x > 1.0 && p.y > 1.0;
+        for p in &cols {
+            let w = c + *p;
+            let h = if fallen(*p) {
+                rng.range(1.5, 4.5)
+            } else {
+                col_h
+            };
+            self.pipe(
+                Vec3::new(w.x, 0.0, w.y),
+                Vec3::new(w.x, h, w.y),
+                0.5,
+                stone * rng.range(0.92, 1.02),
+                Material::Concrete,
+                true,
+            );
+            if !fallen(*p) {
+                self.oboxes.push(OBox {
+                    center: w,
+                    half: Vec2::splat(0.75),
+                    y0: col_h - 0.5,
+                    y1: col_h,
+                    color: stone * 0.95,
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
+                    chip: 0.12,
+                    ..OBox::default()
+                });
+            }
+        }
+        // Roof in quarters with a deep fascia. The outer corner bay (+x, +z)
+        // fell in: its quarter is an L around the gap (the part under the
+        // drum still stands), the slab hangs from the break down to the
+        // floor, and a broken piece lies beside it.
+        let roof_box = |m: &mut Map, x0: f32, x1: f32, z0: f32, z1: f32, chipped: bool| {
+            m.oboxes.push(OBox {
+                center: c + Vec2::new(x0 + x1, z0 + z1) * 0.5,
+                half: Vec2::new(x1 - x0, z1 - z0) * 0.5,
+                y0: col_h,
+                y1: roof,
+                color: stone,
+                side_mat: Material::Plaster,
+                top_mat: Material::Concrete,
+                chip: if chipped { 0.6 } else { 0.3 },
+                ..OBox::default()
+            });
+        };
+        let (o, bay) = (half + 0.4, half * 0.5);
+        roof_box(self, -o, 0.4, -o, 0.4, false);
+        roof_box(self, -0.4, o, -o, 0.4, false);
+        roof_box(self, -o, 0.4, -0.4, o, false);
+        roof_box(self, -0.4, o, -0.4, bay, false);
+        roof_box(self, -0.4, bay, bay - 0.1, o, false);
+        // A short stub still hangs from the broken edge; the rest of the
+        // bay's slab lies in pieces on the floor.
+        for (x, z, yaw) in [
+            (bay + 0.4, bay + 3.2, 0.0f32),
+            (bay + 3.2, bay + 0.4, std::f32::consts::FRAC_PI_2),
+        ] {
+            let hang = Rig {
+                pos: Vec3::new(c.x + x, col_h - 0.6, c.y + z),
+                rot: glam::Quat::from_rotation_y(yaw + std::f32::consts::FRAC_PI_2)
+                    * glam::Quat::from_rotation_x(1.1),
+            };
+            hang.part(
+                self,
+                Vec3::ZERO,
+                Vec3::new(2.4, slab * 0.5, 0.9),
+                glam::Quat::IDENTITY,
+                stone * 0.9,
+                Material::Concrete,
+                false,
+                0.4,
+            );
+        }
+        for (k, (x, z)) in [
+            (bay + 1.8, bay + 2.2),
+            (bay + 4.4, bay + 1.6),
+            (bay + 2.6, bay + 4.6),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let chunk = Rig {
+                pos: Vec3::new(c.x + x, 0.45 + 0.3 * k as f32, c.y + z),
+                rot: glam::Quat::from_rotation_y(rng.range(0.0, 3.0))
+                    * glam::Quat::from_rotation_x(rng.range(-0.45, 0.45))
+                    * glam::Quat::from_rotation_z(rng.range(-0.3, 0.3)),
+            };
+            let s = rng.range(1.3, 1.9);
+            chunk.part(
+                self,
+                Vec3::ZERO,
+                Vec3::new(s, slab * 0.5, s * 0.8),
+                glam::Quat::IDENTITY,
+                stone * rng.range(0.85, 0.95),
+                Material::Concrete,
+                false,
+                0.5,
+            );
+        }
+        // Drum with dark clerestory windows, then the dome: rings of plates
+        // turned to face outward, a ragged hole on the collapsed side.
+        let (drum_r, drum_h) = (5.5f32, 2.4f32);
+        let segs = 16;
+        let step = std::f32::consts::TAU / segs as f32;
+        for k in 0..segs {
+            let a = (k as f32 + 0.5) * step;
+            let out = Vec2::new(a.sin(), a.cos());
+            let p = c + out * drum_r * (step * 0.5).cos();
+            let win = k % 2 == 0;
+            self.oboxes.push(OBox {
+                center: p,
+                yaw: a,
+                half: Vec2::new(drum_r * (step * 0.5).sin() * 1.03, 0.3),
+                y0: roof,
+                y1: roof + drum_h,
+                color: stone * 0.96,
+                side_mat: Material::Plaster,
+                top_mat: Material::Plaster,
+                ..OBox::default()
+            });
+            if win {
+                let pw = c + out * (drum_r * (step * 0.5).cos() + 0.31);
+                self.oboxes.push(OBox {
+                    center: pw,
+                    yaw: a,
+                    half: Vec2::new(0.5, 0.02),
+                    y0: roof + 0.6,
+                    y1: roof + 1.9,
+                    color: Vec3::splat(0.04),
+                    side_mat: Material::Rubble,
+                    top_mat: Material::Rubble,
+                    solid: false,
+                    ..OBox::default()
+                });
+            }
+        }
+        let dome_c = Vec3::new(c.x, roof + drum_h, c.y);
+        let tiers = 5;
+        for j in 0..tiers {
+            let (p0, p1) = (j as f32 / tiers as f32, (j + 1) as f32 / tiers as f32);
+            let phi = std::f32::consts::FRAC_PI_2 * (1.0 - (p0 + p1) * 0.5); // from vertical
+            let dphi = std::f32::consts::FRAC_PI_2 / tiers as f32;
+            for k in 0..segs {
+                let a = (k as f32 + 0.5) * step;
+                // A hole torn in the dome over the collapsed corner.
+                let toward = (a - 0.785).rem_euclid(std::f32::consts::TAU);
+                if !(0.5..=std::f32::consts::TAU - 0.5).contains(&toward)
+                    && j < 3
+                    && rng.chance(0.8)
+                {
+                    continue;
+                }
+                let n = Vec3::new(a.sin() * phi.sin(), phi.cos(), a.cos() * phi.sin());
+                let p = dome_c + n * drum_r;
+                let width = drum_r * phi.sin().max(0.15) * step * 0.53;
+                let rig = Rig {
+                    pos: p,
+                    rot: glam::Quat::from_rotation_y(a) * glam::Quat::from_rotation_x(phi),
+                };
+                let rib = k % 4 == 0;
+                rig.part(
+                    self,
+                    Vec3::ZERO,
+                    Vec3::new(width, 0.12, drum_r * dphi * 0.53),
+                    glam::Quat::IDENTITY,
+                    if rib { stone * 0.88 } else { stone },
+                    Material::Plaster,
+                    false,
+                    0.0,
+                );
+            }
+        }
+        // Stalls inside, under the standing half of the roof.
+        for (x, z, yaw) in [
+            (-7.0f32, -4.0f32, 0.0f32),
+            (-7.0, 4.0, 0.0),
+            (-2.0, -8.0, 1.57),
+            (4.0, -8.0, 1.57),
+        ] {
+            self.stall(rng, c + Vec2::new(x, z), yaw);
+        }
+    }
+
+    /// A giant war machine, dead for decades: sunk nose-first into the
+    /// reservoir bed and listing, one track run half buried, the turret
+    /// slewed off line, its gun drooping into the sand.
+    /// Returns the top of the stern (engine deck), where a drift can lead up.
+    pub(super) fn war_machine(&mut self, rng: &mut Rng, at: Vec3, yaw: f32) -> Vec3 {
+        use glam::Quat;
+        let rig = Rig {
+            pos: at,
+            rot: Quat::from_rotation_y(yaw)
+                * Quat::from_rotation_x(0.16)
+                * Quat::from_rotation_z(-0.12),
+        };
+        // Faded olive drab, and dark painted steel for the running gear and
+        // gun (Rust would bloom orange over all of it).
+        let hull = Vec3::new(0.3, 0.29, 0.21);
+        let dark = Vec3::new(0.11, 0.1, 0.09);
+        let iron = Material::Painted;
+        let id = Quat::IDENTITY;
+        // Hull: a long box (collides) with a sloped glacis and rear plate.
+        rig.part(
+            self,
+            Vec3::new(0.0, 1.2, 0.0),
+            Vec3::new(4.2, 2.0, 8.5),
+            id,
+            hull,
+            Material::Painted,
+            true,
+            0.4,
+        );
+        // Glacis: from the front of the roof down to the nose.
+        rig.part(
+            self,
+            Vec3::new(0.0, 1.9, 9.2),
+            Vec3::new(4.0, 0.3, 1.6),
+            Quat::from_rotation_x(0.75),
+            hull * 1.05,
+            Material::Painted,
+            false,
+            0.3,
+        );
+        rig.part(
+            self,
+            Vec3::new(0.0, 1.6, -9.0),
+            Vec3::new(4.0, 1.4, 0.35),
+            Quat::from_rotation_x(-0.25),
+            hull * 0.95,
+            Material::Painted,
+            false,
+            0.3,
+        );
+        // Side skirts, one torn half away.
+        // The hull lists toward +x, so the -x run stands clear of the sand:
+        // its skirt is the one torn away.
+        for (side, keep) in [(-1.0f32, 0.3f32), (1.0, 1.0)] {
+            let len = 8.0 * keep;
+            rig.part(
+                self,
+                Vec3::new(side * 5.4, 1.8, -8.0 + len),
+                Vec3::new(0.18, 1.3, len),
+                Quat::from_rotation_z(side * 0.15),
+                hull * 0.92,
+                Material::Painted,
+                false,
+                0.3,
+            );
+        }
+        // Track runs: huge road wheels (discs) and links along the bottom,
+        // the far side buried, this side exposed under the torn skirt.
+        for side in [-1.0f32, 1.0] {
+            let x = side * 4.7;
+            for k in 0..6 {
+                let z = -6.5 + k as f32 * 2.6;
+                let c = rig.point(Vec3::new(x, -0.6, z));
+                let axis = rig.rot * Vec3::X * 0.45;
+                self.disc(c, axis, 1.15, dark, iron);
+                self.disc(c, axis * 1.18, 0.5, hull * 0.8, iron);
+            }
+            for k in 0..22 {
+                let z = -8.6 + k as f32 * 0.82;
+                rig.part(
+                    self,
+                    Vec3::new(x, -1.85, z),
+                    Vec3::new(0.9, 0.12, 0.36),
+                    id,
+                    dark,
+                    Material::Rust,
+                    false,
+                    0.05,
+                );
+                rig.part(
+                    self,
+                    Vec3::new(x, 0.65, z),
+                    Vec3::new(0.9, 0.12, 0.36),
+                    id,
+                    dark,
+                    Material::Rust,
+                    false,
+                    0.05,
+                );
+            }
+        }
+        // Engine deck: grille slats in a frame.
+        for k in 0..7 {
+            rig.part(
+                self,
+                Vec3::new(0.0, 3.25, -7.6 + k as f32 * 0.6),
+                Vec3::new(2.8, 0.08, 0.18),
+                id,
+                dark * 1.3,
+                iron,
+                false,
+                0.0,
+            );
+        }
+        // Turret, slewed 35 degrees off line, with stepped cheek armor.
+        let tr = Rig {
+            pos: rig.point(Vec3::new(0.0, 3.4, 1.0)),
+            rot: rig.rot * Quat::from_rotation_y(0.6),
+        };
+        tr.part(
+            self,
+            Vec3::new(0.0, 1.3, 0.0),
+            Vec3::new(3.6, 1.3, 4.2),
+            id,
+            hull * 1.04,
+            Material::Painted,
+            true,
+            0.35,
+        );
+        for side in [-1.0f32, 1.0] {
+            tr.part(
+                self,
+                Vec3::new(side * 2.6, 1.3, 4.3),
+                Vec3::new(1.4, 1.1, 0.4),
+                Quat::from_rotation_y(-side * 0.5),
+                hull,
+                Material::Painted,
+                false,
+                0.25,
+            );
+        }
+        tr.part(
+            self,
+            Vec3::new(1.6, 2.9, -1.6),
+            Vec3::new(0.9, 0.35, 0.9),
+            id,
+            dark,
+            iron,
+            false,
+            0.1,
+        );
+        // Mantlet and the gun drooping down to the sand.
+        tr.part(
+            self,
+            Vec3::new(0.0, 1.3, 4.6),
+            Vec3::new(1.1, 0.9, 0.7),
+            id,
+            hull * 0.9,
+            Material::Painted,
+            false,
+            0.2,
+        );
+        // The gun still points at the town, sagging only a little.
+        let muzzle_dir = tr.rot * (Quat::from_rotation_x(0.05) * Vec3::Z);
+        let a = tr.point(Vec3::new(0.0, 1.3, 5.0));
+        let b = a + muzzle_dir * 16.0;
+        self.pipe(a, b, 0.55, hull * 0.85, iron, true);
+        // Bore evacuator midway, muzzle brake with side ports at the end.
+        self.pipe(
+            a + muzzle_dir * 7.0,
+            a + muzzle_dir * 9.0,
+            0.72,
+            hull * 0.8,
+            iron,
+            false,
+        );
+        self.pipe(b - muzzle_dir * 1.8, b, 0.8, dark, iron, false);
+        // A snapped sensor mast.
+        let m = tr.point(Vec3::new(-2.0, 2.6, -2.5));
+        self.pipe(
+            m,
+            m + Vec3::new(0.4, rng.range(2.0, 3.0), -0.3),
+            0.15,
+            dark,
+            iron,
+            false,
+        );
+        rig.point(Vec3::new(0.0, 3.2, -9.2))
     }
 }

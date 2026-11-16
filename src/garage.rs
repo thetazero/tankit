@@ -29,7 +29,12 @@ const ORBIT_DRIFT: f32 = 0.12;
 
 pub type Loadout = (HullKind, TurretKind);
 
-pub const HULLS: [HullKind; 3] = [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Sethuun];
+pub const HULLS: [HullKind; 4] = [
+    HullKind::Kataphrakt,
+    HullKind::Kastron,
+    HullKind::Sethuun,
+    HullKind::Vigil,
+];
 pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
@@ -37,6 +42,7 @@ pub fn hull_name(k: HullKind) -> &'static str {
         HullKind::Kataphrakt => "KATAPHRAKT",
         HullKind::Kastron => "KASTRON",
         HullKind::Sethuun => "SETHUUN",
+        HullKind::Vigil => "VIGIL",
     }
 }
 

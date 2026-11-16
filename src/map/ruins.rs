@@ -477,6 +477,9 @@ pub(super) fn building(
         (Vec2::new((half.x * 2.0 / 3.0).ceil(), (half.y * 2.0 / 3.0).ceil())).max(Vec2::ONE);
     let (nx, nz) = (cells.x as usize, cells.y as usize);
     let cell = half * 2.0 / cells;
+    // The top storey's slabs as built (local center, half size): flat roof
+    // to put things on.
+    let mut roof_slabs: Vec<(Vec2, Vec2)> = Vec::new();
     for k in 1..=storeys {
         let y = floor_y(k);
         for iz in 0..nz {
@@ -499,22 +502,55 @@ pub(super) fn building(
                 } else {
                     Vec2::ZERO
                 };
-                f.put(
-                    Vec3::new(
+                let (slo, shi) = (
+                    Vec2::new(
                         (lo.x + shrink.x).max(-inner.x),
-                        y - SLAB,
                         (lo.y + shrink.y).max(-inner.y),
                     ),
-                    Vec3::new(
+                    Vec2::new(
                         (lo.x + cell.x - shrink.x * 0.3).min(inner.x),
-                        y,
                         (lo.y + cell.y - shrink.y * 0.3).min(inner.y),
                     ),
+                );
+                if k == storeys {
+                    roof_slabs.push(((slo + shi) * 0.5, (shi - slo) * 0.5));
+                }
+                f.put(
+                    Vec3::new(slo.x, y - SLAB, slo.y),
+                    Vec3::new(shi.x, y, shi.y),
                     SLAB_C,
                     true,
                     Material::Concrete,
                 );
             }
+        }
+    }
+    // Clutter on what's left of the flat roof: water tanks, dishes, AC units.
+    // Its own random stream, so the town's layout doesn't change with it.
+    if damage != Damage::Gutted {
+        let mut crng = Rng::new(
+            ((lot.center.x * 977.0) as i64 as u64)
+                ^ (((lot.center.y * 613.0) as i64 as u64) << 21)
+                ^ 0x5eed,
+        );
+        // Roof slabs big enough to hold something, clear of the parapet.
+        let mut spots: Vec<(Vec2, f32)> = roof_slabs
+            .iter()
+            .map(|&(c, h)| (c, h.min_element() - 0.1))
+            .filter(|&(_, room)| room > 0.7)
+            .collect();
+        let n = spots.len().min(crng.int(1, 4) as usize);
+        for _ in 0..n {
+            let (c, room) = spots.swap_remove(crng.index(spots.len()));
+            let (ax, az) = lot.axes();
+            let w = lot.center + ax * c.x + az * c.y;
+            let quarter = std::f32::consts::FRAC_PI_2 * crng.int(0, 4) as f32;
+            f.map.roof_clutter(
+                &mut crng,
+                Vec3::new(w.x, top_y, w.y),
+                lot.yaw + quarter,
+                room,
+            );
         }
     }
     // Corner columns up to the broken height.

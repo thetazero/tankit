@@ -42,7 +42,6 @@ const RUIN: Vec3 = Vec3::new(0.66, 0.62, 0.55);
 const RUBBLE: Vec3 = Vec3::new(0.6, 0.56, 0.5);
 const DAM: Vec3 = Vec3::new(0.6, 0.58, 0.54);
 const RUST: Vec3 = Vec3::new(0.5, 0.36, 0.24);
-const WRECK: Vec3 = Vec3::new(0.36, 0.34, 0.31);
 
 /// Signed distance to the reservoir's rounded-rectangle outline (negative inside).
 fn bowl_sdf(p: Vec2) -> f32 {
@@ -505,6 +504,8 @@ impl Map {
             ],
             hold_site: None,
             cores: Vec::new(),
+            crystals: Vec::new(),
+            glow_paths: Vec::new(),
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();
@@ -528,7 +529,7 @@ impl Map {
         terrain.color = SAND;
         terrain.material = Material::Sand;
         map.terrain = Some(terrain);
-        map.market_hall();
+        map.market_hall(&mut rng);
         map.traces(&mut rng);
         map.dam(&mut rng);
         map.landmarks();
@@ -700,31 +701,8 @@ impl Map {
 
     /// The market hall: a big drive-through landmark in the square. Four piers
     /// carry a roof slab high enough to drive under.
-    fn market_hall(&mut self) {
-        let c = (SQUARE_MIN + SQUARE_MAX) * 0.5;
-        let (half, pier, roof_lo, roof_hi) = (12.0, 5.0, 7.5, 9.5);
-        for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-            let p = c + Vec2::new(sx, sz) * (half - pier * 0.5);
-            self.block_c(
-                Vec3::new(p.x - pier * 0.5, 0.0, p.y - pier * 0.5),
-                Vec3::new(p.x + pier * 0.5, roof_lo, p.y + pier * 0.5),
-                CONCRETE,
-                Material::Concrete,
-            );
-        }
-        self.block_c(
-            Vec3::new(c.x - half, roof_lo, c.y - half),
-            Vec3::new(c.x + half, roof_hi, c.y + half),
-            CONCRETE * 1.04,
-            Material::Concrete,
-        );
-        // A smaller drum on the roof stands in for the dome.
-        self.block_c(
-            Vec3::new(c.x - 6.0, roof_hi, c.y - 6.0),
-            Vec3::new(c.x + 6.0, roof_hi + 3.5, c.y + 6.0),
-            CONCRETE * 0.97,
-            Material::Concrete,
-        );
+    fn market_hall(&mut self, rng: &mut Rng) {
+        self.market(rng, (SQUARE_MIN + SQUARE_MAX) * 0.5);
     }
 
     /// The dam across the reservoir's south end: 5 m high, breached in the
@@ -956,35 +934,20 @@ impl Map {
     }
 
     fn landmarks(&mut self) {
-        // The half-buried war machine in the reservoir bed: hull sunk into the
-        // floor, turret on top, the gun barrel reaching west toward the town.
+        // The war machine, sunk nose-first into the reservoir bed, gun
+        // toward the town.
         let floor = -BOWL_DEPTH;
         let (cx, cz) = (200.0, 150.0);
-        self.block_c(
-            Vec3::new(cx - 8.0, floor - 2.0, cz - 5.0),
-            Vec3::new(cx + 8.0, floor + 4.5, cz + 5.0),
-            WRECK,
-            Material::Rust,
-        );
-        self.block_c(
-            Vec3::new(cx - 3.5, floor + 4.5, cz - 3.5),
-            Vec3::new(cx + 3.5, floor + 7.5, cz + 3.5),
-            WRECK * 1.05,
-            Material::Rust,
-        );
-        self.block_c(
-            Vec3::new(cx - 18.0, floor + 5.2, cz - 0.7),
-            Vec3::new(cx - 3.5, floor + 6.6, cz + 0.7),
-            WRECK * 0.9,
-            Material::Rust,
-        );
-        // A sand drift banked against its west flank: the way up.
+        let mut wrng = Rng::new(0x3a77);
+        let deck = self.war_machine(&mut wrng, Vec3::new(cx, floor + 1.0, cz), -1.75);
+        // A sand drift banked against its stern: the way up onto the engine
+        // deck.
         self.ramp(
-            Vec2::new(cx - 15.0, cz - 4.0),
-            Vec2::new(cx - 8.0, cz + 4.0),
-            floor,
-            4.5,
-            Rise::PosX,
+            Vec2::new(deck.x + 0.5, deck.z - 3.0),
+            Vec2::new(deck.x + 10.0, deck.z + 3.0),
+            floor - 0.3,
+            deck.y - floor + 0.2,
+            Rise::NegX,
             SAND,
             Material::Sand,
         );

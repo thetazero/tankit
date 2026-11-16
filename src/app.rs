@@ -767,6 +767,6 @@ mod tests {
         assert_eq!(a.factions, m.sides);
         assert_eq!(b.factions, [m.sides[1], m.sides[0]]);
         assert_eq!(b.world.map.bases[0], a.world.map.bases[1]);
-        assert_eq!(b.world.tanks[0].color, Faction::Resonant.paint());
+        assert_eq!(b.factions[0], Faction::Resonant);
     }
 }

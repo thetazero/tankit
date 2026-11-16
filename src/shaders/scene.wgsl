@@ -186,8 +186,8 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         // clouded depth and rare flecks of trapped plasma deep inside.
         let n = noise2(uv * 4.0) * 0.6 + noise2(uv * 13.0) * 0.4;
         s.albedo = base * (0.75 + 0.5 * n);
-        s.rough = 0.1 + 0.12 * n;
-        s.metal = 0.45;
+        s.rough = 0.3 + 0.12 * n;
+        s.metal = 0.18;
         let fleck = smoothstep(0.95, 0.99, noise2(uv * 31.0 + vec2<f32>(lpos.y * 5.0, 0.0)));
         let flick = 0.6 + 0.4 * sin(g.params.x * 2.0 + lpos.z * 3.0);
         s.emissive = vec3<f32>(1.0, 0.36, 0.62) * fleck * 0.35 * flick;
@@ -202,7 +202,8 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
 }
 
 // Procedural surface detail keyed by material id.
-fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>) -> Surface {
+// `dxz`: screen-space derivative of wpos.xz (taken in fs_main, uniform control flow).
+fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, dxz: vec2<f32>) -> Surface {
     var s: Surface;
     s.albedo = base;
     s.rough = 0.6;
@@ -245,11 +246,15 @@ fn surface(id: f32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>) -> Surface {
         s.albedo = base * (0.85 + 0.3 * h);
         s.rough = 0.95;
     } else if (m == MAT_PAVING) {
-        // Paving tiles.
-        let f = fract(wpos.xz * 0.5);
-        let grout = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
-        let h = hash2(floor(wpos.xz * 0.5));
-        s.albedo = base * (0.92 + 0.12 * h) * select(0.75, 1.0, grout > 0.04);
+        // Paving tiles, 2 m. Grout lines are antialiased, and where they get
+        // thinner than a pixel they melt into their average darkening, so
+        // they don't shimmer as the camera moves.
+        let t = wpos.xz * 0.5;
+        let dt = dxz * 0.5;
+        var grout = max(grid_line(t.x, 0.04, dt.x), grid_line(t.y, 0.04, dt.y));
+        grout = mix(grout, 0.15, smoothstep(0.03, 0.12, max(dt.x, dt.y)));
+        let h = hash2(floor(t));
+        s.albedo = base * (0.92 + 0.12 * h) * (1.0 - 0.25 * grout);
         s.rough = 0.8;
     }
     return s;
@@ -472,6 +477,7 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let paint = m == MAT_PAINT || m == MAT_WORN;
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
+    let dxz = fwidth(v.wpos.xz);
     let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);
     let is_world_detail = m == MAT_SAND || m == MAT_PLASTER || m == MAT_CONCRETE || m == MAT_RUBBLE || m == MAT_RUST || m == MAT_PAINTED || m == MAT_CLOTH || m == MAT_WOOD;
     var s: Surface;
@@ -481,7 +487,7 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
         n = detail.normal;
         s = world_surface(m, base, v.wpos, n, detail);
     } else {
-        s = surface(v.color.a, base, v.wpos, n);
+        s = surface(v.color.a, base, v.wpos, n, dxz);
     }
 
     let l = normalize(g.sun_dir.xyz);

@@ -7,7 +7,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use crate::map::{Map, Terrain, Wedge};
 use crate::render::mesh::{MeshData, Vertex};
 use crate::render::{Camera, Scene};
-use crate::sim::{Tank, World, apron_rects, dir2, wrap_angle};
+use crate::sim::{Tank, TurretKind, World, apron_rects, dir2, wrap_angle};
 use crate::tank::TankArt;
 
 /// Static geometry for the whole arena, built once per map.
@@ -77,6 +77,12 @@ pub fn map_mesh(map: &Map) -> MeshData {
     }
     for o in &map.oboxes {
         add_obox(o, &mut m);
+    }
+    for c in &map.crystals {
+        c.mesh(&mut m);
+    }
+    for g in &map.glow_paths {
+        g.mesh(&mut m);
     }
 
     let sphere = MeshData::sphere(12, 8);
@@ -376,6 +382,13 @@ pub struct ChaseCam {
     pub tilt: f32,
     focus: Vec3,
     initialized: bool,
+    /// Recoil kick: an impulse each shot adds to (sized by the gun's recoil),
+    /// decaying; `kick_shown` eases after it so rapid fire reads as a steady
+    /// shove instead of the camera popping on every round.
+    kick: f32,
+    kick_shown: f32,
+    /// The tank's shot counter at the last update, to spot new shots.
+    shots_seen: usize,
 }
 
 impl ChaseCam {
@@ -385,6 +398,9 @@ impl ChaseCam {
             tilt: 0.35,
             focus: Vec3::ZERO,
             initialized: false,
+            kick: 0.0,
+            kick_shown: 0.0,
+            shots_seen: 0,
         }
     }
 
@@ -394,6 +410,7 @@ impl ChaseCam {
         if !self.initialized {
             self.focus = anchor;
             self.yaw = turret_yaw;
+            self.shots_seen = tank.fire_barrel;
             self.initialized = true;
         }
         self.focus = self.focus.lerp(anchor, 1.0 - (-dt * 14.0).exp());
@@ -414,7 +431,12 @@ impl ChaseCam {
 
         let ahead = Vec3::new(back.x, 0.0, back.y);
         // Firing kicks the camera back and up for a moment.
-        let kick = (-tank.since_fire * 14.0).exp() * if tank.since_fire < 0.5 { 1.0 } else { 0.0 };
+        let shots = tank.fire_barrel.saturating_sub(self.shots_seen).min(4);
+        self.shots_seen = tank.fire_barrel;
+        let per_shot = tank.turret_kind.recoil() / TurretKind::Kontos.recoil();
+        self.kick = (self.kick * (-dt * 14.0).exp() + shots as f32 * per_shot).min(1.0);
+        self.kick_shown += (self.kick - self.kick_shown) * (1.0 - (-dt * 40.0).exp());
+        let kick = self.kick_shown;
         let pos = pos - ahead * kick * 0.45 + Vec3::Y * kick * 0.2;
         Camera {
             pos,

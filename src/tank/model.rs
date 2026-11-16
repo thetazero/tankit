@@ -38,6 +38,11 @@ pub const PAINT: Skin = Skin {
     face: Vec4::new(0.9, 0.9, 0.9, Material::Paint.id()),
     edge: Vec4::new(0.9, 0.9, 0.9, Material::Worn.id()),
 };
+/// Imperium armor: deep crimson, worn to metal on the edges.
+pub const CRIMSON: Skin = Skin {
+    face: Vec4::new(0.5, 0.045, 0.06, Material::Paint.id()),
+    edge: Vec4::new(0.5, 0.045, 0.06, Material::Worn.id()),
+};
 pub const METAL: Skin = Skin {
     face: Vec4::new(0.36, 0.37, 0.39, Material::Metal.id()),
     edge: Vec4::new(0.5, 0.5, 0.52, Material::Metal.id()),
@@ -620,7 +625,7 @@ pub fn kataphrakt() -> HullModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -632,7 +637,7 @@ pub fn kataphrakt() -> HullModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -644,7 +649,7 @@ pub fn kataphrakt() -> HullModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Claw plates angling down over the front of the sprockets.
     plate2(
@@ -657,7 +662,7 @@ pub fn kataphrakt() -> HullModel {
         ],
         0.065,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Dark inner fender liners under the white plates (visible from the front).
     plate2(
@@ -688,7 +693,7 @@ pub fn kataphrakt() -> HullModel {
         skirt(-2.32, -0.75, 1.64, 1.02, 0.78),
         0.05,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -702,7 +707,7 @@ pub fn kataphrakt() -> HullModel {
         skirt(0.45, 1.8, 1.64, 0.78, 1.1),
         0.05,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Angled armor wedge bridging the front skirt and the claw.
     plate2(
@@ -764,7 +769,7 @@ pub fn kataphrakt() -> HullModel {
         ],
         0.06,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut m,
@@ -878,7 +883,7 @@ pub fn kastron() -> HullModel {
         ],
         0.08,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate(
         &mut m,
@@ -911,7 +916,7 @@ pub fn kastron() -> HullModel {
         ],
         0.08,
         inside,
-        PAINT,
+        CRIMSON,
     );
     for s in [-1.0f32, 1.0] {
         plate(
@@ -934,7 +939,7 @@ pub fn kastron() -> HullModel {
         let z1 = z0 + 1.2;
         let x = if i % 2 == 0 { 1.66 } else { 1.71 };
         let low = if i == 3 { 0.62 } else { 0.5 };
-        let skin = if i == 1 { CARBON_LIGHT } else { PAINT };
+        let skin = if i == 1 { CARBON_LIGHT } else { CRIMSON };
         plate2(
             &mut m,
             [
@@ -1007,7 +1012,7 @@ pub fn kastron() -> HullModel {
         ],
         0.03,
         inside + Vec3::Y,
-        PAINT,
+        CRIMSON,
     );
     block(
         &mut m,
@@ -1151,7 +1156,7 @@ pub fn kontos() -> TurretModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut head,
@@ -1163,7 +1168,7 @@ pub fn kontos() -> TurretModel {
         ],
         0.07,
         inside,
-        PAINT,
+        CRIMSON,
     );
     // Raised roof panel and a sensor pod with an eye.
     plate(
@@ -1211,7 +1216,7 @@ pub fn kontos() -> TurretModel {
             ],
             0.03,
             v(0.0, 0.5, -1.1),
-            PAINT,
+            CRIMSON,
         );
     }
     // Rear light bar.
@@ -1259,7 +1264,7 @@ pub fn kontos() -> TurretModel {
             ],
             0.07,
             Vec3::ZERO,
-            PAINT,
+            CRIMSON,
         );
     }
 
@@ -1375,7 +1380,7 @@ pub fn pelekys() -> TurretModel {
         ],
         0.08,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate2(
         &mut head,
@@ -1399,7 +1404,7 @@ pub fn pelekys() -> TurretModel {
         ],
         0.06,
         inside,
-        PAINT,
+        CRIMSON,
     );
     plate(
         &mut head,
@@ -1435,7 +1440,7 @@ pub fn pelekys() -> TurretModel {
         ],
         0.03,
         v(0.0, 0.4, -1.2),
-        PAINT,
+        CRIMSON,
     );
     for s in [-1.0f32, 1.0] {
         plate(
@@ -1481,7 +1486,7 @@ pub fn pelekys() -> TurretModel {
         ],
         0.03,
         Vec3::ZERO,
-        PAINT,
+        CRIMSON,
     );
 
     let mut barrel = MeshData::default();
@@ -1514,7 +1519,7 @@ pub fn pelekys() -> TurretModel {
         ],
         0.02,
         Vec3::ZERO,
-        PAINT,
+        CRIMSON,
     );
     round(
         &mut barrel,
@@ -1563,7 +1568,7 @@ const LASER_GLOW: Skin = Skin {
     edge: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
 };
 /// Resonant crystal blue.
-const CRYSTAL: Skin = Skin {
+pub(crate) const CRYSTAL: Skin = Skin {
     face: Vec4::new(0.2, 0.5, 1.0, Material::Glow.id()),
     edge: Vec4::new(0.55, 0.8, 1.0, Material::Glow.id()),
 };
@@ -1745,7 +1750,8 @@ pub fn lumen() -> TurretModel {
 }
 
 /// Resonant flamethrower: a rounded, painted reliquary of a head crowned with
-/// glowing crystals, and a short wide nozzle caged in crystal.
+/// glowing crystals, a censer hung at its back, and a short wide nozzle caged
+/// in crystal that breathes the fire.
 pub fn hymn() -> TurretModel {
     let mut head = MeshData::default();
     turret_ring(&mut head);
@@ -1819,18 +1825,43 @@ pub fn hymn() -> TurretModel {
         0.08,
         CRYSTAL,
     );
-    // Fuel reservoir: two tanks slung at the back.
-    for s in [-1.0f32, 1.0] {
-        round(
-            &mut head,
-            &[
-                at_z(&ngon(10, 0.17, Vec2::new(s * 0.45, 0.35)), -1.25),
-                at_z(&ngon(10, 0.17, Vec2::new(s * 0.45, 0.35)), -0.75),
-            ],
-            0.04,
-            METAL,
-        );
+    // The censer: a pierced gilt vessel on chains from a yoke off the left
+    // flank, the crystal fire glowing through it.
+    use super::resonant::{GILT, bar};
+    bar(
+        &mut head,
+        v(0.75, 0.7, -0.35),
+        v(1.22, 0.95, -0.35),
+        0.07,
+        GILT,
+    );
+    let top = v(1.2, 0.93, -0.35);
+    let hang = v(1.2, 0.5, -0.35);
+    for k in 0..3 {
+        let a = k as f32 / 3.0 * TAU;
+        let at = hang + v(a.cos() * 0.13, 0.12, a.sin() * 0.13);
+        bar(&mut head, top, at, 0.025, GILT);
     }
+    let ring = |r: f32, y: f32| at_y(&ngon(8, r, Vec2::new(hang.x, hang.z)), y);
+    round(
+        &mut head,
+        &[
+            ring(0.05, hang.y - 0.2),
+            ring(0.14, hang.y - 0.14),
+            ring(0.17, hang.y - 0.02),
+            ring(0.15, hang.y + 0.08),
+            ring(0.06, hang.y + 0.16),
+        ],
+        0.02,
+        GILT,
+    );
+    // Its piercings: a band of crystal light round the belly.
+    round(
+        &mut head,
+        &[ring(0.175, hang.y - 0.05), ring(0.175, hang.y + 0.01)],
+        0.0,
+        CRYSTAL,
+    );
 
     let mut mantlet = MeshData::default();
     round(
