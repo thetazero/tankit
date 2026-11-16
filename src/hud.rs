@@ -516,19 +516,8 @@ impl Hud {
             Align::Right,
         );
 
-        // Bottom centre: how to get to the garage.
-        let mut key = TextStyle::LABEL;
-        key.color = theme::FG;
-        let hint = Vec2::new(w * 0.5, h - MARGIN - 8.0);
-        let gw = crate::ui::measure("GARAGE", &TextStyle::LABEL);
-        p.text(
-            hint - Vec2::new(gw * 0.5 + 10.0, 0.0),
-            "G",
-            &key,
-            Align::Right,
-        );
-        label(&mut p, hint, "GARAGE", Align::Center);
-        // Above it: the kit queued for the next respawn, if any.
+        // Bottom centre: the kit queued for the next respawn, if any.
+        let at = Vec2::new(w * 0.5, h - MARGIN - 8.0);
         if let Some((hull, turret)) = me.next_kit {
             let kit = format!(
                 "{} · {}",
@@ -537,12 +526,12 @@ impl Hud {
             );
             label(
                 &mut p,
-                hint - Vec2::new(0.0, 30.0),
+                at - Vec2::new(0.0, 30.0),
                 "NEXT SPAWN",
                 Align::Center,
             );
             p.text(
-                hint - Vec2::new(0.0, 18.0),
+                at - Vec2::new(0.0, 18.0),
                 &kit,
                 &TextStyle::value(10.0),
                 Align::Center,
@@ -576,7 +565,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let backdrop = [0.02, 0.02, 0.025, 0.7];
     let extra = if holding { 18.0 } else { 0.0 };
     let height = if m.phase == Phase::Over {
-        306.0 + extra
+        262.0 + extra
     } else {
         28.0
     } + body;
@@ -683,12 +672,6 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     y += body;
     if m.phase == Phase::Over {
         contract_pay(p, m, x0, x1, y + 14.0);
-        label(
-            p,
-            Vec2::new(top.x, y + 158.0 + extra),
-            "ENTER  AGAIN     ESC  MENU",
-            Align::Center,
-        );
     }
 }
 

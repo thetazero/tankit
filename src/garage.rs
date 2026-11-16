@@ -224,7 +224,7 @@ pub enum Hit {
     Part(Part),
     /// Show this tab: 0 = hulls, 1 = turrets.
     Tab(usize),
-    /// A button or key hint: clicking it presses the key.
+    /// A button: clicking it presses its key.
     Key(Input),
 }
 
@@ -691,52 +691,28 @@ impl Garage {
         let part = self.focused();
         let mut by = BUTTONS_TOP;
         let (act, ready) = primary_action(part, queued, profile);
-        self.button(
-            &mut p,
-            &mut hits,
-            Vec2::new(x, by),
-            "E",
-            &act,
-            ready,
-            Input::Act,
-        );
+        self.button(&mut p, &mut hits, Vec2::new(x, by), &act, ready, Input::Act);
         by += BUTTON_H + 8.0;
         if let Some((up, ready)) = upgrade_action(part, profile) {
             self.button(
                 &mut p,
                 &mut hits,
                 Vec2::new(x, by),
-                "U",
                 &up,
                 ready,
                 Input::Upgrade,
             );
         }
 
-        let hy = h - 64.0;
-        for (i, (key, what, input)) in [
-            ("WASD", "BROWSE", None),
-            ("TAB", "HULL / TURRET", Some(Input::Switch)),
-            ("ENTER", "DEPLOY", Some(Input::Deploy)),
-            ("ESC", "CANCEL", Some(Input::Revert)),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let at = Vec2::new(x + (i % 2) as f32 * 210.0, hy + (i / 2) as f32 * 14.0);
-            let mut k = TextStyle::LABEL;
-            k.color = theme::FG;
-            p.text(at, key, &k, Align::Left);
-            let lw = label(&mut p, at + Vec2::new(72.0, 0.0), what, Align::Left);
-            if let Some(input) = input {
-                hits.add(
-                    &p,
-                    at - Vec2::new(4.0, 3.0),
-                    Vec2::new(80.0 + lw, 14.0),
-                    Hit::Key(input),
-                );
-            }
-        }
+        // Deploy with the kit as it stands (Esc or a right click cancels).
+        self.button(
+            &mut p,
+            &mut hits,
+            Vec2::new(x, h - 72.0),
+            "DEPLOY",
+            true,
+            Input::Deploy,
+        );
 
         self.draw_stats(&mut p, w, queued, profile);
 
@@ -997,15 +973,13 @@ impl Garage {
         }
     }
 
-    /// A full-width button: key on the left, what it does after it. Disabled
-    /// ones are drawn faint and still say why (and can't be clicked).
-    #[allow(clippy::too_many_arguments)]
+    /// A full-width button saying what it does. Disabled ones are drawn
+    /// faint and still say why (and can't be clicked).
     fn button(
         &self,
         p: &mut Painter,
         hits: &mut Hits<Hit>,
         min: Vec2,
-        key: &str,
         text: &str,
         ready: bool,
         input: Input,
@@ -1019,12 +993,9 @@ impl Garage {
         p.set_halo(Some((theme::HALO, theme::HALO_PX)));
         p.rect_outline(min, size, 1.0, if ready { theme::FG } else { theme::FAINT });
         let ty = min.y + (BUTTON_H - TextStyle::LABEL.size) * 0.5;
-        let mut k = TextStyle::LABEL;
-        k.color = if ready { theme::HOT } else { theme::DIM };
-        p.text(Vec2::new(min.x + 12.0, ty), key, &k, Align::Left);
         let mut a = TextStyle::LABEL;
         a.color = if ready { theme::FG } else { theme::DIM };
-        p.text(Vec2::new(min.x + 36.0, ty), text, &a, Align::Left);
+        p.text(Vec2::new(min.x + 12.0, ty), text, &a, Align::Left);
         if ready {
             hits.add(p, min, size, Hit::Key(input));
         }
