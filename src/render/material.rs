@@ -15,7 +15,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum Material {
-    // Flat-shaded world (procedural city).
+    // Flat-shaded world.
     /// No surface detail.
     Plain,
     /// Building wall: window grid, a few lit windows.

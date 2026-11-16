@@ -63,7 +63,6 @@ impl Hud {
         &mut self,
         m: &Match,
         tanks: &[Tank],
-        seed: u64,
         camera: &Camera,
         width: f32,
         height: f32,
@@ -98,7 +97,7 @@ impl Hud {
             theme::FAINT,
         );
 
-        // Top left: round clock, kills / deaths, map seed.
+        // Top left: round clock, kills / deaths, trust.
         let secs = m.time_left.ceil() as u32;
         label(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
         let mut clock = TextStyle::value(20.0);
@@ -145,12 +144,6 @@ impl Hud {
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
             &format!("+{}", m.trust),
             &TextStyle::value(14.0),
-            Align::Left,
-        );
-        label(
-            &mut p,
-            Vec2::new(MARGIN, MARGIN + 92.0),
-            &format!("GRID {seed}"),
             Align::Left,
         );
 
@@ -806,7 +799,7 @@ mod tests {
     }
 
     fn draws_at_any_size_under(contract: Contract) {
-        let mut m = Match::new(crate::map::Map::generate(21), 0, 11, 21);
+        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
         m.set_contract(contract);
         m.fighters[0].alive = false;
         m.phase = Phase::Over;
@@ -820,7 +813,7 @@ mod tests {
         };
         let mut hud = Hud::new();
         for (w, h) in [(1600.0, 900.0), (800.0, 600.0), (3840.0, 2160.0)] {
-            let v = hud.draw(&m, &m.world.tanks, 21, &camera, w, h, 1.0 / 60.0, true);
+            let v = hud.draw(&m, &m.world.tanks, &camera, w, h, 1.0 / 60.0, true);
             assert!(!v.is_empty());
             // A little slack for halos and anti-aliasing at the screen edge.
             assert!(v.iter().all(|v| v.pos[0] > -4.0

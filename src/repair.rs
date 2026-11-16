@@ -229,19 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn city_maps_get_spread_out_spots() {
-        let map = Map::generate(21);
-        assert_eq!(map.repair_spots.len(), crate::map::REPAIR_SPOTS);
-        for (i, a) in map.repair_spots.iter().enumerate() {
-            for b in &map.repair_spots[i + 1..] {
-                assert!(a.distance(*b) > 40.0, "spots {a} and {b} too close");
-            }
-        }
-    }
-
-    #[test]
     fn crates_drop_on_the_timer_and_land() {
-        let map = Map::proving_ground();
+        let map = Map::yard(200.0);
         let mut r = Repairs::new(&map);
         let dt = 0.1;
         let steps = |s: f32| (s / dt).round() as usize;
@@ -263,7 +252,7 @@ mod tests {
 
     #[test]
     fn landed_crate_stays_until_wanted() {
-        let world = crate::sim::World::new(Map::proving_ground(), 0);
+        let world = crate::sim::World::new(Map::yard(200.0), 0);
         let mut r = Repairs::new(&world.map);
         let t = &world.tanks[0];
         r.drops[0].at = Vec2::new(t.pos.x, t.pos.z);

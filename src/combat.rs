@@ -1697,8 +1697,9 @@ mod tests {
     use super::*;
     use crate::sim::dir2;
 
+    /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
-        Match::new(Map::generate(21), 0, bots, 21)
+        Match::new(Map::saltmarket(), 0, bots, 21)
     }
 
     #[test]
@@ -1715,7 +1716,7 @@ mod tests {
 
     #[test]
     fn shell_hits_and_kills_a_tank_in_front() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         // A dummy straight ahead of the player.
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
@@ -1758,7 +1759,7 @@ mod tests {
 
     /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
     fn duel(turret: TurretKind, dist: f32) -> Match {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         m.world.tanks[0].turret_kind = turret;
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist;
@@ -1870,7 +1871,7 @@ mod tests {
 
     #[test]
     fn plasma_orbs_bounce_off_the_ground() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         let Action::Shell(spec) = gun(TurretKind::Ammeth).action else {
             panic!("Ammeth fires shells");
         };
@@ -2077,7 +2078,7 @@ mod tests {
 
     #[test]
     fn driving_onto_a_landed_crate_repairs_the_hull() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
@@ -2101,7 +2102,7 @@ mod tests {
 
     #[test]
     fn holding_pays_trust_and_reaching_the_target_ends_the_round() {
-        let mut m = Match::new(Map::proving_ground(), 0, 0, 3);
+        let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
@@ -2168,7 +2169,7 @@ mod tests {
 
     #[test]
     fn each_side_spawns_at_its_own_base() {
-        for map in [Map::generate(21), Map::saltmarket()] {
+        for map in [Map::saltmarket(), Map::shard_flats(), Map::kiln()] {
             let m = Match::new(map, 0, 11, 5);
             for (i, f) in m.fighters.iter().enumerate() {
                 let p = Vec2::new(m.world.tanks[i].pos.x, m.world.tanks[i].pos.z);

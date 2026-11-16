@@ -30,7 +30,7 @@ pub struct Mission {
     pub contract: Contract,
     pub map: &'static str,
     pub map_kind: MapKind,
-    /// Map seed (only matters for procedural maps).
+    /// Match seed: bot brains, spawns and kits.
     pub seed: u64,
     /// Tanks per side, the player included.
     pub team_size: usize,
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
-            assert_eq!(m.sides, crate::make_map(m.seed, m.map_kind).factions);
+            assert_eq!(m.sides, crate::make_map(m.map_kind).factions);
         }
     }
 

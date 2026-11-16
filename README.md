@@ -44,7 +44,7 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 
 Menus and the garage list their own keys on screen.
 
-Dev keys: R restarts at the next spawn point, F5 rolls a new random city, and
+Dev keys: R restarts at the next spawn point, and
 `[ ]`, `; '` and Backspace adjust live tuning (grip, turn rate) and reset it.
 The window title shows the current tuning.
 
@@ -62,7 +62,7 @@ The window title shows the current tuning.
 | Garage | Pick the hull and turret you spawn in next, and buy or upgrade parts, from the menu or mid-battle. Each part shows its maker faction. | `src/garage.rs` |
 | Crystals | What a finished contract pays (completion, placement, contribution, kill bounty), part prices and the standing with their maker they're sold at, and upgrade levels with their cost and stat bonus. | `src/economy.rs` |
 | Bots | A* over a nav grid built from the map, driving with the same `Command` as the player (no physics shortcuts). | `src/ai.rs` |
-| Maps | Procedural cities, the proving ground (a physics test course) and hand-built maps: Saltmarket, Shard Flats (a placeholder: open flats around a crystal deposit), and the Kiln (Ithessar ground: a close-quarters warren of faceted crystal, three lanes round a kiln court where great crystals hold a plasma core). | `src/map.rs`, `src/map/` |
+| Maps | Hand-built maps: Saltmarket, Shard Flats (a placeholder: open flats around a crystal deposit), and the Kiln (Ithessar ground: a close-quarters warren of faceted crystal, three lanes round a kiln court where great crystals hold a plasma core). Tests build their own ground (a walled yard plus kickers, bumps, stairs and hills) from `src/map/test_kit.rs`, which never ships. | `src/map.rs`, `src/map/` |
 | Tank kit | Procedural hulls and turrets that mix freely, built from beveled plates, with tread links, wheels, recoil and suspension all animated. Surface detail is in the shader. The Ithessar kit is its own: knapped crystal, a hover hull (Sethuun) with gimballing emitters, and turrets that charge an orb between claws (Ammeth) or spin up crystal needles (Ossrin). The Resonant hull (Vigil) is a narrow keel with its plates floating on shafts of light, its crystal turning under a gilt bell arch, and a swinging bell. | `src/tank/`, `src/tank/ithessar.rs`, `src/tank/resonant.rs`, `src/shaders/scene.wgsl` |
 | Physics | rapier3d rigid bodies plus a track model: spring rays per road wheel carry the weight, and every track contact pushes along the belt, limited by friction times load. Climbing, pivot turns and skid steering all come out of that. The hover hull swaps the tracks for six plasma springs: thrust, braking and sideways grip all push through the cushion, so it's fast, drifts through turns and glides over low ledges. | `src/sim.rs` |
 | HUD | Hairline readouts, kill feed, name tags, trust popups and the scoreboard. | `src/hud.rs`, `src/ui/` |

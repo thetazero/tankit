@@ -354,7 +354,7 @@ impl Garage {
         let height = off.y + (ORBIT_HEIGHT - off.y) * e;
         let dir = Vec3::new(angle.sin() * dist, height, angle.cos() * dist);
         let len = dir.length();
-        let hit = world.camera_raycast(focus, dir / len, len);
+        let hit = world.raycast(focus, dir / len, len);
         let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
         // Aim left of the tank so it sits in the open space right of the panel
         // (more so on wide screens, where the panel takes less of the width).
@@ -678,7 +678,7 @@ pub fn orbit_camera(world: &World, tank: &Tank, angle: f32, aspect: f32) -> Came
         angle.cos() * ORBIT_DIST,
     );
     let len = dir.length();
-    let hit = world.camera_raycast(focus, dir / len, len);
+    let hit = world.raycast(focus, dir / len, len);
     let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
     let right = (focus - pos).cross(Vec3::Y).normalize_or_zero();
     let shift = (focus - pos).length() * 0.28 * (aspect / (16.0 / 9.0)).clamp(0.6, 1.2);
@@ -771,7 +771,7 @@ mod tests {
     use super::*;
 
     fn world() -> World {
-        World::new(crate::map::Map::generate(21), 0)
+        World::new(crate::map::Map::saltmarket(), 0)
     }
 
     fn cam(w: &World) -> Camera {

@@ -418,7 +418,7 @@ mod tests {
     /// A real bot battle, recorded: loud enough to hear, never clipping hard.
     #[test]
     fn a_battle_sounds_sane() {
-        let map = crate::make_map(7, crate::MapKind::City);
+        let map = crate::map::Map::saltmarket();
         let mut game = Match::new(map, 0, 5, 7);
         let buf = record(&mut game, 6.0, 24_000, 0.8, |w| {
             crate::game::autopilot(w.time)
