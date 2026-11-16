@@ -1,13 +1,13 @@
 //! Uthenn kit: the Gravis hull. Big, bulky and slow: one smooth pale shell
 //! over the whole running gear, armored pods over the tracks, a chisel prow
 //! with a green visor, and a bank of radiator fins across the rear deck.
-//! Green light runs in its seams.
+//! Green light runs in its seams. And the Lumen turret, in the same style.
 
 use glam::{Vec2, Vec3, Vec4};
 
 use super::model::{
-    CARBON, CARBON_LIGHT, HullModel, LASER_GLOW, METAL, Running, Skin, at_z, block, block2, ngon,
-    plate, plate2, round, solid, trap, v,
+    CARBON, CARBON_LIGHT, HullModel, LASER_GLOW, METAL, Rig, Running, Skin, TurretModel, at_x,
+    at_z, block, block2, ngon, plate, plate2, rect, round, solid, trap, turret_ring, v,
 };
 use super::track::Wheel;
 use crate::render::material::Material;
@@ -260,4 +260,183 @@ pub fn gravis() -> HullModel {
 /// A ring of radius `r` around the turret ring's axis, at height `y`.
 fn at_y_ring(r: f32, y: f32) -> Vec<Vec3> {
     super::model::at_y(&ngon(16, r, Vec2::new(0.0, -0.1)), y)
+}
+
+/// Uthenn laser: one faceted housing in the hull's pale shell, sloping down
+/// to the gun, green seams along its shoulders, radiator fins over a
+/// green-lit well at its back, and a smooth focusing rod ringed in green
+/// ending in the lens.
+pub fn lumen() -> TurretModel {
+    let mut head = MeshData::default();
+    let inside = v(0.0, 0.42, -0.2);
+    turret_ring(&mut head);
+    let sec = |hw: f32, hh: f32, y: f32| rect(Vec2::new(0.0, y), Vec2::new(hw, hh), hh * 0.55);
+    solid(
+        &mut head,
+        &[
+            at_z(&sec(0.6, 0.27, 0.42), -1.3),
+            at_z(&sec(0.74, 0.36, 0.44), -0.95),
+            at_z(&sec(0.74, 0.36, 0.44), 0.35),
+            at_z(&sec(0.52, 0.24, 0.42), 1.0),
+        ],
+        0.03,
+        SHELL,
+    );
+    // Dark spine down the top.
+    plate(
+        &mut head,
+        [
+            v(-0.22, 0.81, -0.95),
+            v(0.22, 0.81, -0.95),
+            v(0.22, 0.81, 0.35),
+            v(-0.22, 0.81, 0.35),
+        ],
+        0.03,
+        inside,
+        SHELL_DARK,
+    );
+    // Green seams along the shoulders, from the back to where it slopes.
+    plate2(
+        &mut head,
+        [
+            v(0.5, 0.79, -0.9),
+            v(0.5, 0.79, 0.3),
+            v(0.55, 0.77, 0.3),
+            v(0.55, 0.77, -0.9),
+        ],
+        0.012,
+        inside,
+        LASER_GLOW,
+    );
+    // Side slots, like the hull's.
+    for k in 0..2 {
+        let z = -0.55 + k as f32 * 0.3;
+        plate2(
+            &mut head,
+            [
+                v(0.76, 0.6, z),
+                v(0.76, 0.6, z + 0.12),
+                v(0.76, 0.3, z + 0.04),
+                v(0.76, 0.3, z - 0.08),
+            ],
+            0.012,
+            inside,
+            LASER_GLOW,
+        );
+    }
+    // The back: a green-lit well behind a stack of radiator fins.
+    plate(
+        &mut head,
+        [
+            v(-0.5, 0.62, -1.31),
+            v(0.5, 0.62, -1.31),
+            v(0.5, 0.22, -1.31),
+            v(-0.5, 0.22, -1.31),
+        ],
+        0.012,
+        inside,
+        LASER_GLOW,
+    );
+    for k in 0..5 {
+        let y = 0.24 + k as f32 * 0.085;
+        block(
+            &mut head,
+            v(-0.54, y, -1.42),
+            v(0.54, y + 0.035, -1.28),
+            0.008,
+            METAL,
+        );
+    }
+    block2(
+        &mut head,
+        v(0.54, 0.18, -1.44),
+        v(0.6, 0.68, -1.26),
+        0.015,
+        SHELL_DARK,
+    );
+
+    let mut mantlet = MeshData::default();
+    solid(
+        &mut mantlet,
+        &[
+            at_z(&sec(0.28, 0.2, 0.0), -0.3),
+            at_z(&sec(0.24, 0.17, 0.0), 0.4),
+        ],
+        0.03,
+        SHELL_DARK,
+    );
+    round(
+        &mut mantlet,
+        &[
+            at_x(&ngon(10, 0.1, Vec2::ZERO), -0.36),
+            at_x(&ngon(10, 0.1, Vec2::ZERO), 0.36),
+        ],
+        0.02,
+        CARBON,
+    );
+
+    let mut barrel = MeshData::default();
+    // A sleeve narrowing into the rod.
+    round(
+        &mut barrel,
+        &[
+            at_z(&ngon(10, 0.17, Vec2::ZERO), 0.3),
+            at_z(&ngon(10, 0.15, Vec2::ZERO), 1.0),
+            at_z(&ngon(10, 0.09, Vec2::ZERO), 1.25),
+        ],
+        0.02,
+        SHELL,
+    );
+    round(
+        &mut barrel,
+        &[
+            at_z(&ngon(10, 0.075, Vec2::ZERO), 1.2),
+            at_z(&ngon(10, 0.075, Vec2::ZERO), 2.9),
+        ],
+        0.0,
+        SHELL_DARK,
+    );
+    // Focusing rings, glowing.
+    for z in [1.55f32, 1.95, 2.35] {
+        round(
+            &mut barrel,
+            &[
+                at_z(&ngon(10, 0.1, Vec2::ZERO), z),
+                at_z(&ngon(10, 0.1, Vec2::ZERO), z + 0.06),
+            ],
+            0.01,
+            LASER_GLOW,
+        );
+    }
+    // Lens housing and the green lens.
+    round(
+        &mut barrel,
+        &[
+            at_z(&ngon(10, 0.12, Vec2::ZERO), 2.82),
+            at_z(&ngon(10, 0.17, Vec2::ZERO), 3.0),
+            at_z(&ngon(10, 0.17, Vec2::ZERO), 3.15),
+        ],
+        0.02,
+        SHELL,
+    );
+    round(
+        &mut barrel,
+        &[
+            at_z(&ngon(10, 0.115, Vec2::ZERO), 3.1),
+            at_z(&ngon(10, 0.115, Vec2::ZERO), 3.16),
+        ],
+        0.0,
+        LASER_GLOW,
+    );
+
+    TurretModel {
+        head,
+        mantlet,
+        barrel,
+        pivot: v(0.0, 0.42, 0.92),
+        barrels: vec![Vec3::ZERO],
+        muzzle: 3.2,
+        rig: Rig::Recoil,
+        recoil: 0.0,
+    }
 }

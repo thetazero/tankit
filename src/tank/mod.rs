@@ -64,7 +64,7 @@ impl KitMeshes {
                 model::pelekys(),
                 ithessar::ammeth(),
                 ithessar::ossrin(),
-                model::lumen(),
+                uthenn::lumen(),
                 model::hymn(),
             ],
         }
