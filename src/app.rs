@@ -11,6 +11,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::game::Clock;
+use crate::hud::Hud;
 use crate::render::Renderer;
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullKind, TurretKind, World};
@@ -28,6 +29,7 @@ struct App {
     showroom: Option<ShowroomArgs>,
     world: World,
     cam: ChaseCam,
+    hud: Hud,
     clock: Clock,
     keys: HashSet<KeyCode>,
     last: Instant,
@@ -48,6 +50,7 @@ pub fn run(seed: u64, showroom: Option<ShowroomArgs>) -> anyhow::Result<()> {
         showroom,
         world,
         cam,
+        hud: Hud::new(),
         clock: Clock::default(),
         keys: HashSet::new(),
         last: Instant::now(),
@@ -131,6 +134,7 @@ impl App {
                 self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 16;
                 self.world = World::new(self.seed);
                 self.cam = ChaseCam::new();
+                self.hud = Hud::new();
                 if let Some(r) = &mut self.renderer {
                     r.set_static_mesh(&scene::map_mesh(&self.world.map));
                 }
@@ -191,11 +195,12 @@ impl App {
                 let angle = room.orbit.unwrap_or(self.world.time * 0.15);
                 camera = showroom::camera(&self.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
             }
-            let mut scene = scene::build(&self.world, art, camera, r.width as f32, r.height as f32);
+            let mut scene = scene::build(&self.world, art, camera);
             if self.showroom.is_some() {
-                scene.ui.clear();
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
+            } else {
+                scene.ui = self.hud.draw(&self.world, self.seed, &camera, r.width as f32, r.height as f32, dt);
             }
             r.render(&scene);
         }

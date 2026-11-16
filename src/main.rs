@@ -1,5 +1,6 @@
 mod app;
 mod game;
+mod hud;
 mod map;
 mod render;
 mod rng;
@@ -7,6 +8,7 @@ mod scene;
 mod showroom;
 mod sim;
 mod tank;
+mod ui;
 
 use anyhow::{Context, Result, bail};
 use glam::Vec3;
@@ -102,7 +104,8 @@ fn screenshot(seed: u64, args: ShotArgs) -> Result<()> {
     let mut renderer = render::Renderer::new_headless(args.width, args.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&world.map));
     let art = tank::TankArt::upload(&mut renderer);
-    let frame = scene::build(&world, &art, camera, args.width as f32, args.height as f32);
+    let mut frame = scene::build(&world, &art, camera);
+    frame.ui = hud::Hud::new().draw(&world, seed, &camera, args.width as f32, args.height as f32, game::DT);
     let img = renderer.render_to_image(&frame)?;
     img.save(&args.out).with_context(|| format!("save {}", args.out))?;
     println!("wrote {} ({}x{}, seed {seed}, t={:.2}s)", args.out, args.width, args.height, world.time);
@@ -122,8 +125,7 @@ fn showroom_shot(seed: u64, args: ShotArgs, room: ShowroomArgs) -> Result<()> {
     let art = tank::TankArt::upload(&mut renderer);
     let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
     let camera = showroom::camera(&world, angle, room.dist, room.focus);
-    let mut frame = scene::build(&world, &art, camera, args.width as f32, args.height as f32);
-    frame.ui.clear();
+    let mut frame = scene::build(&world, &art, camera);
     frame.shadow_center = Vec3::ZERO;
     frame.shadow_radius = 22.0;
     let img = renderer.render_to_image(&frame)?;
