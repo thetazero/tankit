@@ -1,14 +1,15 @@
 //! Resonant kit: the Vigil hull. The Resonant don't build tanks; they build a
-//! vessel for a crystal, by rite. The crystal sits in a shrine at its heart
-//! where an engine would be, blue light runs from it in veins to the running
-//! gear, the side plates float off the frame held by that light, and a bell
-//! (a relic of some fallen machine) hangs off the back.
+//! vessel for a crystal, by rite. A narrow keel runs between bare tracks; its
+//! armor is six plates floating well clear of it on shafts of light; a
+//! pointed-arch prow stands at the front like a lectern; and over the stern a
+//! gilt arch holds the bell (a relic of some fallen machine), with the crystal
+//! floating beneath it, turning.
 
 use glam::{Vec2, Vec3, Vec4};
 
 use super::model::{
-    CARBON, CARBON_LIGHT, CRYSTAL, HullModel, PAINT, Running, Skin, at_x, at_y, at_z, block, ngon,
-    plate, round, shard, solid, trap, v,
+    CARBON, CRYSTAL, HullModel, PAINT, Running, Skin, at_x, at_y, at_z, ngon, plate, round, shard,
+    solid, trap, v,
 };
 use super::track::Wheel;
 use crate::render::material::Material;
@@ -19,7 +20,7 @@ use crate::render::mesh::MeshData;
 pub const CRYSTAL_LIGHT: Vec3 = Vec3::new(0.2, 0.5, 1.0);
 pub const CRYSTAL_LIGHT_HOT: Vec3 = Vec3::new(0.7, 0.88, 1.0);
 
-/// Old gilt: the shrine, its posts and the bell.
+/// Old gilt: the bell, its arch, the trim.
 pub(crate) const GILT: Skin = Skin::new(
     Vec4::new(0.5, 0.36, 0.16, Material::Metal.id()),
     Vec4::new(0.72, 0.56, 0.3, Material::Metal.id()),
@@ -30,19 +31,25 @@ fn light(c: Vec3) -> Skin {
     Skin::new(c, c)
 }
 
-/// How far the side plates float off the frame, m.
-pub const PLATE_GAP: f32 = 0.1;
-
-pub struct VigilModel {
-    pub hull: HullModel,
-    /// The crystal, its veins and the light bridges: drawn emissive, pulsing,
-    /// flickering out on a husk.
+/// Everything of the Vigil drawn apart from its tracked body.
+pub struct VigilExtras {
+    /// Veins, the shafts holding the plates, the prow's slit: drawn emissive,
+    /// breathing, guttering on a husk.
     pub light: MeshData,
-    /// The floating side plates, [left (+x), right (-x)], at rest.
-    pub plates: [MeshData; 2],
+    /// The crystal, around its middle, and where it floats.
+    pub heart: MeshData,
+    pub heart_at: Vec3,
+    /// The floating plates, each built around its own middle, and where that
+    /// is; left side (+x) first.
+    pub plates: Vec<(MeshData, Vec3)>,
     /// The bell, hanging from its pivot at the origin.
     pub bell: MeshData,
     pub bell_pivot: Vec3,
+}
+
+pub struct VigilModel {
+    pub hull: HullModel,
+    pub extras: VigilExtras,
 }
 
 /// A square bar from `a` to `b`, `r` across.
@@ -55,269 +62,238 @@ pub(crate) fn bar(m: &mut MeshData, a: Vec3, b: Vec3, r: f32, skin: Skin) {
     solid(m, &[ring(a), ring(b)], 0.0, skin);
 }
 
+/// The plates' spans along the hull, (from z, to z).
+const PLATE_SPANS: [(f32, f32); 3] = [(-2.1, -0.85), (-0.75, 0.55), (0.65, 1.95)];
+/// Where a plate floats: its middle's height and distance out from the keel.
+const PLATE_Y: f32 = 1.6;
+const PLATE_X: f32 = 1.3;
+
 pub fn vigil() -> VigilModel {
     let mut m = MeshData::default();
-    let inside = v(0.0, 0.8, 0.0);
+    let core = light(CRYSTAL_LIGHT);
+    let hot = light(CRYSTAL_LIGHT_HOT);
+    let mut glow = MeshData::default();
 
-    // Frame: Lancer's tub and deck, bare dark composite.
+    // The keel: narrow, between the tracks, which it leaves bare.
     solid(
         &mut m,
         &[
-            at_z(&trap(0.74, 0.82, 0.45, 1.02, 0.08), -2.38),
-            at_z(&trap(0.86, 0.9, 0.3, 1.1, 0.1), -1.9),
-            at_z(&trap(0.86, 0.9, 0.3, 1.1, 0.1), 1.6),
-            at_z(&trap(0.66, 0.76, 0.5, 0.92, 0.08), 2.45),
+            at_z(&trap(0.55, 0.42, 0.5, 1.28, 0.06), -2.38),
+            at_z(&trap(0.78, 0.62, 0.38, 1.38, 0.08), -1.9),
+            at_z(&trap(0.78, 0.62, 0.38, 1.38, 0.08), 1.6),
+            at_z(&trap(0.5, 0.36, 0.55, 1.12, 0.06), 2.42),
         ],
         0.04,
-        CARBON,
+        PAINT,
     );
+    // Its belly and flanks in dark composite under the paint.
     solid(
         &mut m,
         &[
-            at_z(&trap(1.2, 1.1, 0.98, 1.3, 0.06), -2.42),
-            at_z(&trap(1.3, 1.18, 0.96, 1.4, 0.08), -1.95),
-            at_z(&trap(1.3, 1.18, 0.96, 1.4, 0.08), 0.95),
-            at_z(&trap(1.16, 0.92, 0.92, 1.25, 0.07), 1.95),
-            at_z(&trap(0.8, 0.52, 0.86, 1.02, 0.05), 2.55),
+            at_z(&trap(0.8, 0.8, 0.36, 0.9, 0.04), -1.95),
+            at_z(&trap(0.8, 0.8, 0.36, 0.9, 0.04), 1.65),
         ],
-        0.04,
+        0.03,
         CARBON,
     );
-    // Ribs over the tracks the plates float off: the frame's bones, showing.
-    for z in [-1.9f32, -1.0, -0.1, 0.8, 1.7] {
-        for s in [1.0f32, -1.0] {
-            let (a, b) = (s * 1.04, s * 1.56);
-            block(
-                &mut m,
-                v(a.min(b), 1.12, z - 0.07),
-                v(a.max(b), 1.36, z + 0.07),
-                0.02,
-                CARBON_LIGHT,
-            );
-        }
-    }
-
-    // Prow: a painted plate like a lectern, the brow above it.
-    plate(
-        &mut m,
-        [
-            v(-0.62, 1.4, 1.0),
-            v(0.62, 1.4, 1.0),
-            v(0.44, 1.1, 2.38),
-            v(-0.44, 1.1, 2.38),
-        ],
-        0.06,
-        inside,
-        PAINT,
-    );
-    plate(
-        &mut m,
-        [
-            v(-0.66, 1.0, 2.5),
-            v(0.66, 1.0, 2.5),
-            v(0.5, 0.62, 2.62),
-            v(-0.5, 0.62, 2.62),
-        ],
-        0.06,
-        inside,
-        PAINT,
-    );
-
-    // The shrine, where an engine would be: a gilt plinth and four posts
-    // joined by a frame, open so the crystal shows.
-    let (sz0, sz1) = (-2.38, -1.62);
-    let sc = (sz0 + sz1) * 0.5;
-    block(&mut m, v(-0.6, 1.36, sz0), v(0.6, 1.5, sz1), 0.03, GILT);
-    for (x, z) in [
-        (0.5, sz0 + 0.06),
-        (-0.5, sz0 + 0.06),
-        (0.5, sz1 - 0.06),
-        (-0.5, sz1 - 0.06),
-    ] {
-        block(
+    // Gilt trim along the deck's edges.
+    for s in [1.0f32, -1.0] {
+        bar(
             &mut m,
-            v(x - 0.05, 1.5, z - 0.05),
-            v(x + 0.05, 1.92, z + 0.05),
-            0.015,
+            v(s * 0.62, 1.39, -1.9),
+            v(s * 0.62, 1.39, 1.6),
+            0.05,
+            GILT,
+        );
+        bar(
+            &mut m,
+            v(s * 0.62, 1.39, 1.6),
+            v(s * 0.36, 1.13, 2.42),
+            0.05,
             GILT,
         );
     }
-    for (a, b) in [
-        (v(0.5, 1.92, sz0 + 0.06), v(0.5, 1.92, sz1 - 0.06)),
-        (v(-0.5, 1.92, sz0 + 0.06), v(-0.5, 1.92, sz1 - 0.06)),
-        (v(-0.5, 1.92, sz0 + 0.06), v(0.5, 1.92, sz0 + 0.06)),
-        (v(-0.5, 1.92, sz1 - 0.06), v(0.5, 1.92, sz1 - 0.06)),
-    ] {
-        bar(&mut m, a, b, 0.07, GILT);
-    }
 
-    // The bell's yoke: an arm out over the stern from the shrine's back.
-    let bell_pivot = v(0.0, 1.84, -2.78);
-    block(
+    // The prow: a pointed arch standing at the front, leaning out like a
+    // lectern, rimmed in gilt, a slit of light down its face.
+    let lean = |p: Vec2, z: f32| Vec3::new(p.x, p.y, z + (p.y - 0.7) * 0.35);
+    let arch = [
+        Vec2::new(-0.5, 0.7),
+        Vec2::new(0.5, 0.7),
+        Vec2::new(0.5, 1.25),
+        Vec2::new(0.0, 1.6),
+        Vec2::new(-0.5, 1.25),
+    ];
+    solid(
         &mut m,
-        v(-0.05, 1.84, -2.84),
-        v(0.05, 1.93, sz0 + 0.02),
-        0.015,
-        GILT,
+        &[
+            arch.iter().map(|&p| lean(p, 2.28)).collect(),
+            arch.iter().map(|&p| lean(p, 2.4)).collect(),
+        ],
+        0.03,
+        PAINT,
+    );
+    for i in 1..arch.len() {
+        let (a, b) = (arch[i], arch[(i + 1) % arch.len()]);
+        bar(&mut m, lean(a, 2.42), lean(b, 2.42), 0.06, GILT);
+    }
+    bar(
+        &mut glow,
+        lean(Vec2::new(0.0, 0.85), 2.43),
+        lean(Vec2::new(0.0, 1.42), 2.43),
+        0.05,
+        hot,
     );
 
-    // --- Light ---
-    let mut glow = MeshData::default();
-    let core = light(CRYSTAL_LIGHT);
-    let hot = light(CRYSTAL_LIGHT_HOT);
-    // The crystal: one tall shard and two leaning beside it.
+    // Over the stern, the bell's arch: two gilt posts and a pointed top.
+    let tz = -2.15;
+    for s in [1.0f32, -1.0] {
+        bar(&mut m, v(s * 0.5, 1.3, tz), v(s * 0.5, 2.35, tz), 0.1, GILT);
+        bar(&mut m, v(s * 0.5, 2.35, tz), v(0.0, 2.78, tz), 0.09, GILT);
+    }
+    let bell_pivot = v(0.0, 2.64, tz);
+    // A gilt bowl the crystal floats over.
+    let bowl = |r: f32, y: f32| at_y(&ngon(8, r, Vec2::new(0.0, tz)), y);
+    round(
+        &mut m,
+        &[bowl(0.16, 1.36), bowl(0.24, 1.44), bowl(0.26, 1.5)],
+        0.02,
+        GILT,
+    );
+    let heart_at = v(0.0, 1.82, tz);
+
+    // The crystal: one tall shard and two leaning off it, around its middle.
+    let mut heart = MeshData::default();
     shard(
-        &mut glow,
-        v(0.0, 1.48, sc),
+        &mut heart,
+        v(0.0, -0.3, 0.0),
         v(0.0, 1.0, 0.0),
         0.62,
         0.15,
         hot,
     );
     shard(
-        &mut glow,
-        v(0.14, 1.48, sc + 0.08),
+        &mut heart,
+        v(0.1, -0.22, 0.06),
         v(0.35, 1.0, 0.1),
+        0.38,
+        0.09,
+        core,
+    );
+    shard(
+        &mut heart,
+        v(-0.1, -0.22, -0.08),
+        v(-0.3, 1.0, -0.15),
         0.36,
         0.09,
         core,
     );
     shard(
-        &mut glow,
-        v(-0.12, 1.48, sc - 0.1),
-        v(-0.3, 1.0, -0.15),
-        0.34,
-        0.09,
+        &mut heart,
+        v(0.0, -0.22, 0.0),
+        v(0.0, -1.0, 0.0),
+        0.2,
+        0.12,
         core,
     );
+
     for s in [1.0f32, -1.0] {
-        // Veins from the shrine along the deck, down the prow to the
-        // sprockets, and down the stern to the idlers.
-        let x = s * 0.86;
-        let pts = [
-            v(s * 0.55, 1.42, sz1),
-            v(x, 1.42, -1.2),
-            v(x, 1.42, 0.95),
-            v(s * 0.7, 1.26, 1.95),
-            v(s * 0.86, 1.0, 2.3),
-            v(s * 0.92, 0.66, 2.05),
-        ];
-        for w in pts.windows(2) {
+        // Veins from the crystal's bowl down the keel's flanks to the
+        // sprockets and idlers: what drives the tracks.
+        let side = s * 0.74;
+        for w in [
+            [v(s * 0.2, 1.38, tz + 0.2), v(side, 1.1, -1.7)],
+            [v(side, 1.1, -1.7), v(side, 1.0, 1.5)],
+            [v(side, 1.0, 1.5), v(s * 0.92, 0.66, 2.05)],
+            [v(side, 1.1, -1.7), v(s * 0.92, 0.62, -2.1)],
+        ] {
             bar(&mut glow, w[0], w[1], 0.06, core);
         }
-        bar(
-            &mut glow,
-            v(s * 0.55, 1.4, sz0),
-            v(s * 0.8, 1.1, -2.46),
-            0.06,
-            core,
-        );
-        bar(
-            &mut glow,
-            v(s * 0.8, 1.1, -2.46),
-            v(s * 0.92, 0.62, -2.1),
-            0.06,
-            core,
-        );
-        // Hubs where the light drives the wheels.
-        round(
-            &mut glow,
-            &[
-                at_x(&ngon(8, 0.13, Vec2::new(2.05, 0.66)), s * 0.9),
-                at_x(&ngon(8, 0.13, Vec2::new(2.05, 0.66)), s * 0.95),
-            ],
-            0.0,
-            hot,
-        );
-        round(
-            &mut glow,
-            &[
-                at_x(&ngon(8, 0.12, Vec2::new(-2.1, 0.62)), s * 0.9),
-                at_x(&ngon(8, 0.12, Vec2::new(-2.1, 0.62)), s * 0.95),
-            ],
-            0.0,
-            hot,
-        );
-        // Bridges of light holding each plate off its rib.
-        for z in [-1.9f32, -1.0, -0.1, 0.8, 1.7] {
-            bar(
+        for (z, y, r) in [(2.05f32, 0.66f32, 0.13f32), (-2.1, 0.62, 0.12)] {
+            round(
                 &mut glow,
-                v(s * 1.5, 1.36, z),
-                v(s * (1.5 + PLATE_GAP + 0.05), 1.36 + PLATE_GAP, z),
-                0.05,
-                core,
+                &[
+                    at_x(&ngon(8, r, Vec2::new(z, y)), s * 0.9),
+                    at_x(&ngon(8, r, Vec2::new(z, y)), s * 0.95),
+                ],
+                0.0,
+                hot,
             );
         }
-    }
-    // A line of scripture across the prow.
-    let mut z = 1.2;
-    let mut k = 0;
-    while z < 2.15 {
-        let len = [0.12f32, 0.05, 0.08, 0.04, 0.1, 0.06][k % 6];
-        let f = (z - 1.0) / 1.38;
-        let y = 1.4 + (1.1 - 1.4) * f + 0.035;
-        bar(
-            &mut glow,
-            v(0.0, y, z),
-            v(0.0, y - 0.3 * len / 1.38, z + len),
-            0.035,
-            core,
-        );
-        z += len + 0.05;
-        k += 1;
+        // Shafts of light holding each plate up off the keel.
+        for &(z0, z1) in &PLATE_SPANS {
+            for z in [z0 + 0.3, z1 - 0.3] {
+                bar(
+                    &mut glow,
+                    v(s * 0.78, 1.12, z),
+                    v(s * (PLATE_X - 0.15), PLATE_Y - 0.08, z),
+                    0.08,
+                    core,
+                );
+            }
+        }
     }
 
-    // --- Floating plates ---
-    let plates = [1.0f32, -1.0].map(|s| {
-        let mut p = MeshData::default();
-        let g = PLATE_GAP;
-        let x = |x: f32| s * (x + g);
-        let pin = v(0.0, 0.8, 0.0);
-        // Fenders, lifted off the ribs.
-        for (z0, z1) in [(-2.3f32, -1.0), (-0.95, 0.65), (0.7, 2.1)] {
+    // The plates: shields floating over the bare tracks, tipped outward,
+    // each with a drop at its outer edge lined with scripture.
+    let mut plates = Vec::new();
+    for s in [1.0f32, -1.0] {
+        for &(z0, z1) in &PLATE_SPANS {
+            let mut p = MeshData::default();
+            let h = (z1 - z0) * 0.5;
+            let below = v(0.0, -0.6, 0.0);
             plate(
                 &mut p,
                 [
-                    v(x(0.98), 1.46 + g, z0),
-                    v(x(1.66), 1.27 + g, z0),
-                    v(x(1.66), 1.27 + g, z1),
-                    v(x(0.98), 1.46 + g, z1),
+                    v(-s * 0.4, 0.1, -h),
+                    v(s * 0.38, -0.1, -h),
+                    v(s * 0.38, -0.1, h),
+                    v(-s * 0.4, 0.1, h),
                 ],
                 0.07,
-                pin,
+                below,
                 PAINT,
             );
-        }
-        // Skirts, standing out from the tracks, edged in scripture.
-        for (z0, z1, lo0, lo1) in [
-            (-2.3f32, -0.8, 1.0, 0.78),
-            (-0.75, 0.75, 0.74, 0.74),
-            (0.8, 2.0, 0.78, 1.08),
-        ] {
-            let sk = [
-                v(x(1.66), 1.25, z0),
-                v(x(1.66), 1.25, z1),
-                v(x(1.74), lo1, z1),
-                v(x(1.74), lo0, z0),
-            ];
-            plate(&mut p, sk, 0.05, pin, PAINT);
+            let inward = v(0.0, -0.3, 0.0) - v(s * 0.5, 0.0, 0.0);
             plate(
                 &mut p,
                 [
-                    v(x(1.72), 1.16, z0 + 0.12),
-                    v(x(1.72), 1.16, z1 - 0.12),
-                    v(x(1.725), 1.12, z1 - 0.12),
-                    v(x(1.725), 1.12, z0 + 0.12),
+                    v(s * 0.4, -0.08, -h + 0.04),
+                    v(s * 0.4, -0.08, h - 0.04),
+                    v(s * 0.45, -0.28, h - 0.1),
+                    v(s * 0.45, -0.28, -h + 0.1),
+                ],
+                0.05,
+                inward,
+                PAINT,
+            );
+            plate(
+                &mut p,
+                [
+                    v(s * 0.445, -0.16, -h + 0.18),
+                    v(s * 0.445, -0.16, h - 0.18),
+                    v(s * 0.45, -0.2, h - 0.18),
+                    v(s * 0.45, -0.2, -h + 0.18),
                 ],
                 0.012,
-                pin,
+                inward,
                 CRYSTAL,
             );
+            // A gilt boss where the light holds it.
+            round(
+                &mut p,
+                &[
+                    at_y(&ngon(6, 0.09, Vec2::new(0.0, 0.0)), 0.05),
+                    at_y(&ngon(6, 0.06, Vec2::new(0.0, 0.0)), 0.1),
+                ],
+                0.01,
+                GILT,
+            );
+            plates.push((p, v(s * PLATE_X, PLATE_Y, (z0 + z1) * 0.5)));
         }
-        p
-    });
+    }
 
-    // --- The bell ---
+    // The bell.
     let mut bell = MeshData::default();
     let c = |r: f32| ngon(12, r, Vec2::ZERO);
     round(
@@ -363,11 +339,15 @@ pub fn vigil() -> VigilModel {
                     })
                     .collect(),
             },
-            mount: v(0.0, 1.4, -0.3),
+            mount: v(0.0, 1.38, -0.3),
         },
-        light: glow,
-        plates,
-        bell,
-        bell_pivot,
+        extras: VigilExtras {
+            light: glow,
+            heart,
+            heart_at,
+            plates,
+            bell,
+            bell_pivot,
+        },
     }
 }

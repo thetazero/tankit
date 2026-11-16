@@ -83,8 +83,10 @@ like it shouldn't work.
 it's broken: dark, cracked, blue pouring out of it, still driving and
 firing, for a few moments before it finally goes. This is the faction's one
 miracle in play. The Vigil is that vessel: no armor to speak of (the crystal
-is its armor), fast, its crystal in an open gilt shrine where an engine
-would be, side plates floating off its ribs on light, a bell at its stern.
+is its armor), fast. A narrow keel between bare tracks, its plates floating
+well clear of it on shafts of light, a pointed-arch prow like a lectern, and
+over the stern a gilt arch with the bell hung in it and the crystal floating
+beneath, turning.
 Broken, it's paid as a kill at once but runs on untouchable, at full
 strength for a moment and then fading out.
 

@@ -15,7 +15,7 @@ use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::sim::{HullKind, Tank, TurretKind};
 use ithessar::HoverModel;
 use model::{HullModel, Rig, Running, TurretModel};
-use resonant::VigilModel;
+use resonant::{VigilExtras, VigilModel};
 use track::{Belt, Wheel};
 
 /// Target spacing between tread links.
@@ -28,16 +28,8 @@ pub struct KitMeshes {
     hulls: Vec<(HullModel, [MeshData; 4])>,
     hover: HoverModel,
     /// Vigil's extras (its body and running gear are `hulls[2]`).
-    vigil: VigilParts,
+    vigil: VigilExtras,
     turrets: Vec<TurretModel>,
-}
-
-/// Everything of the Vigil that isn't its tracked body.
-struct VigilParts {
-    light: MeshData,
-    plates: [MeshData; 2],
-    bell: MeshData,
-    bell_pivot: Vec3,
 }
 
 impl KitMeshes {
@@ -54,10 +46,7 @@ impl KitMeshes {
         };
         let VigilModel {
             hull: vigil_hull,
-            light,
-            plates,
-            bell,
-            bell_pivot,
+            extras: vigil,
         } = resonant::vigil();
         KitMeshes {
             hulls: vec![
@@ -66,12 +55,7 @@ impl KitMeshes {
                 hull(vigil_hull),
             ],
             hover: ithessar::sethuun(),
-            vigil: VigilParts {
-                light,
-                plates,
-                bell,
-                bell_pivot,
-            },
+            vigil,
             // Same order as `TurretKind::ALL`.
             turrets: vec![
                 model::lance(),
@@ -97,8 +81,9 @@ impl KitMeshes {
             .map(|m| m.indices.len())
             .sum::<usize>();
         let g = &self.vigil;
-        let h = h + [&g.light, &g.plates[0], &g.plates[1], &g.bell]
-            .iter()
+        let h = h + [&g.light, &g.heart, &g.bell]
+            .into_iter()
+            .chain(g.plates.iter().map(|(m, _)| m))
             .map(|m| m.indices.len())
             .sum::<usize>();
         let t: usize = self
@@ -134,7 +119,9 @@ struct HoverArt {
 
 struct VigilArt {
     light: MeshId,
-    plates: [MeshId; 2],
+    heart: MeshId,
+    heart_at: Vec3,
+    plates: Vec<(MeshId, Vec3)>,
     bell: MeshId,
     bell_pivot: Vec3,
 }
@@ -176,7 +163,13 @@ impl TankArt {
         let g = &kit.vigil;
         let vigil = VigilArt {
             light: r.add_mesh(&g.light),
-            plates: [r.add_mesh(&g.plates[0]), r.add_mesh(&g.plates[1])],
+            heart: r.add_mesh(&g.heart),
+            heart_at: g.heart_at,
+            plates: g
+                .plates
+                .iter()
+                .map(|(m, at)| (r.add_mesh(m), *at))
+                .collect(),
             bell: r.add_mesh(&g.bell),
             bell_pivot: g.bell_pivot,
         };
@@ -320,9 +313,11 @@ impl TankArt {
         sprung * Mat4::from_translation(hull.mount)
     }
 
-    /// The Vigil's crystal light, floating plates and bell. The light breathes
-    /// and burns brighter under throttle; on a husk it gutters and fades and
-    /// the plates hang crooked; on a wreck it's out and the plates have fallen.
+    /// The Vigil's light, floating crystal and plates, and bell. The light
+    /// breathes and burns brighter under throttle and the crystal turns; on a
+    /// husk the light gutters and fades and the plates sag crooked; on a wreck
+    /// it's out, the crystal has dropped into its bowl and the plates lie on
+    /// the tracks.
     fn vigil(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let g = &self.vigil;
         let tint = t.color.extend(0.0);
@@ -334,31 +329,47 @@ impl TankArt {
             (false, Some(s)) => {
                 // Gutters: stutters on and off, weaker as it fades.
                 let flick = ((time * 23.0).sin() * (time * 37.0).sin()).abs();
-                (s * (1.2 + 2.6 * flick), 0.35 + 0.4 * (1.0 - s))
+                (s * (1.2 + 2.6 * flick), 0.3 + 0.4 * (1.0 - s))
             }
             (false, None) => (2.2 + 0.4 * (time * 2.2).sin() + effort * 1.0, 0.0),
         };
-        if glow > 0.0 {
-            out.push((g.light, Instance::new(base, Vec4::new(1.0, 1.0, 1.0, glow))));
+        let lit = |k: f32| {
+            if glow > 0.0 {
+                Vec4::new(1.0, 1.0, 1.0, glow * k)
+            } else {
+                Vec4::new(0.1, 0.1, 0.12, 0.0)
+            }
+        };
+        out.push((g.light, Instance::new(base, lit(1.0))));
+
+        // The crystal floats and turns; it slows as a husk fades, and drops
+        // into its bowl when it's out.
+        let heart = if t.dead {
+            Mat4::from_translation(g.heart_at - Vec3::Y * 0.22) * Mat4::from_rotation_z(0.5)
         } else {
-            out.push((
-                g.light,
-                Instance::new(base, Vec4::new(0.12, 0.12, 0.14, 0.0)),
-            ));
+            let s = t.husk.unwrap_or(1.0);
+            let bob = 0.06 * (time * 1.3).sin() * s;
+            Mat4::from_translation(g.heart_at + Vec3::Y * bob)
+                * Mat4::from_rotation_y(time * (0.6 + 0.9 * effort) * s)
+        };
+        out.push((g.heart, Instance::new(base * heart, lit(1.3))));
+
+        for (k, &(mesh, at)) in g.plates.iter().enumerate() {
+            let side = at.x.signum();
+            let ph = k as f32 * 1.7;
+            // Held: each drifts on its own, a slow float and a little roll.
+            let held = 1.0 - slack;
+            let bob = 0.05 * (time * 1.1 + ph).sin() * held;
+            let roll = 0.05 * (time * 0.8 + ph * 1.3).sin() * held;
+            // Let go: sagging out and down, tipped over, each its own way.
+            let fall = if t.dead { 0.45 } else { 0.3 * slack };
+            let at = at + Vec3::new(side * 0.15 * slack, bob - fall, 0.0);
+            let m = Mat4::from_translation(at)
+                * Mat4::from_rotation_z(side * (roll - 0.45 * slack))
+                * Mat4::from_rotation_x(0.12 * slack * (ph * 2.3).sin());
+            out.push((mesh, Instance::new(base * m, tint)));
         }
-        for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
-            // Held: a slow float. Let go: sagging out and down, tipped over.
-            let bob = 0.025 * (time * 1.7 + k as f32 * 1.9).sin() * (1.0 - slack);
-            let drop = Vec3::new(side * 0.12 * slack, -0.32 * slack + bob, 0.0);
-            let tip = Mat4::from_translation(Vec3::new(side * 1.3, 1.3, 0.0))
-                * Mat4::from_rotation_z(-side * 0.35 * slack)
-                * Mat4::from_rotation_x(0.06 * slack * if k == 0 { 1.0 } else { -1.0 })
-                * Mat4::from_translation(Vec3::new(side * -1.3, -1.3, 0.0));
-            out.push((
-                g.plates[k],
-                Instance::new(base * Mat4::from_translation(drop) * tip, tint),
-            ));
-        }
+
         // The bell swings back as it pulls away and sways as it goes.
         let local_v = t.rot.inverse() * t.vel;
         let lean = (local_v.z / t.hull.max_speed).clamp(-1.0, 1.0) * 0.35;
