@@ -40,9 +40,11 @@ impl MeshId {
     pub const SPHERE: MeshId = MeshId(2);
     /// Octahedron gem, radius 0.5, height 1.
     pub const GEM: MeshId = MeshId(3);
+    /// Parachute dome: rim radius 0.5 at y=0, apex at y=0.5, striped gores.
+    pub const CANOPY: MeshId = MeshId(4);
 }
 
-pub const MESH_COUNT: usize = 4;
+pub const MESH_COUNT: usize = 5;
 
 #[derive(Default, Clone)]
 pub struct MeshData {
@@ -52,7 +54,7 @@ pub struct MeshData {
 
 impl MeshData {
     pub fn primitives() -> [MeshData; MESH_COUNT] {
-        [MeshData::cube(), MeshData::cylinder(20), MeshData::sphere(16, 10), MeshData::gem()]
+        [MeshData::cube(), MeshData::cylinder(20), MeshData::sphere(16, 10), MeshData::gem(), MeshData::canopy(12, 5)]
     }
 
     fn vert(&mut self, p: Vec3, n: Vec3, c: Vec4) -> u32 {
@@ -177,6 +179,30 @@ impl MeshData {
             m.tri([a, top, b], -n_top, w);
             let n_bot = (bot - a).cross(b - a).normalize();
             m.tri([a, b, bot], -n_bot, w);
+        }
+        m
+    }
+
+    /// Half an ellipsoid, open underneath, in alternating white and orange gores.
+    pub fn canopy(gores: u32, rings: u32) -> MeshData {
+        let mut m = MeshData::default();
+        let colors = [Vec4::new(0.92, 0.9, 0.84, 0.0), Vec4::new(0.9, 0.42, 0.14, 0.0)];
+        let point = |g: u32, r: u32| {
+            let th = g as f32 / gores as f32 * std::f32::consts::TAU;
+            let phi = r as f32 / rings as f32 * std::f32::consts::FRAC_PI_2;
+            let n = Vec3::new(phi.sin() * th.cos(), phi.cos(), phi.sin() * th.sin());
+            (n * 0.5, n)
+        };
+        for g in 0..gores {
+            let c = colors[(g % 2) as usize];
+            for r in 0..rings {
+                let (a, na) = point(g, r);
+                let (b, nb) = point(g, r + 1);
+                let (cc, nc) = point(g + 1, r + 1);
+                let (d, nd) = point(g + 1, r);
+                let i = [m.vert(a, na, c), m.vert(b, nb, c), m.vert(cc, nc, c), m.vert(d, nd, c)];
+                m.indices.extend_from_slice(&[i[0], i[1], i[2], i[0], i[2], i[3]]);
+            }
         }
         m
     }

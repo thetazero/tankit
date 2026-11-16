@@ -11,6 +11,7 @@ use crate::ai::{self, Bot, Contact, NavGrid};
 use crate::game::DT;
 use crate::map::Map;
 use crate::render::mesh::{Instance, MeshId};
+use crate::repair::Repairs;
 use crate::rng::Rng;
 use crate::sim::{Command, GRAVITY, HullKind, Tank, TurretKind, World, wrap_angle, yaw_of};
 
@@ -79,6 +80,9 @@ pub struct Fighter {
     pub since_dealt: f32,
     /// Kit to fit at the next respawn (picked in the garage).
     pub next_kit: Option<(HullKind, TurretKind)>,
+    /// Seconds since this tank last picked up a repair crate, and how much it mended.
+    pub since_repair: f32,
+    pub repaired: f32,
 }
 
 impl Fighter {
@@ -106,6 +110,8 @@ pub enum BlastKind {
     Kill,
     /// Smoke puff rising off a wreck.
     Smoke,
+    /// Green flash where a repair crate was picked up.
+    Repair,
 }
 
 pub struct Blast {
@@ -129,6 +135,7 @@ impl Blast {
             BlastKind::Hit => 0.4,
             BlastKind::Kill => 1.1,
             BlastKind::Smoke => 1.6,
+            BlastKind::Repair => 0.7,
         }
     }
 }
@@ -152,6 +159,7 @@ pub struct Match {
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
+    pub repairs: Repairs,
     pub time_left: f32,
     pub phase: Phase,
     nav: NavGrid,
@@ -162,6 +170,7 @@ impl Match {
     /// A fresh round on `map`: the player at spawn point `spawn` plus `bots` bots.
     pub fn new(map: Map, spawn: usize, bots: usize, seed: u64) -> Match {
         let nav = NavGrid::build(&map);
+        let repairs = Repairs::new(&map);
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
         let mut fighters = vec![fighter("YOU", max_health(world.tanks[0].hull_kind))];
@@ -181,6 +190,7 @@ impl Match {
             shells: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
+            repairs,
             time_left: ROUND_TIME,
             phase: Phase::Playing,
             nav,
@@ -242,6 +252,7 @@ impl Match {
             f.shield -= DT;
             f.since_hit += DT;
             f.since_dealt += DT;
+            f.since_repair += DT;
             if trigger && f.alive && f.reload_in <= 0.0 {
                 self.shoot(i);
             }
@@ -249,6 +260,9 @@ impl Match {
 
         self.fly_shells();
         self.respawns();
+        if playing {
+            self.pick_up_repairs();
+        }
 
         for b in &mut self.blasts {
             b.age += DT;
@@ -389,6 +403,20 @@ impl Match {
         }
     }
 
+    fn pick_up_repairs(&mut self) {
+        let (fighters, tanks) = (&self.fighters, &self.world.tanks);
+        let picked = self.repairs.step(DT, tanks, |i| fighters[i].alive && fighters[i].health < max_health(tanks[i].hull_kind));
+        for (i, at) in picked {
+            let max = max_health(self.world.tanks[i].hull_kind);
+            let f = &mut self.fighters[i];
+            let before = f.health;
+            f.health = (f.health + max * crate::repair::HEAL_FRACTION).min(max);
+            f.repaired = f.health - before;
+            f.since_repair = 0.0;
+            self.blasts.push(Blast::new(at, BlastKind::Repair));
+        }
+    }
+
     fn respawns(&mut self) {
         for i in 0..self.fighters.len() {
             if self.fighters[i].alive {
@@ -440,6 +468,7 @@ impl Match {
 
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
+        self.repairs.instances(self.world.time, out);
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
             let p = s.prev.lerp(s.pos, alpha);
@@ -459,6 +488,7 @@ impl Match {
                     let s = (f * 4.0).min(1.0) * (1.0 - f).sqrt();
                     (MeshId::SPHERE, 0.5 + s * 7.0, Vec4::new(1.0, 0.5 + 0.3 * (1.0 - f), 0.15, 4.0 * (1.0 - f * f)))
                 }
+                BlastKind::Repair => (MeshId::SPHERE, 1.0 + f * 4.0, Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f))),
                 BlastKind::Smoke => {
                     let s = (f * 4.0).min(1.0) * (1.0 - f);
                     let c = 0.12 + f * 0.15;
@@ -486,6 +516,8 @@ fn fighter(name: &str, health: f32) -> Fighter {
         since_hit: 10.0,
         since_dealt: 10.0,
         next_kit: None,
+        since_repair: 10.0,
+        repaired: 0.0,
     }
 }
 
@@ -602,6 +634,25 @@ mod tests {
         }
         assert_eq!(m.phase, Phase::Over);
         assert_eq!(m.time_left, 0.0);
+    }
+
+    #[test]
+    fn driving_onto_a_landed_crate_repairs_the_hull() {
+        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let max = max_health(m.world.tanks[0].hull_kind);
+        m.fighters[0].health = 10.0;
+        let t = &m.world.tanks[0];
+        let d = &mut m.repairs.drops[0];
+        d.at = Vec2::new(t.pos.x, t.pos.z);
+        d.state = crate::repair::State::Falling(0.01);
+        m.step(Command::default(), false);
+        m.step(Command::default(), false);
+        assert_eq!(m.fighters[0].health, 10.0 + max * crate::repair::HEAL_FRACTION);
+        assert!(matches!(m.repairs.drops[0].state, crate::repair::State::Waiting(t) if t > crate::repair::COOLDOWN - 0.1));
+        assert!(m.blasts.iter().any(|b| b.kind == BlastKind::Repair));
     }
 
     #[test]
