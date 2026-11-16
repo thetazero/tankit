@@ -15,12 +15,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::audio::{self, Audio};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hud::{self, Hud};
-use crate::menu::{self, Menu, Nav, Pause, PauseAction};
+use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
@@ -83,6 +84,7 @@ struct App {
     cam: ChaseCam,
     hud: Hud,
     garage: Garage,
+    audio: Audio,
     /// Last frame's camera (the garage starts its orbit from it).
     camera: Option<Camera>,
     /// Whether the player was alive last frame (the garage closes on respawn).
@@ -135,6 +137,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         game.set_player_levels(profile.levels);
     }
     let menu_orbit = garage::front_angle(&game.world.tanks[0]);
+    let volume = profile.settings.volume();
     let mut app = App {
         seed: launch.seed,
         map_kind: launch.map_kind,
@@ -160,6 +163,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         cam: ChaseCam::new(),
         hud: Hud::new(),
         garage: Garage::new(),
+        audio: Audio::new(),
         camera: None,
         player_alive: true,
         clock: Clock::default(),
@@ -171,6 +175,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         fps_frames: 0,
         fps: 0.0,
     };
+    app.audio.set_volume(volume);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -392,6 +397,8 @@ impl App {
         Some(match code {
             KeyCode::KeyW | KeyCode::ArrowUp => Nav::Up,
             KeyCode::KeyS | KeyCode::ArrowDown => Nav::Down,
+            KeyCode::KeyA | KeyCode::ArrowLeft => Nav::Left,
+            KeyCode::KeyD | KeyCode::ArrowRight => Nav::Right,
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Nav::Select,
             KeyCode::Escape | KeyCode::Backspace => Nav::Back,
             _ => return None,
@@ -410,6 +417,11 @@ impl App {
                 KeyCode::KeyE => garage::Input::Act,
                 _ => return,
             };
+            self.audio.ui(match input {
+                garage::Input::Deploy | garage::Input::Act => audio::Ui::Select,
+                garage::Input::Revert => audio::Ui::Back,
+                _ => audio::Ui::Move,
+            });
             if let Some(event) = self.garage.input(input, self.queued(), &self.profile) {
                 self.garage_event(event);
             }
@@ -418,6 +430,7 @@ impl App {
         match self.mode {
             Mode::Menu => {
                 let Some(nav) = Self::nav(code) else { return };
+                self.nav_sound(nav);
                 match self.menu.input(nav) {
                     Some(menu::Action::Deploy(i)) => self.start_mission(i),
                     Some(menu::Action::Garage) => {
@@ -425,7 +438,7 @@ impl App {
                             self.garage.toggle(&self.game.world, &cam, self.queued());
                         }
                     }
-                    Some(menu::Action::Toggle(i)) => self.toggle_setting(i),
+                    Some(menu::Action::Setting(c)) => self.change_setting(c),
                     Some(menu::Action::Quit) => event_loop.exit(),
                     None => {}
                 }
@@ -433,9 +446,10 @@ impl App {
             }
             Mode::Paused => {
                 let Some(nav) = Self::nav(code) else { return };
+                self.nav_sound(nav);
                 match self.pause.input(nav) {
                     Some(PauseAction::Resume) => self.mode = Mode::Playing,
-                    Some(PauseAction::Toggle(i)) => self.toggle_setting(i),
+                    Some(PauseAction::Setting(c)) => self.change_setting(c),
                     Some(PauseAction::ExitToMenu) => self.back_to_menu(),
                     Some(PauseAction::Quit) => event_loop.exit(),
                     None => {}
@@ -449,6 +463,7 @@ impl App {
             // Round over: back to the menu. Otherwise pause.
             KeyCode::Escape if self.game.phase == Phase::Over => self.back_to_menu(),
             KeyCode::Escape => {
+                self.audio.ui(audio::Ui::Back);
                 self.pause = Pause::new();
                 self.mode = Mode::Paused;
             }
@@ -503,9 +518,18 @@ impl App {
         }
     }
 
-    fn toggle_setting(&mut self, i: usize) {
-        let settings = menu::toggled(self.profile.settings, i);
+    fn change_setting(&mut self, change: Change) {
+        let settings = menu::apply(self.profile.settings, change);
         self.profile.set_settings(settings);
+        self.audio.set_volume(settings.volume());
+    }
+
+    fn nav_sound(&mut self, nav: Nav) {
+        self.audio.ui(match nav {
+            Nav::Select => audio::Ui::Select,
+            Nav::Back => audio::Ui::Back,
+            _ => audio::Ui::Move,
+        });
     }
 
     fn held(&self, codes: &[KeyCode]) -> bool {
@@ -665,6 +689,9 @@ impl App {
             }
             r.render(&scene);
             self.camera = Some(camera);
+            let sounds = std::mem::take(&mut self.game.sounds);
+            self.audio
+                .update(&self.game, &sounds, &camera, self.mode != Mode::Paused, dt);
         }
 
         self.fps_timer += dt;

@@ -20,6 +20,8 @@ const REF_HEIGHT: f32 = 900.0;
 pub enum Nav {
     Up,
     Down,
+    Left,
+    Right,
     Select,
     Back,
 }
@@ -36,9 +38,19 @@ pub enum Action {
     /// Start mission `MISSIONS[i]`.
     Deploy(usize),
     Garage,
-    /// Flip the settings toggle `SETTINGS[i]`.
-    Toggle(usize),
+    Setting(Change),
     Quit,
+}
+
+/// A change on the settings panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Change {
+    /// Flip the toggle `SETTINGS[i]`.
+    Toggle(usize),
+    /// Volume this many steps up or down.
+    Volume(i32),
+    /// Volume one step up, wrapping round to silent past the top (Enter on the row).
+    CycleVolume,
 }
 
 const MAIN_ITEMS: [&str; 4] = ["MISSIONS", "GARAGE", "SETTINGS", "QUIT"];
@@ -52,11 +64,36 @@ pub const SETTINGS: [(&str, &str, Flag); 1] =
         &mut s.debug
     })];
 
-/// `settings` with toggle `i` flipped.
-pub fn toggled(mut settings: Settings, i: usize) -> Settings {
-    let flag = (SETTINGS[i].2)(&mut settings);
-    *flag = !*flag;
-    settings
+/// Rows on the settings panel: the toggles, then the volume.
+const SETTING_ROWS: usize = SETTINGS.len() + 1;
+const VOLUME_ROW: usize = SETTINGS.len();
+
+/// `settings` after `change`.
+pub fn apply(mut settings: Settings, change: Change) -> Settings {
+    match change {
+        Change::Toggle(i) => {
+            let flag = (SETTINGS[i].2)(&mut settings);
+            *flag = !*flag;
+            settings
+        }
+        Change::Volume(d) => settings.nudge_volume(d),
+        Change::CycleVolume if settings.volume >= Settings::MAX_VOLUME => Settings {
+            volume: 0,
+            ..settings
+        },
+        Change::CycleVolume => settings.nudge_volume(1),
+    }
+}
+
+/// What a key does on settings row `i`.
+fn setting_input(i: usize, nav: Nav) -> Option<Change> {
+    match (i == VOLUME_ROW, nav) {
+        (true, Nav::Left) => Some(Change::Volume(-1)),
+        (true, Nav::Right) => Some(Change::Volume(1)),
+        (true, Nav::Select) => Some(Change::CycleVolume),
+        (false, Nav::Select) => Some(Change::Toggle(i)),
+        _ => None,
+    }
 }
 
 pub struct Menu {
@@ -87,17 +124,18 @@ impl Menu {
                 2 => self.screen = Screen::Settings,
                 _ => return Some(Action::Quit),
             },
-            (Screen::Main, Nav::Back) => {}
+            (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
             (Screen::Missions, Nav::Up | Nav::Down) => {
                 self.mission = step(self.mission, MISSIONS.len(), nav)
             }
             (Screen::Missions, Nav::Select) => return Some(Action::Deploy(self.mission)),
             (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Missions, Nav::Left | Nav::Right) => {}
             (Screen::Settings, Nav::Up | Nav::Down) => {
-                self.setting = step(self.setting, SETTINGS.len(), nav)
+                self.setting = step(self.setting, SETTING_ROWS, nav)
             }
-            (Screen::Settings, Nav::Select) => return Some(Action::Toggle(self.setting)),
             (Screen::Settings, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Settings, _) => return setting_input(self.setting, nav).map(Action::Setting),
         }
         None
     }
@@ -198,7 +236,12 @@ impl Menu {
                     &mut p,
                     x,
                     h,
-                    &[("W/S", "SELECT"), ("ENTER", "TOGGLE"), ("ESC", "BACK")],
+                    &[
+                        ("W/S", "SELECT"),
+                        ("ENTER", "TOGGLE"),
+                        ("A/D", "VOLUME"),
+                        ("ESC", "BACK"),
+                    ],
                 );
             }
         }
@@ -209,8 +252,7 @@ impl Menu {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PauseAction {
     Resume,
-    /// Flip the settings toggle `SETTINGS[i]`.
-    Toggle(usize),
+    Setting(Change),
     ExitToMenu,
     Quit,
 }
@@ -234,15 +276,16 @@ impl Pause {
     pub fn input(&mut self, nav: Nav) -> Option<PauseAction> {
         if let Some(i) = &mut self.settings {
             match nav {
-                Nav::Up | Nav::Down => *i = step(*i, SETTINGS.len(), nav),
+                Nav::Up | Nav::Down => *i = step(*i, SETTING_ROWS, nav),
                 Nav::Back => self.settings = None,
-                Nav::Select => return Some(PauseAction::Toggle(*i)),
+                _ => return setting_input(*i, nav).map(PauseAction::Setting),
             }
             return None;
         }
         match nav {
             Nav::Up | Nav::Down => self.cursor = step(self.cursor, PAUSE_ITEMS.len(), nav),
             Nav::Back => return Some(PauseAction::Resume),
+            Nav::Left | Nav::Right => {}
             Nav::Select => match self.cursor {
                 0 => return Some(PauseAction::Resume),
                 1 => self.settings = Some(0),
@@ -280,7 +323,7 @@ impl Pause {
             label(
                 &mut p,
                 Vec2::new(x, min.y + size.y - 34.0),
-                "ENTER TOGGLE    ESC BACK",
+                "ENTER TOGGLE    A/D VOLUME    ESC BACK",
                 Align::Left,
             );
             return p.finish();
@@ -352,6 +395,38 @@ fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize
         );
         label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
     }
+    let y = at.y + VOLUME_ROW as f32 * 44.0;
+    let on = selected == VOLUME_ROW;
+    if on {
+        p.line(
+            Vec2::new(at.x - 14.0, y - 3.0),
+            Vec2::new(at.x - 14.0, y + 18.0),
+            2.0,
+            theme::FG,
+        );
+    }
+    let mut s = TextStyle::value(15.0);
+    s.color = if on { theme::FG } else { theme::DIM };
+    p.text(Vec2::new(at.x, y), "SOUND VOLUME", &s, Align::Left);
+    let pct = (settings.volume() * 100.0).round() as u32;
+    let value = if pct == 0 {
+        "OFF".to_string()
+    } else {
+        format!("{pct}%")
+    };
+    p.text(
+        Vec2::new(at.x + PANEL_W, y + 2.0),
+        &value,
+        &TextStyle::value(11.0),
+        Align::Right,
+    );
+    widgets::hairbar(
+        p,
+        Vec2::new(at.x, y + 26.0),
+        PANEL_W,
+        settings.volume(),
+        theme::FG,
+    );
 }
 
 /// Pilot rank, XP bar and totals.
@@ -468,7 +543,19 @@ mod tests {
         assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Settings);
-        assert_eq!(m.input(Nav::Select), Some(Action::Toggle(0)));
+        assert_eq!(
+            m.input(Nav::Select),
+            Some(Action::Setting(Change::Toggle(0)))
+        );
+        m.input(Nav::Down);
+        assert_eq!(
+            m.input(Nav::Left),
+            Some(Action::Setting(Change::Volume(-1)))
+        );
+        assert_eq!(
+            m.input(Nav::Select),
+            Some(Action::Setting(Change::CycleVolume))
+        );
         m.input(Nav::Back);
         assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), Some(Action::Quit));
@@ -488,7 +575,17 @@ mod tests {
         assert_eq!(p.input(Nav::Select), Some(PauseAction::Resume));
         p.input(Nav::Down);
         assert_eq!(p.input(Nav::Select), None);
-        assert_eq!(p.input(Nav::Select), Some(PauseAction::Toggle(0)));
+        assert_eq!(
+            p.input(Nav::Select),
+            Some(PauseAction::Setting(Change::Toggle(0)))
+        );
+        assert_eq!(p.input(Nav::Left), None);
+        p.input(Nav::Up);
+        assert_eq!(
+            p.input(Nav::Right),
+            Some(PauseAction::Setting(Change::Volume(1)))
+        );
+        p.input(Nav::Down);
         // Esc closes settings, then resumes.
         assert_eq!(p.input(Nav::Back), None);
         p.input(Nav::Down);
@@ -525,8 +622,25 @@ mod tests {
 
     #[test]
     fn debug_toggle() {
-        let s = toggled(Settings::default(), 0);
+        let s = apply(Settings::default(), Change::Toggle(0));
         assert!(s.debug);
-        assert!(!toggled(s, 0).debug);
+        assert!(!apply(s, Change::Toggle(0)).debug);
+    }
+
+    #[test]
+    fn volume_steps_and_wraps() {
+        let mut s = Settings::default();
+        for _ in 0..20 {
+            s = apply(s, Change::Volume(1));
+        }
+        assert_eq!(s.volume, Settings::MAX_VOLUME);
+        assert_eq!(apply(s, Change::CycleVolume).volume, 0);
+        assert_eq!(
+            apply(s, Change::Volume(-3)).volume,
+            Settings::MAX_VOLUME - 3
+        );
+        let silent = Settings { volume: 0, ..s };
+        assert_eq!(apply(silent, Change::Volume(-1)).volume, 0);
+        assert_eq!(apply(silent, Change::CycleVolume).volume, 1);
     }
 }

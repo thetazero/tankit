@@ -66,11 +66,37 @@ struct Saved {
 }
 
 /// Player options from the settings panel, saved with the profile.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Debug overlay: an FPS counter in the corner.
     pub debug: bool,
+    /// Sound volume in steps, 0 (silent) to [`Settings::MAX_VOLUME`].
+    pub volume: u8,
+}
+
+impl Settings {
+    pub const MAX_VOLUME: u8 = 10;
+
+    /// Volume as a fraction, 0..1.
+    pub fn volume(&self) -> f32 {
+        self.volume.min(Self::MAX_VOLUME) as f32 / Self::MAX_VOLUME as f32
+    }
+
+    /// Volume `delta` steps up or down, held within range.
+    pub fn nudge_volume(mut self, delta: i32) -> Settings {
+        self.volume = (self.volume as i32 + delta).clamp(0, Self::MAX_VOLUME as i32) as u8;
+        self
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            debug: false,
+            volume: 8,
+        }
+    }
 }
 
 /// Why a purchase didn't go through.
@@ -317,7 +343,10 @@ mod tests {
         p.buy(MAUL).unwrap();
         p.upgrade(MAUL).unwrap();
         p.set_loadout((HullKind::Lancer, TurretKind::Maul));
-        p.set_settings(Settings { debug: true });
+        p.set_settings(Settings {
+            debug: true,
+            volume: 3,
+        });
 
         let back = Profile::load(path.clone());
         assert_eq!(back.xp, 300);
@@ -326,6 +355,7 @@ mod tests {
         assert_eq!(back.levels.of(MAUL), 1);
         assert_eq!(back.loadout, (HullKind::Lancer, TurretKind::Maul));
         assert!(back.settings.debug);
+        assert_eq!(back.settings.volume, 3);
 
         // An older profile (no crystals, deploying in a part it never bought) still loads.
         std::fs::write(&path, r#"{"xp": 40, "hull": "bastion", "turret": "lance"}"#).unwrap();
@@ -333,6 +363,8 @@ mod tests {
         assert_eq!((old.xp, old.crystals), (40, 0));
         assert_eq!(old.loadout, (HullKind::Lancer, TurretKind::Lance));
         assert!(!old.settings.debug);
+        // Profiles from before sound get the default volume, not silence.
+        assert_eq!(old.settings.volume, Settings::default().volume);
 
         // A corrupt file starts a fresh pilot rather than failing.
         std::fs::write(&path, "not json").unwrap();

@@ -318,6 +318,48 @@ pub struct XpPop {
     pub age: f32,
 }
 
+/// Something audible that happened this step. The app drains these into the audio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sound {
+    Shot {
+        tank: usize,
+        turret: TurretKind,
+        at: Vec3,
+    },
+    /// A round spent on a wall or the ground.
+    Impact {
+        at: Vec3,
+        plasma: bool,
+    },
+    /// An orb skipping off a wall.
+    Bounce {
+        at: Vec3,
+    },
+    /// A round striking a tank.
+    Hit {
+        at: Vec3,
+        victim: usize,
+    },
+    Kill {
+        at: Vec3,
+    },
+    Repair {
+        at: Vec3,
+    },
+    /// A beam locked out hot.
+    Overheat {
+        tank: usize,
+        at: Vec3,
+    },
+    /// The player's shot made a kill.
+    Confirm,
+    /// The player's link came back in a fresh chassis.
+    Link,
+}
+
+/// Most sound events kept if nobody drains them (headless runs, tests).
+const MAX_SOUNDS: usize = 256;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
     Playing,
@@ -334,6 +376,8 @@ pub struct Match {
     /// XP the player has earned this match (kills plus the win bonus).
     pub xp: u32,
     pub xp_pops: Vec<XpPop>,
+    /// Audible events since the app last took them.
+    pub sounds: Vec<Sound>,
     pub repairs: Repairs,
     /// Side 0 and side 1.
     pub factions: [Faction; 2],
@@ -393,6 +437,7 @@ impl Match {
             feed: Vec::new(),
             xp: 0,
             xp_pops: Vec::new(),
+            sounds: Vec::new(),
             repairs,
             factions,
             time_left: ROUND_TIME,
@@ -473,6 +518,9 @@ impl Match {
 
     /// One fixed step. `player` drives tank 0; `fire` is the trigger held.
     pub fn step(&mut self, player: Command, fire: bool) {
+        if self.sounds.len() > MAX_SOUNDS {
+            self.sounds.drain(..self.sounds.len() - MAX_SOUNDS / 2);
+        }
         if self.phase == Phase::Playing {
             self.time_left -= DT;
             if self.time_left <= 0.0 {
@@ -528,6 +576,10 @@ impl Match {
                         if f.heat >= 1.0 {
                             f.heat = 1.0;
                             f.overheated = true;
+                            self.sounds.push(Sound::Overheat {
+                                tank: i,
+                                at: muzzle(&self.world.tanks[i]),
+                            });
                         }
                         self.beam(i, range);
                     } else {
@@ -626,6 +678,11 @@ impl Match {
             dir = (dir + jitter * spec.spread).normalize();
         }
         let from = muzzle(t);
+        self.sounds.push(Sound::Shot {
+            tank: i,
+            turret: t.turret_kind,
+            at: from,
+        });
         self.shells.push(Shell {
             pos: from,
             prev: from,
@@ -721,11 +778,16 @@ impl Match {
                             s.pos = at + n * 0.05;
                             s.bounces -= 1;
                             self.blasts.push(Blast::new(at, BlastKind::Impact));
+                            self.sounds.push(Sound::Bounce { at });
                             true
                         }
                         None => {
                             if s.spec.look != Look::Flame {
                                 self.blasts.push(Blast::new(at, BlastKind::Impact));
+                                self.sounds.push(Sound::Impact {
+                                    at,
+                                    plasma: matches!(s.spec.look, Look::Plasma { .. }),
+                                });
                             }
                             false
                         }
@@ -741,11 +803,20 @@ impl Match {
         if self.fighters[j].team == self.fighters[s.owner].team {
             if s.spec.look != Look::Flame {
                 self.blasts.push(Blast::new(at, BlastKind::Impact));
+                self.sounds.push(Sound::Hit { at, victim: j });
             }
             return;
         }
         if s.spec.look != Look::Flame {
             self.blasts.push(Blast::new(at, BlastKind::Hit));
+            self.sounds.push(if self.fighters[j].alive {
+                Sound::Hit { at, victim: j }
+            } else {
+                Sound::Impact {
+                    at,
+                    plasma: matches!(s.spec.look, Look::Plasma { .. }),
+                }
+            });
             // A shove through the hull's centre, scaled by how hard the shot
             // hits: felt, but never enough to roll it.
             let (mass, center) = (
@@ -793,6 +864,7 @@ impl Match {
             self.fighters[killer].kills += 1;
             if killer == 0 {
                 self.award(KILL_XP, "KILL");
+                self.sounds.push(Sound::Confirm);
             }
         }
         self.feed.push(Kill {
@@ -804,6 +876,9 @@ impl Match {
         let (pos, mass) = (t.pos, t.chassis.mass);
         self.blasts
             .push(Blast::new(pos + Vec3::Y * 1.2, BlastKind::Kill));
+        self.sounds.push(Sound::Kill {
+            at: pos + Vec3::Y * 1.2,
+        });
         // Pop the wreck up and give it a lazy tumble.
         let off = Vec3::new(self.rng.range(-0.6, 0.6), 0.0, self.rng.range(-0.6, 0.6));
         self.world.push(victim, Vec3::Y * mass * 4.5, pos + off);
@@ -858,6 +933,7 @@ impl Match {
             f.repaired = f.health - before;
             f.since_repair = 0.0;
             self.blasts.push(Blast::new(at, BlastKind::Repair));
+            self.sounds.push(Sound::Repair { at });
         }
     }
 
@@ -903,6 +979,9 @@ impl Match {
             f.reload_in = 0.5;
             f.heat = 0.0;
             f.overheated = false;
+            if i == 0 {
+                self.sounds.push(Sound::Link);
+            }
         }
     }
 
