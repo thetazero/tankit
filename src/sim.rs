@@ -215,36 +215,41 @@ pub struct HullStats {
     pub turret_speed: f32,
     /// How fast the turret spins up to full speed, rad/s².
     pub turret_accel: f32,
+    /// How fast it stops when you let go (or reverse), rad/s². Quicker than the
+    /// spin-up so the turret has weight but still stops where you aim.
+    pub turret_brake: f32,
 }
 
 impl HullStats {
     pub const LANCER: Self = Self {
-        max_speed: 15.0,
-        reverse_speed: 9.0,
-        accel: 13.0,
-        power_knee: 9.0,
-        brake: 20.0,
-        rolling: 0.8,
-        turn_rate: 3.6,
+        max_speed: 13.0,
+        reverse_speed: 7.5,
+        accel: 11.0,
+        power_knee: 8.0,
+        brake: 24.0,
+        rolling: 1.4,
+        turn_rate: 3.0,
         steer_accel: 20.0,
-        grip_long: 1.6,
-        grip_lat: 1.3,
+        grip_long: 1.9,
+        grip_lat: 1.7,
         turret_speed: 2.0,
-        turret_accel: 12.0,
+        turret_accel: 4.0,
+        turret_brake: 14.0,
     };
     pub const BASTION: Self = Self {
-        max_speed: 11.5,
-        reverse_speed: 7.0,
-        accel: 9.0,
-        power_knee: 6.5,
-        brake: 16.0,
-        rolling: 0.8,
-        turn_rate: 2.5,
+        max_speed: 10.0,
+        reverse_speed: 6.0,
+        accel: 7.5,
+        power_knee: 5.5,
+        brake: 20.0,
+        rolling: 1.4,
+        turn_rate: 2.1,
         steer_accel: 14.0,
-        grip_long: 1.6,
-        grip_lat: 1.4,
+        grip_long: 1.9,
+        grip_lat: 1.8,
         turret_speed: 1.5,
-        turret_accel: 8.0,
+        turret_accel: 2.5,
+        turret_brake: 10.0,
     };
 
     pub fn of(kind: HullKind) -> HullStats {
@@ -894,20 +899,23 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
 
 fn turret(t: &mut Tank, cmd: &Command, dt: f32) {
     let h = t.hull;
-    // Manual rotation relative to the hull, with a short spin-up.
+    // Manual rotation relative to the hull: a slow spin-up, a quicker stop.
     // Centering drives it back to 0 and stops exactly there.
     let manual = cmd.turret.clamp(-1.0, 1.0);
     let target_rate = if manual.abs() > 0.05 {
         manual * h.turret_speed
     } else if cmd.center_turret {
         // Full speed toward center until it's time to brake.
-        let stop_dist = t.turret_rate * t.turret_rate / (2.0 * h.turret_accel);
+        let stop_dist = t.turret_rate * t.turret_rate / (2.0 * h.turret_brake);
         let err = -t.turret_rel;
         if err.abs() <= stop_dist { 0.0 } else { err.signum() * h.turret_speed }
     } else {
         0.0
     };
-    t.turret_rate = approach(t.turret_rate, target_rate, h.turret_accel * dt);
+    // Speeding up in the current direction uses the motor; anything else is braking.
+    let spinning_up = target_rate * t.turret_rate >= 0.0 && target_rate.abs() > t.turret_rate.abs();
+    let rate = if spinning_up { h.turret_accel } else { h.turret_brake };
+    t.turret_rate = approach(t.turret_rate, target_rate, rate * dt);
     let before = t.turret_rel;
     t.turret_rel = wrap_angle(t.turret_rel + t.turret_rate * dt);
     if cmd.center_turret && manual.abs() <= 0.05 {
@@ -1075,7 +1083,7 @@ mod tests {
         run(&mut w, Command::default(), 1.0);
         run(&mut w, throttle(1.0), 0.5);
         let early = w.tanks[0].speed();
-        assert!(early > 5.0, "sluggish start: {early} m/s after 0.5 s");
+        assert!(early > 0.33 * HullStats::LANCER.max_speed, "sluggish start: {early} m/s after 0.5 s");
         assert!(w.tanks[0].up().y > 0.98, "wheelie: {:?}", w.tanks[0].up());
         run(&mut w, throttle(1.0), 2.5);
         let s = w.tanks[0].speed();
@@ -1110,7 +1118,7 @@ mod tests {
             turned += wrap_angle(y - last);
             last = y;
         }
-        assert!(turned > PI, "only turned {:.0} degrees in 1.6 s", turned.to_degrees());
+        assert!(turned > 0.8 * PI, "only turned {:.0} degrees in 1.6 s", turned.to_degrees());
         let drift = Vec2::new(w.tanks[0].pos.x - p0.x, w.tanks[0].pos.z - p0.z).length();
         assert!(drift < 0.6, "pivot wandered {drift} m");
     }
@@ -1174,7 +1182,7 @@ mod tests {
     fn every_kicker_lane_is_clearable_at_full_speed() {
         for lane in 0..3 {
             let mut w = World::new(Map::proving_ground(), lane);
-            run(&mut w, throttle(1.0), 6.0);
+            run(&mut w, throttle(1.0), 7.0);
             let t = &w.tanks[0];
             assert!(t.pos.z > 80.0, "lane {lane}: stopped at z={} (crashed into the landing ramp?)", t.pos.z);
             assert!(t.up().y > 0.95, "lane {lane}: not upright");
@@ -1254,10 +1262,26 @@ mod tests {
         assert!(t.up().y > 0.8, "tipped over");
     }
 
+    /// The turret winds up over about half a second but stops within a few degrees of release.
+    #[test]
+    fn turret_spins_up_slowly_and_stops_quickly() {
+        let mut w = flat_world();
+        let h = HullStats::LANCER;
+        run(&mut w, Command { turret: 1.0, ..Default::default() }, 0.2);
+        let rate = w.tanks[0].turret_rate;
+        assert!(rate > 0.1 && rate < 0.6 * h.turret_speed, "after 0.2 s already at {rate} rad/s");
+        run(&mut w, Command { turret: 1.0, ..Default::default() }, 0.6);
+        assert!((w.tanks[0].turret_rate - h.turret_speed).abs() < 1e-3, "not at full speed after 0.8 s");
+        let released = w.tanks[0].turret_rel;
+        run(&mut w, Command::default(), 0.5);
+        let coast = (w.tanks[0].turret_rel - released).abs();
+        assert!(w.tanks[0].turret_rate == 0.0 && coast < 10f32.to_radians(), "coasted {:.1} deg after release", coast.to_degrees());
+    }
+
     #[test]
     fn turret_turns_with_hull_and_centers() {
         let mut w = flat_world();
-        run(&mut w, Command { turret: 1.0, ..Default::default() }, 0.5);
+        run(&mut w, Command { turret: 1.0, ..Default::default() }, 1.0);
         assert!(w.tanks[0].turret_rel > 0.5);
         run(&mut w, Command::default(), 0.25);
         let rel = w.tanks[0].turret_rel;
@@ -1322,7 +1346,7 @@ mod tests {
             w.tanks[0].pos.distance(p0)
         };
         let slide = distance(Vec3::new(6.0, 0.0, 0.0), 0.0);
-        assert!(coast > 15.0, "coasting from 6 m/s only rolled {coast} m");
+        assert!(coast > 12.0, "coasting from 6 m/s only rolled {coast} m");
         assert!(slide < 3.0, "sliding sideways from 6 m/s went {slide} m");
     }
 
