@@ -499,16 +499,14 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
-            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h);
+            frame.ui = garage.overlay(ui, &driven, args.loadout, &profile, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame.ui.extend(menu::Pause::new().draw(
-                    &profile,
-                    game.factions[0],
-                    game.trust,
-                    w,
-                    h,
-                ));
+                frame.ui.extend(
+                    menu::Pause::new()
+                        .draw(&profile, game.factions[0], game.trust, w, h)
+                        .verts,
+                );
             }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));
@@ -586,7 +584,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let tanks = game.display_tanks(1.0);
     let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
-    frame.ui = menu.draw(&profile, h, 1.0);
+    frame.ui = menu.draw(&profile, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));
     }

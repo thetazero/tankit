@@ -28,12 +28,21 @@ use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::{Command, HullStats};
 use crate::tank::TankArt;
+use crate::ui::Hits;
 use crate::{MapKind, ShowroomArgs, make_map, showroom};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
 /// Main menu camera drift around the parked tank, rad/s.
 const MENU_ORBIT: f32 = 0.06;
+
+/// Something clickable on screen, by the component that drew it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum UiHit {
+    Menu(menu::Hit),
+    Pause(menu::Hit),
+    Garage(garage::Hit),
+}
 
 /// What the window is showing.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -95,8 +104,10 @@ struct App {
     player_alive: bool,
     clock: Clock,
     keys: HashSet<KeyCode>,
-    /// Mouse pointer in window pixels, once it has moved over the window.
+    /// Mouse pointer in window pixels, while it's over the window.
     pointer: Option<glam::Vec2>,
+    /// What can be clicked, as of the last frame drawn.
+    hits: Hits<UiHit>,
     /// Live tuning (player tank): sideways grip multiplier and turn-rate offset.
     tune_grip: f32,
     tune_turn: f32,
@@ -177,6 +188,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         clock: Clock::default(),
         keys: HashSet::new(),
         pointer: None,
+        hits: Hits::new(),
         tune_grip: 1.0,
         tune_turn: 0.0,
         last: Instant::now(),
@@ -277,7 +289,7 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let at = glam::Vec2::new(position.x as f32, position.y as f32);
                 self.pointer = Some(at);
-                self.on_pointer_move(at);
+                self.on_hover(at);
             }
             WindowEvent::CursorLeft { .. } => self.pointer = None,
             WindowEvent::MouseInput {
@@ -454,11 +466,7 @@ impl App {
                 KeyCode::KeyE => garage::Input::Act,
                 _ => return,
             };
-            self.audio.ui(match input {
-                garage::Input::Deploy | garage::Input::Act => audio::Ui::Select,
-                garage::Input::Revert => audio::Ui::Back,
-                _ => audio::Ui::Move,
-            });
+            self.garage_sound(input);
             if let Some(event) = self.garage.input(input, self.queued(), &self.profile) {
                 self.garage_event(event);
             }
@@ -541,71 +549,12 @@ impl App {
         }
     }
 
-    /// Window size in logical menu px, if there's a window yet.
-    fn logical_size(&self) -> Option<glam::Vec2> {
-        let r = self.renderer.as_ref()?;
-        let (w, h) = (r.width as f32, r.height as f32);
-        Some(menu::logical(glam::Vec2::new(w, h), h))
-    }
-
-    /// The pointer in logical menu px.
-    fn pointer_logical(&self, px: glam::Vec2) -> Option<glam::Vec2> {
-        let r = self.renderer.as_ref()?;
-        Some(menu::logical(px, r.height as f32))
-    }
-
-    /// Hovering a menu row selects it, as W/S would.
-    fn on_pointer_move(&mut self, px: glam::Vec2) {
-        if self.garage.is_open() {
-            return;
-        }
-        let (Some(at), Some(size)) = (self.pointer_logical(px), self.logical_size()) else {
-            return;
-        };
-        let moved = match self.mode {
-            Mode::Menu => self.menu.hover(at),
-            Mode::Paused => self.pause.hover(at, size.x),
-            Mode::Playing => false,
-        };
-        if moved {
-            self.audio.ui(audio::Ui::Move);
-        }
-    }
-
-    /// Left click picks the row under the pointer; right click goes back, like Esc.
-    fn on_click(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
-        if self.garage.is_open() || self.mode == Mode::Playing {
-            return;
-        }
-        match button {
-            MouseButton::Right | MouseButton::Back => self.on_key(KeyCode::Escape, event_loop),
-            MouseButton::Left => {
-                let (Some(at), Some(size)) = (
-                    self.pointer.and_then(|p| self.pointer_logical(p)),
-                    self.logical_size(),
-                ) else {
-                    return;
-                };
-                match self.mode {
-                    Mode::Menu => {
-                        if let Some((nav, action)) = self.menu.click(at, &self.profile.settings) {
-                            self.nav_sound(nav);
-                            self.menu_action(action, event_loop);
-                        }
-                    }
-                    Mode::Paused => {
-                        if let Some((nav, action)) =
-                            self.pause.click(at, size.x, &self.profile.settings)
-                        {
-                            self.nav_sound(nav);
-                            self.pause_action(action, event_loop);
-                        }
-                    }
-                    Mode::Playing => {}
-                }
-            }
-            _ => {}
-        }
+    fn garage_sound(&mut self, input: garage::Input) {
+        self.audio.ui(match input {
+            garage::Input::Deploy | garage::Input::Act => audio::Ui::Select,
+            garage::Input::Revert => audio::Ui::Back,
+            _ => audio::Ui::Move,
+        });
     }
 
     fn menu_action(&mut self, action: Option<menu::Action>, event_loop: &ActiveEventLoop) {
@@ -629,6 +578,64 @@ impl App {
             Some(PauseAction::ExitToMenu) => self.back_to_menu(),
             Some(PauseAction::Quit) => event_loop.exit(),
             None => {}
+        }
+    }
+
+    /// The pointer moved: whatever it's over takes the selection, as W/S would.
+    fn on_hover(&mut self, at: glam::Vec2) {
+        let Some((hit, _)) = self.hits.at(at) else {
+            return;
+        };
+        let moved = match hit {
+            UiHit::Menu(h) => self.menu.hover(h),
+            UiHit::Pause(h) => self.pause.hover(h),
+            // Garage rows equip what they select, so only a click picks there.
+            UiHit::Garage(_) => false,
+        };
+        if moved {
+            self.audio.ui(audio::Ui::Move);
+        }
+    }
+
+    /// Left click: whatever's under the pointer, as if its key were pressed.
+    /// Right click: back, like Esc (but never pauses the battle).
+    fn on_click(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        match button {
+            MouseButton::Left => {}
+            MouseButton::Right | MouseButton::Back => {
+                if self.garage.is_open() || self.mode != Mode::Playing {
+                    self.on_key(KeyCode::Escape, event_loop);
+                    self.hits.clear();
+                }
+                return;
+            }
+            _ => return,
+        }
+        let Some((hit, at)) = self.pointer.and_then(|p| self.hits.at(p)) else {
+            return;
+        };
+        // The click may change the screen; nothing is clickable until it's drawn again.
+        self.hits.clear();
+        match hit {
+            UiHit::Menu(h) => {
+                let (nav, action) = self.menu.click(h, at, &self.profile.settings);
+                self.nav_sound(nav);
+                self.menu_action(action, event_loop);
+            }
+            UiHit::Pause(h) => {
+                let (nav, action) = self.pause.click(h, at, &self.profile.settings);
+                self.nav_sound(nav);
+                self.pause_action(action, event_loop);
+            }
+            UiHit::Garage(h) => {
+                self.garage_sound(match h {
+                    garage::Hit::Key(input) => input,
+                    garage::Hit::Part(_) => garage::Input::Down,
+                });
+                if let Some(event) = self.garage.click(h, self.queued(), &self.profile) {
+                    self.garage_event(event);
+                }
+            }
         }
     }
 
@@ -779,35 +786,48 @@ impl App {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
             } else {
-                scene.ui = match self.mode {
+                let (ui, hits) = match self.mode {
                     Mode::Menu => {
-                        let mut ui = self
+                        let menu = self
                             .menu
                             .draw(&self.profile, h, 1.0 - self.garage.presence());
-                        ui.extend(self.garage.draw(&driven, queued, &self.profile, h));
-                        ui
+                        let garage = self.garage.draw(&driven, queued, &self.profile, h);
+                        let mut ui = menu.verts;
+                        ui.extend(garage.verts);
+                        // The garage covers the menu panel while it's open.
+                        let mut hits = if self.garage.is_open() {
+                            Hits::new()
+                        } else {
+                            menu.hits.map(UiHit::Menu)
+                        };
+                        hits.extend(garage.hits.map(UiHit::Garage));
+                        (ui, hits)
                     }
                     Mode::Playing => {
                         let hud = self
                             .hud
                             .draw(&self.game, &tanks, self.seed, &camera, w, h, dt, scores);
-                        self.garage.overlay(hud, &driven, queued, &self.profile, h)
+                        let layer = self.garage.overlay(hud, &driven, queued, &self.profile, h);
+                        (layer.verts, layer.hits.map(UiHit::Garage))
                     }
                     Mode::Paused => {
                         let mut ui = menu::dim(
                             self.hud
                                 .draw(&self.game, &tanks, self.seed, &camera, w, h, 0.0, false),
                         );
-                        ui.extend(self.pause.draw(
+                        let pause = self.pause.draw(
                             &self.profile,
                             self.game.factions[0],
                             self.game.trust,
                             w,
                             h,
-                        ));
-                        ui
+                        );
+                        ui.extend(pause.verts);
+                        (ui, pause.hits.map(UiHit::Pause))
                     }
                 };
+                scene.ui = ui;
+                self.hits = hits;
             }
             if self.profile.settings.debug {
                 scene.ui.extend(hud::fps_counter(self.fps, w, h));
