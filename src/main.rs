@@ -1,4 +1,6 @@
+mod ai;
 mod app;
+mod combat;
 mod game;
 mod hud;
 mod map;
@@ -20,6 +22,7 @@ tankit [OPTIONS]
   --seed <n>              map seed (default: random)
   --map <city|proving>    city (default) or the physics test course
   --spawn <n>             which spawn point to start at
+  --bots <n>              bot opponents (default 5 on city maps, 0 on the proving ground; max 7)
   --shot <out.png>        render offscreen and save
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
@@ -36,6 +39,7 @@ pub struct Args {
     pub seed: u64,
     pub proving: bool,
     pub spawn: usize,
+    pub bots: usize,
     straight: bool,
     shot: Option<ShotArgs>,
     showroom: Option<ShowroomArgs>,
@@ -74,7 +78,7 @@ fn main() -> Result<()> {
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
         (Some(shot), None) => screenshot(&args, shot),
-        (None, room) => app::run(args.seed, args.proving, args.spawn, room),
+        (None, room) => app::run(args.seed, args.proving, args.spawn, args.bots, room),
     }
 }
 
@@ -87,6 +91,7 @@ fn parse_args() -> Result<Args> {
     let (mut frames, mut fps) = (1u32, 30.0f32);
     let (mut proving, mut spawn, mut straight) = (false, 0usize, false);
     let mut showroom = false;
+    let mut bots: Option<usize> = None;
     let mut room = ShowroomArgs { orbit: None, dist: 24.0, focus: None };
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -98,6 +103,7 @@ fn parse_args() -> Result<Args> {
                 other => bail!("--map expects city or proving, got {other:?}"),
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
+            "--bots" => bots = Some(args.next().context("--bots needs a number")?.parse()?),
             "--straight" => straight = true,
             "--time" => time = args.next().context("--time needs seconds")?.parse()?,
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
@@ -122,6 +128,7 @@ fn parse_args() -> Result<Args> {
         seed,
         proving,
         spawn,
+        bots: bots.unwrap_or(if proving { 0 } else { 5 }),
         straight,
         shot: shot.map(|out| ShotArgs { out, time, width, height, frames, fps }),
         showroom: showroom.then_some(room),
@@ -137,10 +144,10 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 }
 
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
-    let mut world = sim::World::new(args.map(), args.spawn);
+    let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
     let mut cam = scene::ChaseCam::new();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
-    renderer.set_static_mesh(&scene::map_mesh(&world.map));
+    renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
     let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
@@ -148,27 +155,33 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     };
 
     // Simulate `seconds` more, keeping the camera in step; returns the latest camera.
-    let advance = |world: &mut sim::World, cam: &mut scene::ChaseCam, seconds: f32| {
-        let mut camera = cam.update(world, &world.tanks[0], game::DT);
+    // The autopilot holds the trigger so shots show combat.
+    let advance = |m: &mut combat::Match, cam: &mut scene::ChaseCam, seconds: f32| {
+        let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         for _ in 0..(seconds / game::DT).round() as u32 {
-            let cmd = command(world);
-            world.step(&[cmd]);
-            camera = cam.update(world, &world.tanks[0], game::DT);
+            let cmd = command(&m.world);
+            m.step(cmd, !args.straight);
+            camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         }
         camera
     };
-    let mut camera = advance(&mut world, &mut cam, shot.time);
+    let mut camera = advance(&mut game, &mut cam, shot.time);
 
     for i in 0..shot.frames {
         if i > 0 {
-            camera = advance(&mut world, &mut cam, 1.0 / shot.fps);
+            camera = advance(&mut game, &mut cam, 1.0 / shot.fps);
         }
-        let mut frame = scene::build(&world, &world.tanks, &art, camera);
-        frame.ui = hud.draw(&world.tanks[0], args.seed, &camera, shot.width as f32, shot.height as f32, game::DT);
+        let tanks = game.display_tanks(1.0);
+        let mut frame = scene::build(&game.world, &tanks, &art, camera);
+        game.effect_instances(1.0, &mut frame.instances);
+        frame.ui = hud.draw(&game, &tanks, args.seed, &camera, shot.width as f32, shot.height as f32, game::DT, false);
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
+    let world = &game.world;
     let t = &world.tanks[0];
+    let board: Vec<String> = game.standings().iter().map(|&i| format!("{} {}/{}", game.fighters[i].name, game.fighters[i].kills, game.fighters[i].deaths)).collect();
+    println!("score (kills/deaths): {}", board.join(", "));
     println!(
         "wrote {} frame(s) to {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {} face contacts {}",
         shot.frames, shot.out, shot.width, shot.height, world.time, t.pos, t.up(), t.wheels_down, t.face_contacts

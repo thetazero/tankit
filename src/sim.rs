@@ -319,6 +319,16 @@ impl Tank {
         self.rot * (Quat::from_rotation_y(self.turret_rel) * Vec3::Z)
     }
 
+    /// Where the gun points in the world, including elevation.
+    pub fn gun_dir(&self) -> Vec3 {
+        self.rot * (Quat::from_rotation_y(self.turret_rel) * Quat::from_rotation_x(-self.gun_pitch) * Vec3::Z)
+    }
+
+    /// Height of the gun's pivot above the hull origin.
+    pub fn gun_height(&self) -> f32 {
+        self.chassis.hull_top + 0.4
+    }
+
     /// Turret heading on the ground plane.
     pub fn turret_yaw(&self) -> f32 {
         let d = self.turret_dir();
@@ -453,6 +463,41 @@ impl World {
         let muzzle_height = t.rot * Vec3::Y * (t.chassis.hull_top + 0.4);
         let at = b.translation() + muzzle_height;
         b.apply_impulse_at_point(-t.turret_dir() * t.turret_kind.recoil() * t.chassis.mass, at, true);
+    }
+
+    /// Put tank `i` down at `at` facing `yaw`, at rest, turret forward (respawns).
+    pub fn teleport(&mut self, i: usize, at: Vec2, yaw: f32) {
+        let y = self.map.ground_height(at.x, at.y) + 0.15;
+        let t = &mut self.tanks[i];
+        let b = &mut self.physics.bodies[t.body];
+        b.set_position(Pose::from_parts(Vec3::new(at.x, y, at.y), Quat::from_rotation_y(yaw)), true);
+        b.set_linvel(Vec3::ZERO, true);
+        b.set_angvel(Vec3::ZERO, true);
+        t.turret_rel = 0.0;
+        t.turret_rate = 0.0;
+        t.gun_pitch = 0.0;
+        t.belt = [0.0; 2];
+        t.parked = true;
+        t.flipped_time = 0.0;
+        sync_from_body(t, &self.physics);
+        t.snapshot();
+    }
+
+    /// Shove tank `i` with an impulse (N·s) at a world point (shell hits, blasts).
+    pub fn push(&mut self, i: usize, impulse: Vec3, at: Vec3) {
+        let b = &mut self.physics.bodies[self.tanks[i].body];
+        b.apply_impulse_at_point(impulse, at, true);
+    }
+
+    /// Spin tank `i` (angular impulse, N·m·s): wrecks tumbling after a kill.
+    pub fn spin(&mut self, i: usize, torque: Vec3) {
+        let b = &mut self.physics.bodies[self.tanks[i].body];
+        b.apply_torque_impulse(torque, true);
+    }
+
+    /// Which tank owns a collider, if any.
+    pub fn tank_of(&self, c: ColliderHandle) -> Option<usize> {
+        self.tanks.iter().position(|t| t.collider == c)
     }
 
     pub fn step(&mut self, cmds: &[Command]) {
@@ -768,6 +813,7 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     } else if t.parked {
         // The parking brake holds the belts until the driver touches the controls.
         t.belt = [0.0; 2];
+        t.parked = true;
     } else {
         // Coasting: only rolling resistance and engine drag slow the belts.
         let step = dv(mass * h.rolling * 0.5);
