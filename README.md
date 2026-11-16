@@ -3,7 +3,7 @@
 Single-player arcade tank arena shooter: fast tanks, hand-built and
 procedural maps, bots, and a faction trust + crystals progression loop.
 
-Setting: [docs/setting.md](docs/setting.md). Look: [docs/design-direction.md](docs/design-direction.md).
+Setting: [docs/setting.md](docs/setting.md).
 
 Plain Rust: `winit` + `wgpu`, no engine.
 
