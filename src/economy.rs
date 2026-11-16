@@ -14,11 +14,15 @@ pub enum Part {
     Turret(TurretKind),
 }
 
-pub const PARTS: [Part; 4] = [
+pub const PARTS: [Part; 8] = [
     Part::Hull(HullKind::Lancer),
     Part::Hull(HullKind::Bastion),
     Part::Turret(TurretKind::Lance),
     Part::Turret(TurretKind::Maul),
+    Part::Turret(TurretKind::Wisp),
+    Part::Turret(TurretKind::Triad),
+    Part::Turret(TurretKind::Lumen),
+    Part::Turret(TurretKind::Hymn),
 ];
 
 impl Part {
@@ -51,6 +55,22 @@ impl Part {
             Part::Hull(HullKind::Bastion) => Some(Price {
                 rank: 3,
                 crystals: 900,
+            }),
+            Part::Turret(TurretKind::Hymn) => Some(Price {
+                rank: 2,
+                crystals: 600,
+            }),
+            Part::Turret(TurretKind::Triad) => Some(Price {
+                rank: 3,
+                crystals: 750,
+            }),
+            Part::Turret(TurretKind::Wisp) => Some(Price {
+                rank: 4,
+                crystals: 900,
+            }),
+            Part::Turret(TurretKind::Lumen) => Some(Price {
+                rank: 4,
+                crystals: 1000,
             }),
         }
     }
@@ -100,6 +120,7 @@ impl Levels {
         Gun {
             damage: g.damage * (1.0 + DAMAGE_PER_LEVEL * l),
             reload: g.reload * (1.0 - RELOAD_PER_LEVEL * l),
+            ..g
         }
     }
 }

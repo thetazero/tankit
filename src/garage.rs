@@ -30,7 +30,7 @@ const ORBIT_DRIFT: f32 = 0.12;
 pub type Loadout = (HullKind, TurretKind);
 
 pub const HULLS: [HullKind; 2] = [HullKind::Lancer, HullKind::Bastion];
-pub const TURRETS: [TurretKind; 2] = [TurretKind::Lance, TurretKind::Maul];
+pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
@@ -43,6 +43,10 @@ pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
         TurretKind::Lance => "LANCE",
         TurretKind::Maul => "MAUL",
+        TurretKind::Wisp => "WISP",
+        TurretKind::Triad => "TRIAD",
+        TurretKind::Lumen => "LUMEN",
+        TurretKind::Hymn => "HYMN",
     }
 }
 
@@ -110,25 +114,23 @@ const HULL_STATS: [Stat; 6] = [
 
 const TURRET_STATS: [Stat; 3] = [
     Stat {
-        name: "DAMAGE",
-        unit: "HP",
-        decimals: 0,
-        get: |p, l| l.gun(turret_of(p)).damage,
-    },
-    Stat {
-        name: "FIRE RATE",
-        unit: "/MIN",
-        decimals: 0,
-        get: |p, l| 60.0 / l.gun(turret_of(p)).reload,
-    },
-    Stat {
         name: "DPS",
         unit: "HP/S",
         decimals: 0,
-        get: |p, l| {
-            let g = l.gun(turret_of(p));
-            g.damage / g.reload
-        },
+        get: |p, l| l.gun(turret_of(p)).dps(),
+    },
+    Stat {
+        name: "PER HIT",
+        unit: "HP",
+        decimals: 0,
+        // A beam has no single hit: show what one second of contact does.
+        get: |p, l| l.gun(turret_of(p)).damage,
+    },
+    Stat {
+        name: "RANGE",
+        unit: "M",
+        decimals: 0,
+        get: |p, l| l.gun(turret_of(p)).range(),
     },
 ];
 
@@ -495,12 +497,22 @@ impl Garage {
                     theme::FAINT
                 };
                 let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
-                // Upgrade level after the name; price or lock on the right.
-                if owned {
+                // Upgrade level and the turret's maker after the name; price or lock on the right.
+                let maker = match part {
+                    Part::Turret(k) => Some(k.maker().name()),
+                    Part::Hull(_) => None,
+                };
+                let note = match (owned, maker) {
+                    (true, Some(m)) => format!("M{}  {m}", levels.of(*part)),
+                    (true, None) => format!("M{}", levels.of(*part)),
+                    (false, Some(m)) => m.to_string(),
+                    (false, None) => String::new(),
+                };
+                if !note.is_empty() {
                     label(
                         &mut p,
                         Vec2::new(x + nw + 12.0, y + 4.0),
-                        &format!("M{}", levels.of(*part)),
+                        &note,
                         Align::Left,
                     );
                 }
@@ -721,7 +733,8 @@ mod tests {
         let l = (HullKind::Bastion, TurretKind::Lance);
         assert_eq!(g.input(Input::Down, start, &p), Some(Event::Queue(l)));
         assert_eq!(g.input(Input::Right, l, &p), None);
-        let l2 = (HullKind::Bastion, TurretKind::Maul);
+        // The list wraps: up from the first turret is the last one.
+        let l2 = (HullKind::Bastion, *TURRETS.last().unwrap());
         assert_eq!(g.input(Input::Up, l, &p), Some(Event::Queue(l2)));
         assert_eq!(g.input(Input::Revert, l2, &p), Some(Event::Queue(start)));
         assert!(!g.is_open());
