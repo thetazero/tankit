@@ -9,6 +9,7 @@ use crate::rng::Rng;
 
 mod ruins;
 mod saltmarket;
+mod shard_flats;
 
 /// Size of one city-grid cell in meters.
 pub const CELL: f32 = 4.0;

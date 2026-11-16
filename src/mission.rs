@@ -45,13 +45,13 @@ pub const MISSIONS: &[Mission] = &[
         brief: "PAID PER KILL UNTIL THE CLOCK RUNS OUT",
     },
     Mission {
-        name: "MARKET HALL",
+        name: "CRYSTAL VEIN",
         contract: Contract::Hold,
-        map: "SALTMARKET",
-        map_kind: MapKind::Saltmarket,
+        map: "SHARD FLATS",
+        map_kind: MapKind::ShardFlats,
         seed: 0,
         bots: 5,
-        brief: "PAID WHILE YOU HOLD THE HALL ALONE",
+        brief: "SECURE THE DEPOSIT · PAID WHILE IT'S YOURS ALONE",
     },
 ];
 

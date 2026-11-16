@@ -238,13 +238,15 @@ mod tests {
     }
 
     #[test]
-    fn saltmarket_site_is_the_market_hall_and_reachable() {
-        let m = Map::saltmarket();
+    fn shard_flats_site_is_the_deposit_with_room_to_drive_in_the_ring() {
+        let m = Map::shard_flats();
         let h = Hold::new(&m, 1);
         assert_eq!(Some(h.at), m.hold_site);
         let nav = crate::ai::NavGrid::build(&m);
-        assert!(!nav.is_blocked(h.at), "hold site center is blocked");
-        let from = m.open_spots[0];
-        assert!(!nav.path(from, h.at).is_empty(), "no path to the hold site");
+        // The shards fill the middle; most of the ring around them is open.
+        let open = (0..32)
+            .filter(|&i| !nav.is_blocked(h.at + ring_dir(i as f32 / 32.0) * RADIUS * 0.7))
+            .count();
+        assert!(open >= 24, "only {open}/32 points in the ring are drivable");
     }
 }

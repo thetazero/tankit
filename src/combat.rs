@@ -978,7 +978,7 @@ mod tests {
     /// Under Hold, bots go for the site and someone gets time on it.
     #[test]
     fn bots_go_for_the_hold_site() {
-        let mut m = Match::new(Map::saltmarket(), 0, 4, 5);
+        let mut m = Match::new(Map::shard_flats(), 0, 4, 5);
         m.set_contract(Contract::Hold);
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;

@@ -28,8 +28,9 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --bots --contract --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket>
-                          city (default), the physics test course, or Saltmarket (desert town)
+  --map <city|proving|saltmarket|shards>
+                          city (default), the physics test course, Saltmarket (desert town),
+                          or Shard Flats (crystal deposit, the Hold map)
   --spawn <n>             which spawn point to start at
   --bots <n>              bot opponents (default 5, 0 on the proving ground; max 7)
   --contract <attrition|hold>
@@ -99,6 +100,8 @@ pub enum MapKind {
     Proving,
     /// Hand-built desert town on a dry reservoir.
     Saltmarket,
+    /// Placeholder: open flats around a crystal deposit (the Hold map).
+    ShardFlats,
 }
 
 pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
@@ -106,6 +109,7 @@ pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
         MapKind::City => map::Map::generate(seed),
         MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
+        MapKind::ShardFlats => map::Map::shard_flats(),
     }
 }
 
@@ -198,7 +202,8 @@ fn parse_args() -> Result<Args> {
                 Some("city") => map_kind = MapKind::City,
                 Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
-                other => bail!("--map expects city, proving or saltmarket, got {other:?}"),
+                Some("shards") => map_kind = MapKind::ShardFlats,
+                other => bail!("--map expects city, proving, saltmarket or shards, got {other:?}"),
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,
             "--bots" => bots = Some(args.next().context("--bots needs a number")?.parse()?),

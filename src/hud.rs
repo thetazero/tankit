@@ -274,7 +274,7 @@ impl Hud {
         {
             hold_meter(&mut p, m, hd, top + Vec2::new(0.0, 62.0));
             // The site's tag, unless you're on it.
-            // Above the market hall's roof, clear of the repair pad's tag.
+            // High over the site, clear of the deposit and nearby tags.
             let anchor = Vec3::new(hd.at.x, hd.ground + 15.0, hd.at.y);
             if !hd.inside(tank.pos)
                 && let Some((x, y)) = project(vp, anchor, width, height)
