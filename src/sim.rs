@@ -339,6 +339,17 @@ const HOVER_BELLY_GAP: f32 = 0.42;
 /// Beyond full extension the cushion still steers and thrusts, fading out
 /// over this much more height (cresting a dune doesn't cut the drive).
 const HOVER_REACH: f32 = 0.9;
+/// Ground slope (radians) the cushion holds on fully, and the slope past
+/// which it gets no footing at all.
+const HOVER_FIRM: f32 = 40.0 * PI / 180.0;
+const HOVER_STEEP: f32 = 55.0 * PI / 180.0;
+/// Hover attitude hold (see `hover`): stiffness and damping per radian of
+/// tilt, the cap on the angular acceleration it gives, and how much of it
+/// still works with the whole cushion on the ground.
+const HOVER_LEVEL_K: f32 = 40.0;
+const HOVER_LEVEL_DAMP: f32 = 10.0;
+const HOVER_LEVEL_MAX: f32 = 30.0;
+const HOVER_LEVEL_ON_CUSHION: f32 = 0.25;
 /// Seconds upside down (and slow) before the tank rights itself.
 const FLIP_RECOVER_TIME: f32 = 2.5;
 
@@ -894,6 +905,14 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
         let hy = (o.y1 - o.y0) * 0.5;
         // Ramps (collapsed slabs) grip like ground; walls are slick-ish.
         let friction = if o.is_ramp() { ground_friction } else { 0.4 };
+        // A rock is drawn as a lump inside its box: collide with the lump.
+        if let Some(b) = o
+            .rock_points()
+            .and_then(|p| ColliderBuilder::convex_hull(&p))
+        {
+            physics.insert_collider(b.friction(friction), None);
+            continue;
+        }
         physics.insert_collider(
             ColliderBuilder::cuboid(o.half.x, hy, o.half.y)
                 .translation(o.center3())
@@ -1279,7 +1298,9 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
 
     let mut hits: Vec<Option<(Vec3, Vec3, f32)>> = vec![None; n];
     {
-        let filter = QueryFilter::default().exclude_rigid_body(t.body);
+        // The cushion pushes off the ground, not off other tanks: riding up
+        // onto a hull it ran into launched it end over end.
+        let filter = QueryFilter::only_fixed();
         let qp = physics.query_pipeline_with_filter(filter);
         for (i, hit) in hits.iter_mut().enumerate() {
             let origin = pose.transform_point(c.mount(i));
@@ -1309,7 +1330,12 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
         };
         t.wheel_lift[i] = c.rest_len() - toi;
         let compression = c.free_len() - toi;
-        let w = (1.0 - (toi - c.free_len()).max(0.0) / HOVER_REACH).clamp(0.0, 1.0);
+        // A face too steep to drive up gives the emitter nothing to stand
+        // on: otherwise the cushion holds the hull against gravity on it
+        // and thrusts up it, and the hull climbs a crystal and rolls off.
+        let footing =
+            ((nrm.y - HOVER_STEEP.cos()) / (HOVER_FIRM.cos() - HOVER_STEEP.cos())).clamp(0.0, 1.0);
+        let w = (1.0 - (toi - c.free_len()).max(0.0) / HOVER_REACH).clamp(0.0, 1.0) * footing;
         grip += w / n as f32;
         ground_n += nrm * w;
         if compression > 0.0 {
@@ -1317,7 +1343,7 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
             // Past the belly gap the hull is about to scrape: stiffen hard.
             let over = (compression - HOVER_SAG - HOVER_BELLY_GAP * 0.8).max(0.0);
             let v_along = b.velocity_at_point(origin).dot(up);
-            let force = (k * compression + k * 6.0 * over - damp * v_along).max(0.0);
+            let force = (k * compression + k * 6.0 * over - damp * v_along).max(0.0) * footing;
             b.apply_impulse_at_point(up * force * DT, origin, true);
         }
     }
@@ -1374,6 +1400,22 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     let dw = (want - w).clamp(-h.steer_accel * DT, h.steer_accel * DT) * grip;
     let inertia = c.inertia().y;
     b.apply_torque_impulse(up * inertia * dw, true);
+
+    // Attitude hold: the emitters gimbal to keep the hull level. On the
+    // cushion the springs do that; as it loses the ground (off a crest, up
+    // over a wreck or another tank's prow) the emitters swing to hold it, so
+    // it lands on its belly instead of going end over end. Capped, so a hit
+    // or a hard landing still knocks it about.
+    let target = (gn * grip + Vec3::Y * (1.0 - grip)).normalize_or(Vec3::Y);
+    let tilt = up.cross(target);
+    let wv = b.angvel();
+    let w_tip = wv - up * wv.dot(up);
+    let level = (1.0 - grip).max(HOVER_LEVEL_ON_CUSHION);
+    let alpha = (tilt * HOVER_LEVEL_K - w_tip * HOVER_LEVEL_DAMP) * level;
+    let alpha = alpha.clamp_length_max(HOVER_LEVEL_MAX);
+    let local = pose.rotation.inverse() * alpha;
+    let torque = pose.rotation * (local * c.inertia());
+    b.apply_torque_impulse(torque * DT, true);
 
     // Bank into the turn, more the faster it goes.
     let bank = (w * v_f * 0.014).clamp(-0.14, 0.14);
@@ -1858,6 +1900,59 @@ mod tests {
         }
     }
 
+    /// Saltmarket's edge is cliffs and stacked containers: a tank driving
+    /// flat out at any of them stops against them and doesn't get up onto
+    /// or past them (tracked or hovering). That it's them, not the hidden
+    /// boundary, that stops it is in valley.rs's tests.
+    #[test]
+    fn saltmarket_edge_stops_tanks() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let map = Map::saltmarket();
+        let size = map.size;
+        // The town square's corner in the map's frame.
+        let o = Vec2::splat(40.0);
+        // (start, heading): at the south, east and north cliffs (into bays,
+        // a gully, at headlands) and the west barricade.
+        let runs = [
+            (Vec2::new(60.0, 14.0), PI),
+            (Vec2::new(170.0, 12.0), PI),
+            (Vec2::new(225.0, 60.0), FRAC_PI_2),
+            (Vec2::new(225.0, 100.0), FRAC_PI_2),
+            (Vec2::new(225.0, 200.0), FRAC_PI_2),
+            (Vec2::new(40.0, 222.0), 0.0),
+            (Vec2::new(160.0, 226.0), 0.0),
+            (Vec2::new(78.0, 225.0), 0.0),
+            (Vec2::new(14.0, 150.0), -FRAC_PI_2),
+            (Vec2::new(14.0, 40.0), -FRAC_PI_2),
+        ];
+        for hull in [HullKind::Kataphrakt, HullKind::Sethuun] {
+            for (start, yaw) in runs {
+                let mut w = World::empty(map.clone());
+                w.spawn_tank(Vec3::ONE, start + o, yaw, hull, TurretKind::Kontos);
+                run(&mut w, Command::default(), 0.5);
+                let mut worst = f32::MIN;
+                for _ in 0..(10.0 / DT) as usize {
+                    w.step(&[throttle(1.0)]);
+                    let p = w.tanks[0].pos;
+                    let q = Vec2::new(p.x, p.z);
+                    assert!(
+                        q.cmpgt(Vec2::ZERO).all() && q.cmplt(Vec2::splat(size)).all(),
+                        "{hull:?} from {start} left the map at {q}"
+                    );
+                    worst = worst.max(Map::saltmarket_past_edge(q));
+                }
+                // The tank's middle never gets into the rock or behind the
+                // barricade. The face stands up to about 4 m back from the
+                // foot line in its recesses, and the rock (the plateau's rise)
+                // starts 4.5 m past it.
+                assert!(
+                    worst < 4.0,
+                    "{hull:?} from {start} got {worst} m past the edge"
+                );
+            }
+        }
+    }
+
     /// Something clearly wall-like (taller than the hull) still blocks.
     #[test]
     fn walls_still_block() {
@@ -2213,6 +2308,73 @@ mod hover_tests {
             w.tanks[0].pos.y < -0.4,
             "still floating at {}",
             w.tanks[0].pos.y
+        );
+    }
+}
+
+#[cfg(test)]
+mod rock_tests {
+    use super::*;
+    use crate::map::OBox;
+    use crate::render::material::Material;
+
+    /// A rock (heavily chipped rubble) is drawn as an irregular lump inside
+    /// its box. Shots and tanks must meet that lump: no invisible box
+    /// corners round it, and no driving into it.
+    #[test]
+    fn rocks_collide_along_the_shape_drawn() {
+        let mut map = Map::empty(100.0);
+        let rock = OBox {
+            center: Vec2::new(50.0, 50.0),
+            yaw: 0.4,
+            half: Vec2::new(5.0, 4.0),
+            y0: 0.0,
+            y1: 4.0,
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
+            chip: 0.9,
+            ..OBox::default()
+        };
+        let shadow = rock.shadow();
+        map.oboxes.push(rock);
+        let w = World::empty(map);
+        let c = Vec2::new(50.0, 50.0);
+        // The hull's distance from the center along a direction.
+        let edge = |d: Vec2| {
+            let mut t = 0.0;
+            while shadow.iter().enumerate().all(|(i, &a)| {
+                let b = shadow[(i + 1) % shadow.len()];
+                (b - a).perp_dot(c + d * t - a) >= 0.0
+            }) {
+                t += 0.01;
+            }
+            t
+        };
+        for k in 0..64 {
+            let a = k as f32 / 64.0 * TAU;
+            let d = Vec2::new(a.cos(), a.sin());
+            // Just above the ground, where the rock is widest: its foot.
+            let from = c + d * 20.0;
+            let hit = w.raycast(
+                Vec3::new(from.x, 0.01, from.y),
+                -Vec3::new(d.x, 0.0, d.y),
+                40.0,
+            );
+            let at = 20.0 - hit;
+            let want = edge(d);
+            assert!(
+                (at - want).abs() < 0.1,
+                "heading {a:.2}: hit {at:.2} m out, the rock's foot is {want:.2} m out"
+            );
+        }
+        // Box corners are well outside the rock: a shot past one flies on.
+        let corner = Vec2::new(4.8, 3.8);
+        let (s, co) = 0.4f32.sin_cos();
+        let corner = c + Vec2::new(co * corner.x + s * corner.y, -s * corner.x + co * corner.y);
+        let down = w.raycast(Vec3::new(corner.x, 10.0, corner.y), -Vec3::Y, 10.5);
+        assert!(
+            down > 9.95,
+            "a box corner of empty air stopped a ray at {down:.2} (ground is at 10)"
         );
     }
 }

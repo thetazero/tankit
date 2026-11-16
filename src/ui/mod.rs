@@ -9,6 +9,7 @@
 // Segments, pips and the combat colour are ready for hull and ammo, which the sim doesn't have yet.
 #![allow(dead_code)]
 
+pub mod emblem;
 pub mod font;
 pub mod widgets;
 

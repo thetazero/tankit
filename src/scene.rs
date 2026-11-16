@@ -4,7 +4,7 @@
 use crate::render::material::Material;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-use crate::map::{Map, Terrain, Wedge};
+use crate::map::{Hash, Map, Terrain, Wedge};
 use crate::render::mesh::{MeshData, Vertex};
 use crate::render::{Camera, Scene};
 use crate::sim::{Tank, TurretKind, World, apron_rects, dir2, wrap_angle};
@@ -75,7 +75,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
             b.color.extend(b.top_mat.id()),
         );
     }
-    for o in &map.oboxes {
+    for o in map.oboxes.iter().filter(|o| !o.hidden) {
         add_obox(o, &mut m);
     }
     for c in &map.crystals {
@@ -118,25 +118,6 @@ fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
     m.indices.extend(local.indices.iter().map(|i| i + base));
 }
 
-/// Cheap deterministic random stream for visual-only detail.
-struct Hash(u32);
-
-impl Hash {
-    fn of(p: Vec3) -> Hash {
-        let mut h = (p.x * 73.1).to_bits()
-            ^ (p.y * 19.7).to_bits().rotate_left(11)
-            ^ (p.z * 41.3).to_bits().rotate_left(22);
-        h ^= h >> 15;
-        Hash(h.wrapping_mul(0x2c1b_3c6d) | 1)
-    }
-    fn f(&mut self) -> f32 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 17;
-        self.0 ^= self.0 << 5;
-        (self.0 >> 8) as f32 / 16_777_216.0
-    }
-}
-
 /// A box that's been knocked about (box-local coordinates, centered): chips
 /// bitten out of its vertical edges (some chamfered, some notched), corners of
 /// the top knocked down, and if `broken`, a jagged top that steps and slopes
@@ -151,37 +132,23 @@ fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
     let raw = (o.color * Vec3::new(0.78, 0.72, 0.66)).extend(Material::Rubble.id());
     let chip = o.chip.min(0.45 * hx.min(hz)).max(0.0);
 
-    // Footprint ring, counter-clockwise, with per-point top drop and whether
-    // the side face after this point is a chip face.
     // Rocks (heavily chipped rubble): an irregular outline, tapering to a
-    // lumpy top, instead of a chipped rectangle.
-    if o.chip >= 0.6 && o.side_mat == Material::Rubble {
-        let n = 7 + (rng.f() * 3.0) as usize;
-        let phase = rng.f() * 6.28;
-        let ring: Vec<(Vec2, f32)> = (0..n)
-            .map(|k| {
-                let a = k as f32 / n as f32 * std::f32::consts::TAU + phase + (rng.f() - 0.5) * 0.4;
-                let rad = 0.75 + 0.25 * rng.f();
-                (Vec2::new(a.cos() * hx, a.sin() * hz) * rad, rng.f())
-            })
-            .collect();
-        let taper = 0.55 + 0.2 * rng.f();
-        let bot = |p: Vec2| Vec3::new(p.x, -hy, p.y);
-        let top = |p: Vec2, d: f32| Vec3::new(p.x * taper, hy - d * hy * 0.5, p.y * taper);
-        let peak = Vec3::new((rng.f() - 0.5) * hx * 0.3, hy, (rng.f() - 0.5) * hz * 0.3);
+    // lumpy top, instead of a chipped rectangle. The collider is the same shape.
+    if let Some(rock) = o.rock() {
+        let n = rock.ring.len();
         for i in 0..n {
-            let (a, da) = ring[i];
-            let (b, db) = ring[(i + 1) % n];
-            m.facet([bot(a), bot(b), top(b, db)], Vec3::ZERO, face);
-            m.facet([bot(a), top(b, db), top(a, da)], Vec3::ZERO, face);
-            m.facet(
-                [peak, top(a, da), top(b, db)],
-                Vec3::new(0.0, -hy, 0.0),
-                top_c,
-            );
+            let (a, da) = rock.ring[i];
+            let (b, db) = rock.ring[(i + 1) % n];
+            let (ba, bb) = (rock.bottom(a), rock.bottom(b));
+            let (ta, tb) = (rock.top(a, da), rock.top(b, db));
+            m.facet([ba, bb, tb], Vec3::ZERO, face);
+            m.facet([ba, tb, ta], Vec3::ZERO, face);
+            m.facet([rock.peak, ta, tb], Vec3::new(0.0, -rock.hy, 0.0), top_c);
         }
         return;
     }
+    // Footprint ring, counter-clockwise, with per-point top drop and whether
+    // the side face after this point is a chip face.
     let corners = [
         Vec2::new(-hx, -hz),
         Vec2::new(hx, -hz),
