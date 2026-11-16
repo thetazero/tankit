@@ -36,6 +36,9 @@ pub const TRACER_SPEED: f32 = 1500.0;
 pub const CANNON_RANGE: f32 = 500.0;
 /// Length of that tracer's streak, m: about a frame's flight.
 const TRACER_STREAK: f32 = 22.0;
+/// ...and how long it lingers, fading, once it's reached where the shot
+/// landed, s (at close range the flight itself is shorter than a frame).
+const TRACER_FADE: f32 = 0.08;
 /// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
@@ -957,7 +960,9 @@ impl Match {
         let mut shells = std::mem::take(&mut self.shells);
         shells.retain_mut(|s| {
             s.age += DT;
-            if s.age > s.spec.life {
+            // An instant shot's tracer lingers a moment where it landed.
+            let fade = if s.spec.instant { TRACER_FADE } else { 0.0 };
+            if s.age > s.spec.life + fade {
                 return false;
             }
             s.vel.y -= s.spec.gravity * GRAVITY * DT;
@@ -1314,6 +1319,31 @@ impl Match {
     }
 
     /// The tanks to draw this frame: interpolated, with wrecks charred.
+    /// Where a shot from `t` would land if it fired now, for a gun that
+    /// lands instantly (else None): the first thing along its line, or the
+    /// end of its reach.
+    pub fn instant_landing(&self, t: &Tank) -> Option<Vec3> {
+        let Action::Shell(spec) = gun(t.turret_kind).action else {
+            return None;
+        };
+        if !spec.instant {
+            return None;
+        }
+        let (from, dir) = (muzzle(t), t.gun_dir());
+        let reach = spec.speed * spec.life;
+        let toi = self
+            .world
+            .physics
+            .cast_ray(
+                &Ray::new(from, dir),
+                reach,
+                true,
+                QueryFilter::default().exclude_collider(t.collider),
+            )
+            .map_or(reach, |(_, toi)| toi);
+        Some(from + dir * toi)
+    }
+
     pub fn display_tanks(&self, alpha: f32) -> Vec<Tank> {
         self.world
             .tanks
@@ -1491,13 +1521,16 @@ impl Match {
                 )
             };
             match s.spec.look {
-                // A streak trailing back from the shell.
                 // An instant shot's tracer covers a frame's flight in a long
-                // streak, never trailing back past the muzzle.
+                // streak, never trailing back past the muzzle; once it's
+                // where the shot landed it lingers there, thinning out.
                 Look::Tracer if s.spec.instant => {
-                    let flown = (s.age - (1.0 - alpha) * DT).clamp(0.0, s.spec.life) * s.spec.speed;
-                    out.push(streak(0.2, flown.min(TRACER_STREAK), tracer));
+                    let age = s.age - (1.0 - alpha) * DT;
+                    let flown = age.clamp(0.0, s.spec.life) * s.spec.speed;
+                    let fade = 1.0 - ((age - s.spec.life) / TRACER_FADE).clamp(0.0, 1.0);
+                    out.push(streak(0.2 * fade, flown.min(TRACER_STREAK), tracer));
                 }
+                // A streak trailing back from the shell.
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
                 // Plasma is mostly light (see `glow_particles`); only its
                 // white-hot heart is solid.
@@ -2021,8 +2054,9 @@ mod tests {
                 m.fighters[1].health < hp,
                 "{turret:?}: a target 90 m off wasn't hit on the shot's own step"
             );
-            assert_eq!(m.shells.len(), 1, "{turret:?}: the shot leaves a tracer");
-            let s = &m.shells[0];
+            let mine: Vec<&Shell> = m.shells.iter().filter(|s| s.owner == 0).collect();
+            assert_eq!(mine.len(), 1, "{turret:?}: the shot leaves a tracer");
+            let s = mine[0];
             let reach = s.spec.speed * s.spec.life;
             assert!(
                 (80.0..90.0).contains(&reach),
