@@ -30,13 +30,63 @@ pub enum HullKind {
     Bastion,
 }
 
+/// Who builds a part (see docs/setting.md). Parts from different makers mix freely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Faction {
+    Imperium,
+    /// The aliens.
+    Sorn,
+    Machines,
+    Resonant,
+}
+
+impl Faction {
+    pub fn name(self) -> &'static str {
+        match self {
+            Faction::Imperium => "IMPERIUM",
+            Faction::Sorn => "SORN",
+            Faction::Machines => "MACHINES",
+            Faction::Resonant => "RESONANT",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurretKind {
+    /// Imperium rail cannon.
     Lance,
+    /// Imperium twin autocannon.
     Maul,
+    /// Sorn plasma orb that bounces off walls.
+    Wisp,
+    /// Sorn three-barrel rapid plasma.
+    Triad,
+    /// Machine laser beam; overheats.
+    Lumen,
+    /// Resonant short-range crystal flamethrower.
+    Hymn,
 }
 
 impl TurretKind {
+    /// Every turret, grouped by maker. Also the kit's art order.
+    pub const ALL: [TurretKind; 6] = [
+        TurretKind::Lance,
+        TurretKind::Maul,
+        TurretKind::Wisp,
+        TurretKind::Triad,
+        TurretKind::Lumen,
+        TurretKind::Hymn,
+    ];
+
+    pub fn maker(self) -> Faction {
+        match self {
+            TurretKind::Lance | TurretKind::Maul => Faction::Imperium,
+            TurretKind::Wisp | TurretKind::Triad => Faction::Sorn,
+            TurretKind::Lumen => Faction::Machines,
+            TurretKind::Hymn => Faction::Resonant,
+        }
+    }
+
     /// Velocity change one shot kicks into the hull, m/s. It's applied at gun
     /// height, so most of it shows up as the hull rocking back on its springs.
     pub fn recoil(self) -> f32 {
@@ -45,6 +95,11 @@ impl TurretKind {
             TurretKind::Lance => 2.2,
             // Twin short guns: smaller kicks, more often.
             TurretKind::Maul => 1.3,
+            // Plasma has little mass: a soft push.
+            TurretKind::Wisp => 0.8,
+            TurretKind::Triad => 0.35,
+            // Beam and flame don't kick.
+            TurretKind::Lumen | TurretKind::Hymn => 0.0,
         }
     }
 }

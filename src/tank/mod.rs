@@ -37,7 +37,15 @@ impl KitMeshes {
         };
         KitMeshes {
             hulls: vec![hull(model::lancer()), hull(model::bastion())],
-            turrets: vec![model::lance(), model::maul()],
+            // Same order as `TurretKind::ALL`.
+            turrets: vec![
+                model::lance(),
+                model::maul(),
+                model::wisp(),
+                model::triad(),
+                model::lumen(),
+                model::hymn(),
+            ],
         }
     }
 
@@ -131,10 +139,10 @@ impl TankArt {
             HullKind::Lancer => 0,
             HullKind::Bastion => 1,
         }];
-        let turret = &self.turrets[match t.turret_kind {
-            TurretKind::Lance => 0,
-            TurretKind::Maul => 1,
-        }];
+        let turret = &self.turrets[TurretKind::ALL
+            .iter()
+            .position(|&k| k == t.turret_kind)
+            .unwrap_or(0)];
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
 

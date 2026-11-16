@@ -38,14 +38,15 @@ tankit [OPTIONS]
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review)
   --hull <lancer|bastion> player hull (default lancer)
-  --turret <lance|maul>   player turret (default lance)
+  --turret <name>         player turret: lance maul (Imperium), wisp triad (Sorn),
+                          lumen (machines), hymn (Resonant); default lance
   --garage                (with --shot) open the garage at the start; --hull/--turret become the pick
   --screen <menu|missions|pause>  (with --shot) render that menu screen
   --xp <n>                (with --shot --screen) pilot XP to show
-  --showroom              all hull x turret combos on an open yard, orbiting camera
+  --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
-  --focus <0-3>           showroom: frame one tank
+  --focus <0-5>           showroom: frame one tank
 ";
 
 pub struct Args {
@@ -216,7 +217,7 @@ fn parse_args() -> Result<Args> {
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects lance or maul")?;
+                    .context("--turret expects lance, maul, wisp, triad, lumen or hymn")?;
             }
             "--garage" => garage = true,
             "--screen" => {

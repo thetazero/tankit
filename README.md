@@ -55,9 +55,9 @@ The window title shows the current tuning.
 | Menus | Main menu, mission select and pause, drawn in the hairline style. | `src/menu.rs` |
 | Missions | A map plus a contract (game mode). | `src/mission.rs` |
 | Pilot profile | XP, rank and the kit you deploy in. Autosaved as JSON in the OS data directory (`~/.local/share/tankit/` on Linux); delete it to start over. | `src/profile.rs` |
-| Deathmatch | Timed rounds, every tank for itself. Covers guns and shells, kills, XP (paid on the kill, plus a win bonus), respawns with spawn shield, and vertical auto-aim. | `src/combat.rs` |
+| Deathmatch | Timed rounds, every tank for itself. Covers the weapons (shells, bouncing plasma, the overheating beam, flame), kills, XP (paid on the kill, plus a win bonus), respawns with spawn shield, and vertical auto-aim. | `src/combat.rs` |
 | Repair drops | Crates parachute onto fixed drop zones on a timer and mend part of a damaged tank's hull. | `src/repair.rs` |
-| Garage | Pick the hull and turret you spawn in next, from the menu or mid-battle. | `src/garage.rs` |
+| Garage | Pick the hull and turret you spawn in next, from the menu or mid-battle. Each turret shows its maker faction. | `src/garage.rs` |
 | Bots | A* over a nav grid built from the map, driving with the same `Command` as the player (no physics shortcuts). | `src/ai.rs` |
 | Maps | Procedural cities, the proving ground (a physics test course) and hand-built maps. | `src/map.rs`, `src/map/` |
 | Tank kit | Procedural hulls and turrets that mix freely, built from beveled plates, with tread links, wheels, recoil and suspension all animated. Surface detail is in the shader. | `src/tank/`, `src/shaders/scene.wgsl` |

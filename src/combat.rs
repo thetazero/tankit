@@ -19,8 +19,8 @@ pub const ROUND_TIME: f32 = 300.0;
 pub const RESPAWN_TIME: f32 = 4.0;
 /// Freshly spawned tanks can't be hurt (and bots ignore them) for this long.
 pub const SPAWN_SHIELD: f32 = 2.0;
+/// Imperium cannon shell speed, m/s.
 pub const SHELL_SPEED: f32 = 160.0;
-const SHELL_LIFE: f32 = 1.6;
 /// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
@@ -44,23 +44,163 @@ const BOT_COLORS: [Vec3; 7] = [
 ];
 
 /// Weapon numbers per turret.
+#[derive(Clone, Copy)]
 pub struct Gun {
+    /// Per shot; for a beam, per second of contact.
     pub damage: f32,
-    /// Seconds between shots.
+    /// Seconds between shots (0 for a beam).
     pub reload: f32,
+    pub action: Action,
+}
+
+#[derive(Clone, Copy)]
+pub enum Action {
+    /// Fires projectiles.
+    Shell(ShellSpec),
+    /// A hitscan beam for as long as the trigger is held, until it overheats.
+    Beam {
+        range: f32,
+        /// Seconds of continuous fire from cold to overheated.
+        heat_time: f32,
+        /// Seconds to cool from fully hot back to zero. Once overheated the
+        /// beam stays locked until it has cooled all the way.
+        cool_time: f32,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub struct ShellSpec {
+    /// Muzzle speed, m/s.
+    pub speed: f32,
+    /// Seconds before it fizzles out.
+    pub life: f32,
+    /// Multiple of real gravity (negative rises, like flame).
+    pub gravity: f32,
+    /// Times it ricochets off walls and ground before it's spent.
+    pub bounces: u8,
+    /// Random aim jitter per shot, radians.
+    pub spread: f32,
+    pub look: Look,
+}
+
+/// How a projectile is drawn, and how hard it lands.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Look {
+    /// Orange cannon tracer streak.
+    Tracer,
+    /// A glowing ball of plasma, `size` m across.
+    Plasma { size: f32 },
+    /// A puff of crystal fire that swells as it flies.
+    Flame,
+}
+
+/// Sorn plasma glow.
+const PLASMA: Vec3 = Vec3::new(0.35, 1.0, 0.7);
+/// Machine laser.
+const LASER: Vec3 = Vec3::new(1.0, 0.12, 0.08);
+
+impl Gun {
+    pub fn dps(&self) -> f32 {
+        match self.action {
+            Action::Beam { .. } => self.damage,
+            Action::Shell(_) => self.damage / self.reload,
+        }
+    }
+
+    pub fn range(&self) -> f32 {
+        match self.action {
+            Action::Beam { range, .. } => range,
+            Action::Shell(s) => s.speed * s.life,
+        }
+    }
+
+    /// Projectile speed for leading a target (a beam lands instantly).
+    pub fn speed(&self) -> f32 {
+        match self.action {
+            Action::Beam { .. } => f32::INFINITY,
+            Action::Shell(s) => s.speed,
+        }
+    }
+
+    /// Projectile drop, m/s².
+    pub fn gravity(&self) -> f32 {
+        match self.action {
+            Action::Beam { .. } => 0.0,
+            Action::Shell(s) => s.gravity * GRAVITY,
+        }
+    }
 }
 
 pub fn gun(kind: TurretKind) -> Gun {
+    let cannon = ShellSpec {
+        speed: SHELL_SPEED,
+        life: 1.6,
+        gravity: 1.0,
+        bounces: 0,
+        spread: 0.0,
+        look: Look::Tracer,
+    };
     match kind {
-        // Long rail cannon: hits hard, slow.
+        // Imperium long rail cannon: hits hard, slow.
         TurretKind::Lance => Gun {
             damage: 38.0,
             reload: 1.4,
+            action: Action::Shell(cannon),
         },
-        // Twin short guns: light hits, alternating barrels, fast.
+        // Imperium twin short guns: light hits, alternating barrels, fast.
         TurretKind::Maul => Gun {
             damage: 15.0,
             reload: 0.5,
+            action: Action::Shell(cannon),
+        },
+        // Sorn: a big slow orb of plasma that skips off walls and ground.
+        TurretKind::Wisp => Gun {
+            damage: 30.0,
+            reload: 1.1,
+            action: Action::Shell(ShellSpec {
+                speed: 42.0,
+                life: 3.2,
+                gravity: 0.0,
+                bounces: 3,
+                spread: 0.0,
+                look: Look::Plasma { size: 0.75 },
+            }),
+        },
+        // Sorn: three barrels taking turns, a stream of small slow bolts.
+        TurretKind::Triad => Gun {
+            damage: 7.0,
+            reload: 0.2,
+            action: Action::Shell(ShellSpec {
+                speed: 55.0,
+                life: 1.8,
+                gravity: 0.0,
+                bounces: 0,
+                spread: 0.012,
+                look: Look::Plasma { size: 0.38 },
+            }),
+        },
+        // Machines: a laser that burns while held, then overheats.
+        TurretKind::Lumen => Gun {
+            damage: 34.0,
+            reload: 0.0,
+            action: Action::Beam {
+                range: 85.0,
+                heat_time: 3.0,
+                cool_time: 2.2,
+            },
+        },
+        // Resonant: a short gout of crystal fire; deadly up close, nothing at range.
+        TurretKind::Hymn => Gun {
+            damage: 2.0,
+            reload: 1.0 / 30.0,
+            action: Action::Shell(ShellSpec {
+                speed: 24.0,
+                life: 0.65,
+                gravity: -0.3,
+                bounces: 0,
+                spread: 0.09,
+                look: Look::Flame,
+            }),
         },
     }
 }
@@ -95,6 +235,11 @@ pub struct Fighter {
     /// Seconds since this tank last picked up a repair crate, and how much it mended.
     pub since_repair: f32,
     pub repaired: f32,
+    /// Beam weapons: heat 0..1, and whether it overheated and is locked until cool.
+    pub heat: f32,
+    pub overheated: bool,
+    /// Where this tank's beam ends this step, while it's firing one.
+    pub beam: Option<Vec3>,
 }
 
 impl Fighter {
@@ -110,6 +255,8 @@ pub struct Shell {
     pub owner: usize,
     pub damage: f32,
     pub age: f32,
+    pub spec: ShellSpec,
+    pub bounces: u8,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -208,11 +355,7 @@ impl Match {
             } else {
                 HullKind::Bastion
             };
-            let turret = if rng.chance(0.5) {
-                TurretKind::Lance
-            } else {
-                TurretKind::Maul
-            };
+            let turret = TurretKind::ALL[rng.index(TurretKind::ALL.len())];
             let (at, yaw) = spawn_point(&world, &mut rng, None);
             world.spawn_tank(BOT_COLORS[b], at, yaw, hull, turret);
             fighters.push(fighter(BOT_NAMES[b], max_health(hull)));
@@ -304,8 +447,32 @@ impl Match {
             f.since_hit += DT;
             f.since_dealt += DT;
             f.since_repair += DT;
-            if trigger && f.alive && f.reload_in <= 0.0 {
-                self.shoot(i);
+            f.beam = None;
+            match gun(self.world.tanks[i].turret_kind).action {
+                Action::Beam {
+                    range,
+                    heat_time,
+                    cool_time,
+                } => {
+                    if trigger && f.alive && !f.overheated {
+                        f.heat += DT / heat_time;
+                        if f.heat >= 1.0 {
+                            f.heat = 1.0;
+                            f.overheated = true;
+                        }
+                        self.beam(i, range);
+                    } else {
+                        f.heat = (f.heat - DT / cool_time).max(0.0);
+                        if f.heat == 0.0 {
+                            f.overheated = false;
+                        }
+                    }
+                }
+                Action::Shell(_) => {
+                    if trigger && f.alive && f.reload_in <= 0.0 {
+                        self.shoot(i);
+                    }
+                }
             }
         }
 
@@ -337,6 +504,8 @@ impl Match {
             let t = &self.world.tanks[i];
             let eye = t.pos + t.up() * t.gun_height();
             let yaw = t.turret_yaw();
+            let g = gun(t.turret_kind);
+            let range = g.range().min(ASSIST_RANGE);
             let mut best: Option<(f32, f32)> = None;
             for j in 0..n {
                 if j == i || !self.fighters[j].alive {
@@ -347,17 +516,16 @@ impl Match {
                 let to = aim - eye;
                 let flat = Vec2::new(to.x, to.z);
                 let d = flat.length();
-                if !(2.0..=ASSIST_RANGE).contains(&d)
-                    || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE
+                if !(2.0..=range).contains(&d) || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE
                 {
                     continue;
                 }
                 if !ai::can_see(&self.world, eye, o) {
                     continue;
                 }
-                // Lift for the shell's drop over the flight time.
-                let t_flight = to.length() / SHELL_SPEED;
-                let pitch = ((to.y + 0.5 * GRAVITY * t_flight * t_flight) / d).atan();
+                // Lift for the shot's drop over the flight time.
+                let t_flight = to.length() / g.speed();
+                let pitch = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
                 if best.is_none_or(|(bd, _)| d < bd) {
                     best = Some((d, pitch));
                 }
@@ -372,20 +540,65 @@ impl Match {
     fn shoot(&mut self, i: usize) {
         let t = &self.world.tanks[i];
         let g = gun(t.turret_kind);
-        let dir = t.gun_dir();
-        let muzzle = t.pos + t.up() * t.gun_height() + dir * 2.6;
+        let Action::Shell(spec) = g.action else {
+            return;
+        };
+        let mut dir = t.gun_dir();
+        if spec.spread > 0.0 {
+            let jitter = Vec3::new(
+                self.rng.range(-1.0, 1.0),
+                self.rng.range(-0.5, 0.5),
+                self.rng.range(-1.0, 1.0),
+            );
+            dir = (dir + jitter * spec.spread).normalize();
+        }
+        let from = muzzle(t);
         self.shells.push(Shell {
-            pos: muzzle,
-            prev: muzzle,
-            vel: dir * SHELL_SPEED + t.vel,
+            pos: from,
+            prev: from,
+            vel: dir * spec.speed + t.vel,
             owner: i,
             damage: g.damage,
             age: 0.0,
+            spec,
+            bounces: spec.bounces,
         });
-        self.fighters[i].reload_in = g.reload;
-        self.world.fire(i);
+        // Carry the leftover fraction of a step so fast guns keep their exact rate.
+        let f = &mut self.fighters[i];
+        f.reload_in = f.reload_in.max(-DT) + g.reload;
+        if spec.look != Look::Flame {
+            // A flamethrower pours: no per-puff kick or muzzle flash.
+            self.world.fire(i);
+        }
         if let Some(b) = &mut self.bots[i] {
             b.fired();
+        }
+    }
+
+    /// One step of tank `i`'s beam: burn whatever it touches first.
+    fn beam(&mut self, i: usize, range: f32) {
+        let t = &self.world.tanks[i];
+        let (from, dir) = (muzzle(t), t.gun_dir());
+        let hit = self.world.physics.cast_ray(
+            &Ray::new(from, dir),
+            range,
+            true,
+            QueryFilter::default().exclude_collider(t.collider),
+        );
+        let (end, victim) = match hit {
+            Some((c, toi)) => (from + dir * toi, self.world.tank_of(c)),
+            None => (from + dir * range, None),
+        };
+        self.fighters[i].beam = Some(end);
+        let dmg = gun(self.world.tanks[i].turret_kind).damage * DT;
+        match victim {
+            Some(j) => self.damage(i, j, dmg),
+            // Bots correct their aim after a miss.
+            None => {
+                if let Some(b) = &mut self.bots[i] {
+                    b.fired();
+                }
+            }
         }
     }
 
@@ -393,15 +606,18 @@ impl Match {
         let mut shells = std::mem::take(&mut self.shells);
         shells.retain_mut(|s| {
             s.age += DT;
-            if s.age > SHELL_LIFE {
+            if s.age > s.spec.life {
                 return false;
             }
-            s.vel.y -= GRAVITY * DT;
+            s.vel.y -= s.spec.gravity * GRAVITY * DT;
             s.prev = s.pos;
             let step = s.vel * DT;
             let len = step.length();
+            if len < 1e-6 {
+                return true;
+            }
             let owner = self.world.tanks[s.owner].collider;
-            let hit = self.world.physics.cast_ray(
+            let hit = self.world.physics.cast_ray_and_get_normal(
                 &Ray::new(s.pos, step / len),
                 len,
                 true,
@@ -412,14 +628,30 @@ impl Match {
                     s.pos += step;
                     true
                 }
-                Some((c, toi)) => {
-                    let at = s.pos + step / len * toi;
+                Some((c, ri)) => {
+                    let at = s.pos + step / len * ri.time_of_impact;
                     s.pos = at;
                     match self.world.tank_of(c) {
-                        Some(j) => self.hit(s, j, at),
-                        None => self.blasts.push(Blast::new(at, BlastKind::Impact)),
+                        Some(j) => {
+                            self.hit(s, j, at);
+                            false
+                        }
+                        None if s.bounces > 0 => {
+                            // Ricochet: mirror off the surface and carry on.
+                            let n = ri.normal;
+                            s.vel -= 2.0 * s.vel.dot(n) * n;
+                            s.pos = at + n * 0.05;
+                            s.bounces -= 1;
+                            self.blasts.push(Blast::new(at, BlastKind::Impact));
+                            true
+                        }
+                        None => {
+                            if s.spec.look != Look::Flame {
+                                self.blasts.push(Blast::new(at, BlastKind::Impact));
+                            }
+                            false
+                        }
                     }
-                    false
                 }
             }
         });
@@ -427,23 +659,32 @@ impl Match {
     }
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
-        self.blasts.push(Blast::new(at, BlastKind::Hit));
-        // A shove through the hull's centre: felt, but never enough to roll it.
-        let (mass, center) = (
-            self.world.tanks[j].chassis.mass,
-            self.world.tanks[j].pos + self.world.tanks[j].up() * 0.8,
-        );
-        let shove = s.vel.normalize_or_zero() * Vec3::new(1.0, 0.3, 1.0);
-        self.world.push(j, shove * mass * 0.35, center);
+        if s.spec.look != Look::Flame {
+            self.blasts.push(Blast::new(at, BlastKind::Hit));
+            // A shove through the hull's centre, scaled by how hard the shot
+            // hits: felt, but never enough to roll it.
+            let (mass, center) = (
+                self.world.tanks[j].chassis.mass,
+                self.world.tanks[j].pos + self.world.tanks[j].up() * 0.8,
+            );
+            let shove = s.vel.normalize_or_zero() * Vec3::new(1.0, 0.3, 1.0);
+            let weight = (s.damage / 38.0).min(1.0);
+            self.world.push(j, shove * mass * 0.35 * weight, center);
+        }
+        self.damage(s.owner, j, s.damage);
+    }
+
+    /// `owner` deals `amount` to tank `j` (spawn shields and the round's end permitting).
+    fn damage(&mut self, owner: usize, j: usize, amount: f32) {
         let v = &mut self.fighters[j];
         if !v.alive || v.shield > 0.0 || self.phase != Phase::Playing {
             return;
         }
-        v.health -= s.damage;
+        v.health -= amount;
         v.since_hit = 0.0;
-        self.fighters[s.owner].since_dealt = 0.0;
+        self.fighters[owner].since_dealt = 0.0;
         if self.fighters[j].health <= 0.0 {
-            self.kill(s.owner, j);
+            self.kill(owner, j);
         }
     }
 
@@ -538,6 +779,8 @@ impl Match {
             f.health = max_health(self.world.tanks[i].hull_kind);
             f.shield = SPAWN_SHIELD;
             f.reload_in = 0.5;
+            f.heat = 0.0;
+            f.overheated = false;
         }
     }
 
@@ -566,17 +809,87 @@ impl Match {
             let p = s.prev.lerp(s.pos, alpha);
             let d = s.vel.normalize_or_zero();
             let q = Quat::from_rotation_arc(Vec3::Y, d);
-            // A streak trailing back from the shell.
-            let len = 3.2;
+            let streak = |w: f32, len: f32, color: Vec4| {
+                (
+                    MeshId::GEM,
+                    Instance::new(
+                        Mat4::from_scale_rotation_translation(
+                            Vec3::new(w, len, w),
+                            q,
+                            p - d * len * 0.5,
+                        ),
+                        color,
+                    ),
+                )
+            };
+            let ball = |at: Vec3, size: f32, color: Vec4| {
+                (
+                    MeshId::SPHERE,
+                    Instance::new(
+                        Mat4::from_scale_rotation_translation(
+                            Vec3::splat(size),
+                            Quat::IDENTITY,
+                            at,
+                        ),
+                        color,
+                    ),
+                )
+            };
+            match s.spec.look {
+                // A streak trailing back from the shell.
+                Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
+                // A shimmering core with a soft halo and a short wake.
+                Look::Plasma { size } => {
+                    let wobble = 1.0 + 0.12 * (s.age * 40.0).sin();
+                    out.push(ball(p, size * wobble, PLASMA.extend(2.5)));
+                    out.push(ball(p, size * 0.55, Vec4::new(0.85, 1.0, 0.95, 4.0)));
+                    out.push(streak(size * 0.5, size * 3.0, PLASMA.extend(1.6)));
+                }
+                // Crystal fire: white-hot at the nozzle, swelling into violet, then gone.
+                Look::Flame => {
+                    let f = s.age / s.spec.life;
+                    let size = (0.35 + f * 2.2) * (1.0 - f * f).max(0.0).sqrt();
+                    let hot = Vec3::new(0.95, 0.85, 1.0).lerp(Vec3::new(0.55, 0.2, 1.0), f.sqrt());
+                    out.push(ball(p, size, hot.extend(3.0 * (1.0 - f) + 0.3)));
+                }
+            }
+        }
+        // Laser beams: a hot core inside a wider red glow, and a burn spot where it lands.
+        for (f, t) in self.fighters.iter().zip(&self.world.tanks) {
+            let Some(end) = f.beam else { continue };
+            let from = muzzle(t);
+            let to = end - from;
+            let len = to.length();
+            if len < 0.1 {
+                continue;
+            }
+            let q = Quat::from_rotation_arc(Vec3::Y, to / len);
+            let flicker = 1.0 + 0.15 * (self.world.time * 70.0).sin();
+            for (w, c) in [
+                (0.32 * flicker, LASER.extend(2.2)),
+                (0.1, Vec4::new(1.0, 0.75, 0.7, 4.5)),
+            ] {
+                out.push((
+                    MeshId::CYLINDER,
+                    Instance::new(
+                        Mat4::from_scale_rotation_translation(
+                            Vec3::new(w, len, w),
+                            q,
+                            from + to * 0.5,
+                        ),
+                        c,
+                    ),
+                ));
+            }
             out.push((
-                MeshId::GEM,
+                MeshId::SPHERE,
                 Instance::new(
                     Mat4::from_scale_rotation_translation(
-                        Vec3::new(0.22, len, 0.22),
-                        q,
-                        p - d * len * 0.5,
+                        Vec3::splat(0.7 * flicker),
+                        Quat::IDENTITY,
+                        end,
                     ),
-                    tracer,
+                    Vec4::new(1.0, 0.45, 0.3, 4.0),
                 ),
             ));
         }
@@ -652,7 +965,15 @@ fn fighter(name: &str, health: f32) -> Fighter {
         next_kit: None,
         since_repair: 10.0,
         repaired: 0.0,
+        heat: 0.0,
+        overheated: false,
+        beam: None,
     }
+}
+
+/// Where tank `t`'s shots leave the gun.
+fn muzzle(t: &Tank) -> Vec3 {
+    t.pos + t.up() * t.gun_height() + t.gun_dir() * 2.6
 }
 
 /// A spawn spot well away from the living (for tank `me`, if respawning),
@@ -740,6 +1061,131 @@ mod tests {
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
         assert_eq!(m.xp, m.fighters[0].kills * KILL_XP);
+    }
+
+    /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
+    fn duel(turret: TurretKind, dist: f32) -> Match {
+        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        m.world.tanks[0].turret_kind = turret;
+        let t = &m.world.tanks[0];
+        let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist;
+        m.world
+            .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
+        m.fighters
+            .push(fighter("DUMMY", max_health(HullKind::Lancer)));
+        m.bots.push(None);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        m
+    }
+
+    /// Every faction's turret can kill a tank in front of it at close range.
+    #[test]
+    fn every_turret_kills_at_close_range() {
+        for &k in &TurretKind::ALL {
+            let mut m = duel(k, 11.0);
+            for _ in 0..(8.0 / DT) as usize {
+                m.step(Command::default(), true);
+            }
+            assert!(
+                m.fighters[1].deaths >= 1,
+                "{k:?}: dummy has {} hp left",
+                m.fighters[1].health
+            );
+        }
+    }
+
+    #[test]
+    fn flame_falls_short_at_range() {
+        let mut m = duel(TurretKind::Hymn, 40.0);
+        for _ in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert_eq!(m.fighters[1].health, max_health(HullKind::Lancer));
+        assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
+    }
+
+    #[test]
+    fn beam_overheats_and_locks_until_cool() {
+        let mut m = duel(TurretKind::Lumen, 60.0);
+        let Action::Beam {
+            heat_time,
+            cool_time,
+            ..
+        } = gun(TurretKind::Lumen).action
+        else {
+            panic!("Lumen is a beam");
+        };
+        for _ in 0..((heat_time + 0.1) / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(m.fighters[0].overheated);
+        // Still holding the trigger: nothing comes out while it cools.
+        m.step(Command::default(), true);
+        assert!(m.fighters[0].beam.is_none());
+        let hp = m.fighters[1].health;
+        for _ in 0..((cool_time - 0.2) / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(m.fighters[0].overheated);
+        assert_eq!(m.fighters[1].health, hp);
+        for _ in 0..(0.4 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(!m.fighters[0].overheated);
+        assert!(m.fighters[0].beam.is_some());
+    }
+
+    #[test]
+    fn plasma_orbs_bounce_off_the_ground() {
+        let mut m = Match::new(Map::proving_ground(), 0, 0, 1);
+        let Action::Shell(spec) = gun(TurretKind::Wisp).action else {
+            panic!("Wisp fires shells");
+        };
+        let t = &m.world.tanks[0];
+        let from = t.pos + Vec3::new(8.0, 3.0, 8.0);
+        m.shells.push(Shell {
+            pos: from,
+            prev: from,
+            vel: Vec3::new(0.0, -spec.speed, 0.0),
+            owner: 0,
+            damage: 1.0,
+            age: 0.0,
+            spec,
+            bounces: spec.bounces,
+        });
+        for _ in 0..(0.2 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert_eq!(
+            m.shells.len(),
+            1,
+            "the orb should survive hitting the ground"
+        );
+        assert!(m.shells[0].vel.y > 0.0, "and come back up");
+        assert_eq!(m.shells[0].bounces, spec.bounces - 1);
+        // Cannon shells just stop.
+        let Action::Shell(cannon) = gun(TurretKind::Lance).action else {
+            panic!();
+        };
+        m.shells = vec![Shell {
+            pos: from,
+            prev: from,
+            vel: Vec3::new(0.0, -cannon.speed, 0.0),
+            owner: 0,
+            damage: 1.0,
+            age: 0.0,
+            spec: cannon,
+            bounces: 0,
+        }];
+        for _ in 0..(0.2 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.shells.is_empty());
     }
 
     #[test]

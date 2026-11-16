@@ -28,7 +28,7 @@ const ORBIT_DRIFT: f32 = 0.12;
 pub type Loadout = (HullKind, TurretKind);
 
 pub const HULLS: [HullKind; 2] = [HullKind::Lancer, HullKind::Bastion];
-pub const TURRETS: [TurretKind; 2] = [TurretKind::Lance, TurretKind::Maul];
+pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
@@ -41,6 +41,10 @@ pub fn turret_name(k: TurretKind) -> &'static str {
     match k {
         TurretKind::Lance => "LANCE",
         TurretKind::Maul => "MAUL",
+        TurretKind::Wisp => "WISP",
+        TurretKind::Triad => "TRIAD",
+        TurretKind::Lumen => "LUMEN",
+        TurretKind::Hymn => "HYMN",
     }
 }
 
@@ -119,25 +123,23 @@ const HULL_STATS: [Stat; 6] = [
 
 const TURRET_STATS: [Stat; 3] = [
     Stat {
-        name: "DAMAGE",
-        unit: "HP",
-        decimals: 0,
-        get: |p| combat::gun(turret_of(p)).damage,
-    },
-    Stat {
-        name: "FIRE RATE",
-        unit: "/MIN",
-        decimals: 0,
-        get: |p| 60.0 / combat::gun(turret_of(p)).reload,
-    },
-    Stat {
         name: "DPS",
         unit: "HP/S",
         decimals: 0,
-        get: |p| {
-            let g = combat::gun(turret_of(p));
-            g.damage / g.reload
-        },
+        get: |p| combat::gun(turret_of(p)).dps(),
+    },
+    Stat {
+        name: "PER HIT",
+        unit: "HP",
+        decimals: 0,
+        // A beam has no single hit: show what one second of contact does.
+        get: |p| combat::gun(turret_of(p)).damage,
+    },
+    Stat {
+        name: "RANGE",
+        unit: "M",
+        decimals: 0,
+        get: |p| combat::gun(turret_of(p)).range(),
     },
 ];
 
@@ -439,11 +441,21 @@ impl Garage {
                 let mut s = TextStyle::value(15.0);
                 s.color = if selected { theme::FG } else { theme::DIM };
                 p.text(Vec2::new(x, y), item, &s, Align::Left);
-                if part == in_use && !selected {
+                let maker = match part {
+                    Part::Turret(k) => Some(k.maker().name()),
+                    Part::Hull(_) => None,
+                };
+                let note = match (part == in_use && !selected, maker) {
+                    (true, Some(m)) => Some(format!("IN USE · {m}")),
+                    (true, None) => Some("IN USE".to_string()),
+                    (false, Some(m)) => Some(m.to_string()),
+                    (false, None) => None,
+                };
+                if let Some(note) = note {
                     label(
                         &mut p,
                         Vec2::new(x + PANEL_W - 16.0, y + 4.0),
-                        "IN USE",
+                        &note,
                         Align::Right,
                     );
                 }
@@ -606,8 +618,12 @@ mod tests {
         let l = g.input(Input::Down, start).unwrap();
         assert_eq!(l, (HullKind::Bastion, TurretKind::Lance));
         assert_eq!(g.input(Input::Right, l), None);
-        let l = g.input(Input::Up, l).unwrap();
+        let l = g.input(Input::Down, l).unwrap();
         assert_eq!(l, (HullKind::Bastion, TurretKind::Maul));
+        // The list wraps: up from the first turret is the last one.
+        let l = g.input(Input::Up, l).unwrap();
+        let l = g.input(Input::Up, l).unwrap();
+        assert_eq!(l, (HullKind::Bastion, *TURRETS.last().unwrap()));
         assert_eq!(g.input(Input::Revert, l), Some(start));
         assert!(!g.is_open());
 

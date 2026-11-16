@@ -1,4 +1,4 @@
-//! Showroom: every hull x turret combination on an open yard, each running a
+//! Showroom: every turret (on alternating hulls) on an open yard, each running a
 //! different animation (pivot turns, driving, turret sweeps, firing), with an
 //! orbiting camera. `--showroom` opens it in the window or for `--shot`.
 
@@ -10,37 +10,38 @@ use crate::render::Camera;
 use crate::render::mesh::MeshData;
 use crate::sim::{Command, HullKind, TurretKind, World};
 
-pub const SPOTS: [Vec2; 4] = [
-    Vec2::new(-5.0, -4.0),
-    Vec2::new(5.0, -4.0),
-    Vec2::new(-5.0, 5.0),
-    Vec2::new(5.0, 5.0),
+pub const SPOTS: [Vec2; 6] = [
+    Vec2::new(-10.0, -4.0),
+    Vec2::new(0.0, -4.0),
+    Vec2::new(10.0, -4.0),
+    Vec2::new(-10.0, 5.0),
+    Vec2::new(0.0, 5.0),
+    Vec2::new(10.0, 5.0),
 ];
 
 pub fn world() -> World {
     let mut w = World::empty(Map::empty(100.0));
-    let looks = [
-        (
-            HullKind::Lancer,
-            TurretKind::Lance,
-            Vec3::new(0.92, 0.93, 0.95),
-        ),
-        (
-            HullKind::Bastion,
-            TurretKind::Maul,
-            Vec3::new(0.95, 0.42, 0.32),
-        ),
-        (
-            HullKind::Lancer,
-            TurretKind::Maul,
-            Vec3::new(0.4, 0.62, 0.95),
-        ),
-        (
-            HullKind::Bastion,
-            TurretKind::Lance,
-            Vec3::new(0.95, 0.8, 0.35),
-        ),
+    // Every turret once, on alternating hulls.
+    let colors = [
+        Vec3::new(0.92, 0.93, 0.95),
+        Vec3::new(0.95, 0.42, 0.32),
+        Vec3::new(0.4, 0.62, 0.95),
+        Vec3::new(0.95, 0.8, 0.35),
+        Vec3::new(0.5, 0.82, 0.5),
+        Vec3::new(0.75, 0.5, 0.9),
     ];
+    let looks: Vec<(HullKind, TurretKind, Vec3)> = TurretKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &tu)| {
+            let h = if i % 2 == 0 {
+                HullKind::Lancer
+            } else {
+                HullKind::Bastion
+            };
+            (h, tu, colors[i])
+        })
+        .collect();
     for (&(h, tu, c), p) in looks.iter().zip(SPOTS) {
         w.spawn_tank(c, p, 0.4, h, tu);
     }

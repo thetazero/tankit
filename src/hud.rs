@@ -295,15 +295,33 @@ impl Hud {
             Align::Right,
         );
         widgets::segments(&mut p, bc + Vec2::new(-130.0, -26.0), 260.0, segs, lit, hot);
-        let reload = crate::combat::gun(tank.turret_kind).reload;
-        let ready = 1.0 - (me.reload_in / reload).clamp(0.0, 1.0);
-        widgets::hairbar(
-            &mut p,
-            bc + Vec2::new(-130.0, -10.0),
-            260.0,
-            ready,
-            if ready >= 1.0 { theme::FG } else { theme::DIM },
-        );
+        let g = crate::combat::gun(tank.turret_kind);
+        if let crate::combat::Action::Beam { .. } = g.action {
+            // Beam: the bar is heat. It glows hot as it nears the limit, and
+            // stays hot until it has cooled right down after overheating.
+            let color = if me.overheated {
+                theme::HOT
+            } else if me.heat > 0.75 {
+                with_alpha(theme::HOT, 0.8)
+            } else {
+                theme::DIM
+            };
+            widgets::hairbar(&mut p, bc + Vec2::new(-130.0, -10.0), 260.0, me.heat, color);
+            if me.overheated {
+                let mut s = TextStyle::LABEL;
+                s.color = theme::HOT;
+                p.text(bc + Vec2::new(0.0, 4.0), "OVERHEATED", &s, Align::Center);
+            }
+        } else {
+            let ready = 1.0 - (me.reload_in / g.reload).clamp(0.0, 1.0);
+            widgets::hairbar(
+                &mut p,
+                bc + Vec2::new(-130.0, -10.0),
+                260.0,
+                ready,
+                if ready >= 1.0 { theme::FG } else { theme::DIM },
+            );
+        }
         if me.since_repair < 1.8 {
             let mut s = TextStyle::value(10.0);
             s.color = with_alpha(

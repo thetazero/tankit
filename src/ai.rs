@@ -328,6 +328,9 @@ impl Bot {
         dt: f32,
     ) -> (Command, bool) {
         let t = &world.tanks[me];
+        let g = crate::combat::gun(t.turret_kind);
+        // Short-range guns (the flamethrower) have to close in before they stop to fight.
+        let standoff = STANDOFF.min(g.range() * 0.6);
         let my2 = flat(t.pos);
         let eye = t.pos + Vec3::Y * t.gun_height();
 
@@ -394,7 +397,7 @@ impl Bot {
         // Driving.
         let mut cmd = Command::default();
         let dist = goal.distance(my2);
-        let close = visible && dist < STANDOFF;
+        let close = visible && dist < standoff;
         if let Some(&wp) = self.path.first() {
             let err = wrap_angle(yaw_of(wp - my2) - t.yaw());
             cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
@@ -451,13 +454,13 @@ impl Bot {
         match target {
             Some(o) if visible => {
                 let d = t.pos.distance(o.pos);
-                let lead = flat(o.vel) * (d / crate::combat::SHELL_SPEED) * 0.8;
+                let lead = flat(o.vel) * (d / g.speed()) * 0.8;
                 let want = yaw_of(flat(o.pos) + lead - my2) + self.aim_err;
                 let err = wrap_angle(want - t.turret_yaw());
                 cmd.turret = (err * 3.0).clamp(-1.0, 1.0);
                 // Tolerance scales with distance so a hull-width miss still counts as lined up.
                 let tol = (1.4 / d.max(1.0)).max(0.02);
-                if err.abs() < tol && d < FIRE_RANGE && self.seen_for > 0.45 {
+                if err.abs() < tol && d < FIRE_RANGE.min(g.range()) && self.seen_for > 0.45 {
                     fire = true;
                 }
             }

@@ -27,7 +27,7 @@ Four sides. Any of them can hire you.
 | **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. |
 | **The Resonant** | Human. A cult built around the crystals. The crystals answer: pilots who carry them see a moment ahead, ruined machines keep running, shells bend away. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. |
 | **The machines** | A machine faction (name and origin TBD). Machines hire mercenaries too. |
-| **The aliens** | An alien faction (name and nature TBD). |
+| **The Sorn** | The aliens (nature TBD). Their weapons throw slow, glowing plasma. |
 
 ## Factions vs. gameplay
 
@@ -37,9 +37,16 @@ play. Factions are the world, never a lock on your build. They show up as:
 - **Employers**: who the contract is for.
 - **Enemies**: who the bots are and how they look.
 - **Map owners**: whose territory a map is.
-- **Part makers**: every hull and turret has a maker, and parts from different
-  makers mix freely. Resonant parts are where the strange weapons come from
-  (e.g. shields, drains, phasing).
+- **Part makers**: every turret has a maker, and parts from different makers
+  mix freely. Each maker has its own kind of weapon:
+  - **Imperium**: conventional guns firing fast shells (Lance, Maul).
+  - **Sorn**: slow plasma (Wisp's orbs bounce off walls; Triad's three
+    barrels fire a rapid stream).
+  - **Machines**: a laser beam that burns while held, then overheats (Lumen).
+  - **Resonant**: the strange weapons, starting with a short-range crystal
+    flamethrower (Hymn). Later maybe shields, drains, phasing.
+
+  Hulls are basic kit that every side fields.
 
 ## Crystals
 
@@ -64,7 +71,7 @@ A devastated town in a desert.
 
 ## Open
 
-- Names and natures of the machine and alien factions.
+- The machine faction's name; the nature of the machines and the Sorn.
 - How the war started, and what keeps it going.
 - The first map's world and what happened there.
-- Who exactly made the current tank kit (which faction's parts).
+- Who made the hulls.

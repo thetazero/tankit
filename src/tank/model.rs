@@ -1461,3 +1461,567 @@ pub fn maul() -> TurretModel {
         recoil: 0.6,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Faction turrets. The Imperium builds the plated Lance and Maul above; the
+// others below each have their own shape language and glow color.
+
+/// Sorn plasma glow.
+const SORN_GLOW: Skin = Skin {
+    face: Vec4::new(0.25, 1.0, 0.6, mat::GLOW),
+    edge: Vec4::new(0.25, 1.0, 0.6, mat::GLOW),
+};
+/// Machine laser red.
+const LASER_GLOW: Skin = Skin {
+    face: Vec4::new(1.0, 0.07, 0.04, mat::GLOW),
+    edge: Vec4::new(1.0, 0.07, 0.04, mat::GLOW),
+};
+/// Resonant crystal violet.
+const CRYSTAL: Skin = Skin {
+    face: Vec4::new(0.6, 0.25, 1.0, mat::GLOW),
+    edge: Vec4::new(0.8, 0.55, 1.0, mat::GLOW),
+};
+
+/// An oval dome lofted from horizontal rings: half extents `rx` x `rz` at
+/// `y0`, rising `h`, centered at z = `cz`.
+fn dome(m: &mut MeshData, rx: f32, rz: f32, cz: f32, y0: f32, h: f32, skin: Skin) {
+    let steps = 5;
+    let rings: Vec<Vec<Vec3>> = (0..=steps)
+        .map(|i| {
+            let f = i as f32 / steps as f32;
+            // Quarter-ellipse profile, with a small flat cap on top.
+            let r = (1.0 - f * f).sqrt().max(0.18);
+            let y = y0 + h * (f * std::f32::consts::FRAC_PI_2).sin();
+            ngon(18, 1.0, Vec2::ZERO)
+                .iter()
+                .map(|p| Vec3::new(p.x * rx * r, y, cz + p.y * rz * r))
+                .collect()
+        })
+        .collect();
+    round(m, &rings, 0.02, skin);
+}
+
+/// A crystal shard: a hexagonal prism from `base` along `dir`, tapering to a point.
+fn shard(m: &mut MeshData, base: Vec3, dir: Vec3, len: f32, r: f32, skin: Skin) {
+    let d = dir.normalize();
+    let side = if d.y.abs() > 0.9 { Vec3::X } else { Vec3::Y };
+    let a = d.cross(side).normalize();
+    let b = d.cross(a);
+    let ring = |at: Vec3, rr: f32| -> Vec<Vec3> {
+        ngon(6, rr, Vec2::ZERO)
+            .iter()
+            .map(|p| at + a * p.x + b * p.y)
+            .collect()
+    };
+    solid(
+        m,
+        &[
+            ring(base, r * 0.7),
+            ring(base + d * len * 0.25, r),
+            ring(base + d * len * 0.7, r * 0.85),
+            ring(base + d * len, r * 0.08),
+        ],
+        0.005,
+        skin,
+    );
+}
+
+/// Sorn orb launcher: a smooth shell of a head with glowing seams, and one
+/// fat emitter that throws bouncing plasma.
+pub fn wisp() -> TurretModel {
+    let mut head = MeshData::default();
+    turret_ring(&mut head);
+    dome(&mut head, 0.95, 1.2, -0.15, 0.1, 0.72, CARBON);
+    // A painted carapace over the top, and a glowing seam band around the dome.
+    dome(&mut head, 0.7, 0.85, -0.3, 0.55, 0.38, PAINT);
+    round(
+        &mut head,
+        &[
+            at_y(&ngon(18, 1.0, Vec2::ZERO), 0.0)
+                .iter()
+                .map(|p| Vec3::new(p.x * 0.97, 0.34, -0.15 + p.z * 1.22))
+                .collect(),
+            at_y(&ngon(18, 1.0, Vec2::ZERO), 0.0)
+                .iter()
+                .map(|p| Vec3::new(p.x * 0.95, 0.4, -0.15 + p.z * 1.2))
+                .collect(),
+        ],
+        0.0,
+        SORN_GLOW,
+    );
+    // Two swept-back fins.
+    for s in [-1.0f32, 1.0] {
+        plate(
+            &mut head,
+            [
+                v(s * 0.45, 0.8, -0.6),
+                v(s * 0.45, 0.85, -0.95),
+                v(s * 0.6, 1.25, -1.45),
+                v(s * 0.6, 1.15, -1.1),
+            ],
+            0.04,
+            v(0.0, 0.6, -0.9),
+            CARBON_LIGHT,
+        );
+    }
+
+    let mut mantlet = MeshData::default();
+    round(
+        &mut mantlet,
+        &[
+            at_z(&ngon(12, 0.2, Vec2::ZERO), -0.4),
+            at_z(&ngon(12, 0.36, Vec2::ZERO), -0.15),
+            at_z(&ngon(12, 0.36, Vec2::ZERO), 0.2),
+            at_z(&ngon(12, 0.26, Vec2::ZERO), 0.42),
+        ],
+        0.02,
+        CARBON,
+    );
+
+    let mut barrel = MeshData::default();
+    let c = |r: f32| ngon(14, r, Vec2::ZERO);
+    round(
+        &mut barrel,
+        &[
+            at_z(&c(0.22), 0.3),
+            at_z(&c(0.27), 0.9),
+            at_z(&c(0.25), 1.7),
+        ],
+        0.02,
+        CARBON_LIGHT,
+    );
+    // Glowing containment rings, then a flared bell around a bright core.
+    for i in 0..3 {
+        let z = 0.75 + i as f32 * 0.32;
+        round(
+            &mut barrel,
+            &[at_z(&c(0.3), z), at_z(&c(0.3), z + 0.09)],
+            0.0,
+            SORN_GLOW,
+        );
+    }
+    round(
+        &mut barrel,
+        &[
+            at_z(&c(0.26), 1.65),
+            at_z(&c(0.4), 2.0),
+            at_z(&c(0.43), 2.1),
+        ],
+        0.02,
+        CARBON,
+    );
+    round(
+        &mut barrel,
+        &[at_z(&c(0.3), 2.0), at_z(&c(0.3), 2.11)],
+        0.0,
+        SORN_GLOW,
+    );
+
+    TurretModel {
+        head,
+        mantlet,
+        barrel,
+        pivot: v(0.0, 0.5, 0.85),
+        barrels: vec![Vec3::ZERO],
+        muzzle: 2.15,
+        recoil: 0.3,
+    }
+}
+
+/// Sorn rapid plasma: a long low shell with three thin barrels in a triangle
+/// that fire in turn.
+pub fn triad() -> TurretModel {
+    let mut head = MeshData::default();
+    turret_ring(&mut head);
+    dome(&mut head, 0.85, 1.35, -0.1, 0.1, 0.6, CARBON);
+    dome(&mut head, 0.55, 1.0, -0.2, 0.45, 0.3, PAINT);
+    // Glowing gill slits down each flank.
+    for s in [-1.0f32, 1.0] {
+        for k in 0..3 {
+            let z = -0.7 + k as f32 * 0.28;
+            plate(
+                &mut head,
+                [
+                    v(s * 0.8, 0.42, z),
+                    v(s * 0.8, 0.42, z + 0.14),
+                    v(s * 0.83, 0.22, z + 0.2),
+                    v(s * 0.83, 0.22, z + 0.06),
+                ],
+                0.015,
+                v(0.0, 0.35, z),
+                SORN_GLOW,
+            );
+        }
+    }
+    // A sensor crest on top.
+    plate(
+        &mut head,
+        [
+            v(0.0, 0.75, -1.1),
+            v(0.0, 0.8, 0.4),
+            v(0.0, 1.0, -0.1),
+            v(0.0, 1.05, -0.9),
+        ],
+        0.05,
+        v(0.3, 0.5, -0.4),
+        CARBON_LIGHT,
+    );
+
+    let mut mantlet = MeshData::default();
+    // Triangular collar around the barrel cluster.
+    round(
+        &mut mantlet,
+        &[
+            at_z(&ngon(3, 0.42, Vec2::ZERO), -0.35),
+            at_z(&ngon(3, 0.46, Vec2::ZERO), 0.1),
+            at_z(&ngon(3, 0.4, Vec2::ZERO), 0.35),
+        ],
+        0.06,
+        CARBON,
+    );
+    round(
+        &mut mantlet,
+        &[
+            at_z(&ngon(9, 0.1, Vec2::ZERO), 0.3),
+            at_z(&ngon(9, 0.1, Vec2::ZERO), 0.4),
+        ],
+        0.0,
+        SORN_GLOW,
+    );
+
+    let mut barrel = MeshData::default();
+    let c = |r: f32| ngon(10, r, Vec2::ZERO);
+    round(
+        &mut barrel,
+        &[at_z(&c(0.09), 0.2), at_z(&c(0.08), 2.1)],
+        0.0,
+        CARBON_LIGHT,
+    );
+    round(
+        &mut barrel,
+        &[at_z(&c(0.12), 0.9), at_z(&c(0.12), 1.15)],
+        0.01,
+        CARBON,
+    );
+    round(
+        &mut barrel,
+        &[at_z(&c(0.11), 2.05), at_z(&c(0.11), 2.25)],
+        0.0,
+        SORN_GLOW,
+    );
+
+    let r = 0.17;
+    TurretModel {
+        head,
+        mantlet,
+        barrel,
+        pivot: v(0.0, 0.42, 0.95),
+        barrels: (0..3)
+            .map(|k| {
+                let a = std::f32::consts::FRAC_PI_2 + k as f32 / 3.0 * TAU;
+                v(a.cos() * r, a.sin() * r, 0.0)
+            })
+            .collect(),
+        muzzle: 2.3,
+        recoil: 0.25,
+    }
+}
+
+/// Machine laser: a blocky, asymmetric housing stacked with heat-sink fins,
+/// and a long focusing rod ending in a red lens.
+pub fn lumen() -> TurretModel {
+    let mut head = MeshData::default();
+    let inside = v(0.0, 0.45, -0.2);
+    turret_ring(&mut head);
+    solid(
+        &mut head,
+        &[
+            at_z(
+                &rect(Vec2::new(0.0, 0.42), Vec2::new(0.62, 0.32), 0.05),
+                -1.2,
+            ),
+            at_z(
+                &rect(Vec2::new(0.0, 0.42), Vec2::new(0.7, 0.36), 0.06),
+                -0.3,
+            ),
+            at_z(&rect(Vec2::new(0.0, 0.4), Vec2::new(0.6, 0.3), 0.06), 0.9),
+        ],
+        0.03,
+        CARBON,
+    );
+    // Power block offset to one side, and an armored cap on the other.
+    block(
+        &mut head,
+        v(-0.78, 0.15, -1.0),
+        v(-0.3, 0.98, 0.1),
+        0.04,
+        PAINT,
+    );
+    block(
+        &mut head,
+        v(0.3, 0.78, -0.9),
+        v(0.72, 0.9, 0.6),
+        0.03,
+        PAINT,
+    );
+    // Heat-sink fins: a stack of thin metal plates down the right flank.
+    for k in 0..7 {
+        let z = -1.05 + k as f32 * 0.16;
+        block(
+            &mut head,
+            v(0.7, 0.2, z),
+            v(0.86, 0.74, z + 0.05),
+            0.01,
+            METAL,
+        );
+    }
+    // Red status slit and a rear exhaust grille.
+    plate(
+        &mut head,
+        [
+            v(-0.8, 0.8, -0.7),
+            v(-0.8, 0.8, -0.1),
+            v(-0.8, 0.72, -0.1),
+            v(-0.8, 0.72, -0.7),
+        ],
+        0.015,
+        inside,
+        LASER_GLOW,
+    );
+    plate(
+        &mut head,
+        [
+            v(-0.2, 0.62, -1.21),
+            v(0.45, 0.62, -1.21),
+            v(0.45, 0.3, -1.21),
+            v(-0.2, 0.3, -1.21),
+        ],
+        0.015,
+        inside,
+        METAL,
+    );
+
+    let mut mantlet = MeshData::default();
+    block(
+        &mut mantlet,
+        v(-0.3, -0.22, -0.35),
+        v(0.3, 0.22, 0.4),
+        0.04,
+        CARBON,
+    );
+    round(
+        &mut mantlet,
+        &[
+            at_x(&ngon(8, 0.1, Vec2::ZERO), -0.4),
+            at_x(&ngon(8, 0.1, Vec2::ZERO), 0.4),
+        ],
+        0.02,
+        METAL,
+    );
+
+    let mut barrel = MeshData::default();
+    let sq = |h: f32| rect(Vec2::ZERO, Vec2::splat(h), h * 0.35);
+    solid(
+        &mut barrel,
+        &[at_z(&sq(0.2), 0.3), at_z(&sq(0.18), 1.1)],
+        0.03,
+        CARBON_LIGHT,
+    );
+    round(
+        &mut barrel,
+        &[
+            at_z(&ngon(8, 0.07, Vec2::ZERO), 1.05),
+            at_z(&ngon(8, 0.07, Vec2::ZERO), 2.9),
+        ],
+        0.0,
+        METAL,
+    );
+    // Focusing coils along the rod.
+    for i in 0..4 {
+        let z = 1.3 + i as f32 * 0.38;
+        solid(
+            &mut barrel,
+            &[at_z(&sq(0.13), z), at_z(&sq(0.13), z + 0.12)],
+            0.015,
+            CARBON,
+        );
+    }
+    // Lens housing and the red lens.
+    solid(
+        &mut barrel,
+        &[
+            at_z(&ngon(8, 0.16, Vec2::ZERO), 2.85),
+            at_z(&ngon(8, 0.19, Vec2::ZERO), 3.15),
+        ],
+        0.02,
+        CARBON,
+    );
+    round(
+        &mut barrel,
+        &[
+            at_z(&ngon(10, 0.11, Vec2::ZERO), 3.1),
+            at_z(&ngon(10, 0.11, Vec2::ZERO), 3.16),
+        ],
+        0.0,
+        LASER_GLOW,
+    );
+
+    TurretModel {
+        head,
+        mantlet,
+        barrel,
+        pivot: v(0.0, 0.42, 0.92),
+        barrels: vec![Vec3::ZERO],
+        muzzle: 3.2,
+        recoil: 0.0,
+    }
+}
+
+/// Resonant flamethrower: a rounded, painted reliquary of a head crowned with
+/// glowing crystals, and a short wide nozzle caged in crystal.
+pub fn hymn() -> TurretModel {
+    let mut head = MeshData::default();
+    turret_ring(&mut head);
+    round(
+        &mut head,
+        &[
+            at_y(&ngon(8, 0.9, Vec2::new(0.0, -0.15)), 0.1),
+            at_y(&ngon(8, 0.95, Vec2::new(0.0, -0.15)), 0.45),
+            at_y(&ngon(8, 0.7, Vec2::new(0.0, -0.2)), 0.8),
+        ],
+        0.04,
+        PAINT,
+    );
+    // Dark band with a glowing script line around the waist.
+    round(
+        &mut head,
+        &[
+            at_y(&ngon(8, 0.965, Vec2::new(0.0, -0.15)), 0.4),
+            at_y(&ngon(8, 0.965, Vec2::new(0.0, -0.15)), 0.5),
+        ],
+        0.0,
+        CARBON,
+    );
+    round(
+        &mut head,
+        &[
+            at_y(&ngon(8, 0.97, Vec2::new(0.0, -0.15)), 0.44),
+            at_y(&ngon(8, 0.97, Vec2::new(0.0, -0.15)), 0.46),
+        ],
+        0.0,
+        CRYSTAL,
+    );
+    // Crown of crystals rising out of the back.
+    shard(
+        &mut head,
+        v(0.0, 0.75, -0.45),
+        v(0.0, 1.0, -0.25),
+        0.8,
+        0.13,
+        CRYSTAL,
+    );
+    shard(
+        &mut head,
+        v(0.28, 0.72, -0.35),
+        v(0.35, 1.0, -0.2),
+        0.55,
+        0.1,
+        CRYSTAL,
+    );
+    shard(
+        &mut head,
+        v(-0.28, 0.72, -0.35),
+        v(-0.35, 1.0, -0.2),
+        0.55,
+        0.1,
+        CRYSTAL,
+    );
+    shard(
+        &mut head,
+        v(0.15, 0.7, -0.75),
+        v(0.2, 0.8, -0.6),
+        0.45,
+        0.08,
+        CRYSTAL,
+    );
+    shard(
+        &mut head,
+        v(-0.15, 0.7, -0.75),
+        v(-0.2, 0.8, -0.6),
+        0.45,
+        0.08,
+        CRYSTAL,
+    );
+    // Fuel reservoir: two tanks slung at the back.
+    for s in [-1.0f32, 1.0] {
+        round(
+            &mut head,
+            &[
+                at_z(&ngon(10, 0.17, Vec2::new(s * 0.45, 0.35)), -1.25),
+                at_z(&ngon(10, 0.17, Vec2::new(s * 0.45, 0.35)), -0.75),
+            ],
+            0.04,
+            METAL,
+        );
+    }
+
+    let mut mantlet = MeshData::default();
+    round(
+        &mut mantlet,
+        &[
+            at_z(&ngon(8, 0.26, Vec2::ZERO), -0.35),
+            at_z(&ngon(8, 0.32, Vec2::ZERO), 0.0),
+            at_z(&ngon(8, 0.28, Vec2::ZERO), 0.35),
+        ],
+        0.03,
+        CARBON,
+    );
+
+    let mut barrel = MeshData::default();
+    let c = |r: f32| ngon(12, r, Vec2::ZERO);
+    round(
+        &mut barrel,
+        &[at_z(&c(0.17), 0.3), at_z(&c(0.15), 1.2)],
+        0.02,
+        CARBON_LIGHT,
+    );
+    round(
+        &mut barrel,
+        &[
+            at_z(&c(0.16), 1.15),
+            at_z(&c(0.3), 1.65),
+            at_z(&c(0.32), 1.8),
+        ],
+        0.02,
+        PAINT,
+    );
+    round(
+        &mut barrel,
+        &[at_z(&c(0.22), 1.75), at_z(&c(0.22), 1.81)],
+        0.0,
+        CRYSTAL,
+    );
+    // Crystal cage: four shards along the nozzle pointing forward.
+    for k in 0..4 {
+        let a = k as f32 / 4.0 * TAU + std::f32::consts::FRAC_PI_4;
+        let o = v(a.cos() * 0.24, a.sin() * 0.24, 0.6);
+        shard(
+            &mut barrel,
+            o,
+            v(a.cos() * 0.15, a.sin() * 0.15, 1.0),
+            0.75,
+            0.06,
+            CRYSTAL,
+        );
+    }
+
+    TurretModel {
+        head,
+        mantlet,
+        barrel,
+        pivot: v(0.0, 0.45, 0.8),
+        barrels: vec![Vec3::ZERO],
+        muzzle: 1.85,
+        recoil: 0.0,
+    }
+}
