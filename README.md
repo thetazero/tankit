@@ -36,16 +36,21 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 
 ## Tank kit
 
-Tanks are procedural (`src/tank/`), assembled from thick beveled armor plates
-and chamfered lofted solids. Two hulls (Lancer: low wedge; Bastion: heavy,
-short upper skirts) and two turrets (Lance: long cannon; Maul: twin short
-cannons) mix freely. Look follows `docs/design-direction.md`: weathered
-gunmetal with dust, chipped edges and scratches; the team color only mutes
-into the painted plates; nothing on the tank glows (only the muzzle flash).
+Tanks are procedural (`src/tank/`), assembled from a few thick, flat armor
+slabs and chamfered lofted solids. Two hulls (Lancer: low wedge; Bastion:
+heavy, high skirts) and two turrets (Lance: long cannon; Maul: twin short
+cannons) mix freely. The look follows `docs/design-direction.md`: low and
+long, near-monochrome dusty gunmetal, detail concentrated at the joints, and
+nothing glows except the muzzle flash. Team color is only a faint cast.
 
-Exposed machinery that moves with the tank: tread links run around the
-wheels at each side's own speed; road wheels hang on swing arms with
-coil-over shocks that stretch and compress as the hull pitches and rolls; a
-hydraulic ram raises the gun (the stabilizer lags hull motion, so it's always
-working); recoil cylinders slide with the barrel; the ring gear turns under
-the turret. Surface detail is in the shader, materials 6–12 in `scene.wgsl`.
+Exposed machinery that moves with the tank:
+- tread links run around the wheels at each side's own speed
+- each road wheel hangs on a long trailing arm (raked like a row of legs),
+  with a coil-over shock that stretches and compresses as the hull pitches
+  and rolls
+- a hydraulic ram raises the gun, and the stabilizer lags hull motion, so the
+  ram is always working
+- recoil cylinders slide with the barrel
+- the ring gear turns under the turret
+
+Surface shading is in `scene.wgsl`, materials 6–12.

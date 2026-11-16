@@ -136,50 +136,41 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
     // Grime collects low on the vehicle.
     let grime = mix(0.62, 1.0, smoothstep(0.1, 1.2, wpos.y));
     if (m == 6) {
-        // Rolled armor steel: mottled, pitted, faint plate seams.
-        s.albedo = base * (0.75 + 0.5 * mottle) * grime;
-        let pits = smoothstep(0.78, 0.86, noise2(uv * 55.0));
-        s.albedo *= 1.0 - pits * 0.35;
-        let seams = max(grid_line(uv.x * 0.9, 0.006, duv.x * 0.9), grid_line(uv.y * 0.9 + 0.3, 0.006, duv.y * 0.9));
-        s.albedo *= 1.0 - seams * 0.35;
-        s.metal = 0.45;
-        s.rough = 0.62 + 0.15 * mottle;
+        // Bare armor steel: big clean surfaces, only a soft mottle.
+        s.albedo = base * (0.88 + 0.24 * mottle) * grime;
+        s.metal = 0.35;
+        s.rough = 0.7 + 0.1 * mottle;
     } else if (m == 7 || m == 11) {
-        // Weathered paint (muted team color via tint). Edges (11) are chipped to bare steel.
-        s.albedo = base * (0.8 + 0.35 * mottle) * grime;
-        s.rough = 0.78;
-        let chip_edge = select(0.0, 1.0, m == 11);
-        let chips = smoothstep(0.74 - chip_edge * 0.24, 0.8 - chip_edge * 0.24, noise2(uv * 16.0 + 3.1) * 0.65 + noise2(uv * 47.0) * 0.35);
-        s.albedo = mix(s.albedo, vec3<f32>(0.13, 0.13, 0.13) * (0.8 + 0.4 * mottle), chips);
-        s.metal = chips * 0.6;
-        s.rough = mix(s.rough, 0.5, chips);
-        // Scratches and rain streaks.
-        let scratch = smoothstep(0.86, 0.92, noise2(vec2<f32>(uv.x * 60.0, uv.y * 4.0)));
-        let streak = smoothstep(0.55, 0.9, noise2(vec2<f32>(uv.x * 14.0, uv.y * 0.8)));
-        s.albedo *= (1.0 - scratch * 0.25) * (1.0 - streak * 0.18);
+        // Sun-bleached paint over steel; chamfered edges (11) rubbed slightly darker.
+        s.albedo = base * (0.9 + 0.2 * mottle) * grime;
+        s.rough = 0.82;
+        if (m == 11) {
+            s.albedo *= 0.8;
+            s.metal = 0.2;
+            s.rough = 0.65;
+        }
     } else if (m == 8) {
-        // Track steel: dark, polished bright where it meets the ground.
-        s.albedo = base * (0.7 + 0.6 * noise2(uv * 30.0)) * grime;
-        s.metal = 0.6;
+        // Track steel, polished where it meets the ground.
+        s.albedo = base * (0.8 + 0.4 * noise2(uv * 30.0)) * grime;
+        s.metal = 0.55;
         s.rough = 0.6;
     } else if (m == 10) {
-        // Machined metal (rods, pins, axles): the only shiny parts, kept dull-ish.
+        // Machined metal (rods, pins, axles): the only slightly bright parts.
         let brush = noise2(vec2<f32>(uv.x * 3.0, uv.y * 80.0));
-        s.albedo = base * (0.85 + 0.25 * brush);
-        s.metal = 0.85;
-        s.rough = 0.35 + 0.12 * brush;
+        s.albedo = base * (0.9 + 0.2 * brush);
+        s.metal = 0.8;
+        s.rough = 0.4 + 0.1 * brush;
     } else if (m == 12) {
-        // Vision blocks: dark glass, a little dust.
-        s.albedo = base;
+        // Vision blocks: dark glass.
         s.metal = 0.3;
         s.rough = 0.12;
     }
-    // Dust settles on upward-facing surfaces and is kicked up onto the lower hull.
-    if (m != 10 && m != 12) {
-        let up = smoothstep(0.35, 0.95, wn.y);
+    // An even film of fine dust over everything, a little heavier on top and low down.
+    if (m != 12) {
+        let up = smoothstep(0.3, 0.95, wn.y);
         let low = 1.0 - smoothstep(0.2, 1.0, wpos.y);
-        let d = clamp((up * 0.3 + low * 0.35) * (0.3 + 0.9 * noise2(uv * 5.0 + 7.0)), 0.0, 0.5);
-        s.albedo = mix(s.albedo, vec3<f32>(0.24, 0.21, 0.17), d);
+        let d = clamp(0.1 + up * 0.14 + low * 0.14 + (noise2(uv * 1.5 + 7.0) - 0.5) * 0.08, 0.0, 0.45);
+        s.albedo = mix(s.albedo, vec3<f32>(0.3, 0.27, 0.22), d);
         s.rough = mix(s.rough, 0.95, d);
         s.metal *= 1.0 - d;
     }
@@ -266,7 +257,8 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     // On tanks the instance tint is the team color; it only affects paint, and
     // muted, so bright color stays reserved for combat effects.
     let paint = m == 7 || m == 11;
-    let team = mix(vec3<f32>(dot(v.tint.rgb, vec3<f32>(0.3, 0.55, 0.15))), v.tint.rgb, 0.6);
+    // Near-monochrome: the team color is only a faint cast on the paint.
+    let team = mix(vec3<f32>(dot(v.tint.rgb, vec3<f32>(0.3, 0.55, 0.15))), v.tint.rgb, 0.2);
     var base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     if (is_tank && paint) {
         base = v.color.rgb * team;

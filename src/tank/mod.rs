@@ -35,7 +35,10 @@ impl KitMeshes {
             ];
             (h, parts)
         };
-        KitMeshes { hulls: vec![hull(model::lancer()), hull(model::bastion())], turrets: vec![model::lance(), model::maul()] }
+        KitMeshes {
+            hulls: vec![hull(model::lancer().stretched()), hull(model::bastion().stretched())],
+            turrets: vec![model::lance().stretched(), model::maul().stretched()],
+        }
     }
 
     #[cfg(test)]
@@ -71,15 +74,14 @@ struct Strut {
 
 impl Strut {
     fn layout(run: &Running, top_y: f32) -> Vec<Strut> {
-        let x = run.track_x + run.track_width * 0.5 + 0.08;
+        let x = run.track_x + run.track_width * 0.5 + 0.12;
         run.road
             .iter()
             .map(|w| {
-                // Arms point from a pivot nearer the hull's middle out to the wheel.
-                let dz = if w.center.x > 0.0 { -0.3 } else { 0.3 };
+                // Long trailing arms, all raked the same way like a row of legs.
                 let hub = Vec3::new(x, w.center.y, w.center.x);
-                let pivot = hub + Vec3::new(0.0, 0.26, dz);
-                let top = Vec3::new(x, top_y, w.center.x + dz * 0.15);
+                let pivot = hub + Vec3::new(0.0, 0.36, 0.5);
+                let top = Vec3::new(x, top_y, w.center.x + 0.38);
                 Strut { hub, pivot, top }
             })
             .collect()
