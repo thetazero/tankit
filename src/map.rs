@@ -398,6 +398,12 @@ const BUILDING_COLORS: [[f32; 3]; 8] = [
 ];
 
 impl Map {
+    /// Put the player on side 1: the two factions trade places, bases and all.
+    pub fn swap_sides(&mut self) {
+        self.factions.swap(0, 1);
+        self.bases.swap(0, 1);
+    }
+
     pub fn generate(seed: u64) -> Map {
         let mut rng = Rng::new(seed);
         let size = GRID as f32 * CELL;

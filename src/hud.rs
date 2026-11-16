@@ -8,7 +8,7 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase, XP_POP_TIME};
+use crate::combat::{FEED_TIME, Match, Phase, TRUST_POP_TIME};
 use crate::economy::{Outcome, Payout};
 use crate::hold::{self, Control};
 use crate::mission::Contract;
@@ -138,12 +138,12 @@ impl Hud {
         label(
             &mut p,
             Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "XP",
+            "TRUST",
             Align::Left,
         );
         p.text(
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
-            &format!("+{}", m.xp),
+            &format!("+{}", m.trust),
             &TextStyle::value(14.0),
             Align::Left,
         );
@@ -422,15 +422,15 @@ impl Hud {
             );
         }
 
-        // XP popups, just above the crosshair, drifting up as they fade.
+        // Trust popups, just above the crosshair, drifting up as they fade.
         if !board {
-            for (row, x) in m.xp_pops.iter().rev().take(3).enumerate() {
-                let fade =
-                    ((XP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0) * (x.age / 0.08).clamp(0.0, 1.0);
+            for (row, x) in m.trust_pops.iter().rev().take(3).enumerate() {
+                let fade = ((TRUST_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
+                    * (x.age / 0.08).clamp(0.0, 1.0);
                 let at = Vec2::new(w * 0.5, h * 0.30 - x.age * 14.0 - row as f32 * 30.0);
                 let mut s = TextStyle::value(16.0);
                 s.color = with_alpha(theme::HOT, fade);
-                p.text(at, &format!("+{} XP", x.amount), &s, Align::Center);
+                p.text(at, &format!("+{} TRUST", x.amount), &s, Align::Center);
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(theme::FG, 0.8 * fade);
                 p.text(at + Vec2::new(0.0, 24.0), x.reason, &l, Align::Center);
@@ -572,7 +572,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         label(
             p,
             Vec2::new(top.x, y + 56.0),
-            &format!("+{} XP THIS MATCH", m.xp),
+            &format!("+{} {} TRUST THIS MATCH", m.trust, m.factions[0].name()),
             Align::Center,
         );
         y += 84.0;

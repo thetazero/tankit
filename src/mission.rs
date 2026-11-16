@@ -1,7 +1,7 @@
 //! Missions: one map per contract (game mode).
 
 use crate::MapKind;
-use crate::combat::{KILL_XP, ROUND_TIME};
+use crate::combat::{KILL_TRUST, ROUND_TIME};
 use crate::faction::Faction;
 use crate::hold;
 
@@ -93,8 +93,12 @@ impl Mission {
 
     pub fn pay(&self) -> String {
         match self.contract {
-            Contract::Attrition => format!("CRYSTALS · {KILL_XP} XP PER KILL"),
-            Contract::Hold => format!("CRYSTALS · {} XP / {:.0} S", hold::HOLD_XP, hold::XP_EVERY),
+            Contract::Attrition => format!("CRYSTALS · {KILL_TRUST} TRUST PER KILL"),
+            Contract::Hold => format!(
+                "CRYSTALS · {} TRUST / {:.0} S",
+                hold::HOLD_TRUST,
+                hold::TRUST_EVERY
+            ),
         }
     }
 }
