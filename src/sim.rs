@@ -30,6 +30,9 @@ pub enum HullKind {
     Bastion,
     /// Ithessar: rides a plasma cushion instead of tracks.
     Sethuun,
+    /// Resonant: a light vessel run by the crystal at its heart. Thin armor,
+    /// but it keeps going for a few seconds after it's broken.
+    Vigil,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +57,7 @@ impl HullKind {
         match self {
             HullKind::Lancer | HullKind::Bastion => Faction::Imperium,
             HullKind::Sethuun => Faction::Ithessar,
+            HullKind::Vigil => Faction::Resonant,
         }
     }
 }
@@ -170,9 +174,16 @@ impl Chassis {
         hover: true,
     };
 
+    /// Resonant hull: Lancer's running gear, lighter (no armor to speak of).
+    pub const VIGIL: Chassis = Chassis {
+        mass: 15_000.0,
+        ..Chassis::LANCER
+    };
+
     pub fn of(kind: HullKind) -> &'static Chassis {
         match kind {
             HullKind::Lancer => &Chassis::LANCER,
+            HullKind::Vigil => &Chassis::VIGIL,
             HullKind::Bastion => &Chassis::BASTION,
             HullKind::Sethuun => &Chassis::SETHUUN,
         }
@@ -355,8 +366,8 @@ pub struct HullStats {
 
 impl HullStats {
     pub const LANCER: Self = Self {
-        max_speed: 13.0,
-        reverse_speed: 7.5,
+        max_speed: 11.5,
+        reverse_speed: 7.0,
         accel: 11.0,
         power_knee: 8.0,
         brake: 24.0,
@@ -368,6 +379,12 @@ impl HullStats {
         turret_speed: 1.3,
         turret_accel: 2.6,
         turret_brake: 10.0,
+    };
+    /// Fast: Lancer's old pace.
+    pub const VIGIL: Self = Self {
+        max_speed: 13.0,
+        reverse_speed: 7.5,
+        ..HullStats::LANCER
     };
     pub const BASTION: Self = Self {
         max_speed: 10.0,
@@ -410,6 +427,7 @@ impl HullStats {
             HullKind::Lancer => HullStats::LANCER,
             HullKind::Bastion => HullStats::BASTION,
             HullKind::Sethuun => HullStats::SETHUUN,
+            HullKind::Vigil => HullStats::VIGIL,
         }
     }
 }
@@ -459,6 +477,9 @@ pub struct Tank {
     pub age: f32,
     /// Destroyed: a hover hull's field is out and it falls.
     pub dead: bool,
+    /// Broken but still running (Vigil): how much strength it has left,
+    /// 1 down to 0. `None` while whole.
+    pub husk: Option<f32>,
     /// Hover hulls bank into turns (radians, + rolls right side down). Visual.
     pub lean: f32,
     /// Spin-up guns: how far spun up, 0..1, and the cluster's angle.
@@ -625,6 +646,7 @@ impl World {
             flipped_time: 0.0,
             age: 0.0,
             dead: false,
+            husk: None,
             lean: 0.0,
             spool: 0.0,
             spin: 0.0,

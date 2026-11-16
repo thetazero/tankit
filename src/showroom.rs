@@ -37,6 +37,8 @@ pub fn world() -> World {
         .map(|(i, &tu)| {
             let h = if tu.maker() == crate::faction::Faction::Ithessar {
                 HullKind::Sethuun
+            } else if tu.maker() == crate::faction::Faction::Resonant {
+                HullKind::Vigil
             } else if i % 2 == 0 {
                 HullKind::Lancer
             } else {

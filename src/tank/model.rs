@@ -1482,7 +1482,7 @@ const LASER_GLOW: Skin = Skin {
     edge: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
 };
 /// Resonant crystal blue.
-const CRYSTAL: Skin = Skin {
+pub(crate) const CRYSTAL: Skin = Skin {
     face: Vec4::new(0.2, 0.5, 1.0, Material::Glow.id()),
     edge: Vec4::new(0.55, 0.8, 1.0, Material::Glow.id()),
 };
@@ -1664,7 +1664,8 @@ pub fn lumen() -> TurretModel {
 }
 
 /// Resonant flamethrower: a rounded, painted reliquary of a head crowned with
-/// glowing crystals, and a short wide nozzle caged in crystal.
+/// glowing crystals, a censer hung at its back, and a short wide nozzle caged
+/// in crystal that breathes the fire.
 pub fn hymn() -> TurretModel {
     let mut head = MeshData::default();
     turret_ring(&mut head);
@@ -1738,18 +1739,43 @@ pub fn hymn() -> TurretModel {
         0.08,
         CRYSTAL,
     );
-    // Fuel reservoir: two tanks slung at the back.
-    for s in [-1.0f32, 1.0] {
-        round(
-            &mut head,
-            &[
-                at_z(&ngon(10, 0.17, Vec2::new(s * 0.45, 0.35)), -1.25),
-                at_z(&ngon(10, 0.17, Vec2::new(s * 0.45, 0.35)), -0.75),
-            ],
-            0.04,
-            METAL,
-        );
+    // The censer: a pierced gilt vessel on chains from a yoke off the left
+    // flank, the crystal fire glowing through it.
+    use super::resonant::{GILT, bar};
+    bar(
+        &mut head,
+        v(0.75, 0.7, -0.35),
+        v(1.22, 0.95, -0.35),
+        0.07,
+        GILT,
+    );
+    let top = v(1.2, 0.93, -0.35);
+    let hang = v(1.2, 0.5, -0.35);
+    for k in 0..3 {
+        let a = k as f32 / 3.0 * TAU;
+        let at = hang + v(a.cos() * 0.13, 0.12, a.sin() * 0.13);
+        bar(&mut head, top, at, 0.025, GILT);
     }
+    let ring = |r: f32, y: f32| at_y(&ngon(8, r, Vec2::new(hang.x, hang.z)), y);
+    round(
+        &mut head,
+        &[
+            ring(0.05, hang.y - 0.2),
+            ring(0.14, hang.y - 0.14),
+            ring(0.17, hang.y - 0.02),
+            ring(0.15, hang.y + 0.08),
+            ring(0.06, hang.y + 0.16),
+        ],
+        0.02,
+        GILT,
+    );
+    // Its piercings: a band of crystal light round the belly.
+    round(
+        &mut head,
+        &[ring(0.175, hang.y - 0.05), ring(0.175, hang.y + 0.01)],
+        0.0,
+        CRYSTAL,
+    );
 
     let mut mantlet = MeshData::default();
     round(

@@ -47,7 +47,8 @@ impl Faction {
         }
     }
 
-    /// Tint for the tank's light armor plates.
+    /// The side's color out in the world (the Hold site's rings). Tanks
+    /// don't wear it: they keep their own paint.
     pub fn paint(self) -> Vec3 {
         match self {
             // Pale, cold grey-white.
@@ -71,11 +72,12 @@ impl Faction {
         }
     }
 
-    /// The hulls this side's bots drive: the Ithessar their own, everyone
-    /// else the Imperium's tracked hulls (until they have hulls of their own).
+    /// The hulls this side's bots drive: their own, or the Imperium's tracked
+    /// hulls for the machines (until they have hulls of their own).
     pub fn hulls(self) -> &'static [HullKind] {
         match self {
             Faction::Ithessar => &[HullKind::Sethuun],
+            Faction::Resonant => &[HullKind::Vigil],
             _ => &[HullKind::Lancer, HullKind::Bastion],
         }
     }
