@@ -53,13 +53,11 @@ impl Part {
         PARTS.iter().position(|&p| p == self).unwrap_or(0)
     }
 
-    /// Who makes it, and so whose trust puts it up for sale. `None`: hulls,
-    /// basic kit every side fields.
-    pub fn maker(self) -> Option<Faction> {
+    /// Who makes it, and so whose trust puts it up for sale.
+    pub fn maker(self) -> Faction {
         match self {
-            Part::Hull(HullKind::Sethuun) => Some(Faction::Ithessar),
-            Part::Hull(_) => None,
-            Part::Turret(k) => Some(k.maker()),
+            Part::Hull(k) => k.maker(),
+            Part::Turret(k) => k.maker(),
         }
     }
 

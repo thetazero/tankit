@@ -1152,14 +1152,14 @@ impl Match {
                     out.push(ball(p, 0.55 * size, PLASMA.extend(2.2)));
                     out.push(ball(p, 0.28 * size, PLASMA_HOT.extend(4.0)));
                 }
-                // Crystal fire: white-hot at the nozzle, swelling into violet, then gone.
+                // Crystal fire: white-hot at the nozzle, swelling into blue, then gone.
                 Look::Flame => {
                     // A lumpy cloud of three blobs, tumbling as it swells.
                     let f = s.age / s.spec.life;
                     let size = (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt();
-                    let hot = Vec3::new(1.0, 0.9, 1.0)
-                        .lerp(Vec3::new(0.75, 0.35, 1.0), (f * 2.0).min(1.0))
-                        .lerp(Vec3::new(0.35, 0.1, 0.7), (f * 1.5 - 0.5).clamp(0.0, 1.0));
+                    let hot = Vec3::new(0.9, 0.97, 1.0)
+                        .lerp(Vec3::new(0.25, 0.55, 1.0), (f * 2.0).min(1.0))
+                        .lerp(Vec3::new(0.06, 0.15, 0.7), (f * 1.5 - 0.5).clamp(0.0, 1.0));
                     let glow = 1.0 + 3.0 * (1.0 - f);
                     let spin = s.seed * std::f32::consts::TAU + s.age * 9.0;
                     for k in 0..3 {
