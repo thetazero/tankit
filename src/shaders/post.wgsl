@@ -32,10 +32,15 @@ fn fs_post(v: PostOut) -> @location(0) vec4<f32> {
     var c = textureSample(hdr_tex, hdr_samp, v.uv).rgb;
     // SSAO, lightly blurred (the raw pass uses a per-pixel rotated kernel).
     let px = 1.0 / vec2<f32>(textureDimensions(ao_tex));
+    // A 5x5 box in 3x3 taps: a linear tap halfway between two texels is
+    // their average, so along each axis texels -2,-1 come from one tap at
+    // -1.5, texels 0,1 from one at 0.5, and texel 2 alone (weights 2, 2, 1).
+    let at = array<vec2<f32>, 3>(vec2<f32>(-1.5, 2.0), vec2<f32>(0.5, 2.0), vec2<f32>(2.0, 1.0));
     var ao = 0.0;
-    for (var y = -2; y <= 2; y++) {
-        for (var x = -2; x <= 2; x++) {
-            ao += textureSample(ao_tex, hdr_samp, v.uv + vec2<f32>(f32(x), f32(y)) * px).r;
+    for (var y = 0; y < 3; y++) {
+        for (var x = 0; x < 3; x++) {
+            let o = vec2<f32>(at[x].x, at[y].x);
+            ao += textureSample(ao_tex, hdr_samp, v.uv + o * px).r * at[x].y * at[y].y;
         }
     }
     c *= ao / 25.0;
