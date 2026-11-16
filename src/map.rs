@@ -10,6 +10,7 @@ use crate::faction::Faction;
 use crate::rng::Rng;
 
 mod kiln;
+mod landmarks;
 mod props;
 mod ruins;
 mod saltmarket;
@@ -66,6 +67,9 @@ pub struct OBox {
     /// Rotation about the box's local x axis after the yaw, radians: positive
     /// tips its local +z end down. The box turns about its own center.
     pub tilt: f32,
+    /// Rotation about the box's own long (local z) axis after the tilt:
+    /// several boxes rolled to different angles make a round pipe or hull.
+    pub roll: f32,
     /// Collides and blocks navigation. Debris is visual only.
     pub solid: bool,
     /// Visual wear (the collider stays a box): how big the chips knocked out
@@ -89,6 +93,7 @@ impl Default for OBox {
             side_mat: Material::Plain,
             top_mat: Material::Plain,
             tilt: 0.0,
+            roll: 0.0,
             solid: true,
             chip: 0.0,
             broken: false,
@@ -100,7 +105,9 @@ impl Default for OBox {
 impl OBox {
     /// Full rotation: yaw about +y, then tilt about the local x axis.
     pub fn rotation(&self) -> glam::Quat {
-        glam::Quat::from_rotation_y(self.yaw) * glam::Quat::from_rotation_x(self.tilt)
+        glam::Quat::from_rotation_y(self.yaw)
+            * glam::Quat::from_rotation_x(self.tilt)
+            * glam::Quat::from_rotation_z(self.roll)
     }
 
     /// Box center in 3D.

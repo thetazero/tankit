@@ -530,7 +530,7 @@ impl Map {
         map.terrain = Some(terrain);
         map.market_hall();
         map.traces(&mut rng);
-        map.dam();
+        map.dam(&mut rng);
         map.landmarks();
         map.reservoir_cover(&mut rng);
         map.ridge();
@@ -729,22 +729,11 @@ impl Map {
 
     /// The dam across the reservoir's south end: 5 m high, breached in the
     /// middle, with a ramp up from the town and a ramp down into the bowl.
-    fn dam(&mut self) {
+    fn dam(&mut self, rng: &mut Rng) {
         let (z0, z1, h) = (18.0, 30.0, 5.0);
         let (x0, x1) = (150.0, SIZE - 2.0);
         let (gap0, gap1) = (182.0, 194.0);
-        self.block_c(
-            Vec3::new(x0, 0.0, z0),
-            Vec3::new(gap0, h, z1),
-            DAM,
-            Material::Concrete,
-        );
-        self.block_c(
-            Vec3::new(gap1, 0.0, z0),
-            Vec3::new(x1, h, z1),
-            DAM,
-            Material::Concrete,
-        );
+        self.concrete_dam(rng, x0, x1, z0, z1, h, (gap0, gap1));
         // Rubble spilling out of the breach.
         self.ramp(
             Vec2::new(gap0 + 1.0, z0 - 6.0),
@@ -1006,72 +995,15 @@ impl Map {
     /// boats and rock outcrops.
     fn reservoir_cover(&mut self, rng: &mut Rng) {
         let at = |x: f32, z: f32| ground(x, z);
-        // Pier: a deck at town level running out over the shore, on piles.
-        let (pz0, pz1) = (136.0, 142.0);
-        self.block_c(
-            Vec3::new(146.0, -1.0, pz0),
-            Vec3::new(176.0, 0.4, pz1),
-            RUST * 0.8,
-            Material::Rust,
-        );
-        for x in [154.0f32, 162.0, 170.0] {
-            let g = at(x, pz0);
-            self.block_c(
-                Vec3::new(x - 0.6, g - 0.5, pz0 + 0.5),
-                Vec3::new(x + 0.6, -1.0, pz0 + 1.7),
-                RUST * 0.7,
-                Material::Rust,
-            );
-            self.block_c(
-                Vec3::new(x - 0.6, g - 0.5, pz1 - 1.7),
-                Vec3::new(x + 0.6, -1.0, pz1 - 0.5),
-                RUST * 0.7,
-                Material::Rust,
-            );
-        }
-        // Pipeline: segments half sunk in the bed, with gaps to drive through.
+        // Pier: a timber deck at town level running out over the shore.
+        self.pier(rng, Vec2::new(146.0, 139.0), Vec2::X, 31.0, 6.0, 0.4);
+        // Pipeline: runs half sunk in the bed, with gaps to drive through.
         for i in 0..6 {
-            let z0 = 55.0 + i as f32 * 11.0;
-            let g = at(172.0, z0 + 4.0);
-            self.block_c(
-                Vec3::new(170.5, g - 0.8, z0),
-                Vec3::new(173.5, g + 1.4, z0 + 8.0),
-                RUST,
-                Material::Rust,
-            );
+            self.pipeline_run(rng, Vec2::new(172.0, 55.0 + i as f32 * 11.0), 8.0, 1.1);
         }
-        // Stranded boats: hull block with a bow ramp, lying in the mud.
-        for (x, z, along_x) in [(213.0f32, 70.0f32, false), (180.0, 188.0, true)] {
-            let g = at(x, z);
-            let (hx, hz) = if along_x { (6.0, 2.2) } else { (2.2, 6.0) };
-            self.block_c(
-                Vec3::new(x - hx, g - 0.5, z - hz),
-                Vec3::new(x + hx, g + 2.4, z + hz),
-                Vec3::new(0.44, 0.4, 0.36),
-                Material::Rust,
-            );
-            if along_x {
-                self.ramp(
-                    Vec2::new(x + hx, z - hz),
-                    Vec2::new(x + hx + 4.0, z + hz),
-                    g - 0.5,
-                    2.9,
-                    Rise::NegX,
-                    SAND,
-                    Material::Sand,
-                );
-            } else {
-                self.ramp(
-                    Vec2::new(x - hz, z - hx - 4.0),
-                    Vec2::new(x + hz, z - hx),
-                    g - 0.5,
-                    2.9,
-                    Rise::PosZ,
-                    SAND,
-                    Material::Sand,
-                );
-            }
-        }
+        // Stranded boats, listing in the mud.
+        self.boat(rng, Vec2::new(213.0, 70.0), Vec2::Y, 12.0);
+        self.boat(rng, Vec2::new(180.0, 188.0), Vec2::new(-1.0, 0.0), 12.0);
         // Rock outcrops.
         for (x, z) in [
             (196.0f32, 92.0f32),
