@@ -74,7 +74,7 @@ struct Strut {
 
 impl Strut {
     fn layout(run: &Running, top_y: f32) -> Vec<Strut> {
-        let x = run.track_x + run.track_width * 0.5 + 0.12;
+        let x = run.track_x - run.track_width * 0.5 - 0.06;
         run.road
             .iter()
             .map(|w| {

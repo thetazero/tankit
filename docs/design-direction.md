@@ -12,12 +12,12 @@ story or any specific designs.
   distance, or from its shadow alone. Get there through proportion contrast: a
   dense, compact core with a few long, straight elements (barrels, blades,
   legs). Keep it low and long, with strong horizontal lines.
-- **Simple forms, layered surfaces.** The big forms are bold and simple
-  (wedges, raked glacis, arrowhead turrets), but their surfaces are built up:
-  thick applique plates stepped on top of each other, overlapping skirt
-  segments, ribs, bins, frames and recesses. Big forms carry the silhouette;
-  layering gives every surface depth and shadow. Never leave a large area as
-  one flat featureless panel, and never cover it in noise either.
+- **Built from panels.** The shape itself is made of panels: a faceted
+  carapace of separate thick plates, each at its own angle, with dark gaps
+  between them and edges lapping over their neighbors. Not a box with plates
+  stuck on, and not a stack of shrinking plates. Vary panel sizes: long
+  plates on long runs, smaller ones where the form turns (prow, shoulders).
+  Never a uniform grid.
 - **Detail in three scales.** Big: the silhouette. Medium: layered plates,
   hatches, bins, louvers, rails, spread over the whole body. Small: tight
   clusters (cupola periscopes, latches, hooks, bolts) at a few focal points.

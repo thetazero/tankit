@@ -264,7 +264,7 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     // muted, so bright color stays reserved for combat effects.
     let paint = m == 7 || m == 11;
     // Near-monochrome: the team color is only a faint cast on the paint.
-    let team = mix(vec3<f32>(dot(v.tint.rgb, vec3<f32>(0.3, 0.55, 0.15))), v.tint.rgb, 0.2);
+    let team = mix(vec3<f32>(dot(v.tint.rgb, vec3<f32>(0.3, 0.55, 0.15))), v.tint.rgb, 0.12);
     var base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     if (is_tank && paint) {
         base = v.color.rgb * team;

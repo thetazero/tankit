@@ -345,10 +345,6 @@ pub struct HullModel {
     pub shock_top: f32,
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
 fn quad_normal(q: &[Vec3; 4], away_from: Vec3) -> Vec3 {
     let n = (q[2] - q[0]).cross(q[3] - q[1]).normalize_or_zero();
     let c = (q[0] + q[1] + q[2] + q[3]) * 0.25;
@@ -372,14 +368,6 @@ fn armor(m: &mut MeshData, q: [Vec3; 4], body: Vec3, t: f32, skin: Skin) -> [Vec
     top
 }
 
-/// Stepped applique: each layer smaller and standing on the previous one.
-fn layered(m: &mut MeshData, q: [Vec3; 4], body: Vec3, layers: &[(f32, f32, Skin)]) {
-    let mut q = q;
-    for &(ins, t, skin) in layers {
-        q = armor(m, inset(q, ins), body, t, skin);
-    }
-}
-
 /// A cylinder between two arbitrary points.
 fn tube(m: &mut MeshData, a: Vec3, b: Vec3, r: f32, sides: usize, skin: Skin) {
     let axis = (b - a).normalize_or_zero();
@@ -397,183 +385,166 @@ fn tube(m: &mut MeshData, a: Vec3, b: Vec3, r: f32, sides: usize, skin: Skin) {
     round(m, &[ring(a), ring(b)], (r * 0.25).min(0.015), skin);
 }
 
-fn mirror_x(q: [Vec3; 4]) -> [Vec3; 4] {
-    q.map(|p| Vec3::new(-p.x, p.y, p.z))
+/// Same skin, a touch lighter or darker, so neighboring panels read apart.
+fn shade(s: Skin, k: f32) -> Skin {
+    let f = |c: Vec4| Vec4::new(c.x * k, c.y * k, c.z * k, c.w);
+    Skin { face: f(s.face), edge: f(s.edge) }
+}
+
+/// Mirror a half profile (x >= 0, listed from the top center outward and
+/// down) into a full cross-section ring at depth z.
+fn full_ring(half: &[Vec2], z: f32) -> Vec<Vec3> {
+    let mut r: Vec<Vec3> = half.iter().rev().map(|p| v(-p.x, p.y, z)).collect();
+    r.pop(); // the center point appears once
+    r.extend(half.iter().map(|p| v(p.x, p.y, z)));
+    r
+}
+
+/// An armored shell built from separate panels. `stations` are cross-section
+/// rings from rear to front. Every facet between two stations becomes its own
+/// thick plate, inset to leave a dark gap, with its rear edge lifted and
+/// pushed back so it laps over the plate behind it like a scale. A dark core
+/// fills the inside so gaps read as depth. `skin(row, col)` picks each
+/// panel's finish (row = station band, col = facet around the profile).
+fn shell(m: &mut MeshData, stations: &[Vec<Vec3>], t: f32, gap: f32, lap: f32, skin: impl Fn(usize, usize) -> Skin) {
+    let core: Vec<Vec<Vec3>> = stations.iter().map(|r| shrink(r, t * 1.2)).collect();
+    solid(m, &core, 0.02, CARBON);
+    let body = stations.iter().map(|r| centroid(r)).sum::<Vec3>() / stations.len() as f32;
+    for (row, w) in stations.windows(2).enumerate() {
+        let (rear, front) = (&w[0], &w[1]);
+        let band_mid = (centroid(rear) + centroid(front)) * 0.5;
+        let inside = band_mid.lerp(body, 0.5);
+        for col in 0..rear.len() - 1 {
+            let q = [rear[col], rear[col + 1], front[col + 1], front[col]];
+            if (q[0] - q[1]).length() < 0.05 && (q[2] - q[3]).length() < 0.05 {
+                continue;
+            }
+            let n = quad_normal(&q, inside);
+            let mut q = inset(q, gap);
+            // Scale lap: rear edge stands proud and reaches back over the previous plate.
+            let back = (q[0] - q[3]).normalize_or_zero();
+            for i in [0, 1] {
+                q[i] += n * lap + back * lap * 1.6;
+            }
+            let top = q.map(|p| p + n * t * 1.5);
+            plate(m, top, t, band_mid - n * 2.0, skin(row, col));
+        }
+    }
 }
 
 struct HullSpec {
-    front: f32,
-    rear: f32,
-    /// Half width over the sponsons.
-    hw: f32,
-    deck: f32,
-    /// Where the upper glacis starts sloping down.
-    glacis: f32,
-    /// Height of the prow's top edge.
-    prow: f32,
-    skirts: usize,
-    skirt_low: f32,
+    /// Width and height scale on the base profile.
+    sx: f32,
+    sy: f32,
+    /// Station z positions (rear to front) are scaled by this.
+    sz: f32,
     heavy: bool,
     running: Running,
 }
 
-/// Shared hull form: a lower tub between the tracks, a superstructure over
-/// them with a long raked glacis, layered applique armor on the glacis,
-/// segmented raked skirts, stowage bins along the sponsons and a louvered
-/// engine deck. The two hulls are proportions of this.
+/// Half profile of the hull at one station: raised spine, deck, sponson
+/// shoulder over the track, sloped upper side, skirt edge.
+fn hull_profile(spine: f32, deck: f32, shoulder: Vec2, side: Vec2, low: f32, k: f32) -> Vec<Vec2> {
+    vec![
+        Vec2::new(0.0, spine),
+        Vec2::new(0.3 * k, spine - 0.02),
+        Vec2::new(0.62 * k, deck),
+        Vec2::new(shoulder.x * k, shoulder.y),
+        Vec2::new(side.x * k, side.y),
+        Vec2::new((side.x - 0.05) * k, low),
+    ]
+}
+
+/// Shared hull: a faceted carapace of overlapping armor panels over a dark
+/// core, with a pointed, stepped prow and a tapered tail, a lower tub between
+/// the tracks, a louvered engine grille, headlight clusters and exhausts.
 fn hull(p: HullSpec) -> HullModel {
     let mut m = MeshData::default();
-    let hw = p.hw;
-    let body = v(0.0, p.deck * 0.55, 0.0);
-    let g_end = p.front - 0.38;
-    let prow_top = p.prow + 0.16;
+    let (sx, sy, sz) = (p.sx, p.sy, p.sz);
+    let y = |h: f32| h * sy;
+    let st = |z: f32, spine: f32, deck: f32, sh: (f32, f32), side: (f32, f32), low: f32, k: f32| {
+        let half = hull_profile(y(spine), y(deck), Vec2::new(sh.0 * sx, y(sh.1)), Vec2::new(side.0 * sx, y(side.1)), low, k);
+        full_ring(&half, z * sz)
+    };
+    let stations = vec![
+        st(-2.78, 1.28, 1.24, (1.25, 1.16), (1.42, 1.0), 0.86, 0.92),
+        st(-2.35, 1.46, 1.42, (1.5, 1.31), (1.68, 1.12), 0.76, 1.0),
+        st(0.1, 1.56, 1.47, (1.55, 1.35), (1.73, 1.13), 0.73, 1.0),
+        st(1.25, 1.5, 1.4, (1.53, 1.29), (1.71, 1.08), 0.75, 1.0),
+        st(1.95, 1.3, 1.2, (1.46, 1.1), (1.63, 0.93), 0.72, 0.97),
+        st(2.98, 0.9, 0.84, (0.95, 0.78), (1.05, 0.7), 0.62, 0.86),
+    ];
+    // Finish: spine and deck in paint, shoulders darker steel, sides paint
+    // with alternating tone, prow plates a shade lighter.
+    let skin = |row: usize, col: usize| {
+        let mid = 5; // the ring has 11 points: col 4..6 straddle the spine
+        let d = (col as i32 - mid as i32).unsigned_abs() as usize;
+        let base = match d {
+            0 | 1 => PAINT,
+            2 => CARBON_LIGHT,
+            3 => PAINT,
+            _ => CARBON_LIGHT,
+        };
+        let k = if (row + d) % 2 == 0 { 1.0 } else { 0.86 };
+        let k = if row >= 4 { k * 1.08 } else { k };
+        shade(base, k)
+    };
+    shell(&mut m, &stations, 0.06, 0.022, 0.025, skin);
 
-    // Lower tub.
-    let tub_top = p.deck - 0.3;
+    // Lower tub between the tracks.
+    let tub_top = y(1.1);
     solid(
         &mut m,
         &[
-            at_z(&trap(0.8, 0.86, 0.5, tub_top, 0.08), p.rear + 0.1),
-            at_z(&trap(0.88, 0.9, 0.32, tub_top, 0.1), p.rear + 0.45),
-            at_z(&trap(0.88, 0.9, 0.32, tub_top, 0.1), p.front - 0.75),
-            at_z(&trap(0.74, 0.8, 0.6, tub_top - 0.15, 0.08), p.front - 0.12),
+            at_z(&trap(0.8, 0.86, 0.5, tub_top, 0.08), -2.6 * sz),
+            at_z(&trap(0.88, 0.9, 0.32, tub_top, 0.1), -2.2 * sz),
+            at_z(&trap(0.88, 0.9, 0.32, tub_top, 0.1), 2.0 * sz),
+            at_z(&trap(0.74, 0.8, 0.58, y(0.85), 0.08), 2.8 * sz),
         ],
         0.04,
         CARBON,
     );
-    // Superstructure with the raked glacis.
-    solid(
-        &mut m,
-        &[
-            at_z(&trap(hw - 0.14, hw - 0.3, 1.0, p.deck - 0.14, 0.06), p.rear),
-            at_z(&trap(hw, hw - 0.14, 0.96, p.deck, 0.08), p.rear + 0.3),
-            at_z(&trap(hw, hw - 0.14, 0.96, p.deck, 0.08), p.glacis),
-            at_z(&trap(hw - 0.06, hw - 0.44, 0.94, prow_top, 0.07), g_end),
-            at_z(&trap(hw - 0.42, hw - 0.72, 0.9, p.prow, 0.05), p.front),
-        ],
-        0.05,
-        CARBON_LIGHT,
-    );
+    let body = v(0.0, y(1.0), 0.0);
 
-    // Glacis applique: two stepped layers per side around a raised spine.
-    let gy = |z: f32| lerp(p.deck, prow_top, ((z - p.glacis) / (g_end - p.glacis)).clamp(0.0, 1.0));
-    let gx = |z: f32| lerp(hw - 0.14, hw - 0.44, ((z - p.glacis) / (g_end - p.glacis)).clamp(0.0, 1.0));
-    let (z0, z1) = (p.glacis + 0.06, g_end - 0.04);
+    // Engine grille on the rear deck: louvers in a recessed frame.
+    let (ez0, ez1, ex) = (-2.2 * sz, -1.45 * sz, 0.55 * sx);
+    let gy = y(1.47) + 0.1;
+    block(&mut m, v(-ex - 0.07, gy - 0.12, ez0 - 0.07), v(ex + 0.07, gy, ez1 + 0.07), 0.02, CARBON);
+    for i in 0..6 {
+        let z = ez0 + 0.02 + i as f32 * (ez1 - ez0) / 6.0;
+        block(&mut m, v(-ex, gy - 0.04, z), v(ex, gy + 0.02, z + 0.06), 0.01, METAL);
+    }
+    // Headlight clusters tucked under the prow's shoulders.
     for s in [1.0f32, -1.0] {
-        let q = [v(s * 0.17, gy(z0), z0), v(s * (gx(z0) - 0.04), gy(z0), z0), v(s * (gx(z1) - 0.04), gy(z1), z1), v(s * 0.17, gy(z1), z1)];
-        let mut layers = vec![(0.04, 0.06, PAINT), (0.2, 0.05, PAINT)];
-        if p.heavy {
-            layers.push((0.18, 0.05, CARBON_LIGHT));
+        let c = v(s * 1.05 * sx, y(0.86), 2.62 * sz);
+        block(&mut m, c - v(0.16, 0.07, 0.12), c + v(0.16, 0.07, 0.04), 0.025, CARBON);
+        for k in [-0.08f32, 0.08] {
+            plate(&mut m, [c + v(k - 0.05, 0.04, 0.05), c + v(k + 0.05, 0.04, 0.05), c + v(k + 0.05, -0.04, 0.05), c + v(k - 0.05, -0.04, 0.05)], 0.01, body, LENS);
         }
-        layered(&mut m, q, body, &layers);
+        // Exhausts out of the tail.
+        let e = v(s * 0.6 * sx, y(1.05), -2.8 * sz);
+        tube(&mut m, e + v(0.0, 0.0, 0.25), e - v(0.0, 0.0, 0.12), 0.09, 8, CARBON);
+        // Small tow eyes, flush with the tub ends.
+        block(&mut m, v(s * 0.5 - 0.05, 0.62, 2.72 * sz), v(s * 0.5 + 0.05, 0.72, 2.84 * sz), 0.02, CARBON);
+        block(&mut m, v(s * 0.5 - 0.05, 0.62, -2.68 * sz), v(s * 0.5 + 0.05, 0.72, -2.56 * sz), 0.02, CARBON);
     }
-    armor(&mut m, [v(-0.12, gy(z0 - 0.05), z0 - 0.05), v(0.12, gy(z0 - 0.05), z0 - 0.05), v(0.1, gy(z1), z1), v(-0.1, gy(z1), z1)], body, 0.09, CARBON);
-    // Lower front plate under the prow, with tow hooks.
-    let lf = [v(-(hw - 0.78), p.prow - 0.02, p.front + 0.0), v(hw - 0.78, p.prow - 0.02, p.front), v(0.72, 0.62, p.front - 0.16), v(-0.72, 0.62, p.front - 0.16)];
-    armor(&mut m, lf, body, 0.07, PAINT);
-    for s in [1.0f32, -1.0] {
-        block(&mut m, v(s * 0.5 - 0.07, 0.6, p.front - 0.12), v(s * 0.5 + 0.07, 0.74, p.front + 0.12), 0.025, METAL);
-        // Headlight guards at the prow corners.
-        let hx = s * (hw - 0.62);
-        block(&mut m, v(hx - 0.13, p.prow + 0.02, p.front - 0.22), v(hx + 0.13, p.prow + 0.2, p.front - 0.02), 0.03, CARBON);
-        plate(&mut m, [v(hx - 0.08, p.prow + 0.16, p.front - 0.01), v(hx + 0.08, p.prow + 0.16, p.front - 0.01), v(hx + 0.08, p.prow + 0.07, p.front - 0.01), v(hx - 0.08, p.prow + 0.07, p.front - 0.01)], 0.01, body, LENS);
-    }
-    // Driver's hatch and vision blocks just behind the glacis.
-    let hz = p.glacis - 0.3;
-    round(&mut m, &[at_y(&ngon(8, 0.26, Vec2::new(-0.62, hz)), p.deck - 0.01), at_y(&ngon(8, 0.22, Vec2::new(-0.62, hz)), p.deck + 0.07)], 0.02, PAINT);
-    for k in 0..3 {
-        let x = -0.62 + (k as f32 - 1.0) * 0.17;
-        block(&mut m, v(x - 0.06, p.deck, hz + 0.24), v(x + 0.06, p.deck + 0.09, hz + 0.34), 0.015, CARBON);
-    }
-
-    // Stowage bins along the sponsons, clear of the turret overhang.
-    let (bz0, bz1) = (p.rear + 0.45, p.glacis - 0.2);
-    let bl = (bz1 - bz0) / 2.0;
-    for s in [1.0f32, -1.0] {
-        for i in 0..2 {
-            let za = bz0 + i as f32 * bl + 0.03;
-            let zb = za + bl - 0.06;
-            let (xa, xb) = (hw - 0.3, hw - 0.04);
-            let (x0, x1) = if s > 0.0 { (xa, xb) } else { (-xb, -xa) };
-            block(&mut m, v(x0, p.deck - 0.02, za), v(x1, p.deck + 0.13, zb), 0.025, CARBON);
-            block(&mut m, v(x0 - 0.02, p.deck + 0.12, za - 0.02), v(x1 + 0.02, p.deck + 0.16, zb + 0.02), 0.012, PAINT);
-            for zl in [za + 0.2, zb - 0.2] {
-                let xo = s * (hw - 0.04);
-                block(&mut m, v(xo - 0.025, p.deck + 0.03, zl - 0.04), v(xo + 0.025, p.deck + 0.11, zl + 0.04), 0.008, METAL);
-            }
+    if p.heavy {
+        // Extra spaced armor: a second layer of plates on the glacis shoulders.
+        for s in [1.0f32, -1.0] {
+            let q = [v(s * 0.4 * sx, y(1.42), 1.3 * sz), v(s * 1.3 * sx, y(1.27), 1.3 * sz), v(s * 1.2 * sx, y(1.02), 2.05 * sz), v(s * 0.4 * sx, y(1.15), 2.05 * sz)];
+            armor(&mut m, q, body, 0.05, shade(PAINT, 0.92));
         }
     }
 
-    // Engine deck: louvers recessed in a raised frame, behind the turret.
-    let (ez0, ez1, ex) = (p.rear + 0.32, p.rear + 1.2, 0.78);
-    let fy = p.deck + 0.09;
-    block(&mut m, v(-ex - 0.08, p.deck - 0.02, ez0 - 0.08), v(ex + 0.08, fy, ez0), 0.02, CARBON_LIGHT);
-    block(&mut m, v(-ex - 0.08, p.deck - 0.02, ez1), v(ex + 0.08, fy, ez1 + 0.08), 0.02, CARBON_LIGHT);
-    block(&mut m, v(-ex - 0.08, p.deck - 0.02, ez0), v(-ex, fy, ez1), 0.02, CARBON_LIGHT);
-    block(&mut m, v(ex, p.deck - 0.02, ez0), v(ex + 0.08, fy, ez1), 0.02, CARBON_LIGHT);
-    block(&mut m, v(-0.03, p.deck - 0.02, ez0), v(0.03, fy - 0.01, ez1), 0.01, CARBON_LIGHT);
-    let slats = 7;
-    for i in 0..slats {
-        let z = ez0 + 0.04 + i as f32 * (ez1 - ez0 - 0.08) / slats as f32;
-        armor(&mut m, [v(-ex, p.deck, z), v(ex, p.deck, z), v(ex, p.deck, z + 0.07), v(-ex, p.deck, z + 0.07)], body, 0.035, METAL);
-    }
-    // Rear plate: exhaust grilles and tow hooks.
-    for s in [1.0f32, -1.0] {
-        let (x0, x1) = if s > 0.0 { (0.35, 0.95) } else { (-0.95, -0.35) };
-        block(&mut m, v(x0, p.deck - 0.5, p.rear - 0.1), v(x1, p.deck - 0.2, p.rear + 0.05), 0.03, CARBON);
-        for k in 0..4 {
-            let y = p.deck - 0.46 + k as f32 * 0.07;
-            block(&mut m, v(x0 + 0.04, y, p.rear - 0.13), v(x1 - 0.04, y + 0.03, p.rear - 0.09), 0.008, METAL);
-        }
-        block(&mut m, v(s * 0.6 - 0.07, 0.62, p.rear - 0.15), v(s * 0.6 + 0.07, 0.76, p.rear + 0.1), 0.025, METAL);
-    }
-
-    // Skirts: raked outward, overlapping segments with a reinforcing rib,
-    // the front segment swept up; a rail runs along their top.
-    let (zs, ze) = (p.rear + 0.15, p.front - 0.72);
-    let seg = (ze - zs) / p.skirts as f32;
-    for s in [1.0f32, -1.0] {
-        for i in 0..p.skirts {
-            let za = zs + i as f32 * seg - 0.04;
-            let zb = za + seg + 0.08;
-            let off = if i % 2 == 0 { 0.0 } else { 0.035 };
-            let x_top = hw + 0.04 + off;
-            let x_bot = hw + 0.15 + off;
-            let low_b = if i == p.skirts - 1 { p.skirt_low + 0.28 } else { p.skirt_low };
-            let face = [v(x_top, p.deck - 0.1, za), v(x_top, p.deck - 0.1, zb), v(x_bot, low_b, zb), v(x_bot, p.skirt_low, za)];
-            let face = if s > 0.0 { face } else { mirror_x(face) };
-            plate(&mut m, face, 0.06, body, PAINT);
-            // Rib across the middle of the segment.
-            let mid = |a: Vec3, b: Vec3, t: f32| a.lerp(b, t);
-            let rib = [mid(face[0], face[3], 0.45), mid(face[1], face[2], 0.45), mid(face[1], face[2], 0.6), mid(face[0], face[3], 0.6)];
-            armor(&mut m, inset(rib, 0.06), body, 0.03, CARBON_LIGHT);
-        }
-        // Top rail and the mudguard sweeping down over the front of the track.
-        let rx = s * (hw + 0.08);
-        block(&mut m, v(rx.min(rx + s * 0.1) - 0.0, p.deck - 0.12, zs - 0.05), v(rx.max(rx + s * 0.1), p.deck - 0.04, ze + 0.05), 0.015, CARBON);
-        let guard = [v(hw - 0.02, p.deck - 0.06, ze), v(hw + 0.14, p.deck - 0.1, ze), v(hw - 0.06, p.prow + 0.08, p.front - 0.12), v(hw - 0.3, p.prow + 0.14, p.front - 0.12)];
-        plate(&mut m, if s > 0.0 { guard } else { mirror_x(guard) }, 0.06, body, PAINT);
-    }
-
-    HullModel {
-        body: m,
-        mount: v(0.0, p.deck - 0.05, p.glacis - 1.3),
-        shock_top: p.deck - 0.28,
-        running: p.running,
-    }
+    HullModel { body: m, mount: v(0.0, y(1.5), -0.35 * sz), shock_top: y(1.0), running: p.running }
 }
 
-/// Light hull: low and long, two-layer glacis, three skirt segments.
+/// Light hull.
 pub fn lancer() -> HullModel {
     hull(HullSpec {
-        front: 2.85,
-        rear: -2.65,
-        hw: 1.55,
-        deck: 1.42,
-        glacis: 1.2,
-        prow: 0.95,
-        skirts: 3,
-        skirt_low: 0.8,
+        sx: 1.0,
+        sy: 1.0,
+        sz: 1.0,
         heavy: false,
         running: Running {
             track_x: 1.22,
@@ -585,17 +556,12 @@ pub fn lancer() -> HullModel {
     })
 }
 
-/// Heavy hull: wider and taller, three-layer glacis, four skirt segments.
+/// Heavy hull: the same carapace, wider, taller and longer, with spaced armor.
 pub fn bastion() -> HullModel {
     hull(HullSpec {
-        front: 2.95,
-        rear: -2.75,
-        hw: 1.68,
-        deck: 1.6,
-        glacis: 0.95,
-        prow: 1.02,
-        skirts: 4,
-        skirt_low: 0.78,
+        sx: 1.08,
+        sy: 1.1,
+        sz: 1.04,
         heavy: true,
         running: Running {
             track_x: 1.28,
@@ -666,64 +632,66 @@ struct HeadSpec {
     rear: f32,
 }
 
-/// Shared turret form: an arrowhead in plan view (wide shoulders, front
-/// cheeks raking in to the gun), stepped cheek armor, roof plates, a
-/// commander's cupola, a sensor housing, smoke dischargers and a bustle rack.
+/// Shared turret: a faceted arrowhead carapace of overlapping panels (roof,
+/// shoulder bevels, raked cheeks, flanks) over a dark core, plus a cupola, a
+/// sensor housing, smoke dischargers and a bustle rack.
 fn head(p: &HeadSpec) -> MeshData {
     let mut m = MeshData::default();
     let HeadSpec { w, h, front, rear } = *p;
     let body = v(0.0, h * 0.5, rear * 0.3);
-    let bot = 0.14;
     turret_ring(&mut m);
-    solid(
-        &mut m,
-        &[
-            at_z(&trap(w * 0.6, w * 0.52, bot + 0.06, h - 0.06, 0.06), rear),
-            at_z(&trap(w * 0.94, w * 0.86, bot, h, 0.08), rear + 0.32),
-            at_z(&trap(w, w * 0.9, bot, h, 0.08), 0.05),
-            at_z(&trap(w * 0.38, w * 0.32, bot + 0.06, h - 0.12, 0.06), front),
-        ],
-        0.04,
-        CARBON_LIGHT,
-    );
-    // Cheek armor: two stepped layers on each raked front face.
+    let half = |k: f32, top: f32| {
+        vec![
+            Vec2::new(0.0, top),
+            Vec2::new(w * 0.42 * k, top),
+            Vec2::new(w * 0.86 * k, top - 0.1),
+            Vec2::new(w * k, top - 0.26),
+            Vec2::new(w * 0.96 * k, 0.12),
+        ]
+    };
+    let stations = vec![
+        full_ring(&half(0.62, h - 0.1), rear),
+        full_ring(&half(0.92, h), rear + 0.35),
+        full_ring(&half(1.0, h - 0.02), -0.05),
+        full_ring(&half(0.72, h - 0.06), front - 0.42),
+        full_ring(&half(0.4, h - 0.14), front),
+    ];
+    let skin = |row: usize, col: usize| {
+        let d = (col as i32 - 4).unsigned_abs() as usize;
+        let base = if d <= 1 || d == 3 { PAINT } else { CARBON_LIGHT };
+        shade(base, if (row + d) % 2 == 0 { 1.0 } else { 0.87 })
+    };
+    shell(&mut m, &stations, 0.055, 0.02, 0.022, skin);
+
     for s in [1.0f32, -1.0] {
-        let q = [v(s * w * 0.98, h - 0.03, 0.08), v(s * w * 0.4, h - 0.12, front - 0.02), v(s * w * 0.4, bot + 0.08, front - 0.02), v(s * w * 0.98, bot + 0.03, 0.08)];
-        layered(&mut m, inset(q, 0.03), body, &[(0.02, 0.07, PAINT), (0.12, 0.06, PAINT)]);
-        // Side armor along the flank.
-        let side = [v(s * w * 0.99, h - 0.05, rear + 0.38), v(s * w * 0.99, h - 0.05, 0.0), v(s * w * 0.99, bot + 0.05, 0.0), v(s * w * 0.99, bot + 0.08, rear + 0.38)];
-        armor(&mut m, inset(side, 0.04), body, 0.05, PAINT);
-        // Roof plates either side of the center channel.
-        let roof = [v(s * 0.16, h, rear + 0.42), v(s * w * 0.8, h, rear + 0.42), v(s * w * 0.8, h, -0.05), v(s * 0.16, h, -0.05)];
-        armor(&mut m, roof, body, 0.035, PAINT);
         // Smoke dischargers on a bracket at each shoulder.
-        let bx = s * w * 0.82;
-        block(&mut m, v(bx - 0.14, h - 0.02, rear + 0.6), v(bx + 0.14, h + 0.08, rear + 0.85), 0.02, CARBON);
+        let bx = s * w * 0.8;
+        block(&mut m, v(bx - 0.14, h - 0.08, rear + 0.55), v(bx + 0.14, h + 0.04, rear + 0.8), 0.02, CARBON);
         for k in 0..3 {
-            let base = v(bx + (k as f32 - 1.0) * 0.09, h + 0.06, rear + 0.75);
+            let base = v(bx + (k as f32 - 1.0) * 0.09, h + 0.02, rear + 0.7);
             tube(&mut m, base, base + v(s * 0.08, 0.14, 0.2), 0.04, 6, CARBON);
         }
     }
     // Commander's cupola with periscopes, offset right.
-    let c = Vec2::new(w * 0.45, rear + 0.95);
-    round(&mut m, &[at_y(&ngon(8, 0.3, c), h - 0.02), at_y(&ngon(8, 0.27, c), h + 0.16)], 0.03, CARBON);
-    round(&mut m, &[at_y(&ngon(8, 0.21, c), h + 0.15), at_y(&ngon(8, 0.18, c), h + 0.21)], 0.02, PAINT);
+    let c = Vec2::new(w * 0.42, rear + 0.95);
+    round(&mut m, &[at_y(&ngon(8, 0.3, c), h - 0.02), at_y(&ngon(8, 0.27, c), h + 0.18)], 0.03, CARBON);
+    round(&mut m, &[at_y(&ngon(8, 0.21, c), h + 0.17), at_y(&ngon(8, 0.18, c), h + 0.23)], 0.02, PAINT);
     for k in 0..5 {
         let a = std::f32::consts::FRAC_PI_2 + (k as f32 - 2.0) * 0.55;
         let d = Vec2::new(a.cos(), a.sin()) * 0.29 + c;
-        block(&mut m, v(d.x - 0.05, h + 0.04, d.y - 0.05), v(d.x + 0.05, h + 0.13, d.y + 0.05), 0.015, CARBON_LIGHT);
+        block(&mut m, v(d.x - 0.05, h + 0.06, d.y - 0.05), v(d.x + 0.05, h + 0.15, d.y + 0.05), 0.015, CARBON_LIGHT);
     }
     // Sensor housing, offset left.
-    let sx = -w * 0.5;
-    block(&mut m, v(sx - 0.2, h - 0.02, -0.3), v(sx + 0.2, h + 0.24, 0.1), 0.04, CARBON);
-    plate(&mut m, [v(sx - 0.14, h + 0.19, 0.11), v(sx + 0.14, h + 0.19, 0.11), v(sx + 0.14, h + 0.04, 0.11), v(sx - 0.14, h + 0.04, 0.11)], 0.012, body, LENS);
-    // Bustle rack: two rails on uprights around the rear.
-    for y in [h - 0.05, h + 0.12] {
-        tube(&mut m, v(-w * 0.62, y, rear - 0.22), v(w * 0.62, y, rear - 0.22), 0.025, 6, CARBON);
+    let sx = -w * 0.48;
+    block(&mut m, v(sx - 0.2, h - 0.02, -0.4), v(sx + 0.2, h + 0.24, 0.0), 0.04, CARBON);
+    plate(&mut m, [v(sx - 0.14, h + 0.19, 0.01), v(sx + 0.14, h + 0.19, 0.01), v(sx + 0.14, h + 0.04, 0.01), v(sx - 0.14, h + 0.04, 0.01)], 0.012, body, LENS);
+    // Bustle rack around the rear.
+    for yy in [h - 0.12, h + 0.06] {
+        tube(&mut m, v(-w * 0.62, yy, rear - 0.22), v(w * 0.62, yy, rear - 0.22), 0.025, 6, CARBON);
     }
     for x in [-w * 0.55, 0.0, w * 0.55] {
-        tube(&mut m, v(x, h - 0.12, rear + 0.05), v(x, h - 0.12, rear - 0.24), 0.025, 6, CARBON);
-        tube(&mut m, v(x, h - 0.12, rear - 0.22), v(x, h + 0.14, rear - 0.22), 0.025, 6, CARBON);
+        tube(&mut m, v(x, h - 0.18, rear + 0.05), v(x, h - 0.18, rear - 0.24), 0.025, 6, CARBON);
+        tube(&mut m, v(x, h - 0.18, rear - 0.22), v(x, h + 0.08, rear - 0.22), 0.025, 6, CARBON);
     }
     m
 }
@@ -785,13 +753,9 @@ pub fn maul() -> TurretModel {
     solid(&mut mantlet, &[at_z(&rect(Vec2::ZERO, Vec2::new(0.6, 0.22), 0.07), -0.3), at_z(&rect(Vec2::ZERO, Vec2::new(0.56, 0.19), 0.06), 0.3)], 0.03, CARBON);
     armor(&mut mantlet, [v(-0.16, 0.17, 0.31), v(0.16, 0.17, 0.31), v(0.16, -0.15, 0.31), v(-0.16, -0.15, 0.31)], Vec3::ZERO, 0.05, PAINT);
     round(&mut mantlet, &[at_x(&ngon(10, 0.1, Vec2::ZERO), -0.7), at_x(&ngon(10, 0.1, Vec2::ZERO), 0.7)], 0.02, METAL);
-    for s in [-1.0f32, 1.0] {
-        recoil_housings(&mut mantlet, &[v(s * 0.34, 0.27, 0.0)]);
-    }
     block(&mut mantlet, v(-0.06, 0.2, -0.05), v(0.06, 0.34, 0.15), 0.02, METAL);
 
     let mut barrel = MeshData::default();
-    recoil_rods(&mut barrel, &[v(0.0, 0.27, 0.0)]);
     let sq = |h: f32| rect(Vec2::ZERO, Vec2::splat(h), h * 0.3);
     solid(&mut barrel, &[at_z(&sq(0.17), 0.1), at_z(&sq(0.16), 1.45)], 0.03, CARBON);
     round(&mut barrel, &[at_z(&ngon(8, 0.105, Vec2::ZERO), 1.4), at_z(&ngon(8, 0.1, Vec2::ZERO), 2.45)], 0.0, METAL);
