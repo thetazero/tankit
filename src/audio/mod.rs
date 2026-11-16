@@ -5,9 +5,9 @@
 //! the sprockets, a turret ring motor, and the laser's buzz or the flamer's
 //! roar while they fire; where a beam lands it sizzles, and a broken Vigil's
 //! light sings out of its cracks. Discrete moments (shots, impacts, armour
-//! hits, kills, repairs) come out of the match as [`Sound`] events and play
-//! as one-shots; a beam lighting, letting go and striking a hull are spotted
-//! here, frame to frame.
+//! hits, kills, repairs, the round starting, counting down and ending) come
+//! out of the match as [`Sound`] events and play as one-shots; a beam
+//! lighting, letting go and striking a hull are spotted here, frame to frame.
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
@@ -36,7 +36,7 @@ use crate::render::Camera;
 use dsp::Noise;
 use mixer::{Mixer, OneShot};
 pub use sounds::ui::Ui;
-use sounds::{Play, arrival, beam, guns, hits, hold, repair, ui, vigil};
+use sounds::{Play, arrival, beam, guns, hits, hold, repair, round, ui, vigil};
 use voice::Layer;
 
 /// Distance at which a sound is at half its close-up loudness, m. Past it
@@ -238,6 +238,8 @@ impl Audio {
             Sound::Hold(cue) => hold::cue(cue),
 
             Sound::Repair { at } => repair::repair(at),
+
+            Sound::Round(cue) => round::cue(cue),
 
             Sound::Confirm => ui::confirm(),
             Sound::Link => ui::link(),

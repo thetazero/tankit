@@ -513,6 +513,8 @@ pub enum Sound {
     Link,
     /// The Hold site changed hands, or paid you for holding it.
     Hold(hold::Cue),
+    /// The round starting, its clock running out, and how it ended.
+    Round(RoundCue),
     /// A Vigil's crystal shell cracking open: glass, a rush of light, and
     /// its bell struck hard.
     Shatter {
@@ -534,6 +536,24 @@ pub enum Sound {
         at: Vec3,
     },
 }
+
+/// A moment in the round's flow the player hears, wherever they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundCue {
+    /// The first step of a round.
+    Start,
+    /// The clock passing a whole second in the last `COUNTDOWN`: this many left.
+    Count(u8),
+    /// The round is over (clock out, or the Hold target reached).
+    End,
+    /// How it went for the player's side, heard with `End`.
+    Won,
+    Draw,
+    Lost,
+}
+
+/// The clock ticks aloud for this many final seconds.
+pub const COUNTDOWN: u8 = 10;
 
 /// What a beam's far end is touching.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -718,11 +738,20 @@ impl Match {
             self.sounds.drain(..self.sounds.len() - MAX_SOUNDS / 2);
         }
         if self.phase == Phase::Playing {
+            if self.time_left == ROUND_TIME {
+                self.sounds.push(Sound::Round(RoundCue::Start));
+            }
+            let before = self.time_left;
             self.time_left -= DT;
+            // A tick each time the clock (which shows whole seconds, rounded
+            // up) turns over to 10, 9 ... 1.
+            let left = self.time_left.ceil();
+            if left < before.ceil() && left <= COUNTDOWN as f32 && self.time_left > 0.0 {
+                self.sounds.push(Sound::Round(RoundCue::Count(left as u8)));
+            }
             if self.time_left <= 0.0 {
                 self.time_left = 0.0;
-                self.phase = Phase::Over;
-                self.shells.clear();
+                self.end_round();
             }
         } else {
             self.over_for += DT;
@@ -1337,9 +1366,22 @@ impl Match {
             self.award(hold::HOLD_TRUST, "HOLDING");
         }
         if won {
-            self.phase = Phase::Over;
-            self.shells.clear();
+            self.end_round();
         }
+    }
+
+    /// The round is over: stop the fight and say how it went.
+    fn end_round(&mut self) {
+        self.phase = Phase::Over;
+        self.shells.clear();
+        self.sounds.push(Sound::Round(RoundCue::End));
+        self.sounds.push(Sound::Round(
+            match crate::economy::Payout::of(self).outcome {
+                crate::economy::Outcome::Won => RoundCue::Won,
+                crate::economy::Outcome::Draw => RoundCue::Draw,
+                crate::economy::Outcome::Lost => RoundCue::Lost,
+            },
+        ));
     }
 
     fn pick_up_repairs(&mut self) {
@@ -2611,6 +2653,44 @@ mod tests {
         );
         assert_eq!(m.fighters[0].health, max_health(kit.0));
         assert_eq!(m.fighters[0].next_kit, None);
+    }
+
+    fn round_cues(m: &Match) -> Vec<RoundCue> {
+        m.sounds
+            .iter()
+            .filter_map(|s| match s {
+                Sound::Round(c) => Some(*c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Issue #117: the round's start, its last ten seconds, its end and
+    /// how it went are each heard, once.
+    #[test]
+    fn the_round_is_heard_starting_counting_down_and_ending() {
+        let mut m = arena(0);
+        m.step(Command::default(), false);
+        m.step(Command::default(), false);
+        assert_eq!(round_cues(&m), [RoundCue::Start]);
+        m.sounds.clear();
+        m.time_left = 10.5;
+        m.fighters[0].kills = 1;
+        for _ in 0..(12.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        let mut want: Vec<_> = (1..=COUNTDOWN).rev().map(RoundCue::Count).collect();
+        want.extend([RoundCue::End, RoundCue::Won]);
+        assert_eq!(round_cues(&m), want);
+    }
+
+    #[test]
+    fn a_round_lost_on_the_clock_sounds_lost() {
+        let mut m = arena(1);
+        m.fighters[1].kills = 2;
+        m.time_left = DT * 0.5;
+        m.step(Command::default(), false);
+        assert_eq!(round_cues(&m), [RoundCue::End, RoundCue::Lost]);
     }
 
     #[test]
