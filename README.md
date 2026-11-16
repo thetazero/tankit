@@ -19,7 +19,7 @@ cargo run --release -- --help    # every flag: maps, loadouts, headless screensh
 cargo test
 ```
 
-Any match flag (`--map`, `--seed`, `--bots`, ...) skips the menu and drops
+Any match flag (`--map`, `--seed`, `--team-size`, ...) skips the menu and drops
 straight into a round. `--shot` renders headless to a PNG instead of opening a
 window, and `--screen` does the same for a menu screen.
 

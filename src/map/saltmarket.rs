@@ -21,7 +21,7 @@
 use glam::{Vec2, Vec3};
 
 use super::ruins::{self, Drift};
-use super::{Map, OBox, Rise, Terrain, Wedge, mat};
+use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge, mat};
 use crate::rng::Rng;
 
 const SIZE: f32 = 240.0;
@@ -437,6 +437,8 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             // Repair crates come down in exposed places worth fighting over:
             // the market square, the reservoir bed, the ridge, the dam's foot.
             repair_spots: vec![
@@ -792,6 +794,15 @@ impl Map {
         };
         let kept: Vec<Vec2> = spots.into_iter().filter(|&p| clear(p, self)).collect();
         self.open_spots = kept;
+        // Team bases: the Imperium dug in along the north ridge (bunker and
+        // mast), the Resonant at the south edge of town and the dam's foot.
+        let line = |zs: &[f32], m: &Map| -> Vec<Vec2> {
+            zs.iter()
+                .flat_map(|&z| (0..20).map(move |k| Vec2::new(30.0 + k as f32 * 10.0, z)))
+                .filter(|&p| clear(p, m))
+                .collect()
+        };
+        self.bases = [line(&[206.0, 214.0], self), line(&[6.0, 11.0], self)];
     }
 }
 
@@ -811,6 +822,12 @@ mod tests {
         assert!(m.open_spots.iter().any(|p| p.x < 30.0));
         assert!(m.open_spots.iter().any(|p| p.y > 200.0));
         assert!(m.open_spots.iter().any(|p| p.x > 150.0));
+        // Room for a full team at each end: north ridge and south edge.
+        for (side, base) in m.bases.iter().enumerate() {
+            assert!(base.len() >= 12, "side {side} has {} spawns", base.len());
+        }
+        assert!(m.bases[0].iter().all(|p| p.y > 200.0));
+        assert!(m.bases[1].iter().all(|p| p.y < 20.0));
         // Repair drop zones sit on open ground (a crate has to land and be reachable).
         for &p in &m.repair_spots {
             assert!(

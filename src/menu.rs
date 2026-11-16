@@ -139,7 +139,9 @@ impl Menu {
                 for (k, v) in [
                     ("CONTRACT", m.mode.to_string()),
                     ("MAP", m.map.to_string()),
-                    ("OPPONENTS", m.bots.to_string()),
+                    ("EMPLOYER", m.sides[0].name().to_string()),
+                    ("AGAINST", m.sides[1].name().to_string()),
+                    ("TEAMS", m.teams()),
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
                 ] {
