@@ -490,8 +490,8 @@ impl Map {
                 blowing_sand: 1.0,
                 dust: Vec3::new(0.74, 0.62, 0.45),
             },
-            bases: Default::default(),
-            factions: DEFAULT_SIDES,
+            bases: Map::no_bases(&DEFAULT_SIDES),
+            factions: DEFAULT_SIDES.to_vec(),
             // Repair crates come down in exposed places worth fighting over:
             // the market square, the reservoir bed, the ridge, the dam's foot.
             repair_spots: vec![
@@ -556,7 +556,7 @@ impl Map {
     /// wheel's travel, thin specks) shouldn't stop or jolt a tank: they keep
     /// their looks but lose their colliders. Taller pieces stay solid and the
     /// suspension takes them.
-    fn drop_tiny_hitboxes(&mut self) {
+    pub(super) fn drop_tiny_hitboxes(&mut self) {
         for o in &mut self.oboxes {
             let g = ground(o.center.x, o.center.y);
             let on_ground = o.y0 <= g + 0.3;
@@ -572,7 +572,7 @@ impl Map {
     /// (z-fight). Grow each piece by a different few millimeters (cycling
     /// through 11 sizes, so neighbors built one after another always differ)
     /// so no two faces are ever exactly coplanar. Invisible at play scale.
-    fn separate_coplanar_faces(&mut self) {
+    pub(super) fn separate_coplanar_faces(&mut self) {
         // Each piece gets a "color" 0..29 different from every piece it
         // touches (greedy, over a spatial grid), and its offsets come from the
         // color: sideways c, up 13c+3, down 17c+8 (mod 29, 0.45 mm steps).
@@ -1252,7 +1252,7 @@ impl Map {
                 .filter(|&p| clear(p, m))
                 .collect()
         };
-        self.bases = [line(&[206.0, 214.0], self), line(&[6.0, 11.0], self)];
+        self.bases = vec![line(&[206.0, 214.0], self), line(&[6.0, 11.0], self)];
     }
 }
 

@@ -225,6 +225,19 @@ enum Damage {
     Gutted,
 }
 
+/// What a building's walls are made of: a palette to pick from and the
+/// surface.
+pub(super) struct Style {
+    pub colors: &'static [Vec3],
+    pub wall: Material,
+}
+
+/// Saltmarket's: sun-bleached plaster in faded colors.
+pub(super) const PLASTERED: Style = Style {
+    colors: &PLASTERS,
+    wall: Material::Plaster,
+};
+
 /// Build one ruined building on `lot` (footprint in the world). `front` is the
 /// local face toward the street: (axis, sign). Returns heaps for the terrain.
 /// `clear` says whether a world point is free ground (no other building).
@@ -235,9 +248,22 @@ pub(super) fn building(
     front: (usize, f32),
     clear: &dyn Fn(Vec2) -> bool,
 ) -> Vec<Drift> {
+    building_in(map, rng, lot, front, clear, &PLASTERED)
+}
+
+/// `building`, with walls in `style`.
+pub(super) fn building_in(
+    map: &mut Map,
+    rng: &mut Rng,
+    lot: OBox,
+    front: (usize, f32),
+    clear: &dyn Fn(Vec2) -> bool,
+    style: &Style,
+) -> Vec<Drift> {
     let mut drifts = Vec::new();
     let half = lot.half;
-    let color = PLASTERS[rng.index(PLASTERS.len())] * rng.range(0.94, 1.04);
+    let color = style.colors[rng.index(style.colors.len())] * rng.range(0.94, 1.04);
+    let wall = style.wall;
     let small = half.x.min(half.y) < 4.0;
     let storeys: usize = if small { 1 } else { rng.int(2, 4) as usize };
     let damage = match rng.f32() {
@@ -437,7 +463,7 @@ pub(super) fn building(
                 if top_here < o0 + 0.3 {
                     // Broken off below the window: just a ragged stub of wall.
                     let (lo, hi) = span(s0, s1, y0, top_here);
-                    f.put_broken(rng, lo, hi, color, Material::Plaster);
+                    f.put_broken(rng, lo, hi, color, wall);
                     continue;
                 }
                 // Piers either side, each broken at its own height.
@@ -445,28 +471,28 @@ pub(super) fn building(
                     let h = cut(at((p0 + p1) * 0.5)).min(full).max(o0.min(top_here));
                     let (lo, hi) = span(p0, p1, y0, h);
                     if h < full - 0.05 {
-                        f.put_broken(rng, lo, hi, color, Material::Plaster);
+                        f.put_broken(rng, lo, hi, color, wall);
                     } else {
-                        f.put(lo, hi, color, true, Material::Plaster);
+                        f.put(lo, hi, color, true, wall);
                     }
                 }
                 // Sill under the opening.
                 if o0 > y0 + 0.01 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, y0, o0);
-                    f.put(lo, hi, color, true, Material::Plaster);
+                    f.put(lo, hi, color, true, wall);
                 }
                 // Wall over the opening, up to whatever height survives (jagged
                 // where it's broken: the top steps across the bay).
                 if top_here > o1 + 0.25 {
                     let (lo, hi) = span(s0 + PIER, s1 - PIER, o1, top_here);
                     if top_here < full - 0.05 {
-                        f.put_broken(rng, lo, hi, color * 0.97, Material::Plaster);
+                        f.put_broken(rng, lo, hi, color * 0.97, wall);
                     } else {
-                        f.put(lo, hi, color * 0.97, true, Material::Plaster);
+                        f.put(lo, hi, color * 0.97, true, wall);
                     }
                 } else if top_here > o1 - 0.2 && rng.chance(0.5) {
                     let (lo, hi) = span(s0 + PIER, s0 + PIER + bw * 0.35, o1, o1 + 0.45);
-                    f.put_broken(rng, lo, hi, color * 0.95, Material::Plaster);
+                    f.put_broken(rng, lo, hi, color * 0.95, wall);
                 }
             }
         }
@@ -566,9 +592,9 @@ pub(super) fn building(
             Vec3::new(c.x + 0.4, h, c.y + 0.4),
         );
         if cut(c) < top_y + 0.85 {
-            f.put_broken(rng, lo, hi, color * 0.92, Material::Plaster);
+            f.put_broken(rng, lo, hi, color * 0.92, wall);
         } else {
-            f.put(lo, hi, color * 0.92, true, Material::Plaster);
+            f.put(lo, hi, color * 0.92, true, wall);
         }
     }
 
