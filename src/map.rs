@@ -965,13 +965,16 @@ impl Map {
         }
         map.open_spots.push(Vec2::new(12.0, 105.0));
 
-        // Stairs: 0.25 m steps up to a 2 m ledge.
+        // Stairs: 0.25 m steps up to a 2 m ledge. Each step its own column,
+        // butted against the next: overlapping boxes would share side and end
+        // faces and z-fight.
         for i in 0..8 {
             let z = 120.0 + i as f32 * 2.0;
             let top = 0.25 * (i + 1) as f32;
+            let end = if i == 7 { 200.0 - 50.0 } else { z + 2.0 };
             map.add_block(
                 Vec3::new(28.0, 0.0, z),
-                Vec3::new(40.0, top, 200.0 - 50.0),
+                Vec3::new(40.0, top, end),
                 concrete * (0.9 + 0.02 * i as f32),
             );
         }
