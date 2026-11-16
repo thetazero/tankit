@@ -67,6 +67,10 @@ fn vs_main(v: VIn) -> VOut {
 
 @vertex
 fn vs_shadow(v: VIn) -> @builtin(position) vec4<f32> {
+    // Glowing effects (shots, flame, blasts) are light, not matter: no shadow.
+    if (v.tint.a >= 1.0) {
+        return vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    }
     let model = mat4x4<f32>(v.m0, v.m1, v.m2, v.m3);
     return g.light_view_proj * model * vec4<f32>(v.pos, 1.0);
 }

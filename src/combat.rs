@@ -85,7 +85,7 @@ pub enum Look {
 }
 
 /// Sorn plasma glow.
-const PLASMA: Vec3 = Vec3::new(0.35, 1.0, 0.7);
+const PLASMA: Vec3 = Vec3::new(0.1, 1.0, 0.5);
 /// Machine laser.
 const LASER: Vec3 = Vec3::new(1.0, 0.12, 0.08);
 
@@ -153,7 +153,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 gravity: 0.0,
                 bounces: 3,
                 spread: 0.0,
-                look: Look::Plasma { size: 0.75 },
+                look: Look::Plasma { size: 2.0 },
             }),
         },
         // Sorn: three barrels taking turns, a stream of small slow bolts.
@@ -166,7 +166,7 @@ pub fn gun(kind: TurretKind) -> Gun {
                 gravity: 0.0,
                 bounces: 0,
                 spread: 0.012,
-                look: Look::Plasma { size: 0.38 },
+                look: Look::Plasma { size: 1.0 },
             }),
         },
         // Machines: a laser that burns while held, then overheats.
@@ -181,14 +181,14 @@ pub fn gun(kind: TurretKind) -> Gun {
         },
         // Resonant: a short gout of crystal fire; deadly up close, nothing at range.
         TurretKind::Hymn => Gun {
-            damage: 2.0,
-            reload: 1.0 / 30.0,
+            damage: 1.0,
+            reload: 1.0 / 60.0,
             action: Action::Shell(ShellSpec {
                 speed: 24.0,
                 life: 0.65,
                 gravity: -0.3,
                 bounces: 0,
-                spread: 0.09,
+                spread: 0.11,
                 look: Look::Flame,
             }),
         },
@@ -253,6 +253,8 @@ pub struct Shell {
     pub age: f32,
     pub spec: ShellSpec,
     pub bounces: u8,
+    /// Random 0..1 per shot, for visual variety.
+    pub seed: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -604,6 +606,7 @@ impl Match {
             age: 0.0,
             spec,
             bounces: spec.bounces,
+            seed: self.rng.f32(),
         });
         // Carry the leftover fraction of a step so fast guns keep their exact rate.
         let f = &mut self.fighters[i];
@@ -910,17 +913,27 @@ impl Match {
                 Look::Tracer => out.push(streak(0.22, 3.2, tracer)),
                 // A shimmering core with a soft halo and a short wake.
                 Look::Plasma { size } => {
-                    let wobble = 1.0 + 0.12 * (s.age * 40.0).sin();
-                    out.push(ball(p, size * wobble, PLASMA.extend(2.5)));
-                    out.push(ball(p, size * 0.55, Vec4::new(0.85, 1.0, 0.95, 4.0)));
-                    out.push(streak(size * 0.5, size * 3.0, PLASMA.extend(1.6)));
+                    let wobble = 1.0 + 0.12 * (s.age * 40.0 + s.seed * 6.0).sin();
+                    out.push(ball(p, size * wobble, PLASMA.extend(3.0)));
+                    out.push(ball(p, size * 0.45, Vec4::new(0.7, 1.0, 0.85, 5.0)));
+                    out.push(streak(size * 0.5, size * 2.5, PLASMA.extend(2.0)));
                 }
                 // Crystal fire: white-hot at the nozzle, swelling into violet, then gone.
                 Look::Flame => {
+                    // A lumpy cloud of three blobs, tumbling as it swells.
                     let f = s.age / s.spec.life;
-                    let size = (0.35 + f * 2.2) * (1.0 - f * f).max(0.0).sqrt();
-                    let hot = Vec3::new(0.95, 0.85, 1.0).lerp(Vec3::new(0.55, 0.2, 1.0), f.sqrt());
-                    out.push(ball(p, size, hot.extend(3.0 * (1.0 - f) + 0.3)));
+                    let size = (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt();
+                    let hot = Vec3::new(1.0, 0.9, 1.0)
+                        .lerp(Vec3::new(0.75, 0.35, 1.0), (f * 2.0).min(1.0))
+                        .lerp(Vec3::new(0.35, 0.1, 0.7), (f * 1.5 - 0.5).clamp(0.0, 1.0));
+                    let glow = 1.0 + 3.0 * (1.0 - f);
+                    let spin = s.seed * std::f32::consts::TAU + s.age * 9.0;
+                    for k in 0..3 {
+                        let a = spin + k as f32 * 2.1;
+                        let off = Vec3::new(a.cos(), (a * 1.7).sin() * 0.6, a.sin()) * size * 0.3;
+                        let r = size * (0.75 + 0.2 * (k as f32 + s.seed * 3.0).sin());
+                        out.push(ball(p + off, r, hot.extend(glow)));
+                    }
                 }
             }
         }
@@ -1241,6 +1254,7 @@ mod tests {
             age: 0.0,
             spec,
             bounces: spec.bounces,
+            seed: 0.0,
         });
         for _ in 0..(0.2 / DT) as usize {
             m.step(Command::default(), false);
@@ -1265,6 +1279,7 @@ mod tests {
             age: 0.0,
             spec: cannon,
             bounces: 0,
+            seed: 0.0,
         }];
         for _ in 0..(0.2 / DT) as usize {
             m.step(Command::default(), false);
@@ -1443,6 +1458,7 @@ mod tests {
                 Action::Beam { .. } => unreachable!(),
             },
             bounces: 0,
+            seed: 0.0,
         };
         m.hit(&shell(0), ally, Vec3::ZERO);
         assert!(m.fighters[ally].alive);
