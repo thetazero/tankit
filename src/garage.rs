@@ -11,6 +11,10 @@
 //!
 //! Drawn as a solid panel on the left, the highlighted part's stats in a card
 //! top right, the tank framed in the space between.
+//!
+//! It opens in the depot bay (`bay`): the camera swings round the tank where
+//! it stands, the screen dips to black, and comes up on the tank turning on
+//! the bay's turntable. Closing runs the same way back.
 
 use glam::{Vec2, Vec3};
 
@@ -64,6 +68,10 @@ const BLEND_RATE: f32 = 2.5;
 const ORBIT_DIST: f32 = 8.5;
 const ORBIT_HEIGHT: f32 = 2.6;
 const ORBIT_DRIFT: f32 = 0.12;
+/// The bay's turntable (rad/s).
+const SPIN_RATE: f32 = 0.16;
+/// Past this much open, the bay is shown instead of the battlefield.
+const BAY_AT: f32 = 0.5;
 
 pub type Loadout = (HullKind, TurretKind);
 
@@ -242,6 +250,8 @@ pub struct Garage {
     orbit: f32,
     /// Where the orbit is drifting to; starts at a front three-quarter view.
     orbit_goal: f32,
+    /// The bay turntable's turn since the garage opened.
+    spin: f32,
     /// What the pointer is over, for hover feedback.
     hover: Option<Hit>,
     /// Each tab's grid scroll in logical px, and where it's easing to.
@@ -327,6 +337,7 @@ impl Garage {
             entry: start,
             orbit: 0.0,
             orbit_goal: 0.0,
+            spin: 0.0,
             hover: None,
             scroll: [0.0; 2],
             scroll_goal: [0.0; 2],
@@ -341,6 +352,28 @@ impl Garage {
     /// Eased 0..1 openness, for fading the battle HUD out.
     pub fn presence(&self) -> f32 {
         smooth(self.blend)
+    }
+
+    /// Whether the bay is on screen (instead of the battlefield or menu backdrop).
+    pub fn in_bay(&self) -> bool {
+        self.blend >= BAY_AT
+    }
+
+    /// The bay turntable's angle (see `bay::scene`).
+    pub fn spin(&self) -> f32 {
+        self.spin
+    }
+
+    /// The bay camera: easing in from a little further out as the garage opens.
+    pub fn bay_camera(&self, aspect: f32) -> crate::render::Camera {
+        let k = smooth(((self.blend - BAY_AT) / (1.0 - BAY_AT)).clamp(0.0, 1.0));
+        crate::bay::camera(aspect, 1.0 + 0.2 * (1.0 - k))
+    }
+
+    /// How dark the screen is for the cut between battlefield and bay:
+    /// black around the switch, clear at either end.
+    pub fn dip(&self) -> f32 {
+        ((1.0 - (self.blend - BAY_AT).abs() / BAY_AT) * 1.8).clamp(0.0, 1.0)
     }
 
     /// The pointer moved over `hit` (or off the garage).
@@ -423,6 +456,7 @@ impl Garage {
         if self.blend <= 0.0 {
             let off = camera.pos - t.pos;
             self.orbit = off.x.atan2(off.z);
+            self.spin = 0.0;
         }
         self.orbit_goal = self.orbit + wrap_angle(front_angle(t) - self.orbit);
     }
@@ -522,6 +556,9 @@ impl Garage {
         };
         if self.open {
             self.orbit_goal += ORBIT_DRIFT * dt;
+        }
+        if self.in_bay() {
+            self.spin += SPIN_RATE * dt;
         }
         self.orbit += (self.orbit_goal - self.orbit) * (1.0 - (-dt * 2.5).exp());
         let k = 1.0 - (-dt * 14.0).exp();
@@ -743,6 +780,15 @@ impl Garage {
         let mut v = p.finish();
         for vert in &mut v {
             vert.color[3] *= e;
+        }
+        // The dip to black for the cut to and from the bay, under the panel.
+        let dip = self.dip();
+        if dip > 0.0 {
+            let mut d = Painter::new(scale);
+            d.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, dip]);
+            let mut under = d.finish();
+            under.append(&mut v);
+            v = under;
         }
         // Closing: still fading out, but nothing left to click.
         if !self.open {

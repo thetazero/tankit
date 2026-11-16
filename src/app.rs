@@ -16,6 +16,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::audio::{self, Audio};
+use crate::bay::{self, BayArt};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
@@ -82,6 +83,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     art: Option<TankArt>,
+    bay: Option<BayArt>,
     showroom: Option<ShowroomArgs>,
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
@@ -166,6 +168,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         window: None,
         renderer: None,
         art: None,
+        bay: None,
         showroom: launch.showroom,
         game,
         profile,
@@ -250,6 +253,7 @@ impl ApplicationHandler for App {
                     r.set_static_mesh(&scene::map_mesh(&self.game.world.map));
                 }
                 self.art = Some(TankArt::upload(&mut r));
+                self.bay = Some(BayArt::upload(&mut r));
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -738,7 +742,7 @@ impl App {
         }
         let queued = self.queued();
         let scores = self.held(&[KeyCode::Tab]);
-        if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
+        if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
             let alpha = if self.mode == Mode::Paused {
                 1.0
@@ -775,12 +779,25 @@ impl App {
                     room.focus,
                 );
             }
-            let mut scene = scene::build(&self.game.world, &tanks, art, camera);
-            self.game.effect_instances(alpha, &mut scene.instances);
-            // Ambient motion happens around wherever the camera is.
-            self.game.ambience.focus = camera.pos;
-            scene.particles.extend(self.game.ambience.particles());
-            self.game.glow_particles(alpha, &mut scene.particles);
+            let mut scene = if self.garage.in_bay() {
+                let view = self.garage.bay_camera(w / h);
+                bay::scene(
+                    art,
+                    bay,
+                    &tanks[0],
+                    self.garage.spin(),
+                    self.game.world.time,
+                    view,
+                )
+            } else {
+                let mut scene = scene::build(&self.game.world, &tanks, art, camera);
+                self.game.effect_instances(alpha, &mut scene.instances);
+                // Ambient motion happens around wherever the camera is.
+                self.game.ambience.focus = camera.pos;
+                scene.particles.extend(self.game.ambience.particles());
+                self.game.glow_particles(alpha, &mut scene.particles);
+                scene
+            };
             if self.showroom.is_some() {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
