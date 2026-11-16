@@ -601,6 +601,56 @@ pub struct Map {
     /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
     /// drawn as they are, never collide.
     pub sculpted: crate::render::mesh::MeshData,
+    /// Things that make a sound of their own (a crystal singing, a furnace,
+    /// a banner in the wind): heard as you get near (see
+    /// `audio::sounds::places`).
+    pub sounds: Vec<Emitter>,
+}
+
+/// A place on the map that sounds: what it is, and where.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Emitter {
+    pub kind: Ambient,
+    pub at: Vec3,
+}
+
+/// What a sounding place is. The audio side decides what each sounds like
+/// and how far it carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Ambient {
+    /// A lit Ithessar crystal: glass singing, plasma fizzing up its seam.
+    Crystal,
+    /// Plasma held between crystal tips: a deep thrum and arcs crackling.
+    Core,
+    /// A river of plasma running along the ground.
+    River,
+    /// The Foundry's crucible, still hot: a low roar, metal bubbling.
+    Furnace,
+    /// A wrecked press, still twitching: mains hum, a hiss and a clank.
+    Machine,
+    /// The Sanctum's altar crystal: a Resonant choir.
+    Altar,
+    /// A cluster of Resonant crystals: a soft rubbed-glass chord.
+    Shrine,
+    /// A bell in its tower, stirred by the wind.
+    Bell,
+    /// A long banner flapping in the wind.
+    Banner,
+    /// A great dome open to the sky: wind moaning in it.
+    Dome,
+    /// Power cable singing in the wind.
+    Cable,
+    /// Market cloth (an awning, a stall's canopy) snapping in the wind.
+    Cloth,
+    /// A wreck (a boat, a war machine, a pier) creaking and ticking in the heat.
+    Hull,
+}
+
+impl Map {
+    /// `kind` sounds at `at`.
+    pub fn sound(&mut self, kind: Ambient, at: Vec3) {
+        self.sounds.push(Emitter { kind, at });
+    }
 }
 
 /// A glowing ribbon on the ground: a bright core fading out to its edges.
@@ -909,6 +959,9 @@ impl Map {
             v.pos[0] += by.x;
             v.pos[2] += by.y;
         }
+        for e in &mut self.sounds {
+            e.at += by3;
+        }
     }
 
     pub fn center(&self) -> Vec2 {
@@ -938,6 +991,7 @@ impl Map {
             fall_y: None,
             hold_name: "DEPOSIT",
             sculpted: crate::render::mesh::MeshData::default(),
+            sounds: Vec::new(),
         }
     }
 
