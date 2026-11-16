@@ -249,6 +249,12 @@ impl Map {
     /// A crimson banner hanging flat against a wall facing `out`, from
     /// `top` down `len`, `w` wide, with a small gold disc near the top.
     fn banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32) {
+        self.side_banner(top, out, w, len, CRIMSON, true);
+    }
+
+    /// A banner in `color`; `emblem` puts the Imperium's disc on it (only
+    /// theirs carry it).
+    fn side_banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32, color: Vec3, emblem: bool) {
         let n = Vec3::new(out.x, 0.0, out.y).normalize();
         let right = Vec3::Y.cross(n).normalize();
         let rig = Rig {
@@ -260,7 +266,7 @@ impl Map {
             Vec3::ZERO,
             Vec3::new(w * 0.5, len * 0.5, 0.05),
             Quat::IDENTITY,
-            CRIMSON,
+            color,
             Material::Cloth,
             false,
             0.0,
@@ -276,8 +282,10 @@ impl Map {
             false,
             0.0,
         );
-        let d = top + n * 0.2 - Vec3::Y * w * 0.75;
-        self.disc(d, n * 0.04, w * 0.28, GOLD, Material::Metal);
+        if emblem {
+            let d = top + n * 0.2 - Vec3::Y * w * 0.75;
+            self.disc(d, n * 0.04, w * 0.28, GOLD, Material::Metal);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1325,10 +1333,97 @@ impl Map {
 
     /// Each corner: a staging court behind low barriers, open toward the
     /// middle, with two masts flying its side's color.
-    fn staging_courts(&mut self, _rng: &mut Rng) {
+    fn staging_courts(&mut self, rng: &mut Rng) {
         let factions = self.factions.clone();
         for (k, (corner, inward)) in courts().into_iter().enumerate() {
             let at = |u: f32, v: f32| corner + Vec2::new(inward.x * u, inward.y * v);
+            let box_uv = |map: &mut Map,
+                          u0: f32,
+                          v0: f32,
+                          u1: f32,
+                          v1: f32,
+                          y1: f32,
+                          color: Vec3,
+                          mat: Material,
+                          solid: bool| {
+                let (a, b) = (at(u0, v0), at(u1, v1));
+                let (lo, hi) = (a.min(b), a.max(b));
+                map.slab(
+                    Vec3::new(lo.x, if solid { 0.0 } else { -0.1 }, lo.y),
+                    Vec3::new(hi.x, y1, hi.y),
+                    0.0,
+                    color,
+                    mat,
+                    solid,
+                );
+            };
+            let side = factions[k];
+            let color = side.paint();
+            let ours = side == Faction::Imperium;
+            // A cast pad under the court.
+            let tile = 6.0;
+            let n = (COURT / tile) as i32;
+            for i in 0..n {
+                for j in 0..n {
+                    let (u, v) = (i as f32 * tile, j as f32 * tile);
+                    let shade = 0.62 + 0.05 * (((i * 3 + j * 5) % 3) as f32);
+                    box_uv(
+                        self,
+                        u + 0.08,
+                        v + 0.08,
+                        u + tile - 0.08,
+                        v + tile - 0.08,
+                        0.05,
+                        CONCRETE * shade,
+                        Material::Concrete,
+                        false,
+                    );
+                }
+            }
+            // Bastion walls on the two map-edge sides, banners down their
+            // inner faces in the side's color.
+            box_uv(
+                self,
+                0.0,
+                0.0,
+                COURT + 1.4,
+                1.8,
+                6.5,
+                CONCRETE * 0.8,
+                Material::Concrete,
+                true,
+            );
+            box_uv(
+                self,
+                0.0,
+                0.0,
+                1.8,
+                COURT + 1.4,
+                6.5,
+                CONCRETE * 0.8,
+                Material::Concrete,
+                true,
+            );
+            for t in [0.3f32, 0.55, 0.8] {
+                let p = at(COURT * t, 1.8);
+                self.side_banner(
+                    Vec3::new(p.x, 6.2, p.y),
+                    Vec2::new(0.0, inward.y),
+                    2.6,
+                    5.0,
+                    color,
+                    ours,
+                );
+                let p = at(1.8, COURT * t);
+                self.side_banner(
+                    Vec3::new(p.x, 6.2, p.y),
+                    Vec2::new(inward.x, 0.0),
+                    2.6,
+                    5.0,
+                    color,
+                    ours,
+                );
+            }
             // Barriers along the two inner edges, with a wide gap in each.
             for (u0, v0, u1, v1) in [
                 (2.0, COURT, COURT * 0.35, COURT + 1.4),
@@ -1336,18 +1431,33 @@ impl Map {
                 (COURT, 2.0, COURT + 1.4, COURT * 0.35),
                 (COURT, COURT * 0.65, COURT + 1.4, COURT),
             ] {
-                let (a, b) = (at(u0, v0), at(u1, v1));
-                let (lo, hi) = (a.min(b), a.max(b));
-                self.slab(
-                    Vec3::new(lo.x, 0.0, lo.y),
-                    Vec3::new(hi.x, 1.7, hi.y),
-                    0.0,
+                box_uv(
+                    self,
+                    u0,
+                    v0,
+                    u1,
+                    v1,
+                    1.7,
                     CONCRETE * 0.85,
                     Material::Concrete,
                     true,
                 );
             }
-            let color = factions[k].paint();
+            // Supply containers stacked in the corner, in the side's color.
+            for (u, v, h) in [(3.0f32, 4.0f32, 0.0f32), (3.0, 4.0, 2.6), (7.0, 3.0, 0.0)] {
+                let shade = rng.range(0.8, 1.0);
+                let (a, b) = (at(u - 1.2, v - 0.0), at(u + 1.2, v + 5.0));
+                let (lo, hi) = (a.min(b), a.max(b));
+                self.slab(
+                    Vec3::new(lo.x, h, lo.y),
+                    Vec3::new(hi.x, h + 2.5, hi.y),
+                    0.0,
+                    color * 0.8 * shade + Vec3::splat(0.05),
+                    Material::Painted,
+                    true,
+                );
+            }
+            // Masts at the gaps, flying the side's color.
             for (u, v) in [(COURT - 3.0, COURT * 0.5), (COURT * 0.5, COURT - 3.0)] {
                 let p = at(u, v);
                 self.pipe(
@@ -1358,19 +1468,14 @@ impl Map {
                     Material::Painted,
                     true,
                 );
-                let rig = Rig {
-                    pos: Vec3::new(p.x, 8.4, p.y),
-                    rot: Quat::from_rotation_y(PI * 0.25),
-                };
-                rig.part(
-                    self,
-                    Vec3::new(1.4, 0.0, 0.0),
-                    Vec3::new(1.2, 3.4, 0.05),
-                    Quat::IDENTITY,
+                let face = (CENTER - p).normalize();
+                self.side_banner(
+                    Vec3::new(p.x, 11.6, p.y) + Vec3::new(face.x, 0.0, face.y) * 0.1,
+                    face,
+                    2.4,
+                    6.0,
                     color,
-                    Material::Cloth,
-                    false,
-                    0.0,
+                    ours,
                 );
             }
         }
