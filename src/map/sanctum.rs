@@ -70,10 +70,6 @@ fn past_edge(p: Vec2) -> f32 {
     d.length() - rim(d.y.atan2(d.x))
 }
 
-/// One point down a column of the cliff face: its height, how far out from
-/// the rim it stands, and which band of rock it's in (0: the cap).
-type FacePoint = (f32, f32, u32);
-
 /// The mesa's top: flat round the church, a gentle roll further out.
 fn mesa_top(x: f32, z: f32) -> f32 {
     let r = Vec2::new(x, z).distance(CENTER);
@@ -216,109 +212,159 @@ impl Map {
     }
 
     /// The cliff face: one sculpted surface of rock all round the edge,
-    /// over the heightfield's drop. A lip at the top; fluted columns running
-    /// down it; bands of harder rock stepping out as ledges, each its own
-    /// shade; its foot buried in the scree.
+    /// over the heightfield's drop. A lip at the top; uneven fluted columns
+    /// down it; bands of harder rock set in or out, with ledges that come
+    /// and go along them; its foot flaring into the scree. Smooth shaded,
+    /// its grid jittered so it doesn't read as tiles, its color blended
+    /// between bands and streaked down the face.
     fn cliffs(&mut self) {
-        let m = &mut self.sculpted;
-        let n = 360;
+        use crate::render::mesh::Vertex;
         const BAND: f32 = 8.0;
         const SHADES: [Vec3; 5] = [
-            Vec3::new(0.66, 0.46, 0.32),
-            Vec3::new(0.56, 0.36, 0.25),
-            Vec3::new(0.74, 0.58, 0.42),
-            Vec3::new(0.5, 0.32, 0.23),
-            Vec3::new(0.62, 0.41, 0.28),
+            Vec3::new(0.7, 0.47, 0.31),
+            Vec3::new(0.48, 0.29, 0.19),
+            Vec3::new(0.8, 0.63, 0.45),
+            Vec3::new(0.42, 0.26, 0.18),
+            Vec3::new(0.64, 0.4, 0.26),
         ];
         let hash = |i: u32, k: u32| {
             let h = i.wrapping_mul(0x9E37_79B9) ^ k.wrapping_mul(0x85EB_CA6B);
             let h = (h ^ (h >> 15)).wrapping_mul(0x2C1B_3C6D);
             (h ^ (h >> 12)) as f32 / u32::MAX as f32
         };
+        // Smooth noise along the rim: `cells` bumps round it, seeded by `k`.
+        let wave = |a: f32, cells: f32, k: u32| {
+            let x = a / TAU * cells;
+            let (i, f) = (x.floor(), x.fract());
+            let n = cells as u32;
+            let at = |j: f32| hash((j as i64).rem_euclid(n as i64) as u32, k);
+            let f = f * f * (3.0 - 2.0 * f);
+            at(i) * (1.0 - f) + at(i + 1.0) * f
+        };
         // How far out from the rim the face stands at angle `a`, `depth` m
         // down from the top.
         let face = |a: f32, depth: f32| {
             let s = (depth / 40.0).clamp(0.0, 1.0);
-            // Columns of uneven width: the phase wanders round the rim.
             let phase = a * 120.0 + 9.0 * (a * 3.0).sin() + 4.0 * (a * 7.0 + 1.0).sin();
-            let col = (phase / TAU).floor() as u32;
             let groove =
                 (0.5 + 0.5 * (phase + 0.5 * (depth * 0.11 + a * 13.0).sin()).cos()).powf(0.6);
-            let flute = groove * (0.6 + 1.4 * hash(col, 7)) + 0.4 * (a * 37.0 + depth * 0.05).sin();
+            let flute =
+                groove * (0.6 + 2.0 * wave(a, 60.0, 7)) + 0.4 * (a * 37.0 + depth * 0.05).sin();
             let f = (depth / BAND).fract();
             let band = (depth / BAND).floor() as u32;
-            // Each band set in or out of the face; harder rock at its foot
-            // stepping out as a ledge.
-            let set = 0.9 * (hash(band, 11) - 0.5);
-            let ledge = (0.5 + 0.6 * hash(band, 3)) * smoothstep(0.8, 0.97, f);
-            // The foot flares out into the scree.
-            let flare = 4.0 * smoothstep(0.62, 1.0, s);
-            1.2 + 4.5 * s + flute.max(0.0) + set + ledge + flare
+            let set = 0.9 * (wave(a, 9.0, band + 20) - 0.5);
+            // Ledges come and go along the band.
+            let ledge =
+                1.6 * (1.4 * wave(a, 24.0, band + 40) - 0.35).max(0.0) * smoothstep(0.8, 0.97, f);
+            let flare = 5.0 * smoothstep(0.55, 1.0, s);
+            // The flutes open out below the lip, so the rim runs smooth.
+            let open = smoothstep(0.0, 4.0, depth);
+            1.2 + 4.5 * s + flute.max(0.0) * open + set + ledge + flare
         };
-        // Each column of the face: (height, distance out from the rim).
+        // Color at angle `a`, `depth` down: bands blending into each other,
+        // streaked down the face, darker toward the foot.
+        let shade = |a: f32, depth: f32| {
+            if depth <= 0.0 {
+                return SAND * 0.95;
+            }
+            let b = depth / BAND + 0.15 * (wave(a, 30.0, 3) - 0.5);
+            let (i, f) = (b.floor() as usize, b.fract());
+            let blend = smoothstep(0.9, 1.0, f);
+            let band = SHADES[(i + 3) % SHADES.len()].lerp(SHADES[(i + 4) % SHADES.len()], blend);
+            let streak = 0.9 + 0.14 * wave(a, 160.0, 5) + 0.06 * wave(a, 41.0, 9);
+            band * streak * (1.0 - 0.004 * depth)
+        };
+
+        let n = 360usize;
         let mut depths = vec![0.0f32];
         let mut d = 0.6;
         while d < 41.0 {
             depths.push(d);
             d += 0.7;
         }
-        let profile = |a: f32| -> Vec<FacePoint> {
-            let p = CENTER + Vec2::new(a.cos(), a.sin()) * rim(a);
-            let top = mesa_top(p.x, p.y);
-            // Tucked into the ground, then out to the lip, then down the face.
-            let mut v = vec![(top + 0.2, -0.8, 0), (top + 0.2, face(a, 0.0), 0)];
-            v.extend(
-                depths
-                    .iter()
-                    .skip(1)
-                    .map(|&dp| (top - dp, face(a, dp), 1 + (dp / BAND).floor() as u32)),
-            );
-            v
-        };
-        let rings: Vec<(Vec2, Vec<FacePoint>)> = (0..=n)
-            .map(|i| {
-                let a = i as f32 / n as f32 * TAU;
-                (Vec2::new(a.cos(), a.sin()), profile(a))
-            })
-            .collect();
-        let at = |i: usize, k: usize| {
-            let (dir, ref prof) = rings[i];
-            let a = i as f32 / n as f32 * TAU;
-            let (y, d, _) = prof[k];
-            let p = CENTER + dir * (rim(a) + d);
-            Vec3::new(p.x, y, p.y)
-        };
-        for i in 0..n {
-            let out = (rings[i].0 + rings[i + 1].0).normalize().extend(0.0);
-            let out = Vec3::new(out.x, 0.0, out.y);
-            for k in 0..rings[i].1.len() - 1 {
-                let q = [at(i, k), at(i + 1, k), at(i + 1, k + 1), at(i, k + 1)];
-                let mut nrm = (q[1] - q[0]).cross(q[3] - q[0]).normalize_or_zero();
-                if k == 0 {
-                    // The cap over the lip faces up.
-                    if nrm.y < 0.0 {
-                        nrm = -nrm;
+        let rows = depths.len() + 1;
+        // Vertex grid: column `i` round the rim (the last repeats the first),
+        // row 0 tucked into the ground, row 1 the lip, then down the face.
+        let mut pos = vec![Vec3::ZERO; (n + 1) * rows];
+        let mut col = vec![Vec3::ZERO; (n + 1) * rows];
+        for i in 0..=n {
+            let ii = (i % n) as u32;
+            for r in 0..rows {
+                // Jitter everything but the top two rows, so the grid breaks up.
+                let (ja, jd) = if r < 2 {
+                    (0.0, 0.0)
+                } else {
+                    (
+                        hash(ii, r as u32 * 2) - 0.5,
+                        hash(ii, r as u32 * 2 + 1) - 0.5,
+                    )
+                };
+                let a = (i as f32 + ja * 0.6) / n as f32 * TAU;
+                let dir = Vec2::new(a.cos(), a.sin());
+                let rim_p = CENTER + dir * rim(a);
+                let top = mesa_top(rim_p.x, rim_p.y);
+                let (y, out, depth) = match r {
+                    0 => (top + 0.05, -4.5, 0.0),
+                    1 => (top + 0.35, face(a, 0.0), 0.0),
+                    _ => {
+                        let dp = (depths[r - 1] + jd * 0.4).max(0.3);
+                        (top - dp, face(a, dp), dp)
                     }
-                } else if nrm.dot(out) < 0.0 {
-                    nrm = -nrm;
-                }
-                let band = rings[i].1[k + 1].2;
-                let base = if band == 0 {
-                    SAND * 0.95
-                } else {
-                    SHADES[(band as usize + 2) % SHADES.len()]
                 };
-                // Streaked down the face, darker toward its foot.
-                let depth = (rings[i].1[0].0 - rings[i].1[k + 1].0).max(0.0);
-                let c = base * (0.93 + 0.08 * hash(i as u32 / 2, 5)) * (1.0 - 0.004 * depth);
-                // Wind the quad to face along its normal.
-                let q = if (q[1] - q[0]).cross(q[3] - q[0]).dot(nrm) < 0.0 {
-                    [q[0], q[3], q[2], q[1]]
-                } else {
-                    q
-                };
-                m.quad(q, nrm, c.extend(Material::Rubble.id()));
+                let p = CENTER + dir * (rim(a) + out);
+                pos[i * rows + r] = Vec3::new(p.x, y, p.y);
+                col[i * rows + r] = shade(a, depth);
             }
+        }
+        // Triangles, wound to face out (the cap up), diagonals alternating;
+        // each vertex's normal the sum of its faces'.
+        let mut tris = Vec::new();
+        let mut nrm = vec![Vec3::ZERO; pos.len()];
+        for i in 0..n {
+            let out = Vec2::new(
+                ((i as f32 + 0.5) / n as f32 * TAU).cos(),
+                ((i as f32 + 0.5) / n as f32 * TAU).sin(),
+            );
+            let out = Vec3::new(out.x, 0.0, out.y);
+            for r in 0..rows - 1 {
+                let v = |i: usize, r: usize| i * rows + r;
+                let q = [v(i, r), v(i + 1, r), v(i + 1, r + 1), v(i, r + 1)];
+                let pair = if (i + r) % 2 == 0 {
+                    [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]
+                } else {
+                    [[q[0], q[1], q[3]], [q[1], q[2], q[3]]]
+                };
+                for mut t in pair {
+                    let mut fnrm = (pos[t[1]] - pos[t[0]]).cross(pos[t[2]] - pos[t[0]]);
+                    let want = if r == 0 { Vec3::Y } else { out };
+                    if fnrm.dot(want) < 0.0 {
+                        t.swap(1, 2);
+                        fnrm = -fnrm;
+                    }
+                    for &k in &t {
+                        nrm[k] += fnrm;
+                    }
+                    tris.push(t);
+                }
+            }
+        }
+        // The seam: the last column is the first again.
+        for r in 0..rows {
+            let sum = nrm[r] + nrm[n * rows + r];
+            nrm[r] = sum;
+            nrm[n * rows + r] = sum;
+        }
+        let m = &mut self.sculpted;
+        let base = m.verts.len() as u32;
+        for k in 0..pos.len() {
+            m.verts.push(Vertex {
+                pos: pos[k].to_array(),
+                normal: nrm[k].normalize_or_zero().to_array(),
+                color: col[k].extend(Material::Rubble.id()).to_array(),
+            });
+        }
+        for t in tris {
+            m.indices.extend(t.iter().map(|&k| base + k as u32));
         }
     }
 
