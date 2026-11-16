@@ -1,10 +1,12 @@
 //! The audio thread's side: every tank's loops, the burn where each beam
-//! lands, the wind, and one-shot voices, mixed to stereo.
+//! lands, the wind, the places on the map, and one-shot voices, mixed to
+//! stereo. The places duck under the one-shots, so a fight comes through.
 //! The game thread only sets targets; everything eases toward them here.
 //! What each loop sounds like lives with its family in `sounds/`.
 
 use super::dsp::{OnePole, Smooth, pan_gains};
 use super::sounds::beam::{BurnParams, BurnVoice};
+use super::sounds::places::{PlaceParams, PlaceVoice};
 use super::sounds::wind::Wind;
 use super::tank::{TankParams, TankVoice};
 use super::voice::{Layer, Voice};
@@ -13,6 +15,9 @@ use super::voice::{Layer, Voice};
 const MASTER: f32 = 1.3;
 /// Most one-shots at once; past this the quietest is dropped.
 const MAX_VOICES: usize = 48;
+/// How hard the one-shots duck the places: at a one-shot level of `x` the
+/// places play at `1 / (1 + DUCK * x)`.
+const DUCK: f32 = 12.0;
 
 /// A one-shot to start.
 pub struct OneShot {
@@ -40,6 +45,7 @@ pub struct Mixer {
     sr: f32,
     tanks: Vec<TankVoice>,
     burns: Vec<BurnVoice>,
+    places: Vec<PlaceVoice>,
     voices: Vec<Voice>,
     master: Smooth,
     /// World sounds (loops and wind) fade out while paused.
@@ -48,6 +54,10 @@ pub struct Mixer {
     seed: u32,
     /// The world loops' buffer, kept so the audio thread doesn't allocate.
     scratch: Vec<f32>,
+    /// The places' buffer, likewise.
+    scratch_places: Vec<f32>,
+    /// How loud the one-shots are lately (follows fast, lets go slowly).
+    sidechain: f32,
 }
 
 impl Mixer {
@@ -56,12 +66,15 @@ impl Mixer {
             sr,
             tanks: Vec::new(),
             burns: Vec::new(),
+            places: Vec::new(),
             voices: Vec::new(),
             master: Smooth::new(0.0),
             world: Smooth::new(0.0),
             wind: Wind::new(),
             seed: 1,
             scratch: Vec::new(),
+            scratch_places: Vec::new(),
+            sidechain: 0.0,
         }
     }
 
@@ -96,6 +109,32 @@ impl Mixer {
         for (v, p) in self.burns.iter_mut().zip(params) {
             v.set(p);
         }
+    }
+
+    /// Every place on the map, in the map's order (a new map, new voices).
+    pub fn set_places(&mut self, params: &[PlaceParams]) {
+        let same = self.places.len() == params.len()
+            && self
+                .places
+                .iter()
+                .zip(params)
+                .all(|(v, p)| v.kind() == p.kind);
+        if !same {
+            self.places = params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| PlaceVoice::new(p.kind, i as u32 + 1))
+                .collect();
+        }
+        for (v, p) in self.places.iter_mut().zip(params) {
+            v.set(p);
+        }
+    }
+
+    /// How far the places are ducked right now (1 = not at all).
+    #[cfg(test)]
+    pub fn duck(&self) -> f32 {
+        1.0 / (1.0 + DUCK * self.sidechain)
     }
 
     pub fn play(&mut self, s: OneShot) {
@@ -154,18 +193,42 @@ impl Mixer {
             }
         }
         self.wind.render(&mut world, sr, &k);
-        let world_coef = Smooth::coef(0.15, sr);
-        for (o, w) in out.chunks_exact_mut(2).zip(world.chunks_exact(2)) {
-            let g = self.world.next(world_coef);
-            o[0] = w[0] * g;
-            o[1] = w[1] * g;
+        let mut places = std::mem::take(&mut self.scratch_places);
+        places.clear();
+        places.resize(out.len(), 0.0);
+        for p in &mut self.places {
+            if !p.silent() {
+                p.render(&mut places, sr, &k);
+            }
         }
-        self.scratch = world;
 
+        // The one-shots first, alone in `out`, so they can duck the places.
         for v in &mut self.voices {
             v.render(out, sr);
         }
         self.voices.retain(|v| !v.done());
+
+        let world_coef = Smooth::coef(0.15, sr);
+        let (attack, release) = (Smooth::coef(0.01, sr), Smooth::coef(0.5, sr));
+        for ((o, w), p) in out
+            .chunks_exact_mut(2)
+            .zip(world.chunks_exact(2))
+            .zip(places.chunks_exact(2))
+        {
+            let g = self.world.next(world_coef);
+            let level = o[0].abs().max(o[1].abs());
+            let k = if level > self.sidechain {
+                attack
+            } else {
+                release
+            };
+            self.sidechain += (level - self.sidechain) * k;
+            let duck = g / (1.0 + DUCK * self.sidechain);
+            o[0] += w[0] * g + p[0] * duck;
+            o[1] += w[1] * g + p[1] * duck;
+        }
+        self.scratch = world;
+        self.scratch_places = places;
 
         let master_coef = Smooth::coef(0.05, sr);
         for frame in out.chunks_exact_mut(2) {
