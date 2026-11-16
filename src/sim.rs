@@ -195,7 +195,8 @@ pub struct Command {
     pub steer: f32,
     /// Turret rotation input, -1..1 (+1 turns left). Tanki-style: Z/X.
     pub turret: f32,
-    /// Swing the turret back to face forward over the hull (C).
+    /// Start swinging the turret back to face forward over the hull (C). A tap is
+    /// enough: the swing keeps going on its own until it lands or Z/X cancels it.
     pub center_turret: bool,
 }
 
@@ -241,9 +242,9 @@ impl HullStats {
         steer_accel: 20.0,
         grip_long: 1.9,
         grip_lat: 1.7,
-        turret_speed: 2.0,
-        turret_accel: 4.0,
-        turret_brake: 14.0,
+        turret_speed: 1.3,
+        turret_accel: 2.6,
+        turret_brake: 10.0,
     };
     pub const BASTION: Self = Self {
         max_speed: 10.0,
@@ -256,9 +257,9 @@ impl HullStats {
         steer_accel: 14.0,
         grip_long: 1.9,
         grip_lat: 1.8,
-        turret_speed: 1.5,
-        turret_accel: 2.5,
-        turret_brake: 10.0,
+        turret_speed: 0.95,
+        turret_accel: 1.6,
+        turret_brake: 7.0,
     };
 
     pub fn of(kind: HullKind) -> HullStats {
@@ -297,6 +298,8 @@ pub struct Tank {
     /// Turret angle relative to the hull: the turret is mounted, so it turns with the hull.
     pub turret_rel: f32,
     pub turret_rate: f32,
+    /// An automatic recenter (C) is under way.
+    pub turret_centering: bool,
     /// Gun elevation in radians (positive = up).
     pub gun_pitch: f32,
     /// Distance each tread has travelled: [left (+x), right (-x)].
@@ -458,6 +461,7 @@ impl World {
             parked: true,
             turret_rel: 0.0,
             turret_rate: 0.0,
+            turret_centering: false,
             gun_pitch: 0.0,
             track_dist: [0.0; 2],
             since_fire: 10.0,
@@ -526,6 +530,7 @@ impl World {
         b.set_angvel(Vec3::ZERO, true);
         t.turret_rel = 0.0;
         t.turret_rate = 0.0;
+        t.turret_centering = false;
         t.gun_pitch = 0.0;
         t.belt = [0.0; 2];
         t.parked = true;
@@ -993,11 +998,17 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
 fn turret(t: &mut Tank, cmd: &Command, dt: f32) {
     let h = t.hull;
     // Manual rotation relative to the hull: a slow spin-up, a quicker stop.
-    // Centering drives it back to 0 and stops exactly there.
+    // Centering (latched by a C tap) drives it back to 0 and stops exactly there;
+    // any manual input takes over at once.
     let manual = cmd.turret.clamp(-1.0, 1.0);
+    if manual.abs() > 0.05 {
+        t.turret_centering = false;
+    } else if cmd.center_turret {
+        t.turret_centering = true;
+    }
     let target_rate = if manual.abs() > 0.05 {
         manual * h.turret_speed
-    } else if cmd.center_turret {
+    } else if t.turret_centering {
         // Full speed toward center until it's time to brake.
         let stop_dist = t.turret_rate * t.turret_rate / (2.0 * h.turret_brake);
         let err = -t.turret_rel;
@@ -1019,13 +1030,14 @@ fn turret(t: &mut Tank, cmd: &Command, dt: f32) {
     t.turret_rate = approach(t.turret_rate, target_rate, rate * dt);
     let before = t.turret_rel;
     t.turret_rel = wrap_angle(t.turret_rel + t.turret_rate * dt);
-    if cmd.center_turret && manual.abs() <= 0.05 {
+    if t.turret_centering {
         let crossed = before.signum() != t.turret_rel.signum() && before.abs() < 0.5;
         let settled = t.turret_rel.abs() < 0.02 && t.turret_rate.abs() < 0.5;
         if crossed || settled {
             // Snap and stop exactly forward instead of creeping or oscillating.
             t.turret_rel = 0.0;
             t.turret_rate = 0.0;
+            t.turret_centering = false;
         }
     }
 }
@@ -1493,16 +1505,52 @@ mod tests {
             1.0,
         );
         assert!((w.tanks[0].turret_rel - rel).abs() < 1e-4);
+        // A single tap of C is enough: the swing finishes on its own.
         run(
             &mut w,
             Command {
                 center_turret: true,
                 ..Default::default()
             },
-            2.0,
+            DT,
         );
+        run(&mut w, Command::default(), 3.0);
         assert!(w.tanks[0].turret_rel.abs() < 0.01);
         assert!(w.tanks[0].turret_rate.abs() < 0.01);
+    }
+
+    /// Pressing Z/X mid-swing cancels the recenter; the turret then just stops.
+    #[test]
+    fn turret_input_cancels_centering() {
+        let mut w = flat_world();
+        let turn = |t: f32| Command {
+            turret: t,
+            ..Default::default()
+        };
+        run(&mut w, turn(1.0), 1.5);
+        run(&mut w, Command::default(), 0.5);
+        let start = w.tanks[0].turret_rel;
+        run(
+            &mut w,
+            Command {
+                center_turret: true,
+                ..Default::default()
+            },
+            DT,
+        );
+        run(&mut w, Command::default(), 0.3);
+        assert!(w.tanks[0].turret_centering);
+        assert!(w.tanks[0].turret_rel < start, "not swinging back");
+        run(&mut w, turn(1.0), DT);
+        assert!(!w.tanks[0].turret_centering);
+        run(&mut w, Command::default(), 1.0);
+        let stopped = w.tanks[0].turret_rel;
+        assert!(
+            stopped.abs() > 0.3,
+            "kept centering after cancel ({stopped})"
+        );
+        run(&mut w, Command::default(), 0.5);
+        assert_eq!(w.tanks[0].turret_rel, stopped);
     }
 
     #[test]
