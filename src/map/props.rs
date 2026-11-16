@@ -279,7 +279,8 @@ impl Map {
         // Cloth roof: sloped from back to front, sometimes torn half away.
         let torn = rng.chance(0.3);
         let span = if torn { 0.5 } else { 1.0 };
-        for (x0, x1) in [(-hx - 0.2, -hx + 2.0 * hx * span + 0.2)] {
+        let (x0, x1) = (-hx - 0.2, -hx + 2.0 * hx * span + 0.2);
+        {
             let (a, b) = (
                 w((x0 + x1) * 0.5, -hz - 0.15, 2.65),
                 w((x0 + x1) * 0.5, hz + 0.35, 2.05),

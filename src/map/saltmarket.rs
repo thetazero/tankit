@@ -1149,12 +1149,12 @@ impl Map {
                         continue;
                     }
                     let tops = self.pole(rng, p, dir);
-                    if let (Some(prev), Some(now)) = (last, tops) {
-                        if prev[0].distance(now[0]) < 32.0 {
-                            for k in 0..2 {
-                                let sag = rng.range(0.4, 1.0);
-                                self.cable(prev[k], now[k], sag);
-                            }
+                    if let (Some(prev), Some(now)) = (last, tops)
+                        && prev[0].distance(now[0]) < 32.0
+                    {
+                        for k in 0..2 {
+                            let sag = rng.range(0.4, 1.0);
+                            self.cable(prev[k], now[k], sag);
                         }
                     }
                     last = tops;
