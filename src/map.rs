@@ -9,6 +9,7 @@ use glam::{Vec2, Vec3};
 use crate::faction::Faction;
 use crate::rng::Rng;
 
+mod capital;
 mod kiln;
 mod landmarks;
 mod props;

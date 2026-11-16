@@ -468,7 +468,9 @@ impl Hud {
         }
 
         if board {
-            scoreboard(&mut p, m, Vec2::new(w * 0.5, h * 0.28));
+            // Four sides stack two rows of tables: start higher.
+            let top = if m.factions.len() > 2 { 0.17 } else { 0.28 };
+            scoreboard(&mut p, m, Vec2::new(w * 0.5, h * top));
         }
 
         // Bottom left: speed.
@@ -558,7 +560,7 @@ impl Hud {
 fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     let holding = m.contract == Contract::Hold;
     // Hold adds a HELD column: wider tables so it clears the tank names.
-    let col = if holding { 380.0 } else { 330.0 };
+    let col = if holding { 410.0 } else { 380.0 };
     let gap = 48.0;
     let sides = m.factions.len();
     let rows = (0..sides)

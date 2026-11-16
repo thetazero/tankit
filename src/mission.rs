@@ -70,6 +70,16 @@ pub const MISSIONS: &[Mission] = &[
         sides: &[Faction::Ithessar, Faction::Imperium],
         brief: "THE ITHESSAR HIRE YOU TO HOLD THE IMPERIUM OFF THEIR KILN. PAID PER KILL",
     },
+    Mission {
+        name: "FOUR WINDS",
+        contract: Contract::Attrition,
+        map: "THE CAPITAL",
+        map_kind: MapKind::Capital,
+        seed: 0,
+        team_size: 4,
+        sides: &Faction::ALL,
+        brief: "EVERY SIDE AGAINST EVERY OTHER IN THE IMPERIAL CITY. PAID PER KILL",
+    },
 ];
 
 impl Mission {
