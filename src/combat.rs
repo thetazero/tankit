@@ -10,6 +10,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier3d::prelude::{QueryFilter, Ray};
 
 use crate::ai::{self, Bot, Contact, NavGrid};
+use crate::arrival::{ARRIVAL_TIME, Arrival};
 use crate::economy::Levels;
 use crate::faction::Faction;
 use crate::game::DT;
@@ -286,6 +287,9 @@ pub struct Fighter {
     pub respawn_in: f32,
     /// Seconds of spawn protection left.
     pub shield: f32,
+    /// Seconds since this tank last spawned or respawned (drives its
+    /// side's arrival, which is only looks: see `arrival`).
+    pub arrived: f32,
     /// Seconds until the gun can fire again.
     pub reload_in: f32,
     pub kills: u32,
@@ -688,6 +692,7 @@ impl Match {
             let f = &mut self.fighters[i];
             f.reload_in -= DT;
             f.shield -= DT;
+            f.arrived += DT;
             f.since_hit += DT;
             f.since_dealt += DT;
             f.since_repair += DT;
@@ -1262,6 +1267,7 @@ impl Match {
             f.alive = true;
             f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
             f.shield = SPAWN_SHIELD;
+            f.arrived = 0.0;
             f.hit_by = None;
             f.reload_in = 0.5;
             f.heat = 0.0;
@@ -1272,9 +1278,37 @@ impl Match {
         }
     }
 
-    /// The tanks to draw this frame: interpolated, with wrecks charred.
+    /// The arrivals playing: tanks that spawned or respawned in the last
+    /// `ARRIVAL_TIME`, each arriving its team's way.
+    fn arrivals(&self) -> impl Iterator<Item = (usize, Arrival<'_>)> {
+        self.fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.alive && f.arrived < ARRIVAL_TIME)
+            .map(|(i, f)| {
+                let tank = &self.world.tanks[i];
+                let arrival = Arrival {
+                    faction: self.factions[f.team],
+                    t: f.arrived,
+                    tank,
+                    ground: self.world.map.ground_height(tank.pos.x, tank.pos.z),
+                    seed: (i as f32 * 0.618_034).fract(),
+                };
+                (i, arrival)
+            })
+    }
+
+    /// Tank `i` interpolated, where it really is: what the camera follows
+    /// (an arrival can draw the tank elsewhere for a moment).
+    pub fn camera_tank(&self, i: usize, alpha: f32) -> Tank {
+        self.world.tanks[i].interpolated(alpha)
+    }
+
+    /// The tanks to draw this frame: interpolated, with wrecks charred and
+    /// arrivals still bringing tanks in.
     pub fn display_tanks(&self, alpha: f32) -> Vec<Tank> {
-        self.world
+        let mut tanks: Vec<Tank> = self
+            .world
             .tanks
             .iter()
             .zip(&self.fighters)
@@ -1289,7 +1323,11 @@ impl Match {
                 }
                 t
             })
-            .collect()
+            .collect();
+        for (i, a) in self.arrivals() {
+            a.pose(&mut tanks[i]);
+        }
+        tanks
     }
 
     /// Plasma's light: soft additive glow for shells in flight and the
@@ -1298,6 +1336,9 @@ impl Match {
         let glow = Particle::glow;
         for c in &self.world.map.cores {
             core_glow(c, self.world.time, out);
+        }
+        for (_, a) in self.arrivals() {
+            a.glow(out);
         }
         for s in &self.shells {
             let p = s.prev.lerp(s.pos, alpha);
@@ -1411,6 +1452,9 @@ impl Match {
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
+        for (_, a) in self.arrivals() {
+            a.instances(out);
+        }
         for c in &self.world.map.cores {
             core_instances(c, self.world.time, out);
         }
@@ -1725,6 +1769,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         alive: true,
         respawn_in: 0.0,
         shield: SPAWN_SHIELD,
+        arrived: 0.0,
         reload_in: 0.5,
         kills: 0,
         deaths: 0,
