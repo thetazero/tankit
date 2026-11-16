@@ -16,6 +16,39 @@ use crate::ui::{Align, Painter, TextStyle, theme};
 
 const REF_HEIGHT: f32 = 900.0;
 
+/// Top of the main panel's list, below the header and pilot block.
+const LIST_Y: f32 = 72.0 + 18.0 + 52.0 + PILOT_H + 26.0;
+/// Row pitch of `rows` lists and of the settings rows.
+const ROW_PITCH: f32 = 30.0;
+const SETTING_PITCH: f32 = 44.0;
+const DETAIL_PITCH: f32 = 22.0;
+/// The pause box's size, and how far down it its list starts.
+const PAUSE_SIZE: Vec2 = Vec2::new(PANEL_W + 48.0, 350.0);
+const PAUSE_LIST: f32 = 28.0 + 18.0 + 44.0;
+
+/// Logical px (the 900 px reference screen) from window pixels.
+pub fn logical(px: Vec2, height: f32) -> Vec2 {
+    px * (REF_HEIGHT / height)
+}
+
+/// Which of `n` rows starting at `top`, `pitch` apart, a list at `x` has under `at`.
+fn row_at(at: Vec2, x: f32, top: f32, pitch: f32, n: usize) -> Option<usize> {
+    if at.x < x - 20.0 || at.x > x + PANEL_W + 10.0 {
+        return None;
+    }
+    let i = ((at.y - top + 6.0) / pitch).floor();
+    (i >= 0.0 && (i as usize) < n).then_some(i as usize)
+}
+
+/// Volume steps for a click at `at.x` on the volume bar starting at `x`.
+fn volume_at(at: Vec2, x: f32) -> u8 {
+    let f = ((at.x - x) / PANEL_W).clamp(0.0, 1.0);
+    (f * Settings::MAX_VOLUME as f32).round() as u8
+}
+
+/// A click on a menu: the key it stands in for (for the sound) and what it did.
+pub type Click<A> = (Nav, Option<A>);
+
 /// Navigation input, mapped from keys by the app.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Nav {
@@ -146,6 +179,54 @@ impl Menu {
         None
     }
 
+    /// What's under `at` (logical px): a row of the current list, or on the
+    /// mission screen the employer line.
+    fn target(&self, at: Vec2) -> Option<Target> {
+        let x = PANEL_X;
+        match self.screen {
+            Screen::Main => row_at(at, x, LIST_Y, ROW_PITCH, MAIN_ITEMS.len()).map(Target::Row),
+            Screen::Missions => {
+                let top = LIST_Y + 20.0;
+                if let Some(i) = row_at(at, x, top, ROW_PITCH, MISSIONS.len()) {
+                    return Some(Target::Row(i));
+                }
+                let details = top + MISSIONS.len() as f32 * ROW_PITCH + 14.0;
+                (row_at(at, x, details, DETAIL_PITCH, 3) == Some(2)).then_some(Target::Employer)
+            }
+            Screen::Settings => {
+                row_at(at, x, LIST_Y + 20.0, SETTING_PITCH, SETTING_ROWS).map(Target::Row)
+            }
+        }
+    }
+
+    /// Moves the selection to the row under the pointer; true if it changed.
+    pub fn hover(&mut self, at: Vec2) -> bool {
+        let Some(Target::Row(i)) = self.target(at) else {
+            return false;
+        };
+        let slot = match self.screen {
+            Screen::Main => &mut self.cursor,
+            Screen::Missions => &mut self.mission,
+            Screen::Settings => &mut self.setting,
+        };
+        std::mem::replace(slot, i) != i
+    }
+
+    /// A left click at `at`; `None` if it missed everything.
+    pub fn click(&mut self, at: Vec2, settings: &Settings) -> Option<Click<Action>> {
+        let target = self.target(at)?;
+        self.hover(at);
+        let nav = match target {
+            Target::Employer => Nav::Right,
+            Target::Row(VOLUME_ROW) if self.screen == Screen::Settings => {
+                let d = volume_at(at, PANEL_X) as i32 - settings.volume as i32;
+                return Some((Nav::Right, Some(Action::Setting(Change::Volume(d)))));
+            }
+            Target::Row(_) => Nav::Select,
+        };
+        Some((nav, self.input(nav)))
+    }
+
     /// The panel; `alpha` fades it (out while the garage is open over it).
     pub fn draw(&self, profile: &Profile, height: f32, alpha: f32) -> Vec<UiVertex> {
         if alpha <= 0.0 {
@@ -178,6 +259,7 @@ impl Menu {
             theme::FAINT,
         );
         y += 26.0;
+        debug_assert_eq!(y, LIST_Y);
 
         match self.screen {
             Screen::Main => {
@@ -204,7 +286,7 @@ impl Menu {
                 y += 20.0;
                 let names: Vec<&str> = MISSIONS.iter().map(|m| m.name).collect();
                 rows(&mut p, Vec2::new(x, y), &names, self.mission);
-                y += names.len() as f32 * 30.0 + 14.0;
+                y += names.len() as f32 * ROW_PITCH + 14.0;
 
                 let m = &MISSIONS[self.mission];
                 let (employer, against) = (m.sides[self.side], m.sides[1 - self.side]);
@@ -229,7 +311,7 @@ impl Menu {
                         &TextStyle::value(11.0),
                         Align::Right,
                     );
-                    y += 22.0;
+                    y += DETAIL_PITCH;
                 }
                 y += 8.0;
                 label(&mut p, Vec2::new(x, y), m.brief, Align::Left);
@@ -264,6 +346,12 @@ impl Menu {
         }
         fade(p.finish(), alpha)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    Row(usize),
+    Employer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -313,6 +401,46 @@ impl Pause {
         None
     }
 
+    /// The pause box's list origin on a `width` logical px wide screen.
+    fn list_origin(width: f32) -> Vec2 {
+        let min = Vec2::new(width, REF_HEIGHT) * 0.5 - PAUSE_SIZE * 0.5;
+        min + Vec2::new(24.0, PAUSE_LIST)
+    }
+
+    fn target(&self, at: Vec2, width: f32) -> Option<usize> {
+        let o = Self::list_origin(width);
+        match self.settings {
+            Some(_) => row_at(at, o.x, o.y, SETTING_PITCH, SETTING_ROWS),
+            None => row_at(at, o.x, o.y, ROW_PITCH, PAUSE_ITEMS.len()),
+        }
+    }
+
+    /// Moves the selection to the row under the pointer; true if it changed.
+    pub fn hover(&mut self, at: Vec2, width: f32) -> bool {
+        let Some(i) = self.target(at, width) else {
+            return false;
+        };
+        let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
+        std::mem::replace(slot, i) != i
+    }
+
+    /// A left click at `at` on a `width` logical px wide screen; `None` if it missed.
+    pub fn click(
+        &mut self,
+        at: Vec2,
+        width: f32,
+        settings: &Settings,
+    ) -> Option<Click<PauseAction>> {
+        let i = self.target(at, width)?;
+        self.hover(at, width);
+        if self.settings.is_some() && i == VOLUME_ROW {
+            let x = Self::list_origin(width).x;
+            let d = volume_at(at, x) as i32 - settings.volume as i32;
+            return Some((Nav::Right, Some(PauseAction::Setting(Change::Volume(d)))));
+        }
+        Some((Nav::Select, self.input(Nav::Select)))
+    }
+
     /// Dims the battle and draws the box. `match_trust` is what this match has
     /// earned you with `employer` so far.
     pub fn draw(
@@ -327,7 +455,7 @@ impl Pause {
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
-        let size = Vec2::new(PANEL_W + 48.0, 350.0);
+        let size = PAUSE_SIZE;
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
         p.rect(min, size, [0.03, 0.03, 0.035, 0.9]);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
@@ -343,6 +471,7 @@ impl Pause {
         };
         p.text(Vec2::new(x, y), title, &TextStyle::value(20.0), Align::Left);
         y += 44.0;
+        debug_assert_eq!(Vec2::new(x, y), Self::list_origin(w));
         if let Some(i) = self.settings {
             settings_rows(&mut p, Vec2::new(x, y), &profile.settings, i);
             label(
@@ -398,7 +527,7 @@ impl Pause {
 /// The settings toggles: each a row with a checkbox, and under it what it does.
 fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize) {
     for (i, (name, what, flag)) in SETTINGS.iter().enumerate() {
-        let y = at.y + i as f32 * 44.0;
+        let y = at.y + i as f32 * SETTING_PITCH;
         let on = i == selected;
         if on {
             p.line(
@@ -420,7 +549,7 @@ fn settings_rows(p: &mut Painter, at: Vec2, settings: &Settings, selected: usize
         );
         label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
     }
-    let y = at.y + VOLUME_ROW as f32 * 44.0;
+    let y = at.y + VOLUME_ROW as f32 * SETTING_PITCH;
     let on = selected == VOLUME_ROW;
     if on {
         p.line(
@@ -501,7 +630,7 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
 /// A selectable list, with the garage's bar-and-chevron marker on the selected row.
 fn rows(p: &mut Painter, at: Vec2, items: &[&str], selected: usize) {
     for (i, item) in items.iter().enumerate() {
-        let y = at.y + i as f32 * 30.0;
+        let y = at.y + i as f32 * ROW_PITCH;
         let on = i == selected;
         if on {
             p.line(
@@ -658,6 +787,71 @@ mod tests {
             }
         }
         assert!(m.draw(&profile, 900.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn clicking_rows() {
+        let settings = Settings::default();
+        let mut m = Menu::new();
+        let row = |i: usize| Vec2::new(PANEL_X + 40.0, LIST_Y + i as f32 * ROW_PITCH + 8.0);
+        // Off the panel: nothing.
+        assert_eq!(m.click(Vec2::new(900.0, 400.0), &settings), None);
+        assert!(m.hover(row(3)));
+        assert!(!m.hover(row(3)));
+        assert_eq!(
+            m.click(row(1), &settings),
+            Some((Nav::Select, Some(Action::Garage)))
+        );
+        assert_eq!(m.click(row(0), &settings), Some((Nav::Select, None)));
+        assert_eq!(m.screen, Screen::Missions);
+        // The employer line flips sides.
+        let employer =
+            LIST_Y + 20.0 + MISSIONS.len() as f32 * ROW_PITCH + 14.0 + 2.0 * DETAIL_PITCH;
+        m.click(Vec2::new(PANEL_X + 200.0, employer + 6.0), &settings);
+        let mission = Vec2::new(PANEL_X + 40.0, LIST_Y + 20.0 + 8.0);
+        assert_eq!(
+            m.click(mission, &settings),
+            Some((Nav::Select, Some(Action::Deploy(0, 1))))
+        );
+
+        let mut m = Menu::new();
+        m.screen = Screen::Settings;
+        let top = LIST_Y + 20.0;
+        assert_eq!(
+            m.click(Vec2::new(PANEL_X + 40.0, top + 8.0), &settings)
+                .unwrap()
+                .1,
+            Some(Action::Setting(Change::Toggle(0)))
+        );
+        // Clicking the far end of the volume bar turns it all the way up.
+        let bar = Vec2::new(
+            PANEL_X + PANEL_W,
+            top + SETTING_PITCH * VOLUME_ROW as f32 + 26.0,
+        );
+        let up = Settings::MAX_VOLUME as i32 - settings.volume as i32;
+        assert_eq!(
+            m.click(bar, &settings).unwrap().1,
+            Some(Action::Setting(Change::Volume(up)))
+        );
+    }
+
+    #[test]
+    fn clicking_pause_rows() {
+        let settings = Settings::default();
+        let w = 1600.0;
+        let o = Pause::list_origin(w);
+        let row = |i: usize| o + Vec2::new(40.0, i as f32 * ROW_PITCH + 8.0);
+        let mut p = Pause::new();
+        assert_eq!(p.click(Vec2::ZERO, w, &settings), None);
+        assert_eq!(
+            p.click(row(2), w, &settings),
+            Some((Nav::Select, Some(PauseAction::ExitToMenu)))
+        );
+        assert_eq!(p.click(row(1), w, &settings), Some((Nav::Select, None)));
+        assert_eq!(
+            p.click(row(0), w, &settings).unwrap().1,
+            Some(PauseAction::Setting(Change::Toggle(0)))
+        );
     }
 
     #[test]

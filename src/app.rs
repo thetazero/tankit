@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -95,6 +95,8 @@ struct App {
     player_alive: bool,
     clock: Clock,
     keys: HashSet<KeyCode>,
+    /// Mouse pointer in window pixels, once it has moved over the window.
+    pointer: Option<glam::Vec2>,
     /// Live tuning (player tank): sideways grip multiplier and turn-rate offset.
     tune_grip: f32,
     tune_turn: f32,
@@ -174,6 +176,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         player_alive: true,
         clock: Clock::default(),
         keys: HashSet::new(),
+        pointer: None,
         tune_grip: 1.0,
         tune_turn: 0.0,
         last: Instant::now(),
@@ -271,6 +274,17 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = glam::Vec2::new(position.x as f32, position.y as f32);
+                self.pointer = Some(at);
+                self.on_pointer_move(at);
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => self.on_click(button, event_loop),
             WindowEvent::Focused(false) => self.keys.clear(),
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
@@ -454,29 +468,15 @@ impl App {
             Mode::Menu => {
                 let Some(nav) = Self::nav(code) else { return };
                 self.nav_sound(nav);
-                match self.menu.input(nav) {
-                    Some(menu::Action::Deploy(i, side)) => self.start_mission(i, side),
-                    Some(menu::Action::Garage) => {
-                        if let Some(cam) = self.camera {
-                            self.garage.toggle(&self.game.world, &cam, self.queued());
-                        }
-                    }
-                    Some(menu::Action::Setting(c)) => self.change_setting(c),
-                    Some(menu::Action::Quit) => event_loop.exit(),
-                    None => {}
-                }
+                let action = self.menu.input(nav);
+                self.menu_action(action, event_loop);
                 return;
             }
             Mode::Paused => {
                 let Some(nav) = Self::nav(code) else { return };
                 self.nav_sound(nav);
-                match self.pause.input(nav) {
-                    Some(PauseAction::Resume) => self.mode = Mode::Playing,
-                    Some(PauseAction::Setting(c)) => self.change_setting(c),
-                    Some(PauseAction::ExitToMenu) => self.back_to_menu(),
-                    Some(PauseAction::Quit) => event_loop.exit(),
-                    None => {}
-                }
+                let action = self.pause.input(nav);
+                self.pause_action(action, event_loop);
                 return;
             }
             Mode::Playing => {}
@@ -538,6 +538,97 @@ impl App {
             KeyCode::Quote => self.tune_turn += 0.1,
             KeyCode::Backspace => (self.tune_grip, self.tune_turn) = (1.0, 0.0),
             _ => {}
+        }
+    }
+
+    /// Window size in logical menu px, if there's a window yet.
+    fn logical_size(&self) -> Option<glam::Vec2> {
+        let r = self.renderer.as_ref()?;
+        let (w, h) = (r.width as f32, r.height as f32);
+        Some(menu::logical(glam::Vec2::new(w, h), h))
+    }
+
+    /// The pointer in logical menu px.
+    fn pointer_logical(&self, px: glam::Vec2) -> Option<glam::Vec2> {
+        let r = self.renderer.as_ref()?;
+        Some(menu::logical(px, r.height as f32))
+    }
+
+    /// Hovering a menu row selects it, as W/S would.
+    fn on_pointer_move(&mut self, px: glam::Vec2) {
+        if self.garage.is_open() {
+            return;
+        }
+        let (Some(at), Some(size)) = (self.pointer_logical(px), self.logical_size()) else {
+            return;
+        };
+        let moved = match self.mode {
+            Mode::Menu => self.menu.hover(at),
+            Mode::Paused => self.pause.hover(at, size.x),
+            Mode::Playing => false,
+        };
+        if moved {
+            self.audio.ui(audio::Ui::Move);
+        }
+    }
+
+    /// Left click picks the row under the pointer; right click goes back, like Esc.
+    fn on_click(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        if self.garage.is_open() || self.mode == Mode::Playing {
+            return;
+        }
+        match button {
+            MouseButton::Right | MouseButton::Back => self.on_key(KeyCode::Escape, event_loop),
+            MouseButton::Left => {
+                let (Some(at), Some(size)) = (
+                    self.pointer.and_then(|p| self.pointer_logical(p)),
+                    self.logical_size(),
+                ) else {
+                    return;
+                };
+                match self.mode {
+                    Mode::Menu => {
+                        if let Some((nav, action)) = self.menu.click(at, &self.profile.settings) {
+                            self.nav_sound(nav);
+                            self.menu_action(action, event_loop);
+                        }
+                    }
+                    Mode::Paused => {
+                        if let Some((nav, action)) =
+                            self.pause.click(at, size.x, &self.profile.settings)
+                        {
+                            self.nav_sound(nav);
+                            self.pause_action(action, event_loop);
+                        }
+                    }
+                    Mode::Playing => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn menu_action(&mut self, action: Option<menu::Action>, event_loop: &ActiveEventLoop) {
+        match action {
+            Some(menu::Action::Deploy(i, side)) => self.start_mission(i, side),
+            Some(menu::Action::Garage) => {
+                if let Some(cam) = self.camera {
+                    self.garage.toggle(&self.game.world, &cam, self.queued());
+                }
+            }
+            Some(menu::Action::Setting(c)) => self.change_setting(c),
+            Some(menu::Action::Quit) => event_loop.exit(),
+            None => {}
+        }
+    }
+
+    fn pause_action(&mut self, action: Option<PauseAction>, event_loop: &ActiveEventLoop) {
+        match action {
+            Some(PauseAction::Resume) => self.mode = Mode::Playing,
+            Some(PauseAction::Setting(c)) => self.change_setting(c),
+            Some(PauseAction::ExitToMenu) => self.back_to_menu(),
+            Some(PauseAction::Quit) => event_loop.exit(),
+            None => {}
         }
     }
 
