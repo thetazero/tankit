@@ -110,6 +110,69 @@ impl MeshData {
         self.tri(p, n, c);
     }
 
+    /// Bake approximate ambient occlusion into vertex colors: each vertex is
+    /// darkened by nearby surfaces above it that face back toward it (plate
+    /// joints, creases, overhangs). Uses a spatial hash over triangle
+    /// centroids, so it's fast enough to run at startup.
+    pub fn bake_ao(&mut self, radius: f32, strength: f32, floor: f32) {
+        use std::collections::HashMap;
+        let cell = radius;
+        let key = |p: Vec3| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32, (p.z / cell).floor() as i32);
+        let mut tris: Vec<(Vec3, Vec3, f32)> = Vec::with_capacity(self.indices.len() / 3);
+        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        for t in self.indices.chunks_exact(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from(self.verts[i as usize].pos));
+            let cr = (b - a).cross(c - a);
+            let area = cr.length() * 0.5;
+            if area < 1e-7 {
+                continue;
+            }
+            let centre = (a + b + c) / 3.0;
+            grid.entry(key(centre)).or_default().push(tris.len() as u32);
+            tris.push((centre, cr / (area * 2.0), area));
+        }
+        let shades: Vec<f32> = self
+            .verts
+            .iter()
+            .map(|v| {
+                let (p, n) = (Vec3::from(v.pos), Vec3::from(v.normal));
+                // Sample slightly off the surface so the vertex's own faces don't count.
+                let p = p + n * 0.01;
+                let (kx, ky, kz) = key(p);
+                let mut occ = 0.0f32;
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            let Some(list) = grid.get(&(kx + dx, ky + dy, kz + dz)) else { continue };
+                            for &ti in list {
+                                let (c, tn, area) = tris[ti as usize];
+                                let d = c - p;
+                                let dist = d.length();
+                                if dist < 0.02 || dist > radius {
+                                    continue;
+                                }
+                                let dir = d / dist;
+                                let up = n.dot(dir);
+                                if up <= 0.05 {
+                                    continue;
+                                }
+                                let facing = (-tn.dot(dir)).max(0.0);
+                                occ += area * up * facing * (1.0 - dist / radius) / (dist * dist + 0.004);
+                            }
+                        }
+                    }
+                }
+                let ao = 1.0 - (occ * strength / std::f32::consts::PI).min(1.0);
+                floor + (1.0 - floor) * ao
+            })
+            .collect();
+        for (v, k) in self.verts.iter_mut().zip(shades) {
+            v.color[0] *= k;
+            v.color[1] *= k;
+            v.color[2] *= k;
+        }
+    }
+
     pub fn cube() -> MeshData {
         let mut m = MeshData::default();
         let w = Vec4::new(1.0, 1.0, 1.0, 0.0);

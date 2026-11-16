@@ -145,9 +145,10 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         s.albedo = base * (0.9 + 0.2 * mottle) * grime;
         s.rough = 0.82;
         if (m == 11) {
-            s.albedo *= 0.8;
-            s.metal = 0.2;
-            s.rough = 0.65;
+            // Bevels: paint rubbed thin on the edges, catching the light.
+            s.albedo *= 1.35;
+            s.metal = 0.3;
+            s.rough = 0.5;
         }
     } else if (m == 8) {
         // Track steel, polished where it meets the ground.

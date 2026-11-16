@@ -35,10 +35,23 @@ impl KitMeshes {
             ];
             (h, parts)
         };
-        KitMeshes {
+        let mut kit = KitMeshes {
             hulls: vec![hull(model::lancer()), hull(model::bastion())],
             turrets: vec![model::lance(), model::maul()],
+        };
+        // Bake contact shadows into every part: joints, creases and overhangs go dark.
+        for (h, parts) in &mut kit.hulls {
+            h.body.bake_ao(0.45, 0.6, 0.3);
+            for part in parts.iter_mut() {
+                part.bake_ao(0.12, 0.6, 0.45);
+            }
         }
+        for t in &mut kit.turrets {
+            t.head.bake_ao(0.4, 0.6, 0.3);
+            t.mantlet.bake_ao(0.2, 0.6, 0.4);
+            t.barrel.bake_ao(0.15, 0.6, 0.45);
+        }
+        kit
     }
 
     #[cfg(test)]

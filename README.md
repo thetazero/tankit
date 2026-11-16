@@ -43,7 +43,10 @@ skirts, roof, rear deck, rear), meeting its neighbors at edges where the
 form turns, over a dark core. Turrets the same way: a ridged roof, raked
 cheeks, and flanks that bulge to a widest line and undercut below it.
 Lancer/Bastion and Lance/Maul are proportions and gun fits on shared forms,
-and mix freely. The look follows `docs/design-direction.md`.
+and mix freely. Proportions are deliberately exaggerated (wide tracks, a big
+turret set forward, a thick gun, a roofline leaning into a long wedge nose).
+Ambient occlusion is baked into the vertex colors at startup
+(`MeshData::bake_ao`), so joints, creases and overhangs read dark. The look follows `docs/design-direction.md`.
 
 Machinery that moves with the tank:
 - tread links run around the wheels at each side's own speed

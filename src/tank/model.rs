@@ -198,10 +198,10 @@ pub fn plate(m: &mut MeshData, top: [Vec3; 4], t: f32, inside: Vec3, skin: Skin)
     if n.dot(c - inside) < 0.0 {
         n = -n;
     }
-    let k = (t * 0.6).min(0.05);
+    let k = (t * 0.8).min(0.07);
     let outer = cut_quad(top, k);
     let inner: Vec<Vec3> = outer.iter().map(|&p| p - n * t).collect();
-    solid(m, &[inner, outer], (t * 0.3).min(0.025), skin);
+    solid(m, &[inner, outer], (t * 0.5).min(0.045), skin);
 }
 
 /// Axis-aligned beveled box.
@@ -393,8 +393,30 @@ fn grow(q: [Vec3; 4], k: f32) -> [Vec3; 4] {
 }
 
 /// One structural plate of the hull: `q` is its outer face; it's `t` thick.
+/// Long edges get a row of bolt heads set in from the edge: the scale cue that
+/// tells the eye these are big, heavy plates.
 fn hplate(m: &mut MeshData, q: [Vec3; 4], t: f32, body: Vec3, skin: Skin) {
     plate(m, q, t, body, skin);
+    if t < 0.065 {
+        return;
+    }
+    let n = quad_normal(&q, body);
+    let c = (q[0] + q[1] + q[2] + q[3]) * 0.25;
+    // Only the longest edge of each big plate, sparsely.
+    let (i, len) = (0..4).map(|i| (i, (q[(i + 1) % 4] - q[i]).length())).fold((0, 0.0), |a, b| if b.1 > a.1 { b } else { a });
+    {
+        let (a, b) = (q[i], q[(i + 1) % 4]);
+        if len < 1.4 {
+            return;
+        }
+        let count = ((len - 0.4) / 0.7).floor() as usize;
+        for k in 0..=count {
+            let f = 0.2 / len + k as f32 * (1.0 - 0.4 / len) / count.max(1) as f32;
+            let p = a.lerp(b, f);
+            let p = p + (c - p).normalize_or_zero() * 0.12;
+            tube(m, p - n * 0.01, p + n * 0.03, 0.026, 6, shade(skin, 0.75));
+        }
+    }
 }
 
 /// Mirror a right-side quad to the left, keeping a consistent winding.
@@ -426,24 +448,26 @@ fn hull(p: HullSpec) -> HullModel {
     let t = 0.07;
 
     // Key points of the form (right side; x = 0 is the centerline).
-    let nose = pt(0.92, 0.88, 2.9); // ... at the corner
-    let chin = pt(0.8, 0.56, 2.72); // bottom of the lower glacis
-    let brow = pt(0.98, 1.45, 1.3); // glacis meets roof, at the roof edge
-    let roof_r = pt(0.98, 1.45, -2.25); // roof edge, rear
-    let side_f = pt(1.54, 1.2, 1.55); // sponson edge, front
-    let side_r = pt(1.6, 1.2, -2.35); // sponson edge, rear
-    let cheek = pt(1.32, 0.98, 2.42); // front corner below the cheek
-    let tail_top = pt(1.08, 1.14, -2.75);
-    let tail_bot = pt(0.92, 0.62, -2.66);
-    let tail_side = pt(1.62, 1.1, -2.62);
+    // The roofline climbs toward the front and the nose drives down into a
+    // long wedge, so the whole hull leans forward.
+    let nose = pt(0.9, 0.8, 3.0); // upper glacis corner at the nose
+    let chin = pt(0.78, 0.5, 2.8); // bottom of the lower glacis
+    let brow = pt(0.98, 1.5, 1.15); // glacis meets roof, at the roof edge
+    let roof_r = pt(0.98, 1.36, -2.1); // roof edge, rear (lower)
+    let side_f = pt(1.54, 1.22, 1.4); // sponson edge, front
+    let side_r = pt(1.6, 1.08, -2.25); // sponson edge, rear
+    let cheek = pt(1.32, 1.0, 2.45); // front corner below the cheek
+    let tail_top = pt(1.06, 1.02, -2.58);
+    let tail_bot = pt(0.92, 0.6, -2.38); // rear plate raked hard back
+    let tail_side = pt(1.62, 0.98, -2.45);
 
     // Glacis: a V like a ship's bow, two big plates meeting on a raised
     // center ridge that runs forward to the prow point.
-    let ridge = pt(0.0, 1.5, 1.22);
-    let prow = pt(0.0, 0.95, 3.1);
-    let chin_c = pt(0.0, 0.55, 2.86);
+    let ridge = pt(0.0, 1.57, 1.02);
+    let prow = pt(0.0, 0.84, 3.18);
+    let chin_c = pt(0.0, 0.48, 2.92);
     // Roof deck.
-    hplate(&mut m, [v(-roof_r.x, roof_r.y, roof_r.z), roof_r, brow, v(-brow.x, brow.y, brow.z)], t, body, shade(PAINT, 0.88));
+    hplate(&mut m, [v(-roof_r.x, roof_r.y, roof_r.z), roof_r, brow, v(-brow.x, brow.y, brow.z)], t, body, shade(PAINT, 0.8));
     // Rear deck slopes down to the tail, then the rear plate.
     hplate(&mut m, [v(-tail_top.x, tail_top.y, tail_top.z), tail_top, roof_r, v(-roof_r.x, roof_r.y, roof_r.z)], t, body, CARBON_LIGHT);
     hplate(&mut m, [v(-tail_bot.x, tail_bot.y, tail_bot.z), tail_bot, tail_top, v(-tail_top.x, tail_top.y, tail_top.z)], t, body, CARBON);
@@ -454,37 +478,37 @@ fn hull(p: HullSpec) -> HullModel {
         hplate(&mut m, s([prow, nose, chin, chin_c]), t, body, shade(CARBON_LIGHT, 1.1));
         // Sloped upper side in two facets: it bulges out mid-length, so the
         // plates meet on a crease.
-        let mid_top = pt(0.98, 1.45, -0.55);
-        let mid_bot = pt(1.68, 1.16, -0.55);
-        hplate(&mut m, s([roof_r, mid_top, mid_bot, side_r]), t, body, shade(PAINT, 0.94));
+        let mid_top = pt(0.98, 1.44, -0.5);
+        let mid_bot = pt(1.68, 1.16, -0.5);
+        hplate(&mut m, s([roof_r, mid_top, mid_bot, side_r]), t, body, shade(PAINT, 0.82));
         hplate(&mut m, s([mid_top, brow, side_f, mid_bot]), t, body, PAINT);
         // Cheek: the big raked facet between glacis, side and nose.
-        hplate(&mut m, s(grow([brow, nose, cheek, side_f], 1.02)), t * 1.1, body, shade(PAINT, 1.06));
+        hplate(&mut m, s(grow([brow, nose, cheek, side_f], 1.02)), t * 1.1, body, shade(PAINT, 1.15));
         // Nose side, closing the corner down toward the track.
-        hplate(&mut m, s([nose, chin, pt(0.95, 0.62, 2.5), cheek]), t, body, CARBON_LIGHT);
+        hplate(&mut m, s([nose, chin, pt(0.95, 0.58, 2.58), cheek]), t, body, CARBON_LIGHT);
         // Fender over the front of the track.
-        hplate(&mut m, s([side_f, cheek, pt(1.56, 0.94, 2.48), pt(1.66, 1.16, 1.6)]), t * 0.8, body, CARBON_LIGHT);
+        hplate(&mut m, s([side_f, cheek, pt(1.56, 0.88, 2.56), pt(1.66, 1.18, 1.45)]), t * 0.8, body, shade(CARBON_LIGHT, 0.85));
         // Rear corner joining side to tail.
         hplate(&mut m, s([side_r, roof_r, tail_top, tail_side]), t, body, CARBON_LIGHT);
-        hplate(&mut m, s([tail_side, tail_top, tail_bot, pt(1.5, 0.8, -2.66)]), t, body, CARBON);
+        hplate(&mut m, s([tail_side, tail_top, tail_bot, pt(1.5, 0.78, -2.42)]), t, body, CARBON);
 
         // Skirts: a few big plates overlapping front-over-rear along their
         // joints, raked outward, the front one swept up toward the nose.
-        let (z0, z1) = (-2.45f32, 1.62f32);
+        let (z0, z1) = (-2.3f32, 1.5f32);
         let n = p.skirts;
         let len = (z1 - z0) / n as f32;
+        let top_y = |z: f32| 1.06 + (z - z0) / (z1 - z0) * 0.12;
+        let low_y = |z: f32| 0.66 + ((z - z0) / (z1 - z0)).powi(2) * 0.3;
         for i in 0..n {
             let za = z0 + i as f32 * len - 0.06;
             let zb = za + len + 0.12;
             let out = 0.03 * i as f32;
-            let low_b = if i == n - 1 { 0.95 } else { 0.72 };
-            let low_a = if i == 0 { 0.85 } else { 0.72 };
-            let q = [pt(1.6 + out, 1.18, za), pt(1.6 + out, 1.18, zb), pt(1.7 + out, low_b, zb), pt(1.7 + out, low_a, za)];
-            hplate(&mut m, s(q), 0.06, body, if i % 2 == 0 { PAINT } else { shade(PAINT, 0.88) });
+            let q = [pt(1.6 + out, top_y(za), za), pt(1.6 + out, top_y(zb), zb), pt(1.7 + out, low_y(zb), zb), pt(1.7 + out, low_y(za), za)];
+            hplate(&mut m, s(q), 0.06, body, if i % 2 == 0 { PAINT } else { shade(PAINT, 0.78) });
         }
         // Hinge rail the skirts hang from.
         let r = if flip { -1.0 } else { 1.0 };
-        tube(&mut m, v(r * 1.62 * sx, 1.17 * sy, z0 * sz), v(r * 1.62 * sx, 1.17 * sy, (z1 + 0.05) * sz), 0.035, 8, METAL);
+        tube(&mut m, v(r * 1.62 * sx, top_y(z0) * sy - 0.01, z0 * sz), v(r * 1.62 * sx, top_y(z1) * sy - 0.01, (z1 + 0.05) * sz), 0.035, 8, METAL);
     }
 
     // Dark core inside the plates so joints read as depth, and the tub
@@ -492,10 +516,10 @@ fn hull(p: HullSpec) -> HullModel {
     solid(
         &mut m,
         &[
-            at_z(&trap(1.35 * sx, 0.85 * sx, 0.95 * sy, 1.35 * sy, 0.05), -2.55 * sz),
-            at_z(&trap(1.48 * sx, 0.9 * sx, 0.95 * sy, 1.4 * sy, 0.05), -2.2 * sz),
-            at_z(&trap(1.45 * sx, 0.9 * sx, 0.95 * sy, 1.4 * sy, 0.05), 1.3 * sz),
-            at_z(&trap(0.85 * sx, 0.8 * sx, 0.6 * sy, 0.85 * sy, 0.05), 2.82 * sz),
+            at_z(&trap(1.35 * sx, 0.85 * sx, 0.9 * sy, 1.0 * sy, 0.05), -2.4 * sz),
+            at_z(&trap(1.48 * sx, 0.9 * sx, 0.9 * sy, 1.3 * sy, 0.05), -2.05 * sz),
+            at_z(&trap(1.45 * sx, 0.9 * sx, 0.95 * sy, 1.45 * sy, 0.05), 1.15 * sz),
+            at_z(&trap(0.85 * sx, 0.8 * sx, 0.55 * sy, 0.8 * sy, 0.05), 2.9 * sz),
         ],
         0.02,
         CARBON,
@@ -513,8 +537,8 @@ fn hull(p: HullSpec) -> HullModel {
     );
 
     // Engine grille set into the rear deck.
-    let (ez0, ez1, ex) = (-2.15 * sz, -1.5 * sz, 0.55 * sx);
-    let gy = 1.45 * sy + 0.07;
+    let (ez0, ez1, ex) = (-1.95 * sz, -1.35 * sz, 0.55 * sx);
+    let gy = 1.39 * sy + 0.07;
     block(&mut m, v(-ex - 0.07, gy - 0.1, ez0 - 0.07), v(ex + 0.07, gy, ez1 + 0.07), 0.02, CARBON);
     for i in 0..6 {
         let z = ez0 + 0.02 + i as f32 * (ez1 - ez0) / 6.0;
@@ -522,30 +546,30 @@ fn hull(p: HullSpec) -> HullModel {
     }
     for s in [1.0f32, -1.0] {
         // Headlights recessed under the cheeks.
-        let c = v(s * 1.02 * sx, 0.84 * sy, 2.55 * sz);
+        let c = v(s * 1.02 * sx, 0.78 * sy, 2.62 * sz);
         block(&mut m, c - v(0.15, 0.06, 0.1), c + v(0.15, 0.06, 0.04), 0.02, CARBON);
         plate(&mut m, [c + v(-0.1, 0.035, 0.05), c + v(0.1, 0.035, 0.05), c + v(0.1, -0.035, 0.05), c + v(-0.1, -0.035, 0.05)], 0.01, body, LENS);
         // Exhausts out of the rear plate.
-        let e = v(s * 0.55 * sx, 0.95 * sy, -2.68 * sz);
+        let e = v(s * 0.55 * sx, 0.85 * sy, -2.5 * sz);
         tube(&mut m, e + v(0.0, 0.0, 0.2), e - v(0.0, 0.0, 0.14), 0.09, 8, CARBON);
     }
 
-    HullModel { body: m, mount: v(0.0, 1.45 * sy + 0.02, -0.4 * sz), shock_top: 1.0 * sy, running: p.running }
+    HullModel { body: m, mount: v(0.0, 1.4 * sy, -0.05 * sz), shock_top: 1.0 * sy, running: p.running }
 }
 
 /// Light hull.
 pub fn lancer() -> HullModel {
     hull(HullSpec {
-        sx: 1.0,
-        sy: 1.0,
-        sz: 1.0,
+        sx: 1.15,
+        sy: 0.95,
+        sz: 0.94,
         skirts: 2,
         running: Running {
-            track_x: 1.22,
-            track_width: 0.56,
-            sprocket: Wheel { center: Vec2::new(2.05, 0.66), radius: 0.36 },
-            idler: Wheel { center: Vec2::new(-2.1, 0.62), radius: 0.32 },
-            road: [-1.35f32, -0.45, 0.45, 1.35].iter().map(|&z| Wheel { center: Vec2::new(z, 0.38), radius: 0.3 }).collect(),
+            track_x: 1.33,
+            track_width: 0.8,
+            sprocket: Wheel { center: Vec2::new(1.8, 0.56), radius: 0.34 },
+            idler: Wheel { center: Vec2::new(-1.97, 0.62), radius: 0.32 },
+            road: [-1.27f32, -0.42, 0.42, 1.27].iter().map(|&z| Wheel { center: Vec2::new(z, 0.38), radius: 0.3 }).collect(),
         },
     })
 }
@@ -553,16 +577,16 @@ pub fn lancer() -> HullModel {
 /// Heavy hull: the same construction, wider, taller and longer, three skirt plates.
 pub fn bastion() -> HullModel {
     hull(HullSpec {
-        sx: 1.08,
-        sy: 1.1,
-        sz: 1.04,
+        sx: 1.25,
+        sy: 1.04,
+        sz: 0.98,
         skirts: 3,
         running: Running {
-            track_x: 1.28,
-            track_width: 0.64,
-            sprocket: Wheel { center: Vec2::new(-2.15, 0.7), radius: 0.38 },
-            idler: Wheel { center: Vec2::new(2.15, 0.68), radius: 0.33 },
-            road: [-1.6f32, -0.8, 0.0, 0.8, 1.6].iter().map(|&z| Wheel { center: Vec2::new(z, 0.4), radius: 0.32 }).collect(),
+            track_x: 1.42,
+            track_width: 0.92,
+            sprocket: Wheel { center: Vec2::new(-2.0, 0.7), radius: 0.38 },
+            idler: Wheel { center: Vec2::new(1.86, 0.58), radius: 0.32 },
+            road: [-1.5f32, -0.75, 0.0, 0.75, 1.5].iter().map(|&z| Wheel { center: Vec2::new(z, 0.4), radius: 0.32 }).collect(),
         },
     })
 }
@@ -641,7 +665,7 @@ fn head(p: &HeadSpec) -> MeshData {
     // Key points (right side).
     let slot_top = v(0.3, h - 0.05, front);
     let slot_bot = v(0.3, bot + 0.04, front + 0.02);
-    let cheek_top = v(w * 0.4, h, front - 0.18); // where the roof's front edge starts
+    let cheek_top = v(w * 0.4, h - 0.07, front - 0.18); // where the roof's front edge starts
     let shoulder = v(w, h - 0.03, -0.1);
     let mid_y = bot + (h - bot) * 0.42;
     let shoulder_mid = v(w * 1.08, mid_y, -0.1); // widest point of the turret
@@ -651,7 +675,7 @@ fn head(p: &HeadSpec) -> MeshData {
     let flank_r = v(w * 0.78, h - 0.06, rear + 0.12);
     let flank_rm = v(w * 0.86, mid_y, rear + 0.06);
     let flank_rb = v(w * 0.72, bot + 0.06, rear + 0.1);
-    let ridge_f = v(0.0, h + 0.05, front - 0.18);
+    let ridge_f = v(0.0, h - 0.02, front - 0.18); // roof dips toward the front
     let ridge_r = v(0.0, h + 0.05, -0.1);
 
     // Roof: front plate between the cheeks, rear plate over the bustle.
@@ -718,12 +742,21 @@ fn head(p: &HeadSpec) -> MeshData {
     m
 }
 
+/// Scale a gun part across its bore axis (x, y), keeping its length.
+fn thicken(m: &mut MeshData, k: f32) {
+    let s = Vec3::new(k, k, 1.0);
+    for vtx in &mut m.verts {
+        vtx.pos = (Vec3::from(vtx.pos) * s).to_array();
+        vtx.normal = (Vec3::from(vtx.normal) / s).normalize_or_zero().to_array();
+    }
+}
+
 /// Long main gun: arrowhead turret, single barrel with a fume extractor and
 /// thermal sleeve bands.
 pub fn lance() -> TurretModel {
-    let spec = HeadSpec { w: 1.17, h: 0.74, front: 1.15, rear: -1.55 };
+    let spec = HeadSpec { w: 1.42, h: 0.86, front: 1.45, rear: -1.75 };
     let mut head = head(&spec);
-    let pivot = v(0.0, 0.44, spec.front - 0.12);
+    let pivot = v(0.0, 0.52, spec.front - 0.12);
     // Ram mount on the roof channel.
     block(&mut head, v(-0.1, spec.h - 0.02, pivot.z - 0.75), v(0.1, spec.h + 0.1, pivot.z - 0.55), 0.02, METAL);
 
@@ -751,6 +784,8 @@ pub fn lance() -> TurretModel {
     }
     recoil_rods(&mut barrel, &cyl);
 
+    thicken(&mut mantlet, 1.3);
+    thicken(&mut barrel, 1.3);
     TurretModel {
         head,
         mantlet,
@@ -760,15 +795,15 @@ pub fn lance() -> TurretModel {
         muzzle: 4.0,
         recoil: 0.45,
         ram_anchor: v(0.0, spec.h + 0.05, pivot.z - 0.65),
-        ram_lug: v(0.0, 0.3, 0.0),
+        ram_lug: v(0.0, 0.39, 0.0),
     }
 }
 
 /// Twin short cannons in a wider, lower arrowhead turret.
 pub fn maul() -> TurretModel {
-    let spec = HeadSpec { w: 1.24, h: 0.64, front: 0.95, rear: -1.45 };
+    let spec = HeadSpec { w: 1.5, h: 0.78, front: 1.25, rear: -1.6 };
     let mut head = head(&spec);
-    let pivot = v(0.0, 0.38, spec.front - 0.1);
+    let pivot = v(0.0, 0.45, spec.front - 0.1);
     block(&mut head, v(-0.1, spec.h - 0.02, pivot.z - 0.7), v(0.1, spec.h + 0.1, pivot.z - 0.5), 0.02, METAL);
 
     let mut mantlet = MeshData::default();
@@ -784,16 +819,18 @@ pub fn maul() -> TurretModel {
     solid(&mut barrel, &[at_z(&sq(0.15), 2.4), at_z(&sq(0.16), 2.78)], 0.025, CARBON);
     round(&mut barrel, &[at_z(&ngon(8, 0.07, Vec2::ZERO), 2.7), at_z(&ngon(8, 0.07, Vec2::ZERO), 2.785)], 0.0, BORE);
 
+    thicken(&mut mantlet, 1.3);
+    thicken(&mut barrel, 1.3);
     TurretModel {
         head,
         mantlet,
         barrel,
         pivot,
-        barrels: vec![v(-0.34, 0.0, 0.0), v(0.34, 0.0, 0.0)],
+        barrels: vec![v(-0.44, 0.0, 0.0), v(0.44, 0.0, 0.0)],
         muzzle: 2.82,
         recoil: 0.35,
         ram_anchor: v(0.0, spec.h + 0.05, pivot.z - 0.6),
-        ram_lug: v(0.0, 0.3, 0.05),
+        ram_lug: v(0.0, 0.39, 0.05),
     }
 }
 
