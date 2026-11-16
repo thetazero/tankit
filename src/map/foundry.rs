@@ -474,38 +474,46 @@ impl Map {
         }
     }
 
-    /// The smelter: a dead block of shell at the hall's heart, its vents
-    /// dark but one still glowing, split open on its north face with cubes
-    /// spilled out of it.
+    /// The smelter: an eight-sided furnace tower at the hall's heart, pale
+    /// shell on a dark plinth, banded, with a hopper on top and two stacks,
+    /// one snapped. Its north face is blown out and the crucible inside
+    /// still glows green; cubes have spilled out through the breach. Chutes
+    /// run down from its flanks to the middle production lines.
     fn smelter(&mut self, rng: &mut Rng) {
-        let h = SMELTER_HALF;
-        // Body, in two tiers.
-        self.twin(
-            CENTER,
-            Vec2::splat(h),
-            0.0,
-            SMELTER_H * 0.7,
-            SHELL,
-            Material::Painted,
-            true,
-        );
-        self.twin(
-            CENTER + Vec2::new(0.0, -1.5),
-            Vec2::new(h - 2.0, h - 3.5),
-            SMELTER_H * 0.7,
+        // Wall heights by face, from east (0) round through north (2):
+        // the north face is gone, the faces either side broken low. Faces
+        // mirror (0 and 4, 1 and 3, 5 and 7), so the halves match.
+        let heights = [
+            SMELTER_H, 6.5, 0.0, 6.5, SMELTER_H, SMELTER_H, SMELTER_H, SMELTER_H,
+        ];
+        self.octagon(CENTER, SMELTER_HALF, 0.0, &heights, true);
+        // The hopper: a narrower ring on top, its north side broken away.
+        let hopper = [5.0, 3.0, 0.0, 3.0, 5.0, 5.0, 5.0, 5.0];
+        self.octagon(
+            CENTER + Vec2::new(0.0, -1.0),
+            4.6,
             SMELTER_H,
-            SHELL,
-            Material::Painted,
-            true,
+            &hopper,
+            false,
         );
-        // The top tier is broken off on its north side.
-        let i = self.oboxes.len() - 1;
-        self.oboxes[i].broken = true;
-        // Two stacks on top, one snapped off.
-        for (x, h, broken) in [(-3.5f32, 16.0, false), (3.5, 6.5, true)] {
+        // The roof between them, broken open to the north.
+        self.oboxes.push(OBox {
+            center: CENTER + Vec2::new(0.0, -2.0),
+            half: Vec2::new(5.8, 4.2),
+            y0: SMELTER_H - 0.6,
+            y1: SMELTER_H,
+            color: SHELL_DARK,
+            side_mat: Material::Concrete,
+            top_mat: Material::Concrete,
+            solid: false,
+            broken: true,
+            ..OBox::default()
+        });
+        // Two stacks on the roof, one snapped off.
+        for (x, h, broken) in [(-5.0f32, 15.0, false), (5.0, 5.5, true)] {
             let i = self.twin(
-                CENTER + Vec2::new(x, -3.0),
-                Vec2::splat(1.4),
+                CENTER + Vec2::new(x, -4.5),
+                Vec2::splat(1.2),
                 SMELTER_H,
                 SMELTER_H + h,
                 SHELL_DARK * 1.3,
@@ -513,53 +521,66 @@ impl Map {
                 false,
             );
             self.edit_twin(i, |o| o.broken = broken);
-        }
-        // Dark plinth band and vents round it.
-        self.twin(
-            CENTER,
-            Vec2::splat(h + 0.15),
-            0.0,
-            1.3,
-            SHELL_DARK,
-            Material::Concrete,
-            false,
-        );
-        for k in 0..4 {
-            let a = k as f32 * FRAC_PI_2;
-            let out = Vec2::new(a.cos(), a.sin());
-            let side = Vec2::new(-out.y, out.x);
-            for v in [-1.0f32, 0.0, 1.0] {
-                let lit = k == 2 && v == 0.0;
-                let at = CENTER + out * (h + 0.08) + side * v * 3.5;
-                let half = if out.x.abs() > 0.5 {
-                    Vec2::new(0.1, 0.9)
-                } else {
-                    Vec2::new(0.9, 0.1)
-                };
-                self.oboxes.push(OBox {
-                    center: at,
-                    half,
-                    y0: 3.0,
-                    y1: 5.6,
-                    color: if lit { GREEN } else { SHELL_DARK * 0.6 },
-                    side_mat: if lit {
-                        Material::Glow
-                    } else {
-                        Material::Concrete
-                    },
-                    top_mat: if lit {
-                        Material::Glow
-                    } else {
-                        Material::Concrete
-                    },
-                    solid: false,
-                    ..OBox::default()
-                });
+            if !broken {
+                self.twin(
+                    CENTER + Vec2::new(x, -4.5),
+                    Vec2::splat(1.3),
+                    SMELTER_H + h - 2.0,
+                    SMELTER_H + h - 1.6,
+                    GREEN,
+                    Material::Glow,
+                    false,
+                );
             }
         }
-        // Spilled out of its broken north face: a heap of cubes.
+        // The crucible inside, still hot: a green glow you see through the
+        // breach, under a dark lid.
+        self.oboxes.push(OBox {
+            center: CENTER,
+            half: Vec2::splat(4.2),
+            yaw: std::f32::consts::FRAC_PI_4,
+            y0: 0.0,
+            y1: 3.2,
+            color: GREEN,
+            side_mat: Material::Glow,
+            top_mat: Material::Glow,
+            solid: false,
+            ..OBox::default()
+        });
+        self.oboxes.push(OBox {
+            center: CENTER,
+            half: Vec2::splat(5.0),
+            yaw: std::f32::consts::FRAC_PI_4,
+            y0: 3.2,
+            y1: 4.0,
+            color: SHELL_DARK * 0.7,
+            side_mat: Material::Concrete,
+            top_mat: Material::Concrete,
+            solid: false,
+            ..OBox::default()
+        });
+        // Chutes from its flanks down to the middle lines (west, mirrored east).
+        let chute = self.twin(
+            Vec2::new(MID - SMELTER_HALF - 2.4, MID),
+            Vec2::new(0.7, 3.0),
+            4.2,
+            4.6,
+            SHELL_DARK,
+            Material::Metal,
+            false,
+        );
+        self.edit_twin(chute, |o| {
+            o.yaw = -FRAC_PI_2;
+            o.tilt = 0.55;
+        });
+        // Spilled out through the breach: a heap of cubes.
+        let h = SMELTER_HALF;
         for _ in 0..40 {
-            let at = CENTER + Vec2::new(rng.range(-6.0, 6.0), h + rng.range(0.5, 5.0) * rng.f32());
+            let at = CENTER
+                + Vec2::new(
+                    rng.range(-6.0, 6.0),
+                    h - 2.0 + rng.range(0.5, 7.0) * rng.f32(),
+                );
             let s = rng.range(0.5, 0.9);
             self.cube(
                 at,
@@ -571,8 +592,8 @@ impl Map {
                 false,
             );
         }
-        // Three bigger ones, cover beside the heap.
-        for x in [-4.5f32, 0.0, 4.5] {
+        // Two bigger ones either side of the breach, cover beside the heap.
+        for x in [-5.5f32, 5.5] {
             self.cube(
                 CENTER + Vec2::new(x, h + 2.5),
                 -0.1,
@@ -582,6 +603,50 @@ impl Map {
                 true,
                 false,
             );
+        }
+    }
+
+    /// An eight-sided wall ring round `c`, `r` from center to face: each
+    /// face a panel of pale shell on a dark plinth from `y0`, `heights[i]`
+    /// tall (0: no panel), face 0 facing east and counting round through
+    /// north. A panel shorter than the tallest is broken off; `bands` adds
+    /// a dark band round each full panel.
+    fn octagon(&mut self, c: Vec2, r: f32, y0: f32, heights: &[f32; 8], bands: bool) {
+        let side = 2.0 * r * (std::f32::consts::PI / 8.0).tan() + 0.3;
+        let full = heights.iter().copied().fold(0.0, f32::max);
+        for (i, &h) in heights.iter().enumerate() {
+            if h <= 0.0 {
+                continue;
+            }
+            let a = i as f32 * std::f32::consts::FRAC_PI_4;
+            let out = Vec2::new(a.cos(), a.sin());
+            // Local +z faces out.
+            let yaw = out.x.atan2(out.y);
+            let at = c + out * r;
+            let panel = |y0: f32, y1: f32, color: Vec3, mat: Material, solid: bool| OBox {
+                center: at,
+                yaw,
+                half: Vec2::new(side * 0.5, 0.6),
+                y0,
+                y1,
+                color,
+                side_mat: mat,
+                top_mat: mat,
+                solid,
+                ..OBox::default()
+            };
+            let plinth = (y0 + 1.4).min(y0 + h);
+            self.oboxes
+                .push(panel(y0, plinth, SHELL_DARK, Material::Concrete, true));
+            let mut wall = panel(plinth, y0 + h, SHELL, Material::Painted, true);
+            wall.broken = h < full;
+            wall.chip = 0.15;
+            self.oboxes.push(wall);
+            if bands && h >= full {
+                let mut band = panel(y0 + 8.4, y0 + 9.0, SHELL_DARK, Material::Concrete, false);
+                band.half += Vec2::new(0.0, 0.08);
+                self.oboxes.push(band);
+            }
         }
     }
 
