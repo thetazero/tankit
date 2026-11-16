@@ -25,7 +25,7 @@ Four sides. Any of them can hire you.
 
 | Faction | Who they are |
 |---|---|
-| **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. |
+| **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. An empire that is also a religion, Byzantine in spirit. See [The Imperium](#the-imperium). |
 | **The Resonant** | Human. A cult built around the crystals. The crystals answer: a machine with a crystal in it won't stay dead. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. See [The Resonant](#the-resonant). |
 | **The machines** | A machine faction (name and origin TBD). Machines hire mercenaries too. |
 | **The Ithessar** | The aliens. They shape plasma with crystal: their machines float on it, their weapons throw it. |
@@ -88,6 +88,31 @@ miracle in play.
 short range, deadly up close.
 
 **Color:** crystal blue, everywhere they show up.
+
+## The Imperium
+
+**An empire that is also a religion.** Byzantine in spirit: there is an
+Emperor, the state is sacred, and everything is done with ceremony that
+long ago stopped needing a reason. Ritual for its own sake.
+
+**Not the Resonant.** The Resonant worship the crystal; the Imperium worships
+the Imperium. Their machines are mass-made and identical, stamped with the
+emblem and sent down from orbit.
+
+**They hire mercenaries** for the same reason as everyone else: they want to
+win.
+
+**The emblem:** a haloed crown over a ringed planet. The empire watches
+from above.
+
+**Color:** deep crimson and gold.
+
+**Where the ritual shows:** on maps, subtly. Banners and cloth in crimson,
+gold mosaic, small shrines, the emblem on walls and pods. Their tanks change
+a little (crimson and gold trim, the emblem), but they stay clean,
+plated, made in bulk.
+
+**Names:** Byzantine flavored.
 
 ## Crystals
 
