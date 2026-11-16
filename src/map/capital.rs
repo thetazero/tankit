@@ -161,6 +161,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "ROTUNDA",
+            sculpted: crate::render::mesh::MeshData::default(),
         };
         let mut rng = Rng::new(0xC4_917A);
         let mut drifts = map.districts(&mut rng);
