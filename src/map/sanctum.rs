@@ -35,11 +35,6 @@ pub const FALL_Y: f32 = -10.0;
 const SAND: Vec3 = Vec3::new(0.78, 0.66, 0.5);
 const STONE: Vec3 = Vec3::new(0.82, 0.76, 0.64);
 const SLATE: Vec3 = Vec3::new(0.3, 0.28, 0.3);
-const ROCK: [Vec3; 3] = [
-    Vec3::new(0.56, 0.37, 0.26),
-    Vec3::new(0.63, 0.43, 0.3),
-    Vec3::new(0.5, 0.33, 0.24),
-];
 const GILT: Vec3 = Vec3::new(0.62, 0.47, 0.22);
 /// Resonant crystal, drawn glowing.
 const CRYSTAL: Vec3 = Vec3::new(0.25, 0.55, 1.0);
@@ -75,17 +70,26 @@ fn past_edge(p: Vec2) -> f32 {
     d.length() - rim(d.y.atan2(d.x))
 }
 
+/// One point down a column of the cliff face: its height, how far out from
+/// the rim it stands, and which band of rock it's in (0: the cap).
+type FacePoint = (f32, f32, u32);
+
+/// The mesa's top: flat round the church, a gentle roll further out.
+fn mesa_top(x: f32, z: f32) -> f32 {
+    let r = Vec2::new(x, z).distance(CENTER);
+    0.3 * (x * 0.07).sin() * (z * 0.05).cos() * smoothstep(60.0, 80.0, r)
+}
+
 fn ground(x: f32, z: f32) -> f32 {
     let p = Vec2::new(x, z);
-    let r = p.distance(CENTER);
     let d = past_edge(p);
-    // The top: flat round the church, a gentle roll further out.
-    let top = 0.3 * (x * 0.07).sin() * (z * 0.05).cos() * smoothstep(60.0, 80.0, r);
+    let top = mesa_top(x, z);
     // The floor: scree banked against the cliff's foot, dunes beyond.
     let scree = 10.0 * (-(d - 4.0).max(0.0) / 12.0).exp();
     let dunes = 1.5 * (x * 0.04).sin() * (z * 0.05 + 1.0).cos();
     let floor = LOW + scree + dunes;
-    let t = smoothstep(0.0, 5.0, d);
+    // The drop itself is steep, inside the sculpted face (see `cliffs`).
+    let t = smoothstep(-1.5, 0.3, d);
     top * (1.0 - t) + floor * t
 }
 
@@ -95,8 +99,9 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
     let p = Vec2::new(x, z);
     let edge = p.clamp(Vec2::ZERO, Vec2::splat(SIZE));
     if edge == p {
-        // Under the arena's own ground.
-        return ground(x, z) - 0.6;
+        // Under the arena's own ground, meeting it at the edge.
+        let inside = x.min(z).min(SIZE - x).min(SIZE - z);
+        return ground(x, z) - 0.6 * smoothstep(0.0, 14.0, inside);
     }
     // Carry on from the arena's edge, easing into the open desert.
     let dunes =
@@ -162,6 +167,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: Some(FALL_Y),
             hold_name: "ALTAR",
+            sculpted: crate::render::mesh::MeshData::default(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 151, 151, ground);
         terrain.color = SAND;
@@ -169,7 +175,7 @@ impl Map {
         map.terrain = Some(terrain);
         let mut rng = Rng::new(0x5a4c_7c11);
 
-        map.cliffs(&mut rng);
+        map.cliffs();
         map.church(&mut rng);
         map.precinct(&mut rng);
         map.sanctum_horizon();
@@ -209,32 +215,109 @@ impl Map {
         map
     }
 
-    /// The cliff face: fluted columns of banded rock all round the edge,
-    /// standing in for the heightfield's smeared drop.
-    fn cliffs(&mut self, rng: &mut Rng) {
-        let n = 190;
-        for i in 0..n {
+    /// The cliff face: one sculpted surface of rock all round the edge,
+    /// over the heightfield's drop. A lip at the top; fluted columns running
+    /// down it; bands of harder rock stepping out as ledges, each its own
+    /// shade; its foot buried in the scree.
+    fn cliffs(&mut self) {
+        let m = &mut self.sculpted;
+        let n = 360;
+        const BAND: f32 = 8.0;
+        const SHADES: [Vec3; 5] = [
+            Vec3::new(0.66, 0.46, 0.32),
+            Vec3::new(0.56, 0.36, 0.25),
+            Vec3::new(0.74, 0.58, 0.42),
+            Vec3::new(0.5, 0.32, 0.23),
+            Vec3::new(0.62, 0.41, 0.28),
+        ];
+        let hash = |i: u32, k: u32| {
+            let h = i.wrapping_mul(0x9E37_79B9) ^ k.wrapping_mul(0x85EB_CA6B);
+            let h = (h ^ (h >> 15)).wrapping_mul(0x2C1B_3C6D);
+            (h ^ (h >> 12)) as f32 / u32::MAX as f32
+        };
+        // How far out from the rim the face stands at angle `a`, `depth` m
+        // down from the top.
+        let face = |a: f32, depth: f32| {
+            let s = (depth / 40.0).clamp(0.0, 1.0);
+            // Columns of uneven width: the phase wanders round the rim.
+            let phase = a * 120.0 + 9.0 * (a * 3.0).sin() + 4.0 * (a * 7.0 + 1.0).sin();
+            let col = (phase / TAU).floor() as u32;
+            let groove =
+                (0.5 + 0.5 * (phase + 0.5 * (depth * 0.11 + a * 13.0).sin()).cos()).powf(0.6);
+            let flute = groove * (0.6 + 1.4 * hash(col, 7)) + 0.4 * (a * 37.0 + depth * 0.05).sin();
+            let f = (depth / BAND).fract();
+            let band = (depth / BAND).floor() as u32;
+            // Each band set in or out of the face; harder rock at its foot
+            // stepping out as a ledge.
+            let set = 0.9 * (hash(band, 11) - 0.5);
+            let ledge = (0.5 + 0.6 * hash(band, 3)) * smoothstep(0.8, 0.97, f);
+            // The foot flares out into the scree.
+            let flare = 4.0 * smoothstep(0.62, 1.0, s);
+            1.2 + 4.5 * s + flute.max(0.0) + set + ledge + flare
+        };
+        // Each column of the face: (height, distance out from the rim).
+        let mut depths = vec![0.0f32];
+        let mut d = 0.6;
+        while d < 41.0 {
+            depths.push(d);
+            d += 0.7;
+        }
+        let profile = |a: f32| -> Vec<FacePoint> {
+            let p = CENTER + Vec2::new(a.cos(), a.sin()) * rim(a);
+            let top = mesa_top(p.x, p.y);
+            // Tucked into the ground, then out to the lip, then down the face.
+            let mut v = vec![(top + 0.2, -0.8, 0), (top + 0.2, face(a, 0.0), 0)];
+            v.extend(
+                depths
+                    .iter()
+                    .skip(1)
+                    .map(|&dp| (top - dp, face(a, dp), 1 + (dp / BAND).floor() as u32)),
+            );
+            v
+        };
+        let rings: Vec<(Vec2, Vec<FacePoint>)> = (0..=n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * TAU;
+                (Vec2::new(a.cos(), a.sin()), profile(a))
+            })
+            .collect();
+        let at = |i: usize, k: usize| {
+            let (dir, ref prof) = rings[i];
             let a = i as f32 / n as f32 * TAU;
-            let dir = Vec2::new(a.cos(), a.sin());
-            let r = rim(a);
-            let step = TAU * r / n as f32;
-            // Three bands, each its own shade, stepping in and out a little.
-            let bands = [(LOW - 2.0, -27.0), (-27.0, -13.0), (-13.0, -1.2)];
-            for (k, &(y0, y1)) in bands.iter().enumerate() {
-                let out = rng.range(1.6, 3.4) + if k == 0 { 1.5 } else { 0.0 };
-                self.oboxes.push(OBox {
-                    center: CENTER + dir * (r + out),
-                    yaw: FRAC_PI_2 - a,
-                    half: Vec2::new(step * rng.range(0.5, 0.62), 2.6),
-                    y0,
-                    y1: y1 + rng.range(-1.2, 0.6),
-                    color: ROCK[(i + k) % 3] * rng.range(0.9, 1.08),
-                    side_mat: Material::Rubble,
-                    top_mat: Material::Rubble,
-                    chip: 0.4,
-                    solid: false,
-                    ..OBox::default()
-                });
+            let (y, d, _) = prof[k];
+            let p = CENTER + dir * (rim(a) + d);
+            Vec3::new(p.x, y, p.y)
+        };
+        for i in 0..n {
+            let out = (rings[i].0 + rings[i + 1].0).normalize().extend(0.0);
+            let out = Vec3::new(out.x, 0.0, out.y);
+            for k in 0..rings[i].1.len() - 1 {
+                let q = [at(i, k), at(i + 1, k), at(i + 1, k + 1), at(i, k + 1)];
+                let mut nrm = (q[1] - q[0]).cross(q[3] - q[0]).normalize_or_zero();
+                if k == 0 {
+                    // The cap over the lip faces up.
+                    if nrm.y < 0.0 {
+                        nrm = -nrm;
+                    }
+                } else if nrm.dot(out) < 0.0 {
+                    nrm = -nrm;
+                }
+                let band = rings[i].1[k + 1].2;
+                let base = if band == 0 {
+                    SAND * 0.95
+                } else {
+                    SHADES[(band as usize + 2) % SHADES.len()]
+                };
+                // Streaked down the face, darker toward its foot.
+                let depth = (rings[i].1[0].0 - rings[i].1[k + 1].0).max(0.0);
+                let c = base * (0.93 + 0.08 * hash(i as u32 / 2, 5)) * (1.0 - 0.004 * depth);
+                // Wind the quad to face along its normal.
+                let q = if (q[1] - q[0]).cross(q[3] - q[0]).dot(nrm) < 0.0 {
+                    [q[0], q[3], q[2], q[1]]
+                } else {
+                    q
+                };
+                m.quad(q, nrm, c.extend(Material::Rubble.id()));
             }
         }
     }
