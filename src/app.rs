@@ -515,11 +515,6 @@ impl App {
                 self.spawn += 1;
                 self.restart();
             }
-            // Restart at the next spawn point.
-            KeyCode::KeyR if self.showroom.is_none() => {
-                self.spawn += 1;
-                self.restart();
-            }
             // Quick-cycle the kit queued for the next respawn.
             KeyCode::Digit1 => {
                 let (hull, turret) = self.queued();
