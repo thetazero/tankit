@@ -511,6 +511,11 @@ pub struct Tank {
     pub since_fire: f32,
     /// Which barrel fired last (twin guns alternate).
     pub fire_barrel: usize,
+    /// Beam guns, mirrored from the fight for the art: heat 0..1, locked
+    /// out hot, and whether the beam is on this step.
+    pub heat: f32,
+    pub overheated: bool,
+    pub beaming: bool,
     pub flipped_time: f32,
     /// Seconds since the tank was spawned (drives idle animation).
     pub age: f32,
@@ -682,6 +687,9 @@ impl World {
             track_dist: [0.0; 2],
             since_fire: 10.0,
             fire_barrel: 0,
+            heat: 0.0,
+            overheated: false,
+            beaming: false,
             flipped_time: 0.0,
             age: 0.0,
             dead: false,

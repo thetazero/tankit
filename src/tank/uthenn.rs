@@ -6,12 +6,38 @@
 use glam::{Vec2, Vec3, Vec4};
 
 use super::model::{
-    CARBON, CARBON_LIGHT, HullModel, LASER_GLOW, METAL, Rig, Running, Skin, TurretModel, at_x,
-    at_z, block, block2, ngon, plate, plate2, rect, round, solid, trap, turret_ring, v,
+    CARBON, CARBON_LIGHT, HullModel, METAL, Rig, Running, Skin, TurretModel, at_x, at_z, block,
+    block2, ngon, plate, plate2, rect, round, solid, trap, turret_ring, v,
 };
 use super::track::Wheel;
 use crate::render::material::Material;
 use crate::render::mesh::MeshData;
+
+/// Uthenn laser light: the beam, the muzzle flare, and their glow when cool.
+pub const LASER_LIGHT: Vec3 = Vec3::new(0.2, 1.0, 0.35);
+/// The same light run white-hot, as the heat nears its limit.
+const LASER_HOT: Vec3 = Vec3::new(0.85, 1.0, 0.9);
+/// Heat lights are white in the mesh; the instance tints them (see `heat_glow`).
+const HEAT: Skin = Skin::new(Vec4::new(1.0, 1.0, 1.0, 0.0), Vec4::new(1.0, 1.0, 1.0, 0.0));
+/// Lumen is built a size up from the other turrets.
+const LUMEN_SCALE: f32 = 1.2;
+
+/// The tint (rgb) and glow strength (a) of a tank's heat lights: green at
+/// rest, brighter and whiter as the beam heats, guttering while it's locked
+/// out hot, dark on a wreck.
+pub fn heat_glow(heat: f32, overheated: bool, dead: bool, time: f32) -> Vec4 {
+    if dead {
+        return Vec4::new(0.05, 0.07, 0.06, 0.0);
+    }
+    let h = heat.clamp(0.0, 1.0);
+    let color = LASER_LIGHT.lerp(LASER_HOT, h * h);
+    let mut strength = 1.3 + 2.4 * h;
+    if overheated {
+        let flick = ((time * 31.0).sin() * (time * 17.0).sin()).abs();
+        strength *= 0.25 + 0.75 * flick;
+    }
+    color.extend(strength.max(1.0))
+}
 
 /// The shell: pale, cool grey ceramic, clean to the edges.
 pub(crate) const SHELL: Skin = Skin::new(
@@ -26,6 +52,7 @@ pub(crate) const SHELL_DARK: Skin = Skin::new(
 
 pub fn gravis() -> HullModel {
     let mut m = MeshData::default();
+    let mut light = MeshData::default();
     let inside = v(0.0, 1.0, 0.0);
 
     // Lower tub between the tracks.
@@ -69,7 +96,7 @@ pub fn gravis() -> HullModel {
         SHELL_DARK,
     );
     plate2(
-        &mut m,
+        &mut light,
         [
             v(1.3, 1.98, 1.25),
             v(1.36, 1.98, 1.25),
@@ -78,7 +105,7 @@ pub fn gravis() -> HullModel {
         ],
         0.015,
         inside,
-        LASER_GLOW,
+        HEAT,
     );
     // The visor: a dark band across the prow's face with a green bar in it.
     plate(
@@ -94,7 +121,7 @@ pub fn gravis() -> HullModel {
         SHELL_DARK,
     );
     plate(
-        &mut m,
+        &mut light,
         [
             v(-1.0, 1.12, 3.19),
             v(1.0, 1.12, 3.19),
@@ -103,7 +130,7 @@ pub fn gravis() -> HullModel {
         ],
         0.015,
         inside,
-        LASER_GLOW,
+        HEAT,
     );
 
     // Track pods: a sloped armor skirt down each side, with a green seam
@@ -121,7 +148,7 @@ pub fn gravis() -> HullModel {
         SHELL,
     );
     plate2(
-        &mut m,
+        &mut light,
         [
             v(2.0, 0.98, -2.4),
             v(2.0, 0.98, 2.2),
@@ -130,7 +157,7 @@ pub fn gravis() -> HullModel {
         ],
         0.015,
         inside,
-        LASER_GLOW,
+        HEAT,
     );
     // Dark inset panels on the pods, between the seam and the shell.
     for i in 0..3 {
@@ -152,7 +179,7 @@ pub fn gravis() -> HullModel {
     for k in 0..3 {
         let z = -0.9 + k as f32 * 0.42;
         plate2(
-            &mut m,
+            &mut light,
             [
                 v(1.83, 1.72, z),
                 v(1.83, 1.72, z + 0.18),
@@ -161,7 +188,7 @@ pub fn gravis() -> HullModel {
             ],
             0.02,
             inside,
-            LASER_GLOW,
+            HEAT,
         );
     }
 
@@ -176,7 +203,7 @@ pub fn gravis() -> HullModel {
     // Radiators: a bank of fins across the rear deck over a green-lit well,
     // the heat it soaks up showing between them.
     plate(
-        &mut m,
+        &mut light,
         [
             v(-1.25, 1.96, -2.85),
             v(1.25, 1.96, -2.85),
@@ -185,7 +212,7 @@ pub fn gravis() -> HullModel {
         ],
         0.02,
         inside - Vec3::Y,
-        LASER_GLOW,
+        HEAT,
     );
     for k in 0..9 {
         let z = -2.8 + k as f32 * 0.16;
@@ -219,7 +246,7 @@ pub fn gravis() -> HullModel {
     );
     for s in [-1.0f32, 1.0] {
         plate(
-            &mut m,
+            &mut light,
             [
                 v(s * 0.7, 1.6, -3.13),
                 v(s * 1.25, 1.6, -3.13),
@@ -228,12 +255,13 @@ pub fn gravis() -> HullModel {
             ],
             0.015,
             inside,
-            LASER_GLOW,
+            HEAT,
         );
     }
 
     HullModel {
         body: m,
+        heat_light: light,
         running: Running {
             track_x: 1.45,
             track_width: 0.78,
@@ -268,6 +296,8 @@ fn at_y_ring(r: f32, y: f32) -> Vec<Vec3> {
 /// ending in the lens.
 pub fn lumen() -> TurretModel {
     let mut head = MeshData::default();
+    let mut head_light = MeshData::default();
+    let mut barrel_light = MeshData::default();
     let inside = v(0.0, 0.42, -0.2);
     turret_ring(&mut head);
     let sec = |hw: f32, hh: f32, y: f32| rect(Vec2::new(0.0, y), Vec2::new(hw, hh), hh * 0.55);
@@ -297,7 +327,7 @@ pub fn lumen() -> TurretModel {
     );
     // Green seams along the shoulders, from the back to where it slopes.
     plate2(
-        &mut head,
+        &mut head_light,
         [
             v(0.5, 0.79, -0.9),
             v(0.5, 0.79, 0.3),
@@ -306,13 +336,13 @@ pub fn lumen() -> TurretModel {
         ],
         0.012,
         inside,
-        LASER_GLOW,
+        HEAT,
     );
     // Side slots, like the hull's.
     for k in 0..2 {
         let z = -0.55 + k as f32 * 0.3;
         plate2(
-            &mut head,
+            &mut head_light,
             [
                 v(0.76, 0.6, z),
                 v(0.76, 0.6, z + 0.12),
@@ -321,12 +351,12 @@ pub fn lumen() -> TurretModel {
             ],
             0.012,
             inside,
-            LASER_GLOW,
+            HEAT,
         );
     }
     // The back: a green-lit well behind a stack of radiator fins.
     plate(
-        &mut head,
+        &mut head_light,
         [
             v(-0.5, 0.62, -1.31),
             v(0.5, 0.62, -1.31),
@@ -335,7 +365,7 @@ pub fn lumen() -> TurretModel {
         ],
         0.012,
         inside,
-        LASER_GLOW,
+        HEAT,
     );
     for k in 0..5 {
         let y = 0.24 + k as f32 * 0.085;
@@ -399,13 +429,13 @@ pub fn lumen() -> TurretModel {
     // Focusing rings, glowing.
     for z in [1.55f32, 1.95, 2.35] {
         round(
-            &mut barrel,
+            &mut barrel_light,
             &[
                 at_z(&ngon(10, 0.1, Vec2::ZERO), z),
                 at_z(&ngon(10, 0.1, Vec2::ZERO), z + 0.06),
             ],
             0.01,
-            LASER_GLOW,
+            HEAT,
         );
     }
     // Lens housing and the green lens.
@@ -420,22 +450,37 @@ pub fn lumen() -> TurretModel {
         SHELL,
     );
     round(
-        &mut barrel,
+        &mut barrel_light,
         &[
             at_z(&ngon(10, 0.115, Vec2::ZERO), 3.1),
             at_z(&ngon(10, 0.115, Vec2::ZERO), 3.16),
         ],
         0.0,
-        LASER_GLOW,
+        HEAT,
     );
+
+    // A size up from the kit's other turrets, to sit on the Gravis.
+    for m in [
+        &mut head,
+        &mut head_light,
+        &mut mantlet,
+        &mut barrel,
+        &mut barrel_light,
+    ] {
+        for vert in &mut m.verts {
+            vert.pos = (Vec3::from(vert.pos) * LUMEN_SCALE).to_array();
+        }
+    }
 
     TurretModel {
         head,
+        head_light,
+        barrel_light,
         mantlet,
         barrel,
-        pivot: v(0.0, 0.42, 0.92),
+        pivot: v(0.0, 0.42, 0.92) * LUMEN_SCALE,
         barrels: vec![Vec3::ZERO],
-        muzzle: 3.2,
+        muzzle: 3.2 * LUMEN_SCALE,
         rig: Rig::Recoil,
         recoil: 0.0,
     }

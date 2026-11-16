@@ -119,7 +119,7 @@ const PLASMA_HOT: Vec3 = crate::tank::ithessar::PLASMA_HOT;
 const CRYSTAL: Vec3 = crate::tank::resonant::CRYSTAL_LIGHT;
 const CRYSTAL_HOT: Vec3 = crate::tank::resonant::CRYSTAL_LIGHT_HOT;
 /// Uthenn laser green.
-const LASER: Vec3 = Vec3::new(0.2, 1.0, 0.35);
+const LASER: Vec3 = crate::tank::uthenn::LASER_LIGHT;
 /// Heat a beam sheds per second, the same for every tank.
 pub const COOL_RATE: f32 = 1.35;
 /// A beam does full damage out to this fraction of its range...
@@ -733,6 +733,12 @@ impl Match {
                     }
                 }
             }
+        }
+
+        for (t, f) in self.world.tanks.iter_mut().zip(&self.fighters) {
+            t.heat = f.heat;
+            t.overheated = f.overheated;
+            t.beaming = f.beam.is_some();
         }
 
         self.fly_shells();

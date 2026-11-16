@@ -577,6 +577,9 @@ pub struct Running {
 
 pub struct HullModel {
     pub body: MeshData,
+    /// Light that shows the beam's heat (Uthenn): drawn emissive, tinted
+    /// by heat. Empty on other hulls.
+    pub heat_light: MeshData,
     pub running: Running,
     /// Turret ring position.
     pub mount: Vec3,
@@ -819,6 +822,7 @@ pub fn kataphrakt() -> HullModel {
 
     HullModel {
         body: m,
+        heat_light: MeshData::default(),
         running: Running {
             track_x: 1.22,
             track_width: 0.56,
@@ -1058,6 +1062,7 @@ pub fn kastron() -> HullModel {
 
     HullModel {
         body: m,
+        heat_light: MeshData::default(),
         running: Running {
             track_x: 1.28,
             track_width: 0.64,
@@ -1087,6 +1092,9 @@ pub fn kastron() -> HullModel {
 pub struct TurretModel {
     /// Rotates with turret yaw.
     pub head: MeshData,
+    /// Heat lights on the head and on the barrel (Uthenn), like `HullModel::heat_light`.
+    pub head_light: MeshData,
+    pub barrel_light: MeshData,
     /// Pitches with the gun.
     pub mantlet: MeshData,
     /// One barrel; drawn once per entry in `barrels`, slides back on recoil.
@@ -1344,6 +1352,8 @@ pub fn kontos() -> TurretModel {
 
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel,
         pivot: v(0.0, 0.45, 0.88),
@@ -1548,6 +1558,8 @@ pub fn pelekys() -> TurretModel {
 
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel,
         pivot: v(0.0, 0.38, 0.92),
@@ -1562,11 +1574,6 @@ pub fn pelekys() -> TurretModel {
 // Faction turrets. The Imperium builds the plated Kontos and Pelekys above; the
 // others below each have their own shape language and glow color.
 
-/// Uthenn laser green.
-pub(crate) const LASER_GLOW: Skin = Skin {
-    face: Vec4::new(0.12, 1.0, 0.3, Material::Glow.id()),
-    edge: Vec4::new(0.12, 1.0, 0.3, Material::Glow.id()),
-};
 /// Resonant crystal blue.
 pub(crate) const CRYSTAL: Skin = Skin {
     face: Vec4::new(0.2, 0.5, 1.0, Material::Glow.id()),
@@ -1764,6 +1771,8 @@ pub fn hymn() -> TurretModel {
 
     TurretModel {
         head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
         mantlet,
         barrel,
         pivot: v(0.0, 0.45, 0.8),

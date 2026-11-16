@@ -320,6 +320,7 @@ pub fn vigil() -> VigilModel {
     VigilModel {
         hull: HullModel {
             body: m,
+            heat_light: MeshData::default(),
             running: Running {
                 track_x: 1.22,
                 track_width: 0.56,
