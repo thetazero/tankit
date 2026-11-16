@@ -16,6 +16,7 @@ use crate::render::{Camera, UiVertex};
 use crate::repair::State;
 use crate::scene::project;
 use crate::sim::Tank;
+use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
 
@@ -295,7 +296,13 @@ impl Hud {
                 );
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
-                p.text(Vec2::new(top.x + dir * 52.0, sy + 6.0), f.name(), &l, align);
+                emblem::faction_name(
+                    &mut p,
+                    Vec2::new(top.x + dir * 52.0, sy + 6.0),
+                    f,
+                    &l,
+                    align,
+                );
             }
             p.line(
                 Vec2::new(top.x, sy + 2.0),
@@ -318,7 +325,7 @@ impl Hud {
                 );
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
-                p.text(Vec2::new(x, sy + 20.0), f.name(), &l, Align::Center);
+                emblem::faction_name(&mut p, Vec2::new(x, sy + 20.0), f, &l, Align::Center);
             }
         }
         if let Some(hd) = &m.hold
@@ -444,13 +451,12 @@ impl Hud {
             if let Some(k) = me.killed_by.filter(|&k| k != 0) {
                 let mut s = TextStyle::LABEL;
                 s.color = side_color(m, k);
-                p.text(
+                let f = m.factions[m.fighters[k].team];
+                emblem::tagged(
+                    &mut p,
                     c + Vec2::new(0.0, 42.0),
-                    &format!(
-                        "BY {} {}",
-                        m.factions[m.fighters[k].team].name(),
-                        callsign(m, k)
-                    ),
+                    f,
+                    &format!("BY {} {}", f.name(), callsign(m, k)),
                     &s,
                     Align::Center,
                 );
@@ -619,18 +625,23 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
         big.color = theme::HOT;
         p.text(Vec2::new(top.x, y), "ROUND OVER", &big, Align::Center);
         let mut s = TextStyle::value(12.0);
-        let line = match m.leader() {
+        let at = Vec2::new(top.x, y + 34.0);
+        match m.leader() {
             Some(t) => {
-                s.color = m.factions[t].ui();
-                format!("{} WINS", m.factions[t].name())
+                let f = m.factions[t];
+                s.color = f.ui();
+                emblem::tagged(p, at, f, &format!("{} WINS", f.name()), &s, Align::Center);
             }
-            None => "DRAW".to_string(),
-        };
-        p.text(Vec2::new(top.x, y + 34.0), &line, &s, Align::Center);
-        label(
+            None => {
+                p.text(at, "DRAW", &s, Align::Center);
+            }
+        }
+        emblem::tagged(
             p,
             Vec2::new(top.x, y + 56.0),
+            m.factions[0],
             &format!("+{} {} TRUST THIS MATCH", m.trust, m.factions[0].name()),
+            &TextStyle::LABEL,
             Align::Center,
         );
         y += 84.0;
@@ -646,7 +657,7 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
         let f = m.factions[team];
         let mut name = TextStyle::value(12.0);
         name.color = f.ui();
-        p.text(Vec2::new(a, y), f.name(), &name, Align::Left);
+        emblem::faction_name(p, Vec2::new(a, y), f, &name, Align::Left);
         let mut score = TextStyle::value(18.0);
         score.color = f.ui();
         p.text(
@@ -758,7 +769,10 @@ fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     };
     let mut l = TextStyle::LABEL;
     l.color = hold_color(m, hd.control);
-    p.text(at, &status, &l, Align::Center);
+    match hd.control {
+        Control::Held(s) => emblem::tagged(p, at, m.factions[s], &status, &l, Align::Center),
+        _ => p.text(at, &status, &l, Align::Center),
+    };
     let half = 110.0;
     let y = at.y + 20.0;
     p.line(

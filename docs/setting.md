@@ -30,6 +30,16 @@ Four sides. Any of them can hire you.
 | **Uthenn** | The machines: a splinter from the aliens. See [Uthenn](#uthenn). |
 | **The Ithessar** | The aliens. They shape plasma with crystal: their machines float on it, their weapons throw it. |
 
+## Emblems
+
+Each side has an emblem, drawn in the HUD's hairlines next to its name
+wherever it appears on screen (`src/ui/emblem.rs`):
+
+- **Imperium:** a planet under a halo: a gold disc with an arch over it.
+- **Resonant:** a crystal in a pointed-arch window, a relic in its case.
+- **Uthenn:** a tungsten cube.
+- **Ithessar:** plasma held in crystal: an orb in an almond-shaped lens.
+
 ## Factions vs. gameplay
 
 Gameplay stays **arcade tanks**: any hull with any turret, unlocked through

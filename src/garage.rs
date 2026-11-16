@@ -20,6 +20,7 @@ use crate::profile::{Profile, Refusal};
 use crate::render::{Camera, UiVertex};
 use crate::sim::{HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::thumbs::Thumbs;
+use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, theme, with_alpha};
 
@@ -811,12 +812,11 @@ impl Garage {
         p.set_clip(Some(view));
         for &(faction, hy) in &g.heads {
             let at = origin + Vec2::new(0.0, hy + 4.0);
-            let mut swatch = faction.paint().extend(1.0).to_array();
-            swatch[3] = 0.9;
-            p.rect(at + Vec2::new(0.0, 1.0), Vec2::new(6.0, 6.0), swatch);
-            let lw = label(p, at + Vec2::new(14.0, 0.0), faction.name(), Align::Left);
+            let mut style = TextStyle::LABEL;
+            style.color = with_alpha(faction.ui(), 0.85);
+            let lw = emblem::faction_name(p, at, faction, &style, Align::Left);
             p.line(
-                at + Vec2::new(26.0 + lw, 4.0),
+                at + Vec2::new(12.0 + lw, 4.0),
                 at + Vec2::new(GRID_W, 4.0),
                 1.0,
                 theme::FAINT,
@@ -968,10 +968,12 @@ impl Garage {
         let x = x + PANEL_PAD;
         let mut y = PANEL_TOP + 26.0;
         let kind = if self.section == 0 { "HULL" } else { "TURRET" };
-        label(
+        let kw = label(p, Vec2::new(x, y), &format!("{kind} · "), Align::Left);
+        emblem::faction_name(
             p,
-            Vec2::new(x, y),
-            &format!("{kind} · {}", part.maker().name()),
+            Vec2::new(x + kw + TextStyle::LABEL.tracking, y),
+            part.maker(),
+            &TextStyle::LABEL,
             Align::Left,
         );
         y += 16.0;
