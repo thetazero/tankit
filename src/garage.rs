@@ -498,16 +498,12 @@ impl Garage {
                     theme::FAINT
                 };
                 let nw = p.text(Vec2::new(x, y), part.name(), &s, Align::Left);
-                // Upgrade level and the turret's maker after the name; price or lock on the right.
-                let maker = match part {
-                    Part::Turret(k) => Some(k.maker().name()),
-                    Part::Hull(_) => None,
-                };
-                let note = match (owned, maker) {
-                    (true, Some(m)) => format!("M{}  {m}", levels.of(*part)),
-                    (true, None) => format!("M{}", levels.of(*part)),
-                    (false, Some(m)) => m.to_string(),
-                    (false, None) => String::new(),
+                // Upgrade level and the part's maker after the name; price or lock on the right.
+                let maker = part.maker().name();
+                let note = if owned {
+                    format!("M{}  {maker}", levels.of(*part))
+                } else {
+                    maker.to_string()
                 };
                 if !note.is_empty() {
                     label(
@@ -599,8 +595,7 @@ fn action(part: Part, profile: &Profile) -> (String, bool) {
     } else {
         match profile.can_buy(part) {
             Ok(cost) => (format!("BUY · {cost} CR"), true),
-            Err(Refusal::Trust(Some(f), s)) => (format!("{} SELLS AT TRUST {s}", f.name()), false),
-            Err(Refusal::Trust(None, s)) => (format!("SOLD AT TRUST {s} WITH ANY SIDE"), false),
+            Err(Refusal::Trust(f, s)) => (format!("{} SELLS AT TRUST {s}", f.name()), false),
             Err(Refusal::Crystals(cost)) => (format!("BUY · NEED {cost} CR"), false),
             Err(_) => (String::new(), false),
         }

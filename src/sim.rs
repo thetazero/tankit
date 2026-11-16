@@ -48,6 +48,16 @@ pub enum TurretKind {
     Hymn,
 }
 
+impl HullKind {
+    pub fn maker(self) -> crate::faction::Faction {
+        use crate::faction::Faction;
+        match self {
+            HullKind::Lancer | HullKind::Bastion => Faction::Imperium,
+            HullKind::Sethuun => Faction::Ithessar,
+        }
+    }
+}
+
 impl TurretKind {
     /// Every turret, grouped by maker. Also the kit's art order.
     pub const ALL: [TurretKind; 6] = [
