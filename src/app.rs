@@ -778,19 +778,20 @@ impl App {
                 self.clock.alpha()
             };
             let mut tanks = self.game.display_tanks(alpha);
+            // The camera follows the tank where it really is, not where an
+            // arrival draws it.
+            let anchor = self.game.camera_tank(0, alpha);
             let mut camera = match (self.mode, self.camera) {
                 (Mode::Menu, _) => {
-                    garage::orbit_camera(&self.game.world, &tanks[0], self.menu_orbit, w / h)
+                    garage::orbit_camera(&self.game.world, &anchor, self.menu_orbit, w / h)
                 }
                 // Frozen: hold the last frame's view.
                 (Mode::Paused, Some(c)) => c,
-                _ => self.cam.update(&self.game.world, &tanks[0], dt),
+                _ => self.cam.update(&self.game.world, &anchor, dt),
             };
             if self.mode != Mode::Paused {
                 self.garage.update(dt);
-                camera = self
-                    .garage
-                    .camera(camera, &self.game.world, &tanks[0], w / h);
+                camera = self.garage.camera(camera, &self.game.world, &anchor, w / h);
             }
             let driven = tanks[0].clone();
             // A couple of card thumbnails a frame, so opening doesn't hitch.

@@ -1,6 +1,7 @@
 mod ai;
 mod ambience;
 mod app;
+mod arrival;
 mod audio;
 mod bay;
 mod combat;

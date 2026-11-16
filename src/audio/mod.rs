@@ -21,6 +21,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glam::Vec3;
 
 use crate::combat::{Match, Sound};
+use crate::faction::Faction;
 use crate::render::Camera;
 use crate::sim::{HullKind, TurretKind};
 
@@ -225,6 +226,17 @@ impl Audio {
             }
             Sound::Confirm => (patch::CONFIRM, None, 1.0, 1.0),
             Sound::Link => (patch::LINK, None, 1.0, 1.0),
+            // Your own arrival is heard close up, as if from inside the hull.
+            Sound::Arrival { tank, faction, at } => {
+                let layers = match faction {
+                    Faction::Imperium => patch::DROP_IMPERIUM,
+                    Faction::Resonant => patch::KINDLE_RESONANT,
+                    Faction::Uthenn => patch::BUILD_UTHENN,
+                    Faction::Ithessar => patch::DESCEND_ITHESSAR,
+                };
+                let g = if tank == 0 { 1.4 } else { 1.0 };
+                (layers, Some(at), g, jitter)
+            }
         };
         let placed = match at {
             Some(p) => ears.place(p),

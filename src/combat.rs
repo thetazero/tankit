@@ -10,6 +10,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier3d::prelude::{QueryFilter, Ray};
 
 use crate::ai::{self, Bot, Contact, NavGrid};
+use crate::arrival::{ARRIVAL_TIME, Arrival};
 use crate::economy::Levels;
 use crate::faction::Faction;
 use crate::game::DT;
@@ -318,6 +319,9 @@ pub struct Fighter {
     pub respawn_in: f32,
     /// Seconds of spawn protection left.
     pub shield: f32,
+    /// Seconds since this tank last spawned or respawned (drives its
+    /// side's arrival, which is only looks: see `arrival`).
+    pub arrived: f32,
     /// Seconds until the gun can fire again.
     pub reload_in: f32,
     pub kills: u32,
@@ -499,6 +503,12 @@ pub enum Sound {
     Confirm,
     /// The player's link came back in a fresh chassis.
     Link,
+    /// A tank arriving (spawn or respawn), its team's way.
+    Arrival {
+        tank: usize,
+        faction: Faction,
+        at: Vec3,
+    },
 }
 
 /// Most sound events kept if nobody drains them (headless runs, tests).
@@ -720,6 +730,14 @@ impl Match {
             let f = &mut self.fighters[i];
             f.reload_in -= DT;
             f.shield -= DT;
+            if f.alive && f.arrived == 0.0 {
+                self.sounds.push(Sound::Arrival {
+                    tank: i,
+                    faction: self.factions[f.team],
+                    at: self.world.tanks[i].pos,
+                });
+            }
+            f.arrived += DT;
             f.since_hit += DT;
             f.since_dealt += DT;
             f.since_repair += DT;
@@ -1322,6 +1340,7 @@ impl Match {
             f.alive = true;
             f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
             f.shield = SPAWN_SHIELD;
+            f.arrived = 0.0;
             f.hit_by = None;
             f.reload_in = 0.5;
             f.heat = 0.0;
@@ -1332,7 +1351,32 @@ impl Match {
         }
     }
 
-    /// The tanks to draw this frame: interpolated, with wrecks charred.
+    /// The arrivals playing: tanks that spawned or respawned in the last
+    /// `ARRIVAL_TIME`, each arriving its team's way.
+    fn arrivals(&self) -> impl Iterator<Item = (usize, Arrival<'_>)> {
+        self.fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.alive && f.arrived < ARRIVAL_TIME)
+            .map(|(i, f)| {
+                let tank = &self.world.tanks[i];
+                let arrival = Arrival {
+                    faction: self.factions[f.team],
+                    t: f.arrived,
+                    tank,
+                    ground: self.world.map.ground_height(tank.pos.x, tank.pos.z),
+                    seed: (i as f32 * 0.618_034).fract(),
+                };
+                (i, arrival)
+            })
+    }
+
+    /// Tank `i` interpolated, where it really is: what the camera follows
+    /// (an arrival can draw the tank elsewhere for a moment).
+    pub fn camera_tank(&self, i: usize, alpha: f32) -> Tank {
+        self.world.tanks[i].interpolated(alpha)
+    }
+
     /// Where a shot from `t` would land if it fired now, for a gun that
     /// lands instantly (else None): the first thing along its line, or the
     /// end of its reach.
@@ -1358,8 +1402,11 @@ impl Match {
         Some(from + dir * toi)
     }
 
+    /// The tanks to draw this frame: interpolated, with wrecks charred and
+    /// arrivals still bringing tanks in.
     pub fn display_tanks(&self, alpha: f32) -> Vec<Tank> {
-        self.world
+        let mut tanks: Vec<Tank> = self
+            .world
             .tanks
             .iter()
             .zip(&self.fighters)
@@ -1374,7 +1421,11 @@ impl Match {
                 }
                 t
             })
-            .collect()
+            .collect();
+        for (i, a) in self.arrivals() {
+            a.pose(&mut tanks[i]);
+        }
+        tanks
     }
 
     /// Plasma's light: soft additive glow for shells in flight and the
@@ -1383,6 +1434,9 @@ impl Match {
         let glow = Particle::glow;
         for c in &self.world.map.cores {
             core_glow(c, self.world.time, out);
+        }
+        for (_, a) in self.arrivals() {
+            a.glow(out);
         }
         for s in &self.shells {
             let p = s.prev.lerp(s.pos, alpha);
@@ -1496,6 +1550,9 @@ impl Match {
     /// Shells, impacts, explosions and smoke as render instances.
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
+        for (_, a) in self.arrivals() {
+            a.instances(out);
+        }
         for c in &self.world.map.cores {
             core_instances(c, self.world.time, out);
         }
@@ -1819,6 +1876,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         alive: true,
         respawn_in: 0.0,
         shield: SPAWN_SHIELD,
+        arrived: 0.0,
         reload_in: 0.5,
         kills: 0,
         deaths: 0,
@@ -2008,6 +2066,37 @@ mod tests {
             m.step(Command::default(), false);
         }
         m
+    }
+
+    /// Every tank's arrival is heard once, its team's way: all of them at the
+    /// round start, and a tank again when it respawns.
+    #[test]
+    fn arrivals_sound_once_per_spawn() {
+        let mut m = four_sides(7);
+        let n = m.fighters.len();
+        let mut heard = vec![0; n];
+        let mut count = |m: &mut Match, heard: &mut Vec<usize>| {
+            for s in m.sounds.drain(..) {
+                if let Sound::Arrival { tank, faction, .. } = s {
+                    assert_eq!(faction, m.factions[m.fighters[tank].team]);
+                    heard[tank] += 1;
+                }
+            }
+        };
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+            count(&mut m, &mut heard);
+        }
+        assert!(heard.iter().all(|&h| h == 1), "{heard:?}");
+        for side in Faction::ALL {
+            assert!(m.fighters.iter().any(|f| m.factions[f.team] == side));
+        }
+        m.kill(1, 0);
+        for _ in 0..((RESPAWN_TIME + 0.2) / DT) as usize {
+            m.step(Command::default(), false);
+            count(&mut m, &mut heard);
+        }
+        assert_eq!(heard[0], 2, "{heard:?}");
     }
 
     /// Holding the trigger keeps a shell gun firing at its reload rate.
