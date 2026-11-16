@@ -22,7 +22,7 @@ use crate::economy::{Levels, Part};
 use crate::faction::Faction;
 use crate::profile::{Profile, Refusal};
 use crate::render::{Camera, UiVertex};
-use crate::sim::{HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
+use crate::sim::{Chassis, HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::thumbs::Thumbs;
 use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
@@ -73,6 +73,9 @@ const ORBIT_DRIFT: f32 = 0.12;
 const SPIN_RATE: f32 = 0.16;
 /// Past this much open, the bay is shown instead of the battlefield.
 const BAY_AT: f32 = 0.5;
+/// The longest hull (track end to track end, m) the bay camera frames
+/// without standing back.
+const BAY_FRAMED_LENGTH: f32 = 6.2;
 
 pub type Loadout = (HullKind, TurretKind);
 
@@ -365,10 +368,14 @@ impl Garage {
         self.spin
     }
 
-    /// The bay camera: easing in from a little further out as the garage opens.
+    /// The bay camera: easing in from a little further out as the garage
+    /// opens, and standing back for a hull too long to fit the usual frame.
     pub fn bay_camera(&self, aspect: f32) -> crate::render::Camera {
         let k = smooth(((self.blend - BAY_AT) / (1.0 - BAY_AT)).clamp(0.0, 1.0));
-        crate::bay::camera(aspect, 1.0 + 0.2 * (1.0 - k))
+        let c = Chassis::of(self.view.0);
+        let length = (c.front.0 + c.front.2) - (c.rear.0 - c.rear.2);
+        let fit = (length / BAY_FRAMED_LENGTH).max(1.0);
+        crate::bay::camera(aspect, fit * (1.0 + 0.2 * (1.0 - k)))
     }
 
     /// How dark the screen is for the cut between battlefield and bay:

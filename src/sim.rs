@@ -183,20 +183,22 @@ impl Chassis {
         ..Chassis::KATAPHRAKT
     };
 
-    /// Uthenn heavy hull: long, wide and tall, on six road wheels a side.
+    /// Uthenn heavy hull: the biggest, longest and tallest, on seven road
+    /// wheels a side. Its box is the citadel (the tall tier the turret sits
+    /// on); the convex hull down to the track ends covers the lower shell.
     pub const GRAVIS: Chassis = Chassis {
-        mass: 42_000.0,
-        track_x: 1.45,
-        track_width: 0.78,
-        road_z: &[-2.2, -1.32, -0.44, 0.44, 1.32, 2.2],
-        road_y: 0.42,
-        road_r: 0.34,
-        front: (2.85, 0.74, 0.38),
-        rear: (-2.85, 0.76, 0.42),
-        hull_half_x: 1.8,
-        hull_top: 1.95,
-        hull_z: (-3.0, 2.9),
-        center_of_mass: Vec3::new(0.0, 0.75, -0.1),
+        mass: 50_000.0,
+        track_x: 1.6,
+        track_width: 0.86,
+        road_z: &[-2.7, -1.8, -0.9, 0.0, 0.9, 1.8, 2.7],
+        road_y: 0.46,
+        road_r: 0.38,
+        front: (3.5, 0.82, 0.42),
+        rear: (-3.45, 0.85, 0.46),
+        hull_half_x: 1.9,
+        hull_top: 2.8,
+        hull_z: (-3.3, 1.9),
+        center_of_mass: Vec3::new(0.0, 0.9, -0.15),
         hover: false,
     };
 
@@ -1589,7 +1591,7 @@ mod tests {
     /// transfer) without lifting it off its tracks.
     #[test]
     fn rides_level_under_power() {
-        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
             let mut w = World::empty(flat_world().map);
             w.spawn_tank(
                 Vec3::ONE,
@@ -1627,7 +1629,7 @@ mod tests {
         bumpy.speed_bumps(6.0, 18.0, 120.0, 6);
         let mut hilly = Map::yard(200.0);
         hilly.hills();
-        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
             let bumps = ride(bumpy.clone(), Vec2::new(12.0, 108.0), 0.0, hull, 5.0);
             let hills = ride(hilly.clone(), Vec2::new(130.0, 20.0), 0.0, hull, 8.0);
             for (name, (rate, _, jolt, air)) in [("bumps", bumps), ("hills", hills)] {
@@ -1674,7 +1676,7 @@ mod tests {
 
     #[test]
     fn settles_level_on_its_wheels() {
-        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
             let mut w = flat_world();
             w.set_hull(0, hull);
             run(&mut w, Command::default(), 3.0);
@@ -1881,7 +1883,7 @@ mod tests {
     /// Kerbs, steps and low ledges never stop a tank, from a standstill or at speed.
     #[test]
     fn low_ledges_never_stop_you() {
-        for hull in [HullKind::Kataphrakt, HullKind::Kastron] {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
             for h in [0.25, 0.5, 0.8] {
                 assert!(
                     climbs(h, Vec2::new(100.0, 106.5), 0.0, hull),

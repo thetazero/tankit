@@ -23,6 +23,9 @@ use crate::rng::Rng;
 const SIZE: f32 = 200.0;
 const MID: f32 = SIZE * 0.5;
 const CENTER: Vec2 = Vec2::new(MID, MID);
+/// Clearance a spawn needs from anything solid: the Gravis's corner
+/// radius, so it can face any way without touching.
+const TANK_CLEAR: f32 = 4.4;
 
 /// The hall: walls from `HALL_MIN` to `HALL_MAX`, `HALL_H` tall.
 const HALL_MIN: Vec2 = Vec2::new(56.0, 52.0);
@@ -911,7 +914,7 @@ impl Map {
         spots.dedup_by(|a, b| a.distance(*b) < 3.0);
         self.open_spots = spots
             .into_iter()
-            .filter(|&p| self.foundry_clear(p, 3.5))
+            .filter(|&p| self.foundry_clear(p, TANK_CLEAR))
             .collect();
         self.repair_spots = vec![
             Vec2::new(MID, 70.0),
@@ -923,7 +926,7 @@ impl Map {
             let base = std::mem::take(&mut self.bases[side]);
             self.bases[side] = base
                 .into_iter()
-                .filter(|&p| self.foundry_clear(p, 3.5))
+                .filter(|&p| self.foundry_clear(p, TANK_CLEAR))
                 .collect();
         }
     }
