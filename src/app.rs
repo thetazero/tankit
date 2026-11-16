@@ -632,6 +632,9 @@ impl App {
             }
             let mut scene = scene::build(&self.game.world, &tanks, art, camera);
             self.game.effect_instances(alpha, &mut scene.instances);
+            // Ambient motion happens around wherever the camera is.
+            self.game.ambience.focus = camera.pos;
+            scene.particles = self.game.ambience.particles();
             if self.showroom.is_some() {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;

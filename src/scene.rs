@@ -432,6 +432,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
+        particles: Vec::new(),
         ui: Vec::new(),
     }
 }

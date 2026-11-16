@@ -1,4 +1,5 @@
 mod ai;
+mod ambience;
 mod app;
 mod combat;
 mod economy;
@@ -390,6 +391,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             garage.toggle(&m.world, &camera, args.loadout);
         }
         for _ in 0..(seconds / game::DT).round() as u32 {
+            m.ambience.focus = args.cam.map_or(camera.pos, |c| c.0);
             let cmd = command(&m.world);
             m.step(cmd, !args.straight && !args.garage);
             camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
@@ -416,6 +418,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         };
         let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
+        frame.particles = game.ambience.particles();
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
