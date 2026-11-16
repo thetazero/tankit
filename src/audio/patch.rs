@@ -273,11 +273,11 @@ pub const DROP_IMPERIUM: &[Layer] = &[
     },
     Layer {
         delay: 0.4,
-        ..sine(90.0, 30.0, 0.12, 0.45, 1.0)
+        ..sine(90.0, 30.0, 0.12, 0.45, 0.7)
     },
     Layer {
         delay: 0.4,
-        ..noise(Filt::Low, 5000.0, 180.0, 0.18, 0.5, 0.8)
+        ..noise(Filt::Low, 5000.0, 180.0, 0.18, 0.5, 0.55)
     },
     Layer {
         delay: 0.4,
