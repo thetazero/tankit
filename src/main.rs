@@ -59,7 +59,11 @@ impl Args {
 }
 
 pub fn make_map(seed: u64, proving: bool) -> map::Map {
-    if proving { map::Map::proving_ground() } else { map::Map::generate(seed) }
+    if proving {
+        map::Map::proving_ground()
+    } else {
+        map::Map::generate(seed)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -79,19 +83,31 @@ struct ShotArgs {
 }
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"))
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"),
+    )
+    .init();
     let args = parse_args()?;
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
         (Some(shot), None) => screenshot(&args, shot),
-        (None, room) => app::run(args.seed, args.proving, args.spawn, args.bots, args.loadout, room),
+        (None, room) => app::run(
+            args.seed,
+            args.proving,
+            args.spawn,
+            args.bots,
+            args.loadout,
+            room,
+        ),
     }
 }
 
 fn parse_args() -> Result<Args> {
     let mut args = std::env::args().skip(1);
-    let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64 % 100_000;
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos() as u64
+        % 100_000;
     let mut shot: Option<String> = None;
     let mut time = 1.0;
     let (mut width, mut height) = (1600, 900);
@@ -101,7 +117,11 @@ fn parse_args() -> Result<Args> {
     let mut bots: Option<usize> = None;
     let mut loadout = (sim::HullKind::Lancer, sim::TurretKind::Lance);
     let mut garage = false;
-    let mut room = ShowroomArgs { orbit: None, dist: 24.0, focus: None };
+    let mut room = ShowroomArgs {
+        orbit: None,
+        dist: 24.0,
+        focus: None,
+    };
     while let Some(a) = args.next() {
         match a.as_str() {
             "--shot" => shot = Some(args.next().context("--shot needs a path")?),
@@ -124,17 +144,32 @@ fn parse_args() -> Result<Args> {
             }
             "--hull" => {
                 let name = args.next().unwrap_or_default().to_ascii_uppercase();
-                loadout.0 = *garage::HULLS.iter().find(|&&k| garage::hull_name(k) == name).context("--hull expects lancer or bastion")?;
+                loadout.0 = *garage::HULLS
+                    .iter()
+                    .find(|&&k| garage::hull_name(k) == name)
+                    .context("--hull expects lancer or bastion")?;
             }
             "--turret" => {
                 let name = args.next().unwrap_or_default().to_ascii_uppercase();
-                loadout.1 = *garage::TURRETS.iter().find(|&&k| garage::turret_name(k) == name).context("--turret expects lance or maul")?;
+                loadout.1 = *garage::TURRETS
+                    .iter()
+                    .find(|&&k| garage::turret_name(k) == name)
+                    .context("--turret expects lance or maul")?;
             }
             "--garage" => garage = true,
             "--showroom" => showroom = true,
-            "--orbit" => room.orbit = Some(args.next().context("--orbit needs degrees")?.parse::<f32>()?.to_radians()),
+            "--orbit" => {
+                room.orbit = Some(
+                    args.next()
+                        .context("--orbit needs degrees")?
+                        .parse::<f32>()?
+                        .to_radians(),
+                )
+            }
             "--dist" => room.dist = args.next().context("--dist needs meters")?.parse()?,
-            "--focus" => room.focus = Some(args.next().context("--focus needs a tank index")?.parse()?),
+            "--focus" => {
+                room.focus = Some(args.next().context("--focus needs a tank index")?.parse()?)
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -150,7 +185,14 @@ fn parse_args() -> Result<Args> {
         loadout,
         garage,
         straight,
-        shot: shot.map(|out| ShotArgs { out, time, width, height, frames, fps }),
+        shot: shot.map(|out| ShotArgs {
+            out,
+            time,
+            width,
+            height,
+            frames,
+            fps,
+        }),
         showroom: showroom.then_some(room),
     })
 }
@@ -181,13 +223,22 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.garage {
             sim::Command::default()
         } else if args.straight {
-            sim::Command { throttle: 1.0, ..Default::default() } } else { game::autopilot(world.time) }
+            sim::Command {
+                throttle: 1.0,
+                ..Default::default()
+            }
+        } else {
+            game::autopilot(world.time)
+        }
     };
 
     // Simulate `seconds` more, keeping the camera in step; returns the latest camera.
     // The autopilot holds the trigger so shots show combat.
     let aspect = shot.width as f32 / shot.height as f32;
-    let advance = |m: &mut combat::Match, cam: &mut scene::ChaseCam, garage: &mut garage::Garage, seconds: f32| {
+    let advance = |m: &mut combat::Match,
+                   cam: &mut scene::ChaseCam,
+                   garage: &mut garage::Garage,
+                   seconds: f32| {
         let mut camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
         if args.garage && !garage.is_open() {
             garage.toggle(&m.world, &camera, args.loadout);
@@ -215,15 +266,35 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);
         frame.ui = garage.overlay(ui, &driven, args.loadout, h);
         let out = frame_path(shot, i);
-        renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
+        renderer
+            .render_to_image(&frame)?
+            .save(&out)
+            .with_context(|| format!("save {out}"))?;
     }
     let world = &game.world;
     let t = &world.tanks[0];
-    let board: Vec<String> = game.standings().iter().map(|&i| format!("{} {}/{}", game.fighters[i].name, game.fighters[i].kills, game.fighters[i].deaths)).collect();
+    let board: Vec<String> = game
+        .standings()
+        .iter()
+        .map(|&i| {
+            format!(
+                "{} {}/{}",
+                game.fighters[i].name, game.fighters[i].kills, game.fighters[i].deaths
+            )
+        })
+        .collect();
     println!("score (kills/deaths): {}", board.join(", "));
     println!(
         "wrote {} frame(s) to {} ({}x{}, t={:.2}s) tank at {:.1?} up {:.2?} wheels down {} face contacts {}",
-        shot.frames, shot.out, shot.width, shot.height, world.time, t.pos, t.up(), t.wheels_down, t.face_contacts
+        shot.frames,
+        shot.out,
+        shot.width,
+        shot.height,
+        world.time,
+        t.pos,
+        t.up(),
+        t.wheels_down,
+        t.face_contacts
     );
     Ok(())
 }
@@ -251,8 +322,14 @@ fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
         frame.shadow_center = Vec3::ZERO;
         frame.shadow_radius = 22.0;
         let out = frame_path(shot, i);
-        renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
+        renderer
+            .render_to_image(&frame)?
+            .save(&out)
+            .with_context(|| format!("save {out}"))?;
     }
-    println!("wrote {} frame(s) to {} (showroom, t={:.2}s)", shot.frames, shot.out, world.time);
+    println!(
+        "wrote {} frame(s) to {} (showroom, t={:.2}s)",
+        shot.frames, shot.out, world.time
+    );
     Ok(())
 }

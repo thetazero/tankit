@@ -56,10 +56,20 @@ pub struct TextStyle {
 
 impl TextStyle {
     /// Small wide-spaced caps for labels.
-    pub const LABEL: TextStyle = TextStyle { size: 8.0, tracking: 4.0, weight: 1.0, color: theme::DIM };
+    pub const LABEL: TextStyle = TextStyle {
+        size: 8.0,
+        tracking: 4.0,
+        weight: 1.0,
+        color: theme::DIM,
+    };
     /// Readout numbers.
     pub fn value(size: f32) -> TextStyle {
-        TextStyle { size, tracking: size * 0.28, weight: 1.2, color: theme::FG }
+        TextStyle {
+            size,
+            tracking: size * 0.28,
+            weight: 1.2,
+            color: theme::FG,
+        }
     }
 }
 
@@ -73,7 +83,13 @@ pub struct Painter {
 
 impl Painter {
     pub fn new(scale: f32) -> Painter {
-        Painter { scale, halo: Some((theme::HALO, theme::HALO_PX)), clip: None, verts: Vec::new(), under: Vec::new() }
+        Painter {
+            scale,
+            halo: Some((theme::HALO, theme::HALO_PX)),
+            clip: None,
+            verts: Vec::new(),
+            under: Vec::new(),
+        }
     }
 
     pub fn set_halo(&mut self, halo: Option<(Rgba, f32)>) {
@@ -92,11 +108,19 @@ impl Painter {
     }
 
     pub fn line(&mut self, a: Vec2, b: Vec2, width: f32, color: Rgba) {
-        let Some((a, b)) = clip_segment(a, b, self.clip) else { return };
+        let Some((a, b)) = clip_segment(a, b, self.clip) else {
+            return;
+        };
         let s = self.scale;
         let w = width * s;
         if let Some((hc, hw)) = self.halo {
-            push_line(&mut self.under, a * s, b * s, w + 2.0 * hw * s, with_alpha(hc, color[3].min(1.0)));
+            push_line(
+                &mut self.under,
+                a * s,
+                b * s,
+                w + 2.0 * hw * s,
+                with_alpha(hc, color[3].min(1.0)),
+            );
         }
         push_line(&mut self.verts, a * s, b * s, w, color);
     }
@@ -110,8 +134,10 @@ impl Painter {
     /// Arc around `c`, angles in radians (0 = +x, y down so positive is clockwise on screen).
     pub fn arc(&mut self, c: Vec2, r: f32, a0: f32, a1: f32, width: f32, color: Rgba) {
         let n = (((a1 - a0).abs() * r / 4.0).ceil() as usize).clamp(4, 96);
-        let pts: Vec<Vec2> =
-            (0..=n).map(|i| a0 + (a1 - a0) * i as f32 / n as f32).map(|a| c + Vec2::new(a.cos(), a.sin()) * r).collect();
+        let pts: Vec<Vec2> = (0..=n)
+            .map(|i| a0 + (a1 - a0) * i as f32 / n as f32)
+            .map(|a| c + Vec2::new(a.cos(), a.sin()) * r)
+            .collect();
         self.polyline(&pts, width, color);
     }
 
@@ -119,7 +145,12 @@ impl Painter {
         let s = self.scale;
         if let Some((hc, hw)) = self.halo {
             let h = hw * s;
-            push_rect(&mut self.under, min * s - h, size * s + 2.0 * h, with_alpha(hc, color[3].min(1.0)));
+            push_rect(
+                &mut self.under,
+                min * s - h,
+                size * s + 2.0 * h,
+                with_alpha(hc, color[3].min(1.0)),
+            );
         }
         push_rect(&mut self.verts, min * s, size * s, color);
     }
@@ -127,7 +158,12 @@ impl Painter {
     /// Rect fading horizontally from `left` to `right` colour, no halo (for backdrops).
     pub fn gradient_h(&mut self, min: Vec2, size: Vec2, left: Rgba, right: Rgba) {
         let s = self.scale;
-        let (x0, y0, x1, y1) = (min.x * s, min.y * s, (min.x + size.x) * s, (min.y + size.y) * s);
+        let (x0, y0, x1, y1) = (
+            min.x * s,
+            min.y * s,
+            (min.x + size.x) * s,
+            (min.y + size.y) * s,
+        );
         let v = |x: f32, y: f32, color: Rgba| UiVertex { pos: [x, y], color };
         self.under.extend_from_slice(&[
             v(x0, y0, left),
@@ -141,7 +177,17 @@ impl Painter {
 
     pub fn rect_outline(&mut self, min: Vec2, size: Vec2, width: f32, color: Rgba) {
         let max = min + size;
-        self.polyline(&[min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y), min], width, color);
+        self.polyline(
+            &[
+                min,
+                Vec2::new(max.x, min.y),
+                max,
+                Vec2::new(min.x, max.y),
+                min,
+            ],
+            width,
+            color,
+        );
     }
 
     /// Draws `text` with its top edge at `pos.y`, aligned around `pos.x`. Returns its width.
@@ -159,11 +205,18 @@ impl Painter {
                 continue;
             };
             for stroke in &g.strokes {
-                let pts: Vec<Vec2> = stroke.iter().map(|p| Vec2::new(x, pos.y) + *p * u).collect();
+                let pts: Vec<Vec2> = stroke
+                    .iter()
+                    .map(|p| Vec2::new(x, pos.y) + *p * u)
+                    .collect();
                 if pts.len() == 2 && pts[0].distance(pts[1]) < style.weight {
                     // Dots: a tiny square reads better than a stub of line.
                     let d = style.weight.max(1.2);
-                    self.rect((pts[0] + pts[1]) * 0.5 - d * 0.5, Vec2::splat(d), style.color);
+                    self.rect(
+                        (pts[0] + pts[1]) * 0.5 - d * 0.5,
+                        Vec2::splat(d),
+                        style.color,
+                    );
                 } else {
                     self.polyline(&pts, style.weight, style.color);
                 }
@@ -188,10 +241,17 @@ pub fn measure(text: &str, style: &TextStyle) -> f32 {
 
 /// Liang–Barsky: the part of segment a→b inside the box, if any.
 pub fn clip_segment(a: Vec2, b: Vec2, clip: Option<(Vec2, Vec2)>) -> Option<(Vec2, Vec2)> {
-    let Some((min, max)) = clip else { return Some((a, b)) };
+    let Some((min, max)) = clip else {
+        return Some((a, b));
+    };
     let d = b - a;
     let (mut t0, mut t1) = (0.0f32, 1.0f32);
-    for (p, q) in [(-d.x, a.x - min.x), (d.x, max.x - a.x), (-d.y, a.y - min.y), (d.y, max.y - a.y)] {
+    for (p, q) in [
+        (-d.x, a.x - min.x),
+        (d.x, max.x - a.x),
+        (-d.y, a.y - min.y),
+        (d.y, max.y - a.y),
+    ] {
         if p.abs() < 1e-9 {
             if q < 0.0 {
                 return None;
@@ -214,7 +274,14 @@ pub fn clip_segment(a: Vec2, b: Vec2, clip: Option<(Vec2, Vec2)>) -> Option<(Vec
 fn push_rect(out: &mut Vec<UiVertex>, min: Vec2, size: Vec2, color: Rgba) {
     let v = |x: f32, y: f32| UiVertex { pos: [x, y], color };
     let (x0, y0, x1, y1) = (min.x, min.y, min.x + size.x, min.y + size.y);
-    out.extend_from_slice(&[v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y0), v(x1, y1), v(x0, y1)]);
+    out.extend_from_slice(&[
+        v(x0, y0),
+        v(x1, y0),
+        v(x1, y1),
+        v(x0, y0),
+        v(x1, y1),
+        v(x0, y1),
+    ]);
 }
 
 /// A line as three strips across its width: solid core with a 1 px alpha
@@ -232,12 +299,27 @@ fn push_line(out: &mut Vec<UiVertex>, a: Vec2, b: Vec2, width: f32, color: Rgba)
     let (a, b) = (a - dir * (w * 0.5), b + dir * (w * 0.5));
     let solid = with_alpha(color, cover);
     let clear = with_alpha(color, 0.0);
-    let rows = [(-outer, clear), (-inner, solid), (inner, solid), (outer, clear)];
+    let rows = [
+        (-outer, clear),
+        (-inner, solid),
+        (inner, solid),
+        (outer, clear),
+    ];
     for pair in rows.windows(2) {
         let ((o0, c0), (o1, c1)) = (pair[0], pair[1]);
-        let v = |p: Vec2, c: Rgba| UiVertex { pos: p.into(), color: c };
+        let v = |p: Vec2, c: Rgba| UiVertex {
+            pos: p.into(),
+            color: c,
+        };
         let (p00, p01, p10, p11) = (a + n * o0, b + n * o0, a + n * o1, b + n * o1);
-        out.extend_from_slice(&[v(p00, c0), v(p01, c0), v(p11, c1), v(p00, c0), v(p11, c1), v(p10, c1)]);
+        out.extend_from_slice(&[
+            v(p00, c0),
+            v(p01, c0),
+            v(p11, c1),
+            v(p00, c0),
+            v(p11, c1),
+            v(p10, c1),
+        ]);
     }
 }
 
@@ -269,7 +351,9 @@ mod tests {
     fn clipping() {
         let clip = Some((Vec2::ZERO, Vec2::splat(10.0)));
         let (a, b) = clip_segment(Vec2::new(-5.0, 5.0), Vec2::new(15.0, 5.0), clip).unwrap();
-        assert!((a - Vec2::new(0.0, 5.0)).length() < 1e-4 && (b - Vec2::new(10.0, 5.0)).length() < 1e-4);
+        assert!(
+            (a - Vec2::new(0.0, 5.0)).length() < 1e-4 && (b - Vec2::new(10.0, 5.0)).length() < 1e-4
+        );
         assert!(clip_segment(Vec2::new(-5.0, -1.0), Vec2::new(15.0, -1.0), clip).is_none());
         assert!(clip_segment(Vec2::new(5.0, 20.0), Vec2::new(5.0, 30.0), clip).is_none());
         let inside = (Vec2::new(1.0, 1.0), Vec2::new(2.0, 3.0));
@@ -283,6 +367,9 @@ mod tests {
         assert!((measure("10", &s) - (16.0 + s.tracking)).abs() < 1e-4);
         assert_eq!(measure("", &s), 0.0);
         let mut p = Painter::new(1.0);
-        assert_eq!(p.text(Vec2::ZERO, "10", &s, Align::Right), measure("10", &s));
+        assert_eq!(
+            p.text(Vec2::ZERO, "10", &s, Align::Right),
+            measure("10", &s)
+        );
     }
 }

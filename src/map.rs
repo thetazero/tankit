@@ -75,15 +75,49 @@ impl Wedge {
         let (a, b, y0, y1) = (self.min, self.max, self.base_y, self.base_y + self.height);
         let p = |x: f32, z: f32, y: f32| Vec3::new(x, y, z);
         match self.rise {
-            Rise::PosX => [p(a.x, a.y, y0), p(a.x, b.y, y0), p(b.x, a.y, y0), p(b.x, b.y, y0), p(b.x, a.y, y1), p(b.x, b.y, y1)],
-            Rise::NegX => [p(b.x, a.y, y0), p(b.x, b.y, y0), p(a.x, a.y, y0), p(a.x, b.y, y0), p(a.x, a.y, y1), p(a.x, b.y, y1)],
-            Rise::PosZ => [p(a.x, a.y, y0), p(b.x, a.y, y0), p(a.x, b.y, y0), p(b.x, b.y, y0), p(a.x, b.y, y1), p(b.x, b.y, y1)],
-            Rise::NegZ => [p(a.x, b.y, y0), p(b.x, b.y, y0), p(a.x, a.y, y0), p(b.x, a.y, y0), p(a.x, a.y, y1), p(b.x, a.y, y1)],
+            Rise::PosX => [
+                p(a.x, a.y, y0),
+                p(a.x, b.y, y0),
+                p(b.x, a.y, y0),
+                p(b.x, b.y, y0),
+                p(b.x, a.y, y1),
+                p(b.x, b.y, y1),
+            ],
+            Rise::NegX => [
+                p(b.x, a.y, y0),
+                p(b.x, b.y, y0),
+                p(a.x, a.y, y0),
+                p(a.x, b.y, y0),
+                p(a.x, a.y, y1),
+                p(a.x, b.y, y1),
+            ],
+            Rise::PosZ => [
+                p(a.x, a.y, y0),
+                p(b.x, a.y, y0),
+                p(a.x, b.y, y0),
+                p(b.x, b.y, y0),
+                p(a.x, b.y, y1),
+                p(b.x, b.y, y1),
+            ],
+            Rise::NegZ => [
+                p(a.x, b.y, y0),
+                p(b.x, b.y, y0),
+                p(a.x, a.y, y0),
+                p(b.x, a.y, y0),
+                p(a.x, a.y, y1),
+                p(b.x, a.y, y1),
+            ],
         }
     }
 
     /// Faces as point-index polygons (convex), for rendering.
-    pub const FACES: [&'static [usize]; 5] = [&[0, 1, 5, 4], &[2, 3, 5, 4], &[0, 1, 3, 2], &[0, 2, 4], &[1, 3, 5]];
+    pub const FACES: [&'static [usize]; 5] = [
+        &[0, 1, 5, 4],
+        &[2, 3, 5, 4],
+        &[0, 1, 3, 2],
+        &[0, 2, 4],
+        &[1, 3, 5],
+    ];
 }
 
 /// Heightfield ground. Heights are stored row-major, z rows then x columns.
@@ -99,14 +133,28 @@ pub struct Terrain {
 }
 
 impl Terrain {
-    pub fn from_fn(origin: Vec2, cell: f32, nx: usize, nz: usize, f: impl Fn(f32, f32) -> f32) -> Terrain {
+    pub fn from_fn(
+        origin: Vec2,
+        cell: f32,
+        nx: usize,
+        nz: usize,
+        f: impl Fn(f32, f32) -> f32,
+    ) -> Terrain {
         let mut heights = Vec::with_capacity(nx * nz);
         for iz in 0..nz {
             for ix in 0..nx {
                 heights.push(f(origin.x + ix as f32 * cell, origin.y + iz as f32 * cell));
             }
         }
-        Terrain { origin, cell, nx, nz, heights, color: Vec3::new(0.36, 0.5, 0.28), material: mat::GRASS }
+        Terrain {
+            origin,
+            cell,
+            nx,
+            nz,
+            heights,
+            color: Vec3::new(0.36, 0.5, 0.28),
+            material: mat::GRASS,
+        }
     }
 
     pub fn size(&self) -> Vec2 {
@@ -217,11 +265,36 @@ impl Map {
         };
 
         // Ring road around the inner city.
-        let inner = CellRect { x0: RING, y0: RING, x1: GRID - RING, y1: GRID - RING };
-        map.roads.push(CellRect { x0: 0, y0: 0, x1: GRID, y1: RING });
-        map.roads.push(CellRect { x0: 0, y0: GRID - RING, x1: GRID, y1: GRID });
-        map.roads.push(CellRect { x0: 0, y0: 0, x1: RING, y1: GRID });
-        map.roads.push(CellRect { x0: GRID - RING, y0: 0, x1: GRID, y1: GRID });
+        let inner = CellRect {
+            x0: RING,
+            y0: RING,
+            x1: GRID - RING,
+            y1: GRID - RING,
+        };
+        map.roads.push(CellRect {
+            x0: 0,
+            y0: 0,
+            x1: GRID,
+            y1: RING,
+        });
+        map.roads.push(CellRect {
+            x0: 0,
+            y0: GRID - RING,
+            x1: GRID,
+            y1: GRID,
+        });
+        map.roads.push(CellRect {
+            x0: 0,
+            y0: 0,
+            x1: RING,
+            y1: GRID,
+        });
+        map.roads.push(CellRect {
+            x0: GRID - RING,
+            y0: 0,
+            x1: GRID,
+            y1: GRID,
+        });
 
         let mut blocks = Vec::new();
         bsp(inner, &mut rng, &mut blocks, &mut map.roads, 0);
@@ -308,7 +381,10 @@ impl Map {
     }
 
     fn add_building(&mut self, min: Vec2, max: Vec2, height: f32, color: Vec3) {
-        let (min3, max3) = (Vec3::new(min.x, 0.0, min.y), Vec3::new(max.x, height, max.y));
+        let (min3, max3) = (
+            Vec3::new(min.x, 0.0, min.y),
+            Vec3::new(max.x, height, max.y),
+        );
         self.boxes.push(VisBox {
             min: min3,
             max: max3,
@@ -316,7 +392,10 @@ impl Map {
             side_mat: mat::WALL,
             top_mat: mat::ROOF,
         });
-        self.solids.push(Solid { min: min3, max: max3 });
+        self.solids.push(Solid {
+            min: min3,
+            max: max3,
+        });
     }
 
     fn fill_plaza(&mut self, b: CellRect, rng: &mut Rng) {
@@ -339,7 +418,11 @@ impl Map {
             let (half, height, color) = if kind < 0.45 {
                 // Concrete jersey barrier.
                 let along_x = rng.chance(0.5);
-                let h = if along_x { Vec2::new(2.2, 0.5) } else { Vec2::new(0.5, 2.2) };
+                let h = if along_x {
+                    Vec2::new(2.2, 0.5)
+                } else {
+                    Vec2::new(0.5, 2.2)
+                };
                 (h, 1.3, Vec3::new(0.72, 0.72, 0.70))
             } else if kind < 0.8 {
                 // Shipping crate.
@@ -348,7 +431,11 @@ impl Map {
             } else {
                 // Low wall segment.
                 let along_x = rng.chance(0.5);
-                let h = if along_x { Vec2::new(3.5, 0.35) } else { Vec2::new(0.35, 3.5) };
+                let h = if along_x {
+                    Vec2::new(3.5, 0.35)
+                } else {
+                    Vec2::new(0.35, 3.5)
+                };
                 (h, 2.2, Vec3::new(0.64, 0.56, 0.48))
             };
             let margin = 2.0;
@@ -359,14 +446,21 @@ impl Map {
             // Keep a tank-wide gap between pieces of cover.
             let clear = 5.0;
             if placed.iter().any(|(pc, ph)| {
-                (c.x - pc.x).abs() < half.x + ph.x + clear && (c.y - pc.y).abs() < half.y + ph.y + clear
+                (c.x - pc.x).abs() < half.x + ph.x + clear
+                    && (c.y - pc.y).abs() < half.y + ph.y + clear
             }) {
                 continue;
             }
             placed.push((c, half));
             let min = Vec3::new(c.x - half.x, 0.0, c.y - half.y);
             let max = Vec3::new(c.x + half.x, height, c.y + half.y);
-            self.boxes.push(VisBox { min, max, color, side_mat: mat::PLAIN, top_mat: mat::PLAIN });
+            self.boxes.push(VisBox {
+                min,
+                max,
+                color,
+                side_mat: mat::PLAIN,
+                top_mat: mat::PLAIN,
+            });
             self.solids.push(Solid { min, max });
         }
     }
@@ -386,7 +480,10 @@ impl Map {
             if placed.len() as i32 >= count {
                 break;
             }
-            let p = Vec2::new(rng.range(bmin.x + 3.0, bmax.x - 3.0), rng.range(bmin.y + 3.0, bmax.y - 3.0));
+            let p = Vec2::new(
+                rng.range(bmin.x + 3.0, bmax.x - 3.0),
+                rng.range(bmin.y + 3.0, bmax.y - 3.0),
+            );
             if placed.iter().any(|q| q.distance(p) < 7.0) {
                 continue;
             }
@@ -404,7 +501,10 @@ impl Map {
                 min: Vec3::new(p.x - 0.6, 0.0, p.y - 0.6),
                 max: Vec3::new(p.x + 0.6, 3.2 + r, p.y + 0.6),
             });
-            self.trees.push(Tree { pos: Vec3::new(p.x, 3.0 + r * 0.6, p.y), radius: r });
+            self.trees.push(Tree {
+                pos: Vec3::new(p.x, 3.0 + r * 0.6, p.y),
+                radius: r,
+            });
         }
     }
 
@@ -436,29 +536,58 @@ impl Map {
         let (gap, depth) = (6.0, 60.0);
         // Four bands around the arena; corners are covered by the x-bands.
         let bands = [
-            (Vec2::new(-gap - depth, -gap - depth), Vec2::new(s + gap + depth, -gap), true),
-            (Vec2::new(-gap - depth, s + gap), Vec2::new(s + gap + depth, s + gap + depth), true),
-            (Vec2::new(-gap - depth, -gap), Vec2::new(-gap, s + gap), false),
-            (Vec2::new(s + gap, -gap), Vec2::new(s + gap + depth, s + gap), false),
+            (
+                Vec2::new(-gap - depth, -gap - depth),
+                Vec2::new(s + gap + depth, -gap),
+                true,
+            ),
+            (
+                Vec2::new(-gap - depth, s + gap),
+                Vec2::new(s + gap + depth, s + gap + depth),
+                true,
+            ),
+            (
+                Vec2::new(-gap - depth, -gap),
+                Vec2::new(-gap, s + gap),
+                false,
+            ),
+            (
+                Vec2::new(s + gap, -gap),
+                Vec2::new(s + gap + depth, s + gap),
+                false,
+            ),
         ];
         for (min, max, along_x) in bands {
-            let len = if along_x { max.x - min.x } else { max.y - min.y };
+            let len = if along_x {
+                max.x - min.x
+            } else {
+                max.y - min.y
+            };
             let mut t = 0.0;
             while t < len {
                 let w = rng.range(10.0, 22.0).min(len - t);
                 let d = rng.range(12.0, depth);
                 let (bmin, bmax) = if along_x {
                     let near_wall = min.y < 0.0;
-                    let (y0, y1) = if near_wall { (max.y - d, max.y) } else { (min.y, min.y + d) };
+                    let (y0, y1) = if near_wall {
+                        (max.y - d, max.y)
+                    } else {
+                        (min.y, min.y + d)
+                    };
                     (Vec2::new(min.x + t, y0), Vec2::new(min.x + t + w - 1.5, y1))
                 } else {
                     let near_wall = min.x < 0.0;
-                    let (x0, x1) = if near_wall { (max.x - d, max.x) } else { (min.x, min.x + d) };
+                    let (x0, x1) = if near_wall {
+                        (max.x - d, max.x)
+                    } else {
+                        (min.x, min.x + d)
+                    };
                     (Vec2::new(x0, min.y + t), Vec2::new(x1, min.y + t + w - 1.5))
                 };
                 let f = rng.f32();
                 let h = 10.0 + 30.0 * f * f;
-                let color = Vec3::from(BUILDING_COLORS[rng.index(BUILDING_COLORS.len())]) * rng.range(0.85, 1.0);
+                let color = Vec3::from(BUILDING_COLORS[rng.index(BUILDING_COLORS.len())])
+                    * rng.range(0.85, 1.0);
                 self.boxes.push(VisBox {
                     min: Vec3::new(bmin.x, 0.0, bmin.y),
                     max: Vec3::new(bmax.x, h, bmax.y),
@@ -483,7 +612,10 @@ impl Map {
                     }
                     seen[i] = true;
                     let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * CELL;
-                    let blocked = self.solids.iter().any(|s| p.clamp(s.min2(), s.max2()).distance(p) < CLEARANCE);
+                    let blocked = self
+                        .solids
+                        .iter()
+                        .any(|s| p.clamp(s.min2(), s.max2()).distance(p) < CLEARANCE);
                     if !blocked {
                         self.open_spots.push(p);
                     }
@@ -540,11 +672,13 @@ impl Map {
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.
         map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, |x, z| {
             let east = ((x - 100.0) / 20.0).clamp(0.0, 1.0);
-            let hills = (x * 0.06).sin() * (z * 0.05).cos() * 3.0 + (x * 0.13 + z * 0.07).sin() * 1.2;
+            let hills =
+                (x * 0.06).sin() * (z * 0.05).cos() * 3.0 + (x * 0.13 + z * 0.07).sin() * 1.2;
             let mound = 7.0 * (-((x - 160.0).powi(2) + (z - 50.0).powi(2)) / 300.0).exp();
             let crater_d = ((x - 155.0).powi(2) + (z - 150.0).powi(2)).sqrt();
             let crater = if crater_d < 22.0 {
-                -5.0 * (1.0 - (crater_d / 22.0).powi(2)) + 2.0 * (-(crater_d - 22.0).powi(2) / 10.0).exp()
+                -5.0 * (1.0 - (crater_d / 22.0).powi(2))
+                    + 2.0 * (-(crater_d - 22.0).powi(2) / 10.0).exp()
             } else {
                 2.0 * (-(crater_d - 22.0).powi(2) / 10.0).exp()
             };
@@ -558,7 +692,11 @@ impl Map {
         let blue = Vec3::new(0.30, 0.46, 0.70);
 
         // Lanes run along +z. Each lane: a kicker, then a landing ramp after a gap.
-        let lanes = [(12.0f32, 14.0f32, orange), (32.0, 22.0, orange), (52.0, 30.0, orange)];
+        let lanes = [
+            (12.0f32, 14.0f32, orange),
+            (32.0, 22.0, orange),
+            (52.0, 30.0, orange),
+        ];
         for (x, deg, color) in lanes {
             let h = 1.6;
             let len = h / deg.to_radians().tan();
@@ -592,16 +730,44 @@ impl Map {
         // west, a gentler ramp down on the east, and open drops everywhere else.
         let (px0, px1, pz0, pz1, ph) = (72.0, 88.0, 70.0, 100.0, 3.5);
         map.add_block(Vec3::new(px0, 0.0, pz0), Vec3::new(px1, ph, pz1), concrete);
-        map.wedges.push(Wedge { min: Vec2::new(px0, pz0 - 30.0), max: Vec2::new(px1, pz0), base_y: 0.0, height: ph, rise: Rise::PosZ, color: blue });
-        map.wedges.push(Wedge { min: Vec2::new(px0 - 9.0, pz0 + 4.0), max: Vec2::new(px0, pz0 + 14.0), base_y: 0.0, height: ph, rise: Rise::PosX, color: blue });
-        map.wedges.push(Wedge { min: Vec2::new(px1, pz0 + 16.0), max: Vec2::new(px1 + 12.0, pz0 + 26.0), base_y: 0.0, height: ph, rise: Rise::NegX, color: blue });
+        map.wedges.push(Wedge {
+            min: Vec2::new(px0, pz0 - 30.0),
+            max: Vec2::new(px1, pz0),
+            base_y: 0.0,
+            height: ph,
+            rise: Rise::PosZ,
+            color: blue,
+        });
+        map.wedges.push(Wedge {
+            min: Vec2::new(px0 - 9.0, pz0 + 4.0),
+            max: Vec2::new(px0, pz0 + 14.0),
+            base_y: 0.0,
+            height: ph,
+            rise: Rise::PosX,
+            color: blue,
+        });
+        map.wedges.push(Wedge {
+            min: Vec2::new(px1, pz0 + 16.0),
+            max: Vec2::new(px1 + 12.0, pz0 + 26.0),
+            base_y: 0.0,
+            height: ph,
+            rise: Rise::NegX,
+            color: blue,
+        });
         map.open_spots.push(Vec2::new(80.0, 20.0));
 
         // Speed bumps: back-to-back wedge pairs across a lane.
         for i in 0..6 {
             let z = 120.0 + i as f32 * 9.0;
             for (rise, z0, z1) in [(Rise::PosZ, z, z + 1.2), (Rise::NegZ, z + 1.2, z + 2.4)] {
-                map.wedges.push(Wedge { min: Vec2::new(6.0, z0), max: Vec2::new(18.0, z1), base_y: 0.0, height: 0.35, rise, color: Vec3::new(0.85, 0.75, 0.2) });
+                map.wedges.push(Wedge {
+                    min: Vec2::new(6.0, z0),
+                    max: Vec2::new(18.0, z1),
+                    base_y: 0.0,
+                    height: 0.35,
+                    rise,
+                    color: Vec3::new(0.85, 0.75, 0.2),
+                });
             }
         }
         map.open_spots.push(Vec2::new(12.0, 105.0));
@@ -610,13 +776,26 @@ impl Map {
         for i in 0..8 {
             let z = 120.0 + i as f32 * 2.0;
             let top = 0.25 * (i + 1) as f32;
-            map.add_block(Vec3::new(28.0, 0.0, z), Vec3::new(40.0, top, 200.0 - 50.0), concrete * (0.9 + 0.02 * i as f32));
+            map.add_block(
+                Vec3::new(28.0, 0.0, z),
+                Vec3::new(40.0, top, 200.0 - 50.0),
+                concrete * (0.9 + 0.02 * i as f32),
+            );
         }
         map.open_spots.push(Vec2::new(34.0, 105.0));
 
         // Scattered blocks to bump into.
-        for (x, z, s) in [(60.0, 130.0, 1.5), (66.0, 140.0, 1.0), (56.0, 150.0, 2.0), (70.0, 160.0, 1.2)] {
-            map.add_block(Vec3::new(x - s, 0.0, z - s), Vec3::new(x + s, s * 2.0, z + s), Vec3::new(0.70, 0.30, 0.22));
+        for (x, z, s) in [
+            (60.0, 130.0, 1.5),
+            (66.0, 140.0, 1.0),
+            (56.0, 150.0, 2.0),
+            (70.0, 160.0, 1.2),
+        ] {
+            map.add_block(
+                Vec3::new(x - s, 0.0, z - s),
+                Vec3::new(x + s, s * 2.0, z + s),
+                Vec3::new(0.70, 0.30, 0.22),
+            );
         }
 
         // Hills / crater spawns.
@@ -628,7 +807,13 @@ impl Map {
     }
 
     fn add_block(&mut self, min: Vec3, max: Vec3, color: Vec3) {
-        self.boxes.push(VisBox { min, max, color, side_mat: mat::PLAIN, top_mat: mat::PAVING });
+        self.boxes.push(VisBox {
+            min,
+            max,
+            color,
+            side_mat: mat::PLAIN,
+            top_mat: mat::PAVING,
+        });
         self.solids.push(Solid { min, max });
     }
 }
@@ -636,24 +821,46 @@ impl Map {
 /// `n` of `spots`, spread out: the one nearest `center` first, then each
 /// next pick as far as possible from those already taken.
 fn spread_spots(spots: &[Vec2], center: Vec2, n: usize) -> Vec<Vec2> {
-    let Some(&first) = spots.iter().min_by(|a, b| a.distance(center).total_cmp(&b.distance(center))) else {
+    let Some(&first) = spots
+        .iter()
+        .min_by(|a, b| a.distance(center).total_cmp(&b.distance(center)))
+    else {
         return Vec::new();
     };
     let mut picked = vec![first];
     while picked.len() < n.min(spots.len()) {
-        let gap = |s: &Vec2| picked.iter().map(|p| p.distance(*s)).fold(f32::INFINITY, f32::min);
-        let next = *spots.iter().max_by(|a, b| gap(a).total_cmp(&gap(b))).unwrap();
+        let gap = |s: &Vec2| {
+            picked
+                .iter()
+                .map(|p| p.distance(*s))
+                .fold(f32::INFINITY, f32::min)
+        };
+        let next = *spots
+            .iter()
+            .max_by(|a, b| gap(a).total_cmp(&gap(b)))
+            .unwrap();
         picked.push(next);
     }
     picked
 }
 
 fn crate_color(rng: &mut Rng) -> Vec3 {
-    const C: [[f32; 3]; 4] = [[0.70, 0.30, 0.22], [0.25, 0.42, 0.62], [0.80, 0.62, 0.20], [0.32, 0.52, 0.36]];
+    const C: [[f32; 3]; 4] = [
+        [0.70, 0.30, 0.22],
+        [0.25, 0.42, 0.62],
+        [0.80, 0.62, 0.20],
+        [0.32, 0.52, 0.36],
+    ];
     Vec3::from(C[rng.index(C.len())])
 }
 
-fn bsp(r: CellRect, rng: &mut Rng, blocks: &mut Vec<CellRect>, roads: &mut Vec<CellRect>, depth: u32) {
+fn bsp(
+    r: CellRect,
+    rng: &mut Rng,
+    blocks: &mut Vec<CellRect>,
+    roads: &mut Vec<CellRect>,
+    depth: u32,
+) {
     let road_w = if depth < 2 { 3 } else { rng.int(2, 3) };
     let can_x = r.w() >= 2 * MIN_BLOCK + road_w;
     let can_y = r.h() >= 2 * MIN_BLOCK + road_w;
@@ -663,20 +870,52 @@ fn bsp(r: CellRect, rng: &mut Rng, blocks: &mut Vec<CellRect>, roads: &mut Vec<C
         return;
     }
     let split_x = if can_x && can_y {
-        if r.w() == r.h() { rng.chance(0.5) } else { r.w() > r.h() }
+        if r.w() == r.h() {
+            rng.chance(0.5)
+        } else {
+            r.w() > r.h()
+        }
     } else {
         can_x
     };
     if split_x {
         let s = rng.int(r.x0 + MIN_BLOCK, r.x1 - MIN_BLOCK - road_w);
-        roads.push(CellRect { x0: s, y0: r.y0, x1: s + road_w, y1: r.y1 });
+        roads.push(CellRect {
+            x0: s,
+            y0: r.y0,
+            x1: s + road_w,
+            y1: r.y1,
+        });
         bsp(CellRect { x1: s, ..r }, rng, blocks, roads, depth + 1);
-        bsp(CellRect { x0: s + road_w, ..r }, rng, blocks, roads, depth + 1);
+        bsp(
+            CellRect {
+                x0: s + road_w,
+                ..r
+            },
+            rng,
+            blocks,
+            roads,
+            depth + 1,
+        );
     } else {
         let s = rng.int(r.y0 + MIN_BLOCK, r.y1 - MIN_BLOCK - road_w);
-        roads.push(CellRect { x0: r.x0, y0: s, x1: r.x1, y1: s + road_w });
+        roads.push(CellRect {
+            x0: r.x0,
+            y0: s,
+            x1: r.x1,
+            y1: s + road_w,
+        });
         bsp(CellRect { y1: s, ..r }, rng, blocks, roads, depth + 1);
-        bsp(CellRect { y0: s + road_w, ..r }, rng, blocks, roads, depth + 1);
+        bsp(
+            CellRect {
+                y0: s + road_w,
+                ..r
+            },
+            rng,
+            blocks,
+            roads,
+            depth + 1,
+        );
     }
 }
 

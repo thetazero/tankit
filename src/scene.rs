@@ -20,10 +20,20 @@ pub fn map_mesh(map: &Map) -> MeshData {
         Some(t) => {
             terrain_mesh(t, &mut m);
             for (min, max) in apron_rects(t.origin, t.origin + t.size(), map.size.max(pad)) {
-                m.add_box(Vec3::new(min.x, -0.2, min.y), Vec3::new(max.x, 0.0, max.y), asphalt, asphalt);
+                m.add_box(
+                    Vec3::new(min.x, -0.2, min.y),
+                    Vec3::new(max.x, 0.0, max.y),
+                    asphalt,
+                    asphalt,
+                );
             }
         }
-        None => m.add_box(Vec3::new(-pad, -0.2, -pad), Vec3::new(map.size + pad, 0.0, map.size + pad), asphalt, asphalt),
+        None => m.add_box(
+            Vec3::new(-pad, -0.2, -pad),
+            Vec3::new(map.size + pad, 0.0, map.size + pad),
+            asphalt,
+            asphalt,
+        ),
     }
     for w in &map.wedges {
         let p = w.points();
@@ -47,13 +57,22 @@ pub fn map_mesh(map: &Map) -> MeshData {
     }
 
     for b in &map.boxes {
-        m.add_box(b.min, b.max, b.color.extend(b.side_mat), b.color.extend(b.top_mat));
+        m.add_box(
+            b.min,
+            b.max,
+            b.color.extend(b.side_mat),
+            b.color.extend(b.top_mat),
+        );
     }
 
     let sphere = MeshData::sphere(12, 8);
     for t in &map.trees {
         let s = Vec3::new(t.radius * 2.0, t.radius * 1.7, t.radius * 2.0);
-        m.append(&sphere, Mat4::from_scale_rotation_translation(s, Quat::IDENTITY, t.pos), Vec4::new(0.27, 0.45, 0.2, mat::PLAIN));
+        m.append(
+            &sphere,
+            Mat4::from_scale_rotation_translation(s, Quat::IDENTITY, t.pos),
+            Vec4::new(0.27, 0.45, 0.2, mat::PLAIN),
+        );
     }
 
     road_markings(map, &mut m);
@@ -67,7 +86,12 @@ fn repair_pads(map: &Map, m: &mut MeshData) {
     for &c in &map.repair_spots {
         let y = map.ground_height(c.x, c.y) + 0.02;
         let mut stripe = |min: Vec2, max: Vec2| {
-            m.add_box(Vec3::new(c.x + min.x, y - 0.02, c.y + min.y), Vec3::new(c.x + max.x, y, c.y + max.y), paint, paint);
+            m.add_box(
+                Vec3::new(c.x + min.x, y - 0.02, c.y + min.y),
+                Vec3::new(c.x + max.x, y, c.y + max.y),
+                paint,
+                paint,
+            );
         };
         let (r, t) = (3.2, 0.25);
         stripe(Vec2::new(-r, -r), Vec2::new(r, -r + t));
@@ -81,13 +105,31 @@ fn repair_pads(map: &Map, m: &mut MeshData) {
 }
 
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
-    let h = |ix: i64, iz: i64| t.at(ix.clamp(0, t.nx as i64 - 1) as usize, iz.clamp(0, t.nz as i64 - 1) as usize);
+    let h = |ix: i64, iz: i64| {
+        t.at(
+            ix.clamp(0, t.nx as i64 - 1) as usize,
+            iz.clamp(0, t.nz as i64 - 1) as usize,
+        )
+    };
     let base = m.verts.len() as u32;
     for iz in 0..t.nz as i64 {
         for ix in 0..t.nx as i64 {
-            let p = Vec3::new(t.origin.x + ix as f32 * t.cell, h(ix, iz), t.origin.y + iz as f32 * t.cell);
-            let n = Vec3::new(h(ix - 1, iz) - h(ix + 1, iz), 2.0 * t.cell, h(ix, iz - 1) - h(ix, iz + 1)).normalize();
-            m.verts.push(Vertex { pos: p.to_array(), normal: n.to_array(), color: t.color.extend(t.material).to_array() });
+            let p = Vec3::new(
+                t.origin.x + ix as f32 * t.cell,
+                h(ix, iz),
+                t.origin.y + iz as f32 * t.cell,
+            );
+            let n = Vec3::new(
+                h(ix - 1, iz) - h(ix + 1, iz),
+                2.0 * t.cell,
+                h(ix, iz - 1) - h(ix, iz + 1),
+            )
+            .normalize();
+            m.verts.push(Vertex {
+                pos: p.to_array(),
+                normal: n.to_array(),
+                color: t.color.extend(t.material).to_array(),
+            });
         }
     }
     let nx = t.nx as u32;
@@ -111,12 +153,20 @@ fn road_markings(map: &Map, m: &mut MeshData) {
         if cross < 2 {
             continue;
         }
-        let mid = if along_x { (r.y0 + r.y1) as f32 * 0.5 * CELL } else { (r.x0 + r.x1) as f32 * 0.5 * CELL };
+        let mid = if along_x {
+            (r.y0 + r.y1) as f32 * 0.5 * CELL
+        } else {
+            (r.x0 + r.x1) as f32 * 0.5 * CELL
+        };
         let start = if along_x { r.x0 } else { r.y0 } as f32 * CELL;
         let dashes = (len_cells as f32 * CELL / 6.0) as i32;
         for d in 0..dashes {
             let c = start + d as f32 * 6.0 + 3.0;
-            let p = if along_x { Vec2::new(c, mid) } else { Vec2::new(mid, c) };
+            let p = if along_x {
+                Vec2::new(c, mid)
+            } else {
+                Vec2::new(mid, c)
+            };
             let (cx, cy) = ((p.x / CELL) as i32, (p.y / CELL) as i32);
             let in_other = map.roads.iter().enumerate().any(|(oi, o)| {
                 oi != ri && o.contains(cx, cy) && ((o.x1 - o.x0 > o.y1 - o.y0) != along_x)
@@ -124,7 +174,11 @@ fn road_markings(map: &Map, m: &mut MeshData) {
             if in_other {
                 continue;
             }
-            let half = if along_x { Vec2::new(1.4, 0.12) } else { Vec2::new(0.12, 1.4) };
+            let half = if along_x {
+                Vec2::new(1.4, 0.12)
+            } else {
+                Vec2::new(0.12, 1.4)
+            };
             m.add_box(
                 Vec3::new(p.x - half.x, 0.0, p.y - half.y),
                 Vec3::new(p.x + half.x, 0.015, p.y + half.y),
@@ -148,7 +202,12 @@ pub struct ChaseCam {
 
 impl ChaseCam {
     pub fn new() -> ChaseCam {
-        ChaseCam { yaw: 0.0, tilt: 0.35, focus: Vec3::ZERO, initialized: false }
+        ChaseCam {
+            yaw: 0.0,
+            tilt: 0.35,
+            focus: Vec3::ZERO,
+            initialized: false,
+        }
     }
 
     pub fn update(&mut self, world: &World, tank: &Tank, dt: f32) -> Camera {
@@ -160,7 +219,8 @@ impl ChaseCam {
             self.initialized = true;
         }
         self.focus = self.focus.lerp(anchor, 1.0 - (-dt * 14.0).exp());
-        self.yaw = wrap_angle(self.yaw + wrap_angle(turret_yaw - self.yaw) * (1.0 - (-dt * 10.0).exp()));
+        self.yaw =
+            wrap_angle(self.yaw + wrap_angle(turret_yaw - self.yaw) * (1.0 - (-dt * 10.0).exp()));
 
         let tilt = self.tilt.clamp(0.0, 1.0);
         let dist = 9.0 + tilt * 3.0;
@@ -178,7 +238,11 @@ impl ChaseCam {
         // Firing kicks the camera back and up for a moment.
         let kick = (-tank.since_fire * 14.0).exp() * if tank.since_fire < 0.5 { 1.0 } else { 0.0 };
         let pos = pos - ahead * kick * 0.45 + Vec3::Y * kick * 0.2;
-        Camera { pos, target: self.focus + ahead * 6.0 + Vec3::Y * (0.5 + kick * 0.3), fov_y: 65f32.to_radians() }
+        Camera {
+            pos,
+            target: self.focus + ahead * 6.0 + Vec3::Y * (0.5 + kick * 0.3),
+            fov_y: 65f32.to_radians(),
+        }
     }
 }
 
