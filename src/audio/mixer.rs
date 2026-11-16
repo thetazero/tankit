@@ -1,5 +1,6 @@
 //! The audio thread's side: continuous per-tank loops (engine, tracks, turret
-//! motor, beam, flame), the desert wind, and one-shot voices, mixed to stereo.
+//! motor, beam, flame), the burn where each beam lands, the desert wind, and
+//! one-shot voices, mixed to stereo.
 //! The game thread only sets targets; everything eases toward them here.
 
 use std::f32::consts::TAU;
@@ -29,7 +30,8 @@ pub struct TankParams {
     pub tread: f32,
     /// Turret traverse, 0..1 of full speed.
     pub turret: f32,
-    /// Beam firing (0/1) and its heat 0..1.
+    /// Beam level (0 off; about 1 up close, more far off, where it carries)
+    /// and its heat 0..1.
     pub beam: f32,
     pub heat: f32,
     /// Flamethrower pouring (0/1).
@@ -38,6 +40,17 @@ pub struct TankParams {
     pub heavy: bool,
     /// Rides a plasma cushion: a field hum instead of an engine and tracks.
     pub hover: bool,
+}
+
+/// Where one tank's beam lands this frame, from the game thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BurnParams {
+    /// Distance gain at the burn (0 when the beam touches nothing).
+    pub gain: f32,
+    pub pan: f32,
+    pub air: f32,
+    /// Burning into a hull (metal ringing) rather than stone and sand.
+    pub metal: bool,
 }
 
 /// A one-shot to start.
@@ -82,8 +95,11 @@ struct TankVoice {
     motor_b: Svf,
     beam_a: f32,
     beam_b: f32,
-    beam_tone: f32,
+    beam_throb: f32,
     beam_lp: Svf,
+    beam_nasal: Svf,
+    beam_bite: Svf,
+    beam_arc: Svf,
     beam_hiss: Svf,
     flame_lp: Svf,
     flame_crackle: Svf,
@@ -123,8 +139,11 @@ impl TankVoice {
             motor_b: Svf::default(),
             beam_a: 0.0,
             beam_b: 0.0,
-            beam_tone: 0.0,
+            beam_throb: 0.0,
             beam_lp: Svf::default(),
+            beam_nasal: Svf::default(),
+            beam_bite: Svf::default(),
+            beam_arc: Svf::default(),
             beam_hiss: Svf::default(),
             flame_lp: Svf::default(),
             flame_crackle: Svf::default(),
@@ -234,19 +253,40 @@ impl TankVoice {
                 motor = (clack * 1.6 + grind * 2.4 + hum * 0.25) * turret.sqrt() * 0.3;
             }
 
-            // Laser beam: a detuned buzz with a warbling top that climbs as it heats.
+            // Laser beam: a harsh electric buzz pulsing a few times a second,
+            // fizzing with arcs, climbing as it heats. Its weight is in the
+            // 0.6-4 kHz mids, where laptop speakers play: a buzz that was
+            // mostly its 90 Hz fundamental went unheard on them.
             let mut buzz = 0.0;
             if beam > 0.001 {
-                let f = 90.0 + 70.0 * heat;
+                let f = 120.0 + 80.0 * heat;
                 self.beam_a = (self.beam_a + f / sr).fract();
-                self.beam_b = (self.beam_b + f * 1.007 / sr).fract();
-                self.beam_tone = (self.beam_tone + (2200.0 + 1500.0 * heat) / sr).fract();
+                self.beam_b = (self.beam_b + f * 1.006 / sr).fract();
                 let saws = self.beam_a + self.beam_b - 1.0;
-                let body = self.beam_lp.run(saws, 1200.0 + 2000.0 * heat, 2.0, sr).low;
-                let warble =
-                    (self.beam_tone * TAU).sin() * (0.5 + 0.5 * (self.beam_a * TAU * 0.3).sin());
-                let hiss = self.beam_hiss.run(n, 3200.0, 1.0, sr).band;
-                buzz = (body * 0.6 + warble * 0.15 + hiss * 0.25) * beam * 0.45;
+                // Two formants make the buzz nasal and biting rather than a drone.
+                let nasal = self
+                    .beam_nasal
+                    .run(saws, 900.0 + 500.0 * heat, 2.5, sr)
+                    .band;
+                let bite = self
+                    .beam_bite
+                    .run(saws, 2400.0 + 900.0 * heat, 3.0, sr)
+                    .band;
+                let body = self.beam_lp.run(saws, 350.0, 0.7, sr).low;
+                self.beam_throb = (self.beam_throb + (6.0 + 6.0 * heat) / sr).fract();
+                let throb = 0.75 + 0.25 * (self.beam_throb * TAU).sin();
+                // Arcing: snaps of static, more of them hot.
+                let spark = if self.noise.unit() < (40.0 + 80.0 * heat) / sr {
+                    self.noise.next() * 3.0
+                } else {
+                    0.0
+                };
+                let arc = self.beam_arc.run(spark, 3600.0, 1.2, sr).band;
+                let hiss = self.beam_hiss.run(n, 5500.0, 0.9, sr).band;
+                buzz =
+                    ((nasal * 0.55 + bite * 0.35) * throb + body * 0.25 + arc * 0.6 + hiss * 0.12)
+                        * beam
+                        * 0.9;
             }
 
             // Flamethrower: a roar with crackle in it.
@@ -276,6 +316,93 @@ impl TankVoice {
     }
 }
 
+/// The burn where a beam lands: a frying sizzle with pops of boiling
+/// material, a low roar of vapour, and on a hull the metal ringing as it heats.
+struct BurnVoice {
+    gain: Smooth,
+    pan: Smooth,
+    air: Smooth,
+    metal: Smooth,
+    noise: Noise,
+    flutter: OnePole,
+    fry: Svf,
+    pop: Svf,
+    roar: Svf,
+    ring_a: Svf,
+    ring_b: Svf,
+    ring_c: Svf,
+    air_lp: OnePole,
+}
+
+impl BurnVoice {
+    fn new(seed: u32) -> BurnVoice {
+        BurnVoice {
+            gain: Smooth::new(0.0),
+            pan: Smooth::new(0.0),
+            air: Smooth::new(8000.0),
+            metal: Smooth::new(0.0),
+            noise: Noise::new(seed.wrapping_mul(0x85EB_CA6B).max(1)),
+            flutter: OnePole::default(),
+            fry: Svf::default(),
+            pop: Svf::default(),
+            roar: Svf::default(),
+            ring_a: Svf::default(),
+            ring_b: Svf::default(),
+            ring_c: Svf::default(),
+            air_lp: OnePole::default(),
+        }
+    }
+
+    fn set(&mut self, p: &BurnParams) {
+        self.gain.target = p.gain;
+        // Where it lands jumps as the beam sweeps: keep the old place until
+        // it has faded in at the new one.
+        if self.gain.value < 1e-3 {
+            self.pan.value = p.pan;
+            self.air.value = p.air;
+        }
+        self.pan.target = p.pan;
+        self.air.target = p.air;
+        self.metal.target = p.metal as u8 as f32;
+    }
+
+    fn silent(&self) -> bool {
+        self.gain.value < 1e-4 && self.gain.target < 1e-4
+    }
+
+    fn render(&mut self, out: &mut [f32], sr: f32, k: &Coefs) {
+        for frame in out.chunks_exact_mut(2) {
+            let gain = self.gain.next(k.snap);
+            let pan = self.pan.next(k.fast);
+            let air = self.air.next(k.fast);
+            let metal = self.metal.next(k.fast);
+            let n = self.noise.next();
+            // Frying: bright noise whose level flutters like fat in a pan.
+            let flutter = self.flutter.run(self.noise.next(), k.wobble * 4.0).abs() * 6.0;
+            let fry = self.fry.run(n, 3800.0, 0.7, sr).high * (0.4 + flutter.min(1.4));
+            // Pops of boiling stone or steel.
+            let rate = 90.0 + 60.0 * metal;
+            let pop = if self.noise.unit() < rate / sr {
+                self.noise.next() * 5.0
+            } else {
+                0.0
+            };
+            let pops = self.pop.run(pop, 1600.0 + 900.0 * metal, 1.3, sr).band;
+            let roar = self.roar.run(n, 420.0, 0.8, sr).low;
+            // A hot hull rings: inharmonic plate partials, struck by the pops.
+            let x = pop * 0.25 + n * 0.02;
+            let ring = self.ring_a.run(x, 1470.0, 14.0, sr).band
+                + self.ring_b.run(x, 2290.0, 16.0, sr).band * 0.7
+                + self.ring_c.run(x, 3720.0, 18.0, sr).band * 0.4;
+            let mix = fry * 0.28 + pops * 0.5 + roar * (0.9 - 0.4 * metal) + ring * 0.12 * metal;
+            let x = self.air_lp.run(mix, OnePole::coef(air, sr)) * gain;
+            let (l, r) = pan_gains(pan);
+            frame[0] += x * l;
+            frame[1] += x * r;
+        }
+    }
+}
+
 /// Smoothing coefficients for one render call.
 struct Coefs {
     /// Spatial and load changes (frame-rate updates, no zipper noise).
@@ -292,6 +419,7 @@ struct Coefs {
 pub struct Mixer {
     sr: f32,
     tanks: Vec<TankVoice>,
+    burns: Vec<BurnVoice>,
     voices: Vec<Voice>,
     master: Smooth,
     /// World sounds (loops and wind) fade out while paused.
@@ -312,6 +440,7 @@ impl Mixer {
         Mixer {
             sr,
             tanks: Vec::new(),
+            burns: Vec::new(),
             voices: Vec::new(),
             master: Smooth::new(0.0),
             world: Smooth::new(0.0),
@@ -344,6 +473,17 @@ impl Mixer {
         }
         self.tanks.truncate(params.len());
         for (v, p) in self.tanks.iter_mut().zip(params) {
+            v.set(p);
+        }
+    }
+
+    /// Where each tank's beam is burning, by tank.
+    pub fn set_burns(&mut self, params: &[BurnParams]) {
+        while self.burns.len() < params.len() {
+            self.burns.push(BurnVoice::new(self.burns.len() as u32 + 1));
+        }
+        self.burns.truncate(params.len());
+        for (v, p) in self.burns.iter_mut().zip(params) {
             v.set(p);
         }
     }
@@ -396,6 +536,11 @@ impl Mixer {
         for t in &mut self.tanks {
             if !t.silent() {
                 t.render(&mut world, sr, &k);
+            }
+        }
+        for b in &mut self.burns {
+            if !b.silent() {
+                b.render(&mut world, sr, &k);
             }
         }
         self.render_wind(&mut world, &k);
@@ -548,6 +693,75 @@ mod tests {
         assert!(rms(&buf) > 1e-3);
     }
 
+    /// Level above 600 Hz, which small speakers actually play.
+    fn mids(buf: &[f32]) -> f32 {
+        let mut f = Svf::default();
+        let hp: Vec<f32> = buf
+            .chunks_exact(2)
+            .map(|lr| f.run(lr[0] + lr[1], 600.0, 0.7, 48_000.0).high)
+            .collect();
+        rms(&hp[hp.len() / 2..])
+    }
+
+    fn alone(tank: TankParams, burn: BurnParams) -> Vec<f32> {
+        let mut m = Mixer::new(48_000.0);
+        m.set_master(1.0);
+        m.set_world(1.0);
+        m.set_tanks(&[tank]);
+        m.set_burns(&[burn]);
+        settle(&mut m)
+    }
+
+    /// Issue #114: the beam's buzz used to be mostly its 90 Hz fundamental,
+    /// unheard on laptop speakers. It should cut through a tank driving flat
+    /// out where they play, cold or hot.
+    #[test]
+    fn the_beam_cuts_through_on_small_speakers() {
+        let engine = mids(&alone(
+            TankParams {
+                heavy: true,
+                turret: 0.5,
+                ..driving(1.0)
+            },
+            BurnParams::default(),
+        ));
+        for heat in [0.0, 1.0] {
+            let beam = mids(&alone(
+                TankParams {
+                    gain: 1.0,
+                    air: 16_000.0,
+                    beam: 1.0,
+                    heat,
+                    ..TankParams::default()
+                },
+                BurnParams::default(),
+            ));
+            assert!(
+                beam > 1.5 * engine,
+                "heat {heat}: beam {beam}, engine {engine}"
+            );
+        }
+    }
+
+    /// Where the beam lands is heard, on stone and on a hull, and only while it burns.
+    #[test]
+    fn the_burn_is_heard() {
+        let burn = |gain, metal| {
+            mids(&alone(
+                TankParams::default(),
+                BurnParams {
+                    gain,
+                    pan: 0.0,
+                    air: 16_000.0,
+                    metal,
+                },
+            ))
+        };
+        assert!(burn(1.0, false) > 0.02, "stone {}", burn(1.0, false));
+        assert!(burn(1.0, true) > 0.02, "hull {}", burn(1.0, true));
+        assert!(burn(0.0, true) < 1e-6);
+    }
+
     #[test]
     fn every_loop_at_once_stays_bounded() {
         let mut m = Mixer::new(48_000.0);
@@ -563,6 +777,14 @@ mod tests {
             ..driving(1.0)
         };
         m.set_tanks(&[loud; 12]);
+        m.set_burns(
+            &[BurnParams {
+                gain: 1.0,
+                pan: 0.0,
+                air: 16_000.0,
+                metal: true,
+            }; 12],
+        );
         for _ in 0..60 {
             m.play(OneShot {
                 layers: patch::KILL,
