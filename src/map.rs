@@ -10,6 +10,7 @@ use crate::faction::Faction;
 use crate::rng::Rng;
 
 mod kiln;
+mod props;
 mod ruins;
 mod saltmarket;
 mod shard_flats;
@@ -72,6 +73,8 @@ pub struct OBox {
     pub chip: f32,
     /// The top is a broken edge, not a finished one: drawn jagged.
     pub broken: bool,
+    /// A drivable ramp (set explicitly; a tilted log is not a ramp).
+    pub ramp: bool,
 }
 
 impl Default for OBox {
@@ -89,6 +92,7 @@ impl Default for OBox {
             solid: true,
             chip: 0.0,
             broken: false,
+            ramp: false,
         }
     }
 }
@@ -105,8 +109,9 @@ impl OBox {
     }
 
     /// A sloped slab a tank can drive (gentle tilt).
+    /// A sloped slab tanks drive up (gets ground friction, doesn't block bots).
     pub fn is_ramp(&self) -> bool {
-        self.tilt.abs() > 0.05 && self.tilt.abs() < 0.5
+        self.ramp
     }
 
     /// Local axes on the ground plane: (right, forward), as world xz directions.
@@ -339,6 +344,9 @@ pub struct Map {
     /// Rotated solid boxes (blocking and visible).
     pub oboxes: Vec<OBox>,
     pub terrain: Option<Terrain>,
+    /// Visual-only ground beyond the arena (dunes to the horizon). Drawn
+    /// instead of the flat apron; never collides.
+    pub scenery_terrain: Option<Terrain>,
     pub roads: Vec<CellRect>,
     /// Open road positions usable for spawns and pickups.
     pub open_spots: Vec<Vec2>,
@@ -407,6 +415,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            scenery_terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
@@ -616,7 +625,6 @@ impl Map {
                 side_mat: Material::Plain,
                 top_mat: Material::Plain,
             });
-            self.solids.push(Solid { min, max });
         }
     }
 
@@ -664,6 +672,12 @@ impl Map {
     }
 
     fn perimeter_walls(&mut self) {
+        self.perimeter(true);
+    }
+
+    /// The arena boundary: solid walls, drawn as grey walls or (for maps
+    /// whose edge is scenery, like dunes) invisible.
+    fn perimeter(&mut self, visible: bool) {
         let s = self.size;
         let (t, h) = (2.0, 5.0);
         let walls = [
@@ -673,6 +687,10 @@ impl Map {
             (Vec3::new(s, 0.0, 0.0), Vec3::new(s + t, h, s)),
         ];
         for (min, max) in walls {
+            self.solids.push(Solid { min, max });
+            if !visible {
+                continue;
+            }
             self.boxes.push(VisBox {
                 min,
                 max,
@@ -793,6 +811,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            scenery_terrain: None,
             roads: Vec::new(),
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
@@ -823,6 +842,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            scenery_terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
             // Every lane runs along +z.

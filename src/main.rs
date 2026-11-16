@@ -1,5 +1,7 @@
 mod ai;
+mod ambience;
 mod app;
+mod audio;
 mod combat;
 mod economy;
 mod faction;
@@ -39,6 +41,7 @@ tankit [OPTIONS]
   --employer <faction>    which of the map's two sides hires you (default: its first);
                           your trust in the match goes to them
   --shot <out.png>        render offscreen and save
+  --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
   --time <seconds>        simulated time before the shot (default 1)
   --size <WxH>            shot resolution (default 1600x900)
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
@@ -82,6 +85,8 @@ pub struct Args {
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
     shot: Option<ShotArgs>,
+    /// Record sound to this WAV, for this many seconds.
+    wav: Option<(String, f32)>,
     showroom: Option<ShowroomArgs>,
 }
 
@@ -160,6 +165,9 @@ fn main() -> Result<()> {
     )
     .init();
     let args = parse_args()?;
+    if let Some((out, seconds)) = &args.wav {
+        return record_wav(&args, out, *seconds);
+    }
     match (&args.shot, args.showroom) {
         (Some(shot), Some(room)) => showroom_shot(shot, room),
         (Some(shot), None)
@@ -192,7 +200,8 @@ fn parse_args() -> Result<Args> {
         .as_nanos() as u64
         % 100_000;
     let mut shot: Option<String> = None;
-    let mut time = 1.0;
+    let mut wav: Option<String> = None;
+    let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
     let (mut map_kind, mut spawn, mut straight) = (MapKind::City, 0usize, false);
@@ -273,7 +282,8 @@ fn parse_args() -> Result<Args> {
                 }
                 cam = Some((Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5])));
             }
-            "--time" => time = args.next().context("--time needs seconds")?.parse()?,
+            "--time" => time = Some(args.next().context("--time needs seconds")?.parse()?),
+            "--wav" => wav = Some(args.next().context("--wav needs a path")?),
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
             "--fps" => fps = args.next().context("--fps needs a number")?.parse()?,
             "--size" => {
@@ -362,9 +372,10 @@ fn parse_args() -> Result<Args> {
         debug,
         straight,
         cam,
+        wav: wav.map(|out| (out, time.unwrap_or(12.0))),
         shot: shot.map(|out| ShotArgs {
             out,
-            time,
+            time: time.unwrap_or(1.0),
             width,
             height,
             frames,
@@ -372,6 +383,36 @@ fn parse_args() -> Result<Args> {
         }),
         showroom: showroom.then_some(room),
     })
+}
+
+/// Headless: record a match's sound to a WAV, then print its levels.
+fn record_wav(args: &Args, out: &str, seconds: f32) -> Result<()> {
+    const RATE: u32 = 48_000;
+    let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+    game.set_contract(args.contract);
+    game.set_player_hull(args.loadout.0);
+    game.world.tanks[0].turret_kind = args.loadout.1;
+    let straight = args.straight;
+    let volume = profile::Settings::default().volume();
+    let buf = audio::record(&mut game, seconds, RATE, volume, |w| {
+        if straight {
+            sim::Command {
+                throttle: 1.0,
+                ..Default::default()
+            }
+        } else {
+            game::autopilot(w.time)
+        }
+    });
+    std::fs::write(out, audio::wav(&buf, RATE)).with_context(|| format!("save {out}"))?;
+    let peak = buf.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    let rms = (buf.iter().map(|x| x * x).sum::<f32>() / buf.len().max(1) as f32).sqrt();
+    let hot = buf.iter().filter(|x| x.abs() > 0.95).count();
+    println!(
+        "{out}: {seconds} s, peak {peak:.3}, rms {rms:.4} ({:.1} dBFS), {hot} samples near full scale",
+        20.0 * rms.max(1e-9).log10()
+    );
+    Ok(())
 }
 
 fn frame_path(shot: &ShotArgs, i: u32) -> String {
@@ -427,6 +468,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             garage.toggle(&m.world, &camera, args.loadout);
         }
         for _ in 0..(seconds / game::DT).round() as u32 {
+            m.ambience.focus = args.cam.map_or(camera.pos, |c| c.0);
             let cmd = command(&m.world);
             m.step(cmd, !args.straight && !args.garage);
             camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
@@ -453,6 +495,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         };
         let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
+        frame.particles = game.ambience.particles();
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);

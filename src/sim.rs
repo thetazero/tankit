@@ -423,6 +423,8 @@ pub struct Tank {
     pub belt: [f32; 2],
     /// Parking brake engaged (holds the belts until there's input).
     pub parked: bool,
+    /// How hard the driver is working the engine, 0..1 (last step's throttle or steering).
+    pub drive: f32,
 
     /// Turret angle relative to the hull: the turret is mounted, so it turns with the hull.
     pub turret_rel: f32,
@@ -596,6 +598,7 @@ impl World {
             wheels_down: 0,
             face_contacts: 0,
             belt: [0.0; 2],
+            drive: 0.0,
             parked: true,
             turret_rel: 0.0,
             turret_rate: 0.0,
@@ -707,6 +710,7 @@ impl World {
         for i in 0..self.tanks.len() {
             let cmd = cmds.get(i).copied().unwrap_or_default();
             let t = &mut self.tanks[i];
+            t.drive = cmd.throttle.abs().max(cmd.steer.abs()).min(1.0);
             drive(t, &cmd, &mut self.physics);
             turret(t, &cmd, DT);
             t.since_fire += DT;

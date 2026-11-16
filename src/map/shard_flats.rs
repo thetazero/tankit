@@ -47,6 +47,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            scenery_terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
@@ -59,6 +60,7 @@ impl Map {
                 sky_horizon: Vec3::new(0.8, 0.76, 0.66),
                 ground_color: Vec3::new(0.42, 0.35, 0.26),
                 fog_density: 0.0024,
+                ..crate::render::Atmosphere::default()
             },
             bases: Default::default(),
             factions: DEFAULT_SIDES,

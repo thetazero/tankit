@@ -268,7 +268,12 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 
 fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
     let d = distance(wpos, g.cam_pos.xyz);
-    let f = 1.0 - exp(-d * g.params.y);
+    // Dust banks drifting downwind: haze thickens and thins as they pass.
+    let wind = vec2<f32>(g.sun_color.w, g.sky_zenith.w);
+    let mid = mix(g.cam_pos.xz, wpos.xz, 0.5);
+    let bank = noise2(mid * 0.012 - wind * g.params.x * 0.006);
+    let thick = 1.0 + g.sky_horizon.w * (bank - 0.4) * 1.4;
+    let f = 1.0 - exp(-d * g.params.y * max(thick, 0.3));
     let dir = normalize(wpos - g.cam_pos.xyz);
     return mix(c, sky_color(vec3<f32>(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), f);
 }
@@ -351,6 +356,18 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         let hardpan = smoothstep(0.55, 0.75, noise2(wpos.xz * 0.035) * 0.7 + blotch * 0.3);
         s.albedo = base * (0.92 + 0.1 * ripple * flat_ + 0.22 * (blotch - 0.5) + 0.1 * (grain - 0.5));
         s.albedo = mix(s.albedo, base * vec3<f32>(0.82, 0.78, 0.74), hardpan * 0.5);
+        // Sand on the move: sheets of loose grains sliding downwind over the
+        // surface, in gusty patches (wind and amount packed in the globals' .w).
+        let wind = vec2<f32>(g.sun_color.w, g.sky_zenith.w);
+        let ws = max(length(wind), 0.01);
+        let wdir = wind / ws;
+        let along = dot(wpos.xz, wdir);
+        let across = dot(wpos.xz, vec2<f32>(-wdir.y, wdir.x));
+        let t = g.params.x;
+        let sheet = noise2(vec2<f32>(along * 0.5 - t * ws * 0.5, across * 1.6))
+            * smoothstep(0.3, 0.75, noise2(vec2<f32>(along * 0.05 - t * ws * 0.05, across * 0.12)));
+        let moving = smoothstep(0.25, 0.6, sheet) * g.sky_horizon.w * flat_;
+        s.albedo = mix(s.albedo, base * 1.15, moving * 0.55);
         let mud = smoothstep(-1.5, -3.0, wpos.y);
         let crack = smoothstep(0.48, 0.62, d.fine.b + d.masks.b * 0.4);
         s.albedo = mix(s.albedo, vec3<f32>(0.6, 0.53, 0.44), mud * 0.6);
@@ -401,6 +418,22 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         s.albedo *= 1.0 - 0.3 * smoothstep(0.5, 0.85, d.masks.a) * vertical;
         s.rough = mix(0.65, 0.85, rust);
     }
+    if (m == MAT_CLOTH) {
+        // Sun-faded fabric: bleached where it faces the sky, blotchy, with
+        // stains run down from the folds. Soft, no sheen.
+        s.albedo = base * (0.82 + 0.3 * blotch) * (0.95 + 0.1 * grain);
+        s.albedo = mix(s.albedo, s.albedo * 1.25 + vec3<f32>(0.06), up * 0.45);
+        s.albedo *= 1.0 - 0.3 * smoothstep(0.5, 0.85, d.masks.a);
+        s.rough = 0.97;
+    } else if (m == MAT_WOOD) {
+        // Dry timber: grain streaks, grey where the sun bleached it, cracks.
+        let grain2 = noise2(vec2<f32>((wpos.x + wpos.z) * 9.0, wpos.y * 0.7)) * 0.6
+            + noise2(vec2<f32>(wpos.y * 9.0, (wpos.x - wpos.z) * 0.7)) * 0.4;
+        s.albedo = base * (0.72 + 0.5 * grain2) * (0.85 + 0.3 * blotch);
+        s.albedo = mix(s.albedo, vec3<f32>(0.5, 0.48, 0.44), up * 0.3);
+        s.albedo *= 1.0 - 0.45 * smoothstep(0.6, 0.8, d.fine.b);
+        s.rough = 0.9;
+    }
     // Sand settles on everything that faces up.
     if (m != MAT_SAND) {
         let dust = smoothstep(0.55, 0.95, up) * clamp(0.3 + 0.6 * d.masks.g, 0.0, 1.0);
@@ -440,7 +473,7 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
     let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);
-    let is_world_detail = m == MAT_SAND || m == MAT_PLASTER || m == MAT_CONCRETE || m == MAT_RUBBLE || m == MAT_RUST || m == MAT_PAINTED;
+    let is_world_detail = m == MAT_SAND || m == MAT_PLASTER || m == MAT_CONCRETE || m == MAT_RUBBLE || m == MAT_RUST || m == MAT_PAINTED || m == MAT_CLOTH || m == MAT_WOOD;
     var s: Surface;
     if (is_tank) {
         s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);

@@ -10,7 +10,7 @@ pub mod surface;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -58,6 +58,12 @@ pub struct Atmosphere {
     pub ground_color: Vec3,
     /// Exponential haze per meter.
     pub fog_density: f32,
+    /// Wind on the ground plane, m/s (drives blowing sand and drifting dust).
+    pub wind: Vec2,
+    /// 0..1: how much loose sand the wind carries.
+    pub blowing_sand: f32,
+    /// Color of dust kicked up or blown about.
+    pub dust: Vec3,
 }
 
 impl Default for Atmosphere {
@@ -69,8 +75,26 @@ impl Default for Atmosphere {
             sky_horizon: Vec3::new(0.62, 0.72, 0.84),
             ground_color: Vec3::new(0.32, 0.30, 0.27),
             fog_density: 0.0022,
+            wind: Vec2::new(2.5, 1.0),
+            blowing_sand: 0.0,
+            dust: Vec3::new(0.52, 0.5, 0.47),
         }
     }
+}
+
+/// A soft, camera-facing, alpha-blended blob (dust, blown sand).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Particle {
+    pub pos: [f32; 3],
+    /// Radius, meters.
+    pub size: f32,
+    /// Linear rgb and alpha.
+    pub color: [f32; 4],
+    /// Stretched along this direction (world, length = how many times longer
+    /// than wide); zero for round.
+    pub stretch: [f32; 3],
+    pub _pad: f32,
 }
 
 /// Everything the renderer needs to draw one frame.
@@ -83,6 +107,8 @@ pub struct Scene {
     pub shadow_center: Vec3,
     pub shadow_radius: f32,
     pub instances: Vec<(MeshId, Instance)>,
+    /// Drawn after the opaque scene, blended.
+    pub particles: Vec<Particle>,
     pub ui: Vec<UiVertex>,
 }
 
@@ -146,6 +172,10 @@ pub struct Renderer {
     scene_pipe: wgpu::RenderPipeline,
     shadow_pipe: wgpu::RenderPipeline,
     sky_pipe: wgpu::RenderPipeline,
+    particle_pipe: wgpu::RenderPipeline,
+    particle_buf: wgpu::Buffer,
+    particle_cap: usize,
+    particle_count: u32,
     post_pipe: wgpu::RenderPipeline,
     ui_pipe: wgpu::RenderPipeline,
 
@@ -467,6 +497,40 @@ impl Renderer {
             cache: None,
         });
 
+        let particle_src = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("particle.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/particle.wgsl").into()),
+        });
+        let particle_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("particles"),
+            layout: Some(&scene_layout),
+            vertex: wgpu::VertexState {
+                module: &particle_src,
+                entry_point: Some("vs_particle"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Particle>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32x4, 3 => Float32x4],
+                })],
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::LessEqual)),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &particle_src,
+                entry_point: Some("fs_particle"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let ao_src = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ssao.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/ssao.wgsl").into()),
@@ -648,6 +712,13 @@ impl Renderer {
             instance_cap * std::mem::size_of::<Instance>(),
             wgpu::BufferUsages::VERTEX,
         );
+        let particle_cap = 1024;
+        let particle_buf = make_buffer(
+            &device,
+            "particles",
+            particle_cap * std::mem::size_of::<Particle>(),
+            wgpu::BufferUsages::VERTEX,
+        );
         let ui_cap = 4096;
         let ui_buf = make_buffer(
             &device,
@@ -666,6 +737,10 @@ impl Renderer {
             scene_pipe,
             shadow_pipe,
             sky_pipe,
+            particle_pipe,
+            particle_buf,
+            particle_cap,
+            particle_count: 0,
             post_pipe,
             ui_pipe,
             globals_buf,
@@ -845,6 +920,24 @@ impl Renderer {
         self.queue
             .write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&data));
 
+        if scene.particles.len() > self.particle_cap {
+            self.particle_cap = scene.particles.len().next_power_of_two();
+            self.particle_buf = make_buffer(
+                &self.device,
+                "particles",
+                self.particle_cap * std::mem::size_of::<Particle>(),
+                wgpu::BufferUsages::VERTEX,
+            );
+        }
+        if !scene.particles.is_empty() {
+            self.queue.write_buffer(
+                &self.particle_buf,
+                0,
+                bytemuck::cast_slice(&scene.particles),
+            );
+        }
+        self.particle_count = scene.particles.len() as u32;
+
         if scene.ui.len() > self.ui_cap {
             self.ui_cap = scene.ui.len().next_power_of_two();
             self.ui_buf = make_buffer(
@@ -875,9 +968,22 @@ impl Renderer {
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             cam_pos: scene.camera.pos.extend(1.0).to_array(),
             sun_dir: sun.extend(0.0).to_array(),
-            sun_color: scene.atmosphere.sun_color.extend(0.0).to_array(),
-            sky_zenith: scene.atmosphere.sky_zenith.extend(0.0).to_array(),
-            sky_horizon: scene.atmosphere.sky_horizon.extend(0.0).to_array(),
+            // .w channels carry the wind (x, z) and how much sand it blows.
+            sun_color: scene
+                .atmosphere
+                .sun_color
+                .extend(scene.atmosphere.wind.x)
+                .to_array(),
+            sky_zenith: scene
+                .atmosphere
+                .sky_zenith
+                .extend(scene.atmosphere.wind.y)
+                .to_array(),
+            sky_horizon: scene
+                .atmosphere
+                .sky_horizon
+                .extend(scene.atmosphere.blowing_sand)
+                .to_array(),
             ground_color: scene.atmosphere.ground_color.extend(0.0).to_array(),
             params: [scene.time, scene.atmosphere.fog_density, w, h],
         };
@@ -970,6 +1076,13 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
+            if self.particle_count > 0 {
+                pass.set_pipeline(&self.particle_pipe);
+                pass.set_bind_group(0, &self.globals_bg, &[]);
+                pass.set_bind_group(1, &self.shadow_bg, &[]);
+                pass.set_vertex_buffer(0, self.particle_buf.slice(..));
+                pass.draw(0..6, 0..self.particle_count);
+            }
         }
 
         {

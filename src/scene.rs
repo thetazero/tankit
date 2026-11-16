@@ -15,10 +15,18 @@ pub fn map_mesh(map: &Map) -> MeshData {
     let mut m = MeshData::default();
     let pad = 120.0;
     let asphalt = Vec4::new(0.17, 0.17, 0.18, Material::Asphalt.id());
+    if let Some(st) = &map.scenery_terrain {
+        terrain_mesh(st, &mut m);
+    }
     match &map.terrain {
         Some(t) => {
             terrain_mesh(t, &mut m);
-            for (min, max) in apron_rects(t.origin, t.origin + t.size(), map.size.max(pad)) {
+            let rects = if map.scenery_terrain.is_some() {
+                Vec::new()
+            } else {
+                apron_rects(t.origin, t.origin + t.size(), map.size.max(pad)).to_vec()
+            };
+            for (min, max) in rects {
                 m.add_box(
                     Vec3::new(min.x, -0.2, min.y),
                     Vec3::new(max.x, 0.0, max.y),
@@ -432,6 +440,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
+        particles: Vec::new(),
         ui: Vec::new(),
     }
 }

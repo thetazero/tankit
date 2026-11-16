@@ -55,6 +55,35 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// How far outside the arena a point is (0 or less: inside).
+fn edge_distance(p: Vec2) -> f32 {
+    let q = (p - Vec2::splat(SIZE * 0.5)).abs() - Vec2::splat(SIZE * 0.5);
+    q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0)
+}
+
+/// Visual dunes outside the arena: meets the play ground at the edge, rises
+/// into a berm, then rolls. Inside, it hides under the play terrain.
+fn scenery_ground(x: f32, z: f32) -> f32 {
+    let p = Vec2::new(x, z);
+    let d = edge_distance(p);
+    if d < -0.01 {
+        return -8.0;
+    }
+    let edge = p.clamp(Vec2::ZERO, Vec2::splat(SIZE));
+    let base = ground(edge.x, edge.y);
+    // The berm rises and falls along the edge, so the arena doesn't read as a
+    // rectangular pit.
+    let along = edge.x * 0.9 + edge.y * 1.1;
+    let vary = 0.55 + 0.3 * (along * 0.045).sin() + 0.25 * (along * 0.11 + 1.3).sin();
+    let rise = 10.0 + 8.0 * (along * 0.07).sin().abs();
+    let berm = 7.5 * vary * smoothstep(0.0, rise, d) * (1.0 - 0.45 * smoothstep(20.0, 60.0, d));
+    let dunes = smoothstep(10.0, 40.0, d)
+        * (6.0 * (x * 0.021 + (z * 0.013).sin() * 2.0).sin().abs()
+            + 3.0 * ((x * 0.007 - z * 0.011).sin() + 1.0)
+            + 1.5 * (x * 0.05).sin() * (z * 0.043).cos());
+    base + berm + dunes
+}
+
 /// Ground height: flat town at 0, the reservoir bowl, the north dune ridge,
 /// small dunes along the west edge.
 pub fn ground(x: f32, z: f32) -> f32 {
@@ -447,6 +476,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            scenery_terrain: None,
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
@@ -458,6 +488,10 @@ impl Map {
                 sky_horizon: Vec3::new(0.72, 0.62, 0.48),
                 ground_color: Vec3::new(0.36, 0.28, 0.19),
                 fog_density: 0.0032,
+                // Wind blows along the ripples' fall line, carrying sand.
+                wind: Vec2::new(5.0, 2.3),
+                blowing_sand: 1.0,
+                dust: Vec3::new(0.74, 0.62, 0.45),
             },
             bases: Default::default(),
             factions: DEFAULT_SIDES,
@@ -495,12 +529,15 @@ impl Map {
         terrain.material = Material::Sand;
         map.terrain = Some(terrain);
         map.market_hall();
+        map.traces(&mut rng);
         map.dam();
         map.landmarks();
         map.reservoir_cover(&mut rng);
         map.ridge();
         map.spawns();
-        map.perimeter_walls();
+        // The edge is dunes, not a wall: colliders stay, the grey wall goes.
+        map.perimeter(false);
+        map.horizon(&mut rng);
         // Everything masonry is knocked about a bit (visual only).
         for o in &mut map.oboxes {
             let masonry =
@@ -518,23 +555,72 @@ impl Map {
     /// through 11 sizes, so neighbors built one after another always differ)
     /// so no two faces are ever exactly coplanar. Invisible at play scale.
     fn separate_coplanar_faces(&mut self) {
-        // Sideways, upward and downward offsets cycle independently (13 steps of
-        // 1 mm), so neighboring pieces never share a face plane.
-        let side = |i: usize| 0.002 + 0.00045 * ((i * 11) % 29) as f32;
-        let up = |i: usize| 0.002 + 0.00045 * ((i * 13 + 3) % 29) as f32;
-        let down = |i: usize| 0.002 + 0.00045 * ((i * 17 + 8) % 29) as f32;
+        // Each piece gets a "color" 0..29 different from every piece it
+        // touches (greedy, over a spatial grid), and its offsets come from the
+        // color: sideways c, up 13c+3, down 17c+8 (mod 29, 0.45 mm steps).
+        // 13 and 17 are invertible mod 29, so touching pieces differ in all
+        // three, guaranteed rather than likely.
+        const COLORS: usize = 29;
+        let step = |c: usize| 0.002 + 0.00045 * (c % COLORS) as f32;
+        let side = |c: usize| step(c * 11);
+        let up = |c: usize| step(c * 13 + 3);
+        let down = |c: usize| step(c * 17 + 8);
+        // Footprint circles for every piece (rotated boxes, then plain boxes).
+        let mut shapes: Vec<(Vec2, f32, f32, f32)> = self
+            .oboxes
+            .iter()
+            .map(|o| (o.center, o.half.length(), o.y0, o.y1))
+            .collect();
+        shapes.extend(self.boxes.iter().map(|b| {
+            let c = Vec2::new(b.min.x + b.max.x, b.min.z + b.max.z) * 0.5;
+            (
+                c,
+                (Vec2::new(b.max.x - b.min.x, b.max.z - b.min.z) * 0.5).length(),
+                b.min.y,
+                b.max.y,
+            )
+        }));
+        let cell = 16.0;
+        let key = |p: Vec2| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, s) in shapes.iter().enumerate() {
+            grid.entry(key(s.0)).or_default().push(i);
+        }
+        let mut color = vec![usize::MAX; shapes.len()];
+        for i in 0..shapes.len() {
+            let (c, r, y0, y1) = shapes[i];
+            let mut used = [false; COLORS];
+            let (kx, kz) = key(c);
+            let reach = (r / cell).ceil() as i32 + 1;
+            for dx in -reach..=reach {
+                for dz in -reach..=reach {
+                    for &j in grid.get(&(kx + dx, kz + dz)).into_iter().flatten() {
+                        let (cj, rj, y0j, y1j) = shapes[j];
+                        let touch =
+                            c.distance(cj) < r + rj + 0.05 && y0 < y1j + 0.05 && y0j < y1 + 0.05;
+                        if j != i && color[j] != usize::MAX && touch {
+                            used[color[j]] = true;
+                        }
+                    }
+                }
+            }
+            color[i] = (0..COLORS).find(|&k| !used[k]).unwrap_or(i % COLORS);
+        }
+        let n = self.oboxes.len();
         for (i, o) in self.oboxes.iter_mut().enumerate() {
-            o.half += Vec2::splat(side(i));
-            o.y1 += up(i);
+            let k = color[i];
+            o.half += Vec2::splat(side(k));
+            o.y1 += up(k);
             // Bottoms in the air (slab undersides, upper storeys) too; ones on
             // the ground stay put.
             if o.y0 > ground(o.center.x, o.center.y) + 0.05 {
-                o.y0 -= down(i);
+                o.y0 -= down(k);
             }
         }
-        let n = self.oboxes.len();
-        for (k, b) in self.boxes.iter_mut().enumerate() {
-            let (e, u) = (side(n + k), up(n + k));
+        for (i, b) in self.boxes.iter_mut().enumerate() {
+            let k = color[n + i];
+            let (e, u) = (side(k), up(k));
             b.min -= Vec3::new(e, 0.0, e);
             b.max += Vec3::new(e, u, e);
         }
@@ -1027,6 +1113,189 @@ impl Map {
         }
     }
 
+    /// Traces of the people who lived here (see props.rs): power poles with
+    /// cables along the main roads, burned-out cars, market stalls around the
+    /// hall, dead palms.
+    fn traces(&mut self, rng: &mut Rng) {
+        let hall = SQUARE_C;
+        // Free ground: clear of buildings, collapsed-floor approaches, repair pads.
+        let free = |m: &Map, p: Vec2, r: f32| {
+            m.oboxes.iter().filter(|o| o.solid).all(|o| {
+                let reach = if o.is_ramp() { r + 7.0 } else { r };
+                o.distance(p) > reach
+            }) && m
+                .solids
+                .iter()
+                .all(|s| p.clamp(s.min2(), s.max2()).distance(p) > r)
+                && m.repair_spots.iter().all(|q| q.distance(p) > 5.0)
+                && bowl_sdf(p) > 4.0
+                && edge_distance(p) < -6.0
+        };
+
+        // Power poles along one side of the main roads, wired to their neighbors.
+        for (pts, w) in ROADS.iter().take(4) {
+            let mut last: Option<[Vec3; 2]> = None;
+            for seg in pts.windows(2) {
+                let (a, b) = (Vec2::from(seg[0]), Vec2::from(seg[1]));
+                let dir = (b - a).normalize();
+                let nrm = Vec2::new(-dir.y, dir.x);
+                let len = a.distance(b);
+                let mut t = 6.0;
+                while t < len {
+                    let p = a + dir * t + nrm * (w * 0.5 + 1.4);
+                    t += 22.0;
+                    if !free(self, p, 1.2) {
+                        last = None;
+                        continue;
+                    }
+                    let tops = self.pole(rng, p, dir);
+                    if let (Some(prev), Some(now)) = (last, tops)
+                        && prev[0].distance(now[0]) < 32.0
+                    {
+                        for k in 0..2 {
+                            let sag = rng.range(0.4, 1.0);
+                            self.cable(prev[k], now[k], sag);
+                        }
+                    }
+                    last = tops;
+                }
+            }
+        }
+
+        // Burned-out cars, some slewed across the road.
+        let mut cars = 0;
+        for _ in 0..300 {
+            if cars >= 11 {
+                break;
+            }
+            let (pts, w) = ROADS[rng.index(ROADS.len())];
+            let k = rng.index(pts.len() - 1);
+            let (a, b) = (Vec2::from(pts[k]), Vec2::from(pts[k + 1]));
+            let dir = (b - a).normalize();
+            let nrm = Vec2::new(-dir.y, dir.x);
+            let p = a.lerp(b, rng.range(0.15, 0.85)) + nrm * rng.range(-0.3, 0.3) * w;
+            if !free(self, p, 3.2) || p.distance(hall) < SQUARE_R + 2.0 {
+                continue;
+            }
+            let yaw = dir.x.atan2(dir.y)
+                + if rng.chance(0.3) {
+                    rng.range(-1.2, 1.2)
+                } else {
+                    rng.range(-0.15, 0.15)
+                };
+            self.car(rng, p, yaw);
+            cars += 1;
+        }
+
+        // Market stalls along the hall's sides, clear of the drive-through.
+        for side in 0..4 {
+            let a = side as f32 * std::f32::consts::FRAC_PI_2;
+            let out = Vec2::new(a.cos(), a.sin());
+            let along = Vec2::new(-out.y, out.x);
+            for s in [-1.0f32, 1.0] {
+                let p = hall + out * 15.5 + along * s * 7.5;
+                if !free(self, p, 2.6) {
+                    continue;
+                }
+                self.stall(rng, p, out.x.atan2(out.y));
+            }
+        }
+
+        // Dead palms: a ring around the square, a few along the main road.
+        let mut palms = 0;
+        for _ in 0..200 {
+            if palms >= 9 {
+                break;
+            }
+            let p = if palms < 5 {
+                let a = rng.range(0.0, std::f32::consts::TAU);
+                hall + Vec2::new(a.cos(), a.sin()) * rng.range(18.5, 21.0)
+            } else {
+                let (pts, w) = ROADS[0];
+                let k = rng.index(pts.len() - 1);
+                let (a, b) = (Vec2::from(pts[k]), Vec2::from(pts[k + 1]));
+                let nrm = (b - a).normalize().perp();
+                a.lerp(b, rng.f32()) - nrm * (w * 0.5 + 1.2)
+            };
+            if free(self, p, 1.5) {
+                self.palm(rng, p);
+                palms += 1;
+            }
+        }
+    }
+
+    /// Beyond the arena, visual only: sand rises into a berm at the edge,
+    /// rolls away in dunes to the haze, with the half-buried ruins of the rest
+    /// of the town on them and mesas on the horizon.
+    fn horizon(&mut self, rng: &mut Rng) {
+        // Dunes on a 4 m grid out to ~560 m past each edge (the camera's far
+        // plane is 600 m). Inside the arena it sits well below the play
+        // terrain; the 0 and 240 m grid lines match the arena edge, where it
+        // meets the play ground and rises.
+        let (cell, reach) = (4.0f32, 560.0f32);
+        let n = ((SIZE + 2.0 * reach) / cell) as usize + 1;
+        let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, scenery_ground);
+        t.color = SAND;
+        t.material = Material::Sand;
+        self.scenery_terrain = Some(t);
+
+        // Half-buried ruins out on the dunes.
+        let first = self.oboxes.len();
+        let mut placed: Vec<Vec2> = Vec::new();
+        for _ in 0..400 {
+            if placed.len() >= 34 {
+                break;
+            }
+            let a = rng.range(0.0, std::f32::consts::TAU);
+            let d = rng.range(25.0, 230.0);
+            let c = Vec2::splat(SIZE * 0.5)
+                + Vec2::new(a.cos(), a.sin()) * (SIZE * 0.5 + d) * Vec2::new(1.0, 1.0);
+            if edge_distance(c) < 18.0 || placed.iter().any(|p| p.distance(c) < 26.0) {
+                continue;
+            }
+            let lot = OBox {
+                center: c,
+                yaw: rng.range(-0.4, 0.4) + if rng.chance(0.5) { 1.5708 } else { 0.0 },
+                half: Vec2::new(rng.range(5.0, 9.0), rng.range(5.0, 8.0)),
+                ..OBox::default()
+            };
+            let start = self.oboxes.len();
+            ruins::building(self, rng, lot, (0, 1.0), &|_| true);
+            // Seat it on the dune and sink it, as if the sand took it.
+            let sink = rng.range(1.0, 3.0);
+            let g = scenery_ground(c.x, c.y) - sink;
+            for o in &mut self.oboxes[start..] {
+                o.y0 += g;
+                o.y1 += g;
+            }
+            placed.push(c);
+        }
+        // Mesas and outcrops on the horizon.
+        for k in 0..14 {
+            let a = k as f32 / 14.0 * std::f32::consts::TAU + rng.range(-0.15, 0.15);
+            let d = rng.range(330.0, 470.0);
+            let c = Vec2::splat(SIZE * 0.5) + Vec2::new(a.cos(), a.sin()) * d;
+            let h = rng.range(25.0, 70.0);
+            let g = scenery_ground(c.x, c.y);
+            self.oboxes.push(OBox {
+                center: c,
+                yaw: rng.range(0.0, 3.0),
+                half: Vec2::new(rng.range(30.0, 90.0), rng.range(25.0, 60.0)),
+                y0: g - 5.0,
+                y1: g + h,
+                color: Vec3::new(0.66, 0.5, 0.36) * rng.range(0.85, 1.05),
+                side_mat: Material::Rubble,
+                top_mat: Material::Rubble,
+                chip: 1.0,
+                ..OBox::default()
+            });
+        }
+        // Scenery never collides or blocks bots.
+        for o in &mut self.oboxes[first..] {
+            o.solid = false;
+        }
+    }
+
     /// Drop zones around the edges, plus street intersections for bots to roam to.
     fn spawns(&mut self) {
         let drops = [
@@ -1294,6 +1563,10 @@ mod tests {
                             for sign_b in [-1.0f32, 1.0] {
                                 let (nb, db, _) = face(b, axis_b, sign_b);
                                 if na.dot(nb) < 0.999 || (da - db).abs() > 3e-4 {
+                                    continue;
+                                }
+                                // Broken tops are drawn jagged, not as a flat face.
+                                if na.y > 0.5 && (a.broken || b.broken) {
                                     continue;
                                 }
                                 // Bottoms resting on (or buried in) the ground are never seen.
