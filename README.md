@@ -12,9 +12,11 @@ Plain Rust: `winit` + `wgpu`, no engine.
 ```sh
 cargo run --release                          # play (random map)
 cargo run --release -- --seed 21             # play a specific map
+cargo run --release -- --map proving         # physics test course (jumps, ramps, bumps, stairs, hills)
 cargo run --release -- --seed 21 --shot out.png --time 5 --size 1600x900   # headless frame to PNG
 cargo run --release -- --showroom            # every hull x turret combo, animated, orbiting camera
 cargo run --release -- --showroom --focus 0 --dist 8 --orbit 120 --time 3 --shot tank.png
+cargo run --release -- --map proving --spawn 2 --straight --time 1.2 --frames 90 --shot clip/f.png   # frame sequence
 cargo test
 ```
 
@@ -29,9 +31,13 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 | Z / X | rotate turret left / right (it turns with the hull) |
 | C | swing turret back to center |
 | PageUp / PageDown | camera height |
-| Space | fire (visual only for now: recoil, muzzle flash, hull kick) |
+| Space | fire (no projectiles yet: recoil kicks the hull, muzzle flash) |
 | 1 / 2 | cycle hull / turret |
+| R | respawn at the next spawn point (cycles the proving ground lanes) |
 | F5 | new random map |
+| [ / ] | live tuning: sideways grip ×0.9 / ×1.1 |
+| ; / ' | live tuning: turn rate −/+ 0.1 rad/s |
+| Backspace | reset live tuning |
 | Esc | quit |
 
 ## Tank kit
@@ -63,11 +69,22 @@ on top of the per-vertex bake for small parts. The look follows `docs/design-dir
 
 Machinery that moves with the tank:
 - tread links run around the wheels at each side's own speed
-- each road wheel hangs on a trailing arm with a shock that works as the
-  hull pitches and rolls
+- each road wheel hangs on a trailing arm with a shock that follows its
+  real suspension travel (from the physics)
 - a hydraulic ram raises the gun, and the stabilizer lags hull motion, so the
   ram is always working
 - recoil cylinders slide with the barrel
 - the ring gear turns under the turret
 
 Surface shading is in `scene.wgsl`, materials 6–12.
+
+## Physics
+
+Tanks are rapier3d rigid bodies with honest gravity and contacts. The
+tank-specific part (`src/sim.rs`) is the track model: a spring ray per road
+wheel carries the weight, and every point where a track touches the world
+(road wheels, or the swept-up track run around the sprocket and idler) pushes
+along the belt's direction of travel there, limited by friction times that
+contact's load. Climbing, pivot turns, and skid steering all come out of that.
+Road wheels and the tread belt in the art follow the suspension.
+

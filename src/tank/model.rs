@@ -793,7 +793,7 @@ pub fn lance() -> TurretModel {
         pivot,
         barrels: vec![Vec3::ZERO],
         muzzle: 4.0,
-        recoil: 0.45,
+        recoil: 0.8,
         ram_anchor: v(0.0, spec.h + 0.05, pivot.z - 0.65),
         ram_lug: v(0.0, 0.39, 0.0),
     }
@@ -828,7 +828,7 @@ pub fn maul() -> TurretModel {
         pivot,
         barrels: vec![v(-0.44, 0.0, 0.0), v(0.44, 0.0, 0.0)],
         muzzle: 2.82,
-        recoil: 0.35,
+        recoil: 0.6,
         ram_anchor: v(0.0, spec.h + 0.05, pivot.z - 0.6),
         ram_lug: v(0.0, 0.39, 0.05),
     }

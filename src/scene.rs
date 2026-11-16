@@ -1,12 +1,12 @@
 //! Turns simulation state into renderer input: the static map mesh, tank
-//! instances, the chase camera, and the HUD.
+//! instances and the chase camera. The HUD lives in `hud`.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::map::{Map, mat};
-use crate::render::mesh::MeshData;
-use crate::render::{Camera, Scene, UiVertex};
-use crate::sim::{Tank, World, dir2, wrap_angle};
+use crate::map::{Map, Terrain, Wedge, mat};
+use crate::render::mesh::{MeshData, Vertex};
+use crate::render::{Camera, Scene};
+use crate::sim::{Tank, World, apron_rects, dir2, wrap_angle};
 use crate::tank::TankArt;
 
 pub const SUN_DIR: Vec3 = Vec3::new(0.55, 0.48, 0.4);
@@ -16,7 +16,35 @@ pub fn map_mesh(map: &Map) -> MeshData {
     let mut m = MeshData::default();
     let pad = 120.0;
     let asphalt = Vec4::new(0.17, 0.17, 0.18, mat::ASPHALT);
-    m.add_box(Vec3::new(-pad, -0.2, -pad), Vec3::new(map.size + pad, 0.0, map.size + pad), asphalt, asphalt);
+    match &map.terrain {
+        Some(t) => {
+            terrain_mesh(t, &mut m);
+            for (min, max) in apron_rects(t.origin, t.origin + t.size(), map.size.max(pad)) {
+                m.add_box(Vec3::new(min.x, -0.2, min.y), Vec3::new(max.x, 0.0, max.y), asphalt, asphalt);
+            }
+        }
+        None => m.add_box(Vec3::new(-pad, -0.2, -pad), Vec3::new(map.size + pad, 0.0, map.size + pad), asphalt, asphalt),
+    }
+    for w in &map.wedges {
+        let p = w.points();
+        let center = p.iter().copied().sum::<Vec3>() / 6.0;
+        for face in Wedge::FACES {
+            let pts: Vec<Vec3> = face.iter().map(|&i| p[i]).collect();
+            let mut n = (pts[1] - pts[0]).cross(pts[2] - pts[0]).normalize_or_zero();
+            let face_center = pts.iter().copied().sum::<Vec3>() / pts.len() as f32;
+            if n.dot(face_center - center) < 0.0 {
+                n = -n;
+            }
+            // Slope faces get the paving pattern, everything else is plain.
+            let material = if n.y > 0.2 { mat::PAVING } else { mat::PLAIN };
+            let c = w.color.extend(material);
+            if pts.len() == 4 {
+                m.quad([pts[0], pts[1], pts[2], pts[3]], n, c);
+            } else {
+                m.tri([pts[0], pts[1], pts[2]], n, c);
+            }
+        }
+    }
 
     for b in &map.boxes {
         m.add_box(b.min, b.max, b.color.extend(b.side_mat), b.color.extend(b.top_mat));
@@ -30,6 +58,26 @@ pub fn map_mesh(map: &Map) -> MeshData {
 
     road_markings(map, &mut m);
     m
+}
+
+fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
+    let h = |ix: i64, iz: i64| t.at(ix.clamp(0, t.nx as i64 - 1) as usize, iz.clamp(0, t.nz as i64 - 1) as usize);
+    let base = m.verts.len() as u32;
+    for iz in 0..t.nz as i64 {
+        for ix in 0..t.nx as i64 {
+            let p = Vec3::new(t.origin.x + ix as f32 * t.cell, h(ix, iz), t.origin.y + iz as f32 * t.cell);
+            let n = Vec3::new(h(ix - 1, iz) - h(ix + 1, iz), 2.0 * t.cell, h(ix, iz - 1) - h(ix, iz + 1)).normalize();
+            m.verts.push(Vertex { pos: p.to_array(), normal: n.to_array(), color: t.color.extend(t.material).to_array() });
+        }
+    }
+    let nx = t.nx as u32;
+    for iz in 0..t.nz as u32 - 1 {
+        for ix in 0..nx - 1 {
+            let (a, b) = (base + iz * nx + ix, base + iz * nx + ix + 1);
+            let (c, d) = (a + nx, b + nx);
+            m.indices.extend_from_slice(&[a, b, d, a, d, c]);
+        }
+    }
 }
 
 /// Dashed center lines along each inner road, skipping intersections.
@@ -84,7 +132,7 @@ impl ChaseCam {
     }
 
     pub fn update(&mut self, world: &World, tank: &Tank, dt: f32) -> Camera {
-        let anchor = tank.pos3() + Vec3::Y * 2.2;
+        let anchor = tank.pos + Vec3::Y * 2.2;
         let turret_yaw = tank.turret_yaw();
         if !self.initialized {
             self.focus = anchor;
@@ -107,33 +155,20 @@ impl ChaseCam {
         let pos = self.focus + to / len * (hit - 0.6).max(1.5);
 
         let ahead = Vec3::new(back.x, 0.0, back.y);
-        Camera { pos, target: self.focus + ahead * 6.0 + Vec3::Y * 0.5, fov_y: 65f32.to_radians() }
+        // Firing kicks the camera back and up for a moment.
+        let kick = (-tank.since_fire * 14.0).exp() * if tank.since_fire < 0.5 { 1.0 } else { 0.0 };
+        let pos = pos - ahead * kick * 0.45 + Vec3::Y * kick * 0.2;
+        Camera { pos, target: self.focus + ahead * 6.0 + Vec3::Y * (0.5 + kick * 0.3), fov_y: 65f32.to_radians() }
     }
 }
 
-pub fn build(world: &World, art: &TankArt, camera: Camera, width: f32, height: f32) -> Scene {
+/// The 3D part of a frame. `tanks` is what to draw (usually `world.tanks`,
+/// interpolated for display). `ui` starts empty; the caller adds the HUD.
+pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Scene {
     let mut instances = Vec::new();
-    for t in &world.tanks {
+    for t in tanks {
         art.instances(t, &mut instances);
     }
-
-    let mut ui = Vec::new();
-    let player = &world.tanks[0];
-    let vp = camera.view_proj(width / height);
-
-    // Crosshair sits where the turret actually points, so turret lag is visible.
-    let aim_dir = dir2(player.turret_yaw());
-    let aim_point = player.pos3() + Vec3::new(aim_dir.x, 0.0, aim_dir.y) * 40.0 + Vec3::Y * 1.7;
-    if let Some((x, y)) = project(vp, aim_point, width, height) {
-        crosshair(&mut ui, x, y);
-    }
-
-    // Speed bar, bottom center.
-    let frac = (player.speed().abs() / player.hull.max_speed).min(1.0);
-    let (bw, bh) = (220.0, 8.0);
-    let (bx, by) = (width * 0.5 - bw * 0.5, height - 40.0);
-    push_rect(&mut ui, bx - 2.0, by - 2.0, bw + 4.0, bh + 4.0, [0.0, 0.0, 0.0, 0.45]);
-    push_rect(&mut ui, bx, by, bw * frac, bh, [0.95, 0.85, 0.35, 0.9]);
 
     Scene {
         camera,
@@ -142,29 +177,16 @@ pub fn build(world: &World, art: &TankArt, camera: Camera, width: f32, height: f
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
-        ui,
+        ui: Vec::new(),
     }
 }
 
-fn project(vp: Mat4, p: Vec3, w: f32, h: f32) -> Option<(f32, f32)> {
+/// World point to screen pixels, or `None` if it's behind the camera.
+pub fn project(vp: Mat4, p: Vec3, w: f32, h: f32) -> Option<(f32, f32)> {
     let c = vp * p.extend(1.0);
     if c.w <= 0.01 {
         return None;
     }
     let ndc = c.truncate() / c.w;
     Some(((ndc.x * 0.5 + 0.5) * w, (0.5 - ndc.y * 0.5) * h))
-}
-
-fn crosshair(ui: &mut Vec<UiVertex>, x: f32, y: f32) {
-    let (shadow, white) = ([0.0, 0.0, 0.0, 0.5], [1.0, 1.0, 1.0, 0.9]);
-    for (c, o) in [(shadow, 1.0), (white, 0.0)] {
-        for (dx, dy, w, h) in [(-14.0, -1.0, 9.0, 2.0), (5.0, -1.0, 9.0, 2.0), (-1.0, -14.0, 2.0, 9.0), (-1.0, 5.0, 2.0, 9.0)] {
-            push_rect(ui, x + dx + o, y + dy + o, w, h, c);
-        }
-    }
-}
-
-pub fn push_rect(ui: &mut Vec<UiVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    let v = |px, py| UiVertex { pos: [px, py], color };
-    ui.extend_from_slice(&[v(x, y), v(x + w, y), v(x + w, y + h), v(x, y), v(x + w, y + h), v(x, y + h)]);
 }
