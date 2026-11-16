@@ -14,7 +14,7 @@ mod landmarks;
 mod props;
 mod ruins;
 mod saltmarket;
-mod shard_flats;
+mod sanctum;
 
 /// Size of one city-grid cell in meters.
 pub const CELL: f32 = 4.0;
@@ -519,6 +519,11 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// Maps up high (a mesa): a tank that drops below this height has gone
+    /// over the edge and dies on impact.
+    pub fall_y: Option<f32>,
+    /// What the Hold site is called on the HUD.
+    pub hold_name: &'static str,
 }
 
 /// A glowing ribbon on the ground: a bright core fading out to its edges.
@@ -751,6 +756,8 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         };
 
         // Ring road around the inner city.
@@ -1001,6 +1008,21 @@ impl Map {
         self.perimeter(true);
     }
 
+    /// Invisible arena walls spanning heights `y0`..`y1` (a map whose floor
+    /// isn't at 0).
+    fn perimeter_at(&mut self, y0: f32, y1: f32) {
+        let s = self.size;
+        let t = 2.0;
+        for (min, max) in [
+            (Vec3::new(-t, y0, -t), Vec3::new(s + t, y1, 0.0)),
+            (Vec3::new(-t, y0, s), Vec3::new(s + t, y1, s + t)),
+            (Vec3::new(-t, y0, 0.0), Vec3::new(0.0, y1, s)),
+            (Vec3::new(s, y0, 0.0), Vec3::new(s + t, y1, s)),
+        ] {
+            self.solids.push(Solid { min, max });
+        }
+    }
+
     /// The arena boundary: solid walls, drawn as grey walls or (for maps
     /// whose edge is scenery, like dunes) invisible.
     fn perimeter(&mut self, visible: bool) {
@@ -1149,6 +1171,8 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         }
     }
 
@@ -1184,6 +1208,8 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         };
 
         // Terrain: flat in the west half (obstacle lanes), hills and a crater in the east.

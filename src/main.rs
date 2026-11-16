@@ -31,9 +31,9 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              map seed (default: random)
-  --map <city|proving|saltmarket|shards|kiln>
+  --map <city|proving|saltmarket|sanctum|kiln>
                           city (default), the physics test course, Saltmarket (desert town),
-                          Shard Flats (crystal deposit, the Hold map), or the Kiln (Ithessar ground)
+                          the Sanctum (a Resonant church on a mesa, the Hold map), or the Kiln (Ithessar ground)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6; just you on the proving ground)
   --contract <attrition|hold>
@@ -118,8 +118,8 @@ pub enum MapKind {
     Proving,
     /// Hand-built desert town on a dry reservoir.
     Saltmarket,
-    /// Placeholder: open flats around a crystal deposit (the Hold map).
-    ShardFlats,
+    /// The Sanctum: a Resonant church on a mesa (the Hold map).
+    Sanctum,
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
 }
@@ -129,7 +129,7 @@ pub fn make_map(seed: u64, kind: MapKind) -> map::Map {
         MapKind::City => map::Map::generate(seed),
         MapKind::Proving => map::Map::proving_ground(),
         MapKind::Saltmarket => map::Map::saltmarket(),
-        MapKind::ShardFlats => map::Map::shard_flats(),
+        MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
     }
 }
@@ -243,10 +243,10 @@ fn parse_args() -> Result<Args> {
                 Some("city") => map_kind = MapKind::City,
                 Some("proving") => map_kind = MapKind::Proving,
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
-                Some("shards") => map_kind = MapKind::ShardFlats,
+                Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 other => {
-                    bail!("--map expects city, proving, saltmarket, shards or kiln, got {other:?}")
+                    bail!("--map expects city, proving, saltmarket, sanctum or kiln, got {other:?}")
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,

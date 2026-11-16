@@ -267,12 +267,12 @@ mod tests {
     }
 
     #[test]
-    fn shard_flats_site_is_the_deposit_with_room_to_drive_in_the_ring() {
-        let m = Map::shard_flats();
+    fn sanctum_site_is_the_altar_with_room_to_drive_in_the_ring() {
+        let m = Map::sanctum();
         let h = Hold::new(&m, 1);
         assert_eq!(Some(h.at), m.hold_site);
         let nav = crate::ai::NavGrid::build(&m);
-        // The shards fill the middle; most of the ring around them is open.
+        // The altar and the crossing's piers stand in it; most of the ring is open.
         let open = (0..32)
             .filter(|&i| !nav.is_blocked(h.at + ring_dir(i as f32 / 32.0) * RADIUS * 0.7))
             .count();
