@@ -13,24 +13,31 @@
 //!
 //! The game thread sets targets once a frame; `mixer` eases toward them and
 //! renders on the audio thread. With no audio device the game runs silent.
+//!
+//! **Adding a sound?** Each sound lives with its family in `sounds/`; see
+//! the note at the top of `sounds/mod.rs` for where each part goes.
 
+mod device;
 mod dsp;
 mod mixer;
-mod patch;
+mod sounds;
+mod tank;
+#[cfg(test)]
+mod testkit;
+mod voice;
 
 use std::sync::{Arc, Mutex};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glam::Vec3;
 
-use crate::combat::{Burn, Match, Sound, muzzle};
-use crate::faction::Faction;
-use crate::hold::Cue;
+use crate::combat::{Match, Sound};
 use crate::render::Camera;
-use crate::sim::{HullKind, TurretKind};
 
 use dsp::Noise;
-pub use mixer::{BurnParams, Mixer, OneShot, TankParams};
+use mixer::{Mixer, OneShot};
+pub use sounds::ui::Ui;
+use sounds::{Play, arrival, beam, guns, hits, hold, repair, ui, vigil};
+use voice::Layer;
 
 /// Distance at which a sound is at half its close-up loudness, m. Past it
 /// loudness falls with the square of distance (12 dB per doubling): the chase
@@ -39,31 +46,12 @@ pub use mixer::{BurnParams, Mixer, OneShot, TankParams};
 const REF_DIST: f32 = 12.0;
 /// Past this nothing is heard, m.
 const EARSHOT: f32 = 400.0;
-/// How much louder a firing beam is at `d` m than the rest of its tank: it
-/// falls off at 6 dB per doubling, half as fast as everything else, so a beam
-/// is heard across a fight, not only up close.
-fn beam_carry(d: f32) -> f32 {
-    // Never louder than close up: gain × carry stays under 1.
-    (1.0 + (d / REF_DIST).powi(2)).sqrt()
-}
-
 /// How far a sound can swing to one side (1 would be hard-panned).
 const PAN_WIDTH: f32 = 0.8;
 /// Wind level under everything.
 const WIND: f32 = 0.05;
-/// How long a flamer keeps roaring after its last puff, s.
-const FLAME_HOLD: f32 = 0.12;
-/// A beam burning into your own hull, as against someone else's: you're
-/// inside it (the same as a shell's [`Sound::Hit`]).
+/// A blow to your own hull, as against someone else's: you're inside it.
 const OWN_HULL: f32 = 1.6;
-
-/// UI sounds the app can trigger directly.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Ui {
-    Move,
-    Select,
-    Back,
-}
 
 /// Where the ears are.
 #[derive(Clone, Copy)]
@@ -105,22 +93,39 @@ impl Listener {
     }
 }
 
+impl Placed {
+    /// Heard the same wherever you are, like the HUD.
+    const EVERYWHERE: Placed = Placed {
+        gain: 0.7,
+        pan: 0.0,
+        air: 16_000.0,
+    };
+
+    /// `layers` played here, `gain` times as loud.
+    fn shot(self, layers: &'static [Layer], gain: f32, pitch: f32) -> OneShot {
+        OneShot {
+            layers,
+            pitch,
+            gain: self.gain * gain,
+            pan: self.pan,
+            air: self.air,
+        }
+    }
+}
+
 pub struct Audio {
     mixer: Option<Arc<Mutex<Mixer>>>,
     _stream: Option<cpal::Stream>,
     noise: Noise,
     time: f32,
-    /// Per tank: until when its flamer is pouring.
-    flame_until: Vec<f32>,
-    /// Per tank, as of last frame: whether its beam was on, and what it burned.
-    beaming: Vec<bool>,
-    burning: Vec<Burn>,
+    flames: guns::Flames,
+    beams: beam::Moments,
 }
 
 impl Audio {
     /// Open the default output device; silent (but harmless) if there is none.
     pub fn new() -> Audio {
-        let (mixer, stream) = match open() {
+        let (mixer, stream) = match device::open() {
             Ok((m, s)) => (Some(m), Some(s)),
             Err(e) => {
                 log::warn!("no sound: {e:#}");
@@ -132,9 +137,8 @@ impl Audio {
             _stream: stream,
             noise: Noise::new(0xA0D10),
             time: 0.0,
-            flame_until: Vec::new(),
-            beaming: Vec::new(),
-            burning: Vec::new(),
+            flames: Default::default(),
+            beams: Default::default(),
         }
     }
 
@@ -145,9 +149,8 @@ impl Audio {
             _stream: None,
             noise: Noise::new(0xA0D10),
             time: 0.0,
-            flame_until: Vec::new(),
-            beaming: Vec::new(),
-            burning: Vec::new(),
+            flames: Default::default(),
+            beams: Default::default(),
         }
     }
 
@@ -169,11 +172,7 @@ impl Audio {
     }
 
     pub fn ui(&mut self, sound: Ui) {
-        let (layers, pitch) = match sound {
-            Ui::Move => (patch::TICK, 1.0),
-            Ui::Select => (patch::SELECT, 1.0),
-            Ui::Back => (patch::SELECT, 0.7),
-        };
+        let (layers, pitch) = ui::menu(sound);
         self.with(|m| {
             m.play(OneShot {
                 layers,
@@ -195,8 +194,7 @@ impl Audio {
             self.time += dt;
         }
         let ears = Listener::of(cam);
-        let n = game.world.tanks.len();
-        self.flame_until.resize(n, 0.0);
+        self.flames.resize(game.world.tanks.len());
         let mut shots = Vec::new();
         for s in sounds {
             if let Some(one) = self.one_shot(s, &ears) {
@@ -204,10 +202,10 @@ impl Audio {
             }
         }
         if live {
-            shots.extend(self.beam_moments(game, &ears));
+            shots.extend(self.beams.update(game, &ears, &mut self.noise));
         }
-        let params = self.tank_params(game, &ears, live);
-        let burns = burn_params(game, &ears);
+        let params = tank::params(game, &ears, &self.flames, self.time, live);
+        let burns = beam::burns(game, &ears);
         self.with(|m| {
             m.set_world(if live { 1.0 } else { 0.0 });
             m.set_wind(WIND);
@@ -219,189 +217,38 @@ impl Audio {
         });
     }
 
+    /// The one-shot a match event plays, if any. One arm per event, grouped
+    /// by the family in `sounds/` that voices it.
     fn one_shot(&mut self, s: &Sound, ears: &Listener) -> Option<OneShot> {
         let jitter = 0.94 + 0.12 * self.noise.unit();
-        let (layers, at, gain, pitch): (&'static [patch::Layer], Option<Vec3>, f32, f32) = match *s
-        {
+        let play: Play = match *s {
+            Sound::Arrival { tank, faction, at } => arrival::arrival(tank, faction, at, jitter),
+
+            Sound::Overheat { tank, at } => beam::overheat(tank, at, jitter),
+
             Sound::Shot { tank, turret, at } => {
-                let layers = match turret {
-                    TurretKind::Kontos => patch::KONTOS,
-                    TurretKind::Pelekys => patch::PELEKYS,
-                    TurretKind::Ammeth => patch::WISP,
-                    TurretKind::Ossrin => patch::TRIAD,
-                    TurretKind::Hymn => {
-                        if let Some(t) = self.flame_until.get_mut(tank) {
-                            *t = self.time + FLAME_HOLD;
-                        }
-                        return None;
-                    }
-                    TurretKind::Lumen => return None,
-                };
-                (layers, Some(at), 1.0, jitter)
+                self.flames.shot(tank, turret, at, self.time, jitter)?
             }
-            Sound::Impact { at, plasma } => {
-                let layers = if plasma { patch::SPLASH } else { patch::IMPACT };
-                (layers, Some(at), 0.8, jitter)
-            }
-            Sound::Bounce { at } => (patch::BOUNCE, Some(at), 0.8, jitter),
-            // Your own hull ringing is louder: you're inside it.
-            Sound::Hit { at, victim } => {
-                let g = if victim == 0 { OWN_HULL } else { 1.0 };
-                (patch::HIT, Some(at), g, jitter)
-            }
-            Sound::Kill { at, .. } => (patch::KILL, Some(at), 1.3, jitter),
-            Sound::Repair { at, .. } => (patch::REPAIR, Some(at), 1.0, 1.0),
-            Sound::Overheat { tank, at } => {
-                let g = if tank == 0 { 1.0 } else { 0.6 };
-                (patch::OVERHEAT, Some(at), g, jitter)
-            }
-            // One bell throughout: no pitch jitter.
-            Sound::Shatter { at } => (patch::SHATTER, Some(at), 1.3, 1.0),
-            // Each toll weaker and a little flatter than the last.
-            Sound::Toll { at, strength } => {
-                let s = strength.clamp(0.0, 1.0);
-                (patch::TOLL, Some(at), 0.8 + 0.7 * s, 0.94 + 0.06 * s)
-            }
-            Sound::Gutter { at } => (patch::GUTTER, Some(at), 1.2, 1.0),
-            Sound::Confirm => (patch::CONFIRM, None, 1.0, 1.0),
-            Sound::Link => (patch::LINK, None, 1.0, 1.0),
-            // Heard wherever you are: the site is the round's objective.
-            Sound::Hold(cue) => {
-                let layers = match cue {
-                    Cue::Taken => patch::SITE_TAKEN,
-                    Cue::Lost => patch::SITE_LOST,
-                    Cue::Contested => patch::SITE_CONTESTED,
-                    Cue::Paid => patch::SITE_PAID,
-                };
-                (layers, None, 1.0, 1.0)
-            }
-            // Your own arrival is heard close up, as if from inside the hull.
-            Sound::Arrival { tank, faction, at } => {
-                let layers = match faction {
-                    Faction::Imperium => patch::DROP_IMPERIUM,
-                    Faction::Resonant => patch::KINDLE_RESONANT,
-                    Faction::Uthenn => patch::BUILD_UTHENN,
-                    Faction::Ithessar => patch::DESCEND_ITHESSAR,
-                };
-                let g = if tank == 0 { 1.4 } else { 1.0 };
-                (layers, Some(at), g, jitter)
-            }
-        };
-        let placed = match at {
-            Some(p) => ears.place(p),
-            None => Placed {
-                gain: 0.7,
-                pan: 0.0,
-                air: 16_000.0,
-            },
-        };
-        Some(OneShot {
-            layers,
-            pitch,
-            gain: placed.gain * gain,
-            pan: placed.pan,
-            air: placed.air,
-        })
-    }
 
-    /// Beams that lit, let go, or struck a hull since last frame.
-    fn beam_moments(&mut self, game: &Match, ears: &Listener) -> Vec<OneShot> {
-        let n = game.world.tanks.len();
-        self.beaming.resize(n, false);
-        self.burning.resize(n, Burn::Air);
-        let mut out = Vec::new();
-        let mut play = |layers, at: Vec3, gain: f32, pitch: f32| {
-            let p = ears.place(at);
-            out.push(OneShot {
-                layers,
-                pitch,
-                gain: p.gain * gain,
-                pan: p.pan,
-                air: p.air,
-            });
+            Sound::Impact { at, plasma } => hits::impact(at, plasma, jitter),
+            Sound::Bounce { at } => hits::bounce(at, jitter),
+            Sound::Hit { at, victim } => hits::hit(at, victim, jitter),
+            Sound::Kill { at } => hits::kill(at, jitter),
+
+            Sound::Hold(cue) => hold::cue(cue),
+
+            Sound::Repair { at } => repair::repair(at),
+
+            Sound::Confirm => ui::confirm(),
+            Sound::Link => ui::link(),
+
+            Sound::Shatter { at } => vigil::shatter(at),
+            Sound::Toll { at, strength } => vigil::toll(at, strength),
+            Sound::Gutter { at } => vigil::gutter(at),
         };
-        for (i, (t, f)) in game.world.tanks.iter().zip(&game.fighters).enumerate() {
-            let on = f.beam.is_some();
-            let jitter = 0.94 + 0.12 * self.noise.unit();
-            let gun = muzzle(t);
-            if on && !self.beaming[i] {
-                play(patch::BEAM_ON, gun, 1.0, jitter);
-            }
-            // Locking out hot has its own hiss; a wreck goes quiet.
-            if !on && self.beaming[i] && f.alive && !f.overheated {
-                play(patch::BEAM_OFF, gun, 0.9, jitter);
-            }
-            if let (Burn::Tank(j), Some(end)) = (f.burning, f.beam)
-                && self.burning[i] != f.burning
-            {
-                let g = if j == 0 { OWN_HULL } else { 1.0 };
-                play(patch::SCORCH, end, g, jitter);
-            }
-            self.beaming[i] = on;
-            self.burning[i] = f.burning;
-        }
-        out
+        let placed = play.at.map_or(Placed::EVERYWHERE, |p| ears.place(p));
+        Some(placed.shot(play.layers, play.gain, play.pitch))
     }
-
-    fn tank_params(&self, game: &Match, ears: &Listener, live: bool) -> Vec<TankParams> {
-        game.world
-            .tanks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let f = game.fighters.get(i);
-                if !f.is_none_or(|f| f.alive) {
-                    return TankParams::default();
-                }
-                let p = ears.place(t.pos + t.up());
-                let tread = (t.belt[0].abs() + t.belt[1].abs()) * 0.5;
-                // A hover hull has no belts: its field works with ground speed.
-                let pace = if t.chassis.hover { t.speed() } else { tread };
-                let revs = (pace / t.hull.max_speed).min(1.0);
-                let turret = (t.turret_rate.abs() / t.hull.turret_speed).min(1.0);
-                let flaming = live && self.flame_until.get(i).is_some_and(|&u| u > self.time);
-                TankParams {
-                    gain: p.gain,
-                    pan: p.pan,
-                    air: p.air,
-                    rpm: revs.max(t.drive * 0.35),
-                    load: t.drive,
-                    tread,
-                    turret,
-                    beam: if f.is_some_and(|f| f.beam.is_some()) {
-                        beam_carry((t.pos - ears.pos).length())
-                    } else {
-                        0.0
-                    },
-                    heat: f.map_or(0.0, |f| f.heat),
-                    flame: flaming as u8 as f32,
-                    husk: f.filter(|f| f.is_husk()).map_or(0.0, |f| f.strength()),
-                    heavy: t.hull_kind == HullKind::Kastron,
-                    hover: t.chassis.hover,
-                }
-            })
-            .collect()
-    }
-}
-
-/// Where each tank's beam is burning: at its far end, louder on your own hull.
-fn burn_params(game: &Match, ears: &Listener) -> Vec<BurnParams> {
-    game.fighters
-        .iter()
-        .map(|f| match (f.beam, f.burning) {
-            (Some(end), Burn::Surface | Burn::Tank(_)) => {
-                let p = ears.place(end);
-                let own = f.burning == Burn::Tank(0);
-                BurnParams {
-                    gain: p.gain * if own { OWN_HULL } else { 1.0 },
-                    pan: p.pan,
-                    air: p.air,
-                    metal: matches!(f.burning, Burn::Tank(_)),
-                }
-            }
-            _ => BurnParams::default(),
-        })
-        .collect()
 }
 
 /// Record `seconds` of `game` (driven by `drive`, trigger held) from the chase
@@ -456,80 +303,10 @@ pub fn wav(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     b
 }
 
-/// Start an output stream on the default device, rendering from a shared mixer.
-fn open() -> anyhow::Result<(Arc<Mutex<Mixer>>, cpal::Stream)> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("no output device"))?;
-    let supported = device.default_output_config()?;
-    let format = supported.sample_format();
-    let config: cpal::StreamConfig = supported.into();
-    let channels = config.channels as usize;
-    let mixer = Arc::new(Mutex::new(Mixer::new(config.sample_rate as f32)));
-    let err = |e| log::warn!("audio stream: {e}");
-    let stream = match format {
-        cpal::SampleFormat::F32 => stream::<f32>(&device, config, mixer.clone(), channels, err)?,
-        cpal::SampleFormat::I16 => stream::<i16>(&device, config, mixer.clone(), channels, err)?,
-        cpal::SampleFormat::U16 => stream::<u16>(&device, config, mixer.clone(), channels, err)?,
-        cpal::SampleFormat::I32 => stream::<i32>(&device, config, mixer.clone(), channels, err)?,
-        other => anyhow::bail!("unsupported sample format {other:?}"),
-    };
-    stream.play()?;
-    Ok((mixer, stream))
-}
-
-fn stream<T>(
-    device: &cpal::Device,
-    config: cpal::StreamConfig,
-    mixer: Arc<Mutex<Mixer>>,
-    channels: usize,
-    err: impl FnMut(cpal::Error) + Send + 'static,
-) -> anyhow::Result<cpal::Stream>
-where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    let mut stereo = Vec::new();
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            let frames = data.len() / channels.max(1);
-            stereo.resize(frames * 2, 0.0);
-            match mixer.lock() {
-                Ok(mut m) => m.render(&mut stereo),
-                Err(_) => stereo.fill(0.0),
-            }
-            for (out, lr) in data.chunks_mut(channels).zip(stereo.chunks_exact(2)) {
-                for (c, s) in out.iter_mut().enumerate() {
-                    // Mono gets both sides; extra channels (surround) stay quiet.
-                    let v = match (channels, c) {
-                        (1, _) => (lr[0] + lr[1]) * 0.5,
-                        (_, 0) => lr[0],
-                        (_, 1) => lr[1],
-                        _ => 0.0,
-                    };
-                    *s = T::from_sample(v);
-                }
-            }
-        },
-        err,
-        None,
-    )?;
-    Ok(stream)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::Settings;
-
-    fn ears() -> Listener {
-        Listener::of(&Camera {
-            pos: Vec3::ZERO,
-            target: Vec3::NEG_Z,
-            fov_y: 1.0,
-        })
-    }
+    use testkit::ears;
 
     #[test]
     fn farther_is_quieter_and_duller() {
@@ -577,278 +354,6 @@ mod tests {
         let hot = buf.iter().filter(|x| x.abs() > 0.95).count() as f32 / buf.len() as f32;
         assert!(rms > 0.01, "rms {rms}");
         assert!(hot < 0.01, "{:.2}% of samples near full scale", hot * 100.0);
-    }
-
-    /// Each Hold cue on its own, as heard in the match, `secs` long.
-    fn hold_cue(cue: Cue, secs: f32) -> Vec<f32> {
-        const RATE: u32 = 48_000;
-        let mut audio = Audio::offline(RATE);
-        audio.set_volume(crate::profile::Settings::default().volume());
-        let shot = audio.one_shot(&Sound::Hold(cue), &ears()).unwrap();
-        audio.with(|m| {
-            m.set_wind(0.0);
-            m.play(shot)
-        });
-        let mut out = vec![0.0; 2 * (secs * RATE as f32) as usize];
-        audio.render(&mut out);
-        out
-    }
-
-    const CUES: [(Cue, &str); 4] = [
-        (Cue::Taken, "taken"),
-        (Cue::Lost, "lost"),
-        (Cue::Contested, "contested"),
-        (Cue::Paid, "paid"),
-    ];
-
-    /// Every Hold cue is clearly audible, under a kill's peak, and differs from the others.
-    #[test]
-    fn hold_cues_are_heard_and_tell_apart() {
-        let peaks: Vec<f32> = CUES
-            .iter()
-            .map(|&(c, _)| hold_cue(c, 1.2).iter().fold(0.0f32, |m, x| m.max(x.abs())))
-            .collect();
-        for (p, (_, name)) in peaks.iter().zip(CUES) {
-            assert!(*p > 0.05 && *p < 0.9, "{name} peaks at {p}");
-        }
-        let layers = [
-            patch::SITE_TAKEN,
-            patch::SITE_LOST,
-            patch::SITE_CONTESTED,
-            patch::SITE_PAID,
-        ];
-        for i in 0..4 {
-            for j in i + 1..4 {
-                assert!(layers[i] != layers[j]);
-            }
-        }
-    }
-
-    /// Writes `docs/audio/hold-*.wav`: `cargo test record_hold_cues -- --ignored`.
-    #[test]
-    #[ignore]
-    fn record_hold_cues() {
-        for (cue, name) in CUES {
-            let path = format!("docs/audio/hold-{name}.wav");
-            std::fs::write(&path, wav(&hold_cue(cue, 1.5), 48_000)).unwrap();
-        }
-    }
-
-    fn layers(shots: &[OneShot]) -> Vec<&'static [patch::Layer]> {
-        shots.iter().map(|s| s.layers).collect()
-    }
-
-    /// By value: a `const` slice has no one address (debug builds copy it).
-    fn has(shots: &[OneShot], l: &'static [patch::Layer]) -> bool {
-        layers(shots).iter().any(|x| *x == l)
-    }
-
-    /// Issue #114: a beam is heard lighting, striking a hull (once, not
-    /// every frame it burns) and letting go; locking out hot has its own hiss.
-    #[test]
-    fn a_beam_lights_strikes_and_lets_go() {
-        let mut game = Match::new(crate::map::Map::saltmarket(), 0, 3, 7);
-        let mut audio = Audio::offline(24_000);
-        let e = ears();
-        let end = game.world.tanks[1].pos;
-        assert!(audio.beam_moments(&game, &e).is_empty());
-
-        game.fighters[0].beam = Some(end);
-        game.fighters[0].burning = Burn::Surface;
-        let lit = audio.beam_moments(&game, &e);
-        assert!(has(&lit, patch::BEAM_ON) && !has(&lit, patch::SCORCH));
-
-        game.fighters[0].burning = Burn::Tank(1);
-        let struck = audio.beam_moments(&game, &e);
-        assert!(has(&struck, patch::SCORCH) && !has(&struck, patch::BEAM_ON));
-        assert!(audio.beam_moments(&game, &e).is_empty(), "struck again");
-
-        game.fighters[0].beam = None;
-        game.fighters[0].burning = Burn::Air;
-        assert!(has(&audio.beam_moments(&game, &e), patch::BEAM_OFF));
-
-        game.fighters[0].beam = Some(end);
-        audio.beam_moments(&game, &e);
-        game.fighters[0].beam = None;
-        game.fighters[0].overheated = true;
-        assert!(audio.beam_moments(&game, &e).is_empty(), "locked out");
-    }
-
-    /// Being burned is as loud as being shot: your own hull, louder than
-    /// someone else's, and the strike as loud as a shell's hit.
-    #[test]
-    fn a_beam_on_your_hull_is_loud() {
-        let mut game = Match::new(crate::map::Map::saltmarket(), 0, 3, 7);
-        let e = ears();
-        let end = Vec3::new(0.0, 0.0, -10.0);
-        game.fighters[1].beam = Some(end);
-        game.fighters[1].burning = Burn::Tank(0);
-        game.fighters[2].beam = Some(end);
-        game.fighters[2].burning = Burn::Tank(3);
-        game.fighters[3].beam = Some(end);
-        game.fighters[3].burning = Burn::Air;
-        let b = burn_params(&game, &e);
-        assert!(b[1].metal && b[2].metal);
-        assert!(b[1].gain > 1.5 * b[2].gain);
-        assert_eq!(b[3].gain, 0.0, "a beam into the sky burns nothing");
-
-        let mut audio = Audio::offline(24_000);
-        let shots = audio.beam_moments(&game, &e);
-        let scorch = shots
-            .iter()
-            .filter(|s| s.layers == patch::SCORCH)
-            .map(|s| s.gain)
-            .fold(0.0, f32::max);
-        let hit = audio
-            .one_shot(&Sound::Hit { at: end, victim: 0 }, &e)
-            .unwrap()
-            .gain;
-        assert!(scorch >= hit * 0.99, "scorch {scorch}, hit {hit}");
-    }
-
-    /// Writes `docs/audio/beam.wav`, the beam's sounds in turn (run with
-    /// `cargo test write_beam_demo -- --ignored`): your beam into a wall, into
-    /// a hull until it locks out hot, an enemy's burning you, and one across the fight.
-    #[test]
-    #[ignore]
-    fn write_beam_demo() {
-        const SR: u32 = 48_000;
-        let e = ears();
-        let mut m = Mixer::new(SR as f32);
-        m.set_master(Settings::default().volume().powi(2));
-        m.set_world(1.0);
-        m.set_wind(WIND);
-        let mut out = Vec::new();
-        let mut run = |m: &mut Mixer, secs: f32| {
-            let start = out.len();
-            out.resize(start + (secs * SR as f32) as usize * 2, 0.0);
-            for chunk in out[start..].chunks_mut(960) {
-                m.render(chunk);
-            }
-        };
-        let own = Vec3::new(0.0, 0.0, -10.0);
-        let shot = |layers, at: Vec3, g: f32| {
-            let p = e.place(at);
-            OneShot {
-                layers,
-                pitch: 1.0,
-                gain: p.gain * g,
-                pan: p.pan,
-                air: p.air,
-            }
-        };
-        let tank = |at: Vec3, beam: f32, heat: f32| {
-            let p = e.place(at);
-            TankParams {
-                gain: p.gain,
-                pan: p.pan,
-                air: p.air,
-                rpm: 0.2,
-                beam: beam * beam_carry(at.length()),
-                heat,
-                heavy: true,
-                ..TankParams::default()
-            }
-        };
-        let burn = |at: Vec3, metal: bool, g: f32| {
-            let p = e.place(at);
-            BurnParams {
-                gain: p.gain * g,
-                pan: p.pan,
-                air: p.air,
-                metal,
-            }
-        };
-        let idle = |m: &mut Mixer| {
-            m.set_tanks(&[tank(own, 0.0, 0.0)]);
-            m.set_burns(&[BurnParams::default()]);
-        };
-        // A beam from `from` burning `to`, held for `secs` while heating
-        // from `h0` to `h1`. Your own tank is always the first.
-        let hold = |m: &mut Mixer,
-                    run: &mut dyn FnMut(&mut Mixer, f32),
-                    (from, to, metal, g): (Vec3, Vec3, bool, f32),
-                    (h0, h1): (f32, f32),
-                    secs: f32| {
-            let steps = (secs * 20.0) as usize;
-            for k in 0..steps {
-                let h = h0 + (h1 - h0) * k as f32 / steps as f32;
-                let (beamer, at) = (tank(from, 1.0, h), burn(to, metal, g));
-                if from == own {
-                    m.set_tanks(&[beamer]);
-                    m.set_burns(&[at]);
-                } else {
-                    m.set_tanks(&[tank(own, 0.0, 0.0), beamer]);
-                    m.set_burns(&[BurnParams::default(), at]);
-                }
-                run(m, 0.05);
-            }
-        };
-
-        idle(&mut m);
-        run(&mut m, 0.6);
-        // 1. Your beam into a wall 35 m off.
-        let wall = Vec3::new(8.0, 0.0, -45.0);
-        m.play(shot(patch::BEAM_ON, own, 1.0));
-        hold(&mut m, &mut run, (own, wall, false, 1.0), (0.0, 0.4), 2.5);
-        idle(&mut m);
-        m.play(shot(patch::BEAM_OFF, own, 0.9));
-        run(&mut m, 1.0);
-        // 2. Your beam onto an enemy hull 30 m off, held until it locks out.
-        let enemy = Vec3::new(-6.0, 0.0, -40.0);
-        m.play(shot(patch::BEAM_ON, own, 1.0));
-        hold(&mut m, &mut run, (own, wall, false, 1.0), (0.0, 0.1), 0.4);
-        m.play(shot(patch::SCORCH, enemy, 1.0));
-        hold(&mut m, &mut run, (own, enemy, true, 1.0), (0.1, 1.0), 3.0);
-        idle(&mut m);
-        m.play(shot(patch::OVERHEAT, own, 1.0));
-        run(&mut m, 1.4);
-        // 3. An enemy 40 m off burns your hull.
-        let foe = Vec3::new(25.0, 0.0, -40.0);
-        m.play(shot(patch::BEAM_ON, foe, 1.0));
-        m.play(shot(patch::SCORCH, own, OWN_HULL));
-        hold(
-            &mut m,
-            &mut run,
-            (foe, own, true, OWN_HULL),
-            (0.0, 0.6),
-            2.5,
-        );
-        idle(&mut m);
-        m.play(shot(patch::BEAM_OFF, foe, 0.9));
-        run(&mut m, 1.2);
-        // 4. A beam 70 m off, across the fight, into the ground.
-        let far = Vec3::new(-45.0, 0.0, -55.0);
-        m.play(shot(patch::BEAM_ON, far, 1.0));
-        let ground = far + Vec3::new(10.0, 0.0, -20.0);
-        hold(&mut m, &mut run, (far, ground, false, 1.0), (0.0, 0.4), 2.5);
-        idle(&mut m);
-        m.play(shot(patch::BEAM_OFF, far, 0.9));
-        run(&mut m, 1.0);
-
-        let peak = out.iter().fold(0.0f32, |a, x| a.max(x.abs()));
-        assert!(peak < 0.99, "peak {peak}");
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/audio/beam.wav");
-        std::fs::write(path, wav(&out, SR)).unwrap();
-    }
-
-    /// A beam across the fight is still heard: it fades half as fast (in
-    /// dB) as a gun or an engine.
-    #[test]
-    fn a_beam_carries() {
-        let e = ears();
-        let db = |d: f32| {
-            let g = e.place(Vec3::new(0.0, 0.0, -d)).gain;
-            (20.0 * g.log10(), 20.0 * (g * beam_carry(d)).log10())
-        };
-        let (gun10, beam10) = db(10.0);
-        assert!((beam10 - gun10) < 3.0, "close up it's hardly louder");
-        let ((gun40, beam40), (gun160, beam160)) = (db(40.0), db(160.0));
-        let (fall_gun, fall_beam) = (gun40 - gun160, beam40 - beam160);
-        assert!(
-            fall_beam < 0.6 * fall_gun,
-            "{fall_beam:.1} vs {fall_gun:.1} dB"
-        );
     }
 
     #[test]
