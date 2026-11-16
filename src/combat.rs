@@ -527,6 +527,11 @@ pub enum Sound {
     Gutter {
         at: Vec3,
     },
+    /// A tank's spawn shield ran out: it can be hurt now.
+    ShieldDown {
+        tank: usize,
+        at: Vec3,
+    },
     /// A tank arriving (spawn or respawn), its team's way.
     Arrival {
         tank: usize,
@@ -766,7 +771,14 @@ impl Match {
         for (i, &trigger) in triggers.iter().enumerate() {
             let f = &mut self.fighters[i];
             f.reload_in -= DT;
+            let shielded = f.shield > 0.0;
             f.shield -= DT;
+            if shielded && f.shield <= 0.0 && f.alive {
+                self.sounds.push(Sound::ShieldDown {
+                    tank: i,
+                    at: self.world.tanks[i].pos,
+                });
+            }
             if f.alive && f.arrived == 0.0 {
                 self.sounds.push(Sound::Arrival {
                     tank: i,

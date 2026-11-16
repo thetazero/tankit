@@ -4,13 +4,13 @@
 //! is a [`Loop`] there, plus a line in [`TankParams`], in [`params`], and in
 //! [`Loops`] and its `each`.
 
-use crate::combat::Match;
+use crate::combat::{Match, SPAWN_SHIELD};
 use crate::sim::HullKind;
 
 use super::Listener;
 use super::dsp::{Noise, OnePole, Smooth, pan_gains};
 use super::mixer::Coefs;
-use super::sounds::{beam, engine, guns, tracks, turret, vigil};
+use super::sounds::{beam, engine, guns, shield, tracks, turret, vigil};
 
 /// What one tank sounds like this frame, from the game thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -37,6 +37,10 @@ pub struct TankParams {
     pub flame: f32,
     /// A broken Vigil running on: how much light still pours out, 0..1.
     pub husk: f32,
+    /// Spawn shield up: its loudness (0 when down), and how much of it is
+    /// left, 1 fresh .. 0 about to drop.
+    pub shield: f32,
+    pub shield_left: f32,
     /// Heavy hull: a deeper, slower engine.
     pub heavy: bool,
     /// Rides a plasma cushion: a field hum instead of an engine and tracks.
@@ -58,6 +62,8 @@ impl TankParams {
             heat: 1.0,
             flame: 1.0,
             husk: 1.0,
+            shield: shield::level(0),
+            shield_left: 1.0,
             heavy: true,
             ..TankParams::default()
         }
@@ -105,6 +111,10 @@ pub fn params(
                 heat: f.map_or(0.0, |f| f.heat),
                 flame: flaming as u8 as f32,
                 husk: f.filter(|f| f.is_husk()).map_or(0.0, |f| f.strength()),
+                shield: f
+                    .filter(|f| f.shield > 0.0)
+                    .map_or(0.0, |_| shield::level(i)),
+                shield_left: f.map_or(0.0, |f| (f.shield / SPAWN_SHIELD).clamp(0.0, 1.0)),
                 heavy: t.hull_kind == HullKind::Kastron,
                 hover: t.chassis.hover,
             }
@@ -130,6 +140,7 @@ struct Loops {
     buzz: beam::Buzz,
     flame: guns::Flame,
     husk: vigil::Husk,
+    ward: shield::Ward,
 }
 
 impl Loops {
@@ -141,6 +152,7 @@ impl Loops {
         f(&mut self.buzz);
         f(&mut self.flame);
         f(&mut self.husk);
+        f(&mut self.ward);
     }
 }
 

@@ -34,6 +34,7 @@ pub mod guns;
 pub mod hits;
 pub mod hold;
 pub mod repair;
+pub mod shield;
 pub mod tracks;
 pub mod turret;
 pub mod ui;
