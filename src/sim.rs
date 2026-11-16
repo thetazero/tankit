@@ -83,7 +83,8 @@ impl Chassis {
         rear: (-1.97, 0.62, 0.32),
         hull_half_x: 1.7,
         hull_top: 1.42,
-        hull_z: (-2.4, 2.8),
+        // Ends short of the art's overhanging prow so jumps land on the tracks, not the nose.
+        hull_z: (-2.3, 2.2),
         center_of_mass: Vec3::new(0.0, 0.65, -0.1),
     };
     pub const BASTION: Chassis = Chassis {
@@ -97,7 +98,7 @@ impl Chassis {
         rear: (-2.0, 0.7, 0.38),
         hull_half_x: 1.85,
         hull_top: 1.6,
-        hull_z: (-2.5, 2.95),
+        hull_z: (-2.5, 2.4),
         center_of_mass: Vec3::new(0.0, 0.7, -0.1),
     };
 
@@ -171,9 +172,10 @@ pub const SUSPENSION_SAG: f32 = 0.09;
 const SUSPENSION_DAMPING_RATIO: f32 = 0.5;
 /// Fraction of the drive force's lever arm removed by suspension geometry.
 const ANTI_SQUAT: f32 = 0.6;
-/// How far the tracks' commanded speed may lead the hull (m/s, rad/s).
-const DRIVE_SLIP: f32 = 2.0;
-const TURN_SLIP: f32 = 1.2;
+/// Drivetrain inertia seen at each belt, as a fraction of the tank's mass.
+const BELT_MASS_FRAC: f32 = 0.08;
+/// Below this speed with no input, the parking brake holds the tank.
+const PARK_SPEED: f32 = 0.3;
 /// Seconds upside down (and slow) before the tank rights itself.
 const FLIP_RECOVER_TIME: f32 = 2.5;
 
@@ -198,17 +200,18 @@ pub struct HullStats {
     pub accel: f32,
     /// Above this speed the engine is power-limited: accel falls off as 1/v.
     pub power_knee: f32,
+    /// Brake force, as a deceleration (m/s²).
     pub brake: f32,
-    /// Deceleration with no throttle (tracks drag the tank to a stop).
-    pub coast: f32,
-    /// Pivot / turning rate, rad/s.
+    /// Rolling resistance and engine drag while coasting, as a deceleration (m/s²).
+    pub rolling: f32,
+    /// Turn rate the steering drive aims for, rad/s.
     pub turn_rate: f32,
-    pub turn_accel: f32,
-    /// Track grip along and across the direction of travel.
+    /// Steering drive force, as an acceleration of the belts' speed difference (m/s²).
+    pub steer_accel: f32,
+    /// Track friction coefficients: along the belt (traction) and across it
+    /// (sideways sliding resistance). Both share one limit per contact.
     pub grip_long: f32,
     pub grip_lat: f32,
-    /// Sideways grip while steering (tracks scrub to let the hull swing).
-    pub grip_lat_turning: f32,
     /// Max turret rotation speed relative to the hull, rad/s.
     pub turret_speed: f32,
     /// How fast the turret spins up to full speed, rad/s².
@@ -219,16 +222,14 @@ impl HullStats {
     pub const LANCER: Self = Self {
         max_speed: 15.0,
         reverse_speed: 9.0,
-        accel: 12.0,
+        accel: 13.0,
         power_knee: 9.0,
-        brake: 22.0,
-        coast: 10.0,
-        // Wider tracks (art pass) scrub more in a pivot; 2.45 keeps the old pivot speed.
-        turn_rate: 2.45,
-        turn_accel: 20.0,
+        brake: 20.0,
+        rolling: 0.8,
+        turn_rate: 3.6,
+        steer_accel: 20.0,
         grip_long: 1.6,
         grip_lat: 1.3,
-        grip_lat_turning: 0.7,
         turret_speed: 2.0,
         turret_accel: 12.0,
     };
@@ -237,13 +238,12 @@ impl HullStats {
         reverse_speed: 7.0,
         accel: 9.0,
         power_knee: 6.5,
-        brake: 18.0,
-        coast: 8.0,
-        turn_rate: 1.7,
-        turn_accel: 9.0,
+        brake: 16.0,
+        rolling: 0.8,
+        turn_rate: 2.5,
+        steer_accel: 14.0,
         grip_long: 1.6,
         grip_lat: 1.4,
-        grip_lat_turning: 0.85,
         turret_speed: 1.5,
         turret_accel: 8.0,
     };
@@ -276,8 +276,10 @@ pub struct Tank {
     pub wheels_down: usize,
     /// Track contacts from the hull collider this step (sweep faces, belly).
     pub face_contacts: usize,
-    /// Commanded track speeds [left, right], m/s.
-    pub track_speed: [f32; 2],
+    /// Belt speed of each track relative to the hull [left, right], m/s.
+    pub belt: [f32; 2],
+    /// Parking brake engaged (holds the belts until there's input).
+    pub parked: bool,
 
     /// Turret angle relative to the hull: the turret is mounted, so it turns with the hull.
     pub turret_rel: f32,
@@ -303,9 +305,6 @@ pub struct Tank {
     prev_rot: Quat,
     prev_turret_rel: f32,
     prev_track_dist: [f32; 2],
-    /// Speed the engine is running the tracks at (before the turning split).
-    drive_speed: f32,
-    drive_turn: f32,
 }
 
 impl Tank {
@@ -412,7 +411,8 @@ impl World {
             wheel_lift: vec![0.0; chassis.wheel_count()],
             wheels_down: 0,
             face_contacts: 0,
-            track_speed: [0.0; 2],
+            belt: [0.0; 2],
+            parked: true,
             turret_rel: 0.0,
             turret_rate: 0.0,
             gun_pitch: 0.0,
@@ -427,8 +427,6 @@ impl World {
             prev_rot: Quat::IDENTITY,
             prev_turret_rel: 0.0,
             prev_track_dist: [0.0; 2],
-            drive_speed: 0.0,
-            drive_turn: 0.0,
         };
         sync_from_body(&mut t, &self.physics);
         t.snapshot();
@@ -759,72 +757,115 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
         }
     }
 
-    // 3. What the tracks are trying to do: forward speed plus a speed split for turning.
+    // 3. Drivetrain. Each side's belt speed is a real state (with the drivetrain's
+    // inertia), pushed by the engine, the steering drive and the brakes. The
+    // ground never sets it directly: it pushes back through slip, below.
     let h = t.hull;
     let throttle = cmd.throttle.clamp(-1.0, 1.0);
+    let steer = cmd.steer.clamp(-1.0, 1.0);
+    let m_belt = mass * BELT_MASS_FRAC;
+    let dv = |force: f32| force / m_belt * DT;
+    let u_avg = (t.belt[0] + t.belt[1]) * 0.5;
     let v_now = b.linvel().dot(fwd);
-    let target = if throttle >= 0.0 { throttle * h.max_speed } else { throttle * h.reverse_speed };
-    let rate = if throttle.abs() < 0.05 {
-        h.coast
-    } else if v_now * target < 0.0 {
-        h.brake
+    // Parking brake: engages once stopped with no input, and stays on (even if
+    // something shoves the tank) until there's throttle or steering again.
+    let idle = throttle.abs() < 0.05 && steer.abs() < 0.05;
+    if !idle {
+        t.parked = false;
+    } else if u_avg.abs() < PARK_SPEED && v_now.abs() < PARK_SPEED {
+        t.parked = true;
+    }
+    if throttle.abs() > 0.05 && u_avg * throttle >= -0.5 {
+        // Engine: full force from a standstill, power-limited above the knee,
+        // and governed off as the belts reach top speed.
+        let limit = if throttle > 0.0 { h.max_speed } else { h.reverse_speed };
+        let governor = (limit - u_avg * throttle.signum()).clamp(0.0, 1.0);
+        let force = throttle * mass * h.accel * (h.power_knee / u_avg.abs().max(h.power_knee)) * governor;
+        t.belt[0] += dv(force * 0.5);
+        t.belt[1] += dv(force * 0.5);
+    } else if throttle.abs() > 0.05 {
+        // Throttle against the motion: brakes.
+        let step = dv(mass * h.brake * 0.5);
+        t.belt = t.belt.map(|u| approach(u, 0.0, step));
+    } else if t.parked {
+        // The parking brake holds the belts until the driver touches the controls.
+        t.belt = [0.0; 2];
     } else {
-        // Power-limited: full pull from a standstill, tapering toward top speed.
-        h.accel * (h.power_knee / v_now.abs().max(h.power_knee))
-    };
-    // The tracks have their own speed, driven by the engine. They may run ahead of
-    // the hull (that slip is what pushes), but only within a window, so a blocked
-    // or airborne tank doesn't wind up a huge target.
-    t.drive_speed = approach(t.drive_speed, target, rate * DT).clamp(v_now - DRIVE_SLIP, v_now + DRIVE_SLIP);
-    // Tank steering: A/D always rotate the hull the same way, reversing or not.
-    let steer = cmd.steer;
-    let speed_frac = (v_now.abs() / h.max_speed).min(1.0);
-    let turn_target = steer.clamp(-1.0, 1.0) * h.turn_rate * (1.0 - 0.25 * speed_frac);
-    let yaw_now = b.angvel().dot(up);
-    t.drive_turn = approach(t.drive_turn, turn_target, h.turn_accel * DT).clamp(yaw_now - TURN_SLIP, yaw_now + TURN_SLIP);
-    // Left track (+x) runs slower to turn left (counter-clockwise).
-    let half_span = c.track_x;
-    t.track_speed = [t.drive_speed - t.drive_turn * half_span, t.drive_speed + t.drive_turn * half_span];
-    t.track_dist[0] += t.track_speed[0] * DT;
-    t.track_dist[1] += t.track_speed[1] * DT;
-
-    if contacts.is_empty() {
-        return;
+        // Coasting: only rolling resistance and engine drag slow the belts.
+        let step = dv(mass * h.rolling * 0.5);
+        t.belt = t.belt.map(|u| approach(u, 0.0, step));
     }
+    // Steering drive: pushes the belts' speed difference toward the turn asked
+    // for, with limited force. Left track (+x) slower turns left (counter-clockwise).
+    let want_diff = steer * h.turn_rate * 2.0 * c.track_x;
+    let limit = dv(mass * h.steer_accel);
+    let corr = (want_diff - (t.belt[1] - t.belt[0])).clamp(-limit, limit);
+    t.belt[0] -= corr * 0.5;
+    t.belt[1] += corr * 0.5;
 
-    // 4. Traction: each contact pushes its patch toward the track speed along the
-    // track's direction at that point, and resists sliding sideways, each limited
-    // by friction times the contact's load.
-    let turning = turn_target.abs() > 0.05;
-    let grip_lat = if turning { h.grip_lat_turning } else { h.grip_lat };
-    // Velocities are sampled before any impulse is applied, so every contact
-    // sees the same slip and together they deliver exactly the requested change.
-    let share = mass / contacts.len() as f32;
-    let impulses: Vec<(Vec3, Vec3)> = contacts
-        .iter()
-        .filter_map(|ct| {
-            // Track push direction at the contact, kept in the contact surface.
-            let tangent = (ct.push - ct.normal * ct.push.dot(ct.normal)).normalize_or_zero();
-            if tangent == Vec3::ZERO {
-                return None;
-            }
-            let lateral = ct.normal.cross(tangent).normalize_or_zero();
-            let v = b.velocity_at_point(ct.point);
-            let max_long = ct.grip * ct.load * DT;
-            let max_lat = grip_lat * ct.load * DT;
-            let j_long = (share * (t.track_speed[ct.side] - v.dot(tangent))).clamp(-max_long, max_long);
-            let j_lat = (-share * v.dot(lateral)).clamp(-max_lat, max_lat);
-            Some((tangent * j_long + lateral * j_lat, ct.point))
-        })
-        .collect();
-    let com = b.center_of_mass();
-    // Anti-squat: track and suspension geometry carries part of the drive force
-    // up toward the center of mass, so hard acceleration squats the hull instead
-    // of standing it on its tail. 0 = force at the ground, 1 = at the CoM.
-    for (j, p) in impulses {
-        let lift = (com - p).dot(up).max(0.0) * ANTI_SQUAT;
-        b.apply_impulse_at_point(j, p + up * lift, true);
+    if !contacts.is_empty() {
+        // 4. Ground contacts. Force comes from slip between belt and ground:
+        // along the track the belt can roll, so with no drivetrain torque there's
+        // no slip and no force (a coasting tank rolls on); sideways the belt can't
+        // move at all, so sideways motion is pure slip and meets full friction.
+        // Both directions share one friction limit per contact. Whatever the
+        // ground pushes on the hull, it pushes back on the belt.
+        let share = mass / contacts.len() as f32;
+        let mut per_side = [0usize; 2];
+        for ct in &contacts {
+            per_side[ct.side] += 1;
+        }
+        let mut belt_reaction = [0.0f32; 2];
+        let impulses: Vec<(Vec3, Vec3)> = contacts
+            .iter()
+            .filter_map(|ct| {
+                // Belt direction at the contact, kept in the contact surface.
+                let tangent = (ct.push - ct.normal * ct.push.dot(ct.normal)).normalize_or_zero();
+                if tangent == Vec3::ZERO {
+                    return None;
+                }
+                let lateral = ct.normal.cross(tangent).normalize_or_zero();
+                // Velocities are sampled before any impulse is applied, so every
+                // contact sees the same state.
+                let v = b.velocity_at_point(ct.point);
+                let slip = t.belt[ct.side] - v.dot(tangent);
+                // Zeroing the slip moves both this patch of hull and this side's belt.
+                let belt_share = m_belt / per_side[ct.side] as f32;
+                let m_eff = 1.0 / (1.0 / share + 1.0 / belt_share);
+                let mut j_long = m_eff * slip;
+                let mut j_lat = -share * v.dot(lateral);
+                let max_long = ct.grip * ct.load * DT;
+                let max_lat = h.grip_lat * ct.load * DT;
+                let usage = ((j_long / max_long.max(1e-6)).powi(2) + (j_lat / max_lat.max(1e-6)).powi(2)).sqrt();
+                if usage > 1.0 {
+                    // Sliding: friction opposes the direction the contact is
+                    // actually slipping (belt slip along, hull motion across),
+                    // at the friction limit. When pivoting, the middle of each
+                    // track slips lengthwise and drives the turn, while the ends
+                    // scrub sideways and resist it, as real skid steering does.
+                    let lat_slip = -v.dot(lateral);
+                    let len = (slip * slip + lat_slip * lat_slip).sqrt().max(1e-6);
+                    j_long = max_long * slip / len;
+                    j_lat = max_lat * lat_slip / len;
+                }
+                belt_reaction[ct.side] -= j_long;
+                Some((tangent * j_long + lateral * j_lat, ct.point))
+            })
+            .collect();
+        for s in 0..2 {
+            t.belt[s] += belt_reaction[s] / m_belt;
+        }
+        let com = b.center_of_mass();
+        // Anti-squat: track and suspension geometry carries part of the drive force
+        // up toward the center of mass, so hard acceleration squats the hull instead
+        // of standing it on its tail. 0 = force at the ground, 1 = at the CoM.
+        for (j, p) in impulses {
+            let lift = (com - p).dot(up).max(0.0) * ANTI_SQUAT;
+            b.apply_impulse_at_point(j, p + up * lift, true);
+        }
     }
+    t.track_dist[0] += t.belt[0] * DT;
+    t.track_dist[1] += t.belt[1] * DT;
 }
 
 fn turret(t: &mut Tank, cmd: &Command, dt: f32) {
@@ -1231,6 +1272,47 @@ mod tests {
         }
     }
 
+    /// Tracks roll freely along their length and grip hard sideways: a coasting
+    /// tank rolls on, a sliding one stops almost at once.
+    #[test]
+    fn rolls_forward_freely_but_resists_sliding_sideways() {
+        // Slide: shove a parked tank sideways.
+        let distance = |vel: Vec3, belt: f32| {
+            let mut w = flat_world();
+            run(&mut w, Command::default(), 0.5);
+            w.tanks[0].belt = [belt; 2];
+            w.physics.bodies[w.tanks[0].body].set_linvel(vel, true);
+            let p0 = w.tanks[0].pos;
+            run(&mut w, Command::default(), 8.0);
+            w.tanks[0].pos.distance(p0)
+        };
+        // Coast: drive up to about 6 m/s, then let go.
+        let coast = {
+            let mut w = flat_world();
+            run(&mut w, Command::default(), 0.5);
+            while w.tanks[0].speed() < 6.0 {
+                w.step(&[throttle(1.0)]);
+            }
+            let p0 = w.tanks[0].pos;
+            run(&mut w, Command::default(), 8.0);
+            w.tanks[0].pos.distance(p0)
+        };
+        let slide = distance(Vec3::new(6.0, 0.0, 0.0), 0.0);
+        assert!(coast > 15.0, "coasting from 6 m/s only rolled {coast} m");
+        assert!(slide < 3.0, "sliding sideways from 6 m/s went {slide} m");
+    }
+
+    /// Nudged while parked (no input), the brakes hold.
+    #[test]
+    fn parking_brake_holds() {
+        let mut w = flat_world();
+        run(&mut w, Command::default(), 1.0);
+        let p0 = w.tanks[0].pos;
+        w.fire(0);
+        run(&mut w, Command::default(), 2.0);
+        assert!(w.tanks[0].pos.distance(p0) < 0.3, "rolled {} m after firing while parked", w.tanks[0].pos.distance(p0));
+    }
+
     #[test]
     fn rights_itself_when_flipped() {
         let mut w = flat_world();
@@ -1255,6 +1337,7 @@ mod tests {
         assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
     }
 }
+
 
 
 

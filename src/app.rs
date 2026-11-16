@@ -210,7 +210,6 @@ impl App {
             let t = &mut self.world.tanks[0];
             let base = HullStats::of(t.hull_kind);
             t.hull.grip_lat = base.grip_lat * self.tune_grip;
-            t.hull.grip_lat_turning = base.grip_lat_turning * self.tune_grip;
             t.hull.turn_rate = (base.turn_rate + self.tune_turn).max(0.2);
         }
 
