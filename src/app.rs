@@ -66,7 +66,7 @@ struct App {
     renderer: Option<Renderer>,
     art: Option<TankArt>,
     showroom: Option<ShowroomArgs>,
-    /// The deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
+    /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
     profile: Profile,
     /// How much of `game.xp` is already banked into the profile.
@@ -282,7 +282,7 @@ impl App {
 
     fn start_mission(&mut self, i: usize) {
         let m = &MISSIONS[i];
-        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots);
+        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
         self.load(new_match(
             self.seed,
             self.map_kind,

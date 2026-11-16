@@ -49,8 +49,8 @@ loop.
 
 ## Modes are contracts
 
-- **Attrition** (deathmatch): dropped into a battle, paid per kill until your
-  chassis is lost.
+- **Attrition** (team deathmatch): hired by one side and dropped into its
+  battle, paid per kill. The side with more kills when the clock runs out wins.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,
   carry crystals to your extraction point, deny the enemy theirs. Carrying
   crystals makes you a little stronger, but they resonate, so everyone can see
