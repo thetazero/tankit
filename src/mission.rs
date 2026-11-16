@@ -51,14 +51,14 @@ pub const MISSIONS: &[Mission] = &[
         brief: "PAID PER KILL. MOST KILLS FOR YOUR SIDE TAKES THE TOWN",
     },
     Mission {
-        name: "CRYSTAL VEIN",
+        name: "HOLY GROUND",
         contract: Contract::Hold,
-        map: "SHARD FLATS",
-        map_kind: MapKind::ShardFlats,
+        map: "THE SANCTUM",
+        map_kind: MapKind::Sanctum,
         seed: 0,
         team_size: 6,
         sides: [Faction::Imperium, Faction::Resonant],
-        brief: "SECURE THE DEPOSIT. PAID FOR YOUR TIME ON IT",
+        brief: "HOLD THE ALTAR AT THE HEART OF THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
     },
     Mission {
         name: "KEPT FIRE",

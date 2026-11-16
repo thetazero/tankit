@@ -302,7 +302,12 @@ impl Hud {
                     let mut s = TextStyle::LABEL;
                     s.color = hold_color(m, hd.control);
                     let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
-                    p.text(at, &format!("DEPOSIT  {d:.0} M"), &s, Align::Center);
+                    p.text(
+                        at,
+                        &format!("{}  {d:.0} M", m.world.map.hold_name),
+                        &s,
+                        Align::Center,
+                    );
                 }
             }
         }
@@ -662,7 +667,7 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
 /// side's bar grows left from the middle, theirs right.
 fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     let status = match hd.control {
-        Control::Open => "DEPOSIT OPEN".to_string(),
+        Control::Open => format!("{} OPEN", m.world.map.hold_name),
         Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
         Control::Contested => "CONTESTED".to_string(),
     };
@@ -742,8 +747,12 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
         ),
         (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
     ];
-    let hold = (m.contract == Contract::Hold)
-        .then(|| (format!("ON THE DEPOSIT  {:.0} S", pay.held), pay.hold));
+    let hold = (m.contract == Contract::Hold).then(|| {
+        (
+            format!("ON THE {}  {:.0} S", m.world.map.hold_name, pay.held),
+            pay.hold,
+        )
+    });
     let lines: Vec<_> = lines.into_iter().chain(hold).collect();
     let n = lines.len() as f32;
     for (i, (what, amount)) in lines.iter().enumerate() {

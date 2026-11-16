@@ -35,6 +35,8 @@ pub const SHELL_SPEED: f32 = 160.0;
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
+/// Knocked off the edge this soon after a hit: the hit gets the kill, s.
+const FALL_CREDIT: f32 = 6.0;
 /// A broken Vigil keeps running: at full strength for this long, s...
 pub const HUSK_STRONG: f32 = 2.0;
 /// ...then its speed and firepower fade out over this long, s.
@@ -257,8 +259,9 @@ pub struct Fighter {
     pub deaths: u32,
     /// Who killed this tank last (for the death screen).
     pub killed_by: Option<usize>,
-    /// Seconds since this tank last took a hit.
+    /// Seconds since this tank last took a hit, and who hit it.
     pub since_hit: f32,
+    pub hit_by: Option<usize>,
     /// Seconds since this tank last landed a hit on someone.
     pub since_dealt: f32,
     /// Kit to fit at the next respawn (picked in the garage).
@@ -639,6 +642,7 @@ impl Match {
         }
 
         self.world.step(&cmds);
+        self.falls();
         self.husks();
         self.aim_assist();
 
@@ -963,6 +967,9 @@ impl Match {
         let dealt = amount.min(v.health);
         v.health -= amount;
         v.since_hit = 0.0;
+        if owner != j {
+            v.hit_by = Some(owner);
+        }
         let o = &mut self.fighters[owner];
         o.since_dealt = 0.0;
         if owner != j {
@@ -1041,6 +1048,22 @@ impl Match {
         );
         if let Some(b) = &mut self.bots[victim] {
             b.reset();
+        }
+    }
+
+    /// Over the edge (a mesa map): dead on impact. Whoever hit it last in the
+    /// last few seconds knocked it off and gets the kill.
+    fn falls(&mut self) {
+        let Some(fall_y) = self.world.map.fall_y else {
+            return;
+        };
+        for i in 0..self.fighters.len() {
+            let f = &self.fighters[i];
+            if !f.alive || f.is_husk() || self.world.tanks[i].pos.y > fall_y {
+                continue;
+            }
+            let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
+            self.kill(killer, i);
         }
     }
 
@@ -1166,6 +1189,7 @@ impl Match {
             f.alive = true;
             f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
             f.shield = SPAWN_SHIELD;
+            f.hit_by = None;
             f.reload_in = 0.5;
             f.heat = 0.0;
             f.overheated = false;
@@ -1632,6 +1656,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         deaths: 0,
         killed_by: None,
         since_hit: 10.0,
+        hit_by: None,
         since_dealt: 10.0,
         next_kit: None,
         since_repair: 10.0,
@@ -2133,10 +2158,48 @@ mod tests {
         assert_eq!(m.leader(), Some(0));
     }
 
+    /// Off the mesa's edge: dead when it drops past the fall line, and the
+    /// kill goes to whoever hit it last.
+    #[test]
+    fn falling_off_the_edge_kills() {
+        let mut m = Match::new(Map::sanctum(), 0, 1, 1);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        m.world.set_hull(0, HullKind::Kataphrakt);
+        m.damage(1, 0, 1.0);
+        // Out over the desert floor, well clear of the cliff.
+        m.world.teleport(0, Vec2::new(150.0, 285.0), 0.0);
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(
+            !m.fighters[0].alive,
+            "still alive at y {}",
+            m.world.tanks[0].pos.y
+        );
+        assert_eq!(m.fighters[0].deaths, 1);
+        assert_eq!(m.fighters[1].kills, 1, "the last hit knocked it off");
+    }
+
+    /// A Vigil that goes over runs on at the bottom, as it does anywhere.
+    #[test]
+    fn a_vigil_that_falls_runs_on() {
+        let mut m = Match::new(Map::sanctum(), 0, 0, 1);
+        m.fighters[0].shield = 0.0;
+        m.world.set_hull(0, HullKind::Vigil);
+        m.world.teleport(0, Vec2::new(150.0, 285.0), 0.0);
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[0].alive && m.fighters[0].is_husk());
+        assert_eq!(m.fighters[0].deaths, 1);
+    }
+
     /// Under Hold, bots of both sides go for the site and someone holds it.
     #[test]
     fn bots_go_for_the_hold_site() {
-        let mut m = Match::new(Map::shard_flats(), 0, 5, 5);
+        let mut m = Match::new(Map::sanctum(), 0, 5, 5);
         m.set_contract(Contract::Hold);
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;
@@ -2169,7 +2232,7 @@ mod tests {
 
     #[test]
     fn each_side_spawns_at_its_own_base() {
-        for map in [Map::saltmarket(), Map::shard_flats(), Map::kiln()] {
+        for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
             let m = Match::new(map, 0, 11, 5);
             for (i, f) in m.fighters.iter().enumerate() {
                 let p = Vec2::new(m.world.tanks[i].pos.x, m.world.tanks[i].pos.z);

@@ -31,9 +31,9 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|shards|kiln>
-                          Saltmarket (desert town, the default), Shard Flats (crystal deposit,
-                          the Hold map), or the Kiln (Ithessar ground)
+  --map <saltmarket|sanctum|kiln>
+                          Saltmarket (desert town, the default), the Sanctum (a Resonant church
+                          on a mesa, the Hold map), or the Kiln (Ithessar ground)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
@@ -114,8 +114,8 @@ impl Args {
 pub enum MapKind {
     /// Hand-built desert town on a dry reservoir.
     Saltmarket,
-    /// Placeholder: open flats around a crystal deposit (the Hold map).
-    ShardFlats,
+    /// The Sanctum: a Resonant church on a mesa (the Hold map).
+    Sanctum,
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
 }
@@ -123,7 +123,7 @@ pub enum MapKind {
 pub fn make_map(kind: MapKind) -> map::Map {
     match kind {
         MapKind::Saltmarket => map::Map::saltmarket(),
-        MapKind::ShardFlats => map::Map::shard_flats(),
+        MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
     }
 }
@@ -235,10 +235,10 @@ fn parse_args() -> Result<Args> {
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--map" => match args.next().as_deref() {
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
-                Some("shards") => map_kind = MapKind::ShardFlats,
+                Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 other => {
-                    bail!("--map expects saltmarket, shards or kiln, got {other:?}")
+                    bail!("--map expects saltmarket, sanctum or kiln, got {other:?}")
                 }
             },
             "--spawn" => spawn = args.next().context("--spawn needs a number")?.parse()?,

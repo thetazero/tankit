@@ -1,4 +1,4 @@
-//! Arena geometry: the hand-built maps (Saltmarket, Shard Flats, the Kiln)
+//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln)
 //! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
@@ -12,7 +12,7 @@ mod landmarks;
 mod props;
 mod ruins;
 mod saltmarket;
-mod shard_flats;
+mod sanctum;
 #[cfg(test)]
 mod test_kit;
 
@@ -479,6 +479,11 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// Maps up high (a mesa): a tank that drops below this height has gone
+    /// over the edge and dies on impact.
+    pub fall_y: Option<f32>,
+    /// What the Hold site is called on the HUD.
+    pub hold_name: &'static str,
 }
 
 /// A glowing ribbon on the ground: a bright core fading out to its edges.
@@ -670,8 +675,25 @@ impl Map {
         self.bases.swap(0, 1);
     }
 
+    /// Visible arena walls (the test kit's yard).
+    #[cfg(test)]
     fn perimeter_walls(&mut self) {
         self.perimeter(true);
+    }
+
+    /// Invisible arena walls spanning heights `y0`..`y1` (a map whose floor
+    /// isn't at 0).
+    fn perimeter_at(&mut self, y0: f32, y1: f32) {
+        let s = self.size;
+        let t = 2.0;
+        for (min, max) in [
+            (Vec3::new(-t, y0, -t), Vec3::new(s + t, y1, 0.0)),
+            (Vec3::new(-t, y0, s), Vec3::new(s + t, y1, s + t)),
+            (Vec3::new(-t, y0, 0.0), Vec3::new(0.0, y1, s)),
+            (Vec3::new(s, y0, 0.0), Vec3::new(s + t, y1, s)),
+        ] {
+            self.solids.push(Solid { min, max });
+        }
     }
 
     /// The arena boundary: solid walls, drawn as grey walls or (for maps
@@ -725,6 +747,8 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            fall_y: None,
+            hold_name: "DEPOSIT",
         }
     }
 
@@ -733,6 +757,7 @@ impl Map {
         self.terrain.as_ref().map_or(0.0, |t| t.height_at(x, z))
     }
 
+    #[cfg(test)]
     fn add_block(&mut self, min: Vec3, max: Vec3, color: Vec3) {
         self.boxes.push(VisBox {
             min,
