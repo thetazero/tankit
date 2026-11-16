@@ -127,7 +127,7 @@ impl Map {
                 scenery(p.x, p.y)
             }
         };
-        let face = sculpt_cliff(&mut self.sculpted, &path, &floor, scenery);
+        let face = sculpt_cliff(&mut self.sculpted, &path, &floor, scenery, s);
         // Colliders: pairs of columns, each a slab from the face's most
         // forward point at tank height back into the rock.
         for k in (0..path.len() - 1).step_by(2) {
@@ -268,12 +268,15 @@ impl Map {
     }
 }
 
+/// A straight run from start to end, or an arc round (center, radius).
+type Piece = (Vec2, Vec2, Option<(Vec2, f32)>);
+
 /// A path through `corners` (point, radius: the first and last radius are
 /// ignored), each corner rounded into an arc, sampled every `step` m:
 /// (point, unit normal to its left).
 fn rounded(corners: &[(Vec2, f32)], step: f32) -> Vec<(Vec2, Vec2)> {
     // Straight runs and arcs, as (start, end, Option<(center, radius)>).
-    let mut pieces: Vec<(Vec2, Vec2, Option<(Vec2, f32)>)> = Vec::new();
+    let mut pieces: Vec<Piece> = Vec::new();
     let mut from = corners[0].0;
     for w in corners.windows(3) {
         let (a, (b, r), c) = (w[0].0, w[1], w[2].0);
@@ -355,6 +358,7 @@ fn sculpt_cliff(
     path: &[(Vec2, Vec2)],
     floor: &dyn Fn(Vec2) -> f32,
     scenery: fn(f32, f32) -> f32,
+    size: f32,
 ) -> Vec<(Vec2, f32, f32)> {
     const BAND: f32 = 5.5;
     const STEP: f32 = 0.7;
@@ -398,13 +402,19 @@ fn sculpt_cliff(
     for i in 1..n {
         along[i] = along[i - 1] + path[i].0.distance(path[i - 1].0);
     }
-    let lips: Vec<f32> = path
-        .iter()
-        .map(|&(p, nrm)| {
-            let q = p - nrm * BACK;
-            scenery(q.x, q.y)
-        })
-        .collect();
+    // The lip's height: the plateau's, read the same distance out past the
+    // arena's edge all round (round a corner that's farther back), so the
+    // corners don't sag.
+    let lip_at = |p: Vec2, nrm: Vec2| {
+        let out = |q: Vec2| (q - q.clamp(Vec2::ZERO, Vec2::splat(size))).length();
+        let mut t = BACK;
+        while out(p - nrm * t) < BACK - FOOT && t < 3.0 * BACK {
+            t += 0.5;
+        }
+        let q = p - nrm * t;
+        scenery(q.x, q.y)
+    };
+    let lips: Vec<f32> = path.iter().map(|&(p, nrm)| lip_at(p, nrm)).collect();
     let floors: Vec<f32> = path.iter().map(|&(p, _)| floor(p)).collect();
     // Rows: two for the cap and lip, then down the face to below the floor.
     let deepest = (0..n).map(|i| lips[i] - floors[i]).fold(0.0, f32::max) + 3.0;

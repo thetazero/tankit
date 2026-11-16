@@ -1890,9 +1890,16 @@ mod tests {
                     let p = w.tanks[0].pos;
                     let edge = p.x.min(p.z).min(size - p.x).min(size - p.z);
                     nearest = nearest.min(edge);
-                    highest = highest.max(p.y - w.map.ground_height(p.x, p.z));
+                    // Up on top of something: upright, on its tracks,
+                    // high over the ground (a tank flipping over off the
+                    // wall face doesn't count).
+                    let t = &w.tanks[0];
+                    if t.up().y > 0.8 && (t.wheels_down > 0 || hull == HullKind::Sethuun) {
+                        highest = highest.max(p.y - w.map.ground_height(p.x, p.z));
+                    }
                 }
-                // Tracks can walk the nose up a wall face, but never over it.
+                // Tracks can walk the nose up a wall face (and flip back off
+                // it), but never get over it or up on top.
                 assert!(
                     nearest > 0.0,
                     "{hull:?} from {start} got {} m past the boundary",

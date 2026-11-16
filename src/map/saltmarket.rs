@@ -84,8 +84,9 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
     // North, east and south, the valley's cliffs (valley.rs) hold up a
     // plateau; west, past the barricade, the sand just rolls away.
     let out = p - edge;
-    let west = smoothstep(0.2, 0.8, -out.x / (-out.x + out.y.abs()).max(1e-3));
-    let high = 15.0 + 3.5 * (along * 0.021).sin() + 2.0 * (along * 0.057 + 1.0).sin();
+    let wx = (-out.x).max(0.0);
+    let west = smoothstep(0.2, 0.8, wx / (wx + out.y.abs()).max(1e-3));
+    let high = 15.0 + 3.5 * (along * 0.021 + 4.06).sin() + 2.0 * (along * 0.057 + 1.0).sin();
     let plateau = (1.0 - west) * high * smoothstep(3.0, 9.0, d);
     let berm = berm * (1.0 - 0.7 * (1.0 - west));
     let dunes = smoothstep(10.0, 40.0, d)
