@@ -48,6 +48,16 @@ pub enum TurretKind {
     Hymn,
 }
 
+impl HullKind {
+    pub fn maker(self) -> crate::faction::Faction {
+        use crate::faction::Faction;
+        match self {
+            HullKind::Lancer | HullKind::Bastion => Faction::Imperium,
+            HullKind::Sethuun => Faction::Ithessar,
+        }
+    }
+}
+
 impl TurretKind {
     /// Every turret, grouped by maker. Also the kit's art order.
     pub const ALL: [TurretKind; 6] = [
@@ -273,10 +283,15 @@ impl Chassis {
 }
 
 /// How far a road wheel can rise above its resting position.
-pub const SUSPENSION_TRAVEL_UP: f32 = 0.25;
+pub const SUSPENSION_TRAVEL_UP: f32 = 0.55;
+/// The swept wheel ball's radius as a fraction of the road wheel's: a bit
+/// smaller, so it doesn't catch on walls beside the track.
+const WHEEL_CAST_RADIUS: f32 = 0.85;
 /// Static compression under the tank's own weight (sets spring stiffness).
-pub const SUSPENSION_SAG: f32 = 0.09;
-const SUSPENSION_DAMPING_RATIO: f32 = 0.5;
+pub const SUSPENSION_SAG: f32 = 0.28;
+/// Extra damping on the end road wheels (multiplier added at the ends).
+const END_STATION_DAMPING: f32 = 3.0;
+const SUSPENSION_DAMPING_RATIO: f32 = 0.6;
 /// Fraction of the drive force's lever arm removed by suspension geometry.
 const ANTI_SQUAT: f32 = 0.6;
 /// Drivetrain inertia seen at each belt, as a fraction of the tank's mass.
@@ -932,12 +947,27 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     {
         let filter = QueryFilter::default().exclude_rigid_body(t.body);
         let qp = physics.query_pipeline_with_filter(filter);
+        // Each wheel is a ball swept down from its mount, not a thin ray: it
+        // rolls up onto an edge as it reaches it instead of snapping to the
+        // top when its center passes over (which jolted the hull on every
+        // kerb, rubble step and wall stub). Results are reported as the
+        // equivalent ray length, so the spring math is unchanged.
+        let wheel_r = c.road_r * WHEEL_CAST_RADIUS;
+        let ball = rapier3d::parry::shape::Ball::new(wheel_r);
+        let options = rapier3d::parry::query::ShapeCastOptions {
+            max_time_of_impact: c.free_len() - wheel_r,
+            target_distance: 0.0,
+            stop_at_penetration: true,
+            compute_impact_geometry_on_penetration: true,
+        };
         for (i, hit) in ray_hits.iter_mut().enumerate() {
             let origin = pose.transform_point(c.mount(i));
-            if let Some((_, h)) =
-                qp.cast_ray_and_get_normal(&Ray::new(origin, -up), c.free_len(), true)
-            {
-                *hit = Some((origin, h.normal, h.time_of_impact));
+            let at = Pose::from_parts(origin, pose.rotation);
+            if let Some((_, h)) = qp.cast_shape(&at, -up, &ball, options) {
+                // The ground's outward normal (normal2 is the wheel's own).
+                let n = h.normal1.normalize_or_zero();
+                let n = if n.dot(up) > 0.0 { n } else { up };
+                *hit = Some((origin, n, h.time_of_impact + wheel_r));
             }
         }
     }
@@ -989,6 +1019,17 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // Spring forces; ray contacts join the traction list with the spring load.
     let k = mass * GRAVITY / (n_wheels as f32 * SUSPENSION_SAG);
     let damp = 2.0 * (k * mass / n_wheels as f32).sqrt() * SUSPENSION_DAMPING_RATIO;
+    // The ground plane under the whole tank: the average of the wheels'
+    // ground normals. Bump faces under one or two wheels barely tilt it; a
+    // hill the tank is on does.
+    let plane_n = {
+        let sum: Vec3 = ray_hits.iter().flatten().map(|h| h.1).sum();
+        if sum.length_squared() > 1e-6 {
+            sum.normalize()
+        } else {
+            Vec3::Y
+        }
+    };
     let b = &mut physics.bodies[t.body];
     t.wheels_down = 0;
     for (i, hit) in ray_hits.iter().enumerate() {
@@ -999,8 +1040,21 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 let compression = c.free_len() - toi;
                 // Bump stop: much stiffer once the wheel runs out of travel.
                 let over = (compression - SUSPENSION_SAG - SUSPENSION_TRAVEL_UP).max(0.0);
-                let v_along = b.velocity_at_point(*origin).dot(up);
-                let force = (k * compression + k * 8.0 * over - damp * v_along).max(0.0);
+                // Damp motion toward/away from the ground plane under the
+                // tank. Not along the hull's own up axis (with the nose a few
+                // degrees up, forward speed read as sinking and the damper
+                // lifted the hull off its tracks), and not against each
+                // wheel's local patch (on a bump's face, forward speed read
+                // as charging the ground and the damper launched the tank).
+                let v_along = b.velocity_at_point(*origin).dot(plane_n);
+                // Shock absorbers sit mainly on the end stations, like real
+                // tanks': they damp pitching hard without making the ride
+                // over a bump harsh.
+                let z = c.road_z[i % c.road_z.len()];
+                let reach = c.road_z.iter().fold(0.0f32, |m, z| m.max(z.abs()));
+                let damp = damp * (0.6 + END_STATION_DAMPING * (z.abs() / reach).powi(2));
+                let spring = k * compression;
+                let force = (spring + k * 8.0 * over - damp * v_along).max(0.0);
                 b.apply_impulse_at_point(up * force * DT, *origin, true);
                 contacts.push(TrackContact {
                     point: *origin - up * *toi,
@@ -1428,6 +1482,100 @@ mod tests {
     use super::tests_support::*;
     use super::*;
     use crate::map::{Rise, Terrain};
+
+    /// Ride on a course: (mean |pitch/roll rate|, peak pitch/roll rate,
+    /// worst vertical velocity change in one step, airborne fraction).
+    fn ride(map: Map, start: Vec2, yaw: f32, hull: HullKind, seconds: f32) -> (f32, f32, f32, f32) {
+        let mut w = World::empty(map);
+        w.spawn_tank(Vec3::ONE, start, yaw, hull, TurretKind::Lance);
+        run(&mut w, Command::default(), 1.0);
+        let (mut sum, mut peak, mut jolt, mut air, mut n) =
+            (0.0f32, 0.0f32, 0.0f32, 0usize, 0usize);
+        let mut last = w.tanks[0].vel.y;
+        for _ in 0..(seconds / DT) as usize {
+            w.step(&[throttle(1.0)]);
+            let t = &w.tanks[0];
+            let local = t.rot.inverse() * w.physics.bodies[t.body].angvel();
+            let r = Vec2::new(local.x, local.z).length();
+            sum += r;
+            peak = peak.max(r);
+            jolt = jolt.max((t.vel.y - last).abs());
+            last = t.vel.y;
+            if t.wheels_down == 0 && t.face_contacts == 0 {
+                air += 1;
+            }
+            n += 1;
+        }
+        (sum / n as f32, peak, jolt, air as f32 / n as f32)
+    }
+
+    /// Hard acceleration and braking pitch the hull a little (weight
+    /// transfer) without lifting it off its tracks.
+    #[test]
+    fn rides_level_under_power() {
+        for hull in [HullKind::Lancer, HullKind::Bastion] {
+            let mut w = World::empty(flat_world().map);
+            w.spawn_tank(
+                Vec3::ONE,
+                Vec2::new(100.0, 20.0),
+                0.0,
+                hull,
+                TurretKind::Lance,
+            );
+            run(&mut w, Command::default(), 2.0);
+            let (mut pitch, mut height) = (0.0f32, 0.0f32);
+            for i in 0..(6.0 / DT) as usize {
+                let cmd = if i < (4.0 / DT) as usize {
+                    throttle(1.0)
+                } else {
+                    throttle(-1.0)
+                };
+                w.step(&[cmd]);
+                let t = &w.tanks[0];
+                pitch = pitch.max(t.forward().y.asin().to_degrees().abs());
+                height = height.max(t.pos.y.abs());
+            }
+            assert!(pitch < 7.0, "{hull:?} pitched {pitch} deg");
+            assert!(
+                height < 0.04,
+                "{hull:?} hull lifted {height} m off its tracks"
+            );
+        }
+    }
+
+    /// Full throttle over the proving ground's speed bumps and hills: the
+    /// suspension soaks them up instead of throwing the tank in the air.
+    #[test]
+    fn suspension_soaks_up_bumps() {
+        for hull in [HullKind::Lancer, HullKind::Bastion] {
+            let bumps = ride(
+                Map::proving_ground(),
+                Vec2::new(12.0, 108.0),
+                0.0,
+                hull,
+                5.0,
+            );
+            let hills = ride(
+                Map::proving_ground(),
+                Vec2::new(130.0, 20.0),
+                0.0,
+                hull,
+                8.0,
+            );
+            for (name, (rate, _, jolt, air)) in [("bumps", bumps), ("hills", hills)] {
+                assert!(
+                    air < 0.02,
+                    "{hull:?} airborne {:.0}% of the time on {name}",
+                    air * 100.0
+                );
+                assert!(jolt < 0.6, "{hull:?} {name}: jolt {jolt} m/s in one step");
+                assert!(
+                    rate < 0.15,
+                    "{hull:?} {name}: mean pitch/roll rate {rate} rad/s"
+                );
+            }
+        }
+    }
 
     fn throttle(x: f32) -> Command {
         Command {

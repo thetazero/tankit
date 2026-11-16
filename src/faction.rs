@@ -52,8 +52,8 @@ impl Faction {
         match self {
             // Pale, cold grey-white.
             Faction::Imperium => Vec3::new(0.80, 0.86, 0.98),
-            // Crystal teal.
-            Faction::Resonant => Vec3::new(0.12, 0.78, 0.70),
+            // Crystal blue.
+            Faction::Resonant => Vec3::new(0.14, 0.38, 0.95),
             // Rust orange.
             Faction::Machines => Vec3::new(0.86, 0.46, 0.2),
             // Rose, the color of their plasma cooled.
@@ -65,14 +65,14 @@ impl Faction {
     pub fn ui(self) -> Rgba {
         match self {
             Faction::Imperium => [0.62, 0.78, 1.0, 1.0],
-            Faction::Resonant => [0.25, 0.95, 0.82, 1.0],
+            Faction::Resonant => [0.3, 0.55, 1.0, 1.0],
             Faction::Machines => [1.0, 0.6, 0.3, 1.0],
             Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
         }
     }
 
-    /// The hulls this side's bots drive. Only the Ithessar build their own;
-    /// everyone else fields the common tracked kit.
+    /// The hulls this side's bots drive: the Ithessar their own, everyone
+    /// else the Imperium's tracked hulls (until they have hulls of their own).
     pub fn hulls(self) -> &'static [HullKind] {
         match self {
             Faction::Ithessar => &[HullKind::Sethuun],

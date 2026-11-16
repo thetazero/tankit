@@ -5,8 +5,7 @@
 //!
 //! Every faction starts you on the basic kit. Work its contracts and it trusts
 //! you more; its standing (derived from that trust) decides which of its parts
-//! it will sell you. Hulls have no maker, so your best standing with anyone
-//! unlocks them. Crystals, paid for finished contracts, buy parts and upgrades.
+//! it will sell you. Crystals, paid for finished contracts, buy parts and upgrades.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -113,8 +112,8 @@ impl Default for Settings {
 pub enum Refusal {
     Owned,
     NotOwned,
-    /// Needs this standing with the part's maker (`None`: with any faction, for hulls).
-    Trust(Option<Faction>, u32),
+    /// Needs this standing with the part's maker.
+    Trust(Faction, u32),
     Crystals(u32),
     MaxLevel,
 }
@@ -204,17 +203,9 @@ impl Profile {
         Standing::of(self.trust_of(faction))
     }
 
-    /// Standing that decides whether `part` is for sale: with its maker, or
-    /// the best with anyone for a hull.
+    /// Standing that decides whether `part` is for sale: with its maker.
     pub fn standing_for(&self, part: Part) -> u32 {
-        match part.maker() {
-            Some(f) => self.standing(f).level,
-            None => Faction::ALL
-                .into_iter()
-                .map(|f| self.standing(f).level)
-                .max()
-                .unwrap_or(1),
-        }
+        self.standing(part.maker()).level
     }
 
     /// Every faction trusts you this much (headless shots, tests).
@@ -431,7 +422,7 @@ mod tests {
         assert!(p.owns(Part::Hull(HullKind::Lancer)));
         assert!(!p.owns(MAUL));
         let price = MAUL.price().unwrap();
-        let locked = Err(Refusal::Trust(Some(Faction::Imperium), price.standing));
+        let locked = Err(Refusal::Trust(Faction::Imperium, price.standing));
         assert_eq!(p.buy(MAUL), locked);
         // Trust with someone else doesn't sell you Imperium guns.
         p.add_trust(Faction::Resonant, 10_000);
@@ -450,15 +441,19 @@ mod tests {
         assert_eq!(p.upgrade(MAUL), Err(Refusal::MaxLevel));
     }
 
-    /// Hulls have no maker: standing with any one faction unlocks them.
+    /// Hulls have makers too: only their maker's trust puts them up for sale.
     #[test]
-    fn hulls_unlock_on_your_best_standing() {
+    fn hulls_sell_on_their_makers_trust() {
         let bastion = Part::Hull(HullKind::Bastion);
         let need = bastion.price().unwrap().standing;
         let mut p = Profile::in_memory();
         p.crystals = 100_000;
-        assert_eq!(p.can_buy(bastion), Err(Refusal::Trust(None, need)));
         p.add_trust(Faction::Resonant, 10_000);
+        assert_eq!(
+            p.can_buy(bastion),
+            Err(Refusal::Trust(Faction::Imperium, need))
+        );
+        p.add_trust(Faction::Imperium, 10_000);
         assert!(p.can_buy(bastion).is_ok());
     }
 }

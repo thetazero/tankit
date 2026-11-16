@@ -1481,10 +1481,10 @@ const LASER_GLOW: Skin = Skin {
     face: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
     edge: Vec4::new(1.0, 0.07, 0.04, Material::Glow.id()),
 };
-/// Resonant crystal violet.
+/// Resonant crystal blue.
 const CRYSTAL: Skin = Skin {
-    face: Vec4::new(0.6, 0.25, 1.0, Material::Glow.id()),
-    edge: Vec4::new(0.8, 0.55, 1.0, Material::Glow.id()),
+    face: Vec4::new(0.2, 0.5, 1.0, Material::Glow.id()),
+    edge: Vec4::new(0.55, 0.8, 1.0, Material::Glow.id()),
 };
 
 /// A crystal shard: a hexagonal prism from `base` along `dir`, tapering to a point.
