@@ -29,6 +29,9 @@ const STANDOFF: f32 = 24.0;
 /// With an objective, bots leave it to chase an enemy only this close.
 const GUARD_CHASE: f32 = 40.0;
 
+/// Steepest ground (rise over run) bots will path across.
+const MAX_SLOPE: f32 = 0.7;
+
 pub struct NavGrid {
     nx: usize,
     nz: usize,
@@ -61,8 +64,9 @@ impl NavGrid {
         }
         for o in &map.oboxes {
             // Debris and drivable ramps don't block; neither does anything low or overhead.
+            // (A tall leaning spire is tilted like a ramp, but it's a wall.)
             if !o.solid
-                || o.is_ramp()
+                || (o.is_ramp() && o.y1 - o.y0 < 1.5)
                 || o.y1 - o.y0 < 0.6
                 || o.y0 > map.ground_height(o.center.x, o.center.y) + 1.0
             {
@@ -79,6 +83,21 @@ impl NavGrid {
                 for ix in c0.x as usize..c1.x as usize {
                     let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
                     if o.distance(c) <= CLEARANCE {
+                        blocked[iz * n + ix] = true;
+                    }
+                }
+            }
+        }
+        // Ground too steep to drive up (cliffs, steep banks).
+        if let Some(t) = &map.terrain {
+            for iz in 0..n {
+                for ix in 0..n {
+                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
+                    let h = |d: Vec2| t.height_at(c.x + d.x, c.y + d.y);
+                    let e = NAV_CELL * 0.5;
+                    let gx = (h(Vec2::new(e, 0.0)) - h(Vec2::new(-e, 0.0))) / (2.0 * e);
+                    let gz = (h(Vec2::new(0.0, e)) - h(Vec2::new(0.0, -e))) / (2.0 * e);
+                    if Vec2::new(gx, gz).length() > MAX_SLOPE {
                         blocked[iz * n + ix] = true;
                     }
                 }
