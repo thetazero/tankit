@@ -1121,14 +1121,16 @@ impl Map {
     /// there, and the odd empty lot of rubble.
     fn districts(&mut self, rng: &mut Rng) -> Vec<Drift> {
         let mut drifts = Vec::new();
-        let step = 34.0;
+        // Lots on a 28 m grid, at most 21 m across: streets at least 7 m
+        // wide between them (two tanks pass), most a little wider.
+        let step = 28.0;
         let n = (SIZE / step) as i32;
         for i in 0..n {
             for j in 0..n {
                 let c = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step
-                    + Vec2::new(rng.range(-3.0, 3.0), rng.range(-3.0, 3.0));
-                let half = Vec2::new(rng.range(8.5, 12.5), rng.range(7.5, 11.5));
-                let yaw = if rng.f32() < 0.5 { 0.0 } else { FRAC_PI_2 } + rng.range(-0.05, 0.05);
+                    + Vec2::new(rng.range(-1.5, 1.5), rng.range(-1.5, 1.5));
+                let half = Vec2::new(rng.range(7.5, 9.0), rng.range(6.5, 9.0));
+                let yaw = if rng.f32() < 0.5 { 0.0 } else { FRAC_PI_2 } + rng.range(-0.03, 0.03);
                 let lot = OBox {
                     center: c,
                     yaw,
