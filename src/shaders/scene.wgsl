@@ -16,6 +16,10 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var shadow_tex: texture_depth_2d;
 @group(1) @binding(1) var shadow_samp: sampler_comparison;
+// Procedural surface detail (render/surface.rs): layer 0 = normal/height/cavity,
+// layer 1 = albedo variation, roughness offset, wear, grime.
+@group(1) @binding(2) var surf_tex: texture_2d_array<f32>;
+@group(1) @binding(3) var surf_samp: sampler;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -37,6 +41,10 @@ struct VOut {
     // Object-space position and normal, so surface detail sticks to moving parts.
     @location(4) lpos: vec3<f32>,
     @location(5) lnormal: vec3<f32>,
+    // The part's axes in world space, to rotate object-space normal detail.
+    @location(6) ax: vec3<f32>,
+    @location(7) ay: vec3<f32>,
+    @location(8) az: vec3<f32>,
 };
 
 @vertex
@@ -51,6 +59,9 @@ fn vs_main(v: VIn) -> VOut {
     out.tint = v.tint;
     out.lpos = v.pos;
     out.lnormal = v.normal;
+    out.ax = v.m0.xyz;
+    out.ay = v.m1.xyz;
+    out.az = v.m2.xyz;
     return out;
 }
 
@@ -124,7 +135,7 @@ fn grid_line(x: f32, width: f32, w: f32) -> f32 {
 // Tank materials (ids 6..12) work in object space, so detail moves with the part.
 // Direction (docs/design-direction.md): weathered solid gunmetal, dust and
 // wear; nothing on the machine glows.
-fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, wn: vec3<f32>, duv: vec2<f32>) -> Surface {
+fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: vec3<f32>, wn: vec3<f32>, duv: vec2<f32>, masks: vec4<f32>, cavity: f32) -> Surface {
     var s: Surface;
     s.albedo = base;
     s.rough = 0.6;
@@ -136,19 +147,32 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
     // Grime collects low on the vehicle.
     let grime = mix(0.5, 1.0, smoothstep(0.15, 1.3, wpos.y));
     if (m == 6) {
-        // Bare armor steel: big clean surfaces, only a soft mottle.
-        s.albedo = base * (0.88 + 0.24 * mottle) * grime;
-        s.metal = 0.35;
-        s.rough = 0.7 + 0.1 * mottle;
+        // Bare armor steel: per-plate tone, patchy sheen.
+        let pid = hash2(round(ln.xz * 9.0) + vec2<f32>(round(ln.y * 7.0) * 1.7, 0.0) + floor(lpos.xz * 0.5) * 0.37);
+        s.albedo = base * (0.8 + 0.4 * pid) * (0.85 + 0.3 * mottle) * grime;
+        s.metal = 0.45;
+        s.rough = 0.4 + 0.35 * noise2(uv * 2.1 + 3.0);
     } else if (m == 7 || m == 11) {
-        // Sun-bleached paint over steel; chamfered edges (11) rubbed slightly darker.
-        s.albedo = base * (0.9 + 0.2 * mottle) * grime;
-        s.rough = 0.82;
+        // Painted armor. No two plates are the same tone (each plate has its
+        // own normal, so hashing the normal gives a per-plate value), the
+        // finish is patchy so highlights break up, and grime runs down the
+        // vertical faces in streaks.
+        let pid = hash2(round(ln.xz * 9.0) + vec2<f32>(round(ln.y * 7.0) * 1.7, 0.0) + floor(lpos.xz * 0.5) * 0.37);
+        let tone = 0.8 + 0.4 * pid;
+        s.albedo = base * tone * (0.88 + 0.24 * mottle) * grime;
+        let finish = noise2(uv * 1.6 + vec2<f32>(pid * 13.0, 0.0));
+        s.rough = 0.38 + 0.4 * finish;
+        s.metal = 0.15;
+        // Scratches and chips through the paint to bright steel.
+        let wear = smoothstep(0.25, 0.7, masks.b);
+        s.albedo = mix(s.albedo, vec3<f32>(0.3, 0.3, 0.29), wear);
+        s.metal = mix(s.metal, 0.85, wear);
+        s.rough = mix(s.rough, 0.28, wear);
         if (m == 11) {
-            // Bevels: paint rubbed thin on the edges, catching the light.
-            s.albedo *= 1.35;
-            s.metal = 0.3;
-            s.rough = 0.5;
+            // Bevels: paint rubbed through to bright steel, catching the light.
+            s.albedo = mix(s.albedo * 1.4, vec3<f32>(0.32, 0.31, 0.3), 0.5);
+            s.metal = 0.6;
+            s.rough = 0.3;
         }
     } else if (m == 8) {
         // Track steel, polished where it meets the ground.
@@ -166,17 +190,27 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         s.metal = 0.3;
         s.rough = 0.12;
     }
+    // Texture detail common to all tank finishes: blotchy tone, uneven sheen,
+    // grime streaking down vertical faces, dirt in the cavities.
+    if (m != 12 && m != 10) {
+        s.albedo *= 0.72 + 0.56 * masks.r;
+        s.rough = clamp(s.rough + (masks.g - 0.5) * 0.6, 0.12, 0.95);
+        let vertical = 1.0 - abs(wn.y);
+        s.albedo *= 1.0 - 0.5 * masks.a * vertical;
+        s.rough = mix(s.rough, 0.9, masks.a * vertical * 0.6);
+    }
+    s.ao *= cavity;
     // Value hierarchy: lit top planes, a dark dense underside. Downward faces
     // and everything low on the vehicle lose most of their ambient light.
     let under = smoothstep(0.05, -0.6, wn.y);
     let low_ao = mix(0.3, 1.0, smoothstep(0.2, 1.3, wpos.y));
     s.albedo *= 1.0 - under * 0.45;
-    s.ao = low_ao * (1.0 - under * 0.5);
+    s.ao *= low_ao * (1.0 - under * 0.5);
     // An even film of fine dust over everything, a little heavier on top and low down.
     if (m != 12) {
         let up = smoothstep(0.3, 0.95, wn.y);
         let low = 1.0 - smoothstep(0.2, 1.0, wpos.y);
-        let d = clamp(0.1 + up * 0.14 + low * 0.14 + (noise2(uv * 1.5 + 7.0) - 0.5) * 0.08, 0.0, 0.45);
+        let d = clamp(0.03 + up * 0.12 + low * 0.18 + (noise2(uv * 1.5 + 7.0) - 0.5) * 0.1, 0.0, 0.4);
         s.albedo = mix(s.albedo, vec3<f32>(0.3, 0.27, 0.22), d);
         s.rough = mix(s.rough, 0.95, d);
         s.metal *= 1.0 - d;
@@ -256,6 +290,25 @@ fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
     return mix(c, sky_color(vec3<f32>(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), f);
 }
 
+// GGX / Smith / Schlick specular, scaled by pi to match this renderer's
+// un-normalized Lambert diffuse.
+fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    let h = normalize(v + l);
+    let nl = max(dot(n, l), 0.0);
+    let nv = max(dot(n, v), 0.001);
+    let nh = max(dot(n, h), 0.0);
+    let vh = max(dot(v, h), 0.0);
+    let a = max(rough * rough, 0.002);
+    let a2 = a * a;
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let d = a2 / (3.14159 * dd * dd);
+    let k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    let gv = nv / (nv * (1.0 - k) + k);
+    let gl = nl / (nl * (1.0 - k) + k);
+    let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+    return d * gv * gl * f / (4.0 * nv * max(nl, 0.001)) * 3.14159;
+}
+
 @fragment
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
@@ -271,9 +324,29 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
         base = v.color.rgb * team;
     }
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
+
+    // Triplanar surface detail in object space (sampled for every fragment:
+    // texture sampling has to happen in uniform control flow).
+    let ln0 = normalize(v.lnormal);
+    var tw = pow(abs(ln0), vec3<f32>(4.0));
+    tw = tw / (tw.x + tw.y + tw.z);
+    let tp = v.lpos * 0.9;
+    let sX = textureSample(surf_tex, surf_samp, tp.zy, 0);
+    let sY = textureSample(surf_tex, surf_samp, tp.xz, 0);
+    let sZ = textureSample(surf_tex, surf_samp, tp.xy, 0);
+    let masks = textureSample(surf_tex, surf_samp, tp.zy, 1) * tw.x + textureSample(surf_tex, surf_samp, tp.xz, 1) * tw.y + textureSample(surf_tex, surf_samp, tp.xy, 1) * tw.z;
+    let cavity = sX.a * tw.x + sY.a * tw.y + sZ.a * tw.z;
+    let tX = sX.xy * 2.0 - 1.0;
+    let tY = sY.xy * 2.0 - 1.0;
+    let tZ = sZ.xy * 2.0 - 1.0;
+    let bump = 0.3;
+    let n_obj = normalize(ln0 + bump * (tw.x * vec3<f32>(0.0, tX.y, tX.x) + tw.y * vec3<f32>(tY.x, 0.0, tY.y) + tw.z * vec3<f32>(tZ.x, tZ.y, 0.0)));
+    let n_detail = normalize(normalize(v.ax) * n_obj.x + normalize(v.ay) * n_obj.y + normalize(v.az) * n_obj.z);
+
     var s: Surface;
     if (is_tank) {
-        s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, n, duv);
+        n = n_detail;
+        s = tank_surface(m, base, v.lpos, ln0, v.wpos, n, duv, masks, cavity);
     } else {
         s = surface(v.color.a, base, v.wpos, n);
     }
@@ -296,9 +369,23 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let diffuse = s.albedo * (1.0 - s.metal * 0.75);
     let r = reflect(-view, n);
     let env = mix(g.ground_color.rgb * 0.7, mix(g.sky_horizon.rgb, g.sky_zenith.rgb, clamp(r.y, 0.0, 1.0)), smoothstep(-0.15, 0.15, r.y));
-    var c = diffuse * hemi * 0.5 * s.ao;
-    c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
-    c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
+    var c = vec3<f32>(0.0);
+    if (is_tank) {
+        // Physically based: GGX highlights, metals tint their reflections,
+        // reflections blur toward the average sky as roughness rises, and the
+        // shadow side gets only modest fill so form reads from light.
+        let f0v = mix(vec3<f32>(0.04), s.albedo, s.metal);
+        let kd = s.albedo * (1.0 - s.metal);
+        let nv = max(dot(n, view), 0.0);
+        c = (kd + ggx_spec(n, view, l, s.rough, f0v)) * g.sun_color.rgb * ndl * sh;
+        let fr = f0v + (max(vec3<f32>(1.0 - s.rough), f0v) - f0v) * pow(1.0 - nv, 5.0);
+        let env_soft = mix(env, mix(g.sky_horizon.rgb, g.ground_color.rgb, 0.4) * 0.8, s.rough);
+        c += kd * hemi * 0.32 * s.ao + env_soft * fr * s.ao * 0.4;
+    } else {
+        c = diffuse * hemi * 0.5 * s.ao;
+        c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
+        c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
+    }
     c += s.emissive;
 
     // Emissive instances (effects, pickups) replace lighting with their own glow.

@@ -46,7 +46,14 @@ Lancer/Bastion and Lance/Maul are proportions and gun fits on shared forms,
 and mix freely. Proportions are deliberately exaggerated (wide tracks, a big
 turret set forward, a thick gun, a roofline leaning into a long wedge nose).
 Ambient occlusion is baked into the vertex colors at startup
-(`MeshData::bake_ao`), so joints, creases and overhangs read dark. The look follows `docs/design-direction.md`.
+(`MeshData::bake_ao`), so joints, creases and overhangs read dark.
+
+Rendering for vehicles: procedural surface textures are generated at startup
+(`render/surface.rs`: hammered/dented plate normals, scratches, chips, paint
+blotching, roughness variation, grime streaks; tileable, mipmapped) and
+sampled triplanar in each part's object space, so they need no UVs and move
+with the part. Lighting on vehicles is physically based (GGX highlights,
+metal-tinted reflections, roughness-blurred sky reflection). The look follows `docs/design-direction.md`.
 
 Machinery that moves with the tank:
 - tread links run around the wheels at each side's own speed

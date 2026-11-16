@@ -37,9 +37,9 @@ pub struct Skin {
     edge: Vec4,
 }
 
-pub const CARBON: Skin = Skin { face: Vec4::new(0.13, 0.125, 0.115, mat::STEEL), edge: Vec4::new(0.17, 0.165, 0.15, mat::STEEL) };
-pub const CARBON_LIGHT: Skin = Skin { face: Vec4::new(0.16, 0.155, 0.14, mat::STEEL), edge: Vec4::new(0.2, 0.19, 0.17, mat::STEEL) };
-pub const PAINT: Skin = Skin { face: Vec4::new(0.22, 0.21, 0.19, mat::PAINT), edge: Vec4::new(0.22, 0.21, 0.19, mat::WORN) };
+pub const CARBON: Skin = Skin { face: Vec4::new(0.055, 0.056, 0.058, mat::STEEL), edge: Vec4::new(0.1, 0.1, 0.1, mat::STEEL) };
+pub const CARBON_LIGHT: Skin = Skin { face: Vec4::new(0.09, 0.09, 0.092, mat::STEEL), edge: Vec4::new(0.15, 0.15, 0.15, mat::STEEL) };
+pub const PAINT: Skin = Skin { face: Vec4::new(0.15, 0.155, 0.15, mat::PAINT), edge: Vec4::new(0.15, 0.155, 0.15, mat::WORN) };
 pub const METAL: Skin = Skin { face: Vec4::new(0.3, 0.3, 0.31, mat::METAL), edge: Vec4::new(0.4, 0.4, 0.4, mat::METAL) };
 pub const TREAD: Skin = Skin { face: Vec4::new(0.1, 0.1, 0.1, mat::TREAD), edge: Vec4::new(0.18, 0.18, 0.18, mat::TREAD) };
 pub const RUBBER: Skin = Skin { face: Vec4::new(0.07, 0.07, 0.07, mat::STEEL), edge: Vec4::new(0.1, 0.1, 0.1, mat::STEEL) };
