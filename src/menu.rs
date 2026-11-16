@@ -65,8 +65,6 @@ pub enum Hit {
     Row(usize),
     /// The volume bar; where along it picks the level.
     Volume,
-    /// A key hint: clicking it presses the key.
-    Key(Nav),
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -225,7 +223,6 @@ impl Menu {
         let i = match hit {
             Hit::Row(i) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Key(_) => return false,
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
@@ -247,7 +244,6 @@ impl Menu {
                 );
             }
             Hit::Row(_) => Nav::Select,
-            Hit::Key(nav) => nav,
         };
         (nav, self.input(nav))
     }
@@ -296,23 +292,6 @@ impl Menu {
                     &kit_name(profile.loadout),
                     &TextStyle::value(12.0),
                     Align::Left,
-                );
-                hints(
-                    &mut p,
-                    &mut hits,
-                    x,
-                    h,
-                    &[
-                        ("W/S", "SELECT", None),
-                        (
-                            "ENTER",
-                            match MAIN_ITEMS[self.cursor] {
-                                Item::Opens(_) => "OPEN",
-                                Item::Leaves(name, _) => name,
-                            },
-                            Some(Nav::Select),
-                        ),
-                    ],
                 );
             }
             Screen::Factions => {
@@ -363,17 +342,6 @@ impl Menu {
                 }
                 y += 8.0;
                 wrap(&mut p, Vec2::new(x, y), &maps);
-                hints(
-                    &mut p,
-                    &mut hits,
-                    x,
-                    h,
-                    &[
-                        ("W/S", "SELECT", None),
-                        ("ENTER", "CONTRACTS", Some(Nav::Select)),
-                        ("ESC", "BACK", Some(Nav::Back)),
-                    ],
-                );
             }
             Screen::Missions => {
                 let employer = self.employer();
@@ -463,17 +431,6 @@ impl Menu {
                 let brief = m.briefs[m.side_of(employer)];
                 let words: Vec<String> = brief.split(' ').map(String::from).collect();
                 wrap(&mut p, Vec2::new(x, y), &words);
-                hints(
-                    &mut p,
-                    &mut hits,
-                    x,
-                    h,
-                    &[
-                        ("W/S", "SELECT", None),
-                        ("ENTER", "DEPLOY", Some(Nav::Select)),
-                        ("ESC", "BACK", Some(Nav::Back)),
-                    ],
-                );
             }
             Screen::Settings => {
                 label(&mut p, Vec2::new(x, y), "03  SETTINGS", Align::Left);
@@ -484,18 +441,6 @@ impl Menu {
                     Vec2::new(x, y),
                     &profile.settings,
                     self.setting,
-                );
-                hints(
-                    &mut p,
-                    &mut hits,
-                    x,
-                    h,
-                    &[
-                        ("W/S", "SELECT", None),
-                        ("ENTER", "TOGGLE", Some(Nav::Select)),
-                        ("A/D", "VOLUME", None),
-                        ("ESC", "BACK", Some(Nav::Back)),
-                    ],
                 );
             }
         }
@@ -563,7 +508,6 @@ impl Pause {
         let i = match hit {
             Hit::Row(i) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Key(_) => return false,
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
         std::mem::replace(slot, i) != i
@@ -580,7 +524,6 @@ impl Pause {
                 );
             }
             Hit::Row(_) => Nav::Select,
-            Hit::Key(nav) => nav,
         };
         (nav, self.input(nav))
     }
@@ -618,16 +561,6 @@ impl Pause {
         y += 44.0;
         if let Some(i) = self.settings {
             settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
-            hint_row(
-                &mut p,
-                &mut hits,
-                Vec2::new(x, min.y + size.y - 34.0),
-                &[
-                    ("ENTER", "TOGGLE", Some(Nav::Select)),
-                    ("A/D", "VOLUME", None),
-                    ("ESC", "BACK", Some(Nav::Back)),
-                ],
-            );
             return Layer {
                 verts: p.finish(),
                 hits,
@@ -910,52 +843,6 @@ fn wrap(p: &mut Painter, at: Vec2, words: &[String]) {
     label(p, Vec2::new(at.x, y), &line, Align::Left);
 }
 
-/// Key hints along the bottom; the ones with a key to press can be clicked.
-fn hints(
-    p: &mut Painter,
-    hits: &mut Hits<Hit>,
-    x: f32,
-    h: f32,
-    keys: &[(&str, &str, Option<Nav>)],
-) {
-    let mut y = h - 100.0;
-    for (key, what, nav) in keys {
-        let mut k = TextStyle::LABEL;
-        k.color = theme::FG;
-        p.text(Vec2::new(x, y), key, &k, Align::Left);
-        let w = label(p, Vec2::new(x + 70.0, y), what, Align::Left);
-        if let Some(nav) = nav {
-            hits.add(
-                p,
-                Vec2::new(x - 4.0, y - 3.0),
-                Vec2::new(74.0 + w + 4.0, 14.0),
-                Hit::Key(*nav),
-            );
-        }
-        y += 14.0;
-    }
-}
-
-/// Key hints on one line from `at`, the ones that do something clickable.
-fn hint_row(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, keys: &[(&str, &str, Option<Nav>)]) {
-    let mut x = at.x;
-    for (key, what, nav) in keys {
-        let mut k = TextStyle::LABEL;
-        k.color = theme::FG;
-        let kw = p.text(Vec2::new(x, at.y), key, &k, Align::Left);
-        let w = kw + 6.0 + label(p, Vec2::new(x + kw + 6.0, at.y), what, Align::Left);
-        if let Some(nav) = nav {
-            hits.add(
-                p,
-                Vec2::new(x - 4.0, at.y - 3.0),
-                Vec2::new(w + 8.0, 14.0),
-                Hit::Key(*nav),
-            );
-        }
-        x += w + 24.0;
-    }
-}
-
 pub fn kit_name(kit: Loadout) -> String {
     format!(
         "{} · {}",
@@ -1131,8 +1018,9 @@ mod tests {
             click_drawn(&mut m, &profile, Hit::Row(0)),
             (Nav::Select, Some(Action::Deploy(2, 0)))
         );
-        click_drawn(&mut m, &profile, Hit::Key(Nav::Back));
-        click_drawn(&mut m, &profile, Hit::Key(Nav::Back));
+        // Esc, or a right click, goes back.
+        m.input(Nav::Back);
+        m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
 
         m.screen = Screen::Settings;
@@ -1167,8 +1055,8 @@ mod tests {
             click(&mut p, Hit::Row(0)).1,
             Some(PauseAction::Setting(Change::Toggle(0)))
         );
-        // The footer's ESC BACK leaves settings, like the key.
-        click(&mut p, Hit::Key(Nav::Back));
+        // Back leaves settings.
+        p.input(Nav::Back);
         assert_eq!(p.settings, None);
     }
 

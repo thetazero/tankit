@@ -900,7 +900,7 @@ impl App {
                 self.fps = fps;
                 let t = &self.game.world.tanks[0];
                 w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2} ([ ])  turn {:.1} rad/s (; ')  Backspace reset  |  WASD, Z/X/C turret, Space fire, Tab scores, G garage, Esc pause",
+                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2}  turn {:.1} rad/s",
                     t.speed(),
                     if t.grounded() { "ground" } else { "AIR" },
                     self.tune_grip,

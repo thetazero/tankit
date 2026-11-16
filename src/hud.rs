@@ -487,19 +487,8 @@ impl Hud {
         let br = Vec2::new(w - MARGIN, h - MARGIN);
         widgets::turret_gauge(&mut p, br + Vec2::new(-30.0, -30.0), tank.turret_rel);
 
-        // Bottom centre: how to get to the garage.
-        let mut key = TextStyle::LABEL;
-        key.color = theme::FG;
-        let hint = Vec2::new(w * 0.5, h - MARGIN - 8.0);
-        let gw = crate::ui::measure("GARAGE", &TextStyle::LABEL);
-        p.text(
-            hint - Vec2::new(gw * 0.5 + 10.0, 0.0),
-            "G",
-            &key,
-            Align::Right,
-        );
-        label(&mut p, hint, "GARAGE", Align::Center);
-        // Above it: the kit queued for the next respawn, if any.
+        // Bottom centre: the kit queued for the next respawn, if any.
+        let at = Vec2::new(w * 0.5, h - MARGIN - 8.0);
         if let Some((hull, turret)) = me.next_kit {
             let kit = format!(
                 "{} · {}",
@@ -508,12 +497,12 @@ impl Hud {
             );
             label(
                 &mut p,
-                hint - Vec2::new(0.0, 30.0),
+                at - Vec2::new(0.0, 30.0),
                 "NEXT SPAWN",
                 Align::Center,
             );
             p.text(
-                hint - Vec2::new(0.0, 18.0),
+                at - Vec2::new(0.0, 18.0),
                 &kit,
                 &TextStyle::value(10.0),
                 Align::Center,
@@ -668,33 +657,22 @@ const BUTTON_GAP: f32 = 16.0;
 /// The round-over choices, side by side and centred on `top`: buttons that
 /// click like their keys.
 fn round_over_buttons(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, top: Vec2) {
-    let buttons = [("ENTER", "AGAIN", Hit::Again), ("ESC", "MENU", Hit::Menu)];
+    let buttons = [("AGAIN", Hit::Again), ("MENU", Hit::Menu)];
     let style = TextStyle::LABEL;
-    let key_gap = 10.0;
-    let width = |key: &str, what: &str| {
-        BUTTON_PAD * 2.0 + measure(key, &style) + key_gap + measure(what, &style)
-    };
-    let total = buttons.iter().map(|(k, w, _)| width(k, w)).sum::<f32>()
+    let width = |what: &str| BUTTON_PAD * 2.0 + measure(what, &style);
+    let total = buttons.iter().map(|(w, _)| width(w)).sum::<f32>()
         + BUTTON_GAP * (buttons.len() - 1) as f32;
     let mut x = top.x - total * 0.5;
-    for (key, what, id) in buttons {
+    for (what, id) in buttons {
         let min = Vec2::new(x, top.y);
-        let size = Vec2::new(width(key, what), BUTTON_H);
+        let size = Vec2::new(width(what), BUTTON_H);
         let fill = if hover == Some(id) { 0.16 } else { 0.07 };
         p.rect(min, size, with_alpha(theme::FG, fill));
         p.rect_outline(min, size, 1.0, theme::FG);
         let ty = min.y + (BUTTON_H - style.size) * 0.5;
-        let mut k = style;
-        k.color = theme::HOT;
-        let kw = p.text(Vec2::new(min.x + BUTTON_PAD, ty), key, &k, Align::Left);
         let mut a = style;
         a.color = theme::FG;
-        p.text(
-            Vec2::new(min.x + BUTTON_PAD + kw + key_gap, ty),
-            what,
-            &a,
-            Align::Left,
-        );
+        p.text(Vec2::new(min.x + BUTTON_PAD, ty), what, &a, Align::Left);
         hits.add(p, min, size, id);
         x += size.x + BUTTON_GAP;
     }
