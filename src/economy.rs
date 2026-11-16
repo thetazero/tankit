@@ -1,7 +1,7 @@
 //! Crystals: what contracts pay and what parts cost.
 //!
-//! A finished contract pays crystals (completion, placement, contribution,
-//! kill bounty, and time held under Hold); XP stays for actions in the match. Crystals buy parts (which
+//! A finished contract pays crystals (completion, your side's victory,
+//! contribution, kill bounty, and your time on the site under Hold); XP stays for actions in the match. Crystals buy parts (which
 //! pilot rank unlocks for sale) and upgrade them through M0..M3.
 
 use crate::combat::{self, Gun, Match};
@@ -104,47 +104,47 @@ impl Levels {
     }
 }
 
-/// Contract pay: flat for finishing, by placement, for damage dealt.
+/// Contract pay: flat for finishing, for your side winning (half on a draw),
+/// for damage dealt, per kill.
 const COMPLETION: u32 = 50;
-const PLACEMENT_MAX: u32 = 100;
+const VICTORY: u32 = 100;
 const DAMAGE_PER_CRYSTAL: f32 = 10.0;
 const BOUNTY: u32 = 15;
-/// Hold contract: crystals per second you held the site.
-const HOLD_PER_SECOND: f32 = 1.5;
+/// Hold contract: crystals per second of your own on the site.
+const HOLD_PER_SECOND: f32 = 1.0;
 
 /// The player's pay for a finished round, line by line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Payout {
     pub completion: u32,
-    /// 1-based place, of `field`.
-    pub place: usize,
-    pub field: usize,
-    pub placement: u32,
+    /// How the player's side did.
+    pub outcome: Outcome,
+    pub victory: u32,
     pub damage: f32,
     pub contribution: u32,
     pub kills: u32,
     pub bounty: u32,
-    /// Seconds held, under the Hold contract.
+    /// Seconds of your own on the site, under the Hold contract.
     pub held: f32,
     pub hold: u32,
 }
 
 impl Payout {
     pub fn of(m: &Match) -> Payout {
-        let field = m.fighters.len();
-        let place = m.standings().iter().position(|&i| i == 0).unwrap_or(0) + 1;
-        // First takes it all, last nothing; alone, you're first.
-        let placement = if field <= 1 {
-            PLACEMENT_MAX
-        } else {
-            (PLACEMENT_MAX as f32 * (field - place) as f32 / (field - 1) as f32).round() as u32
-        };
         let me = m.player();
+        let outcome = match m.leader() {
+            None => Outcome::Draw,
+            Some(t) if t == me.team => Outcome::Won,
+            Some(_) => Outcome::Lost,
+        };
         Payout {
             completion: COMPLETION,
-            place,
-            field,
-            placement,
+            outcome,
+            victory: match outcome {
+                Outcome::Won => VICTORY,
+                Outcome::Draw => VICTORY / 2,
+                Outcome::Lost => 0,
+            },
             damage: me.damage_dealt,
             contribution: (me.damage_dealt / DAMAGE_PER_CRYSTAL) as u32,
             kills: me.kills,
@@ -155,8 +155,15 @@ impl Payout {
     }
 
     pub fn total(&self) -> u32 {
-        self.completion + self.placement + self.contribution + self.bounty + self.hold
+        self.completion + self.victory + self.contribution + self.bounty + self.hold
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Won,
+    Draw,
+    Lost,
 }
 
 #[cfg(test)]
@@ -182,33 +189,48 @@ mod tests {
     }
 
     #[test]
-    fn payout_scales_with_place_and_contribution() {
+    fn payout_scales_with_victory_and_contribution() {
         let mut m = Match::new(crate::map::Map::generate(21), 0, 5, 21);
         m.fighters[0].kills = 3;
         m.fighters[0].damage_dealt = 205.0;
         let p = Payout::of(&m);
-        assert_eq!((p.place, p.field), (1, 6));
-        assert_eq!(p.placement, PLACEMENT_MAX);
+        assert_eq!(p.outcome, Outcome::Won);
+        assert_eq!(p.victory, VICTORY);
         assert_eq!(p.contribution, 20);
         assert_eq!(p.bounty, 3 * BOUNTY);
-        assert_eq!(p.total(), COMPLETION + PLACEMENT_MAX + 20 + 3 * BOUNTY);
-        // Dead last: still paid for showing up.
-        for f in &mut m.fighters[1..] {
+        assert_eq!(p.total(), COMPLETION + VICTORY + 20 + 3 * BOUNTY);
+        // Your side lost: still paid for showing up and for your own kills.
+        for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
             f.kills = 5;
         }
         let p = Payout::of(&m);
-        assert_eq!((p.place, p.placement), (6, 0));
-        assert_eq!(p.hold, 0);
+        assert_eq!((p.outcome, p.victory), (Outcome::Lost, 0));
+        assert_eq!(p.bounty, 3 * BOUNTY);
+        // Level: half.
+        let enemy_kills: u32 = m
+            .fighters
+            .iter()
+            .filter(|f| f.team == 1)
+            .map(|f| f.kills)
+            .sum();
+        m.fighters[0].kills = enemy_kills;
+        let p = Payout::of(&m);
+        assert_eq!((p.outcome, p.victory), (Outcome::Draw, VICTORY / 2));
     }
 
     #[test]
-    fn hold_pays_for_time_held() {
-        let mut m = Match::new(crate::map::Map::generate(21), 0, 2, 21);
+    fn hold_pays_for_your_time_on_the_site_and_your_side_holding_longest() {
+        let mut m = Match::new(crate::map::Map::generate(21), 0, 3, 21);
         m.set_contract(crate::mission::Contract::Hold);
-        m.hold.as_mut().unwrap().held[0] = 40.0;
+        for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
+            f.kills = 5;
+        }
+        let h = m.hold.as_mut().unwrap();
+        h.held[0] = 50.0;
+        h.own[0] = 40.0;
         let p = Payout::of(&m);
-        assert_eq!(p.place, 1, "time held beats kills");
+        assert_eq!(p.outcome, Outcome::Won, "time held beats kills");
         assert_eq!(p.hold, (40.0 * HOLD_PER_SECOND) as u32);
-        assert_eq!(p.total(), COMPLETION + PLACEMENT_MAX + p.hold);
+        assert_eq!(p.total(), COMPLETION + VICTORY + p.hold);
     }
 }

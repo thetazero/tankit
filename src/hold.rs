@@ -1,8 +1,11 @@
-//! Hold contract (king of the hill, every tank for itself): one site per map
-//! (`Map::hold_site`, else the open spot nearest the middle). A tank alone in
-//! the ring holds it and banks held time; two or more in it contest it and
-//! nobody scores. First to `TARGET` seconds held ends the round, otherwise
-//! the clock does.
+//! Hold contract (king of the hill, side against side): one site per map,
+//! a crystal deposit (`Map::hold_site`, else the open spot nearest the
+//! middle). A side with tanks in the ring and the other side's none holds
+//! it and banks time; both in it contest it and nobody scores. First side to
+//! `TARGET` seconds held ends the round, otherwise the clock does.
+//!
+//! Each tank's own time in the ring while its side holds is kept too: it
+//! orders the scoreboard and pays the player's HOLD line.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
@@ -12,9 +15,9 @@ use crate::sim::Tank;
 
 /// Ring radius, m.
 pub const RADIUS: f32 = 13.0;
-/// Seconds held that win the round outright.
-pub const TARGET: f32 = 90.0;
-/// The player earns `HOLD_XP` for every `XP_EVERY` seconds held.
+/// Seconds held by one side that win the round outright.
+pub const TARGET: f32 = 120.0;
+/// The player earns `HOLD_XP` for every `XP_EVERY` seconds of their own on the site.
 pub const XP_EVERY: f32 = 10.0;
 pub const HOLD_XP: u32 = 5;
 /// Tanks further than this above or below the ring's ground (a roof, a ledge) don't count.
@@ -26,17 +29,19 @@ const POSTS: usize = 4;
 pub enum Control {
     /// Nobody in the ring.
     Open,
-    /// This tank is alone in it.
+    /// Only this side's tanks are in it.
     Held(usize),
-    /// Two or more tanks in it.
+    /// Both sides are in it.
     Contested,
 }
 
 pub struct Hold {
     pub at: Vec2,
     pub ground: f32,
-    /// Seconds each tank has held the site this round.
-    pub held: Vec<f32>,
+    /// Seconds each side has held the site this round.
+    pub held: [f32; 2],
+    /// Seconds each tank has spent on the site while its side held it.
+    pub own: Vec<f32>,
     pub control: Control,
     /// Ground height under each dash of the ring.
     dash_y: Vec<f32>,
@@ -61,7 +66,8 @@ impl Hold {
         Hold {
             at,
             ground: map.ground_height(at.x, at.y),
-            held: vec![0.0; tanks],
+            held: [0.0; 2],
+            own: vec![0.0; tanks],
             control: Control::Open,
             dash_y,
         }
@@ -72,40 +78,49 @@ impl Hold {
         Vec2::new(p.x, p.z).distance(self.at) < RADIUS && (p.y - self.ground).abs() < REACH_Y
     }
 
-    /// Advance by `dt`: who's in the ring (of the tanks `counts` lets in), and
-    /// bank time for a lone holder. Returns the holder, if any.
+    /// Advance by `dt`. `side(i)` is tank `i`'s side, or `None` if it doesn't
+    /// count (a wreck). Returns the side holding, if any.
     pub fn step(
         &mut self,
         dt: f32,
         tanks: &[Tank],
-        counts: impl Fn(usize) -> bool,
+        side: impl Fn(usize) -> Option<usize>,
     ) -> Option<usize> {
-        self.held.resize(tanks.len(), 0.0);
-        let mut inside = (0..tanks.len()).filter(|&i| counts(i) && self.inside(tanks[i].pos));
-        self.control = match (inside.next(), inside.next()) {
-            (None, _) => Control::Open,
-            (Some(i), None) => Control::Held(i),
-            _ => Control::Contested,
+        self.own.resize(tanks.len(), 0.0);
+        let on: Vec<(usize, usize)> = (0..tanks.len())
+            .filter_map(|i| side(i).map(|s| (i, s)))
+            .filter(|&(i, _)| self.inside(tanks[i].pos))
+            .collect();
+        let present = [0, 1].map(|s| on.iter().any(|&(_, t)| t == s));
+        self.control = match present {
+            [false, false] => Control::Open,
+            [true, false] => Control::Held(0),
+            [false, true] => Control::Held(1),
+            [true, true] => Control::Contested,
         };
-        let Control::Held(i) = self.control else {
+        let Control::Held(s) = self.control else {
             return None;
         };
-        self.held[i] = (self.held[i] + dt).min(TARGET);
-        Some(i)
+        self.held[s] = (self.held[s] + dt).min(TARGET);
+        for &(i, _) in &on {
+            self.own[i] += dt;
+        }
+        Some(s)
     }
 
-    /// Whoever has reached `TARGET`.
+    /// The side that has reached `TARGET`.
     pub fn winner(&self) -> Option<usize> {
-        self.held.iter().position(|&h| h >= TARGET)
+        (0..2).find(|&s| self.held[s] >= TARGET)
     }
 
     /// The ring painted on the ground and its four marker posts, tinted by
-    /// who has it: plain paint when open, the holder's color, flickering when contested.
-    pub fn instances(&self, time: f32, tanks: &[Tank], out: &mut Vec<(MeshId, Instance)>) {
-        let paint = Vec3::new(0.86, 0.82, 0.72);
+    /// who has it: plain paint when open, the holding side's paint,
+    /// flickering orange when contested.
+    pub fn instances(&self, time: f32, paint: [Vec3; 2], out: &mut Vec<(MeshId, Instance)>) {
+        let plain = Vec3::new(0.86, 0.82, 0.72);
         let (color, glow) = match self.control {
-            Control::Open => (paint, 0.0),
-            Control::Held(i) => (tanks[i].color, 0.9),
+            Control::Open => (plain, 0.0),
+            Control::Held(s) => (paint[s], 0.9),
             Control::Contested => (
                 Vec3::new(1.0, 0.55, 0.25),
                 if (time * 5.0).fract() < 0.5 { 1.2 } else { 0.3 },
@@ -114,8 +129,7 @@ impl Hold {
         let dash_len = std::f32::consts::TAU * RADIUS / DASHES as f32 * 0.55;
         for (i, &y) in self.dash_y.iter().enumerate() {
             let f = i as f32 / DASHES as f32;
-            let d = ring_dir(f);
-            let p = self.at + d * RADIUS;
+            let p = self.at + ring_dir(f) * RADIUS;
             // Long side along the ring's tangent.
             let q = Quat::from_rotation_y(-f * std::f32::consts::TAU);
             out.push((
@@ -192,29 +206,42 @@ mod tests {
         w.tanks[i].pos = Vec3::new(p.x, h.ground + 0.5, p.y);
     }
 
+    /// Tanks 0 and 1 on side 0, the rest on side 1.
+    fn sides(i: usize) -> Option<usize> {
+        Some(if i < 2 { 0 } else { 1 })
+    }
+
     #[test]
-    fn a_lone_tank_holds_and_banks_time() {
-        let (mut w, mut h) = world_with(2);
+    fn one_side_alone_holds_and_banks_time() {
+        let (mut w, mut h) = world_with(3);
         put(&mut w, &h, 0, Vec2::new(2.0, 0.0));
-        put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 0.0));
+        put(&mut w, &h, 1, Vec2::new(-4.0, 3.0));
+        put(&mut w, &h, 2, Vec2::new(RADIUS + 10.0, 0.0));
         for _ in 0..60 {
-            assert_eq!(h.step(DT, &w.tanks, |_| true), Some(0));
+            assert_eq!(h.step(DT, &w.tanks, sides), Some(0));
         }
         assert_eq!(h.control, Control::Held(0));
         assert!((h.held[0] - 60.0 * DT).abs() < 1e-4);
         assert_eq!(h.held[1], 0.0);
+        // Both allies on the site get the time.
+        assert!((h.own[0] - 60.0 * DT).abs() < 1e-4 && h.own[0] == h.own[1]);
+        assert_eq!(h.own[2], 0.0);
     }
 
     #[test]
-    fn two_in_the_ring_contest_it() {
-        let (mut w, mut h) = world_with(2);
+    fn both_sides_in_the_ring_contest_it() {
+        let (mut w, mut h) = world_with(3);
         put(&mut w, &h, 0, Vec2::new(2.0, 0.0));
-        put(&mut w, &h, 1, Vec2::new(-3.0, 1.0));
-        assert_eq!(h.step(DT, &w.tanks, |_| true), None);
+        put(&mut w, &h, 2, Vec2::new(-3.0, 1.0));
+        put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 0.0));
+        assert_eq!(h.step(DT, &w.tanks, sides), None);
         assert_eq!(h.control, Control::Contested);
-        assert!(h.held.iter().all(|&t| t == 0.0));
-        // A wreck in the ring doesn't count.
-        assert_eq!(h.step(DT, &w.tanks, |i| i == 0), Some(0));
+        assert_eq!(h.held, [0.0, 0.0]);
+        // An enemy wreck in the ring doesn't count.
+        assert_eq!(
+            h.step(DT, &w.tanks, |i| if i == 2 { None } else { sides(i) }),
+            Some(0)
+        );
     }
 
     #[test]
@@ -222,19 +249,21 @@ mod tests {
         let (mut w, mut h) = world_with(1);
         put(&mut w, &h, 0, Vec2::ZERO);
         w.tanks[0].pos.y += 8.0;
-        assert_eq!(h.step(DT, &w.tanks, |_| true), None);
+        assert_eq!(h.step(DT, &w.tanks, sides), None);
         assert_eq!(h.control, Control::Open);
     }
 
     #[test]
     fn reaching_the_target_wins() {
-        let (mut w, mut h) = world_with(1);
-        put(&mut w, &h, 0, Vec2::ZERO);
-        h.held[0] = TARGET - DT * 0.5;
+        let (mut w, mut h) = world_with(3);
+        put(&mut w, &h, 2, Vec2::ZERO);
+        put(&mut w, &h, 0, Vec2::new(RADIUS + 10.0, 0.0));
+        put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 5.0));
+        h.held[1] = TARGET - DT * 0.5;
         assert_eq!(h.winner(), None);
-        h.step(DT, &w.tanks, |_| true);
-        assert_eq!(h.winner(), Some(0));
-        assert_eq!(h.held[0], TARGET);
+        h.step(DT, &w.tanks, sides);
+        assert_eq!(h.winner(), Some(1));
+        assert_eq!(h.held[1], TARGET);
     }
 
     #[test]

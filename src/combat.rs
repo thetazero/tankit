@@ -1,15 +1,17 @@
-//! The match: every tank for itself, five-minute rounds. Under the Attrition
-//! contract most kills wins; under Hold, most time held on the site (`hold`).
+//! Team fights: two factions, five-minute rounds, no friendly fire; each side
+//! spawns at its own base. Under the Attrition contract the side with the
+//! most kills wins; under Hold, the side that holds the site longest (`hold`).
 //!
 //! Wraps the physics `World` with what a fight needs: shells in flight, hull
 //! health, kills and deaths, respawns, the round clock, and the bots. Tank 0
-//! is the player; the rest are bots.
+//! is the player, on side 0; bots fill both sides.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier3d::prelude::{QueryFilter, Ray};
 
 use crate::ai::{self, Bot, Contact, NavGrid};
 use crate::economy::Levels;
+use crate::faction::Faction;
 use crate::game::DT;
 use crate::hold::{self, Hold};
 use crate::map::Map;
@@ -33,17 +35,6 @@ pub const FEED_TIME: f32 = 6.0;
 pub const KILL_XP: u32 = 10;
 /// How long an XP popup stays on screen, seconds.
 pub const XP_POP_TIME: f32 = 2.0;
-
-pub const BOT_NAMES: [&str; 7] = ["VEGA", "KITE", "ONYX", "RUST", "MOTH", "FLINT", "SABLE"];
-const BOT_COLORS: [Vec3; 7] = [
-    Vec3::new(0.95, 0.42, 0.32),
-    Vec3::new(0.4, 0.62, 0.95),
-    Vec3::new(0.95, 0.8, 0.35),
-    Vec3::new(0.5, 0.82, 0.5),
-    Vec3::new(0.75, 0.5, 0.9),
-    Vec3::new(0.95, 0.6, 0.2),
-    Vec3::new(0.4, 0.85, 0.85),
-];
 
 /// Weapon numbers per turret.
 pub struct Gun {
@@ -75,7 +66,8 @@ pub fn max_health(kind: HullKind) -> f32 {
 }
 
 pub struct Fighter {
-    pub name: String,
+    /// Side 0 (the player's) or 1.
+    pub team: usize,
     pub health: f32,
     pub alive: bool,
     /// Seconds until respawn while dead.
@@ -194,6 +186,8 @@ pub struct Match {
     pub xp: u32,
     pub xp_pops: Vec<XpPop>,
     pub repairs: Repairs,
+    /// Side 0 and side 1.
+    pub factions: [Faction; 2],
     pub time_left: f32,
     pub phase: Phase,
     pub contract: Contract,
@@ -206,15 +200,25 @@ pub struct Match {
 }
 
 impl Match {
-    /// A fresh round on `map`: the player at spawn point `spawn` plus `bots` bots.
+    /// A fresh round on `map` with `bots` bots, dealt to the enemy side first
+    /// and then alternately (so an odd count makes even teams). The player
+    /// starts at their side's base, or at spawn point `spawn` on maps without
+    /// bases.
     pub fn new(map: Map, spawn: usize, bots: usize, seed: u64) -> Match {
         let nav = NavGrid::build(&map);
         let repairs = Repairs::new(&map);
+        let factions = map.factions;
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
-        let mut fighters = vec![fighter("YOU", max_health(world.tanks[0].hull_kind))];
+        world.tanks[0].color = factions[0].paint();
+        if !world.map.bases[0].is_empty() {
+            let (at, yaw) = spawn_point(&world, &mut rng, 0, &[]);
+            world.teleport(0, at, yaw);
+        }
+        let mut fighters = vec![fighter(0, max_health(world.tanks[0].hull_kind))];
         let mut brains = vec![None];
-        for b in 0..bots.min(BOT_NAMES.len()) {
+        for b in 0..bots {
+            let team = (b + 1) % 2;
             let hull = if rng.chance(0.5) {
                 HullKind::Lancer
             } else {
@@ -225,9 +229,12 @@ impl Match {
             } else {
                 TurretKind::Maul
             };
-            let (at, yaw) = spawn_point(&world, &mut rng, None);
-            world.spawn_tank(BOT_COLORS[b], at, yaw, hull, turret);
-            fighters.push(fighter(BOT_NAMES[b], max_health(hull)));
+            let placed: Vec<(usize, Vec2)> = (0..world.tanks.len())
+                .map(|j| (fighters[j].team, flat(world.tanks[j].pos)))
+                .collect();
+            let (at, yaw) = spawn_point(&world, &mut rng, team, &placed);
+            world.spawn_tank(factions[team].paint(), at, yaw, hull, turret);
+            fighters.push(fighter(team, max_health(hull)));
             brains.push(Some(Bot::new(seed.wrapping_add(b as u64 * 7919))));
         }
         Match {
@@ -240,10 +247,11 @@ impl Match {
             xp: 0,
             xp_pops: Vec::new(),
             repairs,
+            factions,
             time_left: ROUND_TIME,
-            phase: Phase::Playing,
             contract: Contract::Attrition,
             hold: None,
+            phase: Phase::Playing,
             over_for: 0.0,
             nav,
             rng,
@@ -261,18 +269,38 @@ impl Match {
             (contract == Contract::Hold).then(|| Hold::new(&self.world.map, self.fighters.len()));
     }
 
-    /// Seconds fighter `i` has held the site (0 outside the Hold contract).
-    pub fn held(&self, i: usize) -> f32 {
-        self.hold.as_ref().map_or(0.0, |h| h.held[i])
+    /// Side `team`'s score: kills under Attrition, whole seconds held under Hold.
+    pub fn score(&self, team: usize) -> u32 {
+        match &self.hold {
+            Some(h) => h.held[team] as u32,
+            None => self
+                .fighters
+                .iter()
+                .filter(|f| f.team == team)
+                .map(|f| f.kills)
+                .sum(),
+        }
     }
 
-    /// Fighter indices by standing: most time held (under Hold), then most
-    /// kills, then fewest deaths.
+    /// Seconds tank `i` has spent on the site while its side held it (0
+    /// outside the Hold contract).
+    pub fn held(&self, i: usize) -> f32 {
+        self.hold.as_ref().map_or(0.0, |h| h.own[i])
+    }
+
+    /// The side ahead on score, or None while level.
+    pub fn leader(&self) -> Option<usize> {
+        let (a, b) = (self.score(0), self.score(1));
+        (a != b).then_some(if a > b { 0 } else { 1 })
+    }
+
+    /// Fighter indices by standing: most time on the site (under Hold), then
+    /// most kills, then fewest deaths.
     pub fn standings(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.fighters.len()).collect();
         order.sort_by_key(|&i| {
             (
-                std::cmp::Reverse((self.held(i) * 10.0) as u32),
+                std::cmp::Reverse(self.held(i) as u32),
                 std::cmp::Reverse(self.fighters[i].kills),
                 self.fighters[i].deaths,
                 i,
@@ -315,6 +343,7 @@ impl Match {
             .iter()
             .map(|f| Contact {
                 targetable: f.alive && f.shield <= 0.0,
+                team: f.team,
             })
             .collect();
         let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
@@ -376,7 +405,10 @@ impl Match {
             let yaw = t.turret_yaw();
             let mut best: Option<(f32, f32)> = None;
             for j in 0..n {
-                if j == i || !self.fighters[j].alive {
+                if j == i
+                    || !self.fighters[j].alive
+                    || self.fighters[j].team == self.fighters[i].team
+                {
                     continue;
                 }
                 let o = &self.world.tanks[j];
@@ -464,6 +496,11 @@ impl Match {
     }
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
+        // No friendly fire: an ally just stops the shell.
+        if self.fighters[j].team == self.fighters[s.owner].team {
+            self.blasts.push(Blast::new(at, BlastKind::Impact));
+            return;
+        }
         self.blasts.push(Blast::new(at, BlastKind::Hit));
         // A shove through the hull's centre: felt, but never enough to roll it.
         let (mass, center) = (
@@ -532,14 +569,16 @@ impl Match {
         });
     }
 
-    /// Bank time for whoever is alone on the site; pay the player XP as they
-    /// hold, and end the round when someone reaches the target.
+    /// Bank time for the side holding the site; pay the player XP for their
+    /// own time on it, and end the round when a side reaches the target.
     fn hold_site(&mut self) {
         let Some(h) = &mut self.hold else { return };
         let fighters = &self.fighters;
-        let before = h.held[0];
-        let paid = h.step(DT, &self.world.tanks, |i| fighters[i].alive) == Some(0)
-            && (h.held[0] / hold::XP_EVERY).floor() > (before / hold::XP_EVERY).floor();
+        let before = h.own[0];
+        h.step(DT, &self.world.tanks, |i| {
+            fighters[i].alive.then_some(fighters[i].team)
+        });
+        let paid = (h.own[0] / hold::XP_EVERY).floor() > (before / hold::XP_EVERY).floor();
         let won = h.winner().is_some();
         if paid {
             self.award(hold::HOLD_XP, "HOLDING");
@@ -594,7 +633,12 @@ impl Match {
             if let Some(levels) = self.fighters[i].next_levels.take() {
                 self.fighters[i].levels = levels;
             }
-            let (at, yaw) = spawn_point(&self.world, &mut self.rng, Some((i, &self.fighters)));
+            let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
+                .filter(|&j| j != i && self.fighters[j].alive)
+                .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
+                .collect();
+            let team = self.fighters[i].team;
+            let (at, yaw) = spawn_point(&self.world, &mut self.rng, team, &living);
             self.world.teleport(i, at, yaw);
             let f = &mut self.fighters[i];
             f.alive = true;
@@ -625,7 +669,7 @@ impl Match {
     pub fn effect_instances(&self, alpha: f32, out: &mut Vec<(MeshId, Instance)>) {
         self.repairs.instances(self.world.time, out);
         if let Some(h) = &self.hold {
-            h.instances(self.world.time, &self.world.tanks, out);
+            h.instances(self.world.time, self.factions.map(|f| f.paint()), out);
         }
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
@@ -702,9 +746,9 @@ impl Match {
     }
 }
 
-fn fighter(name: &str, health: f32) -> Fighter {
+fn fighter(team: usize, health: f32) -> Fighter {
     Fighter {
-        name: name.to_string(),
+        team,
         health,
         alive: true,
         respawn_in: 0.0,
@@ -724,34 +768,41 @@ fn fighter(name: &str, health: f32) -> Fighter {
     }
 }
 
-/// A spawn spot well away from the living (for tank `me`, if respawning),
-/// picked at random among the safest few, facing the map center.
-fn spawn_point(world: &World, rng: &mut Rng, me: Option<(usize, &[Fighter])>) -> (Vec2, f32) {
-    let spots = &world.map.open_spots;
-    let others: Vec<Vec2> = world
-        .tanks
-        .iter()
-        .enumerate()
-        .filter(|(j, _)| me.is_none_or(|(i, fs)| *j != i && fs[*j].alive))
-        .map(|(_, t)| Vec2::new(t.pos.x, t.pos.z))
-        .collect();
+fn flat(p: Vec3) -> Vec2 {
+    Vec2::new(p.x, p.z)
+}
+
+/// A spawn spot for side `team`: at its base if the map has bases (else
+/// anywhere open), well away from `others` (side, position), with enemies
+/// counting as twice as close. Picked at random among the safest few, facing
+/// the enemy base (or the map center).
+fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2)]) -> (Vec2, f32) {
+    let map = &world.map;
+    let spots = match &map.bases[team] {
+        base if !base.is_empty() => base,
+        _ => &map.open_spots,
+    };
     let mut scored: Vec<(f32, Vec2)> = spots
         .iter()
         .map(|&s| {
-            (
-                others
-                    .iter()
-                    .map(|o| o.distance(s))
-                    .fold(f32::INFINITY, f32::min),
-                s,
-            )
+            let room = others
+                .iter()
+                .map(|&(side, o)| o.distance(s) * if side == team { 1.0 } else { 0.5 })
+                .fold(f32::INFINITY, f32::min);
+            (room, s)
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     let pick = scored[rng.index(scored.len().min(4))].1;
-    let to_center = world.map.center() - pick;
-    let yaw = if to_center.length_squared() > 1.0 {
-        yaw_of(to_center)
+    let enemy_base = &map.bases[1 - team];
+    let look = if enemy_base.is_empty() {
+        map.center()
+    } else {
+        enemy_base.iter().sum::<Vec2>() / enemy_base.len() as f32
+    };
+    let to = look - pick;
+    let yaw = if to.length_squared() > 1.0 {
+        yaw_of(to)
     } else {
         rng.range(0.0, std::f32::consts::TAU)
     };
@@ -769,10 +820,10 @@ mod tests {
 
     #[test]
     fn spawns_player_and_bots_apart() {
-        let m = arena(5);
-        assert_eq!(m.world.tanks.len(), 6);
-        for i in 0..6 {
-            for j in i + 1..6 {
+        let m = arena(11);
+        assert_eq!(m.world.tanks.len(), 12);
+        for i in 0..12 {
+            for j in i + 1..12 {
                 let d = m.world.tanks[i].pos.distance(m.world.tanks[j].pos);
                 assert!(d > 8.0, "tanks {i} and {j} spawned {d:.1} m apart");
             }
@@ -787,8 +838,7 @@ mod tests {
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
         m.world
             .spawn_tank(Vec3::ONE, ahead, 0.0, HullKind::Lancer, TurretKind::Lance);
-        m.fighters
-            .push(fighter("DUMMY", max_health(HullKind::Lancer)));
+        m.fighters.push(fighter(1, max_health(HullKind::Lancer)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -939,19 +989,12 @@ mod tests {
     }
 
     #[test]
-    fn holding_alone_pays_xp_and_reaching_the_target_ends_the_round() {
-        let mut m = Match::new(Map::proving_ground(), 0, 1, 3);
+    fn holding_pays_xp_and_reaching_the_target_ends_the_round() {
+        let mut m = Match::new(Map::proving_ground(), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
-        let (far, _) = (m.world.map.open_spots.iter())
-            .map(|&s| (s, s.distance(at)))
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap();
         m.world.teleport(0, at, 0.0);
-        m.world.teleport(1, far, 0.0);
-        m.fighters[1].alive = false;
-        m.fighters[1].respawn_in = 1e9;
-        m.hold.as_mut().unwrap().held[0] = hold::XP_EVERY - 0.1;
+        m.hold.as_mut().unwrap().own[0] = hold::XP_EVERY - 0.1;
         for _ in 0..30 {
             m.step(Command::default(), false);
         }
@@ -963,32 +1006,118 @@ mod tests {
             m.step(Command::default(), false);
         }
         assert_eq!(m.phase, Phase::Over);
-        assert_eq!(m.standings()[0], 0);
+        assert_eq!(m.leader(), Some(0));
     }
 
     #[test]
-    fn hold_standings_put_time_held_over_kills() {
-        let mut m = arena(2);
+    fn hold_score_is_time_held_not_kills() {
+        let mut m = arena(3);
         m.set_contract(Contract::Hold);
-        m.fighters[1].kills = 9;
-        m.hold.as_mut().unwrap().held[2] = 5.0;
-        assert_eq!(m.standings(), vec![2, 1, 0]);
+        for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
+            f.kills = 9;
+        }
+        m.hold.as_mut().unwrap().held[0] = 5.5;
+        assert_eq!((m.score(0), m.score(1)), (5, 0));
+        assert_eq!(m.leader(), Some(0));
     }
 
-    /// Under Hold, bots go for the site and someone gets time on it.
+    /// Under Hold, bots of both sides go for the site and someone holds it.
     #[test]
     fn bots_go_for_the_hold_site() {
-        let mut m = Match::new(Map::shard_flats(), 0, 4, 5);
+        let mut m = Match::new(Map::shard_flats(), 0, 5, 5);
         m.set_contract(Contract::Hold);
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;
             m.step(Command::default(), false);
         }
-        let held: f32 = (1..m.fighters.len()).map(|i| m.held(i)).sum();
+        let h = m.hold.as_ref().unwrap();
         assert!(
-            held > 5.0,
-            "bots held the site for only {held:.1} s in a minute"
+            h.held[0] + h.held[1] > 5.0,
+            "the site was held for only {:.1} s in a minute",
+            h.held[0] + h.held[1]
         );
+        assert!(
+            (1..m.fighters.len()).any(|i| m.fighters[i].team == 1 && m.held(i) > 0.0),
+            "no enemy bot ever stood on a held site"
+        );
+    }
+
+    #[test]
+    fn odd_bot_counts_make_even_teams_in_faction_colors() {
+        let m = arena(11);
+        for team in 0..2 {
+            let side: Vec<usize> = (0..12).filter(|&i| m.fighters[i].team == team).collect();
+            assert_eq!(side.len(), 6);
+            for i in side {
+                assert_eq!(m.world.tanks[i].color, m.factions[team].paint());
+            }
+        }
+        assert_eq!(m.fighters[0].team, 0);
+    }
+
+    #[test]
+    fn each_side_spawns_at_its_own_base() {
+        for map in [Map::generate(21), Map::saltmarket()] {
+            let m = Match::new(map, 0, 11, 5);
+            for (i, f) in m.fighters.iter().enumerate() {
+                let p = Vec2::new(m.world.tanks[i].pos.x, m.world.tanks[i].pos.z);
+                assert!(
+                    m.world.map.bases[f.team]
+                        .iter()
+                        .any(|b| b.distance(p) < 0.5),
+                    "tank {i} (side {}) spawned off base at {p}",
+                    f.team
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn allies_take_no_damage_from_each_other() {
+        let mut m = arena(3);
+        let ally = (1..4).find(|&i| m.fighters[i].team == 0).unwrap();
+        let enemy = (1..4).find(|&i| m.fighters[i].team == 1).unwrap();
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        let shell = |owner| Shell {
+            pos: Vec3::ZERO,
+            prev: Vec3::ZERO,
+            vel: Vec3::X,
+            owner,
+            damage: 1000.0,
+            age: 0.0,
+        };
+        m.hit(&shell(0), ally, Vec3::ZERO);
+        assert!(m.fighters[ally].alive);
+        assert_eq!(
+            m.fighters[ally].health,
+            max_health(m.world.tanks[ally].hull_kind)
+        );
+        m.hit(&shell(0), enemy, Vec3::ZERO);
+        assert!(!m.fighters[enemy].alive);
+        assert_eq!(m.score(0), 1);
+        assert_eq!(m.leader(), Some(0));
+    }
+
+    #[test]
+    fn the_side_with_more_kills_wins_even_if_you_scored_none() {
+        let mut m = arena(3);
+        let ally = (1..4).find(|&i| m.fighters[i].team == 0).unwrap();
+        let enemy = (1..4).find(|&i| m.fighters[i].team == 1).unwrap();
+        m.fighters[ally].kills = 3;
+        m.fighters[enemy].kills = 2;
+        m.time_left = DT * 0.5;
+        m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.leader(), Some(0));
+        assert_eq!(
+            crate::economy::Payout::of(&m).outcome,
+            crate::economy::Outcome::Won
+        );
+        // Level: a draw.
+        m.fighters[enemy].kills = 3;
+        assert_eq!(m.leader(), None);
     }
 
     #[test]
@@ -1000,16 +1129,22 @@ mod tests {
         assert_eq!(m.standings(), vec![2, 1, 0]);
     }
 
-    /// Left alone, bots find each other and fight: kills happen within a minute.
+    /// Left alone, the two sides find each other and fight: kills happen
+    /// within a minute, and nobody's killer is on their own side.
     #[test]
     fn bots_fight_each_other() {
-        let mut m = arena(4);
+        let mut m = arena(5);
         // Park the player out of the way, invulnerable.
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;
             m.step(Command::default(), false);
         }
         let kills: u32 = m.fighters.iter().map(|f| f.kills).sum();
+        for (i, f) in m.fighters.iter().enumerate() {
+            if let Some(k) = f.killed_by.filter(|&k| k != i) {
+                assert_ne!(m.fighters[k].team, f.team, "tank {k} killed its ally {i}");
+            }
+        }
         assert!(
             kills >= 2,
             "only {kills} kills in a minute of bot deathmatch"

@@ -6,13 +6,13 @@
 //!   crystal shards jutting from the middle (the deposit, the hold ring)
 //! - inner ring: rock outcrops and smaller shard clusters, cover on the way in
 //! - diagonals: four wrecked extractor pads (concrete slabs with ramps)
-//! - edges: drop zones
+//! - west and east edges: the two sides' bases
 
 use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
-use super::{Map, OBox, Rise, Terrain, Wedge, mat};
+use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge, mat};
 use crate::rng::Rng;
 
 const SIZE: f32 = 200.0;
@@ -49,6 +49,18 @@ impl Map {
             roads: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
+            // Midday on the same desert world: high hard sun, pale bleached
+            // sky, a thin haze off the flats.
+            atmosphere: crate::render::Atmosphere {
+                sun_dir: Vec3::new(0.45, 0.7, 0.35),
+                sun_color: Vec3::new(2.2, 1.95, 1.6),
+                sky_zenith: Vec3::new(0.34, 0.5, 0.7),
+                sky_horizon: Vec3::new(0.8, 0.76, 0.66),
+                ground_color: Vec3::new(0.42, 0.35, 0.26),
+                fog_density: 0.0024,
+            },
+            bases: Default::default(),
+            factions: DEFAULT_SIDES,
             // Just outside the crater rim: a quick patch-up, in the open.
             repair_spots: vec![
                 CENTER + Vec2::new(0.0, 33.0),
@@ -119,6 +131,7 @@ impl Map {
                 height: h + 0.3,
                 rise,
                 color: CONCRETE * 0.92,
+                material: None,
             });
             map.oboxes.push(OBox {
                 center: c + Vec2::new(0.0, 2.0),
@@ -131,7 +144,16 @@ impl Map {
             });
         }
 
-        // Drop zones around the edge, facing in; roam points between.
+        // Bases: two columns of drop zones at the west and east walls. The
+        // deposit sits halfway between, and both get the same run to it.
+        for (side, xs) in [(0, [10.0, 18.0]), (1, [SIZE - 10.0, SIZE - 18.0])] {
+            for x in xs {
+                for k in 0..8 {
+                    map.bases[side].push(Vec2::new(x, 58.0 + k as f32 * 12.0));
+                }
+            }
+        }
+        // Roam points around the edge and just outside the rim.
         for i in 0..10 {
             let a = i as f32 / 10.0 * TAU;
             map.open_spots
@@ -150,6 +172,10 @@ impl Map {
         };
         let spots = std::mem::take(&mut map.open_spots);
         map.open_spots = spots.into_iter().filter(|&p| !blocked(p, &map)).collect();
+        for side in 0..2 {
+            let base = std::mem::take(&mut map.bases[side]);
+            map.bases[side] = base.into_iter().filter(|&p| !blocked(p, &map)).collect();
+        }
 
         map.perimeter_walls();
         map
@@ -213,8 +239,11 @@ mod tests {
             "{} open spots",
             m.open_spots.len()
         );
+        for (side, base) in m.bases.iter().enumerate() {
+            assert!(base.len() >= 12, "side {side} has {} spawns", base.len());
+        }
         let nav = NavGrid::build(&m);
-        for &p in &m.open_spots {
+        for &p in m.open_spots.iter().chain(m.bases.iter().flatten()) {
             assert!(
                 !nav.path(p, CENTER).is_empty(),
                 "no path from {p} to the deposit"

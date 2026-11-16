@@ -1,16 +1,15 @@
 //! Driving HUD in the hairline style: readouts in the four corners inside
 //! faint brackets, the middle left to the city and the crosshair.
 //!
-//! Deathmatch readouts: round clock and kills top left, kill feed top right,
-//! hull and reload bottom centre, name tags over enemies, a death screen,
-//! and the scoreboard (Tab, or when the round ends). Under Hold, a meter under
-//! the compass says who has the site and how close you are, and a tag marks
-//! the site in the world.
+//! Team deathmatch readouts: round clock and kills top left, team scores
+//! under the compass, kill feed top right, hull and reload bottom centre,
+//! team-coloured health bars over tanks, a death screen, and the scoreboard
+//! (Tab, or when the round ends). Tanks have no names: "YOU", or their turret.
 
 use glam::{Vec2, Vec3};
 
 use crate::combat::{FEED_TIME, Match, Phase, XP_POP_TIME};
-use crate::economy::Payout;
+use crate::economy::{Outcome, Payout};
 use crate::hold::{self, Control};
 use crate::mission::Contract;
 use crate::render::{Camera, UiVertex};
@@ -18,7 +17,25 @@ use crate::repair::State;
 use crate::scene::project;
 use crate::sim::Tank;
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Painter, TextStyle, theme, with_alpha};
+use crate::ui::{Align, Painter, Rgba, TextStyle, theme, with_alpha};
+
+/// What the HUD calls fighter `i`: "YOU", or its turret.
+pub fn callsign(m: &Match, i: usize) -> &'static str {
+    if i == 0 {
+        "YOU"
+    } else {
+        crate::garage::turret_name(m.world.tanks[i].turret_kind)
+    }
+}
+
+/// Fighter `i`'s side colour (the player in the combat orange).
+fn side_color(m: &Match, i: usize) -> Rgba {
+    if i == 0 {
+        theme::HOT
+    } else {
+        m.factions[m.fighters[i].team].ui()
+    }
+}
 
 /// Logical screen height; everything is laid out at this size and scaled.
 const REF_HEIGHT: f32 = 900.0;
@@ -118,27 +135,14 @@ impl Hud {
             &TextStyle::value(14.0),
             Align::Left,
         );
-        let rank = m.standings().iter().position(|&i| i == 0).unwrap_or(0) + 1;
         label(
             &mut p,
             Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "PLACE",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
-            &format!("{rank}/{}", m.fighters.len()),
-            &TextStyle::value(14.0),
-            Align::Left,
-        );
-        label(
-            &mut p,
-            Vec2::new(MARGIN + 230.0, MARGIN + 50.0),
             "XP",
             Align::Left,
         );
         p.text(
-            Vec2::new(MARGIN + 230.0, MARGIN + 64.0),
+            Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
             &format!("+{}", m.xp),
             &TextStyle::value(14.0),
             Align::Left,
@@ -150,23 +154,15 @@ impl Hud {
             Align::Left,
         );
 
-        // Top right: kill feed, newest on top.
+        // Top right: kill feed, newest on top, each side in its colour.
         let tr = Vec2::new(w - MARGIN, MARGIN);
         for (row, k) in m.feed.iter().rev().take(5).enumerate() {
             let fade = ((FEED_TIME - k.age) / 0.8).clamp(0.0, 1.0);
             let y = tr.y + row as f32 * 18.0;
             let mut s = TextStyle::value(10.0);
             s.tracking = 2.5;
-            s.color = with_alpha(
-                if k.victim == 0 || k.killer == 0 {
-                    theme::HOT
-                } else {
-                    theme::FG
-                },
-                fade * 0.95,
-            );
-            let victim = &m.fighters[k.victim].name;
-            let vw = p.text(Vec2::new(tr.x, y), victim, &s, Align::Right);
+            s.color = with_alpha(side_color(m, k.victim), fade * 0.95);
+            let vw = p.text(Vec2::new(tr.x, y), callsign(m, k.victim), &s, Align::Right);
             // A small chevron between killer and victim.
             let cx = tr.x - vw - 14.0;
             let c = with_alpha(theme::DIM, fade);
@@ -180,16 +176,17 @@ impl Hud {
                 c,
             );
             if k.killer != k.victim {
+                s.color = with_alpha(side_color(m, k.killer), fade * 0.95);
                 p.text(
                     Vec2::new(cx - 12.0, y),
-                    &m.fighters[k.killer].name,
+                    callsign(m, k.killer),
                     &s,
                     Align::Right,
                 );
             }
         }
 
-        // Name tags and health over the other tanks in view.
+        // Health over the other tanks in view, in their side's colour; allies get a tick above.
         let vp = camera.view_proj(width / height);
         for (i, (t, f)) in tanks.iter().zip(&m.fighters).enumerate().skip(1) {
             let d = t.pos.distance(camera.pos);
@@ -209,15 +206,24 @@ impl Hud {
                 continue;
             }
             let fade = (1.0 - (d - 110.0) / 50.0).clamp(0.0, 1.0);
-            let mut s = TextStyle::LABEL;
-            s.color = with_alpha(theme::FG, 0.85 * fade);
-            p.text(at - Vec2::new(0.0, 10.0), &f.name, &s, Align::Center);
+            let side = m.factions[f.team].ui();
+            if f.team == me.team {
+                p.polyline(
+                    &[
+                        at + Vec2::new(-4.0, -10.0),
+                        at + Vec2::new(0.0, -5.0),
+                        at + Vec2::new(4.0, -10.0),
+                    ],
+                    1.2,
+                    with_alpha(side, 0.9 * fade),
+                );
+            }
             let frac = f.health / f.max_health(&m.world.tanks[i]);
             let bw = 44.0;
             let fill = if f.since_hit < 0.25 {
                 theme::HOT
             } else {
-                with_alpha(theme::FG, fade)
+                with_alpha(side, fade)
             };
             let o = at - Vec2::new(bw * 0.5, 0.0);
             p.line(o, o + Vec2::new(bw, 0.0), 1.0, with_alpha(theme::DIM, fade));
@@ -258,7 +264,7 @@ impl Hud {
             p.text(at, &text, &s, Align::Center);
         }
 
-        // Top centre: turret heading.
+        // Top centre: turret heading, and under it the team score (your side on the left).
         let top = Vec2::new(w * 0.5, MARGIN + 6.0);
         widgets::compass(&mut p, top, 360.0, self.heading);
         let hdg = self.heading.round() as u32 % 360;
@@ -268,23 +274,42 @@ impl Hud {
             &TextStyle::value(11.0),
             Align::Center,
         );
-
+        let sy = top.y + 58.0;
+        for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
+            let f = m.factions[team];
+            let mut s = TextStyle::value(16.0);
+            s.color = f.ui();
+            p.text(
+                Vec2::new(top.x + dir * 14.0, sy),
+                &m.score(team).to_string(),
+                &s,
+                align,
+            );
+            let mut l = TextStyle::LABEL;
+            l.color = with_alpha(f.ui(), 0.8);
+            p.text(Vec2::new(top.x + dir * 52.0, sy + 6.0), f.name(), &l, align);
+        }
+        p.line(
+            Vec2::new(top.x, sy + 2.0),
+            Vec2::new(top.x, sy + 14.0),
+            1.0,
+            theme::FAINT,
+        );
         if let Some(hd) = &m.hold
             && !board
         {
-            hold_meter(&mut p, m, hd, top + Vec2::new(0.0, 62.0));
+            hold_meter(&mut p, m, hd, Vec2::new(top.x, sy + 32.0));
             // The site's tag, unless you're on it.
-            // High over the site, clear of the deposit and nearby tags.
-            let anchor = Vec3::new(hd.at.x, hd.ground + 15.0, hd.at.y);
+            let anchor = Vec3::new(hd.at.x, hd.ground + 9.0, hd.at.y);
             if !hd.inside(tank.pos)
                 && let Some((x, y)) = project(vp, anchor, width, height)
             {
                 let at = Vec2::new(x, y) / scale;
                 if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
                     let mut s = TextStyle::LABEL;
-                    s.color = hold_color(hd.control);
+                    s.color = hold_color(m, hd.control);
                     let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
-                    p.text(at, &format!("HOLD  {d:.0} M"), &s, Align::Center);
+                    p.text(at, &format!("DEPOSIT  {d:.0} M"), &s, Align::Center);
                 }
             }
         }
@@ -358,10 +383,16 @@ impl Hud {
             big.color = theme::HOT;
             p.text(c, "DESTROYED", &big, Align::Center);
             if let Some(k) = me.killed_by.filter(|&k| k != 0) {
-                label(
-                    &mut p,
+                let mut s = TextStyle::LABEL;
+                s.color = side_color(m, k);
+                p.text(
                     c + Vec2::new(0.0, 42.0),
-                    &format!("BY {}", m.fighters[k].name),
+                    &format!(
+                        "BY {} {}",
+                        m.factions[m.fighters[k].team].name(),
+                        callsign(m, k)
+                    ),
+                    &s,
                     Align::Center,
                 );
             }
@@ -474,22 +505,26 @@ impl Hud {
     }
 }
 
-/// Centred standings table; with a winner banner once the round is over.
+/// Two standings tables side by side (your side on the left), with a winner
+/// banner once the round is over.
 fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
-    let width = 360.0;
-    let rows = m.fighters.len() as f32;
+    let holding = m.contract == Contract::Hold;
+    // Hold adds a HELD column: wider tables so it clears the tank names.
+    let col = if holding { 380.0 } else { 330.0 };
+    let gap = 48.0;
+    let rows = (0..2)
+        .map(|t| m.fighters.iter().filter(|f| f.team == t).count())
+        .max()
+        .unwrap_or(0) as f32;
+    let width = col * 2.0 + gap;
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = [0.02, 0.02, 0.025, 0.7];
-    let extra = if m.contract == Contract::Hold {
-        18.0
-    } else {
-        0.0
-    };
+    let extra = if holding { 18.0 } else { 0.0 };
     let height = if m.phase == Phase::Over {
-        330.0 + extra
+        362.0 + extra
     } else {
-        52.0
+        84.0
     } + rows * 22.0;
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
@@ -503,23 +538,19 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         14.0,
         theme::DIM,
     );
-    let order = m.standings();
     if m.phase == Phase::Over {
-        let winner = &m.fighters[order[0]];
         let mut big = TextStyle::value(22.0);
         big.color = theme::HOT;
         p.text(Vec2::new(top.x, y), "ROUND OVER", &big, Align::Center);
-        let line = if order[0] == 0 {
-            "YOU WIN".to_string()
-        } else {
-            format!("{} WINS", winner.name)
+        let mut s = TextStyle::value(12.0);
+        let line = match m.leader() {
+            Some(t) => {
+                s.color = m.factions[t].ui();
+                format!("{} WINS", m.factions[t].name())
+            }
+            None => "DRAW".to_string(),
         };
-        p.text(
-            Vec2::new(top.x, y + 34.0),
-            &line,
-            &TextStyle::value(12.0),
-            Align::Center,
-        );
+        p.text(Vec2::new(top.x, y + 34.0), &line, &s, Align::Center);
         label(
             p,
             Vec2::new(top.x, y + 56.0),
@@ -528,45 +559,73 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
         );
         y += 84.0;
     }
-    let holding = m.contract == Contract::Hold;
-    label(p, Vec2::new(x0, y), "PILOT", Align::Left);
-    if holding {
-        label(p, Vec2::new(x1 - 200.0, y), "HELD", Align::Right);
-    }
-    label(p, Vec2::new(x1 - 110.0, y), "KILLS", Align::Right);
-    label(p, Vec2::new(x1, y), "DEATHS", Align::Right);
-    y += 14.0;
-    p.line(Vec2::new(x0, y), Vec2::new(x1, y), 1.0, theme::FAINT);
-    y += 10.0;
-    for (rank, &i) in order.iter().enumerate() {
-        let f = &m.fighters[i];
-        let mut s = TextStyle::value(11.0);
-        if i == 0 {
-            s.color = theme::HOT;
-        }
+    let order = m.standings();
+    for team in 0..2 {
+        let (a, b) = if team == 0 {
+            (x0, x0 + col)
+        } else {
+            (x1 - col, x1)
+        };
+        let f = m.factions[team];
+        let mut name = TextStyle::value(12.0);
+        name.color = f.ui();
+        p.text(Vec2::new(a, y), f.name(), &name, Align::Left);
+        let mut score = TextStyle::value(18.0);
+        score.color = f.ui();
         p.text(
-            Vec2::new(x0, y),
-            &format!("{}  {}", rank + 1, f.name),
-            &s,
-            Align::Left,
+            Vec2::new(b, y - 4.0),
+            &m.score(team).to_string(),
+            &score,
+            Align::Right,
         );
+        let mut ty = y + 32.0;
+        label(p, Vec2::new(a, ty), "TANK", Align::Left);
         if holding {
+            label(p, Vec2::new(b - 130.0, ty), "HELD", Align::Right);
+        }
+        label(p, Vec2::new(b - 70.0, ty), "KILLS", Align::Right);
+        label(p, Vec2::new(b, ty), "DEATHS", Align::Right);
+        ty += 14.0;
+        p.line(
+            Vec2::new(a, ty),
+            Vec2::new(b, ty),
+            1.0,
+            with_alpha(f.ui(), 0.4),
+        );
+        ty += 10.0;
+        for &i in order.iter().filter(|&&i| m.fighters[i].team == team) {
+            let fi = &m.fighters[i];
+            let t = &m.world.tanks[i];
+            let mut s = TextStyle::value(11.0);
+            if i == 0 {
+                s.color = theme::HOT;
+            }
+            let kit = format!(
+                "{}{} · {}",
+                if i == 0 { "YOU  " } else { "" },
+                crate::garage::hull_name(t.hull_kind),
+                crate::garage::turret_name(t.turret_kind)
+            );
+            p.text(Vec2::new(a, ty), &kit, &s, Align::Left);
+            if holding {
+                p.text(
+                    Vec2::new(b - 130.0, ty),
+                    &format!("{:.0}", m.held(i).floor()),
+                    &s,
+                    Align::Right,
+                );
+            }
             p.text(
-                Vec2::new(x1 - 200.0, y),
-                &format!("{:.0}", m.held(i).floor()),
+                Vec2::new(b - 70.0, ty),
+                &fi.kills.to_string(),
                 &s,
                 Align::Right,
             );
+            p.text(Vec2::new(b, ty), &fi.deaths.to_string(), &s, Align::Right);
+            ty += 22.0;
         }
-        p.text(
-            Vec2::new(x1 - 110.0, y),
-            &f.kills.to_string(),
-            &s,
-            Align::Right,
-        );
-        p.text(Vec2::new(x1, y), &f.deaths.to_string(), &s, Align::Right);
-        y += 22.0;
     }
+    y += 56.0 + rows * 22.0;
     if m.phase == Phase::Over {
         contract_pay(p, m, x0, x1, y + 14.0);
         label(
@@ -578,50 +637,56 @@ fn scoreboard(p: &mut Painter, m: &Match, top: Vec2) {
     }
 }
 
-/// Who has the site, then your time held against the target, with a tick for
-/// the best of the rest.
+/// Who has the site, then each side's time held against the target: your
+/// side's bar grows left from the middle, theirs right.
 fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     let status = match hd.control {
-        Control::Open => "SITE OPEN".to_string(),
-        Control::Held(0) => "YOU HOLD".to_string(),
-        Control::Held(i) => format!("{} HOLDS", m.fighters[i].name),
+        Control::Open => "DEPOSIT OPEN".to_string(),
+        Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
         Control::Contested => "CONTESTED".to_string(),
     };
-    let mut s = TextStyle::value(11.0);
-    s.color = hold_color(hd.control);
-    p.text(at, &status, &s, Align::Center);
-    let width = 220.0;
-    let o = at + Vec2::new(-width * 0.5, 30.0);
-    let mine = hd.held[0] / hold::TARGET;
-    widgets::hairbar(p, o, width, mine, theme::HOT);
-    let rival = (1..hd.held.len()).max_by(|&a, &b| hd.held[a].total_cmp(&hd.held[b]));
-    if let Some(r) = rival.filter(|&r| hd.held[r] > 0.0) {
-        let x = o.x + width * hd.held[r] / hold::TARGET;
+    let mut l = TextStyle::LABEL;
+    l.color = hold_color(m, hd.control);
+    p.text(at, &status, &l, Align::Center);
+    let half = 110.0;
+    let y = at.y + 20.0;
+    p.line(
+        Vec2::new(at.x - half, y),
+        Vec2::new(at.x + half, y),
+        1.0,
+        theme::FAINT,
+    );
+    for (side, dir) in [(0, -1.0), (1, 1.0)] {
+        let f = (hd.held[side] / hold::TARGET).clamp(0.0, 1.0);
+        if f > 0.0 {
+            p.line(
+                Vec2::new(at.x, y),
+                Vec2::new(at.x + dir * half * f, y),
+                2.0,
+                m.factions[side].ui(),
+            );
+        }
+        // Tick at each end: the target.
+        let end = at.x + dir * half;
         p.line(
-            Vec2::new(x, o.y - 5.0),
-            Vec2::new(x, o.y + 5.0),
-            1.5,
-            theme::FG,
-        );
-        label(
-            p,
-            o + Vec2::new(width, 10.0),
-            &format!("{} {:.0}", m.fighters[r].name, hd.held[r].floor()),
-            Align::Right,
+            Vec2::new(end, y - 4.0),
+            Vec2::new(end, y + 4.0),
+            1.0,
+            theme::DIM,
         );
     }
     label(
         p,
-        o + Vec2::new(0.0, 10.0),
-        &format!("YOU {:.0} / {:.0}", hd.held[0].floor(), hold::TARGET),
-        Align::Left,
+        Vec2::new(at.x, y + 8.0),
+        &format!("FIRST TO {:.0} S", hold::TARGET),
+        Align::Center,
     );
 }
 
-fn hold_color(c: Control) -> crate::ui::Rgba {
+fn hold_color(m: &Match, c: Control) -> Rgba {
     match c {
-        Control::Held(0) | Control::Contested => theme::HOT,
-        Control::Held(_) => theme::FG,
+        Control::Held(s) => m.factions[s].ui(),
+        Control::Contested => theme::HOT,
         Control::Open => theme::DIM,
     }
 }
@@ -642,8 +707,13 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
     let lines = [
         ("COMPLETION".to_string(), pay.completion),
         (
-            format!("PLACEMENT  {}/{}", pay.place, pay.field),
-            pay.placement,
+            match pay.outcome {
+                Outcome::Won => "VICTORY",
+                Outcome::Draw => "DRAW",
+                Outcome::Lost => "DEFEAT",
+            }
+            .to_string(),
+            pay.victory,
         ),
         (
             format!("CONTRIBUTION  {:.0} HP", pay.damage),
@@ -651,8 +721,8 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
         ),
         (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
     ];
-    let hold =
-        (m.contract == Contract::Hold).then(|| (format!("HOLD  {:.0} S", pay.held), pay.hold));
+    let hold = (m.contract == Contract::Hold)
+        .then(|| (format!("ON THE DEPOSIT  {:.0} S", pay.held), pay.hold));
     let lines: Vec<_> = lines.into_iter().chain(hold).collect();
     let n = lines.len() as f32;
     for (i, (what, amount)) in lines.iter().enumerate() {
@@ -678,6 +748,22 @@ fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
     }
 }
 
+/// The debug overlay's frame rate, small in the top right corner above the HUD brackets.
+pub fn fps_counter(fps: f32, width: f32, height: f32) -> Vec<UiVertex> {
+    let scale = height / REF_HEIGHT;
+    let w = width / scale;
+    let mut p = Painter::new(scale);
+    let mut s = TextStyle::LABEL;
+    s.color = theme::FG;
+    p.text(
+        Vec2::new(w - 24.0, 4.0),
+        &format!("{fps:.0} FPS"),
+        &s,
+        Align::Right,
+    );
+    p.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,7 +778,7 @@ mod tests {
     }
 
     fn draws_at_any_size_under(contract: Contract) {
-        let mut m = Match::new(crate::map::Map::generate(21), 0, 5, 21);
+        let mut m = Match::new(crate::map::Map::generate(21), 0, 11, 21);
         m.set_contract(contract);
         m.fighters[0].alive = false;
         m.phase = Phase::Over;

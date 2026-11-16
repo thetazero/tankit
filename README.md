@@ -19,7 +19,7 @@ cargo run --release -- --help    # every flag: maps, loadouts, headless screensh
 cargo test
 ```
 
-Any match flag (`--map`, `--seed`, `--bots`, ...) skips the menu and drops
+Any match flag (`--map`, `--seed`, `--team-size`, ...) skips the menu and drops
 straight into a round. `--shot` renders headless to a PNG instead of opening a
 window, and `--screen` does the same for a menu screen.
 
@@ -53,10 +53,10 @@ The window title shows the current tuning.
 |---|---|---|
 | Game loop | Main menu → mission → match → pause or round over → back to the menu. | `src/app.rs` |
 | Menus | Main menu, mission select and pause, drawn in the hairline style. | `src/menu.rs` |
-| Missions | One map per contract: Dead Town is Attrition (deathmatch) on Saltmarket, Crystal Vein is Hold on Shard Flats. `--contract` picks one outside the menu. | `src/mission.rs` |
+| Missions | One map per contract: Dead Town is Attrition on Saltmarket, Crystal Vein is Hold on Shard Flats. `--contract` picks one outside the menu. | `src/mission.rs` |
 | Pilot profile | XP, rank, crystals, owned parts and their upgrades, and the kit you deploy in. Autosaved as JSON in the OS data directory (`~/.local/share/tankit/` on Linux); delete it to start over. | `src/profile.rs` |
 | Deathmatch | Timed rounds, every tank for itself. Covers guns and shells, kills, XP (paid on the kill, plus a win bonus), respawns with spawn shield, and vertical auto-aim. | `src/combat.rs` |
-| Hold | King of the hill, every tank for itself: one site per map (on Shard Flats, the crystal deposit). Alone in the ring, you bank time; two or more contest it. First to the target wins, otherwise most time held when the clock runs out. Bots make for the site and fight whoever comes near it. | `src/hold.rs` |
+| Hold | King of the hill, side against side: secure the crystal deposit. Only your side in the ring banks time for it; both sides in it contest it. First side to the target wins, otherwise the side with the most time held when the clock runs out. Each tank's own time on the site orders the scoreboard and pays the HOLD line. Bots make for the site and fight whoever comes near it. | `src/hold.rs` |
 | Repair drops | Crates parachute onto fixed drop zones on a timer and mend part of a damaged tank's hull. | `src/repair.rs` |
 | Garage | Pick the hull and turret you spawn in next, and buy or upgrade parts, from the menu or mid-battle. | `src/garage.rs` |
 | Crystals | What a finished contract pays (completion, placement, contribution, kill bounty), part prices and the ranks they're sold at, and upgrade levels with their cost and stat bonus. | `src/economy.rs` |

@@ -16,6 +16,10 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var shadow_tex: texture_depth_2d;
 @group(1) @binding(1) var shadow_samp: sampler_comparison;
+// Procedural surface detail (render/surface.rs): layer 0 = normal xy, height,
+// cavity; layer 1 = albedo variation, roughness offset, wear, grime streaks.
+@group(1) @binding(2) var surf_tex: texture_2d_array<f32>;
+@group(1) @binding(3) var surf_samp: sampler;
 
 struct VIn {
     @location(0) pos: vec3<f32>,
@@ -37,6 +41,10 @@ struct VOut {
     // Object-space position and normal, so surface detail sticks to moving parts.
     @location(4) lpos: vec3<f32>,
     @location(5) lnormal: vec3<f32>,
+    // The part's axes in world space, to rotate object-space normal detail.
+    @location(6) ax: vec3<f32>,
+    @location(7) ay: vec3<f32>,
+    @location(8) az: vec3<f32>,
 };
 
 @vertex
@@ -51,6 +59,9 @@ fn vs_main(v: VIn) -> VOut {
     out.tint = v.tint;
     out.lpos = v.pos;
     out.lnormal = v.normal;
+    out.ax = v.m0.xyz;
+    out.ay = v.m1.xyz;
+    out.az = v.m2.xyz;
     return out;
 }
 
@@ -237,7 +248,7 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
         c = mix(g.sky_horizon.rgb, g.ground_color.rgb * 0.6, min(-t * 4.0, 1.0));
     }
     let sd = max(dot(dir, g.sun_dir.xyz), 0.0);
-    c += g.sun_color.rgb * (pow(sd, 900.0) * 40.0 + pow(sd, 12.0) * 0.25);
+    c += g.sun_color.rgb * (pow(sd, 2400.0) * 30.0 + pow(sd, 40.0) * 0.12 + pow(sd, 6.0) * 0.06);
     return c;
 }
 
@@ -246,6 +257,163 @@ fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
     let f = 1.0 - exp(-d * g.params.y);
     let dir = normalize(wpos - g.cam_pos.xyz);
     return mix(c, sky_color(vec3<f32>(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), f);
+}
+
+// Surface detail for a fragment, sampled triplanar in object space (no UVs
+// needed; detail moves with the part). Two octaves: `scale` texels per
+// meter, and 3.8x finer so narrow faces (plate edges, bevels) carry detail too.
+struct Detail {
+    // Perturbed world-space normal.
+    normal: vec3<f32>,
+    // Albedo variation, roughness offset, wear, grime (0.5 neutral for r/g).
+    masks: vec4<f32>,
+    fine: vec4<f32>,
+    // 1 = open, lower in crevices.
+    cavity: f32,
+};
+
+// Must be called in uniform control flow (it samples textures).
+fn surface_detail(lpos: vec3<f32>, lnormal: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>, az: vec3<f32>, scale: f32, bump: f32) -> Detail {
+    let ln = normalize(lnormal);
+    var tw = pow(abs(ln), vec3<f32>(4.0));
+    tw = tw / (tw.x + tw.y + tw.z);
+    let tp = lpos * scale;
+    let tq = lpos * scale * 3.8;
+    let sx = textureSample(surf_tex, surf_samp, tp.zy, 0);
+    let sy = textureSample(surf_tex, surf_samp, tp.xz, 0);
+    let sz = textureSample(surf_tex, surf_samp, tp.xy, 0);
+    let fx = textureSample(surf_tex, surf_samp, tq.zy, 0).xy * 2.0 - 1.0;
+    let fy = textureSample(surf_tex, surf_samp, tq.xz, 0).xy * 2.0 - 1.0;
+    let fz = textureSample(surf_tex, surf_samp, tq.xy, 0).xy * 2.0 - 1.0;
+    var d: Detail;
+    d.masks = textureSample(surf_tex, surf_samp, tp.zy, 1) * tw.x + textureSample(surf_tex, surf_samp, tp.xz, 1) * tw.y
+        + textureSample(surf_tex, surf_samp, tp.xy, 1) * tw.z;
+    d.fine = textureSample(surf_tex, surf_samp, tq.zy, 1) * tw.x + textureSample(surf_tex, surf_samp, tq.xz, 1) * tw.y
+        + textureSample(surf_tex, surf_samp, tq.xy, 1) * tw.z;
+    d.cavity = sx.a * tw.x + sy.a * tw.y + sz.a * tw.z;
+    let tx = sx.xy * 2.0 - 1.0;
+    let ty = sy.xy * 2.0 - 1.0;
+    let tz = sz.xy * 2.0 - 1.0;
+    let n_obj = normalize(
+        ln + bump * (tw.x * vec3<f32>(0.0, tx.y, tx.x) + tw.y * vec3<f32>(ty.x, 0.0, ty.y) + tw.z * vec3<f32>(tz.x, tz.y, 0.0))
+            + bump * 0.7 * (tw.x * vec3<f32>(0.0, fx.y, fx.x) + tw.y * vec3<f32>(fy.x, 0.0, fy.y) + tw.z * vec3<f32>(fz.x, fz.y, 0.0)),
+    );
+    d.normal = normalize(normalize(ax) * n_obj.x + normalize(ay) * n_obj.y + normalize(az) * n_obj.z);
+    return d;
+}
+
+// World materials 13..17 (map.rs `mat`): sand, plaster, concrete, rubble,
+// rust. Detail comes from the procedural surface textures; these work in
+// world space (static map geometry has an identity transform).
+const SAND_COL: vec3<f32> = vec3<f32>(0.74, 0.6, 0.42);
+
+fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Detail) -> Surface {
+    var s: Surface;
+    s.albedo = base;
+    s.rough = 0.88;
+    s.ao = mix(1.0, d.cavity, 0.8);
+    s.emissive = vec3<f32>(0.0);
+    s.metal = 0.0;
+    let up = clamp(n.y, 0.0, 1.0);
+    let vertical = 1.0 - abs(n.y);
+    let blotch = d.masks.r;
+    let grain = d.fine.r;
+    if (m == 13) {
+        // Sand: wind ripples across the flats, darker crusted hardpan in
+        // patches, cracked dry mud on the reservoir floor.
+        // Ripples: two trains at different angles and wavelengths, bent by
+        // large-scale warping, faded in and out in patches, with the sharp
+        // crest and long gentle back slope real wind ripples have.
+        let warp = vec2<f32>(noise2(wpos.xz * 0.045), noise2(wpos.xz * 0.045 + 17.0)) * 9.0;
+        let q = wpos.xz + warp;
+        let ph1 = fract((q.x * 0.9 + q.y * 0.42) * 0.42 + noise2(q * 0.3) * 0.6);
+        let ph2 = fract((q.x * 0.35 - q.y * 0.94) * 0.31 + noise2(q * 0.21 + 5.0) * 0.8);
+        let r1 = pow(ph1, 3.0) * 2.0 - 0.6;
+        let r2 = pow(ph2, 3.0) * 2.0 - 0.6;
+        let m1 = smoothstep(0.35, 0.7, noise2(wpos.xz * 0.05 + 3.0));
+        let m2 = smoothstep(0.45, 0.8, noise2(wpos.xz * 0.04 + 41.0));
+        let ripple = (r1 * m1 + r2 * m2 * (1.0 - m1 * 0.6)) * 0.8;
+        let flat_ = smoothstep(0.85, 0.98, up);
+        let hardpan = smoothstep(0.55, 0.75, noise2(wpos.xz * 0.035) * 0.7 + blotch * 0.3);
+        s.albedo = base * (0.92 + 0.1 * ripple * flat_ + 0.22 * (blotch - 0.5) + 0.1 * (grain - 0.5));
+        s.albedo = mix(s.albedo, base * vec3<f32>(0.82, 0.78, 0.74), hardpan * 0.5);
+        let mud = smoothstep(-1.5, -3.0, wpos.y);
+        let crack = smoothstep(0.48, 0.62, d.fine.b + d.masks.b * 0.4);
+        s.albedo = mix(s.albedo, vec3<f32>(0.6, 0.53, 0.44), mud * 0.6);
+        s.albedo *= 1.0 - crack * mud * 0.45;
+        s.rough = 0.96;
+    } else if (m == 14) {
+        // Plaster: sun-bleached and blotchy, chipped through to stone and brick
+        // underneath, grime streaks running down from ledges, dust caked low.
+        s.albedo = base * (0.84 + 0.32 * blotch) * (0.94 + 0.12 * grain);
+        let chip = smoothstep(0.38, 0.6, d.masks.b * 0.7 + d.fine.b * 0.6);
+        let masonry = vec3<f32>(0.58, 0.45, 0.34) * (0.75 + 0.5 * grain);
+        s.albedo = mix(s.albedo, masonry, chip);
+        s.ao *= 1.0 - chip * 0.25;
+        // Rain-stain runs: broad and soft, not grain.
+        let stain = smoothstep(0.35, 0.8, d.masks.a) * smoothstep(0.3, 0.6, noise2(vec2<f32>(wpos.x + wpos.z, wpos.y * 0.15) * 0.4));
+        s.albedo *= 1.0 - 0.28 * stain * vertical;
+        let caked = 1.0 - smoothstep(0.0, 1.6, wpos.y);
+        s.albedo = mix(s.albedo, SAND_COL * 0.9, caked * vertical * 0.55);
+        s.rough = 0.9;
+    } else if (m == 15) {
+        // Cast concrete: grey, blotchy, pitted, stained along the edges.
+        s.albedo = base * (0.76 + 0.48 * blotch) * (0.9 + 0.2 * grain);
+        s.albedo *= 1.0 - 0.18 * smoothstep(0.4, 0.8, d.masks.a) * vertical;
+        s.rough = 0.92;
+    } else if (m == 16) {
+        // Rubble: broken masonry and stone, high variation, deep crevices.
+        s.albedo = base * (0.62 + 0.7 * grain) * (0.8 + 0.4 * blotch);
+        s.ao = d.cavity * d.cavity;
+        s.rough = 0.95;
+    } else if (m == 17) {
+        // Rusted steel: orange-brown bloom, flaking dark scale, a little bare
+        // metal where it's been scraped.
+        let bloom = vec3<f32>(0.4, 0.24, 0.14) * (0.7 + 0.6 * grain);
+        s.albedo = mix(base, bloom, smoothstep(0.25, 0.75, blotch + 0.2 * grain));
+        s.albedo *= 1.0 - 0.4 * smoothstep(0.55, 0.75, d.fine.b);
+        let bare = smoothstep(0.7, 0.85, d.masks.b);
+        s.albedo = mix(s.albedo, vec3<f32>(0.4, 0.39, 0.37), bare);
+        s.metal = bare * 0.8;
+        s.rough = mix(0.8, 0.4, bare);
+    }
+    if (m == 18) {
+        // Weathered paint over steel: faded and blotchy, rust breaking through
+        // in patches (worse low down) and running down from them.
+        s.albedo = base * (0.8 + 0.3 * blotch) * (0.94 + 0.12 * grain);
+        let low = 1.0 - smoothstep(0.0, 1.8, wpos.y);
+        let rust = smoothstep(0.62, 0.8, blotch * 0.55 + d.fine.b * 0.45 + low * 0.25);
+        s.albedo = mix(s.albedo, vec3<f32>(0.36, 0.22, 0.13) * (0.7 + 0.6 * grain), rust);
+        s.albedo *= 1.0 - 0.3 * smoothstep(0.5, 0.85, d.masks.a) * vertical;
+        s.rough = mix(0.65, 0.85, rust);
+    }
+    // Sand settles on everything that faces up.
+    if (m != 13) {
+        let dust = smoothstep(0.55, 0.95, up) * clamp(0.3 + 0.6 * d.masks.g, 0.0, 1.0);
+        s.albedo = mix(s.albedo, SAND_COL, dust * 0.65);
+        s.rough = mix(s.rough, 0.96, dust);
+        s.metal *= 1.0 - dust;
+    }
+    return s;
+}
+
+// GGX / Smith / Schlick specular, scaled by pi to match this renderer's
+// un-normalized Lambert diffuse.
+fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    let h = normalize(v + l);
+    let nl = max(dot(n, l), 0.0);
+    let nv = max(dot(n, v), 0.001);
+    let nh = max(dot(n, h), 0.0);
+    let vh = max(dot(v, h), 0.0);
+    let a = max(rough * rough, 0.002);
+    let a2 = a * a;
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let d = a2 / (3.14159 * dd * dd);
+    let k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    let gv = nv / (nv * (1.0 - k) + k);
+    let gl = nl / (nl * (1.0 - k) + k);
+    let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+    return d * gv * gl * f / (4.0 * nv * max(nl, 0.001)) * 3.14159;
 }
 
 @fragment
@@ -257,9 +425,14 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let paint = m == 7 || m == 11;
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
+    let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);
+    let is_world_detail = m >= 13 && m <= 18;
     var s: Surface;
     if (is_tank) {
         s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
+    } else if (is_world_detail) {
+        n = detail.normal;
+        s = world_surface(m, base, v.wpos, n, detail);
     } else {
         s = surface(v.color.a, base, v.wpos, n);
     }
@@ -282,9 +455,20 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let diffuse = s.albedo * (1.0 - s.metal * 0.75);
     let r = reflect(-view, n);
     let env = mix(g.ground_color.rgb * 0.7, mix(g.sky_horizon.rgb, g.sky_zenith.rgb, clamp(r.y, 0.0, 1.0)), smoothstep(-0.15, 0.15, r.y));
-    var c = diffuse * hemi * 0.5 * s.ao;
-    c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
-    c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
+    var c = vec3<f32>(0.0);
+    if (is_world_detail) {
+        // Physically based highlights and reflections for the detailed materials.
+        let f0v = mix(vec3<f32>(0.04), s.albedo, s.metal);
+        let kd = s.albedo * (1.0 - s.metal);
+        let nv = max(dot(n, view), 0.0);
+        c = (kd + ggx_spec(n, view, l, s.rough, f0v)) * g.sun_color.rgb * ndl * sh;
+        let fr = f0v + (max(vec3<f32>(1.0 - s.rough), f0v) - f0v) * pow(1.0 - nv, 5.0);
+        c += kd * hemi * 0.36 * s.ao + env * fr * s.ao * 0.4;
+    } else {
+        c = diffuse * hemi * 0.36 * s.ao;
+        c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
+        c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
+    }
     c += s.emissive;
 
     // Emissive instances (effects, pickups) replace lighting with their own glow.
