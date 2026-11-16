@@ -113,7 +113,7 @@ struct Drift {
 
 impl Drift {
     fn height_at(&self, p: Vec2) -> f32 {
-        let q = self.b.to_local(p);
+        let q = self.b.local_point(p);
         let (along, across, half_along, half_across) =
             if self.axis == 0 { (q.x, q.y, self.b.half.x, self.b.half.y) } else { (q.y, q.x, self.b.half.y, self.b.half.x) };
         let d = along * self.sign - half_along;
@@ -260,7 +260,7 @@ impl Map {
         // Which local face looks at the nearest road (the street front).
         let to_road = {
             let p = roads.samples.iter().min_by(|a, b| a.0.distance_squared(lot.center).total_cmp(&b.0.distance_squared(lot.center))).unwrap().0;
-            lot.to_local(p)
+            lot.local_point(p)
         };
         let (front_axis, front_sign) = if (to_road.x / h.x).abs() > (to_road.y / h.y).abs() { (0, to_road.x.signum()) } else { (1, to_road.y.signum()) };
         let roll = rng.f32();

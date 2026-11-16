@@ -76,7 +76,7 @@ impl OBox {
     }
 
     /// World point (x, z) in the box's local footprint frame.
-    pub fn to_local(&self, p: Vec2) -> Vec2 {
+    pub fn local_point(&self, p: Vec2) -> Vec2 {
         let (ax, az) = self.axes();
         let d = p - self.center;
         Vec2::new(d.dot(ax), d.dot(az))
@@ -84,7 +84,7 @@ impl OBox {
 
     /// Distance from a ground point to the footprint (0 inside).
     pub fn distance(&self, p: Vec2) -> f32 {
-        let q = self.to_local(p).abs() - self.half;
+        let q = self.local_point(p).abs() - self.half;
         q.max(Vec2::ZERO).length()
     }
 
