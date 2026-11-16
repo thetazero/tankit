@@ -1002,7 +1002,11 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // 1. Suspension rays (one per road wheel).
     let mut ray_hits: Vec<Option<(Vec3, Vec3, f32)>> = vec![None; n_wheels];
     {
-        let filter = QueryFilter::default().exclude_rigid_body(t.body);
+        // Wheels stand on fixed ground only, never on another tank. Rolling
+        // up onto a tank's hull (or its wreck) levered the nose high and
+        // dropped the tank on its back: bots in a crush at a choke point
+        // climbed each other and toppled by the handful.
+        let filter = QueryFilter::only_fixed();
         let qp = physics.query_pipeline_with_filter(filter);
         // Each wheel is a ball swept down from its mount, not a thin ray: it
         // rolls up onto an edge as it reaches it instead of snapping to the
@@ -1037,6 +1041,20 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
             continue;
         };
         let ours_first = pair.collider1 == t.collider;
+        // Another tank's hull pushes back (the physics engine's job), but the
+        // belt can't drive on it: grip there walked tanks up onto each other.
+        let other = if ours_first {
+            pair.collider2
+        } else {
+            pair.collider1
+        };
+        if physics
+            .colliders
+            .get(other)
+            .is_some_and(|c| c.parent().is_some())
+        {
+            continue;
+        }
         for m in rc.solver_manifolds() {
             // Manifold normal points from collider1 to collider2; we want it pointing into the tank.
             let normal = if ours_first {
@@ -1072,6 +1090,31 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
         }
     }
     t.face_contacts = contacts.len();
+    // The belt climbs a step, but not a wall: against a face it presses into
+    // at up to 2 g, its grip would lift the tank right up the face, and the
+    // tank stood on its tail and went over. A steep face is a step only if
+    // its top is lower than the top of the tracks' end wheels.
+    {
+        let qp = physics.query_pipeline_with_filter(QueryFilter::only_fixed());
+        let step_max = (c.front.1 + c.front.2).max(c.rear.1 + c.rear.2) + 0.05;
+        let ground_y = pose.translation.y;
+        for ct in &mut contacts {
+            let f = footing(ct.normal);
+            if f >= 1.0 {
+                continue;
+            }
+            let into = Vec3::new(-ct.normal.x, 0.0, -ct.normal.z).normalize_or_zero();
+            let top = ground_y + step_max;
+            let origin = Vec3::new(ct.point.x, top, ct.point.z) + into * 0.15;
+            let span = (top - ct.point.y).max(0.0) + 0.3;
+            let has_top = qp
+                .cast_ray(&Ray::new(origin, -Vec3::Y), span, true)
+                .is_some_and(|(_, toi)| toi > 0.02);
+            if !has_top {
+                ct.load *= f;
+            }
+        }
+    }
 
     // Spring forces; ray contacts join the traction list with the spring load.
     let k = mass * GRAVITY / (n_wheels as f32 * SUSPENSION_SAG);
@@ -1116,7 +1159,7 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 contacts.push(TrackContact {
                     point: *origin - up * *toi,
                     normal: *n,
-                    load: force * n.dot(up).max(0.0),
+                    load: force * n.dot(up).max(0.0) * footing(*n),
                     side: if i < n_wheels / 2 { 0 } else { 1 },
                     push: fwd,
                     grip: t.hull.grip_long,
@@ -1261,6 +1304,72 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     }
     t.track_dist[0] += t.belt[0] * DT;
     t.track_dist[1] += t.belt[1] * DT;
+    hold_off_tipping(b);
+}
+
+/// Tilt from level (degrees) past which a tracked hull resists tipping
+/// further, and past which it also leans itself back.
+const TIP_DAMP_FROM: f32 = 25.0;
+const TIP_RIGHT_FROM: f32 = 45.0;
+/// Most angular acceleration the hold can bring, rad/s².
+const TIP_HOLD_MAX: f32 = 9.0;
+/// Tipping slower than this (rad/s) isn't damped.
+const TIP_SLOW_RATE: f32 = 0.6;
+
+/// A tank's weight sits low between long tracks, so in the game it should
+/// all but never go over by its own driving. It did: hitting a kerb, a
+/// wreck or a kicker at speed threw the nose up at 2 rad/s, the wheels left
+/// the ground, and nothing slowed the spin until it landed on its back.
+/// Once well tipped, this soaks up fast rotation that tips the hull
+/// further, and past `TIP_RIGHT_FROM` (steeper than any drivable slope)
+/// leans it back toward level. A tank on a slope feels nothing, and it's
+/// capped so a shell or a hard crash can still knock one over.
+fn hold_off_tipping(b: &mut RigidBody) {
+    let up = *b.rotation() * Vec3::Y;
+    let tilt = up.y.clamp(-1.0, 1.0).acos();
+    let from = TIP_DAMP_FROM.to_radians();
+    if tilt <= from {
+        return;
+    }
+    // The axis that rotates the hull back toward level.
+    let axis = up.cross(Vec3::Y).normalize_or_zero();
+    if axis == Vec3::ZERO {
+        return;
+    }
+    let w = b.angvel();
+    // Positive while rotating back toward level.
+    let righting = w.dot(axis);
+    let s = ((tilt - from) / (20f32.to_radians())).clamp(0.0, 1.0);
+    // Slow tipping is left alone (rearing up against a wall, then dropping
+    // back off it); a fast spin is cut back to that pace within a few steps.
+    let tipping = (-righting - TIP_SLOW_RATE).max(0.0);
+    let mut accel = tipping / (4.0 * DT) * s;
+    // Well over (perched on another tank, say), lean back toward level.
+    let right = TIP_RIGHT_FROM.to_radians();
+    if tilt > right {
+        accel += TIP_HOLD_MAX * ((tilt - right) / 15f32.to_radians()).min(1.0);
+    }
+    let accel = accel.min(TIP_HOLD_MAX);
+    if accel > 0.0 {
+        b.set_angvel(w + axis * accel * DT, true);
+    }
+}
+
+/// Steepest ground a road wheel grips fully, and the slope past which it
+/// gets no grip at all (degrees from level).
+const GRIP_SLOPE_FULL: f32 = 40.0;
+const GRIP_SLOPE_NONE: f32 = 55.0;
+
+/// How much a road wheel on ground with outward normal `n` can push and hold:
+/// 1 on drivable ground, fading to 0 on faces steeper than a tank can climb.
+/// The tracks grip at nearly 2 g, so without this a tank drove straight up
+/// a leaning crystal or a heaped wall until it went over backwards. The
+/// spring still bears on a steep face; it just slides.
+fn footing(n: Vec3) -> f32 {
+    let full = GRIP_SLOPE_FULL.to_radians().cos();
+    let none = GRIP_SLOPE_NONE.to_radians().cos();
+    let x = ((n.y - none) / (full - none)).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// Hover drive: each emitter is a spring of plasma against whatever is below
@@ -1865,6 +1974,25 @@ mod tests {
             !climbs(2.0, Vec2::new(100.0, 80.0), 0.0, HullKind::Kataphrakt),
             "drove up a wall"
         );
+    }
+
+    /// Driving flat out into a wall and holding the throttle down leaves the
+    /// tank nosed up against it on its tracks. It used to climb the face,
+    /// stand on its tail and go over backwards.
+    #[test]
+    fn stays_on_its_tracks_against_a_wall() {
+        for hull in [HullKind::Kataphrakt, HullKind::Vigil, HullKind::Kastron] {
+            let mut w = ledge_world(2.0);
+            w.set_hull(0, hull);
+            place(&mut w, Vec3::new(100.0, 0.2, 80.0), Quat::IDENTITY);
+            run(&mut w, Command::default(), 0.5);
+            let mut lowest = 1.0f32;
+            for _ in 0..(8.0 / DT) as usize {
+                w.step(&[throttle(1.0)]);
+                lowest = lowest.min(w.tanks[0].up().y);
+            }
+            assert!(lowest > 0.9, "{hull:?} reared up to up.y={lowest:.2}");
+        }
     }
 
     #[test]

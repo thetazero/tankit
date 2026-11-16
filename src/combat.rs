@@ -2489,3 +2489,185 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tip_probe {
+    use super::*;
+    use rapier3d::prelude::PairContacts;
+
+    /// Not a test: a measuring tool. Runs bot matches and reports every bot
+    /// that tips past 72° while alive, with what it was doing as it went.
+    /// `TIP_SECS`, `TIP_SEEDS` (e.g. "1-6"), `TIP_MAPS` (comma list) and
+    /// `TIP_VERBOSE` tune it. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn tip_probe() {
+        let secs: f32 = std::env::var("TIP_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120.0);
+        let seeds = std::env::var("TIP_SEEDS").unwrap_or("1-4".into());
+        let (a, b) = seeds.split_once('-').unwrap_or((&seeds, &seeds));
+        let seeds: Vec<u64> = (a.parse().unwrap()..=b.parse().unwrap()).collect();
+        let maps =
+            std::env::var("TIP_MAPS").unwrap_or("kiln,saltmarket,capital,foundry,sanctum".into());
+        let verbose = std::env::var("TIP_VERBOSE").is_ok();
+        for name in maps.split(',') {
+            let mut total: std::collections::BTreeMap<String, (usize, usize, f32, usize)> =
+                Default::default();
+            for &seed in &seeds {
+                let map = match name {
+                    "kiln" => Map::kiln(),
+                    "saltmarket" => Map::saltmarket(),
+                    "capital" => Map::capital(),
+                    "foundry" => Map::foundry(),
+                    "sanctum" => Map::sanctum(),
+                    _ => panic!("map {name}"),
+                };
+                let bots = if name == "capital" { 15 } else { 11 };
+                let mut m = Match::new(map, 0, bots, seed);
+                m.time_left = secs + 10.0;
+                let n = m.world.tanks.len();
+                let mut tipped = vec![false; n];
+                let mut hist: Vec<std::collections::VecDeque<String>> = vec![Default::default(); n];
+                let mut dist = vec![0.0f32; n];
+                for _ in 0..(secs / DT) as usize {
+                    m.fighters[0].shield = 1.0;
+                    m.step(Command::default(), false);
+                    let w = &m.world;
+                    for i in 1..n {
+                        let t = &w.tanks[i];
+                        if t.dead || !m.fighters[i].alive {
+                            continue;
+                        }
+                        dist[i] += t.vel.length() * DT;
+                        if verbose {
+                            let b = &w.physics.bodies[t.body];
+                            let mut touch = Vec::new();
+                            for pair in w.physics.contact_pairs_with(t.collider) {
+                                let PairContacts::Rigid(rc) = &pair.contacts else {
+                                    continue;
+                                };
+                                if !rc.has_any_active_contact() {
+                                    continue;
+                                }
+                                let other = if pair.collider1 == t.collider {
+                                    pair.collider2
+                                } else {
+                                    pair.collider1
+                                };
+                                touch.push(match w.tank_of(other) {
+                                    Some(j) => format!("T{j}"),
+                                    None => "S".into(),
+                                });
+                            }
+                            let fwd = t.forward();
+                            let wl = t.rot.inverse() * b.angvel();
+                            let line = format!(
+                                "t={:.2} up.y={:.2} pitch={:+.0} roll={:+.0} v={:.1} vy={:+.1} w=({:+.1},{:+.1},{:+.1}) wheels={} faces={} belt=({:+.1},{:+.1}) hit={:.1} touch={:?} pos=({:.0},{:.1},{:.0})",
+                                w.time,
+                                t.up().y,
+                                fwd.y.asin().to_degrees(),
+                                (t.rot * Vec3::X).y.asin().to_degrees(),
+                                t.vel.length(),
+                                t.vel.y,
+                                wl.x,
+                                wl.y,
+                                wl.z,
+                                t.wheels_down,
+                                t.face_contacts,
+                                t.belt[0],
+                                t.belt[1],
+                                m.fighters[i].since_hit,
+                                touch,
+                                t.pos.x,
+                                t.pos.y,
+                                t.pos.z,
+                            );
+                            let hq = &mut hist[i];
+                            hq.push_back(line);
+                            if hq.len() > 90 {
+                                hq.pop_front();
+                            }
+                        }
+                        if !tipped[i] && t.up().y < 0.3 {
+                            tipped[i] = true;
+                            println!(
+                                "{name} seed {seed}: bot {i} {:?} tipped at {:.1}s",
+                                t.hull_kind, w.time
+                            );
+                            if verbose {
+                                let len = hist[i].len();
+                                for (k, l) in hist[i].iter().enumerate() {
+                                    if k % 6 == 0 || k + 15 > len {
+                                        println!("    {l}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for i in 1..n {
+                    let e = total
+                        .entry(format!("{:?}", m.world.tanks[i].hull_kind))
+                        .or_default();
+                    e.0 += tipped[i] as usize;
+                    e.1 += 1;
+                    e.2 += dist[i];
+                    e.3 += m.fighters[i].kills as usize;
+                }
+            }
+            for (h, (tip, cnt, d, k)) in &total {
+                println!(
+                    "SUMMARY {name} {h}: tipped {tip}/{cnt}, {:.0} m driven each, {:.2} kills each",
+                    d / *cnt as f32,
+                    *k as f32 / *cnt as f32
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tracked_bots_stay_upright {
+    use super::*;
+
+    /// Bots on tracks that tipped over in the first 20 s on main: driving
+    /// up crystal faces and walls, climbing each other in a crush, and
+    /// getting thrown nose-up by a kerb at speed. None tip now.
+    fn no_tracked_bot_tips(map: Map, seed: u64) {
+        let mut m = Match::new(map, 0, 11, seed);
+        let n = m.world.tanks.len();
+        let mut tipped = vec![false; n];
+        for _ in 0..(20.0 / DT) as usize {
+            m.fighters[0].shield = 1.0;
+            m.step(Command::default(), false);
+            for (i, t) in m.world.tanks.iter().enumerate().skip(1) {
+                tipped[i] |= !t.chassis.hover && m.fighters[i].alive && t.up().y < 0.3;
+            }
+        }
+        let tracked = m
+            .world
+            .tanks
+            .iter()
+            .skip(1)
+            .filter(|t| !t.chassis.hover)
+            .count();
+        assert!(tracked >= 5, "only {tracked} tracked hulls");
+        let over: Vec<String> = (0..n)
+            .filter(|&i| tipped[i])
+            .map(|i| format!("{i} ({:?})", m.world.tanks[i].hull_kind))
+            .collect();
+        assert!(over.is_empty(), "tracked bots tipped over: {over:?}");
+    }
+
+    #[test]
+    fn on_the_kiln() {
+        no_tracked_bot_tips(Map::kiln(), 3);
+    }
+
+    #[test]
+    fn on_saltmarket() {
+        no_tracked_bot_tips(Map::saltmarket(), 1);
+    }
+}
