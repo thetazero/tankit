@@ -200,6 +200,56 @@ impl GpuMesh {
     }
 }
 
+/// One ground cell of the static mesh: its triangles' indices, and a sphere
+/// round them.
+struct Chunk {
+    indices: std::ops::Range<u32>,
+    center: Vec3,
+    radius: f32,
+}
+
+/// Ground cell size for [`chunked`], meters.
+const CHUNK: f32 = 24.0;
+
+/// `mesh` with its triangles regrouped by the ground cell their middle is
+/// in, and each cell's range.
+fn chunked(mesh: &MeshData) -> (MeshData, Vec<Chunk>) {
+    let pos = |i: u32| Vec3::from(mesh.verts[i as usize].pos);
+    let mut cells: std::collections::BTreeMap<(i32, i32), Vec<[u32; 3]>> = Default::default();
+    for t in mesh.indices.chunks_exact(3) {
+        let mid = (pos(t[0]) + pos(t[1]) + pos(t[2])) / 3.0;
+        let key = ((mid.x / CHUNK).floor() as i32, (mid.z / CHUNK).floor() as i32);
+        cells.entry(key).or_default().push([t[0], t[1], t[2]]);
+    }
+    let mut indices = Vec::with_capacity(mesh.indices.len());
+    let mut chunks = Vec::with_capacity(cells.len());
+    for tris in cells.values() {
+        let start = indices.len() as u32;
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for &i in tris.iter().flatten() {
+            lo = lo.min(pos(i));
+            hi = hi.max(pos(i));
+            indices.push(i);
+        }
+        let center = (lo + hi) * 0.5;
+        let radius = tris
+            .iter()
+            .flatten()
+            .map(|&i| pos(i).distance(center))
+            .fold(0.0, f32::max);
+        chunks.push(Chunk {
+            indices: start..indices.len() as u32,
+            center,
+            radius,
+        });
+    }
+    let out = MeshData {
+        verts: mesh.verts.clone(),
+        indices,
+    };
+    (out, chunks)
+}
+
 /// The middle of a mesh's box and the farthest vertex from it.
 fn bounds(m: &MeshData) -> (Vec3, f32) {
     let (lo, hi) = m.verts.iter().fold(
@@ -275,6 +325,9 @@ pub struct Renderer {
 
     meshes: Vec<GpuMesh>,
     static_mesh: Option<GpuMesh>,
+    /// The static mesh's triangles, grouped into ground cells (index ranges
+    /// with a bounding sphere each), so the camera draws only cells in view.
+    chunks: Vec<Chunk>,
     instance_buf: wgpu::Buffer,
     instance_cap: usize,
     ui_buf: wgpu::Buffer,
@@ -955,6 +1008,7 @@ impl Renderer {
             targets,
             meshes,
             static_mesh: None,
+            chunks: Vec::new(),
             instance_buf,
             instance_cap,
             ui_buf,
@@ -1066,7 +1120,9 @@ impl Renderer {
 
     /// Upload world geometry that never moves (drawn with an identity transform).
     pub fn set_static_mesh(&mut self, mesh: &MeshData) {
-        self.static_mesh = Some(GpuMesh::new(&self.device, mesh, "static"));
+        let (mesh, chunks) = chunked(mesh);
+        self.chunks = chunks;
+        self.static_mesh = Some(GpuMesh::new(&self.device, &mesh, "static"));
         self.static_gen += 1;
     }
 
@@ -1311,7 +1367,7 @@ impl Renderer {
     /// Upload this frame's instances, particles, UI and globals. Returns the
     /// instance ranges to draw for the camera, then for the sun's shadow map:
     /// each holds only the instances inside that view.
-    fn upload(&mut self, scene: &Scene) -> (Ranges, Ranges) {
+    fn upload(&mut self, scene: &Scene) -> (Ranges, Ranges, Vec<std::ops::Range<u32>>) {
         let (w, h) = (self.width as f32, self.height as f32);
         let view_proj = scene.camera.view_proj(w / h);
         let sun = scene.sun_dir.normalize();
@@ -1362,6 +1418,20 @@ impl Renderer {
         let seen = pick(frustum(view_proj));
         let shadowed = pick(frustum(light_view_proj));
         self.light_view_proj = light_view_proj;
+        // The static world's cells in view, neighbours merged into one draw.
+        let planes = frustum(view_proj);
+        let mut world: Vec<std::ops::Range<u32>> = Vec::new();
+        if scene.world {
+            for c in &self.chunks {
+                if !in_frustum(&planes, c.center, c.radius) {
+                    continue;
+                }
+                match world.last_mut() {
+                    Some(r) if r.end == c.indices.start => r.end = c.indices.end,
+                    _ => world.push(c.indices.clone()),
+                }
+            }
+        }
         if data.len() > self.instance_cap {
             self.instance_cap = data.len().next_power_of_two();
             self.instance_buf = make_buffer(
@@ -1438,20 +1508,22 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&[w, h, 0.0, 0.0]),
         );
-        (seen, shadowed)
+        (seen, shadowed, world)
     }
 
     fn draw_geometry<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         ranges: &[(MeshId, std::ops::Range<u32>)],
-        world: bool,
+        world: &[std::ops::Range<u32>],
     ) {
         pass.set_vertex_buffer(1, self.instance_buf.slice(..));
-        if let Some(m) = self.static_mesh.as_ref().filter(|_| world) {
+        if let Some(m) = self.static_mesh.as_ref().filter(|_| !world.is_empty()) {
             pass.set_vertex_buffer(0, m.vb.slice(..));
             pass.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..m.count, 0, 0..1);
+            for r in world {
+                pass.draw_indexed(r.clone(), 0, 0..1);
+            }
         }
         for (id, r) in ranges {
             let m = &self.meshes[id.0 as usize];
@@ -1511,7 +1583,8 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            self.draw_geometry(&mut pass, &[], true);
+            let all = self.static_mesh.as_ref().map_or(0, |m| m.count);
+            self.draw_geometry(&mut pass, &[], &[0..all]);
         }
         self.shadow_cache = Some((key.0, key.1, tex, view));
     }
@@ -1522,7 +1595,7 @@ impl Renderer {
         out: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        let (seen, shadowed) = self.upload(scene);
+        let (seen, shadowed, world) = self.upload(scene);
 
         // The world's own shadow comes from the cache when it still fits.
         let cached = scene.world && self.static_mesh.is_some();
@@ -1561,7 +1634,14 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            self.draw_geometry(&mut pass, &shadowed, scene.world && !cached);
+            // Uncached, the sun sees the whole world.
+            let all = self.static_mesh.as_ref().map_or(0, |m| m.count);
+            let sun_world = if scene.world && !cached {
+                vec![0..all]
+            } else {
+                Vec::new()
+            };
+            self.draw_geometry(&mut pass, &shadowed, &sun_world);
         }
 
         {
@@ -1583,7 +1663,7 @@ impl Renderer {
             pass.set_pipeline(&self.prepass_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_bind_group(1, &self.shadow_bg, &[]);
-            self.draw_geometry(&mut pass, &seen, scene.world);
+            self.draw_geometry(&mut pass, &seen, &world);
         }
 
         {
@@ -1613,7 +1693,7 @@ impl Renderer {
             pass.set_pipeline(&self.scene_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_bind_group(1, &self.shadow_bg, &[]);
-            self.draw_geometry(&mut pass, &seen, scene.world);
+            self.draw_geometry(&mut pass, &seen, &world);
             pass.set_pipeline(&self.sky_pipe);
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
