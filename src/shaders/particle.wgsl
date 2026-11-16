@@ -99,6 +99,11 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     let puff = k * k;
     let line = (1.0 - v.uv.x * v.uv.x) * (1.0 - abs(v.uv.y));
     let soft0 = max(mix(puff, line, v.streak), 0.0);
+    // Outside the puff (the quad's corners): nothing to draw, so don't
+    // pay for the depth and shadow lookups below.
+    if (soft0 <= 0.0) {
+        discard;
+    }
     // Soft particles: fade out as the quad nears the ground or a hull it
     // cuts into, so no straight edge shows where it's clipped.
     let d = distance(v.wpos, g.cam_pos.xyz);

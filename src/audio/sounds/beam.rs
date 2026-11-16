@@ -7,7 +7,7 @@ use std::f32::consts::TAU;
 use glam::Vec3;
 
 use super::Play;
-use crate::audio::dsp::{Noise, OnePole, Smooth, Svf, pan_gains};
+use crate::audio::dsp::{Noise, OnePole, Panner, Smooth, Svf};
 use crate::audio::mixer::{Coefs, OneShot};
 use crate::audio::tank::{Loop, TankParams};
 use crate::audio::voice::{Filt, L, Layer, Src, noise, ring, sine};
@@ -260,6 +260,7 @@ pub struct BurnVoice {
     ring_b: Svf,
     ring_c: Svf,
     air_lp: OnePole,
+    panner: Panner,
 }
 
 impl BurnVoice {
@@ -278,6 +279,7 @@ impl BurnVoice {
             ring_b: Svf::default(),
             ring_c: Svf::default(),
             air_lp: OnePole::default(),
+            panner: Panner::default(),
         }
     }
 
@@ -324,8 +326,8 @@ impl BurnVoice {
                 + self.ring_b.run(x, 2290.0, 16.0, sr).band * 0.7
                 + self.ring_c.run(x, 3720.0, 18.0, sr).band * 0.4;
             let mix = fry * 0.28 + pops * 0.5 + roar * (0.9 - 0.4 * metal) + ring * 0.12 * metal;
-            let x = self.air_lp.run(mix, OnePole::coef(air, sr)) * gain;
-            let (l, r) = pan_gains(pan);
+            let x = self.air_lp.run_at(mix, air, sr) * gain;
+            let (l, r) = self.panner.gains(pan);
             frame[0] += x * l;
             frame[1] += x * r;
         }

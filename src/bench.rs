@@ -78,6 +78,7 @@ pub fn run(
     let mut total = Timer::new("frame");
     let mut steps_max = 0;
     let (mut instances, mut particles) = (0usize, 0usize);
+    let mut tris = (0, 0);
 
     let frames = ((warmup + seconds) * FPS) as u32;
     let warm = (warmup * FPS) as u32;
@@ -128,6 +129,8 @@ pub fn run(
             }
             steps_max = steps_max.max(steps);
             instances = instances.max(frame_scene.instances.len());
+            let t = renderer.triangles(&frame_scene);
+            tris = (t.0, tris.1.max(t.1));
             particles = particles.max(frame_scene.particles.len());
         }
     }
@@ -137,6 +140,10 @@ pub fn run(
         "{} tanks ({alive} alive at the end), {width}x{height}, {seconds} s after {warmup} s, \
          up to {steps_max} sim steps a frame, up to {instances} instances and {particles} particles",
         game.world.tanks.len(),
+    );
+    println!(
+        "  triangles: {} in the map, up to {} in tanks and effects",
+        tris.0, tris.1
     );
     for t in [&sim, &build, &ui, &encode, &gpu, &voice, &total] {
         println!("  {}", t.report());

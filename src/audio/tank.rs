@@ -8,7 +8,7 @@ use crate::combat::{Match, SPAWN_SHIELD};
 use crate::sim::HullKind;
 
 use super::Listener;
-use super::dsp::{Noise, OnePole, Smooth, pan_gains};
+use super::dsp::{Noise, OnePole, Panner, Smooth};
 use super::mixer::Coefs;
 use super::sounds::{beam, engine, guns, knocks, shield, tracks, turret, vigil};
 
@@ -170,6 +170,7 @@ pub struct TankVoice {
     noise: Noise,
     loops: Loops,
     air_lp: OnePole,
+    panner: Panner,
 }
 
 impl TankVoice {
@@ -181,6 +182,7 @@ impl TankVoice {
             noise: Noise::new(seed.wrapping_mul(2654435761).max(1)),
             loops: Loops::default(),
             air_lp: OnePole::default(),
+            panner: Panner::default(),
         }
     }
 
@@ -206,8 +208,8 @@ impl TankVoice {
             // -0.0 so the first loop's sample passes through exactly.
             let mut mix = -0.0;
             self.loops.each(|l| mix += l.next(n, noise, sr, k));
-            let x = self.air_lp.run(mix, OnePole::coef(air, sr)) * gain;
-            let (l, r) = pan_gains(pan);
+            let x = self.air_lp.run_at(mix, air, sr) * gain;
+            let (l, r) = self.panner.gains(pan);
             frame[0] += x * l;
             frame[1] += x * r;
         }
