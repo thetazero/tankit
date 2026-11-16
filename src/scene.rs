@@ -155,18 +155,22 @@ impl ChaseCam {
         let pos = self.focus + to / len * (hit - 0.6).max(1.5);
 
         let ahead = Vec3::new(back.x, 0.0, back.y);
-        Camera { pos, target: self.focus + ahead * 6.0 + Vec3::Y * 0.5, fov_y: 65f32.to_radians() }
+        // Firing kicks the camera back and up for a moment.
+        let kick = (-tank.since_fire * 14.0).exp() * if tank.since_fire < 0.5 { 1.0 } else { 0.0 };
+        let pos = pos - ahead * kick * 0.45 + Vec3::Y * kick * 0.2;
+        Camera { pos, target: self.focus + ahead * 6.0 + Vec3::Y * (0.5 + kick * 0.3), fov_y: 65f32.to_radians() }
     }
 }
 
-pub fn build(world: &World, art: &TankArt, camera: Camera, width: f32, height: f32) -> Scene {
+/// `tanks` is what to draw (usually `world.tanks`, interpolated for display).
+pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera, width: f32, height: f32) -> Scene {
     let mut instances = Vec::new();
-    for t in &world.tanks {
+    for t in tanks {
         art.instances(t, &mut instances);
     }
 
     let mut ui = Vec::new();
-    let player = &world.tanks[0];
+    let player = &tanks[0];
     let vp = camera.view_proj(width / height);
 
     // Crosshair sits where the turret actually points (including hull tilt).

@@ -36,6 +36,19 @@ pub enum TurretKind {
     Maul,
 }
 
+impl TurretKind {
+    /// Velocity change one shot kicks into the hull, m/s. It's applied at gun
+    /// height, so most of it shows up as the hull rocking back on its springs.
+    pub fn recoil(self) -> f32 {
+        match self {
+            // Long rail cannon: one big slam.
+            TurretKind::Lance => 2.2,
+            // Twin short guns: smaller kicks, more often.
+            TurretKind::Maul => 1.3,
+        }
+    }
+}
+
 /// Running gear and body geometry. Body frame = art frame: x across (+x is the
 /// left track), y up with the ground at 0 when resting, z forward.
 #[derive(Debug)]
@@ -153,6 +166,8 @@ pub const SUSPENSION_TRAVEL_UP: f32 = 0.25;
 /// Static compression under the tank's own weight (sets spring stiffness).
 pub const SUSPENSION_SAG: f32 = 0.09;
 const SUSPENSION_DAMPING_RATIO: f32 = 0.5;
+/// How much tighter than grip allows a turn may be requested at speed (drift room).
+const TURN_OVERDRIVE: f32 = 2.2;
 /// Fraction of the drive force's lever arm removed by suspension geometry.
 const ANTI_SQUAT: f32 = 0.6;
 /// How far the tracks' commanded speed may lead the hull (m/s, rad/s).
@@ -191,16 +206,16 @@ pub struct HullStats {
     /// Track grip along and across the direction of travel.
     pub grip_long: f32,
     pub grip_lat: f32,
-    /// Sideways grip while steering (tracks scrub to let the hull swing).
+    /// Sideways grip while steering at speed (tracks scrub to let the hull swing).
     pub grip_lat_turning: f32,
+    /// Sideways grip while pivoting in place.
+    pub grip_lat_pivot: f32,
     /// Grip of the track run against edges and walls (steel on concrete).
     pub grip_edge: f32,
     /// Max turret rotation speed relative to the hull, rad/s.
     pub turret_speed: f32,
     /// How fast the turret spins up to full speed, rad/s².
     pub turret_accel: f32,
-    /// Velocity kick from firing, m/s (scaled by mass already).
-    pub recoil: f32,
 }
 
 impl HullStats {
@@ -211,15 +226,15 @@ impl HullStats {
         power_knee: 9.0,
         brake: 22.0,
         coast: 10.0,
-        turn_rate: 2.3,
+        turn_rate: 2.5,
         turn_accel: 20.0,
         grip_long: 1.6,
-        grip_lat: 1.3,
-        grip_lat_turning: 0.7,
+        grip_lat: 2.0,
+        grip_lat_turning: 1.4,
+        grip_lat_pivot: 0.8,
         grip_edge: 0.8,
         turret_speed: 2.0,
         turret_accel: 12.0,
-        recoil: 0.5,
     };
     pub const BASTION: Self = Self {
         max_speed: 11.5,
@@ -231,12 +246,12 @@ impl HullStats {
         turn_rate: 1.7,
         turn_accel: 9.0,
         grip_long: 1.6,
-        grip_lat: 1.4,
-        grip_lat_turning: 0.85,
+        grip_lat: 2.0,
+        grip_lat_turning: 1.4,
+        grip_lat_pivot: 0.85,
         grip_edge: 0.8,
         turret_speed: 1.5,
         turret_accel: 8.0,
-        recoil: 0.35,
     };
 
     pub fn of(kind: HullKind) -> HullStats {
@@ -282,6 +297,11 @@ pub struct Tank {
     /// Which barrel fired last (twin guns alternate).
     pub fire_barrel: usize,
     pub flipped_time: f32,
+    /// State at the start of the last step, for render interpolation.
+    prev_pos: Vec3,
+    prev_rot: Quat,
+    prev_turret_rel: f32,
+    prev_track_dist: [f32; 2],
     /// Speed the engine is running the tracks at (before the turning split).
     drive_speed: f32,
     drive_turn: f32,
@@ -320,6 +340,27 @@ impl Tank {
 
     pub fn grounded(&self) -> bool {
         self.wheels_down + self.face_contacts > 0
+    }
+
+    fn snapshot(&mut self) {
+        self.prev_pos = self.pos;
+        self.prev_rot = self.rot;
+        self.prev_turret_rel = self.turret_rel;
+        self.prev_track_dist = self.track_dist;
+    }
+
+    /// The tank as it should be drawn `alpha` (0..1) of the way from the previous
+    /// sim step to the current one. Rendering at a different rate than the 120 Hz
+    /// sim without this shows up as a rhythmic judder.
+    pub fn interpolated(&self, alpha: f32) -> Tank {
+        let mut t = self.clone();
+        t.pos = self.prev_pos.lerp(self.pos, alpha);
+        t.rot = self.prev_rot.slerp(self.rot, alpha);
+        t.turret_rel = self.prev_turret_rel + wrap_angle(self.turret_rel - self.prev_turret_rel) * alpha;
+        for s in 0..2 {
+            t.track_dist[s] = self.prev_track_dist[s] + (self.track_dist[s] - self.prev_track_dist[s]) * alpha;
+        }
+        t
     }
 }
 
@@ -378,10 +419,15 @@ impl World {
             since_fire: 10.0,
             fire_barrel: 0,
             flipped_time: 0.0,
+            prev_pos: Vec3::ZERO,
+            prev_rot: Quat::IDENTITY,
+            prev_turret_rel: 0.0,
+            prev_track_dist: [0.0; 2],
             drive_speed: 0.0,
             drive_turn: 0.0,
         };
         sync_from_body(&mut t, &self.physics);
+        t.snapshot();
         self.tanks.push(t);
         self.tanks.len() - 1
     }
@@ -404,6 +450,7 @@ impl World {
         t.hull = HullStats::of(kind);
         t.wheel_lift = vec![0.0; chassis.wheel_count()];
         sync_from_body(t, &self.physics);
+        t.snapshot();
     }
 
     /// Fire tank `i`'s gun: recoil impulse on the hull plus the visual timers.
@@ -414,11 +461,14 @@ impl World {
         let b = &mut self.physics.bodies[t.body];
         let muzzle_height = t.rot * Vec3::Y * (t.chassis.hull_top + 0.4);
         let at = b.translation() + muzzle_height;
-        b.apply_impulse_at_point(-t.turret_dir() * t.hull.recoil * t.chassis.mass, at, true);
+        b.apply_impulse_at_point(-t.turret_dir() * t.turret_kind.recoil() * t.chassis.mass, at, true);
     }
 
     pub fn step(&mut self, cmds: &[Command]) {
         self.time += DT;
+        for t in &mut self.tanks {
+            t.snapshot();
+        }
         for i in 0..self.tanks.len() {
             let cmd = cmds.get(i).copied().unwrap_or_default();
             let t = &mut self.tanks[i];
@@ -702,13 +752,20 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // or airborne tank doesn't wind up a huge target.
     t.drive_speed = approach(t.drive_speed, target, rate * DT).clamp(v_now - DRIVE_SLIP, v_now + DRIVE_SLIP);
     let steer = if v_now < -0.5 && throttle < 0.0 { -cmd.steer } else { cmd.steer };
-    let speed_frac = (v_now.abs() / h.max_speed).min(1.0);
-    let turn_target = steer.clamp(-1.0, 1.0) * h.turn_rate * (1.0 - 0.25 * speed_frac);
+    // At speed, only ask for a turn the tracks can actually hold: sideways grip
+    // limits the cornering acceleration v*w. TURN_OVERDRIVE leaves a little room
+    // to break traction and drift.
+    let grip_turn_limit = TURN_OVERDRIVE * h.grip_lat_turning * GRAVITY / v_now.abs().max(0.1);
+    let turn_target = steer.clamp(-1.0, 1.0) * h.turn_rate.min(grip_turn_limit);
     let yaw_now = b.angvel().dot(up);
     t.drive_turn = approach(t.drive_turn, turn_target, h.turn_accel * DT).clamp(yaw_now - TURN_SLIP, yaw_now + TURN_SLIP);
     // Left track (+x) runs slower to turn left (counter-clockwise).
     let half_span = c.track_x;
-    t.track_speed = [t.drive_speed - t.drive_turn * half_span, t.drive_speed + t.drive_turn * half_span];
+    let top = h.max_speed.max(h.reverse_speed);
+    t.track_speed = [
+        (t.drive_speed - t.drive_turn * half_span).clamp(-top, top),
+        (t.drive_speed + t.drive_turn * half_span).clamp(-top, top),
+    ];
     t.track_dist[0] += t.track_speed[0] * DT;
     t.track_dist[1] += t.track_speed[1] * DT;
 
@@ -719,8 +776,11 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // 4. Traction: each contact pushes its patch toward the track speed along the
     // track's direction at that point, and resists sliding sideways, each limited
     // by friction times the contact's load.
+    // Tracks scrub sideways to let the hull swing: easiest when pivoting slowly,
+    // firmer when cornering at speed.
     let turning = turn_target.abs() > 0.05;
-    let grip_lat = if turning { h.grip_lat_turning } else { h.grip_lat };
+    let speed_frac = (v_now.abs() / h.max_speed).min(1.0);
+    let grip_lat = if turning { h.grip_lat_pivot + (h.grip_lat_turning - h.grip_lat_pivot) * speed_frac } else { h.grip_lat };
     // Velocities are sampled before any impulse is applied, so every contact
     // sees the same slip and together they deliver exactly the requested change.
     let share = mass / contacts.len() as f32;
@@ -796,6 +856,7 @@ fn recover_if_flipped(t: &mut Tank, physics: &mut PhysicsWorld) {
         b.set_linvel(Vec3::ZERO, true);
         b.set_angvel(Vec3::ZERO, true);
         sync_from_body(t, physics);
+        t.snapshot();
     }
 }
 
@@ -973,6 +1034,29 @@ mod tests {
         assert!(drift < 0.6, "pivot wandered {drift} m");
     }
 
+    /// Slip angle (degrees) and speed after 2 s of a full-throttle turn at top speed.
+    fn corner(steer: f32) -> (f32, f32) {
+        let mut w = flat_world();
+        place(&mut w, Vec3::new(100.0, 0.2, 100.0), Quat::IDENTITY);
+        run(&mut w, Command::default(), 0.5);
+        run(&mut w, throttle(1.0), 3.0);
+        run(&mut w, Command { throttle: 1.0, steer, ..Default::default() }, 2.0);
+        let t = &w.tanks[0];
+        let v = Vec2::new(t.vel.x, t.vel.z);
+        let f = Vec2::new(t.forward().x, t.forward().z);
+        (f.angle_to(v).to_degrees().abs(), v.length())
+    }
+
+    /// Cranking the steering at top speed drifts a little, but stays controlled.
+    #[test]
+    fn drifts_but_stays_planted() {
+        let (slip, speed) = corner(1.0);
+        assert!(slip > 3.0 && slip < 25.0, "full-steer slip angle {slip} deg (want a controlled drift)");
+        assert!(speed <= HullStats::LANCER.max_speed + 0.3, "turning pumped speed up to {speed}");
+        let (slip, _) = corner(0.5);
+        assert!(slip < 5.0, "half-steer slides {slip} deg");
+    }
+
     #[test]
     fn holds_position_on_slope() {
         let mut map = Map::proving_ground();
@@ -1069,9 +1153,12 @@ mod tests {
         w.set_hull(0, hull);
         place(&mut w, Vec3::new(start.x, 0.2, start.y), Quat::from_rotation_y(yaw));
         run(&mut w, Command::default(), 0.5);
-        run(&mut w, throttle(1.0), 6.0);
-        let t = &w.tanks[0];
-        (t.pos.y > height - 0.2 || t.pos.z > 140.0) && t.up().y > 0.9
+        // Success: at some point the tank is sitting upright on top of the block.
+        (0..(6.0 / DT) as usize).any(|_| {
+            w.step(&[throttle(1.0)]);
+            let t = &w.tanks[0];
+            t.pos.y > height - 0.2 && t.pos.z > 112.0 && t.up().y > 0.9 && t.wheels_down > 0
+        })
     }
 
     /// Kerbs, steps and low ledges never stop a tank, from a standstill or at speed.
@@ -1121,6 +1208,19 @@ mod tests {
     }
 
     #[test]
+    fn interpolation_blends_between_steps() {
+        let mut w = flat_world();
+        run(&mut w, throttle(1.0), 1.0);
+        let t = &w.tanks[0];
+        let (a, b) = (t.interpolated(0.0), t.interpolated(1.0));
+        assert_eq!(a.pos, t.prev_pos);
+        assert_eq!(b.pos, t.pos);
+        let mid = t.interpolated(0.5).pos;
+        assert!((mid - (t.prev_pos + t.pos) * 0.5).length() < 1e-5);
+        assert!(t.pos.distance(t.prev_pos) > 0.01, "moving tank should differ between steps");
+    }
+
+    #[test]
     fn rights_itself_when_flipped() {
         let mut w = flat_world();
         place(&mut w, Vec3::new(100.0, 2.5, 100.0), Quat::from_rotation_z(PI));
@@ -1135,8 +1235,17 @@ mod tests {
         let mut w = flat_world();
         run(&mut w, Command::default(), 1.0);
         w.fire(0);
-        run(&mut w, Command::default(), 0.05);
-        assert!(w.tanks[0].speed() < -0.05, "no recoil: {}", w.tanks[0].speed());
+        let mut pitch = 0.0f32;
+        for _ in 0..60 {
+            w.step(&[Command::default()]);
+            pitch = pitch.max(w.tanks[0].forward().y.asin().to_degrees());
+        }
+        // Lance fires forward: the nose kicks up as the hull rocks back.
+        assert!(pitch > 5.0, "weak recoil: hull only pitched {pitch} deg");
     }
 }
+
+
+
+
 

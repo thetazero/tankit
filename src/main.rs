@@ -160,7 +160,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if i > 0 {
             camera = advance(&mut world, &mut cam, 1.0 / shot.fps);
         }
-        let frame = scene::build(&world, &art, camera, shot.width as f32, shot.height as f32);
+        let frame = scene::build(&world, &world.tanks, &art, camera, shot.width as f32, shot.height as f32);
         let out = frame_path(shot, i);
         renderer.render_to_image(&frame)?.save(&out).with_context(|| format!("save {out}"))?;
     }
@@ -191,7 +191,7 @@ fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs) -> Result<()> {
         }
         let angle = room.orbit.unwrap_or(world.time * 0.15 + 0.6);
         let camera = showroom::camera(&world, angle, room.dist, room.focus);
-        let mut frame = scene::build(&world, &art, camera, shot.width as f32, shot.height as f32);
+        let mut frame = scene::build(&world, &world.tanks, &art, camera, shot.width as f32, shot.height as f32);
         frame.ui.clear();
         frame.shadow_center = Vec3::ZERO;
         frame.shadow_radius = 22.0;

@@ -202,13 +202,15 @@ impl App {
         }
 
         if let (Some(r), Some(art)) = (&mut self.renderer, &self.art) {
-            let mut camera = self.cam.update(&self.world, &self.world.tanks[0], dt);
+            let alpha = self.clock.alpha();
+            let tanks: Vec<_> = self.world.tanks.iter().map(|t| t.interpolated(alpha)).collect();
+            let mut camera = self.cam.update(&self.world, &tanks[0], dt);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
                 let angle = room.orbit.unwrap_or(self.world.time * 0.15);
                 camera = showroom::camera(&self.world, angle, room.dist * (0.6 + self.cam.tilt), room.focus);
             }
-            let mut scene = scene::build(&self.world, art, camera, r.width as f32, r.height as f32);
+            let mut scene = scene::build(&self.world, &tanks, art, camera, r.width as f32, r.height as f32);
             if self.showroom.is_some() {
                 scene.ui.clear();
                 scene.shadow_center = glam::Vec3::ZERO;

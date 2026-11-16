@@ -607,7 +607,7 @@ pub fn lance() -> TurretModel {
         plate(&mut barrel, [v(s * 0.25, 0.04, 3.15), v(s * 0.25, 0.04, 3.42), v(s * 0.25, -0.04, 3.42), v(s * 0.25, -0.04, 3.15)], 0.01, Vec3::new(0.0, 0.0, 3.3), GLOW);
     }
 
-    TurretModel { head, mantlet, barrel, pivot: v(0.0, 0.45, 0.88), barrels: vec![Vec3::ZERO], muzzle: 3.55, recoil: 0.45 }
+    TurretModel { head, mantlet, barrel, pivot: v(0.0, 0.45, 0.88), barrels: vec![Vec3::ZERO], muzzle: 3.55, recoil: 0.8 }
 }
 
 /// Twin short cannons in a wide, low turret with big shoulder plates.
@@ -658,6 +658,6 @@ pub fn maul() -> TurretModel {
         pivot: v(0.0, 0.38, 0.92),
         barrels: vec![v(-0.34, 0.0, 0.0), v(0.34, 0.0, 0.0)],
         muzzle: 2.82,
-        recoil: 0.35,
+        recoil: 0.6,
     }
 }
