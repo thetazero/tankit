@@ -23,6 +23,9 @@ use crate::sim::{Command, GRAVITY, HullKind, Tank, TurretKind, World, wrap_angle
 
 pub const ROUND_TIME: f32 = 300.0;
 pub const RESPAWN_TIME: f32 = 4.0;
+/// Tanks wear their own paint, not their side's color: sides are told apart
+/// by their markers on the HUD.
+pub const TANK_PAINT: Vec3 = Vec3::ONE;
 /// Freshly spawned tanks can't be hurt (and bots ignore them) for this long.
 pub const SPAWN_SHIELD: f32 = 2.0;
 /// Imperium cannon shell speed, m/s.
@@ -471,7 +474,7 @@ impl Match {
         let factions = map.factions;
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
-        world.tanks[0].color = factions[0].paint();
+        world.tanks[0].color = TANK_PAINT;
         if !world.map.bases[0].is_empty() {
             let (at, yaw) = spawn_point(&world, &mut rng, 0, &[]);
             world.teleport(0, at, yaw);
@@ -490,7 +493,7 @@ impl Match {
                 .map(|j| (fighters[j].team, flat(world.tanks[j].pos)))
                 .collect();
             let (at, yaw) = spawn_point(&world, &mut rng, team, &placed);
-            world.spawn_tank(factions[team].paint(), at, yaw, hull, turret);
+            world.spawn_tank(TANK_PAINT, at, yaw, hull, turret);
             fighters.push(fighter(team, max_health(hull)));
             brains.push(Some(Bot::new(seed.wrapping_add(b as u64 * 7919))));
         }
@@ -1980,13 +1983,13 @@ mod tests {
     }
 
     #[test]
-    fn odd_bot_counts_make_even_teams_in_faction_colors() {
+    fn odd_bot_counts_make_even_teams_in_their_own_paint() {
         let m = arena(11);
         for team in 0..2 {
             let side: Vec<usize> = (0..12).filter(|&i| m.fighters[i].team == team).collect();
             assert_eq!(side.len(), 6);
             for i in side {
-                assert_eq!(m.world.tanks[i].color, m.factions[team].paint());
+                assert_eq!(m.world.tanks[i].color, TANK_PAINT);
             }
         }
         assert_eq!(m.fighters[0].team, 0);

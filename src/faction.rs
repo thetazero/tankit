@@ -47,7 +47,8 @@ impl Faction {
         }
     }
 
-    /// Tint for the tank's light armor plates.
+    /// The side's color out in the world (the Hold site's rings). Tanks
+    /// don't wear it: they keep their own paint.
     pub fn paint(self) -> Vec3 {
         match self {
             // Pale, cold grey-white.

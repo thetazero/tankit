@@ -93,7 +93,8 @@ strength for a moment and then fading out.
 **Their weapon is fire.** Hymn is a reliquary crowned with crystal, a censer
 hung at its flank: purifying blue crystal fire, short range, deadly up close.
 
-**Color:** crystal blue, everywhere they show up.
+**Color:** crystal blue, in their light and on the HUD. Their machines are
+worn ivory and gilt; no tank wears its side's color.
 
 ## Crystals
 
