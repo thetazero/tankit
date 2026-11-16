@@ -450,8 +450,9 @@ impl ChaseCam {
 /// interpolated for display). `ui` starts empty; the caller adds the HUD.
 pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Scene {
     let mut instances = Vec::new();
+    let mut particles = Vec::new();
     for t in tanks {
-        art.instances(t, &mut instances);
+        art.instances(t, &mut instances, &mut particles);
     }
 
     Scene {
@@ -462,7 +463,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         shadow_center: Vec3::new(world.map.size * 0.5, 0.0, world.map.size * 0.5),
         shadow_radius: world.map.size * 0.75,
         instances,
-        particles: Vec::new(),
+        particles,
         ui: Vec::new(),
     }
 }

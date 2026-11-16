@@ -495,7 +495,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         };
         let mut frame = scene::build(&game.world, &tanks, &art, view);
         game.effect_instances(1.0, &mut frame.instances);
-        frame.particles = game.ambience.particles();
+        frame.particles.extend(game.ambience.particles());
+        game.glow_particles(1.0, &mut frame.particles);
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud.draw(&game, &tanks, args.seed, &camera, w, h, game::DT, false);

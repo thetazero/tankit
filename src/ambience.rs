@@ -281,7 +281,7 @@ impl Ambience {
                     size: p.size0 + (p.size1 - p.size0) * t,
                     color: p.color.extend(p.alpha * fade).to_array(),
                     stretch: (dir * p.stretch).to_array(),
-                    _pad: 0.0,
+                    glow: 0.0,
                 }
             })
             .collect()
