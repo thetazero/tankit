@@ -37,6 +37,12 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
+/// A frame whose own work takes longer than this is logged with what it
+/// spent the time on, so a hitch mid-match can be traced to its cause.
+const HITCH_WORK: f32 = 0.05;
+/// Likewise a gap this long between frames that the frame's work doesn't
+/// explain (the window, the driver or the OS held the loop).
+const HITCH_GAP: f32 = 0.1;
 /// Main menu camera drift around the parked tank, rad/s.
 const MENU_ORBIT: f32 = 0.06;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
@@ -137,6 +143,10 @@ struct App {
     /// What can be clicked, as of the last frame drawn.
     hits: Hits<UiHit>,
     last: Instant,
+    /// How long the last frame's own work took (for telling a gap from a slow frame).
+    last_work: f32,
+    /// A map was just loaded: the next frame's gap is the load, not a hitch.
+    loaded: bool,
     fps_timer: f32,
     fps_frames: u32,
     /// Frames per second over the last half second (the debug overlay shows it).
@@ -218,6 +228,8 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         pointer: None,
         hits: Hits::new(),
         last: Instant::now(),
+        last_work: 0.0,
+        loaded: true,
         fps_timer: 0.0,
         fps_frames: 0,
         fps: 0.0,
@@ -397,6 +409,7 @@ impl App {
         self.hud = Hud::new();
         self.garage = Garage::new();
         self.player_alive = true;
+        self.loaded = true;
         if let Some(r) = &mut self.renderer {
             r.set_static_mesh(mesh);
         }
@@ -858,6 +871,16 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
+        let mut laps = Laps::new(now);
+        let gap = dt - self.last_work;
+        if gap > HITCH_GAP && !self.loaded {
+            log::warn!(
+                "hitch: {:.0} ms between frames, {:.0} ms of it outside the frame's work",
+                dt * 1e3,
+                gap * 1e3
+            );
+        }
+        self.loaded = false;
 
         let tilt =
             (self.held(&[KeyCode::PageUp]) as i32 - self.held(&[KeyCode::PageDown]) as i32) as f32;
@@ -866,8 +889,10 @@ impl App {
         let cmd = self.command();
         let fire =
             self.held(&[KeyCode::Space]) && !self.garage.is_open() && self.mode == Mode::Playing;
+        let mut steps = 0;
         if self.mode != Mode::Paused {
-            for _ in 0..self.clock.advance(dt) {
+            steps = self.clock.advance(dt);
+            for _ in 0..steps {
                 if self.showroom.is_some() {
                     let w = &mut self.game.world;
                     let cmds = showroom::commands(w);
@@ -896,6 +921,7 @@ impl App {
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
         }
+        laps.lap("sim");
 
         // Respawned (in the new kit) or round over: back to battle.
         let alive = self.game.player().alive;
@@ -968,6 +994,7 @@ impl App {
                 self.game.glow_particles(alpha, &mut scene.particles);
                 scene
             };
+            laps.lap("scene");
             if self.showroom.is_some() {
                 scene.shadow_center = glam::Vec3::ZERO;
                 scene.shadow_radius = 22.0;
@@ -1046,12 +1073,24 @@ impl App {
             if self.profile.settings.debug {
                 scene.ui.extend(hud::fps_counter(self.fps, w, h));
             }
+            laps.lap("ui");
             r.render(&scene);
+            laps.lap("render");
             self.camera = Some(camera);
             self.audio.set_turntable(self.garage.in_bay());
             let sounds = std::mem::take(&mut self.game.sounds);
             self.audio
                 .update(&self.game, &sounds, &camera, self.mode != Mode::Paused, dt);
+            laps.lap("audio");
+        }
+        self.last_work = laps.total();
+        if self.last_work > HITCH_WORK {
+            log::warn!(
+                "hitch: a {:.0} ms frame ({steps} sim steps at {:.1} s): {}",
+                self.last_work * 1e3,
+                self.game.world.time,
+                laps
+            );
         }
 
         self.fps_timer += dt;
@@ -1061,6 +1100,44 @@ impl App {
             self.fps_timer = 0.0;
             self.fps_frames = 0;
         }
+    }
+}
+
+/// A stopwatch over the parts of one frame, for the hitch log.
+struct Laps {
+    start: Instant,
+    at: Instant,
+    laps: Vec<(&'static str, f32)>,
+}
+
+impl Laps {
+    fn new(start: Instant) -> Laps {
+        Laps {
+            start,
+            at: start,
+            laps: Vec::with_capacity(6),
+        }
+    }
+
+    /// The part named `name` ended now.
+    fn lap(&mut self, name: &'static str) {
+        let now = Instant::now();
+        self.laps.push((name, (now - self.at).as_secs_f32()));
+        self.at = now;
+    }
+
+    fn total(&self) -> f32 {
+        (self.at - self.start).as_secs_f32()
+    }
+}
+
+impl std::fmt::Display for Laps {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (i, (name, t)) in self.laps.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            write!(f, "{sep}{name} {:.1} ms", t * 1e3)?;
+        }
+        Ok(())
     }
 }
 

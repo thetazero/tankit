@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 
@@ -136,7 +138,76 @@ pub struct Profile {
     pub levels: Levels,
     pub settings: Settings,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
-    path: Option<PathBuf>,
+    disk: Option<Disk>,
+}
+
+/// The profile's file, written on a worker thread: a save lands mid-match on
+/// every kill, and a write that waits on a busy disk mustn't stall the frame.
+struct Disk {
+    path: PathBuf,
+    /// The latest profile text, for the worker to write.
+    tx: Option<mpsc::Sender<String>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl Disk {
+    fn new(path: PathBuf) -> Disk {
+        let (tx, rx) = mpsc::channel::<String>();
+        let to = path.clone();
+        let worker = std::thread::Builder::new()
+            .name("profile save".into())
+            .spawn(move || {
+                while let Ok(mut text) = rx.recv() {
+                    // Saves queued up behind a slow write: only the newest matters.
+                    if let Some(latest) = rx.try_iter().last() {
+                        text = latest;
+                    }
+                    if let Err(e) = write_file(&to, &text) {
+                        log::warn!("couldn't save profile to {}: {e:#}", to.display());
+                    }
+                }
+            })
+            .ok();
+        Disk {
+            path,
+            tx: Some(tx),
+            worker,
+        }
+    }
+
+    fn save(&self, text: String) {
+        let sent = self
+            .tx
+            .as_ref()
+            .is_some_and(|tx| tx.send(text.clone()).is_ok());
+        if !sent || self.worker.is_none() {
+            // No worker thread: write here rather than lose the save.
+            if let Err(e) = write_file(&self.path, &text) {
+                log::warn!("couldn't save profile to {}: {e:#}", self.path.display());
+            }
+        }
+    }
+}
+
+impl Drop for Disk {
+    /// Quitting waits for the last save to reach the disk.
+    fn drop(&mut self) {
+        self.tx = None;
+        if let Some(w) = self.worker.take() {
+            let _ = w.join();
+        }
+    }
+}
+
+/// Write then rename, so a crash mid-save can't leave a half-written profile.
+fn write_file(path: &Path, text: &str) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 impl Profile {
@@ -149,7 +220,7 @@ impl Profile {
             bought: Vec::new(),
             levels: Levels::default(),
             settings: Settings::default(),
-            path: None,
+            disk: None,
         }
     }
 
@@ -160,7 +231,7 @@ impl Profile {
     /// Load from `path`, or start a fresh pilot there if it's missing or unreadable.
     pub fn load(path: PathBuf) -> Profile {
         let mut p = Profile {
-            path: Some(path.clone()),
+            disk: Some(Disk::new(path.clone())),
             ..Profile::in_memory()
         };
         match std::fs::read_to_string(&path) {
@@ -311,14 +382,17 @@ impl Profile {
         }
     }
 
+    /// Queue the profile to be written; the file is written off this thread.
     fn save(&self) {
-        let Some(path) = &self.path else { return };
-        if let Err(e) = self.write(path) {
-            log::warn!("couldn't save profile to {}: {e:#}", path.display());
+        let Some(disk) = &self.disk else { return };
+        match self.text() {
+            Ok(text) => disk.save(text),
+            Err(e) => log::warn!("couldn't save profile to {}: {e:#}", disk.path.display()),
         }
     }
 
-    fn write(&self, path: &Path) -> anyhow::Result<()> {
+    /// The profile as it's saved.
+    fn text(&self) -> anyhow::Result<String> {
         let name = |p: Part| p.name().to_ascii_lowercase();
         let saved = Saved {
             reputation: Faction::ALL
@@ -339,14 +413,7 @@ impl Profile {
             levels: BTreeMap::new(),
             settings: self.settings,
         };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        // Write then rename, so a crash mid-save can't leave a half-written profile.
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(&saved)?)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        Ok(serde_json::to_string_pretty(&saved)?)
     }
 }
 
@@ -401,12 +468,15 @@ mod tests {
             debug: true,
             volume: 3,
         });
+        let crystals = p.crystals;
+        // Dropping the profile waits for its last save to land.
+        drop(p);
 
         let back = Profile::load(path.clone());
         assert_eq!(back.reputation_of(Faction::Imperium), 300);
         assert_eq!(back.reputation_of(Faction::Resonant), 40);
         assert_eq!(back.reputation_of(Faction::Ithessar), 0);
-        assert_eq!(back.crystals, p.crystals);
+        assert_eq!(back.crystals, crystals);
         assert!(back.owns(PELEKYS));
         assert_eq!(back.levels.of(PELEKYS), 1);
         assert_eq!(back.loadout, (HullKind::Kataphrakt, TurretKind::Pelekys));
