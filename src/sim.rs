@@ -332,6 +332,10 @@ const ANTI_SQUAT: f32 = 0.6;
 const BELT_MASS_FRAC: f32 = 0.08;
 /// Below this speed with no input, the parking brake holds the tank.
 const PARK_SPEED: f32 = 0.3;
+/// Friction of a wreck's hull against the ground. A live hull is frictionless
+/// (the track model does the gripping); a dead one drags on its belly, side or
+/// roof instead of sliding off like a puck.
+const WRECK_FRICTION: f32 = 0.7;
 /// Hover emitters: static compression under the hull's weight (soft: it bobs).
 pub const HOVER_SAG: f32 = 0.16;
 const HOVER_DAMPING_RATIO: f32 = 0.45;
@@ -815,6 +819,12 @@ impl World {
             let cmd = cmds.get(i).copied().unwrap_or_default();
             let t = &mut self.tanks[i];
             t.drive = cmd.throttle.abs().max(cmd.steer.abs()).min(1.0);
+            let friction = if t.dead { WRECK_FRICTION } else { 0.0 };
+            if let Some(c) = self.physics.colliders.get_mut(t.collider) {
+                if c.friction() != friction {
+                    c.set_friction(friction);
+                }
+            }
             drive(t, &cmd, &mut self.physics);
             turret(t, &cmd, DT);
             t.since_fire += DT;
@@ -1302,7 +1312,12 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     } else if u_avg.abs() < PARK_SPEED && v_now.abs() < PARK_SPEED {
         t.parked = true;
     }
-    if throttle.abs() > 0.05 && u_avg * throttle >= -0.5 {
+    if t.dead {
+        // A wreck's drive train is seized: the belts don't turn, so it skids
+        // to a stop on its tracks (and holds on a slope) instead of coasting.
+        t.belt = [0.0; 2];
+        t.parked = true;
+    } else if throttle.abs() > 0.05 && u_avg * throttle >= -0.5 {
         // Engine: full force from a standstill, power-limited above the knee,
         // and governed off as the belts reach top speed.
         let limit = if throttle > 0.0 {
@@ -1330,11 +1345,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     }
     // Steering drive: pushes the belts' speed difference toward the turn asked
     // for, with limited force. Left track (+x) slower turns left (counter-clockwise).
-    let want_diff = steer * h.turn_rate * 2.0 * c.track_x;
-    let limit = dv(mass * h.steer_accel);
-    let corr = (want_diff - (t.belt[1] - t.belt[0])).clamp(-limit, limit);
-    t.belt[0] -= corr * 0.5;
-    t.belt[1] += corr * 0.5;
+    if !t.dead {
+        let want_diff = steer * h.turn_rate * 2.0 * c.track_x;
+        let limit = dv(mass * h.steer_accel);
+        let corr = (want_diff - (t.belt[1] - t.belt[0])).clamp(-limit, limit);
+        t.belt[0] -= corr * 0.5;
+        t.belt[1] += corr * 0.5;
+    }
 
     if !contacts.is_empty() {
         // 4. Ground contacts. Force comes from slip between belt and ground:
@@ -1363,8 +1380,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 let v = b.velocity_at_point(ct.point);
                 let slip = t.belt[ct.side] - v.dot(tangent);
                 // Zeroing the slip moves both this patch of hull and this side's belt.
+                // A wreck's seized belt doesn't move, so it's all on the hull.
                 let belt_share = m_belt / per_side[ct.side] as f32;
-                let m_eff = 1.0 / (1.0 / share + 1.0 / belt_share);
+                let m_eff = if t.dead {
+                    share
+                } else {
+                    1.0 / (1.0 / share + 1.0 / belt_share)
+                };
                 let mut j_long = m_eff * slip;
                 let mut j_lat = -share * v.dot(lateral);
                 let max_long = ct.grip * ct.load * DT;
@@ -1387,8 +1409,10 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 Some((tangent * j_long + lateral * j_lat, ct.point))
             })
             .collect();
-        for s in 0..2 {
-            t.belt[s] += belt_reaction[s] / m_belt;
+        if !t.dead {
+            for s in 0..2 {
+                t.belt[s] += belt_reaction[s] / m_belt;
+            }
         }
         let com = b.center_of_mass();
         // Anti-squat: track and suspension geometry carries part of the drive force
@@ -1938,6 +1962,89 @@ mod tests {
         run(&mut w, Command::default(), 3.0);
         let drift = w.tanks[0].pos.distance(p0);
         assert!(drift < 0.2, "slid {drift} m down the slope");
+    }
+
+    /// Killed at full speed, a wreck's seized tracks drag it to a stop in a
+    /// few meters instead of letting it coast on.
+    #[test]
+    fn a_wreck_skids_to_a_stop() {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
+            let mut w = World::empty(flat_world().map);
+            w.spawn_tank(
+                Vec3::ONE,
+                Vec2::new(100.0, 20.0),
+                0.0,
+                hull,
+                TurretKind::Kontos,
+            );
+            run(&mut w, throttle(1.0), 5.0);
+            let (p0, v0) = (w.tanks[0].pos, w.tanks[0].vel.length());
+            assert!(v0 > 5.0, "{hull:?} only got to {v0} m/s");
+            w.tanks[0].dead = true;
+            run(&mut w, Command::default(), 2.5);
+            let t = &w.tanks[0];
+            let slid = t.pos.distance(p0);
+            assert!(
+                t.vel.length() < 0.2,
+                "{hull:?} wreck still moving at {}",
+                t.vel.length()
+            );
+            assert!(slid < 8.0, "{hull:?} wreck went {slid} m from {v0} m/s");
+        }
+    }
+
+    /// A wreck heading downhill stops and stays put; it doesn't roll away.
+    #[test]
+    fn a_wreck_stops_on_a_slope() {
+        let mut map = Map::yard(200.0);
+        // A uniform 15 degree slope falling along +z.
+        let grade = 15f32.to_radians().tan();
+        map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, move |_, z| {
+            (200.0 - z) * grade
+        }));
+        let mut w = World::empty(map);
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(100.0, 30.0),
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        run(&mut w, throttle(1.0), 3.0);
+        assert!(w.tanks[0].vel.length() > 5.0);
+        w.tanks[0].dead = true;
+        run(&mut w, Command::default(), 3.0);
+        let p0 = w.tanks[0].pos;
+        run(&mut w, Command::default(), 3.0);
+        let creep = w.tanks[0].pos.distance(p0);
+        assert!(creep < 0.2, "wreck crept {creep} m down the slope");
+    }
+
+    /// Upside down, a wreck grinds along on its roof rather than sliding
+    /// like a puck (the live hull is frictionless).
+    #[test]
+    fn an_upturned_wreck_drags() {
+        let mut w = flat_world();
+        w.tanks[0].dead = true;
+        place(
+            &mut w,
+            Vec3::new(100.0, 2.5, 100.0),
+            Quat::from_rotation_z(PI),
+        );
+        run(&mut w, Command::default(), 1.0);
+        assert!(w.tanks[0].up().y < 0.0, "should be upside down");
+        let b = &mut w.physics.bodies[w.tanks[0].body];
+        b.set_linvel(Vec3::new(0.0, 0.0, 8.0), true);
+        let p0 = w.tanks[0].pos;
+        run(&mut w, Command::default(), 1.4);
+        let t = &w.tanks[0];
+        let slid = t.pos.distance(p0);
+        assert!(
+            t.vel.length() < 0.3,
+            "upturned wreck still moving at {}",
+            t.vel.length()
+        );
+        assert!(slid < 7.0, "upturned wreck slid {slid} m");
     }
 
     #[test]
