@@ -100,6 +100,12 @@ pub fn weld(verts: &[Vertex], tris: &[u32]) -> (Vec<Vertex>, Vec<u32>, Vec<u32>)
     (out, tris, from)
 }
 
+/// How much a unit of normal change counts against the error, in meters.
+/// Shading changes over a whole triangle, however small it is on screen,
+/// so this is steep: at the coarsest map level (0.32 m) normals may turn
+/// about 5 degrees.
+const NORMAL_WEIGHT: f32 = 4.0;
+
 /// `tris` (indexing `verts`, welded) simplified as far as `max_error`
 /// (mesh units) allows, never moving a vertex `locked` marks. Returns the
 /// triangles, over the same vertices, and the error they have.
@@ -108,7 +114,8 @@ pub fn weld(verts: &[Vertex], tris: &[u32]) -> (Vec<Vertex>, Vec<u32>, Vec<u32>)
 /// different faces meet, the simplifier only slides them along the seam.
 /// (Its permissive mode, which crosses them, lets a flat face end up using
 /// a bevel's corner and so its sideways normal, and the whole face shades
-/// wrong.)
+/// wrong.) On smooth surfaces normals count too ([`NORMAL_WEIGHT`]), or long
+/// triangles across curved ground would shade in a sawtooth.
 pub fn simplify(
     verts: &[Vertex],
     tris: &[u32],
@@ -116,10 +123,14 @@ pub fn simplify(
     locked: &[bool],
 ) -> (Vec<u32>, f32) {
     let positions: Vec<[f32; 3]> = verts.iter().map(|v| v.pos).collect();
+    let normals: Vec<f32> = verts.iter().flat_map(|v| v.normal).collect();
     let mut error = 0.0;
-    let out = meshopt::simplify_with_locks_decoder(
+    let out = meshopt::simplify_with_attributes_and_locks_decoder(
         tris,
         &positions,
+        &normals,
+        &[NORMAL_WEIGHT; 3],
+        std::mem::size_of::<[f32; 3]>(),
         locked,
         0,
         max_error,
@@ -257,8 +268,8 @@ pub fn cluster(
         if n != Vec3::ZERO {
             v.normal = n.to_array();
         }
-        for c in 0..3 {
-            v.color[c] = rgb[c] / count as f32;
+        for (c, sum) in v.color.iter_mut().zip(rgb) {
+            *c = sum / count as f32;
         }
     }
     (out, moved)
@@ -516,11 +527,13 @@ fn patches(verts: &[Vertex], tris: &[u32]) -> Vec<(u32, f32, Vec3, Vec3)> {
 }
 
 /// The exact mesh and its coarser copies, finest first, for a mesh of
-/// `radius`. For each error from `radius / 512` up to `radius / 4` it tries
-/// both [`simplify`] and [`cluster`] and keeps whichever leaves fewer
+/// `radius`. For each error target from `radius / 512` up to `radius` it
+/// tries both [`simplify`] and [`cluster`] and keeps whichever leaves fewer
 /// triangles, if that's at most 3/4 of the last copy kept and its error,
-/// measured against the exact mesh with [`deviation`], is within 1.5x the
-/// target. The
+/// measured against the exact mesh with [`deviation`], came out under 4x
+/// the target (beyond that the search stops, so it isn't known). Each copy
+/// keeps the error it measured, so the copies' errors needn't rise in step
+/// with their triangle counts; [`pick`] takes the coarsest that fits. The
 /// vertices go to `out_verts` and every level's triangles to `out_indices`.
 pub fn build_levels(
     verts: &[Vertex],
@@ -541,9 +554,9 @@ pub fn build_levels(
     let locked = vec![false; welded.len()];
     let mut target = radius / 512.0;
     let mut kept = tris.len();
-    while target <= radius / 4.0 && kept > 12 {
+    while target <= radius && kept > 12 {
         let measure = |v: &[Vertex], t: &[u32], claimed: f32| {
-            claimed.max(deviation(&welded, &tris, v, t, target, target * 2.0))
+            claimed.max(deviation(&welded, &tris, v, t, target, target * 4.0))
         };
         let (edge, edge_claim) = simplify(&welded, &tris, target, &locked);
         // Cubes this wide move no vertex farther than `target`.
@@ -558,7 +571,7 @@ pub fn build_levels(
             }
             let v: &[Vertex] = if own { &new } else { &welded };
             let error = measure(v, &t, claim);
-            (error <= target * 1.5).then_some((t, error, own))
+            (error < target * 4.0).then_some((t, error, own))
         });
         if let Some((t, error, own)) = choice {
             let offset = if own {

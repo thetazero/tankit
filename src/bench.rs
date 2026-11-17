@@ -144,6 +144,19 @@ pub fn run(
         }
     }
 
+    // What one tank, and one ground cell, cost by distance.
+    let fov = 65f32.to_radians();
+    let mut by_distance =
+        String::from("  triangles with everything at one distance (one tank, the whole map):");
+    for d in [10.0f32, 25.0, 50.0, 100.0, 200.0, 400.0] {
+        let mut one = Vec::new();
+        art.instances(&game.world.tanks[0], &mut one, &mut Vec::new());
+        let (tank, tank_full) = renderer.triangles_at(&one, d, fov);
+        let (cell, cell_full) = renderer.world_triangles_at(d, fov);
+        by_distance +=
+            &format!("\n    {d:>4} m: tank {tank} of {tank_full}, map {cell} of {cell_full}");
+    }
+
     let alive = game.fighters.iter().filter(|f| f.alive).count();
     println!(
         "{} tanks ({alive} alive at the end), {width}x{height}, {seconds} s after {warmup} s, \
@@ -170,6 +183,7 @@ pub fn run(
         t_lod.as_secs_f64() * 1e3,
         t_art.as_secs_f64() * 1e3
     );
+    println!("{by_distance}");
     for t in [&sim, &build, &ui, &encode, &gpu, &voice, &total] {
         println!("  {}", t.report());
     }

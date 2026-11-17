@@ -178,7 +178,8 @@ pub fn build_levels(mesh: &MeshData, exact: &[Range<u32>], cancel: &AtomicBool) 
             }
             let step = target - cell.error;
             let (t, claimed) = lod::simplify(&cell.verts, &cell.tris, step, &cell.locked);
-            if t.is_empty() || t.len() * 4 > kept * 3 {
+            // A copy only costs indices, so any real saving earns one.
+            if t.is_empty() || t.len() * 8 > kept * 7 {
                 continue;
             }
             let measured =

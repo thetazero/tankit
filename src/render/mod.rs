@@ -1221,6 +1221,46 @@ impl Renderer {
         (world, moving)
     }
 
+    /// Triangles `instances` take when all of them are `distance` meters
+    /// from a camera with vertical field of view `fov_y`, at this size, and
+    /// at full detail.
+    pub fn triangles_at(
+        &self,
+        instances: &[(MeshId, Instance)],
+        distance: f32,
+        fov_y: f32,
+    ) -> (u64, u64) {
+        let focal = self.height as f32 * 0.5 / (fov_y * 0.5).tan();
+        let error = lod::MAX_ERROR_PX * distance / focal;
+        instances.iter().fold((0, 0), |(drawn, full), (id, inst)| {
+            let m = &self.meshes[id.0 as usize];
+            let scale = Mat4::from_cols_array_2d(&inst.model)
+                .x_axis
+                .truncate()
+                .length();
+            let l = &m.levels[lod::pick(&m.levels, error / scale)].indices;
+            (
+                drawn + ((l.end - l.start) / 3) as u64,
+                full + (m.count / 3) as u64,
+            )
+        })
+    }
+
+    /// The static world's triangles when every ground cell is `distance`
+    /// meters away (as [`Renderer::triangles_at`]).
+    pub fn world_triangles_at(&self, distance: f32, fov_y: f32) -> (u64, u64) {
+        let focal = self.height as f32 * 0.5 / (fov_y * 0.5).tan();
+        let error = lod::MAX_ERROR_PX * distance / focal;
+        self.chunks.iter().fold((0, 0), |(drawn, full), c| {
+            let l = &c.levels[lod::pick(&c.levels, error)].indices;
+            let l0 = &c.levels[0].indices;
+            (
+                drawn + ((l.end - l.start) / 3) as u64,
+                full + ((l0.end - l0.start) / 3) as u64,
+            )
+        })
+    }
+
     /// Triangles the camera drew in the last frame after culling: the static
     /// world's as drawn and at full detail, then everything else's.
     pub fn drawn_triangles(&self) -> [u64; 4] {
