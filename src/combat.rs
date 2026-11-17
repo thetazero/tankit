@@ -9,7 +9,7 @@
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier3d::prelude::{Collider, ColliderHandle, QueryFilter, Ray};
 
-use crate::ai::{self, Bot, Contact, NavGrid};
+use crate::ai::{self, Bot, Brain, Contact, NavGrid};
 use crate::arrival::{ARRIVAL_TIME, Arrival};
 use crate::economy::Levels;
 use crate::faction::Faction;
@@ -677,7 +677,7 @@ pub enum Phase {
 pub struct Match {
     pub world: World,
     pub fighters: Vec<Fighter>,
-    bots: Vec<Option<Bot>>,
+    bots: Vec<Option<Brain>>,
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
@@ -738,7 +738,9 @@ impl Match {
             let (at, yaw) = spawn_point(&world, &mut rng, team, &placed);
             world.spawn_tank(TANK_PAINT, at, yaw, hull, turret);
             fighters.push(fighter(team, max_health(hull)));
-            brains.push(Some(Bot::new(seed.wrapping_add(b as u64 * 7919))));
+            brains.push(Some(Brain::Bot(Bot::new(
+                seed.wrapping_add(b as u64 * 7919),
+            ))));
         }
         let ambience = crate::ambience::Ambience::new(&world.map);
         Match {
@@ -762,6 +764,52 @@ impl Match {
             over_for: 0.0,
             nav,
             rng,
+        }
+    }
+
+    /// Hand tank 0 to a bot as well, in a kit of its side's own like the
+    /// rest (for bot-only matches: `--arena`).
+    pub fn bots_only(&mut self, seed: u64) {
+        let faction = self.factions[self.fighters[0].team];
+        let hulls = faction.hulls();
+        let hull = hulls[self.rng.index(hulls.len())];
+        let guns = faction.turrets();
+        let turret = guns[self.rng.index(guns.len())];
+        self.world.tanks[0].turret_kind = turret;
+        self.world.set_hull(0, hull);
+        self.fighters[0].health = self.fighters[0].levels.max_health(hull);
+        self.fit_hull(0);
+        self.bots[0] = Some(Brain::Bot(Bot::new(seed ^ 0x5EED)));
+    }
+
+    /// Refit tank `i` with `hull` and `turret` at full health, under the
+    /// current bot brain or the baseline one (duels: `--duel`).
+    pub fn refit_bot(
+        &mut self,
+        i: usize,
+        hull: HullKind,
+        turret: TurretKind,
+        current: bool,
+        seed: u64,
+    ) {
+        self.world.tanks[i].turret_kind = turret;
+        self.world.set_hull(i, hull);
+        self.fighters[i].health = self.fighters[i].levels.max_health(hull);
+        self.fit_hull(i);
+        self.bots[i] = Some(if current {
+            Brain::Bot(Bot::new(seed))
+        } else {
+            Brain::Baseline(ai::baseline::Bot::new(seed))
+        });
+    }
+
+    /// Swap side `team`'s bots for the frozen baseline brain (`ai::baseline`).
+    pub fn baseline_side(&mut self, team: usize, seed: u64) {
+        for i in 0..self.fighters.len() {
+            if self.fighters[i].team == team && self.bots[i].is_some() {
+                let s = seed.wrapping_add(i as u64 * 7919);
+                self.bots[i] = Some(Brain::Baseline(ai::baseline::Bot::new(s)));
+            }
         }
     }
 
@@ -893,12 +941,21 @@ impl Match {
             })
             .collect();
         let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
+        // Repair crates anyone can see: coming down under their canopies, or down.
+        let crates: Vec<Vec2> = self
+            .repairs
+            .drops
+            .iter()
+            .filter_map(|d| d.crate_pos().map(|_| d.at))
+            .collect();
         let mut cmds = Vec::with_capacity(self.fighters.len());
         let mut triggers = Vec::with_capacity(self.fighters.len());
         for i in 0..self.fighters.len() {
             let (c, f) = match &mut self.bots[i] {
                 _ if !self.fighters[i].alive || !playing => (Command::default(), false),
-                Some(bot) => bot.think(i, &self.world, &contacts, objective, &self.nav, DT),
+                Some(bot) => {
+                    bot.think(i, &self.world, &contacts, objective, &crates, &self.nav, DT)
+                }
                 None => (player, fire),
             };
             // A husk's drive fades with it; a tank ringing up a charge braces.
@@ -1092,7 +1149,9 @@ impl Match {
             let t = &mut self.world.tanks[i];
             let (pitch, side) = best.map_or((0.0, 0.0), |(_, aim)| {
                 let to = aim - eye;
-                let d = Vec2::new(to.x, to.z).length();
+                // Never zero: the aim point can sit right over or under the
+                // gun (a tank pressed up against it), and the lift would be NaN.
+                let d = Vec2::new(to.x, to.z).length().max(0.5);
                 // Lift for the shot's drop over the flight time.
                 let t_flight = to.length() / g.speed();
                 let lift = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
@@ -4261,5 +4320,89 @@ mod hover_bots_stay_upright {
         assert!(hover >= 5, "only {hover} hover hulls");
         let flipped: Vec<usize> = (0..n).filter(|&i| tipped[i]).collect();
         assert!(flipped.is_empty(), "hover bots {flipped:?} tipped over");
+    }
+}
+
+#[cfg(test)]
+mod bot_duels {
+    use super::*;
+
+    /// Bot 0 in `a` (current brain) against bot 1 in `b` (the baseline) on
+    /// open ground, `start` m apart, for up to `secs`: the match afterwards.
+    fn duel(
+        a: (HullKind, TurretKind),
+        b: (HullKind, TurretKind),
+        start: f32,
+        secs: f32,
+        seed: u64,
+    ) -> Match {
+        let mut m = Match::new(Map::empty(400.0), 0, 1, seed);
+        m.refit_bot(0, a.0, a.1, true, seed * 31 + 1);
+        m.refit_bot(1, b.0, b.1, false, seed * 31 + 2);
+        let yaw = seed as f32 * 0.7;
+        let off = Vec2::new(yaw.sin(), yaw.cos()) * start * 0.5;
+        m.world.teleport(0, Vec2::splat(200.0) - off, yaw);
+        m.world.teleport(1, Vec2::splat(200.0) + off, yaw + 3.0);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..(secs / DT) as usize {
+            m.step(Command::default(), false);
+            m.sounds.clear();
+            if m.fighters[1].deaths > 0 || !m.fighters[0].alive {
+                break;
+            }
+        }
+        m
+    }
+
+    /// A Knell's toll throws its own hull back. Bots used to toll with the
+    /// bell swung out across a Vigil's narrow hull and roll themselves onto
+    /// their backs; now the hull comes in line while it rings up.
+    #[test]
+    fn knell_bots_dont_toll_themselves_over() {
+        for seed in 0..6 {
+            let mut m = duel(
+                (HullKind::Vigil, TurretKind::Knell),
+                (HullKind::Kataphrakt, TurretKind::Kontos),
+                85.0,
+                0.0,
+                seed,
+            );
+            let mut tolls = 0;
+            for _ in 0..(12.0 / DT) as usize {
+                m.fighters[0].health = 85.0;
+                m.step(Command::default(), false);
+                tolls += m
+                    .sounds
+                    .drain(..)
+                    .filter(|s| matches!(s, Sound::Shot { tank: 0, .. }))
+                    .count();
+                assert!(
+                    m.world.tanks[0].up().y > 0.5,
+                    "seed {seed}: the Knell tipped over"
+                );
+            }
+            assert!(tolls >= 2, "seed {seed}: only {tolls} tolls in 12 s");
+        }
+    }
+
+    /// The flamethrower drives in and stays on its target: from 20 m it
+    /// beats a rail cannon, which the old bots never managed.
+    #[test]
+    fn flamers_win_at_close_quarters() {
+        let wins = (0..4)
+            .filter(|&seed| {
+                let m = duel(
+                    (HullKind::Vigil, TurretKind::Hymn),
+                    (HullKind::Kataphrakt, TurretKind::Kontos),
+                    20.0,
+                    30.0,
+                    seed,
+                );
+                m.fighters[1].deaths > 0
+            })
+            .count();
+        assert!(wins >= 3, "the flamer won only {wins} of 4");
     }
 }

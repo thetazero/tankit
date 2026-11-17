@@ -1,6 +1,7 @@
 mod ai;
 mod ambience;
 mod app;
+mod arena;
 mod arrival;
 mod audio;
 mod bay;
@@ -50,6 +51,13 @@ tankit [OPTIONS]
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
+  --arena <rounds>        play bot-only rounds headless (seeds from --seed up) and print each
+                          side's wins; every bot runs the frozen baseline brain unless --improve
+  --improve <faction>     (with --arena) that side's bots run the current brain
+  --duel <hull,turret,hull,turret,metres,count>
+                          one bot against one on open ground, that far apart, count times: the
+                          first kit under the current brain (then the baseline) against the
+                          second under the baseline; prints how often the first wins
   --shot <out.png>        render offscreen and save
   --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
   --time <seconds>        simulated time before the shot (default 1)
@@ -119,6 +127,12 @@ pub struct Args {
     /// Benchmark this many seconds of a round, after this much warmup.
     bench: Option<(f32, f32, u32, u32)>,
     showroom: Option<ShowroomArgs>,
+    /// Bot-only rounds to play headless, and which side runs the current
+    /// bots against the baseline (None: every side baseline).
+    arena: Option<(u32, Option<faction::Faction>)>,
+    /// Duels: (hull, turret) under the current brain against one under
+    /// the baseline, this far apart, this many times.
+    duel: Option<(garage::Loadout, garage::Loadout, f32, u32)>,
 }
 
 impl Args {
@@ -212,6 +226,12 @@ fn main() -> Result<()> {
         game.world.tanks[0].turret_kind = args.loadout.1;
         return bench::run(game, w, h, warmup, seconds);
     }
+    if let Some((a, b, start, reps)) = args.duel {
+        return arena::duel(a, b, start, reps);
+    }
+    if let Some((rounds, improve)) = args.arena {
+        return arena::run(&args, rounds, improve);
+    }
     if let Some((out, seconds)) = &args.wav {
         return record_wav(&args, out, *seconds);
     }
@@ -258,6 +278,9 @@ fn parse_args() -> Result<Args> {
     let mut shot: Option<String> = None;
     let mut wav: Option<String> = None;
     let mut bench: Option<f32> = None;
+    let mut arena: Option<u32> = None;
+    let mut improve: Option<faction::Faction> = None;
+    let mut duel: Option<(garage::Loadout, garage::Loadout, f32, u32)> = None;
     let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
@@ -356,6 +379,43 @@ fn parse_args() -> Result<Args> {
             }
             "--time" => time = Some(args.next().context("--time needs seconds")?.parse()?),
             "--bench" => bench = Some(args.next().context("--bench needs seconds")?.parse()?),
+            "--arena" => {
+                arena = Some(
+                    args.next()
+                        .context("--arena needs a round count")?
+                        .parse()?,
+                )
+            }
+            "--duel" => {
+                let spec = args
+                    .next()
+                    .context("--duel needs hull,turret,hull,turret,metres,count")?;
+                let v: Vec<&str> = spec.split(',').collect();
+                if v.len() != 6 {
+                    bail!("--duel needs hull,turret,hull,turret,metres,count, got {spec:?}");
+                }
+                let hull = |n: &str| match economy::Part::by_name(n) {
+                    Some(economy::Part::Hull(h)) => Ok(h),
+                    _ => Err(anyhow::anyhow!("--duel: no hull called {n:?}")),
+                };
+                let gun = |n: &str| match economy::Part::by_name(n) {
+                    Some(economy::Part::Turret(t)) => Ok(t),
+                    _ => Err(anyhow::anyhow!("--duel: no turret called {n:?}")),
+                };
+                duel = Some((
+                    (hull(v[0])?, gun(v[1])?),
+                    (hull(v[2])?, gun(v[3])?),
+                    v[4].parse()?,
+                    v[5].parse()?,
+                ));
+            }
+            "--improve" => {
+                let name = args.next().context("--improve needs a faction name")?;
+                improve =
+                    Some(faction::Faction::by_name(&name).with_context(|| {
+                        format!("--improve expects a faction name, got {name:?}")
+                    })?);
+            }
             "--wav" => wav = Some(args.next().context("--wav needs a path")?),
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
             "--fps" => fps = args.next().context("--fps needs a number")?.parse()?,
@@ -475,6 +535,8 @@ fn parse_args() -> Result<Args> {
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
+        arena: arena.map(|n| (n, improve)),
+        duel,
         shot: shot.map(|out| ShotArgs {
             out,
             time: time.unwrap_or(1.0),
