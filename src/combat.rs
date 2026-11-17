@@ -43,6 +43,13 @@ const TRACER_FADE: f32 = 0.08;
 /// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
 const ASSIST_CONE: f32 = 0.09;
 const ASSIST_RANGE: f32 = 150.0;
+/// How far the gun dips below the hull's deck line, rad. Deep enough to keep
+/// a close target in its sights while the hull sits rocked back on its
+/// springs under sustained fire (a Pelekys holds a Kataphrakt ~9° nose-up),
+/// shallow enough that the barrel still clears the front deck.
+const GUN_DEPRESSION: f32 = 0.2;
+/// How far the gun lifts above the deck line, rad.
+const GUN_ELEVATION: f32 = 0.3;
 pub const FEED_TIME: f32 = 6.0;
 /// Knocked off the edge this soon after a hit: the hit gets the kill, s.
 const FALL_CREDIT: f32 = 6.0;
@@ -980,7 +987,7 @@ impl Match {
             }
             let t = &mut self.world.tanks[i];
             let hull_pitch = t.turret_dir().y.clamp(-1.0, 1.0).asin();
-            let want = best.map_or(0.0, |(_, p)| (p - hull_pitch).clamp(-0.15, 0.3));
+            let want = best.map_or(0.0, |(_, p)| (p - hull_pitch).clamp(-GUN_DEPRESSION, GUN_ELEVATION));
             t.gun_pitch += (want - t.gun_pitch) * (1.0 - (-DT * 12.0).exp());
         }
     }
