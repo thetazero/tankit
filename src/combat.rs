@@ -765,6 +765,13 @@ impl Match {
         let frac = f.health / f.levels.max_health(self.world.tanks[0].hull_kind);
         self.world.set_hull(0, kind);
         f.health = frac * f.levels.max_health(kind);
+        self.fit_hull(0);
+    }
+
+    /// Tank `i`'s drive at its fighter's upgrade level.
+    fn fit_hull(&mut self, i: usize) {
+        let t = &mut self.world.tanks[i];
+        t.hull = self.fighters[i].levels.hull(t.hull_kind);
     }
 
     /// Set the player's upgrade levels now, at full health (before a round starts).
@@ -772,6 +779,7 @@ impl Match {
         let f = &mut self.fighters[0];
         f.levels = levels;
         f.health = levels.max_health(self.world.tanks[0].hull_kind);
+        self.fit_hull(0);
     }
 
     /// One fixed step. `player` drives tank 0; `fire` is the trigger held.
@@ -860,7 +868,7 @@ impl Match {
             f.since_repair += DT;
             f.beam = None;
             f.burning = Burn::Air;
-            match gun(self.world.tanks[i].turret_kind).action {
+            match f.levels.gun(self.world.tanks[i].turret_kind).action {
                 Action::Beam {
                     range,
                     thermal_mass,
@@ -961,7 +969,7 @@ impl Match {
             let eye = t.turret_frame().transform_point3(t.turret_kind.trunnion());
             let yaw = t.turret_yaw();
             let level = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-            let g = gun(t.turret_kind);
+            let g = self.fighters[i].levels.gun(t.turret_kind);
             let range = g.range().min(ASSIST_RANGE);
             let mut best: Option<(f32, Vec3)> = None;
             for j in 0..n {
@@ -1654,6 +1662,7 @@ impl Match {
             if let Some(levels) = self.fighters[i].next_levels.take() {
                 self.fighters[i].levels = levels;
             }
+            self.fit_hull(i);
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
                 .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
@@ -1705,9 +1714,9 @@ impl Match {
 
     /// Where a shot from `t` would land if it fired now, for a gun that
     /// lands instantly (else None): the first thing along its line, or the
-    /// end of its reach.
+    /// end of its reach. `t` is the player's tank (it reaches as far as their upgrades).
     pub fn instant_landing(&self, t: &Tank) -> Option<Vec3> {
-        let Action::Shell(spec) = gun(t.turret_kind).action else {
+        let Action::Shell(spec) = self.fighters[0].levels.gun(t.turret_kind).action else {
             return None;
         };
         if !spec.instant {
