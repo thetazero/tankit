@@ -121,6 +121,21 @@ pub enum Look {
     Flame,
 }
 
+/// How big a flame puff is drawn (its scale, m) at `f` of its life: small
+/// at the nozzle, swelling, then guttering out.
+fn flame_size(f: f32) -> f32 {
+    (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt()
+}
+
+/// A puff is drawn as three balls of radius 0.375-0.475 `flame_size` set
+/// 0.3 of it off its centre, so the fire it shows reaches about this far.
+const FLAME_BODY: f32 = 0.7;
+
+/// How far from its centre a flame puff burns: the fire it shows.
+fn flame_reach(s: &Shell) -> f32 {
+    FLAME_BODY * flame_size(s.age / s.spec.life)
+}
+
 /// An Ammeth orb shrinks a little at every skip.
 fn plasma_shrink(s: &Shell) -> f32 {
     let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
@@ -1116,7 +1131,11 @@ impl Match {
                 s.pos += step * left.clamp(0.0, 1.0);
                 return true;
             }
-            self.travel(s, step)
+            let alive = self.travel(s, step);
+            if alive && s.spec.look == Look::Flame {
+                self.engulf(s);
+            }
+            alive
         });
         self.shells = shells;
     }
@@ -1161,6 +1180,46 @@ impl Match {
                 }
                 _ => return self.land(s, c, at, ri.normal),
             }
+        }
+    }
+
+    /// Flame puff `s` burns every tank inside the fire it shows (not just
+    /// those its centre passes through), each once, unless a wall stands
+    /// between its centre and the tank.
+    fn engulf(&mut self, s: &mut Shell) {
+        let reach = flame_reach(s);
+        let colliders: Vec<_> = self.world.tanks.iter().map(|t| t.collider).collect();
+        for (j, &c) in colliders.iter().enumerate() {
+            if j == s.owner || s.passed.contains(&j) {
+                continue;
+            }
+            let Some(col) = self.world.physics.colliders.get(c) else {
+                continue;
+            };
+            let near = col.shape().project_point(col.position(), s.pos, true).point;
+            let to = near - s.pos;
+            let d = to.length();
+            if d > reach {
+                continue;
+            }
+            // Walls (and the ground) still stop it: only tanks are see-through.
+            let tank = |c: ColliderHandle, _: &Collider| !colliders.contains(&c);
+            let blocked = d > 1e-3
+                && self
+                    .world
+                    .physics
+                    .cast_ray(
+                        &Ray::new(s.pos, to / d),
+                        d,
+                        true,
+                        QueryFilter::default().predicate(&tank),
+                    )
+                    .is_some();
+            if blocked {
+                continue;
+            }
+            self.hit(s, j, near);
+            s.passed.push(j);
         }
     }
 
@@ -1786,7 +1845,7 @@ impl Match {
                 Look::Flame => {
                     // A lumpy cloud of three blobs, tumbling as it swells.
                     let f = s.age / s.spec.life;
-                    let size = (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt();
+                    let size = flame_size(f);
                     let hot = Vec3::new(0.9, 0.97, 1.0)
                         .lerp(Vec3::new(0.25, 0.55, 1.0), (f * 2.0).min(1.0))
                         .lerp(Vec3::new(0.06, 0.15, 0.7), (f * 1.5 - 0.5).clamp(0.0, 1.0));
@@ -2417,6 +2476,73 @@ mod tests {
             m.step(Command::default(), true);
         }
         max_health(HullKind::Kataphrakt) - m.fighters[back].health
+    }
+
+    /// How much an enemy `ahead` m in front of the flamer and `side` m off
+    /// its line loses to a second of fire, with (if `wall`) a thin wall
+    /// standing across the line from `wall` m out.
+    fn flame_burn(ahead: f32, side: f32, wall: Option<f32>) -> f32 {
+        let probe = Match::new(Map::yard(200.0), 0, 0, 1);
+        let t = &probe.world.tanks[0];
+        let (pos, yaw, fwd) = (Vec2::new(t.pos.x, t.pos.z), t.yaw(), dir2(t.yaw()));
+        let at = |d: f32, x: f32| pos + fwd * d + Vec2::new(-fwd.y, fwd.x) * x;
+        let mut map = Map::yard(200.0);
+        if let Some(w) = wall {
+            // 0.4 m thick and 8 m wide, facing the flamer (which faces down an axis).
+            let (a, b) = (at(w, -4.0), at(w + 0.4, 4.0));
+            map.solids.push(crate::map::Solid {
+                min: Vec3::new(a.x.min(b.x), 0.0, a.y.min(b.y)),
+                max: Vec3::new(a.x.max(b.x), 6.0, a.y.max(b.y)),
+            });
+        }
+        let mut m = Match::new(map, 0, 0, 1);
+        m.world.tanks[0].turret_kind = TurretKind::Hymn;
+        m.world.spawn_tank(
+            Vec3::ONE,
+            at(ahead, side),
+            yaw,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
+        m.bots.push(None);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        max_health(HullKind::Kataphrakt) - m.fighters[1].health
+    }
+
+    /// The flame burns what it visibly engulfs, not just what its puffs'
+    /// centres pass through, and still nothing clearly outside it.
+    #[test]
+    fn flame_burns_what_it_engulfs() {
+        let dead_on = flame_burn(8.0, 0.0, None);
+        assert!(dead_on > 40.0, "dead on at 8 m: {dead_on}");
+        // Hull side about 1 m off the barrel line, well inside the fire.
+        let edge = flame_burn(8.0, 2.5, None);
+        assert!(edge > 10.0, "engulfed at its edge: {edge}");
+        // Further out, where the fire has swelled: hull side 1.5 m off.
+        let far = flame_burn(11.0, 3.0, None);
+        assert!(far > 3.0, "engulfed at 11 m: {far}");
+        // Hull side 3.5 m off: nowhere near the fire.
+        assert_eq!(flame_burn(8.0, 5.0, None), 0.0);
+    }
+
+    /// The fire a puff shows doesn't reach round a thin wall onto a tank
+    /// pressed right up behind it.
+    #[test]
+    fn flame_fire_stops_at_thin_walls() {
+        // The hull's nose is 0.3 m behind the wall's back face.
+        let open = flame_burn(9.7, 0.0, None);
+        assert!(open > 20.0, "nothing in the way: {open}");
+        assert_eq!(flame_burn(9.7, 0.0, Some(7.0)), 0.0);
     }
 
     #[test]
