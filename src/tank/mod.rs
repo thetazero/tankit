@@ -59,14 +59,7 @@ impl KitMeshes {
             hover: ithessar::sethuun(),
             vigil,
             // Same order as `TurretKind::ALL`.
-            turrets: vec![
-                model::kontos(),
-                model::pelekys(),
-                ithessar::ammeth(),
-                ithessar::ossrin(),
-                uthenn::lumen(),
-                model::hymn(),
-            ],
+            turrets: TurretKind::ALL.map(turret_model).into(),
         }
     }
 
@@ -94,6 +87,18 @@ impl KitMeshes {
             .map(|t| t.head.indices.len() + t.mantlet.indices.len() + t.barrel.indices.len())
             .sum();
         (h + t) / 3
+    }
+}
+
+/// `kind`'s turret art (also what its hitbox is shaped from).
+pub fn turret_model(kind: TurretKind) -> TurretModel {
+    match kind {
+        TurretKind::Kontos => model::kontos(),
+        TurretKind::Pelekys => model::pelekys(),
+        TurretKind::Ammeth => ithessar::ammeth(),
+        TurretKind::Ossrin => ithessar::ossrin(),
+        TurretKind::Lumen => uthenn::lumen(),
+        TurretKind::Hymn => model::hymn(),
     }
 }
 
