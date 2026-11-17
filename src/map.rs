@@ -869,6 +869,27 @@ impl Map {
         }
     }
 
+    /// Points round the arena's edge every `step` m, each side running
+    /// `past` m beyond its corners (so the sides overlap there): the point,
+    /// and the way into the arena.
+    fn edge_points(&self, step: f32, past: f32) -> Vec<(Vec2, Vec2)> {
+        let s = self.size;
+        let mut out = Vec::new();
+        for (start, along, inward) in [
+            (Vec2::new(0.0, 0.0), Vec2::X, Vec2::Y),
+            (Vec2::new(s, 0.0), Vec2::Y, -Vec2::X),
+            (Vec2::new(s, s), -Vec2::X, -Vec2::Y),
+            (Vec2::new(0.0, s), -Vec2::Y, Vec2::X),
+        ] {
+            let n = ((s + 2.0 * past) / step).ceil() as usize;
+            for k in 0..=n {
+                let t = -past + (s + 2.0 * past) * k as f32 / n as f32;
+                out.push((start + along * t, inward));
+            }
+        }
+        out
+    }
+
     /// The arena boundary: solid walls, drawn as grey walls or (for maps
     /// whose edge is scenery, like dunes) invisible.
     fn perimeter(&mut self, visible: bool) {
@@ -998,6 +1019,65 @@ impl Map {
     /// Ground height at a point (terrain if present, else flat 0).
     pub fn ground_height(&self, x: f32, z: f32) -> f32 {
         self.terrain.as_ref().map_or(0.0, |t| t.height_at(x, z))
+    }
+
+    /// Every point a little inside the arena's edge (`inset` m in, every
+    /// half meter, bar the ones `skip` says nothing can reach) stands in
+    /// something solid and visible, too tall for a tank to climb: no tank
+    /// gets to the backstop at the edge.
+    #[cfg(test)]
+    pub(crate) fn assert_edge_walled(&self, inset: f32, skip: impl Fn(Vec2) -> bool) {
+        let tall = 2.5;
+        // Only what stands near the edge can close it.
+        let near_edge = |c: Vec2, r: f32| {
+            let d = c.min_element().min(self.size - c.max_element());
+            d < r + 2.0
+        };
+        // Each one's footprint (what a tank runs into) and height range,
+        // worked out once.
+        let boxes: Vec<(Vec<Vec2>, f32, f32)> = self
+            .oboxes
+            .iter()
+            .filter(|o| {
+                let reach = o.half.length() + (o.y1 - o.y0);
+                o.solid && !o.hidden && near_edge(o.center, reach)
+            })
+            .map(|o| {
+                let (lo, hi) = o.y_range();
+                (o.base_shadow(1.5), lo, hi)
+            })
+            .collect();
+        let crystals: Vec<&Crystal> = self
+            .crystals
+            .iter()
+            .filter(|c| {
+                let reach = c.radius * 1.2 + Vec2::new(c.axis.x, c.axis.z).length();
+                c.solid && near_edge(Vec2::new(c.base.x, c.base.z), reach)
+            })
+            .collect();
+        for (p, inward) in self.edge_points(0.5, 0.0) {
+            let p = p + inward * inset;
+            if skip(p) {
+                continue;
+            }
+            let g = self.ground_height(p.x, p.y);
+            let by_box = boxes.iter().any(|(foot, lo, hi)| {
+                *lo <= g + 0.3 && *hi > g + tall && polygon_distance(foot, p) == 0.0
+            });
+            // A crystal by its narrowest facets (its jitter goes down to
+            // 0.82 of its radius).
+            let by_crystal = crystals.iter().any(|c| {
+                let tip = (c.base + c.axis).y;
+                tip > g + tall
+                    && c.footprint(g, 1.5)
+                        .iter()
+                        .any(|&(q, r)| q.distance(p) < r * 0.82)
+            });
+            assert!(
+                by_box || by_crystal,
+                "nothing you can see stops a tank at {p} (ground {g})"
+            );
+        }
     }
 
     #[cfg(test)]

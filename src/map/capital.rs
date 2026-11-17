@@ -184,6 +184,7 @@ impl Map {
             map.arch(&mut rng, dir, k == 3);
         }
         map.staging_courts(&mut rng);
+        map.city_edge();
         map.capital_spawns();
         map.perimeter(false);
         map.skyline(&mut rng);
@@ -1412,6 +1413,160 @@ impl Map {
         }
     }
 
+    /// The edge: the city goes on, and its first row of blocks closes the
+    /// arena in, shoulder to shoulder, some shelled to a ragged top. Where
+    /// each avenue runs out, a block came down across it: a bank of rubble
+    /// too high and steep to climb, with the avenue's vista still open over
+    /// it.
+    fn city_edge(&mut self) {
+        let mut rng = Rng::new(0x00c1_7ed6);
+        for (start, along, inward) in [
+            (Vec2::new(0.0, 0.0), Vec2::X, Vec2::Y),
+            (Vec2::new(SIZE, 0.0), Vec2::Y, -Vec2::X),
+            (Vec2::new(SIZE, SIZE), -Vec2::X, -Vec2::Y),
+            (Vec2::new(0.0, SIZE), -Vec2::Y, Vec2::X),
+        ] {
+            let mouth = (MID - AVENUE_HALF - 3.0, MID + AVENUE_HALF + 3.0);
+            let mut t = -18.0;
+            while t < SIZE + 18.0 {
+                if t >= mouth.0 && t < mouth.1 {
+                    self.rubble_bank(&mut rng, start, along, inward, mouth);
+                    t = mouth.1;
+                    continue;
+                }
+                // Up to the mouth, in blocks no shorter than 11 m.
+                let left = if t < mouth.0 { mouth.0 - t } else { f32::MAX };
+                let len = if left <= 22.0 {
+                    left
+                } else if left < 34.0 {
+                    left * 0.5
+                } else {
+                    rng.range(12.0, 22.0)
+                };
+                let depth = rng.range(10.0, 16.0);
+                let inset = rng.range(0.4, 1.0);
+                let c = start + along * (t + len * 0.5) - inward * (depth * 0.5 - inset);
+                let half = (along * len * 0.5 + inward * depth * 0.5).abs();
+                let h = rng.range(9.0, 24.0);
+                let broken = rng.chance(0.4);
+                let block = OBox {
+                    center: c,
+                    half,
+                    y0: -0.5,
+                    y1: h,
+                    color: CONCRETES[rng.index(CONCRETES.len())] * rng.range(0.85, 1.0),
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
+                    solid: true,
+                    chip: 0.25,
+                    ..OBox::default()
+                };
+                self.oboxes.push(block);
+                if broken {
+                    self.ragged_top(&mut rng, &block);
+                }
+                // Ribbon windows on the face toward the city.
+                let face = c + inward * (depth * 0.5 + 0.05);
+                let strip = (along * (len * 0.5 - 1.0) + inward * 0.08).abs();
+                let mut y = 3.0;
+                while y + 2.5 < h - if broken { 3.0 } else { 0.0 } {
+                    self.oboxes.push(OBox {
+                        center: face,
+                        half: strip,
+                        y0: y,
+                        y1: y + 1.1,
+                        color: CONCRETE_DARK * 0.5,
+                        side_mat: Material::Concrete,
+                        top_mat: Material::Concrete,
+                        solid: false,
+                        ..OBox::default()
+                    });
+                    y += 3.6;
+                }
+                t += len;
+            }
+        }
+    }
+
+    /// Rubble banked across an avenue's end (`span` along the edge): big
+    /// lumps of concrete heaped along the edge, smaller ones spilled out in
+    /// front.
+    fn rubble_bank(
+        &mut self,
+        rng: &mut Rng,
+        start: Vec2,
+        along: Vec2,
+        inward: Vec2,
+        span: (f32, f32),
+    ) {
+        let lump = |rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| OBox {
+            center: at,
+            yaw: rng.range(0.0, TAU),
+            half: Vec2::new(s, s * rng.range(0.7, 1.0)),
+            y0: -0.8,
+            y1: h,
+            tilt: rng.range(-0.2, 0.2),
+            roll: rng.range(-0.2, 0.2),
+            color: CONCRETE * rng.range(0.75, 1.0),
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
+            solid,
+            chip: 0.7,
+            ..OBox::default()
+        };
+        // Three rows, heaped highest mid-avenue and toward the back: (how
+        // far out past the edge, spacing, lowest height, how much the heap
+        // adds to it).
+        for (out, step, low, heap) in [
+            (3.0, 2.6, 5.0, 4.0),
+            (0.6, 2.4, 3.6, 2.2),
+            (-2.0, 3.0, 2.8, 1.0),
+        ] {
+            let mut t = span.0 - 2.0 + rng.range(0.0, step);
+            while t < span.1 + 2.0 {
+                let u = ((t - span.0) / (span.1 - span.0)).clamp(0.0, 1.0);
+                let h = low + heap * (std::f32::consts::PI * u).sin() + rng.range(-0.6, 0.6);
+                let s = rng.range(2.2, 3.8);
+                let at = start + along * (t + rng.range(-0.5, 0.5))
+                    - inward * (out + rng.range(-0.6, 0.6));
+                let o = lump(rng, at, s, h.max(2.9), true);
+                self.oboxes.push(o);
+                t += step * rng.range(0.85, 1.1);
+            }
+        }
+        // Spill in front.
+        for _ in 0..18 {
+            let at = start + along * rng.range(span.0, span.1) + inward * rng.range(2.5, 9.0);
+            let s = rng.range(0.4, 1.4);
+            let h = s * rng.range(0.5, 1.0);
+            let o = lump(rng, at, s, h, false);
+            self.oboxes.push(o);
+        }
+        // Floor slabs of the block that came down, broken and leaning on
+        // the heap.
+        for _ in 0..3 {
+            let t = rng.range(span.0 + 4.0, span.1 - 4.0);
+            let half = Vec2::new(rng.range(2.5, 4.5), 0.25);
+            let lean = rng.range(0.5, 0.9);
+            let yaw = along.y.atan2(along.x) + rng.range(-0.3, 0.3);
+            let y = rng.range(1.5, 3.0);
+            self.oboxes.push(OBox {
+                center: start + along * t + inward * rng.range(0.5, 1.5),
+                yaw: -yaw,
+                half,
+                y0: y,
+                y1: y + 0.5,
+                roll: lean,
+                color: CONCRETE * rng.range(0.85, 1.0),
+                side_mat: Material::Concrete,
+                top_mat: Material::Concrete,
+                solid: false,
+                broken: true,
+                ..OBox::default()
+            });
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Bases, spawns, the edge
 
@@ -1754,6 +1909,13 @@ mod tests {
         }
         assert!(m.open_spots.len() > 100);
         assert!(m.repair_spots.len() >= 4);
+    }
+
+    /// Blocks and rubble close the edge all round: nowhere can a tank
+    /// drive up to the backstop.
+    #[test]
+    fn the_city_closes_the_edge() {
+        Map::capital().assert_edge_walled(0.3, |_| false);
     }
 
     #[test]

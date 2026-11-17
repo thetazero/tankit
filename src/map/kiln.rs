@@ -215,6 +215,7 @@ impl Map {
         map.river(&mut rng);
         map.ithessar_base();
         map.imperium_base(&mut rng);
+        map.kiln_rim();
         map.kiln_spawns();
         map.perimeter(false);
         map.kiln_horizon(&mut rng);
@@ -538,6 +539,32 @@ impl Map {
         }
     }
 
+    /// The edge: the crystal grows thick all round, a palisade too tall
+    /// and too close-set to get through, leaning out over the berm. Behind
+    /// the Imperium's breach on the east it's knocked low and askew, leaning
+    /// in where they blasted their way through, but still standing.
+    fn kiln_rim(&mut self) {
+        let mut rng = Rng::new(0x0e0d_9e11);
+        for (p, inward) in self.edge_points(2.6, 4.0) {
+            let at = p - inward * rng.range(0.3, 1.0)
+                + Vec2::new(-inward.y, inward.x) * rng.range(-0.4, 0.4);
+            let breach = p.x > SIZE - 0.5 && (p.y - MID).abs() < 36.0;
+            let r = rng.range(2.5, 3.4);
+            let jitter = Vec2::new(rng.range(-0.6, 0.6), rng.range(-0.6, 0.6));
+            let (h, lean, dir) = if breach {
+                (rng.range(3.5, 6.5), rng.range(0.25, 0.5), inward + jitter)
+            } else {
+                (
+                    rng.range(8.0, 17.0),
+                    rng.range(0.05, 0.25),
+                    -inward + jitter,
+                )
+            };
+            let lit = !breach && rng.chance(0.12);
+            self.crystal(at, h, r, dir, lean, lit, &mut rng);
+        }
+    }
+
     /// Bases at the west and east edges; roam points in every lane and
     /// court; repair crates in the side courts and where the outer lanes meet.
     fn kiln_spawns(&mut self) {
@@ -708,6 +735,13 @@ mod tests {
                 assert!(!nav.path(p, g).is_empty(), "no path from {p} to {g}");
             }
         }
+    }
+
+    /// Crystal closes the edge all round: nowhere can a tank drive up to
+    /// the backstop.
+    #[test]
+    fn the_edge_is_crystal() {
+        Map::kiln().assert_edge_walled(0.5, |_| false);
     }
 
     #[test]
