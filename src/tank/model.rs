@@ -581,8 +581,6 @@ pub struct HullModel {
     /// by heat. Empty on other hulls.
     pub heat_light: MeshData,
     pub running: Running,
-    /// Turret ring position.
-    pub mount: Vec3,
 }
 
 /// Light, sleek hull: a low wedge with sharp white fender plates sweeping
@@ -842,7 +840,6 @@ pub fn kataphrakt() -> HullModel {
                 })
                 .collect(),
         },
-        mount: v(0.0, 1.42, -0.3),
     }
 }
 
@@ -1082,7 +1079,6 @@ pub fn kastron() -> HullModel {
                 })
                 .collect(),
         },
-        mount: v(0.0, 1.62, -0.2),
     }
 }
 
@@ -1099,8 +1095,6 @@ pub struct TurretModel {
     pub mantlet: MeshData,
     /// One barrel; drawn once per entry in `barrels`, slides back on recoil.
     pub barrel: MeshData,
-    /// Gun pitch pivot in turret space.
-    pub pivot: Vec3,
     /// Barrel origins in gun space.
     pub barrels: Vec<Vec3>,
     /// Muzzle distance along +z from a barrel's origin.
@@ -1356,9 +1350,8 @@ pub fn kontos() -> TurretModel {
         barrel_light: MeshData::default(),
         mantlet,
         barrel,
-        pivot: v(0.0, 0.45, 0.88),
         barrels: vec![Vec3::ZERO],
-        muzzle: 3.55,
+        muzzle: crate::sim::TurretKind::Kontos.reach(),
         rig: Rig::Recoil,
         recoil: 0.8,
     }
@@ -1562,9 +1555,8 @@ pub fn pelekys() -> TurretModel {
         barrel_light: MeshData::default(),
         mantlet,
         barrel,
-        pivot: v(0.0, 0.38, 0.92),
         barrels: vec![v(-0.34, 0.0, 0.0), v(0.34, 0.0, 0.0)],
-        muzzle: 2.82,
+        muzzle: crate::sim::TurretKind::Pelekys.reach(),
         rig: Rig::Recoil,
         recoil: 0.6,
     }
@@ -1775,9 +1767,8 @@ pub fn hymn() -> TurretModel {
         barrel_light: MeshData::default(),
         mantlet,
         barrel,
-        pivot: v(0.0, 0.45, 0.8),
         barrels: vec![Vec3::ZERO],
-        muzzle: 1.85,
+        muzzle: crate::sim::TurretKind::Hymn.reach(),
         rig: Rig::Recoil,
         recoil: 0.0,
     }

@@ -15,7 +15,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3};
 use rapier3d::prelude::*;
 
 use crate::game::DT;
@@ -63,6 +63,19 @@ impl HullKind {
             HullKind::Gravis => Faction::Uthenn,
         }
     }
+
+    /// Where the turret ring sits in the hull's body frame (the art's too).
+    /// A hover hull's ring rides on its body, which floats [`HOVER_RIDE`]
+    /// up and banks with [`Tank::lean`]; see [`Tank::turret_frame`].
+    pub fn ring(self) -> Vec3 {
+        match self {
+            HullKind::Kataphrakt => Vec3::new(0.0, 1.42, -0.3),
+            HullKind::Kastron => Vec3::new(0.0, 1.62, -0.2),
+            HullKind::Sethuun => Vec3::new(0.0, 1.3, -0.15),
+            HullKind::Vigil => Vec3::new(0.0, 1.38, -0.3),
+            HullKind::Gravis => Vec3::new(0.0, 2.8, -0.4),
+        }
+    }
 }
 
 impl TurretKind {
@@ -99,6 +112,32 @@ impl TurretKind {
             TurretKind::Ossrin => 0.35,
             // Beam and flame don't kick.
             TurretKind::Lumen | TurretKind::Hymn => 0.0,
+        }
+    }
+
+    /// The gun's pitch pivot in turret space (the art's too).
+    pub fn trunnion(self) -> Vec3 {
+        match self {
+            TurretKind::Kontos => Vec3::new(0.0, 0.45, 0.88),
+            TurretKind::Pelekys => Vec3::new(0.0, 0.38, 0.92),
+            TurretKind::Ammeth => Vec3::new(0.0, 0.5, 0.55),
+            TurretKind::Ossrin => Vec3::new(0.0, 0.44, 0.62),
+            // The Lumen is drawn 1.2x size, pivot and all.
+            TurretKind::Lumen => Vec3::new(0.0, 0.42, 0.92) * 1.2,
+            TurretKind::Hymn => Vec3::new(0.0, 0.45, 0.8),
+        }
+    }
+
+    /// How far along the gun axis, from the trunnion, its muzzle is (the
+    /// art's too): where shots and the beam leave it.
+    pub fn reach(self) -> f32 {
+        match self {
+            TurretKind::Kontos => 3.55,
+            TurretKind::Pelekys => 2.82,
+            TurretKind::Ammeth => 1.45,
+            TurretKind::Ossrin => 2.35,
+            TurretKind::Lumen => 3.2 * 1.2,
+            TurretKind::Hymn => 1.85,
         }
     }
 }
@@ -338,6 +377,8 @@ const PARK_SPEED: f32 = 0.3;
 const WRECK_FRICTION: f32 = 0.7;
 /// Hover emitters: static compression under the hull's weight (soft: it bobs).
 pub const HOVER_SAG: f32 = 0.16;
+/// How high a hover hull's body (and so its turret) floats above its frame.
+pub const HOVER_RIDE: f32 = 0.3;
 const HOVER_DAMPING_RATIO: f32 = 0.45;
 /// How far the belly sits above the emitters' rest line: their working range
 /// before the hull itself touches.
@@ -572,20 +613,48 @@ impl Tank {
 
     /// World-space turret direction (3D, follows hull tilt).
     pub fn turret_dir(&self) -> Vec3 {
-        self.rot * (Quat::from_rotation_y(self.turret_rel) * Vec3::Z)
+        self.turret_frame().transform_vector3(Vec3::Z).normalize()
     }
 
     /// Where the gun points in the world, including elevation.
     pub fn gun_dir(&self) -> Vec3 {
-        self.rot
-            * (Quat::from_rotation_y(self.turret_rel)
-                * Quat::from_rotation_x(-self.gun_pitch)
-                * Vec3::Z)
+        self.gun_frame().transform_vector3(Vec3::Z).normalize()
     }
 
     /// Height of the gun's pivot above the hull origin.
     pub fn gun_height(&self) -> f32 {
         self.chassis.hull_top + 0.4
+    }
+
+    /// The turret ring in the world, turned to the turret's heading: the
+    /// frame the turret's art hangs from.
+    pub fn turret_frame(&self) -> Mat4 {
+        let mut body = Mat4::from_rotation_translation(self.rot, self.pos);
+        if self.hull_kind == HullKind::Sethuun {
+            body = body
+                * Mat4::from_rotation_z(self.lean)
+                * Mat4::from_translation(Vec3::Y * HOVER_RIDE);
+        }
+        body * Mat4::from_translation(self.hull_kind.ring())
+            * Mat4::from_rotation_y(self.turret_rel)
+    }
+
+    /// The gun in the world: origin at its trunnion, +z down the barrel.
+    pub fn gun_frame(&self) -> Mat4 {
+        self.turret_frame()
+            * Mat4::from_translation(self.turret_kind.trunnion())
+            * Mat4::from_rotation_x(-self.gun_pitch)
+    }
+
+    /// Where the gun's axis leaves the muzzle, in the world.
+    pub fn muzzle(&self) -> Vec3 {
+        self.gun_frame()
+            .transform_point3(Vec3::Z * self.turret_kind.reach())
+    }
+
+    /// The gun's trunnion in the world: on the gun's axis, inside the turret.
+    pub fn breech(&self) -> Vec3 {
+        self.gun_frame().transform_point3(Vec3::ZERO)
     }
 
     /// Turret heading on the ground plane.

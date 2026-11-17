@@ -51,7 +51,7 @@ fn glow_color(c: Vec3) -> Skin {
 
 /// The hull is modelled with its belly at 0.4; it rides this much higher
 /// (the physics chassis's emitters are `road_y` up).
-pub const RIDE: f32 = 0.3;
+pub const RIDE: f32 = crate::sim::HOVER_RIDE;
 
 /// The hover hull's art. Everything but `body` is drawn per frame with its
 /// own motion and glow.
@@ -68,8 +68,6 @@ pub struct HoverModel {
     pub shards: Vec<(Vec3, f32)>,
     /// Emitter cradle height in the model.
     pub emitter_y: f32,
-    /// Turret ring position.
-    pub mount: Vec3,
 }
 
 /// Small fixed jitter so knapped facets aren't perfectly regular.
@@ -283,7 +281,6 @@ pub fn sethuun() -> HoverModel {
             (v(0.0, 1.0, 3.3), 0.5),
         ],
         emitter_y: 0.36,
-        mount: v(0.0, 1.3, -0.15),
     }
 }
 
@@ -409,14 +406,13 @@ pub fn ammeth() -> TurretModel {
         barrel_light: MeshData::default(),
         mantlet,
         barrel: claw,
-        pivot: v(0.0, 0.5, 0.55),
         barrels: (0..3)
             .map(|k| {
                 let a = FRAC_PI_2 + k as f32 / 3.0 * TAU;
                 v(a.cos() * r, a.sin() * r, 0.1)
             })
             .collect(),
-        muzzle: 1.45,
+        muzzle: crate::sim::TurretKind::Ammeth.reach(),
         recoil: 0.0,
         rig: Rig::Cradle {
             orb: 1.45,
@@ -545,14 +541,13 @@ pub fn ossrin() -> TurretModel {
         barrel_light: MeshData::default(),
         mantlet,
         barrel: needle,
-        pivot: v(0.0, 0.44, 0.62),
         barrels: (0..3)
             .map(|k| {
                 let a = FRAC_PI_2 + k as f32 / 3.0 * TAU;
                 v(a.cos() * r, a.sin() * r, 0.0)
             })
             .collect(),
-        muzzle: 2.35,
+        muzzle: crate::sim::TurretKind::Ossrin.reach(),
         recoil: 0.0,
         rig: Rig::Spinner,
     }

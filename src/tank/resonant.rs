@@ -340,7 +340,6 @@ pub fn vigil() -> VigilModel {
                     })
                     .collect(),
             },
-            mount: v(0.0, 1.38, -0.3),
         },
         extras: VigilExtras {
             light: glow,
