@@ -2,7 +2,7 @@
 //!
 //! The loop: main menu (missions, garage, quit) → a mission's match → Esc
 //! pauses (resume, exit to menu, quit) → when the round ends, Enter plays it
-//! again and Esc goes back to the menu. Trust is banked into the pilot profile
+//! again and Esc goes back to the menu. Reputation is banked into the pilot profile
 //! the moment it's earned, and the profile saves itself on every change.
 
 use std::collections::{HashMap, HashSet};
@@ -90,7 +90,7 @@ struct App {
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
     profile: Profile,
-    /// How much of `game.trust` is already banked into the profile.
+    /// How much of `game.reputation` is already banked into the profile.
     banked: u32,
     /// Whether this round's contract pay has been banked.
     paid: bool,
@@ -771,12 +771,12 @@ impl App {
             }
         }
 
-        // Trust is paid the moment it's earned, to whoever hired you; crystals
+        // Reputation is paid the moment it's earned, to whoever hired you; crystals
         // when the contract is done.
-        if self.game.trust > self.banked {
+        if self.game.reputation > self.banked {
             self.profile
-                .add_trust(self.game.factions[0], self.game.trust - self.banked);
-            self.banked = self.game.trust;
+                .add_reputation(self.game.factions[0], self.game.reputation - self.banked);
+            self.banked = self.game.reputation;
         }
         if self.mode == Mode::Playing
             && self.showroom.is_none()
@@ -903,7 +903,7 @@ impl App {
                         let pause = self.pause.draw(
                             &self.profile,
                             self.game.factions[0],
-                            self.game.trust,
+                            self.game.reputation,
                             w,
                             h,
                         );

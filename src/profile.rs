@@ -1,10 +1,10 @@
-//! The pilot profile: trust with each faction, crystals, owned parts and the
+//! The pilot profile: reputation with each faction, crystals, owned parts and the
 //! loadout you deploy in. One profile, saved as JSON in the OS data directory
 //! (`~/.local/share/tankit/profile.json` on Linux) whenever it changes, so
 //! there's no save button.
 //!
-//! Every faction starts you on the basic kit. Work its contracts and it trusts
-//! you more; its standing (derived from that trust) decides which of its parts
+//! Every faction starts you on the basic kit. Work its contracts and your reputation
+//! with it grows; its standing (derived from that reputation) decides which of its parts
 //! it will sell you. Crystals, paid for finished contracts, buy parts and upgrades.
 
 use std::collections::BTreeMap;
@@ -17,25 +17,25 @@ use crate::faction::Faction;
 use crate::garage::Loadout;
 use crate::sim::{HullKind, TurretKind};
 
-/// Trust from one standing to the next: 100, then 50 more for each after.
+/// Reputation from one standing to the next: 100, then 50 more for each after.
 fn standing_span(level: u32) -> u32 {
     100 + 50 * (level - 1)
 }
 
-/// Where a faction's trust in you sits on the standing ladder.
+/// Where your reputation with a faction sits on the standing ladder.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Standing {
     /// Starts at 1: the basic kit.
     pub level: u32,
-    /// Trust earned since reaching this standing.
+    /// Reputation earned since reaching this standing.
     pub into: u32,
-    /// Trust this standing takes to get through.
+    /// Reputation this standing takes to get through.
     pub span: u32,
 }
 
 impl Standing {
-    pub fn of(trust: u32) -> Standing {
-        let (mut level, mut left) = (1, trust);
+    pub fn of(reputation: u32) -> Standing {
+        let (mut level, mut left) = (1, reputation);
         while left >= standing_span(level) {
             left -= standing_span(level);
             level += 1;
@@ -57,9 +57,11 @@ impl Standing {
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Saved {
-    /// Trust by faction name; missing means none.
-    trust: BTreeMap<String, u32>,
-    /// Profiles from before trust had one XP total, earned working for the
+    /// Reputation by faction name; missing means none. Saved as `trust`
+    /// before it was renamed, so that still loads.
+    #[serde(alias = "trust")]
+    reputation: BTreeMap<String, u32>,
+    /// Profiles from before per-faction reputation had one XP total, earned working for the
     /// Imperium (the only side that hired). Read once, never written.
     #[serde(skip_serializing)]
     xp: u32,
@@ -113,14 +115,14 @@ pub enum Refusal {
     Owned,
     NotOwned,
     /// Needs this standing with the part's maker.
-    Trust(Faction, u32),
+    Reputation(Faction, u32),
     Crystals(u32),
     MaxLevel,
 }
 
 pub struct Profile {
-    /// Trust with each faction, by `Faction::index`.
-    pub trust: [u32; Faction::ALL.len()],
+    /// Reputation with each faction, by `Faction::index`.
+    pub reputation: [u32; Faction::ALL.len()],
     pub crystals: u32,
     /// The kit you deploy in (and respawn in, until the garage changes it).
     pub loadout: Loadout,
@@ -136,7 +138,7 @@ impl Profile {
     /// A fresh pilot that is never written to disk.
     pub fn in_memory() -> Profile {
         Profile {
-            trust: [0; Faction::ALL.len()],
+            reputation: [0; Faction::ALL.len()],
             crystals: 0,
             loadout: (HullKind::Kataphrakt, TurretKind::Kontos),
             bought: Vec::new(),
@@ -170,13 +172,13 @@ impl Profile {
     }
 
     fn restore(&mut self, s: Saved) {
-        for (name, &t) in &s.trust {
+        for (name, &t) in &s.reputation {
             if let Some(f) = Faction::by_name(name) {
-                self.trust[f.index()] = t;
+                self.reputation[f.index()] = t;
             }
         }
-        if s.trust.is_empty() {
-            self.trust[Faction::Imperium.index()] = s.xp;
+        if s.reputation.is_empty() {
+            self.reputation[Faction::Imperium.index()] = s.xp;
         }
         self.crystals = s.crystals;
         self.settings = s.settings;
@@ -195,12 +197,12 @@ impl Profile {
         }
     }
 
-    pub fn trust_of(&self, faction: Faction) -> u32 {
-        self.trust[faction.index()]
+    pub fn reputation_of(&self, faction: Faction) -> u32 {
+        self.reputation[faction.index()]
     }
 
     pub fn standing(&self, faction: Faction) -> Standing {
-        Standing::of(self.trust_of(faction))
+        Standing::of(self.reputation_of(faction))
     }
 
     /// Standing that decides whether `part` is for sale: with its maker.
@@ -215,9 +217,9 @@ impl Profile {
         }
     }
 
-    /// Every faction trusts you this much (headless shots, tests).
-    pub fn set_trust_all(&mut self, trust: u32) {
-        self.trust = [trust; Faction::ALL.len()];
+    /// You have this much reputation with every faction (headless shots, tests).
+    pub fn set_reputation_all(&mut self, reputation: u32) {
+        self.reputation = [reputation; Faction::ALL.len()];
     }
 
     pub fn owns(&self, part: Part) -> bool {
@@ -230,7 +232,7 @@ impl Profile {
             return Err(Refusal::Owned);
         };
         if self.standing_for(part) < price.standing {
-            return Err(Refusal::Trust(part.maker(), price.standing));
+            return Err(Refusal::Reputation(part.maker(), price.standing));
         }
         if self.crystals < price.crystals {
             return Err(Refusal::Crystals(price.crystals));
@@ -266,10 +268,10 @@ impl Profile {
         Ok(())
     }
 
-    /// Bank trust earned working for `faction` and save.
-    pub fn add_trust(&mut self, faction: Faction, trust: u32) {
-        if trust > 0 {
-            self.trust[faction.index()] += trust;
+    /// Bank reputation earned working for `faction` and save.
+    pub fn add_reputation(&mut self, faction: Faction, reputation: u32) {
+        if reputation > 0 {
+            self.reputation[faction.index()] += reputation;
             self.save();
         }
     }
@@ -308,10 +310,10 @@ impl Profile {
     fn write(&self, path: &Path) -> anyhow::Result<()> {
         let name = |p: Part| p.name().to_ascii_lowercase();
         let saved = Saved {
-            trust: Faction::ALL
+            reputation: Faction::ALL
                 .into_iter()
-                .filter(|&f| self.trust_of(f) > 0)
-                .map(|f| (f.name().to_ascii_lowercase(), self.trust_of(f)))
+                .filter(|&f| self.reputation_of(f) > 0)
+                .map(|f| (f.name().to_ascii_lowercase(), self.reputation_of(f)))
                 .collect(),
             xp: 0,
             crystals: self.crystals,
@@ -376,9 +378,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut p = Profile::load(path.clone());
-        assert_eq!(p.trust_of(Faction::Imperium), 0);
-        p.add_trust(Faction::Imperium, 300);
-        p.add_trust(Faction::Resonant, 40);
+        assert_eq!(p.reputation_of(Faction::Imperium), 0);
+        p.add_reputation(Faction::Imperium, 300);
+        p.add_reputation(Faction::Resonant, 40);
         p.add_crystals(2000);
         p.buy(PELEKYS).unwrap();
         p.upgrade(PELEKYS).unwrap();
@@ -389,9 +391,9 @@ mod tests {
         });
 
         let back = Profile::load(path.clone());
-        assert_eq!(back.trust_of(Faction::Imperium), 300);
-        assert_eq!(back.trust_of(Faction::Resonant), 40);
-        assert_eq!(back.trust_of(Faction::Ithessar), 0);
+        assert_eq!(back.reputation_of(Faction::Imperium), 300);
+        assert_eq!(back.reputation_of(Faction::Resonant), 40);
+        assert_eq!(back.reputation_of(Faction::Ithessar), 0);
         assert_eq!(back.crystals, p.crystals);
         assert!(back.owns(PELEKYS));
         assert_eq!(back.levels.of(PELEKYS), 1);
@@ -403,34 +405,40 @@ mod tests {
         // bought) still loads; its XP was earned for the Imperium.
         std::fs::write(&path, r#"{"xp": 40, "hull": "bastion", "turret": "lance"}"#).unwrap();
         let old = Profile::load(path.clone());
-        assert_eq!(old.trust_of(Faction::Imperium), 40);
-        assert_eq!(old.trust_of(Faction::Resonant), 0);
+        assert_eq!(old.reputation_of(Faction::Imperium), 40);
+        assert_eq!(old.reputation_of(Faction::Resonant), 0);
         assert_eq!(old.crystals, 0);
         assert_eq!(old.loadout, (HullKind::Kataphrakt, TurretKind::Kontos));
         assert!(!old.settings.debug);
         // Profiles from before sound get the default volume, not silence.
         assert_eq!(old.settings.volume, Settings::default().volume);
 
+        // Profiles from when reputation was called trust keep it.
+        std::fs::write(&path, r#"{"trust": {"imperium": 120, "resonant": 7}}"#).unwrap();
+        let trust = Profile::load(path.clone());
+        assert_eq!(trust.reputation_of(Faction::Imperium), 120);
+        assert_eq!(trust.reputation_of(Faction::Resonant), 7);
+
         // A corrupt file starts a fresh pilot rather than failing.
         std::fs::write(&path, "not json").unwrap();
-        assert_eq!(Profile::load(path).trust, [0; Faction::ALL.len()]);
+        assert_eq!(Profile::load(path).reputation, [0; Faction::ALL.len()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     const PELEKYS: Part = Part::Turret(TurretKind::Pelekys);
 
     #[test]
-    fn buying_needs_trust_and_crystals() {
+    fn buying_needs_reputation_and_crystals() {
         let mut p = Profile::in_memory();
         assert!(p.owns(Part::Hull(HullKind::Kataphrakt)));
         assert!(!p.owns(PELEKYS));
         let price = PELEKYS.price().unwrap();
-        let locked = Err(Refusal::Trust(Faction::Imperium, price.standing));
+        let locked = Err(Refusal::Reputation(Faction::Imperium, price.standing));
         assert_eq!(p.buy(PELEKYS), locked);
-        // Trust with someone else doesn't sell you Imperium guns.
-        p.add_trust(Faction::Resonant, 10_000);
+        // Reputation with someone else doesn't sell you Imperium guns.
+        p.add_reputation(Faction::Resonant, 10_000);
         assert_eq!(p.buy(PELEKYS), locked);
-        p.add_trust(Faction::Imperium, 10_000);
+        p.add_reputation(Faction::Imperium, 10_000);
         assert_eq!(p.buy(PELEKYS), Err(Refusal::Crystals(price.crystals)));
         assert_eq!(p.upgrade(PELEKYS), Err(Refusal::NotOwned));
         p.crystals = price.crystals;
@@ -444,19 +452,19 @@ mod tests {
         assert_eq!(p.upgrade(PELEKYS), Err(Refusal::MaxLevel));
     }
 
-    /// Hulls have makers too: only their maker's trust puts them up for sale.
+    /// Hulls have makers too: only their maker's reputation puts them up for sale.
     #[test]
-    fn hulls_sell_on_their_makers_trust() {
+    fn hulls_sell_on_their_makers_reputation() {
         let kastron = Part::Hull(HullKind::Kastron);
         let need = kastron.price().unwrap().standing;
         let mut p = Profile::in_memory();
         p.crystals = 100_000;
-        p.add_trust(Faction::Resonant, 10_000);
+        p.add_reputation(Faction::Resonant, 10_000);
         assert_eq!(
             p.can_buy(kastron),
-            Err(Refusal::Trust(Faction::Imperium, need))
+            Err(Refusal::Reputation(Faction::Imperium, need))
         );
-        p.add_trust(Faction::Imperium, 10_000);
+        p.add_reputation(Faction::Imperium, 10_000);
         assert!(p.can_buy(kastron).is_ok());
     }
 }

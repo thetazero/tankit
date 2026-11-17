@@ -8,7 +8,7 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase, TRUST_POP_TIME};
+use crate::combat::{FEED_TIME, Match, Phase, REPUTATION_POP_TIME};
 use crate::economy::{Outcome, Payout};
 use crate::hold::{self, Control};
 use crate::mission::Contract;
@@ -110,7 +110,7 @@ impl Hud {
             theme::FAINT,
         );
 
-        // Top left: round clock, kills / deaths, trust.
+        // Top left: round clock, kills / deaths, reputation.
         let secs = m.time_left.ceil() as u32;
         label(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
         let mut clock = TextStyle::value(20.0);
@@ -150,12 +150,12 @@ impl Hud {
         label(
             &mut p,
             Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "TRUST",
+            "REPUTATION",
             Align::Left,
         );
         p.text(
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
-            &format!("+{}", m.trust),
+            &format!("+{}", m.reputation),
             &TextStyle::value(14.0),
             Align::Left,
         );
@@ -430,15 +430,15 @@ impl Hud {
             );
         }
 
-        // Trust popups, just above the crosshair, drifting up as they fade.
+        // Reputation popups, just above the crosshair, drifting up as they fade.
         if !board {
-            for (row, x) in m.trust_pops.iter().rev().take(3).enumerate() {
-                let fade = ((TRUST_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
+            for (row, x) in m.reputation_pops.iter().rev().take(3).enumerate() {
+                let fade = ((REPUTATION_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
                     * (x.age / 0.08).clamp(0.0, 1.0);
                 let at = Vec2::new(w * 0.5, h * 0.30 - x.age * 14.0 - row as f32 * 30.0);
                 let mut s = TextStyle::value(16.0);
                 s.color = with_alpha(theme::HOT, fade);
-                p.text(at, &format!("+{} TRUST", x.amount), &s, Align::Center);
+                p.text(at, &format!("+{} REPUTATION", x.amount), &s, Align::Center);
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(theme::FG, 0.8 * fade);
                 p.text(at + Vec2::new(0.0, 24.0), x.reason, &l, Align::Center);
@@ -579,7 +579,11 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
             p,
             Vec2::new(top.x, y + 56.0),
             m.factions[0],
-            &format!("+{} {} TRUST THIS MATCH", m.trust, m.factions[0].name()),
+            &format!(
+                "+{} {} REPUTATION THIS MATCH",
+                m.reputation,
+                m.factions[0].name()
+            ),
             &TextStyle::LABEL,
             Align::Center,
         );

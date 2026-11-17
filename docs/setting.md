@@ -46,7 +46,7 @@ Gameplay stays **arcade tanks**: any hull with any turret, unlocked through
 play. Factions are the world, never a lock on your build. They show up as:
 
 - **Employers**: who the contract is for. Every faction starts you on basic
-  kit; work its contracts and it **trusts** you more, and its standing decides
+  kit; work its contracts and your **reputation** with it grows, and its standing decides
   which of its parts it'll sell you. Parts you've bought stay yours whoever hires you next.
 - **Enemies**: who the bots are, how they look, and the guns they bring (each
   side's bots use its own faction's turrets).

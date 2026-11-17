@@ -60,7 +60,7 @@ const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
 /// What you'll deploy with.
 const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
-/// Parts you can't buy yet (not enough trust with their maker).
+/// Parts you can't buy yet (not enough reputation with their maker).
 const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
 const LOCKED_NAME: Rgba = [0.86, 0.47, 0.38, 0.5];
 /// Open/close transition speed (1 / seconds).
@@ -890,7 +890,7 @@ impl Garage {
 
     /// One card: the part's thumbnail (dimmed if it isn't yours, darker and
     /// padlocked if you can't buy it yet), its name, and EQUIPPED, OWNED, a
-    /// price or the trust it needs.
+    /// price or the reputation it needs.
     fn draw_card(
         &self,
         p: &mut Painter,
@@ -964,7 +964,7 @@ impl Garage {
             (format!("OWNED · {level}"), theme::DIM)
         } else if let Some(price) = price {
             if locked {
-                (format!("TRUST {}", price.standing), LOCKED)
+                (format!("REPUTATION {}", price.standing), LOCKED)
             } else if profile.crystals >= price.crystals {
                 (format!("{} CR", price.crystals), theme::FG)
             } else {
@@ -1115,13 +1115,13 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
     } else {
         match profile.can_buy(part) {
             Ok(cost) => (format!("BUY · {cost} CR"), true),
-            Err(Refusal::Trust(f, s)) => {
+            Err(Refusal::Reputation(f, s)) => {
                 let have = profile.standing_for(part);
                 // The longest that fits the button.
                 let text = [
-                    format!("LOCKED · {} TRUST {s} · YOU {have}", f.name()),
-                    format!("NEEDS {} TRUST {s} · YOU {have}", f.name()),
-                    format!("NEEDS TRUST {s} · YOU {have}"),
+                    format!("LOCKED · {} REPUTATION {s} · YOU {have}", f.name()),
+                    format!("NEEDS {} REPUTATION {s} · YOU {have}", f.name()),
+                    format!("NEEDS REPUTATION {s} · YOU {have}"),
                 ]
                 .into_iter()
                 .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
@@ -1267,7 +1267,7 @@ mod tests {
     /// A pilot who owns everything.
     fn rich() -> Profile {
         let mut p = Profile::in_memory();
-        p.set_trust_all(100_000);
+        p.set_reputation_all(100_000);
         p.crystals = 100_000;
         for part in crate::economy::PARTS {
             let _ = p.buy(part);
@@ -1385,7 +1385,7 @@ mod tests {
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
         // Once bought it's equipped.
-        p.set_trust_all(100_000);
+        p.set_reputation_all(100_000);
         p.crystals = 100_000;
         p.buy(pelekys).unwrap();
         let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);
