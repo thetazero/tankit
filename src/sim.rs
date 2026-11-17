@@ -233,14 +233,15 @@ impl Chassis {
     /// on); the convex hull down to the track ends covers the lower shell.
     pub const GRAVIS: Chassis = Chassis {
         mass: 50_000.0,
-        track_x: 1.6,
+        // 1.6 m plus the widening (`crate::tank::uthenn::WIDEN`).
+        track_x: 1.85,
         track_width: 0.86,
         road_z: &[-2.7, -1.8, -0.9, 0.0, 0.9, 1.8, 2.7],
         road_y: 0.46,
         road_r: 0.38,
         front: (3.5, 0.82, 0.42),
         rear: (-3.45, 0.85, 0.46),
-        hull_half_x: 1.9,
+        hull_half_x: 2.15,
         hull_top: 2.8,
         hull_z: (-3.3, 1.9),
         center_of_mass: Vec3::new(0.0, 0.9, -0.15),
