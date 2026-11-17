@@ -67,9 +67,11 @@ tankit [OPTIONS]
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|factions|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
-  --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
+  --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
+                          --frames): scoreboard, reputation gained and crystal tally
   --reputation <n>        (with --shot) reputation with every faction for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
+  --earned <n>            (with --screen results) reputation earned this match, for the results graphic
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
@@ -99,6 +101,8 @@ pub struct Args {
     screen: Option<Screen>,
     reputation: u32,
     crystals: u32,
+    /// Results shot: reputation earned in the match.
+    earned: u32,
     debug: bool,
     straight: bool,
     /// Fixed screenshot camera: position and target.
@@ -258,7 +262,7 @@ fn parse_args() -> Result<Args> {
     let mut preview = None;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let (mut reputation, mut crystals) = (0, 0);
+    let (mut reputation, mut crystals, mut earned) = (0, 0, 0);
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -377,6 +381,7 @@ fn parse_args() -> Result<Args> {
                     .parse()?
             }
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
+            "--earned" => earned = args.next().context("--earned needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
             "--orbit" => {
@@ -437,6 +442,7 @@ fn parse_args() -> Result<Args> {
         screen,
         reputation,
         crystals,
+        earned,
         debug,
         straight,
         cam,
@@ -517,7 +523,10 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     }
     game.set_player_levels(profile.levels);
     if args.screen == Some(Screen::Results) {
-        game.time_left = (shot.time - 3.0).max(0.1);
+        // A still shows the results settled; a clip starts as they begin to count.
+        let lead = if shot.frames > 1 { 0.3 } else { 4.0 };
+        game.time_left = (shot.time - lead).max(0.1);
+        game.reputation = args.earned;
     }
     let mut cam = scene::ChaseCam::new();
     let mut garage = garage::Garage::new();
@@ -609,7 +618,16 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud
-                .draw(&game, &tanks, &camera, w, h, game::DT, false)
+                .draw(
+                    &game,
+                    &tanks,
+                    &camera,
+                    w,
+                    h,
+                    game::DT,
+                    false,
+                    hud::Ledger::before(&profile, &game, 0, false),
+                )
                 .verts;
             frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
             if args.screen == Some(Screen::Pause) {

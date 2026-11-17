@@ -100,7 +100,9 @@ pub fn run(
         let t_scene = start.elapsed();
 
         let (w, h) = (width as f32, height as f32);
-        frame_scene.ui = hud.draw(&game, &tanks, &camera, w, h, dt, false).verts;
+        frame_scene.ui = hud
+            .draw(&game, &tanks, &camera, w, h, dt, false, Default::default())
+            .verts;
         let t_hud = start.elapsed();
 
         let (cpu, wait) = renderer.render_timed(&frame_scene)?;
