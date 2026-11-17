@@ -588,6 +588,9 @@ pub struct Tank {
     pub turret_centering: bool,
     /// Gun elevation in radians (positive = up).
     pub gun_pitch: f32,
+    /// The aim assist's small sideways nudge of the gun in its mantlet,
+    /// radians (positive = left, toward +yaw), on top of the turret's heading.
+    pub gun_yaw: f32,
     /// Distance each tread has travelled: [left (+x), right (-x)].
     pub track_dist: [f32; 2],
     /// Seconds since the gun last fired (drives recoil and muzzle flash).
@@ -687,6 +690,7 @@ impl Tank {
     pub fn gun_frame(&self) -> Mat4 {
         self.turret_frame()
             * Mat4::from_translation(self.turret_kind.trunnion())
+            * Mat4::from_rotation_y(self.gun_yaw)
             * Mat4::from_rotation_x(-self.gun_pitch)
     }
 
@@ -822,6 +826,7 @@ impl World {
             turret_rate: 0.0,
             turret_centering: false,
             gun_pitch: 0.0,
+            gun_yaw: 0.0,
             track_dist: [0.0; 2],
             since_fire: 10.0,
             fire_barrel: 0,
@@ -907,6 +912,7 @@ impl World {
         t.turret_rate = 0.0;
         t.turret_centering = false;
         t.gun_pitch = 0.0;
+        t.gun_yaw = 0.0;
         t.belt = [0.0; 2];
         t.parked = true;
         t.flipped_time = 0.0;

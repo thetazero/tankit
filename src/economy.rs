@@ -4,7 +4,7 @@
 //! contribution, kill bounty, and your time on the site under Hold); reputation
 //! with your employer is paid for actions in the match. Crystals buy parts
 //! (which standing with their maker puts up for sale) and upgrade them
-//! through M0..M3.
+//! a step at a time through M0..M3.
 
 use crate::combat::{self, Gun, Match};
 use crate::faction::Faction;
@@ -123,18 +123,45 @@ pub struct Price {
     pub crystals: u32,
 }
 
-/// Highest upgrade level (M3).
-pub const MAX_LEVEL: u8 = 3;
-/// Crystals to go from level `n` to `n + 1`.
-const UPGRADE_COST: [u32; MAX_LEVEL as usize] = [250, 500, 1000];
-/// Per level: hull armor +8%; turret damage +6% and reload −4%.
-const ARMOR_PER_LEVEL: f32 = 0.08;
-const DAMAGE_PER_LEVEL: f32 = 0.06;
-const RELOAD_PER_LEVEL: f32 = 0.04;
+/// Upgrades come in small paid steps: ten from one mark (M0, M1, M2, M3) to the next,
+/// shown as M1.4 for four steps past M1.
+pub const STEPS_PER_MARK: u8 = 10;
+/// The last mark.
+pub const MAX_MARK: u8 = 3;
+/// Highest upgrade level, in steps (M3).
+pub const MAX_LEVEL: u8 = STEPS_PER_MARK * MAX_MARK;
+/// Crystals for the first step; each one after costs [`STEP_GROWTH`] times the last,
+/// so maxing a part is a grind of ~200 contracts (~41k crystals): about 23 to M1, 54
+/// more to M2 and 128 more to M3, at ~200 crystals a contract.
+const FIRST_STEP: f32 = 300.0;
+const STEP_GROWTH: f32 = 1.09;
+/// Per step: hull armor +0.8%; turret damage +0.6% and reload −0.4% (so +24%, +18%
+/// and −12% at M3).
+const ARMOR_PER_LEVEL: f32 = 0.008;
+const DAMAGE_PER_LEVEL: f32 = 0.006;
+const RELOAD_PER_LEVEL: f32 = 0.004;
 
-/// Cost of the next upgrade from `level`, or `None` at max.
+/// Cost of the next upgrade step from `level`, or `None` at max. Rounded to 10.
 pub fn upgrade_cost(level: u8) -> Option<u32> {
-    UPGRADE_COST.get(level as usize).copied()
+    (level < MAX_LEVEL)
+        .then(|| (FIRST_STEP * STEP_GROWTH.powi(level as i32) / 10.0).round() as u32 * 10)
+}
+
+/// Crystals from M0 to `level`.
+#[cfg(test)]
+pub fn cost_to(level: u8) -> u32 {
+    (0..level.min(MAX_LEVEL)).filter_map(upgrade_cost).sum()
+}
+
+/// `level` as the player sees it: M1 on a mark, M1.4 between.
+pub fn level_label(level: u8) -> String {
+    let level = level.min(MAX_LEVEL);
+    let (mark, step) = (level / STEPS_PER_MARK, level % STEPS_PER_MARK);
+    if step == 0 {
+        format!("M{mark}")
+    } else {
+        format!("M{mark}.{step}")
+    }
 }
 
 /// Upgrade level of every part.
@@ -240,7 +267,7 @@ mod tests {
         let base = l.max_health(HullKind::Kataphrakt);
         let g0 = l.gun(TurretKind::Kontos);
         l.set(Part::Hull(HullKind::Kataphrakt), 2);
-        l.set(Part::Turret(TurretKind::Kontos), 9);
+        l.set(Part::Turret(TurretKind::Kontos), 99);
         assert_eq!(l.of(Part::Turret(TurretKind::Kontos)), MAX_LEVEL);
         assert!(l.max_health(HullKind::Kataphrakt) > base);
         assert_eq!(
@@ -250,6 +277,35 @@ mod tests {
         let g = l.gun(TurretKind::Kontos);
         assert!(g.damage > g0.damage && g.reload < g0.reload);
         assert_eq!(upgrade_cost(MAX_LEVEL), None);
+    }
+
+    #[test]
+    fn maxing_a_part_is_a_long_grind_of_small_steps() {
+        let costs: Vec<u32> = (0..MAX_LEVEL).filter_map(upgrade_cost).collect();
+        assert_eq!(costs.len(), MAX_LEVEL as usize);
+        assert!(
+            costs.windows(2).all(|w| w[0] < w[1]),
+            "each step costs more"
+        );
+        // The first step is about one contract's pay; the whole climb about 200.
+        assert_eq!(costs[0], 300);
+        let total = cost_to(MAX_LEVEL);
+        assert!((35_000..50_000).contains(&total), "{total}");
+        assert!(cost_to(STEPS_PER_MARK) < total / 5, "M1 comes early");
+        // M3 is worth what it was when it was three big upgrades.
+        let mut l = Levels::default();
+        l.set(Part::Hull(HullKind::Kataphrakt), MAX_LEVEL);
+        let hp = l.max_health(HullKind::Kataphrakt) / combat::max_health(HullKind::Kataphrakt);
+        assert!((hp - 1.24).abs() < 1e-4);
+    }
+
+    #[test]
+    fn levels_read_as_marks_and_steps() {
+        assert_eq!(level_label(0), "M0");
+        assert_eq!(level_label(4), "M0.4");
+        assert_eq!(level_label(10), "M1");
+        assert_eq!(level_label(27), "M2.7");
+        assert_eq!(level_label(MAX_LEVEL), "M3");
     }
 
     #[test]

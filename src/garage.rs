@@ -958,7 +958,7 @@ impl Garage {
             Align::Left,
         );
 
-        let level = format!("M{}", profile.levels.of(part));
+        let level = crate::economy::level_label(profile.levels.of(part));
         let (tag, color) = if equipped {
             (format!("EQUIPPED · {level}"), EQUIPPED)
         } else if owned {
@@ -989,7 +989,9 @@ impl Garage {
         };
         let card_w = STATS_W + 2.0 * PANEL_PAD;
         let x = w - PANEL_TOP - card_w;
-        let card_h = 78.0 + stats.len() as f32 * 20.0 + 16.0;
+        let owned = profile.owns(part);
+        let track_h = if owned { UPGRADE_TRACK_H } else { 0.0 };
+        let card_h = 78.0 + track_h + stats.len() as f32 * 20.0 + 16.0;
         p.rect(
             Vec2::new(x, PANEL_TOP),
             Vec2::new(card_w, card_h),
@@ -1014,6 +1016,10 @@ impl Garage {
             Align::Left,
         );
         y += 36.0;
+        if owned {
+            upgrade_track(p, Vec2::new(x, y - 6.0), STATS_W, profile.levels.of(part));
+            y += track_h;
+        }
         for stat in stats {
             draw_stat(
                 p,
@@ -1055,6 +1061,33 @@ impl Garage {
         if ready {
             hits.add(p, min, size, Hit::Key(input));
         }
+    }
+}
+
+/// Height the upgrade track adds to the spec card.
+const UPGRADE_TRACK_H: f32 = 30.0;
+
+/// An owned part's climb to M3: its level, then one notch per upgrade step, filled up
+/// to where it is, with the marks (M1, M2) standing taller.
+fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8) {
+    use crate::economy::{MAX_LEVEL, STEPS_PER_MARK, level_label};
+    let lw = label(p, at, "UPGRADE ", Align::Left);
+    p.text(
+        at + Vec2::new(lw + TextStyle::LABEL.tracking, 0.0),
+        &level_label(level),
+        &TextStyle::LABEL,
+        Align::Left,
+    );
+    let y = at.y + 16.0;
+    let gap = 2.0;
+    let n = MAX_LEVEL as f32;
+    let notch = (w - gap * (n - 1.0)) / n;
+    for i in 0..MAX_LEVEL {
+        let x = at.x + i as f32 * (notch + gap);
+        let mark = (i + 1) % STEPS_PER_MARK == 0;
+        let h = if mark { 8.0 } else { 5.0 };
+        let color = if i < level { theme::FG } else { theme::FAINT };
+        p.rect(Vec2::new(x, y + 8.0 - h), Vec2::new(notch, h), color);
     }
 }
 
@@ -1140,10 +1173,10 @@ fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
     if !profile.owns(part) {
         return None;
     }
-    let next = profile.levels.of(part) + 1;
+    let next = crate::economy::level_label(profile.levels.of(part) + 1);
     Some(match profile.can_upgrade(part) {
-        Ok(cost) => (format!("UPGRADE TO M{next} · {cost} CR"), true),
-        Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO M{next} · NEED {cost} CR"), false),
+        Ok(cost) => (format!("UPGRADE TO {next} · {cost} CR"), true),
+        Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO {next} · NEED {cost} CR"), false),
         Err(_) => ("FULLY UPGRADED".to_string(), false),
     })
 }

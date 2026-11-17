@@ -71,6 +71,7 @@ tankit [OPTIONS]
                           --frames): scoreboard, reputation gained and crystal tally
   --reputation <n>        (with --shot) reputation with every faction for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
+  --upgrade <steps>       (with --shot) every part the pilot owns is this many upgrade steps up (10 a mark)
   --earned <n>            (with --screen results) reputation earned this match, for the results graphic
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
@@ -103,6 +104,8 @@ pub struct Args {
     crystals: u32,
     /// Results shot: reputation earned in the match.
     earned: u32,
+    /// Shots: upgrade steps on every owned part.
+    upgrade: u8,
     debug: bool,
     straight: bool,
     /// Fixed screenshot camera: position and target.
@@ -124,6 +127,11 @@ impl Args {
         p.settings.debug = self.debug;
         for &part in &self.own {
             p.grant(part);
+        }
+        for part in economy::PARTS {
+            if p.owns(part) {
+                p.levels.set(part, self.upgrade);
+            }
         }
         p
     }
@@ -263,6 +271,7 @@ fn parse_args() -> Result<Args> {
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
     let (mut reputation, mut crystals, mut earned) = (0, 0, 0);
+    let mut upgrade = 0;
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -383,6 +392,7 @@ fn parse_args() -> Result<Args> {
                     .parse()?
             }
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
+            "--upgrade" => upgrade = args.next().context("--upgrade needs a number")?.parse()?,
             "--earned" => earned = args.next().context("--earned needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
@@ -445,6 +455,7 @@ fn parse_args() -> Result<Args> {
         reputation,
         crystals,
         earned,
+        upgrade,
         debug,
         straight,
         cam,

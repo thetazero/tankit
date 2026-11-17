@@ -468,9 +468,9 @@ impl App {
             garage::Event::Upgrade(part) => {
                 if self.profile.upgrade(part).is_ok() {
                     log::info!(
-                        "upgraded {} to M{}",
+                        "upgraded {} to {}",
                         part.name(),
-                        self.profile.levels.of(part)
+                        crate::economy::level_label(self.profile.levels.of(part))
                     );
                     // Like a kit change: now in the menu, at the next respawn in battle.
                     if self.mode == Mode::Menu {
