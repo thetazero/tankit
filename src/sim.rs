@@ -516,9 +516,13 @@ impl HullStats {
         brake: 18.0,
         rolling: 1.4,
         turn_rate: 1.6,
-        steer_accel: 11.0,
+        // Its tracks are long for their spacing, so the ends scrub hard
+        // sideways in a pivot: it needs more steering force and less side
+        // grip than the others just to turn at all (at 11.0 and 1.9 it
+        // managed 7 deg/s against a 92 deg/s ask).
+        steer_accel: 18.0,
         grip_long: 1.9,
-        grip_lat: 1.9,
+        grip_lat: 1.4,
         turret_speed: 0.8,
         turret_accel: 1.4,
         turret_brake: 6.0,
@@ -2023,6 +2027,49 @@ mod tests {
         );
         let drift = Vec2::new(w.tanks[0].pos.x - p0.x, w.tanks[0].pos.z - p0.z).length();
         assert!(drift < 0.6, "pivot wandered {drift} m");
+    }
+
+    /// Degrees a hull turns in `seconds` of full steer (with `thr` throttle).
+    fn degrees_turned(hull: HullKind, thr: f32, seconds: f32) -> f32 {
+        let mut w = World::empty(Map::yard(400.0));
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(200.0, 200.0),
+            0.0,
+            hull,
+            TurretKind::Kontos,
+        );
+        run(&mut w, Command::default(), 1.0);
+        let (mut turned, mut last) = (0.0, w.tanks[0].yaw());
+        for _ in 0..(seconds / DT) as usize {
+            w.step(&[Command {
+                steer: 1.0,
+                throttle: thr,
+                ..Default::default()
+            }]);
+            let y = w.tanks[0].yaw();
+            turned += wrap_angle(y - last);
+            last = y;
+        }
+        turned.to_degrees()
+    }
+
+    /// The Gravis's long tracks scrub hard in a turn, but it still turns at a
+    /// usable pace, on the spot and on the move, just slower than the Kastron.
+    #[test]
+    fn gravis_turns_slowly_but_turns() {
+        for thr in [0.0, 1.0] {
+            let gravis = degrees_turned(HullKind::Gravis, thr, 3.0);
+            let kastron = degrees_turned(HullKind::Kastron, thr, 3.0);
+            assert!(
+                gravis > 120.0,
+                "Gravis only turned {gravis:.0} deg in 3 s (throttle {thr})"
+            );
+            assert!(
+                gravis < kastron,
+                "Gravis ({gravis:.0} deg) out-turned the Kastron ({kastron:.0} deg)"
+            );
+        }
     }
 
     #[test]
