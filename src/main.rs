@@ -717,7 +717,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
     profile.loadout = args.loadout;
-    let mut game = app::menu_match(profile.loadout);
     let mut menu = menu::Menu::new();
     match args.screen {
         Some(Screen::Factions | Screen::Missions) => {
@@ -739,6 +738,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         _ => {}
     }
+    // The backdrop follows the selected contract, as in the window.
+    let (i, side) = menu.backdrop().unwrap_or((0, 0));
+    let mut game = app::backdrop_match(i, side, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);

@@ -280,6 +280,12 @@ pub fn pay_factor(rating: u8) -> f32 {
     1.0 + PAY_PER_MARK * rating as f32 / STEPS_PER_MARK as f32
 }
 
+/// What winning a mission rated `rating` pays, before kills and damage.
+pub fn win_pay(rating: u8) -> u32 {
+    let base = COMPLETION + VICTORY;
+    base + (base as f32 * (pay_factor(rating) - 1.0)).round() as u32
+}
+
 /// The player's pay for a finished round, line by line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Payout {

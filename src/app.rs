@@ -25,6 +25,8 @@ use crate::hud::{self, Hud, Ledger};
 use crate::keys;
 use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
 use crate::mission::{Contract, MISSIONS};
+use crate::render::mesh::MeshData;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
@@ -37,6 +39,8 @@ use crate::{MapKind, ShowroomArgs, make_map, showroom};
 const CAM_TILT_SPEED: f32 = 0.8;
 /// Main menu camera drift around the parked tank, rad/s.
 const MENU_ORBIT: f32 = 0.06;
+/// Seconds a contract stays selected before the menu backdrop moves to its map.
+const BACKDROP_SETTLE: f32 = 0.25;
 
 /// Something clickable on screen, by the component that drew it.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -100,6 +104,14 @@ struct App {
     pause: Pause,
     /// Main menu camera angle around the parked tank.
     menu_orbit: f32,
+    /// The mission (and side) whose map the menu backdrop shows.
+    backdrop: (usize, usize),
+    /// How long the mission screen has pointed at a different contract than
+    /// the backdrop shows: it follows once the selection settles.
+    backdrop_wait: f32,
+    /// A backdrop being built off the main thread (a big map takes most of a
+    /// second), for the mission and side it's of.
+    backdrop_job: Option<((usize, usize), Receiver<(Match, MeshData)>)>,
     cam: ChaseCam,
     hud: Hud,
     garage: Garage,
@@ -181,6 +193,9 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         menu: Menu::new(),
         pause: Pause::new(),
         menu_orbit,
+        backdrop: (0, 0),
+        backdrop_wait: 0.0,
+        backdrop_job: None,
         cam: ChaseCam::new(),
         hud: Hud::new(),
         garage: Garage::new(),
@@ -225,17 +240,28 @@ pub fn new_match(
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    let first = &MISSIONS[0];
+    backdrop_match(0, 0, kit)
+}
+
+/// Mission `MISSIONS[i]`'s map, empty, your tank parked at side `side`'s base:
+/// the menu's backdrop while that contract is selected.
+pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
+    let mission = &MISSIONS[i];
     let mut m = new_match(
-        first.seed,
-        first.map_kind,
-        0,
+        mission.seed,
+        mission.map_kind,
+        side,
         0,
         0,
         Contract::Attrition,
         kit,
     );
     m.time_left = f32::INFINITY;
+    // Already parked: no arrival (or its sound) each time the backdrop
+    // changes, and no shield to drop with a cue.
+    let me = &mut m.fighters[0];
+    me.arrived = crate::arrival::ARRIVAL_TIME;
+    me.shield = 0.0;
     m
 }
 
@@ -336,6 +362,12 @@ impl ApplicationHandler for App {
 impl App {
     /// Swap in a new match (or menu backdrop) and reset everything tied to the old one.
     fn load(&mut self, game: Match) {
+        let mesh = scene::map_mesh(&game.world.map);
+        self.load_built(game, &mesh);
+    }
+
+    /// `load`, with the map's mesh already built.
+    fn load_built(&mut self, game: Match, mesh: &MeshData) {
         self.game = game;
         self.game.set_player_levels(self.profile.levels);
         self.banked = 0;
@@ -345,7 +377,7 @@ impl App {
         self.garage = Garage::new();
         self.player_alive = true;
         if let Some(r) = &mut self.renderer {
-            r.set_static_mesh(&scene::map_mesh(&self.game.world.map));
+            r.set_static_mesh(mesh);
         }
     }
 
@@ -393,8 +425,54 @@ impl App {
         );
     }
 
+    /// Puts the menu backdrop on the selected contract's map once the
+    /// selection has held still a moment (scrolling past doesn't load each
+    /// map). The map is built on a worker thread so the menu never stalls,
+    /// and swapped in when it's ready.
+    fn follow_backdrop(&mut self, dt: f32) {
+        if let Some((key, job)) = &self.backdrop_job {
+            match job.try_recv() {
+                Ok((game, mesh)) => {
+                    let key = *key;
+                    self.backdrop_job = None;
+                    self.load_built(game, &mesh);
+                    self.backdrop = key;
+                    self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => self.backdrop_job = None,
+            }
+        }
+        match self.menu.backdrop() {
+            Some(want) if want != self.backdrop => {
+                self.backdrop_wait += dt;
+                if self.backdrop_wait >= BACKDROP_SETTLE {
+                    self.backdrop_wait = 0.0;
+                    let kit = self.profile.loadout;
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let started = Instant::now();
+                        let game = backdrop_match(want.0, want.1, kit);
+                        let mesh = scene::map_mesh(&game.world.map);
+                        log::debug!(
+                            "menu backdrop: {} built in {:.0?}",
+                            MISSIONS[want.0].map,
+                            started.elapsed()
+                        );
+                        // The menu may have moved on: then nobody's listening.
+                        let _ = tx.send((game, mesh));
+                    });
+                    self.backdrop_job = Some((want, rx));
+                }
+            }
+            _ => self.backdrop_wait = 0.0,
+        }
+    }
+
     fn back_to_menu(&mut self) {
         self.load(menu_match(self.profile.loadout));
+        self.backdrop = (0, 0);
+        self.backdrop_job = None;
         self.menu = Menu::new();
         self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
         self.mode = Mode::Menu;
@@ -796,6 +874,7 @@ impl App {
         self.player_alive = alive;
         if self.mode == Mode::Menu && !self.garage.is_open() {
             self.menu_orbit += MENU_ORBIT * dt;
+            self.follow_backdrop(dt);
         }
         let queued = self.queued();
         let scores = self.held(&[KeyCode::Tab]);
@@ -954,6 +1033,27 @@ impl App {
 mod tests {
     use super::*;
     use crate::faction::Faction;
+
+    /// Moving the menu between contracts swaps the backdrop's map: the tank is
+    /// already parked there, so nothing arrives, rings or drops a shield.
+    #[test]
+    fn a_menu_backdrop_is_silent() {
+        let kit = (
+            crate::sim::HullKind::Kataphrakt,
+            crate::sim::TurretKind::Kontos,
+        );
+        let mut m = backdrop_match(0, 1, kit);
+        assert_eq!(m.factions[0], MISSIONS[0].sides[1]);
+        for _ in 0..(4.0 / crate::game::DT) as usize {
+            m.step(crate::sim::Command::default(), false);
+        }
+        let loud: Vec<_> = m
+            .sounds
+            .iter()
+            .filter(|s| !matches!(s, crate::combat::Sound::Knock(_)))
+            .collect();
+        assert!(loud.is_empty(), "{loud:?}");
+    }
 
     /// Hired by side 1, the player fights for that faction from its bases.
     #[test]

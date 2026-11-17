@@ -20,6 +20,7 @@ const FONT: &[u8] = include_bytes!("../../assets/fonts/Inter-Medium.otf");
 /// Characters in the atlas. Anything else is drawn as a space.
 const CHARSET: &str = concat!(
     " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`{|}~",
+    "abcdefghijklmnopqrstuvwxyz",
     "·°×–—←↑→↓•"
 );
 
@@ -160,8 +161,18 @@ impl Font {
     }
 
     /// Glyph for `c`, set in capitals; `None` if the font doesn't carry it.
+    /// `c`'s glyph, as a capital: most of the UI is set in caps whatever it's given.
     pub fn glyph(&self, c: char) -> Option<&Glyph> {
-        let c = c.to_uppercase().next().unwrap_or(c);
+        self.glyph_as(c, false)
+    }
+
+    /// `c`'s glyph, its own case kept when `lower`.
+    pub fn glyph_as(&self, c: char, lower: bool) -> Option<&Glyph> {
+        let c = if lower {
+            c
+        } else {
+            c.to_uppercase().next().unwrap_or(c)
+        };
         self.glyphs.get(&c)
     }
 
