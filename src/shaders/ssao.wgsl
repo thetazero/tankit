@@ -48,7 +48,8 @@ fn hash(p: vec2<f32>) -> f32 {
 fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let px = vec2<i32>(frag.xy);
     let d = textureLoad(depth_tex, px, 0);
-    if (d >= 1.0) {
+    // Nothing drawn here: the sky (reverse Z, so the far plane is 0).
+    if (d <= 0.0) {
         return vec4<f32>(1.0);
     }
     let p = world_at(px);

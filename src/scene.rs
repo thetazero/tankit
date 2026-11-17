@@ -67,16 +67,34 @@ pub fn map_mesh(map: &Map) -> MeshData {
         }
     }
 
-    for b in &map.boxes {
+    // Boxes overlap all over the maps (wall runs, stacked panels, cornices)
+    // with faces in one plane, and their colors differ, so they'd z-fight.
+    // Each is drawn grown by its own fraction of a millimetre instead, never
+    // the same as any box it touches: the depth buffer tells them apart at
+    // any range, and nothing visibly moves.
+    let oboxes: Vec<&crate::map::OBox> = map.oboxes.iter().filter(|o| !o.hidden).collect();
+    let bounds: Vec<(Vec3, Vec3)> = map
+        .boxes
+        .iter()
+        .map(|b| (b.min, b.max))
+        .chain(oboxes.iter().map(|o| {
+            // Loose: wide enough for any yaw, tilt or roll.
+            let r = o.half.length() + (o.y1 - o.y0);
+            let c = o.center3();
+            (c - Vec3::splat(r), c + Vec3::splat(r))
+        }))
+        .collect();
+    let mut grow = growths(&bounds).into_iter();
+    for (b, g) in map.boxes.iter().zip(&mut grow) {
         m.add_box(
-            b.min,
-            b.max,
+            b.min - g,
+            b.max + g,
             b.color.extend(b.side_mat.id()),
             b.color.extend(b.top_mat.id()),
         );
     }
-    for o in map.oboxes.iter().filter(|o| !o.hidden) {
-        add_obox(o, &mut m);
+    for (o, g) in oboxes.into_iter().zip(&mut grow) {
+        add_obox(o, g, &mut m);
     }
     for c in &map.crystals {
         c.mesh(&mut m);
@@ -93,8 +111,54 @@ pub fn map_mesh(map: &Map) -> MeshData {
     m
 }
 
-/// A box turned about +y: built as an axis-aligned box at the origin, then rotated into place.
-fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
+/// The steps map boxes are grown in (see `map_mesh`), m. The depth buffer
+/// resolves far less than this even at the far plane.
+const GROW_STEP: f32 = 0.0005;
+
+/// How much to grow each box with these bounds so no two that touch grow
+/// the same: a greedy coloring of the boxes by contact, each color a step.
+fn growths(bounds: &[(Vec3, Vec3)]) -> Vec<f32> {
+    const CELL: f32 = 8.0;
+    let cells = |&(lo, hi): &(Vec3, Vec3)| {
+        let (lo, hi) = (
+            ((lo - 0.01) / CELL).floor().as_ivec3(),
+            ((hi + 0.01) / CELL).floor().as_ivec3(),
+        );
+        (lo.x..=hi.x).flat_map(move |x| {
+            (lo.y..=hi.y).flat_map(move |y| (lo.z..=hi.z).map(move |z| glam::IVec3::new(x, y, z)))
+        })
+    };
+    let touch = |a: &(Vec3, Vec3), b: &(Vec3, Vec3)| {
+        (a.0 - 0.01).cmple(b.1).all() && (b.0 - 0.01).cmple(a.1).all()
+    };
+    let mut grid: std::collections::HashMap<glam::IVec3, Vec<usize>> = Default::default();
+    let mut level: Vec<u32> = Vec::with_capacity(bounds.len());
+    let mut taken = Vec::new();
+    for (i, b) in bounds.iter().enumerate() {
+        taken.clear();
+        for c in cells(b) {
+            let here = grid.entry(c).or_default();
+            taken.extend(
+                here.iter()
+                    .filter(|&&j| touch(b, &bounds[j]))
+                    .map(|&j| level[j]),
+            );
+            here.push(i);
+        }
+        taken.sort_unstable();
+        taken.dedup();
+        let free = (0..).find(|l| taken.binary_search(l).is_err()).unwrap();
+        level.push(free);
+    }
+    level
+        .into_iter()
+        .map(|l| GROW_STEP * (1 + l) as f32)
+        .collect()
+}
+
+/// A box turned about +y: built as an axis-aligned box at the origin, grown
+/// by `grow` (see `map_mesh`), then rotated into place.
+fn add_obox(o: &crate::map::OBox, grow: f32, m: &mut MeshData) {
     let mut local = MeshData::default();
     let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
     if o.chip > 0.0 || o.broken {
@@ -111,8 +175,12 @@ fn add_obox(o: &crate::map::OBox, m: &mut MeshData) {
     let base = m.verts.len() as u32;
     for v in &local.verts {
         let mut v = *v;
-        v.pos = xf.transform_point3(Vec3::from(v.pos)).to_array();
-        v.normal = xf.transform_vector3(Vec3::from(v.normal)).to_array();
+        // Grow: each corner out by `grow` along every axis it's off center
+        // on, so every face (chips too) moves out by at least `grow`.
+        let p = Vec3::from(v.pos);
+        let out = Vec3::select(p.abs().cmpgt(Vec3::splat(1e-5)), p.signum(), Vec3::ZERO);
+        v.pos = xf.transform_point3(p + out * grow).to_array();
+        v.normal = (o.rotation() * Vec3::from(v.normal)).to_array();
         m.verts.push(v);
     }
     m.indices.extend(local.indices.iter().map(|i| i + base));
@@ -446,4 +514,68 @@ pub fn project(vp: Mat4, p: Vec3, w: f32, h: f32) -> Option<(f32, f32)> {
     }
     let ndc = c.truncate() / c.w;
     Some(((ndc.x * 0.5 + 0.5) * w, (0.5 - ndc.y * 0.5) * h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::zfight::{Fight, Soup};
+
+    /// Where each map's static geometry has coplanar faces that show.
+    fn map_fights(name: &str, map: &Map) -> Vec<Fight> {
+        let ground = map.clone();
+        let mut soup = Soup::map(move |x, z| ground.ground_height(x, z));
+        soup.add(
+            name,
+            &map_mesh(map),
+            Mat4::IDENTITY,
+            Vec4::new(1.0, 1.0, 1.0, 0.0),
+        );
+        soup.fights()
+    }
+
+    /// No map z-fights beyond a few slivers: chip cuts on stacked worn
+    /// blocks that land, by chance, within a hair of each other. Takes a few
+    /// seconds optimized, minutes not, so it runs under `--release` only.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn maps_hardly_z_fight() {
+        for (name, map) in [
+            ("saltmarket", Map::saltmarket()),
+            ("sanctum", Map::sanctum()),
+            ("kiln", Map::kiln()),
+            ("capital", Map::capital()),
+            ("foundry", Map::foundry()),
+        ] {
+            let fights = map_fights(name, &map);
+            let area: f32 = fights.iter().map(|f| f.area).sum();
+            let report: Vec<String> = fights
+                .iter()
+                .take(10)
+                .map(|f| format!("{:.3} m² at {:.2} (faces {:.2?})", f.area, f.at, f.faces))
+                .collect();
+            assert!(
+                area < 0.4 && fights.iter().all(|f| f.area < 0.1),
+                "{name}: {} z-fights, {area:.2} m² in all; the biggest:\n{}",
+                fights.len(),
+                report.join("\n")
+            );
+        }
+    }
+
+    /// Map boxes that touch grow by different amounts.
+    #[test]
+    fn touching_boxes_grow_apart() {
+        let b = |x: f32| (Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 1.0, 1.0));
+        // A row of overlapping boxes, and one far off.
+        let g = growths(&[b(0.0), b(0.5), b(0.9), b(1.4), b(50.0)]);
+        for w in g[..4].windows(2) {
+            assert!((w[0] - w[1]).abs() >= GROW_STEP * 0.99, "{g:?}");
+        }
+        assert!((g[0] - g[2]).abs() >= GROW_STEP * 0.99, "{g:?}");
+        assert_eq!(g[4], GROW_STEP, "a box touching nothing grows the least");
+    }
 }

@@ -251,10 +251,11 @@ pub fn gravis() -> HullModel {
         SHELL_DARK,
     );
 
-    // Turret ring plinth.
+    // Turret ring plinth, standing proud of the citadel's roof (flush, its
+    // top would z-fight with the roof).
     round(
         &mut m,
-        &[at_y_ring(1.15, 2.74), at_y_ring(1.1, 2.8)],
+        &[at_y_ring(1.15, 2.76), at_y_ring(1.1, 2.84)],
         0.02,
         CARBON_LIGHT,
     );
