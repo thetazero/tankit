@@ -7,7 +7,7 @@
 //! is the player, on side 0; bots fill both sides.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
-use rapier3d::prelude::{QueryFilter, Ray};
+use rapier3d::prelude::{Collider, ColliderHandle, QueryFilter, Ray};
 
 use crate::ai::{self, Bot, Contact, NavGrid};
 use crate::arrival::{ARRIVAL_TIME, Arrival};
@@ -389,6 +389,9 @@ pub struct Shell {
     pub bounces: u8,
     /// Random 0..1 per shot, for visual variety.
     pub seed: f32,
+    /// Tanks a flame puff has already poured through (and burnt, if they
+    /// were enemies): it passes them by from then on.
+    pub passed: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -999,6 +1002,7 @@ impl Match {
             spec,
             bounces: spec.bounces,
             seed: self.rng.f32(),
+            passed: Vec::new(),
         };
         if spec.instant {
             // Land it now, then send off a tracer that stops where it landed.
@@ -1119,66 +1123,84 @@ impl Match {
 
     /// Move shell `s` by `step`, or until it hits something on the way: a
     /// tank takes the hit, a wall stops it or (if it has bounces left) turns
-    /// it. False once it's spent.
-    fn travel(&mut self, s: &mut Shell, step: Vec3) -> bool {
-        let len = step.length();
-        if len < 1e-6 {
-            return true;
-        }
-        let owner = self.world.tanks[s.owner].collider;
-        let hit = self.world.physics.cast_ray_and_get_normal(
-            &Ray::new(s.pos, step / len),
-            len,
-            true,
-            QueryFilter::default().exclude_collider(owner),
-        );
-        match hit {
-            None => {
+    /// it. A flame pours on through tanks, burning each enemy once, and only
+    /// walls stop it. False once it's spent.
+    fn travel(&mut self, s: &mut Shell, mut step: Vec3) -> bool {
+        loop {
+            let len = step.length();
+            if len < 1e-6 {
+                return true;
+            }
+            let owner = self.world.tanks[s.owner].collider;
+            let passed: Vec<_> = s
+                .passed
+                .iter()
+                .filter_map(|&j| self.world.tanks.get(j).map(|t| t.collider))
+                .collect();
+            let skip = |c: ColliderHandle, _: &Collider| !passed.contains(&c);
+            let hit = self.world.physics.cast_ray_and_get_normal(
+                &Ray::new(s.pos, step / len),
+                len,
+                true,
+                QueryFilter::default()
+                    .exclude_collider(owner)
+                    .predicate(&skip),
+            );
+            let Some((c, ri)) = hit else {
                 s.pos += step;
+                return true;
+            };
+            let at = s.pos + step / len * ri.time_of_impact;
+            match self.world.tank_of(c) {
+                Some(j) if s.spec.look == Look::Flame => {
+                    self.hit(s, j, at);
+                    s.passed.push(j);
+                    // Carry on from where it touched, with the rest of the step.
+                    step -= at - s.pos;
+                    s.pos = at;
+                }
+                _ => return self.land(s, c, at, ri.normal),
+            }
+        }
+    }
+
+    /// Shell `s` ran into collider `c` at `at` (surface normal `n`).
+    fn land(&mut self, s: &mut Shell, c: ColliderHandle, at: Vec3, n: Vec3) -> bool {
+        s.pos = at;
+        match self.world.tank_of(c) {
+            Some(j) => {
+                self.hit(s, j, at);
+                false
+            }
+            None if s.bounces > 0 => {
+                // Ricochet: mirror off the surface and carry on.
+                s.vel -= 2.0 * s.vel.dot(n) * n;
+                s.pos = at + n * 0.05;
+                s.bounces -= 1;
+                // The skin sheds plasma at every skip.
+                s.damage *= BOUNCE_KEEP;
+                self.blasts
+                    .push(Blast::new(at, impact_kind(&s.spec, false)));
+                self.sounds.push(Sound::Bounce { at });
                 true
             }
-            Some((c, ri)) => {
-                let at = s.pos + step / len * ri.time_of_impact;
-                s.pos = at;
-                match self.world.tank_of(c) {
-                    Some(j) => {
-                        self.hit(s, j, at);
-                        false
-                    }
-                    None if s.bounces > 0 => {
-                        // Ricochet: mirror off the surface and carry on.
-                        let n = ri.normal;
-                        s.vel -= 2.0 * s.vel.dot(n) * n;
-                        s.pos = at + n * 0.05;
-                        s.bounces -= 1;
-                        // The skin sheds plasma at every skip.
-                        s.damage *= BOUNCE_KEEP;
-                        self.blasts
-                            .push(Blast::new(at, impact_kind(&s.spec, false)));
-                        self.sounds.push(Sound::Bounce { at });
-                        true
-                    }
-                    None => {
-                        if s.spec.look != Look::Flame {
-                            self.blasts
-                                .push(Blast::new(at, impact_kind(&s.spec, false)));
-                            self.sounds.push(Sound::Impact {
-                                at,
-                                plasma: matches!(
-                                    s.spec.look,
-                                    Look::Plasma { .. } | Look::Bolt { .. }
-                                ),
-                            });
-                        }
-                        false
-                    }
+            None => {
+                if s.spec.look != Look::Flame {
+                    self.blasts
+                        .push(Blast::new(at, impact_kind(&s.spec, false)));
+                    self.sounds.push(Sound::Impact {
+                        at,
+                        plasma: matches!(s.spec.look, Look::Plasma { .. } | Look::Bolt { .. }),
+                    });
                 }
+                false
             }
         }
     }
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
-        // No friendly fire: an ally just stops the shot.
+        // No friendly fire: an ally just stops the shot (a flame pours on
+        // past it unharmed).
         if self.fighters[j].team == self.fighters[s.owner].team {
             if s.spec.look != Look::Flame {
                 self.blasts
@@ -2349,6 +2371,73 @@ mod tests {
         assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
     }
 
+    /// The flamer pours at a tank 11 m off with something 5 m off in the
+    /// way: another tank of team `front` (None: nothing), or a wall. How
+    /// much the tank at the back has lost after a second of fire.
+    fn flame_through(front: Option<usize>, wall: bool) -> f32 {
+        let probe = Match::new(Map::yard(200.0), 0, 0, 1);
+        let (pos, yaw) = (probe.world.tanks[0].pos, probe.world.tanks[0].yaw());
+        let at = |d: f32| Vec2::new(pos.x, pos.z) + dir2(yaw) * d;
+        let mut map = Map::yard(200.0);
+        if wall {
+            let c = at(5.5);
+            map.solids.push(crate::map::Solid {
+                min: Vec3::new(c.x - 3.0, 0.0, c.y - 3.0),
+                max: Vec3::new(c.x + 3.0, 6.0, c.y + 3.0),
+            });
+        }
+        let mut m = Match::new(map, 0, 0, 1);
+        assert_eq!(m.world.tanks[0].pos, pos);
+        m.world.tanks[0].turret_kind = TurretKind::Hymn;
+        let spawn = |m: &mut Match, d: f32, team: usize| {
+            m.world.spawn_tank(
+                Vec3::ONE,
+                at(d),
+                0.0,
+                HullKind::Kataphrakt,
+                TurretKind::Kontos,
+            );
+            m.fighters
+                .push(fighter(team, max_health(HullKind::Kataphrakt)));
+            m.bots.push(None);
+        };
+        if let Some(team) = front {
+            spawn(&mut m, 5.0, team);
+        }
+        spawn(&mut m, 11.0, 1);
+        let back = m.fighters.len() - 1;
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        max_health(HullKind::Kataphrakt) - m.fighters[back].health
+    }
+
+    #[test]
+    fn flame_pours_through_tanks_but_not_walls() {
+        let open = flame_through(None, false);
+        assert!(open > 5.0, "the flamer should reach 11 m: {open}");
+        // An enemy in front burns too, and doesn't shield the one behind.
+        let past_enemy = flame_through(Some(1), false);
+        assert!(
+            past_enemy > open * 0.5,
+            "open {open}, past an enemy {past_enemy}"
+        );
+        // Nor does an ally.
+        let past_ally = flame_through(Some(0), false);
+        assert!(
+            past_ally > open * 0.5,
+            "open {open}, past an ally {past_ally}"
+        );
+        // A wall does.
+        assert_eq!(flame_through(None, true), 0.0);
+    }
+
     /// Damage per second of beam contact at distance `dist`.
     fn beam_dps_at(dist: f32) -> f32 {
         let mut m = duel(TurretKind::Lumen, dist);
@@ -2454,6 +2543,7 @@ mod tests {
             spec,
             bounces: spec.bounces,
             seed: 0.0,
+            passed: Vec::new(),
         });
         for _ in 0..(0.2 / DT) as usize {
             m.step(Command::default(), false);
@@ -2479,6 +2569,7 @@ mod tests {
             spec: dart,
             bounces: 0,
             seed: 0.0,
+            passed: Vec::new(),
         }];
         for _ in 0..(0.2 / DT) as usize {
             m.step(Command::default(), false);
@@ -2991,6 +3082,7 @@ mod tests {
             },
             bounces: 0,
             seed: 0.0,
+            passed: Vec::new(),
         };
         m.hit(&shell(0), ally, Vec3::ZERO);
         assert!(m.fighters[ally].alive);
