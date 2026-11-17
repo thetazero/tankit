@@ -86,19 +86,25 @@ impl TurretKind {
         }
     }
 
-    /// Velocity change one shot kicks into the hull, m/s. It's applied at gun
-    /// height, so most of it shows up as the hull rocking back on its springs.
+    /// Momentum one shot carries, N·s. Equal and opposite: the gun kicks its
+    /// own hull back by exactly this much (at gun height, so it rocks back on
+    /// its springs as well as sliding), and the shot shoves whatever tank it
+    /// lands on forward by the same. Per shot, not per tank: a heavy hull
+    /// shrugs off what sends a light one skidding.
     pub fn recoil(self) -> f32 {
         match self {
             // Long rail cannon: one big slam.
-            TurretKind::Kontos => 2.2,
+            TurretKind::Kontos => 60_000.0,
             // Twin short guns: smaller kicks, more often.
-            TurretKind::Pelekys => 1.3,
-            // Plasma has little mass: a soft push.
-            TurretKind::Ammeth => 0.8,
-            TurretKind::Ossrin => 0.35,
-            // Beam and flame don't kick.
-            TurretKind::Lumen | TurretKind::Hymn => 0.0,
+            TurretKind::Pelekys => 25_000.0,
+            // A big, slow orb of plasma: a heavy shove.
+            TurretKind::Ammeth => 45_000.0,
+            // A stream of light darts: a steady push.
+            TurretKind::Ossrin => 3_500.0,
+            // Each puff of fire is light, but there are sixty a second.
+            TurretKind::Hymn => 600.0,
+            // Light has no mass to speak of: a beam doesn't push.
+            TurretKind::Lumen => 0.0,
         }
     }
 }
@@ -760,14 +766,16 @@ impl World {
         let t = &mut self.tanks[i];
         t.since_fire = 0.0;
         t.fire_barrel += 1;
+        self.recoil(i);
+    }
+
+    /// Kick tank `i` back by one shot's momentum, at gun height, opposite to
+    /// where the gun points.
+    pub fn recoil(&mut self, i: usize) {
+        let t = &self.tanks[i];
         let b = &mut self.physics.bodies[t.body];
-        let muzzle_height = t.rot * Vec3::Y * (t.chassis.hull_top + 0.4);
-        let at = b.translation() + muzzle_height;
-        b.apply_impulse_at_point(
-            -t.turret_dir() * t.turret_kind.recoil() * t.chassis.mass,
-            at,
-            true,
-        );
+        let at = b.translation() + t.rot * Vec3::Y * t.gun_height();
+        b.apply_impulse_at_point(-t.gun_dir() * t.turret_kind.recoil(), at, true);
     }
 
     /// Put tank `i` down at `at` facing `yaw`, at rest, turret forward (respawns).
@@ -2458,7 +2466,8 @@ mod tests {
         assert!(slide < 3.0, "sliding sideways from 6 m/s went {slide} m");
     }
 
-    /// Nudged while parked (no input), the brakes hold.
+    /// Kicked while parked (no input), the brakes hold: the recoil skids it
+    /// back a little, then it stays put instead of rolling away.
     #[test]
     fn parking_brake_holds() {
         let mut w = flat_world();
@@ -2466,10 +2475,17 @@ mod tests {
         let p0 = w.tanks[0].pos;
         w.fire(0);
         run(&mut w, Command::default(), 2.0);
+        let p1 = w.tanks[0].pos;
+        run(&mut w, Command::default(), 2.0);
         assert!(
-            w.tanks[0].pos.distance(p0) < 0.3,
-            "rolled {} m after firing while parked",
-            w.tanks[0].pos.distance(p0)
+            p1.distance(p0) < 1.0,
+            "skidded {} m after firing while parked",
+            p1.distance(p0)
+        );
+        assert!(
+            w.tanks[0].pos.distance(p1) < 0.02,
+            "still rolling {} m after the kick",
+            w.tanks[0].pos.distance(p1)
         );
     }
 
