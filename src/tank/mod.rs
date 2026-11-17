@@ -871,6 +871,7 @@ mod tests {
         for (kind, h) in [
             (HullKind::Kataphrakt, model::kataphrakt()),
             (HullKind::Kastron, model::kastron()),
+            (HullKind::Gravis, uthenn::gravis()),
         ] {
             let c = Chassis::of(kind);
             let r = &h.running;

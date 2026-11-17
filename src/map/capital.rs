@@ -51,7 +51,7 @@ const ARCH_AT: f32 = 96.0;
 const COURT: f32 = 46.0;
 /// Clearance a spawn needs from anything solid: the biggest hull's (the
 /// Gravis's) corner radius, so it can face any way without touching.
-const TANK_CLEAR: f32 = 4.4;
+const TANK_CLEAR: f32 = 4.6;
 
 const GROUND: Vec3 = Vec3::new(0.32, 0.32, 0.33);
 const CONCRETE: Vec3 = Vec3::new(0.54, 0.53, 0.51);
