@@ -1,9 +1,7 @@
 //! Missions: one map per contract (game mode).
 
 use crate::MapKind;
-use crate::combat::{KILL_REPUTATION, ROUND_TIME};
 use crate::faction::Faction;
-use crate::hold;
 
 /// What a mission pays you for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -55,8 +53,8 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
         briefs: &[
-            "THE IMPERIUM WANT THE TOWN BACK. PAID PER KILL. MOST KILLS TAKES IT",
-            "THE RESONANT WANT THE TOWN KEPT. PAID PER KILL. MOST KILLS TAKES IT",
+            "The Imperium want the town back. Most kills takes it.",
+            "The Resonant want the town kept. Most kills takes it.",
         ],
         rating: 0,
         standing: 1,
@@ -70,8 +68,8 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
         briefs: &[
-            "TAKE THE ALTAR FROM THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
-            "HOLD THE ALTAR AT THE HEART OF THE CHURCH. PAID FOR YOUR TIME ON IT. MIND THE EDGE",
+            "Take the altar from the church and stay on it. Mind the edge.",
+            "Hold the altar at the heart of the church. Mind the edge.",
         ],
         rating: 0,
         standing: 1,
@@ -85,8 +83,8 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Imperium],
         briefs: &[
-            "THE ITHESSAR HIRE YOU TO HOLD THE IMPERIUM OFF THEIR KILN. PAID PER KILL",
-            "THE IMPERIUM HIRE YOU TO PUT OUT THE ITHESSAR KILN. PAID PER KILL",
+            "Hold the Imperium off the Ithessar kiln.",
+            "Put out the Ithessar kiln.",
         ],
         rating: 0,
         standing: 1,
@@ -99,7 +97,7 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,
-        briefs: &["EVERY SIDE AGAINST EVERY OTHER IN THE IMPERIAL CITY. BETTER-GEARED CREWS, BETTER PAY. PAID PER KILL";
+        briefs: &["Every side against every other in the imperial city. Better-geared crews.";
             4],
         rating: 5,
         standing: 2,
@@ -113,8 +111,8 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Uthenn, Faction::Imperium],
         briefs: &[
-            "THE UTHENN HIRE YOU TO DRIVE THE IMPERIUM OUT OF THEIR WRECKED FOUNDRY. PAID PER KILL",
-            "THE IMPERIUM HIRE YOU TO KEEP THE UTHENN OUT OF THE FOUNDRY THEY WRECKED. PAID PER KILL",
+            "Drive the Imperium out of the foundry they wrecked.",
+            "Keep the Uthenn out of the foundry they wrecked.",
         ],
         rating: 0,
         standing: 1,
@@ -152,35 +150,9 @@ impl Mission {
         self.sides.len() * self.team_size - 1
     }
 
-    /// "6 V 6", or "4 V 4 V 4 V 4" with four sides.
-    pub fn teams(&self) -> String {
-        vec![self.team_size.to_string(); self.sides.len()].join(" V ")
-    }
-
-    pub fn round_time(&self) -> String {
-        let s = ROUND_TIME as u32;
-        let clock = format!("{}:{:02}", s / 60, s % 60);
-        match self.contract {
-            Contract::Attrition => clock,
-            Contract::Hold => format!("{clock} OR {:.0} S HELD", hold::TARGET),
-        }
-    }
-
-    pub fn pay(&self) -> String {
-        let factor = crate::economy::pay_factor(self.rating);
-        let crystals = if self.rating == 0 {
-            "CRYSTALS".to_string()
-        } else {
-            format!("CRYSTALS ×{factor}")
-        };
-        match self.contract {
-            Contract::Attrition => format!("{crystals} · {KILL_REPUTATION} REPUTATION PER KILL"),
-            Contract::Hold => format!(
-                "{crystals} · {} REPUTATION / {:.0} S",
-                hold::HOLD_REPUTATION,
-                hold::REPUTATION_EVERY
-            ),
-        }
+    /// Crystals a win pays before kills and damage.
+    pub fn win_pay(&self) -> u32 {
+        crate::economy::win_pay(self.rating)
     }
 }
 
@@ -215,7 +187,8 @@ mod tests {
         assert_eq!(m.rating_label(), "M0.5");
         assert!(!m.open_at(1), "open to a new pilot");
         assert!(m.open_at(2));
-        assert!(m.pay().starts_with("CRYSTALS ×1.5"), "{}", m.pay());
+        // Pays half as much again as an M0 contract.
+        assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 3 / 2);
         // The rest stay M0, open from the start.
         for m in MISSIONS.iter().filter(|m| m.name != "FOUR WINDS") {
             assert_eq!((m.rating, m.open_at(1)), (0, true), "{}", m.name);
