@@ -1038,8 +1038,10 @@ impl Match {
         let f = &mut self.fighters[i];
         f.reload_in = f.reload_in.max(-DT) + reload;
         if spec.look != Look::Flame {
-            // A flamethrower pours: no per-puff kick or muzzle flash.
             self.world.fire(i);
+        } else {
+            // A flamethrower pours: each puff pushes back, but no muzzle flash.
+            self.world.recoil(i);
         }
         if let Some(b) = &mut self.bots[i] {
             b.fired();
@@ -1277,15 +1279,17 @@ impl Match {
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
         // No friendly fire: an ally just stops the shot (a flame pours on
-        // past it unharmed).
+        // past it unharmed), though the shot still shoves it.
         if self.fighters[j].team == self.fighters[s.owner].team {
             if s.spec.look != Look::Flame {
                 self.blasts
                     .push(Blast::new(at, impact_kind(&s.spec, false)));
                 self.sounds.push(Sound::Hit { at, victim: j });
+                self.knock(s, j, at);
             }
             return;
         }
+        self.knock(s, j, at);
         if s.spec.look != Look::Flame {
             self.blasts.push(Blast::new(at, impact_kind(&s.spec, true)));
             self.sounds.push(if self.fighters[j].alive {
@@ -1296,17 +1300,24 @@ impl Match {
                     plasma: matches!(s.spec.look, Look::Plasma { .. } | Look::Bolt { .. }),
                 }
             });
-            // A shove through the hull's centre, scaled by how hard the shot
-            // hits: felt, but never enough to roll it.
-            let (mass, center) = (
-                self.world.tanks[j].chassis.mass,
-                self.world.tanks[j].pos + self.world.tanks[j].up() * 0.8,
-            );
-            let shove = s.vel.normalize_or_zero() * Vec3::new(1.0, 0.3, 1.0);
-            let weight = (s.damage / 38.0).min(1.0);
-            self.world.push(j, shove * mass * 0.35 * weight, center);
         }
         self.damage(s.owner, j, s.damage);
+    }
+
+    /// Shot `s` landing on tank `j` at `at` hands it the momentum its gun
+    /// kicked back with (less what it shed skipping off walls), along its
+    /// flight. It pushes where it lands, so a hit off-centre slews the hull
+    /// round, but no higher than the gun: a broadside rocks a tank, never
+    /// rolls it.
+    fn knock(&mut self, s: &Shell, j: usize, at: Vec3) {
+        let kind = self.world.tanks[s.owner].turret_kind;
+        let skips = s.spec.bounces.saturating_sub(s.bounces) as i32;
+        let momentum = kind.recoil() * BOUNCE_KEEP.powi(skips);
+        let t = &self.world.tanks[j];
+        let up = t.up();
+        let over = (at - t.pos).dot(up);
+        let at = at - up * (over - over.clamp(0.0, t.gun_height()));
+        self.world.push(j, s.vel.normalize_or_zero() * momentum, at);
     }
 
     /// `owner` deals `amount` to tank `j` (spawn shields and the round's end permitting).
@@ -2290,7 +2301,9 @@ mod tests {
         assert_eq!(m.reputation, m.fighters[0].kills * KILL_REPUTATION);
     }
 
-    /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
+    /// The player with `turret` and a dummy `dist` m straight ahead, shields
+    /// down, settled. The dummy never fires (with no bot, it would pull the
+    /// player's trigger).
     fn duel(turret: TurretKind, dist: f32) -> Match {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         m.world.tanks[0].turret_kind = turret;
@@ -2309,6 +2322,7 @@ mod tests {
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
+        m.fighters[1].reload_in = f32::INFINITY;
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
@@ -2420,6 +2434,99 @@ mod tests {
             assert!(m.shells.is_empty());
             assert_eq!(m.fighters[1].health, after);
         }
+    }
+
+    /// Every action has an equal and opposite reaction: whatever the gun kicks
+    /// its own tank back with, the shot hands the tank it lands on. Up in the
+    /// air, away from the ground's friction, the two cancel exactly.
+    #[test]
+    fn a_hit_shoves_the_target_as_hard_as_the_gun_kicks_back() {
+        for &k in &TurretKind::ALL {
+            if !matches!(gun(k).action, Action::Shell(_)) {
+                continue;
+            }
+            let mut m = duel(k, 10.0);
+            for t in &m.world.tanks {
+                let b = &mut m.world.physics.bodies[t.body];
+                b.set_translation(b.translation() + Vec3::Y * 40.0, true);
+                b.set_linvel(Vec3::ZERO, true);
+                b.set_angvel(Vec3::ZERO, true);
+            }
+            let ahead = m.world.tanks[0].turret_dir();
+            let flat = |m: &Match, i: usize| {
+                let b = &m.world.physics.bodies[m.world.tanks[i].body];
+                b.linvel() * Vec3::new(1.0, 0.0, 1.0) * b.mass()
+            };
+            m.step(Command::default(), true);
+            for _ in 0..(0.6 / DT) as usize {
+                m.step(Command::default(), false);
+            }
+            let (kick, shove) = (flat(&m, 0), flat(&m, 1));
+            let shot = k.recoil();
+            assert!(
+                kick.dot(ahead) < -0.95 * shot,
+                "{k:?}: kicked back {:.0} N·s, wants {shot:.0}",
+                -kick.dot(ahead)
+            );
+            assert!(
+                shove.dot(ahead) > 0.9 * shot,
+                "{k:?}: the target took {:.0} N·s of {shot:.0}",
+                shove.dot(ahead)
+            );
+            assert!(
+                (kick + shove).length() < 0.1 * shot,
+                "{k:?}: momentum not conserved: {kick} vs {shove}"
+            );
+        }
+    }
+
+    /// On the ground, a rail cannon hit is plain to see: the shooter rocks and
+    /// slides back, and the target slides away. (Taken low on its back plate,
+    /// near its centre of mass, the target rocks less than the shooter, whose
+    /// kick comes at gun height.)
+    #[test]
+    fn a_cannon_hit_visibly_knocks_both_tanks() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        let ahead = m.world.tanks[0].turret_dir();
+        let p0 = [m.world.tanks[0].pos, m.world.tanks[1].pos];
+        m.step(Command::default(), true);
+        let mut tilt = [0.0f32; 2];
+        for _ in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), false);
+            for i in 0..2 {
+                tilt[i] = tilt[i].max(m.world.tanks[i].up().angle_between(Vec3::Y).to_degrees());
+            }
+        }
+        let moved = |i: usize| (m.world.tanks[i].pos - p0[i]).dot(ahead);
+        assert!(moved(0) < -0.3, "shooter slid back only {:.2} m", -moved(0));
+        assert!(moved(1) > 0.3, "target slid away only {:.2} m", moved(1));
+        assert!(tilt[0] > 8.0 && tilt[1] > 2.0, "rocked {tilt:?} deg");
+        assert!(m.world.tanks[1].up().y > 0.9, "the hit must not roll it");
+    }
+
+    /// A broadside from the heaviest gun rocks the lightest tracked hull hard,
+    /// but never rolls it.
+    #[test]
+    fn a_broadside_rocks_but_never_rolls() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        m.world.set_hull(1, HullKind::Vigil);
+        // Turn the target side-on.
+        let t = &m.world.tanks[1];
+        let at = Vec2::new(t.pos.x, t.pos.z);
+        m.world
+            .teleport(1, at, t.yaw() + std::f32::consts::FRAC_PI_2);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let mut worst = 1.0f32;
+        for _ in 0..4 {
+            m.step(Command::default(), true);
+            for _ in 0..(1.5 / DT) as usize {
+                m.step(Command::default(), false);
+                worst = worst.min(m.world.tanks[1].up().y);
+            }
+        }
+        assert!(worst > 0.5, "the target tipped to up.y = {worst:.2}");
     }
 
     /// Nothing to lead with an Imperium gun; everyone else's shells still fly.
