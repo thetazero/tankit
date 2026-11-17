@@ -79,6 +79,8 @@ struct App {
     spawn: usize,
     bots: usize,
     contract: Contract,
+    /// The mission's rating, in upgrade steps (see `Match::set_rating`).
+    rating: u8,
     /// Which of the map's sides hired you.
     side: usize,
     mode: Mode,
@@ -160,6 +162,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         spawn: launch.spawn,
         bots: launch.bots,
         contract: launch.contract,
+        rating: 0,
         side: launch.side,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
@@ -349,7 +352,7 @@ impl App {
     /// Start a new round on the current map settings, keeping the player's queued kit.
     fn restart(&mut self) {
         let kit = self.queued();
-        self.load(new_match(
+        let mut m = new_match(
             self.seed,
             self.map_kind,
             self.side,
@@ -357,7 +360,9 @@ impl App {
             self.bots,
             self.contract,
             kit,
-        ));
+        );
+        m.set_rating(self.rating);
+        self.load(m);
         self.mode = Mode::Playing;
     }
 
@@ -365,8 +370,8 @@ impl App {
     fn start_mission(&mut self, i: usize, side: usize) {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
-        (self.contract, self.side) = (m.contract, side);
-        self.load(new_match(
+        (self.contract, self.side, self.rating) = (m.contract, side, m.rating);
+        let mut game = new_match(
             self.seed,
             self.map_kind,
             self.side,
@@ -374,11 +379,14 @@ impl App {
             self.bots,
             self.contract,
             self.profile.loadout,
-        ));
+        );
+        game.set_rating(self.rating);
+        self.load(game);
         self.mode = Mode::Playing;
         log::info!(
-            "deployed: {} ({}, {}) for the {}",
+            "deployed: {} ({} {}, {}) for the {}",
             m.name,
+            m.rating_label(),
             m.contract.name(),
             m.map,
             m.sides[side].name()
@@ -589,7 +597,15 @@ impl App {
 
     fn menu_action(&mut self, action: Option<menu::Action>, event_loop: &ActiveEventLoop) {
         match action {
-            Some(menu::Action::Deploy(i, side)) => self.start_mission(i, side),
+            Some(menu::Action::Deploy(i, side)) => {
+                let m = &MISSIONS[i];
+                if m.open_at(self.profile.standing(m.sides[side]).level) {
+                    self.start_mission(i, side);
+                } else {
+                    // Not trusted with this one yet.
+                    self.audio.garage(audio::GarageCue::Refused);
+                }
+            }
             Some(menu::Action::Garage) => {
                 if let Some(cam) = self.camera {
                     self.garage.toggle(&self.game.world, &cam, self.queued());

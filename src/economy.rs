@@ -8,6 +8,7 @@
 
 use crate::combat::{self, Action, Gun, Match, ShellSpec};
 use crate::faction::Faction;
+use crate::rng::Rng;
 use crate::sim::{HullKind, HullStats, TurretKind};
 
 /// A hull or a turret.
@@ -180,6 +181,9 @@ pub fn level_label(level: u8) -> String {
     }
 }
 
+/// Deviation of a rated mission's bot gear about its rating, in steps.
+const GEAR_SPREAD: f32 = 4.0;
+
 /// Upgrade level of every part.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Levels([u8; PARTS.len()]);
@@ -191,6 +195,29 @@ impl Levels {
 
     pub fn set(&mut self, part: Part, level: u8) {
         self.0[part.index()] = level.min(MAX_LEVEL);
+    }
+
+    /// Gear for a bot on a mission rated `rating` (in steps): each part's level drawn
+    /// from a normal centred on the rating, kept within half a mark below it and a
+    /// mark above (M0.5: M0 to M1.5). Rated M0: all M0.
+    pub fn rated(rating: u8, rng: &mut Rng) -> Levels {
+        let mut levels = Levels::default();
+        if rating == 0 {
+            return levels;
+        }
+        let low = rating.saturating_sub(STEPS_PER_MARK / 2) as f32;
+        let high = (rating + STEPS_PER_MARK).min(MAX_LEVEL) as f32;
+        for part in PARTS {
+            // Redraw out of range rather than clamp, so the ends don't pile up.
+            let level = loop {
+                let l = (rating as f32 + GEAR_SPREAD * rng.normal()).round();
+                if (low..=high).contains(&l) {
+                    break l;
+                }
+            };
+            levels.set(part, level as u8);
+        }
+        levels
     }
 
     pub fn max_health(&self, hull: HullKind) -> f32 {
@@ -245,6 +272,13 @@ const DAMAGE_PER_CRYSTAL: f32 = 10.0;
 const BOUNTY: u32 = 15;
 /// Hold contract: crystals per second of your own on the site.
 const HOLD_PER_SECOND: f32 = 1.0;
+/// A rated mission's pay on top, per mark of rating: M0.5 pays half as much again.
+const PAY_PER_MARK: f32 = 1.0;
+
+/// What a mission rated `rating` (in steps) multiplies crystal pay by.
+pub fn pay_factor(rating: u8) -> f32 {
+    1.0 + PAY_PER_MARK * rating as f32 / STEPS_PER_MARK as f32
+}
 
 /// The player's pay for a finished round, line by line.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -260,6 +294,9 @@ pub struct Payout {
     /// Seconds of your own on the site, under the Hold contract.
     pub held: f32,
     pub hold: u32,
+    /// The mission's rating (in steps), and what it adds on top of the rest.
+    pub rating: u8,
+    pub rated: u32,
 }
 
 impl Payout {
@@ -272,7 +309,7 @@ impl Payout {
             None if m.score(me.team) == best => Outcome::Draw,
             _ => Outcome::Lost,
         };
-        Payout {
+        let mut pay = Payout {
             completion: COMPLETION,
             outcome,
             victory: match outcome {
@@ -286,11 +323,16 @@ impl Payout {
             bounty: me.kills * BOUNTY,
             held: m.held(0),
             hold: (m.held(0) * HOLD_PER_SECOND) as u32,
-        }
+            rating: m.rating,
+            rated: 0,
+        };
+        let base = pay.total();
+        pay.rated = (base as f32 * (pay_factor(m.rating) - 1.0)).round() as u32;
+        pay
     }
 
     pub fn total(&self) -> u32 {
-        self.completion + self.victory + self.contribution + self.bounty + self.hold
+        self.completion + self.victory + self.contribution + self.bounty + self.hold + self.rated
     }
 }
 
@@ -433,6 +475,55 @@ mod tests {
         assert_eq!(level_label(10), "M1");
         assert_eq!(level_label(27), "M2.7");
         assert_eq!(level_label(MAX_LEVEL), "M3");
+    }
+
+    #[test]
+    fn rated_gear_is_spread_about_the_rating() {
+        let mut rng = crate::rng::Rng::new(7);
+        assert_eq!(Levels::rated(0, &mut rng), Levels::default());
+        let mut all = Vec::new();
+        for _ in 0..2000 {
+            let l = Levels::rated(5, &mut rng);
+            all.extend(PARTS.iter().map(|&p| l.of(p) as f32));
+        }
+        // M0.5 enemies: M0 to M1.5, centred on M0.5 (a little above, the range
+        // reaching further up than down), mixed rather than all one level.
+        let (lo, hi) = all
+            .iter()
+            .fold((99.0f32, 0.0f32), |(a, b), &l| (a.min(l), b.max(l)));
+        assert_eq!((lo, hi), (0.0, 15.0));
+        let mean = all.iter().sum::<f32>() / all.len() as f32;
+        assert!((5.0..6.5).contains(&mean), "mean {mean}");
+        let near = all.iter().filter(|&&l| (2.0..=8.0).contains(&l)).count();
+        assert!(near * 10 > all.len() * 5, "most within a few steps of M0.5");
+        let at = |n: f32| all.iter().filter(|&&l| l == n).count();
+        assert!(
+            at(5.0) > at(0.0) && at(5.0) > at(12.0),
+            "peaks at the rating"
+        );
+    }
+
+    #[test]
+    fn rated_missions_pay_more_and_field_better_gear() {
+        let mut m = Match::new(crate::map::Map::capital(), 0, 15, 3);
+        m.fighters[0].kills = 2;
+        m.fighters[0].damage_dealt = 300.0;
+        let base = Payout::of(&m).total();
+        let health: Vec<f32> = m.fighters.iter().map(|f| f.health).collect();
+        m.set_rating(5);
+        let p = Payout::of(&m);
+        assert_eq!(p.total(), base + (base as f32 * 0.5).round() as u32);
+        assert_eq!(pay_factor(5), 1.5);
+        // The player's own gear is theirs; the bots' is better on average.
+        assert_eq!(m.fighters[0].levels, Levels::default());
+        assert_eq!(m.fighters[0].health, health[0]);
+        let tougher = (1..m.fighters.len())
+            .filter(|&i| m.fighters[i].health > health[i])
+            .count();
+        assert!(tougher > m.fighters.len() / 2, "{tougher} tougher");
+        for (i, f) in m.fighters.iter().enumerate().skip(1) {
+            assert_eq!(f.health, f.levels.max_health(m.world.tanks[i].hull_kind));
+        }
     }
 
     #[test]

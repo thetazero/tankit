@@ -213,6 +213,13 @@ impl Menu {
         self.faction = faction.index();
     }
 
+    /// Select mission `MISSIONS[i]` on the mission screen, if the employer offers it.
+    pub fn pick_mission(&mut self, i: usize) {
+        if let Some(k) = self.missions().iter().position(|&j| j == i) {
+            self.mission = k;
+        }
+    }
+
     /// The employer's missions, as indices into `MISSIONS`.
     fn missions(&self) -> Vec<usize> {
         mission::hiring(self.employer())
@@ -363,7 +370,27 @@ impl Menu {
                     .iter()
                     .map(|&i| Item::Opens(MISSIONS[i].name))
                     .collect();
-                y += rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission) + 14.0;
+                let s = profile.standing(employer);
+                let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission);
+                for (k, &i) in work.iter().enumerate() {
+                    // Each contract's rating beside its chevron; a locked one says
+                    // the standing that opens it instead.
+                    let m = &MISSIONS[i];
+                    let (tag, color) = if m.open_at(s.level) {
+                        (m.rating_label(), theme::DIM)
+                    } else {
+                        (format!("LOCKED · T{}", m.standing), theme::HOT)
+                    };
+                    let mut style = TextStyle::LABEL;
+                    style.color = color;
+                    p.text(
+                        Vec2::new(x + PANEL_W - 20.0, y + k as f32 * 30.0 + 4.0),
+                        &tag,
+                        &style,
+                        Align::Right,
+                    );
+                }
+                y += drawn + 14.0;
 
                 let m = &MISSIONS[work[self.mission]];
                 let against = m
@@ -373,9 +400,10 @@ impl Menu {
                     .map(|f| f.name())
                     .collect::<Vec<_>>()
                     .join(" · ");
-                let s = profile.standing(employer);
-                for (k, v) in [
+                let open = m.open_at(s.level);
+                let mut details = vec![
                     ("CONTRACT", m.contract.name().to_string()),
+                    ("RATING", m.rating_label()),
                     ("MAP", m.map.to_string()),
                     ("EMPLOYER", employer.name().to_string()),
                     ("AGAINST", against),
@@ -386,7 +414,11 @@ impl Menu {
                     ("TEAMS", m.teams()),
                     ("ROUND", m.round_time()),
                     ("PAY", m.pay()),
-                ] {
+                ];
+                if !open {
+                    details.push(("OPENS AT", format!("T{} REPUTATION", m.standing)));
+                }
+                for (k, v) in details {
                     let style = TextStyle::value(11.0);
                     let others: Vec<Faction> =
                         m.sides.iter().copied().filter(|&f| f != employer).collect();
@@ -420,6 +452,11 @@ impl Menu {
                                 style.color = f.ui();
                                 at.x -= emblem::faction_name(&mut p, at, f, &style, Align::Right);
                             }
+                        }
+                        "OPENS AT" => {
+                            let mut style = style;
+                            style.color = theme::HOT;
+                            p.text(right, &v, &style, Align::Right);
                         }
                         _ => {
                             p.text(right, &v, &style, Align::Right);
