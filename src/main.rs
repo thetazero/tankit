@@ -69,6 +69,7 @@ tankit [OPTIONS]
   --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, reputation gained and crystal tally
+  --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds'
   --reputation <n>        (with --shot) reputation with every faction for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --upgrade <steps>       (with --shot) every part the pilot owns is this many upgrade steps up (10 a mark)
@@ -89,6 +90,8 @@ pub struct Args {
     pub side: usize,
     /// --employer, for menu shots.
     employer: Option<faction::Faction>,
+    /// --mission, for menu shots: index into `MISSIONS`.
+    mission: Option<usize>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -264,6 +267,7 @@ fn parse_args() -> Result<Args> {
     let mut team_size: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
+    let mut mission = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -327,6 +331,15 @@ fn parse_args() -> Result<Args> {
                     Some(faction::Faction::by_name(&name).with_context(|| {
                         format!("--employer expects a faction name, got {name:?}")
                     })?);
+            }
+            "--mission" => {
+                let name = args.next().unwrap_or_default();
+                mission = Some(
+                    mission::MISSIONS
+                        .iter()
+                        .position(|m| m.name.eq_ignore_ascii_case(&name))
+                        .with_context(|| format!("--mission: no mission called {name:?}"))?,
+                );
             }
             "--straight" => straight = true,
             "--cam" => {
@@ -440,6 +453,7 @@ fn parse_args() -> Result<Args> {
         seed,
         side,
         employer,
+        mission,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -713,6 +727,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             }
             if args.screen == Some(Screen::Missions) {
                 menu.input(menu::Nav::Select);
+                if let Some(i) = args.mission {
+                    menu.pick_mission(i);
+                }
             }
         }
         Some(Screen::Settings) => {

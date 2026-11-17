@@ -693,6 +693,8 @@ pub struct Match {
     pub time_left: f32,
     pub phase: Phase,
     pub contract: Contract,
+    /// The mission's rating, in upgrade steps (0 is M0, 5 is M0.5).
+    pub rating: u8,
     /// The site, under the Hold contract.
     pub hold: Option<Hold>,
     /// Seconds since the round ended (the results screen counts up with it).
@@ -754,6 +756,7 @@ impl Match {
             factions,
             time_left: ROUND_TIME,
             contract: Contract::Attrition,
+            rating: 0,
             hold: None,
             phase: Phase::Playing,
             over_for: 0.0,
@@ -764,6 +767,20 @@ impl Match {
 
     pub fn player(&self) -> &Fighter {
         &self.fighters[0]
+    }
+
+    /// Rate the round (in upgrade steps; 5 is M0.5) before it starts: every bot
+    /// is refitted with gear drawn about that rating (see `Levels::rated`), and
+    /// the contract pays more (see `economy::pay_factor`).
+    pub fn set_rating(&mut self, rating: u8) {
+        self.rating = rating;
+        for i in 1..self.fighters.len() {
+            let levels = Levels::rated(rating, &mut self.rng);
+            let f = &mut self.fighters[i];
+            f.levels = levels;
+            f.health = levels.max_health(self.world.tanks[i].hull_kind);
+            self.fit_hull(i);
+        }
     }
 
     /// Switch to `contract` (before the round starts).
