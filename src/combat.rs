@@ -40,8 +40,12 @@ const TRACER_STREAK: f32 = 22.0;
 /// ...and how long it lingers, fading, once it's reached where the shot
 /// landed, s (at close range the flight itself is shorter than a frame).
 const TRACER_FADE: f32 = 0.08;
-/// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
+/// Aim assist: a tank this close (horizontally, radians) to the gun line gets it.
 const ASSIST_CONE: f32 = 0.09;
+/// ...and the most it bends the gun to the side to hit it (1 degree).
+const ASSIST_NUDGE: f32 = 0.017_453_3;
+/// How far inside a tank's edge a gun just missing it is put on, m.
+const ASSIST_INSET: f32 = 0.25;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
 /// Knocked off the edge this soon after a hit: the hit gets the kill, s.
@@ -940,17 +944,26 @@ impl Match {
         self.reputation_pops.retain(|x| x.age < REPUTATION_POP_TIME);
     }
 
-    /// Elevate each gun onto a tank roughly along its line of fire (Tanki-style
-    /// vertical auto-aim), so hills and ramps don't make every shot miss.
+    /// Aim assist (Tanki-style, but gentle): bend each gun as little as it
+    /// takes to hit a tank near its line of fire. Down the turret's heading,
+    /// held level, the gun's line either strikes a tank already (then it's
+    /// left alone, only lifted for the shot's drop) or passes it by; then it
+    /// swings onto the nearest point of the tank (hull or turret), a little
+    /// way in, up or down within the usual elevation range, and at most
+    /// [`ASSIST_NUDGE`] to the side. Where on the tank the shot lands is the
+    /// player's to choose: aim at its left side to spin it one way, its right
+    /// the other, its turret to rock it. Far off, the nudge covers most of a
+    /// tank, as aiming is little more than luck there anyway.
     fn aim_assist(&mut self) {
         let n = self.world.tanks.len();
         for i in 0..n {
             let t = &self.world.tanks[i];
-            let eye = t.pos + t.up() * t.gun_height();
+            let eye = t.turret_frame().transform_point3(t.turret_kind.trunnion());
             let yaw = t.turret_yaw();
+            let level = Vec3::new(yaw.sin(), 0.0, yaw.cos());
             let g = gun(t.turret_kind);
             let range = g.range().min(ASSIST_RANGE);
-            let mut best: Option<(f32, f32)> = None;
+            let mut best: Option<(f32, Vec3)> = None;
             for j in 0..n {
                 if j == i
                     || !self.fighters[j].alive
@@ -960,29 +973,85 @@ impl Match {
                     continue;
                 }
                 let o = &self.world.tanks[j];
-                let aim = o.pos + o.up() * (o.chassis.hull_top * 0.7);
-                let to = aim - eye;
+                let centre = o.pos + o.up() * (o.chassis.hull_top * 0.7);
+                let to = centre - eye;
                 let flat = Vec2::new(to.x, to.z);
                 let d = flat.length();
                 if !(2.0..=range).contains(&d) || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE
                 {
                     continue;
                 }
-                if !ai::can_see(&self.world, eye, o) {
+                if best.is_some_and(|(bd, _)| d >= bd) {
                     continue;
                 }
-                // Lift for the shot's drop over the flight time.
-                let t_flight = to.length() / g.speed();
-                let pitch = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
-                if best.is_none_or(|(bd, _)| d < bd) {
-                    best = Some((d, pitch));
+                let Some(aim) = self.aim_point(eye, level, j) else {
+                    continue;
+                };
+                // Only where the gun can see: walls and hills still hide.
+                let to = aim - eye;
+                let len = to.length();
+                if self.world.raycast(eye, to / len, len) < len - 0.3 {
+                    continue;
                 }
+                best = Some((d, aim));
             }
             let t = &mut self.world.tanks[i];
-            let hull_pitch = t.turret_dir().y.clamp(-1.0, 1.0).asin();
-            let want = best.map_or(0.0, |(_, p)| (p - hull_pitch).clamp(-0.15, 0.3));
-            t.gun_pitch += (want - t.gun_pitch) * (1.0 - (-DT * 12.0).exp());
+            let (pitch, side) = best.map_or((0.0, 0.0), |(_, aim)| {
+                let to = aim - eye;
+                let d = Vec2::new(to.x, to.z).length();
+                // Lift for the shot's drop over the flight time.
+                let t_flight = to.length() / g.speed();
+                let lift = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
+                let hull_pitch = t.turret_dir().y.clamp(-1.0, 1.0).asin();
+                let side = wrap_angle(yaw_of(Vec2::new(to.x, to.z)) - yaw);
+                (
+                    (lift - hull_pitch).clamp(-0.15, 0.3),
+                    side.clamp(-ASSIST_NUDGE, ASSIST_NUDGE),
+                )
+            });
+            let k = 1.0 - (-DT * 12.0).exp();
+            t.gun_pitch += (pitch - t.gun_pitch) * k;
+            t.gun_yaw += (side - t.gun_yaw) * k;
         }
+    }
+
+    /// Where a gun at `eye`, aimed level along `dir`, should put its shot on
+    /// tank `j` for the least correction: where that line strikes the tank's
+    /// hull or turret, or, missing, the point of them nearest the line, moved
+    /// [`ASSIST_INSET`] in so the shot lands on it, not grazing past.
+    fn aim_point(&self, eye: Vec3, dir: Vec3, j: usize) -> Option<Vec3> {
+        let o = &self.world.tanks[j];
+        let parts: Vec<&Collider> = [o.collider, o.turret_hitbox]
+            .iter()
+            .filter_map(|&c| self.world.physics.colliders.get(c))
+            .collect();
+        let ray = Ray::new(eye, dir);
+        let struck = parts
+            .iter()
+            .filter_map(|c| {
+                c.shape()
+                    .cast_ray(c.position(), &ray, ASSIST_RANGE * 2.0, true)
+            })
+            .min_by(f32::total_cmp);
+        if let Some(toi) = struck {
+            return Some(eye + dir * toi);
+        }
+        // Nearest points of a line and a convex shape: hop between the two a
+        // few times (each hop only gets closer).
+        let on_line = |p: Vec3| eye + dir * (p - eye).dot(dir).max(0.0);
+        let mut p = on_line(o.pos);
+        let mut near = None;
+        for _ in 0..6 {
+            let (q, c) = parts
+                .iter()
+                .map(|c| (c.shape().project_point(c.position(), p, true).point, *c))
+                .min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p)))?;
+            near = Some((q, c));
+            p = on_line(q);
+        }
+        let (q, c) = near?;
+        let inward = (c.compute_aabb().center() - q).normalize_or_zero();
+        Some(q + inward * ASSIST_INSET)
     }
 
     fn shoot(&mut self, i: usize) {
@@ -1312,17 +1381,13 @@ impl Match {
 
     /// Shot `s` landing on tank `j` at `at` hands it the momentum its gun
     /// kicked back with (less what it shed skipping off walls), along its
-    /// flight. It pushes where it lands, so a hit off-centre slews the hull
-    /// round, but no higher than the gun: a broadside rocks a tank, never
-    /// rolls it.
+    /// flight, where it lands: a hit off-centre slews the hull round, one
+    /// high on the turret rocks it hard, one low near its centre of mass
+    /// barely tips it.
     fn knock(&mut self, s: &Shell, j: usize, at: Vec3) {
         let kind = self.world.tanks[s.owner].turret_kind;
         let skips = s.spec.bounces.saturating_sub(s.bounces) as i32;
         let momentum = kind.recoil() * BOUNCE_KEEP.powi(skips);
-        let t = &self.world.tanks[j];
-        let up = t.up();
-        let over = (at - t.pos).dot(up);
-        let at = at - up * (over - over.clamp(0.0, t.gun_height()));
         self.world.push(j, s.vel.normalize_or_zero() * momentum, at);
     }
 
@@ -2216,6 +2281,7 @@ mod tests {
     use super::*;
     use crate::sim::dir2;
     use rapier3d::prelude::ColliderBuilder;
+    use std::f32::consts::{FRAC_PI_2, PI};
 
     /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
@@ -2486,28 +2552,195 @@ mod tests {
         }
     }
 
+    /// Fire from the settled duel `m` (one shot, or holding the trigger for
+    /// `hold` s) and watch both tanks for two seconds: how far each tipped
+    /// and turned (degrees, at the worst), and how far each moved along the
+    /// line of fire (m).
+    fn exchange(m: &mut Match, hold: f32) -> ([f32; 2], [f32; 2], [f32; 2]) {
+        let ahead = m.world.tanks[0].turret_dir();
+        let t0 = [m.world.tanks[0].clone(), m.world.tanks[1].clone()];
+        m.step(Command::default(), true);
+        let (mut tilt, mut turn) = ([0.0f32; 2], [0.0f32; 2]);
+        for n in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), (n as f32) * DT < hold);
+            for i in 0..2 {
+                let t = &m.world.tanks[i];
+                tilt[i] = tilt[i].max(t.up().angle_between(t0[i].up()).to_degrees());
+                turn[i] = turn[i].max(wrap_angle(t.yaw() - t0[i].yaw()).abs().to_degrees());
+            }
+        }
+        let moved = [0, 1].map(|i| (m.world.tanks[i].pos - t0[i].pos).dot(ahead));
+        (tilt, turn, moved)
+    }
+
     /// On the ground, a rail cannon hit is plain to see: the shooter rocks and
-    /// slides back, and the target slides away. (Taken low on its back plate,
-    /// near its centre of mass, the target rocks less than the shooter, whose
-    /// kick comes at gun height.)
+    /// slides back, and the target slides away.
     #[test]
     fn a_cannon_hit_visibly_knocks_both_tanks() {
         let mut m = duel(TurretKind::Kontos, 20.0);
-        let ahead = m.world.tanks[0].turret_dir();
-        let p0 = [m.world.tanks[0].pos, m.world.tanks[1].pos];
+        let (tilt, _, moved) = exchange(&mut m, 0.0);
+        assert!(moved[0] < -0.3, "shooter slid back only {:.2} m", -moved[0]);
+        assert!(moved[1] > 0.3, "target slid away only {:.2} m", moved[1]);
+        assert!(tilt[0] > 8.0 && tilt[1] > 8.0, "rocked {tilt:?} deg");
+        assert!(m.world.tanks[1].up().y > 0.9, "the hit must not roll it");
+    }
+
+    /// Duel `k` at `dist` m with the target turned `turn` from facing the
+    /// shooter, settled.
+    fn turned_duel(k: TurretKind, dist: f32, turn: f32) -> Match {
+        let mut m = duel(k, dist);
+        let t = &m.world.tanks[1];
+        let (at, yaw) = (Vec2::new(t.pos.x, t.pos.z), t.yaw() + PI + turn);
+        m.world.teleport(1, at, yaw);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        m
+    }
+
+    /// Equal and opposite, to the eye: for every gun that fires something, a
+    /// hit rocks the tank it lands on about as hard as firing it rocks the
+    /// shooter (same hull both ends, face to face so both rock back), and a
+    /// hit in the flank rolls it at least half as hard. That's plain physics:
+    /// aimed level, the shot lands high on the turret, near the height the
+    /// gun kicked its own hull from. The light streams are held a second, as
+    /// they're fired.
+    #[test]
+    fn a_hit_rocks_the_target_about_as_hard_as_firing_rocks_the_shooter() {
+        for &k in &TurretKind::ALL {
+            if k.recoil() == 0.0 {
+                continue;
+            }
+            let stream = matches!(k, TurretKind::Ossrin | TurretKind::Hymn);
+            let hold = if stream { 1.0 } else { 0.0 };
+            let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, 0.0), hold);
+            assert!(
+                tilt[1] > 0.75 * tilt[0] && tilt[1] < 1.25 * tilt[0],
+                "{k:?} head on: shooter rocked {:.2} deg, target {:.2}",
+                tilt[0],
+                tilt[1]
+            );
+            let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, FRAC_PI_2), hold);
+            assert!(
+                tilt[1] > 0.5 * tilt[0],
+                "{k:?} in the flank: shooter rocked {:.2} deg, target {:.2}",
+                tilt[0],
+                tilt[1]
+            );
+        }
+    }
+
+    /// A hit off-centre spins the target round; the same shot taken dead
+    /// centre leaves it pointing straight.
+    #[test]
+    fn an_off_centre_hit_spins_the_target() {
+        let spin = |side: f32| {
+            let mut m = duel(TurretKind::Kontos, 20.0);
+            let t = &m.world.tanks[1];
+            let at = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw() - FRAC_PI_2) * side;
+            m.world.teleport(1, at, t.yaw());
+            for _ in 0..60 {
+                m.step(Command::default(), false);
+            }
+            let hp = m.fighters[1].health;
+            let (_, turn, _) = exchange(&mut m, 0.0);
+            assert!(m.fighters[1].health < hp, "the shot at {side} m missed");
+            turn[1]
+        };
+        let (centre, off) = (spin(0.0), spin(1.2));
+        assert!(
+            centre < 1.0,
+            "a centred hit turned the target {centre:.1} deg"
+        );
+        assert!(
+            off > 5.0,
+            "an off-centre hit turned the target only {off:.1} deg"
+        );
+    }
+
+    /// Swing the shooter's turret `off` radians from the target in the duel
+    /// `m`, let the assist settle, then fire once: whether it hit, the gun's
+    /// sideways nudge, and which way the target turned (radians, + = toward
+    /// +yaw) two seconds later.
+    fn shot_aside(m: &mut Match, off: f32) -> (bool, f32, f32) {
+        m.world.tanks[0].turret_rel += off;
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let nudge = m.world.tanks[0].gun_yaw;
+        let (hp, yaw) = (m.fighters[1].health, m.world.tanks[1].yaw());
         m.step(Command::default(), true);
-        let mut tilt = [0.0f32; 2];
         for _ in 0..(2.0 / DT) as usize {
             m.step(Command::default(), false);
-            for i in 0..2 {
-                tilt[i] = tilt[i].max(m.world.tanks[i].up().angle_between(Vec3::Y).to_degrees());
-            }
         }
-        let moved = |i: usize| (m.world.tanks[i].pos - p0[i]).dot(ahead);
-        assert!(moved(0) < -0.3, "shooter slid back only {:.2} m", -moved(0));
-        assert!(moved(1) > 0.3, "target slid away only {:.2} m", moved(1));
-        assert!(tilt[0] > 8.0 && tilt[1] > 2.0, "rocked {tilt:?} deg");
-        assert!(m.world.tanks[1].up().y > 0.9, "the hit must not roll it");
+        let hit = m.fighters[1].health < hp;
+        (hit, nudge, wrap_angle(m.world.tanks[1].yaw() - yaw))
+    }
+
+    /// The assist bends the gun no more than it has to. Laid on the tank
+    /// already, the gun isn't swung toward its middle at all, so where you aim
+    /// is where it lands: its left side spins it one way, its right the other.
+    #[test]
+    fn aimed_on_a_tank_the_assist_leaves_the_aim_alone() {
+        let mut turns = [0.0; 2];
+        for (n, off) in [0.03f32, -0.03].into_iter().enumerate() {
+            let mut m = duel(TurretKind::Kontos, 20.0);
+            let (hit, nudge, turn) = shot_aside(&mut m, off);
+            assert!(hit, "aimed {off} rad aside, on the hull, it missed");
+            assert!(nudge.abs() < 1e-3, "the gun was swung {nudge:.4} rad");
+            turns[n] = turn;
+        }
+        assert!(
+            turns[0] * turns[1] < 0.0 && turns[0].abs() > 0.05 && turns[1].abs() > 0.05,
+            "hit on either side, the target turned {turns:?} rad"
+        );
+    }
+
+    /// Aimed just past a tank's edge, the gun is nudged (by at most a degree)
+    /// onto its nearest edge, and the shot lands; aimed further out it isn't
+    /// pulled in, and the shot misses.
+    #[test]
+    fn a_near_miss_is_nudged_onto_the_edge_and_a_wide_one_misses() {
+        // At 40 m the Kataphrakt's 1.45 m half-width spans 0.036 rad.
+        let (hit, nudge, _) = shot_aside(&mut duel(TurretKind::Kontos, 40.0), 0.045);
+        assert!(hit, "a near miss wasn't nudged on");
+        assert!(
+            nudge < 0.0 && nudge >= -ASSIST_NUDGE - 1e-4,
+            "nudge {nudge:.4} rad"
+        );
+        let (hit, nudge, _) = shot_aside(&mut duel(TurretKind::Kontos, 40.0), 0.07);
+        assert!(!hit, "a wide miss was pulled onto the tank");
+        assert!(nudge.abs() <= ASSIST_NUDGE + 1e-4, "nudge {nudge:.4} rad");
+    }
+
+    /// Up and down it still lays the gun on: a tank on a rise above the
+    /// shooter is hit, high on its hull or turret.
+    #[test]
+    fn the_assist_still_elevates_onto_a_tank_uphill() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        let t = &m.world.tanks[1];
+        // Held up 3 m, in place (kinematic: not scenery, which would hide it).
+        let b = &mut m.world.physics.bodies[t.body];
+        let p = b.translation() + Vec3::Y * 3.0;
+        b.set_translation(p, true);
+        b.set_body_type(
+            rapier3d::prelude::RigidBodyType::KinematicPositionBased,
+            true,
+        );
+        let hp = m.fighters[1].health;
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        assert!(
+            m.world.tanks[0].gun_pitch > 0.05,
+            "pitch {}",
+            m.world.tanks[0].gun_pitch
+        );
+        m.step(Command::default(), true);
+        for _ in 0..10 {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[1].health < hp, "the shot uphill missed");
     }
 
     /// A broadside from the heaviest gun rocks the lightest tracked hull hard,
