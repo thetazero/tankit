@@ -354,7 +354,6 @@ pub fn gravis() -> HullModel {
                 })
                 .collect(),
         },
-        mount: v(0.0, 2.8, MOUNT_Z),
     }
 }
 
@@ -554,9 +553,8 @@ pub fn lumen() -> TurretModel {
         barrel_light,
         mantlet,
         barrel,
-        pivot: v(0.0, 0.42, 0.92) * LUMEN_SCALE,
         barrels: vec![Vec3::ZERO],
-        muzzle: 3.2 * LUMEN_SCALE,
+        muzzle: crate::sim::TurretKind::Lumen.reach(),
         rig: Rig::Recoil,
         recoil: 0.0,
     }

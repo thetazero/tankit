@@ -107,7 +107,6 @@ struct HullArt {
     idler: MeshId,
     running: Running,
     links: usize,
-    mount: Vec3,
 }
 
 struct HoverArt {
@@ -118,7 +117,6 @@ struct HoverArt {
     shard: MeshId,
     shards: Vec<(Vec3, f32)>,
     emitter_y: f32,
-    mount: Vec3,
 }
 
 struct VigilArt {
@@ -137,7 +135,6 @@ struct TurretArt {
     barrel_light: Option<MeshId>,
     mantlet: MeshId,
     barrel: MeshId,
-    pivot: Vec3,
     barrels: Vec<Vec3>,
     muzzle: f32,
     recoil: f32,
@@ -164,7 +161,6 @@ impl TankArt {
             shard: r.add_mesh(&o.shard),
             shards: o.shards.clone(),
             emitter_y: o.emitter_y,
-            mount: o.mount,
         };
         let g = &kit.vigil;
         let vigil = VigilArt {
@@ -198,7 +194,6 @@ impl TankArt {
                     idler: r.add_mesh(&idler),
                     running: run,
                     links,
-                    mount: h.mount,
                 }
             })
             .collect();
@@ -214,7 +209,6 @@ impl TankArt {
                 barrel_light: light_mesh(r, &t.barrel_light),
                 mantlet: r.add_mesh(&t.mantlet),
                 barrel: r.add_mesh(&t.barrel),
-                pivot: t.pivot,
                 barrels: t.barrels,
                 muzzle: t.muzzle,
                 recoil: t.recoil,
@@ -237,29 +231,24 @@ impl TankArt {
             .unwrap_or(0)];
         // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
         let base = Mat4::from_rotation_translation(t.rot, t.pos);
-        let mount = match t.hull_kind {
+        match t.hull_kind {
             HullKind::Kataphrakt => self.tracked(&self.hulls[0], t, base, out),
             HullKind::Kastron => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
             HullKind::Gravis => self.tracked(&self.hulls[3], t, base, out),
             HullKind::Vigil => {
-                let mount = self.tracked(&self.hulls[2], t, base, out);
+                self.tracked(&self.hulls[2], t, base, out);
                 self.vigil(t, base, out);
-                mount
             }
-        };
-        self.turret(turret, t, mount, out, glow);
+        }
+        // The turret hangs where the sim says the gun is, so shots and the
+        // beam leave the muzzle that's drawn.
+        self.turret(turret, t, out, glow);
     }
 
     /// A tracked hull: body, wheels on their suspension, and the belt of
-    /// links wrapped round them. Returns the turret ring's transform.
-    fn tracked(
-        &self,
-        hull: &HullArt,
-        t: &Tank,
-        base: Mat4,
-        out: &mut Vec<(MeshId, Instance)>,
-    ) -> Mat4 {
+    /// links wrapped round them.
+    fn tracked(&self, hull: &HullArt, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let sprung = base;
@@ -323,8 +312,6 @@ impl TankArt {
                 out.push((hull.link, Instance::new(base * m * flip, plain)));
             }
         }
-
-        sprung * Mat4::from_translation(hull.mount)
     }
 
     /// The Vigil's light, floating crystal and plates, and bell. The light
@@ -401,8 +388,8 @@ impl TankArt {
 
     /// The Ithessar hover hull: the carapace banked into its turn, six
     /// emitters gimballing with the thrust and firing plasma at the ground,
-    /// and loose crystals bobbing in the field. Returns the turret ring.
-    fn hovering(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) -> Mat4 {
+    /// and loose crystals bobbing in the field.
+    fn hovering(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let h = &self.hover;
         let c = t.chassis;
         let tint = t.color.extend(0.0);
@@ -432,7 +419,7 @@ impl TankArt {
                     Instance::new(body * Mat4::from_translation(at), plain),
                 ));
             }
-            return body * Mat4::from_translation(h.mount);
+            return;
         }
 
         let time = t.age;
@@ -485,7 +472,6 @@ impl TankArt {
                 ),
             ));
         }
-        body * Mat4::from_translation(h.mount)
     }
 
     /// Turret yaws on the hull's ring; the gun pitches about its trunnion.
@@ -493,18 +479,17 @@ impl TankArt {
         &self,
         turret: &TurretArt,
         t: &Tank,
-        mount: Mat4,
         out: &mut Vec<(MeshId, Instance)>,
         glow: &mut Vec<Particle>,
     ) {
         let tint = t.color.extend(0.0);
         let alive = t.color.max_element() > 0.2;
-        let tm = mount * Mat4::from_rotation_y(t.turret_rel);
+        let tm = t.turret_frame();
         out.push((turret.head, Instance::new(tm, tint)));
         if let Some(light) = turret.head_light {
             out.push((light, Instance::new(tm, heat_tint(t))));
         }
-        let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-t.gun_pitch);
+        let gun = t.gun_frame();
         out.push((turret.mantlet, Instance::new(gun, tint)));
 
         let plasma = turret.kind.maker() == crate::faction::Faction::Ithessar;
@@ -802,6 +787,32 @@ mod tests {
                 c.rear,
                 (rear.center.x, rear.center.y, rear.radius),
                 "{kind:?} rear"
+            );
+        }
+    }
+
+    /// The sim's muzzle (where shots and the beam start) is the tip of the
+    /// barrel that's drawn, for every turret.
+    #[test]
+    fn muzzle_is_at_the_barrel_tip() {
+        let kit = KitMeshes::build();
+        for (t, kind) in kit.turrets.iter().zip(TurretKind::ALL) {
+            assert_eq!(t.muzzle, kind.reach(), "{kind:?}");
+            if t.rig != Rig::Recoil {
+                // Prongs and spinning needles: the muzzle is on the gun's
+                // axis, out by the prong tips, not on any one prong.
+                continue;
+            }
+            let tip = t
+                .barrel
+                .verts
+                .iter()
+                .map(|v| v.pos[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (tip - kind.reach()).abs() < 0.12,
+                "{kind:?}: barrel tip at {tip}, muzzle at {}",
+                kind.reach()
             );
         }
     }

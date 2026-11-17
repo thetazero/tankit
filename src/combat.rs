@@ -1000,7 +1000,7 @@ impl Match {
             );
             dir = (dir + jitter * spec.spread).normalize();
         }
-        let from = muzzle(t);
+        let from = self.clear_muzzle(t);
         self.sounds.push(Sound::Shot {
             tank: i,
             turret: t.turret_kind,
@@ -1050,7 +1050,7 @@ impl Match {
     /// up close. It bends onto an enemy just off its line.
     fn beam(&mut self, i: usize, range: f32) {
         let t = &self.world.tanks[i];
-        let from = muzzle(t);
+        let from = self.clear_muzzle(t);
         let dir = self.beam_assist(i, from, t.gun_dir(), range);
         let t = &self.world.tanks[i];
         let hit = self.world.physics.cast_ray(
@@ -1084,6 +1084,24 @@ impl Match {
                     b.fired();
                 }
             }
+        }
+    }
+
+    /// Where `t`'s shots start: its muzzle, or, if the barrel is poking
+    /// into something, just short of where it goes in, so a gun shoved
+    /// against a wall can't shoot through it.
+    fn clear_muzzle(&self, t: &Tank) -> Vec3 {
+        let (breech, muzzle) = (t.breech(), t.muzzle());
+        let to = muzzle - breech;
+        let len = to.length();
+        match self.world.physics.cast_ray(
+            &Ray::new(breech, to / len),
+            len,
+            true,
+            QueryFilter::default().exclude_collider(t.collider),
+        ) {
+            Some((_, toi)) => breech + to / len * (toi - 0.05).max(0.0),
+            None => muzzle,
         }
     }
 
@@ -1613,7 +1631,7 @@ impl Match {
         if !spec.instant {
             return None;
         }
-        let (from, dir) = (muzzle(t), t.gun_dir());
+        let (from, dir) = (self.clear_muzzle(t), t.gun_dir());
         let reach = spec.speed * spec.life;
         let toi = self
             .world
@@ -1863,7 +1881,8 @@ impl Match {
         // Laser beams: a hot core inside a wider green glow, and a burn spot where it lands.
         for (f, t) in self.fighters.iter().zip(&self.world.tanks) {
             let Some(end) = f.beam else { continue };
-            let from = muzzle(t);
+            // From the muzzle as it's drawn this frame.
+            let from = muzzle(&t.interpolated(alpha));
             let to = end - from;
             let len = to.length();
             if len < 0.1 {
@@ -2124,9 +2143,9 @@ fn fighter(team: usize, health: f32) -> Fighter {
     }
 }
 
-/// Where tank `t`'s shots leave the gun.
+/// Where tank `t`'s shots leave the gun: the muzzle that's drawn.
 pub(crate) fn muzzle(t: &Tank) -> Vec3 {
-    t.pos + t.up() * t.gun_height() + t.gun_dir() * 2.6
+    t.muzzle()
 }
 
 fn flat(p: Vec3) -> Vec2 {
@@ -2179,6 +2198,7 @@ fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2
 mod tests {
     use super::*;
     use crate::sim::dir2;
+    use rapier3d::prelude::ColliderBuilder;
 
     /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
@@ -2606,6 +2626,55 @@ mod tests {
             m.step(Command::default(), true);
         }
         assert_eq!(m.fighters[1].health, hp);
+    }
+
+    /// The beam starts at the muzzle and runs down the barrel, on every hull,
+    /// with the turret traversed and the gun elevated. (Aimed away from the
+    /// enemy, so the beam doesn't bend onto it.)
+    #[test]
+    fn beam_leaves_the_muzzle_along_the_barrel() {
+        for hull in [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ] {
+            let mut m = duel(TurretKind::Lumen, 80.0);
+            m.world.set_hull(0, hull);
+            m.world.tanks[0].lean = 0.1;
+            for (turn, pitch) in [(0.4, 0.0), (0.9, 0.12), (-2.0, -0.08)] {
+                let t = &mut m.world.tanks[0];
+                t.turret_rel = turn;
+                t.gun_pitch = pitch;
+                m.beam(0, 160.0);
+                let t = &m.world.tanks[0];
+                let (from, dir) = (t.muzzle(), t.gun_dir());
+                let end = m.fighters[0].beam.expect("beaming");
+                let off = (end - from).normalize().angle_between(dir);
+                assert!(off < 1e-3, "{hull:?} {turn}: beam {off} rad off the barrel");
+                // The muzzle is at the end of the gun, ahead of the trunnion.
+                let reach = from.distance(t.breech());
+                assert!((reach - TurretKind::Lumen.reach()).abs() < 1e-3);
+                assert!((from - t.breech()).normalize().angle_between(dir) < 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn a_gun_against_a_wall_cant_shoot_through_it() {
+        let mut m = duel(TurretKind::Lumen, 80.0);
+        let t = &m.world.tanks[0];
+        // Something between the trunnion and the muzzle.
+        let mid = (t.breech() + t.muzzle()) * 0.5;
+        m.world
+            .physics
+            .insert_collider(ColliderBuilder::ball(0.5).translation(mid), None);
+        let hp = m.fighters[1].health;
+        for _ in 0..30 {
+            m.step(Command::default(), true);
+        }
+        assert_eq!(m.fighters[1].health, hp, "the beam went through the wall");
     }
 
     #[test]
