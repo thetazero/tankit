@@ -70,7 +70,12 @@ struct Saved {
     turret: String,
     /// Bought parts (starters are always owned).
     owned: Vec<String>,
-    /// Upgrade level by part name; missing means M0.
+    /// Upgrade level in steps (see [`crate::economy::STEPS_PER_MARK`]) by part name;
+    /// missing means M0.
+    steps: BTreeMap<String, u8>,
+    /// Profiles from before upgrades came in steps had whole marks (M1 = 1). Read once,
+    /// never written.
+    #[serde(skip_serializing)]
     levels: BTreeMap<String, u8>,
     settings: Settings,
 }
@@ -183,9 +188,15 @@ impl Profile {
         self.crystals = s.crystals;
         self.settings = s.settings;
         self.bought = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
-        for (name, level) in &s.levels {
+        for (name, &mark) in &s.levels {
             if let Some(part) = Part::by_name(name) {
-                self.levels.set(part, *level);
+                self.levels
+                    .set(part, mark.saturating_mul(crate::economy::STEPS_PER_MARK));
+            }
+        }
+        for (name, &level) in &s.steps {
+            if let Some(part) = Part::by_name(name) {
+                self.levels.set(part, level);
             }
         }
         // Only deploy in parts you own (older profiles predate buying).
@@ -320,11 +331,12 @@ impl Profile {
             hull: name(Part::Hull(self.loadout.0)),
             turret: name(Part::Turret(self.loadout.1)),
             owned: self.bought.iter().map(|&p| name(p)).collect(),
-            levels: PARTS
+            steps: PARTS
                 .iter()
                 .filter(|&&p| self.levels.of(p) > 0)
                 .map(|&p| (name(p), self.levels.of(p)))
                 .collect(),
+            levels: BTreeMap::new(),
             settings: self.settings,
         };
         if let Some(dir) = path.parent() {
@@ -418,6 +430,19 @@ mod tests {
         let trust = Profile::load(path.clone());
         assert_eq!(trust.reputation_of(Faction::Imperium), 120);
         assert_eq!(trust.reputation_of(Faction::Resonant), 7);
+
+        // Profiles from when upgrades were whole marks keep the mark they reached.
+        std::fs::write(
+            &path,
+            r#"{"owned": ["pelekys"], "levels": {"pelekys": 2, "kontos": 3}}"#,
+        )
+        .unwrap();
+        let marks = Profile::load(path.clone());
+        assert_eq!(marks.levels.of(PELEKYS), 20);
+        assert_eq!(
+            marks.levels.of(Part::Turret(TurretKind::Kontos)),
+            crate::economy::MAX_LEVEL
+        );
 
         // A corrupt file starts a fresh pilot rather than failing.
         std::fs::write(&path, "not json").unwrap();
