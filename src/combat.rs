@@ -1312,18 +1312,23 @@ impl Match {
 
     /// Shot `s` landing on tank `j` at `at` hands it the momentum its gun
     /// kicked back with (less what it shed skipping off walls), along its
-    /// flight. It pushes where it lands, so a hit off-centre slews the hull
-    /// round, but no higher than the gun: a broadside rocks a tank, never
-    /// rolls it.
+    /// flight. Equal and opposite in leverage too: the gun kicks its own hull
+    /// at gun height, so the shot shoves the target at its gun height, above
+    /// where it landed, and along its deck (the shot's dip toward its aim
+    /// point would only press the hull onto its springs and, landing on the
+    /// back plate, damp the rock). Then a hit rocks the target as hard as
+    /// firing rocks the shooter (landing low, near the centre of mass, it
+    /// barely tipped it), and one off-centre slews it round. A broadside
+    /// rocks a tank hard, but never rolls it.
     fn knock(&mut self, s: &Shell, j: usize, at: Vec3) {
         let kind = self.world.tanks[s.owner].turret_kind;
         let skips = s.spec.bounces.saturating_sub(s.bounces) as i32;
         let momentum = kind.recoil() * BOUNCE_KEEP.powi(skips);
         let t = &self.world.tanks[j];
         let up = t.up();
-        let over = (at - t.pos).dot(up);
-        let at = at - up * (over - over.clamp(0.0, t.gun_height()));
-        self.world.push(j, s.vel.normalize_or_zero() * momentum, at);
+        let at = at + up * (t.gun_height() - (at - t.pos).dot(up));
+        let dir = s.vel.normalize_or_zero();
+        self.world.push(j, (dir - up * dir.dot(up)) * momentum, at);
     }
 
     /// `owner` deals `amount` to tank `j` (spawn shields and the round's end permitting).
@@ -2486,28 +2491,94 @@ mod tests {
         }
     }
 
+    /// Fire from the settled duel `m` (one shot, or holding the trigger for
+    /// `hold` s) and watch both tanks for two seconds: how far each tipped
+    /// and turned (degrees, at the worst), and how far each moved along the
+    /// line of fire (m).
+    fn exchange(m: &mut Match, hold: f32) -> ([f32; 2], [f32; 2], [f32; 2]) {
+        let ahead = m.world.tanks[0].turret_dir();
+        let t0 = [m.world.tanks[0].clone(), m.world.tanks[1].clone()];
+        m.step(Command::default(), true);
+        let (mut tilt, mut turn) = ([0.0f32; 2], [0.0f32; 2]);
+        for n in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), (n as f32) * DT < hold);
+            for i in 0..2 {
+                let t = &m.world.tanks[i];
+                tilt[i] = tilt[i].max(t.up().angle_between(t0[i].up()).to_degrees());
+                turn[i] = turn[i].max(wrap_angle(t.yaw() - t0[i].yaw()).abs().to_degrees());
+            }
+        }
+        let moved = [0, 1].map(|i| (m.world.tanks[i].pos - t0[i].pos).dot(ahead));
+        (tilt, turn, moved)
+    }
+
     /// On the ground, a rail cannon hit is plain to see: the shooter rocks and
-    /// slides back, and the target slides away. (Taken low on its back plate,
-    /// near its centre of mass, the target rocks less than the shooter, whose
-    /// kick comes at gun height.)
+    /// slides back, and the target slides away.
     #[test]
     fn a_cannon_hit_visibly_knocks_both_tanks() {
         let mut m = duel(TurretKind::Kontos, 20.0);
-        let ahead = m.world.tanks[0].turret_dir();
-        let p0 = [m.world.tanks[0].pos, m.world.tanks[1].pos];
-        m.step(Command::default(), true);
-        let mut tilt = [0.0f32; 2];
-        for _ in 0..(2.0 / DT) as usize {
-            m.step(Command::default(), false);
-            for i in 0..2 {
-                tilt[i] = tilt[i].max(m.world.tanks[i].up().angle_between(Vec3::Y).to_degrees());
-            }
-        }
-        let moved = |i: usize| (m.world.tanks[i].pos - p0[i]).dot(ahead);
-        assert!(moved(0) < -0.3, "shooter slid back only {:.2} m", -moved(0));
-        assert!(moved(1) > 0.3, "target slid away only {:.2} m", moved(1));
-        assert!(tilt[0] > 8.0 && tilt[1] > 2.0, "rocked {tilt:?} deg");
+        let (tilt, _, moved) = exchange(&mut m, 0.0);
+        assert!(moved[0] < -0.3, "shooter slid back only {:.2} m", -moved[0]);
+        assert!(moved[1] > 0.3, "target slid away only {:.2} m", moved[1]);
+        assert!(tilt[0] > 8.0 && tilt[1] > 8.0, "rocked {tilt:?} deg");
         assert!(m.world.tanks[1].up().y > 0.9, "the hit must not roll it");
+    }
+
+    /// Equal and opposite, to the eye: for every gun that fires something, a
+    /// hit rocks the tank it lands on about as hard as firing it rocks the
+    /// shooter (same hull both ends, face to face so both rock back). The
+    /// light streams are held a second, as they're fired.
+    #[test]
+    fn a_hit_rocks_the_target_as_hard_as_firing_rocks_the_shooter() {
+        for &k in &TurretKind::ALL {
+            if k.recoil() == 0.0 {
+                continue;
+            }
+            let mut m = duel(k, 10.0);
+            let t = &m.world.tanks[1];
+            let (at, yaw) = (Vec2::new(t.pos.x, t.pos.z), t.yaw() + std::f32::consts::PI);
+            m.world.teleport(1, at, yaw);
+            for _ in 0..60 {
+                m.step(Command::default(), false);
+            }
+            let stream = matches!(k, TurretKind::Ossrin | TurretKind::Hymn);
+            let (tilt, _, _) = exchange(&mut m, if stream { 1.0 } else { 0.0 });
+            assert!(
+                tilt[1] > 0.8 * tilt[0] && tilt[1] < 1.25 * tilt[0],
+                "{k:?}: shooter rocked {:.2} deg, target {:.2}",
+                tilt[0],
+                tilt[1]
+            );
+        }
+    }
+
+    /// A hit off-centre spins the target round; the same shot taken dead
+    /// centre leaves it pointing straight.
+    #[test]
+    fn an_off_centre_hit_spins_the_target() {
+        let spin = |side: f32| {
+            let mut m = duel(TurretKind::Kontos, 20.0);
+            let t = &m.world.tanks[1];
+            let at =
+                Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw() - std::f32::consts::FRAC_PI_2) * side;
+            m.world.teleport(1, at, t.yaw());
+            for _ in 0..60 {
+                m.step(Command::default(), false);
+            }
+            let hp = m.fighters[1].health;
+            let (_, turn, _) = exchange(&mut m, 0.0);
+            assert!(m.fighters[1].health < hp, "the shot at {side} m missed");
+            turn[1]
+        };
+        let (centre, off) = (spin(0.0), spin(1.2));
+        assert!(
+            centre < 1.0,
+            "a centred hit turned the target {centre:.1} deg"
+        );
+        assert!(
+            off > 10.0,
+            "an off-centre hit turned the target only {off:.1} deg"
+        );
     }
 
     /// A broadside from the heaviest gun rocks the lightest tracked hull hard,
