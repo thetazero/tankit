@@ -394,6 +394,16 @@ impl Hud {
                 s.color = theme::HOT;
                 p.text(bc + Vec2::new(0.0, 4.0), "OVERHEATED", &s, Align::Center);
             }
+        } else if me.charge > 0.0 {
+            // Charge gun ringing up (or draining after a cancel): the bar is
+            // the charge, hot while it builds.
+            widgets::hairbar(
+                &mut p,
+                bc + Vec2::new(-130.0, -10.0),
+                260.0,
+                me.charge,
+                if me.charging { theme::HOT } else { theme::DIM },
+            );
         } else {
             let ready = 1.0 - (me.reload_in / g.reload).clamp(0.0, 1.0);
             widgets::hairbar(

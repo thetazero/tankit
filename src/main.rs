@@ -60,7 +60,7 @@ tankit [OPTIONS]
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
   --hull <kataphrakt|kastron|sethuun|vigil|gravis>  player hull (default kataphrakt; sethuun hovers)
   --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
-                          lumen (Uthenn), hymn (Resonant); default kontos
+                          lumen (Uthenn), hymn knell (Resonant); default kontos
   --garage                (with --shot) open the garage at the start, previewing --hull/--turret
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
@@ -75,7 +75,7 @@ tankit [OPTIONS]
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
-  --focus <0-5>           showroom: frame one tank
+  --focus <0-6>           showroom: frame one tank
 ";
 
 pub struct Args {
@@ -354,7 +354,9 @@ fn parse_args() -> Result<Args> {
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects kontos, pelekys, ammeth, ossrin, lumen or hymn")?;
+                    .context(
+                        "--turret expects kontos, pelekys, ammeth, ossrin, lumen, hymn or knell",
+                    )?;
             }
             "--garage" => garage = true,
             "--own" => own.push(part_arg(args.next(), "--own")?),

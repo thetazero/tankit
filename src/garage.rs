@@ -86,7 +86,7 @@ pub const HULLS: [HullKind; 5] = [
     HullKind::Vigil,
     HullKind::Gravis,
 ];
-pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
+pub const TURRETS: [TurretKind; 7] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
@@ -106,6 +106,7 @@ pub fn turret_name(k: TurretKind) -> &'static str {
         TurretKind::Ossrin => "OSSRIN",
         TurretKind::Lumen => "LUMEN",
         TurretKind::Hymn => "HYMN",
+        TurretKind::Knell => "KNELL",
     }
 }
 

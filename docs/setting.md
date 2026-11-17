@@ -61,8 +61,8 @@ play. Factions are the world, never a lock on your build. They show up as:
     overheats instead of reloading. Heat is tied to the tank: bigger hulls
     and heavier turrets have more thermal mass. Cooling is a flat rate.
   - **Resonant**: the strange weapons, starting with Hymn, a censer that
-    breathes short-range blue crystal fire. Later maybe shields, drains,
-    phasing.
+    breathes short-range blue crystal fire, and Knell, a siege bell (below).
+    Later maybe shields, drains, phasing.
 
   Hulls: the Imperium make the tracked ones (Kataphrakt, Kastron), the Ithessar
   one that hovers (Sethuun), the Resonant a vessel that won't stay dead
@@ -106,6 +106,14 @@ strength for a moment and then fading out.
 
 **Their weapon is fire.** Hymn is a reliquary crowned with crystal, a censer
 hung at its flank: purifying blue crystal fire, short range, deadly up close.
+
+**Knell, the siege bell.** A great bronze bell lying on its side in a gilt
+yoke, mouth to the enemy, a bank of organ pipes behind it and a crystal in
+its crown. It rings only when the rite is complete: hold the trigger and the
+pipes light one by one as it rings up, and at full it tolls by itself. Let
+go early and the rite is broken; nothing happens. The toll is a ring of
+crystal light and sound that throws whatever it strikes up and away, bowling
+light machines over, and shoves the Knell's own hull back.
 
 **Color:** crystal blue, in their light and on the HUD. Their machines are
 worn ivory and gilt; no tank wears its side's color.
