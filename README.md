@@ -24,8 +24,12 @@ straight into a round. `--shot` renders headless to a PNG instead of opening a
 window, and `--screen` does the same for a menu screen. `--wav` records a
 round's sound headless to a WAV and prints its levels.
 `--bench <seconds>` plays a round headless at 60 frames a second and prints
-what each part of the frame costs (sim, scene, HUD, each GPU pass, sound);
-`--size` sets the resolution, `--map` the map.
+what each part of the frame costs (sim, scene, HUD, each GPU pass, sound),
+then its slowest frames part by part; `--size` sets the resolution, `--map` the map.
+In a window, a frame that takes over 50 ms (or a gap of over 100 ms between
+frames, or a wait on the window's next image) is logged as a `hitch` warning
+saying where the time went, with the machine's memory and disk pressure, and
+appended to `hitches.log` next to the profile.
 `--arena <rounds>` plays bot-only rounds headless and prints each side's wins
 and each gun's kills and deaths: every side runs the old bots (`src/ai/baseline.rs`)
 except the one `--improve <faction>` names, which runs the current ones.
