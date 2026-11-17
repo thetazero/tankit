@@ -1438,11 +1438,14 @@ impl Match {
         }
     }
 
-    /// A toll `s` strikes the nearest tank within `TOLL_RADIUS` of it (a
-    /// wall between them shields it). True if it struck one, and is spent.
+    /// A toll `s` strikes the nearest enemy within `TOLL_RADIUS` of it (a
+    /// wall between them shields it; a teammate it passes by is left be,
+    /// though one it runs straight into still stops it, as any shot). True
+    /// if it struck one, and is spent.
     fn strike(&mut self, s: &mut Shell) -> bool {
+        let team = self.fighters[s.owner].team;
         let near = (0..self.world.tanks.len())
-            .filter(|&j| j != s.owner)
+            .filter(|&j| self.fighters[j].team != team)
             .filter_map(|j| self.within(s.pos, j, TOLL_RADIUS).map(|p| (j, p)))
             .min_by(|a, b| a.1.distance(s.pos).total_cmp(&b.1.distance(s.pos)));
         let Some((j, at)) = near else {
@@ -1923,7 +1926,9 @@ impl Match {
             // A toll strikes whatever it passes close to.
             if spec.look == Look::Toll
                 && let Some(at) = (1..self.world.tanks.len())
-                    .filter(|&j| self.fighters[j].alive)
+                    .filter(|&j| {
+                        self.fighters[j].alive && self.fighters[j].team != self.fighters[0].team
+                    })
                     .find_map(|j| self.within(pos, j, TOLL_RADIUS))
             {
                 return at;
@@ -3168,6 +3173,58 @@ mod tests {
         }
     }
 
+    /// Adds a teammate of the player's to the duel `m`, `ahead` m down the
+    /// player's heading and `aside` m to its side, facing the same way.
+    fn add_friend(m: &mut Match, ahead: f32, aside: f32) -> usize {
+        let t = &m.world.tanks[0];
+        let yaw = t.yaw();
+        let at = Vec2::new(t.pos.x, t.pos.z) + dir2(yaw) * ahead + dir2(yaw - FRAC_PI_2) * aside;
+        m.world
+            .spawn_tank(Vec3::ONE, at, 0.0, HullKind::Kataphrakt, TurretKind::Kontos);
+        let k = m.world.tanks.len() - 1;
+        m.world.teleport(k, at, yaw);
+        m.fighters
+            .push(fighter(0, max_health(HullKind::Kataphrakt)));
+        m.bots.push(None);
+        m.fighters[k].shield = 0.0;
+        m.fighters[k].reload_in = f32::INFINITY;
+        k
+    }
+
+    /// A toll passing close by a teammate isn't drawn onto them: it flies on
+    /// to the enemy behind, and the crosshair marks the enemy, not the friend.
+    #[test]
+    fn a_toll_passes_a_friend_by() {
+        let mut m = duel(TurretKind::Knell, 30.0);
+        let friend = add_friend(&mut m, 14.0, 2.3);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let at = m.aim_landing(&m.world.tanks[0]);
+        assert!(
+            m.within(at, friend, 0.5).is_none(),
+            "the crosshair sits on the friend"
+        );
+        assert!(
+            m.within(at, 1, 0.5).is_some(),
+            "the crosshair isn't on the enemy"
+        );
+        let hp = (m.fighters[1].health, m.fighters[friend].health);
+        // Held until it tolls, then let it fly.
+        let secs = gun(TurretKind::Knell).charge;
+        let mut tolled = false;
+        for _ in 0..((secs + 2.0) / DT) as usize {
+            m.step(Command::default(), !tolled);
+            tolled |= shots_by_player(&mut m) > 0;
+        }
+        assert!(tolled, "the Knell never tolled");
+        assert!(
+            m.fighters[1].health < hp.0,
+            "the toll never reached the enemy"
+        );
+        assert_eq!(m.fighters[friend].health, hp.1);
+    }
+
     /// The assist never lays a gun on an enemy through a teammate: with a
     /// friend standing between, turned a little off the enemy behind them,
     /// no gun is bent onto it and no crosshair lands on it.
@@ -3176,19 +3233,7 @@ mod tests {
         for k in TurretKind::ALL {
             let dist = (gun(k).range() * 0.5).min(40.0);
             let mut m = duel(k, dist);
-            let t = &m.world.tanks[0];
-            let between = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist * 0.5;
-            m.world.spawn_tank(
-                Vec3::ONE,
-                between,
-                0.0,
-                HullKind::Kataphrakt,
-                TurretKind::Kontos,
-            );
-            m.fighters.push(fighter(0, max_health(HullKind::Kataphrakt)));
-            m.bots.push(None);
-            m.fighters[2].shield = 0.0;
-            m.fighters[2].reload_in = f32::INFINITY;
+            add_friend(&mut m, dist * 0.5, 0.0);
             m.world.tanks[0].turret_rel += 0.05;
             for _ in 0..60 {
                 m.step(Command::default(), false);
@@ -3198,6 +3243,11 @@ mod tests {
                 nudge.abs() < 1e-3,
                 "{k:?}: the gun was bent {nudge:.4} rad onto the enemy behind a friend"
             );
+            // A toll flies on past the friend and strikes the enemy as it
+            // goes by (`a_toll_passes_a_friend_by`): its mark is right there.
+            if k == TurretKind::Knell {
+                continue;
+            }
             let at = m.aim_landing(&m.world.tanks[0]);
             assert!(
                 m.within(at, 1, 0.5).is_none(),
