@@ -27,7 +27,9 @@ round's sound headless to a WAV and prints its levels.
 what each part of the frame costs (sim, scene, HUD, each GPU pass, sound),
 then its slowest frames part by part; `--size` sets the resolution, `--map` the map.
 In a window, a frame that takes over 50 ms (or a gap of over 100 ms between
-frames) is logged as a `hitch` warning saying where the time went.
+frames, or a wait on the window's next image) is logged as a `hitch` warning
+saying where the time went, with the machine's memory and disk pressure, and
+appended to `hitches.log` next to the profile.
 
 ## Controls
 

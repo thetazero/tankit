@@ -2,8 +2,12 @@
 //! matter the display refresh rate; rendering just reads the latest state.
 
 pub const DT: f32 = 1.0 / 120.0;
-/// Never simulate more than this much wall time per frame (avoids a spiral of death after a stall).
-const MAX_FRAME: f32 = 0.25;
+/// Most steps one frame catches up on (50 ms of play: real time down to
+/// 20 fps). Time past that is dropped and the game slows down instead. If
+/// steps cost more than DT, every frame owes more steps than the last, so the
+/// frame rate collapses to however long this many steps take: a cap of a
+/// quarter second (30 steps) pinned a heavy fight at ~5 fps.
+const MAX_STEPS: u32 = 6;
 
 #[derive(Default)]
 pub struct Clock {
@@ -13,9 +17,11 @@ pub struct Clock {
 impl Clock {
     /// Returns how many fixed steps to run for this frame.
     pub fn advance(&mut self, frame_dt: f32) -> u32 {
-        self.accumulator += frame_dt.clamp(0.0, MAX_FRAME);
-        let steps = (self.accumulator / DT) as u32;
+        self.accumulator += frame_dt.max(0.0);
+        let steps = ((self.accumulator / DT) as u32).min(MAX_STEPS);
         self.accumulator -= steps as f32 * DT;
+        // What's owed past the cap is dropped, not carried into the next frame.
+        self.accumulator = self.accumulator.min(DT);
         steps
     }
 
@@ -54,6 +60,21 @@ mod tests {
     #[test]
     fn clock_caps_long_stalls() {
         let mut c = Clock::default();
-        assert_eq!(c.advance(5.0), (MAX_FRAME / DT) as u32);
+        assert_eq!(c.advance(5.0), MAX_STEPS);
+        // The stall isn't paid back over the frames after it.
+        assert!(c.advance(1.0 / 60.0) <= 3);
+    }
+
+    /// Steps that cost more than DT (a heavy fight on a slow machine) slow
+    /// the game down rather than collapsing the frame rate.
+    #[test]
+    fn slow_steps_dont_spiral() {
+        let (step_cost, draw_cost) = (0.012, 0.015);
+        let mut c = Clock::default();
+        let mut dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            dt = c.advance(dt) as f32 * step_cost + draw_cost;
+        }
+        assert!(1.0 / dt > 10.0, "{:.1} fps", 1.0 / dt);
     }
 }

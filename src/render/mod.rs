@@ -1186,11 +1186,11 @@ impl Renderer {
         // (Minimized it's occluded every frame, and that's expected.)
         if waited > SLOW_ACQUIRE || outcome.is_some_and(|o| !matches!(o, "suboptimal" | "occluded"))
         {
-            log::warn!(
+            crate::hitch::report(format_args!(
                 "window image {} after {:.0} ms",
                 outcome.unwrap_or("acquired"),
                 waited.as_secs_f64() * 1e3
-            );
+            ));
         }
         let tex = match got {
             wgpu::CurrentSurfaceTexture::Success(t)

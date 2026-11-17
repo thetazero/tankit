@@ -21,6 +21,7 @@ use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
+use crate::hitch::{self, Laps};
 use crate::hud::{self, Hud, Ledger};
 use crate::keys;
 use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
@@ -154,6 +155,7 @@ struct App {
 }
 
 pub fn run(launch: Launch) -> anyhow::Result<()> {
+    hitch::start();
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let profile = match Profile::default_path() {
@@ -874,11 +876,11 @@ impl App {
         let mut laps = Laps::new(now);
         let gap = dt - self.last_work;
         if gap > HITCH_GAP && !self.loaded {
-            log::warn!(
+            hitch::report(format_args!(
                 "hitch: {:.0} ms between frames, {:.0} ms of it outside the frame's work",
                 dt * 1e3,
                 gap * 1e3
-            );
+            ));
         }
         self.loaded = false;
 
@@ -1085,12 +1087,12 @@ impl App {
         }
         self.last_work = laps.total();
         if self.last_work > HITCH_WORK {
-            log::warn!(
+            hitch::report(format_args!(
                 "hitch: a {:.0} ms frame ({steps} sim steps at {:.1} s): {}",
                 self.last_work * 1e3,
                 self.game.world.time,
                 laps
-            );
+            ));
         }
 
         self.fps_timer += dt;
@@ -1100,44 +1102,6 @@ impl App {
             self.fps_timer = 0.0;
             self.fps_frames = 0;
         }
-    }
-}
-
-/// A stopwatch over the parts of one frame, for the hitch log.
-struct Laps {
-    start: Instant,
-    at: Instant,
-    laps: Vec<(&'static str, f32)>,
-}
-
-impl Laps {
-    fn new(start: Instant) -> Laps {
-        Laps {
-            start,
-            at: start,
-            laps: Vec::with_capacity(6),
-        }
-    }
-
-    /// The part named `name` ended now.
-    fn lap(&mut self, name: &'static str) {
-        let now = Instant::now();
-        self.laps.push((name, (now - self.at).as_secs_f32()));
-        self.at = now;
-    }
-
-    fn total(&self) -> f32 {
-        (self.at - self.start).as_secs_f32()
-    }
-}
-
-impl std::fmt::Display for Laps {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        for (i, (name, t)) in self.laps.iter().enumerate() {
-            let sep = if i == 0 { "" } else { ", " };
-            write!(f, "{sep}{name} {:.1} ms", t * 1e3)?;
-        }
-        Ok(())
     }
 }
 
