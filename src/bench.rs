@@ -55,8 +55,15 @@ pub fn run(
     seconds: f32,
 ) -> Result<()> {
     let mut renderer = render::Renderer::new_headless(width, height)?;
-    renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
+    let load = Instant::now();
+    let map_mesh = scene::map_mesh(&game.world.map);
+    let t_mesh = load.elapsed();
+    renderer.set_static_mesh(&map_mesh);
+    let t_map = load.elapsed() - t_mesh;
+    renderer.take_world_lod(true);
+    let t_lod = load.elapsed() - t_mesh - t_map;
     let art = tank::TankArt::upload(&mut renderer);
+    let t_art = load.elapsed() - t_mesh - t_map - t_lod;
     let timed = renderer.enable_gpu_timer();
     let mut passes: Vec<Timer> = render::PASSES.iter().map(|&n| Timer::new(n)).collect();
     let mut hud = hud::Hud::new();
@@ -75,6 +82,8 @@ pub fn run(
     let mut steps_max = 0;
     let (mut instances, mut particles) = (0usize, 0usize);
     let mut tris = (0, 0);
+    let mut drawn = [0u64; 4];
+    let mut drawn_frames = 0u64;
 
     let frames = ((warmup + seconds) * FPS) as u32;
     let warm = (warmup * FPS) as u32;
@@ -127,6 +136,10 @@ pub fn run(
             instances = instances.max(frame_scene.instances.len());
             let t = renderer.triangles(&frame_scene);
             tris = (t.0, tris.1.max(t.1));
+            for (sum, d) in drawn.iter_mut().zip(renderer.drawn_triangles()) {
+                *sum += d;
+            }
+            drawn_frames += 1;
             particles = particles.max(frame_scene.particles.len());
         }
     }
@@ -140,6 +153,22 @@ pub fn run(
     println!(
         "  triangles: {} in the map, up to {} in tanks and effects",
         tris.0, tris.1
+    );
+    let n = drawn_frames.max(1);
+    println!(
+        "  in view, mean: map {} drawn of {} at full detail, tanks and effects {} of {}",
+        drawn[0] / n,
+        drawn[1] / n,
+        drawn[2] / n,
+        drawn[3] / n
+    );
+    println!(
+        "  load: map mesh {:.0} ms, its upload {:.0} ms, its LOD (in the background) {:.0} ms, \
+         tank kit {:.0} ms",
+        t_mesh.as_secs_f64() * 1e3,
+        t_map.as_secs_f64() * 1e3,
+        t_lod.as_secs_f64() * 1e3,
+        t_art.as_secs_f64() * 1e3
     );
     for t in [&sim, &build, &ui, &encode, &gpu, &voice, &total] {
         println!("  {}", t.report());
