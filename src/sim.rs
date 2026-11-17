@@ -545,6 +545,11 @@ pub struct Tank {
     pub hull: HullStats,
     pub body: RigidBodyHandle,
     pub collider: ColliderHandle,
+    /// The turret's hitbox: hangs off the body, turns with the turret, and
+    /// only shots see it (see [`insert_turret_hitbox`]).
+    pub turret_hitbox: ColliderHandle,
+    /// The turret the hitbox is shaped for (`turret_kind` can be swapped).
+    hitbox_kind: TurretKind,
 
     // Mirrored from the rigid body after every step, for rendering and AI.
     pub pos: Vec3,
@@ -635,14 +640,30 @@ impl Tank {
     /// The turret ring in the world, turned to the turret's heading: the
     /// frame the turret's art hangs from.
     pub fn turret_frame(&self) -> Mat4 {
-        let mut body = Mat4::from_rotation_translation(self.rot, self.pos);
+        Mat4::from_rotation_translation(self.rot, self.pos) * self.turret_mount()
+    }
+
+    /// The turret ring in the hull's own frame, turned to the turret's heading.
+    fn turret_mount(&self) -> Mat4 {
+        let mut m = Mat4::IDENTITY;
         if self.hull_kind == HullKind::Sethuun {
-            body = body
-                * Mat4::from_rotation_z(self.lean)
-                * Mat4::from_translation(Vec3::Y * HOVER_RIDE);
+            m = Mat4::from_rotation_z(self.lean) * Mat4::from_translation(Vec3::Y * HOVER_RIDE);
         }
-        body * Mat4::from_translation(self.hull_kind.ring())
-            * Mat4::from_rotation_y(self.turret_rel)
+        m * Mat4::from_translation(self.hull_kind.ring()) * Mat4::from_rotation_y(self.turret_rel)
+    }
+
+    /// Hang the turret hitbox where the turret is drawn now, reshaping it if
+    /// the turret was swapped. Takes effect at the next physics step.
+    fn place_turret_hitbox(&mut self, physics: &mut PhysicsWorld) {
+        let Some(c) = physics.colliders.get_mut(self.turret_hitbox) else {
+            return;
+        };
+        if self.hitbox_kind != self.turret_kind {
+            c.set_shape(turret_shape(self.turret_kind));
+            self.hitbox_kind = self.turret_kind;
+        }
+        let (_, rot, at) = self.turret_mount().to_scale_rotation_translation();
+        c.set_position_wrt_parent(Pose::from_parts(at, rot));
     }
 
     /// The gun in the world: origin at its trunnion, +z down the barrel.
@@ -759,6 +780,7 @@ impl World {
         let y = self.map.ground_height(at.x, at.y) + 0.15;
         let pose = Pose::from_parts(Vec3::new(at.x, y, at.y), Quat::from_rotation_y(yaw));
         let (body, collider) = insert_tank_body(&mut self.physics, Chassis::of(hull), pose);
+        let turret_hitbox = insert_turret_hitbox(&mut self.physics, body, turret);
         let chassis = Chassis::of(hull);
         let mut t = Tank {
             color,
@@ -768,6 +790,8 @@ impl World {
             hull: HullStats::of(hull),
             body,
             collider,
+            turret_hitbox,
+            hitbox_kind: turret,
             pos: Vec3::ZERO,
             rot: Quat::IDENTITY,
             vel: Vec3::ZERO,
@@ -801,6 +825,7 @@ impl World {
             feel: Feel::default(),
         };
         sync_from_body(&mut t, &self.physics);
+        t.place_turret_hitbox(&mut self.physics);
         t.snapshot();
         self.tanks.push(t);
         self.tanks.len() - 1
@@ -822,6 +847,8 @@ impl World {
         self.physics.bodies[body].set_linvel(old.linvel(), true);
         t.body = body;
         t.collider = collider;
+        t.turret_hitbox = insert_turret_hitbox(&mut self.physics, body, t.turret_kind);
+        t.hitbox_kind = t.turret_kind;
         t.hull_kind = kind;
         t.chassis = chassis;
         t.hull = HullStats::of(kind);
@@ -882,9 +909,11 @@ impl World {
         b.apply_torque_impulse(torque, true);
     }
 
-    /// Which tank owns a collider, if any.
+    /// Which tank owns a collider (its hull or its turret), if any.
     pub fn tank_of(&self, c: ColliderHandle) -> Option<usize> {
-        self.tanks.iter().position(|t| t.collider == c)
+        self.tanks
+            .iter()
+            .position(|t| t.collider == c || t.turret_hitbox == c)
     }
 
     pub fn step(&mut self, cmds: &[Command]) {
@@ -904,6 +933,7 @@ impl World {
             }
             drive(t, &cmd, &mut self.physics);
             turret(t, &cmd, DT);
+            t.place_turret_hitbox(&mut self.physics);
             t.since_fire += DT;
             t.age += DT;
         }
@@ -1055,6 +1085,47 @@ fn insert_tank_body(
         .restitution(0.0);
     let ch = physics.insert_collider(collider, Some(h));
     (h, ch)
+}
+
+/// A hitbox for `kind`'s turret on `body`: the convex hull of the head and
+/// mantlet as drawn (the gun level), in the turret's frame. Shots see it,
+/// nothing else does: a massless sensor in no collision group, so it never
+/// touches the ground, walls or other tanks, and the drive's wheel casts skip
+/// it. Its pose is kept on the turret by [`Tank::place_turret_hitbox`].
+fn insert_turret_hitbox(
+    physics: &mut PhysicsWorld,
+    body: RigidBodyHandle,
+    kind: TurretKind,
+) -> ColliderHandle {
+    let c = ColliderBuilder::new(turret_shape(kind))
+        .sensor(true)
+        .density(0.0)
+        .collision_groups(InteractionGroups::none());
+    physics.insert_collider(c, Some(body))
+}
+
+/// Each turret's hitbox shape, built once from its art.
+fn turret_shape(kind: TurretKind) -> SharedShape {
+    static SHAPES: std::sync::OnceLock<Vec<SharedShape>> = std::sync::OnceLock::new();
+    let shapes = SHAPES.get_or_init(|| {
+        TurretKind::ALL
+            .iter()
+            .map(|&k| {
+                let m = crate::tank::turret_model(k);
+                let gun = k.trunnion();
+                let pts: Vec<Vec3> = m
+                    .head
+                    .verts
+                    .iter()
+                    .map(|v| Vec3::from(v.pos))
+                    .chain(m.mantlet.verts.iter().map(|v| Vec3::from(v.pos) + gun))
+                    .collect();
+                SharedShape::convex_hull(&pts).expect("turret hitbox shape")
+            })
+            .collect()
+    });
+    let i = TurretKind::ALL.iter().position(|&k| k == kind).unwrap();
+    shapes[i].clone()
 }
 
 fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
@@ -1229,7 +1300,10 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // 1. Suspension rays (one per road wheel).
     let mut ray_hits: Vec<Option<(Vec3, Vec3, f32)>> = vec![None; n_wheels];
     {
-        let filter = QueryFilter::default().exclude_rigid_body(t.body);
+        // Turret hitboxes are for shots only: wheels pass through them.
+        let filter = QueryFilter::default()
+            .exclude_rigid_body(t.body)
+            .exclude_sensors();
         let qp = physics.query_pipeline_with_filter(filter);
         // Each wheel is a ball swept down from its mount, not a thin ray: it
         // rolls up onto an edge as it reaches it instead of snapping to the
@@ -2533,6 +2607,93 @@ mod tests {
         let slide = distance(Vec3::new(6.0, 0.0, 0.0), 0.0);
         assert!(coast > 12.0, "coasting from 6 m/s only rolled {coast} m");
         assert!(slide < 3.0, "sliding sideways from 6 m/s went {slide} m");
+    }
+
+    /// A shot over the hull's deck still hits the turret drawn there, from the
+    /// front and, with the turret turned, from the side; above the turret's
+    /// roof it misses.
+    #[test]
+    fn turrets_can_be_hit() {
+        for &kind in &TurretKind::ALL {
+            let mut w = flat_world();
+            w.tanks[0].turret_kind = kind;
+            run(&mut w, Command::default(), 1.0);
+            let t = &w.tanks[0];
+            let ring = t.turret_frame().transform_point3(Vec3::ZERO);
+            let height = |m: &crate::render::mesh::MeshData| {
+                m.verts.iter().map(|v| v.pos[1]).fold(0.0f32, f32::max)
+            };
+            let model = crate::tank::turret_model(kind);
+            let roof = height(&model.head).max(height(&model.mantlet) + kind.trunnion().y);
+            let shoot = |w: &World, dir: Vec3, y: f32| {
+                let from = ring + Vec3::Y * y - dir * 20.0;
+                w.physics
+                    .cast_ray(&Ray::new(from, dir), 40.0, true, QueryFilter::default())
+                    .and_then(|(c, _)| w.tank_of(c))
+            };
+            let deck = t.chassis.hull_top - t.hull_kind.ring().y;
+            let over = deck + 0.15;
+            assert_eq!(
+                shoot(&w, -Vec3::Z, over),
+                Some(0),
+                "{kind:?} from the front"
+            );
+            assert_eq!(
+                shoot(&w, Vec3::Z, roof + 0.1),
+                None,
+                "{kind:?} over its roof"
+            );
+            // Turn it a quarter round: its hitbox goes with it.
+            run(
+                &mut w,
+                Command {
+                    turret: 1.0,
+                    ..Command::default()
+                },
+                1.5,
+            );
+            let t = &w.tanks[0];
+            let (_, rot, at) = t.turret_frame().to_scale_rotation_translation();
+            let pose = w.physics.colliders[t.turret_hitbox].position();
+            assert!(
+                pose.translation.distance(at) < 0.05,
+                "{kind:?} hitbox off the ring"
+            );
+            assert!(
+                pose.rotation.angle_between(rot) < 0.05,
+                "{kind:?} hitbox didn't turn"
+            );
+            assert!(
+                t.turret_rel.abs() > 1.0,
+                "{kind:?} turret only turned {}",
+                t.turret_rel
+            );
+            let side = t.turret_dir().cross(Vec3::Y).normalize();
+            assert_eq!(
+                shoot(&w, side, over),
+                Some(0),
+                "{kind:?} turned, from the side"
+            );
+        }
+    }
+
+    /// The turret hitbox touches nothing but shots: the hull's mass is
+    /// unchanged, and the wheels ride over it as if it weren't there.
+    #[test]
+    fn turret_hitbox_is_for_shots_only() {
+        let mut w = flat_world();
+        let b = &w.physics.bodies[w.tanks[0].body];
+        assert_eq!(b.mass(), w.tanks[0].chassis.mass);
+        let c = &w.physics.colliders[w.tanks[0].turret_hitbox];
+        assert!(c.is_sensor());
+        assert_eq!(c.collision_groups(), InteractionGroups::none());
+        run(&mut w, Command::default(), 1.0);
+        assert!(
+            w.physics
+                .contact_pairs_with(w.tanks[0].turret_hitbox)
+                .next()
+                .is_none()
+        );
     }
 
     /// Kicked while parked (no input), the brakes hold: the recoil skids it

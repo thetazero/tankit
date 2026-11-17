@@ -21,7 +21,7 @@ use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
-use crate::hud::{self, Hud};
+use crate::hud::{self, Hud, Ledger};
 use crate::keys;
 use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
 use crate::mission::{Contract, MISSIONS};
@@ -862,7 +862,11 @@ impl App {
                         (ui, hits)
                     }
                     Mode::Playing => {
-                        let hud = self.hud.draw(&self.game, &tanks, &camera, w, h, dt, scores);
+                        let ledger =
+                            Ledger::before(&self.profile, &self.game, self.banked, self.paid);
+                        let hud = self
+                            .hud
+                            .draw(&self.game, &tanks, &camera, w, h, dt, scores, ledger);
                         let layer =
                             self.garage
                                 .overlay(hud.verts, &driven, queued, &self.profile, w, h);
@@ -878,7 +882,21 @@ impl App {
                     Mode::Paused => {
                         let mut ui = menu::dim(
                             self.hud
-                                .draw(&self.game, &tanks, &camera, w, h, 0.0, false)
+                                .draw(
+                                    &self.game,
+                                    &tanks,
+                                    &camera,
+                                    w,
+                                    h,
+                                    0.0,
+                                    false,
+                                    Ledger::before(
+                                        &self.profile,
+                                        &self.game,
+                                        self.banked,
+                                        self.paid,
+                                    ),
+                                )
                                 .verts,
                         );
                         let pause = self.pause.draw(

@@ -1059,7 +1059,7 @@ impl Match {
             &Ray::new(from, dir),
             range,
             true,
-            QueryFilter::default().exclude_collider(t.collider),
+            QueryFilter::default().exclude_rigid_body(t.body),
         );
         let (end, victim, d) = match hit {
             Some((c, toi)) => (from + dir * toi, self.world.tank_of(c), toi),
@@ -1100,7 +1100,7 @@ impl Match {
             &Ray::new(breech, to / len),
             len,
             true,
-            QueryFilter::default().exclude_collider(t.collider),
+            QueryFilter::default().exclude_rigid_body(t.body),
         ) {
             Some((_, toi)) => breech + to / len * (toi - 0.05).max(0.0),
             None => muzzle,
@@ -1170,19 +1170,17 @@ impl Match {
             if len < 1e-6 {
                 return true;
             }
-            let owner = self.world.tanks[s.owner].collider;
-            let passed: Vec<_> = s
-                .passed
-                .iter()
-                .filter_map(|&j| self.world.tanks.get(j).map(|t| t.collider))
-                .collect();
-            let skip = |c: ColliderHandle, _: &Collider| !passed.contains(&c);
+            let owner = self.world.tanks[s.owner].body;
+            let world = &self.world;
+            let skip = |c: ColliderHandle, _: &Collider| {
+                world.tank_of(c).is_none_or(|j| !s.passed.contains(&j))
+            };
             let hit = self.world.physics.cast_ray_and_get_normal(
                 &Ray::new(s.pos, step / len),
                 len,
                 true,
                 QueryFilter::default()
-                    .exclude_collider(owner)
+                    .exclude_rigid_body(owner)
                     .predicate(&skip),
             );
             let Some((c, ri)) = hit else {
@@ -1208,22 +1206,30 @@ impl Match {
     /// between its centre and the tank.
     fn engulf(&mut self, s: &mut Shell) {
         let reach = flame_reach(s);
-        let colliders: Vec<_> = self.world.tanks.iter().map(|t| t.collider).collect();
-        for (j, &c) in colliders.iter().enumerate() {
+        for j in 0..self.world.tanks.len() {
             if j == s.owner || s.passed.contains(&j) {
                 continue;
             }
-            let Some(col) = self.world.physics.colliders.get(c) else {
+            // The nearest point of its hull or its turret.
+            let t = &self.world.tanks[j];
+            let Some((near, d)) = [t.collider, t.turret_hitbox]
+                .iter()
+                .filter_map(|&c| self.world.physics.colliders.get(c))
+                .map(|col| {
+                    let p = col.shape().project_point(col.position(), s.pos, true).point;
+                    (p, p.distance(s.pos))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+            else {
                 continue;
             };
-            let near = col.shape().project_point(col.position(), s.pos, true).point;
             let to = near - s.pos;
-            let d = to.length();
             if d > reach {
                 continue;
             }
             // Walls (and the ground) still stop it: only tanks are see-through.
-            let tank = |c: ColliderHandle, _: &Collider| !colliders.contains(&c);
+            let world = &self.world;
+            let tank = |c: ColliderHandle, _: &Collider| world.tank_of(c).is_none();
             let blocked = d > 1e-3
                 && self
                     .world
@@ -1651,7 +1657,7 @@ impl Match {
                 &Ray::new(from, dir),
                 reach,
                 true,
-                QueryFilter::default().exclude_collider(t.collider),
+                QueryFilter::default().exclude_rigid_body(t.body),
             )
             .map_or(reach, |(_, toi)| toi);
         Some(from + dir * toi)
