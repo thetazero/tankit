@@ -362,6 +362,8 @@ pub fn ideal_range(kind: TurretKind) -> f32 {
         TurretKind::Lumen => 55.0,
         // Flamethrower: right up against them.
         TurretKind::Hymn => 8.0,
+        // Siege bell: near enough that the slow toll is hard to sidestep.
+        TurretKind::Knell => 40.0,
     }
 }
 
@@ -656,6 +658,22 @@ impl Bot {
             }
         }
 
+        // An enemy Knell ringing up with its bell on us: get out of its line.
+        let tolling = world.tanks.iter().enumerate().any(|(j, o)| {
+            if j == me || contacts[j].team == contacts[me].team || o.charge < 0.35 {
+                return false;
+            }
+            let to = my2 - flat(o.pos);
+            let d = to.length();
+            d < crate::combat::gun(o.turret_kind).range()
+                && wrap_angle(yaw_of(to) - o.turret_yaw()).abs() < (3.0 / d.max(1.0)).max(0.06)
+                && can_see(world, o.pos + Vec3::Y * o.gun_height(), t)
+        });
+        if tolling {
+            cmd.throttle = 1.0;
+            cmd.steer = self.jink;
+        }
+
         // On a mesa: never drive at the edge, whatever else says to (jinking,
         // backing off something). Brake, and back away from it.
         if let Some(fall_y) = world.map.fall_y {
@@ -679,6 +697,12 @@ impl Bot {
                 // Tolerance scales with distance so a hull-width miss still counts as lined up.
                 let tol = (1.4 / d.max(1.0)).max(0.02);
                 if err.abs() < tol && d < FIRE_RANGE.min(g.range()) && self.seen_for > 0.45 {
+                    fire = true;
+                }
+                // A charge gun has to be held through its charge: once it's
+                // ringing up, keep holding while the target stays roughly
+                // in line, rather than letting go and wasting it.
+                if g.charge > 0.0 && t.charge > 0.0 && err.abs() < tol * 4.0 + 0.05 {
                     fire = true;
                 }
             }

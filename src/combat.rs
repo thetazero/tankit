@@ -71,11 +71,30 @@ pub struct Gun {
     /// Spin-up guns: seconds of holding the trigger from still to full spin.
     /// They fire from the first moment, but slowly (`SPOOL_FLOOR`). 0: none.
     pub spool: f32,
+    /// Charge guns: seconds of holding the trigger before the shot goes,
+    /// which it does by itself. Letting go first cancels it. 0: none.
+    pub charge: f32,
     pub action: Action,
 }
 
 /// A spin-up gun's fire rate when it's barely turning, as a fraction of full.
 pub const SPOOL_FLOOR: f32 = 0.3;
+
+/// A cancelled charge drains away over this long, s (the bell exhales)...
+pub const CHARGE_DRAIN: f32 = 0.4;
+/// ...and the gun can't start another for this long, s.
+pub const CHARGE_LOCK: f32 = 0.5;
+/// While a charge builds, the tank braces: drive and traverse are cut to
+/// this share.
+pub const CHARGE_BRACE: f32 = 0.4;
+/// What a Knell's toll hands the tank it lands on, N·s: more than it kicks
+/// its own hull back with (`TurretKind::recoil`).
+pub const KNELL_KNOCK: f32 = 200_000.0;
+/// ...thrown up as well as away: this much lift per unit of shove.
+const KNELL_LIFT: f32 = 0.3;
+/// A toll strikes any tank this close to its path, m: it's a wide ring of
+/// sound and light, not a slug.
+const TOLL_RADIUS: f32 = 1.4;
 
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -123,6 +142,8 @@ pub enum Look {
     Bolt { size: f32 },
     /// A puff of crystal fire that swells as it flies.
     Flame,
+    /// A Knell's toll: a ring of crystal light and sound, `TOLL_RADIUS` wide.
+    Toll,
 }
 
 /// How big a flame puff is drawn (its scale, m) at `f` of its life: small
@@ -214,6 +235,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(cannon),
         },
         // Imperium twin short guns: light hits, alternating barrels, fast;
@@ -222,6 +244,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 15.0,
             reload: 0.5,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(cannon),
         },
         // Ithessar: an orb of plasma charged in a crystal cradle. Slow, and it
@@ -230,6 +253,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 32.0,
             reload: 1.2,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 38.0,
                 life: 3.4,
@@ -245,6 +269,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 6.0,
             reload: 0.11,
             spool: 1.1,
+            charge: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 68.0,
                 life: 1.4,
@@ -260,6 +285,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 34.0,
             reload: 0.0,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Beam {
                 range: 160.0,
                 thermal_mass: 1.6,
@@ -270,6 +296,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 1.0,
             reload: 1.0 / 60.0,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 24.0,
                 life: 0.65,
@@ -277,6 +304,24 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 0,
                 spread: 0.11,
                 look: Look::Flame,
+                instant: false,
+            }),
+        },
+        // Resonant siege bell: hold to ring it up; at full it tolls by
+        // itself, one shot that throws whatever it strikes (and its own
+        // hull back). Let go early and the rite is broken.
+        TurretKind::Knell => Gun {
+            damage: 85.0,
+            reload: 3.0,
+            spool: 0.0,
+            charge: 1.8,
+            action: Action::Shell(ShellSpec {
+                speed: 120.0,
+                life: 0.95,
+                gravity: 0.0,
+                bounces: 0,
+                spread: 0.0,
+                look: Look::Toll,
                 instant: false,
             }),
         },
@@ -362,6 +407,10 @@ pub struct Fighter {
     /// Beam weapons: heat 0..1, and whether it overheated and is locked until cool.
     pub heat: f32,
     pub overheated: bool,
+    /// Charge guns: how far the shot has built up, 0..1, and whether it's
+    /// building (the trigger held since it started).
+    pub charge: f32,
+    pub charging: bool,
     /// Where this tank's beam ends this step, while it's firing one.
     pub beam: Option<Vec3>,
     /// What that beam is burning (for the sound of it).
@@ -441,6 +490,7 @@ fn impact_kind(spec: &ShellSpec, hit: bool) -> BlastKind {
     match spec.look {
         Look::Plasma { size } => BlastKind::Plasma(size * if hit { 1.6 } else { 1.0 }),
         Look::Bolt { size } => BlastKind::Plasma(size * if hit { 0.9 } else { 0.6 }),
+        Look::Toll => BlastKind::Shatter(if hit { 2.6 } else { 1.8 }),
         _ if hit => BlastKind::Hit,
         _ => BlastKind::Impact,
     }
@@ -541,6 +591,13 @@ pub enum Sound {
     BeamReady {
         tank: usize,
         at: Vec3,
+    },
+    /// A Knell let go before it tolled: the rite broken, the charge
+    /// (0..1, how far it got) exhaled.
+    ChargeCancel {
+        tank: usize,
+        at: Vec3,
+        charge: f32,
     },
     /// The player's shot made a kill.
     Confirm,
@@ -819,11 +876,17 @@ impl Match {
                 Some(bot) => bot.think(i, &self.world, &contacts, objective, &self.nav, DT),
                 None => (player, fire),
             };
-            // A husk's drive fades with it.
+            // A husk's drive fades with it; a tank ringing up a charge braces.
             let s = self.fighters[i].strength();
+            let brace = if self.fighters[i].charging {
+                CHARGE_BRACE
+            } else {
+                1.0
+            };
             cmds.push(Command {
-                throttle: c.throttle * s,
-                steer: c.steer * s.sqrt(),
+                throttle: c.throttle * s * brace,
+                steer: c.steer * s.sqrt() * brace,
+                turret: c.turret * brace,
                 ..c
             });
             triggers.push(f);
@@ -902,7 +965,9 @@ impl Match {
                         };
                         t.spin += DT * (1.5 + 26.0 * t.spool);
                     }
-                    if trigger && f.alive && f.reload_in <= 0.0 {
+                    if g.charge > 0.0 {
+                        self.charge(i, trigger, g.charge);
+                    } else if trigger && f.alive && f.reload_in <= 0.0 {
                         self.shoot(i);
                     }
                 }
@@ -912,6 +977,7 @@ impl Match {
         for (t, f) in self.world.tanks.iter_mut().zip(&self.fighters) {
             t.heat = f.heat;
             t.overheated = f.overheated;
+            t.charge = f.charge;
             t.beaming = f.beam.is_some();
         }
 
@@ -1013,6 +1079,36 @@ impl Match {
             t.gun_pitch += (pitch - t.gun_pitch) * k;
             t.gun_yaw += (side - t.gun_yaw) * k;
         }
+    }
+
+    /// One step of tank `i`'s charge gun, which takes `secs` of holding the
+    /// trigger to ring up. Full, it fires by itself; let go first and the
+    /// charge drains away, and the gun is locked for a moment.
+    fn charge(&mut self, i: usize, trigger: bool, secs: f32) {
+        let f = &mut self.fighters[i];
+        if trigger && f.alive && (f.charging || f.reload_in <= 0.0) {
+            f.charging = true;
+            f.charge = (f.charge + DT / secs).min(1.0);
+            if f.charge >= 1.0 {
+                f.charge = 0.0;
+                f.charging = false;
+                self.shoot(i);
+            }
+            return;
+        }
+        if f.charging {
+            f.charging = false;
+            f.reload_in = f.reload_in.max(CHARGE_LOCK);
+            if f.alive {
+                self.sounds.push(Sound::ChargeCancel {
+                    tank: i,
+                    at: muzzle(&self.world.tanks[i]),
+                    charge: f.charge,
+                });
+            }
+        }
+        let f = &mut self.fighters[i];
+        f.charge = (f.charge - DT / CHARGE_DRAIN).max(0.0);
     }
 
     /// Where a gun at `eye`, aimed level along `dir`, should put its shot on
@@ -1224,6 +1320,9 @@ impl Match {
             if alive && s.spec.look == Look::Flame {
                 self.engulf(s);
             }
+            if alive && s.spec.look == Look::Toll {
+                return !self.strike(s);
+            }
             alive
         });
         self.shells = shells;
@@ -1279,43 +1378,58 @@ impl Match {
             if j == s.owner || s.passed.contains(&j) {
                 continue;
             }
-            // The nearest point of its hull or its turret.
-            let t = &self.world.tanks[j];
-            let Some((near, d)) = [t.collider, t.turret_hitbox]
-                .iter()
-                .filter_map(|&c| self.world.physics.colliders.get(c))
-                .map(|col| {
-                    let p = col.shape().project_point(col.position(), s.pos, true).point;
-                    (p, p.distance(s.pos))
-                })
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-            else {
-                continue;
-            };
-            let to = near - s.pos;
-            if d > reach {
-                continue;
+            if let Some(near) = self.within(s.pos, j, reach) {
+                self.hit(s, j, near);
+                s.passed.push(j);
             }
-            // Walls (and the ground) still stop it: only tanks are see-through.
-            let world = &self.world;
-            let tank = |c: ColliderHandle, _: &Collider| world.tank_of(c).is_none();
-            let blocked = d > 1e-3
-                && self
-                    .world
-                    .physics
-                    .cast_ray(
-                        &Ray::new(s.pos, to / d),
-                        d,
-                        true,
-                        QueryFilter::default().predicate(&tank),
-                    )
-                    .is_some();
-            if blocked {
-                continue;
-            }
-            self.hit(s, j, near);
-            s.passed.push(j);
         }
+    }
+
+    /// A toll `s` strikes the nearest tank within `TOLL_RADIUS` of it (a
+    /// wall between them shields it). True if it struck one, and is spent.
+    fn strike(&mut self, s: &mut Shell) -> bool {
+        let near = (0..self.world.tanks.len())
+            .filter(|&j| j != s.owner)
+            .filter_map(|j| self.within(s.pos, j, TOLL_RADIUS).map(|p| (j, p)))
+            .min_by(|a, b| a.1.distance(s.pos).total_cmp(&b.1.distance(s.pos)));
+        let Some((j, at)) = near else {
+            return false;
+        };
+        s.pos = at;
+        self.hit(s, j, at);
+        true
+    }
+
+    /// The nearest point of tank `j`'s hull or turret to `from`, if it's
+    /// within `reach` and no wall (or the ground) stands between them.
+    fn within(&self, from: Vec3, j: usize, reach: f32) -> Option<Vec3> {
+        let t = &self.world.tanks[j];
+        let (near, d) = [t.collider, t.turret_hitbox]
+            .iter()
+            .filter_map(|&c| self.world.physics.colliders.get(c))
+            .map(|col| {
+                let p = col.shape().project_point(col.position(), from, true).point;
+                (p, p.distance(from))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        if d > reach {
+            return None;
+        }
+        // Walls (and the ground) still stop it: only tanks are see-through.
+        let world = &self.world;
+        let tank = |c: ColliderHandle, _: &Collider| world.tank_of(c).is_none();
+        let blocked = d > 1e-3
+            && self
+                .world
+                .physics
+                .cast_ray(
+                    &Ray::new(from, (near - from) / d),
+                    d,
+                    true,
+                    QueryFilter::default().predicate(&tank),
+                )
+                .is_some();
+        (!blocked).then_some(near)
     }
 
     /// Shell `s` ran into collider `c` at `at` (surface normal `n`).
@@ -1383,12 +1497,20 @@ impl Match {
     /// kicked back with (less what it shed skipping off walls), along its
     /// flight, where it lands: a hit off-centre slews the hull round, one
     /// high on the turret rocks it hard, one low near its centre of mass
-    /// barely tips it.
+    /// barely tips it. A Knell's toll hands it far more, and throws it up
+    /// as well.
     fn knock(&mut self, s: &Shell, j: usize, at: Vec3) {
+        let d = s.vel.normalize_or_zero();
+        if s.spec.look == Look::Toll {
+            // Up and away from right where it struck: a high hit bowls it over.
+            self.world
+                .push(j, (d + Vec3::Y * KNELL_LIFT) * KNELL_KNOCK, at);
+            return;
+        }
         let kind = self.world.tanks[s.owner].turret_kind;
         let skips = s.spec.bounces.saturating_sub(s.bounces) as i32;
         let momentum = kind.recoil() * BOUNCE_KEEP.powi(skips);
-        self.world.push(j, s.vel.normalize_or_zero() * momentum, at);
+        self.world.push(j, d * momentum, at);
     }
 
     /// `owner` deals `amount` to tank `j` (spawn shields and the round's end permitting).
@@ -1671,6 +1793,8 @@ impl Match {
             f.reload_in = 0.5;
             f.heat = 0.0;
             f.overheated = false;
+            f.charge = 0.0;
+            f.charging = false;
             if i == 0 {
                 self.sounds.push(Sound::Link);
             }
@@ -1829,6 +1953,27 @@ impl Match {
                     ));
                     out.push(glow(p, size * 0.5, PLASMA, 1.6 * born, Vec3::ZERO));
                 }
+                // The toll: a great bloom of crystal light, trailing.
+                Look::Toll => {
+                    out.push(glow(p, TOLL_RADIUS * 2.6, CRYSTAL, 1.8 * born, Vec3::ZERO));
+                    out.push(glow(
+                        p,
+                        TOLL_RADIUS * 1.1,
+                        CRYSTAL_HOT,
+                        2.2 * born,
+                        Vec3::ZERO,
+                    ));
+                    for k in 1..4 {
+                        let k = k as f32;
+                        out.push(glow(
+                            p - d * k * 1.6,
+                            TOLL_RADIUS * (1.8 - 0.35 * k),
+                            CRYSTAL,
+                            (1.2 - 0.3 * k) * born,
+                            Vec3::ZERO,
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -1956,6 +2101,38 @@ impl Match {
                         let off = Vec3::new(a.cos(), (a * 1.7).sin() * 0.6, a.sin()) * size * 0.3;
                         let r = size * (0.75 + 0.2 * (k as f32 + s.seed * 3.0).sin());
                         out.push(ball(p + off, r, hot.extend(glow)));
+                    }
+                }
+                // A ring of crystal shards round the flight path, widening
+                // from the bell's lip as it goes, turning, with a pale
+                // ripple of the sound itself inside it.
+                Look::Toll => {
+                    let f = (s.age / s.spec.life).min(1.0);
+                    let r = TOLL_RADIUS * (0.65 + 0.35 * f.sqrt());
+                    let side = d.any_orthonormal_vector();
+                    let n = 12;
+                    for k in 0..n {
+                        let a = k as f32 / n as f32 * std::f32::consts::TAU + s.age * 6.0;
+                        let out_dir = Quat::from_axis_angle(d, a) * side;
+                        let tangent = d.cross(out_dir);
+                        out.push((
+                            MeshId::GEM,
+                            Instance::new(
+                                Mat4::from_scale_rotation_translation(
+                                    Vec3::new(0.12, 0.7, 0.12),
+                                    Quat::from_rotation_arc(Vec3::Y, tangent),
+                                    p + out_dir * r,
+                                ),
+                                CRYSTAL_HOT.extend(5.0),
+                            ),
+                        ));
+                    }
+                    for (back, w) in [(0.0, 0.5), (1.2, 0.35), (2.4, 0.2)] {
+                        out.push(ball(
+                            p - d * back,
+                            r * w,
+                            CRYSTAL.extend(1.5 * (1.0 - back / 3.0)),
+                        ));
                     }
                 }
             }
@@ -2216,6 +2393,8 @@ fn fighter(team: usize, health: f32) -> Fighter {
         repaired: 0.0,
         heat: 0.0,
         overheated: false,
+        charge: 0.0,
+        charging: false,
         beam: None,
         burning: Burn::Air,
         levels: Levels::default(),
@@ -2280,7 +2459,7 @@ fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2
 mod tests {
     use super::*;
     use crate::sim::dir2;
-    use rapier3d::prelude::ColliderBuilder;
+    use rapier3d::prelude::{ColliderBuilder, Pose};
     use std::f32::consts::{FRAC_PI_2, PI};
 
     /// A real map with room for a full match.
@@ -2465,7 +2644,9 @@ mod tests {
     /// Every faction's turret can kill a tank in front of it at close range.
     #[test]
     fn every_turret_kills_at_close_range() {
-        for &k in &TurretKind::ALL {
+        // The Knell's kill is two tolls, or the fall after one: its own
+        // tests below.
+        for &k in TurretKind::ALL.iter().filter(|&&k| k != TurretKind::Knell) {
             let mut m = duel(k, 11.0);
             for _ in 0..(8.0 / DT) as usize {
                 m.step(Command::default(), true);
@@ -2514,7 +2695,9 @@ mod tests {
     #[test]
     fn a_hit_shoves_the_target_as_hard_as_the_gun_kicks_back() {
         for &k in &TurretKind::ALL {
-            if !matches!(gun(k).action, Action::Shell(_)) {
+            // The Knell hands its target more than it kicks back with (its
+            // own test below), and has to ring up first.
+            if !matches!(gun(k).action, Action::Shell(_)) || k == TurretKind::Knell {
                 continue;
             }
             let mut m = duel(k, 10.0);
@@ -2550,6 +2733,167 @@ mod tests {
                 "{k:?}: momentum not conserved: {kick} vs {shove}"
             );
         }
+    }
+
+    /// Shots tank 0 fired in the steps taken by `run`.
+    fn shots_by_player(m: &mut Match) -> usize {
+        m.sounds
+            .drain(..)
+            .filter(|s| matches!(s, Sound::Shot { tank: 0, .. }))
+            .count()
+    }
+
+    /// Holding the trigger rings a Knell up; nothing leaves the bell until
+    /// it's full, and then it tolls by itself, once, holding or not.
+    #[test]
+    fn a_knell_charges_then_tolls_by_itself() {
+        let mut m = duel(TurretKind::Knell, 40.0);
+        let secs = gun(TurretKind::Knell).charge;
+        let mut shots = 0;
+        let mut fired_at = None;
+        for n in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), true);
+            let s = shots_by_player(&mut m);
+            if s > 0 && fired_at.is_none() {
+                fired_at = Some(n as f32 * DT);
+            }
+            shots += s;
+        }
+        let at = fired_at.expect("the Knell never tolled");
+        assert!(
+            (at - secs).abs() < 0.05,
+            "tolled after {at:.2} s, wants {secs} s"
+        );
+        assert_eq!(shots, 1, "one toll, then it reloads");
+    }
+
+    /// Letting go before it's full breaks the rite: nothing fires, the
+    /// charge drains away, the bell exhales, and it's locked for a moment.
+    #[test]
+    fn letting_go_cancels_a_knell() {
+        let mut m = duel(TurretKind::Knell, 40.0);
+        for _ in 0..(1.2 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(m.fighters[0].charge > 0.5 && m.fighters[0].charging);
+        assert!(m.world.tanks[0].charge > 0.5, "the art sees the charge");
+        m.sounds.clear();
+        m.step(Command::default(), false);
+        assert!(
+            m.sounds
+                .iter()
+                .any(|s| matches!(s, Sound::ChargeCancel { tank: 0, .. })),
+            "no exhale"
+        );
+        assert!(!m.fighters[0].charging);
+        assert!(m.fighters[0].reload_in > 0.4, "locked after a cancel");
+        let mut shots = shots_by_player(&mut m);
+        for _ in 0..(CHARGE_DRAIN / DT) as usize + 2 {
+            m.step(Command::default(), false);
+            shots += shots_by_player(&mut m);
+        }
+        assert_eq!(m.fighters[0].charge, 0.0, "the charge drained");
+        assert_eq!(shots, 0, "a cancelled Knell never fires");
+        assert_eq!(m.fighters[1].health, max_health(HullKind::Kataphrakt));
+    }
+
+    /// The toll throws its own hull back hard, and its target harder, up as
+    /// well as away; and it hurts.
+    #[test]
+    fn a_knell_throws_both_tanks() {
+        let mut m = duel(TurretKind::Knell, 30.0);
+        for t in &m.world.tanks {
+            let b = &mut m.world.physics.bodies[t.body];
+            b.set_translation(b.translation() + Vec3::Y * 40.0, true);
+            b.set_linvel(Vec3::ZERO, true);
+            b.set_angvel(Vec3::ZERO, true);
+        }
+        let ahead = m.world.tanks[0].turret_dir();
+        let momentum = |m: &Match, i: usize| {
+            let b = &m.world.physics.bodies[m.world.tanks[i].body];
+            b.linvel() * b.mass()
+        };
+        let charge = gun(TurretKind::Knell).charge;
+        let mut kick = Vec3::ZERO;
+        for _ in 0..((charge + 2.0 * DT) / DT) as usize {
+            m.step(Command::default(), true);
+            kick = momentum(&m, 0);
+        }
+        // Pin the shooter's kick before the toll has flown to the target.
+        let kicked = -(kick * Vec3::new(1.0, 0.0, 1.0)).dot(ahead);
+        let recoil = TurretKind::Knell.recoil();
+        assert!(
+            kicked > 0.9 * recoil,
+            "kicked back {kicked:.0} of {recoil:.0} N·s"
+        );
+        let v0 = momentum(&m, 1);
+        for _ in 0..(0.5 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        // Gravity pulls both down the same; take it out of the target's lift.
+        let fall = m.world.physics.bodies[m.world.tanks[1].body].mass() * GRAVITY * 0.5;
+        let shove = momentum(&m, 1) - v0;
+        assert!(
+            shove.dot(ahead) > 0.9 * KNELL_KNOCK,
+            "the target took {:.0} of {KNELL_KNOCK:.0} N·s",
+            shove.dot(ahead)
+        );
+        assert!(
+            shove.y + fall > 0.3 * KNELL_LIFT * KNELL_KNOCK,
+            "thrown up by {:.0} N·s",
+            shove.y + fall
+        );
+        let left = m.fighters[1].health;
+        let hurt = max_health(HullKind::Kataphrakt) - left;
+        assert!(
+            (hurt - gun(TurretKind::Knell).damage).abs() < 1.0,
+            "took {hurt}"
+        );
+    }
+
+    /// The toll is wide: a shot that would pass a tank by a hull's half-width
+    /// still strikes it.
+    #[test]
+    fn a_toll_strikes_what_it_passes_close_to() {
+        let mut m = duel(TurretKind::Knell, 30.0);
+        // Turn the target's line a little off the gun: the muzzle's line
+        // passes about 1 m beside the hull, clear of a plain shot.
+        let rot = m.world.tanks[0].rot;
+        let side = m.world.tanks[0].turret_dir().cross(Vec3::Y).normalize();
+        let t = &m.world.tanks[1];
+        let off = side * (t.chassis.track_x + t.chassis.track_width * 0.5 + 0.9);
+        let b = &mut m.world.physics.bodies[t.body];
+        let p = *b.position();
+        b.set_position(Pose::from_parts(p.translation + off, rot), true);
+        for _ in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(
+            m.fighters[1].health < max_health(HullKind::Kataphrakt),
+            "the toll passed it by"
+        );
+    }
+
+    /// On flat ground, a toll bowls a light tank over: struck high, it
+    /// rolls, where a rail cannon only rocks it.
+    #[test]
+    fn a_toll_rolls_a_light_tank() {
+        let mut m = duel(TurretKind::Knell, 25.0);
+        // Broadside on.
+        let t = &m.world.tanks[1];
+        let rot = m.world.tanks[0].rot * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let b = &mut m.world.physics.bodies[t.body];
+        let p = *b.position();
+        b.set_position(Pose::from_parts(p.translation, rot), true);
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        let mut tilt = 0.0f32;
+        for _ in 0..(4.0 / DT) as usize {
+            m.step(Command::default(), true);
+            tilt = tilt.max(m.world.tanks[1].up().angle_between(Vec3::Y));
+        }
+        assert!(tilt > 1.0, "it only tipped {tilt:.2} rad");
     }
 
     /// Fire from the settled duel `m` (one shot, or holding the trigger for
@@ -2608,7 +2952,9 @@ mod tests {
     #[test]
     fn a_hit_rocks_the_target_about_as_hard_as_firing_rocks_the_shooter() {
         for &k in &TurretKind::ALL {
-            if k.recoil() == 0.0 {
+            // The Knell hands its target far more than it kicks back with,
+            // on purpose (`a_knell_throws_both_tanks`).
+            if k.recoil() == 0.0 || k == TurretKind::Knell {
                 continue;
             }
             let stream = matches!(k, TurretKind::Ossrin | TurretKind::Hymn);

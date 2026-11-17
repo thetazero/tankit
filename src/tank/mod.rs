@@ -99,6 +99,7 @@ pub fn turret_model(kind: TurretKind) -> TurretModel {
         TurretKind::Ossrin => ithessar::ossrin(),
         TurretKind::Lumen => uthenn::lumen(),
         TurretKind::Hymn => model::hymn(),
+        TurretKind::Knell => resonant::knell(),
     }
 }
 
@@ -497,6 +498,9 @@ impl TankArt {
         let gun = t.gun_frame();
         out.push((turret.mantlet, Instance::new(gun, tint)));
 
+        if turret.kind == TurretKind::Knell && alive {
+            knell_charge(t, tm, gun, out, glow);
+        }
         let plasma = turret.kind.maker() == crate::faction::Faction::Ithessar;
         let fired = t.fire_barrel % turret.barrels.len();
         let (kick, flash) = recoil_curve(t.since_fire);
@@ -630,6 +634,90 @@ impl TankArt {
             }
         }
     }
+}
+
+/// A Knell ringing up: its pipes light one by one, back to front, the
+/// crystal in its crown brightens, and light gathers in the bell's mouth.
+/// The pipes breathe faintly even at rest.
+fn knell_charge(
+    t: &Tank,
+    tm: Mat4,
+    gun: Mat4,
+    out: &mut Vec<(MeshId, Instance)>,
+    glow: &mut Vec<Particle>,
+) {
+    use resonant::{
+        CRYSTAL_LIGHT, CRYSTAL_LIGHT_HOT, KNELL_CROWN, KNELL_LIP, KNELL_PIPE_BASE, KNELL_PIPE_R,
+        KNELL_PIPE_Z, KNELL_PIPES,
+    };
+    let c = t.charge;
+    let n = KNELL_PIPES.len() as f32;
+    let full = c > 0.97;
+    let beat = if full {
+        1.0 + 0.2 * (t.age * 40.0).sin()
+    } else {
+        1.0
+    };
+    for (k, &(x, h)) in KNELL_PIPES.iter().enumerate() {
+        let lit = (c * n - k as f32).clamp(0.0, 1.0);
+        let rest = 0.15 + 0.1 * (t.age * 1.3 + k as f32 * 0.7).sin();
+        let strength = (rest + 3.5 * lit) * beat;
+        // A slit of light up the pipe, front and back.
+        for side in [1.0, -1.0] {
+            let mid = Vec3::new(
+                x,
+                KNELL_PIPE_BASE + h * 0.55,
+                KNELL_PIPE_Z + side * KNELL_PIPE_R * 0.9,
+            );
+            out.push((
+                MeshId::CYLINDER,
+                Instance::new(
+                    tm * Mat4::from_scale_rotation_translation(
+                        Vec3::new(0.05, h * 0.8, 0.05),
+                        Quat::IDENTITY,
+                        mid,
+                    ),
+                    CRYSTAL_LIGHT.extend(strength),
+                ),
+            ));
+        }
+        if lit > 0.0 {
+            let top = tm.transform_point3(Vec3::new(x, KNELL_PIPE_BASE + h + 0.1, KNELL_PIPE_Z));
+            glow.push(Particle::glow(
+                top,
+                0.3 + 0.3 * lit,
+                CRYSTAL_LIGHT,
+                1.4 * lit,
+                Vec3::ZERO,
+            ));
+        }
+    }
+    if c <= 0.0 {
+        return;
+    }
+    let crown = gun.transform_point3(Vec3::Z * (KNELL_CROWN - 0.35));
+    glow.push(Particle::glow(
+        crown,
+        0.4 + 0.8 * c,
+        CRYSTAL_LIGHT,
+        2.0 * c * beat,
+        Vec3::ZERO,
+    ));
+    let mouth = gun.transform_point3(Vec3::Z * (crate::sim::TurretKind::Knell.reach() + 0.15));
+    glow.push(Particle::glow(
+        mouth,
+        KNELL_LIP * (0.4 + 1.4 * c) * beat,
+        CRYSTAL_LIGHT,
+        2.2 * c,
+        Vec3::ZERO,
+    ));
+    glow.push(Particle::glow(
+        mouth,
+        KNELL_LIP * 0.7 * c,
+        CRYSTAL_LIGHT_HOT,
+        2.6 * c * c,
+        Vec3::ZERO,
+    ));
 }
 
 fn ithessar_sag() -> f32 {

@@ -8,8 +8,8 @@
 use glam::{Vec2, Vec3, Vec4};
 
 use super::model::{
-    CARBON, CRYSTAL, HullModel, PAINT, Running, Skin, at_x, at_y, at_z, ngon, plate, round, shard,
-    solid, trap, v,
+    CARBON, CRYSTAL, HullModel, PAINT, Rig, Running, Skin, TurretModel, at_x, at_y, at_z, ngon,
+    plate, round, shard, solid, trap, turret_ring, v,
 };
 use super::track::Wheel;
 use crate::render::material::Material;
@@ -350,5 +350,224 @@ pub fn vigil() -> VigilModel {
             bell,
             bell_pivot,
         },
+    }
+}
+
+/// Bell bronze: darker and browner than the gilt it hangs in.
+const BRONZE: Skin = Skin::new(
+    Vec4::new(0.3, 0.2, 0.09, Material::Metal.id()),
+    Vec4::new(0.55, 0.4, 0.2, Material::Metal.id()),
+);
+
+/// The Knell's organ pipes, left (+x) to right: (x, height above the
+/// head's deck), in turret space. They light one by one, back to front in
+/// the order listed, as the bell rings up.
+pub const KNELL_PIPES: [(f32, f32); 7] = [
+    (0.0, 1.55),
+    (0.22, 1.35),
+    (-0.22, 1.35),
+    (0.44, 1.12),
+    (-0.44, 1.12),
+    (0.66, 0.9),
+    (-0.66, 0.9),
+];
+/// Where the pipes stand: their row's z, the deck they rise from, and how
+/// wide they are.
+pub const KNELL_PIPE_Z: f32 = -1.08;
+pub const KNELL_PIPE_BASE: f32 = 0.55;
+pub const KNELL_PIPE_R: f32 = 0.085;
+/// The bell's mouth, from the trunnion along the gun axis, and how wide
+/// it is; the crystal at its crown, behind the trunnion.
+const KNELL_MOUTH: f32 = 2.3;
+pub const KNELL_LIP: f32 = 0.92;
+pub const KNELL_CROWN: f32 = -0.6;
+
+/// Resonant siege bell: a great bronze bell lying on its side, mouth to
+/// the enemy, swung in a gilt yoke on an ivory plinth. Behind it a bank of
+/// organ pipes breathes it up; the crystal set in its crown rings it.
+pub fn knell() -> TurretModel {
+    let gun = crate::sim::TurretKind::Knell.trunnion();
+    let mut head = MeshData::default();
+    turret_ring(&mut head);
+    // The plinth: a squat ivory octagon, stepped in, with a gilt band.
+    round(
+        &mut head,
+        &[
+            at_y(&ngon(8, 0.95, Vec2::new(0.0, -0.2)), 0.1),
+            at_y(&ngon(8, 1.0, Vec2::new(0.0, -0.2)), 0.38),
+            at_y(&ngon(8, 0.8, Vec2::new(0.0, -0.25)), 0.55),
+        ],
+        0.04,
+        PAINT,
+    );
+    round(
+        &mut head,
+        &[
+            at_y(&ngon(8, 1.015, Vec2::new(0.0, -0.2)), 0.3),
+            at_y(&ngon(8, 1.015, Vec2::new(0.0, -0.2)), 0.36),
+        ],
+        0.0,
+        GILT,
+    );
+    // The yoke: two gilt cheeks rising either side to the trunnion.
+    for sx in [1.0f32, -1.0] {
+        let x = sx * 1.08;
+        solid(
+            &mut head,
+            &[
+                at_x(&trap(0.32, 0.14, 0.3, gun.y + 0.2, 0.03), x - 0.07)
+                    .iter()
+                    .map(|p| *p + Vec3::Z * gun.z)
+                    .collect(),
+                at_x(&trap(0.32, 0.14, 0.3, gun.y + 0.2, 0.03), x + 0.07)
+                    .iter()
+                    .map(|p| *p + Vec3::Z * gun.z)
+                    .collect(),
+            ],
+            0.02,
+            GILT,
+        );
+    }
+    // The organ: a rank of dark pipes behind, gilt-mouthed, on a wind chest.
+    solid(
+        &mut head,
+        &[
+            at_z(
+                &trap(0.8, 0.8, 0.4, KNELL_PIPE_BASE + 0.05, 0.03),
+                KNELL_PIPE_Z - 0.14,
+            ),
+            at_z(
+                &trap(0.8, 0.8, 0.4, KNELL_PIPE_BASE + 0.05, 0.03),
+                KNELL_PIPE_Z + 0.14,
+            ),
+        ],
+        0.02,
+        CARBON,
+    );
+    for (x, h) in KNELL_PIPES {
+        let c = Vec2::new(x, KNELL_PIPE_Z);
+        let base = KNELL_PIPE_BASE;
+        round(
+            &mut head,
+            &[
+                at_y(&ngon(8, KNELL_PIPE_R, c), base),
+                at_y(&ngon(8, KNELL_PIPE_R, c), base + h),
+            ],
+            0.01,
+            CARBON,
+        );
+        // The pipe's mouth, a third of the way up, and its gilt cap.
+        let mouth = base + h * 0.3;
+        round(
+            &mut head,
+            &[
+                at_y(&ngon(8, KNELL_PIPE_R + 0.012, c), mouth - 0.04),
+                at_y(&ngon(8, KNELL_PIPE_R + 0.012, c), mouth + 0.04),
+            ],
+            0.0,
+            GILT,
+        );
+        round(
+            &mut head,
+            &[
+                at_y(&ngon(8, KNELL_PIPE_R + 0.015, c), base + h - 0.05),
+                at_y(&ngon(8, KNELL_PIPE_R + 0.005, c), base + h + 0.02),
+            ],
+            0.005,
+            GILT,
+        );
+    }
+
+    // The axle the bell swings on, gilt hubs at the cheeks.
+    let mut mantlet = MeshData::default();
+    round(
+        &mut mantlet,
+        &[
+            at_x(&ngon(10, 0.13, Vec2::ZERO), -1.15),
+            at_x(&ngon(10, 0.13, Vec2::ZERO), 1.15),
+        ],
+        0.01,
+        GILT,
+    );
+    for sx in [1.0f32, -1.0] {
+        round(
+            &mut mantlet,
+            &[
+                at_x(&ngon(10, 0.2, Vec2::ZERO), sx * 1.16),
+                at_x(&ngon(10, 0.17, Vec2::ZERO), sx * 1.24),
+            ],
+            0.02,
+            GILT,
+        );
+    }
+
+    // The bell, on its side: the crown behind the axle, the waist, the
+    // flare of the sound bow and the lip at the mouth.
+    let mut bell = MeshData::default();
+    let c = |r: f32, z: f32| at_z(&ngon(20, r, Vec2::ZERO), z);
+    round(
+        &mut bell,
+        &[
+            c(0.22, KNELL_CROWN - 0.05),
+            c(0.4, KNELL_CROWN + 0.05),
+            c(0.5, KNELL_CROWN + 0.3),
+            c(0.53, 0.3),
+            c(0.58, 0.9),
+            c(0.7, 1.5),
+            c(0.86, 1.95),
+            c(KNELL_LIP, KNELL_MOUTH - 0.12),
+            c(KNELL_LIP - 0.02, KNELL_MOUTH),
+        ],
+        0.02,
+        BRONZE,
+    );
+    // Inside the mouth: dark, and the crystal light deep in its throat.
+    round(
+        &mut bell,
+        &[
+            c(KNELL_LIP - 0.12, KNELL_MOUTH + 0.005),
+            c(KNELL_LIP - 0.12, KNELL_MOUTH + 0.01),
+        ],
+        0.0,
+        CARBON,
+    );
+    round(
+        &mut bell,
+        &[c(0.3, KNELL_MOUTH + 0.012), c(0.3, KNELL_MOUTH + 0.016)],
+        0.0,
+        CRYSTAL,
+    );
+    // Gilt bands at the shoulder and the sound bow; a line of glowing
+    // scripture round the waist.
+    for (r, z) in [(0.535, 0.0), (0.875, 1.98)] {
+        round(&mut bell, &[c(r, z - 0.05), c(r, z + 0.05)], 0.0, GILT);
+    }
+    round(&mut bell, &[c(0.575, 0.82), c(0.578, 0.88)], 0.0, CRYSTAL);
+    // The crown's crystal, set in a gilt claw, pointing back.
+    round(
+        &mut bell,
+        &[c(0.26, KNELL_CROWN - 0.12), c(0.18, KNELL_CROWN - 0.04)],
+        0.01,
+        GILT,
+    );
+    shard(
+        &mut bell,
+        v(0.0, 0.0, KNELL_CROWN - 0.1),
+        v(0.0, 0.0, -1.0),
+        0.4,
+        0.16,
+        CRYSTAL,
+    );
+
+    TurretModel {
+        head,
+        head_light: MeshData::default(),
+        barrel_light: MeshData::default(),
+        mantlet,
+        barrel: bell,
+        barrels: vec![Vec3::ZERO],
+        muzzle: crate::sim::TurretKind::Knell.reach(),
+        rig: Rig::Recoil,
+        recoil: 0.45,
     }
 }

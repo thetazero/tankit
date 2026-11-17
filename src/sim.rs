@@ -51,6 +51,9 @@ pub enum TurretKind {
     Lumen,
     /// Resonant short-range crystal flamethrower.
     Hymn,
+    /// Resonant siege bell: charges while held, then tolls one shot that
+    /// throws both tanks.
+    Knell,
 }
 
 impl HullKind {
@@ -80,13 +83,14 @@ impl HullKind {
 
 impl TurretKind {
     /// Every turret, grouped by maker. Also the kit's art order.
-    pub const ALL: [TurretKind; 6] = [
+    pub const ALL: [TurretKind; 7] = [
         TurretKind::Kontos,
         TurretKind::Pelekys,
         TurretKind::Ammeth,
         TurretKind::Ossrin,
         TurretKind::Lumen,
         TurretKind::Hymn,
+        TurretKind::Knell,
     ];
 
     pub fn maker(self) -> crate::faction::Faction {
@@ -95,7 +99,7 @@ impl TurretKind {
             TurretKind::Kontos | TurretKind::Pelekys => Faction::Imperium,
             TurretKind::Ammeth | TurretKind::Ossrin => Faction::Ithessar,
             TurretKind::Lumen => Faction::Uthenn,
-            TurretKind::Hymn => Faction::Resonant,
+            TurretKind::Hymn | TurretKind::Knell => Faction::Resonant,
         }
     }
 
@@ -116,6 +120,9 @@ impl TurretKind {
             TurretKind::Ossrin => 3_500.0,
             // Each puff of fire is light, but there are sixty a second.
             TurretKind::Hymn => 600.0,
+            // The siege bell: it shoves its own hull back (a Kataphrakt at
+            // ~4 m/s), and hands its target far more (`KNELL_KNOCK`).
+            TurretKind::Knell => 75_000.0,
             // Light has no mass to speak of: a beam doesn't push.
             TurretKind::Lumen => 0.0,
         }
@@ -131,6 +138,7 @@ impl TurretKind {
             // The Lumen is drawn 1.2x size, pivot and all.
             TurretKind::Lumen => Vec3::new(0.0, 0.42, 0.92) * 1.2,
             TurretKind::Hymn => Vec3::new(0.0, 0.45, 0.8),
+            TurretKind::Knell => Vec3::new(0.0, 0.95, 0.3),
         }
     }
 
@@ -144,6 +152,7 @@ impl TurretKind {
             TurretKind::Ossrin => 2.35,
             TurretKind::Lumen => 3.2 * 1.2,
             TurretKind::Hymn => 1.85,
+            TurretKind::Knell => 2.3,
         }
     }
 }
@@ -606,6 +615,9 @@ pub struct Tank {
     /// Spin-up guns: how far spun up, 0..1, and the cluster's angle.
     pub spool: f32,
     pub spin: f32,
+    /// Charge guns (Knell): how far the shot has built up, 0..1 (it fires at
+    /// 1). Draws the art and the hum; the gun itself lives in combat.
+    pub charge: f32,
     /// State at the start of the last step, for render interpolation.
     prev_pos: Vec3,
     prev_rot: Quat,
@@ -827,6 +839,7 @@ impl World {
             husk: None,
             lean: 0.0,
             spool: 0.0,
+            charge: 0.0,
             spin: 0.0,
             prev_pos: Vec3::ZERO,
             prev_rot: Quat::IDENTITY,

@@ -264,6 +264,7 @@ impl Audio {
 
             Sound::Overheat { tank, at } => beam::overheat(tank, at, jitter),
             Sound::BeamReady { tank, at } => beam::ready(tank, at)?,
+            Sound::ChargeCancel { at, charge, .. } => guns::exhale(at, charge),
 
             Sound::Shot { tank, turret, at } => {
                 self.flames.shot(tank, turret, at, self.time, jitter)?
