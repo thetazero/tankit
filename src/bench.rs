@@ -75,6 +75,8 @@ pub fn run(
     let mut steps_max = 0;
     let (mut instances, mut particles) = (0usize, 0usize);
     let mut tris = (0, 0);
+    // The slowest frames, with the time in the round and each part's cost.
+    let mut worst: Vec<(Duration, f32, u32, [Duration; 6])> = Vec::new();
 
     let frames = ((warmup + seconds) * FPS) as u32;
     let warm = (warmup * FPS) as u32;
@@ -126,6 +128,17 @@ pub fn run(
                 t.samples.push(Duration::from_secs_f32(ms / 1e3));
             }
             steps_max = steps_max.max(steps);
+            let parts = [
+                t_sim,
+                t_scene - t_sim,
+                t_hud - t_scene,
+                cpu,
+                wait,
+                t_audio - t_render,
+            ];
+            worst.push((t_audio, game.world.time, steps, parts));
+            worst.sort_by_key(|w| std::cmp::Reverse(w.0));
+            worst.truncate(8);
             instances = instances.max(frame_scene.instances.len());
             let t = renderer.triangles(&frame_scene);
             tris = (t.0, tris.1.max(t.1));
@@ -151,6 +164,21 @@ pub fn run(
         for t in &passes {
             println!("    {}", t.report());
         }
+    }
+    println!("  slowest frames (ms: sim scene hud encode gpu audio):");
+    for (t, at, steps, p) in &worst {
+        let ms = |d: &Duration| d.as_secs_f64() * 1e3;
+        println!(
+            "    {:>7.2} at {:>6.2} s ({steps} steps): {:.2} {:.2} {:.2} {:.2} {:.2} {:.2}",
+            ms(t),
+            at,
+            ms(&p[0]),
+            ms(&p[1]),
+            ms(&p[2]),
+            ms(&p[3]),
+            ms(&p[4]),
+            ms(&p[5]),
+        );
     }
     let over = total
         .samples

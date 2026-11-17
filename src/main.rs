@@ -10,6 +10,7 @@ mod economy;
 mod faction;
 mod game;
 mod garage;
+mod hitch;
 mod hold;
 mod hud;
 mod keys;
