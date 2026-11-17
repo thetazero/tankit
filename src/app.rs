@@ -28,7 +28,7 @@ use crate::mission::{Contract, MISSIONS};
 use crate::profile::Profile;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
-use crate::sim::{Command, HullStats};
+use crate::sim::Command;
 use crate::tank::TankArt;
 use crate::ui::Hits;
 use crate::{MapKind, ShowroomArgs, make_map, showroom};
@@ -114,9 +114,6 @@ struct App {
     pointer: Option<glam::Vec2>,
     /// What can be clicked, as of the last frame drawn.
     hits: Hits<UiHit>,
-    /// Live tuning (player tank): sideways grip multiplier and turn-rate offset.
-    tune_grip: f32,
-    tune_turn: f32,
     last: Instant,
     fps_timer: f32,
     fps_frames: u32,
@@ -192,8 +189,6 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         held: HashMap::new(),
         pointer: None,
         hits: Hits::new(),
-        tune_grip: 1.0,
-        tune_turn: 0.0,
         last: Instant::now(),
         fps_timer: 0.0,
         fps_frames: 0,
@@ -578,12 +573,6 @@ impl App {
                     self.next_owned(&garage::TURRETS, turret, Part::Turret),
                 ));
             }
-            // Live tuning: sideways grip and turn rate.
-            KeyCode::BracketLeft => self.tune_grip *= 0.9,
-            KeyCode::BracketRight => self.tune_grip *= 1.1,
-            KeyCode::Semicolon => self.tune_turn -= 0.1,
-            KeyCode::Quote => self.tune_turn += 0.1,
-            KeyCode::Backspace => (self.tune_grip, self.tune_turn) = (1.0, 0.0),
             _ => {}
         }
     }
@@ -746,14 +735,6 @@ impl App {
         let tilt =
             (self.held(&[KeyCode::PageUp]) as i32 - self.held(&[KeyCode::PageDown]) as i32) as f32;
         self.cam.tilt = (self.cam.tilt + tilt * CAM_TILT_SPEED * dt).clamp(0.0, 1.0);
-
-        // Apply live tuning on top of the hull's base stats (survives hull swaps).
-        if self.showroom.is_none() {
-            let t = &mut self.game.world.tanks[0];
-            let base = HullStats::of(t.hull_kind);
-            t.hull.grip_lat = base.grip_lat * self.tune_grip;
-            t.hull.turn_rate = (base.turn_rate + self.tune_turn).max(0.2);
-        }
 
         let cmd = self.command();
         let fire =
@@ -946,18 +927,7 @@ impl App {
         self.fps_timer += dt;
         self.fps_frames += 1;
         if self.fps_timer >= 0.5 {
-            if let Some(w) = &self.window {
-                let fps = self.fps_frames as f32 / self.fps_timer;
-                self.fps = fps;
-                let t = &self.game.world.tanks[0];
-                w.set_title(&format!(
-                    "tankit  |  {fps:.0} fps  |  {:>4.1} m/s  {}  |  side grip x{:.2}  turn {:.1} rad/s",
-                    t.speed(),
-                    if t.grounded() { "ground" } else { "AIR" },
-                    self.tune_grip,
-                    t.hull.turn_rate,
-                ));
-            }
+            self.fps = self.fps_frames as f32 / self.fps_timer;
             self.fps_timer = 0.0;
             self.fps_frames = 0;
         }

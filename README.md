@@ -47,9 +47,6 @@ Tanki-style: the camera rides behind the turret, and the turret is turned with k
 
 Menus and the garage list their own keys on screen.
 
-Dev keys: `[ ]`, `; '` and Backspace adjust live tuning (grip, turn rate) and reset it.
-The window title shows the current tuning.
-
 ## How it fits together
 
 | Part | What it is | Code |
