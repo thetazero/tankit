@@ -1078,10 +1078,13 @@ impl Match {
                 let Some(aim) = self.aim_point(eye, level, j) else {
                     continue;
                 };
-                // Only where the gun can see: walls and hills still hide.
+                // Only where the gun can see: walls and hills still hide,
+                // and so does a teammate (the shot would only stop on them).
                 let to = aim - eye;
                 let len = to.length();
-                if self.world.raycast(eye, to / len, len) < len - 0.3 {
+                if self.world.raycast(eye, to / len, len) < len - 0.3
+                    || self.ally_in_way(i, eye, aim)
+                {
                     continue;
                 }
                 best = Some((d, aim));
@@ -1297,6 +1300,31 @@ impl Match {
         }
     }
 
+    /// Whether one of tank `i`'s teammates stands on the line from `from` to
+    /// `to`: the assist never lays a gun on an enemy through a friend.
+    fn ally_in_way(&self, i: usize, from: Vec3, to: Vec3) -> bool {
+        let d = to - from;
+        let len = d.length();
+        if len < 1e-3 {
+            return false;
+        }
+        let team = self.fighters[i].team;
+        let ally = |c: ColliderHandle, _: &Collider| {
+            self.world
+                .tank_of(c)
+                .is_some_and(|k| k != i && self.fighters[k].team == team)
+        };
+        self.world
+            .physics
+            .cast_ray(
+                &Ray::new(from, d / len),
+                len,
+                true,
+                QueryFilter::default().predicate(&ally),
+            )
+            .is_some()
+    }
+
     /// Where tank `i`'s beam goes: `dir`, or straight onto the visible enemy
     /// closest (by angle, within `BEAM_ASSIST`) to it.
     fn beam_assist(&self, i: usize, from: Vec3, dir: Vec3, range: f32) -> Vec3 {
@@ -1315,7 +1343,7 @@ impl Match {
             if off > BEAM_ASSIST || best.is_some_and(|(b, _)| off >= b) {
                 continue;
             }
-            if ai::can_see(&self.world, from, o) {
+            if ai::can_see(&self.world, from, o) && !self.ally_in_way(i, from, from + to) {
                 best = Some((off, to / d));
             }
         }
@@ -3136,6 +3164,44 @@ mod tests {
             assert!(
                 !near(0.3),
                 "{k:?}: turned away, the crosshair is still on it"
+            );
+        }
+    }
+
+    /// The assist never lays a gun on an enemy through a teammate: with a
+    /// friend standing between, turned a little off the enemy behind them,
+    /// no gun is bent onto it and no crosshair lands on it.
+    #[test]
+    fn the_assist_never_aims_through_a_friend() {
+        for k in TurretKind::ALL {
+            let dist = (gun(k).range() * 0.5).min(40.0);
+            let mut m = duel(k, dist);
+            let t = &m.world.tanks[0];
+            let between = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist * 0.5;
+            m.world.spawn_tank(
+                Vec3::ONE,
+                between,
+                0.0,
+                HullKind::Kataphrakt,
+                TurretKind::Kontos,
+            );
+            m.fighters.push(fighter(0, max_health(HullKind::Kataphrakt)));
+            m.bots.push(None);
+            m.fighters[2].shield = 0.0;
+            m.fighters[2].reload_in = f32::INFINITY;
+            m.world.tanks[0].turret_rel += 0.05;
+            for _ in 0..60 {
+                m.step(Command::default(), false);
+            }
+            let nudge = m.world.tanks[0].gun_yaw;
+            assert!(
+                nudge.abs() < 1e-3,
+                "{k:?}: the gun was bent {nudge:.4} rad onto the enemy behind a friend"
+            );
+            let at = m.aim_landing(&m.world.tanks[0]);
+            assert!(
+                m.within(at, 1, 0.5).is_none(),
+                "{k:?}: the crosshair sits on the enemy through a friend"
             );
         }
     }
