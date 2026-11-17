@@ -1,7 +1,7 @@
 //! Crystals: what contracts pay and what parts cost.
 //!
 //! A finished contract pays crystals (completion, your side's victory,
-//! contribution, kill bounty, and your time on the site under Hold); trust
+//! contribution, kill bounty, and your time on the site under Hold); reputation
 //! with your employer is paid for actions in the match. Crystals buy parts
 //! (which standing with their maker puts up for sale) and upgrade them
 //! through M0..M3.
@@ -59,7 +59,7 @@ impl Part {
         PARTS.iter().position(|&p| p == self).unwrap_or(0)
     }
 
-    /// Who makes it, and so whose trust puts it up for sale.
+    /// Who makes it, and so whose reputation puts it up for sale.
     pub fn maker(self) -> Faction {
         match self {
             Part::Hull(k) => k.maker(),

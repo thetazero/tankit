@@ -333,7 +333,7 @@ impl Menu {
                     .collect();
                 for (k, v) in [
                     (
-                        "THEIR TRUST",
+                        "REPUTATION",
                         format!("T{}  {} / {}", s.level, s.into, s.span),
                     ),
                     ("CONTRACTS", work.len().to_string()),
@@ -380,7 +380,7 @@ impl Menu {
                     ("EMPLOYER", employer.name().to_string()),
                     ("AGAINST", against),
                     (
-                        "THEIR TRUST",
+                        "REPUTATION",
                         format!("T{}  {} / {}", s.level, s.into, s.span),
                     ),
                     ("TEAMS", m.teams()),
@@ -528,13 +528,13 @@ impl Pause {
         (nav, self.input(nav))
     }
 
-    /// Dims the battle and draws the box. `match_trust` is what this match has
+    /// Dims the battle and draws the box. `match_reputation` is what this match has
     /// earned you with `employer` so far.
     pub fn draw(
         &self,
         profile: &Profile,
         employer: Faction,
-        match_trust: u32,
+        match_reputation: u32,
         width: f32,
         height: f32,
     ) -> Layer<Hit> {
@@ -583,7 +583,7 @@ impl Pause {
         label(&mut p, Vec2::new(x, y + 1.0), "THIS MATCH", Align::Left);
         p.text(
             Vec2::new(x + PANEL_W, y),
-            &format!("+{match_trust} TRUST"),
+            &format!("+{match_reputation} REPUTATION"),
             &TextStyle::value(11.0),
             Align::Right,
         );
@@ -696,9 +696,9 @@ fn settings_rows(
 const PILOT_H: f32 = 18.0 + Faction::ALL.len() as f32 * ROW_H + 40.0;
 const ROW_H: f32 = 20.0;
 
-/// Each faction's trust in you (standing and the bar to the next), then crystals.
+/// Your reputation with each faction (standing and the bar to the next), then crystals.
 fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
-    label(p, at, "TRUST", Align::Left);
+    label(p, at, "REPUTATION", Align::Left);
     label(p, at + Vec2::new(PANEL_W, 0.0), "STANDING", Align::Right);
     let mut y = at.y + 18.0;
     for f in Faction::ALL {
@@ -711,7 +711,7 @@ fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
             Vec2::new(at.x + 136.0, y + 6.0),
             PANEL_W - 136.0 - 36.0,
             s.progress(),
-            if profile.trust_of(f) > 0 {
+            if profile.reputation_of(f) > 0 {
                 theme::FG
             } else {
                 theme::FAINT

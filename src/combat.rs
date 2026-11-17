@@ -52,10 +52,10 @@ pub const HUSK_STRONG: f32 = 2.0;
 pub const HUSK_FADE: f32 = 3.0;
 /// A husk's cracked bell tolls this often while it runs, s.
 pub const HUSK_TOLL: f32 = 1.25;
-/// Trust with your employer for each enemy the player kills, paid the moment it dies.
-pub const KILL_TRUST: u32 = 10;
-/// How long a trust popup stays on screen, seconds.
-pub const TRUST_POP_TIME: f32 = 2.0;
+/// Reputation with your employer for each enemy the player kills, paid the moment it dies.
+pub const KILL_REPUTATION: u32 = 10;
+/// How long a reputation popup stays on screen, seconds.
+pub const REPUTATION_POP_TIME: f32 = 2.0;
 
 /// Weapon numbers per turret.
 #[derive(Clone, Copy)]
@@ -463,8 +463,8 @@ pub struct Kill {
     pub age: f32,
 }
 
-/// Trust the player just earned, for the HUD popup.
-pub struct TrustPop {
+/// Reputation the player just earned, for the HUD popup.
+pub struct ReputationPop {
     pub amount: u32,
     pub reason: &'static str,
     pub age: f32,
@@ -602,9 +602,9 @@ pub struct Match {
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
-    /// Trust the player has earned with their side (`factions[0]`) this match.
-    pub trust: u32,
-    pub trust_pops: Vec<TrustPop>,
+    /// Reputation the player has earned with their side (`factions[0]`) this match.
+    pub reputation: u32,
+    pub reputation_pops: Vec<ReputationPop>,
     /// Audible events since the app last took them.
     pub sounds: Vec<Sound>,
     pub repairs: Repairs,
@@ -668,8 +668,8 @@ impl Match {
             shells: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
-            trust: 0,
-            trust_pops: Vec::new(),
+            reputation: 0,
+            reputation_pops: Vec::new(),
             sounds: Vec::new(),
             repairs,
             factions,
@@ -916,10 +916,10 @@ impl Match {
             k.age += DT;
         }
         self.feed.retain(|k| k.age < FEED_TIME);
-        for x in &mut self.trust_pops {
+        for x in &mut self.reputation_pops {
             x.age += DT;
         }
-        self.trust_pops.retain(|x| x.age < TRUST_POP_TIME);
+        self.reputation_pops.retain(|x| x.age < REPUTATION_POP_TIME);
     }
 
     /// Elevate each gun onto a tank roughly along its line of fire (Tanki-style
@@ -1246,7 +1246,7 @@ impl Match {
         if killer != victim {
             self.fighters[killer].kills += 1;
             if killer == 0 {
-                self.award(KILL_TRUST, "KILL");
+                self.award(KILL_REPUTATION, "KILL");
                 self.sounds.push(Sound::Confirm);
             }
         }
@@ -1374,15 +1374,15 @@ impl Match {
     }
 
     fn award(&mut self, amount: u32, reason: &'static str) {
-        self.trust += amount;
-        self.trust_pops.push(TrustPop {
+        self.reputation += amount;
+        self.reputation_pops.push(ReputationPop {
             amount,
             reason,
             age: 0.0,
         });
     }
 
-    /// Bank time for the side holding the site; pay the player trust for their
+    /// Bank time for the side holding the site; pay the player reputation for their
     /// own time on it, and end the round when a side reaches the target.
     fn hold_site(&mut self) {
         let Some(h) = &mut self.hold else { return };
@@ -1391,14 +1391,15 @@ impl Match {
         h.step(DT, &self.world.tanks, |i| {
             fighters[i].alive.then_some(fighters[i].team)
         });
-        let paid = (h.own[0] / hold::TRUST_EVERY).floor() > (before / hold::TRUST_EVERY).floor();
+        let paid =
+            (h.own[0] / hold::REPUTATION_EVERY).floor() > (before / hold::REPUTATION_EVERY).floor();
         let won = h.winner().is_some();
         if let Some(cue) = h.cue() {
             self.sounds.push(Sound::Hold(cue));
         }
         if paid {
             self.sounds.push(Sound::Hold(hold::Cue::Paid));
-            self.award(hold::HOLD_TRUST, "HOLDING");
+            self.award(hold::HOLD_REPUTATION, "HOLDING");
         }
         if won {
             self.end_round();
@@ -2185,7 +2186,7 @@ mod tests {
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
-        assert_eq!(m.trust, m.fighters[0].kills * KILL_TRUST);
+        assert_eq!(m.reputation, m.fighters[0].kills * KILL_REPUTATION);
     }
 
     /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
@@ -2491,11 +2492,11 @@ mod tests {
         let mut m = arena(2);
         m.kill(1, 2);
         m.kill(0, 0);
-        assert_eq!(m.trust, 0);
+        assert_eq!(m.reputation, 0);
         m.kill(0, 1);
-        assert_eq!(m.trust, KILL_TRUST);
+        assert_eq!(m.reputation, KILL_REPUTATION);
         assert_eq!(
-            m.trust_pops.len(),
+            m.reputation_pops.len(),
             1,
             "one popup, for the player's own kill"
         );
@@ -2778,17 +2779,17 @@ mod tests {
     }
 
     #[test]
-    fn holding_pays_trust_and_reaching_the_target_ends_the_round() {
+    fn holding_pays_reputation_and_reaching_the_target_ends_the_round() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
-        m.hold.as_mut().unwrap().own[0] = hold::TRUST_EVERY - 0.1;
+        m.hold.as_mut().unwrap().own[0] = hold::REPUTATION_EVERY - 0.1;
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
-        assert_eq!(m.trust, hold::HOLD_TRUST);
-        assert_eq!(m.trust_pops.last().map(|x| x.reason), Some("HOLDING"));
+        assert_eq!(m.reputation, hold::HOLD_REPUTATION);
+        assert_eq!(m.reputation_pops.last().map(|x| x.reason), Some("HOLDING"));
         let heard: Vec<_> = m
             .sounds
             .iter()

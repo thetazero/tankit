@@ -46,7 +46,7 @@ tankit [OPTIONS]
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
   --employer <faction>    which of the map's sides hires you (default: its first);
-                          your trust in the match goes to them
+                          your reputation in the match goes to them
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
@@ -68,7 +68,7 @@ tankit [OPTIONS]
   --screen <menu|factions|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
-  --trust <n>             (with --shot) trust with every faction for menu, garage and pause shots
+  --reputation <n>        (with --shot) reputation with every faction for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
@@ -97,7 +97,7 @@ pub struct Args {
     /// Garage shot: highlight this part instead of --hull/--turret.
     preview: Option<economy::Part>,
     screen: Option<Screen>,
-    trust: u32,
+    reputation: u32,
     crystals: u32,
     debug: bool,
     straight: bool,
@@ -115,7 +115,7 @@ impl Args {
     /// An in-memory pilot for headless shots (never saved).
     fn profile(&self) -> profile::Profile {
         let mut p = profile::Profile::in_memory();
-        p.set_trust_all(self.trust);
+        p.set_reputation_all(self.reputation);
         p.crystals = self.crystals;
         p.settings.debug = self.debug;
         for &part in &self.own {
@@ -258,7 +258,7 @@ fn parse_args() -> Result<Args> {
     let mut preview = None;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let (mut trust, mut crystals) = (0, 0);
+    let (mut reputation, mut crystals) = (0, 0);
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -370,7 +370,12 @@ fn parse_args() -> Result<Args> {
                     }
                 })
             }
-            "--trust" => trust = args.next().context("--trust needs a number")?.parse()?,
+            "--reputation" | "--trust" => {
+                reputation = args
+                    .next()
+                    .context("--reputation needs a number")?
+                    .parse()?
+            }
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
@@ -430,7 +435,7 @@ fn parse_args() -> Result<Args> {
         own,
         preview,
         screen,
-        trust,
+        reputation,
         crystals,
         debug,
         straight,
@@ -611,7 +616,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
                 frame.ui.extend(
                     menu::Pause::new()
-                        .draw(&profile, game.factions[0], game.trust, w, h)
+                        .draw(&profile, game.factions[0], game.reputation, w, h)
                         .verts,
                 );
             }
