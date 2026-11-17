@@ -1028,26 +1028,47 @@ impl Map {
     #[cfg(test)]
     pub(crate) fn assert_edge_walled(&self, inset: f32, skip: impl Fn(Vec2) -> bool) {
         let tall = 2.5;
+        // Only what stands near the edge can close it.
+        let near_edge = |c: Vec2, r: f32| {
+            let d = c.min_element().min(self.size - c.max_element());
+            d < r + 2.0
+        };
+        // Each one's footprint (what a tank runs into) and height range,
+        // worked out once.
+        let boxes: Vec<(Vec<Vec2>, f32, f32)> = self
+            .oboxes
+            .iter()
+            .filter(|o| {
+                let reach = o.half.length() + (o.y1 - o.y0);
+                o.solid && !o.hidden && near_edge(o.center, reach)
+            })
+            .map(|o| {
+                let (lo, hi) = o.y_range();
+                (o.base_shadow(1.5), lo, hi)
+            })
+            .collect();
+        let crystals: Vec<&Crystal> = self
+            .crystals
+            .iter()
+            .filter(|c| {
+                let reach = c.radius * 1.2 + Vec2::new(c.axis.x, c.axis.z).length();
+                c.solid && near_edge(Vec2::new(c.base.x, c.base.z), reach)
+            })
+            .collect();
         for (p, inward) in self.edge_points(0.5, 0.0) {
             let p = p + inward * inset;
             if skip(p) {
                 continue;
             }
             let g = self.ground_height(p.x, p.y);
-            let by_box = self.oboxes.iter().any(|o| {
-                let (lo, hi) = o.y_range();
-                o.solid
-                    && !o.hidden
-                    && o.base_distance(p, 1.5) == 0.0
-                    && lo <= g + 0.3
-                    && hi > g + tall
+            let by_box = boxes.iter().any(|(foot, lo, hi)| {
+                *lo <= g + 0.3 && *hi > g + tall && polygon_distance(foot, p) == 0.0
             });
             // A crystal by its narrowest facets (its jitter goes down to
             // 0.82 of its radius).
-            let by_crystal = self.crystals.iter().any(|c| {
+            let by_crystal = crystals.iter().any(|c| {
                 let tip = (c.base + c.axis).y;
-                c.solid
-                    && tip > g + tall
+                tip > g + tall
                     && c.footprint(g, 1.5)
                         .iter()
                         .any(|&(q, r)| q.distance(p) < r * 0.82)
