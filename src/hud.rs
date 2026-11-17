@@ -333,12 +333,10 @@ impl Hud {
             }
         }
 
-        // Crosshair where the turret points; the gap kicks open when firing.
-        // Where the gun actually points, including hull tilt; for a gun that
-        // lands instantly, right where the shot would land.
-        let aim_point = m
-            .instant_landing(tank)
-            .unwrap_or_else(|| tank.pos + tank.up() * tank.gun_height() + tank.turret_dir() * 40.0);
+        // Crosshair where the shot would land, down the gun as the aim assist
+        // lays it (so it moves onto a tank the assist bends onto); the gap
+        // kicks open when firing.
+        let aim_point = m.aim_landing(tank);
         if me.alive
             && !board
             && let Some((x, y)) = project(vp, aim_point, width, height)

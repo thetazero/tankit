@@ -1853,29 +1853,55 @@ impl Match {
         self.world.tanks[i].interpolated(alpha)
     }
 
-    /// Where a shot from `t` would land if it fired now, for a gun that
-    /// lands instantly (else None): the first thing along its line, or the
-    /// end of its reach. `t` is the player's tank (it reaches as far as their upgrades).
-    pub fn instant_landing(&self, t: &Tank) -> Option<Vec3> {
-        let Action::Shell(spec) = self.fighters[0].levels.gun(t.turret_kind).action else {
-            return None;
+    /// Where a shot from `t` would land if it fired now, down the gun as the
+    /// aim assist has laid it: the first thing along its line (a beam's, or
+    /// a shell's arc as it drops), or the end of its reach. What the
+    /// crosshair marks. `t` is the player's tank (it reaches as far as their
+    /// upgrades).
+    pub fn aim_landing(&self, t: &Tank) -> Vec3 {
+        let from = self.clear_muzzle(t);
+        let ray = |from: Vec3, dir: Vec3, len: f32| {
+            self.world
+                .physics
+                .cast_ray(
+                    &Ray::new(from, dir),
+                    len,
+                    true,
+                    QueryFilter::default().exclude_rigid_body(t.body),
+                )
+                .map(|(_, toi)| from + dir * toi)
         };
-        if !spec.instant {
-            return None;
+        let spec = match self.fighters[0].levels.gun(t.turret_kind).action {
+            Action::Beam { range, .. } => {
+                let dir = self.beam_assist(0, from, t.gun_dir(), range);
+                return ray(from, dir, range).unwrap_or(from + dir * range);
+            }
+            Action::Shell(spec) => spec,
+        };
+        if spec.instant {
+            let reach = spec.speed * spec.life;
+            return ray(from, t.gun_dir(), reach).unwrap_or(from + t.gun_dir() * reach);
         }
-        let (from, dir) = (self.clear_muzzle(t), t.gun_dir());
-        let reach = spec.speed * spec.life;
-        let toi = self
-            .world
-            .physics
-            .cast_ray(
-                &Ray::new(from, dir),
-                reach,
-                true,
-                QueryFilter::default().exclude_rigid_body(t.body),
-            )
-            .map_or(reach, |(_, toi)| toi);
-        Some(from + dir * toi)
+        // Fly it as `fly_shells` would, a step at a time.
+        let (mut pos, mut vel) = (from, t.gun_dir() * spec.speed);
+        for _ in 0..(spec.life / DT).ceil() as usize {
+            vel.y -= spec.gravity * GRAVITY * DT;
+            let step = vel * DT;
+            let len = step.length();
+            if let Some(at) = ray(pos, step / len, len) {
+                return at;
+            }
+            pos += step;
+            // A toll strikes whatever it passes close to.
+            if spec.look == Look::Toll
+                && let Some(at) = (1..self.world.tanks.len())
+                    .filter(|&j| self.fighters[j].alive)
+                    .find_map(|j| self.within(pos, j, TOLL_RADIUS))
+            {
+                return at;
+            }
+        }
+        pos
     }
 
     /// The tanks to draw this frame: interpolated, with wrecks charred and
@@ -3083,6 +3109,35 @@ mod tests {
         let (hit, nudge, _) = shot_aside(&mut duel(TurretKind::Kontos, 40.0), 0.07);
         assert!(!hit, "a wide miss was pulled onto the tank");
         assert!(nudge.abs() <= ASSIST_NUDGE + 1e-4, "nudge {nudge:.4} rad");
+    }
+
+    /// The crosshair follows the assist: turned a little off a tank, every
+    /// gun's mark moves onto it as the gun is bent on (not left down the
+    /// turret's heading); turned well off, it stays off.
+    #[test]
+    fn the_crosshair_follows_the_assist() {
+        for k in TurretKind::ALL {
+            let range = gun(k).range();
+            let dist = (range * 0.5).min(40.0);
+            let near = |off: f32| {
+                let mut m = duel(k, dist);
+                m.world.tanks[0].turret_rel += off;
+                for _ in 0..60 {
+                    m.step(Command::default(), false);
+                }
+                let at = m.aim_landing(&m.world.tanks[0]);
+                m.within(at, 1, 0.5).is_some()
+            };
+            assert!(near(0.0), "{k:?}: laid on, the crosshair isn't on the tank");
+            assert!(
+                near(0.05),
+                "{k:?}: the crosshair didn't follow the assist on"
+            );
+            assert!(
+                !near(0.3),
+                "{k:?}: turned away, the crosshair is still on it"
+            );
+        }
     }
 
     /// Up and down it still lays the gun on: a tank on a rise above the
