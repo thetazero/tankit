@@ -11,6 +11,7 @@
 //!   too tight to see into never shows.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 
@@ -25,6 +26,43 @@ pub const PLANE_TOL: f32 = 0.0001;
 pub const MIN_AREA: f32 = 2e-5;
 /// How far a probe ray from an overlap must get to call it seen.
 const OPEN: f32 = 1.0;
+
+/// A cheap hasher for the buckets (small integer keys, millions of lookups):
+/// std's SipHash dominated the run time. Multiply-rotate per word, as in FxHash.
+#[derive(Default)]
+struct Fx(u64);
+
+impl Hasher for Fx {
+    fn write(&mut self, bytes: &[u8]) {
+        for c in bytes.chunks(8) {
+            let mut w = [0u8; 8];
+            w[..c.len()].copy_from_slice(c);
+            self.write_u64(u64::from_le_bytes(w));
+        }
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64);
+    }
+
+    fn write_i32(&mut self, i: i32) {
+        self.write_u64(i as u32 as u64);
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 
 struct Tri {
     p: [Vec3; 3],
@@ -149,8 +187,8 @@ impl Soup {
         let bucket = |x: f32, cell: f32| (x / cell + 0.5).floor() as i32;
         let span = |x: f32, tol: f32, cell: f32| bucket(x - tol, cell)..=bucket(x + tol, cell);
         let center = |c: IVec3| (c.as_vec3() + 0.5) * self.space;
-        let mut space: HashMap<IVec3, Vec<usize>> = HashMap::new();
-        let mut planes: HashMap<(IVec3, [i32; 4]), Vec<usize>> = HashMap::new();
+        let mut space: FastMap<IVec3, Vec<usize>> = FastMap::default();
+        let mut planes: FastMap<(IVec3, [i32; 4]), Vec<usize>> = FastMap::default();
         for (i, t) in self.tris.iter().enumerate() {
             for c in cubes(&t.p, PLANE_TOL, self.space) {
                 space.entry(c).or_default().push(i);
@@ -168,7 +206,7 @@ impl Soup {
                 }
             }
         }
-        let mut found: HashMap<(usize, usize, IVec3), Fight> = HashMap::new();
+        let mut found: FastMap<(usize, usize, IVec3), Fight> = FastMap::default();
         let mut near = Vec::new();
         for (i, a) in self.tris.iter().enumerate() {
             near.clear();
@@ -231,7 +269,7 @@ impl Soup {
     /// or inside a solid. From outside every solid no ray can reach the
     /// inside of a face first, so a few that do mean it's inside one (a
     /// few, not one, for rays that graze an edge).
-    fn seen(&self, p: Vec3, n: Vec3, space: &HashMap<IVec3, Vec<usize>>) -> bool {
+    fn seen(&self, p: Vec3, n: Vec3, space: &FastMap<IVec3, Vec<usize>>) -> bool {
         let q = p + n * 0.01;
         if let Some(g) = &self.ground
             && q.y < g(q.x, q.z) - 0.005
