@@ -329,7 +329,10 @@ impl Menu {
                 let f = self.employer();
                 let s = profile.standing(f);
                 let work = self.missions();
-                let open = work.iter().filter(|&&i| MISSIONS[i].open_at(s.level)).count();
+                let open = work
+                    .iter()
+                    .filter(|&&i| MISSIONS[i].open_at(s.level))
+                    .count();
                 p.text(
                     Vec2::new(x, y),
                     &format!("T{}", s.level),
@@ -369,10 +372,7 @@ impl Menu {
                     Align::Left,
                 );
                 y += 26.0;
-                let names: Vec<Item> = work
-                    .iter()
-                    .map(|&i| Item::Acts(MISSIONS[i].name))
-                    .collect();
+                let names: Vec<Item> = work.iter().map(|&i| Item::Acts(MISSIONS[i].name)).collect();
                 let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission);
                 for (k, &i) in work.iter().enumerate() {
                     // Each contract's rating; a locked one says the standing it needs.
@@ -402,7 +402,12 @@ impl Menu {
                     theme::FG,
                 );
                 y += 22.0;
-                y = wrap(&mut p, Vec2::new(x, y), m.briefs[m.side_of(employer)], theme::DIM);
+                y = wrap(
+                    &mut p,
+                    Vec2::new(x, y),
+                    m.briefs[m.side_of(employer)],
+                    theme::DIM,
+                );
                 y += 26.0;
                 let big = TextStyle::value(22.0);
                 let col = x + 150.0;
@@ -416,7 +421,12 @@ impl Menu {
                 body(&mut p, Vec2::new(col + w + 6.0, y + 11.0), "CR", theme::DIM);
                 y += 32.0;
                 body(&mut p, Vec2::new(x, y), "Rating", theme::DIM);
-                body(&mut p, Vec2::new(col, y), "For a win, plus kills", theme::DIM);
+                body(
+                    &mut p,
+                    Vec2::new(col, y),
+                    "For a win, plus kills",
+                    theme::DIM,
+                );
                 if !m.open_at(s.level) {
                     y += 34.0;
                     body(
@@ -719,7 +729,12 @@ fn body(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
 
 /// Your crystals, right-aligned at `at`.
 fn crystals(p: &mut Painter, at: Vec2, crystals: u32) {
-    let w = body(p, at + Vec2::new(-measure("CR", &BODY), 2.0), "CR", theme::DIM);
+    let w = body(
+        p,
+        at + Vec2::new(-measure("CR", &BODY), 2.0),
+        "CR",
+        theme::DIM,
+    );
     p.text(
         at - Vec2::new(w + 6.0, 0.0),
         &crystals.to_string(),

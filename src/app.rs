@@ -25,15 +25,15 @@ use crate::hud::{self, Hud, Ledger};
 use crate::keys;
 use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
 use crate::mission::{Contract, MISSIONS};
-use crate::render::mesh::MeshData;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use crate::profile::Profile;
+use crate::render::mesh::MeshData;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::Command;
 use crate::tank::TankArt;
 use crate::ui::Hits;
 use crate::{MapKind, ShowroomArgs, make_map, showroom};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
@@ -41,6 +41,10 @@ const CAM_TILT_SPEED: f32 = 0.8;
 const MENU_ORBIT: f32 = 0.06;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
+/// Seconds the menu scene takes to dip to black before a backdrop swap, and
+/// to come back up after it.
+const DIP_OUT: f32 = 0.18;
+const DIP_IN: f32 = 0.4;
 
 /// Something clickable on screen, by the component that drew it.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -112,6 +116,10 @@ struct App {
     /// A backdrop being built off the main thread (a big map takes most of a
     /// second), for the mission and side it's of.
     backdrop_job: Option<((usize, usize), Receiver<(Match, MeshData)>)>,
+    /// A built backdrop waiting for the screen to go dark before it's swapped in.
+    backdrop_ready: Option<((usize, usize), Match, MeshData)>,
+    /// How dark the menu scene is (0..1): it dips to black around a backdrop swap.
+    backdrop_dark: f32,
     cam: ChaseCam,
     hud: Hud,
     garage: Garage,
@@ -196,6 +204,8 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         backdrop: (0, 0),
         backdrop_wait: 0.0,
         backdrop_job: None,
+        backdrop_ready: None,
+        backdrop_dark: 0.0,
         cam: ChaseCam::new(),
         hud: Hud::new(),
         garage: Garage::new(),
@@ -236,6 +246,17 @@ pub fn new_match(
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
+}
+
+/// Black over the whole menu scene at `dark` (0..1), eased.
+fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
+    if dark <= 0.0 {
+        return Vec::new();
+    }
+    let k = dark * dark * (3.0 - 2.0 * dark);
+    let mut p = crate::ui::Painter::new(1.0);
+    p.rect(glam::Vec2::ZERO, glam::Vec2::new(w, h), [0.0, 0.0, 0.0, k]);
+    p.finish()
 }
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
@@ -428,21 +449,31 @@ impl App {
     /// Puts the menu backdrop on the selected contract's map once the
     /// selection has held still a moment (scrolling past doesn't load each
     /// map). The map is built on a worker thread so the menu never stalls,
-    /// and swapped in when it's ready.
+    /// while the scene dips to black; it's swapped in in the dark and the
+    /// scene comes back up on it.
     fn follow_backdrop(&mut self, dt: f32) {
         if let Some((key, job)) = &self.backdrop_job {
             match job.try_recv() {
                 Ok((game, mesh)) => {
-                    let key = *key;
+                    self.backdrop_ready = Some((*key, game, mesh));
                     self.backdrop_job = None;
-                    self.load_built(game, &mesh);
-                    self.backdrop = key;
-                    self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
                 }
-                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => self.backdrop_job = None,
             }
         }
+        if self.backdrop_job.is_some() || self.backdrop_ready.is_some() {
+            self.backdrop_dark = (self.backdrop_dark + dt / DIP_OUT).min(1.0);
+            if self.backdrop_dark >= 1.0
+                && let Some((key, game, mesh)) = self.backdrop_ready.take()
+            {
+                self.load_built(game, &mesh);
+                self.backdrop = key;
+                self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
+            }
+            return;
+        }
+        self.backdrop_dark = (self.backdrop_dark - dt / DIP_IN).max(0.0);
         match self.menu.backdrop() {
             Some(want) if want != self.backdrop => {
                 self.backdrop_wait += dt;
@@ -473,6 +504,8 @@ impl App {
         self.load(menu_match(self.profile.loadout));
         self.backdrop = (0, 0);
         self.backdrop_job = None;
+        self.backdrop_ready = None;
+        self.backdrop_dark = 0.0;
         self.menu = Menu::new();
         self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
         self.mode = Mode::Menu;
@@ -945,7 +978,9 @@ impl App {
                             .menu
                             .draw(&self.profile, h, 1.0 - self.garage.presence());
                         let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
-                        let mut ui = menu.verts;
+                        // The dip around a backdrop swap, under the panel.
+                        let mut ui = backdrop_dip(self.backdrop_dark, w, h);
+                        ui.extend(menu.verts);
                         ui.extend(garage.verts);
                         // The garage covers the menu panel while it's open.
                         let mut hits = if self.garage.is_open() {
