@@ -24,6 +24,8 @@ const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The camera's near and far planes, m.
 const CAM_NEAR: f32 = 0.2;
+/// Waiting longer than this for the window's next image is logged.
+const SLOW_ACQUIRE: std::time::Duration = std::time::Duration::from_millis(50);
 const CAM_FAR: f32 = 600.0;
 /// The camera's depth buffer is reverse Z (see `Camera::view_proj`): nearer
 /// is greater, and it clears to the far plane, 0. The sun's shadow map is
@@ -1168,7 +1170,29 @@ impl Renderer {
         let Some((surface, config)) = &self.surface else {
             return;
         };
-        let tex = match surface.get_current_texture() {
+        let asked = std::time::Instant::now();
+        let got = surface.get_current_texture();
+        let waited = asked.elapsed();
+        let outcome = match &got {
+            wgpu::CurrentSurfaceTexture::Success(_) => None,
+            wgpu::CurrentSurfaceTexture::Suboptimal(_) => Some("suboptimal"),
+            wgpu::CurrentSurfaceTexture::Timeout => Some("timed out"),
+            wgpu::CurrentSurfaceTexture::Occluded => Some("occluded"),
+            wgpu::CurrentSurfaceTexture::Outdated => Some("outdated"),
+            wgpu::CurrentSurfaceTexture::Lost => Some("lost"),
+            _ => Some("failed"),
+        };
+        // A window that holds back its next image stalls the whole frame: say so.
+        // (Minimized it's occluded every frame, and that's expected.)
+        if waited > SLOW_ACQUIRE || outcome.is_some_and(|o| !matches!(o, "suboptimal" | "occluded"))
+        {
+            log::warn!(
+                "window image {} after {:.0} ms",
+                outcome.unwrap_or("acquired"),
+                waited.as_secs_f64() * 1e3
+            );
+        }
+        let tex = match got {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
