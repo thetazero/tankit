@@ -97,8 +97,7 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,
-        briefs: &["Every side against every other in the imperial city. Better-geared crews.";
-            4],
+        briefs: &["Every side against every other in the imperial city. Better-geared crews."; 4],
         rating: 5,
         standing: 2,
     },
