@@ -2415,7 +2415,9 @@ mod tests {
         // (start, heading): at the south, east and north cliffs (into bays,
         // a gully, at headlands) and the west barricade.
         let runs = [
-            (Vec2::new(60.0, 14.0), PI),
+            // Clear of the town: from further north a tracked tank wedges on
+            // its edge and never gets going.
+            (Vec2::new(60.0, 2.0), PI),
             (Vec2::new(170.0, 12.0), PI),
             (Vec2::new(225.0, 60.0), FRAC_PI_2),
             (Vec2::new(225.0, 100.0), FRAC_PI_2),
@@ -2431,6 +2433,8 @@ mod tests {
                 let mut w = World::empty(map.clone());
                 w.spawn_tank(Vec3::ONE, start + o, yaw, hull, TurretKind::Kontos);
                 run(&mut w, Command::default(), 0.5);
+                let p = w.tanks[0].pos;
+                let from = Map::saltmarket_past_edge(Vec2::new(p.x, p.z));
                 let mut worst = f32::MIN;
                 for _ in 0..(10.0 / DT) as usize {
                     w.step(&[throttle(1.0)]);
@@ -2449,6 +2453,12 @@ mod tests {
                 assert!(
                     worst < 4.0,
                     "{hull:?} from {start} got {worst} m past the edge"
+                );
+                // And it did drive at the edge, rather than sticking where it
+                // started (which would pass the check above without testing it).
+                assert!(
+                    worst - from > 5.0,
+                    "{hull:?} from {start} never got going: {from} m to {worst} m"
                 );
             }
         }
