@@ -144,7 +144,7 @@ const HULL_STATS: [Stat; 7] = [
         name: "TOP SPEED",
         unit: "KM/H",
         decimals: 0,
-        get: |p, _| HullStats::of(hull_of(p)).max_speed * 3.6,
+        get: |p, l| l.hull(hull_of(p)).max_speed * 3.6,
     },
     Stat {
         name: "ACCEL",
@@ -156,7 +156,7 @@ const HULL_STATS: [Stat; 7] = [
         name: "TURN",
         unit: "°/S",
         decimals: 0,
-        get: |p, _| HullStats::of(hull_of(p)).turn_rate.to_degrees(),
+        get: |p, l| l.hull(hull_of(p)).turn_rate.to_degrees(),
     },
     Stat {
         name: "TRAVERSE",

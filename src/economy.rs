@@ -6,9 +6,9 @@
 //! (which standing with their maker puts up for sale) and upgrade them
 //! a step at a time through M0..M3.
 
-use crate::combat::{self, Gun, Match};
+use crate::combat::{self, Action, Gun, Match, ShellSpec};
 use crate::faction::Faction;
-use crate::sim::{HullKind, TurretKind};
+use crate::sim::{HullKind, HullStats, TurretKind};
 
 /// A hull or a turret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,11 +135,27 @@ pub const MAX_LEVEL: u8 = STEPS_PER_MARK * MAX_MARK;
 /// more to M2 and 128 more to M3, at ~200 crystals a contract.
 const FIRST_STEP: f32 = 300.0;
 const STEP_GROWTH: f32 = 1.09;
-/// Per step: hull armor +0.8%; turret damage +0.6% and reload −0.4% (so +24%, +18%
-/// and −12% at M3).
-const ARMOR_PER_LEVEL: f32 = 0.008;
-const DAMAGE_PER_LEVEL: f32 = 0.006;
-const RELOAD_PER_LEVEL: f32 = 0.004;
+/// What each mark (M0..M3) multiplies a part's stats by; the steps between a mark and
+/// the next are spread evenly between them. Reload is time per shot, so it falls.
+#[derive(Clone, Copy)]
+struct Curve([f32; MAX_MARK as usize + 1]);
+
+const ARMOR: Curve = Curve([1.0, 1.25, 1.5, 1.75]);
+/// Hull top speed (forward and reverse) and turn rate.
+const DRIVE: Curve = Curve([1.0, 1.05, 1.10, 1.15]);
+const DAMAGE: Curve = Curve([1.0, 1.2, 1.4, 1.6]);
+const RELOAD: Curve = Curve([1.0, 0.93, 0.86, 0.80]);
+/// Shot speed, and with it range (or a beam's reach).
+const REACH: Curve = Curve([1.0, 1.05, 1.10, 1.15]);
+
+impl Curve {
+    fn at(self, level: u8) -> f32 {
+        let level = level.min(MAX_LEVEL);
+        let mark = (level / STEPS_PER_MARK).min(MAX_MARK - 1) as usize;
+        let t = (level as f32 - mark as f32 * STEPS_PER_MARK as f32) / STEPS_PER_MARK as f32;
+        self.0[mark] + (self.0[mark + 1] - self.0[mark]) * t
+    }
+}
 
 /// Cost of the next upgrade step from `level`, or `None` at max. Rounded to 10.
 pub fn upgrade_cost(level: u8) -> Option<u32> {
@@ -178,16 +194,44 @@ impl Levels {
     }
 
     pub fn max_health(&self, hull: HullKind) -> f32 {
-        let l = self.of(Part::Hull(hull)) as f32;
-        combat::max_health(hull) * (1.0 + ARMOR_PER_LEVEL * l)
+        combat::max_health(hull) * ARMOR.at(self.of(Part::Hull(hull)))
+    }
+
+    /// The hull's drive at its level: faster, and quicker to turn.
+    pub fn hull(&self, hull: HullKind) -> HullStats {
+        let k = DRIVE.at(self.of(Part::Hull(hull)));
+        let h = HullStats::of(hull);
+        HullStats {
+            max_speed: h.max_speed * k,
+            reverse_speed: h.reverse_speed * k,
+            turn_rate: h.turn_rate * k,
+            // Enough steering force to reach the faster turn as quickly.
+            steer_accel: h.steer_accel * k,
+            ..h
+        }
     }
 
     pub fn gun(&self, turret: TurretKind) -> Gun {
-        let l = self.of(Part::Turret(turret)) as f32;
+        let l = self.of(Part::Turret(turret));
         let g = combat::gun(turret);
+        let reach = REACH.at(l);
         Gun {
-            damage: g.damage * (1.0 + DAMAGE_PER_LEVEL * l),
-            reload: g.reload * (1.0 - RELOAD_PER_LEVEL * l),
+            damage: g.damage * DAMAGE.at(l),
+            reload: g.reload * RELOAD.at(l),
+            action: match g.action {
+                // Faster shots fly as long, so they carry further.
+                Action::Shell(s) => Action::Shell(ShellSpec {
+                    speed: s.speed * reach,
+                    ..s
+                }),
+                Action::Beam {
+                    range,
+                    thermal_mass,
+                } => Action::Beam {
+                    range: range * reach,
+                    thermal_mass,
+                },
+            },
             ..g
         }
     }
@@ -292,11 +336,94 @@ mod tests {
         let total = cost_to(MAX_LEVEL);
         assert!((35_000..50_000).contains(&total), "{total}");
         assert!(cost_to(STEPS_PER_MARK) < total / 5, "M1 comes early");
-        // M3 is worth what it was when it was three big upgrades.
+    }
+
+    #[test]
+    fn each_mark_is_a_clear_jump() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        let (hull, turret) = (HullKind::Kataphrakt, TurretKind::Ammeth);
+        let base_h = HullStats::of(hull);
+        let base_g = combat::gun(turret);
+        let speed = |g: &Gun| match g.action {
+            Action::Shell(s) => s.speed,
+            Action::Beam { .. } => unreachable!(),
+        };
+        // (armor, drive, damage, reload, reach) at M0..M3.
+        let marks = [
+            (1.0, 1.0, 1.0, 1.0, 1.0),
+            (1.25, 1.05, 1.2, 0.93, 1.05),
+            (1.5, 1.10, 1.4, 0.86, 1.10),
+            (1.75, 1.15, 1.6, 0.80, 1.15),
+        ];
         let mut l = Levels::default();
-        l.set(Part::Hull(HullKind::Kataphrakt), MAX_LEVEL);
-        let hp = l.max_health(HullKind::Kataphrakt) / combat::max_health(HullKind::Kataphrakt);
-        assert!((hp - 1.24).abs() < 1e-4);
+        for (m, &(armor, drive, damage, reload, reach)) in marks.iter().enumerate() {
+            let level = m as u8 * STEPS_PER_MARK;
+            l.set(Part::Hull(hull), level);
+            l.set(Part::Turret(turret), level);
+            assert!(close(l.max_health(hull), combat::max_health(hull) * armor));
+            let h = l.hull(hull);
+            assert!(close(h.max_speed, base_h.max_speed * drive));
+            assert!(close(h.turn_rate, base_h.turn_rate * drive));
+            let g = l.gun(turret);
+            assert!(close(g.damage, base_g.damage * damage));
+            assert!(close(g.reload, base_g.reload * reload));
+            assert!(close(speed(&g), speed(&base_g) * reach));
+            assert!(close(g.range(), base_g.range() * reach));
+        }
+        // Halfway between marks is halfway between their stats.
+        l.set(Part::Hull(hull), 15);
+        assert!(close(l.max_health(hull), combat::max_health(hull) * 1.375));
+        // A beam reaches further too.
+        l.set(Part::Turret(TurretKind::Lumen), MAX_LEVEL);
+        let r = l.gun(TurretKind::Lumen).range() / combat::gun(TurretKind::Lumen).range();
+        assert!(close(r, 1.15));
+    }
+
+    /// The faster drive is real on the ground, not only on the spec card: each hull at
+    /// M3 drives and pivots about 15% faster than at M0.
+    #[test]
+    fn upgraded_hulls_drive_and_turn_faster() {
+        use crate::sim::Command;
+        use crate::sim::tests_support::{flat_world, run};
+        let go = Command {
+            throttle: 1.0,
+            ..Command::default()
+        };
+        let pivot = Command {
+            steer: 1.0,
+            ..Command::default()
+        };
+        let mut l = Levels::default();
+        for hull in [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ] {
+            let drive = |l: &Levels| {
+                let mut w = flat_world();
+                w.set_hull(0, hull);
+                w.tanks[0].hull = l.hull(hull);
+                run(&mut w, Command::default(), 1.0);
+                run(&mut w, go, 6.0);
+                let speed = w.tanks[0].speed();
+                let mut w = flat_world();
+                w.set_hull(0, hull);
+                w.tanks[0].hull = l.hull(hull);
+                run(&mut w, Command::default(), 1.0);
+                run(&mut w, pivot, 2.0);
+                let t = &w.tanks[0];
+                let turn = w.physics.bodies[t.body].angvel().y.abs();
+                (speed, turn)
+            };
+            l.set(Part::Hull(hull), 0);
+            let (s0, t0) = drive(&l);
+            l.set(Part::Hull(hull), MAX_LEVEL);
+            let (s3, t3) = drive(&l);
+            assert!((s3 / s0 - 1.15).abs() < 0.04, "{hull:?} speed {s0} -> {s3}");
+            assert!((t3 / t0 - 1.15).abs() < 0.06, "{hull:?} turn {t0} -> {t3}");
+        }
     }
 
     #[test]
