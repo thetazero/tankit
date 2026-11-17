@@ -11,8 +11,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::render::mesh::{Instance, MeshData, MeshId};
-use crate::render::{Particle, Renderer};
+use crate::render::Particle;
+use crate::render::mesh::{Instance, MeshData, MeshId, MeshStore};
 use crate::sim::{HullKind, Tank, TurretKind};
 use ithessar::HoverModel;
 use model::{HullModel, Rig, Running, TurretModel};
@@ -150,7 +150,7 @@ pub struct TankArt {
 }
 
 impl TankArt {
-    pub fn upload(r: &mut Renderer) -> TankArt {
+    pub fn upload(r: &mut impl MeshStore) -> TankArt {
         let kit = KitMeshes::build();
         let o = &kit.hover;
         let hover = HoverArt {
@@ -720,6 +720,111 @@ fn muzzle_flash(at: Mat4, f: f32, t: f32, out: &mut Vec<(MeshId, Instance)>) {
 mod tests {
     use super::*;
 
+    /// Every tank, each hull with each turret, standing with its turret
+    /// turned to `yaw`: where coplanar faces show.
+    fn tank_fights(yaw: f32) -> Vec<String> {
+        use crate::render::mesh::CpuMeshes;
+        use crate::render::zfight::Soup;
+        use crate::sim::World;
+        let mut meshes = CpuMeshes::new();
+        let art = TankArt::upload(&mut meshes);
+        let names = mesh_names(&art);
+        let mut out = Vec::new();
+        for hull in [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ] {
+            for turret in TurretKind::ALL {
+                let mut w = World::empty(crate::map::Map::empty(40.0));
+                w.spawn_tank(Vec3::ONE, Vec2::splat(20.0), 0.0, hull, turret);
+                let mut t = w.tanks[0].clone();
+                t.turret_rel = yaw;
+                t.since_fire = 100.0;
+                let mut inst = Vec::new();
+                art.instances(&t, &mut inst, &mut Vec::new());
+                let mut soup = Soup::new();
+                soup.add_instances(&meshes.0, &inst, |id| {
+                    names
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("mesh {}", id.0))
+                });
+                for f in soup.fights() {
+                    let at = f.at - t.pos;
+                    out.push(format!(
+                        "{hull:?}+{turret:?}: {} / {}: {:.4} m² at ({:.2}, {:.2}, {:.2})",
+                        f.a, f.b, f.area, at.x, at.y, at.z
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// No tank has coplanar faces that show. The turret is turned off the
+    /// hull's axes, so nothing lines up with it by accident.
+    #[test]
+    fn tanks_dont_z_fight() {
+        let f = tank_fights(0.7);
+        assert!(f.is_empty(), "{}", f.join("\n"));
+    }
+
+    fn mesh_names(art: &TankArt) -> std::collections::HashMap<MeshId, String> {
+        let mut n = std::collections::HashMap::new();
+        for (id, s) in [
+            (MeshId::CUBE, "cube"),
+            (MeshId::CYLINDER, "cylinder"),
+            (MeshId::SPHERE, "sphere"),
+            (MeshId::GEM, "gem"),
+            (MeshId::CANOPY, "canopy"),
+        ] {
+            n.insert(id, s.to_string());
+        }
+        for (i, h) in art.hulls.iter().enumerate() {
+            n.insert(h.body, format!("hull{i} body"));
+            if let Some(l) = h.heat_light {
+                n.insert(l, format!("hull{i} heat light"));
+            }
+            n.insert(h.link, format!("hull{i} link"));
+            n.insert(h.road, format!("hull{i} road wheel"));
+            n.insert(h.sprocket, format!("hull{i} sprocket"));
+            n.insert(h.idler, format!("hull{i} idler"));
+        }
+        let o = &art.hover;
+        for (id, s) in [
+            (o.body, "body"),
+            (o.glow, "glow"),
+            (o.emitter, "emitter"),
+            (o.lens, "lens"),
+            (o.shard, "shard"),
+        ] {
+            n.insert(id, format!("sethuun {s}"));
+        }
+        let g = &art.vigil;
+        n.insert(g.light, "vigil light".into());
+        n.insert(g.heart, "vigil heart".into());
+        n.insert(g.bell, "vigil bell".into());
+        for (i, (p, _)) in g.plates.iter().enumerate() {
+            n.insert(*p, format!("vigil plate{i}"));
+        }
+        for t in &art.turrets {
+            let k = t.kind;
+            n.insert(t.head, format!("{k:?} head"));
+            if let Some(l) = t.head_light {
+                n.insert(l, format!("{k:?} head light"));
+            }
+            if let Some(l) = t.barrel_light {
+                n.insert(l, format!("{k:?} barrel light"));
+            }
+            n.insert(t.mantlet, format!("{k:?} mantlet"));
+            n.insert(t.barrel, format!("{k:?} barrel"));
+        }
+        n
+    }
+
     #[test]
     fn kit_builds_with_sane_geometry() {
         let kit = KitMeshes::build();
@@ -827,7 +932,7 @@ mod tests {
 }
 
 /// A model's heat lights on the GPU, if it has any.
-fn light_mesh(r: &mut Renderer, m: &MeshData) -> Option<MeshId> {
+fn light_mesh(r: &mut impl MeshStore, m: &MeshData) -> Option<MeshId> {
     (!m.indices.is_empty()).then(|| r.add_mesh(m))
 }
 

@@ -49,6 +49,32 @@ impl MeshId {
 
 pub const MESH_COUNT: usize = 5;
 
+/// Somewhere meshes are registered for instanced drawing: the renderer, or
+/// (in tests) a plain list kept on the CPU.
+pub trait MeshStore {
+    fn add_mesh(&mut self, mesh: &MeshData) -> MeshId;
+}
+
+/// Meshes kept on the CPU, indexed like the renderer's: the built-in
+/// primitives first, then each one added.
+#[cfg(test)]
+pub struct CpuMeshes(pub Vec<MeshData>);
+
+#[cfg(test)]
+impl CpuMeshes {
+    pub fn new() -> CpuMeshes {
+        CpuMeshes(MeshData::primitives().into())
+    }
+}
+
+#[cfg(test)]
+impl MeshStore for CpuMeshes {
+    fn add_mesh(&mut self, mesh: &MeshData) -> MeshId {
+        self.0.push(mesh.clone());
+        MeshId(self.0.len() as u32 - 1)
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct MeshData {
     pub verts: Vec<Vertex>,

@@ -475,7 +475,9 @@ pub fn road_wheel(r: f32, width: f32) -> MeshData {
 /// Toothed drive sprocket.
 pub fn sprocket(r: f32, width: f32) -> MeshData {
     let mut m = MeshData::default();
-    let gap = 0.13;
+    // A touch wider than the road wheels' gap: where the sprocket and the
+    // last road wheel overlap, their inner faces mustn't share a plane.
+    let gap = 0.14;
     let dw = (width - gap) * 0.5;
     for s in [-1.0f32, 1.0] {
         let (xa, xb) = (s * gap * 0.5, s * (gap * 0.5 + dw * 0.7));
@@ -495,7 +497,10 @@ pub fn sprocket(r: f32, width: f32) -> MeshData {
             let (b0, b1) = (d * r * 0.85, d * (r + 0.045));
             let tooth = [b0 - side, b0 + side, b1 + side * 0.45, b1 - side * 0.45];
             let ring = |x: f32| tooth.iter().map(|p| v(x, p.y, p.x)).collect::<Vec<_>>();
-            round(&mut m, &[ring(xa), ring(xb)], 0.006, METAL);
+            // Teeth a hair narrower than the disc, so their roots don't
+            // share its faces.
+            let inset = s * 0.004;
+            round(&mut m, &[ring(xa + inset), ring(xb - inset)], 0.006, METAL);
         }
     }
     let xo = gap * 0.5 + dw * 0.7;

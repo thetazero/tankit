@@ -310,9 +310,10 @@ pub fn vigil() -> VigilModel {
         0.02,
         GILT,
     );
+    // Its dark mouth, just below the rim (level with it, they'd z-fight).
     round(
         &mut bell,
-        &[at_y(&c(0.2), -0.5), at_y(&c(0.12), -0.36)],
+        &[at_y(&c(0.2), -0.505), at_y(&c(0.12), -0.36)],
         0.0,
         CARBON,
     );
