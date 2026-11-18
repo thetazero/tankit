@@ -76,6 +76,8 @@ tankit [OPTIONS]
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|factions|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
+  --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
+                          screen and its respawn countdown
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, reputation gained and crystal tally
   --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds'
@@ -203,6 +205,8 @@ enum Screen {
     Settings,
     Pause,
     Results,
+    /// The death screen: destroyed, counting down to the respawn.
+    Dead,
 }
 
 struct ShotArgs {
@@ -452,9 +456,10 @@ fn parse_args() -> Result<Args> {
                     Some("settings") => Screen::Settings,
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
+                    Some("dead") => Screen::Dead,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, settings, pause or results, got {other:?}"
+                            "--screen expects menu, factions, missions, settings, pause, results or dead, got {other:?}"
                         )
                     }
                 })
@@ -662,7 +667,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = advance(&mut game, &mut cam, &mut garage, shot.time);
+    let mut camera = if args.screen == Some(Screen::Dead) {
+        // Destroyed by the nearest enemy a few seconds before the shot.
+        let lead = 3.5f32.min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        game.destroy_player();
+        advance(&mut game, &mut cam, &mut garage, lead)
+    } else {
+        advance(&mut game, &mut cam, &mut garage, shot.time)
+    };
 
     for i in 0..shot.frames {
         if i > 0 {

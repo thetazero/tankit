@@ -1081,6 +1081,15 @@ impl World {
     }
 
     /// Distance along a ray until it hits static geometry, capped at `max`.
+    /// Like [`World::raycast`], with the surface normal where it struck
+    /// (None if nothing static is within `max`).
+    pub fn raycast_normal(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3)> {
+        let ray = Ray::new(origin, dir);
+        self.physics
+            .cast_ray_and_get_normal(&ray, max, true, QueryFilter::only_fixed())
+            .map(|(_, ri)| (ri.time_of_impact, ri.normal))
+    }
+
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> f32 {
         let ray = Ray::new(origin, dir);
         self.physics

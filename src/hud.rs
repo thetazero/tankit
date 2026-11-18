@@ -453,12 +453,25 @@ impl Hud {
                     Align::Center,
                 );
             }
+            // The countdown: whole seconds left, big, over a bar that fills
+            // as the new chassis comes up.
+            let left = me.respawn_in.max(0.0);
             p.text(
-                c + Vec2::new(0.0, 62.0),
-                &format!("RESPAWN {}", me.respawn_in.ceil().max(1.0) as u32),
-                &TextStyle::value(11.0),
+                c + Vec2::new(0.0, 74.0),
+                "RESPAWN IN",
+                &TextStyle::LABEL,
                 Align::Center,
             );
+            p.text(
+                c + Vec2::new(0.0, 104.0),
+                &(left.ceil().max(1.0) as u32).to_string(),
+                &TextStyle::value(30.0),
+                Align::Center,
+            );
+            let done = 1.0 - (left / crate::combat::RESPAWN_TIME).clamp(0.0, 1.0);
+            let (bw, o) = (160.0, c + Vec2::new(-80.0, 146.0));
+            p.line(o, o + Vec2::new(bw, 0.0), 1.0, theme::DIM);
+            p.line(o, o + Vec2::new(bw * done, 0.0), 2.0, theme::HOT);
         }
 
         // Reputation popups, just above the crosshair, drifting up as they fade.

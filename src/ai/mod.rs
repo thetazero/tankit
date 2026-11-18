@@ -46,6 +46,9 @@ const GUARD_CHASE: f32 = 40.0;
 const MEND_BELOW: f32 = 0.65;
 /// ...this far off, m.
 const MEND_REACH: f32 = 70.0;
+/// A bouncing gun banks a shot off a wall at a target out of sight (its
+/// health bar shows through walls, to a player too) at most this far off, m.
+const BANK_REACH: f32 = 60.0;
 
 /// Steepest ground (rise over run) bots will path across.
 const MAX_SLOPE: f32 = 0.7;
@@ -434,6 +437,10 @@ pub struct Bot {
     /// How long the current target has been in sight (reaction time before firing).
     seen_for: f32,
     last_seen: Option<Vec2>,
+    /// A bouncing gun's bank shot at a target out of sight: the heading to
+    /// fire along, off a wall, and when to look for one again.
+    bank: Option<f32>,
+    bank_in: f32,
     /// Aim offset re-rolled after every shot, radians.
     aim_err: f32,
     stuck_for: f32,
@@ -477,6 +484,8 @@ impl Bot {
             retarget_in: 0.0,
             seen_for: 0.0,
             last_seen: None,
+            bank: None,
+            bank_in: 0.0,
             aim_err: 0.0,
             stuck_for: 0.0,
             reverse_for: 0.0,
@@ -501,6 +510,7 @@ impl Bot {
         self.path.clear();
         self.target = None;
         self.last_seen = None;
+        self.bank = None;
         self.seen_for = 0.0;
         self.stuck_for = 0.0;
         self.reverse_for = 0.0;
@@ -547,6 +557,7 @@ impl Bot {
         };
         let my2 = flat(t.pos);
         let eye = t.pos + Vec3::Y * t.gun_height();
+        let banks = matches!(g.action, crate::combat::Action::Shell(s) if s.bounces > 0);
 
         // How fast the hull is swinging round (the turret rides on it).
         let yaw = t.yaw();
@@ -570,7 +581,9 @@ impl Bot {
                 let d = t.pos.distance(o.pos);
                 let mut score = d;
                 if !can_see(world, eye, o) {
-                    score += 120.0;
+                    // Out of sight is out of reach, unless the gun can
+                    // bank a shot round to it.
+                    score += if banks && d < BANK_REACH { 25.0 } else { 120.0 };
                 }
                 if Some(j) == self.target {
                     score -= 15.0;
@@ -812,6 +825,30 @@ impl Bot {
             }
         }
 
+        // A gun whose shots skip off walls can reach a target that's just
+        // ducked out of sight: off a wall beside it. Seen a moment ago and
+        // still close, look for a wall to bank off; with one, stop (the
+        // shot carries the tank's own motion) and take it from cover.
+        let bounces = match g.action {
+            crate::combat::Action::Shell(s) => s.bounces,
+            _ => 0,
+        };
+        self.bank_in -= dt;
+        match target {
+            Some(o) if bounces > 0 && !visible && target_d < BANK_REACH => {
+                if self.bank_in <= 0.0 {
+                    self.bank_in = 0.25;
+                    self.bank = bank_shot(world, t, o, g.speed());
+                }
+            }
+            _ => self.bank = None,
+        }
+        if self.bank.is_some() && self.reverse_for == 0.0 {
+            // Brake (a hover hull coasts on if just let go).
+            cmd.throttle = (-t.speed() * 0.5).clamp(-1.0, 1.0);
+            cmd.steer = 0.0;
+        }
+
         // Aiming: lead the target by where it'll be when the shot gets there
         // (a shell flies off with the gun's own motion added), with a
         // per-shot error. A charge gun leads by its charge left as well:
@@ -892,6 +929,25 @@ impl Bot {
                         cmd.throttle = 0.0;
                     }
                 }
+            }
+            _ if self.bank.is_some() => {
+                // The heading the shot has to travel along; it flies off
+                // with the tank's own motion added, so fire a little
+                // across that to make it good.
+                let path = self.bank.unwrap_or_default();
+                let want = Vec2::new(path.sin(), path.cos());
+                let v = flat(t.vel);
+                let s = g.speed();
+                let along = v.dot(want);
+                let k = along + (along * along - v.length_squared() + s * s).max(0.0).sqrt();
+                let yaw = yaw_of(want * k - v);
+                let err = wrap_angle(yaw - t.turret_yaw());
+                cmd.turret = self.lay(t, err);
+                // Fired level, steady, and dead on the line: a bank shot
+                // has no aim assist to fix it up.
+                let gun = t.gun_dir();
+                let level = (gun.y / Vec2::new(gun.x, gun.z).length().max(1e-3)).abs() < 0.03;
+                fire = err.abs() < 0.015 && level && t.vel.length() < 4.0;
             }
             _ => {
                 // Nothing in sight: point the gun where the target was last
@@ -1003,6 +1059,80 @@ impl Bot {
     pub fn fired(&mut self) {
         self.aim_err = self.rng.range(-0.04, 0.04);
     }
+}
+
+/// The heading for a shot from `t` at `o` off one wall, if there's a clean
+/// one: out to the wall, mirrored off it, on to the tank, with nothing in
+/// the way on either leg. Shells fly level (no assist lifts a bank shot),
+/// so the target has to stand about as high as the gun. Of those it finds,
+/// the shortest flight.
+fn bank_shot(world: &World, t: &Tank, o: &Tank, speed: f32) -> Option<f32> {
+    bank_from(world, t.breech(), o, speed)
+}
+
+/// [`bank_shot`] from a gun at `eye`.
+fn bank_from(world: &World, eye: Vec3, o: &Tank, speed: f32) -> Option<f32> {
+    let my2 = flat(eye);
+    // Fired level from the gun, it crosses the target at gun height: its
+    // turret, or its hull if it stands lower.
+    let aim = o.pos + o.up() * (o.chassis.hull_top + 0.4);
+    if (aim.y - eye.y).abs() > 0.8 {
+        return None;
+    }
+    let bearing = yaw_of(flat(aim) - my2);
+    let mut best: Option<(f32, f32)> = None;
+    for k in 0..40 {
+        let a = bearing + (k as f32 / 39.0 - 0.5) * 3.0;
+        let dir = Vec3::new(a.sin(), 0.0, a.cos());
+        let Some((h, n)) = world.raycast_normal(eye, dir, BANK_REACH) else {
+            continue;
+        };
+        let n2 = flat(n);
+        if n.y.abs() > 0.35 || h < 2.0 {
+            continue;
+        }
+        let n2 = n2.normalize();
+        let wall = my2 + flat(dir) * h;
+        // Where it'll be by the time the shot gets round (a guess at the
+        // flight from the straight line out and back).
+        let est = (h + flat(aim).distance(wall)) / speed;
+        let tp = flat(aim) + flat(o.vel) * est;
+        if (tp - wall).dot(n2) < 0.5 || (my2 - wall).dot(n2) < 0.5 {
+            continue;
+        }
+        let image = tp - 2.0 * (tp - wall).dot(n2) * n2;
+        let to = image - my2;
+        let d = to.length();
+        let d2 = to / d;
+        let shot = Vec3::new(d2.x, 0.0, d2.y);
+        // The real wall where that line meets it: the same face, short of
+        // the image.
+        let Some((h2, m)) = world.raycast_normal(eye, shot, d) else {
+            continue;
+        };
+        let m2 = flat(m).normalize_or_zero();
+        if m.y.abs() > 0.35 || m2.dot(n2) < 0.97 || h2 < 2.0 {
+            continue;
+        }
+        let q = eye + shot * h2;
+        let r = d2 - 2.0 * d2.dot(m2) * m2;
+        let leg = flat(q).distance(tp);
+        let back = Vec3::new(r.x, 0.0, r.y);
+        let from = q + Vec3::new(m2.x, 0.0, m2.y) * 0.1;
+        if world.raycast(from, back, leg) < leg - 1.0 {
+            continue;
+        }
+        // And it does pass over the tank, not beside it.
+        let miss = (tp - flat(q)).perp_dot(r).abs();
+        let total = h2 + leg;
+        if miss > 0.5 || total > BANK_REACH * 1.4 {
+            continue;
+        }
+        if best.is_none_or(|(b, _)| total < b) {
+            best = Some((total, yaw_of(d2)));
+        }
+    }
+    best.map(|(_, yaw)| yaw)
 }
 
 /// How hard a bot drives while circling a target. A hover hull rocks on

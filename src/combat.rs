@@ -7,7 +7,8 @@
 //! is the player, on side 0; bots fill both sides.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
-use rapier3d::prelude::{Collider, ColliderHandle, QueryFilter, Ray};
+use rapier3d::parry::query::details::ShapeCastOptions;
+use rapier3d::prelude::{Ball, Collider, ColliderHandle, Pose, QueryFilter, Ray};
 
 use crate::ai::{self, Bot, Brain, Contact, NavGrid};
 use crate::arrival::{ARRIVAL_TIME, Arrival};
@@ -24,7 +25,8 @@ use crate::rng::Rng;
 use crate::sim::{Command, GRAVITY, HullKind, Tank, TurretKind, World, wrap_angle, yaw_of};
 
 pub const ROUND_TIME: f32 = 300.0;
-pub const RESPAWN_TIME: f32 = 4.0;
+/// Seconds dead before a tank comes back: long enough that dying costs you.
+pub const RESPAWN_TIME: f32 = 10.0;
 /// Tanks wear their own paint, not their side's color: sides are told apart
 /// by their markers on the HUD.
 pub const TANK_PAINT: Vec3 = Vec3::ONE;
@@ -162,6 +164,10 @@ fn flame_reach(s: &Shell) -> f32 {
 }
 
 /// An Ammeth orb shrinks a little at every skip.
+/// A plasma orb's solid heart, as a radius per unit of its `size`: drawn as
+/// a sphere `size * 0.26` across (see `effect_instances`), and it hits as one.
+const HEART: f32 = 0.13;
+
 fn plasma_shrink(s: &Shell) -> f32 {
     let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
     1.0 - 0.18 * spent
@@ -248,9 +254,10 @@ pub fn gun(kind: TurretKind) -> Gun {
             action: Action::Shell(cannon),
         },
         // Ithessar: an orb of plasma charged in a crystal cradle. Slow, and it
-        // skips off walls and ground, a little weaker each time.
+        // skips off walls and ground, a little weaker each time. Slow enough
+        // to dodge, so each one that lands hits hard.
         TurretKind::Ammeth => Gun {
-            damage: 32.0,
+            damage: 48.0,
             reload: 1.2,
             spool: 0.0,
             charge: 0.0,
@@ -484,6 +491,9 @@ pub enum BlastKind {
 
 /// Damage an Ithessar orb keeps through each skip.
 const BOUNCE_KEEP: f32 = 0.85;
+/// An Ithessar shot shoves what it strikes this much harder than its gun
+/// kicks back.
+const ITHESSAR_KNOCK: f32 = 1.5;
 
 /// The burst a shot makes where it lands (on a tank: `hit`).
 fn impact_kind(spec: &ShellSpec, hit: bool) -> BlastKind {
@@ -801,6 +811,28 @@ impl Match {
         } else {
             Brain::Baseline(ai::baseline::Bot::new(seed))
         });
+    }
+
+    /// Leave tank `i` without a brain: it sits still (tests).
+    #[cfg(test)]
+    pub fn idle(&mut self, i: usize) {
+        self.bots[i] = None;
+    }
+
+    /// Destroy the player now, credited to the nearest enemy (death-screen
+    /// shots: `--screen dead`).
+    pub fn destroy_player(&mut self) {
+        let me = self.fighters[0].team;
+        let p = self.world.tanks[0].pos;
+        let killer = (1..self.fighters.len())
+            .filter(|&j| self.fighters[j].team != me)
+            .min_by(|&a, &b| {
+                let d = |j: usize| self.world.tanks[j].pos.distance(p);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap_or(0);
+        self.fighters[0].health = 0.0;
+        self.kill(killer, 0);
     }
 
     /// Swap side `team`'s bots for the frozen baseline brain (`ai::baseline`).
@@ -1455,19 +1487,40 @@ impl Match {
             let skip = |c: ColliderHandle, _: &Collider| {
                 world.tank_of(c).is_none_or(|j| !s.passed.contains(&j))
             };
-            let hit = self.world.physics.cast_ray_and_get_normal(
-                &Ray::new(s.pos, step / len),
-                len,
-                true,
-                QueryFilter::default()
-                    .exclude_rigid_body(owner)
-                    .predicate(&skip),
-            );
-            let Some((c, ri)) = hit else {
+            let filter = QueryFilter::default()
+                .exclude_rigid_body(owner)
+                .predicate(&skip);
+            // A plasma orb is as big as its white-hot heart: it sweeps that
+            // ball along, so it strikes whatever the heart touches. Everything
+            // else is a point.
+            let heart = match s.spec.look {
+                Look::Plasma { size } => size * plasma_shrink(s) * HEART,
+                _ => 0.0,
+            };
+            let hit = if heart > 0.0 {
+                self.world
+                    .physics
+                    .cast_shape(
+                        &Pose::from_translation(s.pos),
+                        step / len,
+                        &Ball::new(heart),
+                        ShapeCastOptions::with_max_time_of_impact(len),
+                        filter,
+                    )
+                    // The struck collider comes first: `normal1` is its outward normal.
+                    .map(|(c, h)| (c, h.time_of_impact, h.normal1))
+            } else {
+                self.world
+                    .physics
+                    .cast_ray_and_get_normal(&Ray::new(s.pos, step / len), len, true, filter)
+                    .map(|(c, ri)| (c, ri.time_of_impact, ri.normal))
+            };
+            let Some((c, toi, normal)) = hit else {
                 s.pos += step;
                 return true;
             };
-            let at = s.pos + step / len * ri.time_of_impact;
+            // Where it struck: the heart's surface, against what it touched.
+            let at = s.pos + step / len * toi - normal * heart;
             match self.world.tank_of(c) {
                 Some(j) if s.spec.look == Look::Flame => {
                     self.hit(s, j, at);
@@ -1476,7 +1529,7 @@ impl Match {
                     step -= at - s.pos;
                     s.pos = at;
                 }
-                _ => return self.land(s, c, at, ri.normal),
+                _ => return self.land(s, c, at, normal, heart),
             }
         }
     }
@@ -1548,7 +1601,8 @@ impl Match {
     }
 
     /// Shell `s` ran into collider `c` at `at` (surface normal `n`).
-    fn land(&mut self, s: &mut Shell, c: ColliderHandle, at: Vec3, n: Vec3) -> bool {
+    /// A shell of radius `r` (0 for a point) is kept that far off the surface.
+    fn land(&mut self, s: &mut Shell, c: ColliderHandle, at: Vec3, n: Vec3, r: f32) -> bool {
         s.pos = at;
         match self.world.tank_of(c) {
             Some(j) => {
@@ -1558,7 +1612,7 @@ impl Match {
             None if s.bounces > 0 => {
                 // Ricochet: mirror off the surface and carry on.
                 s.vel -= 2.0 * s.vel.dot(n) * n;
-                s.pos = at + n * 0.05;
+                s.pos = at + n * (r + 0.05);
                 s.bounces -= 1;
                 // The skin sheds plasma at every skip.
                 s.damage *= BOUNCE_KEEP;
@@ -1624,7 +1678,14 @@ impl Match {
         }
         let kind = self.world.tanks[s.owner].turret_kind;
         let skips = s.spec.bounces.saturating_sub(s.bounces) as i32;
-        let momentum = kind.recoil() * BOUNCE_KEEP.powi(skips);
+        // Plasma and crystal darts hit harder than they kick: they land
+        // with more shove than the gun takes back.
+        let hits_harder = if kind.maker() == Faction::Ithessar {
+            ITHESSAR_KNOCK
+        } else {
+            1.0
+        };
+        let momentum = kind.recoil() * hits_harder * BOUNCE_KEEP.powi(skips);
         self.world.push(j, d * momentum, at);
     }
 
@@ -2834,8 +2895,18 @@ mod tests {
     }
 
     /// Every action has an equal and opposite reaction: whatever the gun kicks
-    /// its own tank back with, the shot hands the tank it lands on. Up in the
+    /// its own tank back with, the shot hands the tank it lands on (half as
+    /// much again for Ithessar shots, on purpose). Up in the
     /// air, away from the ground's friction, the two cancel exactly.
+    /// How much harder a gun's shot lands than it kicks back.
+    fn hit_harder(k: TurretKind) -> f32 {
+        if k.maker() == Faction::Ithessar {
+            ITHESSAR_KNOCK
+        } else {
+            1.0
+        }
+    }
+
     #[test]
     fn a_hit_shoves_the_target_as_hard_as_the_gun_kicks_back() {
         for &k in &TurretKind::ALL {
@@ -2862,18 +2933,21 @@ mod tests {
             }
             let (kick, shove) = (flat(&m, 0), flat(&m, 1));
             let shot = k.recoil();
+            // Ithessar shots land harder than they kick, on purpose.
+            let hard = hit_harder(k);
             assert!(
                 kick.dot(ahead) < -0.95 * shot,
                 "{k:?}: kicked back {:.0} N·s, wants {shot:.0}",
                 -kick.dot(ahead)
             );
             assert!(
-                shove.dot(ahead) > 0.9 * shot,
-                "{k:?}: the target took {:.0} N·s of {shot:.0}",
-                shove.dot(ahead)
+                shove.dot(ahead) > 0.9 * shot * hard,
+                "{k:?}: the target took {:.0} N·s of {:.0}",
+                shove.dot(ahead),
+                shot * hard
             );
             assert!(
-                (kick + shove).length() < 0.1 * shot,
+                (kick + shove / hard).length() < 0.1 * shot,
                 "{k:?}: momentum not conserved: {kick} vs {shove}"
             );
         }
@@ -3104,8 +3178,9 @@ mod tests {
             let stream = matches!(k, TurretKind::Ossrin | TurretKind::Hymn);
             let hold = if stream { 1.0 } else { 0.0 };
             let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, 0.0), hold);
+            let hard = hit_harder(k);
             assert!(
-                tilt[1] > 0.75 * tilt[0] && tilt[1] < 1.25 * tilt[0],
+                tilt[1] > 0.75 * hard * tilt[0] && tilt[1] < 1.25 * hard * tilt[0],
                 "{k:?} head on: shooter rocked {:.2} deg, target {:.2}",
                 tilt[0],
                 tilt[1]
@@ -4404,5 +4479,58 @@ mod bot_duels {
             })
             .count();
         assert!(wins >= 3, "the flamer won only {wins} of 4");
+    }
+}
+
+#[cfg(test)]
+mod bank_shots {
+    use super::*;
+    use crate::map::Solid;
+
+    /// An Ammeth whose target ducks behind a block, with a wall off to the
+    /// side: it banks its orbs off the wall and hits the tank it can't see.
+    #[test]
+    fn ammeth_bots_bank_off_walls_at_tanks_out_of_sight() {
+        let mut map = Map::empty(200.0);
+        // The block between them, and the wall beside.
+        map.solids.push(Solid {
+            min: Vec3::new(92.0, 0.0, 97.0),
+            max: Vec3::new(108.0, 5.0, 103.0),
+        });
+        map.solids.push(Solid {
+            min: Vec3::new(114.0, 0.0, 60.0),
+            max: Vec3::new(116.0, 6.0, 140.0),
+        });
+        let mut m = Match::new(map, 0, 1, 3);
+        m.refit_bot(0, HullKind::Sethuun, TurretKind::Ammeth, true, 5);
+        m.refit_bot(1, HullKind::Kataphrakt, TurretKind::Kontos, false, 6);
+        m.idle(1);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        // In sight a moment, off to the side, then behind the block.
+        m.world.teleport(0, Vec2::new(100.0, 80.0), 0.0);
+        m.world
+            .teleport(1, Vec2::new(80.0, 115.0), std::f32::consts::PI);
+        for _ in 0..(0.6 / DT) as usize {
+            m.fighters[0].reload_in = 1.0;
+            m.step(Command::default(), false);
+        }
+        m.world
+            .teleport(1, Vec2::new(100.0, 112.0), std::f32::consts::PI);
+        let mut hidden_hits = 0.0;
+        for _ in 0..(6.0 / DT) as usize {
+            let before = m.fighters[1].health;
+            m.step(Command::default(), false);
+            let eye = m.world.tanks[0].pos + Vec3::Y * m.world.tanks[0].gun_height();
+            if !ai::can_see(&m.world, eye, &m.world.tanks[1]) {
+                hidden_hits += (before - m.fighters[1].health).max(0.0);
+            }
+            m.sounds.clear();
+        }
+        assert!(
+            hidden_hits > 20.0,
+            "only {hidden_hits:.0} damage dealt out of sight"
+        );
     }
 }
