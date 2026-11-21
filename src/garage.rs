@@ -945,10 +945,7 @@ impl Garage {
         } else if owned {
             (format!("OWNED · {level}"), theme::DIM)
         } else {
-            let at = crate::mission::offering(part)
-                .map(|(i, _)| crate::mission::MISSIONS[i].name)
-                .unwrap_or("NOT OFFERED");
-            (at.to_string(), LOCKED)
+            (format!("FROM THE {}", part.maker().name()), LOCKED)
         };
         let mut t = TextStyle::LABEL;
         t.color = color;
@@ -1124,22 +1121,17 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
             (format!("EQUIP {}", part.name()), true)
         }
     } else {
-        let text = match crate::mission::offering(part) {
-            Some((i, side)) => {
-                let m = &crate::mission::MISSIONS[i];
-                let employer = m.sides[side].name();
-                // The longest that fits the button.
-                [
-                    format!("STEAL IT: WIN {} FOR THE {employer}", m.name),
-                    format!("WIN {} FOR THE {employer}", m.name),
-                    format!("WIN {}", m.name),
-                ]
-                .into_iter()
-                .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
-                .unwrap_or_default()
-            }
-            None => "SCHEMATIC NOT OFFERED".to_string(),
-        };
+        // Stolen in a theater, from a side you fight there (#311).
+        let maker = part.maker().name();
+        // The longest that fits the button.
+        let text = [
+            format!("STEAL IT: BEAT THE {maker} IN A THEATER"),
+            format!("STEAL IT FROM THE {maker}"),
+            format!("BEAT THE {maker}"),
+        ]
+        .into_iter()
+        .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
+        .unwrap_or_default();
         (text, false)
     }
 }
@@ -1372,10 +1364,10 @@ mod tests {
         let pelekys = Part::Turret(TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Locked(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
-        // The button says which mission's win steals it.
+        // The button says whose it is to steal: the side that makes it.
         let (text, can) = primary_action(pelekys, start, &p);
         assert!(!can);
-        assert!(text.contains("DEAD TOWN"), "{text}");
+        assert!(text.contains("IMPERIUM"), "{text}");
         // Once stolen, E equips it and U upgrades it.
         p.crystals = 100_000;
         assert!(p.steal(pelekys));

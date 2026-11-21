@@ -44,8 +44,6 @@ pub struct Mission {
     pub team_size: usize,
     /// The map's sides: whichever of them you pick hires you, against the rest.
     pub sides: &'static [Faction],
-    /// The brief from each side's point of view, in `sides` order.
-    pub briefs: &'static [&'static str],
     /// How hard it is, in upgrade steps (shown as a mark: 5 is M0.5): the enemy's
     /// gear is drawn about it, and the pay rises with it.
     pub rating: u8,
@@ -80,10 +78,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
-        briefs: &[
-            "Raid the Resonant camp in the town. Cost them the most hulls.",
-            "Raid the Imperium camp in the town. Cost them the most hulls.",
-        ],
         rating: 0,
         rank: 1,
         prizes: &[HYMN, PELEKYS],
@@ -96,10 +90,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
-        briefs: &[
-            "Take the altar from the church and stay on it. Mind the edge.",
-            "Hold the altar at the heart of the church. Mind the edge.",
-        ],
         rating: 0,
         rank: 1,
         prizes: &[VIGIL, KASTRON],
@@ -112,10 +102,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Imperium],
-        briefs: &[
-            "Hold the Imperium off the Ithessar kiln.",
-            "Put out the Ithessar kiln.",
-        ],
         rating: 0,
         rank: 1,
         prizes: &[None, OSSRIN],
@@ -128,7 +114,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,
-        briefs: &["Every side against every other in the imperial city. Better-geared crews."; 4],
         rating: 5,
         rank: T0_5_RANK,
         prizes: &[LUMEN, SETHUUN, None, None],
@@ -141,10 +126,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Uthenn, Faction::Imperium],
-        briefs: &[
-            "Drive the Imperium out of the foundry they wrecked.",
-            "Keep the Uthenn out of the foundry they wrecked.",
-        ],
         rating: 0,
         rank: 1,
         prizes: &[None, GRAVIS],
@@ -157,10 +138,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Resonant],
-        briefs: &[
-            "Raid the Resonant camp at the mine. Cost them the most hulls.",
-            "The seam is holy. Drive the miners off it.",
-        ],
         rating: 10,
         rank: T1_RANK,
         prizes: &[KNELL, AMMETH],
@@ -173,10 +150,6 @@ pub const MISSIONS: &[Mission] = &[
         seed: 0,
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Resonant],
-        briefs: &[
-            "Take the Resonant flag from their camp and bring it home. Then keep yours.",
-            "Take the miners' flag from their yard and bring it home. Then keep yours.",
-        ],
         rating: 10,
         rank: T1_RANK,
         // Crystals only: every schematic is already some mission's prize.
@@ -184,31 +157,16 @@ pub const MISSIONS: &[Mission] = &[
     },
 ];
 
-/// The missions `faction` hires for, locked or not: indices into `MISSIONS`.
-pub fn hiring(faction: Faction) -> Vec<usize> {
+/// The missions a theater's sites can be fought with at Company rank `rank`
+/// (#311): every two-sided one the Company takes at that rank, its map and
+/// contract standing in for the site's until sites get maps of their own.
+pub fn for_sites(rank: u32) -> Vec<usize> {
     (0..MISSIONS.len())
-        .filter(|&i| MISSIONS[i].sides.contains(&faction))
+        .filter(|&i| MISSIONS[i].sides.len() == 2 && MISSIONS[i].open_at(rank))
         .collect()
 }
 
-/// The mission (index into `MISSIONS`) and side whose win steals `part`'s schematic.
-pub fn offering(part: Part) -> Option<(usize, usize)> {
-    MISSIONS.iter().enumerate().find_map(|(i, m)| {
-        (0..m.sides.len())
-            .find(|&side| m.prize(side) == Some(part))
-            .map(|side| (i, side))
-    })
-}
-
 impl Mission {
-    /// Where `faction` stands among the sides (it must be one of them).
-    pub fn side_of(&self, faction: Faction) -> usize {
-        self.sides
-            .iter()
-            .position(|&f| f == faction)
-            .expect("a side of this mission")
-    }
-
     /// The rating as a tier: "T0", "T0.5".
     pub fn rating_label(&self) -> String {
         crate::economy::level_label(self.rating)
@@ -243,20 +201,6 @@ mod tests {
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
             assert_eq!(m.sides, crate::make_map(m.map_kind, m.seed).factions);
-        }
-    }
-
-    #[test]
-    fn a_brief_for_every_side() {
-        for m in MISSIONS {
-            assert_eq!(m.briefs.len(), m.sides.len(), "{}", m.name);
-        }
-    }
-
-    #[test]
-    fn every_faction_has_work() {
-        for f in Faction::ALL {
-            assert!(!hiring(f).is_empty(), "nobody hires {}", f.name());
         }
     }
 
@@ -306,15 +250,11 @@ mod tests {
         }
     }
 
+    /// A new pilot's theater has maps to fight on.
     #[test]
-    fn every_faction_has_open_work() {
-        for f in Faction::ALL {
-            assert!(
-                hiring(f).iter().any(|&i| MISSIONS[i].open_at(1)),
-                "nothing open for a new pilot with {}",
-                f.name()
-            );
-        }
+    fn sites_have_maps_from_the_start() {
+        assert!(!for_sites(1).is_empty());
+        assert!(for_sites(T1_RANK).len() > for_sites(1).len());
     }
 
     /// Every part but the starters is some mission's prize, stolen from a side you

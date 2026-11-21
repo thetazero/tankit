@@ -32,6 +32,7 @@ mod showroom;
 mod sim;
 mod sweep;
 mod tank;
+mod theater_view;
 mod thumbs;
 mod ui;
 mod vista;
@@ -101,8 +102,10 @@ tankit [OPTIONS]
                           and (with --mission, if you won) the schematic stolen
   --screen carry          (with --shot --contract raid) the player starts on the enemy's flag,
                           facing home, and carries it
-  --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds';
-                          (with --screen results) the round was this mission, for its prize
+  --mission <name>        (with --screen results) the round was this mission, by name, e.g.
+                          'four winds', for its prize
+  --site <n>              (with --screen missions|site) select the theater's nth contested site
+                          (from 0; default: the first your side fights for)
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --upgrade <steps>       (with --shot) every part the pilot owns is this many upgrade steps up (10 a mark)
@@ -127,8 +130,10 @@ pub struct Args {
     pub side: usize,
     /// --employer, for menu shots.
     employer: Option<faction::Faction>,
-    /// --mission, for menu shots: index into `MISSIONS`.
+    /// --mission, for results shots: index into `MISSIONS`.
     mission: Option<usize>,
+    /// --site, for theater shots: index into the contested sites.
+    site: Option<usize>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -255,6 +260,8 @@ enum Screen {
     Menu,
     Factions,
     Missions,
+    /// A contested site of the theater.
+    Site,
     Settings,
     /// Settings' key bindings.
     Controls,
@@ -311,6 +318,7 @@ fn main() -> Result<()> {
                     Screen::Menu
                         | Screen::Factions
                         | Screen::Missions
+                        | Screen::Site
                         | Screen::Settings
                         | Screen::Controls
                         | Screen::Rebind
@@ -372,6 +380,7 @@ fn parse_args() -> Result<Args> {
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
     let mut mission = None;
+    let mut site = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -452,6 +461,7 @@ fn parse_args() -> Result<Args> {
                         .with_context(|| format!("--mission: no mission called {name:?}"))?,
                 );
             }
+            "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
             "--straight" => straight = true,
             "--tilt" => {
                 tilt = args
@@ -560,6 +570,7 @@ fn parse_args() -> Result<Args> {
                     Some("menu") => Screen::Menu,
                     Some("factions") => Screen::Factions,
                     Some("missions") => Screen::Missions,
+                    Some("site") => Screen::Site,
                     Some("settings") => Screen::Settings,
                     Some("controls") => Screen::Controls,
                     Some("rebind") => Screen::Rebind,
@@ -569,7 +580,7 @@ fn parse_args() -> Result<Args> {
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
+                            "--screen expects menu, factions, missions, site, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
                         )
                     }
                 })
@@ -607,6 +618,7 @@ fn parse_args() -> Result<Args> {
             Screen::Menu
                 | Screen::Factions
                 | Screen::Missions
+                | Screen::Site
                 | Screen::Settings
                 | Screen::Controls
                 | Screen::Rebind
@@ -638,6 +650,7 @@ fn parse_args() -> Result<Args> {
         side,
         employer,
         mission,
+        site,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -939,15 +952,22 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     profile.loadout = args.loadout;
     let mut menu = menu::Menu::new();
     match args.screen {
-        Some(Screen::Factions | Screen::Missions) => {
+        Some(Screen::Factions | Screen::Missions | Screen::Site) => {
             menu.input(menu::Nav::Select);
             if let Some(f) = args.employer {
                 menu.pick_employer(f);
             }
-            if args.screen == Some(Screen::Missions) {
+            if args.screen != Some(Screen::Factions) {
                 menu.input(menu::Nav::Select);
-                if let Some(i) = args.mission {
-                    menu.pick_mission(i);
+                // A new pilot's galaxy, posted for the employer.
+                let g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                let f = menu.employer().index();
+                menu.set_theater(g.theater(f, None, profile.rank().level));
+                if let Some(k) = args.site {
+                    menu.pick_site(k);
+                }
+                if args.screen == Some(Screen::Site) {
+                    menu.input(menu::Nav::Select);
                 }
             }
         }
@@ -984,7 +1004,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let tanks = game.display_tanks(1.0);
     let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
-    frame.ui = menu.draw(&profile, h, 1.0).verts;
+    frame.ui = menu.draw(&profile, w, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));
     }

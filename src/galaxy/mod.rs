@@ -38,6 +38,7 @@
 pub mod battle;
 pub mod chart;
 pub mod save;
+pub mod theater;
 
 use glam::Vec2;
 

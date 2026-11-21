@@ -262,6 +262,28 @@ impl Painter {
         self.polyline(&pts, width, color);
     }
 
+    /// A filled disc as a triangle fan, `inner` at the centre blending to
+    /// `outer` at the rim: a soft glow with a transparent rim, or a shaded
+    /// ball. No halo, and not clipped (keep it inside any clip).
+    pub fn disc(&mut self, c: Vec2, r: f32, inner: Rgba, outer: Rgba) {
+        let s = self.scale;
+        let n = ((r * s * 0.6) as usize).clamp(24, 180);
+        let v = |p: Vec2, color: Rgba| UiVertex {
+            pos: [p.x * s, p.y * s],
+            color,
+            uv: NO_UV,
+            sdf: NO_SDF,
+        };
+        let at = |i: usize| {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            c + Vec2::new(a.cos(), a.sin()) * r
+        };
+        for i in 0..n {
+            self.verts
+                .extend_from_slice(&[v(c, inner), v(at(i), outer), v(at(i + 1), outer)]);
+        }
+    }
+
     pub fn rect(&mut self, min: Vec2, size: Vec2, color: Rgba) {
         let Some((min, size)) = clip_rect(min, size, self.clip) else {
             return;
