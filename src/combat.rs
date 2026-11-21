@@ -14,6 +14,7 @@ use crate::ai::{self, Bot, Brain, Contact, NavGrid};
 use crate::arrival::{ARRIVAL_TIME, Arrival};
 use crate::economy::Levels;
 use crate::faction::Faction;
+use crate::fx;
 use crate::game::DT;
 use crate::hold::{self, Hold};
 use crate::map::Map;
@@ -528,10 +529,10 @@ impl Blast {
 impl Blast {
     fn life(&self) -> f32 {
         match self.kind {
-            BlastKind::Impact => 0.3,
-            BlastKind::Hit => 0.4,
-            BlastKind::Kill => 1.1,
-            BlastKind::Smoke => 1.6,
+            // Long enough for the dust or smoke to clear (`fx`).
+            BlastKind::Impact | BlastKind::Hit => 1.5,
+            BlastKind::Kill => 4.2,
+            BlastKind::Smoke => 2.4,
             BlastKind::Repair => 0.7,
             BlastKind::Plasma(size) | BlastKind::Shatter(size) => 0.25 + size * 0.15,
             BlastKind::Mote => 0.9,
@@ -1988,11 +1989,28 @@ impl Match {
             let f = &mut self.fighters[i];
             let before = f.respawn_in;
             f.respawn_in -= DT;
-            // Wrecks smoke: small puffs scattered off the hull, drifting up and apart.
-            if (before / 0.25).floor() != (f.respawn_in / 0.25).floor() {
-                let off = Vec3::new(self.rng.range(-1.0, 1.0), 0.0, self.rng.range(-1.0, 1.0));
+            // Wrecks burn: puffs of flame off the hull that roll up and
+            // apart as smoke.
+            // Every 0.25 s a puff draws on the match's rng (as it always has,
+            // so the fight plays out the same); the ones in between are
+            // scattered by a hash, which leaves the rng alone.
+            let tick = |dt: f32| (before / dt).floor() != (f.respawn_in / dt).floor();
+            let (from_rng, between) = (tick(0.25), tick(0.1));
+            if from_rng || between {
+                let (x, z, up) = if from_rng {
+                    (
+                        self.rng.range(-1.0, 1.0),
+                        self.rng.range(-1.0, 1.0),
+                        self.rng.range(3.5, 5.5),
+                    )
+                } else {
+                    let k = fx::seed_at(Vec3::new(i as f32, f.respawn_in, 0.0));
+                    let h = |n: f32| fx::seed_at(Vec3::new(k * 91.0, n, k * 37.0));
+                    (h(1.0) * 2.0 - 1.0, h(2.0) * 2.0 - 1.0, 3.5 + 2.0 * h(3.0))
+                };
+                let off = Vec3::new(x, 0.0, z);
                 let p = self.world.tanks[i].pos + Vec3::Y * 1.2 + off;
-                let drift = off * 1.5 + Vec3::Y * self.rng.range(3.5, 5.5);
+                let drift = off * 1.5 + Vec3::Y * up;
                 self.blasts.push(Blast {
                     drift,
                     ..Blast::new(p, BlastKind::Smoke)
@@ -2238,6 +2256,16 @@ impl Match {
                 _ => {}
             }
         }
+        // Shell strikes, exploding tanks and burning wrecks.
+        for b in &self.blasts {
+            match b.kind {
+                BlastKind::Impact => fx::impact(b.pos, false, b.age, out),
+                BlastKind::Hit => fx::impact(b.pos, true, b.age, out),
+                BlastKind::Kill => fx::kill(b.pos, b.age, out),
+                BlastKind::Smoke => fx::wreck_puff(b.pos, b.drift, b.age / b.life(), out),
+                _ => {}
+            }
+        }
         // Where plasma bursts: the skin pops in a flash of light that swells
         // and fades, throwing droplets out in a ring that arc and wink out.
         for b in &self.blasts {
@@ -2441,24 +2469,12 @@ impl Match {
         for b in &self.blasts {
             let f = b.age / b.life();
             let (mesh, size, color) = match b.kind {
-                BlastKind::Impact => (
-                    MeshId::SPHERE,
-                    0.4 + f * 1.4,
-                    Vec4::new(1.0, 0.75, 0.4, 3.0 * (1.0 - f)),
-                ),
-                BlastKind::Hit => (
-                    MeshId::SPHERE,
-                    0.6 + f * 2.2,
-                    Vec4::new(1.0, 0.45, 0.15, 3.5 * (1.0 - f)),
-                ),
+                // Fire, smoke and dust are particles (`glow_particles`);
+                // only a tank's flung debris is solid.
+                BlastKind::Impact | BlastKind::Hit | BlastKind::Smoke => continue,
                 BlastKind::Kill => {
-                    // Fireball swells then collapses.
-                    let s = (f * 4.0).min(1.0) * (1.0 - f).sqrt();
-                    (
-                        MeshId::SPHERE,
-                        0.5 + s * 7.0,
-                        Vec4::new(1.0, 0.5 + 0.3 * (1.0 - f), 0.15, 4.0 * (1.0 - f * f)),
-                    )
+                    fx::kill_debris(b.pos, b.age, out);
+                    continue;
                 }
                 BlastKind::Repair => (
                     MeshId::SPHERE,
@@ -2521,23 +2537,6 @@ impl Match {
                                 p,
                             ),
                             CRYSTAL_HOT.extend(4.0 * (1.0 - f)),
-                        ),
-                    ));
-                    continue;
-                }
-                BlastKind::Smoke => {
-                    let s = (f * 4.0).min(1.0) * (1.0 - f);
-                    let c = 0.12 + f * 0.15;
-                    let p = b.pos + b.drift * f;
-                    out.push((
-                        MeshId::SPHERE,
-                        Instance::new(
-                            Mat4::from_scale_rotation_translation(
-                                Vec3::splat(s * 1.3),
-                                Quat::IDENTITY,
-                                p,
-                            ),
-                            Vec4::new(c, c, c, 0.0),
                         ),
                     ));
                     continue;

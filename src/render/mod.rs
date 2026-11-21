@@ -124,6 +124,9 @@ pub struct Particle {
     /// 0: lit and alpha-blended. Above 0: glows by itself at this strength
     /// (color times alpha), adding light rather than covering what's behind.
     pub glow: f32,
+    /// 0: a smooth round blob. Above 0: a billow of smoke or flame, lumpy at
+    /// the edge and through the body, its shape seeded by this (0..1].
+    pub billow: f32,
 }
 
 impl Particle {
@@ -136,8 +139,42 @@ impl Particle {
             color: color.extend(1.0).to_array(),
             stretch: stretch.to_array(),
             glow: strength.max(0.0),
+            billow: 0.0,
         }
     }
+
+    /// A tongue of flame: like `glow`, but billowing, shaped by `seed` (0..1).
+    pub fn fire(
+        at: Vec3,
+        size: f32,
+        color: Vec3,
+        strength: f32,
+        stretch: Vec3,
+        seed: f32,
+    ) -> Particle {
+        Particle {
+            billow: billow_seed(seed),
+            ..Particle::glow(at, size, color, strength, stretch)
+        }
+    }
+
+    /// A lit puff of billowing smoke or dust: `size` m radius, `color` lit by
+    /// the sun at `alpha` cover, its lumps shaped by `seed` (0..1).
+    pub fn smoke(at: Vec3, size: f32, color: Vec3, alpha: f32, seed: f32) -> Particle {
+        Particle {
+            pos: at.to_array(),
+            size,
+            color: color.extend(alpha.clamp(0.0, 1.0)).to_array(),
+            stretch: [0.0; 3],
+            glow: 0.0,
+            billow: billow_seed(seed),
+        }
+    }
+}
+
+/// A billow seed in (0, 1] from any number.
+fn billow_seed(seed: f32) -> f32 {
+    seed.fract().abs().max(0.001)
 }
 
 /// Everything the renderer needs to draw one frame.
@@ -755,7 +792,7 @@ impl Renderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Particle>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32x4, 3 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32x4, 3 => Float32x4, 4 => Float32],
                 })],
             },
             primitive: Default::default(),

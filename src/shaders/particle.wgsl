@@ -1,7 +1,9 @@
 // Soft, camera-facing particles drawn into the HDR target after the opaque
 // scene: depth-tested, not depth-written. Blended premultiplied, so one pass
 // holds both kinds: lit, alpha-blended dust and blown sand (glow 0), and
-// self-lit plasma glow (glow > 0) that adds light and blocks none.
+// self-lit plasma glow (glow > 0) that adds light and blocks none. Either
+// kind can billow (billow > 0, seeding its shape): smoke and flame, lumpy at
+// the edge and through the body instead of a smooth round blob.
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -47,6 +49,7 @@ struct PIn {
     @location(1) size: f32,
     @location(2) color: vec4<f32>,
     @location(3) stretch: vec4<f32>,
+    @location(4) billow: f32,
 };
 
 struct POut {
@@ -57,6 +60,8 @@ struct POut {
     @location(3) streak: f32,
     @location(4) size: f32,
     @location(5) glow: f32,
+    @location(6) near: f32,
+    @location(7) billow: f32,
 };
 
 @vertex
@@ -88,7 +93,41 @@ fn vs_particle(@builtin(vertex_index) i: u32, p: PIn) -> POut {
     o.streak = select(0.0, 1.0, sl > 0.01);
     o.size = p.size;
     o.glow = p.stretch.w;
+    o.billow = p.billow;
+    // Fade out a puff the camera is in or about to be in: up close its quad
+    // fills the view and the near plane cuts it off in a straight line.
+    let dc = distance(p.pos, g.cam_pos.xyz);
+    o.near = clamp((dc - p.size - 1.0) / (p.size + 1.5), 0.0, 1.0);
     return o;
+}
+
+fn hash2(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(hash2(i), hash2(i + vec2<f32>(1.0, 0.0)), u.x),
+        mix(hash2(i + vec2<f32>(0.0, 1.0)), hash2(i + vec2<f32>(1.0, 1.0)), u.x),
+        u.y,
+    );
+}
+
+// 0..1 lumps for a smoke puff, a different shape for each seed. Each octave
+// is turned against the last (and the whole against the screen) so the
+// noise lattice never lines up into visible squares.
+fn billow(uv: vec2<f32>, seed: f32) -> f32 {
+    let a = seed * 6.2832;
+    let r = mat2x2<f32>(cos(a), sin(a), -sin(a), cos(a));
+    let turn = mat2x2<f32>(0.8, 0.6, -0.6, 0.8);
+    let o = vec2<f32>(seed * 37.0, seed * 91.0);
+    let p1 = r * uv * 1.6 + o;
+    let p2 = turn * p1 * 2.1 + 5.3;
+    let p3 = turn * p2 * 2.1 + 9.1;
+    return noise2(p1) * 0.62 + noise2(p2) * 0.28 + noise2(p3) * 0.1;
 }
 
 @fragment
@@ -98,7 +137,17 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     let k = max(1.0 - r2, 0.0);
     let puff = k * k;
     let line = (1.0 - v.uv.x * v.uv.x) * (1.0 - abs(v.uv.y));
-    let soft0 = max(mix(puff, line, v.streak), 0.0);
+    var soft0 = max(mix(puff, line, v.streak), 0.0);
+    // Smoke and flame: lumps eat into the edge and thin the body, so it
+    // reads as a billow rather than a ball.
+    let lumpy = v.billow > 0.0;
+    var lump = 0.5;
+    if (lumpy) {
+        lump = billow(v.uv, v.billow);
+        // Thins to nothing before the quad's edge (r2 = 1), however lumpy.
+        let body = clamp((1.0 - r2) * 1.6 - (1.0 - lump) * 0.75, 0.0, 1.0);
+        soft0 = body * body;
+    }
     // Outside the puff (the quad's corners): nothing to draw, so don't
     // pay for the depth and shadow lookups below.
     if (soft0 <= 0.0) {
@@ -108,7 +157,7 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     // cuts into, so no straight edge shows where it's clipped.
     let d = distance(v.wpos, g.cam_pos.xyz);
     let gap = scene_dist(v.clip.xy) - d;
-    let fade = clamp(gap / clamp(v.size * 0.6, 0.05, 2.0), 0.0, 1.0);
+    let fade = clamp(gap / clamp(v.size * 0.6, 0.05, 2.0), 0.0, 1.0) * v.near;
     let soft = soft0 * fade;
     if (soft <= 0.0) {
         discard;
@@ -117,9 +166,14 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     if (v.glow > 0.0) {
         // Plasma: a wide colored halo around a white-hot heart, both falling
         // off smoothly (no hard edge), haze swallowing it with distance.
-        let halo = exp(-r2 * 4.0) * fade;
-        let heart = exp(-r2 * 22.0) * fade;
-        let hot = mix(v.color.rgb, vec3<f32>(1.0, 0.92, 0.97), 0.6);
+        var halo = exp(-r2 * 4.0) * fade;
+        var heart = exp(-r2 * 22.0) * fade;
+        if (lumpy) {
+            // Flame: the billow's shape, hottest in its thickest lumps.
+            halo = soft0 * fade;
+            heart = soft0 * exp(-r2 * 8.0) * fade;
+        }
+        let hot = mix(v.color.rgb, vec3<f32>(1.0, 0.92, 0.97), select(0.6, 0.3, lumpy));
         let strength = v.glow * v.color.a * (1.0 - d_fog);
         let light = (v.color.rgb * halo + hot * heart * 2.0) * strength;
         // A little coverage too, so the color holds against a bright sky
@@ -131,6 +185,10 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     let sun = g.sun_color.rgb * (0.35 + 0.35 * max(g.sun_dir.y, 0.0)) * sunlit(v.wpos);
     let fill = mix(g.ground_color.rgb, g.sky_horizon.rgb, 0.6) * 0.55;
     var c = v.color.rgb * (sun + fill);
+    if (lumpy) {
+        // Lit from above, darker in its folds.
+        c = c * (0.85 + 0.15 * v.uv.y + 0.6 * (lump - 0.5));
+    }
     // Same haze as the scene.
     c = mix(c, g.sky_horizon.rgb, d_fog);
     let a = v.color.a * soft;
