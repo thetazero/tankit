@@ -11,6 +11,7 @@ mod combat;
 mod economy;
 mod faction;
 mod fx;
+mod galaxy;
 mod game;
 mod garage;
 mod hitch;
@@ -60,6 +61,9 @@ tankit [OPTIONS]
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
   --arena <rounds>        play bot-only rounds headless (seeds from --seed up) and print each
                           side's wins; every bot runs the frozen baseline brain unless --improve
+  --galaxy <ticks>        run the galaxy's forever war on its own (from --seed) for that many ticks,
+                          print each faction's share and how long a tick takes; with --shot,
+                          save a chart of the run there
   --improve <faction>     (with --arena) that side's bots run the current brain
   --duel <hull,turret,hull,turret,metres,count>
                           one bot against one on open ground, that far apart, count times: the
@@ -149,6 +153,8 @@ pub struct Args {
     /// Duels: (hull, turret) under the current brain against one under
     /// the baseline, this far apart, this many times.
     duel: Option<(garage::Loadout, garage::Loadout, f32, u32)>,
+    /// Run the galaxy's war on its own for this many ticks.
+    galaxy: Option<u64>,
 }
 
 impl Args {
@@ -253,6 +259,9 @@ fn main() -> Result<()> {
         game.world.tanks[0].turret_kind = args.loadout.1;
         return bench::run(game, w, h, warmup, seconds);
     }
+    if let Some(ticks) = args.galaxy {
+        return galaxy::run(args.seed, ticks, args.shot.as_ref().map(|s| s.out.as_str()));
+    }
     if let Some((a, b, start, reps)) = args.duel {
         return arena::duel(a, b, start, reps);
     }
@@ -313,6 +322,7 @@ fn parse_args() -> Result<Args> {
     let mut wav: Option<String> = None;
     let mut bench: Option<f32> = None;
     let mut arena: Option<u32> = None;
+    let mut galaxy: Option<u64> = None;
     let mut improve: Option<faction::Faction> = None;
     let mut duel: Option<(garage::Loadout, garage::Loadout, f32, u32)> = None;
     let mut time: Option<f32> = None;
@@ -427,6 +437,13 @@ fn parse_args() -> Result<Args> {
                 arena = Some(
                     args.next()
                         .context("--arena needs a round count")?
+                        .parse()?,
+                )
+            }
+            "--galaxy" => {
+                galaxy = Some(
+                    args.next()
+                        .context("--galaxy needs a tick count")?
                         .parse()?,
                 )
             }
@@ -591,6 +608,7 @@ fn parse_args() -> Result<Args> {
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
         arena: arena.map(|n| (n, improve)),
         duel,
+        galaxy,
         shot: shot.map(|out| ShotArgs {
             out,
             time: time.unwrap_or(1.0),
