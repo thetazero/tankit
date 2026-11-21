@@ -6,6 +6,7 @@ mod arrival;
 mod audio;
 mod bay;
 mod bench;
+mod binds;
 mod combat;
 mod economy;
 mod faction;
@@ -75,7 +76,7 @@ tankit [OPTIONS]
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
-  --screen <menu|factions|missions|settings|pause|results>  (with --shot) render that screen
+  --screen <menu|factions|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
                           screen and its respawn countdown
@@ -204,6 +205,10 @@ enum Screen {
     Factions,
     Missions,
     Settings,
+    /// Settings' key bindings.
+    Controls,
+    /// The key bindings, waiting for the key to put on FIRE's second slot.
+    Rebind,
     Pause,
     Results,
     /// The death screen: destroyed, counting down to the respawn.
@@ -246,7 +251,14 @@ fn main() -> Result<()> {
         (Some(shot), None)
             if matches!(
                 args.screen,
-                Some(Screen::Menu | Screen::Factions | Screen::Missions | Screen::Settings)
+                Some(
+                    Screen::Menu
+                        | Screen::Factions
+                        | Screen::Missions
+                        | Screen::Settings
+                        | Screen::Controls
+                        | Screen::Rebind
+                )
             ) =>
         {
             menu_shot(&args, shot)
@@ -455,12 +467,14 @@ fn parse_args() -> Result<Args> {
                     Some("factions") => Screen::Factions,
                     Some("missions") => Screen::Missions,
                     Some("settings") => Screen::Settings,
+                    Some("controls") => Screen::Controls,
+                    Some("rebind") => Screen::Rebind,
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, settings, pause, results or dead, got {other:?}"
+                            "--screen expects menu, factions, missions, settings, controls, rebind, pause, results or dead, got {other:?}"
                         )
                     }
                 })
@@ -498,7 +512,14 @@ fn parse_args() -> Result<Args> {
     let sides = make_map(map_kind).factions;
     let menu_shot = matches!(
         screen,
-        Some(Screen::Menu | Screen::Factions | Screen::Missions | Screen::Settings)
+        Some(
+            Screen::Menu
+                | Screen::Factions
+                | Screen::Missions
+                | Screen::Settings
+                | Screen::Controls
+                | Screen::Rebind
+        )
     );
     let side = match employer {
         None => 0,
@@ -808,10 +829,22 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 }
             }
         }
-        Some(Screen::Settings) => {
+        Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {
             menu.input(menu::Nav::Down);
             menu.input(menu::Nav::Down);
             menu.input(menu::Nav::Select);
+            if args.screen != Some(Screen::Settings) {
+                // Up wraps round to CONTROLS.
+                menu.input(menu::Nav::Up);
+                menu.input(menu::Nav::Select);
+            }
+            if args.screen == Some(Screen::Rebind) {
+                for _ in 0..binds::Action::Fire.index() {
+                    menu.input(menu::Nav::Down);
+                }
+                menu.input(menu::Nav::Right);
+                menu.input(menu::Nav::Select);
+            }
         }
         _ => {}
     }

@@ -9,7 +9,9 @@
 //! body text. Colour is for signals only: who's hiring, and what's locked.
 
 use glam::Vec2;
+use winit::keyboard::KeyCode;
 
+use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::faction::Faction;
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{self, MISSIONS};
@@ -40,6 +42,8 @@ pub enum Screen {
     /// Pick one of that faction's missions.
     Missions,
     Settings,
+    /// Settings' key bindings.
+    Controls,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,6 +64,12 @@ pub enum Change {
     Volume(i32),
     /// Volume one step up, wrapping round to silent past the top (Enter on the row).
     CycleVolume,
+    /// Put the key on this action's slot.
+    Bind(binds::Action, usize, KeyCode),
+    /// Clear this action's slot.
+    Unbind(binds::Action, usize),
+    /// Every key back to the defaults.
+    ResetBinds,
 }
 
 /// What can be clicked on the menus.
@@ -69,6 +79,8 @@ pub enum Hit {
     Row(usize),
     /// The volume bar; where along it picks the level.
     Volume,
+    /// On the controls screen: action row `.0`'s key slot `.1`.
+    Bind(usize, usize),
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -118,9 +130,14 @@ pub const SETTINGS: [(&str, &str, Flag); 1] =
         &mut s.debug
     })];
 
-/// Rows on the settings panel: the toggles, then the volume.
-const SETTING_ROWS: usize = SETTINGS.len() + 1;
+/// Rows on the settings panel: the toggles, the volume, then the way into the controls.
+const SETTING_ROWS: usize = SETTINGS.len() + 2;
 const VOLUME_ROW: usize = SETTINGS.len();
+const CONTROLS_ROW: usize = SETTINGS.len() + 1;
+
+/// Rows on the controls screen: one per action, then RESET.
+const CONTROL_ROWS: usize = ACTIONS.len() + 1;
+const RESET_ROW: usize = ACTIONS.len();
 
 /// `settings` after `change`.
 pub fn apply(mut settings: Settings, change: Change) -> Settings {
@@ -136,17 +153,103 @@ pub fn apply(mut settings: Settings, change: Change) -> Settings {
             ..settings
         },
         Change::CycleVolume => settings.nudge_volume(1),
+        Change::Bind(action, slot, code) => {
+            settings.binds.bind(action, slot, code);
+            settings
+        }
+        Change::Unbind(action, slot) => {
+            settings.binds.unbind(action, slot);
+            settings
+        }
+        Change::ResetBinds => Settings {
+            binds: Binds::default(),
+            ..settings
+        },
     }
 }
 
-/// What a key does on settings row `i`.
+/// What a key does on settings row `i` (the controls row opens its screen instead).
 fn setting_input(i: usize, nav: Nav) -> Option<Change> {
     match (i == VOLUME_ROW, nav) {
+        _ if i == CONTROLS_ROW => None,
         (true, Nav::Left) => Some(Change::Volume(-1)),
         (true, Nav::Right) => Some(Change::Volume(1)),
         (true, Nav::Select) => Some(Change::CycleVolume),
         (false, Nav::Select) => Some(Change::Toggle(i)),
         _ => None,
+    }
+}
+
+/// The controls screen: which action and slot is selected, and whether it's
+/// waiting for a key.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Controls {
+    row: usize,
+    slot: usize,
+    /// Waiting for the key to put on the selected slot.
+    capturing: bool,
+}
+
+impl Controls {
+    fn input(&mut self, nav: Nav) -> Option<Change> {
+        match nav {
+            Nav::Up | Nav::Down => self.row = step(self.row, CONTROL_ROWS, nav),
+            Nav::Left => self.slot = self.slot.saturating_sub(1),
+            Nav::Right => self.slot = (self.slot + 1).min(SLOTS - 1),
+            Nav::Select if self.row == RESET_ROW => return Some(Change::ResetBinds),
+            Nav::Select => self.capturing = true,
+            Nav::Back => {}
+        }
+        None
+    }
+
+    /// A key pressed while waiting for one: it goes on the slot. Esc gives up,
+    /// Backspace clears the slot; keys that can't be bound are ignored.
+    fn key(&mut self, code: KeyCode) -> Option<Change> {
+        let action = ACTIONS[self.row];
+        let change = match code {
+            KeyCode::Escape => None,
+            KeyCode::Backspace => Some(Change::Unbind(action, self.slot)),
+            c if binds::reserved(c) || binds::key_name(c).is_none() => return None,
+            c => Some(Change::Bind(action, self.slot, c)),
+        };
+        self.capturing = false;
+        change
+    }
+
+    fn hover(&mut self, hit: Hit) -> bool {
+        let (row, slot) = match hit {
+            Hit::Row(i) => (i, self.slot),
+            Hit::Bind(i, s) => (i, s),
+            Hit::Volume => return false,
+        };
+        if self.capturing || (row, slot) == (self.row, self.slot) {
+            return false;
+        }
+        (self.row, self.slot) = (row, slot);
+        true
+    }
+
+    /// A click on a row or slot: start rebinding it (or reset, on RESET).
+    /// While waiting for a key, any click gives up.
+    fn click(&mut self, hit: Hit) -> (Nav, Option<Change>) {
+        if self.capturing {
+            self.capturing = false;
+            return (Nav::Back, None);
+        }
+        self.hover(hit);
+        (Nav::Select, self.input(Nav::Select))
+    }
+
+    /// The keys to show at the bottom.
+    fn hint(&self) -> &'static str {
+        if self.capturing {
+            "Press a key     Backspace  clear     Esc  cancel"
+        } else if self.row == RESET_ROW {
+            "Enter  reset all     Esc  back"
+        } else {
+            "Enter  rebind     ← →  slot     Esc  back"
+        }
     }
 }
 
@@ -158,6 +261,7 @@ pub struct Menu {
     /// Index into the employer's missions (`mission::hiring`).
     mission: usize,
     setting: usize,
+    controls: Controls,
 }
 
 impl Menu {
@@ -168,7 +272,18 @@ impl Menu {
             faction: 0,
             mission: 0,
             setting: 0,
+            controls: Controls::default(),
         }
+    }
+
+    /// Waiting for a key to bind: the app sends it here (`capture`) rather than as `Nav`.
+    pub fn capturing(&self) -> bool {
+        self.screen == Screen::Controls && self.controls.capturing
+    }
+
+    /// The key pressed while `capturing`.
+    pub fn capture(&mut self, code: KeyCode) -> Option<Action> {
+        self.controls.key(code).map(Action::Setting)
     }
 
     pub fn input(&mut self, nav: Nav) -> Option<Action> {
@@ -205,7 +320,13 @@ impl Menu {
                 self.setting = step(self.setting, SETTING_ROWS, nav)
             }
             (Screen::Settings, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Settings, Nav::Select) if self.setting == CONTROLS_ROW => {
+                self.controls = Controls::default();
+                self.screen = Screen::Controls;
+            }
             (Screen::Settings, _) => return setting_input(self.setting, nav).map(Action::Setting),
+            (Screen::Controls, Nav::Back) => self.screen = Screen::Settings,
+            (Screen::Controls, _) => return self.controls.input(nav).map(Action::Setting),
         }
         None
     }
@@ -234,21 +355,28 @@ impl Menu {
 
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
+        if self.screen == Screen::Controls {
+            return self.controls.hover(hit);
+        }
         let i = match hit {
-            Hit::Row(i) => i,
+            Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
             Screen::Factions => &mut self.faction,
             Screen::Missions => &mut self.mission,
-            Screen::Settings => &mut self.setting,
+            Screen::Settings | Screen::Controls => &mut self.setting,
         };
         std::mem::replace(slot, i) != i
     }
 
     /// A click on `hit`, `at` (0..1) across it.
     pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<Action> {
+        if self.screen == Screen::Controls {
+            let (nav, change) = self.controls.click(hit);
+            return (nav, change.map(Action::Setting));
+        }
         self.hover(hit);
         let nav = match hit {
             Hit::Volume => {
@@ -257,7 +385,7 @@ impl Menu {
                     Some(Action::Setting(volume_click(settings, at.x))),
                 );
             }
-            Hit::Row(_) => Nav::Select,
+            Hit::Row(_) | Hit::Bind(..) => Nav::Select,
         };
         (nav, self.input(nav))
     }
@@ -454,7 +582,19 @@ impl Menu {
                     &profile.settings,
                     self.setting,
                 );
-                "Esc  back"
+                "Enter  select     Esc  back"
+            }
+            Screen::Controls => {
+                body(&mut p, Vec2::new(x, y), "Settings · Controls", theme::DIM);
+                y += 26.0;
+                controls_rows(
+                    &mut p,
+                    &mut hits,
+                    Vec2::new(x, y),
+                    &profile.settings.binds,
+                    &self.controls,
+                );
+                self.controls.hint()
             }
         };
         body(&mut p, Vec2::new(x, h - 64.0), keys, theme::FAINT);
@@ -482,8 +622,10 @@ const PAUSE_ITEMS: [Item; 4] = [
 
 pub struct Pause {
     cursor: usize,
-    /// The settings list is open in the box, on this toggle.
+    /// The settings list is open in the box, on this row.
     settings: Option<usize>,
+    /// The controls screen is open in the box (over the settings).
+    controls: Option<Controls>,
 }
 
 impl Pause {
@@ -491,14 +633,34 @@ impl Pause {
         Pause {
             cursor: 0,
             settings: None,
+            controls: None,
         }
     }
 
+    /// Waiting for a key to bind: the app sends it here (`capture`) rather than as `Nav`.
+    pub fn capturing(&self) -> bool {
+        self.controls.is_some_and(|c| c.capturing)
+    }
+
+    /// The key pressed while `capturing`.
+    pub fn capture(&mut self, code: KeyCode) -> Option<PauseAction> {
+        let c = self.controls.as_mut()?;
+        c.key(code).map(PauseAction::Setting)
+    }
+
     pub fn input(&mut self, nav: Nav) -> Option<PauseAction> {
+        if let Some(c) = &mut self.controls {
+            if nav == Nav::Back {
+                self.controls = None;
+                return None;
+            }
+            return c.input(nav).map(PauseAction::Setting);
+        }
         if let Some(i) = &mut self.settings {
             match nav {
                 Nav::Up | Nav::Down => *i = step(*i, SETTING_ROWS, nav),
                 Nav::Back => self.settings = None,
+                Nav::Select if *i == CONTROLS_ROW => self.controls = Some(Controls::default()),
                 _ => return setting_input(*i, nav).map(PauseAction::Setting),
             }
             return None;
@@ -519,8 +681,11 @@ impl Pause {
 
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
+        if let Some(c) = &mut self.controls {
+            return c.hover(hit);
+        }
         let i = match hit {
-            Hit::Row(i) => i,
+            Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
@@ -529,6 +694,10 @@ impl Pause {
 
     /// A click on `hit`, `at` (0..1) across it.
     pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<PauseAction> {
+        if let Some(c) = &mut self.controls {
+            let (nav, change) = c.click(hit);
+            return (nav, change.map(PauseAction::Setting));
+        }
         self.hover(hit);
         let nav = match hit {
             Hit::Volume => {
@@ -537,7 +706,7 @@ impl Pause {
                     Some(PauseAction::Setting(volume_click(settings, at.x))),
                 );
             }
-            Hit::Row(_) => Nav::Select,
+            Hit::Row(_) | Hit::Bind(..) => Nav::Select,
         };
         (nav, self.input(nav))
     }
@@ -557,7 +726,12 @@ impl Pause {
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
-        let size = Vec2::new(PANEL_W + 48.0, 350.0);
+        // The controls list is long: the box grows to hold it and its keys line.
+        let tall = 90.0 + CONTROLS_H + 44.0;
+        let size = Vec2::new(
+            PANEL_W + 48.0,
+            if self.controls.is_some() { tall } else { 350.0 },
+        );
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
         p.rect(min, size, theme::PANEL);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
@@ -566,13 +740,32 @@ impl Pause {
         let mut y = min.y + 28.0;
         label(&mut p, Vec2::new(x, y), "LINK HELD", Align::Left);
         y += 18.0;
-        let title = if self.settings.is_some() {
-            "SETTINGS"
-        } else {
-            "PAUSED"
+        let title = match (self.controls, self.settings) {
+            (Some(_), _) => "CONTROLS",
+            (None, Some(_)) => "SETTINGS",
+            (None, None) => "PAUSED",
         };
         p.text(Vec2::new(x, y), title, &TextStyle::value(20.0), Align::Left);
         y += 44.0;
+        if let Some(c) = &self.controls {
+            controls_rows(
+                &mut p,
+                &mut hits,
+                Vec2::new(x, y),
+                &profile.settings.binds,
+                c,
+            );
+            body(
+                &mut p,
+                Vec2::new(x, min.y + size.y - 32.0),
+                c.hint(),
+                theme::FAINT,
+            );
+            return Layer {
+                verts: p.finish(),
+                hits,
+            };
+        }
         if let Some(i) = self.settings {
             settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
             return Layer {
@@ -704,6 +897,163 @@ fn settings_rows(
         settings.volume(),
         theme::FG,
     );
+
+    // The way into the key bindings.
+    let y = at.y + CONTROLS_ROW as f32 * 44.0;
+    garage::row_hit(p, hits, Vec2::new(at.x, y), 44.0, Hit::Row(CONTROLS_ROW));
+    let on = selected == CONTROLS_ROW;
+    if on {
+        selection_bar(p, Vec2::new(at.x, y), theme::FG);
+        chevron(p, Vec2::new(at.x + PANEL_W, y));
+    }
+    let mut s = TextStyle::value(15.0);
+    s.color = if on { theme::FG } else { theme::DIM };
+    p.text(Vec2::new(at.x, y), "CONTROLS", &s, Align::Left);
+    let changed = settings.binds != Binds::default();
+    let what = if changed {
+        "KEY BINDINGS · CHANGED"
+    } else {
+        "KEY BINDINGS · DEFAULT"
+    };
+    label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
+}
+
+/// Pitch of a row on the controls screen.
+const CONTROL_ROW: f32 = 24.0;
+/// Height of a section label (BATTLE, GARAGE) on the controls screen.
+const CONTROL_LABEL: f32 = 22.0;
+/// Width of a key slot.
+const SLOT_W: f32 = 76.0;
+
+/// Height the controls screen draws.
+const CONTROLS_H: f32 = CONTROL_LABEL * 2.0
+    + ACTIONS.len() as f32 * CONTROL_ROW
+    + 10.0
+    + LEAVE_GAP
+    + 10.0
+    + CONTROL_ROW;
+
+/// The marker beside a selected row.
+fn selection_bar(p: &mut Painter, at: Vec2, color: Rgba) {
+    p.line(
+        Vec2::new(at.x - 14.0, at.y - 3.0),
+        Vec2::new(at.x - 14.0, at.y + 18.0),
+        2.0,
+        color,
+    );
+}
+
+/// The chevron on a selected row that opens a screen; `right` is the row's right edge.
+fn chevron(p: &mut Painter, right: Vec2) {
+    let (cx, y) = (right.x, right.y);
+    p.polyline(
+        &[
+            Vec2::new(cx - 8.0, y + 2.0),
+            Vec2::new(cx - 3.0, y + 7.5),
+            Vec2::new(cx - 8.0, y + 13.0),
+        ],
+        1.2,
+        theme::FG,
+    );
+}
+
+/// The controls screen: each action with its two key slots, battle controls
+/// then the garage's, then RESET under a rule.
+fn controls_rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, binds: &Binds, c: &Controls) {
+    let mut y = at.y;
+    let mut section = None;
+    for (i, &action) in ACTIONS.iter().enumerate() {
+        let garage_only = action.context() == Context::Garage;
+        if section != Some(garage_only) {
+            if section.is_some() {
+                y += 10.0;
+            }
+            section = Some(garage_only);
+            let name = if garage_only {
+                "IN THE GARAGE"
+            } else {
+                "IN BATTLE"
+            };
+            label(p, Vec2::new(at.x, y), name, Align::Left);
+            y += CONTROL_LABEL;
+        }
+        garage::row_hit(p, hits, Vec2::new(at.x, y + 3.0), CONTROL_ROW, Hit::Row(i));
+        let on = i == c.row;
+        if on {
+            selection_bar(
+                p,
+                Vec2::new(at.x, y),
+                if c.capturing { theme::HOT } else { theme::FG },
+            );
+        }
+        let mut s = TextStyle::value(12.0);
+        s.color = if on { theme::FG } else { theme::DIM };
+        p.text(Vec2::new(at.x, y + 2.0), action.name(), &s, Align::Left);
+        for (slot, key) in binds.keys(action).into_iter().enumerate() {
+            let min = Vec2::new(
+                at.x + PANEL_W - (SLOTS - slot) as f32 * SLOT_W + 6.0,
+                y - 1.0,
+            );
+            let size = Vec2::new(SLOT_W - 6.0, 18.0);
+            hits.add(p, min, size, Hit::Bind(i, slot));
+            let picked = on && slot == c.slot;
+            let waiting = picked && c.capturing;
+            let edge = match (picked, waiting) {
+                (_, true) => theme::HOT,
+                (true, false) => theme::FG,
+                (false, false) => theme::FAINT,
+            };
+            p.rect_outline(min, size, 1.0, edge);
+            let (text, color) = match key.and_then(binds::key_name) {
+                _ if waiting => ("PRESS", theme::HOT),
+                Some(name) => (name, if on { theme::FG } else { theme::DIM }),
+                None => ("—", theme::FAINT),
+            };
+            let mut s = TextStyle::LABEL;
+            s.color = color;
+            p.text(
+                Vec2::new(min.x + size.x * 0.5, min.y + (size.y - s.size) * 0.5),
+                text,
+                &s,
+                Align::Center,
+            );
+        }
+        y += CONTROL_ROW;
+    }
+
+    // Back to the defaults, set apart like the menus' leaving rows.
+    let ry = y + LEAVE_GAP * 0.5;
+    p.line(
+        Vec2::new(at.x, ry),
+        Vec2::new(at.x + PANEL_W, ry),
+        1.0,
+        theme::FAINT,
+    );
+    y += LEAVE_GAP + 10.0;
+    garage::row_hit(
+        p,
+        hits,
+        Vec2::new(at.x, y + 3.0),
+        CONTROL_ROW,
+        Hit::Row(RESET_ROW),
+    );
+    let on = c.row == RESET_ROW;
+    if on {
+        selection_bar(p, Vec2::new(at.x, y), theme::HOT);
+    }
+    let mut s = TextStyle::value(12.0);
+    s.color = if on { theme::HOT } else { theme::DIM };
+    p.text(Vec2::new(at.x, y + 2.0), "RESET CONTROLS", &s, Align::Left);
+    let mut s = TextStyle::LABEL;
+    if on {
+        s.color = theme::HOT;
+    }
+    let what = if *binds == Binds::default() {
+        "ALL DEFAULT"
+    } else {
+        "TO DEFAULT KEYS"
+    };
+    p.text(Vec2::new(at.x + PANEL_W, y + 5.0), what, &s, Align::Right);
 }
 
 /// Body text: sentence case, for everything that isn't a name or a number.
@@ -933,6 +1283,9 @@ mod tests {
             Some(PauseAction::Setting(Change::Toggle(0)))
         );
         assert_eq!(p.input(Nav::Left), None);
+        // Up wraps round to CONTROLS, which Left and Right leave alone; volume is above it.
+        p.input(Nav::Up);
+        assert_eq!(p.input(Nav::Right), None);
         p.input(Nav::Up);
         assert_eq!(
             p.input(Nav::Right),
@@ -954,11 +1307,17 @@ mod tests {
         let mut settings = Pause::new();
         settings.input(Nav::Down);
         settings.input(Nav::Select);
+        let mut controls = Pause::new();
+        controls.settings = Some(CONTROLS_ROW);
+        controls.input(Nav::Select);
+        controls.input(Nav::Select);
+        assert!(controls.capturing());
         for screen in [
             Screen::Main,
             Screen::Factions,
             Screen::Missions,
             Screen::Settings,
+            Screen::Controls,
         ] {
             m.screen = screen;
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
@@ -968,6 +1327,7 @@ mod tests {
                         .draw(&profile, Faction::Imperium, 30, w, h)
                         .verts,
                     settings.draw(&profile, Faction::Imperium, 30, w, h).verts,
+                    controls.draw(&profile, Faction::Imperium, 30, w, h).verts,
                 ] {
                     assert!(!v.is_empty());
                     assert!(v.iter().all(|v| v.pos[0] > -4.0
@@ -1060,6 +1420,123 @@ mod tests {
         // Back leaves settings.
         p.input(Nav::Back);
         assert_eq!(p.settings, None);
+    }
+
+    /// Settings → CONTROLS → pick a slot → press a key: it's bound there.
+    #[test]
+    fn rebinding_from_the_menu() {
+        let mut m = Menu::new();
+        m.screen = Screen::Settings;
+        m.setting = CONTROLS_ROW;
+        assert_eq!(m.input(Nav::Select), None);
+        assert_eq!(m.screen, Screen::Controls);
+        assert!(!m.capturing());
+        // FIRE, second slot.
+        for _ in 0..binds::Action::Fire.index() {
+            m.input(Nav::Down);
+        }
+        m.input(Nav::Right);
+        assert_eq!(m.input(Nav::Select), None);
+        assert!(m.capturing());
+        // Keys that can't be bound don't end the wait.
+        assert_eq!(m.capture(KeyCode::Enter), None);
+        assert!(m.capturing());
+        assert_eq!(
+            m.capture(KeyCode::KeyF),
+            Some(Action::Setting(Change::Bind(
+                binds::Action::Fire,
+                1,
+                KeyCode::KeyF
+            )))
+        );
+        assert!(!m.capturing());
+        // Esc gives up; Backspace clears.
+        m.input(Nav::Select);
+        assert_eq!(m.capture(KeyCode::Escape), None);
+        assert!(!m.capturing());
+        m.input(Nav::Select);
+        assert_eq!(
+            m.capture(KeyCode::Backspace),
+            Some(Action::Setting(Change::Unbind(binds::Action::Fire, 1)))
+        );
+        // RESET, at the bottom (Up wraps there from the top).
+        for _ in 0..=binds::Action::Fire.index() {
+            m.input(Nav::Up);
+        }
+        assert_eq!(
+            m.input(Nav::Select),
+            Some(Action::Setting(Change::ResetBinds))
+        );
+        m.input(Nav::Back);
+        assert_eq!(m.screen, Screen::Settings);
+    }
+
+    #[test]
+    fn rebinding_from_the_pause_box() {
+        let mut p = Pause::new();
+        p.input(Nav::Down);
+        p.input(Nav::Select);
+        p.input(Nav::Up);
+        assert_eq!(p.settings, Some(CONTROLS_ROW));
+        p.input(Nav::Select);
+        assert!(p.controls.is_some());
+        p.input(Nav::Select);
+        assert_eq!(
+            p.capture(KeyCode::KeyI),
+            Some(PauseAction::Setting(Change::Bind(
+                binds::Action::Forward,
+                0,
+                KeyCode::KeyI
+            )))
+        );
+        // Esc steps back out: controls, settings, then resumes.
+        assert_eq!(p.input(Nav::Back), None);
+        assert_eq!(p.controls, None);
+        assert_eq!(p.input(Nav::Back), None);
+        assert_eq!(p.input(Nav::Back), Some(PauseAction::Resume));
+    }
+
+    #[test]
+    fn clicking_a_key_slot_waits_for_a_key() {
+        let profile = Profile::in_memory();
+        let mut m = Menu::new();
+        m.screen = Screen::Controls;
+        let hit = Hit::Bind(binds::Action::Garage.index(), 1);
+        assert_eq!(click_drawn(&mut m, &profile, hit), (Nav::Select, None));
+        assert!(m.capturing());
+        assert_eq!(
+            m.capture(KeyCode::KeyH),
+            Some(Action::Setting(Change::Bind(
+                binds::Action::Garage,
+                1,
+                KeyCode::KeyH
+            )))
+        );
+        // Any click while waiting gives up.
+        click_drawn(&mut m, &profile, Hit::Row(0));
+        assert!(m.capturing());
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(0)),
+            (Nav::Back, None)
+        );
+        assert!(!m.capturing());
+        assert_eq!(
+            click_drawn(&mut m, &profile, Hit::Row(RESET_ROW)),
+            (Nav::Select, Some(Action::Setting(Change::ResetBinds)))
+        );
+    }
+
+    #[test]
+    fn binds_apply_and_reset() {
+        let s = apply(
+            Settings::default(),
+            Change::Bind(binds::Action::Fire, 0, KeyCode::KeyF),
+        );
+        assert!(s.binds.is(binds::Action::Fire, KeyCode::KeyF));
+        assert!(!s.binds.is(binds::Action::Fire, KeyCode::Space));
+        let s = apply(s, Change::Unbind(binds::Action::Forward, 0));
+        assert_eq!(s.binds.keys(binds::Action::Forward)[0], None);
+        assert_eq!(apply(s, Change::ResetBinds).binds, Binds::default());
     }
 
     #[test]
