@@ -254,17 +254,18 @@ pub fn gun(kind: TurretKind) -> Gun {
             charge: 0.0,
             action: Action::Shell(cannon),
         },
-        // Ithessar: an orb of plasma charged in a crystal cradle. Slow, and it
-        // skips off walls and ground, a little weaker each time. Slow enough
-        // to dodge, so each one that lands hits hard.
+        // Ithessar: an orb of plasma charged in a crystal cradle. Slower than
+        // the darts, and it skips off walls and ground, a little weaker each
+        // time. Slow enough to dodge at range, so each one that lands hits
+        // hard. It flies about 129 m before it fades.
         TurretKind::Ammeth => Gun {
             damage: 48.0,
             reload: 1.2,
             spool: 0.0,
             charge: 0.0,
             action: Action::Shell(ShellSpec {
-                speed: 38.0,
-                life: 3.4,
+                speed: 57.0,
+                life: 129.2 / 57.0,
                 gravity: 0.0,
                 bounces: 3,
                 spread: 0.0,
@@ -1525,6 +1526,10 @@ impl Match {
     /// it. A flame pours on through tanks, burning each enemy once, and only
     /// walls stop it. False once it's spent.
     fn travel(&mut self, s: &mut Shell, mut step: Vec3) -> bool {
+        // A surface the shot was found touching while already moving away
+        // from it (an orb just skipped off it): passed through for the rest
+        // of this step, or it would skip again on the spot.
+        let mut leaving: Option<ColliderHandle> = None;
         loop {
             let len = step.length();
             if len < 1e-6 {
@@ -1533,7 +1538,7 @@ impl Match {
             let owner = self.world.tanks[s.owner].body;
             let world = &self.world;
             let skip = |c: ColliderHandle, _: &Collider| {
-                world.tank_of(c).is_none_or(|j| !s.passed.contains(&j))
+                leaving != Some(c) && world.tank_of(c).is_none_or(|j| !s.passed.contains(&j))
             };
             let filter = QueryFilter::default()
                 .exclude_rigid_body(owner)
@@ -1569,7 +1574,12 @@ impl Match {
             };
             // Where it struck: the heart's surface, against what it touched.
             let at = s.pos + step / len * toi - normal * heart;
-            match self.world.tank_of(c) {
+            let tank = self.world.tank_of(c);
+            if tank.is_none() && step.dot(normal) >= 0.0 && leaving.is_none() {
+                leaving = Some(c);
+                continue;
+            }
+            match tank {
                 Some(j) if s.spec.look == Look::Flame => {
                     self.hit(s, j, at);
                     s.passed.push(j);
