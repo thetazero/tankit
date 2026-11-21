@@ -2,8 +2,9 @@
 //!
 //! The loop: main menu (missions, garage, quit) → a mission's match → Esc
 //! pauses (resume, exit to menu, quit) → when the round ends, Enter plays it
-//! again and Esc goes back to the menu. Reputation is banked into the pilot profile
-//! the moment it's earned, and the profile saves itself on every change.
+//! again and Esc goes back to the menu. Renown is banked into the pilot profile
+//! the moment it's earned, a won mission's schematic when the round ends, and
+//! the profile saves itself on every change.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -97,6 +98,8 @@ struct App {
     contract: Contract,
     /// The mission's rating, in upgrade steps (see `Match::set_rating`).
     rating: u8,
+    /// The schematic the mission offers the side you took, owned or not.
+    prize: Option<Part>,
     /// Which of the map's sides hired you.
     side: usize,
     mode: Mode,
@@ -108,7 +111,7 @@ struct App {
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
     profile: Profile,
-    /// How much of `game.reputation` is already banked into the profile.
+    /// How much of `game.renown` is already banked into the profile.
     banked: u32,
     /// Whether this round's contract pay has been banked.
     paid: bool,
@@ -201,6 +204,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         bots: launch.bots,
         contract: launch.contract,
         rating: 0,
+        prize: None,
         side: launch.side,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
@@ -440,8 +444,14 @@ impl App {
             kit,
         );
         m.set_rating(self.rating);
+        m.prize = self.unstolen_prize();
         self.load(m);
         self.mode = Mode::Playing;
+    }
+
+    /// The mission's prize, unless it's already yours: then it just pays crystals.
+    fn unstolen_prize(&self) -> Option<Part> {
+        self.prize.filter(|&p| !self.profile.owns(p))
     }
 
     /// Start mission `MISSIONS[i]`, hired by its side `side`.
@@ -449,6 +459,7 @@ impl App {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
         (self.contract, self.side, self.rating) = (m.contract, side, m.rating);
+        self.prize = m.prize(side);
         let mut game = new_match(
             self.seed,
             self.map_kind,
@@ -459,6 +470,7 @@ impl App {
             self.profile.loadout,
         );
         game.set_rating(self.rating);
+        game.prize = self.unstolen_prize();
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(
@@ -561,7 +573,7 @@ impl App {
     }
 
     /// A garage key or button pressed, and what it asks for: play its sound
-    /// and do it. E (equip or buy) has a sound of its own for what it did;
+    /// and do it. E (equip) has a sound of its own for what it did;
     /// everything else clicks like a menu.
     fn garage_acted(&mut self, input: garage::Input, event: Option<garage::Event>) {
         match (input, event) {
@@ -576,7 +588,7 @@ impl App {
     }
 
     /// Do what the garage asked. `voiced`: play the depot bay's sound for
-    /// it (a swap or a purchase), not just the menu click already played.
+    /// it (a swap or a refusal), not just the menu click already played.
     fn garage_event(&mut self, event: garage::Event, voiced: bool) {
         match event {
             garage::Event::Queue(kit) => {
@@ -591,22 +603,10 @@ impl App {
                 self.queue(kit)
             }
             // Refusals need no handling beyond the buzz: the garage already shows why E won't work.
-            garage::Event::Buy(part) => {
-                let bought = self.profile.buy(part).is_ok();
+            // A part you don't have: the garage already says which mission steals it.
+            garage::Event::Locked(_) => {
                 if voiced {
-                    self.audio.garage(if bought {
-                        audio::GarageCue::Bought
-                    } else {
-                        audio::GarageCue::Refused
-                    });
-                }
-                if bought {
-                    log::info!("bought {}", part.name());
-                    if let Some(garage::Event::Queue(kit)) =
-                        self.garage.bought(self.queued(), &self.profile)
-                    {
-                        self.queue(kit);
-                    }
+                    self.audio.garage(audio::GarageCue::Refused);
                 }
             }
             garage::Event::Upgrade(part) => {
@@ -792,7 +792,7 @@ impl App {
         match action {
             Some(menu::Action::Deploy(i, side)) => {
                 let m = &MISSIONS[i];
-                if m.open_at(self.profile.standing(m.sides[side]).level) {
+                if m.open_at(self.profile.rank().level) {
                     self.start_mission(i, side);
                 } else {
                     // Not trusted with this one yet.
@@ -982,12 +982,11 @@ impl App {
             }
         }
 
-        // Reputation is paid the moment it's earned, to whoever hired you; crystals
-        // when the contract is done.
-        if self.game.reputation > self.banked {
-            self.profile
-                .add_reputation(self.game.factions[0], self.game.reputation - self.banked);
-            self.banked = self.game.reputation;
+        // Renown is paid the moment it's earned, to the Company; crystals, and the
+        // schematic if you won it, when the contract is done.
+        if self.game.renown > self.banked {
+            self.profile.add_renown(self.game.renown - self.banked);
+            self.banked = self.game.renown;
         }
         if self.mode == Mode::Playing
             && self.showroom.is_none()
@@ -996,6 +995,12 @@ impl App {
         {
             let pay = Payout::of(&self.game);
             self.profile.add_crystals(pay.total());
+            if let Some(part) = pay.schematic
+                && self.profile.steal(part)
+            {
+                log::info!("stole the {} schematic", part.name());
+                self.audio.garage(audio::GarageCue::Bought);
+            }
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
         }
@@ -1137,13 +1142,7 @@ impl App {
                                 )
                                 .verts,
                         );
-                        let pause = self.pause.draw(
-                            &self.profile,
-                            self.game.factions[0],
-                            self.game.reputation,
-                            w,
-                            h,
-                        );
+                        let pause = self.pause.draw(&self.profile, self.game.renown, w, h);
                         ui.extend(pause.verts);
                         (ui, pause.hits.map(UiHit::Pause))
                     }

@@ -1,7 +1,11 @@
-//! Missions: one map per contract (game mode).
+//! Missions: one map per contract (game mode). The Company takes a mission
+//! for whichever of its sides you pick, once its rank is high enough, and
+//! most offer a schematic stolen from the side you fight as the prize.
 
 use crate::MapKind;
+use crate::economy::Part;
 use crate::faction::Faction;
+use crate::sim::{HullKind, TurretKind};
 
 /// What a mission pays you for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -39,9 +43,27 @@ pub struct Mission {
     /// How hard it is, in upgrade steps (shown as a mark: 5 is M0.5): the enemy's
     /// gear is drawn about it, and the pay rises with it.
     pub rating: u8,
-    /// Standing a side needs your reputation with it at before it hires you here.
-    pub standing: u32,
+    /// The Company rank it takes before the Company takes this contract.
+    pub rank: u32,
+    /// What winning steals, for each side that can hire you (in `sides` order): a
+    /// schematic from an enemy's vaults, or none (crystals only).
+    pub prizes: &'static [Option<Part>],
 }
+
+/// The Company rank each mission tier opens at: T0 from the start.
+const T0_5_RANK: u32 = 4;
+const T1_RANK: u32 = 8;
+
+const PELEKYS: Option<Part> = Some(Part::Turret(TurretKind::Pelekys));
+const KASTRON: Option<Part> = Some(Part::Hull(HullKind::Kastron));
+const AMMETH: Option<Part> = Some(Part::Turret(TurretKind::Ammeth));
+const OSSRIN: Option<Part> = Some(Part::Turret(TurretKind::Ossrin));
+const SETHUUN: Option<Part> = Some(Part::Hull(HullKind::Sethuun));
+const HYMN: Option<Part> = Some(Part::Turret(TurretKind::Hymn));
+const KNELL: Option<Part> = Some(Part::Turret(TurretKind::Knell));
+const VIGIL: Option<Part> = Some(Part::Hull(HullKind::Vigil));
+const LUMEN: Option<Part> = Some(Part::Turret(TurretKind::Lumen));
+const GRAVIS: Option<Part> = Some(Part::Hull(HullKind::Gravis));
 
 pub const MISSIONS: &[Mission] = &[
     Mission {
@@ -57,7 +79,8 @@ pub const MISSIONS: &[Mission] = &[
             "The Resonant want the town kept. Most kills takes it.",
         ],
         rating: 0,
-        standing: 1,
+        rank: 1,
+        prizes: &[HYMN, PELEKYS],
     },
     Mission {
         name: "HOLY GROUND",
@@ -72,7 +95,8 @@ pub const MISSIONS: &[Mission] = &[
             "Hold the altar at the heart of the church. Mind the edge.",
         ],
         rating: 0,
-        standing: 1,
+        rank: 1,
+        prizes: &[VIGIL, KASTRON],
     },
     Mission {
         name: "KEPT FIRE",
@@ -87,7 +111,8 @@ pub const MISSIONS: &[Mission] = &[
             "Put out the Ithessar kiln.",
         ],
         rating: 0,
-        standing: 1,
+        rank: 1,
+        prizes: &[None, OSSRIN],
     },
     Mission {
         name: "FOUR WINDS",
@@ -99,7 +124,8 @@ pub const MISSIONS: &[Mission] = &[
         sides: &Faction::ALL,
         briefs: &["Every side against every other in the imperial city. Better-geared crews."; 4],
         rating: 5,
-        standing: 2,
+        rank: T0_5_RANK,
+        prizes: &[LUMEN, SETHUUN, None, None],
     },
     Mission {
         name: "SCRAP METAL",
@@ -114,7 +140,8 @@ pub const MISSIONS: &[Mission] = &[
             "Keep the Uthenn out of the foundry they wrecked.",
         ],
         rating: 0,
-        standing: 1,
+        rank: 1,
+        prizes: &[None, GRAVIS],
     },
     Mission {
         name: "DEEP VEIN",
@@ -129,7 +156,8 @@ pub const MISSIONS: &[Mission] = &[
             "The seam is holy. Drive the miners off it.",
         ],
         rating: 10,
-        standing: 1,
+        rank: T1_RANK,
+        prizes: &[KNELL, AMMETH],
     },
 ];
 
@@ -138,6 +166,15 @@ pub fn hiring(faction: Faction) -> Vec<usize> {
     (0..MISSIONS.len())
         .filter(|&i| MISSIONS[i].sides.contains(&faction))
         .collect()
+}
+
+/// The mission (index into `MISSIONS`) and side whose win steals `part`'s schematic.
+pub fn offering(part: Part) -> Option<(usize, usize)> {
+    MISSIONS.iter().enumerate().find_map(|(i, m)| {
+        (0..m.sides.len())
+            .find(|&side| m.prize(side) == Some(part))
+            .map(|side| (i, side))
+    })
 }
 
 impl Mission {
@@ -154,9 +191,14 @@ impl Mission {
         crate::economy::level_label(self.rating)
     }
 
-    /// Whether a side will hire you here, at standing `standing` with it.
-    pub fn open_at(&self, standing: u32) -> bool {
-        standing >= self.standing
+    /// Whether the Company takes this contract at Company rank `rank`.
+    pub fn open_at(&self, rank: u32) -> bool {
+        rank >= self.rank
+    }
+
+    /// The schematic winning steals for side `side`, if any.
+    pub fn prize(&self, side: usize) -> Option<Part> {
+        self.prizes.get(side).copied().flatten()
     }
 
     /// Bots to fill every side around the player.
@@ -196,14 +238,21 @@ mod tests {
     }
 
     #[test]
+    fn a_prize_slot_for_every_side() {
+        for m in MISSIONS {
+            assert_eq!(m.prizes.len(), m.sides.len(), "{}", m.name);
+        }
+    }
+
+    #[test]
     fn four_winds_is_m0_5_and_earned() {
         let m = MISSIONS.iter().find(|m| m.name == "FOUR WINDS").unwrap();
         assert_eq!(m.rating_label(), "T0.5");
         assert!(!m.open_at(1), "open to a new pilot");
-        assert!(m.open_at(2));
+        assert!(m.open_at(T0_5_RANK));
         // Pays half as much again as an M0 contract.
         assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 3 / 2);
-        // The rest are open from the start, and all but Deep Vein are M0.
+        // The rest but Deep Vein are T0, open from the start.
         for m in MISSIONS
             .iter()
             .filter(|m| !["FOUR WINDS", "DEEP VEIN"].contains(&m.name))
@@ -213,12 +262,25 @@ mod tests {
     }
 
     #[test]
-    fn deep_vein_is_t1() {
+    fn deep_vein_is_t1_and_earned() {
         let m = MISSIONS.iter().find(|m| m.name == "DEEP VEIN").unwrap();
         assert_eq!(m.rating_label(), "T1");
-        assert!(m.open_at(1), "open to a new pilot");
+        assert!(!m.open_at(T1_RANK - 1));
+        assert!(m.open_at(T1_RANK));
         // Pays twice what a T0 contract does.
         assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 2);
+    }
+
+    /// Harder tiers take a higher rank.
+    #[test]
+    fn rank_opens_tiers_in_order() {
+        for a in MISSIONS {
+            for b in MISSIONS {
+                if a.rating < b.rating {
+                    assert!(a.rank < b.rank, "{} vs {}", a.name, b.name);
+                }
+            }
+        }
     }
 
     #[test]
@@ -229,6 +291,32 @@ mod tests {
                 "nothing open for a new pilot with {}",
                 f.name()
             );
+        }
+    }
+
+    /// Every part but the starters is some mission's prize, stolen from a side you
+    /// fight there: never from whoever hired you, never twice.
+    #[test]
+    fn every_schematic_is_stolen_from_the_enemy_once() {
+        let mut offered = Vec::new();
+        for m in MISSIONS {
+            for (side, &employer) in m.sides.iter().enumerate() {
+                if let Some(part) = m.prize(side) {
+                    assert!(!part.starter(), "{} offers a starter", m.name);
+                    assert_ne!(part.maker(), employer, "{} for {}", m.name, employer.name());
+                    assert!(
+                        m.sides.contains(&part.maker()),
+                        "{}: {}",
+                        m.name,
+                        part.name()
+                    );
+                    assert!(!offered.contains(&part), "{} offered twice", part.name());
+                    offered.push(part);
+                }
+            }
+        }
+        for part in crate::economy::PARTS.into_iter().filter(|p| !p.starter()) {
+            assert!(offered.contains(&part), "nobody offers {}", part.name());
         }
     }
 

@@ -97,6 +97,24 @@ pub fn emblem(p: &mut Painter, f: Faction, c: Vec2, size: f32, weight: f32, colo
             arc(p, at(0.0, -off), r * u, a, PI - a, weight, color);
             disc(p, at(0.0, 0.0), 0.3 * u, color);
         }
+        // The Company: a blade through a coin. Paid work, done with a weapon.
+        Faction::Company => {
+            arc(p, at(0.0, 0.1), 0.62 * u, 0.0, TAU, weight, color);
+            // The blade, point down through the coin, its hilt above it.
+            p.polyline(
+                &[
+                    at(-0.13, -0.55),
+                    at(-0.13, 0.62),
+                    at(0.0, 0.98),
+                    at(0.13, 0.62),
+                    at(0.13, -0.55),
+                ],
+                weight,
+                color,
+            );
+            p.line(at(-0.42, -0.55), at(0.42, -0.55), weight, color);
+            p.line(at(0.0, -0.55), at(0.0, -0.95), weight, color);
+        }
     }
 }
 
@@ -157,7 +175,7 @@ mod tests {
 
     #[test]
     fn lockup_width_matches_drawn() {
-        for f in Faction::ALL {
+        for f in Faction::ALL.into_iter().chain([Faction::Company]) {
             let s = TextStyle::value(11.0);
             let mut p = Painter::new(1.0);
             let w = faction_name(&mut p, Vec2::ZERO, f, &s, Align::Right);

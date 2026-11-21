@@ -1,10 +1,10 @@
-//! Crystals: what contracts pay and what parts cost.
+//! Crystals: what contracts pay and what upgrades cost.
 //!
 //! A finished contract pays crystals (completion, your side's victory,
-//! contribution, kill bounty, and your time on the site under Hold); reputation
-//! with your employer is paid for actions in the match. Crystals buy parts
-//! (which standing with their maker puts up for sale) and upgrade them
-//! a step at a time through M0..M3.
+//! contribution, kill bounty, and your time on the site under Hold); renown
+//! with the Company is paid for actions in the match. Parts aren't bought:
+//! their schematics are stolen on missions (see [`crate::mission`]). Crystals
+//! upgrade them a step at a time through M0..M3.
 
 use crate::combat::{self, Action, Gun, Match, ShellSpec};
 use crate::faction::Faction;
@@ -61,7 +61,7 @@ impl Part {
         PARTS.iter().position(|&p| p == self).unwrap_or(0)
     }
 
-    /// Who makes it, and so whose reputation puts it up for sale.
+    /// Who makes it: whose vaults its schematic is stolen from.
     pub fn maker(self) -> Faction {
         match self {
             Part::Hull(k) => k.maker(),
@@ -69,59 +69,14 @@ impl Part {
         }
     }
 
-    /// What it costs to buy, and the standing with its maker it's for sale at. `None`: a
-    /// starter part, owned from the start.
-    pub fn price(self) -> Option<Price> {
-        match self {
-            Part::Hull(HullKind::Kataphrakt) | Part::Turret(TurretKind::Kontos) => None,
-            Part::Turret(TurretKind::Pelekys) => Some(Price {
-                standing: 2,
-                crystals: 500,
-            }),
-            Part::Hull(HullKind::Kastron) => Some(Price {
-                standing: 3,
-                crystals: 900,
-            }),
-            Part::Hull(HullKind::Sethuun) => Some(Price {
-                standing: 3,
-                crystals: 850,
-            }),
-            Part::Hull(HullKind::Vigil) => Some(Price {
-                standing: 3,
-                crystals: 850,
-            }),
-            Part::Hull(HullKind::Gravis) => Some(Price {
-                standing: 4,
-                crystals: 1000,
-            }),
-            Part::Turret(TurretKind::Hymn) => Some(Price {
-                standing: 2,
-                crystals: 600,
-            }),
-            Part::Turret(TurretKind::Ossrin) => Some(Price {
-                standing: 3,
-                crystals: 750,
-            }),
-            Part::Turret(TurretKind::Ammeth) => Some(Price {
-                standing: 4,
-                crystals: 900,
-            }),
-            Part::Turret(TurretKind::Lumen) => Some(Price {
-                standing: 4,
-                crystals: 1000,
-            }),
-            Part::Turret(TurretKind::Knell) => Some(Price {
-                standing: 4,
-                crystals: 1100,
-            }),
-        }
+    /// The Company's starting kit, the Imperium's basic gear: owned from the start.
+    /// Every other part is a schematic stolen on a mission.
+    pub fn starter(self) -> bool {
+        matches!(
+            self,
+            Part::Hull(HullKind::Kataphrakt) | Part::Turret(TurretKind::Kontos)
+        )
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Price {
-    pub standing: u32,
-    pub crystals: u32,
 }
 
 /// Upgrades come in small paid steps: ten from one mark (M0, M1, M2, M3) to the next,
@@ -303,6 +258,9 @@ pub struct Payout {
     /// The mission's rating (in steps), and what it adds on top of the rest.
     pub rating: u8,
     pub rated: u32,
+    /// The schematic stolen: the mission's prize, if your side won (a draw or a
+    /// loss steals nothing).
+    pub schematic: Option<Part>,
 }
 
 impl Payout {
@@ -331,6 +289,7 @@ impl Payout {
             hold: (m.held(0) * HOLD_PER_SECOND) as u32,
             rating: m.rating,
             rated: 0,
+            schematic: m.prize.filter(|_| outcome == Outcome::Won),
         };
         let base = pay.total();
         pay.rated = (base as f32 * (pay_factor(m.rating) - 1.0)).round() as u32;

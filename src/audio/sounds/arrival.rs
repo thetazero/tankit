@@ -9,7 +9,7 @@ use crate::faction::Faction;
 /// Your own arrival is heard close up, as if from inside the hull.
 pub fn arrival(tank: usize, faction: Faction, at: Vec3, jitter: f32) -> Play {
     let layers = match faction {
-        Faction::Imperium => DROP_IMPERIUM,
+        Faction::Imperium | Faction::Company => DROP_IMPERIUM,
         Faction::Resonant => KINDLE_RESONANT,
         Faction::Uthenn => BUILD_UTHENN,
         Faction::Ithessar => DESCEND_ITHESSAR,

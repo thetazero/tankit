@@ -1,11 +1,12 @@
 //! Garage: from the main menu, or G mid-match to park and swing the camera
-//! round your tank. Pick the hull and turret for your next respawn, and buy
-//! or upgrade parts with crystals. The tank you're driving doesn't change.
+//! round your tank. Pick the hull and turret for your next respawn, and
+//! upgrade parts with crystals. The tank you're driving doesn't change. Parts
+//! you don't have yet say which mission's win steals their schematic.
 //!
 //! Hulls and turrets each have a tab: a scrolling grid of cards with rendered
 //! thumbnails, grouped by maker. Browsing only previews: the orbit camera
 //! shows the highlighted kit (parts you don't own too), and nothing is
-//! equipped until you press E (equip, or buy) on a part. U upgrades the
+//! equipped until you press E (equip) on a part. U upgrades the
 //! highlighted part. Deploying keeps what you equipped, cancelling puts back
 //! what was equipped when you came in.
 //!
@@ -60,7 +61,7 @@ const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
 /// What you'll deploy with.
 const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
-/// Parts you can't buy yet (not enough reputation with their maker).
+/// Parts whose schematic you haven't stolen yet.
 const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
 const LOCKED_NAME: Rgba = [0.86, 0.47, 0.38, 0.5];
 /// Open/close transition speed (1 / seconds).
@@ -211,7 +212,7 @@ pub enum Input {
     Right,
     /// Switch between the hull and turret tabs.
     Switch,
-    /// Equip the highlighted part, or buy it if it isn't owned.
+    /// Equip the highlighted part (if owned).
     Act,
     /// Upgrade the highlighted part (if owned).
     Upgrade,
@@ -226,7 +227,8 @@ pub enum Input {
 pub enum Event {
     /// Queue this kit for the next respawn.
     Queue(Loadout),
-    Buy(Part),
+    /// E on a part you don't have: refused, it has to be stolen.
+    Locked(Part),
     Upgrade(Part),
 }
 
@@ -519,7 +521,7 @@ impl Garage {
                 let kit = with_part(queued, part);
                 (kit != queued).then_some(Event::Queue(kit))
             }
-            Input::Act => Some(Event::Buy(part)),
+            Input::Act => Some(Event::Locked(part)),
             Input::Upgrade => profile.owns(part).then_some(Event::Upgrade(part)),
             Input::Deploy => {
                 self.open = false;
@@ -546,13 +548,6 @@ impl Garage {
             }
             Hit::Part(_) | Hit::Tab(_) => None,
         }
-    }
-
-    /// After a purchase: equip the part just bought (the highlighted one).
-    pub fn bought(&mut self, queued: Loadout, profile: &Profile) -> Option<Event> {
-        let part = self.focused();
-        let kit = with_part(queued, part);
-        (profile.owns(part) && kit != queued).then_some(Event::Queue(kit))
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -889,9 +884,8 @@ impl Garage {
         }
     }
 
-    /// One card: the part's thumbnail (dimmed if it isn't yours, darker and
-    /// padlocked if you can't buy it yet), its name, and EQUIPPED, OWNED, a
-    /// price or the reputation it needs.
+    /// One card: the part's thumbnail (dark and padlocked if it isn't yours),
+    /// its name, and EQUIPPED, OWNED, or the mission whose win steals it.
     fn draw_card(
         &self,
         p: &mut Painter,
@@ -903,21 +897,14 @@ impl Garage {
     ) {
         let size = Vec2::new(CARD_W, CARD_H);
         let owned = profile.owns(part);
-        let price = part.price().filter(|_| !owned);
-        let locked = price.is_some_and(|pr| profile.standing_for(part) < pr.standing);
+        let locked = !owned;
 
         p.set_halo(None);
         p.rect(min, size, if selected { SELECT_FILL } else { CARD_FILL });
         let thumb = Vec2::new(CARD_W, THUMB_H);
         match self.thumbs.uv(part) {
             Some((u0, u1)) => {
-                let k = if owned {
-                    1.0
-                } else if locked {
-                    0.3
-                } else {
-                    0.62
-                };
+                let k = if owned { 1.0 } else { 0.3 };
                 p.image(min, thumb, u0, u1, [k, k, k, 1.0]);
             }
             None => p.rect(min, thumb, HOVER_FILL),
@@ -944,13 +931,7 @@ impl Garage {
         }
 
         let mut s = TextStyle::value(11.0);
-        s.color = if owned {
-            theme::FG
-        } else if locked {
-            LOCKED_NAME
-        } else {
-            theme::DIM
-        };
+        s.color = if owned { theme::FG } else { LOCKED_NAME };
         p.text(
             min + Vec2::new(8.0, THUMB_H + 8.0),
             part.name(),
@@ -963,16 +944,11 @@ impl Garage {
             (format!("EQUIPPED · {level}"), EQUIPPED)
         } else if owned {
             (format!("OWNED · {level}"), theme::DIM)
-        } else if let Some(price) = price {
-            if locked {
-                (format!("RANK {}", price.standing), LOCKED)
-            } else if profile.crystals >= price.crystals {
-                (format!("{} CR", price.crystals), theme::FG)
-            } else {
-                (format!("{} CR", price.crystals), theme::DIM)
-            }
         } else {
-            (String::new(), theme::DIM)
+            let at = crate::mission::offering(part)
+                .map(|(i, _)| crate::mission::MISSIONS[i].name)
+                .unwrap_or("NOT OFFERED");
+            (at.to_string(), LOCKED)
         };
         let mut t = TextStyle::LABEL;
         t.color = color;
@@ -1138,7 +1114,8 @@ fn padlock(p: &mut Painter, at: Vec2, color: Rgba) {
     p.rect(at + Vec2::new(0.0, 6.0), Vec2::new(10.0, 6.0), color);
 }
 
-/// What E does for `part` (equip it, or buy it), and whether it can right now.
+/// What E does for `part` (equip it), and whether it can right now; for a part
+/// you don't have, where to steal it.
 fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bool) {
     if profile.owns(part) {
         if with_part(queued, part) == queued {
@@ -1147,24 +1124,23 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
             (format!("EQUIP {}", part.name()), true)
         }
     } else {
-        match profile.can_buy(part) {
-            Ok(cost) => (format!("BUY · {cost} CR"), true),
-            Err(Refusal::Reputation(f, s)) => {
-                let have = profile.standing_for(part);
+        let text = match crate::mission::offering(part) {
+            Some((i, side)) => {
+                let m = &crate::mission::MISSIONS[i];
+                let employer = m.sides[side].name();
                 // The longest that fits the button.
-                let text = [
-                    format!("LOCKED · {} RANK {s} · YOU {have}", f.name()),
-                    format!("NEEDS {} RANK {s} · YOU {have}", f.name()),
-                    format!("NEEDS RANK {s} · YOU {have}"),
+                [
+                    format!("STEAL IT: WIN {} FOR THE {employer}", m.name),
+                    format!("WIN {} FOR THE {employer}", m.name),
+                    format!("WIN {}", m.name),
                 ]
                 .into_iter()
                 .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
-                .unwrap_or_default();
-                (text, false)
+                .unwrap_or_default()
             }
-            Err(Refusal::Crystals(cost)) => (format!("BUY · NEED {cost} CR"), false),
-            Err(_) => (String::new(), false),
-        }
+            None => "SCHEMATIC NOT OFFERED".to_string(),
+        };
+        (text, false)
     }
 }
 
@@ -1280,10 +1256,9 @@ mod tests {
     /// A pilot who owns everything.
     fn rich() -> Profile {
         let mut p = Profile::in_memory();
-        p.set_reputation_all(100_000);
         p.crystals = 100_000;
         for part in crate::economy::PARTS {
-            let _ = p.buy(part);
+            p.grant(part);
         }
         p
     }
@@ -1384,25 +1359,28 @@ mod tests {
     }
 
     #[test]
-    fn unowned_parts_preview_and_e_buys() {
+    fn unowned_parts_preview_and_say_where_to_steal_them() {
         let w = world();
         let mut p = Profile::in_memory();
         let mut g = Garage::new();
         let start = (HullKind::Kataphrakt, TurretKind::Kontos);
         g.toggle(&w, &cam(&w), start);
         g.input(Input::Switch, start, &p);
-        // Pelekys isn't owned: highlighted and previewed; E asks to buy it, U does nothing.
+        // Pelekys isn't owned: highlighted and previewed; E is refused, U does nothing.
         assert_eq!(g.input(Input::Right, start, &p), None);
         assert_eq!(g.view, (HullKind::Kataphrakt, TurretKind::Pelekys));
         let pelekys = Part::Turret(TurretKind::Pelekys);
-        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(pelekys)));
+        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Locked(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
-        // Once bought it's equipped.
-        p.set_reputation_all(100_000);
+        // The button says which mission's win steals it.
+        let (text, can) = primary_action(pelekys, start, &p);
+        assert!(!can);
+        assert!(text.contains("DEAD TOWN"), "{text}");
+        // Once stolen, E equips it and U upgrades it.
         p.crystals = 100_000;
-        p.buy(pelekys).unwrap();
+        assert!(p.steal(pelekys));
         let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);
-        assert_eq!(g.bought(start, &p), Some(Event::Queue(kit)));
+        assert_eq!(g.input(Input::Act, start, &p), Some(Event::Queue(kit)));
         assert_eq!(
             g.input(Input::Upgrade, kit, &p),
             Some(Event::Upgrade(pelekys))

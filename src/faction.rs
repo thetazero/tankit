@@ -1,6 +1,7 @@
-//! The sides of the war (see docs/setting.md). Every faction makes turrets
-//! and fields teams; most maps are two of them against each other, a
-//! free-for-all map all four.
+//! The sides of the war (see docs/setting.md). Every warring faction makes
+//! turrets and fields teams; most maps are two of them against each other, a
+//! free-for-all map all four. The Company, the mercenaries, is a faction too,
+//! but fights for whoever hires it rather than as a side of its own.
 
 use glam::Vec3;
 
@@ -17,6 +18,9 @@ pub enum Faction {
     Uthenn,
     /// The aliens.
     Ithessar,
+    /// The mercenaries: you. Not one of the war's sides (not in `ALL`): it fights
+    /// inside whichever side hires it, in its own colors, on stolen gear.
+    Company,
 }
 
 impl Faction {
@@ -27,7 +31,7 @@ impl Faction {
         Faction::Ithessar,
     ];
 
-    /// Position in `ALL`, for per-faction tables (reputation).
+    /// Position in `ALL` (the Company, not in it, comes after).
     pub fn index(self) -> usize {
         self as usize
     }
@@ -44,11 +48,13 @@ impl Faction {
             Faction::Resonant => "RESONANT",
             Faction::Uthenn => "UTHENN",
             Faction::Ithessar => "ITHESSAR",
+            Faction::Company => "COMPANY",
         }
     }
 
     /// The side's color out in the world (the Hold site's rings). Tanks
-    /// don't wear it: they keep their own paint.
+    /// don't wear it: they keep their own paint, except the Company's, which
+    /// wear the Company's.
     pub fn paint(self) -> Vec3 {
         match self {
             // Deep crimson.
@@ -59,6 +65,8 @@ impl Faction {
             Faction::Uthenn => Vec3::new(0.16, 0.7, 0.3),
             // Rose, the color of their plasma cooled.
             Faction::Ithessar => Vec3::new(0.8, 0.3, 0.46),
+            // Hazard amber, a working color nobody's war is fought in.
+            Faction::Company => Vec3::new(0.85, 0.52, 0.08),
         }
     }
 
@@ -69,10 +77,11 @@ impl Faction {
             Faction::Resonant => [0.3, 0.55, 1.0, 1.0],
             Faction::Uthenn => [0.35, 1.0, 0.5, 1.0],
             Faction::Ithessar => [1.0, 0.45, 0.68, 1.0],
+            Faction::Company => [1.0, 0.74, 0.22, 1.0],
         }
     }
 
-    /// The hulls this side's bots drive.
+    /// The hulls this side's bots drive (the Company's starter kit is the Imperium's).
     pub fn hulls(self) -> &'static [HullKind] {
         match self {
             Faction::Ithessar => &[HullKind::Sethuun],

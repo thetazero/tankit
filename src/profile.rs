@@ -1,11 +1,13 @@
-//! The pilot profile: reputation with each faction, crystals, owned parts and the
-//! loadout you deploy in. One profile, saved as JSON in the OS data directory
-//! (`~/.local/share/tankit/profile.json` on Linux) whenever it changes, so
-//! there's no save button.
+//! The pilot profile: your Company rank, crystals, the schematics you've stolen
+//! and the loadout you deploy in. One profile, saved as JSON in the OS data
+//! directory (`~/.local/share/tankit/profile.json` on Linux) whenever it
+//! changes, so there's no save button.
 //!
-//! Every faction starts you on the basic kit. Work its contracts and your reputation
-//! with it grows; its standing (derived from that reputation) decides which of its parts
-//! it will sell you. Crystals, paid for finished contracts, buy parts and upgrades.
+//! You're the Company's, whoever hires you. Renown earned in matches climbs one
+//! Company rank, which decides the contracts it takes. The Company starts you
+//! on the Imperium's basic kit; every other part is a schematic stolen by
+//! winning the mission that offers it. Crystals, paid for finished contracts,
+//! buy upgrades.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,42 +18,69 @@ use serde::{Deserialize, Serialize};
 
 use crate::binds::Binds;
 use crate::economy::{Levels, PARTS, Part, upgrade_cost};
-use crate::faction::Faction;
 use crate::garage::Loadout;
 use crate::sim::{HullKind, TurretKind};
 
-/// Reputation from one standing to the next: 100, then 50 more for each after.
-fn standing_span(level: u32) -> u32 {
-    100 + 50 * (level - 1)
+/// Renown from one rank to the next: 100, then 20 more for each after, so the
+/// ranks come quickly at first and slow into a long climb.
+fn rank_span(level: u32) -> u32 {
+    100 + 20 * (level - 1)
 }
 
-/// Where your reputation with a faction sits on the standing ladder.
+/// The Company's titles, each held for [`RANKS_PER_TITLE`] ranks; past the last,
+/// the last title holds.
+const TITLES: [&str; 10] = [
+    "RECRUIT",
+    "HIRELING",
+    "FREELANCE",
+    "GUNHAND",
+    "VETERAN",
+    "SERGEANT",
+    "LIEUTENANT",
+    "CAPTAIN",
+    "MARSHAL",
+    "WARLORD",
+];
+const RANKS_PER_TITLE: u32 = 5;
+
+/// Where your renown sits on the Company's ladder.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Standing {
-    /// Starts at 1: the basic kit.
+pub struct Rank {
+    /// Starts at 1.
     pub level: u32,
-    /// Reputation earned since reaching this standing.
+    /// Renown earned since reaching this rank.
     pub into: u32,
-    /// Reputation this standing takes to get through.
+    /// Renown this rank takes to get through.
     pub span: u32,
 }
 
-impl Standing {
-    pub fn of(reputation: u32) -> Standing {
-        let (mut level, mut left) = (1, reputation);
-        while left >= standing_span(level) {
-            left -= standing_span(level);
+impl Rank {
+    pub fn of(renown: u32) -> Rank {
+        let (mut level, mut left) = (1, renown);
+        while left >= rank_span(level) {
+            left -= rank_span(level);
             level += 1;
         }
-        Standing {
+        Rank {
             level,
             into: left,
-            span: standing_span(level),
+            span: rank_span(level),
         }
     }
 
     pub fn progress(&self) -> f32 {
         self.into as f32 / self.span as f32
+    }
+
+    /// The title that goes with the number.
+    pub fn title(&self) -> &'static str {
+        let i = ((self.level - 1) / RANKS_PER_TITLE) as usize;
+        TITLES[i.min(TITLES.len() - 1)]
+    }
+
+    /// "RANK 7 · HIRELING".
+    pub fn label(&self) -> String {
+        format!("RANK {} · {}", self.level, self.title())
     }
 }
 
@@ -60,18 +89,12 @@ impl Standing {
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Saved {
-    /// Reputation by faction name; missing means none. Saved as `trust`
-    /// before it was renamed, so that still loads.
-    #[serde(alias = "trust")]
-    reputation: BTreeMap<String, u32>,
-    /// Profiles from before per-faction reputation had one XP total, earned working for the
-    /// Imperium (the only side that hired). Read once, never written.
-    #[serde(skip_serializing)]
-    xp: u32,
+    /// Renown with the Company, all told.
+    renown: u32,
     crystals: u32,
     hull: String,
     turret: String,
-    /// Bought parts (starters are always owned).
+    /// Stolen schematics (starters are always owned).
     owned: Vec<String>,
     /// Upgrade level in steps (see [`crate::economy::STEPS_PER_MARK`]) by part name;
     /// missing means M0.
@@ -120,25 +143,23 @@ impl Default for Settings {
     }
 }
 
-/// Why a purchase didn't go through.
+/// Why an upgrade didn't go through.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Refusal {
-    Owned,
+    /// The part's schematic hasn't been stolen yet.
     NotOwned,
-    /// Needs this standing with the part's maker.
-    Reputation(Faction, u32),
     Crystals(u32),
     MaxLevel,
 }
 
 pub struct Profile {
-    /// Reputation with each faction, by `Faction::index`.
-    pub reputation: [u32; Faction::ALL.len()],
+    /// Renown with the Company, all told: your rank.
+    pub renown: u32,
     pub crystals: u32,
     /// The kit you deploy in (and respawn in, until the garage changes it).
     pub loadout: Loadout,
-    /// Bought parts, starters not included.
-    bought: Vec<Part>,
+    /// Stolen schematics, starters not included.
+    stolen: Vec<Part>,
     pub levels: Levels,
     pub settings: Settings,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
@@ -218,10 +239,10 @@ impl Profile {
     /// A fresh pilot that is never written to disk.
     pub fn in_memory() -> Profile {
         Profile {
-            reputation: [0; Faction::ALL.len()],
+            renown: 0,
             crystals: 0,
             loadout: (HullKind::Kataphrakt, TurretKind::Kontos),
-            bought: Vec::new(),
+            stolen: Vec::new(),
             levels: Levels::default(),
             settings: Settings::default(),
             disk: None,
@@ -252,17 +273,10 @@ impl Profile {
     }
 
     fn restore(&mut self, s: Saved) {
-        for (name, &t) in &s.reputation {
-            if let Some(f) = Faction::by_name(name) {
-                self.reputation[f.index()] = t;
-            }
-        }
-        if s.reputation.is_empty() {
-            self.reputation[Faction::Imperium.index()] = s.xp;
-        }
+        self.renown = s.renown;
         self.crystals = s.crystals;
         self.settings = s.settings;
-        self.bought = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
+        self.stolen = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
         for (name, &mark) in &s.levels {
             if let Some(part) = Part::by_name(name) {
                 self.levels
@@ -274,7 +288,7 @@ impl Profile {
                 self.levels.set(part, level);
             }
         }
-        // Only deploy in parts you own (older profiles predate buying).
+        // Only deploy in parts you own (older profiles predate owning).
         if let Some(Part::Hull(h)) = Part::by_name(&s.hull).filter(|&p| self.owns(p)) {
             self.loadout.0 = h;
         }
@@ -283,55 +297,29 @@ impl Profile {
         }
     }
 
-    pub fn reputation_of(&self, faction: Faction) -> u32 {
-        self.reputation[faction.index()]
+    pub fn rank(&self) -> Rank {
+        Rank::of(self.renown)
     }
 
-    pub fn standing(&self, faction: Faction) -> Standing {
-        Standing::of(self.reputation_of(faction))
-    }
-
-    /// Standing that decides whether `part` is for sale: with its maker.
-    pub fn standing_for(&self, part: Part) -> u32 {
-        self.standing(part.maker()).level
-    }
-
-    /// Own `part` without paying for it (headless shots).
+    /// Own `part` without stealing it (headless shots, tests).
     pub fn grant(&mut self, part: Part) {
         if !self.owns(part) {
-            self.bought.push(part);
+            self.stolen.push(part);
         }
-    }
-
-    /// You have this much reputation with every faction (headless shots, tests).
-    pub fn set_reputation_all(&mut self, reputation: u32) {
-        self.reputation = [reputation; Faction::ALL.len()];
     }
 
     pub fn owns(&self, part: Part) -> bool {
-        part.price().is_none() || self.bought.contains(&part)
+        part.starter() || self.stolen.contains(&part)
     }
 
-    /// Can `part` be bought right now? Its price if so.
-    pub fn can_buy(&self, part: Part) -> Result<u32, Refusal> {
-        let Some(price) = part.price().filter(|_| !self.owns(part)) else {
-            return Err(Refusal::Owned);
-        };
-        if self.standing_for(part) < price.standing {
-            return Err(Refusal::Reputation(part.maker(), price.standing));
+    /// Bank a schematic stolen on a mission and save. False if it was already yours.
+    pub fn steal(&mut self, part: Part) -> bool {
+        if self.owns(part) {
+            return false;
         }
-        if self.crystals < price.crystals {
-            return Err(Refusal::Crystals(price.crystals));
-        }
-        Ok(price.crystals)
-    }
-
-    pub fn buy(&mut self, part: Part) -> Result<(), Refusal> {
-        let cost = self.can_buy(part)?;
-        self.crystals -= cost;
-        self.bought.push(part);
+        self.stolen.push(part);
         self.save();
-        Ok(())
+        true
     }
 
     /// Can `part` be upgraded right now? The cost if so.
@@ -354,10 +342,10 @@ impl Profile {
         Ok(())
     }
 
-    /// Bank reputation earned working for `faction` and save.
-    pub fn add_reputation(&mut self, faction: Faction, reputation: u32) {
-        if reputation > 0 {
-            self.reputation[faction.index()] += reputation;
+    /// Bank renown earned for the Company and save.
+    pub fn add_renown(&mut self, renown: u32) {
+        if renown > 0 {
+            self.renown += renown;
             self.save();
         }
     }
@@ -399,16 +387,11 @@ impl Profile {
     fn text(&self) -> anyhow::Result<String> {
         let name = |p: Part| p.name().to_ascii_lowercase();
         let saved = Saved {
-            reputation: Faction::ALL
-                .into_iter()
-                .filter(|&f| self.reputation_of(f) > 0)
-                .map(|f| (f.name().to_ascii_lowercase(), self.reputation_of(f)))
-                .collect(),
-            xp: 0,
+            renown: self.renown,
             crystals: self.crystals,
             hull: name(Part::Hull(self.loadout.0)),
             turret: name(Part::Turret(self.loadout.1)),
-            owned: self.bought.iter().map(|&p| name(p)).collect(),
+            owned: self.stolen.iter().map(|&p| name(p)).collect(),
             steps: PARTS
                 .iter()
                 .filter(|&&p| self.levels.of(p) > 0)
@@ -426,32 +409,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn standing_ladder() {
+    fn rank_ladder() {
         assert_eq!(
-            Standing::of(0),
-            Standing {
+            Rank::of(0),
+            Rank {
                 level: 1,
                 into: 0,
                 span: 100
             }
         );
-        assert_eq!(Standing::of(99).level, 1);
+        assert_eq!(Rank::of(99).level, 1);
         assert_eq!(
-            Standing::of(100),
-            Standing {
+            Rank::of(100),
+            Rank {
                 level: 2,
                 into: 0,
-                span: 150
+                span: 120
             }
         );
         assert_eq!(
-            Standing::of(260),
-            Standing {
+            Rank::of(230),
+            Rank {
                 level: 3,
                 into: 10,
-                span: 200
+                span: 140
             }
         );
+    }
+
+    /// Lots of ranks, each a number with a title: dozens of them before the titles
+    /// run out, the climb getting longer as it goes.
+    #[test]
+    fn ranks_are_many_and_titled() {
+        assert_eq!(Rank::of(0).label(), "RANK 1 · RECRUIT");
+        assert_eq!(Rank::of(0).title(), Rank::of(399).title());
+        let top = TITLES.len() as u32 * RANKS_PER_TITLE;
+        assert!(top >= 50);
+        // Renown to reach the last title's first rank.
+        let to = |level: u32| (1..level).map(rank_span).sum::<u32>();
+        let last = to(top - RANKS_PER_TITLE + 1);
+        assert_eq!(Rank::of(last).title(), "WARLORD");
+        assert_eq!(Rank::of(last - 1).title(), "MARSHAL");
+        // At ~60 renown a match, the top title is hundreds of matches off.
+        assert!(last / 60 > 300, "{}", last / 60);
+        assert_eq!(Rank::of(to(top + 20)).title(), "WARLORD");
+        assert!(rank_span(40) > rank_span(2) * 3);
     }
 
     #[test]
@@ -461,11 +463,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut p = Profile::load(path.clone());
-        assert_eq!(p.reputation_of(Faction::Imperium), 0);
-        p.add_reputation(Faction::Imperium, 300);
-        p.add_reputation(Faction::Resonant, 40);
+        assert_eq!(p.renown, 0);
+        p.add_renown(300);
+        p.add_renown(40);
         p.add_crystals(2000);
-        p.buy(PELEKYS).unwrap();
+        assert!(p.steal(PELEKYS));
         p.upgrade(PELEKYS).unwrap();
         p.set_loadout((HullKind::Kataphrakt, TurretKind::Pelekys));
         let mut binds = Binds::default();
@@ -484,9 +486,7 @@ mod tests {
         drop(p);
 
         let back = Profile::load(path.clone());
-        assert_eq!(back.reputation_of(Faction::Imperium), 300);
-        assert_eq!(back.reputation_of(Faction::Resonant), 40);
-        assert_eq!(back.reputation_of(Faction::Ithessar), 0);
+        assert_eq!(back.renown, 340);
         assert_eq!(back.crystals, crystals);
         assert!(back.owns(PELEKYS));
         assert_eq!(back.levels.of(PELEKYS), 1);
@@ -495,12 +495,11 @@ mod tests {
         assert_eq!(back.settings.volume, 3);
         assert_eq!(back.settings.binds, binds);
 
-        // An older profile (XP, no crystals, deploying in a part it never
-        // bought) still loads; its XP was earned for the Imperium.
-        std::fs::write(&path, r#"{"xp": 40, "hull": "bastion", "turret": "lance"}"#).unwrap();
+        // An older profile (no crystals, deploying in a part it never owned)
+        // still loads.
+        std::fs::write(&path, r#"{"hull": "bastion", "turret": "lance"}"#).unwrap();
         let old = Profile::load(path.clone());
-        assert_eq!(old.reputation_of(Faction::Imperium), 40);
-        assert_eq!(old.reputation_of(Faction::Resonant), 0);
+        assert_eq!(old.renown, 0);
         assert_eq!(old.crystals, 0);
         assert_eq!(old.loadout, (HullKind::Kataphrakt, TurretKind::Kontos));
         assert!(!old.settings.debug);
@@ -508,12 +507,6 @@ mod tests {
         assert_eq!(old.settings.volume, Settings::default().volume);
         // ...and the default keys.
         assert_eq!(old.settings.binds, Binds::default());
-
-        // Profiles from when reputation was called trust keep it.
-        std::fs::write(&path, r#"{"trust": {"imperium": 120, "resonant": 7}}"#).unwrap();
-        let trust = Profile::load(path.clone());
-        assert_eq!(trust.reputation_of(Faction::Imperium), 120);
-        assert_eq!(trust.reputation_of(Faction::Resonant), 7);
 
         // Profiles from when upgrades were whole marks keep the mark they reached.
         std::fs::write(
@@ -530,50 +523,33 @@ mod tests {
 
         // A corrupt file starts a fresh pilot rather than failing.
         std::fs::write(&path, "not json").unwrap();
-        assert_eq!(Profile::load(path).reputation, [0; Faction::ALL.len()]);
+        assert_eq!(Profile::load(path).renown, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     const PELEKYS: Part = Part::Turret(TurretKind::Pelekys);
 
+    /// The starters are yours from the start; anything else only once stolen, and
+    /// then crystals upgrade it.
     #[test]
-    fn buying_needs_reputation_and_crystals() {
+    fn parts_are_stolen_then_upgraded() {
         let mut p = Profile::in_memory();
         assert!(p.owns(Part::Hull(HullKind::Kataphrakt)));
+        assert!(p.owns(Part::Turret(TurretKind::Kontos)));
         assert!(!p.owns(PELEKYS));
-        let price = PELEKYS.price().unwrap();
-        let locked = Err(Refusal::Reputation(Faction::Imperium, price.standing));
-        assert_eq!(p.buy(PELEKYS), locked);
-        // Reputation with someone else doesn't sell you Imperium guns.
-        p.add_reputation(Faction::Resonant, 10_000);
-        assert_eq!(p.buy(PELEKYS), locked);
-        p.add_reputation(Faction::Imperium, 10_000);
-        assert_eq!(p.buy(PELEKYS), Err(Refusal::Crystals(price.crystals)));
-        assert_eq!(p.upgrade(PELEKYS), Err(Refusal::NotOwned));
-        p.crystals = price.crystals;
-        p.buy(PELEKYS).unwrap();
-        assert_eq!(p.crystals, 0);
-        assert_eq!(p.buy(PELEKYS), Err(Refusal::Owned));
         p.crystals = 100_000;
+        assert_eq!(p.upgrade(PELEKYS), Err(Refusal::NotOwned));
+        assert!(p.steal(PELEKYS));
+        assert!(!p.steal(PELEKYS), "already yours");
+        assert!(!p.steal(Part::Turret(TurretKind::Kontos)), "a starter");
         for _ in 0..crate::economy::MAX_LEVEL {
             p.upgrade(PELEKYS).unwrap();
         }
         assert_eq!(p.upgrade(PELEKYS), Err(Refusal::MaxLevel));
-    }
-
-    /// Hulls have makers too: only their maker's reputation puts them up for sale.
-    #[test]
-    fn hulls_sell_on_their_makers_reputation() {
-        let kastron = Part::Hull(HullKind::Kastron);
-        let need = kastron.price().unwrap().standing;
-        let mut p = Profile::in_memory();
-        p.crystals = 100_000;
-        p.add_reputation(Faction::Resonant, 10_000);
+        p.crystals = 0;
         assert_eq!(
-            p.can_buy(kastron),
-            Err(Refusal::Reputation(Faction::Imperium, need))
+            p.upgrade(Part::Turret(TurretKind::Kontos)),
+            Err(Refusal::Crystals(upgrade_cost(0).unwrap()))
         );
-        p.add_reputation(Faction::Imperium, 10_000);
-        assert!(p.can_buy(kastron).is_ok());
     }
 }

@@ -594,8 +594,11 @@ impl HullStats {
 
 #[derive(Clone, Debug)]
 pub struct Tank {
-    /// Team color; tints the light armor plates.
+    /// Multiplies the paint (white: the maker's own colors; dimmed when the tank is wrecked).
     pub color: Vec3,
+    /// Painted over in the Company's colors: the player's tank, a mercenary among
+    /// the side that hired it.
+    pub company: bool,
     pub hull_kind: HullKind,
     pub turret_kind: TurretKind,
     pub chassis: &'static Chassis,
@@ -671,6 +674,17 @@ pub struct Tank {
 }
 
 impl Tank {
+    /// The instance tint for the tank's paint: `color`, or for a Company tank the
+    /// Company's paint dimmed by it, flagged (alpha -1) for the shader to paint over
+    /// the maker's colors rather than multiply them.
+    pub fn paint_tint(&self) -> glam::Vec4 {
+        if self.company {
+            (self.color * crate::faction::Faction::Company.paint()).extend(-1.0)
+        } else {
+            self.color.extend(0.0)
+        }
+    }
+
     pub fn forward(&self) -> Vec3 {
         self.rot * Vec3::Z
     }
@@ -858,6 +872,7 @@ impl World {
         let chassis = Chassis::of(hull);
         let mut t = Tank {
             color,
+            company: false,
             hull_kind: hull,
             turret_kind: turret,
             chassis,
