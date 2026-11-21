@@ -2010,8 +2010,13 @@ struct Feel {
     tipped: bool,
 }
 
-/// Upside down or on its side for a while: put it back on its tracks.
+/// Upside down or on its side for a while: put it back on its tracks. A
+/// wreck has no crew to right it: it stays however it landed.
 fn recover_if_flipped(t: &mut Tank, physics: &mut PhysicsWorld) {
+    if t.dead {
+        t.flipped_time = 0.0;
+        return;
+    }
     let tipped = t.up().y < 0.3;
     if tipped && t.vel.length() < 3.0 {
         t.flipped_time += DT;
@@ -3039,6 +3044,29 @@ mod tests {
             "still rolling {} m after the kick",
             w.tanks[0].pos.distance(p1)
         );
+    }
+
+    /// A wreck stays however it landed, upside down or on its side: only a
+    /// live crew rights a tank.
+    #[test]
+    fn a_wreck_stays_flipped() {
+        for (name, rot) in [
+            ("upside down", Quat::from_rotation_z(PI)),
+            (
+                "on its side",
+                Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            ),
+        ] {
+            let mut w = flat_world();
+            w.tanks[0].dead = true;
+            place(&mut w, Vec3::new(100.0, 2.5, 100.0), rot);
+            run(&mut w, Command::default(), 1.0);
+            let up0 = w.tanks[0].up();
+            assert!(up0.y < 0.3, "{name}: should be tipped first: {up0:?}");
+            run(&mut w, Command::default(), 8.0);
+            let up = w.tanks[0].up();
+            assert!(up.y < 0.3, "{name}: wreck righted itself: {up:?}");
+        }
     }
 
     #[test]
