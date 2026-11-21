@@ -15,17 +15,38 @@ on purpose.
 ## Why tanks
 
 Worlds worth fighting over sit under **planetary shields**. A shield stops
-fleets, bombardment and anything large; only small things get through. So a
-world can't be taken from orbit, only on the ground, by small machines dropped
-in under the shield. The shields themselves are contested, along with the
-rest of a world's infrastructure and its crystal. Take a world's shield and
-its sky opens; until then the fight stays on the ground.
+fleets and anything large; only small things get through, and slowly, at a
+cost in crystal for each machine dropped through. So a world can't be taken
+from orbit, only on the ground, by small machines dropped in under the
+shield. The shields themselves are contested, along with the rest of a
+world's infrastructure and its crystal.
+
+A world has one or two **shield generators**. While any of them stands, an
+attacker lands only a trickle. Destroy them all and the sky opens: landing is
+free and the fight is even, until the defenders repair a generator, which
+takes them a while.
+
+**Bombarding a world from orbit is taboo.** Every side keeps to it, for now.
+
+## The war
+
+Some ten thousand colonized star systems. A world's factories build machines
+on the ground, so defending is cheap; moving machines between stars is
+expensive, so attacking is not. Most of the region is quiet at any one time,
+but there is always war somewhere: a side masses machines from its nearby
+systems and pushes where it sees a good chance of taking ground. If one side
+grows too strong, the other three turn on it. Nobody wins.
+
+A contested system is a **theater**: its worlds, their shield generators,
+mines and factories, and the machines each side holds there.
 
 ## The player
 
 A **mercenary pilot** of the Company, remote-linked into each chassis,
-working for whoever pays. Losing a chassis just drops the link; the next
-contract drops you a new one. That's the in-world reason for respawns. What
+working for whoever pays. Losing a chassis just drops the link, and you're
+linked into the next of your employer's machines in that battle. That's the
+in-world reason for respawns, and it isn't free: every side brings only so
+many machines to a battle, and each one lost is gone from the theater. What
 the pilot is, is left deliberately vague.
 
 ## The Company
@@ -34,6 +55,12 @@ The mercenaries are a faction of their own: **the Company**, a galactic
 mercenary outfit that sells its pilots to whichever side of the war is
 paying. It isn't one of the war's sides and doesn't hold ground; it fights
 inside other people's battles.
+
+**Postings.** The Company signs with one side in a theater and posts you
+there until the theater is settled or the contract's battles run out. Its
+pilots are never on both sides of a battle. Within the Company you're a free
+agent: for a price in crystals, you can transfer to a different posting. A
+theater you leave goes on without you.
 
 **In a match**, you're the one tank in the Company's colors among the hiring
 side's machines: hired help, and it shows. For now only the player is
@@ -231,10 +258,12 @@ own way into the rock from the east to take it back.
 
 ## Modes are contracts
 
-- **Attrition** (team deathmatch): the Company is hired by one side and
-  drops you into its battle, paid per kill. The side with more kills when the clock runs out wins.
+- **Attrition** (a raid on an enemy camp): no ground changes hands; the job
+  is to cost the enemy machines. Paid per kill.
   Most battles are two sides; some are all four at once, every side against
   every other.
+- **Raid** (one-sided capture the flag): one side guards a flag, the other
+  has to carry it off. First on the Seam.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,
   carry crystals to your extraction point, deny the enemy theirs. Carrying
   crystals makes you a little stronger, but they resonate, so everyone can see
