@@ -105,7 +105,8 @@ pub fn build_levels(mesh: &MeshData, exact: &[Range<u32>], cancel: &AtomicBool) 
             }
         }
     }
-    let key = |i: usize| mesh.verts[i].pos.map(f32::to_bits);
+    // `+ 0.0` turns -0.0 into 0.0, so both sides of a border at 0 match.
+    let key = |i: usize| mesh.verts[i].pos.map(|x| (x + 0.0).to_bits());
     let mut by_pos: FxMap<[u32; 3], u32> = FxMap::default();
     by_pos.reserve(mesh.verts.len());
     for (i, &k) in by_index.iter().enumerate() {
@@ -184,7 +185,8 @@ pub fn build_levels(mesh: &MeshData, exact: &[Range<u32>], cancel: &AtomicBool) 
             }
             let measured =
                 lod::deviation(&cell.verts, &cell.tris, &cell.verts, &t, step, step * 2.0);
-            let error = claimed.max(measured);
+            // Within `step` measures 0, so `step` is all that's known.
+            let error = claimed.max(measured).max(step);
             if error > step * 1.5 {
                 continue;
             }

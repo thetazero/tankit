@@ -1271,10 +1271,7 @@ impl Renderer {
         let error = lod::MAX_ERROR_PX * distance / focal;
         instances.iter().fold((0, 0), |(drawn, full), (id, inst)| {
             let m = &self.meshes[id.0 as usize];
-            let scale = Mat4::from_cols_array_2d(&inst.model)
-                .x_axis
-                .truncate()
-                .length();
+            let scale = max_scale(&Mat4::from_cols_array_2d(&inst.model));
             let l = &m.levels[lod::pick(&m.levels, error / scale)].indices;
             (
                 drawn + ((l.end - l.start) / 3) as u64,
@@ -1520,9 +1517,11 @@ impl Renderer {
             }
         };
         let texel = 2.0 * r / SHADOW_SIZE as f32;
-        let shadow_error = |_: Vec3, _: f32| {
+        // Never coarser than the camera's copy: a caster that bulges past
+        // the receiver drawn for the camera would shadow itself.
+        let shadow_error = |c: Vec3, r: f32| {
             if lod {
-                lod::MAX_ERROR_TEXELS * texel
+                (lod::MAX_ERROR_TEXELS * texel).min(seen_error(c, r))
             } else {
                 0.0
             }
@@ -1536,12 +1535,7 @@ impl Renderer {
             .map(|(id, inst)| {
                 let m = &self.meshes[id.0 as usize];
                 let model = Mat4::from_cols_array_2d(&inst.model);
-                let scale = model
-                    .x_axis
-                    .truncate()
-                    .length()
-                    .max(model.y_axis.truncate().length())
-                    .max(model.z_axis.truncate().length());
+                let scale = max_scale(&model);
                 (model.transform_point3(m.center), m.radius * scale, scale)
             })
             .collect();
@@ -2199,4 +2193,14 @@ impl mesh::MeshStore for Renderer {
     fn add_mesh(&mut self, mesh: &MeshData) -> MeshId {
         Renderer::add_mesh(self, mesh)
     }
+}
+
+/// The largest of a transform's axis scales: how much it can stretch a mesh.
+fn max_scale(model: &Mat4) -> f32 {
+    model
+        .x_axis
+        .truncate()
+        .length()
+        .max(model.y_axis.truncate().length())
+        .max(model.z_axis.truncate().length())
 }

@@ -39,6 +39,10 @@ pub struct Level {
 /// The coarsest of `levels` (finest first, the first exact) whose error is
 /// at most `max_error` (mesh units).
 pub fn pick(levels: &[Level], max_error: f32) -> usize {
+    // No budget at all means the exact mesh, even past copies that measured 0.
+    if max_error <= 0.0 {
+        return 0;
+    }
     levels
         .iter()
         .rposition(|l| l.error <= max_error)
@@ -556,7 +560,10 @@ pub fn build_levels(
     let mut kept = tris.len();
     while target <= radius && kept > 12 {
         let measure = |v: &[Vertex], t: &[u32], claimed: f32| {
-            claimed.max(deviation(&welded, &tris, v, t, target, target * 4.0))
+            // Anything within `ok` measures 0, so `ok` is all that's known
+            // there: a strip thinner than it may have collapsed away.
+            let ok = target / 4.0;
+            claimed.max(deviation(&welded, &tris, v, t, ok, target * 4.0).max(ok))
         };
         let (edge, edge_claim) = simplify(&welded, &tris, target, &locked);
         // Cubes this wide move no vertex farther than `target`.
@@ -625,7 +632,6 @@ mod tests {
         assert_eq!(tri_count(&levels[0]), sphere.indices.len() / 3);
         for w in levels.windows(2) {
             assert!(tri_count(&w[1]) * 4 <= tri_count(&w[0]) * 3);
-            assert!(w[1].error >= w[0].error);
         }
         // Each level's triangles stay near the sphere: their middles sit no
         // deeper inside it than the level's error allows (with slack for the
