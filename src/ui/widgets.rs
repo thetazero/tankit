@@ -130,8 +130,12 @@ pub fn odometer(
         Align::Center => pos.x - total * 0.5,
         Align::Right => pos.x - total,
     };
-    let row = style.size * 1.6;
-    let pad = style.size * 0.3;
+    // A rolling digit is cut to the number's own band: just room for the halo
+    // and the round digits' overshoot, so nothing spills above or below.
+    let pad = theme::HALO_PX + style.size * 0.04;
+    // Digits on the wheel sit one band apart, so mid-roll shows a readable
+    // half of each rather than two slivers across an empty gap.
+    let row = style.size + 2.0 * pad + style.size * 0.1;
     let lead_end = (value.max(0.0).floor() as u64).to_string().len() as u32;
     for i in 0..digits {
         let place = digits - 1 - i;
@@ -141,9 +145,14 @@ pub fn odometer(
         if place >= lead_end.max(1) {
             s.color = theme::FAINT;
         }
+        if roll == 0.0 {
+            // At rest: drawn whole, like any other text.
+            p.text(Vec2::new(x, pos.y), &d.to_string(), &s, Align::Left);
+            continue;
+        }
         p.set_clip(Some((
             Vec2::new(x - pad, pos.y - pad),
-            Vec2::new(x + advance, pos.y + style.size + pad),
+            Vec2::new(x + advance + pad, pos.y + style.size + pad),
         )));
         p.text(
             Vec2::new(x, pos.y - roll * row),
@@ -151,14 +160,12 @@ pub fn odometer(
             &s,
             Align::Left,
         );
-        if roll > 0.0 {
-            p.text(
-                Vec2::new(x, pos.y + (1.0 - roll) * row),
-                &((d + 1) % 10).to_string(),
-                &s,
-                Align::Left,
-            );
-        }
+        p.text(
+            Vec2::new(x, pos.y + (1.0 - roll) * row),
+            &((d + 1) % 10).to_string(),
+            &s,
+            Align::Left,
+        );
         p.set_clip(None);
     }
     total
@@ -285,6 +292,27 @@ mod tests {
         let (d, r) = digit_roll(99.9, 2);
         assert_eq!(d, 0);
         assert!((r - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rolling_digit_stays_in_its_band() {
+        let style = TextStyle::value(22.0);
+        let (top, size) = (100.0, style.size);
+        let pad = theme::HALO_PX + size * 0.04;
+        for i in 1..20 {
+            let mut p = Painter::new(1.0);
+            let value = 6.8 + i as f32 * 0.01;
+            assert!(digit_roll(value, 0).1 > 0.0);
+            odometer(&mut p, Vec2::new(0.0, top), value, 1, &style, Align::Left);
+            for v in p.finish() {
+                let y = v.pos[1];
+                assert!(
+                    y >= top - pad - 1e-3 && y <= top + size + pad + 1e-3,
+                    "{value}: vertex at y={y} outside {top}..{}",
+                    top + size
+                );
+            }
+        }
     }
 
     #[test]

@@ -40,14 +40,18 @@ const LINES: [f32; 3] = [76.0, MID, 124.0];
 /// Breaches in the end walls (z, half-width): where the lanes come in.
 const BREACHES: [(f32, f32); 3] = [(64.0, 6.0), (MID - 12.0, 5.0), (136.0, 6.0)];
 
-/// Tungsten: dark, dense grey.
-const TUNGSTEN: Vec3 = Vec3::new(0.3, 0.31, 0.33);
-/// The Uthenn's pale shell, on the hall and the smelter.
-const SHELL: Vec3 = Vec3::new(0.6, 0.63, 0.63);
-const SHELL_DARK: Vec3 = Vec3::new(0.2, 0.22, 0.23);
-const FLOOR: Vec3 = Vec3::new(0.3, 0.31, 0.31);
-const ASH: Vec3 = Vec3::new(0.17, 0.175, 0.175);
-const STEEL: Vec3 = Vec3::new(0.34, 0.35, 0.37);
+/// Tungsten: dense, cold blue-grey steel, a shade darker and bluer than
+/// anything else on the ground so cubes read as cubes.
+const TUNGSTEN: Vec3 = Vec3::new(0.2, 0.24, 0.3);
+/// The Uthenn's pale shell, on the hall and the smelter: a cold, faintly
+/// green white.
+const SHELL: Vec3 = Vec3::new(0.44, 0.49, 0.46);
+const SHELL_DARK: Vec3 = Vec3::new(0.12, 0.15, 0.14);
+/// The hall's floor slab: cast concrete, paler and cooler than the slag.
+const FLOOR: Vec3 = Vec3::new(0.52, 0.51, 0.48);
+/// Outside: slag and burnt ground, rust brown.
+const ASH: Vec3 = Vec3::new(0.12, 0.1, 0.09);
+const STEEL: Vec3 = Vec3::new(0.42, 0.3, 0.22);
 /// Uthenn green: a few lights still on in the wreck.
 const GREEN: Vec3 = Vec3::new(0.15, 0.9, 0.35);
 
@@ -124,17 +128,22 @@ impl Map {
             sounds: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
-            // Overcast and smoky: a flat pale sun through grey haze.
+            // Late and smoky: a low amber sun through the works' smoke,
+            // slate sky overhead, the haze brown-gold at the horizon. Warm
+            // light on the faces, cool in the shadows.
             atmosphere: crate::render::Atmosphere {
-                sun_dir: Vec3::new(0.4, 0.62, -0.45),
-                sun_color: Vec3::new(1.6, 1.62, 1.6),
-                sky_zenith: Vec3::new(0.14, 0.16, 0.17),
-                sky_horizon: Vec3::new(0.34, 0.36, 0.35),
-                ground_color: Vec3::new(0.15, 0.16, 0.16),
-                fog_density: 0.003,
+                sun_dir: Vec3::new(0.5, 0.4, -0.45),
+                sun_color: Vec3::new(1.8, 1.48, 1.18),
+                sky_zenith: Vec3::new(0.12, 0.15, 0.21),
+                sky_horizon: Vec3::new(0.4, 0.35, 0.3),
+                ground_color: Vec3::new(0.14, 0.12, 0.11),
+                fog_density: 0.0024,
                 wind: Vec2::new(1.2, -0.6),
                 blowing_sand: 0.2,
-                dust: Vec3::new(0.3, 0.31, 0.3),
+                dust: Vec3::new(0.28, 0.24, 0.21),
+                // Ash and soot settle here, not sand.
+                settle: Vec3::new(0.2, 0.19, 0.18),
+                ambient: 1.0,
             },
             bases: Map::no_bases(&sides),
             factions: sides.to_vec(),
@@ -149,7 +158,7 @@ impl Map {
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, ground);
         terrain.color = ASH;
-        terrain.material = Material::Sand;
+        terrain.material = Material::Rubble;
         map.terrain = Some(terrain);
         let mut rng = Rng::new(0x007c_0be5);
 
@@ -159,6 +168,7 @@ impl Map {
         map.stockpiles(&mut rng);
         map.fallen_cubes(&mut rng);
         map.yard_wall();
+        map.litter();
         map.foundry_spawns();
         map.perimeter(false);
         map.foundry_horizon(&mut rng);
@@ -227,7 +237,11 @@ impl Map {
     /// One tungsten cube, `s` on a side, sitting on `y`: turned `yaw`,
     /// tipped `tilt`. Visual only unless `solid`.
     #[allow(clippy::too_many_arguments)]
+    /// A great cube (2.5 m and up) is worn at the edges and, standing
+    /// square, has the Uthenn's seam round its middle: lit green on some.
+    #[allow(clippy::too_many_arguments)]
     fn cube(&mut self, at: Vec2, y: f32, s: f32, yaw: f32, tilt: f32, solid: bool, twin: bool) {
+        let great = s >= 2.5;
         let o = OBox {
             center: at,
             yaw,
@@ -239,15 +253,40 @@ impl Map {
             top_mat: Material::Metal,
             tilt,
             solid,
+            chip: if great { s * 0.03 } else { 0.0 },
             ..OBox::default()
         };
-        self.oboxes.push(o);
-        if twin {
-            self.oboxes.push(OBox {
-                center: mirror(at),
-                yaw: -yaw,
+        let mut parts = vec![o];
+        if great && tilt == 0.0 {
+            // Lit or dark by where it lies, so a cube and its twin match.
+            let lit = (at.x * 0.37 + at.y * 0.61 + s).sin() > 0.1;
+            let (color, mat) = if lit {
+                (GREEN, Material::Glow)
+            } else {
+                (SHELL_DARK, Material::Concrete)
+            };
+            let mid = y + s * 0.5;
+            parts.push(OBox {
+                half: o.half + Vec2::splat(0.05),
+                y0: mid - 0.1,
+                y1: mid + 0.1,
+                color,
+                side_mat: mat,
+                top_mat: mat,
+                solid: false,
+                chip: 0.0,
                 ..o
             });
+        }
+        for part in parts {
+            self.oboxes.push(part);
+            if twin {
+                self.oboxes.push(OBox {
+                    center: mirror(part.center),
+                    yaw: -yaw,
+                    ..part
+                });
+            }
         }
     }
 
@@ -264,8 +303,8 @@ impl Map {
             y0: -0.2,
             y1: 0.02,
             color: FLOOR,
-            side_mat: Material::Asphalt,
-            top_mat: Material::Asphalt,
+            side_mat: Material::Concrete,
+            top_mat: Material::Concrete,
             solid: false,
             ..OBox::default()
         });
@@ -445,6 +484,41 @@ impl Map {
                     ..OBox::default()
                 },
             );
+            // A dark rib at the panel's start, standing proud of both
+            // faces, and a dark coping along the top of a whole panel.
+            let across = Vec2::new(dir.y.abs(), dir.x.abs());
+            let rib = dir.abs() * 0.3 + across * (WALL_T * 0.5 + 0.14);
+            put(
+                self,
+                OBox {
+                    center: mid - dir * seg * 0.5,
+                    half: rib,
+                    y0: 0.0,
+                    y1: top + 0.25,
+                    color: SHELL_DARK,
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
+                    solid: false,
+                    broken,
+                    ..OBox::default()
+                },
+            );
+            if !broken {
+                put(
+                    self,
+                    OBox {
+                        center: mid,
+                        half: half + across * 0.08,
+                        y0: top - 0.45,
+                        y1: top + 0.05,
+                        color: SHELL_DARK,
+                        side_mat: Material::Concrete,
+                        top_mat: Material::Concrete,
+                        solid: false,
+                        ..OBox::default()
+                    },
+                );
+            }
             // The green seam, proud of the wall on both faces; dark where
             // it's broken.
             let lit = !broken && rng.chance(0.5);
@@ -707,6 +781,22 @@ impl Map {
             Material::Metal,
             false,
         );
+        // A light strip along the frame's flanks, still on along some
+        // (picked by place, not by `rng`, so the layout doesn't shift).
+        let lit = (x0 * 0.71 + z * 0.29).sin() > -0.2;
+        self.twin(
+            c,
+            half + Vec2::new(0.0, 0.04),
+            0.62,
+            0.74,
+            if lit { GREEN } else { SHELL_DARK * 0.6 },
+            if lit {
+                Material::Glow
+            } else {
+                Material::Concrete
+            },
+            false,
+        );
         let n = ((x1 - x0) / 1.5) as usize;
         for k in 0..n {
             if rng.chance(0.25) {
@@ -770,6 +860,16 @@ impl Map {
                 5.0,
                 TUNGSTEN,
                 Material::Metal,
+                false,
+            );
+            // Its status light, still green.
+            self.twin(
+                at,
+                Vec2::new(1.45, 2.65),
+                6.5,
+                6.7,
+                GREEN,
+                Material::Glow,
                 false,
             );
         } else {
@@ -968,6 +1068,18 @@ impl Map {
                     rng.range(5.6, 6.6)
                 };
                 let panel = self.twin(mid, half, -0.6, top, SHELL, Material::Painted, true);
+                // A dark rib at the panel's start, proud of both faces.
+                let across = Vec2::new(dir.y.abs(), dir.x.abs());
+                let rib = self.twin(
+                    mid - dir * seg * 0.5,
+                    dir.abs() * 0.3 + across * (t + 0.14),
+                    -0.6,
+                    top + 0.25,
+                    SHELL_DARK,
+                    Material::Concrete,
+                    false,
+                );
+                self.edit_twin(rib, |o| o.broken = broken);
                 self.edit_twin(panel, |o| {
                     o.broken = broken;
                     o.chip = 0.15;
@@ -982,6 +1094,88 @@ impl Map {
                 };
                 self.twin(mid, seam, 1.05, 1.2, color, mat, false);
             }
+        }
+    }
+
+    /// Litter on the open ground outside the hall, so it isn't one flat
+    /// sheet: dark slag clinker, tungsten offcuts, shards of pale shell.
+    /// Visual only, drawn from its own `Rng` so the layout never shifts
+    /// with it, and kept off the menu backdrop's tank spots.
+    fn litter(&mut self) {
+        let mut rng = Rng::new(0x0005_1a65);
+        let mut placed = 0;
+        while placed < 260 {
+            let at = Vec2::new(rng.range(4.0, MID), rng.range(4.0, SIZE - 4.0));
+            let near_hall =
+                at.x > HALL_MIN.x - 1.5 && at.y > HALL_MIN.y - 1.5 && at.y < HALL_MAX.y + 1.5;
+            // Keep clear of where the menus park a tank for the backdrop.
+            let backdrop = crate::vista::spots(crate::MapKind::Foundry)
+                .iter()
+                .any(|&(x, z, _)| {
+                    let v = Vec2::new(x, z);
+                    v.distance(at) < 5.0 || v.distance(mirror(at)) < 5.0
+                });
+            if near_hall || backdrop || !self.foundry_clear(at, 1.2) {
+                continue;
+            }
+            placed += 1;
+            let g = self.ground_height(at.x, at.y);
+            let yaw = rng.range(0.0, TAU);
+            let o = match rng.int(0, 5) {
+                // Clinker: low dark lumps, often in a little cluster.
+                0..=2 => OBox {
+                    center: at,
+                    yaw,
+                    half: Vec2::new(rng.range(0.25, 0.7), rng.range(0.2, 0.5)),
+                    y0: g - 0.15,
+                    y1: g + rng.range(0.1, 0.3),
+                    color: ASH * rng.range(0.45, 0.7),
+                    side_mat: Material::Rubble,
+                    top_mat: Material::Rubble,
+                    tilt: rng.range(-0.2, 0.2),
+                    solid: false,
+                    chip: 0.08,
+                    ..OBox::default()
+                },
+                // A shard of shell, lying flat-ish.
+                3 | 4 => OBox {
+                    center: at,
+                    yaw,
+                    half: Vec2::new(rng.range(0.4, 1.0), rng.range(0.3, 0.6)),
+                    y0: g - 0.05,
+                    y1: g + 0.1,
+                    color: SHELL * rng.range(0.8, 1.0),
+                    side_mat: Material::Painted,
+                    top_mat: Material::Painted,
+                    tilt: rng.range(-0.25, 0.25),
+                    solid: false,
+                    broken: true,
+                    ..OBox::default()
+                },
+                // An offcut of tungsten.
+                _ => {
+                    let s = rng.range(0.3, 0.6);
+                    OBox {
+                        center: at,
+                        yaw,
+                        half: Vec2::splat(s * 0.5),
+                        y0: g - 0.1,
+                        y1: g - 0.1 + s,
+                        color: TUNGSTEN,
+                        side_mat: Material::Metal,
+                        top_mat: Material::Metal,
+                        tilt: rng.range(-0.4, 0.4),
+                        solid: false,
+                        ..OBox::default()
+                    }
+                }
+            };
+            self.oboxes.push(o);
+            self.oboxes.push(OBox {
+                center: mirror(o.center),
+                yaw: -o.yaw,
+                ..o
+            });
         }
     }
 
@@ -1046,7 +1240,7 @@ impl Map {
         let n = ((SIZE + 2.0 * reach) / cell) as usize + 1;
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, scenery_ground);
         t.color = ASH * 0.95;
-        t.material = Material::Sand;
+        t.material = Material::Rubble;
         self.scenery_terrain = Some(t);
 
         for _ in 0..70 {
@@ -1059,9 +1253,29 @@ impl Map {
                 0 => {
                     let half = Vec2::new(rng.range(12.0, 30.0), rng.range(8.0, 16.0));
                     let h = rng.range(8.0, 16.0);
+                    let yaw = rng.range(0.0, TAU);
+                    // A band of dark windows high up, lit green on a few
+                    // (picked by place, so the skyline doesn't shift).
+                    let lit = (at.x * 0.13 + at.y * 0.07).sin() > 0.4;
                     self.oboxes.push(OBox {
                         center: at,
-                        yaw: rng.range(0.0, TAU),
+                        yaw,
+                        half: half + Vec2::splat(0.1),
+                        y0: g + h * 0.62,
+                        y1: g + h * 0.62 + 1.2,
+                        color: if lit { GREEN * 0.7 } else { SHELL_DARK * 0.8 },
+                        side_mat: if lit {
+                            Material::Glow
+                        } else {
+                            Material::Concrete
+                        },
+                        top_mat: Material::Concrete,
+                        solid: false,
+                        ..OBox::default()
+                    });
+                    self.oboxes.push(OBox {
+                        center: at,
+                        yaw,
                         half,
                         y0: g,
                         y1: g + h,

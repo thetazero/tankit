@@ -11,6 +11,7 @@ struct Globals {
     sky_horizon: vec4<f32>,
     ground_color: vec4<f32>,
     params: vec4<f32>,       // x: time, y: fog density, z: screen width, w: screen height
+    settle: vec4<f32>,       // xyz: color of the dust settled on upward faces
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -329,7 +330,6 @@ fn surface_detail(lpos: vec3<f32>, lnormal: vec3<f32>, ax: vec3<f32>, ay: vec3<f
 // World materials 13..17 (map.rs `mat`): sand, plaster, concrete, rubble,
 // rust. Detail comes from the procedural surface textures; these work in
 // world space (static map geometry has an identity transform).
-const SAND_COL: vec3<f32> = vec3<f32>(0.74, 0.6, 0.42);
 
 fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Detail) -> Surface {
     var s: Surface;
@@ -390,7 +390,7 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
         let stain = smoothstep(0.35, 0.8, d.masks.a) * smoothstep(0.3, 0.6, noise2(vec2<f32>(wpos.x + wpos.z, wpos.y * 0.15) * 0.4));
         s.albedo *= 1.0 - 0.28 * stain * vertical;
         let caked = 1.0 - smoothstep(0.0, 1.6, wpos.y);
-        s.albedo = mix(s.albedo, SAND_COL * 0.9, caked * vertical * 0.55);
+        s.albedo = mix(s.albedo, g.settle.xyz * 0.9, caked * vertical * 0.55);
         s.rough = 0.9;
     } else if (m == MAT_CONCRETE) {
         // Cast concrete: grey, blotchy, pitted, stained along the edges.
@@ -442,7 +442,7 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
     // Sand settles on everything that faces up.
     if (m != MAT_SAND) {
         let dust = smoothstep(0.55, 0.95, up) * clamp(0.3 + 0.6 * d.masks.g, 0.0, 1.0);
-        s.albedo = mix(s.albedo, SAND_COL, dust * 0.65);
+        s.albedo = mix(s.albedo, g.settle.xyz, dust * 0.65);
         s.rough = mix(s.rough, 0.96, dust);
         s.metal *= 1.0 - dust;
     }
@@ -501,7 +501,8 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
 
     let sky_amb = mix(g.sky_horizon.rgb, g.sky_zenith.rgb, 0.35);
-    let hemi = mix(g.ground_color.rgb, sky_amb, n.y * 0.5 + 0.5);
+    // ground_color.w: the map's ambient scale (fill for faces in shade).
+    let hemi = mix(g.ground_color.rgb, sky_amb, n.y * 0.5 + 0.5) * g.ground_color.w;
     // Metals: tinted specular, darker diffuse, and a sky/ground reflection.
     let spec_col = mix(vec3<f32>(1.0), s.albedo * 1.6, s.metal);
     let f = mix(fresnel, 0.6 + 0.4 * fresnel, s.metal);

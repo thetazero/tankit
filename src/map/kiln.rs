@@ -89,7 +89,7 @@ const BASE_MAX: Vec2 = Vec2::new(27.0, 118.0);
 
 const SLATE: Vec3 = Vec3::new(0.19, 0.2, 0.22);
 /// The warren's worked stone: a cold blue-grey, a shade above the ground.
-const STONE: Vec3 = Vec3::new(0.15, 0.16, 0.19);
+const STONE: Vec3 = Vec3::new(0.18, 0.19, 0.23);
 const GLASS: Vec3 = Vec3::new(0.02, 0.065, 0.17);
 const CONCRETE: Vec3 = Vec3::new(0.56, 0.57, 0.6);
 const IMPERIAL: Vec3 = Vec3::new(0.78, 0.82, 0.9);
@@ -186,13 +186,15 @@ impl Map {
             atmosphere: crate::render::Atmosphere {
                 sun_dir: Vec3::new(-0.62, 0.42, 0.55),
                 sun_color: Vec3::new(1.75, 1.8, 2.1),
-                sky_zenith: Vec3::new(0.025, 0.04, 0.12),
-                sky_horizon: Vec3::new(0.2, 0.26, 0.38),
-                ground_color: Vec3::new(0.12, 0.14, 0.18),
+                sky_zenith: Vec3::new(0.04, 0.06, 0.17),
+                sky_horizon: Vec3::new(0.26, 0.32, 0.46),
+                ground_color: Vec3::new(0.2, 0.22, 0.28),
                 fog_density: 0.0022,
                 wind: Vec2::new(-1.5, 0.8),
                 blowing_sand: 0.15,
                 dust: Vec3::new(0.4, 0.4, 0.46),
+                settle: crate::render::SAND_SETTLE,
+                ambient: 3.2,
             },
             bases: Map::no_bases(&[Faction::Ithessar, Faction::Imperium]),
             factions: [Faction::Ithessar, Faction::Imperium].to_vec(),
