@@ -4,8 +4,8 @@ Decisions so far. Deliberately thin: more lore later.
 
 ## Premise
 
-A forever war spanning the galaxy. Nobody remembers how it started; it keeps
-going anyway. Mostly automated, with humans still in it.
+A forever war across a crowded region of some ten thousand colonized star
+systems. Nobody remembers how it started; it keeps going anyway. Mostly automated, with humans still in it.
 
 **Tone:** grim and melancholic (Dune, Horizon's old world): ruins, faded human
 traces, a war that doesn't notice them. Things that behave like magic
@@ -69,9 +69,15 @@ Four sides at war. Any of them can hire the Company.
 | Faction | Who they are |
 |---|---|
 | **The Imperium** | Human. A vast power fighting with automated war machines commanded from orbit. An empire that is also a religion, Byzantine in spirit. See [The Imperium](#the-imperium). |
-| **The Resonant** | Human. A cult built around the crystals. The crystals answer: a machine with a crystal in it won't stay dead. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. See [The Resonant](#the-resonant). |
+| **The Resonant** | Human. A militant fundamentalist cult in the far reaches of human space, built around the crystals. The crystals answer: a machine with a crystal in it won't stay dead. That it happens is not in doubt; whether it's magic or science nobody understands is never resolved. See [The Resonant](#the-resonant). |
 | **Uthenn** | The machines: a splinter from the aliens. See [Uthenn](#uthenn). |
 | **The Ithessar** | The aliens. They shape plasma with crystal: their machines float on it, their weapons throw it. |
+
+**Where they are.** Humans hold one part of the region and the aliens and
+the machines another, and the two overlap. The densest fighting is inside
+each: the Imperium against the Resonant on the human side, the Ithessar
+against Uthenn on theirs. Where human and alien space meet, the fronts are
+thinner.
 
 ## Emblems
 
