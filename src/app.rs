@@ -31,7 +31,7 @@ use crate::keys;
 use crate::menu::{self, Change, Menu, Nav, Pause, PauseAction};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::Profile;
-use crate::render::mesh::MeshData;
+use crate::render::StaticWorld;
 use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::Command;
@@ -141,9 +141,9 @@ struct App {
     backdrop_wait: f32,
     /// A backdrop being built off the main thread (a big map takes most of a
     /// second), for the mission and side it's of.
-    backdrop_job: Option<((usize, usize), Receiver<(Match, MeshData)>)>,
+    backdrop_job: Option<((usize, usize), Receiver<(Match, StaticWorld)>)>,
     /// A built backdrop waiting for the screen to go dark before it's swapped in.
-    backdrop_ready: Option<((usize, usize), Match, MeshData)>,
+    backdrop_ready: Option<((usize, usize), Match, StaticWorld)>,
     /// How dark the menu scene is (0..1): it dips to black around a backdrop swap.
     backdrop_dark: f32,
     cam: ChaseCam,
@@ -444,12 +444,12 @@ impl ApplicationHandler for App {
 impl App {
     /// Swap in a new match (or menu backdrop) and reset everything tied to the old one.
     fn load(&mut self, game: Match) {
-        let mesh = scene::map_mesh(&game.world.map);
-        self.load_built(game, &mesh);
+        let world = StaticWorld::new(&scene::map_mesh(&game.world.map));
+        self.load_built(game, world);
     }
 
     /// `load`, with the map's mesh already built.
-    fn load_built(&mut self, game: Match, mesh: &MeshData) {
+    fn load_built(&mut self, game: Match, world: StaticWorld) {
         self.game = game;
         self.game.set_player_levels(self.profile.levels);
         self.banked = 0;
@@ -461,7 +461,7 @@ impl App {
         self.player_alive = true;
         self.loaded = true;
         if let Some(r) = &mut self.renderer {
-            r.set_static_mesh(mesh);
+            r.set_static_world(world);
         }
     }
 
@@ -547,7 +547,7 @@ impl App {
             if self.backdrop_dark >= 1.0
                 && let Some((key, game, mesh)) = self.backdrop_ready.take()
             {
-                self.load_built(game, &mesh);
+                self.load_built(game, mesh);
                 self.backdrop = key;
                 self.menu_orbit = garage::front_angle(&self.game.world.tanks[0]);
             }
@@ -564,7 +564,7 @@ impl App {
                     std::thread::spawn(move || {
                         let started = Instant::now();
                         let game = backdrop_match(want.0, want.1, kit);
-                        let mesh = scene::map_mesh(&game.world.map);
+                        let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
                         log::debug!(
                             "menu backdrop: {} built in {:.0?}",
                             MISSIONS[want.0].map,
