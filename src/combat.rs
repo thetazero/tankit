@@ -2235,13 +2235,13 @@ impl Match {
                 raid::Event::Dropped { .. } => Sound::Hold(hold::Cue::Contested),
                 raid::Event::Returned { by } => {
                     if by == Some(0) {
-                        self.award(raid::RETURN_REPUTATION, "RETURNED");
+                        self.award(raid::RETURN_RENOWN, "RETURNED");
                     }
                     good(att != mine)
                 }
                 raid::Event::Captured { by } => {
                     if by == 0 {
-                        self.award(raid::CAPTURE_REPUTATION, "CAPTURED");
+                        self.award(raid::CAPTURE_RENOWN, "CAPTURED");
                     }
                     good(att == mine)
                 }
@@ -4693,7 +4693,7 @@ mod tests {
         assert!(r.paused());
         assert_eq!(r.captures(0), 1);
         assert_eq!(m.score(0), 1);
-        assert_eq!(m.reputation, raid::CAPTURE_REPUTATION);
+        assert_eq!(m.renown, raid::CAPTURE_RENOWN);
         assert_eq!(m.phase, Phase::Playing);
         // Frozen through the break: the player can't drive.
         let before = m.world.tanks[0].pos;
@@ -5023,7 +5023,7 @@ mod tests {
                         let who = m.factions[p.attackers].name();
                         match p.captured {
                             Some(t) => format!("{who} took it in {t:.0} s"),
-                            None => format!("{who} held off"),
+                            None => format!("{who} kept out"),
                         }
                     })
                     .collect();

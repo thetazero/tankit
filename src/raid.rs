@@ -36,9 +36,9 @@ pub const CAPTURE_RADIUS: f32 = 7.0;
 pub const RETURN_TIME: f32 = 20.0;
 /// What the carrier's throttle is scaled by.
 pub const CARRIER_THROTTLE: f32 = 0.85;
-/// Reputation the player earns for capturing, and for sending a dropped flag home.
-pub const CAPTURE_REPUTATION: u32 = 30;
-pub const RETURN_REPUTATION: u32 = 10;
+/// Renown the player earns for capturing, and for sending a dropped flag home.
+pub const CAPTURE_RENOWN: u32 = 30;
+pub const RETURN_RENOWN: u32 = 10;
 /// Tanks further than this above or below the flag or the ring don't touch it.
 const REACH_Y: f32 = 4.0;
 const DASHES: usize = 36;
