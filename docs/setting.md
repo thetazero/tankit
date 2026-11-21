@@ -12,6 +12,15 @@ traces, a war that doesn't notice them. Things that behave like magic
 unambiguously exist; whether they're science or magic is left **ambiguous**,
 on purpose.
 
+## Why tanks
+
+Worlds worth fighting over sit under **planetary shields**. A shield stops
+fleets, bombardment and anything large; only small things get through. So a
+world can't be taken from orbit, only on the ground, by small machines dropped
+in under the shield. The shields themselves are contested, along with the
+rest of a world's infrastructure and its crystal. Take a world's shield and
+its sky opens; until then the fight stays on the ground.
+
 ## The player
 
 A **mercenary pilot** of the Company, remote-linked into each chassis,
