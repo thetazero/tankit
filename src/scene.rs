@@ -7,7 +7,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use crate::map::{Hash, Map, Terrain, Wedge};
 use crate::render::mesh::{MeshData, Vertex};
 use crate::render::{Camera, Scene};
-use crate::sim::{Tank, TurretKind, World, apron_rects, dir2, wrap_angle};
+use crate::sim::{HullKind, Tank, TurretKind, World, apron_rects, dir2, wrap_angle};
 use crate::tank::TankArt;
 
 /// Static geometry for the whole arena, built once per map.
@@ -412,7 +412,9 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
 
 /// Third-person chase camera, Tanki-style: it sits behind the turret and
 /// swings with it, follows with a little lag, and pulls in when something is
-/// in the way.
+/// in the way. If pulling in would put it inside its own tank (backed up to
+/// a wall, tipped, flipped), it climbs higher over the tank, or swings round
+/// to a side that's open, and eases back once the way is clear.
 pub struct ChaseCam {
     yaw: f32,
     /// 0 = low behind the tank, 1 = high overhead-ish.
@@ -426,7 +428,17 @@ pub struct ChaseCam {
     kick_shown: f32,
     /// The tank's shot counter at the last update, to spot new shots.
     shots_seen: usize,
+    /// How far the boom is swung (yaw, rad) and raised (pitch, rad) off its
+    /// usual place to keep out of the tank, as shown.
+    dodge: Vec2,
 }
+
+/// Boom raises (rad above its usual pitch) and swings (rad off behind the
+/// turret) the chase camera tries, in order, to keep out of its own tank.
+const DODGE_RAISES: [f32; 7] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.25];
+const DODGE_SWINGS: [f32; 9] = [0.0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, 2.6, -2.6];
+/// The steepest the boom goes: not quite straight down at the tank.
+const BOOM_STEEPEST: f32 = 1.4;
 
 impl ChaseCam {
     pub fn new() -> ChaseCam {
@@ -438,6 +450,7 @@ impl ChaseCam {
             kick: 0.0,
             kick_shown: 0.0,
             shots_seen: 0,
+            dodge: Vec2::ZERO,
         }
     }
 
@@ -457,15 +470,48 @@ impl ChaseCam {
         let tilt = self.tilt.clamp(0.0, 1.0);
         let dist = 9.0 + tilt * 3.0;
         let height = 2.5 + tilt * 6.0;
+        let pitch = height.atan2(dist);
+        let len = dist.hypot(height);
+        let (focus, yaw) = (self.focus, self.yaw);
+        // The boom swung and raised by `dodge`, pulled in short of walls; and
+        // how deep that puts the camera in its own tank (<= 0: clear).
+        let place = |dodge: Vec2| {
+            let back = dir2(yaw + dodge.x);
+            let p = (pitch + dodge.y).min(BOOM_STEEPEST);
+            let dir = Vec3::new(-back.x * p.cos(), p.sin(), -back.y * p.cos());
+            let hit = world.raycast(focus, dir, len);
+            let pos = focus + dir * (hit - 0.6).max(0.0);
+            (pos, depth_in_tank(tank, pos))
+        };
+        // The least dodge that keeps out of the tank (or, boxed in, the one
+        // that gets least far into it).
+        let mut want = (Vec2::ZERO, f32::MAX);
+        'search: for swing in DODGE_SWINGS {
+            for raise in DODGE_RAISES {
+                let d = Vec2::new(swing, raise);
+                let depth = place(d).1;
+                if depth < want.1 {
+                    want = (d, depth);
+                }
+                if depth <= 0.0 {
+                    break 'search;
+                }
+            }
+        }
+        // Ease back toward the wanted dodge, unless easing leaves the camera
+        // deeper in than it has to be: then jump straight there.
+        let ease = 1.0 - (-dt * 4.0).exp();
+        self.dodge = Vec2::new(
+            wrap_angle(self.dodge.x + wrap_angle(want.0.x - self.dodge.x) * ease),
+            self.dodge.y + (want.0.y - self.dodge.y) * ease,
+        );
+        let (mut pos, depth) = place(self.dodge);
+        if depth > want.1.max(0.0) {
+            self.dodge = want.0;
+            pos = place(want.0).0;
+        }
+
         let back = dir2(self.yaw);
-        let back3 = Vec3::new(-back.x, 0.0, -back.y);
-        let desired = self.focus + back3 * dist + Vec3::Y * height;
-
-        let to = desired - self.focus;
-        let len = to.length();
-        let hit = world.raycast(self.focus, to / len, len);
-        let pos = self.focus + to / len * (hit - 0.6).max(1.5);
-
         let ahead = Vec3::new(back.x, 0.0, back.y);
         // Firing kicks the camera back and up for a moment.
         let shots = tank.fire_barrel.saturating_sub(self.shots_seen).min(4);
@@ -474,13 +520,168 @@ impl ChaseCam {
         self.kick = (self.kick * (-dt * 14.0).exp() + shots as f32 * per_shot).min(1.0);
         self.kick_shown += (self.kick - self.kick_shown) * (1.0 - (-dt * 40.0).exp());
         let kick = self.kick_shown;
-        let pos = pos - ahead * kick * 0.45 + Vec3::Y * kick * 0.2;
+        let kicked = pos - ahead * kick * 0.45 + Vec3::Y * kick * 0.2;
+        // Swung round in front, the kick would shove the camera into the tank.
+        if depth_in_tank(tank, kicked) <= 0.0 {
+            pos = kicked;
+        }
         Camera {
             pos,
             target: self.focus + ahead * 6.0 + Vec3::Y * (0.5 + kick * 0.3),
             fov_y: 65f32.to_radians(),
         }
     }
+}
+
+/// How much room the chase camera keeps from its own tank's art (m): the
+/// near plane's corners (0.2 m out, ~0.25 m to the side) and a little more.
+const CAM_CLEARANCE: f32 = 0.45;
+
+/// An axis-aligned box in some frame of the tank's.
+#[derive(Clone, Copy, Debug)]
+struct Bulk {
+    min: Vec3,
+    max: Vec3,
+}
+
+impl Bulk {
+    const EMPTY: Bulk = Bulk {
+        min: Vec3::splat(f32::MAX),
+        max: Vec3::splat(f32::MIN),
+    };
+
+    fn add(&mut self, p: Vec3) {
+        self.min = self.min.min(p);
+        self.max = self.max.max(p);
+    }
+
+    fn add_mesh(&mut self, m: &MeshData, at: Vec3) {
+        for v in &m.verts {
+            self.add(Vec3::from(v.pos) + at);
+        }
+    }
+
+    /// How far `p` (in this box's frame) is inside it, padded by `pad`; zero
+    /// or less outside.
+    fn depth(&self, p: Vec3, pad: f32) -> f32 {
+        let out = (self.min - pad - p).max(p - self.max - pad);
+        -out.max_element()
+    }
+}
+
+/// The boxes a tank's art fits in: the hull in the body frame, the turret
+/// head in the turret frame, the mantlet and barrels in the gun frame.
+struct KitBulk {
+    hulls: Vec<(HullKind, Bulk)>,
+    /// Same order as `TurretKind::ALL`: (head, gun).
+    turrets: Vec<(Bulk, Bulk)>,
+}
+
+fn kit_bulk() -> &'static KitBulk {
+    use crate::tank::{ithessar, model, resonant, uthenn};
+    static BULK: std::sync::OnceLock<KitBulk> = std::sync::OnceLock::new();
+    BULK.get_or_init(|| {
+        let hull = |kind: HullKind, meshes: &[(&MeshData, Vec3)], points: &[Vec3]| {
+            let mut b = Bulk::EMPTY;
+            for p in crate::sim::Chassis::of(kind).collider_points() {
+                b.add(p);
+            }
+            for &(m, at) in meshes {
+                b.add_mesh(m, at);
+            }
+            for &p in points {
+                b.add(p);
+            }
+            (kind, b)
+        };
+        let tracked = |kind: HullKind, h: &model::HullModel| {
+            let r = &h.running;
+            // Wheels and belt: the running gear's outline on both sides.
+            let mut gear = Vec::new();
+            for w in r.road.iter().chain([&r.sprocket, &r.idler]) {
+                for x in [-r.track_x, r.track_x] {
+                    let half = r.track_width * 0.5;
+                    // Links stand off the wheels by about their thickness.
+                    let rad = w.radius + 0.1;
+                    gear.push(Vec3::new(x - half, w.center.y - rad, w.center.x - rad));
+                    gear.push(Vec3::new(x + half, w.center.y + rad, w.center.x + rad));
+                }
+            }
+            hull(kind, &[(&h.body, Vec3::ZERO)], &gear)
+        };
+        let hover = ithessar::sethuun();
+        let shards: Vec<Vec3> = (hover.shards.iter())
+            .flat_map(|&(at, len)| [at - Vec3::splat(len * 0.5), at + Vec3::splat(len * 0.5)])
+            .map(|p| p + Vec3::Y * ithessar::RIDE)
+            .collect();
+        let vigil = resonant::vigil();
+        let g = &vigil.extras;
+        let mut extras = vec![
+            (&g.light, Vec3::ZERO),
+            (&g.heart, g.heart_at),
+            (&g.bell, g.bell_pivot),
+            (&vigil.hull.body, Vec3::ZERO),
+        ];
+        extras.extend(g.plates.iter().map(|(m, at)| (m, *at)));
+        let mut hulls = vec![
+            tracked(HullKind::Kataphrakt, &model::kataphrakt()),
+            tracked(HullKind::Kastron, &model::kastron()),
+            tracked(HullKind::Gravis, &uthenn::gravis()),
+            hull(
+                HullKind::Sethuun,
+                &[
+                    (&hover.body, Vec3::Y * ithessar::RIDE),
+                    (&hover.glow, Vec3::Y * ithessar::RIDE),
+                ],
+                &shards,
+            ),
+        ];
+        let (kind, mut b) = tracked(HullKind::Vigil, &vigil.hull);
+        for (m, at) in extras {
+            b.add_mesh(m, at);
+        }
+        hulls.push((kind, b));
+
+        let turrets = TurretKind::ALL
+            .iter()
+            .map(|&k| {
+                let m = crate::tank::turret_model(k);
+                let mut head = Bulk::EMPTY;
+                head.add_mesh(&m.head, Vec3::ZERO);
+                let mut gun = Bulk::EMPTY;
+                gun.add_mesh(&m.mantlet, Vec3::ZERO);
+                for &o in &m.barrels {
+                    gun.add_mesh(&m.barrel, o);
+                }
+                (head, gun)
+            })
+            .collect();
+        KitBulk { hulls, turrets }
+    })
+}
+
+/// How deep `p` is inside `tank`'s art padded by [`CAM_CLEARANCE`]: zero or
+/// less when the camera is clear of it.
+pub fn depth_in_tank(tank: &Tank, p: Vec3) -> f32 {
+    let bulk = kit_bulk();
+    let body = Mat4::from_rotation_translation(tank.rot, tank.pos);
+    let local = |frame: Mat4| frame.inverse().transform_point3(p);
+    // The hover hull leans on its cushion.
+    let body = if tank.hull_kind == HullKind::Sethuun {
+        body * Mat4::from_rotation_z(tank.lean)
+    } else {
+        body
+    };
+    let hull = (bulk.hulls.iter())
+        .find(|(k, _)| *k == tank.hull_kind)
+        .map_or(f32::MIN, |(_, b)| b.depth(local(body), CAM_CLEARANCE));
+    let i = (TurretKind::ALL.iter())
+        .position(|&k| k == tank.turret_kind)
+        .unwrap_or(0);
+    let (head, gun) = &bulk.turrets[i];
+    let head = head.depth(local(tank.turret_frame()), CAM_CLEARANCE);
+    let gun = gun.depth(local(tank.gun_frame()), CAM_CLEARANCE);
+    hull.max(head).max(gun)
 }
 
 /// The 3D part of a frame. `tanks` is what to draw (usually `world.tanks`,
@@ -578,5 +779,90 @@ mod tests {
         }
         assert!((g[0] - g[2]).abs() >= GROW_STEP * 0.99, "{g:?}");
         assert_eq!(g[4], GROW_STEP, "a box touching nothing grows the least");
+    }
+
+    /// Backed up to a wall, tipped, flipped or under a low roof, whatever
+    /// the hull and turret, the chase camera never ends up in its own tank.
+    #[test]
+    fn chase_cam_keeps_out_of_its_own_tank() {
+        use crate::sim::tests_support::ledge_world;
+        use glam::Quat;
+        use rapier3d::prelude::ColliderBuilder;
+        use std::f32::consts::{FRAC_PI_2, PI};
+
+        // A 6 m block whose near face is at z = 110; and the same with a cave
+        // roof 5.5 m up over the ground in front of it.
+        let open = ledge_world(6.0);
+        let mut cave = ledge_world(6.0);
+        cave.physics.insert_collider(
+            ColliderBuilder::cuboid(15.0, 0.5, 10.0).translation(Vec3::new(100.0, 6.0, 100.0)),
+            None,
+        );
+        cave.physics.step();
+        let hulls = [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ];
+        let mut failures = Vec::new();
+        for (place, mut world) in [("open", open), ("cave", cave)] {
+            for hull in hulls {
+                world.set_hull(0, hull);
+                for turret in [TurretKind::Kontos, TurretKind::Knell, TurretKind::Lumen] {
+                    let mut tank = world.tanks[0].clone();
+                    tank.turret_kind = turret;
+                    tank.turret_rel = 0.0;
+                    // Facing away from the block, so the boom points into it.
+                    {
+                        for gap in [0.2, 1.0, 2.5, 4.0] {
+                            for (name, lean) in [
+                                ("level", Quat::IDENTITY),
+                                ("nose up", Quat::from_rotation_x(-0.6)),
+                                ("tipped", Quat::from_rotation_z(1.1)),
+                                ("on its side", Quat::from_rotation_z(FRAC_PI_2)),
+                                ("flipped", Quat::from_rotation_z(PI)),
+                            ] {
+                                tank.rot = Quat::from_rotation_y(PI) * lean;
+                                let lift = if name == "flipped" { 3.0 } else { 1.5 };
+                                tank.pos = Vec3::new(100.0, lift, 110.0 - 3.6 - gap);
+                                let mut cam = ChaseCam::new();
+                                for tilt in [0.0, 0.35, 1.0] {
+                                    cam.tilt = tilt;
+                                    for _ in 0..30 {
+                                        let c = cam.update(&world, &tank, 1.0 / 60.0);
+                                        let depth = depth_in_tank(&tank, c.pos);
+                                        if depth > 0.0 {
+                                            failures.push(format!(
+                                            "{place}: {hull:?}/{turret:?} {name} {gap} m off the \
+                                             wall, tilt {tilt}: {depth:.2} m in"
+                                        ));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// With nothing in the way the camera sits where it always has.
+    #[test]
+    fn chase_cam_in_the_open_is_unmoved() {
+        let world = crate::sim::tests_support::flat_world();
+        let tank = &world.tanks[0];
+        let mut cam = ChaseCam::new();
+        let c = cam.update(&world, tank, 1.0 / 60.0);
+        // The usual boom, 0.6 m short of its full length (the wall margin).
+        let back = dir2(tank.turret_yaw());
+        let boom =
+            Vec3::new(-back.x, 0.0, -back.y) * (9.0 + 0.35 * 3.0) + Vec3::Y * (2.5 + 0.35 * 6.0);
+        let want = tank.pos + Vec3::Y * 2.2 + boom.normalize() * (boom.length() - 0.6);
+        assert!(c.pos.distance(want) < 1e-3, "{} vs {want}", c.pos);
     }
 }
