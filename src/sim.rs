@@ -408,8 +408,13 @@ pub const SUSPENSION_SAG: f32 = 0.28;
 /// Extra damping on the end road wheels (multiplier added at the ends).
 const END_STATION_DAMPING: f32 = 3.0;
 const SUSPENSION_DAMPING_RATIO: f32 = 0.6;
-/// Fraction of the drive force's lever arm removed by suspension geometry.
-const ANTI_SQUAT: f32 = 0.6;
+/// Fraction of the tracks' sideways grip force's lever arm removed by
+/// suspension geometry, so a hard turn doesn't heel the hull onto its
+/// outer track. Along the tracks there's none: driving and braking push at
+/// the ground, so the hull squats back under hard acceleration and dives
+/// under hard braking, and rocks with them (rocking the gun up or down onto
+/// a target is part of aiming).
+const ANTI_ROLL: f32 = 0.6;
 /// Drivetrain inertia seen at each belt, as a fraction of the tank's mass.
 const BELT_MASS_FRAC: f32 = 0.08;
 /// Below this speed with no input, the parking brake holds the tank.
@@ -1697,7 +1702,7 @@ fn drive(
             per_side[ct.side] += 1;
         }
         let mut belt_reaction = [0.0f32; 2];
-        let impulses: Vec<(Vec3, Vec3)> = contacts
+        let impulses: Vec<(Vec3, Vec3, Vec3)> = contacts
             .iter()
             .filter_map(|ct| {
                 // Belt direction at the contact, kept in the contact surface.
@@ -1737,7 +1742,7 @@ fn drive(
                     j_lat = max_lat * lat_slip / len;
                 }
                 belt_reaction[ct.side] -= j_long;
-                Some((tangent * j_long + lateral * j_lat, ct.point))
+                Some((tangent * j_long, lateral * j_lat, ct.point))
             })
             .collect();
         if !t.dead {
@@ -1746,12 +1751,13 @@ fn drive(
             }
         }
         let com = b.center_of_mass();
-        // Anti-squat: track and suspension geometry carries part of the drive force
-        // up toward the center of mass, so hard acceleration squats the hull instead
-        // of standing it on its tail. 0 = force at the ground, 1 = at the CoM.
-        for (j, p) in impulses {
-            let lift = (com - p).dot(up).max(0.0) * ANTI_SQUAT;
-            b.apply_impulse_at_point(j, p + up * lift, true);
+        // Along the track the force acts at the ground (the hull rocks
+        // with the drive and the brakes); across it, part way up toward the
+        // center of mass ([`ANTI_ROLL`]).
+        for (along, across, p) in impulses {
+            let lift = (com - p).dot(up).max(0.0) * ANTI_ROLL;
+            b.apply_impulse_at_point(along, p, true);
+            b.apply_impulse_at_point(across, p + up * lift, true);
         }
     }
     t.track_dist[0] += t.belt[0] * DT;
@@ -2151,37 +2157,109 @@ mod tests {
         (sum / n as f32, peak, jolt, air as f32 / n as f32)
     }
 
-    /// Hard acceleration and braking pitch the hull a little (weight
-    /// transfer) without lifting it off its tracks.
+    fn hull_pitch(t: &Tank) -> f32 {
+        t.forward().y.asin().to_degrees()
+    }
+
+    fn parked_tank(hull: HullKind) -> World {
+        let mut w = World::empty(flat_world().map);
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(100.0, 20.0),
+            0.0,
+            hull,
+            TurretKind::Kontos,
+        );
+        run(&mut w, Command::default(), 2.0);
+        w
+    }
+
+    /// Launching hard squats the hull back and braking hard from top speed
+    /// dives it onto its nose, far enough to lay the gun well above or below
+    /// its usual range (the heavier the hull, the less), without lifting it
+    /// off its tracks or tipping it over. Then it settles.
     #[test]
-    fn rides_level_under_power() {
-        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
-            let mut w = World::empty(flat_world().map);
-            w.spawn_tank(
-                Vec3::ONE,
-                Vec2::new(100.0, 20.0),
-                0.0,
-                hull,
-                TurretKind::Kontos,
-            );
-            run(&mut w, Command::default(), 2.0);
-            let (mut pitch, mut height) = (0.0f32, 0.0f32);
-            for i in 0..(6.0 / DT) as usize {
-                let cmd = if i < (4.0 / DT) as usize {
-                    throttle(1.0)
-                } else {
-                    throttle(-1.0)
+    fn rocks_under_hard_launch_and_braking() {
+        // (hull, least nose up launching, least nose down braking), degrees.
+        for (hull, squat, dive) in [
+            (HullKind::Kataphrakt, 7.0, 12.0),
+            (HullKind::Vigil, 7.0, 12.0),
+            (HullKind::Kastron, 4.5, 10.0),
+            (HullKind::Gravis, 2.0, 3.5),
+        ] {
+            let mut w = parked_tank(hull);
+            let wheels = w.tanks[0].chassis.wheel_count();
+            let (mut up, mut down, mut fewest) = (0.0f32, 0.0f32, wheels);
+            for i in 0..(7.0 / DT) as usize {
+                let cmd = match i as f32 * DT {
+                    t if t < 4.0 => throttle(1.0),
+                    t if t < 4.8 => throttle(-1.0),
+                    _ => Command::default(),
                 };
                 w.step(&[cmd]);
                 let t = &w.tanks[0];
-                pitch = pitch.max(t.forward().y.asin().to_degrees().abs());
-                height = height.max(t.pos.y.abs());
+                up = up.max(hull_pitch(t));
+                down = down.min(hull_pitch(t));
+                fewest = fewest.min(t.wheels_down);
             }
-            assert!(pitch < 7.0, "{hull:?} pitched {pitch} deg");
+            assert!(up > squat, "{hull:?} squatted only {up} deg");
+            assert!(-down > dive, "{hull:?} dived only {down} deg");
+            assert!(-down < 25.0, "{hull:?} dived {down} deg: onto its nose");
             assert!(
-                height < 0.04,
-                "{hull:?} hull lifted {height} m off its tracks"
+                fewest >= wheels / 2,
+                "{hull:?}: down to {fewest} of {wheels} wheels on the ground"
             );
+            let t = &w.tanks[0];
+            assert!(
+                hull_pitch(t).abs() < 1.0 && t.speed() < 0.2,
+                "{hull:?} still rocking 2 s after braking: {} deg",
+                hull_pitch(t)
+            );
+        }
+    }
+
+    /// Rocking in place is a knack: pumping forward and back in time with
+    /// the hull's own sway builds it up far more than mashing the keys.
+    #[test]
+    fn rocking_in_time_builds_up() {
+        let rock = |half: f32| {
+            let mut w = parked_tank(HullKind::Kataphrakt);
+            let start = w.tanks[0].pos;
+            let n = (half / DT) as usize;
+            let (mut up, mut down, mut strayed) = (0.0f32, 0.0f32, 0.0f32);
+            for i in 0..n * 6 {
+                let x = if (i / n) % 2 == 0 { 1.0 } else { -1.0 };
+                w.step(&[throttle(x)]);
+                let t = &w.tanks[0];
+                up = up.max(hull_pitch(t));
+                down = down.min(hull_pitch(t));
+                strayed = strayed.max(t.pos.distance(start));
+            }
+            (up.min(-down), strayed)
+        };
+        let (in_time, strayed) = rock(0.75);
+        let (mashed, _) = rock(0.3);
+        assert!(in_time > 7.0, "rocked only {in_time} deg each way");
+        assert!(
+            in_time > mashed * 3.0,
+            "in time {in_time} deg, mashing {mashed} deg"
+        );
+        assert!(strayed < 6.0, "rocking drove it {strayed} m away");
+    }
+
+    /// Cruising flat out in a straight line, the hull rides level: no
+    /// wobble unless you rock it.
+    #[test]
+    fn cruises_level() {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
+            let mut w = parked_tank(hull);
+            run(&mut w, throttle(1.0), 6.0);
+            let mut worst = 0.0f32;
+            for _ in 0..(3.0 / DT) as usize {
+                w.step(&[throttle(1.0)]);
+                worst = worst.max(hull_pitch(&w.tanks[0]).abs());
+            }
+            assert!(worst < 1.5, "{hull:?} pitched {worst} deg at top speed");
         }
     }
 
