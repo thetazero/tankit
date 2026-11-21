@@ -50,7 +50,7 @@ use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::crag;
 use super::landmarks::Rig;
-use super::valley::{noise, noise2};
+use super::valley::{hash, noise, noise2};
 use super::vault;
 use super::{Ambient, Core, Crystal, Map, OBox, Terrain};
 use crate::faction::Faction;
@@ -341,6 +341,8 @@ const FINS: [(Vec2, Vec2, f32); 4] = [
 /// Sandstone, in a few shades; the desert floor.
 const STONE: Vec3 = Vec3::new(0.58, 0.34, 0.22);
 const STONE_DARK: Vec3 = Vec3::new(0.4, 0.23, 0.15);
+/// Marks the stand-ins for the blocks that used to stand along the Face.
+const FACE_BLOCK: Vec3 = Vec3::new(0.123, 0.456, 0.789);
 const STONE_PALE: Vec3 = Vec3::new(0.7, 0.5, 0.34);
 const SAND: Vec3 = Vec3::new(0.66, 0.46, 0.3);
 /// Mine waste: pale crushed rock.
@@ -576,6 +578,17 @@ fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
 /// Play ground: dunes on the flats, the mesa along the north with the mine
 /// cut out under it, the wash across under it, the dump and the fins.
 pub fn ground(x: f32, z: f32) -> f32 {
+    surface(x, z, true)
+}
+
+/// The rock the mine was cut from: the ground as if there were no caves
+/// under the mesa. Their roofs are drawn to it (`roof_lid`), and the ground
+/// round them is shaded by it.
+fn uncut(p: Vec2) -> f32 {
+    surface(p.x, p.y, false)
+}
+
+fn surface(x: f32, z: f32, caves: bool) -> f32 {
     let p = Vec2::new(x, z);
     let m = mesa(p);
     let dunes = 0.45 * (0.061 * x + 0.3).sin() * (0.047 * z).cos()
@@ -602,8 +615,12 @@ pub fn ground(x: f32, z: f32) -> f32 {
         * smoothstep(4.0, 10.0, rect_distance(BOX_CUT, p))
         * smoothstep(3.0, 8.0, crag_depth(p));
     let relief = relief * (1.0 - c) + crag_relief;
-    let mut rock =
-        (TOP * m + (CRAG_TOP - TOP) * c + relief) * smoothstep(0.0, 2.0, cave_distance(p));
+    let cut = if caves {
+        smoothstep(0.0, 2.0, cave_distance(p))
+    } else {
+        1.0
+    };
+    let mut rock = (TOP * m + (CRAG_TOP - TOP) * c + relief) * cut;
     // The box cut, down through the rock.
     let cut = rect_distance(BOX_CUT, p);
     rock = rock
@@ -698,13 +715,15 @@ fn paint(x: f32, z: f32, h: f32, slope: f32) -> Vec3 {
         Vec3::new(0.5, 0.38, 0.28) * mottle,
         0.6 * (1.0 - smoothstep(2.5, 4.0, way)),
     );
-    // Ballast along the track.
-    c = c.lerp(
-        Vec3::new(0.36, 0.32, 0.3),
-        1.0 - smoothstep(2.4, 3.6, track_distance(p)),
-    );
-    // The mine's floors.
-    if mesa(p) > 0.5 && cave_distance(p) < 0.5 {
+    // Ballast along the track (not on the rock over the adit).
+    if h < ROOF.0 {
+        c = c.lerp(
+            Vec3::new(0.36, 0.32, 0.3),
+            1.0 - smoothstep(2.4, 3.6, track_distance(p)),
+        );
+    }
+    // The mine's floors (not the roofs over them).
+    if mesa(p) > 0.5 && cave_distance(p) < 0.5 && h < ROOF.0 {
         c = STONE_DARK * 0.8 * mottle;
     }
     c
@@ -791,6 +810,27 @@ impl Map {
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 111, 111, ground);
         terrain.color = Vec3::ONE;
         terrain.material = Material::Sand;
+        // Round the caves the ground dips away under the roofs (drawn over
+        // it, see `roof_lid` and `crag_lid`): shade it as the rock it was
+        // cut from, not as a slope down into the cave, which ringed every
+        // roof with a dark edge.
+        terrain.normals = (0..terrain.nz)
+            .flat_map(|iz| (0..terrain.nx).map(move |ix| (ix, iz)))
+            .map(|(ix, iz)| {
+                let p = Vec2::new(ix as f32, iz as f32) * terrain.cell;
+                if in_cave(p) || cave_distance(p) > CAVE_WALL + 3.0 {
+                    return terrain.normal(ix, iz);
+                }
+                let e = terrain.cell;
+                let (dx, dz) = (Vec2::new(e, 0.0), Vec2::new(0.0, e));
+                Vec3::new(
+                    uncut(p - dx) - uncut(p + dx),
+                    2.0 * e,
+                    uncut(p - dz) - uncut(p + dz),
+                )
+                .normalize()
+            })
+            .collect();
         terrain.paint(paint);
         map.terrain = Some(terrain);
         // The ways round first (they're on the ground and the deck), so
@@ -830,8 +870,11 @@ impl Map {
         map.mine_ithessar_base(&mut rng);
         map.mine_resonant_base(&mut rng);
         map.edge_rocks(&mut rng);
+        map.clear_face_blocks();
+        map.mesa_face();
         map.mine_spawns();
         map.mine_horizon(&mut rng);
+        map.rock_lumps();
         map.mine_sounds();
         map
     }
@@ -1055,34 +1098,7 @@ impl Map {
         let mut mesh = std::mem::take(&mut self.sculpted);
         let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
         self.sculpted = mesh;
-        // Colliders: one thin slab per stretch of face, from its most
-        // forward point at tank height back into the rock.
-        for k in (0..feet.len() - 1).step_by(2) {
-            let j = (k + 2).min(feet.len() - 1);
-            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
-                continue;
-            };
-            let along = b - a;
-            let len = along.length();
-            if len < 1e-3 || len > 4.0 {
-                continue;
-            }
-            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
-            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
-            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
-            let depth = 3.0;
-            let dir = along / len;
-            let floor = feet[k].floor.min(feet[j].floor);
-            self.oboxes.push(OBox {
-                center: mid - nrm * depth * 0.5,
-                yaw: (-dir.y).atan2(dir.x),
-                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
-                y0: floor - 3.0,
-                y1: floor + 10.0,
-                hidden: true,
-                ..OBox::default()
-            });
-        }
+        self.face_colliders(&feet, &fronts);
         // Lintels over the mouths in the Face: rock from the face back to
         // where the tunnel's roof starts.
         for (a, b) in MOUTHS {
@@ -1144,6 +1160,110 @@ impl Map {
             rng.index(3);
             cuts += 1;
         }
+    }
+
+    /// Colliders for a sculpted face: one thin slab per stretch of it,
+    /// from its most forward point at tank height back into the rock.
+    fn face_colliders(&mut self, feet: &[crag::Foot], fronts: &[Option<Vec2>]) {
+        for k in (0..feet.len() - 1).step_by(2) {
+            let j = (k + 2).min(feet.len() - 1);
+            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
+                continue;
+            };
+            let along = b - a;
+            let len = along.length();
+            if len < 1e-3 || len > 4.0 {
+                continue;
+            }
+            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
+            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
+            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
+            let depth = 3.0;
+            let dir = along / len;
+            let floor = feet[k].floor.min(feet[j].floor);
+            self.oboxes.push(OBox {
+                center: mid - nrm * depth * 0.5,
+                yaw: (-dir.y).atan2(dir.x),
+                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
+                y0: floor - 3.0,
+                y1: floor + 10.0,
+                hidden: true,
+                ..OBox::default()
+            });
+        }
+    }
+
+    /// The Face out from under the Crag, sculpted as one rock face like the
+    /// Crag's: the mesa's cliff, its lip at the mesa's top, hanging down to
+    /// a lintel over the west adit and the breach, petering out where the
+    /// mesa slopes down at its west end and into the scree.
+    fn mesa_face(&mut self) {
+        let mouths = [CAVES[3], CAVES[5]];
+        // The stretches: west of the Crag, between it and the scree, and
+        // east of the scree.
+        let spans = [
+            (-6.0, crag_west(face(80.0)) + 1.0),
+            (crag_east(face(141.0)) - 1.0, SCREE.0 + 4.0),
+            (SCREE.1 - 4.0, SIZE + 6.0),
+        ];
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        let mut all_feet = Vec::new();
+        let mut all_fronts = Vec::new();
+        for (x0, x1) in spans {
+            let mut corners = Vec::new();
+            let mut x = x0;
+            while x < x1 {
+                corners.push(Vec2::new(x, face(x) + 1.2));
+                x += 2.0;
+            }
+            corners.push(Vec2::new(x1, face(x1) + 1.2));
+            let pts = crag::resample(&corners, 0.7, 1.2);
+            let mut feet = Vec::with_capacity(pts.len());
+            let mut along = x0 * 1.7 + 300.0;
+            for (i, &(p, dir)) in pts.iter().enumerate() {
+                if i > 0 {
+                    along += p.distance(pts[i - 1].0);
+                }
+                let nrm = Vec2::new(dir.y, -dir.x);
+                let full = mesa(Vec2::new(p.x, face(p.x) + FACE_RISE + 1.0)) * (1.0 - scree(p.x));
+                let base = self.level(p + nrm * 2.5);
+                let lip = TOP * full + 0.8 * (noise(along / 6.0, 31) - 0.5);
+                let mouth = mouths.iter().any(|(a, b)| p.x > a.x && p.x < b.x);
+                let by_mouth = mouths
+                    .iter()
+                    .map(|(a, b)| (a.x - p.x).max(p.x - b.x).max(0.0))
+                    .fold(f32::INFINITY, f32::min);
+                // Low where the mesa slopes away: no face at all.
+                if lip - base < 0.3 && !mouth {
+                    if feet.len() > 1 {
+                        all_fronts.extend(crag::sculpt(&mut mesh, &feet, &|q| {
+                            self.ground_height(q.x, q.y)
+                        }));
+                        all_feet.append(&mut feet);
+                    }
+                    feet.clear();
+                    continue;
+                }
+                feet.push(crag::Foot {
+                    p,
+                    nrm,
+                    along,
+                    floor: if mouth { ROOF.0 } else { base },
+                    lip,
+                    cut: -100.0,
+                    mouth,
+                    relief: 0.8 * smoothstep(0.5, 5.0, by_mouth),
+                });
+            }
+            if feet.len() > 1 {
+                all_fronts.extend(crag::sculpt(&mut mesh, &feet, &|q| {
+                    self.ground_height(q.x, q.y)
+                }));
+                all_feet.append(&mut feet);
+            }
+        }
+        self.sculpted = mesh;
+        self.face_colliders(&all_feet, &all_fronts);
     }
 
     /// The Crag's top over its tunnels: drawn as the ground there would be,
@@ -1745,8 +1865,13 @@ impl Map {
                 [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.05),
                 0.5,
             );
+            // Only a stand-in, so what's placed round it after stays where
+            // it was: the Face is sculpted (`mesa_face`), and these blocks
+            // that used to stand along it go once the map is laid out
+            // (`clear_face_blocks`).
             if let Some(o) = self.oboxes.last_mut() {
-                o.broken = true;
+                o.hidden = true;
+                o.color = FACE_BLOCK;
             }
             // Blocks fallen out of it.
             if rng.chance(0.45) {
@@ -1909,9 +2034,15 @@ impl Map {
                 side_mat: Material::Rubble,
                 top_mat: Material::Sand,
                 ramp: true,
+                // Out on the mesa the roof is drawn as ground (`roof_lid`):
+                // a slab there stood out as a flat rectangle with straight
+                // sides, stepping out over the Face's lip. Under the Crag
+                // its face and lid hide the slab.
+                hidden: !tall,
                 ..OBox::default()
             });
         }
+        self.roof_lid();
         self.cave_lining();
         // Lamps: plasma in a crystal cage on the walls every 12 m (the
         // Resonant's breach is lit their own way), and veins of raw crystal
@@ -2002,6 +2133,163 @@ impl Map {
             (67.6, 158.0, 0.0),
         ] {
             self.ore_cart(rng, Vec2::new(x, z), yaw);
+        }
+    }
+
+    /// The cave roofs out on the mesa, drawn as ground over their hidden
+    /// slabs: level with the rock round them and painted like it, their
+    /// edges tucked under the terrain where they meet it, drooping with the
+    /// Face's lip instead of stepping out over it. Rock below, down to the
+    /// ceiling the caves see.
+    fn roof_lid(&mut self) {
+        let cell = 2.0;
+        let origin = Vec2::new(56.0, 136.0);
+        let (nx, nz) = (54i32, 45i32);
+        let at = |ix: i32, iz: i32| origin + Vec2::new(ix as f32, iz as f32) * cell;
+        // Over the mouths it runs on down the Face to the roof's underside,
+        // so the mouth's top is the cliff, not a slab's 2 m steps.
+        let lidded = |ix: i32, iz: i32| {
+            (0..nx).contains(&ix) && (0..nz).contains(&iz) && {
+                let a = at(ix, iz);
+                let c = a + Vec2::splat(cell * 0.5);
+                let over_mouth = cave_distance(c) < CAVE_WALL + 0.5
+                    && !within(BOX_CUT, c, 0.0)
+                    && [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+                        .iter()
+                        .any(|&(u, v)| uncut(a + Vec2::new(u, v) * cell) > ROOF.0 + 0.2);
+                (roofed(c) || over_mouth) && !under_crag(c)
+            }
+        };
+        // The rock's top at a corner, as if no cave were under it.
+        let floor = ROOF.0;
+        let height = |ix: i32, iz: i32| {
+            let p = at(ix, iz);
+            let rock = uncut(p).clamp(floor, ROOF.1);
+            let inner = lidded(ix - 1, iz - 1)
+                && lidded(ix, iz - 1)
+                && lidded(ix - 1, iz)
+                && lidded(ix, iz);
+            let g = ground(p.x, p.y);
+            if !inner && g > rock - 0.3 {
+                // Meeting the terrain: on its vertex (the grids line up),
+                // so there's no seam.
+                g
+            } else {
+                rock
+            }
+        };
+        let point = |ix: i32, iz: i32| {
+            let p = at(ix, iz);
+            Vec3::new(p.x, height(ix, iz), p.y)
+        };
+        // Shaded like the ground round it (see `build_mine`).
+        let normal = |ix: i32, iz: i32| {
+            let p = at(ix, iz);
+            let (dx, dz) = (Vec2::new(cell, 0.0), Vec2::new(0.0, cell));
+            let h = |q: Vec2| uncut(q).clamp(floor, ROOF.1);
+            Vec3::new(h(p - dx) - h(p + dx), 2.0 * cell, h(p - dz) - h(p + dz)).normalize()
+        };
+        let m = &mut self.sculpted;
+        // A convex polygon, its corners in order round it, wound to face
+        // along `n`.
+        let mut poly = |q: &[Vec3], n: &[Vec3], c: &[Vec3], mat: Material| {
+            if q.len() < 3 {
+                return;
+            }
+            let base = m.verts.len() as u32;
+            for k in 0..q.len() {
+                m.verts.push(crate::render::mesh::Vertex {
+                    pos: q[k].to_array(),
+                    normal: n[k].to_array(),
+                    color: c[k].extend(mat.id()).to_array(),
+                });
+            }
+            let flip = (q[1] - q[0]).cross(q[2] - q[0]).dot(n[0]) < 0.0;
+            for k in 1..q.len() as u32 - 1 {
+                let (b, c) = if flip { (k + 1, k) } else { (k, k + 1) };
+                m.indices.extend([base, base + b, base + c]);
+            }
+        };
+        let rock = |p: Vec3, k: f32| {
+            STONE.lerp(STONE_DARK, k) * (1.0 + 0.06 * (0.37 * p.x + 0.8 * (0.11 * p.z).sin()).sin())
+        };
+        // How far a corner's rock stands over the roof's underside: the lid
+        // is cut off where that's 0, on the Face over a mouth.
+        let over = |ix: i32, iz: i32| uncut(at(ix, iz)) - ROOF.0;
+        let cross = |a: Vec3, b: Vec3, fa: f32, fb: f32| {
+            let t = fa / (fa - fb);
+            let p = a.lerp(b, t);
+            Vec3::new(p.x, ROOF.0, p.z)
+        };
+        for iz in 0..nz {
+            for ix in 0..nx {
+                if !lidded(ix, iz) {
+                    continue;
+                }
+                let ids = [(ix, iz), (ix + 1, iz), (ix + 1, iz + 1), (ix, iz + 1)];
+                let q = ids.map(|(i, j)| point(i, j));
+                let n = ids.map(|(i, j)| normal(i, j));
+                let f = ids.map(|(i, j)| over(i, j));
+                // The cell, cut back to where the rock stands over the
+                // underside.
+                let (mut top, mut norms) = (Vec::new(), Vec::new());
+                for k in 0..4 {
+                    let l = (k + 1) % 4;
+                    if f[k] >= 0.0 {
+                        top.push(q[k]);
+                        norms.push(n[k]);
+                    }
+                    if (f[k] >= 0.0) != (f[l] >= 0.0) {
+                        top.push(cross(q[k], q[l], f[k], f[l]));
+                        norms.push(n[k].lerp(n[l], 0.5).normalize());
+                    }
+                }
+                let colors: Vec<Vec3> = top
+                    .iter()
+                    .zip(&norms)
+                    .map(|(p, n)| paint(p.x, p.z, p.y, Vec2::new(n.x, n.z).length() / n.y))
+                    .collect();
+                poly(&top, &norms, &colors, Material::Sand);
+                // The cave's ceiling.
+                let under: Vec<Vec3> = top.iter().map(|p| Vec3::new(p.x, ROOF.0, p.z)).collect();
+                let shade: Vec<Vec3> = under.iter().map(|&p| rock(p, 0.6)).collect();
+                poly(
+                    &under,
+                    &vec![Vec3::NEG_Y; under.len()],
+                    &shade,
+                    Material::Rubble,
+                );
+                // Rock faces where the lid ends (in the terrain, or over a
+                // mouth back from the Face).
+                for (k, (di, dj)) in [(0, -1), (1, 0), (0, 1), (-1, 0)].into_iter().enumerate() {
+                    let l = (k + 1) % 4;
+                    if lidded(ix + di, iz + dj) || (f[k] < 0.0 && f[l] < 0.0) {
+                        continue;
+                    }
+                    let a = if f[k] >= 0.0 {
+                        q[k]
+                    } else {
+                        cross(q[k], q[l], f[k], f[l])
+                    };
+                    let b = if f[l] >= 0.0 {
+                        q[l]
+                    } else {
+                        cross(q[k], q[l], f[k], f[l])
+                    };
+                    if a.y.max(b.y) < ROOF.0 + 0.01 {
+                        continue;
+                    }
+                    let side = [
+                        a,
+                        b,
+                        Vec3::new(b.x, ROOF.0, b.z),
+                        Vec3::new(a.x, ROOF.0, a.z),
+                    ];
+                    let out = Vec3::new(di as f32, 0.0, dj as f32);
+                    let shade = side.map(|p| rock(p, 0.2));
+                    poly(&side, &[out; 4], &shade, Material::Rubble);
+                }
+            }
         }
     }
 
@@ -4182,6 +4470,103 @@ impl Map {
         }
     }
 
+    /// Take out the stand-ins for the blocks along the Face (see
+    /// `rough_face`).
+    fn clear_face_blocks(&mut self) {
+        self.oboxes.retain(|o| !(o.hidden && o.color == FACE_BLOCK));
+    }
+
+    /// Every block of stone on the map drawn as rock, not a box: rounded,
+    /// lumpy, over its box (still its collider). The map's edge,
+    /// the box cut's sides, the hoodoos, boulders and rubble.
+    fn rock_lumps(&mut self) {
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        for (k, o) in self.oboxes.iter_mut().enumerate() {
+            let stone = o.side_mat == Material::Rubble && o.top_mat == Material::Rubble;
+            if !stone || o.hidden || o.sculpted {
+                continue;
+            }
+            o.sculpted = true;
+            let hy = (o.y1 - o.y0) * 0.5;
+            let half = Vec3::new(o.half.x, hy, o.half.y);
+            let centre = o.center3();
+            let rot = o.rotation();
+            let seed = k as u32 * 7 + 3;
+            let small = half.min_element();
+            // Big blocks get more facets.
+            let big = half.max_element() > 2.0;
+            let (rows, cols) = if half.max_element() > 6.0 {
+                (12usize, 18usize)
+            } else if big {
+                (8, 12)
+            } else {
+                (6, 8)
+            };
+            let jag = |i: usize, j: usize, c: u32| hash(i as i32, j as i32, seed + c) - 0.5;
+            // A rounded box over the block, a little proud of it so its
+            // corners don't show, broken into facets.
+            let spow = |c: f32, e: f32| c.signum() * c.abs().powf(e);
+            let point = |i: usize, j: usize| {
+                let j = j % cols;
+                let wobble = if i == 0 || i == rows - 1 {
+                    0.0
+                } else {
+                    0.35 * jag(i, j, 0)
+                };
+                let phi = -FRAC_PI_2 + PI * (i as f32 + wobble * 0.5) / (rows - 1) as f32;
+                let th = TAU * (j as f32 + wobble) / cols as f32 + seed as f32;
+                // Flat-ish top and steep sides, round across.
+                let (ev, eh) = (0.45, 0.8);
+                let d = Vec3::new(
+                    spow(phi.cos(), ev) * spow(th.cos(), eh),
+                    spow(phi.sin(), ev),
+                    spow(phi.cos(), ev) * spow(th.sin(), eh),
+                );
+                let q = d * half * 1.1;
+                let w = rot * q + centre;
+                // Lumps across it, and every corner pushed in or out.
+                let lump = noise2(w.x * 0.35 + w.z * 0.15, w.y * 0.4, seed) - 0.5;
+                let push = (0.45 * lump + 0.35 * jag(i, j, 1))
+                    * (0.4 * small + 0.15).min(1.2 + 0.08 * half.max_element());
+                w + (rot * d.normalize_or_zero()) * push
+            };
+            let at = |i: usize, j: usize| point(i, j);
+            let mut tris: Vec<[Vec3; 3]> = Vec::new();
+            for i in 0..rows - 1 {
+                for j in 0..cols {
+                    let q = [at(i, j), at(i, j + 1), at(i + 1, j + 1), at(i + 1, j)];
+                    tris.push([q[0], q[2], q[1]]);
+                    tris.push([q[0], q[3], q[2]]);
+                }
+            }
+            // Flat shaded: each facet its own plane.
+            for t in tris {
+                let mut n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                let mid = (t[0] + t[1] + t[2]) / 3.0;
+                if n.dot(mid - centre) < 0.0 {
+                    n = -n;
+                }
+                let shade = 0.88
+                    + 0.24
+                        * hash(
+                            (mid.x * 3.0) as i32,
+                            (mid.y * 3.0 + mid.z * 5.0) as i32,
+                            seed,
+                        );
+                let base = mesh.verts.len() as u32;
+                for p in t {
+                    mesh.verts.push(crate::render::mesh::Vertex {
+                        pos: p.to_array(),
+                        normal: n.to_array(),
+                        color: (o.color * shade).extend(Material::Cliff.id()).to_array(),
+                    });
+                }
+                mesh.indices.extend([base, base + 1, base + 2]);
+            }
+        }
+        self.sculpted = mesh;
+    }
+
     /// The edge: a wall of boulders all the way round, on whatever ground
     /// it meets (the flats, the mesa, the adit's floor).
     fn edge_rocks(&mut self, rng: &mut Rng) {
@@ -5021,6 +5406,56 @@ mod tests {
     /// A drop straight down from high above `p` lands on this height.
     fn land_on(w: &crate::sim::World, p: Vec2, from: f32) -> f32 {
         from - w.raycast(Vec3::new(p.x, from, p.y), -Vec3::Y, from + 20.0)
+    }
+
+    /// No block of stone on the map is drawn as a box (#249): each is
+    /// drawn as a lump of rock, or stands in for a sculpted face.
+    #[test]
+    fn no_stone_drawn_as_a_box() {
+        let map = Map::mine();
+        for o in &map.oboxes {
+            let stone = o.side_mat == Material::Rubble && o.top_mat == Material::Rubble;
+            assert!(
+                !stone || o.hidden || o.sculpted,
+                "a stone box drawn at {} ({}..{})",
+                o.center,
+                o.y0,
+                o.y1
+            );
+            assert!(o.color != FACE_BLOCK, "a stand-in left at {}", o.center);
+        }
+    }
+
+    /// Out on the mesa the caves' roofs read as ground (#249): no slab
+    /// is drawn over them, and the roof drawn in its place is level with
+    /// the rock round it.
+    #[test]
+    fn roofs_are_ground_not_slabs() {
+        let map = Map::mine();
+        for o in &map.oboxes {
+            let roof = o.y0 == ROOF.0 && o.y1 == ROOF.1 && o.color == MESA_TOP;
+            assert!(!roof || o.hidden, "a roof slab drawn at {}", o.center);
+        }
+        // Over the hall, the west adit and the breach: the roof's top is
+        // drawn just where the ground runs on round it.
+        for p in [
+            Vec2::new(78.0, 184.0),
+            Vec2::new(71.0, 162.0),
+            Vec2::new(153.0, 175.0),
+        ] {
+            let top = map
+                .sculpted
+                .verts
+                .iter()
+                .filter(|v| Vec2::new(v.pos[0], v.pos[2]).distance(p) < 1.5)
+                .map(|v| v.pos[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (top - uncut(p)).abs() < 0.1,
+                "roof at {p} drawn at {top}, rock at {}",
+                uncut(p)
+            );
+        }
     }
 
     #[test]

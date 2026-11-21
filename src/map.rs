@@ -86,6 +86,9 @@ pub struct OBox {
     /// Collides but isn't drawn: the collider for something drawn another
     /// way (a sculpted rock face).
     pub hidden: bool,
+    /// Drawn in the map's sculpted surfaces, not as a box (a block of stone
+    /// drawn as a lump of rock): seen, but not drawn here.
+    pub sculpted: bool,
 }
 
 impl Default for OBox {
@@ -106,6 +109,7 @@ impl Default for OBox {
             broken: false,
             ramp: false,
             hidden: false,
+            sculpted: false,
         }
     }
 }
@@ -519,6 +523,10 @@ pub struct Terrain {
     /// (empty: the whole ground is `color`). Rock showing on a slope, a
     /// different soil in a hollow.
     pub tint: Vec<Vec3>,
+    /// Per-vertex shading normal, row-major like `heights` (empty: from the
+    /// heights). For ground cut away under something drawn over it (a
+    /// cave's roof), so the rock round it isn't shaded as if it fell away.
+    pub normals: Vec<Vec3>,
 }
 
 impl Terrain {
@@ -544,7 +552,21 @@ impl Terrain {
             color: Vec3::new(0.36, 0.5, 0.28),
             material: Material::Grass,
             tint: Vec::new(),
+            normals: Vec::new(),
         }
+    }
+
+    /// The shading normal at a vertex.
+    pub fn normal(&self, ix: usize, iz: usize) -> Vec3 {
+        if let Some(&n) = self.normals.get(iz * self.nx + ix) {
+            return n;
+        }
+        let h = |dx: i64, dz: i64| {
+            let x = (ix as i64 + dx).clamp(0, self.nx as i64 - 1) as usize;
+            let z = (iz as i64 + dz).clamp(0, self.nz as i64 - 1) as usize;
+            self.at(x, z)
+        };
+        Vec3::new(h(-1, 0) - h(1, 0), 2.0 * self.cell, h(0, -1) - h(0, 1)).normalize()
     }
 
     /// Tint every vertex by `f(x, z, height, slope)` (slope: rise over run).
@@ -552,18 +574,13 @@ impl Terrain {
         let mut tint = Vec::with_capacity(self.heights.len());
         for iz in 0..self.nz {
             for ix in 0..self.nx {
-                let h = |dx: i64, dz: i64| {
-                    let x = (ix as i64 + dx).clamp(0, self.nx as i64 - 1) as usize;
-                    let z = (iz as i64 + dz).clamp(0, self.nz as i64 - 1) as usize;
-                    self.at(x, z)
-                };
-                let slope =
-                    Vec2::new(h(1, 0) - h(-1, 0), h(0, 1) - h(0, -1)).length() / (2.0 * self.cell);
+                let n = self.normal(ix, iz);
+                let slope = Vec2::new(n.x, n.z).length() / n.y.max(1e-4);
                 let (x, z) = (
                     self.origin.x + ix as f32 * self.cell,
                     self.origin.y + iz as f32 * self.cell,
                 );
-                tint.push(f(x, z, h(0, 0), slope));
+                tint.push(f(x, z, self.at(ix, iz), slope));
             }
         }
         self.tint = tint;
