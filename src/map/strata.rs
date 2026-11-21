@@ -458,8 +458,9 @@ fn slab(m: &mut MeshData, t: &Tower, s: &Slab) {
     for i in 1..inner {
         us.push(re + (len - 2.0 * re) * i as f32 / inner as f32);
     }
-    let ends: Vec<f32> = us.iter().rev().map(|u| len - u).collect();
-    us.extend(ends);
+    // The far end mirrors the near one; only its rounding, not the middle
+    // again (that would fold a second skin back over the whole face).
+    us.extend(fine.iter().rev().map(|f| len - f * re));
     // Round its section: (how far back from the front, height, normal),
     // the front at 0, the back at `depth`.
     let n_top = ((depth - rc) / (1.6 * cell)).ceil().max(1.0) as usize;
@@ -513,17 +514,19 @@ fn slab(m: &mut MeshData, t: &Tower, s: &Slab) {
         };
         let (chip_top, chip_foot) = (chip(5), chip(6) * 0.6);
         let mid_y = s.y0 + thick * 0.5;
+        // Round the section, top to foot, it never climbs back up: where
+        // the ground cuts its top low, the top half drops below where the
+        // foot is held, and a section that doubles back on itself puts
+        // faces flat on each other.
+        let mut below = f32::MAX;
         for &(back, y, n2) in &sec {
             let y = if y > mid_y {
-                y - (s.y1 - y1)
+                y - (s.y1 - y1) - chip_top * ((y - mid_y) / (thick * 0.5)).clamp(0.0, 1.0)
             } else {
-                y.min(y1 - 0.02)
+                y.min(y1 - 0.02) + chip_foot * ((mid_y - y) / (thick * 0.5)).clamp(0.0, 1.0)
             };
-            let y = if y > mid_y {
-                y - chip_top * ((y - mid_y) / (thick * 0.5)).clamp(0.0, 1.0)
-            } else {
-                y + chip_foot * ((mid_y - y) / (thick * 0.5)).clamp(0.0, 1.0)
-            };
+            let y = y.min(below);
+            below = y;
             let h = ((y - s.y0) / thick).clamp(0.0, 1.0) - 0.5;
             let frac = 1.0 - back / depth;
             let out = s.back + (depth - back + (bow + s.lean * h) * frac) * stand * cut;

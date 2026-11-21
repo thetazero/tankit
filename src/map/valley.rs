@@ -91,7 +91,7 @@ impl Side {
 
 // ---- Noise ----------------------------------------------------------------
 
-fn hash(i: i32, j: i32, k: u32) -> f32 {
+pub(super) fn hash(i: i32, j: i32, k: u32) -> f32 {
     let h = (i as u32).wrapping_mul(0x9E37_79B9)
         ^ (j as u32).wrapping_mul(0x7F4A_7C15)
         ^ k.wrapping_mul(0x85EB_CA6B);
@@ -105,14 +105,14 @@ fn fade(t: f32) -> f32 {
 }
 
 /// Smooth value noise along a line, 0..1, one bump per unit.
-fn noise(x: f32, k: u32) -> f32 {
+pub(super) fn noise(x: f32, k: u32) -> f32 {
     let (i, f) = (x.floor(), fade(x.fract()));
     let i = i as i32;
     hash(i, 0, k) * (1.0 - f) + hash(i + 1, 0, k) * f
 }
 
 /// Smooth value noise over a plane, 0..1.
-fn noise2(x: f32, y: f32, k: u32) -> f32 {
+pub(super) fn noise2(x: f32, y: f32, k: u32) -> f32 {
     let (ix, iy) = (x.floor() as i32, y.floor() as i32);
     let (fx, fy) = (fade(x - x.floor()), fade(y - y.floor()));
     let a = hash(ix, iy, k) * (1.0 - fx) + hash(ix + 1, iy, k) * fx;
@@ -139,7 +139,7 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 }
 
 /// A bump 1 at 0 falling to 0 at `w` either side.
-fn bump(d: f32, w: f32) -> f32 {
+pub(super) fn bump(d: f32, w: f32) -> f32 {
     1.0 - smoothstep(0.0, w, d.abs())
 }
 
