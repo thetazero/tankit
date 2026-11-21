@@ -3365,6 +3365,64 @@ mod tests {
         }
     }
 
+    /// Pulling away doesn't throw the gun off: laid on an enemy ahead, every
+    /// gun's mark stays on it the whole way from a standstill to top speed,
+    /// and a Kontos shot fired at the height of the squat lands (#212: the
+    /// hull used to squat so far that the assist couldn't keep up).
+    #[test]
+    fn the_aim_holds_on_a_tank_while_pulling_away() {
+        let go = Command {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        let start = |k: TurretKind| {
+            let mut m = duel(k, (gun(k).range() * 0.5).min(60.0));
+            // Held there (with no brain of its own it takes the player's
+            // commands, and would drive off too).
+            m.world.physics.bodies[m.world.tanks[1].body].set_body_type(
+                rapier3d::prelude::RigidBodyType::KinematicPositionBased,
+                true,
+            );
+            m
+        };
+        for k in TurretKind::ALL {
+            let mut m = start(k);
+            for i in 0..(2.0 / DT) as usize {
+                let gap = m.world.tanks[1].pos - m.world.tanks[0].pos;
+                if Vec2::new(gap.x, gap.z).length() < 8.0 {
+                    // Short-range guns: up close, it'd soon run into it.
+                    break;
+                }
+                m.step(go, false);
+                let at = m.aim_landing(&m.world.tanks[0]);
+                assert!(
+                    m.within(at, 1, 0.5).is_some(),
+                    "{k:?}: {:.2} s into pulling away, the crosshair slid off the tank \
+                     (hull pitched {:.1} deg)",
+                    i as f32 * DT,
+                    m.world.tanks[0].forward().y.asin().to_degrees()
+                );
+            }
+        }
+        let mut m = start(TurretKind::Kontos);
+        m.fighters[0].reload_in = 0.0;
+        let hp = m.fighters[1].health;
+        let (mut last, mut fired) = (0.0f32, false);
+        for _ in 0..(2.0 / DT) as usize {
+            let now = m.world.tanks[0].forward().y;
+            // At the top of the squat, as it starts to settle.
+            let fire = !fired && now < last && now > 0.0;
+            fired |= fire;
+            last = now;
+            m.step(go, fire);
+        }
+        assert!(fired, "never squatted");
+        assert!(
+            m.fighters[1].health < hp,
+            "the shot fired pulling away missed"
+        );
+    }
+
     /// Adds a teammate of the player's to the duel `m`, `ahead` m down the
     /// player's heading and `aside` m to its side, facing the same way.
     fn add_friend(m: &mut Match, ahead: f32, aside: f32) -> usize {
@@ -3476,96 +3534,6 @@ mod tests {
             m.step(Command::default(), false);
         }
         assert!(m.fighters[1].health < hp, "the shot uphill missed");
-    }
-
-    /// Rocking the hull lays the gun past its own elevation: a tank up on a
-    /// ledge, too high for the gun to reach from level, is hit by backing
-    /// off, throwing the tank forward (it stops nose up) and firing at the
-    /// top of the rock. Only its turret shows over the lip, and the assist
-    /// lays onto that.
-    #[test]
-    fn rocking_back_reaches_a_tank_up_on_a_ledge() {
-        let mut map = Map::yard(200.0);
-        let ledge = 10.0;
-        map.add_block(
-            Vec3::new(88.0, 0.0, 117.5),
-            Vec3::new(112.0, ledge, 140.0),
-            Vec3::ONE,
-        );
-        let mut m = Match::new(map, 0, 0, 1);
-        m.world.tanks[0].turret_kind = TurretKind::Kontos;
-        let t = &m.world.tanks[0];
-        let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 20.0;
-        m.world.spawn_tank(
-            Vec3::ONE,
-            ahead,
-            0.0,
-            HullKind::Kataphrakt,
-            TurretKind::Kontos,
-        );
-        let b = &mut m.world.physics.bodies[m.world.tanks[1].body];
-        b.set_translation(Vec3::new(ahead.x, ledge + 0.2, ahead.y), true);
-        m.fighters
-            .push(fighter(1, max_health(HullKind::Kataphrakt)));
-        m.bots.push(None);
-        for f in &mut m.fighters {
-            f.shield = 0.0;
-        }
-        m.fighters[1].reload_in = f32::INFINITY;
-        let hp = m.fighters[1].health;
-        let pitch = |m: &Match| m.world.tanks[0].forward().y.asin();
-        // Level, at full elevation, the shot hits the ledge under it.
-        for _ in 0..120 {
-            m.step(Command::default(), false);
-        }
-        assert!(m.world.tanks[1].pos.y > ledge - 0.3, "it's up on the ledge");
-        // Held there (with no brain of its own it takes the player's
-        // commands, and would drive off).
-        m.world.physics.bodies[m.world.tanks[1].body].set_body_type(
-            rapier3d::prelude::RigidBodyType::KinematicPositionBased,
-            true,
-        );
-        assert!(
-            m.world.tanks[0].gun_pitch > 0.29,
-            "the assist didn't lay onto its turret: pitch {}",
-            m.world.tanks[0].gun_pitch
-        );
-        m.step(Command::default(), true);
-        for _ in 0..10 {
-            m.step(Command::default(), false);
-        }
-        assert_eq!(m.fighters[1].health, hp, "hit it from level");
-        while m.fighters[0].reload_in > 0.0 {
-            m.step(Command::default(), false);
-        }
-        // Back off, then throw it forward: stopping from reverse rocks the
-        // nose up. Fire at the top.
-        let (mut last, mut fired) = (0.0, None);
-        for i in 0..(2.5 / DT) as usize {
-            let throttle = if (i as f32 * DT) < 1.0 { -1.0 } else { 1.0 };
-            let now = pitch(&m);
-            let fire = now > 0.1 && now < last && fired.is_none();
-            last = now;
-            if fire {
-                fired = Some(now.to_degrees());
-                // Higher than the gun goes with the hull level.
-                let up = m.world.tanks[0].gun_dir().y.asin();
-                assert!(up > 0.33, "laid only {up} rad up");
-            }
-            let cmd = Command {
-                throttle,
-                ..Default::default()
-            };
-            m.step(cmd, fire);
-            if m.fighters[1].health < hp {
-                break;
-            }
-        }
-        let rocked = fired.expect("never rocked back");
-        assert!(
-            m.fighters[1].health < hp,
-            "fired rocked back {rocked} deg and missed"
-        );
     }
 
     /// A broadside from the heaviest gun rocks the lightest tracked hull hard,

@@ -1082,7 +1082,7 @@ impl Map {
     }
 
     #[cfg(test)]
-    pub(crate) fn add_block(&mut self, min: Vec3, max: Vec3, color: Vec3) {
+    fn add_block(&mut self, min: Vec3, max: Vec3, color: Vec3) {
         self.boxes.push(VisBox {
             min,
             max,
