@@ -59,6 +59,11 @@ pub enum Material {
     Cloth,
     /// Dry, sun-cracked timber (poles, palms, stalls, crates).
     Wood,
+
+    // World again.
+    /// Layered sandstone cliff face: beds, partings, joints, worked out in
+    /// world space at the scale of a whole cliff (`cliff_surface`).
+    Cliff,
 }
 
 impl Material {
@@ -85,6 +90,7 @@ impl Material {
         Material::Vhaal,
         Material::Cloth,
         Material::Wood,
+        Material::Cliff,
     ];
 
     /// What goes in the vertex color's alpha channel.
@@ -116,6 +122,7 @@ impl Material {
             Material::Vhaal => "VHAAL",
             Material::Cloth => "CLOTH",
             Material::Wood => "WOOD",
+            Material::Cliff => "CLIFF",
         }
     }
 
