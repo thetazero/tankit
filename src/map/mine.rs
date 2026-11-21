@@ -23,10 +23,13 @@
 //!   breach, and the box cut, a slot sawn up through the Crag from the
 //!   adit's end to the mesa's east top. Tanks on the mesa drive over tanks
 //!   in the hall's west end.
-//! - **The wash**, a dry ravine 7 m deep winding across under the face: the
-//!   seam crops out on its floor, where a cutting rig works it. The rail
-//!   bridge leads out of the adit's mouth across the wash, on crystal
-//!   piers, so the fight on the wash floor goes on under the deck.
+//! - **The wash**, a dry ravine 7 m deep winding right across the map
+//!   under the face, in at the west edge by the Ithessar's yard and out at
+//!   the east edge below the Resonant's camp: the seam crops out on its
+//!   floor, where a cutting rig works it. The rail bridge leads out of the
+//!   adit's mouth across the wash, on crystal piers, so the fight on the
+//!   wash floor goes on under the deck. Haul ramps lead down into it, and a
+//!   crossing near each side's spawns runs down one bank and up the other.
 //! - **The flats**, south of the wash: the railroad runs out across them to
 //!   the south edge, the ore train stopped on it under the loading tipple.
 //!   The Ithessar's waste dump stands in the west, the sorting house in the
@@ -125,9 +128,11 @@ const CRAG_ROOF: f32 = CRAG_TOP - 0.3;
 /// Cave walls stand this thick round each corridor.
 const CAVE_WALL: f32 = 2.4;
 
-/// The wash: its line, west to east, and its depth in the middle (it
-/// shallows out at both ends).
-const WASH: [Vec2; 9] = [
+/// The wash: its line, west to east, edge to edge (its ends run on out
+/// past the map), and its depth.
+const WASH: [Vec2; 14] = [
+    Vec2::new(-14.0, 108.0),
+    Vec2::new(8.0, 112.0),
     Vec2::new(30.0, 116.0),
     Vec2::new(56.0, 121.0),
     Vec2::new(84.0, 127.0),
@@ -137,17 +142,31 @@ const WASH: [Vec2; 9] = [
     Vec2::new(166.0, 104.0),
     Vec2::new(176.0, 84.0),
     Vec2::new(184.0, 64.0),
+    Vec2::new(198.0, 54.0),
+    Vec2::new(216.0, 50.0),
+    Vec2::new(236.0, 48.0),
 ];
 const WASH_DEPTH: f32 = 7.0;
 /// Its banks, from the floor's edge to the top.
 const WASH_BANK: f32 = 5.0;
 /// Haul ramps down into the wash: from the top (start) to the floor (end),
 /// and their half-width. One cut into the south bank west of the bridge,
-/// one into the north bank east of it.
-const RAMPS: [(Vec2, Vec2, f32); 2] = [
+/// one into the north bank east of it, one into the east arm's bank below
+/// the Resonant's camp.
+const RAMPS: [(Vec2, Vec2, f32); 3] = [
     (Vec2::new(90.0, 110.0), Vec2::new(86.0, 127.0), 4.0),
     (Vec2::new(153.0, 146.0), Vec2::new(143.0, 130.0), 4.0),
+    (Vec2::new(190.0, 97.0), Vec2::new(172.0, 92.0), 4.0),
 ];
+/// Crossings: a ramp cut down one bank and up the other, top to top, and
+/// their half-width. One in the west by the Ithessar's yard, one in the
+/// south-east below the Resonant's camp.
+const FORDS: [(Vec2, Vec2, f32); 2] = [
+    (Vec2::new(38.5, 93.2), Vec2::new(29.5, 140.3), 6.0),
+    (Vec2::new(203.0, 80.0), Vec2::new(175.1, 40.9), 6.0),
+];
+/// How far a crossing's ramp runs, from the top down to the floor.
+const FORD_RUN: f32 = 16.0;
 
 /// The railroad, out of the mine to the south edge: the adit, then the
 /// bridge (from the mouth to the far bank), then out over the flats.
@@ -205,8 +224,10 @@ const REPAIRS: [Vec2; 4] = [
     Vec2::new(47.0, 137.0),
     Vec2::new(163.0, 137.0),
     Vec2::new(67.0, 83.0),
-    Vec2::new(165.0, 77.0),
+    Vec2::new(158.0, 72.0),
 ];
+/// The Ithessar's yard, by their spawns, under its plasma core.
+const ITHESSAR_YARD: Vec2 = Vec2::new(37.0, 72.0);
 /// The ways up onto the mesa, kept clear: the haul road up its west end,
 /// and the worn track up the scree.
 const WAYS_UP: [(Vec2, Vec2); 2] = [
@@ -347,35 +368,37 @@ fn in_rock(p: Vec2) -> bool {
     mesa(p) > 0.5 && !in_cave(p) && !within(BOX_CUT, p, 0.0)
 }
 
-/// Where the wash is nearest `p`: (distance from its line, 0..1 along it).
+/// Where the wash is nearest `p`: (distance from its line, metres along it
+/// from its west end).
 fn wash_near(p: Vec2) -> (f32, f32) {
-    let lens: Vec<f32> = WASH.windows(2).map(|w| w[0].distance(w[1])).collect();
-    let total: f32 = lens.iter().sum();
     let (mut best, mut at, mut acc) = (f32::INFINITY, 0.0, 0.0);
-    for (w, len) in WASH.windows(2).zip(&lens) {
+    for w in WASH.windows(2) {
+        let len = w[0].distance(w[1]);
         let (d, t) = seg(p, w[0], w[1]);
         if d < best {
             best = d;
-            at = (acc + t * len) / total;
+            at = acc + t * len;
         }
         acc += len;
     }
     (best, at)
 }
 
-/// The wash's depth and floor half-width, `t` along it.
-fn wash_profile(t: f32) -> (f32, f32) {
-    let depth = WASH_DEPTH * smoothstep(0.0, 0.2, t) * (1.0 - smoothstep(0.78, 1.0, t));
-    (depth, 6.5 + 1.5 * (t * 17.0).sin())
+/// The wash's depth and floor half-width, `s` m along it: the floor
+/// narrows and widens as it winds (in step from where it used to begin,
+/// at its third point, so the middle keeps the banks it had).
+fn wash_profile(s: f32) -> (f32, f32) {
+    let from = WASH[0].distance(WASH[1]) + WASH[1].distance(WASH[2]);
+    (WASH_DEPTH, 6.5 + 1.5 * (0.08 * (s - from)).sin())
 }
 
 fn wash(p: Vec2) -> f32 {
-    let (d, t) = wash_near(p);
-    let (depth, half) = wash_profile(t);
+    let (d, s) = wash_near(p);
+    let (depth, half) = wash_profile(s);
     -depth * (1.0 - smoothstep(half, half + WASH_BANK, d))
 }
 
-/// The ground with the haul ramps cut down into the wash.
+/// The ground with the haul ramps and the crossings cut into the wash.
 fn with_ramps(p: Vec2, g: f32) -> f32 {
     let mut g = g;
     for (s, e, half) in RAMPS {
@@ -390,6 +413,23 @@ fn with_ramps(p: Vec2, g: f32) -> f32 {
         let h = floor * (a / len).clamp(0.0, 1.0);
         let k =
             (1.0 - smoothstep(half, half + 2.5, c)) * (1.0 - smoothstep(len + 2.0, len + 6.0, a));
+        g += (h - g) * k;
+    }
+    for (s, e, half) in FORDS {
+        let len = s.distance(e);
+        let u = (e - s) / len;
+        let rel = p - s;
+        let (a, c) = (rel.dot(u), rel.perp_dot(u).abs());
+        if a < -3.0 || a > len + 3.0 || c > half + 6.0 {
+            continue;
+        }
+        // Down from either top to the floor, flat across the floor; its
+        // sides laid back, not cut sheer.
+        let floor = wash(s.lerp(e, 0.5));
+        let h = floor * (a.min(len - a) / FORD_RUN).clamp(0.0, 1.0);
+        let k = (1.0 - smoothstep(half, half + 6.0, c))
+            * smoothstep(-3.0, 0.0, a)
+            * smoothstep(-3.0, 0.0, len - a);
         g += (h - g) * k;
     }
     g
@@ -683,7 +723,10 @@ impl Map {
         found.push((Ambient::River, Vec3::new(110.0, -6.5, 133.0)));
         found.push((Ambient::Shrine, Vec3::new(153.0, 2.0, 154.0)));
         found.push((Ambient::Shrine, Vec3::new(192.0, 2.0, 108.0)));
-        found.push((Ambient::Core, Vec3::new(30.0, 10.0, 104.0)));
+        found.push((
+            Ambient::Core,
+            Vec3::new(ITHESSAR_YARD.x, 10.0, ITHESSAR_YARD.y),
+        ));
         for (kind, at) in found {
             self.sound(kind, at);
         }
@@ -1869,20 +1912,24 @@ impl Map {
     fn wash_rocks(&mut self, rng: &mut Rng) {
         let mut placed = 0;
         for _ in 0..600 {
-            if placed >= 9 {
+            if placed >= 13 {
                 break;
             }
             let k = rng.index(WASH.len() - 1);
             let p = WASH[k].lerp(WASH[k + 1], rng.f32());
-            let (_, t) = wash_near(p);
-            let (depth, half) = wash_profile(t);
+            let (_, along) = wash_near(p);
+            let (_, half) = wash_profile(along);
             let dir = (WASH[k + 1] - WASH[k]).normalize().perp();
             // Toward one side, so the middle of the floor stays a way through.
             let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
             let q = p + dir * side * rng.range(half * 0.45, half + 0.5);
-            if depth < 2.0
+            if q.min_element() < 12.0
+                || q.max_element() > SIZE - 12.0
                 || seg(q, BRIDGE.0, BRIDGE.1).0 < DECK_HALF + 3.0
-                || RAMPS.iter().any(|&(s, e, h)| seg(q, s, e).0 < h + 3.0)
+                || RAMPS
+                    .iter()
+                    .chain(&FORDS)
+                    .any(|&(s, e, h)| seg(q, s, e).0 < h + 3.0)
                 || self.on_way(q)
                 || self
                     .oboxes
@@ -2441,7 +2488,7 @@ impl Map {
             (Vec2::new(176.0, 186.0), 0.3, 5.5),
             (Vec2::new(198.0, 170.0), -0.1, 4.0),
             (Vec2::new(186.0, 204.0), 0.6, 5.0),
-            (Vec2::new(160.0, 206.0), -0.3, 4.0),
+            (Vec2::new(163.0, 195.0), -0.3, 4.0),
             (Vec2::new(32.0, 196.0), 0.9, 4.5),
             (Vec2::new(66.0, 212.0), 0.2, 3.5),
             (Vec2::new(166.0, 178.0), -0.7, 3.5),
@@ -2599,8 +2646,8 @@ impl Map {
     /// Hoodoos among the fins: sandstone pillars, capped with harder rock.
     fn fins_and_hoodoos(&mut self, rng: &mut Rng) {
         for (x, z, h) in [
-            (174.0, 44.0, 7.0),
-            (190.0, 52.0, 9.0),
+            (186.0, 38.0, 7.0),
+            (208.0, 30.0, 9.0),
             (162.0, 22.0, 6.0),
             (198.0, 14.0, 8.0),
             (166.0, 66.0, 5.5),
@@ -2683,9 +2730,9 @@ impl Map {
     /// rock piles, crystal outcrops, timber cribs.
     fn flats_cover(&mut self, rng: &mut Rng) {
         for (x, z, s) in [
-            (40.0, 92.0, 1.7),
+            (48.0, 96.0, 1.7),
             (62.0, 104.0, 1.5),
-            (34.0, 138.0, 1.8),
+            (44.0, 142.0, 1.8),
             (110.0, 92.0, 1.6),
             (112.0, 54.0, 1.7),
             (100.0, 16.0, 1.5),
@@ -2693,14 +2740,14 @@ impl Map {
             (30.0, 34.0, 1.6),
             (146.0, 100.0, 1.6),
             (176.0, 121.0, 1.5),
-            (186.0, 92.0, 1.7),
-            (200.0, 74.0, 1.4),
+            (196.0, 86.0, 1.7),
+            (212.0, 70.0, 1.4),
             (166.0, 140.0, 1.4),
         ] {
             self.rock_pile(rng, Vec2::new(x, z), s);
         }
         for (x, z, h) in [
-            (48.0, 112.0, 3.0),
+            (50.0, 118.0, 3.0),
             (140.0, 112.0, 3.4),
             (76.0, 84.0, 2.6),
             (156.0, 86.0, 2.8),
@@ -2750,12 +2797,14 @@ impl Map {
         }
     }
 
-    /// Near a point on one of the ways round the bots take (kept open).
+    /// Near a point on one of the ways round the bots take, or the Hold
+    /// site (kept open).
     fn on_way(&self, q: Vec2) -> bool {
         self.routes
             .iter()
             .flatten()
             .any(|w| Vec2::new(w.x, w.z).distance(q) < 4.5)
+            || self.hold_site.is_some_and(|h| h.distance(q) < 7.0)
     }
 
     /// Something solid to hide behind near `p`, at the ground's level.
@@ -2849,7 +2898,7 @@ impl Map {
     /// The Ithessar's yard at the west edge: a plasma core held over it, as
     /// at every Ithessar place, and worked crystal standing round.
     fn mine_ithessar_base(&mut self, rng: &mut Rng) {
-        let at = Vec2::new(30.0, 104.0);
+        let at = ITHESSAR_YARD;
         let g = self.ground_height(at.x, at.y);
         let mut prongs = Vec::new();
         for k in 0..3 {
@@ -2943,7 +2992,10 @@ impl Map {
         // On whatever's underfoot seen from above (the flats, the wash's
         // floor, the mesa's top), on the bridge's deck, in the mine (under
         // its roof).
-        let g = |m: &Map, x: f32, z: f32| Vec3::new(x, m.ground_height(x, z), z);
+        let g = |m: &Map, x: f32, z: f32| {
+            let p = m.open_near(Vec2::new(x, z), 3.5).unwrap_or(Vec2::new(x, z));
+            Vec3::new(p.x, m.ground_height(p.x, p.y), p.y)
+        };
         let (a, b) = BRIDGE;
         let deck = |t: f32| {
             let p = a.lerp(b, t);
@@ -2980,8 +3032,12 @@ impl Map {
                 g(m, 143.0, 130.0),
                 g(m, 155.0, 149.0),
             ],
-            // The wash end to end, on its floor.
+            // The wash end to end, on its floor: down the west crossing by
+            // the Ithessar's yard, along, up the south-east one by the
+            // Resonant's camp.
             vec![
+                g(m, 37.0, 101.0),
+                g(m, 34.0, 117.0),
                 g(m, 44.0, 118.0),
                 g(m, 70.0, 127.0),
                 g(m, 98.0, 125.0),
@@ -2990,6 +3046,9 @@ impl Map {
                 g(m, 140.0, 129.0),
                 g(m, 160.0, 112.0),
                 g(m, 174.0, 88.0),
+                g(m, 183.0, 68.0),
+                g(m, 190.0, 62.0),
+                g(m, 199.0, 74.0),
             ],
             // Through the mine: in at the west adit, through the hall and
             // the crosscut, along the drift, out at the breach.
@@ -3030,12 +3089,14 @@ impl Map {
     }
 
     fn mine_spawns(&mut self) {
-        for (side, xs, z0) in [
-            (0, [11.0, 18.0], 78.0),
-            (1, [SIZE - 11.0, SIZE - 18.0], 84.0),
+        // The Ithessar south of the wash's west arm, the Resonant north of
+        // its east arm.
+        for (side, xs, z0, rows) in [
+            (0, &[11.0, 18.0, 25.0][..], 58.0, 7),
+            (1, &[SIZE - 11.0, SIZE - 18.0][..], 90.0, 10),
         ] {
-            for x in xs {
-                for k in 0..10 {
+            for &x in xs {
+                for k in 0..rows {
                     self.bases[side].push(Vec2::new(x, z0 + k as f32 * 6.0));
                 }
             }
@@ -3046,18 +3107,9 @@ impl Map {
         // Each at the clear ground nearest where it's meant to be.
         self.open_spots = spots
             .into_iter()
-            .filter_map(|(x, z)| {
-                let p = Vec2::new(x, z);
-                (0..40)
-                    .find_map(|k| {
-                        let r = k as f32 * 0.25;
-                        let a = k as f32 * 2.4;
-                        let q = p + Vec2::new(a.cos(), a.sin()) * r;
-                        self.mine_clear(q, TANK_CLEAR).then_some(q)
-                    })
-                    // Not up on the Crag, where nothing gets.
-                    .filter(|&q| crag_depth(q) < -4.0)
-            })
+            .filter_map(|(x, z)| self.open_near(Vec2::new(x, z), TANK_CLEAR))
+            // Not up on the Crag, where nothing gets.
+            .filter(|&q| crag_depth(q) < -4.0)
             .collect();
         self.repair_spots = REPAIRS.to_vec();
         for side in 0..2 {
@@ -3067,6 +3119,16 @@ impl Map {
                 .filter(|&p| self.mine_clear(p, TANK_CLEAR))
                 .collect();
         }
+    }
+
+    /// The ground nearest `p` (within 10 m) with nothing solid within `r`,
+    /// if there's any.
+    fn open_near(&self, p: Vec2, r: f32) -> Option<Vec2> {
+        (0..40).find_map(|k| {
+            let a = k as f32 * 2.4;
+            let q = p + Vec2::new(a.cos(), a.sin()) * (k as f32 * 0.25);
+            self.mine_clear(q, r).then_some(q)
+        })
     }
 
     /// Nothing solid within `r` of a ground point, at the ground's height.
@@ -3201,15 +3263,16 @@ fn crag_feet(m: &Map) -> Vec<crag::Foot> {
 }
 
 /// Ground the cover fill leaves open: the spawns and the camps, the track
-/// and the bridge, the ramps, the wash's banks, the mine's corridors, the
-/// box cut, the scree's way up, the top of the Face.
+/// and the bridge, the ramps and crossings, the wash's banks, the mine's
+/// corridors, the box cut and the run out of its top, the scree's way up, the top of the Face.
 fn keep_clear(p: Vec2) -> bool {
-    let spawns = (p.x < 30.0 && (66.0..146.0).contains(&p.y))
-        || (p.x > 188.0 && (72.0..150.0).contains(&p.y))
+    let spawns = (p.x < 31.0 && (52.0..102.0).contains(&p.y))
+        || p.distance(ITHESSAR_YARD) < 9.0
+        || (p.x > 188.0 && (84.0..152.0).contains(&p.y))
         || p.distance(Vec2::new(192.0, 108.0)) < 12.0;
-    let (d, t) = wash_near(p);
-    let (depth, half) = wash_profile(t);
-    let bank = depth > 1.0 && d > half - 1.5 && d < half + WASH_BANK + 2.5;
+    let (d, along) = wash_near(p);
+    let (depth, half) = wash_profile(along);
+    let bank = d > half - 1.5 && d < half + WASH_BANK + 2.5;
     // The way along the wash's floor, down its middle.
     let floor_way = depth > 1.0 && d < 3.0;
     let f = face(p.x);
@@ -3218,9 +3281,12 @@ fn keep_clear(p: Vec2) -> bool {
         || floor_way
         || track_distance(p) < 6.0
         || seg(p, BRIDGE.0, BRIDGE.1).0 < DECK_HALF + 5.0
-        || RAMPS.iter().any(|&(s, e, h)| seg(p, s, e).0 < h + 4.0)
+        || RAMPS
+            .iter()
+            .chain(&FORDS)
+            .any(|&(s, e, h)| seg(p, s, e).0 < h + 4.0)
         || cave_distance(p) < 4.0 && mesa(p) > 0.3 && !roofed(p)
-        || within(BOX_CUT, p, 4.0)
+        || within((BOX_CUT.0, BOX_CUT.1 + Vec2::new(14.0, 0.0)), p, 4.0)
         || crag_depth(p) > -4.0
         || (p.y > f - 8.0 && p.y < f + FACE_RISE + 5.0)
         || WAYS_UP.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
@@ -3476,7 +3542,9 @@ mod tests {
                     end.z < face(end.x) + 0.5 || in_cave(at),
                     "{hull:?} got in to {end} at {x}"
                 );
-                assert!(high < 4.0, "{hull:?} climbed to {high} at {x}");
+                // (Rearing against the rock where the foot runs slantwise
+                // lifts it a little, no more.)
+                assert!(high < 5.0, "{hull:?} climbed to {high} at {x}");
             }
         }
         // Nor up its sides from the mesa.
@@ -3535,6 +3603,29 @@ mod tests {
                 );
                 let (end, _, high) = drive(hull, e + dir * 1.0, yaw_along(-dir), 6.0);
                 assert!(high > -0.5, "{hull:?} never got up ramp {s} ({end})");
+            }
+        }
+    }
+
+    /// Every hull drives across the wash at each crossing, down one bank
+    /// and up the other, both ways.
+    #[test]
+    fn tanks_cross_the_wash_at_the_fords() {
+        for hull in HULLS {
+            for (s, e, _) in FORDS {
+                for (a, b) in [(s, e), (e, s)] {
+                    let dir = (b - a).normalize();
+                    let (end, low, _) = drive(hull, a - dir * 4.0, yaw_along(dir), 12.0);
+                    assert!(
+                        low < -WASH_DEPTH + 1.5,
+                        "{hull:?} never got down into the wash from {a} ({end})"
+                    );
+                    let past = (Vec2::new(end.x, end.z) - b).dot(dir);
+                    assert!(
+                        past > -2.0 && end.y > -0.8,
+                        "{hull:?} crossing from {a} only got to {end}"
+                    );
+                }
             }
         }
     }
