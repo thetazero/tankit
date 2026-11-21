@@ -51,8 +51,8 @@
 pub mod battle;
 pub mod chart;
 pub mod save;
-pub mod theater;
 pub mod structure;
+pub mod theater;
 
 use glam::{Vec2, Vec3};
 
