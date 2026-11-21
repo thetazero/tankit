@@ -35,6 +35,8 @@ fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         ],
         // Chimneys and girders, from either end.
         MapKind::Foundry => &[(123.0, 18.0, 2.88), (158.0, 83.0, 1.83)],
+        // The pit, the bridge and the conveyors, from either side.
+        MapKind::Mine => &[(77.0, 83.0, 3.66), (143.0, 83.0, 2.62)],
     }
 }
 
@@ -199,6 +201,7 @@ mod tests {
             MapKind::Kiln,
             MapKind::Capital,
             MapKind::Foundry,
+            MapKind::Mine,
         ] {
             let world = World::new(make_map(kind), 0);
             let sun = world.map.atmosphere.sun_dir.normalize();
@@ -268,6 +271,7 @@ mod tests {
             MapKind::Kiln,
             MapKind::Capital,
             MapKind::Foundry,
+            MapKind::Mine,
         ] {
             let world = World::new(make_map(kind), 0);
             let s = world.map.size;

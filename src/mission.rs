@@ -116,6 +116,21 @@ pub const MISSIONS: &[Mission] = &[
         rating: 0,
         standing: 1,
     },
+    Mission {
+        name: "DEEP VEIN",
+        contract: Contract::Attrition,
+        map: "THE SEAM",
+        map_kind: MapKind::Mine,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Ithessar, Faction::Resonant],
+        briefs: &[
+            "Keep the Resonant out of the mine. Most kills holds it.",
+            "The seam is holy. Drive the miners off it.",
+        ],
+        rating: 0,
+        standing: 1,
+    },
 ];
 
 /// The missions `faction` hires for, locked or not: indices into `MISSIONS`.

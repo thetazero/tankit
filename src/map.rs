@@ -1,5 +1,5 @@
 //! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln,
-//! the Capital, the Foundry)
+//! the Capital, the Foundry, the Seam)
 //! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
@@ -12,6 +12,7 @@ mod capital;
 mod foundry;
 mod kiln;
 mod landmarks;
+mod mine;
 mod props;
 mod ruins;
 mod saltmarket;
