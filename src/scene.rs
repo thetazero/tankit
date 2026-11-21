@@ -396,7 +396,13 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
             m.verts.push(Vertex {
                 pos: p.to_array(),
                 normal: n.to_array(),
-                color: t.color.extend(t.material.id()).to_array(),
+                color: (t.color
+                    * t.tint
+                        .get((iz * t.nx as i64 + ix) as usize)
+                        .copied()
+                        .unwrap_or(Vec3::ONE))
+                .extend(t.material.id())
+                .to_array(),
             });
         }
     }
