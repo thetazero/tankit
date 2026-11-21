@@ -911,13 +911,28 @@ impl Map {
         });
     }
 
-    /// A tank-sized rock with rubble round it: cover.
+    /// A rock bigger than a tank, often with a second block broken off
+    /// against it, and a piece of rubble: cover. It grows bigger only where there's room for it (off the ways
+    /// round, the fords, the doors): it stays as asked for otherwise.
     fn rock_pile(&mut self, rng: &mut Rng, at: Vec2, size: f32) {
+        let size = if self.room(at, size * 1.4 + 1.0) {
+            size * 1.25
+        } else {
+            size
+        };
         self.boulder(rng, at, size, true);
-        for _ in 0..3 {
+        if rng.chance(0.5) {
             let a = rng.range(0.0, TAU);
-            let q = at + Vec2::new(a.cos(), a.sin()) * rng.range(size + 0.8, size + 3.0);
-            let s = rng.range(0.3, 0.6);
+            let q = at + Vec2::new(a.cos(), a.sin()) * size * rng.range(1.0, 1.3);
+            let s = size * rng.range(0.55, 0.75);
+            if self.room(q, s * 1.2 + 1.0) {
+                self.boulder(rng, q, s, true);
+            }
+        }
+        if rng.chance(0.6) {
+            let a = rng.range(0.0, TAU);
+            let q = at + Vec2::new(a.cos(), a.sin()) * rng.range(size + 1.0, size + 3.0);
+            let s = rng.range(0.4, 0.7);
             self.boulder(rng, q, s, false);
         }
     }
@@ -1737,7 +1752,7 @@ impl Map {
             if rng.chance(0.45) {
                 let q = p - Vec2::new(rng.range(-2.0, 2.0), rng.range(3.5, 6.0));
                 if wash(q) > -0.3 {
-                    let s = rng.range(0.6, 1.6);
+                    let s = rng.range(1.0, 2.0);
                     self.boulder(rng, q, s, s > 1.4);
                 }
             }
@@ -1767,11 +1782,11 @@ impl Map {
             {
                 continue;
             }
-            let big = placed % 3 == 0;
+            let big = placed % 3 != 2;
             let s = if big {
-                rng.range(1.6, 2.4)
+                rng.range(1.8, 2.8)
             } else {
-                rng.range(0.5, 1.1)
+                rng.range(0.7, 1.2)
             };
             self.boulder(rng, p, s, big);
             placed += 1;
@@ -3229,12 +3244,10 @@ impl Map {
             if let Some(o) = self.oboxes.last_mut() {
                 o.broken = true;
             }
-            for _ in 0..2 {
-                let q = p + Vec2::new(rng.range(-6.0, 6.0), rng.range(-4.0, 4.0));
-                if in_rock(q) {
-                    let s = rng.range(0.4, 0.8);
-                    self.boulder(rng, q, s, false);
-                }
+            let q = p + Vec2::new(rng.range(-6.0, 6.0), rng.range(-4.0, 4.0));
+            if in_rock(q) {
+                let s = rng.range(1.2, 1.8);
+                self.boulder(rng, q, s, true);
             }
         }
         for p in [
@@ -3287,7 +3300,7 @@ impl Map {
             if (p.x - 0.0).min(SIZE - p.x) < 24.0 {
                 continue;
             }
-            let s = rng.range(0.6, 1.3);
+            let s = rng.range(1.0, 1.9);
             self.boulder(rng, p, s, s > 1.0);
         }
         let _ = h;
@@ -3913,7 +3926,7 @@ impl Map {
                 let t = rng.range(0.2, 0.8);
                 let side = (b - a).normalize().perp() * if rng.chance(0.5) { 1.0 } else { -1.0 };
                 let p = a.lerp(b, t) + side * rng.range(4.5, 6.5);
-                let s = rng.range(0.7, 1.3);
+                let s = rng.range(1.0, 1.8);
                 self.boulder(rng, p, s, s > 1.0);
             }
         }
@@ -3933,7 +3946,7 @@ impl Map {
             (30.0, 34.0, 1.6),
             (146.0, 100.0, 1.6),
             (176.0, 121.0, 1.5),
-            (196.0, 86.0, 1.7),
+            (195.0, 88.0, 1.7),
             (212.0, 70.0, 1.4),
             (166.0, 140.0, 1.4),
         ] {
@@ -3993,6 +4006,30 @@ impl Map {
 
     /// Near a point on one of the ways round the bots take, or the Hold
     /// site (kept open).
+    /// Nothing to keep clear for driving within `r` of `at`: no way round,
+    /// ramp or ford, track, the run out of the warehouse's doors, or the
+    /// foot of the Face.
+    fn room(&self, at: Vec2, r: f32) -> bool {
+        (0..9).all(|k| {
+            let q = if k == 0 {
+                at
+            } else {
+                let a = k as f32 / 8.0 * TAU;
+                at + Vec2::new(a.cos(), a.sin()) * r
+            };
+            let f = face(q.x);
+            !self.on_way(q)
+                && track_distance(q) > 6.0
+                && shed_distance(q) > 14.0
+                && !(q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0)
+                && !RAMPS
+                    .iter()
+                    .chain(&FORDS)
+                    .any(|&(s, e, h)| seg(q, s, e).0 < h + 4.0)
+                && !WAYS_UP.iter().any(|&(a, b)| seg(q, a, b).0 < 6.0)
+        })
+    }
+
     fn on_way(&self, q: Vec2) -> bool {
         self.routes
             .iter()
@@ -5471,8 +5508,25 @@ mod tests {
     fn tanks_drive_through_the_warehouse() {
         for hull in HULLS {
             let (at, yaw) = in_shed(Vec2::new(-SHED_HALF.x - 6.0, -1.0), Vec2::X);
-            let (end, _, high) = drive(hull, at, yaw, 8.0);
-            let p = shed_local(Vec2::new(end.x, end.z));
+            let mut w = crate::sim::World::empty(Map::mine());
+            w.spawn_tank(Vec3::ONE, at, yaw, hull, crate::sim::TurretKind::Kontos);
+            let cmd = crate::sim::Command {
+                throttle: 1.0,
+                ..Default::default()
+            };
+            // Until it's out of the far door (not whatever it climbs after,
+            // driving on blind).
+            let mut high = f32::NEG_INFINITY;
+            let mut p = shed_local(at);
+            for _ in 0..(8.0 / crate::game::DT) as usize {
+                w.step(&[cmd]);
+                let t = w.tanks[0].pos;
+                p = shed_local(Vec2::new(t.x, t.z));
+                high = high.max(t.y);
+                if p.x > SHED_HALF.x + 1.0 {
+                    break;
+                }
+            }
             assert!(p.x > SHED_HALF.x + 1.0, "{hull:?} only got to {p} (local)");
             assert!(high < 2.0, "{hull:?} went up to {high}");
         }
@@ -5736,5 +5790,33 @@ mod play {
             fighting[5] * 100.0
         );
         assert!(time[3] > 0.02 && time[4] > 0.03, "mine and mesa {time:?}");
+    }
+
+    /// The rocks strewn about run big: more over a tank's width than
+    /// pebbles (#267).
+    #[test]
+    fn rocks_run_big() {
+        let m = Map::mine();
+        let (mut small, mut big) = (0, 0);
+        for o in &m.oboxes {
+            let on_map = o.center.min_element() > 0.0 && o.center.max_element() < SIZE;
+            // Rock on the ground (not ore heaped in a car), short of the
+            // edge's wall.
+            if o.side_mat != Material::Rubble
+                || o.broken
+                || !on_map
+                || o.y0 >= m.ground_height(o.center.x, o.center.y)
+            {
+                continue;
+            }
+            let s = o.half.max_element();
+            if s < 0.7 {
+                small += 1;
+            } else if (1.8..3.0).contains(&s) {
+                big += 1;
+            }
+        }
+        assert!(small < 60, "{small} small rocks");
+        assert!(big > 70, "only {big} big rocks");
     }
 }
