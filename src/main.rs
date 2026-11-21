@@ -25,6 +25,7 @@ mod rng;
 mod scene;
 mod showroom;
 mod sim;
+mod sweep;
 mod tank;
 mod thumbs;
 mod ui;
