@@ -134,7 +134,7 @@ impl Mission {
             .expect("a side of this mission")
     }
 
-    /// The rating as a mark: "M0", "M0.5".
+    /// The rating as a tier: "T0", "T0.5".
     pub fn rating_label(&self) -> String {
         crate::economy::level_label(self.rating)
     }
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn four_winds_is_m0_5_and_earned() {
         let m = MISSIONS.iter().find(|m| m.name == "FOUR WINDS").unwrap();
-        assert_eq!(m.rating_label(), "M0.5");
+        assert_eq!(m.rating_label(), "T0.5");
         assert!(!m.open_at(1), "open to a new pilot");
         assert!(m.open_at(2));
         // Pays half as much again as an M0 contract.
