@@ -84,6 +84,7 @@ pub fn judge(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
         // pocket system lasts before it changes hands or rejoins its side.
         let (mut pocketed, mut since, mut lives) = (0u64, vec![0u64; SYSTEMS], Vec::new());
         let mut offensive_ticks = 0u64;
+        let (mut realms, mut sizes, mut biggest) = (0u64, 0u64, 0u32);
         let mut owners: Vec<usize> = g.systems.iter().map(|s| s.owner()).collect();
         let (mut lo, mut hi) = (1.0f32, 0.0f32);
         let mut wars = Vec::new();
@@ -109,7 +110,12 @@ pub fn judge(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                     since[i] = 0;
                 }
             }
-            offensive_ticks += g.offensives.iter().filter(|o| o.is_some()).count() as u64;
+            offensive_ticks += g.living().filter(|(_, r)| r.offensive.is_some()).count() as u64;
+            for (_, r) in g.living() {
+                realms += 1;
+                sizes += r.systems as u64;
+                biggest = biggest.max(r.systems);
+            }
             if t % 100 == 0 {
                 for (i, s) in g.systems.iter().enumerate() {
                     let o = s.owner();
@@ -130,7 +136,7 @@ pub fn judge(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
         let mean = wars.iter().sum::<f32>() / wars.len().max(1) as f32;
         let pct = |p: f32| wars[((wars.len() - 1) as f32 * p) as usize] * 100.0;
         println!(
-            "seed {seed}: share {:4.1}..{:4.1}%  war mean {:4.1}% p10 {:4.1} p90 {:4.1} max {:4.1}  swing/100 {:4.1}%  flips/100 {:5.0}  pockets {:4.1} live {:4.1}  offensives {:3.1}  final {:?}",
+            "seed {seed}: share {:4.1}..{:4.1}%  war mean {:4.1}% p10 {:4.1} p90 {:4.1} max {:4.1}  swing/100 {:4.1}%  flips/100 {:5.0}  pockets {:4.1} live {:4.1}  offensives {:3.1}  realms {:3.0} size {:4.1} max {} splits/100 {:4.1} merges/100 {:4.1}  final {:?}",
             lo * 100.0,
             hi * 100.0,
             mean * 100.0,
@@ -142,6 +148,11 @@ pub fn judge(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
             pocketed as f32 / ticks as f32,
             lives.iter().sum::<u64>() as f32 / lives.len().max(1) as f32,
             offensive_ticks as f32 / ticks as f32,
+            realms as f32 / ticks as f32,
+            sizes as f32 / realms.max(1) as f32,
+            biggest,
+            g.splits as f32 / (ticks / 100) as f32,
+            g.merges as f32 / (ticks / 100) as f32,
             g.share.map(|s| (s * 1000.0).round() / 10.0),
         );
     }
@@ -158,9 +169,16 @@ fn judge_rules() {
     let variants: Vec<(&str, Rules)> = vec![
         ("default", base),
         (
-            "no initiative",
+            "reach 350",
             Rules {
-                initiative: 0.0,
+                reach: 350.0,
+                ..base
+            },
+        ),
+        (
+            "reach 800",
+            Rules {
+                reach: 800.0,
                 ..base
             },
         ),
@@ -218,5 +236,73 @@ fn judge_structure() {
             *biggest as f32 / n as f32 * 100.0,
             zs.iter().sum::<f32>() / n as f32
         );
+    }
+}
+
+fn small_war() -> Galaxy {
+    Galaxy::with_size(4, SYSTEMS / 4, REGION * 0.5, Rules::default())
+}
+
+/// Realms are the actors: every side's sites and hulls in a system are one
+/// realm's, of that side, and every realm still around holds or fights somewhere.
+#[test]
+fn every_holding_is_a_realms() {
+    let mut g = small_war();
+    for _ in 0..60 {
+        g.step();
+        for sys in &g.systems {
+            for f in 0..SIDES {
+                if sys.held[f] > 0 || sys.hulls[f] >= AT_WAR {
+                    let r = sys.realms[f];
+                    assert_ne!(
+                        r,
+                        realm::NONE,
+                        "tick {}: a side's holding with no realm",
+                        g.tick
+                    );
+                    assert_eq!(g.realms[r as usize].faction as usize, f);
+                    assert!(g.realms[r as usize].systems > 0);
+                }
+            }
+        }
+    }
+    assert!(g.living().count() > 20, "a people is many realms");
+}
+
+/// Holdings too far from their seat break away as realms of their own,
+/// with their share of the vaults.
+#[test]
+fn far_holdings_break_away() {
+    let mut g = small_war();
+    let before = g.living().count();
+    let crystals: f32 = g.realms.iter().map(|r| r.crystals).sum();
+    g.rules.reach = 100.0;
+    g.reshape();
+    assert!(g.splits > 0);
+    assert!(g.living().count() > before);
+    let after: f32 = g.realms.iter().map(|r| r.crystals).sum();
+    assert!(
+        (after - crystals).abs() < crystals * 1e-3,
+        "the vaults are shared out, not lost"
+    );
+}
+
+/// Small neighbors of one people fold together when one seat can rule them.
+#[test]
+fn small_realms_fold_together() {
+    let mut g = small_war();
+    let before = g.living().count();
+    g.rules.fold = 1000;
+    g.rules.reach = 5000.0;
+    g.reshape();
+    assert!(g.merges > 0);
+    assert!(g.living().count() < before);
+    // And never across peoples.
+    for sys in &g.systems {
+        for f in 0..SIDES {
+            if sys.realms[f] != realm::NONE {
+                assert_eq!(g.realms[sys.realms[f] as usize].faction as usize, f);
+            }
+        }
     }
 }

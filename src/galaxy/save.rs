@@ -1,13 +1,14 @@
 //! The galaxy on disk: `galaxy.json` beside the profile. Only what changes is
 //! saved (who owns each site, which generators are down, every side's hulls
-//! in every system, crystals, the clock and the dice); the layout of systems
-//! and sites is regenerated from the seed.
+//! in every system and whose realm they are, the realms, the clock and the
+//! dice); the layout of systems and sites is regenerated from the seed.
 
 use std::path::{Path, PathBuf};
 
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
+use super::realm::{NONE, Realm};
 use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
 
@@ -29,14 +30,24 @@ struct Saved {
     down: Vec<u8>,
     /// Each system's hulls, side by side: `SIDES` numbers a system.
     hulls: Vec<f32>,
-    crystals: [f32; SIDES],
-    income: [f32; SIDES],
-    /// The faction being ganged up on, and each side's offensive (where it's
-    /// aimed, the last tick it took a site).
-    #[serde(default)]
-    dominant: Option<usize>,
-    #[serde(default)]
-    offensives: [Option<([f32; 3], u64)>; SIDES],
+    /// Each system's realm for each side, likewise (`u32::MAX` for none).
+    tags: Vec<u32>,
+    /// Every realm slot. (A galaxy saved before realms has none of these,
+    /// and isn't read: a fresh one starts.)
+    realms: Vec<SavedRealm>,
+    splits: u64,
+    merges: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedRealm {
+    faction: u8,
+    seat: u32,
+    crystals: f32,
+    income: f32,
+    founded: u64,
+    /// Where its offensive is aimed, and the last tick it took a site.
+    offensive: Option<([f32; 3], u64)>,
 }
 
 impl Galaxy {
@@ -57,12 +68,21 @@ impl Galaxy {
                 })
                 .collect(),
             hulls: self.systems.iter().flat_map(|s| s.hulls).collect(),
-            crystals: self.crystals,
-            income: self.income,
-            dominant: self.dominant,
-            offensives: self
-                .offensives
-                .map(|o| o.map(|o| (o.at.to_array(), o.gained))),
+            tags: self.systems.iter().flat_map(|s| s.realms).collect(),
+            realms: self
+                .realms
+                .iter()
+                .map(|r| SavedRealm {
+                    faction: r.faction,
+                    seat: r.seat,
+                    crystals: r.crystals,
+                    income: r.income,
+                    founded: r.founded,
+                    offensive: r.offensive.map(|o| (o.at.to_array(), o.gained)),
+                })
+                .collect(),
+            splits: self.splits,
+            merges: self.merges,
         }
     }
 
@@ -77,7 +97,8 @@ impl Galaxy {
         anyhow::ensure!(
             s.owners.len() == g.sites.len()
                 && s.down.len() == g.sites.len()
-                && s.hulls.len() == g.systems.len() * SIDES,
+                && s.hulls.len() == g.systems.len() * SIDES
+                && s.tags.len() == g.systems.len() * SIDES,
             "saved for a different layout"
         );
         for (i, site) in g.sites.iter_mut().enumerate() {
@@ -87,29 +108,46 @@ impl Galaxy {
                 *down = s.down[i];
             }
         }
+        anyhow::ensure!(
+            s.realms
+                .iter()
+                .all(|r| (r.faction as usize) < SIDES && (r.seat as usize) < g.systems.len()),
+            "a realm with no side or seat"
+        );
+        anyhow::ensure!(
+            s.tags
+                .iter()
+                .all(|&t| t == NONE || (t as usize) < s.realms.len()),
+            "hulls of no realm"
+        );
         for (i, sys) in g.systems.iter_mut().enumerate() {
             sys.hulls
                 .copy_from_slice(&s.hulls[i * SIDES..(i + 1) * SIDES]);
+            sys.realms
+                .copy_from_slice(&s.tags[i * SIDES..(i + 1) * SIDES]);
             sys.held = [0; SIDES];
             for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
                 sys.held[site.owner as usize] += 1;
             }
         }
-        (g.tick, g.crystals, g.income) = (s.tick, s.crystals, s.income);
-        g.rng = Rng::from_state(s.rng);
-        anyhow::ensure!(
-            s.dominant.is_none_or(|d| d < SIDES),
-            "a dominant faction with no side"
-        );
-        g.dominant = s.dominant;
-        g.offensives = s.offensives.map(|o| {
-            o.map(|(at, gained)| Offensive {
-                at: Vec3::from_array(at),
-                gained,
+        g.realms = s
+            .realms
+            .iter()
+            .map(|r| Realm {
+                crystals: r.crystals,
+                income: r.income,
+                offensive: r.offensive.map(|(at, gained)| Offensive {
+                    at: Vec3::from_array(at),
+                    gained,
+                }),
+                ..Realm::new(r.faction, r.seat, r.founded)
             })
-        });
+            .collect();
+        g.spans = vec![(0, 0); g.realms.len()];
+        (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
+        g.rng = Rng::from_state(s.rng);
         g.update_share();
-        g.update_supply();
+        g.refresh();
         Ok(g)
     }
 
@@ -227,7 +265,9 @@ mod tests {
         for (a, b) in g.systems.iter().zip(&back.systems) {
             assert_eq!(a.held, b.held);
             assert_eq!(a.hulls, b.hulls);
+            assert_eq!(a.realms, b.realms);
         }
+        assert_eq!(g.living().count(), back.living().count());
         for _ in 0..10 {
             g.step();
             back.step();

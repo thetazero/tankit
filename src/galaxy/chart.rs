@@ -1,10 +1,14 @@
 //! A picture of a long run of the war: the galaxy at a few moments (each
-//! system in its holder's color, systems at war bright white), and under it
-//! each faction's share of the galaxy over the whole run, with the fraction of
-//! systems at war.
+//! system in a shade of its people's color, one shade a realm, its seat
+//! ringed; systems at war bright white), the same stretch of it close up at
+//! those moments, and under them each faction's share of the galaxy over the
+//! whole run, with the fraction of systems at war, and how many realms each
+//! people is.
 
 use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _, point};
 use image::{Rgb, RgbImage};
+
+use glam::Vec2;
 
 use super::{Census, Galaxy, REGION, SIDES};
 use crate::faction::Faction;
@@ -14,6 +18,12 @@ const W: u32 = 1600;
 const MAP_W: u32 = 790;
 const MAP_H: u32 = (MAP_W as f32 * REGION.y / REGION.x) as u32;
 const CHART_H: u32 = 420;
+/// The close-ups: a window of the region (ly), and each panel's width.
+const ZOOM_AT: Vec2 = Vec2::new(1350.0, 1500.0);
+const ZOOM: Vec2 = Vec2::new(1100.0, 690.0);
+const ZOOM_W: u32 = (W - 5 * PAD) / 4;
+const ZOOM_H: u32 = (ZOOM_W as f32 * ZOOM.y / ZOOM.x) as u32;
+const REALMS_H: u32 = 180;
 const PAD: u32 = 10;
 const BG: Rgb<u8> = Rgb([12, 13, 16]);
 
@@ -26,64 +36,127 @@ fn rgb(c: [f32; 3], k: f32) -> Rgb<u8> {
     Rgb(c.map(|x| (x * k * 255.0).clamp(0.0, 255.0) as u8))
 }
 
-/// One map panel's pixels.
+/// One moment of the war, for the map panels.
 pub struct Snapshot {
     tick: u64,
-    /// (x px, y px, owner, at war)
-    dots: Vec<(u32, u32, u8, bool)>,
+    /// (position in the plane, ly; owner; a tint for its realm; its realm's seat; at war)
+    dots: Vec<(Vec2, u8, [f32; 3], bool, bool)>,
+}
+
+/// Realm `r`'s tint of its people's color: brighter or darker, a little
+/// off in hue, so neighbors mostly come out different.
+fn shade(r: u32) -> [f32; 3] {
+    let h = r.wrapping_mul(2_654_435_761);
+    let k = |shift: u32, steps: u32| ((h >> shift) % steps) as f32 / (steps - 1) as f32;
+    let light = 0.35 + 0.75 * k(26, 5);
+    [0, 1, 2].map(|c| light * (0.7 + 0.6 * k(8 + 6 * c, 4)))
+}
+
+fn tinted(f: usize, tint: [f32; 3]) -> Rgb<u8> {
+    let c = color(f);
+    Rgb([0, 1, 2].map(|i| (c[i] * tint[i] * 255.0).clamp(0.0, 255.0) as u8))
 }
 
 impl Snapshot {
     pub fn take(g: &Galaxy) -> Snapshot {
-        let k = MAP_W as f32 / REGION.x;
         Snapshot {
             tick: g.tick,
-            dots: g
-                .systems
-                .iter()
-                .map(|s| {
+            dots: (0..g.systems.len())
+                .map(|i| {
+                    let s = &g.systems[i];
+                    let r = g.holder(i);
+                    let seat = r != super::realm::NONE && g.realms[r as usize].seat as usize == i;
                     (
-                        ((s.pos.x * k) as u32).min(MAP_W - 1),
-                        ((s.pos.y * k) as u32).min(MAP_H - 1),
+                        s.pos.truncate(),
                         s.owner() as u8,
+                        shade(r),
+                        seat,
                         s.at_war(),
                     )
                 })
                 .collect(),
         }
     }
+
+    /// Draws the region's window `at`..`at + size` (ly) into a `w` x `h` panel at (x0, y0).
+    #[allow(clippy::too_many_arguments)]
+    fn draw(
+        &self,
+        img: &mut RgbImage,
+        x0: u32,
+        y0: u32,
+        w: u32,
+        h: u32,
+        at: Vec2,
+        size: Vec2,
+        big: bool,
+    ) {
+        fill(img, x0, y0, w, h, Rgb([20, 22, 27]));
+        let k = w as f32 / size.x;
+        let px = |p: Vec2| {
+            let q = (p - at) * k;
+            (q.x >= 0.0 && q.y >= 0.0 && q.x < w as f32 && q.y < h as f32)
+                .then(|| (x0 + q.x as u32, y0 + q.y as u32))
+        };
+        let r = if big { 3 } else { 1 };
+        // Quiet systems first, then seats, then the ones at war on top.
+        for pass in 0..3 {
+            for &(p, owner, k, seat, war) in &self.dots {
+                let Some((x, y)) = px(p) else { continue };
+                match pass {
+                    0 if !war => dot(img, x, y, r, tinted(owner as usize, k)),
+                    1 if seat && !war && big => {
+                        ring(img, x, y, r + 3, Rgb([235, 235, 235]));
+                        dot(img, x, y, r, tinted(owner as usize, k));
+                    }
+                    2 if war => dot(img, x, y, r + 1, Rgb([255, 255, 255])),
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
-/// Four snapshots over a 2x2 grid, then the share chart over `history`.
+/// Four snapshots over a 2x2 grid, the close-ups of them in a row, then the
+/// share chart over `history`, and the realms.
 pub fn render(snaps: &[Snapshot], history: &[Census]) -> RgbImage {
     let maps_h = 2 * (MAP_H + PAD) + PAD;
-    let h = maps_h + CHART_H + PAD;
+    let zoom_y = maps_h;
+    let maps_h = maps_h + ZOOM_H + PAD;
+    let h = maps_h + CHART_H + REALMS_H + PAD;
     let mut img = RgbImage::from_pixel(W, h, BG);
     let face = FontRef::try_from_slice(FONT).expect("bundled font parses");
     for (i, snap) in snaps.iter().take(4).enumerate() {
         let x0 = PAD + (i as u32 % 2) * (MAP_W + PAD);
         let y0 = PAD + (i as u32 / 2) * (MAP_H + PAD);
-        fill(&mut img, x0, y0, MAP_W, MAP_H, Rgb([20, 22, 27]));
-        // Quiet systems first, then the ones at war on top.
-        for war in [false, true] {
-            for &(x, y, owner, at_war) in &snap.dots {
-                if at_war != war {
-                    continue;
-                }
-                let (c, r) = if at_war {
-                    (Rgb([255, 255, 255]), 2)
-                } else {
-                    (rgb(color(owner as usize), 0.6), 1)
-                };
-                dot(&mut img, x0 + x, y0 + y, r, c);
-            }
-        }
+        snap.draw(&mut img, x0, y0, MAP_W, MAP_H, Vec2::ZERO, REGION, false);
+        // Where the close-up is.
+        let k = MAP_W as f32 / REGION.x;
+        frame(
+            &mut img,
+            x0 + (ZOOM_AT.x * k) as u32,
+            y0 + (ZOOM_AT.y * k) as u32,
+            (ZOOM.x * k) as u32,
+            (ZOOM.y * k) as u32,
+            Rgb([120, 120, 120]),
+        );
         text(
             &mut img,
             &face,
             x0 + 10,
             y0 + 8,
             22.0,
+            &format!("TICK {}", snap.tick),
+            Rgb([230, 230, 230]),
+        );
+        let zx = PAD + i as u32 * (ZOOM_W + PAD);
+        snap.draw(&mut img, zx, zoom_y, ZOOM_W, ZOOM_H, ZOOM_AT, ZOOM, true);
+        text(
+            &mut img,
+            &face,
+            zx + 8,
+            zoom_y + 6,
+            16.0,
             &format!("TICK {}", snap.tick),
             Rgb([230, 230, 230]),
         );
@@ -220,7 +293,91 @@ pub fn render(snaps: &[Snapshot], history: &[Census]) -> RgbImage {
         &end,
         Rgb([180, 180, 180]),
     );
+    // Realms: how many each people is, over the run.
+    let (ry, rh) = (cy + ch + 56, REALMS_H - 66);
+    fill(&mut img, cx, ry, cw, rh, Rgb([20, 22, 27]));
+    let counts = || history.iter().flat_map(|c| c.realms);
+    let lo = counts().min().unwrap_or(0).saturating_sub(10) as f32;
+    let hi = counts().max().unwrap_or(1) as f32 + 10.0;
+    for f in 0..SIDES {
+        for px in 0..cw {
+            let c = &history[(px as usize * (n - 1) / (cw as usize - 1)).min(history.len() - 1)];
+            let v = (c.realms[f] as f32 - lo) / (hi - lo);
+            let y = ry + rh - 2 - (v * (rh - 2) as f32) as u32;
+            img.put_pixel(cx + px, y, rgb(color(f), 1.0));
+            img.put_pixel(cx + px, y + 1, rgb(color(f), 1.0));
+        }
+    }
+    text(
+        &mut img,
+        &face,
+        PAD,
+        ry - 2,
+        16.0,
+        &format!("{hi:.0}"),
+        Rgb([180, 180, 180]),
+    );
+    text(
+        &mut img,
+        &face,
+        PAD,
+        ry + rh - 16,
+        16.0,
+        &format!("{lo:.0}"),
+        Rgb([180, 180, 180]),
+    );
+    let (first, last) = (
+        history.first().copied().unwrap_or_default(),
+        history.last().copied().unwrap_or_default(),
+    );
+    text(
+        &mut img,
+        &face,
+        cx,
+        ry - 26,
+        18.0,
+        &format!(
+            "REALMS OF EACH PEOPLE: {} IN ALL AT THE START, {} AT THE END  ·  {} BROKE AWAY, {} FOLDED TOGETHER",
+            first.realms.iter().sum::<u32>(),
+            last.realms.iter().sum::<u32>(),
+            last.splits,
+            last.merges,
+        ),
+        Rgb([230, 230, 230]),
+    );
     img
+}
+
+fn ring(img: &mut RgbImage, x: u32, y: u32, r: i32, c: Rgb<u8>) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            let d = dx * dx + dy * dy;
+            if d > r * r + 1 || d < (r - 1) * (r - 1) {
+                continue;
+            }
+            let (px, py) = (x as i32 + dx, y as i32 + dy);
+            if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                img.put_pixel(px as u32, py as u32, c);
+            }
+        }
+    }
+}
+
+fn frame(img: &mut RgbImage, x0: u32, y0: u32, w: u32, h: u32, c: Rgb<u8>) {
+    for x in x0..(x0 + w).min(img.width()) {
+        for y in [y0, y0 + h] {
+            if y < img.height() {
+                img.put_pixel(x, y, c);
+            }
+        }
+    }
+    for y in y0..(y0 + h).min(img.height()) {
+        for x in [x0, x0 + w] {
+            if x < img.width() {
+                img.put_pixel(x, y, c);
+            }
+        }
+    }
 }
 
 fn fill(img: &mut RgbImage, x0: u32, y0: u32, w: u32, h: u32, c: Rgb<u8>) {
