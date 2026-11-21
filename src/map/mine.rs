@@ -39,12 +39,14 @@
 //!   crossing near each side's spawns runs down one bank and up the other.
 //! - **The flats**, south of the wash: the railroad runs out across them to
 //!   the south edge, the ore train stopped on it under the loading tipple.
-//!   The Ithessar's waste dump stands in the west, the sorting house in the
-//!   middle, sandstone fins and hoodoos in the east.
+//!   A branch leaves it south of the train and swings back west into the
+//!   warehouse, a plain steel shed where the ore waits in open-top bins,
+//!   doors at both ends and both sides to drive through. The Ithessar's
+//!   waste dump stands in the west, sandstone fins and hoodoos in the east.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::crag;
 use super::landmarks::Rig;
@@ -53,8 +55,10 @@ use super::vault;
 use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
+use crate::render::mesh::MeshData;
 use crate::rng::Rng;
-use crate::tank::ithessar::PLASMA;
+use crate::tank::ithessar::{PLASMA, PLASMA_HOT};
+use crate::tank::model::{self, Skin};
 
 const SIZE: f32 = 220.0;
 const MID: f32 = SIZE * 0.5;
@@ -143,7 +147,7 @@ const BOX_CUT: (Vec2, Vec2) = (Vec2::new(112.0, 200.0), Vec2::new(150.0, 210.0))
 /// The hall's rock pillars, left standing to hold the roof up.
 const PILLARS: [Vec2; 4] = [
     Vec2::new(71.0, 180.0),
-    Vec2::new(84.0, 179.0),
+    Vec2::new(84.5, 177.5),
     Vec2::new(72.0, 190.0),
     Vec2::new(84.0, 190.0),
 ];
@@ -214,14 +218,72 @@ const DECK_T: f32 = 1.0;
 /// Track gauge (rail to rail, m): broad, for big ore cars.
 const GAUGE: f32 = 2.2;
 
+/// The warehouse's branch line: it leaves the main line this far past the
+/// track's fifth point (south of the stopped train), back the way the
+/// trains came, swings west on a curve of this radius through this angle,
+/// and runs straight in at the warehouse's rail door this far on.
+const JUNCTION: f32 = 14.0;
+const BRANCH_R: f32 = 14.0;
+const BRANCH_TURN: f32 = 85.0 * PI / 180.0;
+const SHED_LEAD: f32 = 4.0;
+/// The warehouse: half its width (across the line) and length (along it),
+/// its eaves and ridge.
+const SHED_HALF: Vec2 = Vec2::new(13.0, 18.0);
+const SHED_EAVES: f32 = 8.0;
+const SHED_RIDGE: f32 = 11.3;
+/// Where the branch ends, inside, at its buffer stop (along from the middle).
+const SHED_BUFFER: f32 = 13.0;
+
+/// The branch's line, from the junction to the buffer stop.
+static BRANCH: std::sync::LazyLock<Vec<Vec2>> = std::sync::LazyLock::new(|| {
+    let (j, dir) = track_at(track_len(4) + JUNCTION);
+    let back = -dir;
+    let centre = j + back.perp() * BRANCH_R;
+    let n = 12;
+    let mut line: Vec<Vec2> = (0..=n)
+        .map(|k| centre + Vec2::from_angle(BRANCH_TURN * k as f32 / n as f32).rotate(j - centre))
+        .collect();
+    let (at, along) = shed();
+    line.push(at - along * SHED_HALF.y);
+    line.push(at + along * SHED_BUFFER);
+    line
+});
+
+/// The warehouse's middle, and its way along (from the rail door in).
+fn shed() -> (Vec2, Vec2) {
+    let (j, dir) = track_at(track_len(4) + JUNCTION);
+    let back = -dir;
+    let centre = j + back.perp() * BRANCH_R;
+    let turn = Vec2::from_angle(BRANCH_TURN);
+    let end = centre + turn.rotate(j - centre);
+    let along = turn.rotate(back);
+    (end + along * (SHED_LEAD + SHED_HALF.y), along)
+}
+
+/// A point in the warehouse's own frame: (across, along) from its middle,
+/// +across to the left of the way in.
+fn shed_local(p: Vec2) -> Vec2 {
+    let (at, along) = shed();
+    let d = p - at;
+    Vec2::new(d.dot(Vec2::new(along.y, -along.x)), d.dot(along))
+}
+
+/// How far outside the warehouse's walls (0 inside).
+fn shed_distance(p: Vec2) -> f32 {
+    let q = shed_local(p).abs() - SHED_HALF;
+    q.max(Vec2::ZERO).length()
+}
+
 /// Places bots head for: across the flats, the wash, the landing under the
 /// Face, the mine and the mesa.
-const SPOTS: [(f32, f32); 28] = [
+const SPOTS: [(f32, f32); 29] = [
     (40.0, 70.0),
     (70.0, 30.0),
     (56.0, 52.0),
     (100.0, 44.0),
     (120.0, 70.0),
+    // In the warehouse.
+    (102.6, 69.0),
     (150.0, 60.0),
     (176.0, 36.0),
     (180.0, 74.0),
@@ -291,6 +353,10 @@ const RAW: Vec3 = Vec3::new(0.05, 0.1, 0.2);
 const STEEL: Vec3 = Vec3::new(0.2, 0.21, 0.24);
 const RUST: Vec3 = Vec3::new(0.36, 0.22, 0.14);
 const TIMBER: Vec3 = Vec3::new(0.42, 0.32, 0.22);
+const CONCRETE: Vec3 = Vec3::new(0.6, 0.57, 0.52);
+/// How bright a plasma lamp's light is, and how far it reaches (m).
+const LAMP_BRIGHT: f32 = 4.5;
+const LAMP_REACH: f32 = 10.0;
 /// The Resonant's crystal light.
 /// Fresh-cut stone, and the scorch along a plasma cut.
 const CUT: Vec3 = Vec3::new(0.66, 0.47, 0.34);
@@ -486,10 +552,18 @@ fn fins(p: Vec2) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// How near the track (distance from its line).
+/// How near the track, main line or branch (distance from its line).
 fn track_distance(p: Vec2) -> f32 {
-    TRACK
-        .windows(2)
+    main_line_distance(p).min(line_distance(&BRANCH, p))
+}
+
+/// How near the main line.
+fn main_line_distance(p: Vec2) -> f32 {
+    line_distance(&TRACK, p)
+}
+
+fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
+    line.windows(2)
         .map(|w| seg(p, w[0], w[1]).0)
         .fold(f32::INFINITY, f32::min)
 }
@@ -502,8 +576,9 @@ pub fn ground(x: f32, z: f32) -> f32 {
     let dunes = 0.45 * (0.061 * x + 0.3).sin() * (0.047 * z).cos()
         + 0.25 * (0.13 * x - 0.09 * z).sin()
         + 0.15 * (0.21 * z + 0.4 * (0.05 * x).sin()).sin();
-    // Flat along the railroad and on the mesa.
-    let flat = smoothstep(3.0, 9.0, track_distance(p)) * (1.0 - m);
+    // Flat along the railroad, under the warehouse and on the mesa.
+    let shed = smoothstep(1.0, 8.0, shed_distance(p));
+    let flat = smoothstep(3.0, 9.0, track_distance(p)) * shed * (1.0 - m);
     // The mesa's top rolls a little, away from the mine's roofs and back
     // from the lip.
     let f = face(x);
@@ -528,7 +603,7 @@ pub fn ground(x: f32, z: f32) -> f32 {
     let cut = rect_distance(BOX_CUT, p);
     rock = rock
         .min(box_cut_floor(x.clamp(BOX_CUT.0.x, BOX_CUT.1.x)) + (rock * smoothstep(0.0, 2.0, cut)));
-    let g = dunes * flat + rock + wash(p) + heap(DUMP, p) + heap(HEAP, p) + fins(p);
+    let g = dunes * flat + rock + wash(p) + (heap(DUMP, p) + heap(HEAP, p)) * shed + fins(p);
     with_ramps(p, g)
 }
 
@@ -632,8 +707,13 @@ fn paint(x: f32, z: f32, h: f32, slope: f32) -> Vec3 {
 
 /// Position and heading `s` m along the track.
 fn track_at(s: f32) -> (Vec2, Vec2) {
+    line_at(&TRACK, s)
+}
+
+/// Position and heading `s` m along a line.
+fn line_at(line: &[Vec2], s: f32) -> (Vec2, Vec2) {
     let mut left = s;
-    for w in TRACK.windows(2) {
+    for w in line.windows(2) {
         let len = w[0].distance(w[1]);
         let dir = (w[1] - w[0]) / len;
         if left <= len {
@@ -641,8 +721,13 @@ fn track_at(s: f32) -> (Vec2, Vec2) {
         }
         left -= len;
     }
-    let n = TRACK.len();
-    (TRACK[n - 1], (TRACK[n - 1] - TRACK[n - 2]).normalize())
+    let n = line.len();
+    (line[n - 1], (line[n - 1] - line[n - 2]).normalize())
+}
+
+/// Length of a line up to its point `k`.
+fn line_len(line: &[Vec2], k: usize) -> f32 {
+    line[..=k].windows(2).map(|w| w[0].distance(w[1])).sum()
 }
 
 /// Yaw that turns a box's local +z along `dir`.
@@ -693,6 +778,7 @@ impl Map {
             crystals: Vec::new(),
             glow_paths: Vec::new(),
             beams: Vec::new(),
+            lights: Vec::new(),
             fall_y: None,
             hold_name: "SEAM",
             routes: Vec::new(),
@@ -712,8 +798,10 @@ impl Map {
         map.crag_lid();
         map.rough_face(&mut rng);
         map.scree_rocks(&mut rng);
-        map.mine_caves(&mut rng);
-        map.pillared_hall(&mut rng);
+        // The mine's inside has its own dice too.
+        let mut inside = Rng::new(0x1a5e_0254);
+        map.mine_caves(&mut inside);
+        map.pillared_hall(&mut inside);
         map.breach(&mut rng);
         map.box_cut(&mut rng);
         map.railroad();
@@ -730,7 +818,7 @@ impl Map {
         map.headframe(Vec2::new(60.0, 207.0));
         map.mesa_cover(&mut rng);
         map.dump_cover(&mut rng);
-        map.sorting_house(&mut rng);
+        map.warehouse(&mut rng);
         map.fins_and_hoodoos(&mut rng);
         map.flats_cover(&mut rng);
         map.fill_cover(&mut rng);
@@ -1378,6 +1466,14 @@ impl Map {
             });
             prongs.push(rig.point(Vec3::new(x * 0.8, 5.5, -6.2)));
         }
+        // The beam lights the bay: the blaze on the face, and along it.
+        for (at, k) in [(to - dir * 1.2, 2.2), ((from + to) * 0.5, 1.2)] {
+            self.lights.push(crate::render::PointLight {
+                pos: at,
+                color: PLASMA.lerp(PLASMA_HOT, 0.5) * LAMP_BRIGHT * k,
+                radius: LAMP_REACH * k,
+            });
+        }
         self.cores.push(Core {
             at: rig.point(Vec3::new(0.0, 4.4, -6.2)),
             radius: 0.85,
@@ -1466,7 +1562,7 @@ impl Map {
         let runs = [
             (ADIT, true, 4.0),
             (CAVES[3], true, 4.0),
-            (CAVES[4], false, 7.0),
+            (CAVES[4], false, 6.0),
             (HEADING, true, 4.0),
         ];
         for ((a, b), along_z, first) in runs {
@@ -1507,7 +1603,8 @@ impl Map {
                 true,
             );
         }
-        // The cap, into the rock at each end.
+        // The cap, into the rock at each end (over every tank: it's never
+        // in the way).
         let w = a.distance(b) * 0.5 + 0.8;
         self.oboxes.push(OBox {
             center: mid,
@@ -1518,6 +1615,7 @@ impl Map {
             color: STEEL * 0.9,
             side_mat: Material::Metal,
             top_mat: Material::Metal,
+            solid: false,
             ..OBox::default()
         });
         // Knee braces.
@@ -1919,7 +2017,7 @@ impl Map {
                         continue;
                     }
                     if (k + side as usize).is_multiple_of(2) {
-                        self.lamp(p - out * 0.15);
+                        self.lamp(p - out * 0.15, -out);
                     } else {
                         // A vein: shards growing out of the wall, low.
                         for _ in 0..3 {
@@ -1950,7 +2048,8 @@ impl Map {
                 z += 0.5;
             }
             let z = z + 0.6;
-            for x in [a.x - 0.35, b.x + 0.35] {
+            // Standing a little proud of the cave walls, not flush.
+            for x in [a.x - 0.25, b.x + 0.25] {
                 self.oboxes.push(OBox {
                     center: Vec2::new(x, z),
                     half: Vec2::splat(0.35),
@@ -2073,30 +2172,10 @@ impl Map {
         }
     }
 
-    /// A plasma lamp in a crystal cage, on a cave wall.
-    fn lamp(&mut self, at: Vec2) {
-        self.oboxes.push(OBox {
-            center: at,
-            half: Vec2::splat(0.22),
-            y0: 4.4,
-            y1: 5.1,
-            color: PLASMA,
-            side_mat: Material::Glow,
-            top_mat: Material::Glow,
-            solid: false,
-            ..OBox::default()
-        });
-        self.oboxes.push(OBox {
-            center: at,
-            half: Vec2::splat(0.34),
-            y0: 5.1,
-            y1: 5.25,
-            color: GLASS,
-            side_mat: Material::Vhaal,
-            top_mat: Material::Vhaal,
-            solid: false,
-            ..OBox::default()
-        });
+    /// A plasma lamp on a cave wall at `at`, on a bracket standing out
+    /// along `out`.
+    fn lamp(&mut self, at: Vec2, out: Vec2) {
+        self.wall_lamp(Vec3::new(at.x, 5.9, at.y), out, 1.5);
     }
 
     /// A cave wall from `a` to `b`, standing outward (`out`) of the cave.
@@ -2192,7 +2271,7 @@ impl Map {
             // A lamp on each pillar's face toward the middle.
             let mid = (HALL.0 + HALL.1) * 0.5;
             let out = if p.x < mid.x { Vec2::X } else { -Vec2::X };
-            self.lamp(p + out * (s * 1.1 + 0.2));
+            self.lamp(p + out * (s * 1.1 + 0.2), out);
         }
         // The vein across the hall floor, west to east toward the adit.
         let mut pts = Vec::new();
@@ -2329,11 +2408,45 @@ impl Map {
     }
 
     /// The track, from the end of the adit out across the bridge and the
-    /// flats to the south edge: two rails on sleepers. Visual only.
+    /// flats to the south edge, and the branch off it into the warehouse:
+    /// two rails on sleepers. Visual only.
     fn railroad(&mut self) {
-        let total = track_len(TRACK.len() - 1);
+        self.rails(&TRACK, false);
+        let branch = BRANCH.clone();
+        self.rails(&branch, true);
+        // The points lever by the junction, on the outside of the curve.
+        let (j, dir) = track_at(track_len(4) + JUNCTION - 2.0);
+        let at = j + dir.perp() * 2.8;
+        let g = self.ground_height(at.x, at.y);
+        self.oboxes.push(OBox {
+            center: at,
+            yaw: yaw_along(dir),
+            half: Vec2::new(0.25, 0.35),
+            y0: g - 0.1,
+            y1: g + 0.5,
+            color: STEEL,
+            side_mat: Material::Metal,
+            top_mat: Material::Metal,
+            solid: false,
+            ..OBox::default()
+        });
+        self.segment(
+            Vec3::new(at.x, g + 0.45, at.y),
+            Vec3::new(at.x + dir.x * 0.3, g + 1.3, at.y + dir.y * 0.3),
+            0.04,
+            RUST,
+            Material::Rust,
+            false,
+        );
+    }
+
+    /// Rails on sleepers along `line`, following the ground (or the
+    /// bridge's deck). A branch leaves out the sleepers where the main
+    /// line's already are.
+    fn rails(&mut self, line: &[Vec2], branch: bool) {
+        let total = line_len(line, line.len() - 1);
         let y_at = |m: &Map, s: f32| {
-            let (p, dir) = track_at(s);
+            let (p, dir) = line_at(line, s);
             if on_bridge(p) {
                 DECK_TOP
             } else {
@@ -2347,7 +2460,10 @@ impl Map {
         let n = (total / step) as usize;
         for k in 0..n {
             let s = step * (k as f32 + 0.5);
-            let (p, dir) = track_at(s);
+            let (p, dir) = line_at(line, s);
+            if branch && main_line_distance(p) < 2.4 {
+                continue;
+            }
             let y = y_at(self, s);
             self.oboxes.push(OBox {
                 center: p,
@@ -2363,9 +2479,9 @@ impl Map {
             });
         }
         // Rails, in runs of up to 6 m following the ground, broken at the
-        // track's bends.
-        let mut s = 0.0;
-        let bends: Vec<f32> = (1..TRACK.len()).map(track_len).collect();
+        // line's bends.
+        let mut s = if branch { 1.0 } else { 0.0 };
+        let bends: Vec<f32> = (1..line.len()).map(|k| line_len(line, k)).collect();
         while s < total - 0.01 {
             let next_bend = bends
                 .iter()
@@ -2373,8 +2489,8 @@ impl Map {
                 .find(|&b| b > s + 0.01)
                 .unwrap_or(total);
             let e = (s + 6.0).min(next_bend);
-            let (pa, dir) = track_at(s + 0.001);
-            let (pb, _) = track_at(e - 0.001);
+            let (pa, dir) = line_at(line, s + 0.001);
+            let (pb, _) = line_at(line, e - 0.001);
             let (ya, yb) = (y_at(self, s) + 0.16, y_at(self, e - 0.001) + 0.16);
             for side in [-1.0f32, 1.0] {
                 let o = dir.perp() * side * GAUGE * 0.5;
@@ -2728,12 +2844,29 @@ impl Map {
     }
 
     /// One rail car centered at `at`, its length along `yaw`, rolled `roll`
-    /// onto its side (a derailed car). A hopper of raw crystal, or the
-    /// locomotive (`loco`), its crystal prow toward local +z.
+    /// onto its side (a derailed car): an ore car, or the locomotive (`loco`),
+    /// its prow toward local +z. Ithessar freight runs on rails, but it's
+    /// built like the rest of their machines: knapped crystal over dark
+    /// alloy running gear, each body held a hand's width off its bogies by
+    /// the field, plasma showing through its seams. The hulls are drawn
+    /// sculpted; a plain box round each is what tanks hit and hide behind.
     fn rail_car(&mut self, rng: &mut Rng, at: Vec2, yaw: f32, roll: f32, loco: bool) {
+        // Its detail comes from its own stream; the map's advances by what
+        // the old train drew from it, so everything built after keeps its
+        // layout.
+        skip(
+            rng,
+            if loco {
+                1
+            } else if roll.abs() < 0.3 {
+                40
+            } else {
+                0
+            },
+        );
+        let rng = &mut own_rng(at);
         let g = self.ground_height(at.x, at.y);
-        let len: f32 = if loco { 13.0 } else { 9.0 };
-        let half_w = 1.7;
+        let half_w = 1.75;
         let pivot = Vec3::new(-half_w * roll.signum(), 0.0, 0.0);
         let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(roll);
         let base = Vec3::new(at.x, g + 0.2, at.y);
@@ -2741,142 +2874,180 @@ impl Map {
             pos: base + Quat::from_rotation_y(yaw) * pivot - rot * pivot,
             rot,
         };
-        let id = Quat::IDENTITY;
-        for z in [-(len * 0.5 - 2.0), len * 0.5 - 2.0] {
-            rig.part(
-                self,
-                Vec3::new(0.0, 0.75, z),
-                Vec3::new(1.2, 0.3, 1.5),
-                id,
-                STEEL * 0.8,
-                Material::Metal,
-                true,
-                0.0,
-            );
-            for (x, dz) in [(-1.2, -0.9), (1.2, -0.9), (-1.2, 0.9), (1.2, 0.9)] {
-                let c = rig.point(Vec3::new(x, 0.6, z + dz));
-                self.disc(c, rig.rot * Vec3::X * 0.09, 0.55, STEEL, Material::Metal);
-            }
+        let mut m = MeshData::default();
+        let bogies: [f32; 2] = if loco { [-4.0, 3.0] } else { [-2.5, 2.5] };
+        for z in bogies {
+            bogie(&mut m, z);
         }
+        // The collider: the body, from the bogies' frames to the rim.
+        let (cz, hz, top) = if loco {
+            (-0.3, 6.2, 3.95)
+        } else {
+            (0.0, 4.3, 3.8)
+        };
+        self.hidden_part(
+            &rig,
+            Vec3::new(0.0, (0.45 + top) * 0.5, cz),
+            Vec3::new(half_w, (top - 0.45) * 0.5, hz),
+        );
+        if loco {
+            locomotive(&mut m);
+            self.hidden_part(&rig, Vec3::new(0.0, 4.4, -2.4), Vec3::new(1.0, 0.5, 2.2));
+            // Its drive: a knot of plasma held between two crystal horns
+            // behind the canopy.
+            let core = rig.point(Vec3::new(0.0, 5.25, -5.4));
+            let prongs = [-1.0f32, 1.0]
+                .map(|s| rig.point(Vec3::new(s * 0.75, 5.35, -5.4)))
+                .to_vec();
+            self.cores.push(Core {
+                at: core,
+                radius: 0.32,
+                prongs,
+            });
+        } else {
+            ore_tub(&mut m);
+        }
+        self.sculpt(&rig, &m);
+        if !loco {
+            self.ore_load(rng, &rig, roll.abs() < 0.3);
+        }
+    }
+
+    /// A collider at `local` in `rig` (half extents `half`), not drawn: the
+    /// box round something drawn sculpted.
+    fn hidden_part(&mut self, rig: &Rig, local: Vec3, half: Vec3) {
         rig.part(
             self,
-            Vec3::new(0.0, 1.3, 0.0),
-            Vec3::new(half_w, 0.25, len * 0.5),
-            id,
-            STEEL,
-            Material::Metal,
+            local,
+            half,
+            Quat::IDENTITY,
+            GLASS,
+            Material::Vhaal,
             true,
             0.0,
         );
-        if loco {
-            rig.part(
-                self,
-                Vec3::new(0.0, 2.75, -0.5),
-                Vec3::new(1.4, 1.2, len * 0.5 - 1.0),
-                id,
-                GLASS,
-                Material::Vhaal,
-                true,
-                0.0,
+        if let Some(o) = self.oboxes.last_mut() {
+            o.hidden = true;
+        }
+    }
+
+    /// Draws `m`, built in `rig`'s frame, into the sculpted surfaces.
+    fn sculpt(&mut self, rig: &Rig, m: &MeshData) {
+        let base = self.sculpted.verts.len() as u32;
+        for v in &m.verts {
+            let mut v = *v;
+            v.pos = rig.point(Vec3::from(v.pos)).to_array();
+            v.normal = (rig.rot * Vec3::from(v.normal)).to_array();
+            self.sculpted.verts.push(v);
+        }
+        self.sculpted
+            .indices
+            .extend(m.indices.iter().map(|i| i + base));
+    }
+
+    /// An ore car's load: crystal-rich rock from the Crag heaped up over
+    /// the rim (`full`), raw crystal breaking out of it. Spilled, only a
+    /// few lumps are left in the tub.
+    fn ore_load(&mut self, rng: &mut Rng, rig: &Rig, full: bool) {
+        let lump = |m: &mut Map, rng: &mut Rng, at: Vec3, s: f32| {
+            let shade = [ORE, ORE * 0.75, ORE * 1.2, MESA_TOP * 0.8][rng.index(4)];
+            let turn = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                rng.range(0.0, TAU),
+                rng.range(-0.6, 0.6),
+                rng.range(-0.6, 0.6),
             );
             rig.part(
-                self,
-                Vec3::new(0.0, 4.4, -len * 0.5 + 2.4),
-                Vec3::new(1.55, 0.6, 1.8),
-                id,
-                GLASS * 1.3,
-                Material::Vhaal,
-                true,
-                0.0,
+                m,
+                at,
+                Vec3::new(
+                    s * rng.range(0.8, 1.2),
+                    s * rng.range(0.55, 0.85),
+                    s * rng.range(0.8, 1.2),
+                ),
+                turn,
+                shade * rng.range(0.9, 1.1),
+                Material::Rubble,
+                false,
+                s * 0.4,
             );
-            for x in [-1.42, 1.42] {
-                rig.part(
-                    self,
-                    Vec3::new(x, 2.6, 0.0),
-                    Vec3::new(0.03, 0.12, len * 0.5 - 2.0),
-                    id,
-                    PLASMA,
-                    Material::Glow,
-                    false,
-                    0.0,
+        };
+        if !full {
+            for _ in 0..6 {
+                let at = Vec3::new(
+                    rng.range(-0.9, 0.9),
+                    rng.range(1.7, 2.2),
+                    rng.range(-2.6, 2.6),
                 );
+                let size = rng.range(0.3, 0.55);
+                lump(self, rng, at, size);
             }
-            for k in 0..3 {
-                rig.part(
-                    self,
-                    Vec3::new(0.0, 4.05, 1.0 + k as f32 * 1.6),
-                    Vec3::new(0.5, 0.12, 0.4),
-                    id,
-                    PLASMA,
-                    Material::Glow,
-                    false,
-                    0.0,
-                );
-            }
-            let nose = rig.point(Vec3::new(0.0, 2.6, len * 0.5 - 1.6));
-            let ahead = rig.rot * Vec3::Z;
-            self.crystals.push(Crystal {
-                base: nose,
-                axis: ahead * 3.2 + Vec3::Y * 0.3,
-                radius: 1.1,
-                sides: 6,
-                seed: rng.next_u64() as u32,
-                color: GLASS * 1.4,
-                lit: true,
-                solid: false,
-            });
-        } else {
+            return;
+        }
+        // The heap, highest down the middle.
+        let heap =
+            |x: f32, z: f32| 3.25 + 1.05 * (1.0 - (x / 1.8).powi(2)) * (1.0 - (z / 4.3).powi(2));
+        for _ in 0..26 {
+            let x = rng.range(-1.4, 1.4);
+            let reach = 3.1 + 1.0 * (1.0 - x.abs() / 1.4);
+            let z = rng.range(-reach, reach);
+            let s = rng.range(0.32, 0.7);
+            lump(self, rng, Vec3::new(x, heap(x, z) - s * 0.35, z), s);
+        }
+        // Lumps riding up on the rim, hanging over the side.
+        for _ in 0..4 {
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let at = Vec3::new(side * rng.range(1.4, 1.6), 3.55, rng.range(-2.6, 2.6));
+            let size = rng.range(0.25, 0.42);
+            lump(self, rng, at, size);
+        }
+        // Raw crystal breaking out of the rock, and lumps of it in the heap.
+        for _ in 0..5 {
+            let x = rng.range(-1.1, 1.1);
+            let z = rng.range(-2.8, 2.8);
+            let s = rng.range(0.25, 0.4);
             rig.part(
                 self,
-                Vec3::new(0.0, 2.6, 0.0),
-                Vec3::new(half_w, 1.05, len * 0.5 - 0.3),
-                id,
-                GLASS * 1.1,
+                Vec3::new(x, heap(x, z), z),
+                Vec3::new(s, s * 0.7, s * 1.3),
+                Quat::from_euler(glam::EulerRot::YXZ, rng.range(0.0, TAU), 0.4, 0.3),
+                RAW * 1.3,
                 Material::Vhaal,
-                true,
+                false,
                 0.0,
             );
-            for x in [-half_w + 0.06, half_w - 0.06] {
-                rig.part(
-                    self,
-                    Vec3::new(x, 2.5, 0.0),
-                    Vec3::new(0.02, 0.06, len * 0.5 - 0.6),
-                    id,
-                    PLASMA,
-                    Material::Glow,
-                    false,
-                    0.0,
-                );
-            }
-            if roll.abs() < 0.3 {
-                for _ in 0..5 {
-                    let p = rig.point(Vec3::new(
-                        rng.range(-1.1, 1.1),
-                        3.5,
-                        rng.range(-len * 0.4, len * 0.4),
-                    ));
-                    let dir = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-                    self.shard(
-                        rng.next_u64(),
-                        p,
-                        rng.range(0.6, 1.4),
-                        0.35,
-                        dir,
-                        rng.range(0.1, 0.6),
-                        rng.chance(0.4),
-                        false,
-                    );
-                }
-            }
+        }
+        for k in 0..8 {
+            let x = rng.range(-1.1, 1.1);
+            let z = rng.range(-3.0, 3.0);
+            let p = rig.point(Vec3::new(x, heap(x, z), z));
+            let out = rig.rot * Vec3::new(x, 0.0, z * 0.3);
+            let dir =
+                Vec2::new(out.x, out.z) + Vec2::new(rng.range(-0.4, 0.4), rng.range(-0.4, 0.4));
+            let big = k < 3;
+            self.shard(
+                rng.next_u64(),
+                p,
+                if big {
+                    rng.range(1.5, 2.2)
+                } else {
+                    rng.range(0.7, 1.1)
+                },
+                if big { 0.4 } else { 0.22 },
+                dir,
+                rng.range(0.2, 0.6),
+                big || rng.chance(0.35),
+                false,
+            );
         }
     }
 
     /// The ore train, stopped on the flats headed out: the locomotive, two
-    /// hoppers behind it under the tipple. Far down the line, two cars off
-    /// the rails, one on its side, their load spilled.
+    /// ore cars behind it under the tipple. Far down the line, two cars off
+    /// the rails, one on its side, its load spilled.
     fn ore_train(&mut self, rng: &mut Rng) {
         let s0 = track_len(3) + 6.0;
-        // Hoppers under and past the tipple, then the loco ahead (south).
+        // Ore cars under and past the tipple, then the loco ahead (south).
         for (s, loco) in [(s0, false), (s0 + 10.0, false), (s0 + 22.0, true)] {
             let (p, dir) = track_at(s);
             self.rail_car(rng, p, yaw_along(dir), 0.0, loco);
@@ -2893,6 +3064,9 @@ impl Map {
             0.0,
             false,
         );
+        // The spill, from its own stream (see `rail_car`).
+        skip(rng, 72);
+        let rng = &mut own_rng(p);
         for _ in 0..9 {
             let c = p - side * rng.range(10.0, 15.0) + dir * rng.range(-6.0, 6.0);
             let g = self.ground_height(c.x, c.y);
@@ -2907,6 +3081,27 @@ impl Map {
                 rng.chance(0.3),
                 false,
             );
+        }
+        // The rock it was carrying, strewn out of its mouth.
+        for _ in 0..16 {
+            let c = p - side * rng.range(8.5, 14.0) + dir * rng.range(-5.0, 5.0);
+            let g = self.ground_height(c.x, c.y);
+            let r = rng.range(0.3, 0.65);
+            let shade = [ORE, ORE * 0.75, ORE * 1.2][rng.index(3)];
+            self.oboxes.push(OBox {
+                center: c,
+                yaw: rng.range(0.0, TAU),
+                tilt: rng.range(-0.4, 0.4),
+                half: Vec2::new(r * rng.range(0.8, 1.2), r * rng.range(0.8, 1.2)),
+                y0: g - r * 0.4,
+                y1: g + r * rng.range(0.6, 1.0),
+                color: shade,
+                side_mat: Material::Rubble,
+                top_mat: Material::Rubble,
+                chip: r * 0.4,
+                solid: false,
+                ..OBox::default()
+            });
         }
     }
 
@@ -3210,74 +3405,540 @@ impl Map {
         let _ = h;
     }
 
-    /// The sorting house: an Ithessar shed on the flats by the line, a
-    /// crystal roof on columns, high enough to drive under, sorting bins
-    /// inside to hide behind.
-    fn sorting_house(&mut self, rng: &mut Rng) {
-        let at = Vec2::new(94.0, 70.0);
-        let yaw = 0.2;
+    /// The warehouse at the end of the branch: a plain steel shed on a
+    /// concrete floor, pitched roof on portal frames, a rail door at the
+    /// junction's end, a door at the far end and one in each side, all big
+    /// enough to drive through. Open-top bins of crystal-rich ore stand
+    /// along both walls, a hopper at the buffer stop. Only the plasma lamps,
+    /// and the emblem small on the front, say whose it is.
+    fn warehouse(&mut self, rng: &mut Rng) {
+        let (at, along) = shed();
+        let g = self.ground_height(at.x, at.y);
+        let yaw = yaw_along(along);
         let rig = Rig {
-            pos: Vec3::new(at.x, self.ground_height(at.x, at.y), at.y),
+            pos: Vec3::new(at.x, g, at.y),
             rot: Quat::from_rotation_y(yaw),
         };
-        let (hx, hz) = (9.0f32, 6.0f32);
-        let roof = 5.6;
-        for (sx, sz) in [
-            (-1.0f32, -1.0f32),
-            (0.0, -1.0),
-            (1.0, -1.0),
-            (-1.0, 1.0),
-            (0.0, 1.0),
-            (1.0, 1.0),
-        ] {
-            let foot = rig.point(Vec3::new(sx * hx, 0.0, sz * hz));
-            let g = self.ground_height(foot.x, foot.z);
-            self.oboxes.push(OBox {
-                center: Vec2::new(foot.x, foot.z),
-                yaw: yaw + PI / 4.0,
-                half: Vec2::splat(0.6),
-                y0: g - 0.5,
-                y1: rig.pos.y + roof,
-                color: GLASS,
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
-                ..OBox::default()
-            });
-        }
+        let id = Quat::IDENTITY;
+        let (hw, hl) = (SHED_HALF.x, SHED_HALF.y);
+        let (eaves, ridge) = (SHED_EAVES, SHED_RIDGE);
+        // Wall half-thickness; the doors' half-widths and height.
+        let t = 0.2;
+        let (end_door, side_door, door_h) = (5.5, 3.5, 6.0);
+        let clad = Vec3::new(0.58, 0.56, 0.5);
+        let dado = Vec3::new(0.42, 0.36, 0.3);
+        let frame = Vec3::new(0.3, 0.31, 0.33);
+        // The floor.
         rig.part(
             self,
-            Vec3::new(0.0, roof + 0.3, 0.0),
-            Vec3::new(hx + 1.2, 0.3, hz + 1.2),
-            Quat::IDENTITY,
-            GLASS * 1.2,
-            Material::Vhaal,
-            true,
-            0.0,
-        );
-        rig.part(
-            self,
-            Vec3::new(0.0, roof - 0.05, 0.0),
-            Vec3::new(hx + 0.6, 0.05, 0.12),
-            Quat::IDENTITY,
-            PLASMA * 0.8,
-            Material::Glow,
+            Vec3::new(0.0, -0.14, 0.0),
+            Vec3::new(hw + 0.9, 0.18, hl + 0.9),
+            id,
+            CONCRETE,
+            Material::Concrete,
             false,
             0.0,
         );
-        // Bins inside: crystal tubs to sort the ore into, tank height.
-        for (x, z) in [(-5.0, -1.5), (0.5, 2.0), (5.5, -2.0)] {
+        // A wall panel: from `a` to `b` (local x, z) along the wall, `y0` to
+        // `y1` up, `half_t` thick each side, with a grimy band low down.
+        let panel = |m: &mut Map, a: Vec2, b: Vec2, y0: f32, y1: f32| {
+            let mid = (a + b) * 0.5;
+            let half = ((b - a).abs() * 0.5).max(Vec2::splat(t));
+            rig.part(
+                m,
+                Vec3::new(mid.x, (y0 + y1) * 0.5, mid.y),
+                Vec3::new(half.x, (y1 - y0) * 0.5, half.y),
+                id,
+                clad * (1.0 + 0.03 * (mid.x * 1.7 + mid.y * 0.9).sin()),
+                Material::Painted,
+                true,
+                0.0,
+            );
+            if y0 < 0.5 {
+                let grow = Vec2::splat(0.04);
+                let h = ((b - a).abs() * 0.5).max(Vec2::splat(t)) + grow;
+                rig.part(
+                    m,
+                    Vec3::new(mid.x, 0.55, mid.y),
+                    Vec3::new(h.x, 0.65, h.y),
+                    id,
+                    dado,
+                    Material::Concrete,
+                    false,
+                    0.0,
+                );
+            }
+        };
+        // The sides, a door in the middle of each.
+        for sx in [-1.0f32, 1.0] {
+            let x = sx * hw;
+            panel(
+                self,
+                Vec2::new(x, -hl),
+                Vec2::new(x, -side_door),
+                0.0,
+                eaves,
+            );
+            panel(self, Vec2::new(x, side_door), Vec2::new(x, hl), 0.0, eaves);
+            panel(
+                self,
+                Vec2::new(x, -side_door),
+                Vec2::new(x, side_door),
+                door_h,
+                eaves,
+            );
+        }
+        // The ends, a door in the middle of each.
+        for sz in [-1.0f32, 1.0] {
+            let z = sz * hl;
+            let w = hw - t;
+            panel(self, Vec2::new(-w, z), Vec2::new(-end_door, z), 0.0, eaves);
+            panel(self, Vec2::new(end_door, z), Vec2::new(w, z), 0.0, eaves);
+            panel(
+                self,
+                Vec2::new(-end_door, z),
+                Vec2::new(end_door, z),
+                door_h,
+                eaves,
+            );
+            // The gable over it: a plate under each slope of the roof, its
+            // lower edge hidden in the wall.
+            let rise = ridge - eaves;
+            let a = (rise / hw).atan();
+            let len = (hw * hw + rise * rise).sqrt();
+            let d = rise / a.cos() + 0.2;
+            for (sx, th) in [(1.0f32, 0.15), (-1.0, 0.13)] {
+                let n = Vec2::new(-sx * a.sin(), -a.cos());
+                let mid = Vec2::new(sx * hw * 0.5, (eaves + ridge) * 0.5) + n * (d * 0.5);
+                rig.part(
+                    self,
+                    Vec3::new(mid.x, mid.y, z),
+                    Vec3::new(len * 0.5, d * 0.5, th),
+                    Quat::from_rotation_z(-sx * a),
+                    clad * 0.97,
+                    Material::Painted,
+                    false,
+                    0.0,
+                );
+            }
+        }
+        // The roof: two slopes overhanging the walls, a cap along the ridge.
+        let rise = ridge - eaves;
+        let a = (rise / hw).atan();
+        let over = 0.8;
+        let len = ((hw + over) * (hw + over) + (rise + over * a.tan()).powi(2)).sqrt();
+        for sx in [-1.0f32, 1.0] {
+            let up = Vec2::new(sx * a.sin(), a.cos()) * 0.13;
+            let mid = Vec2::new(
+                sx * (hw + over) * 0.5,
+                ridge - (rise + over * a.tan()) * 0.5,
+            ) + up;
             rig.part(
                 self,
-                Vec3::new(x, 1.0, z),
-                Vec3::new(1.6, 1.1, 1.0),
-                Quat::IDENTITY,
-                GLASS * rng.range(1.1, 1.4),
-                Material::Vhaal,
+                Vec3::new(mid.x, mid.y, 0.0),
+                Vec3::new(len * 0.5, 0.12, hl + 0.7),
+                Quat::from_rotation_z(-sx * a),
+                Vec3::new(0.44, 0.44, 0.43),
+                Material::Painted,
                 true,
                 0.0,
             );
         }
-        self.block_stack(rng, at + Vec2::new(-13.0, 6.0), 0.5);
+        rig.part(
+            self,
+            Vec3::new(0.0, ridge + 0.28, 0.0),
+            Vec3::new(0.35, 0.1, hl + 0.75),
+            id,
+            frame,
+            Material::Metal,
+            false,
+            0.0,
+        );
+        // Portal frames inside: columns along the walls, a tie across at
+        // the eaves, rafters up under the roof. Plasma lamps hang from the
+        // ties over the aisles.
+        let mut z = -hl + 6.0;
+        while z < hl - 1.0 {
+            for sx in [-1.0f32, 1.0] {
+                if z.abs() > side_door + 0.4 {
+                    rig.part(
+                        self,
+                        Vec3::new(sx * (hw - t - 0.25), eaves * 0.5, z),
+                        Vec3::new(0.25, eaves * 0.5, 0.2),
+                        id,
+                        frame,
+                        Material::Metal,
+                        true,
+                        0.0,
+                    );
+                }
+                let e = rig.point(Vec3::new(sx * (hw - t), eaves - 0.4, z));
+                let r = rig.point(Vec3::new(0.0, ridge - 0.4, z));
+                self.segment(e, r, 0.18, frame, Material::Metal, false);
+            }
+            let (a, b) = (
+                rig.point(Vec3::new(-(hw - t), eaves - 0.5, z)),
+                rig.point(Vec3::new(hw - t, eaves - 0.5, z)),
+            );
+            self.segment(a, b, 0.12, frame, Material::Metal, false);
+            for x in [-4.5f32, 4.5] {
+                self.plasma_lamp(rig.point(Vec3::new(x, eaves - 0.6, z)), 1.0, 1.0);
+            }
+            z += 6.0;
+        }
+        // Outside: a rolled-up door drum over each door, a plasma lamp
+        // either side of it.
+        for (c, out, w) in [
+            (Vec2::new(0.0, -hl), Vec2::new(0.0, -1.0), end_door),
+            (Vec2::new(0.0, hl), Vec2::new(0.0, 1.0), end_door),
+            (Vec2::new(-hw, 0.0), Vec2::new(-1.0, 0.0), side_door),
+            (Vec2::new(hw, 0.0), Vec2::new(1.0, 0.0), side_door),
+        ] {
+            let face = c + out * (t + 0.4);
+            let across = out.perp();
+            let (a, b) = (face - across * (w + 0.3), face + across * (w + 0.3));
+            self.pipe(
+                rig.point(Vec3::new(a.x, door_h + 0.45, a.y)),
+                rig.point(Vec3::new(b.x, door_h + 0.45, b.y)),
+                0.42,
+                frame * 1.2,
+                Material::Painted,
+                false,
+            );
+            for s in [-1.0f32, 1.0] {
+                let p = c + out * (t + 0.02) + across * s * (w + 1.2);
+                let dir = rig.rot * Vec3::new(out.x, 0.0, out.y);
+                self.wall_lamp(
+                    rig.point(Vec3::new(p.x, door_h - 0.2, p.y)),
+                    Vec2::new(dir.x, dir.z),
+                    1.0,
+                );
+            }
+        }
+        // The emblem, small, high on the front over the rail door: plasma
+        // held in crystal, an orb in an almond-shaped lens.
+        self.lens_emblem(&rig, Vec3::new(0.0, eaves + 1.4, -hl - 0.2), 0.7);
+        // The bins of ore along the walls (a gap at each side door), one
+        // left out in the aisle by the rail door.
+        let colours = [
+            Vec3::new(0.52, 0.3, 0.16),
+            Vec3::new(0.55, 0.47, 0.25),
+            Vec3::new(0.38, 0.4, 0.41),
+            Vec3::new(0.3, 0.37, 0.31),
+        ];
+        let mut spots = Vec::new();
+        for sx in [-1.0f32, 1.0] {
+            for z in [-14.2f32, -8.4, 8.4, 14.2] {
+                spots.push((Vec2::new(sx * 9.0, z), rng.range(-0.04, 0.04)));
+            }
+        }
+        spots.push((Vec2::new(-4.6, -9.0), 0.45));
+        for (p, turn) in spots {
+            let w = rig.point(Vec3::new(p.x, 0.0, p.y));
+            let c = colours[rng.index(colours.len())];
+            self.ore_bin(rng, Vec2::new(w.x, w.z), yaw + turn, c);
+        }
+        // A hopper at the buffer stop, and the stop.
+        let car = rig.point(Vec3::new(0.0, 0.0, SHED_BUFFER - 5.4));
+        self.rail_car(rng, Vec2::new(car.x, car.z), yaw, 0.0, false);
+        rig.part(
+            self,
+            Vec3::new(0.0, 0.7, SHED_BUFFER + 0.3),
+            Vec3::new(1.6, 0.7, 0.3),
+            id,
+            RUST,
+            Material::Rust,
+            true,
+            0.0,
+        );
+        for sx in [-1.0f32, 1.0] {
+            rig.part(
+                self,
+                Vec3::new(sx * GAUGE * 0.5, 0.85, SHED_BUFFER - 0.15),
+                Vec3::new(0.22, 0.22, 0.2),
+                id,
+                STEEL,
+                Material::Metal,
+                false,
+                0.0,
+            );
+        }
+    }
+
+    /// An open-top steel bin, tank high, heaped with crystal-rich ore:
+    /// broken red rock with raw crystal through it.
+    fn ore_bin(&mut self, rng: &mut Rng, at: Vec2, yaw: f32, colour: Vec3) {
+        let g = self.ground_height(at.x, at.y);
+        let rig = Rig {
+            pos: Vec3::new(at.x, g, at.y),
+            rot: Quat::from_rotation_y(yaw),
+        };
+        let id = Quat::IDENTITY;
+        let (hx, hz, h, t) = (1.5f32, 2.4f32, 1.8f32, 0.08f32);
+        let paint = colour * rng.range(0.9, 1.05);
+        // Floor, sides and ends, a rolled rim on top.
+        rig.part(
+            self,
+            Vec3::new(0.0, 0.12, 0.0),
+            Vec3::new(hx, 0.12, hz),
+            id,
+            paint * 0.8,
+            Material::Painted,
+            true,
+            0.0,
+        );
+        for s in [-1.0f32, 1.0] {
+            rig.part(
+                self,
+                Vec3::new(s * (hx - t), h * 0.5 + 0.12, 0.0),
+                Vec3::new(t, h * 0.5, hz),
+                id,
+                paint,
+                Material::Painted,
+                true,
+                0.0,
+            );
+            rig.part(
+                self,
+                Vec3::new(0.0, h * 0.5 + 0.12, s * (hz - t)),
+                Vec3::new(hx - 2.0 * t, h * 0.5, t),
+                id,
+                paint,
+                Material::Painted,
+                true,
+                0.0,
+            );
+            rig.part(
+                self,
+                Vec3::new(s * (hx - t), h + 0.16, 0.0),
+                Vec3::new(t + 0.05, 0.06, hz + 0.05),
+                id,
+                paint * 0.85,
+                Material::Painted,
+                false,
+                0.0,
+            );
+            // Ribs down the sides, a lifting lug at each end.
+            for rz in [-1.2f32, 0.0, 1.2] {
+                rig.part(
+                    self,
+                    Vec3::new(s * (hx + 0.05), h * 0.5 + 0.12, rz),
+                    Vec3::new(0.05, h * 0.5, 0.09),
+                    id,
+                    paint * 0.9,
+                    Material::Painted,
+                    false,
+                    0.0,
+                );
+            }
+            rig.part(
+                self,
+                Vec3::new(0.0, h + 0.05, s * (hz + 0.1)),
+                Vec3::new(0.3, 0.12, 0.08),
+                id,
+                STEEL,
+                Material::Metal,
+                false,
+                0.0,
+            );
+        }
+        // The ore, heaped just under the rim.
+        let top = h + 0.02;
+        for _ in 0..7 {
+            let p = Vec3::new(
+                rng.range(-hx + 0.5, hx - 0.5),
+                top - rng.range(0.25, 0.5),
+                rng.range(-hz + 0.5, hz - 0.5),
+            );
+            let s = rng.range(0.25, 0.5);
+            let tip = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                rng.range(0.0, TAU),
+                rng.range(-0.5, 0.5),
+                rng.range(-0.5, 0.5),
+            );
+            let shade = rng.range(0.75, 1.05);
+            rig.part(
+                self,
+                p,
+                Vec3::new(s, s * 0.7, s * 1.2),
+                tip,
+                STONE * shade,
+                Material::Rubble,
+                false,
+                0.0,
+            );
+        }
+        rig.part(
+            self,
+            Vec3::new(0.0, top - 0.55, 0.0),
+            Vec3::new(hx - 2.0 * t - 0.02, 0.3, hz - 2.0 * t - 0.02),
+            id,
+            STONE_DARK,
+            Material::Rubble,
+            false,
+            0.0,
+        );
+        for _ in 0..4 {
+            let p = Vec3::new(
+                rng.range(-hx + 0.4, hx - 0.4),
+                top - 0.1,
+                rng.range(-hz + 0.4, hz - 0.4),
+            );
+            let tip = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                rng.range(0.0, TAU),
+                rng.range(-0.6, 0.6),
+                rng.range(-0.6, 0.6),
+            );
+            let s = rng.range(0.1, 0.18);
+            rig.part(
+                self,
+                p,
+                Vec3::new(s, s * 2.6, s),
+                tip,
+                RAW * 1.4,
+                Material::Vhaal,
+                false,
+                0.0,
+            );
+        }
+    }
+
+    /// A plasma lamp hanging `drop` m on a rod from `at`: the Ithessar's
+    /// light everywhere they work, their emblem made real. An orb of plasma
+    /// held in an almond-shaped cage of crystal prongs, pinched to a point
+    /// below and gathered into a crystal cap above.
+    fn plasma_lamp(&mut self, at: Vec3, drop: f32, size: f32) {
+        let top = at - Vec3::Y * drop;
+        if drop > 0.05 {
+            self.segment(at, top, 0.025, STEEL, Material::Metal, false);
+        }
+        // The cap the cage hangs from: a short hexagonal collar.
+        self.pipe(
+            top,
+            top - Vec3::Y * 0.12 * size,
+            0.11 * size,
+            GLASS * 1.3,
+            Material::Vhaal,
+            false,
+        );
+        let (h, r) = (0.82 * size, 0.24 * size);
+        let crown = top - Vec3::Y * 0.12 * size;
+        let tip = crown - Vec3::Y * h;
+        let mid = (crown + tip) * 0.5;
+        // The orb: a glowing core, haloed.
+        let orb = mid + Vec3::Y * 0.03 * size;
+        let core = PLASMA * 1.6;
+        self.lights.push(crate::render::PointLight {
+            pos: orb,
+            color: PLASMA.lerp(PLASMA_HOT, 0.45) * LAMP_BRIGHT * size,
+            radius: LAMP_REACH * size,
+        });
+        for k in 0..3 {
+            let a = PI / 3.0 * k as f32;
+            let axis = Vec3::new(a.cos(), 0.0, a.sin());
+            self.disc(orb, axis * 0.1 * size, 0.18 * size, core, Material::Glow);
+        }
+        self.disc(orb, Vec3::Y * 0.1 * size, 0.18 * size, core, Material::Glow);
+        // The lens: five prongs bowed out round it, swept a little like
+        // grown crystal, meeting top and bottom.
+        let n = 4;
+        for k in 0..n {
+            let a = TAU * k as f32 / n as f32;
+            let swirl = 0.35;
+            let bow = |t: f32, twist: f32| {
+                let ang = a + twist;
+                let w = r * (PI * t).sin();
+                let y = crown.y + (tip.y - crown.y) * t;
+                Vec3::new(mid.x + ang.cos() * w, y, mid.z + ang.sin() * w)
+            };
+            let pts = [
+                bow(0.0, 0.0),
+                bow(0.22, swirl * 0.3),
+                bow(0.5, swirl * 0.6),
+                bow(0.78, swirl * 0.85),
+                bow(1.0, swirl),
+            ];
+            for w in pts.windows(2) {
+                self.segment(w[0], w[1], 0.014 * size, RAW * 2.2, Material::Vhaal, false);
+            }
+        }
+        // The point it's pinched to, below, a bead of plasma on it.
+        self.segment(
+            tip + Vec3::Y * 0.04 * size,
+            tip - Vec3::Y * 0.14 * size,
+            0.03 * size,
+            GLASS * 1.3,
+            Material::Vhaal,
+            false,
+        );
+        self.disc(
+            tip - Vec3::Y * 0.16,
+            Vec3::Y * 0.025,
+            0.04,
+            PLASMA,
+            Material::Glow,
+        );
+    }
+
+    /// A plasma lamp on a wall, `size` times the usual: a steel bracket out from `at` (on the
+    /// wall's face) along `out`, the lamp hanging off its end.
+    fn wall_lamp(&mut self, at: Vec3, out: Vec2, size: f32) {
+        let o = Vec3::new(out.x, 0.0, out.y).normalize() * 0.45 * size;
+        let end = at + o;
+        // The arm, a strut under it back to the wall, a plate on the wall.
+        self.segment(at, end, 0.04, STEEL, Material::Metal, false);
+        self.segment(
+            at - Vec3::Y * 0.4,
+            at + o * 0.65,
+            0.025,
+            STEEL,
+            Material::Metal,
+            false,
+        );
+        self.oboxes.push(OBox {
+            center: Vec2::new(at.x, at.z),
+            yaw: out.x.atan2(out.y),
+            half: Vec2::new(0.12, 0.03),
+            y0: at.y - 0.5,
+            y1: at.y + 0.1,
+            color: STEEL,
+            side_mat: Material::Metal,
+            top_mat: Material::Metal,
+            solid: false,
+            ..OBox::default()
+        });
+        self.plasma_lamp(end - Vec3::Y * 0.04, 0.0, size);
+    }
+
+    /// The Ithessar emblem on a wall, in `rig`'s frame at `at`, facing its
+    /// -z: an almond-shaped lens of crystal `r` m across each way from
+    /// the middle, a plasma orb in it.
+    fn lens_emblem(&mut self, rig: &Rig, at: Vec3, r: f32) {
+        // As the HUD draws it: two arcs meeting in points either side.
+        let h = 0.58 * r;
+        let off = (r * r - h * h) / (2.0 * h);
+        let rad = off + h;
+        let a = (off / r).atan();
+        let n = 10;
+        for (cy, from, to) in [(off, PI + a, TAU - a), (-off, a, PI - a)] {
+            let p = |k: usize| {
+                let t = from + (to - from) * k as f32 / n as f32;
+                rig.point(at + Vec3::new(t.cos() * rad, cy + t.sin() * rad, 0.0))
+            };
+            for k in 0..n {
+                self.segment(p(k), p(k + 1), 0.05, GLASS * 1.3, Material::Vhaal, false);
+            }
+        }
+        let c = rig.point(at);
+        self.disc(
+            c,
+            rig.rot * Vec3::Z * -0.03,
+            0.3 * r,
+            PLASMA,
+            Material::Glow,
+        );
     }
 
     /// Hoodoos among the fins: sandstone pillars, capped with harder rock.
@@ -3371,7 +4032,7 @@ impl Map {
             (62.0, 104.0, 1.5),
             (44.0, 142.0, 1.8),
             (110.0, 92.0, 1.6),
-            (112.0, 54.0, 1.7),
+            (116.0, 46.0, 1.7),
             (100.0, 16.0, 1.5),
             (62.0, 14.0, 1.8),
             (30.0, 34.0, 1.6),
@@ -3396,6 +4057,7 @@ impl Map {
         for (p, yaw) in [
             (Vec2::new(116.0, 90.0), -0.2),
             (Vec2::new(62.0, 131.0), 1.2),
+            (Vec2::new(105.0, 116.0), 0.4),
         ] {
             self.crib(rng, p, yaw);
         }
@@ -3926,6 +4588,7 @@ fn keep_clear(p: Vec2) -> bool {
         || bank
         || floor_way
         || track_distance(p) < 6.0
+        || shed_distance(p) < 6.0
         || seg(p, BRIDGE.0, BRIDGE.1).0 < DECK_HALF + 5.0
         || RAMPS
             .iter()
@@ -3956,6 +4619,300 @@ fn roofed(p: Vec2) -> bool {
         && mesa(Vec2::new(p.x, p.y - 1.0)) > 0.9
         && !within(BOX_CUT, p, 0.0)
         && p.y < SIZE + 6.0
+}
+/// Draws `n` from `rng`, unused.
+fn skip(rng: &mut Rng, n: usize) {
+    for _ in 0..n {
+        rng.next_u64();
+    }
+}
+
+/// A stream of its own for the thing at `at`.
+fn own_rng(at: Vec2) -> Rng {
+    Rng::new(((at.x.to_bits() as u64) << 32) | at.y.to_bits() as u64)
+}
+
+/// Ithessar freight: worked crystal over dark alloy.
+const HULL: Skin = Skin::new(
+    Vec4::new(0.02, 0.05, 0.13, Material::Vhaal.id()),
+    Vec4::new(0.05, 0.12, 0.28, Material::Vhaal.id()),
+);
+/// The locomotive's canopy: a lens of clearer crystal.
+const LENS: Skin = Skin::new(
+    Vec4::new(0.06, 0.14, 0.3, Material::Vhaal.id()),
+    Vec4::new(0.12, 0.24, 0.45, Material::Vhaal.id()),
+);
+const GEAR: Skin = Skin::new(
+    Vec4::new(0.12, 0.11, 0.13, Material::Metal.id()),
+    Vec4::new(0.22, 0.2, 0.23, Material::Metal.id()),
+);
+/// Plasma showing through the seams.
+const SEAM: Skin = Skin::new(
+    Vec4::new(PLASMA.x, PLASMA.y, PLASMA.z, Material::Glow.id()),
+    Vec4::new(PLASMA.x, PLASMA.y, PLASMA.z, Material::Glow.id()),
+);
+/// Loose crystal held in the field, lit rose by the plasma in it.
+const LOOSE: Skin = Skin::new(
+    Vec4::new(0.42, 0.13, 0.3, Material::Glow.id()),
+    Vec4::new(0.6, 0.22, 0.42, Material::Glow.id()),
+);
+/// Ore from the Crag's red beds.
+const ORE: Vec3 = Vec3::new(0.36, 0.15, 0.09);
+
+/// A thin glowing bar through the points of `line` (each a center in the
+/// car's frame and its half size across there).
+fn seam_bar(m: &mut MeshData, line: &[(Vec3, Vec2)]) {
+    let rings: Vec<Vec<Vec3>> = line
+        .iter()
+        .map(|(c, h)| model::at_z(&model::rect(Vec2::new(c.x, c.y), *h, 0.005), c.z))
+        .collect();
+    model::solid(m, &rings, 0.0, SEAM);
+}
+
+/// A bogie centered `z` along the car: a pointed alloy frame on four
+/// wheels, plasma in their hubs, and the field pad on top that holds the
+/// body up.
+fn bogie(m: &mut MeshData, z: f32) {
+    let full = model::trap(0.95, 0.7, 0.4, 0.95, 0.08);
+    let end = model::trap(0.45, 0.3, 0.55, 0.9, 0.05);
+    model::solid(
+        m,
+        &[
+            model::at_z(&end, z - 1.8),
+            model::at_z(&full, z - 1.3),
+            model::at_z(&full, z + 1.3),
+            model::at_z(&end, z + 1.8),
+        ],
+        0.04,
+        GEAR,
+    );
+    for x in [-1.2f32, 1.2] {
+        for dz in [-0.9, 0.9] {
+            let c = Vec2::new(z + dz, 0.6);
+            let wheel = model::ngon(10, 0.5, c);
+            model::round(
+                m,
+                &[model::at_x(&wheel, x - 0.09), model::at_x(&wheel, x + 0.09)],
+                0.03,
+                GEAR,
+            );
+            let hub = model::ngon(6, 0.17, c);
+            let o = x + x.signum() * 0.1;
+            model::round(
+                m,
+                &[
+                    model::at_x(&hub, o),
+                    model::at_x(&hub, o + x.signum() * 0.03),
+                ],
+                0.0,
+                SEAM,
+            );
+        }
+    }
+    seam_bar(
+        m,
+        &[
+            (Vec3::new(0.0, 1.02, z - 1.0), Vec2::new(0.55, 0.03)),
+            (Vec3::new(0.0, 1.02, z + 1.0), Vec2::new(0.55, 0.03)),
+        ],
+    );
+}
+
+/// An ore car's tub: open-topped, flared, pointed at both ends like a
+/// lens, two bands of crystal with plasma glowing between them, on a keel.
+/// A blade stands up off each point.
+fn ore_tub(m: &mut MeshData) {
+    // Plan outline (x, z), going round: the flanks, then a point.
+    let hex = |hw: f32, hz: f32, tip: f32| {
+        [
+            Vec2::new(hw, -hz),
+            Vec2::new(hw, hz),
+            Vec2::new(0.0, tip),
+            Vec2::new(-hw, hz),
+            Vec2::new(-hw, -hz),
+            Vec2::new(0.0, -tip),
+        ]
+    };
+    let (bot, rim) = (hex(1.2, 2.7, 3.7), hex(1.75, 3.25, 4.45));
+    let (y0, y1) = (1.4, 3.45);
+    let at = |i: usize, t: f32, inset: f32| {
+        let p = bot[i % 6].lerp(rim[i % 6], t) * inset;
+        Vec3::new(p.x, y0 + (y1 - y0) * t, p.y)
+    };
+    let inside = Vec3::new(0.0, 2.4, 0.0);
+    for i in 0..6 {
+        for (t0, t1) in [(0.0, 0.46), (0.54, 1.0)] {
+            model::plate(
+                m,
+                [
+                    at(i, t0, 1.0),
+                    at(i + 1, t0, 1.0),
+                    at(i + 1, t1, 1.0),
+                    at(i, t1, 1.0),
+                ],
+                0.12,
+                inside,
+                HULL,
+            );
+        }
+        model::plate(
+            m,
+            [
+                at(i, 0.44, 0.97),
+                at(i + 1, 0.44, 0.97),
+                at(i + 1, 0.56, 0.97),
+                at(i, 0.56, 0.97),
+            ],
+            0.04,
+            inside,
+            SEAM,
+        );
+    }
+    let keel: Vec<Vec2> = bot.iter().map(|p| *p * Vec2::new(0.35, 0.8)).collect();
+    model::solid(
+        m,
+        &[model::at_y(&keel, 1.12), model::at_y(&bot, y0 + 0.02)],
+        0.03,
+        HULL,
+    );
+    // Inside, the floor of the load (the lumps heap up on it).
+    let bed: Vec<Vec2> = rim.iter().map(|p| *p * 0.9).collect();
+    let floor: Vec<Vec2> = bot.iter().map(|p| *p * 0.92).collect();
+    model::solid(
+        m,
+        &[model::at_y(&floor, y0 + 0.1), model::at_y(&bed, 3.2)],
+        0.02,
+        Skin::new(
+            ORE.extend(Material::Rubble.id()),
+            (ORE * 1.15).extend(Material::Rubble.id()),
+        ),
+    );
+    for s in [-1.0f32, 1.0] {
+        model::shard(
+            m,
+            Vec3::new(0.0, 2.7, s * 4.15),
+            Vec3::new(0.0, 1.0, s * 0.6),
+            1.7,
+            0.17,
+            HULL,
+        );
+    }
+}
+
+/// The locomotive's body, prow toward +z: two long blades of crystal split
+/// down the spine, the plasma that drives it glowing up through the split,
+/// raking down to a knife-edged prow; a lens of clearer crystal over the
+/// spine aft, and loose crystals riding the field along the prow.
+fn locomotive(m: &mut MeshData) {
+    // One blade's section (x, y), the right one; the left mirrors it.
+    let blade = [
+        Vec2::new(0.12, 1.25),
+        Vec2::new(1.2, 1.3),
+        Vec2::new(1.72, 2.3),
+        Vec2::new(1.45, 3.3),
+        Vec2::new(0.32, 4.0),
+        Vec2::new(0.12, 3.75),
+    ];
+    // Stations along it: (z, width, height) as fractions of the full section.
+    let stations = [
+        (-6.5, 0.85, 0.82),
+        (-6.0, 1.0, 1.0),
+        (1.6, 1.0, 1.0),
+        (4.4, 0.72, 0.62),
+        (6.3, 0.26, 0.24),
+        (6.9, 0.06, 0.1),
+    ];
+    let foot = 1.55;
+    for side in [-1.0f32, 1.0] {
+        let rings: Vec<Vec<Vec3>> = stations
+            .iter()
+            .map(|&(z, sx, sy)| {
+                blade
+                    .iter()
+                    .map(|p| Vec3::new(side * p.x * sx, foot + (p.y - foot) * sy, z))
+                    .collect()
+            })
+            .collect();
+        model::solid(m, &rings, 0.03, HULL);
+        // Plasma along the chine, where the flank turns in.
+        seam_bar(
+            m,
+            &[
+                (Vec3::new(side * 1.74, 2.3, -6.0), Vec2::new(0.03, 0.05)),
+                (Vec3::new(side * 1.74, 2.3, 1.6), Vec2::new(0.03, 0.05)),
+                (
+                    Vec3::new(side * 1.26, foot + 0.75 * 0.62, 4.4),
+                    Vec2::new(0.03, 0.04),
+                ),
+            ],
+        );
+    }
+    // The plasma in the split.
+    seam_bar(
+        m,
+        &[
+            (Vec3::new(0.0, 2.65, -6.0), Vec2::new(0.1, 1.1)),
+            (Vec3::new(0.0, 2.65, 1.6), Vec2::new(0.1, 1.1)),
+            (Vec3::new(0.0, 2.2, 4.4), Vec2::new(0.07, 0.75)),
+            (Vec3::new(0.0, 1.8, 6.2), Vec2::new(0.025, 0.25)),
+        ],
+    );
+    // The canopy lens, over the spine aft, raked forward.
+    let lens = [
+        Vec2::new(-0.9, 3.6),
+        Vec2::new(0.9, 3.6),
+        Vec2::new(1.05, 4.25),
+        Vec2::new(0.5, 4.85),
+        Vec2::new(-0.5, 4.85),
+        Vec2::new(-1.05, 4.25),
+    ];
+    let lens_at = |z: f32, s: f32, drop: f32| -> Vec<Vec3> {
+        lens.iter()
+            .map(|p| Vec3::new(p.x * s, 3.6 + (p.y - 3.6) * s - drop, z))
+            .collect()
+    };
+    model::solid(
+        m,
+        &[
+            lens_at(-4.9, 0.55, 0.0),
+            lens_at(-4.4, 1.0, 0.0),
+            lens_at(-1.8, 1.0, 0.0),
+            lens_at(0.4, 0.35, 0.1),
+        ],
+        0.03,
+        LENS,
+    );
+    for s in [-1.0f32, 1.0] {
+        seam_bar(
+            m,
+            &[
+                (Vec3::new(s * 1.07, 4.25, -4.3), Vec2::new(0.02, 0.04)),
+                (Vec3::new(s * 1.07, 4.25, -1.9), Vec2::new(0.02, 0.04)),
+            ],
+        );
+        // The horns that hold the drive's plasma, aft of the canopy.
+        model::shard(
+            m,
+            Vec3::new(s * 0.55, 3.7, -5.4),
+            Vec3::new(s * 0.35, 1.0, 0.0),
+            1.75,
+            0.16,
+            HULL,
+        );
+        // Loose crystals riding the field along the prow, points forward.
+        for k in 0..2 {
+            let z = 2.0 + k as f32 * 1.6;
+            let x = 2.15 - (z - 1.6) * 0.2;
+            model::shard(
+                m,
+                Vec3::new(s * x, 2.7 - k as f32 * 0.3, z),
+                Vec3::new(s * 0.1, -0.06, 1.0),
+                0.8 - k as f32 * 0.15,
+                0.07,
+                LOOSE,
+            );
+        }
+    }
 }
 
 /// A high room's roof over a point in it (not out in its walls), if it's
@@ -4115,7 +5072,7 @@ type RoofRun = (f32, f32, (bool, f32));
 
 /// Length of the track up to its point `k`.
 fn track_len(k: usize) -> f32 {
-    TRACK[..=k].windows(2).map(|w| w[0].distance(w[1])).sum()
+    line_len(&TRACK, k)
 }
 
 /// Over the bridge's deck (not its end plates).
@@ -4434,7 +5391,30 @@ mod tests {
             for (s, e, _) in FORDS {
                 for (a, b) in [(s, e), (e, s)] {
                     let dir = (b - a).normalize();
-                    let (end, low, _) = drive(hull, a - dir * 4.0, yaw_along(dir), 12.0);
+                    // Until it's across (then it's done: what's strewn on
+                    // past the far top isn't the crossing).
+                    let mut w = crate::sim::World::empty(Map::mine());
+                    w.spawn_tank(
+                        Vec3::ONE,
+                        a - dir * 4.0,
+                        yaw_along(dir),
+                        hull,
+                        crate::sim::TurretKind::Kontos,
+                    );
+                    let cmd = crate::sim::Command {
+                        throttle: 1.0,
+                        ..Default::default()
+                    };
+                    let mut low = f32::INFINITY;
+                    for _ in 0..(12.0 / crate::game::DT) as usize {
+                        w.step(&[cmd]);
+                        let p = w.tanks[0].pos;
+                        low = low.min(p.y);
+                        if (Vec2::new(p.x, p.z) - b).dot(dir) > 2.0 {
+                            break;
+                        }
+                    }
+                    let end = w.tanks[0].pos;
                     assert!(
                         low < -WASH_DEPTH + 1.5,
                         "{hull:?} never got down into the wash from {a} ({end})"
@@ -4581,6 +5561,39 @@ mod tests {
     /// Cover at tank scale everywhere: from any open ground (bar what's
     /// kept clear on purpose: spawns, track, ramps, ways up) there's
     /// something to hide behind within a short dash.
+    /// Where a tank `local` in the warehouse's frame (across, along) is in
+    /// the world, and the yaw that points it `dir` in that frame.
+    fn in_shed(local: Vec2, dir: Vec2) -> (Vec2, f32) {
+        let (at, along) = shed();
+        let across = Vec2::new(along.y, -along.x);
+        let w = |v: Vec2| across * v.x + along * v.y;
+        (at + w(local), yaw_along(w(dir)))
+    }
+
+    /// Every hull drives in at one side door, across between the bins and
+    /// out of the other.
+    #[test]
+    fn tanks_drive_through_the_warehouse() {
+        for hull in HULLS {
+            let (at, yaw) = in_shed(Vec2::new(-SHED_HALF.x - 6.0, -1.0), Vec2::X);
+            let (end, _, high) = drive(hull, at, yaw, 8.0);
+            let p = shed_local(Vec2::new(end.x, end.z));
+            assert!(p.x > SHED_HALF.x + 1.0, "{hull:?} only got to {p} (local)");
+            assert!(high < 2.0, "{hull:?} went up to {high}");
+        }
+    }
+
+    /// Every hull drives in at the rail door, along the line past the middle.
+    #[test]
+    fn tanks_drive_in_at_the_rail_door() {
+        for hull in HULLS {
+            let (at, yaw) = in_shed(Vec2::new(0.0, -SHED_HALF.y - 8.0), Vec2::Y);
+            let (end, _, _) = drive(hull, at, yaw, 6.0);
+            let p = shed_local(Vec2::new(end.x, end.z));
+            assert!(p.y > -2.0, "{hull:?} only got to {p} (local)");
+        }
+    }
+
     #[test]
     fn cover_everywhere() {
         let m = Map::mine();

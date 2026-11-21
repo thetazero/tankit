@@ -628,6 +628,8 @@ pub struct Map {
     /// Beams of plasma held on for good (a borer cutting rock): drawn with
     /// the effects, and death to any tank that drives into one.
     pub beams: Vec<Beam>,
+    /// Lamps: they light what faces them.
+    pub lights: Vec<crate::render::PointLight>,
     /// Maps up high (a mesa): a tank that drops below this height has gone
     /// over the edge and dies on impact.
     pub fall_y: Option<f32>,
@@ -1049,6 +1051,7 @@ impl Map {
             crystals: Vec::new(),
             glow_paths: Vec::new(),
             beams: Vec::new(),
+            lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
             routes: Vec::new(),

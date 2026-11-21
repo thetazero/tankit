@@ -209,6 +209,7 @@ impl Map {
             crystals: Vec::new(),
             glow_paths: Vec::new(),
             beams: Vec::new(),
+            lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
             routes: Vec::new(),
