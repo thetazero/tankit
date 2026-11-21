@@ -72,7 +72,11 @@ pub fn map_mesh(map: &Map) -> MeshData {
     // Each is drawn grown by its own fraction of a millimetre instead, never
     // the same as any box it touches: the depth buffer tells them apart at
     // any range, and nothing visibly moves.
-    let oboxes: Vec<&crate::map::OBox> = map.oboxes.iter().filter(|o| !o.hidden).collect();
+    let oboxes: Vec<&crate::map::OBox> = map
+        .oboxes
+        .iter()
+        .filter(|o| !o.hidden && !o.sculpted)
+        .collect();
     let bounds: Vec<(Vec3, Vec3)> = map
         .boxes
         .iter()
@@ -387,12 +391,7 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
                 h(ix, iz),
                 t.origin.y + iz as f32 * t.cell,
             );
-            let n = Vec3::new(
-                h(ix - 1, iz) - h(ix + 1, iz),
-                2.0 * t.cell,
-                h(ix, iz - 1) - h(ix, iz + 1),
-            )
-            .normalize();
+            let n = t.normal(ix as usize, iz as usize);
             m.verts.push(Vertex {
                 pos: p.to_array(),
                 normal: n.to_array(),

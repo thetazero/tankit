@@ -117,6 +117,7 @@ impl Frame<'_> {
             broken: false,
             ramp: false,
             hidden: false,
+            sculpted: false,
         });
     }
 
@@ -190,6 +191,7 @@ impl Frame<'_> {
             broken: false,
             ramp: true,
             hidden: false,
+            sculpted: false,
         });
     }
 
@@ -213,6 +215,7 @@ impl Frame<'_> {
             broken: false,
             ramp: false,
             hidden: false,
+            sculpted: false,
         });
     }
 }

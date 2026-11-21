@@ -50,7 +50,7 @@ use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::crag;
 use super::landmarks::Rig;
-use super::valley::{noise, noise2};
+use super::valley::{hash, noise, noise2};
 use super::vault;
 use super::{Ambient, Core, Crystal, Map, OBox, Terrain};
 use crate::faction::Faction;
@@ -348,6 +348,8 @@ const FINS: [(Vec2, Vec2, f32); 4] = [
 /// Sandstone, in a few shades; the desert floor.
 const STONE: Vec3 = Vec3::new(0.58, 0.34, 0.22);
 const STONE_DARK: Vec3 = Vec3::new(0.4, 0.23, 0.15);
+/// Marks the stand-ins for the blocks that used to stand along the Face.
+const FACE_BLOCK: Vec3 = Vec3::new(0.123, 0.456, 0.789);
 const STONE_PALE: Vec3 = Vec3::new(0.7, 0.5, 0.34);
 const SAND: Vec3 = Vec3::new(0.66, 0.46, 0.3);
 /// Mine waste: pale crushed rock.
@@ -362,6 +364,8 @@ const RAW: Vec3 = Vec3::new(0.1, 0.125, 0.17);
 const STEEL: Vec3 = Vec3::new(0.2, 0.21, 0.24);
 const RUST: Vec3 = Vec3::new(0.36, 0.22, 0.14);
 const TIMBER: Vec3 = Vec3::new(0.42, 0.32, 0.22);
+/// Black iron, gone brown at the edges: cart wheels and binding.
+const IRON: Vec3 = Vec3::new(0.16, 0.13, 0.11);
 const CONCRETE: Vec3 = Vec3::new(0.6, 0.57, 0.52);
 /// Mine machinery's paint, faded in the sun.
 const MACHINE: Vec3 = Vec3::new(0.56, 0.42, 0.2);
@@ -585,6 +589,17 @@ fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
 /// Play ground: dunes on the flats, the mesa along the north with the mine
 /// cut out under it, the wash across under it, the dump and the fins.
 pub fn ground(x: f32, z: f32) -> f32 {
+    surface(x, z, true)
+}
+
+/// The rock the mine was cut from: the ground as if there were no caves
+/// under the mesa. Their roofs are drawn to it (`roof_lid`), and the ground
+/// round them is shaded by it.
+fn uncut(p: Vec2) -> f32 {
+    surface(p.x, p.y, false)
+}
+
+fn surface(x: f32, z: f32, caves: bool) -> f32 {
     let p = Vec2::new(x, z);
     let m = mesa(p);
     let dunes = 0.45 * (0.061 * x + 0.3).sin() * (0.047 * z).cos()
@@ -611,8 +626,12 @@ pub fn ground(x: f32, z: f32) -> f32 {
         * smoothstep(4.0, 10.0, rect_distance(BOX_CUT, p))
         * smoothstep(3.0, 8.0, crag_depth(p));
     let relief = relief * (1.0 - c) + crag_relief;
-    let mut rock =
-        (TOP * m + (CRAG_TOP - TOP) * c + relief) * smoothstep(0.0, 2.0, cave_distance(p));
+    let cut = if caves {
+        smoothstep(0.0, 2.0, cave_distance(p))
+    } else {
+        1.0
+    };
+    let mut rock = (TOP * m + (CRAG_TOP - TOP) * c + relief) * cut;
     // The box cut, down through the rock.
     let cut = rect_distance(BOX_CUT, p);
     rock = rock
@@ -707,13 +726,15 @@ fn paint(x: f32, z: f32, h: f32, slope: f32) -> Vec3 {
         Vec3::new(0.5, 0.38, 0.28) * mottle,
         0.6 * (1.0 - smoothstep(2.5, 4.0, way)),
     );
-    // Ballast along the track.
-    c = c.lerp(
-        Vec3::new(0.36, 0.32, 0.3),
-        1.0 - smoothstep(2.4, 3.6, track_distance(p)),
-    );
-    // The mine's floors.
-    if mesa(p) > 0.5 && cave_distance(p) < 0.5 {
+    // Ballast along the track (not on the rock over the adit).
+    if h < ROOF.0 {
+        c = c.lerp(
+            Vec3::new(0.36, 0.32, 0.3),
+            1.0 - smoothstep(2.4, 3.6, track_distance(p)),
+        );
+    }
+    // The mine's floors (not the roofs over them).
+    if mesa(p) > 0.5 && cave_distance(p) < 0.5 && h < ROOF.0 {
         c = STONE_DARK * 0.8 * mottle;
     }
     c
@@ -800,6 +821,27 @@ impl Map {
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 111, 111, ground);
         terrain.color = Vec3::ONE;
         terrain.material = Material::Sand;
+        // Round the caves the ground dips away under the roofs (drawn over
+        // it, see `roof_lid` and `crag_lid`): shade it as the rock it was
+        // cut from, not as a slope down into the cave, which ringed every
+        // roof with a dark edge.
+        terrain.normals = (0..terrain.nz)
+            .flat_map(|iz| (0..terrain.nx).map(move |ix| (ix, iz)))
+            .map(|(ix, iz)| {
+                let p = Vec2::new(ix as f32, iz as f32) * terrain.cell;
+                if in_cave(p) || cave_distance(p) > CAVE_WALL + 3.0 {
+                    return terrain.normal(ix, iz);
+                }
+                let e = terrain.cell;
+                let (dx, dz) = (Vec2::new(e, 0.0), Vec2::new(0.0, e));
+                Vec3::new(
+                    uncut(p - dx) - uncut(p + dx),
+                    2.0 * e,
+                    uncut(p - dz) - uncut(p + dz),
+                )
+                .normalize()
+            })
+            .collect();
         terrain.paint(paint);
         map.terrain = Some(terrain);
         // The ways round first (they're on the ground and the deck), so
@@ -842,8 +884,11 @@ impl Map {
         map.mine_ithessar_base(&mut rng);
         map.mine_resonant_base(&mut rng);
         map.edge_rocks(&mut rng);
+        map.clear_face_blocks();
+        map.mesa_face();
         map.mine_spawns();
         map.mine_horizon(&mut rng);
+        map.rock_lumps();
         map.mine_sounds();
         map
     }
@@ -923,13 +968,28 @@ impl Map {
         });
     }
 
-    /// A tank-sized rock with rubble round it: cover.
+    /// A rock bigger than a tank, often with a second block broken off
+    /// against it, and a piece of rubble: cover. It grows bigger only where there's room for it (off the ways
+    /// round, the fords, the doors): it stays as asked for otherwise.
     fn rock_pile(&mut self, rng: &mut Rng, at: Vec2, size: f32) {
+        let size = if self.room(at, size * 1.4 + 1.0) {
+            size * 1.25
+        } else {
+            size
+        };
         self.boulder(rng, at, size, true);
-        for _ in 0..3 {
+        if rng.chance(0.5) {
             let a = rng.range(0.0, TAU);
-            let q = at + Vec2::new(a.cos(), a.sin()) * rng.range(size + 0.8, size + 3.0);
-            let s = rng.range(0.3, 0.6);
+            let q = at + Vec2::new(a.cos(), a.sin()) * size * rng.range(1.0, 1.3);
+            let s = size * rng.range(0.55, 0.75);
+            if self.room(q, s * 1.2 + 1.0) {
+                self.boulder(rng, q, s, true);
+            }
+        }
+        if rng.chance(0.6) {
+            let a = rng.range(0.0, TAU);
+            let q = at + Vec2::new(a.cos(), a.sin()) * rng.range(size + 1.0, size + 3.0);
+            let s = rng.range(0.4, 0.7);
             self.boulder(rng, q, s, false);
         }
     }
@@ -1070,34 +1130,7 @@ impl Map {
         let mut mesh = std::mem::take(&mut self.sculpted);
         let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
         self.sculpted = mesh;
-        // Colliders: one thin slab per stretch of face, from its most
-        // forward point at tank height back into the rock.
-        for k in (0..feet.len() - 1).step_by(2) {
-            let j = (k + 2).min(feet.len() - 1);
-            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
-                continue;
-            };
-            let along = b - a;
-            let len = along.length();
-            if len < 1e-3 || len > 4.0 {
-                continue;
-            }
-            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
-            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
-            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
-            let depth = 3.0;
-            let dir = along / len;
-            let floor = feet[k].floor.min(feet[j].floor);
-            self.oboxes.push(OBox {
-                center: mid - nrm * depth * 0.5,
-                yaw: (-dir.y).atan2(dir.x),
-                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
-                y0: floor - 3.0,
-                y1: floor + 10.0,
-                hidden: true,
-                ..OBox::default()
-            });
-        }
+        self.face_colliders(&feet, &fronts);
         // Lintels over the mouths in the Face: rock from the face back to
         // where the tunnel's roof starts.
         for (a, b) in MOUTHS {
@@ -1159,6 +1192,110 @@ impl Map {
             rng.index(3);
             cuts += 1;
         }
+    }
+
+    /// Colliders for a sculpted face: one thin slab per stretch of it,
+    /// from its most forward point at tank height back into the rock.
+    fn face_colliders(&mut self, feet: &[crag::Foot], fronts: &[Option<Vec2>]) {
+        for k in (0..feet.len() - 1).step_by(2) {
+            let j = (k + 2).min(feet.len() - 1);
+            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
+                continue;
+            };
+            let along = b - a;
+            let len = along.length();
+            if len < 1e-3 || len > 4.0 {
+                continue;
+            }
+            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
+            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
+            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
+            let depth = 3.0;
+            let dir = along / len;
+            let floor = feet[k].floor.min(feet[j].floor);
+            self.oboxes.push(OBox {
+                center: mid - nrm * depth * 0.5,
+                yaw: (-dir.y).atan2(dir.x),
+                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
+                y0: floor - 3.0,
+                y1: floor + 10.0,
+                hidden: true,
+                ..OBox::default()
+            });
+        }
+    }
+
+    /// The Face out from under the Crag, sculpted as one rock face like the
+    /// Crag's: the mesa's cliff, its lip at the mesa's top, hanging down to
+    /// a lintel over the west adit and the breach, petering out where the
+    /// mesa slopes down at its west end and into the scree.
+    fn mesa_face(&mut self) {
+        let mouths = [CAVES[3], CAVES[5]];
+        // The stretches: west of the Crag, between it and the scree, and
+        // east of the scree.
+        let spans = [
+            (-6.0, crag_west(face(80.0)) + 1.0),
+            (crag_east(face(141.0)) - 1.0, SCREE.0 + 4.0),
+            (SCREE.1 - 4.0, SIZE + 6.0),
+        ];
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        let mut all_feet = Vec::new();
+        let mut all_fronts = Vec::new();
+        for (x0, x1) in spans {
+            let mut corners = Vec::new();
+            let mut x = x0;
+            while x < x1 {
+                corners.push(Vec2::new(x, face(x) + 1.2));
+                x += 2.0;
+            }
+            corners.push(Vec2::new(x1, face(x1) + 1.2));
+            let pts = crag::resample(&corners, 0.7, 1.2);
+            let mut feet = Vec::with_capacity(pts.len());
+            let mut along = x0 * 1.7 + 300.0;
+            for (i, &(p, dir)) in pts.iter().enumerate() {
+                if i > 0 {
+                    along += p.distance(pts[i - 1].0);
+                }
+                let nrm = Vec2::new(dir.y, -dir.x);
+                let full = mesa(Vec2::new(p.x, face(p.x) + FACE_RISE + 1.0)) * (1.0 - scree(p.x));
+                let base = self.level(p + nrm * 2.5);
+                let lip = TOP * full + 0.8 * (noise(along / 6.0, 31) - 0.5);
+                let mouth = mouths.iter().any(|(a, b)| p.x > a.x && p.x < b.x);
+                let by_mouth = mouths
+                    .iter()
+                    .map(|(a, b)| (a.x - p.x).max(p.x - b.x).max(0.0))
+                    .fold(f32::INFINITY, f32::min);
+                // Low where the mesa slopes away: no face at all.
+                if lip - base < 0.3 && !mouth {
+                    if feet.len() > 1 {
+                        all_fronts.extend(crag::sculpt(&mut mesh, &feet, &|q| {
+                            self.ground_height(q.x, q.y)
+                        }));
+                        all_feet.append(&mut feet);
+                    }
+                    feet.clear();
+                    continue;
+                }
+                feet.push(crag::Foot {
+                    p,
+                    nrm,
+                    along,
+                    floor: if mouth { ROOF.0 } else { base },
+                    lip,
+                    cut: -100.0,
+                    mouth,
+                    relief: 0.8 * smoothstep(0.5, 5.0, by_mouth),
+                });
+            }
+            if feet.len() > 1 {
+                all_fronts.extend(crag::sculpt(&mut mesh, &feet, &|q| {
+                    self.ground_height(q.x, q.y)
+                }));
+                all_feet.append(&mut feet);
+            }
+        }
+        self.sculpted = mesh;
+        self.face_colliders(&all_feet, &all_fronts);
     }
 
     /// The Crag's top over its tunnels: drawn as the ground there would be,
@@ -1760,14 +1897,19 @@ impl Map {
                 [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.05),
                 0.5,
             );
+            // Only a stand-in, so what's placed round it after stays where
+            // it was: the Face is sculpted (`mesa_face`), and these blocks
+            // that used to stand along it go once the map is laid out
+            // (`clear_face_blocks`).
             if let Some(o) = self.oboxes.last_mut() {
-                o.broken = true;
+                o.hidden = true;
+                o.color = FACE_BLOCK;
             }
             // Blocks fallen out of it.
             if rng.chance(0.45) {
                 let q = p - Vec2::new(rng.range(-2.0, 2.0), rng.range(3.5, 6.0));
                 if wash(q) > -0.3 {
-                    let s = rng.range(0.6, 1.6);
+                    let s = rng.range(1.0, 2.0);
                     self.boulder(rng, q, s, s > 1.4);
                 }
             }
@@ -1797,11 +1939,11 @@ impl Map {
             {
                 continue;
             }
-            let big = placed % 3 == 0;
+            let big = placed % 3 != 2;
             let s = if big {
-                rng.range(1.6, 2.4)
+                rng.range(1.8, 2.8)
             } else {
-                rng.range(0.5, 1.1)
+                rng.range(0.7, 1.2)
             };
             self.boulder(rng, p, s, big);
             placed += 1;
@@ -1924,9 +2066,15 @@ impl Map {
                 side_mat: Material::Rubble,
                 top_mat: Material::Sand,
                 ramp: true,
+                // Out on the mesa the roof is drawn as ground (`roof_lid`):
+                // a slab there stood out as a flat rectangle with straight
+                // sides, stepping out over the Face's lip. Under the Crag
+                // its face and lid hide the slab.
+                hidden: !tall,
                 ..OBox::default()
             });
         }
+        self.roof_lid();
         self.cave_lining();
         // Lamps: plasma in a crystal cage on the walls every 12 m (the
         // Resonant's breach is lit their own way), and veins of raw crystal
@@ -2017,6 +2165,163 @@ impl Map {
             (67.6, 158.0, 0.0),
         ] {
             self.ore_cart(rng, Vec2::new(x, z), yaw);
+        }
+    }
+
+    /// The cave roofs out on the mesa, drawn as ground over their hidden
+    /// slabs: level with the rock round them and painted like it, their
+    /// edges tucked under the terrain where they meet it, drooping with the
+    /// Face's lip instead of stepping out over it. Rock below, down to the
+    /// ceiling the caves see.
+    fn roof_lid(&mut self) {
+        let cell = 2.0;
+        let origin = Vec2::new(56.0, 136.0);
+        let (nx, nz) = (54i32, 45i32);
+        let at = |ix: i32, iz: i32| origin + Vec2::new(ix as f32, iz as f32) * cell;
+        // Over the mouths it runs on down the Face to the roof's underside,
+        // so the mouth's top is the cliff, not a slab's 2 m steps.
+        let lidded = |ix: i32, iz: i32| {
+            (0..nx).contains(&ix) && (0..nz).contains(&iz) && {
+                let a = at(ix, iz);
+                let c = a + Vec2::splat(cell * 0.5);
+                let over_mouth = cave_distance(c) < CAVE_WALL + 0.5
+                    && !within(BOX_CUT, c, 0.0)
+                    && [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+                        .iter()
+                        .any(|&(u, v)| uncut(a + Vec2::new(u, v) * cell) > ROOF.0 + 0.2);
+                (roofed(c) || over_mouth) && !under_crag(c)
+            }
+        };
+        // The rock's top at a corner, as if no cave were under it.
+        let floor = ROOF.0;
+        let height = |ix: i32, iz: i32| {
+            let p = at(ix, iz);
+            let rock = uncut(p).clamp(floor, ROOF.1);
+            let inner = lidded(ix - 1, iz - 1)
+                && lidded(ix, iz - 1)
+                && lidded(ix - 1, iz)
+                && lidded(ix, iz);
+            let g = ground(p.x, p.y);
+            if !inner && g > rock - 0.3 {
+                // Meeting the terrain: on its vertex (the grids line up),
+                // so there's no seam.
+                g
+            } else {
+                rock
+            }
+        };
+        let point = |ix: i32, iz: i32| {
+            let p = at(ix, iz);
+            Vec3::new(p.x, height(ix, iz), p.y)
+        };
+        // Shaded like the ground round it (see `build_mine`).
+        let normal = |ix: i32, iz: i32| {
+            let p = at(ix, iz);
+            let (dx, dz) = (Vec2::new(cell, 0.0), Vec2::new(0.0, cell));
+            let h = |q: Vec2| uncut(q).clamp(floor, ROOF.1);
+            Vec3::new(h(p - dx) - h(p + dx), 2.0 * cell, h(p - dz) - h(p + dz)).normalize()
+        };
+        let m = &mut self.sculpted;
+        // A convex polygon, its corners in order round it, wound to face
+        // along `n`.
+        let mut poly = |q: &[Vec3], n: &[Vec3], c: &[Vec3], mat: Material| {
+            if q.len() < 3 {
+                return;
+            }
+            let base = m.verts.len() as u32;
+            for k in 0..q.len() {
+                m.verts.push(crate::render::mesh::Vertex {
+                    pos: q[k].to_array(),
+                    normal: n[k].to_array(),
+                    color: c[k].extend(mat.id()).to_array(),
+                });
+            }
+            let flip = (q[1] - q[0]).cross(q[2] - q[0]).dot(n[0]) < 0.0;
+            for k in 1..q.len() as u32 - 1 {
+                let (b, c) = if flip { (k + 1, k) } else { (k, k + 1) };
+                m.indices.extend([base, base + b, base + c]);
+            }
+        };
+        let rock = |p: Vec3, k: f32| {
+            STONE.lerp(STONE_DARK, k) * (1.0 + 0.06 * (0.37 * p.x + 0.8 * (0.11 * p.z).sin()).sin())
+        };
+        // How far a corner's rock stands over the roof's underside: the lid
+        // is cut off where that's 0, on the Face over a mouth.
+        let over = |ix: i32, iz: i32| uncut(at(ix, iz)) - ROOF.0;
+        let cross = |a: Vec3, b: Vec3, fa: f32, fb: f32| {
+            let t = fa / (fa - fb);
+            let p = a.lerp(b, t);
+            Vec3::new(p.x, ROOF.0, p.z)
+        };
+        for iz in 0..nz {
+            for ix in 0..nx {
+                if !lidded(ix, iz) {
+                    continue;
+                }
+                let ids = [(ix, iz), (ix + 1, iz), (ix + 1, iz + 1), (ix, iz + 1)];
+                let q = ids.map(|(i, j)| point(i, j));
+                let n = ids.map(|(i, j)| normal(i, j));
+                let f = ids.map(|(i, j)| over(i, j));
+                // The cell, cut back to where the rock stands over the
+                // underside.
+                let (mut top, mut norms) = (Vec::new(), Vec::new());
+                for k in 0..4 {
+                    let l = (k + 1) % 4;
+                    if f[k] >= 0.0 {
+                        top.push(q[k]);
+                        norms.push(n[k]);
+                    }
+                    if (f[k] >= 0.0) != (f[l] >= 0.0) {
+                        top.push(cross(q[k], q[l], f[k], f[l]));
+                        norms.push(n[k].lerp(n[l], 0.5).normalize());
+                    }
+                }
+                let colors: Vec<Vec3> = top
+                    .iter()
+                    .zip(&norms)
+                    .map(|(p, n)| paint(p.x, p.z, p.y, Vec2::new(n.x, n.z).length() / n.y))
+                    .collect();
+                poly(&top, &norms, &colors, Material::Sand);
+                // The cave's ceiling.
+                let under: Vec<Vec3> = top.iter().map(|p| Vec3::new(p.x, ROOF.0, p.z)).collect();
+                let shade: Vec<Vec3> = under.iter().map(|&p| rock(p, 0.6)).collect();
+                poly(
+                    &under,
+                    &vec![Vec3::NEG_Y; under.len()],
+                    &shade,
+                    Material::Rubble,
+                );
+                // Rock faces where the lid ends (in the terrain, or over a
+                // mouth back from the Face).
+                for (k, (di, dj)) in [(0, -1), (1, 0), (0, 1), (-1, 0)].into_iter().enumerate() {
+                    let l = (k + 1) % 4;
+                    if lidded(ix + di, iz + dj) || (f[k] < 0.0 && f[l] < 0.0) {
+                        continue;
+                    }
+                    let a = if f[k] >= 0.0 {
+                        q[k]
+                    } else {
+                        cross(q[k], q[l], f[k], f[l])
+                    };
+                    let b = if f[l] >= 0.0 {
+                        q[l]
+                    } else {
+                        cross(q[k], q[l], f[k], f[l])
+                    };
+                    if a.y.max(b.y) < ROOF.0 + 0.01 {
+                        continue;
+                    }
+                    let side = [
+                        a,
+                        b,
+                        Vec3::new(b.x, ROOF.0, b.z),
+                        Vec3::new(a.x, ROOF.0, a.z),
+                    ];
+                    let out = Vec3::new(di as f32, 0.0, dj as f32);
+                    let shade = side.map(|p| rock(p, 0.2));
+                    poly(&side, &[out; 4], &shade, Material::Rubble);
+                }
+            }
         }
     }
 
@@ -2701,58 +3006,205 @@ impl Map {
         }
     }
 
-    /// A small ore cart at `at` heading `yaw`: a steel tub on a steel
-    /// frame, full of raw crystal.
+    /// A small ore cart at `at` heading `yaw`: an open-top wooden tub,
+    /// plank sides bound in iron, on an iron frame and four iron wheels,
+    /// heaped over the rim with ore from the Crag. A plain box the size of
+    /// the tub is what tanks hit and hide behind.
     fn ore_cart(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
+        // Its detail comes from its own stream; the map's advances by what
+        // the old cart drew from it (three shards of eight draws), so
+        // everything built after keeps its layout.
+        skip(rng, 24);
+        let rng = &mut own_rng(at);
         let g = self.ground_height(at.x, at.y);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
             rot: Quat::from_rotation_y(yaw),
         };
-        rig.part(
+        let part = |m: &mut Map, c: Vec3, h: Vec3, color: Vec3, mat: Material, solid: bool| {
+            rig.part(m, c, h, Quat::IDENTITY, color, mat, solid, 0.0);
+        };
+        // The frame under the tub, and the axles.
+        part(
             self,
-            Vec3::new(0.0, 0.5, 0.0),
-            Vec3::new(0.9, 0.25, 1.5),
-            Quat::IDENTITY,
-            STEEL,
-            Material::Metal,
-            true,
-            0.0,
+            Vec3::new(0.0, 0.62, 0.0),
+            Vec3::new(0.7, 0.1, 1.45),
+            IRON,
+            Material::Rust,
+            false,
         );
-        rig.part(
-            self,
-            Vec3::new(0.0, 1.35, 0.0),
-            Vec3::new(1.05, 0.6, 1.6),
-            Quat::IDENTITY,
-            RUST * 1.1,
-            Material::Painted,
-            true,
-            0.0,
-        );
-        for (x, z) in [(-0.95, -1.0), (0.95, -1.0), (-0.95, 1.0), (0.95, 1.0)] {
-            let c = rig.point(Vec3::new(x, 0.35, z));
-            self.disc(
-                c,
-                rig.rot * Vec3::X * 0.08,
-                0.32,
-                STEEL * 0.8,
-                Material::Metal,
-            );
-        }
-        for _ in 0..3 {
-            let p = rig.point(Vec3::new(rng.range(-0.6, 0.6), 1.7, rng.range(-1.0, 1.0)));
-            let dir = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-            self.shard(
-                rng.next_u64(),
-                p,
-                rng.range(0.4, 0.9),
-                0.25,
-                dir,
-                rng.range(0.2, 0.6),
-                rng.chance(0.5),
+        for z in [-1.0, 1.0] {
+            let a = rig.point(Vec3::new(-0.92, 0.35, z));
+            let b = rig.point(Vec3::new(0.92, 0.35, z));
+            self.segment(a, b, 0.06, IRON * 0.8, Material::Metal, false);
+            part(
+                self,
+                Vec3::new(0.0, 0.5, z),
+                Vec3::new(0.75, 0.08, 0.1),
+                IRON,
+                Material::Rust,
                 false,
             );
         }
+        // Iron wheels: a flanged rim, spokes' dark between, and a hub.
+        for (x, z) in [(-0.95, -1.0), (0.95, -1.0), (-0.95, 1.0), (0.95, 1.0)] {
+            let c = rig.point(Vec3::new(x, 0.35, z));
+            let axis = rig.rot * Vec3::X;
+            self.disc(c, axis * 0.07, 0.35, IRON * 0.75, Material::Metal);
+            self.disc(
+                c - axis * (0.06 * x.signum()),
+                axis * 0.03,
+                0.42,
+                IRON * 0.65,
+                Material::Rust,
+            );
+            self.disc(
+                c + axis * (0.07 * x.signum()),
+                axis * 0.05,
+                0.12,
+                IRON * 1.2,
+                Material::Metal,
+            );
+        }
+        // The tub's floor.
+        part(
+            self,
+            Vec3::new(0.0, 0.82, 0.0),
+            Vec3::new(0.95, 0.07, 1.5),
+            TIMBER * 0.7,
+            Material::Wood,
+            false,
+        );
+        // Dark inner boarding, seen through the gaps between the planks.
+        for s in [-1.0f32, 1.0] {
+            part(
+                self,
+                Vec3::new(s * 0.94, 1.35, 0.0),
+                Vec3::new(0.02, 0.58, 1.5),
+                TIMBER * 0.25,
+                Material::Wood,
+                false,
+            );
+            part(
+                self,
+                Vec3::new(0.0, 1.35, s * 1.49),
+                Vec3::new(0.9, 0.58, 0.02),
+                TIMBER * 0.25,
+                Material::Wood,
+                false,
+            );
+        }
+        // Plank sides, three boards high, each its own shade.
+        let (y0, board) = (0.75, 0.4);
+        for k in 0..3 {
+            let y = y0 + board * (k as f32 + 0.5);
+            let h = board * 0.43;
+            for s in [-1.0f32, 1.0] {
+                let shade = TIMBER * rng.range(0.55, 0.75);
+                part(
+                    self,
+                    Vec3::new(s * 0.98, y, 0.0),
+                    Vec3::new(0.07, h, 1.6),
+                    shade,
+                    Material::Wood,
+                    false,
+                );
+                let shade = TIMBER * rng.range(0.55, 0.75);
+                part(
+                    self,
+                    Vec3::new(0.0, y, s * 1.53),
+                    Vec3::new(0.91, h, 0.07),
+                    shade,
+                    Material::Wood,
+                    false,
+                );
+            }
+        }
+        // Iron binding: corner posts, and a strap round the middle of each
+        // side.
+        for (x, z) in [(-1.0, -1.55), (1.0, -1.55), (-1.0, 1.55), (1.0, 1.55)] {
+            part(
+                self,
+                Vec3::new(x, 1.35, z),
+                Vec3::new(0.09, 0.62, 0.09),
+                IRON * 0.8,
+                Material::Metal,
+                false,
+            );
+        }
+        for s in [-1.0f32, 1.0] {
+            for z in [-0.55, 0.55] {
+                part(
+                    self,
+                    Vec3::new(s * 1.06, 1.35, z),
+                    Vec3::new(0.02, 0.6, 0.08),
+                    IRON * 0.8,
+                    Material::Metal,
+                    false,
+                );
+            }
+            part(
+                self,
+                Vec3::new(0.0, 1.35, s * 1.61),
+                Vec3::new(0.08, 0.6, 0.02),
+                IRON * 0.8,
+                Material::Metal,
+                false,
+            );
+        }
+        // What tanks hit: the old cart's frame and tub, exactly. The fill
+        // that places cover after reads these, so the rest of the map keeps
+        // its layout.
+        self.hidden_part(&rig, Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.9, 0.25, 1.5));
+        self.hidden_part(&rig, Vec3::new(0.0, 1.35, 0.0), Vec3::new(1.05, 0.6, 1.6));
+        // The ore, heaped over the rim, highest down the middle.
+        self.heaped_ore(
+            rng,
+            &rig,
+            |_| 0.88,
+            1.43,
+            1.8,
+            0.5,
+            (8, 14),
+            16,
+            (0.1, 0.2),
+            2,
+        );
+    }
+
+    /// Ore heaped in a tub (see `ore_heap`), drawn sculpted in `rig`'s
+    /// frame: the mound, `lumps` loose stones between `size.0` and
+    /// `size.1` across lying on it, and `crystals` lumps of raw crystal.
+    #[allow(clippy::too_many_arguments)]
+    fn heaped_ore(
+        &mut self,
+        rng: &mut Rng,
+        rig: &Rig,
+        half_w: impl Fn(f32) -> f32 + Copy,
+        half_l: f32,
+        y_edge: f32,
+        rise: f32,
+        grid: (usize, usize),
+        lumps: usize,
+        size: (f32, f32),
+        crystals: usize,
+    ) {
+        let mut m = MeshData::default();
+        ore_heap(&mut m, rng, half_w, half_l, y_edge, rise, grid.0, grid.1);
+        let shades = [ORE * 0.8, ORE * 0.6, ORE * 0.95, MESA_TOP * 0.6];
+        for k in 0..lumps + crystals {
+            let (u, v) = (rng.range(-0.75, 0.75), rng.range(-0.8, 0.8));
+            let z = v * half_l;
+            let at = Vec3::new(u * half_w(z), heap_height(y_edge, rise, u, v), z);
+            let s = rng.range(size.0, size.1);
+            let (color, mat) = if k < lumps {
+                (shades[rng.index(shades.len())], Material::Rubble)
+            } else {
+                (RAW * 1.15, Material::Ore)
+            };
+            ore_lump(&mut m, rng, at, s, color, mat);
+        }
+        self.sculpt(rig, &m);
     }
 
     /// One rail car centered at `at`, its length along `yaw`, rolled `roll`
@@ -2896,62 +3348,22 @@ impl Map {
             }
             return;
         }
-        // The heap, highest down the middle.
-        let heap =
-            |x: f32, z: f32| 3.25 + 1.05 * (1.0 - (x / 1.8).powi(2)) * (1.0 - (z / 4.3).powi(2));
-        for _ in 0..26 {
-            let x = rng.range(-1.4, 1.4);
-            let reach = 3.1 + 1.0 * (1.0 - x.abs() / 1.4);
-            let z = rng.range(-reach, reach);
-            let s = rng.range(0.32, 0.7);
-            lump(self, rng, Vec3::new(x, heap(x, z) - s * 0.35, z), s);
-        }
-        // Lumps riding up on the rim, hanging over the side.
-        for _ in 0..4 {
-            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
-            let at = Vec3::new(side * rng.range(1.4, 1.6), 3.55, rng.range(-2.6, 2.6));
-            let size = rng.range(0.25, 0.42);
-            lump(self, rng, at, size);
-        }
-        // Raw crystal breaking out of the rock, and lumps of it in the heap.
-        for _ in 0..5 {
-            let x = rng.range(-1.1, 1.1);
-            let z = rng.range(-2.8, 2.8);
-            let s = rng.range(0.25, 0.4);
-            rig.part(
-                self,
-                Vec3::new(x, heap(x, z), z),
-                Vec3::new(s, s * 0.7, s * 1.3),
-                Quat::from_euler(glam::EulerRot::YXZ, rng.range(0.0, TAU), 0.4, 0.3),
-                RAW * 1.15,
-                Material::Ore,
-                false,
-                0.0,
-            );
-        }
-        for k in 0..8 {
-            let x = rng.range(-1.1, 1.1);
-            let z = rng.range(-3.0, 3.0);
-            let p = rig.point(Vec3::new(x, heap(x, z), z));
-            let out = rig.rot * Vec3::new(x, 0.0, z * 0.3);
-            let dir =
-                Vec2::new(out.x, out.z) + Vec2::new(rng.range(-0.4, 0.4), rng.range(-0.4, 0.4));
-            let big = k < 3;
-            self.shard(
-                rng.next_u64(),
-                p,
-                if big {
-                    rng.range(1.5, 2.2)
-                } else {
-                    rng.range(0.7, 1.1)
-                },
-                if big { 0.4 } else { 0.22 },
-                dir,
-                rng.range(0.2, 0.6),
-                big || rng.chance(0.35),
-                false,
-            );
-        }
+        // The heap, highest down the middle, filling the tub's lens to
+        // just inside the rim (see `ore_tub`), a few lumps of raw crystal
+        // in it.
+        let half_w = |z: f32| 1.55 * ((4.0 - z.abs()) / 1.1).clamp(0.05, 1.0);
+        self.heaped_ore(
+            rng,
+            rig,
+            half_w,
+            4.0,
+            3.3,
+            1.0,
+            (12, 28),
+            40,
+            (0.16, 0.36),
+            4,
+        );
     }
 
     /// The ore train, stopped on the flats headed out: the locomotive, two
@@ -3232,12 +3644,10 @@ impl Map {
             if let Some(o) = self.oboxes.last_mut() {
                 o.broken = true;
             }
-            for _ in 0..2 {
-                let q = p + Vec2::new(rng.range(-6.0, 6.0), rng.range(-4.0, 4.0));
-                if in_rock(q) {
-                    let s = rng.range(0.4, 0.8);
-                    self.boulder(rng, q, s, false);
-                }
+            let q = p + Vec2::new(rng.range(-6.0, 6.0), rng.range(-4.0, 4.0));
+            if in_rock(q) {
+                let s = rng.range(1.2, 1.8);
+                self.boulder(rng, q, s, true);
             }
         }
         for p in [
@@ -3290,7 +3700,7 @@ impl Map {
             if (p.x - 0.0).min(SIZE - p.x) < 24.0 {
                 continue;
             }
-            let s = rng.range(0.6, 1.3);
+            let s = rng.range(1.0, 1.9);
             self.boulder(rng, p, s, s > 1.0);
         }
         let _ = h;
@@ -3916,7 +4326,7 @@ impl Map {
                 let t = rng.range(0.2, 0.8);
                 let side = (b - a).normalize().perp() * if rng.chance(0.5) { 1.0 } else { -1.0 };
                 let p = a.lerp(b, t) + side * rng.range(4.5, 6.5);
-                let s = rng.range(0.7, 1.3);
+                let s = rng.range(1.0, 1.8);
                 self.boulder(rng, p, s, s > 1.0);
             }
         }
@@ -3936,7 +4346,7 @@ impl Map {
             (30.0, 34.0, 1.6),
             (146.0, 100.0, 1.6),
             (176.0, 121.0, 1.5),
-            (196.0, 86.0, 1.7),
+            (195.0, 88.0, 1.7),
             (212.0, 70.0, 1.4),
             (166.0, 140.0, 1.4),
         ] {
@@ -3996,6 +4406,30 @@ impl Map {
 
     /// Near a point on one of the ways round the bots take, or the Hold
     /// site (kept open).
+    /// Nothing to keep clear for driving within `r` of `at`: no way round,
+    /// ramp or ford, track, the run out of the warehouse's doors, or the
+    /// foot of the Face.
+    fn room(&self, at: Vec2, r: f32) -> bool {
+        (0..9).all(|k| {
+            let q = if k == 0 {
+                at
+            } else {
+                let a = k as f32 / 8.0 * TAU;
+                at + Vec2::new(a.cos(), a.sin()) * r
+            };
+            let f = face(q.x);
+            !self.on_way(q)
+                && track_distance(q) > 6.0
+                && shed_distance(q) > 14.0
+                && !(q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0)
+                && !RAMPS
+                    .iter()
+                    .chain(&FORDS)
+                    .any(|&(s, e, h)| seg(q, s, e).0 < h + 4.0)
+                && !WAYS_UP.iter().any(|&(a, b)| seg(q, a, b).0 < 6.0)
+        })
+    }
+
     fn on_way(&self, q: Vec2) -> bool {
         self.routes
             .iter()
@@ -4146,6 +4580,103 @@ impl Map {
                 ..OBox::default()
             });
         }
+    }
+
+    /// Take out the stand-ins for the blocks along the Face (see
+    /// `rough_face`).
+    fn clear_face_blocks(&mut self) {
+        self.oboxes.retain(|o| !(o.hidden && o.color == FACE_BLOCK));
+    }
+
+    /// Every block of stone on the map drawn as rock, not a box: rounded,
+    /// lumpy, over its box (still its collider). The map's edge,
+    /// the box cut's sides, the hoodoos, boulders and rubble.
+    fn rock_lumps(&mut self) {
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        for (k, o) in self.oboxes.iter_mut().enumerate() {
+            let stone = o.side_mat == Material::Rubble && o.top_mat == Material::Rubble;
+            if !stone || o.hidden || o.sculpted {
+                continue;
+            }
+            o.sculpted = true;
+            let hy = (o.y1 - o.y0) * 0.5;
+            let half = Vec3::new(o.half.x, hy, o.half.y);
+            let centre = o.center3();
+            let rot = o.rotation();
+            let seed = k as u32 * 7 + 3;
+            let small = half.min_element();
+            // Big blocks get more facets.
+            let big = half.max_element() > 2.0;
+            let (rows, cols) = if half.max_element() > 6.0 {
+                (12usize, 18usize)
+            } else if big {
+                (8, 12)
+            } else {
+                (6, 8)
+            };
+            let jag = |i: usize, j: usize, c: u32| hash(i as i32, j as i32, seed + c) - 0.5;
+            // A rounded box over the block, a little proud of it so its
+            // corners don't show, broken into facets.
+            let spow = |c: f32, e: f32| c.signum() * c.abs().powf(e);
+            let point = |i: usize, j: usize| {
+                let j = j % cols;
+                let wobble = if i == 0 || i == rows - 1 {
+                    0.0
+                } else {
+                    0.35 * jag(i, j, 0)
+                };
+                let phi = -FRAC_PI_2 + PI * (i as f32 + wobble * 0.5) / (rows - 1) as f32;
+                let th = TAU * (j as f32 + wobble) / cols as f32 + seed as f32;
+                // Flat-ish top and steep sides, round across.
+                let (ev, eh) = (0.45, 0.8);
+                let d = Vec3::new(
+                    spow(phi.cos(), ev) * spow(th.cos(), eh),
+                    spow(phi.sin(), ev),
+                    spow(phi.cos(), ev) * spow(th.sin(), eh),
+                );
+                let q = d * half * 1.1;
+                let w = rot * q + centre;
+                // Lumps across it, and every corner pushed in or out.
+                let lump = noise2(w.x * 0.35 + w.z * 0.15, w.y * 0.4, seed) - 0.5;
+                let push = (0.45 * lump + 0.35 * jag(i, j, 1))
+                    * (0.4 * small + 0.15).min(1.2 + 0.08 * half.max_element());
+                w + (rot * d.normalize_or_zero()) * push
+            };
+            let at = |i: usize, j: usize| point(i, j);
+            let mut tris: Vec<[Vec3; 3]> = Vec::new();
+            for i in 0..rows - 1 {
+                for j in 0..cols {
+                    let q = [at(i, j), at(i, j + 1), at(i + 1, j + 1), at(i + 1, j)];
+                    tris.push([q[0], q[2], q[1]]);
+                    tris.push([q[0], q[3], q[2]]);
+                }
+            }
+            // Flat shaded: each facet its own plane.
+            for t in tris {
+                let mut n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                let mid = (t[0] + t[1] + t[2]) / 3.0;
+                if n.dot(mid - centre) < 0.0 {
+                    n = -n;
+                }
+                let shade = 0.88
+                    + 0.24
+                        * hash(
+                            (mid.x * 3.0) as i32,
+                            (mid.y * 3.0 + mid.z * 5.0) as i32,
+                            seed,
+                        );
+                let base = mesh.verts.len() as u32;
+                for p in t {
+                    mesh.verts.push(crate::render::mesh::Vertex {
+                        pos: p.to_array(),
+                        normal: n.to_array(),
+                        color: (o.color * shade).extend(Material::Cliff.id()).to_array(),
+                    });
+                }
+                mesh.indices.extend([base, base + 1, base + 2]);
+            }
+        }
+        self.sculpted = mesh;
     }
 
     /// The edge: a wall of boulders all the way round, on whatever ground
@@ -4990,6 +5521,56 @@ mod tests {
         from - w.raycast(Vec3::new(p.x, from, p.y), -Vec3::Y, from + 20.0)
     }
 
+    /// No block of stone on the map is drawn as a box (#249): each is
+    /// drawn as a lump of rock, or stands in for a sculpted face.
+    #[test]
+    fn no_stone_drawn_as_a_box() {
+        let map = Map::mine();
+        for o in &map.oboxes {
+            let stone = o.side_mat == Material::Rubble && o.top_mat == Material::Rubble;
+            assert!(
+                !stone || o.hidden || o.sculpted,
+                "a stone box drawn at {} ({}..{})",
+                o.center,
+                o.y0,
+                o.y1
+            );
+            assert!(o.color != FACE_BLOCK, "a stand-in left at {}", o.center);
+        }
+    }
+
+    /// Out on the mesa the caves' roofs read as ground (#249): no slab
+    /// is drawn over them, and the roof drawn in its place is level with
+    /// the rock round it.
+    #[test]
+    fn roofs_are_ground_not_slabs() {
+        let map = Map::mine();
+        for o in &map.oboxes {
+            let roof = o.y0 == ROOF.0 && o.y1 == ROOF.1 && o.color == MESA_TOP;
+            assert!(!roof || o.hidden, "a roof slab drawn at {}", o.center);
+        }
+        // Over the hall, the west adit and the breach: the roof's top is
+        // drawn just where the ground runs on round it.
+        for p in [
+            Vec2::new(78.0, 184.0),
+            Vec2::new(71.0, 162.0),
+            Vec2::new(153.0, 175.0),
+        ] {
+            let top = map
+                .sculpted
+                .verts
+                .iter()
+                .filter(|v| Vec2::new(v.pos[0], v.pos[2]).distance(p) < 1.5)
+                .map(|v| v.pos[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (top - uncut(p)).abs() < 0.1,
+                "roof at {p} drawn at {top}, rock at {}",
+                uncut(p)
+            );
+        }
+    }
+
     #[test]
     fn levels_stack() {
         let w = crate::sim::World::empty(Map::mine());
@@ -5481,20 +6062,19 @@ mod tests {
                 throttle: 1.0,
                 ..Default::default()
             };
+            // Until it's out of the far door (not whatever it climbs after,
+            // driving on blind).
             let mut high = f32::NEG_INFINITY;
+            let mut p = shed_local(at);
             for _ in 0..(8.0 / crate::game::DT) as usize {
                 w.step(&[cmd]);
-                let pos = w.tanks[0].pos;
-                let p = shed_local(Vec2::new(pos.x, pos.z));
-                if p.x > SHED_HALF.x + 2.0 {
+                let t = w.tanks[0].pos;
+                p = shed_local(Vec2::new(t.x, t.z));
+                high = high.max(t.y);
+                if p.x > SHED_HALF.x + 1.0 {
                     break;
                 }
-                if p.x.abs() < SHED_HALF.x {
-                    high = high.max(pos.y);
-                }
             }
-            let end = w.tanks[0].pos;
-            let p = shed_local(Vec2::new(end.x, end.z));
             assert!(p.x > SHED_HALF.x + 1.0, "{hull:?} only got to {p} (local)");
             assert!(high < 2.0, "{hull:?} went up to {high} inside");
         }
@@ -5758,5 +6338,142 @@ mod play {
             fighting[5] * 100.0
         );
         assert!(time[3] > 0.02 && time[4] > 0.03, "mine and mesa {time:?}");
+    }
+
+    /// The rocks strewn about run big: more over a tank's width than
+    /// pebbles (#267).
+    #[test]
+    fn rocks_run_big() {
+        let m = Map::mine();
+        let (mut small, mut big) = (0, 0);
+        for o in &m.oboxes {
+            let on_map = o.center.min_element() > 0.0 && o.center.max_element() < SIZE;
+            // Rock on the ground (not ore heaped in a car), short of the
+            // edge's wall.
+            if o.side_mat != Material::Rubble
+                || o.broken
+                || !on_map
+                || o.y0 >= m.ground_height(o.center.x, o.center.y)
+            {
+                continue;
+            }
+            let s = o.half.max_element();
+            if s < 0.7 {
+                small += 1;
+            } else if (1.8..3.0).contains(&s) {
+                big += 1;
+            }
+        }
+        assert!(small < 60, "{small} small rocks");
+        assert!(big > 70, "only {big} big rocks");
+    }
+}
+
+/// A heap of broken ore filling a tub, in the tub's frame: a rough mound
+/// of small flat facets, each its own shade of Crag rock, from `y_edge`
+/// round the inside of the rim up to `y_edge + rise` in the middle. Its
+/// outline is `half_w(z)` across at each `z`, `half_l` long.
+#[allow(clippy::too_many_arguments)]
+fn ore_heap(
+    m: &mut MeshData,
+    rng: &mut Rng,
+    half_w: impl Fn(f32) -> f32,
+    half_l: f32,
+    y_edge: f32,
+    rise: f32,
+    nu: usize,
+    nv: usize,
+) {
+    let shades = [ORE * 0.9, ORE * 0.7, ORE * 0.55, ORE * 1.0, MESA_TOP * 0.6];
+    // The grid's points, jittered so no two facets lie the same way.
+    let mut pts = vec![Vec3::ZERO; (nu + 1) * (nv + 1)];
+    let (cu, cv) = (1.0 / nu as f32, 1.0 / nv as f32);
+    for j in 0..=nv {
+        for i in 0..=nu {
+            let edge = i == 0 || i == nu || j == 0 || j == nv;
+            let mut u = i as f32 / nu as f32 * 2.0 - 1.0;
+            let mut v = j as f32 / nv as f32 * 2.0 - 1.0;
+            if !edge {
+                u += rng.range(-0.35, 0.35) * 2.0 * cu;
+                v += rng.range(-0.35, 0.35) * 2.0 * cv;
+            }
+            let z = v * half_l;
+            let x = u * half_w(z);
+            let mound = (1.0 - u * u).max(0.0).sqrt() * (1.0 - v * v).max(0.0).powf(0.6);
+            let y = if edge {
+                y_edge
+            } else {
+                y_edge + rise * mound + rise * rng.range(-0.14, 0.14) * (0.4 + mound)
+            };
+            pts[j * (nu + 1) + i] = Vec3::new(x, y, z);
+        }
+    }
+    let face = |m: &mut MeshData, a: Vec3, b: Vec3, c: Vec3, rng: &mut Rng| {
+        let mut n = (b - a).cross(c - a).normalize_or_zero();
+        if n.y < 0.0 {
+            n = -n;
+        }
+        let shade = shades[rng.index(shades.len())] * rng.range(0.85, 1.1);
+        m.tri([a, b, c], n, shade.extend(Material::Rubble.id()));
+    };
+    for j in 0..nv {
+        for i in 0..nu {
+            let p = |i: usize, j: usize| pts[j * (nu + 1) + i];
+            let (a, b, c, d) = (p(i, j), p(i + 1, j), p(i + 1, j + 1), p(i, j + 1));
+            // Split each cell either way, so the facets don't line up.
+            if rng.chance(0.5) {
+                face(m, a, b, c, rng);
+                face(m, a, c, d, rng);
+            } else {
+                face(m, a, b, d, rng);
+                face(m, b, c, d, rng);
+            }
+        }
+    }
+}
+
+/// Where an `ore_heap`'s mound stands at (u, v), without its roughness.
+fn heap_height(y_edge: f32, rise: f32, u: f32, v: f32) -> f32 {
+    y_edge + rise * (1.0 - u * u).max(0.0).sqrt() * (1.0 - v * v).max(0.0).powf(0.6)
+}
+
+/// One lump of rock (or raw crystal) about `s` across at `c`: a broken,
+/// many-faced stone, sunk a little into whatever it sits on.
+fn ore_lump(m: &mut MeshData, rng: &mut Rng, c: Vec3, s: f32, color: Vec3, mat: Material) {
+    let turn = Quat::from_euler(
+        glam::EulerRot::YXZ,
+        rng.range(0.0, TAU),
+        rng.range(-0.5, 0.5),
+        rng.range(-0.5, 0.5),
+    );
+    let squash = Vec3::new(
+        rng.range(0.8, 1.2),
+        rng.range(0.5, 0.75),
+        rng.range(0.8, 1.2),
+    ) * s;
+    let dirs = [
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::Y,
+        Vec3::NEG_Y,
+        Vec3::Z,
+        Vec3::NEG_Z,
+    ];
+    let p: Vec<Vec3> = dirs
+        .iter()
+        .map(|d| c + turn * (*d * squash * rng.range(0.75, 1.15)))
+        .collect();
+    // An octahedron's eight faces: each pairs an x end and a z end with
+    // the top or the bottom.
+    for (a, b) in [(0, 4), (4, 1), (1, 5), (5, 0)] {
+        for t in [2, 3] {
+            let (pa, pb, pt) = (p[a], p[b], p[t]);
+            let mut n = (pb - pa).cross(pt - pa).normalize_or_zero();
+            if n.dot((pa + pb + pt) / 3.0 - c) < 0.0 {
+                n = -n;
+            }
+            let shade = color * rng.range(0.85, 1.1);
+            m.tri([pa, pb, pt], n, shade.extend(mat.id()));
+        }
     }
 }
