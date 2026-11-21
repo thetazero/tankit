@@ -32,9 +32,9 @@
 //!   it strikes. Driving into the beam destroys you (bots keep clear).
 //! - **The wash**, a dry ravine 7 m deep winding right across the map
 //!   under the face, in at the west edge by the Ithessar's yard and out at
-//!   the east edge below the Resonant's camp: the seam crops out on its
+//!   the east edge below the Resonant's camp: the seam runs along its
 //!   floor, where a cutting rig works it. The rail bridge leads out of the
-//!   adit's mouth across the wash, on crystal piers, so the fight on the
+//!   adit's mouth across the wash, on concrete piers, so the fight on the
 //!   wash floor goes on under the deck. Haul ramps lead down into it, and a
 //!   crossing near each side's spawns runs down one bank and up the other.
 //! - **The flats**, south of the wash: the railroad runs out across them to
@@ -274,6 +274,13 @@ fn shed_distance(p: Vec2) -> f32 {
     q.max(Vec2::ZERO).length()
 }
 
+/// The ground straight out in front of the warehouse's doors, at the sides
+/// and the ends: room to drive out before there's anything in the way.
+fn shed_doorways(p: Vec2) -> bool {
+    let l = shed_local(p).abs();
+    (l.y < 7.0 && l.x < SHED_HALF.x + 16.0) || (l.x < 7.0 && l.y < SHED_HALF.y + 16.0)
+}
+
 /// Places bots head for: across the flats, the wash, the landing under the
 /// Face, the mine and the mesa.
 const SPOTS: [(f32, f32); 29] = [
@@ -356,6 +363,8 @@ const STEEL: Vec3 = Vec3::new(0.2, 0.21, 0.24);
 const RUST: Vec3 = Vec3::new(0.36, 0.22, 0.14);
 const TIMBER: Vec3 = Vec3::new(0.42, 0.32, 0.22);
 const CONCRETE: Vec3 = Vec3::new(0.6, 0.57, 0.52);
+/// Mine machinery's paint, faded in the sun.
+const MACHINE: Vec3 = Vec3::new(0.56, 0.42, 0.2);
 /// How bright a plasma lamp's light is, and how far it reaches (m).
 const LAMP_BRIGHT: f32 = 4.5;
 const LAMP_REACH: f32 = 10.0;
@@ -798,7 +807,7 @@ impl Map {
         map.mine_routes();
         let mut rng = Rng::new(0x5ea3_0213);
 
-        map.seam(&mut rng);
+        let seam_rocks = map.seam(&mut rng);
         map.crag_face(&mut rng);
         map.crag_lid();
         map.rough_face(&mut rng);
@@ -811,7 +820,10 @@ impl Map {
         map.box_cut(&mut rng);
         map.railroad();
         map.rail_bridge();
-        map.wash_rocks(&mut rng);
+        map.wash_rocks(&mut rng, &seam_rocks);
+        for &(p, h) in &seam_rocks {
+            map.rock_at(p, h);
+        }
         map.cutting_rig(Vec2::new(97.0, 131.5), PI * 0.5 + 0.35, -WASH_DEPTH);
         map.cutting_rig(Vec2::new(90.0, 174.5), -PI * 0.5 - 0.3, 0.0);
         // (Its own dice, so what it strews about doesn't move the rest.)
@@ -983,13 +995,29 @@ impl Map {
         }
     }
 
-    /// The seam: where the crystal crops out along the wash floor (it runs
-    /// on up the Crag's face, and through the hall). Crystal breaks out
-    /// along it.
-    fn seam(&mut self, rng: &mut Rng) {
+    /// Where an outcrop of crystal once stood out in the open: a rock about
+    /// as big, with rubble round it. It takes the draws `outcrop` took from
+    /// `rng`, so everything placed after it stays where it was.
+    fn outcrop_rock(&mut self, rng: &mut Rng, p: Vec2, h: f32) {
+        skip(rng, 28);
+        self.rock_at(p, h);
+    }
+
+    /// A rock about `h` high at `p`, rubble round it, on dice of its own.
+    fn rock_at(&mut self, p: Vec2, h: f32) {
+        let size = (h * 0.55).clamp(1.3, 1.9);
+        self.rock_pile(&mut own_rng(p), p, size);
+    }
+
+    /// The seam: where it runs along the wash floor (on up the Crag's face,
+    /// and through the hall), worked out here: the cut faces either side,
+    /// and where it cropped out, the spots for rocks (returned: placed once
+    /// the wash's other rocks are, which keep their distance).
+    fn seam(&mut self, rng: &mut Rng) -> Vec<(Vec2, f32)> {
+        let mut rocks = Vec::new();
         let line = seam_line();
-        // Crystal along the seam on the wash floor, cover under the bridge
-        // and either side of it.
+        // Rock along the seam on the wash floor, cover under the bridge and
+        // either side of it.
         for (x, h) in [
             (76.0, 3.0),
             (88.0, 3.6),
@@ -1010,7 +1038,8 @@ impl Map {
             {
                 continue;
             }
-            self.outcrop(rng, p, h);
+            skip(rng, 28);
+            rocks.push((p, h));
         }
         // Cut faces: low steps of dark rock either side of the vein where
         // the rig has cut it back.
@@ -1029,6 +1058,7 @@ impl Map {
                 0.25,
             );
         }
+        rocks
     }
 
     /// The Crag's face, sculpted along its foot: down its west side, along
@@ -2396,7 +2426,7 @@ impl Map {
     }
 
     /// The rail bridge out of the adit's mouth over the wash: a deck on
-    /// piers of worked crystal, low steel girders along its edges, a truss
+    /// concrete piers, low steel girders along its edges, a truss
     /// over them, tilted plates up onto it at each end.
     fn rail_bridge(&mut self) {
         let (a, b) = BRIDGE;
@@ -2486,8 +2516,8 @@ impl Map {
                 false,
             );
         }
-        // Piers: a crystal column under each rail where the wash falls away,
-        // a cap beam across their tops, a seam of plasma up the faces.
+        // Piers: a concrete column under each rail where the wash falls
+        // away, a steel cap beam across their tops.
         // Ten meters apart: room to drive between them.
         let mut t = 9.0;
         while t < len - 4.0 {
@@ -2506,22 +2536,9 @@ impl Map {
                     half: Vec2::splat(0.8),
                     y0: g - 0.5,
                     y1: DECK_TOP - DECK_T,
-                    color: GLASS,
-                    side_mat: Material::Vhaal,
-                    top_mat: Material::Vhaal,
-                    ..OBox::default()
-                });
-                let glow = at + side_dir * side * 1.1;
-                self.oboxes.push(OBox {
-                    center: glow,
-                    yaw,
-                    half: Vec2::new(0.06, 0.12),
-                    y0: g + 0.3,
-                    y1: DECK_TOP - DECK_T - 0.4,
-                    color: PLASMA,
-                    side_mat: Material::Glow,
-                    top_mat: Material::Glow,
-                    solid: false,
+                    color: CONCRETE * 0.8,
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
                     ..OBox::default()
                 });
             }
@@ -2531,9 +2548,9 @@ impl Map {
                 half: Vec2::new(DECK_HALF + 0.3, 0.9),
                 y0: DECK_TOP - DECK_T - 0.9,
                 y1: DECK_TOP - DECK_T + 0.01,
-                color: GLASS * 1.2,
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
+                color: RUST,
+                side_mat: Material::Rust,
+                top_mat: Material::Rust,
                 ..OBox::default()
             });
             let (l, r) = (c - side_dir * 2.4, c + side_dir * 2.4);
@@ -2550,7 +2567,7 @@ impl Map {
 
     /// Rock in the wash: blocks fallen from the banks, cover along the
     /// floor.
-    fn wash_rocks(&mut self, rng: &mut Rng) {
+    fn wash_rocks(&mut self, rng: &mut Rng, seam: &[(Vec2, f32)]) {
         let mut placed = 0;
         for _ in 0..600 {
             if placed >= 13 {
@@ -2579,7 +2596,10 @@ impl Map {
                 || self
                     .crystals
                     .iter()
-                    .any(|c| c.solid && Vec2::new(c.base.x, c.base.z).distance(q) < 7.0)
+                    .filter(|c| c.solid)
+                    .map(|c| Vec2::new(c.base.x, c.base.z))
+                    .chain(seam.iter().map(|&(p, _)| p))
+                    .any(|c| c.distance(q) < 7.0)
             {
                 continue;
             }
@@ -2590,8 +2610,8 @@ impl Map {
     }
 
     /// A cutting rig at `at` on ground at `floor`, its boom reaching out
-    /// along `yaw`: a crystal-hulled body on hover pads, a plasma head
-    /// glowing at the end of the boom.
+    /// along `yaw`: a painted steel body on four crawler units, a cab on
+    /// top, a toothed cutting drum at the end of the boom.
     fn cutting_rig(&mut self, at: Vec2, yaw: f32, floor: f32) {
         let rig = Rig {
             pos: Vec3::new(at.x, floor, at.y),
@@ -2608,13 +2628,14 @@ impl Map {
                 true,
                 0.0,
             );
+            // The crawler's track, down on the ground under it.
             rig.part(
                 self,
                 Vec3::new(x, 0.12, z),
-                Vec3::new(0.6, 0.05, 0.8),
+                Vec3::new(0.85, 0.12, 1.05),
                 Quat::IDENTITY,
-                PLASMA,
-                Material::Glow,
+                STEEL * 0.6,
+                Material::Metal,
                 false,
                 0.0,
             );
@@ -2624,8 +2645,8 @@ impl Map {
             Vec3::new(0.0, 1.7, 0.0),
             Vec3::new(2.2, 0.95, 3.2),
             Quat::IDENTITY,
-            GLASS,
-            Material::Vhaal,
+            MACHINE,
+            Material::Painted,
             true,
             0.0,
         );
@@ -2634,19 +2655,9 @@ impl Map {
             Vec3::new(0.0, 3.1, -1.6),
             Vec3::new(1.4, 0.5, 1.2),
             Quat::IDENTITY,
-            GLASS * 1.3,
-            Material::Vhaal,
+            STEEL,
+            Material::Metal,
             true,
-            0.0,
-        );
-        rig.part(
-            self,
-            Vec3::new(0.0, 2.68, 0.0),
-            Vec3::new(2.25, 0.04, 3.25),
-            Quat::IDENTITY,
-            PLASMA,
-            Material::Glow,
-            false,
             0.0,
         );
         let root = Vec3::new(0.0, 2.9, 2.6);
@@ -2673,8 +2684,21 @@ impl Map {
         }
         let hc = rig.point(head);
         let axle = rig.rot * Vec3::X * 0.35;
-        self.disc(hc, axle, 1.3, GLASS * 1.5, Material::Vhaal);
-        self.disc(hc, axle * 1.25, 0.6, PLASMA, Material::Glow);
+        self.disc(hc, axle, 1.3, STEEL * 1.2, Material::Metal);
+        self.disc(hc, axle * 1.25, 0.6, RUST, Material::Rust);
+        // Picks round the drum.
+        for k in 0..10 {
+            let a = k as f32 * TAU / 10.0;
+            let out = rig.rot * Vec3::new(0.0, a.cos(), a.sin());
+            self.segment(
+                hc + out * 1.2,
+                hc + out * 1.55,
+                0.09,
+                STEEL * 0.7,
+                Material::Metal,
+                false,
+            );
+        }
     }
 
     /// A small ore cart at `at` heading `yaw`: a steel tub on a steel
@@ -2993,7 +3017,7 @@ impl Map {
         }
     }
 
-    /// The loading tipple over the track south of the bridge: a crystal bin
+    /// The loading tipple over the track south of the bridge: a steel bin
     /// on four legs high enough to run a train (or a tank) under, its chute
     /// over the rails, and the conveyor climbing to it out of the wash from
     /// the cutting rig.
@@ -3025,8 +3049,8 @@ impl Map {
             Vec3::new(0.0, (bin0 + bin1) * 0.5, 0.0),
             Vec3::new(4.0, (bin1 - bin0) * 0.5, 5.8),
             Quat::IDENTITY,
-            GLASS * 1.1,
-            Material::Vhaal,
+            STEEL * 1.5,
+            Material::Metal,
             true,
             0.0,
         );
@@ -3040,13 +3064,14 @@ impl Map {
             false,
             0.0,
         );
+        // A rusted band round the bin near its top.
         rig.part(
             self,
             Vec3::new(0.0, bin1 - 0.7, 0.0),
             Vec3::new(4.05, 0.1, 5.85),
             Quat::IDENTITY,
-            PLASMA,
-            Material::Glow,
+            RUST,
+            Material::Rust,
             false,
             0.0,
         );
@@ -3058,17 +3083,6 @@ impl Map {
         self.segment(a, b, 0.5, STEEL, Material::Metal, false);
         if let Some(o) = self.oboxes.last_mut() {
             o.half.x = 0.9;
-        }
-        self.segment(
-            a + Vec3::Y * 0.52,
-            b + Vec3::Y * 0.52,
-            0.03,
-            PLASMA * 0.7,
-            Material::Glow,
-            false,
-        );
-        if let Some(o) = self.oboxes.last_mut() {
-            o.half.x = 0.5;
         }
         for f in [0.2f32, 0.42, 0.64, 0.84] {
             let p = a.lerp(b, f);
@@ -3090,7 +3104,7 @@ impl Map {
 
     /// The headframe over the hall's shaft, on the mesa: four legs and two
     /// back braces of steel, a sheave wheel on top, the hoist house behind,
-    /// the shaft collar capped with crystal.
+    /// the shaft collar capped with concrete.
     fn headframe(&mut self, at: Vec2) {
         let g = self.ground_height(at.x, at.y);
         let top = g + 16.0;
@@ -3166,9 +3180,9 @@ impl Map {
             half: Vec2::splat(1.6),
             y0: g - 0.3,
             y1: g + 0.22,
-            color: GLASS,
-            side_mat: Material::Vhaal,
-            top_mat: Material::Vhaal,
+            color: CONCRETE * 0.9,
+            side_mat: Material::Concrete,
+            top_mat: Material::Concrete,
             ramp: true,
             ..OBox::default()
         });
@@ -3180,17 +3194,6 @@ impl Map {
             color: RUST,
             side_mat: Material::Painted,
             top_mat: Material::Rust,
-            ..OBox::default()
-        });
-        self.oboxes.push(OBox {
-            center: house + Vec2::new(3.21, 0.0),
-            half: Vec2::new(0.02, 1.8),
-            y0: g + 3.2,
-            y1: g + 3.45,
-            color: PLASMA,
-            side_mat: Material::Glow,
-            top_mat: Material::Glow,
-            solid: false,
             ..OBox::default()
         });
         self.sound(Ambient::Cable, sheave);
@@ -3945,7 +3948,7 @@ impl Map {
             (76.0, 84.0, 2.6),
             (156.0, 86.0, 2.8),
         ] {
-            self.outcrop(rng, Vec2::new(x, z), h);
+            self.outcrop_rock(rng, Vec2::new(x, z), h);
         }
         // Timber cribs: stacked pit props waiting by the Ithessar's mouth,
         // and by the line.
@@ -4020,8 +4023,8 @@ impl Map {
 
     /// Fill the gaps: wherever open ground is more than `REACH` m from
     /// anything to hide behind, put something there, in keeping with where
-    /// it is. Natural rock on the mesa and in the east, the mine's gear in
-    /// the west and by the line, crystal in the wash.
+    /// it is. Natural rock on the mesa, in the east and in the wash, the
+    /// mine's gear and rock in the west and by the line.
     fn fill_cover(&mut self, rng: &mut Rng) {
         const REACH: f32 = 10.0;
         let mut pts = Vec::new();
@@ -4056,7 +4059,7 @@ impl Map {
                 if roll < 0.5 {
                     {
                         let v = rng.range(2.4, 3.6);
-                        self.outcrop(rng, q, v);
+                        self.outcrop_rock(rng, q, v);
                     }
                 } else {
                     let s = rng.range(1.4, 2.0);
@@ -4080,7 +4083,7 @@ impl Map {
             } else if roll < 0.8 {
                 {
                     let v = rng.range(2.2, 3.2);
-                    self.outcrop(rng, q, v);
+                    self.outcrop_rock(rng, q, v);
                 }
             } else {
                 let s = rng.range(1.4, 2.0);
@@ -4485,6 +4488,7 @@ fn keep_clear(p: Vec2) -> bool {
         || floor_way
         || track_distance(p) < 6.0
         || shed_distance(p) < 6.0
+        || shed_doorways(p)
         || seg(p, BRIDGE.0, BRIDGE.1).0 < DECK_HALF + 5.0
         || RAMPS
             .iter()
@@ -5465,16 +5469,34 @@ mod tests {
         (at + w(local), yaw_along(w(dir)))
     }
 
-    /// Every hull drives in at one side door, across between the bins and
-    /// out of the other.
+    /// Every hull drives in at one side door, across between the bins (not
+    /// up onto them) and out of the other.
     #[test]
     fn tanks_drive_through_the_warehouse() {
         for hull in HULLS {
             let (at, yaw) = in_shed(Vec2::new(-SHED_HALF.x - 6.0, -1.0), Vec2::X);
-            let (end, _, high) = drive(hull, at, yaw, 8.0);
+            let mut w = crate::sim::World::empty(Map::mine());
+            w.spawn_tank(Vec3::ONE, at, yaw, hull, crate::sim::TurretKind::Kontos);
+            let cmd = crate::sim::Command {
+                throttle: 1.0,
+                ..Default::default()
+            };
+            let mut high = f32::NEG_INFINITY;
+            for _ in 0..(8.0 / crate::game::DT) as usize {
+                w.step(&[cmd]);
+                let pos = w.tanks[0].pos;
+                let p = shed_local(Vec2::new(pos.x, pos.z));
+                if p.x > SHED_HALF.x + 2.0 {
+                    break;
+                }
+                if p.x.abs() < SHED_HALF.x {
+                    high = high.max(pos.y);
+                }
+            }
+            let end = w.tanks[0].pos;
             let p = shed_local(Vec2::new(end.x, end.z));
             assert!(p.x > SHED_HALF.x + 1.0, "{hull:?} only got to {p} (local)");
-            assert!(high < 2.0, "{hull:?} went up to {high}");
+            assert!(high < 2.0, "{hull:?} went up to {high} inside");
         }
     }
 
