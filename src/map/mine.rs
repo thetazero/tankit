@@ -3342,6 +3342,7 @@ impl Map {
             },
         );
         let rng = &mut own_rng(at);
+        let upright = roll.abs() < 0.3;
         let g = self.ground_height(at.x, at.y);
         let half_w = 1.75;
         let pivot = Vec3::new(-half_w * roll.signum(), 0.0, 0.0);
@@ -3382,11 +3383,15 @@ impl Map {
                 prongs,
             });
         } else {
-            ore_tub(&mut m);
+            ore_tub(&mut m, upright);
         }
         self.sculpt(&rig, &m);
         if !loco {
-            self.ore_load(rng, &rig, roll.abs() < 0.3);
+            if upright {
+                self.ore_load(rng, &rig);
+            } else {
+                self.spilled_load(rng, &rig);
+            }
         }
     }
 
@@ -3423,45 +3428,8 @@ impl Map {
     }
 
     /// An ore car's load: crystal-rich rock from the Crag heaped up over
-    /// the rim (`full`), raw crystal breaking out of it. Spilled, only a
-    /// few lumps are left in the tub.
-    fn ore_load(&mut self, rng: &mut Rng, rig: &Rig, full: bool) {
-        let lump = |m: &mut Map, rng: &mut Rng, at: Vec3, s: f32| {
-            let shade = [ORE, ORE * 0.75, ORE * 1.2, MESA_TOP * 0.8][rng.index(4)];
-            let turn = Quat::from_euler(
-                glam::EulerRot::YXZ,
-                rng.range(0.0, TAU),
-                rng.range(-0.6, 0.6),
-                rng.range(-0.6, 0.6),
-            );
-            rig.part(
-                m,
-                at,
-                Vec3::new(
-                    s * rng.range(0.8, 1.2),
-                    s * rng.range(0.55, 0.85),
-                    s * rng.range(0.8, 1.2),
-                ),
-                turn,
-                shade * rng.range(0.9, 1.1),
-                Material::Rubble,
-                false,
-                0.0,
-            );
-            m.last_is_rock(rocks::Kind::Rubble);
-        };
-        if !full {
-            for _ in 0..6 {
-                let at = Vec3::new(
-                    rng.range(-0.9, 0.9),
-                    rng.range(1.7, 2.2),
-                    rng.range(-2.6, 2.6),
-                );
-                let size = rng.range(0.3, 0.55);
-                lump(self, rng, at, size);
-            }
-            return;
-        }
+    /// the rim, raw crystal breaking out of it.
+    fn ore_load(&mut self, rng: &mut Rng, rig: &Rig) {
         // The heap, highest down the middle, filling the tub's lens to
         // just inside the rim (see `ore_tub`), a few lumps of raw crystal
         // in it.
@@ -3480,9 +3448,85 @@ impl Map {
         );
     }
 
+    /// A car on its side has lost its load: the ore poured out of its
+    /// mouth into a slumped fan on the ground, highest just outside the
+    /// lip (a little still lying in the tub), thinning out away from it,
+    /// lumps rolled out past its toe and raw crystal among them.
+    fn spilled_load(&mut self, rng: &mut Rng, rig: &Rig) {
+        // Out of the mouth, across the ground; the fan's frame has its
+        // local +z that way, +x along the car, y up.
+        let mouth = rig.rot * Vec3::Y;
+        let out = Vec2::new(mouth.x, mouth.z).normalize_or(Vec2::X);
+        let lip = rig.point(Vec3::new(0.0, 3.45, 0.0));
+        let (half_l, rise, back) = (4.5f32, 1.5f32, 2.0f32);
+        let center = Vec2::new(lip.x, lip.z) + out * (half_l - back);
+        let fan = Rig {
+            pos: Vec3::new(center.x, 0.0, center.y),
+            rot: Quat::from_rotation_y(out.x.atan2(out.y)),
+        };
+        // Wide as the tub's mouth at the lip, spreading as it runs out.
+        let half_w = move |z: f32| 3.6 + 1.6 * ((z + half_l) / (2.0 * half_l));
+        // How high the pile stands at (u, v) over the ground: the mound
+        // `ore_heap` makes, leaned so its crest is at the lip.
+        let lean = move |v: f32| 1.6 - 0.65 * (v + 1.0);
+        let sink = 0.12;
+        let place = |m: &Map, local: Vec3| {
+            let w = fan.point(Vec3::new(local.x, 0.0, local.z));
+            Vec3::new(w.x, m.ground_height(w.x, w.z) - sink + local.y, w.z)
+        };
+        let mut m = MeshData::default();
+        ore_heap(&mut m, rng, half_w, half_l, 0.0, rise, 12, 16);
+        for v in &mut m.verts {
+            let p = Vec3::from(v.pos);
+            let y = p.y * lean(p.z / half_l);
+            v.pos = place(self, Vec3::new(p.x, y, p.z)).to_array();
+        }
+        // Laid over the ground, each facet faces a new way.
+        for t in m.verts.chunks_mut(3) {
+            let p = t.iter().map(|v| Vec3::from(v.pos)).collect::<Vec<_>>();
+            let mut n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or(Vec3::Y);
+            if n.y < 0.0 {
+                n = -n;
+            }
+            for v in t {
+                v.normal = n.to_array();
+            }
+        }
+        // Loose stones on the pile, raw crystal among them, and more
+        // rolled out past its toe onto the ground.
+        let shades = [ORE * 0.8, ORE * 0.6, ORE * 0.95, MESA_TOP * 0.6];
+        for k in 0..34 {
+            let loose = k >= 24;
+            let (u, v) = if loose {
+                (rng.range(-1.1, 1.1), rng.range(0.9, 1.5))
+            } else {
+                (rng.range(-0.8, 0.8), rng.range(-0.5, 0.85))
+            };
+            let z = v * half_l;
+            let y = if loose {
+                0.0
+            } else {
+                heap_height(0.0, rise, u, v) * lean(v)
+            };
+            let at = place(self, Vec3::new(u * half_w(z), y + sink, z));
+            let (color, mat, s) = if k % 8 == 7 {
+                (RAW * 1.15, Material::Ore, rng.range(0.15, 0.3))
+            } else {
+                let c = shades[rng.index(shades.len())];
+                (c, Material::Rubble, rng.range(0.18, 0.45))
+            };
+            ore_lump(&mut m, rng, at, s, color, mat);
+        }
+        let world = Rig {
+            pos: Vec3::ZERO,
+            rot: Quat::IDENTITY,
+        };
+        self.sculpt(&world, &m);
+    }
+
     /// The ore train, stopped on the flats headed out: the locomotive, two
     /// ore cars behind it under the tipple. Far down the line, two cars off
-    /// the rails, one on its side, its load spilled.
+    /// the rails, one on its side, its load spilled out of it.
     fn ore_train(&mut self, rng: &mut Rng) {
         let s0 = track_len(3) + 6.0;
         // Ore cars under and past the tipple, then the loco ahead (south).
@@ -3502,40 +3546,9 @@ impl Map {
             0.0,
             false,
         );
-        // The spill, from its own stream (see `rail_car`).
+        // What the old spill drew (its load is spilled with the car, see
+        // `spilled_load`), so everything built after keeps its layout.
         skip(rng, 72);
-        let rng = &mut own_rng(p);
-        for _ in 0..9 {
-            let c = p - side * rng.range(10.0, 15.0) + dir * rng.range(-6.0, 6.0);
-            let g = self.ground_height(c.x, c.y);
-            let d = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-            self.shard(
-                rng.next_u64(),
-                Vec3::new(c.x, g, c.y),
-                rng.range(0.4, 1.2),
-                0.3,
-                d,
-                rng.range(0.6, 1.3),
-                rng.chance(0.3),
-                false,
-            );
-        }
-        // The rock it was carrying, strewn out of its mouth.
-        for _ in 0..16 {
-            let c = p - side * rng.range(8.5, 14.0) + dir * rng.range(-5.0, 5.0);
-            let g = self.ground_height(c.x, c.y);
-            let r = rng.range(0.3, 0.65);
-            let shade = [ORE, ORE * 0.75, ORE * 1.2][rng.index(3)];
-            let yaw = rng.range(0.0, TAU);
-            let tilt = rng.range(-0.4, 0.4);
-            let half = Vec2::new(r * rng.range(0.8, 1.2), r * rng.range(0.8, 1.2));
-            let top = g + r * rng.range(0.6, 1.0);
-            self.oboxes.push(OBox {
-                tilt,
-                solid: false,
-                ..rocks::rubble(c, yaw, half, g - r * 0.4, top, shade)
-            });
-        }
     }
 
     /// The loading tipple over the track south of the bridge: a steel ore
@@ -5454,7 +5467,7 @@ fn bogie(m: &mut MeshData, z: f32) {
 /// An ore car's tub: open-topped, flared, pointed at both ends like a
 /// lens, two bands of crystal with plasma glowing between them, on a keel.
 /// A blade stands up off each point.
-fn ore_tub(m: &mut MeshData) {
+fn ore_tub(m: &mut MeshData, loaded: bool) {
     // Plan outline (x, z), going round: the flanks, then a point.
     let hex = |hw: f32, hz: f32, tip: f32| {
         [
@@ -5508,18 +5521,21 @@ fn ore_tub(m: &mut MeshData) {
         0.03,
         HULL,
     );
-    // Inside, the floor of the load (the lumps heap up on it).
-    let bed: Vec<Vec2> = rim.iter().map(|p| *p * 0.9).collect();
-    let floor: Vec<Vec2> = bot.iter().map(|p| *p * 0.92).collect();
-    model::solid(
-        m,
-        &[model::at_y(&floor, y0 + 0.1), model::at_y(&bed, 3.2)],
-        0.02,
-        Skin::new(
-            ORE.extend(Material::Rubble.id()),
-            (ORE * 1.15).extend(Material::Rubble.id()),
-        ),
-    );
+    // Inside, the floor of the load (the lumps heap up on it). Emptied,
+    // the tub shows its bare floor.
+    if loaded {
+        let bed: Vec<Vec2> = rim.iter().map(|p| *p * 0.9).collect();
+        let floor: Vec<Vec2> = bot.iter().map(|p| *p * 0.92).collect();
+        model::solid(
+            m,
+            &[model::at_y(&floor, y0 + 0.1), model::at_y(&bed, 3.2)],
+            0.02,
+            Skin::new(
+                ORE.extend(Material::Rubble.id()),
+                (ORE * 1.15).extend(Material::Rubble.id()),
+            ),
+        );
+    }
     for s in [-1.0f32, 1.0] {
         model::shard(
             m,
