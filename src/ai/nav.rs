@@ -102,6 +102,9 @@ impl NavGrid {
             // A rail standing on a deck: kept only a little off from either
             // side, so where a deck meets the ground at its end a rail's
             // end doesn't close the way on.
+            // What a tank on the ground runs into, worked out once (a rock's
+            // is its whole surface's hull: not cheap).
+            let foot = o.base_shadow(TANK_HEIGHT);
             let deck = nav.floors_at(o.center)[TOP];
             let on_deck = deck > nav.ground(o.center) + 0.1 && (o.y0 - deck).abs() < 0.1;
             nav.mark(lo, hi, |c, f, on_slab| {
@@ -114,7 +117,7 @@ impl NavGrid {
                 } else {
                     CLEARANCE
                 };
-                o.base_distance(c, TANK_HEIGHT) <= keep
+                crate::map::polygon_distance(&foot, c) <= keep
             });
         }
         // Crystals: wherever they stand low enough over a floor to hit.

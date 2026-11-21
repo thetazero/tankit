@@ -16,6 +16,7 @@
 
 use glam::{Vec2, Vec3};
 
+use super::rocks;
 use super::saltmarket::SIZE;
 use super::{Map, OBox};
 use crate::render::material::Material;
@@ -415,26 +416,21 @@ impl Map {
             }
             let g = land(p);
             let color = STRATA[rng.index(STRATA.len())] * rng.range(0.7, 0.88);
-            // Two blocks through each other, tipped: a lump of rock.
+            // Two boulders through each other, tipped: a lump of rock.
             for k in 0..2 {
                 let sz = size * if k == 0 { 1.0 } else { rng.range(0.55, 0.85) };
                 let off = Vec2::new(rng.range(-0.3, 0.3), rng.range(-0.3, 0.3)) * sz;
                 let tip = if sz > 1.6 { 0.25 } else { 0.6 };
+                let yaw = rng.range(0.0, std::f32::consts::TAU);
+                let half = Vec2::new(sz * rng.range(0.6, 0.95), sz * rng.range(0.5, 0.8));
+                let top = g + sz * rng.range(0.35, 0.8);
+                let (tilt, roll) = (rng.range(-tip, tip), rng.range(-tip, tip));
                 self.oboxes.push(OBox {
-                    center: p + off,
-                    yaw: rng.range(0.0, std::f32::consts::TAU),
-                    half: Vec2::new(sz * rng.range(0.6, 0.95), sz * rng.range(0.5, 0.8)),
-                    y0: g - sz * 0.7,
-                    y1: g + sz * rng.range(0.35, 0.8),
-                    color,
-                    side_mat: Material::Rubble,
-                    top_mat: Material::Rubble,
-                    tilt: rng.range(-tip, tip),
-                    roll: rng.range(-tip, tip),
-                    chip: sz * 0.45,
+                    tilt,
+                    roll,
                     // Big ones stop a tank; small ones it rolls over.
                     solid: sz > 1.3,
-                    ..OBox::default()
+                    ..rocks::boulder(p + off, yaw, half, g - sz * 0.7, top, color)
                 });
             }
             placed += 1;

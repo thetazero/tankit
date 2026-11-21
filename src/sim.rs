@@ -1219,6 +1219,24 @@ fn insert_turret_hitbox(
 }
 
 /// Each turret's hitbox shape, built once from its art.
+/// A boulder's collider in its own frame (see `rocks`): the hull of the
+/// surface drawn. Built once per rock; every world on the map shares it.
+fn rock_hull(o: &crate::map::OBox) -> Option<SharedShape> {
+    type Cache = std::sync::Mutex<std::collections::HashMap<[u32; 6], Option<SharedShape>>>;
+    static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Default::default);
+    if !o.is_rock() {
+        return None;
+    }
+    let rock = crate::map::rocks::Rock::of(o)?;
+    let id = rock.id();
+    if let Some(shape) = CACHE.lock().unwrap().get(&id) {
+        return shape.clone();
+    }
+    let shape = SharedShape::convex_hull(&rock.points());
+    CACHE.lock().unwrap().insert(id, shape.clone());
+    shape
+}
+
 fn turret_shape(kind: TurretKind) -> SharedShape {
     static SHAPES: std::sync::OnceLock<Vec<SharedShape>> = std::sync::OnceLock::new();
     let shapes = SHAPES.get_or_init(|| {
@@ -1333,9 +1351,9 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
         } else {
             wall_friction
         };
-        // A rock is drawn as a lump inside its box: collide with the lump.
-        if let Some(b) = o.rock_points().and_then(|p| SharedShape::convex_hull(&p)) {
-            add(friction, Pose::IDENTITY, b);
+        // A boulder is drawn as a lump inside its box: collide with the lump.
+        if let Some(b) = rock_hull(o) {
+            add(friction, Pose::from_parts(o.center3(), o.rotation()), b);
             continue;
         }
         add(
@@ -3288,57 +3306,76 @@ mod hover_tests {
 #[cfg(test)]
 mod rock_tests {
     use super::*;
-    use crate::map::OBox;
-    use crate::render::material::Material;
 
-    /// A rock (heavily chipped rubble) is drawn as an irregular lump inside
-    /// its box. Shots and tanks must meet that lump: no invisible box
-    /// corners round it, and no driving into it.
+    /// A boulder (from the rocks toolkit) is drawn as a lump inside its
+    /// box. Shots and tanks must meet that lump: no invisible box corners
+    /// round it, and no driving into it.
     #[test]
     fn rocks_collide_along_the_shape_drawn() {
         let mut map = Map::empty(100.0);
-        let rock = OBox {
-            center: Vec2::new(50.0, 50.0),
-            yaw: 0.4,
-            half: Vec2::new(5.0, 4.0),
-            y0: 0.0,
-            y1: 4.0,
-            side_mat: Material::Rubble,
-            top_mat: Material::Rubble,
-            chip: 0.9,
-            ..OBox::default()
-        };
-        let shadow = rock.shadow();
+        let rock = crate::map::rocks::boulder(
+            Vec2::new(50.0, 50.0),
+            0.4,
+            Vec2::new(5.0, 4.0),
+            0.0,
+            4.0,
+            Vec3::ONE,
+        );
+        // The surface drawn, in the world.
+        let mut drawn = crate::render::mesh::MeshData::default();
+        crate::map::rocks::Rock::of(&rock).unwrap().draw(
+            &mut drawn,
+            rock.center3(),
+            rock.rotation(),
+            None,
+        );
         map.oboxes.push(rock);
         let w = World::empty(map);
         let c = Vec2::new(50.0, 50.0);
-        // The hull's distance from the center along a direction.
-        let edge = |d: Vec2| {
-            let mut t = 0.0;
-            while shadow.iter().enumerate().all(|(i, &a)| {
-                let b = shadow[(i + 1) % shadow.len()];
-                (b - a).perp_dot(c + d * t - a) >= 0.0
-            }) {
-                t += 0.01;
+        for y in [0.8, 2.0, 3.2] {
+            // Where the drawn surface crosses this height, and its outline.
+            let mut cut = Vec::new();
+            for t in drawn.indices.chunks(3) {
+                let p: Vec<Vec3> = t
+                    .iter()
+                    .map(|&i| Vec3::from(drawn.verts[i as usize].pos))
+                    .collect();
+                for k in 0..3 {
+                    let (a, b) = (p[k], p[(k + 1) % 3]);
+                    if (a.y - y) * (b.y - y) < 0.0 {
+                        let q = a.lerp(b, (y - a.y) / (b.y - a.y));
+                        cut.push(Vec2::new(q.x, q.z));
+                    }
+                }
             }
-            t
-        };
-        for k in 0..64 {
-            let a = k as f32 / 64.0 * TAU;
-            let d = Vec2::new(a.cos(), a.sin());
-            // Just above the ground, where the rock is widest: its foot.
-            let from = c + d * 20.0;
-            let hit = w.raycast(
-                Vec3::new(from.x, 0.01, from.y),
-                -Vec3::new(d.x, 0.0, d.y),
-                40.0,
-            );
-            let at = 20.0 - hit;
-            let want = edge(d);
-            assert!(
-                (at - want).abs() < 0.1,
-                "heading {a:.2}: hit {at:.2} m out, the rock's foot is {want:.2} m out"
-            );
+            let outline = crate::map::convex_hull(cut);
+            // The outline's distance from the center along a direction.
+            let edge = |d: Vec2| {
+                let mut t = 0.0;
+                while outline.iter().enumerate().all(|(i, &a)| {
+                    let b = outline[(i + 1) % outline.len()];
+                    (b - a).perp_dot(c + d * t - a) >= 0.0
+                }) {
+                    t += 0.01;
+                }
+                t
+            };
+            for k in 0..64 {
+                let a = k as f32 / 64.0 * TAU;
+                let d = Vec2::new(a.cos(), a.sin());
+                let from = c + d * 20.0;
+                let hit = w.raycast(
+                    Vec3::new(from.x, y, from.y),
+                    -Vec3::new(d.x, 0.0, d.y),
+                    40.0,
+                );
+                let at = 20.0 - hit;
+                let want = edge(d);
+                assert!(
+                    (at - want).abs() < 0.15,
+                    "{y} m up, heading {a:.2}: hit {at:.2} m out, the rock drawn is {want:.2} m out"
+                );
+            }
         }
         // Box corners are well outside the rock: a shot past one flies on.
         let corner = Vec2::new(4.8, 3.8);

@@ -19,6 +19,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Vec2, Vec3};
 
+use super::rocks;
 use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
@@ -214,6 +215,7 @@ impl Map {
             hold_name: "DEPOSIT",
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: None,
             sounds: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
@@ -381,19 +383,14 @@ impl Map {
         let along = normal.perp();
         let g = self.ground_height(at.x, at.y);
         let size = if deep { 3.4 } else { 2.6 };
+        // Local +z along the wall, local +x out of its face. A block from
+        // the rocks toolkit: it collides as its box, so its face stays
+        // plumb.
+        let yaw = along.x.atan2(along.y);
         self.oboxes.push(OBox {
-            center: at,
-            // Local +z along the wall, local +x out of its face.
-            yaw: along.x.atan2(along.y),
-            half: Vec2::new(2.4, size),
-            y0: g - 1.0,
-            y1: g + h,
-            color: STONE * shade,
             side_mat: Material::Rubble,
             top_mat: Material::Rubble,
-            solid: true,
-            chip: 0.25,
-            ..OBox::default()
+            ..rocks::block(at, yaw, Vec2::new(2.4, size), g - 1.0, g + h, STONE * shade)
         });
     }
 

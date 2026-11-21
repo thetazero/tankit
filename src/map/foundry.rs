@@ -15,6 +15,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
+use super::rocks;
 use super::{Ambient, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
@@ -130,6 +131,7 @@ impl Map {
             terrain: None,
             scenery_terrain: None,
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: None,
             sounds: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
@@ -1129,20 +1131,18 @@ impl Map {
             let yaw = rng.range(0.0, TAU);
             let o = match rng.int(0, 5) {
                 // Clinker: low dark lumps, often in a little cluster.
-                0..=2 => OBox {
-                    center: at,
-                    yaw,
-                    half: Vec2::new(rng.range(0.25, 0.7), rng.range(0.2, 0.5)),
-                    y0: g - 0.15,
-                    y1: g + rng.range(0.1, 0.3),
-                    color: ASH * rng.range(0.45, 0.7),
-                    side_mat: Material::Rubble,
-                    top_mat: Material::Rubble,
-                    tilt: rng.range(-0.2, 0.2),
-                    solid: false,
-                    chip: 0.08,
-                    ..OBox::default()
-                },
+                0..=2 => {
+                    let half = Vec2::new(rng.range(0.25, 0.7), rng.range(0.2, 0.5));
+                    let top = g + rng.range(0.1, 0.3);
+                    let color = ASH * rng.range(0.45, 0.7);
+                    OBox {
+                        side_mat: Material::Rubble,
+                        top_mat: Material::Rubble,
+                        tilt: rng.range(-0.2, 0.2),
+                        solid: false,
+                        ..rocks::boulder(at, yaw, half, g - 0.15, top, color)
+                    }
+                }
                 // A shard of shell, lying flat-ish.
                 3 | 4 => OBox {
                     center: at,

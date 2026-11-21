@@ -28,6 +28,7 @@
 use crate::render::material::Material;
 use glam::{Vec2, Vec3};
 
+use super::rocks;
 use super::ruins::{self, Drift};
 use super::valley::{self, MARGIN};
 use super::{DEFAULT_SIDES, Map, OBox, Rise, Terrain, Wedge};
@@ -562,6 +563,7 @@ impl Map {
             hold_name: "DEPOSIT",
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: Some(SAND),
             sounds: Vec::new(),
         };
         let mut rng = Rng::new(0x5a17_3a2c);
@@ -1602,9 +1604,10 @@ impl Map {
                 y0: g - 5.0,
                 y1: g + h,
                 color: Vec3::new(0.66, 0.5, 0.36) * rng.range(0.85, 1.05),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: 1.0,
+                side_mat: Material::Cliff,
+                top_mat: Material::Cliff,
+                rock: Some(rocks::Kind::Boulder),
+                broken: true,
                 ..OBox::default()
             });
         }

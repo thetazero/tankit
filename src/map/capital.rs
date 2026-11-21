@@ -22,6 +22,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use glam::{Mat3, Quat, Vec2, Vec3};
 
 use super::landmarks::Rig;
+use super::rocks;
 use super::ruins::{self, Drift, Style};
 use super::{Ambient, Map, OBox, Terrain};
 use crate::faction::Faction;
@@ -178,6 +179,7 @@ impl Map {
             hold_name: "ROTUNDA",
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: None,
             sounds: Vec::new(),
         };
         let mut rng = Rng::new(0xC4_917A);
@@ -610,20 +612,16 @@ impl Map {
             let d = rng.range(6.0, ROTUNDA_R + 14.0);
             let p = CENTER + Vec2::new(a.cos(), a.sin()) * d;
             let s = rng.range(0.8, 2.6);
+            let yaw = rng.range(0.0, TAU);
+            let half = Vec2::new(s, s * rng.range(0.4, 0.9));
+            let top = base + s * rng.range(0.3, 0.7);
+            let (tilt, roll) = (rng.range(-0.4, 0.4), rng.range(-0.3, 0.3));
+            let color = CONCRETE * rng.range(0.85, 1.0);
             self.oboxes.push(OBox {
-                center: p,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(s, s * rng.range(0.4, 0.9)),
-                y0: base - 0.3,
-                y1: base + s * rng.range(0.3, 0.7),
-                tilt: rng.range(-0.4, 0.4),
-                roll: rng.range(-0.3, 0.3),
-                color: CONCRETE * rng.range(0.85, 1.0),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
+                tilt,
+                roll,
                 solid: s > 1.6,
-                chip: 0.6,
-                ..OBox::default()
+                ..rocks::rubble(p, yaw, half, base - 0.3, top, color)
             });
         }
         drifts
@@ -1443,20 +1441,16 @@ impl Map {
             let (ax, az) = lot.axes();
             let p = lot.center + ax * q.x + az * q.y;
             let s = rng.range(0.8, 2.4);
+            let yaw = rng.range(0.0, TAU);
+            let half = Vec2::new(s, s * rng.range(0.4, 1.0));
+            let top = s * rng.range(0.4, 0.9);
+            let (tilt, roll) = (rng.range(-0.3, 0.3), rng.range(-0.3, 0.3));
+            let color = CONCRETE * rng.range(0.8, 1.0);
             self.oboxes.push(OBox {
-                center: p,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(s, s * rng.range(0.4, 1.0)),
-                y0: -0.3,
-                y1: s * rng.range(0.4, 0.9),
-                tilt: rng.range(-0.3, 0.3),
-                roll: rng.range(-0.3, 0.3),
-                color: CONCRETE * rng.range(0.8, 1.0),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
+                tilt,
+                roll,
                 solid: s > 1.5,
-                chip: 0.6,
-                ..OBox::default()
+                ..rocks::rubble(p, yaw, half, -0.3, top, color)
             });
         }
     }
@@ -1530,20 +1524,17 @@ impl Map {
         inward: Vec2,
         span: (f32, f32),
     ) {
-        let lump = |rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| OBox {
-            center: at,
-            yaw: rng.range(0.0, TAU),
-            half: Vec2::new(s, s * rng.range(0.7, 1.0)),
-            y0: -0.8,
-            y1: h,
-            tilt: rng.range(-0.2, 0.2),
-            roll: rng.range(-0.2, 0.2),
-            color: CONCRETE * rng.range(0.75, 1.0),
-            side_mat: Material::Rubble,
-            top_mat: Material::Rubble,
-            solid,
-            chip: 0.7,
-            ..OBox::default()
+        let lump = |rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| {
+            let yaw = rng.range(0.0, TAU);
+            let half = Vec2::new(s, s * rng.range(0.7, 1.0));
+            let (tilt, roll) = (rng.range(-0.2, 0.2), rng.range(-0.2, 0.2));
+            let color = CONCRETE * rng.range(0.75, 1.0);
+            OBox {
+                tilt,
+                roll,
+                solid,
+                ..rocks::rubble(at, yaw, half, -0.8, h, color)
+            }
         };
         // Three rows, heaped highest mid-avenue and toward the back: (how
         // far out past the edge, spacing, lowest height, how much the heap
