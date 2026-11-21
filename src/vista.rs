@@ -18,7 +18,7 @@ pub struct Vista {
 /// Spots picked from `tests::vista_search`'s best and checked by eye:
 /// open sky, the map's landmarks behind the tank, the tank in the sun.
 /// One per side, so each contract's sides show the map differently.
-fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
+pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
     match kind {
         // The town's domes under the pyramids; the cliffs and a ruined tower.
         MapKind::Saltmarket => &[(257.0, 88.0, 1.83), (163.0, 48.0, 1.31)],
