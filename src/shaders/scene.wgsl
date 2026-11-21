@@ -12,6 +12,9 @@ struct Globals {
     ground_color: vec4<f32>,
     params: vec4<f32>,       // x: time, y: fog density, z: screen width, w: screen height
     settle: vec4<f32>,       // xyz: color of the dust settled on upward faces
+    light_count: vec4<f32>,  // x: point lights in use
+    // Point lights, two each: xyz position, w radius; rgb color.
+    lights: array<vec4<f32>, 64>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -649,6 +652,24 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
         c = diffuse * hemi * 0.36 * s.ao;
         c += (diffuse + spec * f * spec_col * (1.0 - s.rough * 0.7)) * g.sun_color.rgb * ndl * sh;
         c += env * f * spec_col * (0.15 + 0.35 * s.metal) * (1.0 - s.rough) * s.ao;
+    }
+    // Lamps: each lights what faces it, fading smoothly out to its radius.
+    let lamp_kd = select(diffuse, s.albedo * (1.0 - s.metal), is_world_detail);
+    let lamps = i32(g.light_count.x);
+    for (var k = 0; k < lamps; k++) {
+        let lp = g.lights[k * 2];
+        let to = lp.xyz - v.wpos;
+        let d = length(to);
+        if (d >= lp.w) {
+            continue;
+        }
+        let ld = to / max(d, 0.001);
+        let lndl = max(dot(n, ld), 0.0);
+        let q = d / lp.w;
+        let fade = (1.0 - q * q) * (1.0 - q * q) / (1.0 + d * d * 0.35);
+        let lh = normalize(ld + view);
+        let lspec = pow(max(dot(n, lh), 0.0), gloss) * (gloss + 8.0) / 25.0 * f * spec_col * (1.0 - s.rough * 0.7);
+        c += (lamp_kd * s.ao + lspec) * g.lights[k * 2 + 1].rgb * lndl * fade;
     }
     c += s.emissive;
 

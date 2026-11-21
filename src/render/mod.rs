@@ -189,6 +189,20 @@ fn billow_seed(seed: f32) -> f32 {
     seed.fract().abs().max(0.001)
 }
 
+/// A light that shines from a point (a lamp): it lights whatever faces it
+/// within `radius`, fading to nothing there. No shadows.
+#[derive(Clone, Copy, Debug)]
+pub struct PointLight {
+    pub pos: Vec3,
+    /// Linear rgb, times how bright.
+    pub color: Vec3,
+    pub radius: f32,
+}
+
+/// How many point lights a frame shades with: the nearest the camera that
+/// are in view.
+pub const MAX_LIGHTS: usize = 32;
+
 /// Everything the renderer needs to draw one frame.
 pub struct Scene {
     pub camera: Camera,
@@ -201,6 +215,8 @@ pub struct Scene {
     pub instances: Vec<(MeshId, Instance)>,
     /// Drawn after the opaque scene, blended.
     pub particles: Vec<Particle>,
+    /// Lamps lighting the scene (any number: the nearest are used).
+    pub lights: Vec<PointLight>,
     pub ui: Vec<UiVertex>,
     /// Draw the map's static geometry (off for studio shots like thumbnails).
     pub world: bool,
@@ -221,6 +237,10 @@ struct Globals {
     params: [f32; 4],
     /// xyz: settled dust color.
     settle: [f32; 4],
+    /// x: how many of `lights` are in use.
+    light_count: [f32; 4],
+    /// Point lights, two vec4s each: position and radius, color.
+    lights: [[f32; 4]; MAX_LIGHTS * 2],
 }
 
 struct GpuMesh {
@@ -237,6 +257,22 @@ struct GpuMesh {
 fn frustum(m: Mat4) -> [Vec4; 6] {
     let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
     [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| p / p.truncate().length())
+}
+
+/// The lights to shade a frame with: those reaching into view, nearest the
+/// camera first, at most `MAX_LIGHTS`.
+fn nearest_lights(lights: &[PointLight], cam: Vec3, planes: &[Vec4; 6]) -> Vec<PointLight> {
+    let mut seen: Vec<PointLight> = lights
+        .iter()
+        .filter(|l| in_frustum(planes, l.pos, l.radius))
+        .copied()
+        .collect();
+    seen.sort_by(|a, b| {
+        let d = |l: &PointLight| l.pos.distance(cam) - l.radius;
+        d(a).total_cmp(&d(b))
+    });
+    seen.truncate(MAX_LIGHTS);
+    seen
 }
 
 /// Whether a sphere at `center` of `radius` is at least partly inside `planes`.
@@ -1571,7 +1607,7 @@ impl Renderer {
                 .write_buffer(&self.ui_buf, 0, bytemuck::cast_slice(&scene.ui));
         }
 
-        let globals = Globals {
+        let mut globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
             light_view_proj: light_view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
@@ -1600,7 +1636,15 @@ impl Renderer {
                 .to_array(),
             params: [scene.time, scene.atmosphere.fog_density, w, h],
             settle: scene.atmosphere.settle.extend(0.0).to_array(),
+            light_count: [0.0; 4],
+            lights: [[0.0; 4]; MAX_LIGHTS * 2],
         };
+        let near = nearest_lights(&scene.lights, scene.camera.pos, &frustum(view_proj));
+        globals.light_count[0] = near.len() as f32;
+        for (k, l) in near.iter().enumerate() {
+            globals.lights[k * 2] = l.pos.extend(l.radius).to_array();
+            globals.lights[k * 2 + 1] = l.color.extend(0.0).to_array();
+        }
         self.queue
             .write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         self.queue.write_buffer(

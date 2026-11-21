@@ -58,7 +58,8 @@ jobs:
         run: cargo test --locked --no-run
         timeout-minutes: 6
 
-      # Unit tests finish in well under a second; anything near this limit is a hang.
+      # The suite takes ~40s on two threads (the physics and map tests are
+      # the slow ones); anything near this limit is a hang or a regression.
       - name: Run tests
         run: cargo test --locked
         timeout-minutes: 2

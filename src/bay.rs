@@ -130,6 +130,7 @@ pub fn scene(
         shadow_radius: 17.0,
         instances,
         particles,
+        lights: Vec::new(),
         ui: Vec::new(),
         world: false,
     }

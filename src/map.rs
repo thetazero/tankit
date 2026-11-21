@@ -624,6 +624,8 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// Lamps: they light what faces them.
+    pub lights: Vec<crate::render::PointLight>,
     /// Maps up high (a mesa): a tank that drops below this height has gone
     /// over the edge and dies on impact.
     pub fall_y: Option<f32>,
@@ -687,6 +689,14 @@ impl Map {
     /// `kind` sounds at `at`.
     pub fn sound(&mut self, kind: Ambient, at: Vec3) {
         self.sounds.push(Emitter { kind, at });
+    }
+
+    /// A copy of the map `build` makes, built only the first time it's
+    /// asked for. The big maps take seconds to lay out in a debug build,
+    /// and the tests ask for them over and over; a copy takes well under
+    /// a millisecond. Building is deterministic, so a copy is the same map.
+    fn built_once(cell: &'static std::sync::OnceLock<Map>, build: fn() -> Map) -> Map {
+        cell.get_or_init(build).clone()
     }
 }
 
@@ -1013,6 +1023,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
             routes: Vec::new(),

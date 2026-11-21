@@ -115,6 +115,11 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
 
 impl Map {
     pub fn foundry() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        Map::built_once(&BUILT, Map::build_foundry)
+    }
+
+    fn build_foundry() -> Map {
         let sides = [Faction::Uthenn, Faction::Imperium];
         let mut map = Map {
             size: SIZE,
@@ -152,6 +157,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            lights: Vec::new(),
             fall_y: None,
             hold_name: "SMELTER",
             routes: Vec::new(),
