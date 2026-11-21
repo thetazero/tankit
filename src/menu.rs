@@ -463,13 +463,13 @@ impl Menu {
                     .count();
                 p.text(
                     Vec2::new(x, y),
-                    &format!("T{}", s.level),
+                    &format!("Rank {}", s.level),
                     &TextStyle::value(22.0),
                     Align::Left,
                 );
                 p.text(
                     Vec2::new(x + PANEL_W, y + 11.0),
-                    &format!("{} / {} to T{}", s.into, s.span, s.level + 1),
+                    &format!("{} / {} to Rank {}", s.into, s.span, s.level + 1),
                     &BODY,
                     Align::Right,
                 );
@@ -508,7 +508,7 @@ impl Menu {
                     let (tag, color) = if m.open_at(s.level) {
                         (m.rating_label(), theme::DIM)
                     } else {
-                        (format!("Needs T{}", m.standing), theme::HOT)
+                        (format!("Needs Rank {}", m.standing), theme::HOT)
                     };
                     let mut style = BODY;
                     style.color = color;
@@ -561,7 +561,7 @@ impl Menu {
                         &mut p,
                         Vec2::new(x, y),
                         &format!(
-                            "Opens at T{} with the {}",
+                            "Opens at Rank {} with the {}",
                             m.standing,
                             title(employer.name())
                         ),
@@ -796,18 +796,21 @@ impl Pause {
         );
         y += 20.0;
         let r = profile.standing(employer);
-        emblem::tagged(
-            &mut p,
-            Vec2::new(x, y + 1.0),
-            employer,
-            &format!("{} T{}", employer.name(), r.level),
-            &TextStyle::LABEL,
-            Align::Left,
+        // The bar starts past the name, however long it runs.
+        let bar_x = 132.0_f32.max(
+            emblem::tagged(
+                &mut p,
+                Vec2::new(x, y + 1.0),
+                employer,
+                &format!("{} RANK {}", employer.name(), r.level),
+                &TextStyle::LABEL,
+                Align::Left,
+            ) + 12.0,
         );
         widgets::hairbar(
             &mut p,
-            Vec2::new(x + 132.0, y + 5.0),
-            PANEL_W - 132.0,
+            Vec2::new(x + bar_x, y + 5.0),
+            PANEL_W - bar_x,
             r.progress(),
             theme::FG,
         );

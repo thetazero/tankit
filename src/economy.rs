@@ -170,14 +170,14 @@ pub fn cost_to(level: u8) -> u32 {
     (0..level.min(MAX_LEVEL)).filter_map(upgrade_cost).sum()
 }
 
-/// `level` as the player sees it: M1 on a mark, M1.4 between.
+/// `level` as the player sees it, as a tier: T1 on a mark, T1.4 between.
 pub fn level_label(level: u8) -> String {
     let level = level.min(MAX_LEVEL);
     let (mark, step) = (level / STEPS_PER_MARK, level % STEPS_PER_MARK);
     if step == 0 {
-        format!("M{mark}")
+        format!("T{mark}")
     } else {
-        format!("M{mark}.{step}")
+        format!("T{mark}.{step}")
     }
 }
 
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(costs[0], 300);
         let total = cost_to(MAX_LEVEL);
         assert!((35_000..50_000).contains(&total), "{total}");
-        assert!(cost_to(STEPS_PER_MARK) < total / 5, "M1 comes early");
+        assert!(cost_to(STEPS_PER_MARK) < total / 5, "T1 comes early");
     }
 
     #[test]
@@ -476,11 +476,11 @@ mod tests {
 
     #[test]
     fn levels_read_as_marks_and_steps() {
-        assert_eq!(level_label(0), "M0");
-        assert_eq!(level_label(4), "M0.4");
-        assert_eq!(level_label(10), "M1");
-        assert_eq!(level_label(27), "M2.7");
-        assert_eq!(level_label(MAX_LEVEL), "M3");
+        assert_eq!(level_label(0), "T0");
+        assert_eq!(level_label(4), "T0.4");
+        assert_eq!(level_label(10), "T1");
+        assert_eq!(level_label(27), "T2.7");
+        assert_eq!(level_label(MAX_LEVEL), "T3");
     }
 
     #[test]
@@ -501,7 +501,7 @@ mod tests {
         let mean = all.iter().sum::<f32>() / all.len() as f32;
         assert!((5.0..6.5).contains(&mean), "mean {mean}");
         let near = all.iter().filter(|&&l| (2.0..=8.0).contains(&l)).count();
-        assert!(near * 10 > all.len() * 5, "most within a few steps of M0.5");
+        assert!(near * 10 > all.len() * 5, "most within a few steps of T0.5");
         let at = |n: f32| all.iter().filter(|&&l| l == n).count();
         assert!(
             at(5.0) > at(0.0) && at(5.0) > at(12.0),

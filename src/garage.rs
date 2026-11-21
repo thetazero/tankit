@@ -965,7 +965,7 @@ impl Garage {
             (format!("OWNED · {level}"), theme::DIM)
         } else if let Some(price) = price {
             if locked {
-                (format!("REPUTATION {}", price.standing), LOCKED)
+                (format!("RANK {}", price.standing), LOCKED)
             } else if profile.crystals >= price.crystals {
                 (format!("{} CR", price.crystals), theme::FG)
             } else {
@@ -1067,8 +1067,8 @@ impl Garage {
 /// Height the upgrade track adds to the spec card.
 const UPGRADE_TRACK_H: f32 = 30.0;
 
-/// An owned part's climb to M3: its level, then one notch per upgrade step, filled up
-/// to where it is, with the marks (M1, M2) standing taller.
+/// An owned part's climb to T3: its level, then one notch per upgrade step, filled up
+/// to where it is, with the marks (T1, T2) standing taller.
 fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8) {
     use crate::economy::{MAX_LEVEL, STEPS_PER_MARK, level_label};
     let lw = label(p, at, "UPGRADE ", Align::Left);
@@ -1153,9 +1153,9 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
                 let have = profile.standing_for(part);
                 // The longest that fits the button.
                 let text = [
-                    format!("LOCKED · {} REPUTATION {s} · YOU {have}", f.name()),
-                    format!("NEEDS {} REPUTATION {s} · YOU {have}", f.name()),
-                    format!("NEEDS REPUTATION {s} · YOU {have}"),
+                    format!("LOCKED · {} RANK {s} · YOU {have}", f.name()),
+                    format!("NEEDS {} RANK {s} · YOU {have}", f.name()),
+                    format!("NEEDS RANK {s} · YOU {have}"),
                 ]
                 .into_iter()
                 .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)

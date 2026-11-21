@@ -922,7 +922,7 @@ fn reputation_gained(
     }
     let tw = p.text(
         Vec2::new(b, y + 24.0),
-        &format!("T{}", now.level),
+        &format!("RANK {}", now.level),
         &tier,
         Align::Right,
     );
@@ -965,7 +965,7 @@ fn reputation_gained(
     label(
         p,
         Vec2::new(b, bar_y + bar_h + 10.0),
-        &format!("{} / {} TO T{}", now.into, now.span, now.level + 1),
+        &format!("{} / {} TO RANK {}", now.into, now.span, now.level + 1),
         Align::Right,
     );
 }
