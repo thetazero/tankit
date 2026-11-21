@@ -71,6 +71,7 @@ tankit [OPTIONS]
   --frames <n>            (with --shot) render n frames from --time on, saved as <out>_000.png ...
   --fps <f>               frame rate for --frames (default 30)
   --straight              (with --shot) full throttle straight ahead instead of the weaving autopilot
+  --tilt <0..1>           (with --shot) chase camera tilt: 0 low behind the tank, 1 high (default 0.35)
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
   --hull <kataphrakt|kastron|sethuun|vigil|gravis>  player hull (default kataphrakt; sethuun hovers)
   --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
@@ -127,6 +128,8 @@ pub struct Args {
     upgrade: u8,
     debug: bool,
     straight: bool,
+    /// Shots: the chase camera's tilt.
+    tilt: f32,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
     shot: Option<ShotArgs>,
@@ -309,6 +312,7 @@ fn parse_args() -> Result<Args> {
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
     let (mut map_kind, mut spawn, mut straight) = (MapKind::Saltmarket, 0usize, false);
+    let mut tilt = scene::TILT_HOME;
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut team_size: Option<usize> = None;
@@ -390,6 +394,13 @@ fn parse_args() -> Result<Args> {
                 );
             }
             "--straight" => straight = true,
+            "--tilt" => {
+                tilt = args
+                    .next()
+                    .context("--tilt needs a number")?
+                    .parse::<f32>()?;
+                anyhow::ensure!((0.0..=1.0).contains(&tilt), "--tilt goes from 0 to 1");
+            }
             "--cam" => {
                 let v: Vec<f32> = args
                     .next()
@@ -567,6 +578,7 @@ fn parse_args() -> Result<Args> {
         upgrade,
         debug,
         straight,
+        tilt,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
@@ -653,6 +665,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         game.reputation = args.earned;
     }
     let mut cam = scene::ChaseCam::new();
+    cam.tilt = args.tilt;
     let mut garage = garage::Garage::new();
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));

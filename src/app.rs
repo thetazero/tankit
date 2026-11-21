@@ -39,6 +39,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 /// Camera height change per second while PageUp/PageDown is held (0..1 range).
 const CAM_TILT_SPEED: f32 = 0.8;
+/// How fast (tilt/s) a camera reset eases the tilt back home.
+const CAM_RESET_SPEED: f32 = 2.5;
 /// A frame whose own work takes longer than this is logged with what it
 /// spent the time on, so a hitch mid-match can be traced to its cause.
 const HITCH_WORK: f32 = 0.05;
@@ -129,6 +131,9 @@ struct App {
     /// How dark the menu scene is (0..1): it dips to black around a backdrop swap.
     backdrop_dark: f32,
     cam: ChaseCam,
+    /// Easing the camera back to its usual tilt (a camera reset), until it's
+    /// there or a tilt key takes over.
+    cam_homing: bool,
     hud: Hud,
     garage: Garage,
     audio: Audio,
@@ -221,6 +226,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         backdrop_ready: None,
         backdrop_dark: 0.0,
         cam: ChaseCam::new(),
+        cam_homing: false,
         hud: Hud::new(),
         garage: Garage::new(),
         audio: Audio::new(),
@@ -411,6 +417,7 @@ impl App {
         self.banked = 0;
         self.paid = false;
         self.cam = ChaseCam::new();
+        self.cam_homing = false;
         self.hud = Hud::new();
         self.garage = Garage::new();
         self.player_alive = true;
@@ -722,7 +729,12 @@ impl App {
         }
         let action = binds.find(
             code,
-            &[Action::Garage, Action::NextHull, Action::NextTurret],
+            &[
+                Action::Garage,
+                Action::NextHull,
+                Action::NextTurret,
+                Action::CameraReset,
+            ],
         );
         match code {
             KeyCode::Escape if self.showroom.is_some() => event_loop.exit(),
@@ -749,6 +761,7 @@ impl App {
                 self.spawn += 1;
                 self.restart();
             }
+            _ if action == Some(Action::CameraReset) => self.cam_homing = true,
             // Quick-cycle the kit queued for the next respawn.
             _ if action == Some(Action::NextHull) => {
                 let (hull, turret) = self.queued();
@@ -945,9 +958,12 @@ impl App {
         }
         self.loaded = false;
 
-        let tilt =
-            (self.held(Action::CameraUp) as i32 - self.held(Action::CameraDown) as i32) as f32;
-        self.cam.tilt = (self.cam.tilt + tilt * CAM_TILT_SPEED * dt).clamp(0.0, 1.0);
+        // Tilt only in battle: in the garage Q/E switch tabs and equip.
+        if self.mode == Mode::Playing && !self.garage.is_open() {
+            let (up, down) = (self.held(Action::CameraUp), self.held(Action::CameraDown));
+            let (tilt, homing) = tilt_step(self.cam.tilt, up, down, self.cam_homing, dt);
+            (self.cam.tilt, self.cam_homing) = (tilt, homing);
+        }
 
         let cmd = self.command();
         let fire = self.held(Action::Fire) && !self.garage.is_open() && self.mode == Mode::Playing;
@@ -1168,9 +1184,53 @@ impl App {
     }
 }
 
+/// One frame of the chase camera's tilt: the tilt keys move it (and cancel a
+/// reset); otherwise a reset eases it home. Returns the tilt and whether it's
+/// still easing home.
+fn tilt_step(tilt: f32, up: bool, down: bool, homing: bool, dt: f32) -> (f32, bool) {
+    if up || down {
+        let dir = (up as i32 - down as i32) as f32;
+        return ((tilt + dir * CAM_TILT_SPEED * dt).clamp(0.0, 1.0), false);
+    }
+    if !homing {
+        return (tilt, false);
+    }
+    let gap = scene::TILT_HOME - tilt;
+    let step = CAM_RESET_SPEED * dt;
+    if gap.abs() <= step {
+        (scene::TILT_HOME, false)
+    } else {
+        (tilt + step.copysign(gap), true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_tilts_and_resets() {
+        let dt = 1.0 / 60.0;
+        // Held up, it climbs to the top and stops there.
+        let mut t = scene::TILT_HOME;
+        for _ in 0..200 {
+            t = tilt_step(t, true, false, false, dt).0;
+        }
+        assert_eq!(t, 1.0);
+        // A reset eases it back home, a step at a time, then stops.
+        let (mut homing, mut frames) = (true, 0);
+        while homing {
+            let before = t;
+            (t, homing) = tilt_step(t, false, false, homing, dt);
+            assert!(before - t <= CAM_RESET_SPEED * dt + 1e-6);
+            frames += 1;
+        }
+        assert_eq!(t, scene::TILT_HOME);
+        assert!(frames > 5, "snapped back in {frames} frames");
+        // A tilt key during a reset takes over.
+        let (t2, homing) = tilt_step(0.0, false, true, true, dt);
+        assert_eq!((t2, homing), (0.0, false));
+    }
     use crate::faction::Faction;
 
     /// Moving the menu between contracts swaps the backdrop's map: the tank is

@@ -50,7 +50,8 @@ always move through menus and the garage.
 | Z / X | rotate turret left / right (it turns with the hull) |
 | C | swing turret back to center |
 | Space | fire (hold to keep firing) |
-| PageUp / PageDown | camera height |
+| Q / E (or PageUp / PageDown) | tilt the camera up / down |
+| R | reset the camera tilt |
 | Tab | scoreboard |
 | G | garage |
 | 1 / 2 | quick-cycle the hull / turret for the next respawn |
