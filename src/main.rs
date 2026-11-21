@@ -1,6 +1,7 @@
 mod ai;
 mod ambience;
 mod app;
+mod arena;
 mod arrival;
 mod audio;
 mod bay;
@@ -10,6 +11,7 @@ mod economy;
 mod faction;
 mod game;
 mod garage;
+mod hitch;
 mod hold;
 mod hud;
 mod keys;
@@ -46,10 +48,17 @@ tankit [OPTIONS]
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
   --employer <faction>    which of the map's sides hires you (default: its first);
-                          your trust in the match goes to them
+                          your reputation in the match goes to them
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
+  --arena <rounds>        play bot-only rounds headless (seeds from --seed up) and print each
+                          side's wins; every bot runs the frozen baseline brain unless --improve
+  --improve <faction>     (with --arena) that side's bots run the current brain
+  --duel <hull,turret,hull,turret,metres,count>
+                          one bot against one on open ground, that far apart, count times: the
+                          first kit under the current brain (then the baseline) against the
+                          second under the baseline; prints how often the first wins
   --shot <out.png>        render offscreen and save
   --wav <out.wav>         record a match's sound offscreen (autopilot, trigger held) for --time seconds (default 12)
   --time <seconds>        simulated time before the shot (default 1)
@@ -60,20 +69,26 @@ tankit [OPTIONS]
   --cam <x,y,z,tx,ty,tz>  (with --shot) fixed camera at x,y,z looking at tx,ty,tz, no HUD (map review; also the showroom)
   --hull <kataphrakt|kastron|sethuun|vigil|gravis>  player hull (default kataphrakt; sethuun hovers)
   --turret <name>         player turret: kontos pelekys (Imperium), ammeth ossrin (Ithessar),
-                          lumen (Uthenn), hymn (Resonant); default kontos
+                          lumen (Uthenn), hymn knell (Resonant); default kontos
   --garage                (with --shot) open the garage at the start, previewing --hull/--turret
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|factions|missions|settings|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
-  --screen results        (with --shot) end the round 3 s before the shot: scoreboard and contract pay
-  --trust <n>             (with --shot) trust with every faction for menu, garage and pause shots
+  --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
+                          screen and its respawn countdown
+  --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
+                          --frames): scoreboard, reputation gained and crystal tally
+  --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds'
+  --reputation <n>        (with --shot) reputation with every faction for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
+  --upgrade <steps>       (with --shot) every part the pilot owns is this many upgrade steps up (10 a mark)
+  --earned <n>            (with --screen results) reputation earned this match, for the results graphic
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
-  --focus <0-5>           showroom: frame one tank
+  --focus <0-6>           showroom: frame one tank
 ";
 
 pub struct Args {
@@ -86,6 +101,8 @@ pub struct Args {
     pub side: usize,
     /// --employer, for menu shots.
     employer: Option<faction::Faction>,
+    /// --mission, for menu shots: index into `MISSIONS`.
+    mission: Option<usize>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -97,8 +114,12 @@ pub struct Args {
     /// Garage shot: highlight this part instead of --hull/--turret.
     preview: Option<economy::Part>,
     screen: Option<Screen>,
-    trust: u32,
+    reputation: u32,
     crystals: u32,
+    /// Results shot: reputation earned in the match.
+    earned: u32,
+    /// Shots: upgrade steps on every owned part.
+    upgrade: u8,
     debug: bool,
     straight: bool,
     /// Fixed screenshot camera: position and target.
@@ -109,17 +130,28 @@ pub struct Args {
     /// Benchmark this many seconds of a round, after this much warmup.
     bench: Option<(f32, f32, u32, u32)>,
     showroom: Option<ShowroomArgs>,
+    /// Bot-only rounds to play headless, and which side runs the current
+    /// bots against the baseline (None: every side baseline).
+    arena: Option<(u32, Option<faction::Faction>)>,
+    /// Duels: (hull, turret) under the current brain against one under
+    /// the baseline, this far apart, this many times.
+    duel: Option<(garage::Loadout, garage::Loadout, f32, u32)>,
 }
 
 impl Args {
     /// An in-memory pilot for headless shots (never saved).
     fn profile(&self) -> profile::Profile {
         let mut p = profile::Profile::in_memory();
-        p.set_trust_all(self.trust);
+        p.set_reputation_all(self.reputation);
         p.crystals = self.crystals;
         p.settings.debug = self.debug;
         for &part in &self.own {
             p.grant(part);
+        }
+        for part in economy::PARTS {
+            if p.owns(part) {
+                p.levels.set(part, self.upgrade);
+            }
         }
         p
     }
@@ -173,6 +205,8 @@ enum Screen {
     Settings,
     Pause,
     Results,
+    /// The death screen: destroyed, counting down to the respawn.
+    Dead,
 }
 
 struct ShotArgs {
@@ -196,6 +230,12 @@ fn main() -> Result<()> {
         game.set_player_hull(args.loadout.0);
         game.world.tanks[0].turret_kind = args.loadout.1;
         return bench::run(game, w, h, warmup, seconds);
+    }
+    if let Some((a, b, start, reps)) = args.duel {
+        return arena::duel(a, b, start, reps);
+    }
+    if let Some((rounds, improve)) = args.arena {
+        return arena::run(&args, rounds, improve);
     }
     if let Some((out, seconds)) = &args.wav {
         return record_wav(&args, out, *seconds);
@@ -243,6 +283,9 @@ fn parse_args() -> Result<Args> {
     let mut shot: Option<String> = None;
     let mut wav: Option<String> = None;
     let mut bench: Option<f32> = None;
+    let mut arena: Option<u32> = None;
+    let mut improve: Option<faction::Faction> = None;
+    let mut duel: Option<(garage::Loadout, garage::Loadout, f32, u32)> = None;
     let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
@@ -252,13 +295,15 @@ fn parse_args() -> Result<Args> {
     let mut team_size: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
+    let mut mission = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
     let mut preview = None;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let (mut trust, mut crystals) = (0, 0);
+    let (mut reputation, mut crystals, mut earned) = (0, 0, 0);
+    let mut upgrade = 0;
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -315,6 +360,15 @@ fn parse_args() -> Result<Args> {
                         format!("--employer expects a faction name, got {name:?}")
                     })?);
             }
+            "--mission" => {
+                let name = args.next().unwrap_or_default();
+                mission = Some(
+                    mission::MISSIONS
+                        .iter()
+                        .position(|m| m.name.eq_ignore_ascii_case(&name))
+                        .with_context(|| format!("--mission: no mission called {name:?}"))?,
+                );
+            }
             "--straight" => straight = true,
             "--cam" => {
                 let v: Vec<f32> = args
@@ -330,6 +384,43 @@ fn parse_args() -> Result<Args> {
             }
             "--time" => time = Some(args.next().context("--time needs seconds")?.parse()?),
             "--bench" => bench = Some(args.next().context("--bench needs seconds")?.parse()?),
+            "--arena" => {
+                arena = Some(
+                    args.next()
+                        .context("--arena needs a round count")?
+                        .parse()?,
+                )
+            }
+            "--duel" => {
+                let spec = args
+                    .next()
+                    .context("--duel needs hull,turret,hull,turret,metres,count")?;
+                let v: Vec<&str> = spec.split(',').collect();
+                if v.len() != 6 {
+                    bail!("--duel needs hull,turret,hull,turret,metres,count, got {spec:?}");
+                }
+                let hull = |n: &str| match economy::Part::by_name(n) {
+                    Some(economy::Part::Hull(h)) => Ok(h),
+                    _ => Err(anyhow::anyhow!("--duel: no hull called {n:?}")),
+                };
+                let gun = |n: &str| match economy::Part::by_name(n) {
+                    Some(economy::Part::Turret(t)) => Ok(t),
+                    _ => Err(anyhow::anyhow!("--duel: no turret called {n:?}")),
+                };
+                duel = Some((
+                    (hull(v[0])?, gun(v[1])?),
+                    (hull(v[2])?, gun(v[3])?),
+                    v[4].parse()?,
+                    v[5].parse()?,
+                ));
+            }
+            "--improve" => {
+                let name = args.next().context("--improve needs a faction name")?;
+                improve =
+                    Some(faction::Faction::by_name(&name).with_context(|| {
+                        format!("--improve expects a faction name, got {name:?}")
+                    })?);
+            }
             "--wav" => wav = Some(args.next().context("--wav needs a path")?),
             "--frames" => frames = args.next().context("--frames needs a count")?.parse()?,
             "--fps" => fps = args.next().context("--fps needs a number")?.parse()?,
@@ -350,7 +441,9 @@ fn parse_args() -> Result<Args> {
                 loadout.1 = *garage::TURRETS
                     .iter()
                     .find(|&&k| garage::turret_name(k) == name)
-                    .context("--turret expects kontos, pelekys, ammeth, ossrin, lumen or hymn")?;
+                    .context(
+                        "--turret expects kontos, pelekys, ammeth, ossrin, lumen, hymn or knell",
+                    )?;
             }
             "--garage" => garage = true,
             "--own" => own.push(part_arg(args.next(), "--own")?),
@@ -363,15 +456,23 @@ fn parse_args() -> Result<Args> {
                     Some("settings") => Screen::Settings,
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
+                    Some("dead") => Screen::Dead,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, settings, pause or results, got {other:?}"
+                            "--screen expects menu, factions, missions, settings, pause, results or dead, got {other:?}"
                         )
                     }
                 })
             }
-            "--trust" => trust = args.next().context("--trust needs a number")?.parse()?,
+            "--reputation" | "--trust" => {
+                reputation = args
+                    .next()
+                    .context("--reputation needs a number")?
+                    .parse()?
+            }
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
+            "--upgrade" => upgrade = args.next().context("--upgrade needs a number")?.parse()?,
+            "--earned" => earned = args.next().context("--earned needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
             "--orbit" => {
@@ -418,6 +519,7 @@ fn parse_args() -> Result<Args> {
         seed,
         side,
         employer,
+        mission,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -430,13 +532,17 @@ fn parse_args() -> Result<Args> {
         own,
         preview,
         screen,
-        trust,
+        reputation,
         crystals,
+        earned,
+        upgrade,
         debug,
         straight,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
+        arena: arena.map(|n| (n, improve)),
+        duel,
         shot: shot.map(|out| ShotArgs {
             out,
             time: time.unwrap_or(1.0),
@@ -512,7 +618,10 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     }
     game.set_player_levels(profile.levels);
     if args.screen == Some(Screen::Results) {
-        game.time_left = (shot.time - 3.0).max(0.1);
+        // A still shows the results settled; a clip starts as they begin to count.
+        let lead = if shot.frames > 1 { 0.3 } else { 4.0 };
+        game.time_left = (shot.time - lead).max(0.1);
+        game.reputation = args.earned;
     }
     let mut cam = scene::ChaseCam::new();
     let mut garage = garage::Garage::new();
@@ -558,7 +667,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = advance(&mut game, &mut cam, &mut garage, shot.time);
+    let mut camera = if args.screen == Some(Screen::Dead) {
+        // Destroyed by the nearest enemy a few seconds before the shot.
+        let lead = 3.5f32.min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        game.destroy_player();
+        advance(&mut game, &mut cam, &mut garage, lead)
+    } else {
+        advance(&mut game, &mut cam, &mut garage, shot.time)
+    };
 
     for i in 0..shot.frames {
         if i > 0 {
@@ -604,14 +721,23 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
             let ui = hud
-                .draw(&game, &tanks, &camera, w, h, game::DT, false)
+                .draw(
+                    &game,
+                    &tanks,
+                    &camera,
+                    w,
+                    h,
+                    game::DT,
+                    false,
+                    hud::Ledger::before(&profile, &game, 0, false),
+                )
                 .verts;
             frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
                 frame.ui.extend(
                     menu::Pause::new()
-                        .draw(&profile, game.factions[0], game.trust, w, h)
+                        .draw(&profile, game.factions[0], game.reputation, w, h)
                         .verts,
                 );
             }
@@ -667,7 +793,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
     profile.loadout = args.loadout;
-    let mut game = app::menu_match(profile.loadout);
     let mut menu = menu::Menu::new();
     match args.screen {
         Some(Screen::Factions | Screen::Missions) => {
@@ -677,6 +802,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             }
             if args.screen == Some(Screen::Missions) {
                 menu.input(menu::Nav::Select);
+                if let Some(i) = args.mission {
+                    menu.pick_mission(i);
+                }
             }
         }
         Some(Screen::Settings) => {
@@ -686,6 +814,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         _ => {}
     }
+    // The backdrop follows the selected contract, as in the window.
+    let (i, side) = menu.backdrop().unwrap_or((0, 0));
+    let mut game = app::backdrop_match(i, side, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);

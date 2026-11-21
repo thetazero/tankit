@@ -37,6 +37,13 @@ impl Rng {
         self.f32() < p
     }
 
+    /// Standard normal (mean 0, deviation 1), by Box-Muller.
+    pub fn normal(&mut self) -> f32 {
+        let u = 1.0 - self.f32(); // (0, 1]: ln stays finite
+        let v = self.f32();
+        (-2.0 * u.ln()).sqrt() * (std::f32::consts::TAU * v).cos()
+    }
+
     pub fn index(&mut self, len: usize) -> usize {
         (self.next_u64() % len.max(1) as u64) as usize
     }

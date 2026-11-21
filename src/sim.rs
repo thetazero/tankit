@@ -15,7 +15,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3};
 use rapier3d::prelude::*;
 
 use crate::game::DT;
@@ -51,6 +51,9 @@ pub enum TurretKind {
     Lumen,
     /// Resonant short-range crystal flamethrower.
     Hymn,
+    /// Resonant siege bell: charges while held, then tolls one shot that
+    /// throws both tanks.
+    Knell,
 }
 
 impl HullKind {
@@ -63,17 +66,31 @@ impl HullKind {
             HullKind::Gravis => Faction::Uthenn,
         }
     }
+
+    /// Where the turret ring sits in the hull's body frame (the art's too).
+    /// A hover hull's ring rides on its body, which floats [`HOVER_RIDE`]
+    /// up and banks with [`Tank::lean`]; see [`Tank::turret_frame`].
+    pub fn ring(self) -> Vec3 {
+        match self {
+            HullKind::Kataphrakt => Vec3::new(0.0, 1.42, -0.3),
+            HullKind::Kastron => Vec3::new(0.0, 1.62, -0.2),
+            HullKind::Sethuun => Vec3::new(0.0, 1.3, -0.15),
+            HullKind::Vigil => Vec3::new(0.0, 1.38, -0.3),
+            HullKind::Gravis => Vec3::new(0.0, 2.8, -0.4),
+        }
+    }
 }
 
 impl TurretKind {
     /// Every turret, grouped by maker. Also the kit's art order.
-    pub const ALL: [TurretKind; 6] = [
+    pub const ALL: [TurretKind; 7] = [
         TurretKind::Kontos,
         TurretKind::Pelekys,
         TurretKind::Ammeth,
         TurretKind::Ossrin,
         TurretKind::Lumen,
         TurretKind::Hymn,
+        TurretKind::Knell,
     ];
 
     pub fn maker(self) -> crate::faction::Faction {
@@ -82,23 +99,60 @@ impl TurretKind {
             TurretKind::Kontos | TurretKind::Pelekys => Faction::Imperium,
             TurretKind::Ammeth | TurretKind::Ossrin => Faction::Ithessar,
             TurretKind::Lumen => Faction::Uthenn,
-            TurretKind::Hymn => Faction::Resonant,
+            TurretKind::Hymn | TurretKind::Knell => Faction::Resonant,
         }
     }
 
-    /// Velocity change one shot kicks into the hull, m/s. It's applied at gun
-    /// height, so most of it shows up as the hull rocking back on its springs.
+    /// Momentum one shot carries, N·s. Equal and opposite: the gun kicks its
+    /// own hull back by exactly this much (at gun height, so it rocks back on
+    /// its springs as well as sliding), and the shot shoves whatever tank it
+    /// lands on forward by the same. Per shot, not per tank: a heavy hull
+    /// shrugs off what sends a light one skidding.
     pub fn recoil(self) -> f32 {
         match self {
             // Long rail cannon: one big slam.
-            TurretKind::Kontos => 2.2,
+            TurretKind::Kontos => 60_000.0,
             // Twin short guns: smaller kicks, more often.
-            TurretKind::Pelekys => 1.3,
-            // Plasma has little mass: a soft push.
-            TurretKind::Ammeth => 0.8,
-            TurretKind::Ossrin => 0.35,
-            // Beam and flame don't kick.
-            TurretKind::Lumen | TurretKind::Hymn => 0.0,
+            TurretKind::Pelekys => 25_000.0,
+            // A big, slow orb of plasma: a heavy shove.
+            TurretKind::Ammeth => 45_000.0,
+            // A stream of light darts: a steady push.
+            TurretKind::Ossrin => 3_500.0,
+            // Each puff of fire is light, but there are sixty a second.
+            TurretKind::Hymn => 600.0,
+            // The siege bell: it shoves its own hull back (a Kataphrakt at
+            // ~4 m/s), and hands its target far more (`KNELL_KNOCK`).
+            TurretKind::Knell => 75_000.0,
+            // Light has no mass to speak of: a beam doesn't push.
+            TurretKind::Lumen => 0.0,
+        }
+    }
+
+    /// The gun's pitch pivot in turret space (the art's too).
+    pub fn trunnion(self) -> Vec3 {
+        match self {
+            TurretKind::Kontos => Vec3::new(0.0, 0.45, 0.88),
+            TurretKind::Pelekys => Vec3::new(0.0, 0.38, 0.92),
+            TurretKind::Ammeth => Vec3::new(0.0, 0.5, 0.55),
+            TurretKind::Ossrin => Vec3::new(0.0, 0.44, 0.62),
+            // The Lumen is drawn 1.2x size, pivot and all.
+            TurretKind::Lumen => Vec3::new(0.0, 0.42, 0.92) * 1.2,
+            TurretKind::Hymn => Vec3::new(0.0, 0.45, 0.8),
+            TurretKind::Knell => Vec3::new(0.0, 0.95, 0.3),
+        }
+    }
+
+    /// How far along the gun axis, from the trunnion, its muzzle is (the
+    /// art's too): where shots and the beam leave it.
+    pub fn reach(self) -> f32 {
+        match self {
+            TurretKind::Kontos => 3.55,
+            TurretKind::Pelekys => 2.82,
+            TurretKind::Ammeth => 1.45,
+            TurretKind::Ossrin => 2.35,
+            TurretKind::Lumen => 3.2 * 1.2,
+            TurretKind::Hymn => 1.85,
+            TurretKind::Knell => 2.3,
         }
     }
 }
@@ -188,14 +242,15 @@ impl Chassis {
     /// on); the convex hull down to the track ends covers the lower shell.
     pub const GRAVIS: Chassis = Chassis {
         mass: 50_000.0,
-        track_x: 1.6,
+        // 1.6 m plus the widening (`crate::tank::uthenn::WIDEN`).
+        track_x: 1.85,
         track_width: 0.86,
         road_z: &[-2.7, -1.8, -0.9, 0.0, 0.9, 1.8, 2.7],
         road_y: 0.46,
         road_r: 0.38,
         front: (3.5, 0.82, 0.42),
         rear: (-3.45, 0.85, 0.46),
-        hull_half_x: 1.9,
+        hull_half_x: 2.15,
         hull_top: 2.8,
         hull_z: (-3.3, 1.9),
         center_of_mass: Vec3::new(0.0, 0.9, -0.15),
@@ -332,8 +387,14 @@ const ANTI_SQUAT: f32 = 0.6;
 const BELT_MASS_FRAC: f32 = 0.08;
 /// Below this speed with no input, the parking brake holds the tank.
 const PARK_SPEED: f32 = 0.3;
+/// Friction of a wreck's hull against the ground. A live hull is frictionless
+/// (the track model does the gripping); a dead one drags on its belly, side or
+/// roof instead of sliding off like a puck.
+const WRECK_FRICTION: f32 = 0.7;
 /// Hover emitters: static compression under the hull's weight (soft: it bobs).
 pub const HOVER_SAG: f32 = 0.16;
+/// How high a hover hull's body (and so its turret) floats above its frame.
+pub const HOVER_RIDE: f32 = 0.3;
 const HOVER_DAMPING_RATIO: f32 = 0.45;
 /// How far the belly sits above the emitters' rest line: their working range
 /// before the hull itself touches.
@@ -465,9 +526,13 @@ impl HullStats {
         brake: 18.0,
         rolling: 1.4,
         turn_rate: 1.6,
-        steer_accel: 11.0,
+        // Its tracks are long for their spacing, so the ends scrub hard
+        // sideways in a pivot: it needs more steering force and less side
+        // grip than the others just to turn at all (at 11.0 and 1.9 it
+        // managed 7 deg/s against a 92 deg/s ask).
+        steer_accel: 18.0,
         grip_long: 1.9,
-        grip_lat: 1.9,
+        grip_lat: 1.4,
         turret_speed: 0.8,
         turret_accel: 1.4,
         turret_brake: 6.0,
@@ -494,6 +559,11 @@ pub struct Tank {
     pub hull: HullStats,
     pub body: RigidBodyHandle,
     pub collider: ColliderHandle,
+    /// The turret's hitbox: hangs off the body, turns with the turret, and
+    /// only shots see it (see [`insert_turret_hitbox`]).
+    pub turret_hitbox: ColliderHandle,
+    /// The turret the hitbox is shaped for (`turret_kind` can be swapped).
+    hitbox_kind: TurretKind,
 
     // Mirrored from the rigid body after every step, for rendering and AI.
     pub pos: Vec3,
@@ -518,6 +588,9 @@ pub struct Tank {
     pub turret_centering: bool,
     /// Gun elevation in radians (positive = up).
     pub gun_pitch: f32,
+    /// The aim assist's small sideways nudge of the gun in its mantlet,
+    /// radians (positive = left, toward +yaw), on top of the turret's heading.
+    pub gun_yaw: f32,
     /// Distance each tread has travelled: [left (+x), right (-x)].
     pub track_dist: [f32; 2],
     /// Seconds since the gun last fired (drives recoil and muzzle flash).
@@ -542,6 +615,9 @@ pub struct Tank {
     /// Spin-up guns: how far spun up, 0..1, and the cluster's angle.
     pub spool: f32,
     pub spin: f32,
+    /// Charge guns (Knell): how far the shot has built up, 0..1 (it fires at
+    /// 1). Draws the art and the hum; the gun itself lives in combat.
+    pub charge: f32,
     /// State at the start of the last step, for render interpolation.
     prev_pos: Vec3,
     prev_rot: Quat,
@@ -568,20 +644,65 @@ impl Tank {
 
     /// World-space turret direction (3D, follows hull tilt).
     pub fn turret_dir(&self) -> Vec3 {
-        self.rot * (Quat::from_rotation_y(self.turret_rel) * Vec3::Z)
+        self.turret_frame().transform_vector3(Vec3::Z).normalize()
     }
 
     /// Where the gun points in the world, including elevation.
     pub fn gun_dir(&self) -> Vec3 {
-        self.rot
-            * (Quat::from_rotation_y(self.turret_rel)
-                * Quat::from_rotation_x(-self.gun_pitch)
-                * Vec3::Z)
+        self.gun_frame().transform_vector3(Vec3::Z).normalize()
     }
 
     /// Height of the gun's pivot above the hull origin.
     pub fn gun_height(&self) -> f32 {
         self.chassis.hull_top + 0.4
+    }
+
+    /// The turret ring in the world, turned to the turret's heading: the
+    /// frame the turret's art hangs from.
+    pub fn turret_frame(&self) -> Mat4 {
+        Mat4::from_rotation_translation(self.rot, self.pos) * self.turret_mount()
+    }
+
+    /// The turret ring in the hull's own frame, turned to the turret's heading.
+    fn turret_mount(&self) -> Mat4 {
+        let mut m = Mat4::IDENTITY;
+        if self.hull_kind == HullKind::Sethuun {
+            m = Mat4::from_rotation_z(self.lean) * Mat4::from_translation(Vec3::Y * HOVER_RIDE);
+        }
+        m * Mat4::from_translation(self.hull_kind.ring()) * Mat4::from_rotation_y(self.turret_rel)
+    }
+
+    /// Hang the turret hitbox where the turret is drawn now, reshaping it if
+    /// the turret was swapped. Takes effect at the next physics step.
+    fn place_turret_hitbox(&mut self, physics: &mut PhysicsWorld) {
+        let Some(c) = physics.colliders.get_mut(self.turret_hitbox) else {
+            return;
+        };
+        if self.hitbox_kind != self.turret_kind {
+            c.set_shape(turret_shape(self.turret_kind));
+            self.hitbox_kind = self.turret_kind;
+        }
+        let (_, rot, at) = self.turret_mount().to_scale_rotation_translation();
+        c.set_position_wrt_parent(Pose::from_parts(at, rot));
+    }
+
+    /// The gun in the world: origin at its trunnion, +z down the barrel.
+    pub fn gun_frame(&self) -> Mat4 {
+        self.turret_frame()
+            * Mat4::from_translation(self.turret_kind.trunnion())
+            * Mat4::from_rotation_y(self.gun_yaw)
+            * Mat4::from_rotation_x(-self.gun_pitch)
+    }
+
+    /// Where the gun's axis leaves the muzzle, in the world.
+    pub fn muzzle(&self) -> Vec3 {
+        self.gun_frame()
+            .transform_point3(Vec3::Z * self.turret_kind.reach())
+    }
+
+    /// The gun's trunnion in the world: on the gun's axis, inside the turret.
+    pub fn breech(&self) -> Vec3 {
+        self.gun_frame().transform_point3(Vec3::ZERO)
     }
 
     /// Turret heading on the ground plane.
@@ -680,6 +801,7 @@ impl World {
         let y = self.map.ground_height(at.x, at.y) + 0.15;
         let pose = Pose::from_parts(Vec3::new(at.x, y, at.y), Quat::from_rotation_y(yaw));
         let (body, collider) = insert_tank_body(&mut self.physics, Chassis::of(hull), pose);
+        let turret_hitbox = insert_turret_hitbox(&mut self.physics, body, turret);
         let chassis = Chassis::of(hull);
         let mut t = Tank {
             color,
@@ -689,6 +811,8 @@ impl World {
             hull: HullStats::of(hull),
             body,
             collider,
+            turret_hitbox,
+            hitbox_kind: turret,
             pos: Vec3::ZERO,
             rot: Quat::IDENTITY,
             vel: Vec3::ZERO,
@@ -702,6 +826,7 @@ impl World {
             turret_rate: 0.0,
             turret_centering: false,
             gun_pitch: 0.0,
+            gun_yaw: 0.0,
             track_dist: [0.0; 2],
             since_fire: 10.0,
             fire_barrel: 0,
@@ -714,6 +839,7 @@ impl World {
             husk: None,
             lean: 0.0,
             spool: 0.0,
+            charge: 0.0,
             spin: 0.0,
             prev_pos: Vec3::ZERO,
             prev_rot: Quat::IDENTITY,
@@ -722,6 +848,7 @@ impl World {
             feel: Feel::default(),
         };
         sync_from_body(&mut t, &self.physics);
+        t.place_turret_hitbox(&mut self.physics);
         t.snapshot();
         self.tanks.push(t);
         self.tanks.len() - 1
@@ -743,6 +870,8 @@ impl World {
         self.physics.bodies[body].set_linvel(old.linvel(), true);
         t.body = body;
         t.collider = collider;
+        t.turret_hitbox = insert_turret_hitbox(&mut self.physics, body, t.turret_kind);
+        t.hitbox_kind = t.turret_kind;
         t.hull_kind = kind;
         t.chassis = chassis;
         t.hull = HullStats::of(kind);
@@ -756,14 +885,16 @@ impl World {
         let t = &mut self.tanks[i];
         t.since_fire = 0.0;
         t.fire_barrel += 1;
+        self.recoil(i);
+    }
+
+    /// Kick tank `i` back by one shot's momentum, at gun height, opposite to
+    /// where the gun points.
+    pub fn recoil(&mut self, i: usize) {
+        let t = &self.tanks[i];
         let b = &mut self.physics.bodies[t.body];
-        let muzzle_height = t.rot * Vec3::Y * (t.chassis.hull_top + 0.4);
-        let at = b.translation() + muzzle_height;
-        b.apply_impulse_at_point(
-            -t.turret_dir() * t.turret_kind.recoil() * t.chassis.mass,
-            at,
-            true,
-        );
+        let at = b.translation() + t.rot * Vec3::Y * t.gun_height();
+        b.apply_impulse_at_point(-t.gun_dir() * t.turret_kind.recoil(), at, true);
     }
 
     /// Put tank `i` down at `at` facing `yaw`, at rest, turret forward (respawns).
@@ -781,6 +912,7 @@ impl World {
         t.turret_rate = 0.0;
         t.turret_centering = false;
         t.gun_pitch = 0.0;
+        t.gun_yaw = 0.0;
         t.belt = [0.0; 2];
         t.parked = true;
         t.flipped_time = 0.0;
@@ -801,9 +933,11 @@ impl World {
         b.apply_torque_impulse(torque, true);
     }
 
-    /// Which tank owns a collider, if any.
+    /// Which tank owns a collider (its hull or its turret), if any.
     pub fn tank_of(&self, c: ColliderHandle) -> Option<usize> {
-        self.tanks.iter().position(|t| t.collider == c)
+        self.tanks
+            .iter()
+            .position(|t| t.collider == c || t.turret_hitbox == c)
     }
 
     pub fn step(&mut self, cmds: &[Command]) {
@@ -815,8 +949,15 @@ impl World {
             let cmd = cmds.get(i).copied().unwrap_or_default();
             let t = &mut self.tanks[i];
             t.drive = cmd.throttle.abs().max(cmd.steer.abs()).min(1.0);
+            let friction = if t.dead { WRECK_FRICTION } else { 0.0 };
+            if let Some(c) = self.physics.colliders.get_mut(t.collider) {
+                if c.friction() != friction {
+                    c.set_friction(friction);
+                }
+            }
             drive(t, &cmd, &mut self.physics);
             turret(t, &cmd, DT);
+            t.place_turret_hitbox(&mut self.physics);
             t.since_fire += DT;
             t.age += DT;
         }
@@ -940,6 +1081,15 @@ impl World {
     }
 
     /// Distance along a ray until it hits static geometry, capped at `max`.
+    /// Like [`World::raycast`], with the surface normal where it struck
+    /// (None if nothing static is within `max`).
+    pub fn raycast_normal(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3)> {
+        let ray = Ray::new(origin, dir);
+        self.physics
+            .cast_ray_and_get_normal(&ray, max, true, QueryFilter::only_fixed())
+            .map(|(_, ri)| (ri.time_of_impact, ri.normal))
+    }
+
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> f32 {
         let ray = Ray::new(origin, dir);
         self.physics
@@ -968,6 +1118,47 @@ fn insert_tank_body(
         .restitution(0.0);
     let ch = physics.insert_collider(collider, Some(h));
     (h, ch)
+}
+
+/// A hitbox for `kind`'s turret on `body`: the convex hull of the head and
+/// mantlet as drawn (the gun level), in the turret's frame. Shots see it,
+/// nothing else does: a massless sensor in no collision group, so it never
+/// touches the ground, walls or other tanks, and the drive's wheel casts skip
+/// it. Its pose is kept on the turret by [`Tank::place_turret_hitbox`].
+fn insert_turret_hitbox(
+    physics: &mut PhysicsWorld,
+    body: RigidBodyHandle,
+    kind: TurretKind,
+) -> ColliderHandle {
+    let c = ColliderBuilder::new(turret_shape(kind))
+        .sensor(true)
+        .density(0.0)
+        .collision_groups(InteractionGroups::none());
+    physics.insert_collider(c, Some(body))
+}
+
+/// Each turret's hitbox shape, built once from its art.
+fn turret_shape(kind: TurretKind) -> SharedShape {
+    static SHAPES: std::sync::OnceLock<Vec<SharedShape>> = std::sync::OnceLock::new();
+    let shapes = SHAPES.get_or_init(|| {
+        TurretKind::ALL
+            .iter()
+            .map(|&k| {
+                let m = crate::tank::turret_model(k);
+                let gun = k.trunnion();
+                let pts: Vec<Vec3> = m
+                    .head
+                    .verts
+                    .iter()
+                    .map(|v| Vec3::from(v.pos))
+                    .chain(m.mantlet.verts.iter().map(|v| Vec3::from(v.pos) + gun))
+                    .collect();
+                SharedShape::convex_hull(&pts).expect("turret hitbox shape")
+            })
+            .collect()
+    });
+    let i = TurretKind::ALL.iter().position(|&k| k == kind).unwrap();
+    shapes[i].clone()
 }
 
 fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) {
@@ -1142,7 +1333,10 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     // 1. Suspension rays (one per road wheel).
     let mut ray_hits: Vec<Option<(Vec3, Vec3, f32)>> = vec![None; n_wheels];
     {
-        let filter = QueryFilter::default().exclude_rigid_body(t.body);
+        // Turret hitboxes are for shots only: wheels pass through them.
+        let filter = QueryFilter::default()
+            .exclude_rigid_body(t.body)
+            .exclude_sensors();
         let qp = physics.query_pipeline_with_filter(filter);
         // Each wheel is a ball swept down from its mount, not a thin ray: it
         // rolls up onto an edge as it reaches it instead of snapping to the
@@ -1302,7 +1496,12 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     } else if u_avg.abs() < PARK_SPEED && v_now.abs() < PARK_SPEED {
         t.parked = true;
     }
-    if throttle.abs() > 0.05 && u_avg * throttle >= -0.5 {
+    if t.dead {
+        // A wreck's drive train is seized: the belts don't turn, so it skids
+        // to a stop on its tracks (and holds on a slope) instead of coasting.
+        t.belt = [0.0; 2];
+        t.parked = true;
+    } else if throttle.abs() > 0.05 && u_avg * throttle >= -0.5 {
         // Engine: full force from a standstill, power-limited above the knee,
         // and governed off as the belts reach top speed.
         let limit = if throttle > 0.0 {
@@ -1330,11 +1529,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
     }
     // Steering drive: pushes the belts' speed difference toward the turn asked
     // for, with limited force. Left track (+x) slower turns left (counter-clockwise).
-    let want_diff = steer * h.turn_rate * 2.0 * c.track_x;
-    let limit = dv(mass * h.steer_accel);
-    let corr = (want_diff - (t.belt[1] - t.belt[0])).clamp(-limit, limit);
-    t.belt[0] -= corr * 0.5;
-    t.belt[1] += corr * 0.5;
+    if !t.dead {
+        let want_diff = steer * h.turn_rate * 2.0 * c.track_x;
+        let limit = dv(mass * h.steer_accel);
+        let corr = (want_diff - (t.belt[1] - t.belt[0])).clamp(-limit, limit);
+        t.belt[0] -= corr * 0.5;
+        t.belt[1] += corr * 0.5;
+    }
 
     if !contacts.is_empty() {
         // 4. Ground contacts. Force comes from slip between belt and ground:
@@ -1363,8 +1564,13 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 let v = b.velocity_at_point(ct.point);
                 let slip = t.belt[ct.side] - v.dot(tangent);
                 // Zeroing the slip moves both this patch of hull and this side's belt.
+                // A wreck's seized belt doesn't move, so it's all on the hull.
                 let belt_share = m_belt / per_side[ct.side] as f32;
-                let m_eff = 1.0 / (1.0 / share + 1.0 / belt_share);
+                let m_eff = if t.dead {
+                    share
+                } else {
+                    1.0 / (1.0 / share + 1.0 / belt_share)
+                };
                 let mut j_long = m_eff * slip;
                 let mut j_lat = -share * v.dot(lateral);
                 let max_long = ct.grip * ct.load * DT;
@@ -1387,8 +1593,10 @@ fn drive(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
                 Some((tangent * j_long + lateral * j_lat, ct.point))
             })
             .collect();
-        for s in 0..2 {
-            t.belt[s] += belt_reaction[s] / m_belt;
+        if !t.dead {
+            for s in 0..2 {
+                t.belt[s] += belt_reaction[s] / m_belt;
+            }
         }
         let com = b.center_of_mass();
         // Anti-squat: track and suspension geometry carries part of the drive force
@@ -1924,6 +2132,49 @@ mod tests {
         assert!(drift < 0.6, "pivot wandered {drift} m");
     }
 
+    /// Degrees a hull turns in `seconds` of full steer (with `thr` throttle).
+    fn degrees_turned(hull: HullKind, thr: f32, seconds: f32) -> f32 {
+        let mut w = World::empty(Map::yard(400.0));
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(200.0, 200.0),
+            0.0,
+            hull,
+            TurretKind::Kontos,
+        );
+        run(&mut w, Command::default(), 1.0);
+        let (mut turned, mut last) = (0.0, w.tanks[0].yaw());
+        for _ in 0..(seconds / DT) as usize {
+            w.step(&[Command {
+                steer: 1.0,
+                throttle: thr,
+                ..Default::default()
+            }]);
+            let y = w.tanks[0].yaw();
+            turned += wrap_angle(y - last);
+            last = y;
+        }
+        turned.to_degrees()
+    }
+
+    /// The Gravis's long tracks scrub hard in a turn, but it still turns at a
+    /// usable pace, on the spot and on the move, just slower than the Kastron.
+    #[test]
+    fn gravis_turns_slowly_but_turns() {
+        for thr in [0.0, 1.0] {
+            let gravis = degrees_turned(HullKind::Gravis, thr, 3.0);
+            let kastron = degrees_turned(HullKind::Kastron, thr, 3.0);
+            assert!(
+                gravis > 120.0,
+                "Gravis only turned {gravis:.0} deg in 3 s (throttle {thr})"
+            );
+            assert!(
+                gravis < kastron,
+                "Gravis ({gravis:.0} deg) out-turned the Kastron ({kastron:.0} deg)"
+            );
+        }
+    }
+
     #[test]
     fn holds_position_on_slope() {
         let mut map = Map::yard(200.0);
@@ -1938,6 +2189,89 @@ mod tests {
         run(&mut w, Command::default(), 3.0);
         let drift = w.tanks[0].pos.distance(p0);
         assert!(drift < 0.2, "slid {drift} m down the slope");
+    }
+
+    /// Killed at full speed, a wreck's seized tracks drag it to a stop in a
+    /// few meters instead of letting it coast on.
+    #[test]
+    fn a_wreck_skids_to_a_stop() {
+        for hull in [HullKind::Kataphrakt, HullKind::Kastron, HullKind::Gravis] {
+            let mut w = World::empty(flat_world().map);
+            w.spawn_tank(
+                Vec3::ONE,
+                Vec2::new(100.0, 20.0),
+                0.0,
+                hull,
+                TurretKind::Kontos,
+            );
+            run(&mut w, throttle(1.0), 5.0);
+            let (p0, v0) = (w.tanks[0].pos, w.tanks[0].vel.length());
+            assert!(v0 > 5.0, "{hull:?} only got to {v0} m/s");
+            w.tanks[0].dead = true;
+            run(&mut w, Command::default(), 2.5);
+            let t = &w.tanks[0];
+            let slid = t.pos.distance(p0);
+            assert!(
+                t.vel.length() < 0.2,
+                "{hull:?} wreck still moving at {}",
+                t.vel.length()
+            );
+            assert!(slid < 8.0, "{hull:?} wreck went {slid} m from {v0} m/s");
+        }
+    }
+
+    /// A wreck heading downhill stops and stays put; it doesn't roll away.
+    #[test]
+    fn a_wreck_stops_on_a_slope() {
+        let mut map = Map::yard(200.0);
+        // A uniform 15 degree slope falling along +z.
+        let grade = 15f32.to_radians().tan();
+        map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, move |_, z| {
+            (200.0 - z) * grade
+        }));
+        let mut w = World::empty(map);
+        w.spawn_tank(
+            Vec3::ONE,
+            Vec2::new(100.0, 30.0),
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        run(&mut w, throttle(1.0), 3.0);
+        assert!(w.tanks[0].vel.length() > 5.0);
+        w.tanks[0].dead = true;
+        run(&mut w, Command::default(), 3.0);
+        let p0 = w.tanks[0].pos;
+        run(&mut w, Command::default(), 3.0);
+        let creep = w.tanks[0].pos.distance(p0);
+        assert!(creep < 0.2, "wreck crept {creep} m down the slope");
+    }
+
+    /// Upside down, a wreck grinds along on its roof rather than sliding
+    /// like a puck (the live hull is frictionless).
+    #[test]
+    fn an_upturned_wreck_drags() {
+        let mut w = flat_world();
+        w.tanks[0].dead = true;
+        place(
+            &mut w,
+            Vec3::new(100.0, 2.5, 100.0),
+            Quat::from_rotation_z(PI),
+        );
+        run(&mut w, Command::default(), 1.0);
+        assert!(w.tanks[0].up().y < 0.0, "should be upside down");
+        let b = &mut w.physics.bodies[w.tanks[0].body];
+        b.set_linvel(Vec3::new(0.0, 0.0, 8.0), true);
+        let p0 = w.tanks[0].pos;
+        run(&mut w, Command::default(), 1.4);
+        let t = &w.tanks[0];
+        let slid = t.pos.distance(p0);
+        assert!(
+            t.vel.length() < 0.3,
+            "upturned wreck still moving at {}",
+            t.vel.length()
+        );
+        assert!(slid < 7.0, "upturned wreck slid {slid} m");
     }
 
     #[test]
@@ -2090,7 +2424,9 @@ mod tests {
         // (start, heading): at the south, east and north cliffs (into bays,
         // a gully, at headlands) and the west barricade.
         let runs = [
-            (Vec2::new(60.0, 14.0), PI),
+            // Clear of the town: from further north a tracked tank wedges on
+            // its edge and never gets going.
+            (Vec2::new(60.0, 2.0), PI),
             (Vec2::new(170.0, 12.0), PI),
             (Vec2::new(225.0, 60.0), FRAC_PI_2),
             (Vec2::new(225.0, 100.0), FRAC_PI_2),
@@ -2106,6 +2442,8 @@ mod tests {
                 let mut w = World::empty(map.clone());
                 w.spawn_tank(Vec3::ONE, start + o, yaw, hull, TurretKind::Kontos);
                 run(&mut w, Command::default(), 0.5);
+                let p = w.tanks[0].pos;
+                let from = Map::saltmarket_past_edge(Vec2::new(p.x, p.z));
                 let mut worst = f32::MIN;
                 for _ in 0..(10.0 / DT) as usize {
                     w.step(&[throttle(1.0)]);
@@ -2124,6 +2462,12 @@ mod tests {
                 assert!(
                     worst < 4.0,
                     "{hull:?} from {start} got {worst} m past the edge"
+                );
+                // And it did drive at the edge, rather than sticking where it
+                // started (which would pass the check above without testing it).
+                assert!(
+                    worst - from > 5.0,
+                    "{hull:?} from {start} never got going: {from} m to {worst} m"
                 );
             }
         }
@@ -2351,7 +2695,95 @@ mod tests {
         assert!(slide < 3.0, "sliding sideways from 6 m/s went {slide} m");
     }
 
-    /// Nudged while parked (no input), the brakes hold.
+    /// A shot over the hull's deck still hits the turret drawn there, from the
+    /// front and, with the turret turned, from the side; above the turret's
+    /// roof it misses.
+    #[test]
+    fn turrets_can_be_hit() {
+        for &kind in &TurretKind::ALL {
+            let mut w = flat_world();
+            w.tanks[0].turret_kind = kind;
+            run(&mut w, Command::default(), 1.0);
+            let t = &w.tanks[0];
+            let ring = t.turret_frame().transform_point3(Vec3::ZERO);
+            let height = |m: &crate::render::mesh::MeshData| {
+                m.verts.iter().map(|v| v.pos[1]).fold(0.0f32, f32::max)
+            };
+            let model = crate::tank::turret_model(kind);
+            let roof = height(&model.head).max(height(&model.mantlet) + kind.trunnion().y);
+            let shoot = |w: &World, dir: Vec3, y: f32| {
+                let from = ring + Vec3::Y * y - dir * 20.0;
+                w.physics
+                    .cast_ray(&Ray::new(from, dir), 40.0, true, QueryFilter::default())
+                    .and_then(|(c, _)| w.tank_of(c))
+            };
+            let deck = t.chassis.hull_top - t.hull_kind.ring().y;
+            let over = deck + 0.15;
+            assert_eq!(
+                shoot(&w, -Vec3::Z, over),
+                Some(0),
+                "{kind:?} from the front"
+            );
+            assert_eq!(
+                shoot(&w, Vec3::Z, roof + 0.1),
+                None,
+                "{kind:?} over its roof"
+            );
+            // Turn it a quarter round: its hitbox goes with it.
+            run(
+                &mut w,
+                Command {
+                    turret: 1.0,
+                    ..Command::default()
+                },
+                1.5,
+            );
+            let t = &w.tanks[0];
+            let (_, rot, at) = t.turret_frame().to_scale_rotation_translation();
+            let pose = w.physics.colliders[t.turret_hitbox].position();
+            assert!(
+                pose.translation.distance(at) < 0.05,
+                "{kind:?} hitbox off the ring"
+            );
+            assert!(
+                pose.rotation.angle_between(rot) < 0.05,
+                "{kind:?} hitbox didn't turn"
+            );
+            assert!(
+                t.turret_rel.abs() > 1.0,
+                "{kind:?} turret only turned {}",
+                t.turret_rel
+            );
+            let side = t.turret_dir().cross(Vec3::Y).normalize();
+            assert_eq!(
+                shoot(&w, side, over),
+                Some(0),
+                "{kind:?} turned, from the side"
+            );
+        }
+    }
+
+    /// The turret hitbox touches nothing but shots: the hull's mass is
+    /// unchanged, and the wheels ride over it as if it weren't there.
+    #[test]
+    fn turret_hitbox_is_for_shots_only() {
+        let mut w = flat_world();
+        let b = &w.physics.bodies[w.tanks[0].body];
+        assert_eq!(b.mass(), w.tanks[0].chassis.mass);
+        let c = &w.physics.colliders[w.tanks[0].turret_hitbox];
+        assert!(c.is_sensor());
+        assert_eq!(c.collision_groups(), InteractionGroups::none());
+        run(&mut w, Command::default(), 1.0);
+        assert!(
+            w.physics
+                .contact_pairs_with(w.tanks[0].turret_hitbox)
+                .next()
+                .is_none()
+        );
+    }
+
+    /// Kicked while parked (no input), the brakes hold: the recoil skids it
+    /// back a little, then it stays put instead of rolling away.
     #[test]
     fn parking_brake_holds() {
         let mut w = flat_world();
@@ -2359,10 +2791,17 @@ mod tests {
         let p0 = w.tanks[0].pos;
         w.fire(0);
         run(&mut w, Command::default(), 2.0);
+        let p1 = w.tanks[0].pos;
+        run(&mut w, Command::default(), 2.0);
         assert!(
-            w.tanks[0].pos.distance(p0) < 0.3,
-            "rolled {} m after firing while parked",
-            w.tanks[0].pos.distance(p0)
+            p1.distance(p0) < 1.0,
+            "skidded {} m after firing while parked",
+            p1.distance(p0)
+        );
+        assert!(
+            w.tanks[0].pos.distance(p1) < 0.02,
+            "still rolling {} m after the kick",
+            w.tanks[0].pos.distance(p1)
         );
     }
 

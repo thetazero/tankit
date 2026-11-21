@@ -531,10 +531,62 @@ impl Map {
             map.bases[side] = base.into_iter().filter(|&p| !blocked(p, &map)).collect();
         }
 
-        // Walls round the arena, down on the desert floor: they only catch
-        // wrecks.
+        // Down on the desert floor, a ring of boulders closes the arena (a
+        // Vigil runs on a while after the fall); the walls behind it only
+        // catch wrecks thrown over.
+        map.floor_rim();
         map.perimeter_at(LOW - 10.0, LOW + 12.0);
         map
+    }
+
+    /// Boulders along the arena's edge down on the desert floor, shoulder
+    /// to shoulder: sandstone come down off the mesas long ago, too tall and
+    /// steep to climb.
+    fn floor_rim(&mut self) {
+        let mut rng = Rng::new(0x0b01_de55);
+        let boulder = |m: &mut Map, rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| {
+            let g = m.ground_height(at.x, at.y);
+            m.oboxes.push(OBox {
+                center: at,
+                yaw: rng.range(0.0, TAU),
+                half: Vec2::new(s, s * rng.range(0.7, 1.0)),
+                y0: g - 1.5,
+                y1: g + h,
+                tilt: rng.range(-0.15, 0.15),
+                roll: rng.range(-0.15, 0.15),
+                color: STONE * rng.range(0.72, 0.92),
+                side_mat: Material::Rubble,
+                top_mat: Material::Rubble,
+                solid,
+                chip: 0.75,
+                ..OBox::default()
+            });
+        };
+        for (p, inward) in self.edge_points(2.6, 4.0) {
+            let side = Vec2::new(-inward.y, inward.x);
+            let at = p + inward * rng.range(-0.8, 0.4) + side * rng.range(-0.5, 0.5);
+            // Mostly big, now and then a great one.
+            let (s, h) = if rng.chance(0.15) {
+                (rng.range(5.0, 6.5), rng.range(9.0, 14.0))
+            } else {
+                let s = rng.range(2.8, 4.6);
+                (s, s * rng.range(1.0, 2.0))
+            };
+            boulder(self, &mut rng, at, s, h, true);
+            // Smaller ones tumbled out in front of it, and some behind.
+            if rng.chance(0.3) {
+                let s = rng.range(0.8, 2.0);
+                let at = p + inward * rng.range(3.5, 9.0) + side * rng.range(-1.5, 1.5);
+                let h = s * rng.range(0.6, 1.1);
+                boulder(self, &mut rng, at, s, h, s > 1.4);
+            }
+            if rng.chance(0.3) {
+                let s = rng.range(2.0, 4.0);
+                let at = p - inward * rng.range(4.0, 9.0) + side * rng.range(-1.5, 1.5);
+                let h = s * rng.range(0.8, 1.6);
+                boulder(self, &mut rng, at, s, h, false);
+            }
+        }
     }
 
     /// The cliff face round the mesa, rock fallen from its notches lying at
@@ -1490,6 +1542,13 @@ mod tests {
         }
         assert!(m.ground_height(5.0, 5.0) < FALL_Y - 15.0);
         assert!(m.ground_height(150.0, 295.0) < FALL_Y - 15.0);
+    }
+
+    /// Boulders close the desert floor's edge all round: a Vigil running
+    /// on after the fall never reaches the walls behind them.
+    #[test]
+    fn boulders_close_the_floor() {
+        Map::sanctum().assert_edge_walled(0.5, |_| false);
     }
 
     #[test]

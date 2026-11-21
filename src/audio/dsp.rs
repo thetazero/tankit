@@ -1,6 +1,61 @@
-//! Small DSP building blocks: noise, filters, parameter smoothing.
+//! Small DSP building blocks: noise, filters, parameter smoothing, and
+//! quick sines.
 
-use std::f32::consts::PI;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
+
+/// `sin`, `cos` and `fract` for the audio thread, which calls them millions
+/// of times a second. libm's are exact to the last bit and slow (`fract`
+/// isn't even inlined without SSE4.1); these are within a few parts in ten
+/// million of them, far below anything audible.
+pub trait Quick {
+    fn sin_q(self) -> f32;
+    fn cos_q(self) -> f32;
+    /// [`f32::fract`], for |x| < 2^31.
+    fn fract_q(self) -> f32;
+}
+
+impl Quick for f32 {
+    fn sin_q(self) -> f32 {
+        sin_turns(self / TAU)
+    }
+
+    fn cos_q(self) -> f32 {
+        sin_turns(self / TAU + 0.25)
+    }
+
+    fn fract_q(self) -> f32 {
+        self - (self as i32) as f32
+    }
+}
+
+/// sin(2π t): the phase in turns, which oscillators keep anyway.
+pub fn sin_turns(t: f32) -> f32 {
+    // Into -1/2..1/2 of a turn, then folded into -1/4..1/4, where the series
+    // converges fast.
+    let mut q = t - ((t + if t >= 0.0 { 0.5 } else { -0.5 }) as i32) as f32;
+    if q > 0.25 {
+        q = 0.5 - q;
+    } else if q < -0.25 {
+        q = -0.5 - q;
+    }
+    sin_series(q * TAU)
+}
+
+/// sin(x) for |x| <= π/2 (Taylor to x^13, error under 1e-9 there).
+fn sin_series(x: f32) -> f32 {
+    let x2 = x * x;
+    x * (1.0
+        + x2 * (-1.0 / 6.0
+            + x2 * (1.0 / 120.0
+                + x2 * (-1.0 / 5040.0
+                    + x2 * (1.0 / 362_880.0
+                        + x2 * (-1.0 / 39_916_800.0 + x2 * (1.0 / 6_227_020_800.0)))))))
+}
+
+/// tan(x) for 0 <= x < π/2, as a quotient of two short series.
+fn tan_q(x: f32) -> f32 {
+    sin_series(x) / sin_series(FRAC_PI_2 - x)
+}
 
 /// White noise from a xorshift generator, in -1..1.
 #[derive(Clone, Copy)]
@@ -51,7 +106,7 @@ pub struct Svf {
 impl Svf {
     pub fn run(&mut self, x: f32, cutoff: f32, q: f32, sr: f32) -> SvfOut {
         if self.at != (cutoff, q, sr) {
-            let g = (PI * cutoff.clamp(10.0, sr * 0.45) / sr).tan();
+            let g = tan_q(PI * cutoff.clamp(10.0, sr * 0.45) / sr);
             self.k = 1.0 / q.max(0.05);
             self.a1 = 1.0 / (1.0 + g * (g + self.k));
             self.a2 = g * self.a1;
@@ -264,6 +319,30 @@ mod tests {
             }
         }
         assert!(peak < 0.01, "peak {peak}");
+    }
+
+    #[test]
+    fn quick_maths_matches_libm() {
+        for i in -20_000..20_000 {
+            let x = i as f32 * 0.0017;
+            // Out by about as much as `x` itself is rounded: no more.
+            let close = 1e-6 + x.abs() * f32::EPSILON;
+            assert!((x.sin_q() - x.sin()).abs() < close, "sin {x}");
+            assert!((x.cos_q() - x.cos()).abs() < close, "cos {x}");
+            assert_eq!(x.fract_q(), x.fract(), "fract {x}");
+            let turns = i as f32 * 0.000_37;
+            let exact = (turns as f64 * std::f64::consts::TAU).sin();
+            assert!(
+                (sin_turns(turns) as f64 - exact).abs() < 1e-6,
+                "{turns} turns"
+            );
+        }
+        // Every tangent a filter can ask for, up to 0.45 of the sample rate.
+        for i in 0..10_000 {
+            let x = i as f32 / 10_000.0 * PI * 0.45;
+            let (q, t) = (tan_q(x), x.tan());
+            assert!((q - t).abs() <= 2e-6 * t.max(1.0), "tan {x}: {q} vs {t}");
+        }
     }
 
     #[test]

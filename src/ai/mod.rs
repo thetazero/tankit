@@ -1,11 +1,23 @@
 //! Bot opponents: a coarse navigation grid over the map, A* paths through it,
-//! and a small brain per bot that hunts the nearest enemy, drives the path,
-//! aims with a little lead and a little error, and fires when lined up. Given
-//! an objective (the Hold site), bots make for it, fight whoever comes near
-//! it, and patrol inside the ring.
+//! and a small brain per bot. It picks a target (near, in sight, already
+//! hurt, in reach of its gun), drives the path to it, and fights the way its
+//! gun wants: ranged guns hold their distance and circle, the flamethrower
+//! drives straight in and stays nose-on, a broken Vigil spends its last
+//! seconds going for the throat. It leads its shots by where the target
+//! will be (its own motion included), lays the turret against the hull's
+//! turn, waits for a rocking gun to come level, keeps a spin-up gun turning,
+//! rings a bell up with the hull in line so the toll can't roll it over, and
+//! goes for a repair crate when it's hurt. Given an objective (the Hold
+//! site), bots make for it, fight whoever comes near it, and patrol inside
+//! the ring.
 //!
 //! Bots drive through the same `Command` as the player; they get no physics
-//! shortcuts.
+//! shortcuts, and see what a player would: tanks, crates, their own gun.
+//!
+//! `baseline` keeps the bots as they were before, to measure against
+//! (`--arena`, `--duel`).
+
+pub mod baseline;
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -30,6 +42,13 @@ const BRAWL_RANGE: f32 = 40.0;
 const WOUNDED: f32 = 0.35;
 /// With an objective, bots leave it to chase an enemy only this close.
 const GUARD_CHASE: f32 = 40.0;
+/// Below this share of health, bots go for a repair crate within reach...
+const MEND_BELOW: f32 = 0.65;
+/// ...this far off, m.
+const MEND_REACH: f32 = 70.0;
+/// A bouncing gun banks a shot off a wall at a target out of sight (its
+/// health bar shows through walls, to a player too) at most this far off, m.
+const BANK_REACH: f32 = 60.0;
 
 /// Steepest ground (rise over run) bots will path across.
 const MAX_SLOPE: f32 = 0.7;
@@ -354,14 +373,57 @@ pub fn ideal_range(kind: TurretKind) -> f32 {
         TurretKind::Kontos => 75.0,
         // Light, fast twin guns: middle distance.
         TurretKind::Pelekys => 45.0,
-        // Slow orbs: close enough that they're hard to sidestep.
-        TurretKind::Ammeth => 50.0,
-        // Spraying darts: their spread wants it fairly close.
-        TurretKind::Ossrin => 42.0,
+        // Slow orbs: close enough that they're hard to sidestep (from much
+        // further a strafing tank is long gone by the time they get there).
+        TurretKind::Ammeth => 20.0,
+        // Spraying darts: they fly slow enough to dodge from far off too.
+        TurretKind::Ossrin => 20.0,
         // The beam is at full strength out to 40% of its range.
         TurretKind::Lumen => 55.0,
         // Flamethrower: right up against them.
         TurretKind::Hymn => 8.0,
+        // Siege bell: far enough back that it isn't a sitting duck while it
+        // rings up; its toll still carries.
+        TurretKind::Knell => 85.0,
+    }
+}
+
+/// A bot's brain: the current one, or the frozen baseline it's measured against.
+pub enum Brain {
+    Bot(Bot),
+    Baseline(baseline::Bot),
+}
+
+impl Brain {
+    #[allow(clippy::too_many_arguments)]
+    pub fn think(
+        &mut self,
+        me: usize,
+        world: &World,
+        contacts: &[Contact],
+        objective: Option<(Vec2, f32)>,
+        crates: &[Vec2],
+        nav: &NavGrid,
+        dt: f32,
+    ) -> (Command, bool) {
+        match self {
+            Brain::Bot(b) => b.think(me, world, contacts, objective, crates, nav, dt),
+            Brain::Baseline(b) => b.think(me, world, contacts, objective, nav, dt),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        match self {
+            Brain::Bot(b) => b.reset(),
+            Brain::Baseline(b) => b.reset(),
+        }
+    }
+
+    pub fn fired(&mut self) {
+        match self {
+            Brain::Bot(b) => b.fired(),
+            Brain::Baseline(b) => b.fired(),
+        }
     }
 }
 
@@ -375,6 +437,10 @@ pub struct Bot {
     /// How long the current target has been in sight (reaction time before firing).
     seen_for: f32,
     last_seen: Option<Vec2>,
+    /// A bouncing gun's bank shot at a target out of sight: the heading to
+    /// fire along, off a wall, and when to look for one again.
+    bank: Option<f32>,
+    bank_in: f32,
     /// Aim offset re-rolled after every shot, radians.
     aim_err: f32,
     stuck_for: f32,
@@ -398,6 +464,10 @@ pub struct Bot {
     post: Option<Vec2>,
     /// Path searches run so far (each one can cost a whole-grid search).
     plans: u32,
+    /// Hull heading last step and how fast it's turning, rad/s: the turret
+    /// rides on the hull, so aiming has to take its turn out.
+    last_yaw: Option<f32>,
+    hull_rate: f32,
 }
 
 impl Bot {
@@ -414,6 +484,8 @@ impl Bot {
             retarget_in: 0.0,
             seen_for: 0.0,
             last_seen: None,
+            bank: None,
+            bank_in: 0.0,
             aim_err: 0.0,
             stuck_for: 0.0,
             reverse_for: 0.0,
@@ -428,6 +500,8 @@ impl Bot {
             roam: None,
             post: None,
             plans: 0,
+            last_yaw: None,
+            hull_rate: 0.0,
         }
     }
 
@@ -436,42 +510,65 @@ impl Bot {
         self.path.clear();
         self.target = None;
         self.last_seen = None;
+        self.bank = None;
         self.seen_for = 0.0;
         self.stuck_for = 0.0;
         self.reverse_for = 0.0;
         self.roam = None;
         self.post = None;
         self.engaged = false;
+        self.last_yaw = None;
+        self.hull_rate = 0.0;
         self.flank = self.rng.range(-0.9, 0.9);
     }
 
     /// Decide this step's controls for tank `me`, with an optional objective
-    /// ring (center, radius) to hold. Returns (command, wants to fire).
+    /// ring (center, radius) to hold and the repair crates in sight (falling
+    /// or down). Returns (command, wants to fire).
+    #[allow(clippy::too_many_arguments)]
     pub fn think(
         &mut self,
         me: usize,
         world: &World,
         contacts: &[Contact],
         objective: Option<(Vec2, f32)>,
+        crates: &[Vec2],
         nav: &NavGrid,
         dt: f32,
     ) -> (Command, bool) {
         let t = &world.tanks[me];
         let g = crate::combat::gun(t.turret_kind);
+        // A broken Vigil has a few seconds left whatever it does: it spends
+        // them going for the throat.
+        let husk = t.husk.is_some();
         // Short-range guns (the flamethrower) have to close in before they
         // stop to fight. Everything else picks a distance that suits it and
         // fights from there, further out when hurt.
-        let brawler = g.range() < BRAWL_RANGE;
+        let brawler = g.range() < BRAWL_RANGE || husk;
         let reach = FIRE_RANGE.min(g.range());
         let mut ideal = ideal_range(t.turret_kind).min(reach * 0.8);
         if !brawler && contacts[me].health < WOUNDED {
             ideal = (ideal * 1.35).min(reach * 0.9);
         }
-        let standoff = ideal.max(g.range() * 0.6).min(reach);
+        let standoff = if husk {
+            g.range() * 0.5
+        } else {
+            ideal.max(g.range() * 0.6).min(reach)
+        };
         let my2 = flat(t.pos);
         let eye = t.pos + Vec3::Y * t.gun_height();
+        let banks = matches!(g.action, crate::combat::Action::Shell(s) if s.bounces > 0);
 
-        // Target: the nearest enemy, strongly preferring ones in sight. Sticky for a moment.
+        // How fast the hull is swinging round (the turret rides on it).
+        let yaw = t.yaw();
+        if let Some(y) = self.last_yaw {
+            self.hull_rate = wrap_angle(yaw - y) / dt.max(1e-4);
+        }
+        self.last_yaw = Some(yaw);
+
+        // Target: the enemy it can do the most about, the nearest in sight,
+        // weighed towards ones already hurt (finish them) and ones its gun
+        // reaches. Sticky for a moment.
         self.retarget_in -= dt;
         let stale = self.target.is_some_and(|j| !contacts[j].targetable);
         if self.retarget_in <= 0.0 || stale {
@@ -484,11 +581,15 @@ impl Bot {
                 let d = t.pos.distance(o.pos);
                 let mut score = d;
                 if !can_see(world, eye, o) {
-                    score += 120.0;
+                    // Out of sight is out of reach, unless the gun can
+                    // bank a shot round to it.
+                    score += if banks && d < BANK_REACH { 25.0 } else { 120.0 };
                 }
                 if Some(j) == self.target {
                     score -= 15.0;
                 }
+                score += contacts[j].health * 30.0;
+                score += (d - reach).max(0.0) * 0.5;
                 // Holding: the enemies that matter are the ones on or near the site.
                 if let Some((c, r)) = objective {
                     score += (flat(o.pos).distance(c) - r).max(0.0) * 0.6;
@@ -523,6 +624,21 @@ impl Bot {
             && target_d < reach
             && target_d < ideal * if self.engaged { 1.5 } else { 1.2 };
 
+        // Hurt and not in the thick of it: a repair crate nearby is worth
+        // the drive.
+        let mend = (!husk && contacts[me].health < MEND_BELOW && !(visible && target_d < 25.0))
+            .then(|| {
+                crates
+                    .iter()
+                    .copied()
+                    .filter(|c| c.distance(my2) < MEND_REACH)
+                    .min_by(|a, b| a.distance(my2).total_cmp(&b.distance(my2)))
+            })
+            .flatten();
+        if mend.is_some() {
+            self.engaged = false;
+        }
+
         // Where a ranged bot goes to fight `o` from: at its ideal range, on
         // its own side of the target, swung round by its flank angle. Once
         // there with no sight of it, straight at it to find it.
@@ -543,8 +659,10 @@ impl Bot {
         // Where to drive: to fight the target (or where it was last seen),
         // else roam. With an objective: to the site, leaving it only for
         // enemies close by or on it.
-        let goal = match (objective, target) {
-            (Some((c, r)), t) => {
+        let goal = match (mend, objective, target) {
+            (Some(c), _, _) => c,
+            (None, Some(_), Some(o)) if husk => flat(o.pos),
+            (None, Some((c, r)), t) => {
                 let chase = t.map(|o| flat(o.pos)).filter(|&p| {
                     visible && (p.distance(my2) < GUARD_CHASE || p.distance(c) < r + 8.0)
                 });
@@ -569,8 +687,8 @@ impl Bot {
                     }
                 }
             }
-            (None, Some(o)) => approach(flat(o.pos)),
-            (None, None) => *self.roam.get_or_insert_with(|| {
+            (None, None, Some(o)) => approach(flat(o.pos)),
+            (None, None, None) => *self.roam.get_or_insert_with(|| {
                 world.map.open_spots[self.rng.index(world.map.open_spots.len())]
             }),
         };
@@ -590,7 +708,7 @@ impl Bot {
                 // straight for a target or the objective.
                 self.roam = None;
                 self.post = None;
-                if target.is_some() || objective.is_some() {
+                if target.is_some() || objective.is_some() || mend.is_some() {
                     self.path.push(goal);
                 }
             }
@@ -601,7 +719,7 @@ impl Bot {
 
         // Driving.
         let mut cmd = Command::default();
-        let close = brawler && visible && target_d < standoff;
+        let close = brawler && visible && target_d < standoff && mend.is_none();
         if let Some(&wp) = self.path.first() {
             let err = wrap_angle(yaw_of(wp - my2) - t.yaw());
             cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
@@ -611,15 +729,39 @@ impl Bot {
                 1.0 - err.abs() * 0.5
             };
         }
-        if close {
-            // In a fight at close range: stop advancing and jink back and forth.
-            self.jink_in -= dt;
-            if self.jink_in <= 0.0 {
-                self.jink = -self.jink;
-                self.jink_in = self.rng.range(1.2, 2.6);
+        // A close-range gun with its target in sight and nothing in between
+        // drives straight for it (where it's going, a moment ahead), not
+        // along a path planned to where it was.
+        if let Some(o) = target.filter(|_| brawler && visible && !close && mend.is_none()) {
+            let ahead = flat(o.pos) + flat(o.vel) * (target_d / 25.0).min(1.0);
+            if nav.clear_line(my2, ahead) {
+                let err = wrap_angle(yaw_of(ahead - my2) - t.yaw());
+                cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
+                cmd.throttle = if err.abs() > 1.1 { 0.3 } else { 1.0 };
             }
-            cmd.throttle = self.jink * 0.7;
-            cmd.steer *= 0.3;
+        }
+        if close {
+            if husk || t.turret_kind == TurretKind::Hymn {
+                // Point blank: stay on it, nose to it, so the flame (or the
+                // last of a husk's fight) lands; ram if it comes to that.
+                if let Some(o) = target {
+                    let err = wrap_angle(yaw_of(flat(o.pos) - my2) - t.yaw());
+                    cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
+                    cmd.throttle = if target_d > 6.0 { 1.0 } else { 0.3 };
+                    if err.abs() > 1.2 {
+                        cmd.throttle = 0.2;
+                    }
+                }
+            } else {
+                // In a fight at close range: stop advancing and jink back and forth.
+                self.jink_in -= dt;
+                if self.jink_in <= 0.0 {
+                    self.jink = -self.jink;
+                    self.jink_in = self.rng.range(1.2, 2.6);
+                }
+                cmd.throttle = self.jink * 0.7;
+                cmd.steer *= 0.3;
+            }
         }
         if let (true, Some(o)) = (self.engaged, target) {
             cmd = self.circle(t, flat(o.pos), ideal, objective, nav, dt);
@@ -656,6 +798,22 @@ impl Bot {
             }
         }
 
+        // An enemy Knell ringing up with its bell on us: get out of its line.
+        let tolling = world.tanks.iter().enumerate().any(|(j, o)| {
+            if j == me || contacts[j].team == contacts[me].team || o.charge < 0.35 {
+                return false;
+            }
+            let to = my2 - flat(o.pos);
+            let d = to.length();
+            d < crate::combat::gun(o.turret_kind).range()
+                && wrap_angle(yaw_of(to) - o.turret_yaw()).abs() < (3.0 / d.max(1.0)).max(0.06)
+                && can_see(world, o.pos + Vec3::Y * o.gun_height(), t)
+        });
+        if tolling && !husk {
+            cmd.throttle = 1.0;
+            cmd.steer = self.jink;
+        }
+
         // On a mesa: never drive at the edge, whatever else says to (jinking,
         // backing off something). Brake, and back away from it.
         if let Some(fall_y) = world.map.fall_y {
@@ -667,24 +825,163 @@ impl Bot {
             }
         }
 
-        // Aiming: lead the target a little, with a per-shot error.
+        // A gun whose shots skip off walls can reach a target that's just
+        // ducked out of sight: off a wall beside it. Seen a moment ago and
+        // still close, look for a wall to bank off; with one, stop (the
+        // shot carries the tank's own motion) and take it from cover.
+        let bounces = match g.action {
+            crate::combat::Action::Shell(s) => s.bounces,
+            _ => 0,
+        };
+        self.bank_in -= dt;
+        match target {
+            Some(o) if bounces > 0 && !visible && target_d < BANK_REACH => {
+                if self.bank_in <= 0.0 {
+                    self.bank_in = 0.25;
+                    self.bank = bank_shot(world, t, o, g.speed());
+                }
+            }
+            _ => self.bank = None,
+        }
+        if self.bank.is_some() && self.reverse_for == 0.0 {
+            // Brake (a hover hull coasts on if just let go).
+            cmd.throttle = (-t.speed() * 0.5).clamp(-1.0, 1.0);
+            cmd.steer = 0.0;
+        }
+
+        // Aiming: lead the target by where it'll be when the shot gets there
+        // (a shell flies off with the gun's own motion added), with a
+        // per-shot error. A charge gun leads by its charge left as well:
+        // that's when it goes.
         let mut fire = false;
         match target {
             Some(o) if visible => {
                 let d = t.pos.distance(o.pos);
-                let lead = flat(o.vel) * (d / g.speed()) * 0.8;
-                let want = yaw_of(flat(o.pos) + lead - my2) + self.aim_err;
+                let carried = if g.speed().is_finite() {
+                    flat(t.vel)
+                } else {
+                    Vec2::ZERO
+                };
+                let rel = flat(o.vel) - carried;
+                let wait = if g.charge > 0.0 {
+                    (1.0 - t.charge) * g.charge
+                } else {
+                    0.0
+                };
+                let mut aim = flat(o.pos);
+                for _ in 0..3 {
+                    let flight = aim.distance(my2) / g.speed();
+                    aim = flat(o.pos) + flat(o.vel) * wait + rel * flight;
+                }
+                let want = yaw_of(aim - my2) + self.aim_err;
                 let err = wrap_angle(want - t.turret_yaw());
-                cmd.turret = (err * 3.0).clamp(-1.0, 1.0);
+                cmd.turret = self.lay(t, err);
                 // Tolerance scales with distance so a hull-width miss still counts as lined up.
                 let tol = (1.4 / d.max(1.0)).max(0.02);
-                if err.abs() < tol && d < FIRE_RANGE.min(g.range()) && self.seen_for > 0.45 {
+                // And up and down: a hull rocking on its springs (or
+                // pitching on a slope) can have the gun at the sky or the
+                // ground; the aim assist only levels it onto a tank close to
+                // the line. Wait for it to come level rather than waste the shot.
+                let gun = t.gun_dir();
+                let drop = 0.5 * g.gravity() * (d / g.speed()).powi(2);
+                let rise = (o.pos.y + o.chassis.hull_top * 0.6 + drop - t.muzzle().y) / d.max(1.0);
+                // Anywhere on the tank will do; a shot that skips off the
+                // ground (orbs) can still go on to land, so only high ones count.
+                let off_y = gun.y / Vec2::new(gun.x, gun.z).length().max(1e-3) - rise;
+                let skips = matches!(g.action, crate::combat::Action::Shell(s) if s.bounces > 0);
+                let level = !g.speed().is_finite()
+                    || t.turret_kind == TurretKind::Hymn
+                    || if skips { off_y } else { off_y.abs() } < (1.6 / d.max(1.0)).max(0.03);
+                if err.abs() < tol && level && d < reach && self.seen_for > 0.45 {
                     fire = true;
                 }
+                // A spin-up gun only fires fast once it's spun up, and runs
+                // down when let go: keep it turning (and firing) while the
+                // target's in reach and roughly in line.
+                if g.spool > 0.0 && d < reach && err.abs() < tol * 3.0 + 0.05 && self.seen_for > 0.3
+                {
+                    fire = true;
+                }
+                // A charge gun has to be held through its charge: start
+                // ringing it up as the gun comes onto the target, and keep
+                // holding while it's in sight; the lead above puts the gun
+                // where the target will be when it tolls.
+                if g.charge > 0.0 {
+                    let starting = t.charge == 0.0;
+                    fire = if starting {
+                        err.abs() < 0.3 && d < reach * 0.9 && self.seen_for > 0.3
+                    } else {
+                        true
+                    };
+                    // The toll throws its own hull back. Fired across the
+                    // hull it rolls a narrow tank right over, so while it
+                    // rings up the hull swings in line with the shot (either
+                    // end) and holds still.
+                    if fire {
+                        let ahead = wrap_angle(want - t.yaw());
+                        let behind = wrap_angle(ahead + std::f32::consts::PI);
+                        let e = if ahead.abs() < behind.abs() {
+                            ahead
+                        } else {
+                            behind
+                        };
+                        cmd.steer = (e * 2.5).clamp(-1.0, 1.0);
+                        cmd.throttle = 0.0;
+                    }
+                }
             }
-            _ => cmd.center_turret = true,
+            _ if self.bank.is_some() => {
+                // The heading the shot has to travel along; it flies off
+                // with the tank's own motion added, so fire a little
+                // across that to make it good.
+                let path = self.bank.unwrap_or_default();
+                let want = Vec2::new(path.sin(), path.cos());
+                let v = flat(t.vel);
+                let s = g.speed();
+                let along = v.dot(want);
+                let k = along + (along * along - v.length_squared() + s * s).max(0.0).sqrt();
+                let yaw = yaw_of(want * k - v);
+                let err = wrap_angle(yaw - t.turret_yaw());
+                cmd.turret = self.lay(t, err);
+                // Fired level, steady, and dead on the line: a bank shot
+                // has no aim assist to fix it up.
+                let gun = t.gun_dir();
+                let level = (gun.y / Vec2::new(gun.x, gun.z).length().max(1e-3)).abs() < 0.03;
+                fire = err.abs() < 0.015 && level && t.vel.length() < 4.0;
+            }
+            _ => {
+                // Nothing in sight: point the gun where the target was last
+                // seen, ready, rather than back over the hull.
+                match self
+                    .last_seen
+                    .filter(|p| p.distance(my2) < SIGHT && target.is_some())
+                {
+                    Some(p) => {
+                        let err = wrap_angle(yaw_of(p - my2) - t.turret_yaw());
+                        cmd.turret = self.lay(t, err);
+                    }
+                    None => cmd.center_turret = true,
+                }
+            }
         }
         (cmd, fire)
+    }
+
+    /// Turret command to swing the gun through `err` radians and stop
+    /// there: as fast as it can still brake in time, minus the hull's own
+    /// turn (the turret rides on it).
+    fn lay(&self, t: &Tank, err: f32) -> f32 {
+        let h = t.hull;
+        let rate = err.signum() * (2.0 * h.turret_brake * err.abs()).sqrt() * 0.8 + err * 4.0;
+        let want = rate.clamp(-h.turret_speed, h.turret_speed) - self.hull_rate;
+        let c = want / h.turret_speed;
+        // The motor ignores the faintest touch: nudge past that when there's
+        // still an angle to close.
+        if err.abs() > 0.004 && c.abs() < 0.06 {
+            0.06 * c.signum()
+        } else {
+            c.clamp(-1.0, 1.0)
+        }
     }
 
     /// Controls for holding a ranged fight with a target at `tp`: slide
@@ -752,7 +1049,7 @@ impl Bot {
                 * if err.abs() > 1.0 {
                     0.2
                 } else {
-                    0.85 - err.abs() * 0.4
+                    strafe_speed(t) - err.abs() * 0.4
                 },
             ..Command::default()
         }
@@ -761,6 +1058,90 @@ impl Bot {
     /// Called when this bot's shot actually leaves the barrel.
     pub fn fired(&mut self) {
         self.aim_err = self.rng.range(-0.04, 0.04);
+    }
+}
+
+/// The heading for a shot from `t` at `o` off one wall, if there's a clean
+/// one: out to the wall, mirrored off it, on to the tank, with nothing in
+/// the way on either leg. Shells fly level (no assist lifts a bank shot),
+/// so the target has to stand about as high as the gun. Of those it finds,
+/// the shortest flight.
+fn bank_shot(world: &World, t: &Tank, o: &Tank, speed: f32) -> Option<f32> {
+    bank_from(world, t.breech(), o, speed)
+}
+
+/// [`bank_shot`] from a gun at `eye`.
+fn bank_from(world: &World, eye: Vec3, o: &Tank, speed: f32) -> Option<f32> {
+    let my2 = flat(eye);
+    // Fired level from the gun, it crosses the target at gun height: its
+    // turret, or its hull if it stands lower.
+    let aim = o.pos + o.up() * (o.chassis.hull_top + 0.4);
+    if (aim.y - eye.y).abs() > 0.8 {
+        return None;
+    }
+    let bearing = yaw_of(flat(aim) - my2);
+    let mut best: Option<(f32, f32)> = None;
+    for k in 0..40 {
+        let a = bearing + (k as f32 / 39.0 - 0.5) * 3.0;
+        let dir = Vec3::new(a.sin(), 0.0, a.cos());
+        let Some((h, n)) = world.raycast_normal(eye, dir, BANK_REACH) else {
+            continue;
+        };
+        let n2 = flat(n);
+        if n.y.abs() > 0.35 || h < 2.0 {
+            continue;
+        }
+        let n2 = n2.normalize();
+        let wall = my2 + flat(dir) * h;
+        // Where it'll be by the time the shot gets round (a guess at the
+        // flight from the straight line out and back).
+        let est = (h + flat(aim).distance(wall)) / speed;
+        let tp = flat(aim) + flat(o.vel) * est;
+        if (tp - wall).dot(n2) < 0.5 || (my2 - wall).dot(n2) < 0.5 {
+            continue;
+        }
+        let image = tp - 2.0 * (tp - wall).dot(n2) * n2;
+        let to = image - my2;
+        let d = to.length();
+        let d2 = to / d;
+        let shot = Vec3::new(d2.x, 0.0, d2.y);
+        // The real wall where that line meets it: the same face, short of
+        // the image.
+        let Some((h2, m)) = world.raycast_normal(eye, shot, d) else {
+            continue;
+        };
+        let m2 = flat(m).normalize_or_zero();
+        if m.y.abs() > 0.35 || m2.dot(n2) < 0.97 || h2 < 2.0 {
+            continue;
+        }
+        let q = eye + shot * h2;
+        let r = d2 - 2.0 * d2.dot(m2) * m2;
+        let leg = flat(q).distance(tp);
+        let back = Vec3::new(r.x, 0.0, r.y);
+        let from = q + Vec3::new(m2.x, 0.0, m2.y) * 0.1;
+        if world.raycast(from, back, leg) < leg - 1.0 {
+            continue;
+        }
+        // And it does pass over the tank, not beside it.
+        let miss = (tp - flat(q)).perp_dot(r).abs();
+        let total = h2 + leg;
+        if miss > 0.5 || total > BANK_REACH * 1.4 {
+            continue;
+        }
+        if best.is_none_or(|(b, _)| total < b) {
+            best = Some((total, yaw_of(d2)));
+        }
+    }
+    best.map(|(_, yaw)| yaw)
+}
+
+/// How hard a bot drives while circling a target. A hover hull rocks on
+/// its cushion when it pushes hard, and its gun with it: it eases off.
+fn strafe_speed(t: &Tank) -> f32 {
+    if t.hull_kind == crate::sim::HullKind::Sethuun {
+        0.35
+    } else {
+        1.0
     }
 }
 
@@ -849,7 +1230,7 @@ mod tests {
             health: 1.0,
         }];
         for _ in 0..(3.0 / DT) as usize {
-            let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
+            let (cmd, _) = bot.think(0, &w, &contacts, None, &[], &nav, DT);
             w.step(&[cmd]);
         }
         assert!(bot.plans <= 3, "{} path searches in 3 s", bot.plans);
@@ -885,7 +1266,7 @@ mod tests {
         });
         let mut out = Vec::new();
         for _ in 0..(secs / DT) as usize {
-            let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
+            let (cmd, _) = bot.think(0, &w, &contacts, None, &[], &nav, DT);
             w.step(&[cmd, Command::default()]);
             let p = flat(w.tanks[0].pos);
             out.push((p.distance(flat(w.tanks[1].pos)), p));
@@ -954,7 +1335,7 @@ mod tests {
             health: 1.0,
         }];
         for _ in 0..(8.0 / DT) as usize {
-            let (cmd, _) = bot.think(0, &w, &contacts, None, &nav, DT);
+            let (cmd, _) = bot.think(0, &w, &contacts, None, &[], &nav, DT);
             w.step(&[cmd]);
         }
         assert!(

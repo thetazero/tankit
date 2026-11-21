@@ -11,8 +11,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::render::mesh::{Instance, MeshData, MeshId};
-use crate::render::{Particle, Renderer};
+use crate::render::Particle;
+use crate::render::mesh::{Instance, MeshData, MeshId, MeshStore};
 use crate::sim::{HullKind, Tank, TurretKind};
 use ithessar::HoverModel;
 use model::{HullModel, Rig, Running, TurretModel};
@@ -59,14 +59,7 @@ impl KitMeshes {
             hover: ithessar::sethuun(),
             vigil,
             // Same order as `TurretKind::ALL`.
-            turrets: vec![
-                model::kontos(),
-                model::pelekys(),
-                ithessar::ammeth(),
-                ithessar::ossrin(),
-                uthenn::lumen(),
-                model::hymn(),
-            ],
+            turrets: TurretKind::ALL.map(turret_model).into(),
         }
     }
 
@@ -97,6 +90,19 @@ impl KitMeshes {
     }
 }
 
+/// `kind`'s turret art (also what its hitbox is shaped from).
+pub fn turret_model(kind: TurretKind) -> TurretModel {
+    match kind {
+        TurretKind::Kontos => model::kontos(),
+        TurretKind::Pelekys => model::pelekys(),
+        TurretKind::Ammeth => ithessar::ammeth(),
+        TurretKind::Ossrin => ithessar::ossrin(),
+        TurretKind::Lumen => uthenn::lumen(),
+        TurretKind::Hymn => model::hymn(),
+        TurretKind::Knell => resonant::knell(),
+    }
+}
+
 struct HullArt {
     body: MeshId,
     /// Uthenn heat lights, if the hull has any.
@@ -107,7 +113,6 @@ struct HullArt {
     idler: MeshId,
     running: Running,
     links: usize,
-    mount: Vec3,
 }
 
 struct HoverArt {
@@ -118,7 +123,6 @@ struct HoverArt {
     shard: MeshId,
     shards: Vec<(Vec3, f32)>,
     emitter_y: f32,
-    mount: Vec3,
 }
 
 struct VigilArt {
@@ -137,7 +141,6 @@ struct TurretArt {
     barrel_light: Option<MeshId>,
     mantlet: MeshId,
     barrel: MeshId,
-    pivot: Vec3,
     barrels: Vec<Vec3>,
     muzzle: f32,
     recoil: f32,
@@ -153,7 +156,7 @@ pub struct TankArt {
 }
 
 impl TankArt {
-    pub fn upload(r: &mut Renderer) -> TankArt {
+    pub fn upload(r: &mut impl MeshStore) -> TankArt {
         let kit = KitMeshes::build();
         let o = &kit.hover;
         let hover = HoverArt {
@@ -164,7 +167,6 @@ impl TankArt {
             shard: r.add_mesh(&o.shard),
             shards: o.shards.clone(),
             emitter_y: o.emitter_y,
-            mount: o.mount,
         };
         let g = &kit.vigil;
         let vigil = VigilArt {
@@ -198,7 +200,6 @@ impl TankArt {
                     idler: r.add_mesh(&idler),
                     running: run,
                     links,
-                    mount: h.mount,
                 }
             })
             .collect();
@@ -214,7 +215,6 @@ impl TankArt {
                 barrel_light: light_mesh(r, &t.barrel_light),
                 mantlet: r.add_mesh(&t.mantlet),
                 barrel: r.add_mesh(&t.barrel),
-                pivot: t.pivot,
                 barrels: t.barrels,
                 muzzle: t.muzzle,
                 recoil: t.recoil,
@@ -237,29 +237,24 @@ impl TankArt {
             .unwrap_or(0)];
         // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
         let base = Mat4::from_rotation_translation(t.rot, t.pos);
-        let mount = match t.hull_kind {
+        match t.hull_kind {
             HullKind::Kataphrakt => self.tracked(&self.hulls[0], t, base, out),
             HullKind::Kastron => self.tracked(&self.hulls[1], t, base, out),
             HullKind::Sethuun => self.hovering(t, base, out),
             HullKind::Gravis => self.tracked(&self.hulls[3], t, base, out),
             HullKind::Vigil => {
-                let mount = self.tracked(&self.hulls[2], t, base, out);
+                self.tracked(&self.hulls[2], t, base, out);
                 self.vigil(t, base, out);
-                mount
             }
-        };
-        self.turret(turret, t, mount, out, glow);
+        }
+        // The turret hangs where the sim says the gun is, so shots and the
+        // beam leave the muzzle that's drawn.
+        self.turret(turret, t, out, glow);
     }
 
     /// A tracked hull: body, wheels on their suspension, and the belt of
-    /// links wrapped round them. Returns the turret ring's transform.
-    fn tracked(
-        &self,
-        hull: &HullArt,
-        t: &Tank,
-        base: Mat4,
-        out: &mut Vec<(MeshId, Instance)>,
-    ) -> Mat4 {
+    /// links wrapped round them.
+    fn tracked(&self, hull: &HullArt, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let tint = t.color.extend(0.0);
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let sprung = base;
@@ -323,8 +318,6 @@ impl TankArt {
                 out.push((hull.link, Instance::new(base * m * flip, plain)));
             }
         }
-
-        sprung * Mat4::from_translation(hull.mount)
     }
 
     /// The Vigil's light, floating crystal and plates, and bell. The light
@@ -401,8 +394,8 @@ impl TankArt {
 
     /// The Ithessar hover hull: the carapace banked into its turn, six
     /// emitters gimballing with the thrust and firing plasma at the ground,
-    /// and loose crystals bobbing in the field. Returns the turret ring.
-    fn hovering(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) -> Mat4 {
+    /// and loose crystals bobbing in the field.
+    fn hovering(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let h = &self.hover;
         let c = t.chassis;
         let tint = t.color.extend(0.0);
@@ -432,7 +425,7 @@ impl TankArt {
                     Instance::new(body * Mat4::from_translation(at), plain),
                 ));
             }
-            return body * Mat4::from_translation(h.mount);
+            return;
         }
 
         let time = t.age;
@@ -485,7 +478,6 @@ impl TankArt {
                 ),
             ));
         }
-        body * Mat4::from_translation(h.mount)
     }
 
     /// Turret yaws on the hull's ring; the gun pitches about its trunnion.
@@ -493,20 +485,22 @@ impl TankArt {
         &self,
         turret: &TurretArt,
         t: &Tank,
-        mount: Mat4,
         out: &mut Vec<(MeshId, Instance)>,
         glow: &mut Vec<Particle>,
     ) {
         let tint = t.color.extend(0.0);
         let alive = t.color.max_element() > 0.2;
-        let tm = mount * Mat4::from_rotation_y(t.turret_rel);
+        let tm = t.turret_frame();
         out.push((turret.head, Instance::new(tm, tint)));
         if let Some(light) = turret.head_light {
             out.push((light, Instance::new(tm, heat_tint(t))));
         }
-        let gun = tm * Mat4::from_translation(turret.pivot) * Mat4::from_rotation_x(-t.gun_pitch);
+        let gun = t.gun_frame();
         out.push((turret.mantlet, Instance::new(gun, tint)));
 
+        if turret.kind == TurretKind::Knell && alive {
+            knell_charge(t, tm, gun, out, glow);
+        }
         let plasma = turret.kind.maker() == crate::faction::Faction::Ithessar;
         let fired = t.fire_barrel % turret.barrels.len();
         let (kick, flash) = recoil_curve(t.since_fire);
@@ -642,6 +636,90 @@ impl TankArt {
     }
 }
 
+/// A Knell ringing up: its pipes light one by one, back to front, the
+/// crystal in its crown brightens, and light gathers in the bell's mouth.
+/// The pipes breathe faintly even at rest.
+fn knell_charge(
+    t: &Tank,
+    tm: Mat4,
+    gun: Mat4,
+    out: &mut Vec<(MeshId, Instance)>,
+    glow: &mut Vec<Particle>,
+) {
+    use resonant::{
+        CRYSTAL_LIGHT, CRYSTAL_LIGHT_HOT, KNELL_CROWN, KNELL_LIP, KNELL_PIPE_BASE, KNELL_PIPE_R,
+        KNELL_PIPE_Z, KNELL_PIPES,
+    };
+    let c = t.charge;
+    let n = KNELL_PIPES.len() as f32;
+    let full = c > 0.97;
+    let beat = if full {
+        1.0 + 0.2 * (t.age * 40.0).sin()
+    } else {
+        1.0
+    };
+    for (k, &(x, h)) in KNELL_PIPES.iter().enumerate() {
+        let lit = (c * n - k as f32).clamp(0.0, 1.0);
+        let rest = 0.15 + 0.1 * (t.age * 1.3 + k as f32 * 0.7).sin();
+        let strength = (rest + 3.5 * lit) * beat;
+        // A slit of light up the pipe, front and back.
+        for side in [1.0, -1.0] {
+            let mid = Vec3::new(
+                x,
+                KNELL_PIPE_BASE + h * 0.55,
+                KNELL_PIPE_Z + side * KNELL_PIPE_R * 0.9,
+            );
+            out.push((
+                MeshId::CYLINDER,
+                Instance::new(
+                    tm * Mat4::from_scale_rotation_translation(
+                        Vec3::new(0.05, h * 0.8, 0.05),
+                        Quat::IDENTITY,
+                        mid,
+                    ),
+                    CRYSTAL_LIGHT.extend(strength),
+                ),
+            ));
+        }
+        if lit > 0.0 {
+            let top = tm.transform_point3(Vec3::new(x, KNELL_PIPE_BASE + h + 0.1, KNELL_PIPE_Z));
+            glow.push(Particle::glow(
+                top,
+                0.3 + 0.3 * lit,
+                CRYSTAL_LIGHT,
+                1.4 * lit,
+                Vec3::ZERO,
+            ));
+        }
+    }
+    if c <= 0.0 {
+        return;
+    }
+    let crown = gun.transform_point3(Vec3::Z * (KNELL_CROWN - 0.35));
+    glow.push(Particle::glow(
+        crown,
+        0.4 + 0.8 * c,
+        CRYSTAL_LIGHT,
+        2.0 * c * beat,
+        Vec3::ZERO,
+    ));
+    let mouth = gun.transform_point3(Vec3::Z * (crate::sim::TurretKind::Knell.reach() + 0.15));
+    glow.push(Particle::glow(
+        mouth,
+        KNELL_LIP * (0.4 + 1.4 * c) * beat,
+        CRYSTAL_LIGHT,
+        2.2 * c,
+        Vec3::ZERO,
+    ));
+    glow.push(Particle::glow(
+        mouth,
+        KNELL_LIP * 0.7 * c,
+        CRYSTAL_LIGHT_HOT,
+        2.6 * c * c,
+        Vec3::ZERO,
+    ));
+}
+
 fn ithessar_sag() -> f32 {
     crate::sim::HOVER_SAG
 }
@@ -735,6 +813,111 @@ fn muzzle_flash(at: Mat4, f: f32, t: f32, out: &mut Vec<(MeshId, Instance)>) {
 mod tests {
     use super::*;
 
+    /// Every tank, each hull with each turret, standing with its turret
+    /// turned to `yaw`: where coplanar faces show.
+    fn tank_fights(yaw: f32) -> Vec<String> {
+        use crate::render::mesh::CpuMeshes;
+        use crate::render::zfight::Soup;
+        use crate::sim::World;
+        let mut meshes = CpuMeshes::new();
+        let art = TankArt::upload(&mut meshes);
+        let names = mesh_names(&art);
+        let mut out = Vec::new();
+        for hull in [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ] {
+            for turret in TurretKind::ALL {
+                let mut w = World::empty(crate::map::Map::empty(40.0));
+                w.spawn_tank(Vec3::ONE, Vec2::splat(20.0), 0.0, hull, turret);
+                let mut t = w.tanks[0].clone();
+                t.turret_rel = yaw;
+                t.since_fire = 100.0;
+                let mut inst = Vec::new();
+                art.instances(&t, &mut inst, &mut Vec::new());
+                let mut soup = Soup::new();
+                soup.add_instances(&meshes.0, &inst, |id| {
+                    names
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("mesh {}", id.0))
+                });
+                for f in soup.fights() {
+                    let at = f.at - t.pos;
+                    out.push(format!(
+                        "{hull:?}+{turret:?}: {} / {}: {:.4} m² at ({:.2}, {:.2}, {:.2})",
+                        f.a, f.b, f.area, at.x, at.y, at.z
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// No tank has coplanar faces that show. The turret is turned off the
+    /// hull's axes, so nothing lines up with it by accident.
+    #[test]
+    fn tanks_dont_z_fight() {
+        let f = tank_fights(0.7);
+        assert!(f.is_empty(), "{}", f.join("\n"));
+    }
+
+    fn mesh_names(art: &TankArt) -> std::collections::HashMap<MeshId, String> {
+        let mut n = std::collections::HashMap::new();
+        for (id, s) in [
+            (MeshId::CUBE, "cube"),
+            (MeshId::CYLINDER, "cylinder"),
+            (MeshId::SPHERE, "sphere"),
+            (MeshId::GEM, "gem"),
+            (MeshId::CANOPY, "canopy"),
+        ] {
+            n.insert(id, s.to_string());
+        }
+        for (i, h) in art.hulls.iter().enumerate() {
+            n.insert(h.body, format!("hull{i} body"));
+            if let Some(l) = h.heat_light {
+                n.insert(l, format!("hull{i} heat light"));
+            }
+            n.insert(h.link, format!("hull{i} link"));
+            n.insert(h.road, format!("hull{i} road wheel"));
+            n.insert(h.sprocket, format!("hull{i} sprocket"));
+            n.insert(h.idler, format!("hull{i} idler"));
+        }
+        let o = &art.hover;
+        for (id, s) in [
+            (o.body, "body"),
+            (o.glow, "glow"),
+            (o.emitter, "emitter"),
+            (o.lens, "lens"),
+            (o.shard, "shard"),
+        ] {
+            n.insert(id, format!("sethuun {s}"));
+        }
+        let g = &art.vigil;
+        n.insert(g.light, "vigil light".into());
+        n.insert(g.heart, "vigil heart".into());
+        n.insert(g.bell, "vigil bell".into());
+        for (i, (p, _)) in g.plates.iter().enumerate() {
+            n.insert(*p, format!("vigil plate{i}"));
+        }
+        for t in &art.turrets {
+            let k = t.kind;
+            n.insert(t.head, format!("{k:?} head"));
+            if let Some(l) = t.head_light {
+                n.insert(l, format!("{k:?} head light"));
+            }
+            if let Some(l) = t.barrel_light {
+                n.insert(l, format!("{k:?} barrel light"));
+            }
+            n.insert(t.mantlet, format!("{k:?} mantlet"));
+            n.insert(t.barrel, format!("{k:?} barrel"));
+        }
+        n
+    }
+
     #[test]
     fn kit_builds_with_sane_geometry() {
         let kit = KitMeshes::build();
@@ -776,6 +959,7 @@ mod tests {
         for (kind, h) in [
             (HullKind::Kataphrakt, model::kataphrakt()),
             (HullKind::Kastron, model::kastron()),
+            (HullKind::Gravis, uthenn::gravis()),
         ] {
             let c = Chassis::of(kind);
             let r = &h.running;
@@ -806,6 +990,32 @@ mod tests {
         }
     }
 
+    /// The sim's muzzle (where shots and the beam start) is the tip of the
+    /// barrel that's drawn, for every turret.
+    #[test]
+    fn muzzle_is_at_the_barrel_tip() {
+        let kit = KitMeshes::build();
+        for (t, kind) in kit.turrets.iter().zip(TurretKind::ALL) {
+            assert_eq!(t.muzzle, kind.reach(), "{kind:?}");
+            if t.rig != Rig::Recoil {
+                // Prongs and spinning needles: the muzzle is on the gun's
+                // axis, out by the prong tips, not on any one prong.
+                continue;
+            }
+            let tip = t
+                .barrel
+                .verts
+                .iter()
+                .map(|v| v.pos[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (tip - kind.reach()).abs() < 0.12,
+                "{kind:?}: barrel tip at {tip}, muzzle at {}",
+                kind.reach()
+            );
+        }
+    }
+
     #[test]
     fn recoil_snaps_back_then_returns() {
         assert_eq!(recoil_curve(0.0).0, 0.0);
@@ -816,7 +1026,7 @@ mod tests {
 }
 
 /// A model's heat lights on the GPU, if it has any.
-fn light_mesh(r: &mut Renderer, m: &MeshData) -> Option<MeshId> {
+fn light_mesh(r: &mut impl MeshStore, m: &MeshData) -> Option<MeshId> {
     (!m.indices.is_empty()).then(|| r.add_mesh(m))
 }
 

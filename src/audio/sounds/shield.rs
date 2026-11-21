@@ -9,7 +9,7 @@ use glam::Vec3;
 
 use super::Play;
 use crate::audio::OWN_HULL;
-use crate::audio::dsp::{Noise, Smooth, Svf};
+use crate::audio::dsp::{Noise, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
 use crate::audio::voice::{Filt, Layer, noise, sine};
@@ -67,13 +67,13 @@ impl Loop for Ward {
         }
         let mut chord = 0.0;
         for (j, &(f, g)) in WARD.iter().enumerate() {
-            self.tone[j] = (self.tone[j] + f / sr).fract();
-            chord += (self.tone[j] * TAU).sin() * g;
+            self.tone[j] = (self.tone[j] + f / sr).fract_q();
+            chord += (self.tone[j] * TAU).sin_q() * g;
         }
         // 3 Hz with the shield fresh, 11 Hz as it's about to go.
         let rate = 3.0 + 8.0 * (1.0 - self.left).clamp(0.0, 1.0);
-        self.pulse = (self.pulse + rate / sr).fract();
-        let pulse = 0.65 + 0.35 * (self.pulse * TAU).sin();
+        self.pulse = (self.pulse + rate / sr).fract_q();
+        let pulse = 0.65 + 0.35 * (self.pulse * TAU).sin_q();
         let shimmer = self.air.run(n, 3600.0, 3.0, sr).band;
         (chord * 0.3 + shimmer * 0.25) * pulse * level
     }

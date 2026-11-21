@@ -11,13 +11,14 @@ use crate::render::Camera;
 use crate::render::mesh::MeshData;
 use crate::sim::{Command, HullKind, TurretKind, World};
 
-pub const SPOTS: [Vec2; 6] = [
+pub const SPOTS: [Vec2; 7] = [
     Vec2::new(-10.0, -4.0),
     Vec2::new(0.0, -4.0),
     Vec2::new(10.0, -4.0),
     Vec2::new(-10.0, 5.0),
     Vec2::new(0.0, 5.0),
     Vec2::new(10.0, 5.0),
+    Vec2::new(0.0, 13.0),
 ];
 
 pub fn world() -> World {
@@ -90,7 +91,22 @@ pub fn after_step(w: &mut World) {
             tk.spin += DT * (1.5 + 26.0 * tk.spool);
         }
         let (period, off) = (2.2 + i as f32 * 0.35, i as f32 * 0.6);
-        if ((t + off) / period).floor() != ((t - DT + off) / period).floor() {
+        let charge = crate::combat::gun(w.tanks[i].turret_kind).charge;
+        if charge > 0.0 {
+            // Charge guns ring up over most of the cycle, then toll, without
+            // the kick (it would throw the tank off the yard).
+            let tk = &mut w.tanks[i];
+            let period = charge + 1.4;
+            let f = ((t + off) / period).fract() * period;
+            tk.charge = (f / charge).min(1.0);
+            if f >= charge && f - DT < charge {
+                tk.charge = 0.0;
+                tk.since_fire = 0.0;
+                tk.fire_barrel += 1;
+            } else if f > charge {
+                tk.charge = 0.0;
+            }
+        } else if ((t + off) / period).floor() != ((t - DT + off) / period).floor() {
             w.fire(i);
         }
     }
@@ -122,7 +138,7 @@ pub fn ground_mesh() -> MeshData {
     let pave = Vec4::new(0.6, 0.57, 0.52, Material::Paving.id());
     m.add_box(
         Vec3::new(-14.0, -0.1, -13.0),
-        Vec3::new(14.0, 0.0, 14.0),
+        Vec3::new(14.0, 0.0, 18.0),
         pave,
         pave,
     );

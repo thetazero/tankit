@@ -3,7 +3,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::audio::dsp::{DcBlock, Noise, Smooth, Svf};
+use crate::audio::dsp::{DcBlock, Noise, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
 
@@ -58,12 +58,12 @@ impl Loop for Engine {
             self.cylinder = 0.75 + 0.5 * noise.unit();
         }
         let pulse = (-self.cycle * 7.0).exp() * self.cylinder;
-        let sub = (self.cycle * TAU * 0.5).sin();
+        let sub = (self.cycle * TAU * 0.5).sin_q();
         let raw = pulse + sub * 0.3 + n * 0.15 * pulse * (0.4 + load);
         let cutoff = 220.0 + 1000.0 * load + 600.0 * rpm;
         let engine = if self.hover {
             // Field hum: a steady tone and its fifth, rising with effort, over hiss.
-            let hum = (self.cycle * TAU).sin() * 0.7 + (self.cycle * TAU * 3.0).sin() * 0.25;
+            let hum = (self.cycle * TAU).sin_q() * 0.7 + (self.cycle * TAU * 3.0).sin_q() * 0.25;
             let air = self.lp.run(n, 500.0 + 1200.0 * rpm, 1.5, sr).band;
             (hum + air * 0.8) * (0.15 + 0.2 * rpm + 0.15 * load)
         } else {

@@ -1,8 +1,12 @@
 //! Main menu, mission select, settings and the pause menu, in the hairline style.
 //!
 //! The main menu and mission select sit in the same left-hand panel as the
-//! garage, over the first mission's map with your tank parked in it. The
-//! pause menu is a small centred box over the frozen battle.
+//! garage, over a mission's map with your tank parked in it: the first
+//! mission's, then whichever contract the mission list points at. The pause
+//! menu is a small centred box over the frozen battle.
+//!
+//! Names and numbers are set in display caps; everything else is sentence-case
+//! body text. Colour is for signals only: who's hiring, and what's locked.
 
 use glam::Vec2;
 
@@ -13,7 +17,7 @@ use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Hits, Layer, Painter, TextStyle, measure, theme};
+use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme};
 
 const REF_HEIGHT: f32 = 900.0;
 
@@ -81,6 +85,9 @@ fn volume_click(settings: &Settings, frac: f32) -> Change {
 enum Item {
     /// Leads to another screen: a chevron when selected.
     Opens(&'static str),
+    /// Acts straight away (deploys): no chevron, so whatever sits on the
+    /// right of the row lines up on every row.
+    Acts(&'static str),
     /// Acts straight away and takes you out (of the match, or the game): set
     /// apart under a rule, with what it does spelled out on the right, and
     /// lit hot when selected.
@@ -90,7 +97,7 @@ enum Item {
 impl Item {
     fn name(self) -> &'static str {
         match self {
-            Item::Opens(n) | Item::Leaves(n, _) => n,
+            Item::Opens(n) | Item::Acts(n) | Item::Leaves(n, _) => n,
         }
     }
 }
@@ -213,6 +220,13 @@ impl Menu {
         self.faction = faction.index();
     }
 
+    /// Select mission `MISSIONS[i]` on the mission screen, if the employer offers it.
+    pub fn pick_mission(&mut self, i: usize) {
+        if let Some(k) = self.missions().iter().position(|&j| j == i) {
+            self.mission = k;
+        }
+    }
+
     /// The employer's missions, as indices into `MISSIONS`.
     fn missions(&self) -> Vec<usize> {
         mission::hiring(self.employer())
@@ -248,6 +262,15 @@ impl Menu {
         (nav, self.input(nav))
     }
 
+    /// The contract the mission screen points at, and the side you'd take in
+    /// it: the menu's backdrop shows its map. None off the mission screen.
+    pub fn backdrop(&self) -> Option<(usize, usize)> {
+        (self.screen == Screen::Missions).then(|| {
+            let i = self.missions()[self.mission];
+            (i, MISSIONS[i].side_of(self.employer()))
+        })
+    }
+
     /// The panel; `alpha` fades it (out while the garage is open over it).
     pub fn draw(&self, profile: &Profile, height: f32, alpha: f32) -> Layer<Hit> {
         if alpha <= 0.0 {
@@ -261,48 +284,32 @@ impl Menu {
         let x = PANEL_X;
         let mut y = 72.0;
 
-        // Header: the game, then the pilot.
-        label(&mut p, Vec2::new(x, y), "MERCENARY LINK", Align::Left);
-        label(&mut p, Vec2::new(x + PANEL_W, y), "ONLINE", Align::Right);
-        y += 18.0;
+        // The game, and what you have to spend.
         p.text(
             Vec2::new(x, y),
             "TANKIT",
             &TextStyle::value(28.0),
             Align::Left,
         );
-        y += 52.0;
-        pilot(&mut p, Vec2::new(x, y), profile);
-        y += PILOT_H;
-        p.line(
-            Vec2::new(x, y),
-            Vec2::new(x + PANEL_W, y),
-            1.0,
-            theme::FAINT,
-        );
-        y += 26.0;
+        crystals(&mut p, Vec2::new(x + PANEL_W, y + 10.0), profile.crystals);
+        y += 72.0;
 
-        match self.screen {
+        let keys = match self.screen {
             Screen::Main => {
-                y += rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor) + 20.0;
-                label(&mut p, Vec2::new(x, y), "DEPLOYING IN", Align::Left);
-                y += 16.0;
+                y += rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor) + 24.0;
+                body(&mut p, Vec2::new(x, y), "Deploying in", theme::DIM);
+                y += 20.0;
                 p.text(
                     Vec2::new(x, y),
                     &kit_name(profile.loadout),
                     &TextStyle::value(12.0),
                     Align::Left,
                 );
+                "Enter  select"
             }
             Screen::Factions => {
-                label(&mut p, Vec2::new(x, y), "01  EMPLOYER", Align::Left);
-                label(
-                    &mut p,
-                    Vec2::new(x + PANEL_W, y),
-                    &format!("{}/{}", self.faction + 1, Faction::ALL.len()),
-                    Align::Right,
-                );
-                y += 20.0;
+                body(&mut p, Vec2::new(x, y), "Who you work for", theme::DIM);
+                y += 26.0;
                 let names: Vec<Item> = Faction::ALL.iter().map(|f| Item::Opens(f.name())).collect();
                 let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.faction);
                 for (i, f) in Faction::ALL.iter().enumerate() {
@@ -310,131 +317,136 @@ impl Menu {
                     emblem::emblem(
                         &mut p,
                         *f,
-                        Vec2::new(x + PANEL_W - 26.0, y + i as f32 * 30.0 + 7.5),
+                        Vec2::new(x + PANEL_W - 26.0, y + i as f32 * ROW + 7.5),
                         13.0,
                         1.2,
                         f.ui(),
                     );
                 }
-                y += drawn + 14.0;
+                y += drawn + 26.0;
 
+                // Your standing with them: what decides which of their work you get.
                 let f = self.employer();
                 let s = profile.standing(f);
                 let work = self.missions();
-                // Whole map names, so none breaks across lines.
-                let n = work.len();
-                let maps: Vec<String> = work
+                let open = work
                     .iter()
-                    .enumerate()
-                    .map(|(k, &i)| {
-                        let dot = if k + 1 < n { " ·" } else { "" };
-                        format!("{}{dot}", MISSIONS[i].map)
-                    })
-                    .collect();
-                for (k, v) in [
-                    (
-                        "THEIR TRUST",
-                        format!("T{}  {} / {}", s.level, s.into, s.span),
-                    ),
-                    ("CONTRACTS", work.len().to_string()),
-                ] {
-                    y = detail(&mut p, Vec2::new(x, y), k, &v);
-                }
-                y += 8.0;
-                wrap(&mut p, Vec2::new(x, y), &maps);
+                    .filter(|&&i| MISSIONS[i].open_at(s.level))
+                    .count();
+                p.text(
+                    Vec2::new(x, y),
+                    &format!("T{}", s.level),
+                    &TextStyle::value(22.0),
+                    Align::Left,
+                );
+                p.text(
+                    Vec2::new(x + PANEL_W, y + 11.0),
+                    &format!("{} / {} to T{}", s.into, s.span, s.level + 1),
+                    &BODY,
+                    Align::Right,
+                );
+                y += 34.0;
+                widgets::hairbar(&mut p, Vec2::new(x, y), PANEL_W, s.progress(), theme::FG);
+                y += 16.0;
+                let contracts = if open == work.len() {
+                    format!("Standing · {} contracts open", work.len())
+                } else {
+                    format!("Standing · {open} of {} contracts open", work.len())
+                };
+                body(&mut p, Vec2::new(x, y), &contracts, theme::DIM);
+                "Enter  choose     Esc  back"
             }
             Screen::Missions => {
                 let employer = self.employer();
                 let work = self.missions();
-                label(
+                let s = profile.standing(employer);
+                // The one place their colour goes: who's hiring.
+                let mut style = BODY;
+                style.color = employer.ui();
+                emblem::tagged(
                     &mut p,
                     Vec2::new(x, y),
-                    &format!("01  {} CONTRACTS", employer.name()),
+                    employer,
+                    &format!("{} contracts", title(employer.name())),
+                    &style,
                     Align::Left,
                 );
-                label(
-                    &mut p,
-                    Vec2::new(x + PANEL_W, y),
-                    &format!("{}/{}", self.mission + 1, work.len()),
-                    Align::Right,
-                );
-                y += 20.0;
-                let names: Vec<Item> = work
-                    .iter()
-                    .map(|&i| Item::Opens(MISSIONS[i].name))
-                    .collect();
-                y += rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission) + 14.0;
-
-                let m = &MISSIONS[work[self.mission]];
-                let against = m
-                    .sides
-                    .iter()
-                    .filter(|&&f| f != employer)
-                    .map(|f| f.name())
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                let s = profile.standing(employer);
-                for (k, v) in [
-                    ("CONTRACT", m.contract.name().to_string()),
-                    ("MAP", m.map.to_string()),
-                    ("EMPLOYER", employer.name().to_string()),
-                    ("AGAINST", against),
-                    (
-                        "THEIR TRUST",
-                        format!("T{}  {} / {}", s.level, s.into, s.span),
-                    ),
-                    ("TEAMS", m.teams()),
-                    ("ROUND", m.round_time()),
-                    ("PAY", m.pay()),
-                ] {
-                    let style = TextStyle::value(11.0);
-                    let others: Vec<Faction> =
-                        m.sides.iter().copied().filter(|&f| f != employer).collect();
-                    let sep = measure(" · ", &style);
-                    let width = match k {
-                        "EMPLOYER" => emblem::tagged_width(employer.name(), &style),
-                        "AGAINST" => {
-                            others
-                                .iter()
-                                .map(|f| emblem::tagged_width(f.name(), &style))
-                                .sum::<f32>()
-                                + sep * others.len().saturating_sub(1) as f32
-                        }
-                        _ => measure(&v, &style),
+                y += 26.0;
+                let names: Vec<Item> = work.iter().map(|&i| Item::Acts(MISSIONS[i].name)).collect();
+                let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission);
+                for (k, &i) in work.iter().enumerate() {
+                    // Each contract's rating; a locked one says the standing it needs.
+                    let m = &MISSIONS[i];
+                    let (tag, color) = if m.open_at(s.level) {
+                        (m.rating_label(), theme::DIM)
+                    } else {
+                        (format!("Needs T{}", m.standing), theme::HOT)
                     };
-                    let right = detail_key(&mut p, Vec2::new(x, y), k, width);
-                    match k {
-                        "EMPLOYER" => {
-                            let mut style = style;
-                            style.color = employer.ui();
-                            emblem::faction_name(&mut p, right, employer, &style, Align::Right);
-                        }
-                        "AGAINST" => {
-                            let mut style = style;
-                            let mut at = right;
-                            for (i, &f) in others.iter().rev().enumerate() {
-                                if i > 0 {
-                                    style.color = theme::FG;
-                                    at.x -= p.text(at, " · ", &style, Align::Right);
-                                }
-                                style.color = f.ui();
-                                at.x -= emblem::faction_name(&mut p, at, f, &style, Align::Right);
-                            }
-                        }
-                        _ => {
-                            p.text(right, &v, &style, Align::Right);
-                        }
-                    }
-                    y = right.y + 22.0;
+                    let mut style = BODY;
+                    style.color = color;
+                    p.text(
+                        Vec2::new(x + PANEL_W, y + k as f32 * ROW + 3.0),
+                        &tag,
+                        &style,
+                        Align::Right,
+                    );
                 }
-                y += 8.0;
-                let brief = m.briefs[m.side_of(employer)];
-                let words: Vec<String> = brief.split(' ').map(String::from).collect();
-                wrap(&mut p, Vec2::new(x, y), &words);
+                y += drawn + 30.0;
+
+                // The selected contract: what it is, the pitch, then the two numbers.
+                let m = &MISSIONS[work[self.mission]];
+                body(
+                    &mut p,
+                    Vec2::new(x, y),
+                    &format!("{} · {}", title(m.contract.name()), title(m.map)),
+                    theme::FG,
+                );
+                y += 22.0;
+                y = wrap(
+                    &mut p,
+                    Vec2::new(x, y),
+                    m.briefs[m.side_of(employer)],
+                    theme::DIM,
+                );
+                y += 26.0;
+                let big = TextStyle::value(22.0);
+                let col = x + 150.0;
+                p.text(Vec2::new(x, y), &m.rating_label(), &big, Align::Left);
+                let w = p.text(
+                    Vec2::new(col, y),
+                    &m.win_pay().to_string(),
+                    &big,
+                    Align::Left,
+                );
+                body(&mut p, Vec2::new(col + w + 6.0, y + 11.0), "CR", theme::DIM);
+                y += 32.0;
+                body(&mut p, Vec2::new(x, y), "Rating", theme::DIM);
+                body(
+                    &mut p,
+                    Vec2::new(col, y),
+                    "For a win, plus kills",
+                    theme::DIM,
+                );
+                if !m.open_at(s.level) {
+                    y += 34.0;
+                    body(
+                        &mut p,
+                        Vec2::new(x, y),
+                        &format!(
+                            "Opens at T{} with the {}",
+                            m.standing,
+                            title(employer.name())
+                        ),
+                        theme::HOT,
+                    );
+                    "Esc  back"
+                } else {
+                    "Enter  deploy     Esc  back"
+                }
             }
             Screen::Settings => {
-                label(&mut p, Vec2::new(x, y), "03  SETTINGS", Align::Left);
-                y += 20.0;
+                body(&mut p, Vec2::new(x, y), "Settings", theme::DIM);
+                y += 26.0;
                 settings_rows(
                     &mut p,
                     &mut hits,
@@ -442,8 +454,10 @@ impl Menu {
                     &profile.settings,
                     self.setting,
                 );
+                "Esc  back"
             }
-        }
+        };
+        body(&mut p, Vec2::new(x, h - 64.0), keys, theme::FAINT);
         Layer {
             verts: fade(p.finish(), alpha),
             hits,
@@ -528,13 +542,13 @@ impl Pause {
         (nav, self.input(nav))
     }
 
-    /// Dims the battle and draws the box. `match_trust` is what this match has
+    /// Dims the battle and draws the box. `match_reputation` is what this match has
     /// earned you with `employer` so far.
     pub fn draw(
         &self,
         profile: &Profile,
         employer: Faction,
-        match_trust: u32,
+        match_reputation: u32,
         width: f32,
         height: f32,
     ) -> Layer<Hit> {
@@ -583,7 +597,7 @@ impl Pause {
         label(&mut p, Vec2::new(x, y + 1.0), "THIS MATCH", Align::Left);
         p.text(
             Vec2::new(x + PANEL_W, y),
-            &format!("+{match_trust} TRUST"),
+            &format!("+{match_reputation} REPUTATION"),
             &TextStyle::value(11.0),
             Align::Right,
         );
@@ -692,48 +706,54 @@ fn settings_rows(
     );
 }
 
-/// Height of the pilot block.
-const PILOT_H: f32 = 18.0 + Faction::ALL.len() as f32 * ROW_H + 40.0;
-const ROW_H: f32 = 20.0;
+/// Body text: sentence case, for everything that isn't a name or a number.
+const BODY: TextStyle = TextStyle {
+    size: 10.0,
+    tracking: 0.3,
+    weight: 1.1,
+    color: theme::DIM,
+    lower: true,
+};
 
-/// Each faction's trust in you (standing and the bar to the next), then crystals.
-fn pilot(p: &mut Painter, at: Vec2, profile: &Profile) {
-    label(p, at, "TRUST", Align::Left);
-    label(p, at + Vec2::new(PANEL_W, 0.0), "STANDING", Align::Right);
-    let mut y = at.y + 18.0;
-    for f in Faction::ALL {
-        let s = profile.standing(f);
-        let mut name = TextStyle::value(11.0);
-        name.color = f.ui();
-        emblem::faction_name(p, Vec2::new(at.x, y), f, &name, Align::Left);
-        widgets::hairbar(
-            p,
-            Vec2::new(at.x + 136.0, y + 6.0),
-            PANEL_W - 136.0 - 36.0,
-            s.progress(),
-            if profile.trust_of(f) > 0 {
-                theme::FG
-            } else {
-                theme::FAINT
-            },
-        );
-        p.text(
-            Vec2::new(at.x + PANEL_W, y),
-            &format!("T{}", s.level),
-            &TextStyle::value(11.0),
-            Align::Right,
-        );
-        y += ROW_H;
-    }
-    let cy = y + 10.0 - at.y;
-    label(p, at + Vec2::new(0.0, cy + 2.0), "CRYSTALS", Align::Left);
-    let cw = label(p, at + Vec2::new(PANEL_W, cy + 2.0), "CR", Align::Right);
+/// Line height of wrapped body text.
+const BODY_LINE: f32 = 17.0;
+
+/// Height of a list row.
+const ROW: f32 = 30.0;
+
+fn body(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
+    let mut style = BODY;
+    style.color = color;
+    p.text(at, text, &style, Align::Left)
+}
+
+/// Your crystals, right-aligned at `at`.
+fn crystals(p: &mut Painter, at: Vec2, crystals: u32) {
+    let w = body(
+        p,
+        at + Vec2::new(-measure("CR", &BODY), 2.0),
+        "CR",
+        theme::DIM,
+    );
     p.text(
-        at + Vec2::new(PANEL_W - cw - 8.0, cy),
-        &profile.crystals.to_string(),
-        &TextStyle::value(12.0),
+        at - Vec2::new(w + 6.0, 0.0),
+        &crystals.to_string(),
+        &TextStyle::value(13.0),
         Align::Right,
     );
+}
+
+/// "THE CAPITAL" as "The Capital".
+fn title(caps: &str) -> String {
+    caps.split(' ')
+        .map(|w| {
+            let mut c = w.chars();
+            c.next()
+                .map(|f| f.to_string() + &c.as_str().to_lowercase())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Gap above the rule that sets the leaving rows apart.
@@ -758,7 +778,7 @@ fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selecte
             );
             y += LEAVE_GAP;
         }
-        garage::row_hit(p, hits, Vec2::new(at.x, y), 30.0, Hit::Row(i));
+        garage::row_hit(p, hits, Vec2::new(at.x, y), ROW, Hit::Row(i));
         let on = i == selected;
         let lit = match (on, leaves) {
             (true, true) => theme::HOT,
@@ -786,7 +806,7 @@ fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selecte
                     theme::FG,
                 );
             }
-            Item::Opens(_) => {}
+            Item::Opens(_) | Item::Acts(_) => {}
             Item::Leaves(_, what) => {
                 let mut s = TextStyle::LABEL;
                 if on {
@@ -798,49 +818,31 @@ fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selecte
         let mut s = TextStyle::value(15.0);
         s.color = lit;
         p.text(Vec2::new(at.x, y), item.name(), &s, Align::Left);
-        y += 30.0;
+        y += ROW;
     }
     y - at.y
 }
 
-/// A detail line, key on the left and value on the right; a value too long to
-/// sit beside its key drops onto the line below. Returns where the next one goes.
-fn detail(p: &mut Painter, at: Vec2, key: &str, value: &str) -> f32 {
-    let style = TextStyle::value(11.0);
-    let right = detail_key(p, at, key, measure(value, &style));
-    p.text(right, value, &style, Align::Right);
-    right.y + 22.0
-}
-
-/// A detail line's key; returns where a value `width` wide goes, right-aligned:
-/// beside the key if it fits, else on the line below.
-fn detail_key(p: &mut Painter, at: Vec2, key: &str, width: f32) -> Vec2 {
-    let gap = 8.0;
-    let beside = measure(key, &TextStyle::LABEL) + gap + width <= PANEL_W;
-    label(p, at + Vec2::new(0.0, 1.0), key, Align::Left);
-    let y = if beside { at.y } else { at.y + 16.0 };
-    Vec2::new(at.x + PANEL_W, y)
-}
-
-/// Small label text, `words` spaced and wrapped to the panel's width.
-fn wrap(p: &mut Painter, at: Vec2, words: &[String]) {
+/// Body text wrapped to the panel's width. Returns where the line after it goes.
+fn wrap(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
     let mut line = String::new();
     let mut y = at.y;
-    for word in words {
+    for word in text.split(' ') {
         let longer = if line.is_empty() {
-            word.clone()
+            word.to_string()
         } else {
             format!("{line} {word}")
         };
-        if !line.is_empty() && measure(&longer, &TextStyle::LABEL) > PANEL_W {
-            label(p, Vec2::new(at.x, y), &line, Align::Left);
-            y += 14.0;
-            line = word.clone();
+        if !line.is_empty() && measure(&longer, &BODY) > PANEL_W {
+            body(p, Vec2::new(at.x, y), &line, color);
+            y += BODY_LINE;
+            line = word.to_string();
         } else {
             line = longer;
         }
     }
-    label(p, Vec2::new(at.x, y), &line, Align::Left);
+    body(p, Vec2::new(at.x, y), &line, color);
+    y + BODY_LINE
 }
 
 pub fn kit_name(kit: Loadout) -> String {

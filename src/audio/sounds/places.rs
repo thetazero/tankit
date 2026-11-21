@@ -15,7 +15,7 @@
 use std::f32::consts::TAU;
 
 use crate::audio::Listener;
-use crate::audio::dsp::{Noise, OnePole, Panner, Smooth, Svf};
+use crate::audio::dsp::{Noise, OnePole, Panner, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::map::{Ambient, Map};
 
@@ -183,8 +183,8 @@ struct State {
 
 /// Phase `ph` advanced by `f` Hz; the sine at the new phase.
 fn osc(ph: &mut f32, f: f32, sr: f32) -> f32 {
-    *ph = (*ph + f / sr).fract();
-    (*ph * TAU).sin()
+    *ph = (*ph + f / sr).fract_q();
+    (*ph * TAU).sin_q()
 }
 
 /// Seconds-per-sample decay factor for time constant `tau`.
@@ -237,7 +237,7 @@ impl State {
     fn crystal(&mut self, n: f32, sr: f32) -> f32 {
         const NOTES: [f32; 5] = [660.0, 742.5, 880.0, 990.0, 1113.75];
         let f = NOTES[(self.vary * 4.99) as usize];
-        let swell = 0.55 + 0.45 * (TAU * (0.11 + 0.1 * self.vary) * self.t).sin();
+        let swell = 0.55 + 0.45 * (TAU * (0.11 + 0.1 * self.vary) * self.t).sin_q();
         let tone = osc(&mut self.ph[0], f, sr) * 0.5
             + osc(&mut self.ph[1], f * 1.004, sr) * 0.4
             + osc(&mut self.ph[2], f * 2.76, sr) * 0.1;
@@ -250,7 +250,7 @@ impl State {
     /// snapping off it now and then.
     fn core(&mut self, n: f32, sr: f32) -> f32 {
         let f = 52.0 + 6.0 * self.vary;
-        let wobble = 0.75 + 0.25 * (TAU * 0.37 * self.t).sin();
+        let wobble = 0.75 + 0.25 * (TAU * 0.37 * self.t).sin_q();
         let thrum = osc(&mut self.ph[0], f, sr)
             + osc(&mut self.ph[1], f * 2.0, sr) * 0.6
             + osc(&mut self.ph[2], f * 3.01, sr) * 0.3;
@@ -279,7 +279,7 @@ impl State {
     /// The crucible: a low roar breathing slowly, flame through it, and
     /// molten metal bubbling (a pitch rising fast under a quick decay).
     fn furnace(&mut self, n: f32, sr: f32) -> f32 {
-        let breathe = 0.75 + 0.25 * (TAU * 0.13 * self.t).sin();
+        let breathe = 0.75 + 0.25 * (TAU * 0.13 * self.t).sin_q();
         let roar = self.f[0].run(n, 170.0, 0.8, sr).low;
         let flame = self.f[1].run(n, 650.0, 1.0, sr).band;
         if self.every(0, 0.12, 0.55, sr) {
@@ -298,7 +298,7 @@ impl State {
         let hum = osc(&mut self.ph[0], 100.0, sr) * 0.6
             + osc(&mut self.ph[1], 200.0, sr) * 0.3
             + osc(&mut self.ph[2], 300.0, sr) * 0.2;
-        let flicker = if (TAU * 7.0 * self.t).sin() > 0.97 {
+        let flicker = if (TAU * 7.0 * self.t).sin_q() > 0.97 {
             0.4
         } else {
             1.0
@@ -331,8 +331,8 @@ impl State {
         let mut buzz = 0.0;
         for (j, &f) in VOICES.iter().enumerate() {
             // A little vibrato each, out of step.
-            let vib = 1.0 + 0.004 * (TAU * (4.6 + j as f32 * 0.3) * self.t).sin();
-            self.ph[j] = (self.ph[j] + f * vib / sr).fract();
+            let vib = 1.0 + 0.004 * (TAU * (4.6 + j as f32 * 0.3) * self.t).sin_q();
+            self.ph[j] = (self.ph[j] + f * vib / sr).fract_q();
             buzz += self.ph[j] * 2.0 - 1.0;
         }
         buzz += n * 0.15;
@@ -344,8 +344,9 @@ impl State {
         let f2 = 1150.0 - 300.0 * w;
         let a = self.f[0].run(buzz, f1, 5.0, sr).band;
         let b = self.f[1].run(buzz, f2, 6.0, sr).band;
-        let swell = 0.65 + 0.35 * (TAU * 0.07 * self.t).sin();
-        let shimmer = osc(&mut self.ph[4], 1760.0, sr) * (0.5 + 0.5 * (TAU * 0.23 * self.t).sin());
+        let swell = 0.65 + 0.35 * (TAU * 0.07 * self.t).sin_q();
+        let shimmer =
+            osc(&mut self.ph[4], 1760.0, sr) * (0.5 + 0.5 * (TAU * 0.23 * self.t).sin_q());
         (a * 0.06 + b * 0.04) * swell + shimmer * 0.03
     }
 
@@ -360,7 +361,7 @@ impl State {
             .enumerate()
         {
             let swell =
-                0.5 + 0.5 * (TAU * (0.09 + 0.05 * j as f32) * self.t + j as f32 * 2.0).sin();
+                0.5 + 0.5 * (TAU * (0.09 + 0.05 * j as f32) * self.t + j as f32 * 2.0).sin_q();
             out += osc(&mut self.ph[j], f * mult, sr) * g * swell;
         }
         out * 0.3
@@ -442,10 +443,10 @@ impl State {
         if self.env[0] > 0.0 {
             self.env[0] -= 1.0 / sr;
             let along = 1.0 - self.env[0].max(0.0) / self.env[1];
-            let shape = (along * std::f32::consts::PI).sin();
+            let shape = (along * std::f32::consts::PI).sin_q();
             self.pitch *= 1.0 + 0.4 / sr;
             let before = self.ph[0];
-            self.ph[0] = (self.ph[0] + self.pitch / sr).fract();
+            self.ph[0] = (self.ph[0] + self.pitch / sr).fract_q();
             if self.ph[0] < before {
                 click = shape * (0.6 + 0.4 * self.noise.unit());
             }

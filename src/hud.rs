@@ -8,10 +8,11 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase, TRUST_POP_TIME};
-use crate::economy::{Outcome, Payout};
+use crate::combat::{FEED_TIME, Match, Phase, REPUTATION_POP_TIME};
+use crate::economy::Payout;
 use crate::hold::{self, Control};
 use crate::mission::Contract;
+use crate::profile::{Profile, Standing};
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::sim::Tank;
@@ -50,6 +51,27 @@ pub enum Hit {
     Menu,
 }
 
+/// The pilot's books as the match started, for the round-over screen to count
+/// up from: reputation with the employer before this match's was banked, and
+/// crystals before the contract paid.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Ledger {
+    pub reputation: u32,
+    pub crystals: u32,
+}
+
+impl Ledger {
+    /// Backs this match's earnings out of `profile`: `banked` reputation is
+    /// already in it, and the contract pay too once `paid`.
+    pub fn before(profile: &Profile, m: &Match, banked: u32, paid: bool) -> Ledger {
+        let pay = if paid { Payout::of(m).total() } else { 0 };
+        Ledger {
+            reputation: profile.reputation_of(m.factions[0]).saturating_sub(banked),
+            crystals: profile.crystals.saturating_sub(pay),
+        }
+    }
+}
+
 /// Eased values so readouts glide instead of snapping.
 pub struct Hud {
     speed: f32,
@@ -80,6 +102,7 @@ impl Hud {
         height: f32,
         dt: f32,
         scores: bool,
+        ledger: Ledger,
     ) -> Layer<Hit> {
         let tank = &tanks[0];
         let me = m.player();
@@ -110,7 +133,7 @@ impl Hud {
             theme::FAINT,
         );
 
-        // Top left: round clock, kills / deaths, trust.
+        // Top left: round clock, kills / deaths, reputation.
         let secs = m.time_left.ceil() as u32;
         label(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
         let mut clock = TextStyle::value(20.0);
@@ -150,12 +173,12 @@ impl Hud {
         label(
             &mut p,
             Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "TRUST",
+            "REPUTATION",
             Align::Left,
         );
         p.text(
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
-            &format!("+{}", m.trust),
+            &format!("+{}", m.reputation),
             &TextStyle::value(14.0),
             Align::Left,
         );
@@ -310,12 +333,10 @@ impl Hud {
             }
         }
 
-        // Crosshair where the turret points; the gap kicks open when firing.
-        // Where the gun actually points, including hull tilt; for a gun that
-        // lands instantly, right where the shot would land.
-        let aim_point = m
-            .instant_landing(tank)
-            .unwrap_or_else(|| tank.pos + tank.up() * tank.gun_height() + tank.turret_dir() * 40.0);
+        // Crosshair where the shot would land, down the gun as the aim assist
+        // lays it (so it moves onto a tank the assist bends onto); the gap
+        // kicks open when firing.
+        let aim_point = m.aim_landing(tank);
         if me.alive
             && !board
             && let Some((x, y)) = project(vp, aim_point, width, height)
@@ -371,6 +392,16 @@ impl Hud {
                 s.color = theme::HOT;
                 p.text(bc + Vec2::new(0.0, 4.0), "OVERHEATED", &s, Align::Center);
             }
+        } else if me.charge > 0.0 {
+            // Charge gun ringing up (or draining after a cancel): the bar is
+            // the charge, hot while it builds.
+            widgets::hairbar(
+                &mut p,
+                bc + Vec2::new(-130.0, -10.0),
+                260.0,
+                me.charge,
+                if me.charging { theme::HOT } else { theme::DIM },
+            );
         } else {
             let ready = 1.0 - (me.reload_in / g.reload).clamp(0.0, 1.0);
             widgets::hairbar(
@@ -422,23 +453,36 @@ impl Hud {
                     Align::Center,
                 );
             }
+            // The countdown: whole seconds left, big, over a bar that fills
+            // as the new chassis comes up.
+            let left = me.respawn_in.max(0.0);
             p.text(
-                c + Vec2::new(0.0, 62.0),
-                &format!("RESPAWN {}", me.respawn_in.ceil().max(1.0) as u32),
-                &TextStyle::value(11.0),
+                c + Vec2::new(0.0, 74.0),
+                "RESPAWN IN",
+                &TextStyle::LABEL,
                 Align::Center,
             );
+            p.text(
+                c + Vec2::new(0.0, 104.0),
+                &(left.ceil().max(1.0) as u32).to_string(),
+                &TextStyle::value(30.0),
+                Align::Center,
+            );
+            let done = 1.0 - (left / crate::combat::RESPAWN_TIME).clamp(0.0, 1.0);
+            let (bw, o) = (160.0, c + Vec2::new(-80.0, 146.0));
+            p.line(o, o + Vec2::new(bw, 0.0), 1.0, theme::DIM);
+            p.line(o, o + Vec2::new(bw * done, 0.0), 2.0, theme::HOT);
         }
 
-        // Trust popups, just above the crosshair, drifting up as they fade.
+        // Reputation popups, just above the crosshair, drifting up as they fade.
         if !board {
-            for (row, x) in m.trust_pops.iter().rev().take(3).enumerate() {
-                let fade = ((TRUST_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
+            for (row, x) in m.reputation_pops.iter().rev().take(3).enumerate() {
+                let fade = ((REPUTATION_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
                     * (x.age / 0.08).clamp(0.0, 1.0);
                 let at = Vec2::new(w * 0.5, h * 0.30 - x.age * 14.0 - row as f32 * 30.0);
                 let mut s = TextStyle::value(16.0);
                 s.color = with_alpha(theme::HOT, fade);
-                p.text(at, &format!("+{} TRUST", x.amount), &s, Align::Center);
+                p.text(at, &format!("+{} REPUTATION", x.amount), &s, Align::Center);
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(theme::FG, 0.8 * fade);
                 p.text(at + Vec2::new(0.0, 24.0), x.reason, &l, Align::Center);
@@ -453,6 +497,7 @@ impl Hud {
                 &mut hits,
                 self.hover,
                 m,
+                ledger,
                 Vec2::new(w * 0.5, h * top),
             );
         }
@@ -518,7 +563,14 @@ impl Hud {
 
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
-fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Match, top: Vec2) {
+fn scoreboard(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    hover: Option<Hit>,
+    m: &Match,
+    ledger: Ledger,
+    top: Vec2,
+) {
     let holding = m.contract == Contract::Hold;
     let cols = StatColumns::new(holding);
     // Wide enough for the longest tank name in the match beside the stat columns.
@@ -541,9 +593,8 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = theme::PANEL;
-    let extra = if holding { 18.0 } else { 0.0 };
     let height = if m.phase == Phase::Over {
-        306.0 + extra
+        24.0 + 66.0 + 18.0 + RESULTS_H + 24.0 + BUTTON_H + 24.0
     } else {
         28.0
     } + body;
@@ -575,15 +626,7 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
                 p.text(at, "DRAW", &s, Align::Center);
             }
         }
-        emblem::tagged(
-            p,
-            Vec2::new(top.x, y + 56.0),
-            m.factions[0],
-            &format!("+{} {} TRUST THIS MATCH", m.trust, m.factions[0].name()),
-            &TextStyle::LABEL,
-            Align::Center,
-        );
-        y += 84.0;
+        y += 66.0;
     }
     let order = m.standings();
     for team in 0..sides {
@@ -645,8 +688,29 @@ fn scoreboard(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, m: &Mat
     }
     y += body;
     if m.phase == Phase::Over {
-        contract_pay(p, m, x0, x1, y + 14.0);
-        round_over_buttons(p, hits, hover, Vec2::new(top.x, y + 150.0 + extra));
+        let y = y + 18.0;
+        let employer = m.factions[0];
+        let t = m.over_for - RESULTS_DELAY;
+        reputation_gained(
+            p,
+            employer,
+            ledger.reputation,
+            m.reputation,
+            t,
+            x0,
+            x0 + col,
+            y,
+        );
+        crystal_tally(
+            p,
+            ledger.crystals,
+            Payout::of(m).total(),
+            t,
+            x1 - col,
+            x1,
+            y,
+        );
+        round_over_buttons(p, hits, hover, Vec2::new(top.x, y + RESULTS_H + 24.0));
     }
 }
 
@@ -779,64 +843,173 @@ fn hold_color(m: &Match, c: Control) -> Rgba {
     }
 }
 
-/// Seconds after the round ends before the pay lines start, and between them.
-const PAY_DELAY: f32 = 0.6;
-const PAY_STEP: f32 = 0.35;
+/// Seconds after the round ends before the results start moving.
+const RESULTS_DELAY: f32 = 0.6;
+/// Height of the reputation and crystal blocks under the tables.
+const RESULTS_H: f32 = 84.0;
 
-/// The contract's crystal pay, line by line, then the total counting up.
-fn contract_pay(p: &mut Painter, m: &Match, x0: f32, x1: f32, mut y: f32) {
-    let pay = Payout::of(m);
-    let t = m.over_for - PAY_DELAY;
-    label(p, Vec2::new(x0, y), "CONTRACT PAY", Align::Left);
-    label(p, Vec2::new(x1, y), "CR", Align::Right);
-    y += 14.0;
-    p.line(Vec2::new(x0, y), Vec2::new(x1, y), 1.0, theme::FAINT);
-    y += 10.0;
-    let lines = [
-        ("COMPLETION".to_string(), pay.completion),
-        (
-            match pay.outcome {
-                Outcome::Won => "VICTORY",
-                Outcome::Draw => "DRAW",
-                Outcome::Lost => "DEFEAT",
-            }
-            .to_string(),
-            pay.victory,
-        ),
-        (
-            format!("CONTRIBUTION  {:.0} HP", pay.damage),
-            pay.contribution,
-        ),
-        (format!("BOUNTY  {} KILLS", pay.kills), pay.bounty),
-    ];
-    let hold = (m.contract == Contract::Hold).then(|| {
-        (
-            format!("ON THE {}  {:.0} S", m.world.map.hold_name, pay.held),
-            pay.hold,
-        )
+/// Reputation: the bar fills from where you stood over this long.
+const REP_FILL: f32 = 1.2;
+/// Crystals: "+0" joins the balance, ticks up to the pay, then folds into it.
+const CR_PLUS: f32 = 0.2;
+const CR_TICK: f32 = 0.6;
+const CR_TICK_TIME: f32 = 1.0;
+const CR_FOLD: f32 = 1.9;
+const CR_FOLD_TIME: f32 = 0.4;
+
+fn ease_out(x: f32) -> f32 {
+    1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
+}
+
+/// How much of `gained` the reputation graphic shows `t` seconds in.
+fn reputation_shown(gained: u32, t: f32) -> u32 {
+    (gained as f32 * ease_out(t / REP_FILL)).round() as u32
+}
+
+/// What the crystal tally reads `t` seconds in: the balance, and the pay
+/// beside it (with its opacity) until it folds in.
+#[derive(Debug, PartialEq)]
+struct Tally {
+    balance: u32,
+    plus: Option<(u32, f32)>,
+}
+
+fn tally(before: u32, pay: u32, t: f32) -> Tally {
+    let fold = ((t - CR_FOLD) / CR_FOLD_TIME).clamp(0.0, 1.0);
+    let balance = before + (pay as f32 * ease_out(fold)).round() as u32;
+    let plus = (t >= CR_PLUS && fold < 1.0).then(|| {
+        // Ticks: the count steps evenly, so every crystal shows.
+        let k = (pay as f32 * ((t - CR_TICK) / CR_TICK_TIME).clamp(0.0, 1.0)).floor() as u32;
+        let alpha = (((t - CR_PLUS) / 0.15).clamp(0.0, 1.0)) * (1.0 - fold);
+        (k, alpha)
     });
-    let lines: Vec<_> = lines.into_iter().chain(hold).collect();
-    let n = lines.len() as f32;
-    for (i, (what, amount)) in lines.iter().enumerate() {
-        let a = ((t - i as f32 * PAY_STEP) / 0.2).clamp(0.0, 1.0);
-        if a > 0.0 {
-            let mut s = TextStyle::value(10.0);
-            s.color = with_alpha(theme::FG, a * 0.9);
-            let mut l = TextStyle::LABEL;
-            l.color = with_alpha(theme::DIM, a);
-            p.text(Vec2::new(x0, y + 1.0), what, &l, Align::Left);
-            p.text(Vec2::new(x1, y), &amount.to_string(), &s, Align::Right);
-        }
-        y += 18.0;
+    Tally { balance, plus }
+}
+
+/// Reputation gained with your employer, as a graphic: the standing bar filling
+/// from where you stood, the new part lit, the standing ticking over if it fills.
+#[allow(clippy::too_many_arguments)]
+fn reputation_gained(
+    p: &mut Painter,
+    employer: crate::faction::Faction,
+    before: u32,
+    gained: u32,
+    t: f32,
+    a: f32,
+    b: f32,
+    y: f32,
+) {
+    let shown = reputation_shown(gained, t);
+    let start = Standing::of(before);
+    let now = Standing::of(before + shown);
+    label(p, Vec2::new(a, y), "REPUTATION", Align::Left);
+    let mut name = TextStyle::LABEL;
+    name.color = employer.ui();
+    emblem::faction_name(p, Vec2::new(b, y), employer, &name, Align::Right);
+
+    let mut big = TextStyle::value(22.0);
+    big.color = theme::HOT;
+    p.text(
+        Vec2::new(a, y + 18.0),
+        &format!("+{shown}"),
+        &big,
+        Align::Left,
+    );
+    let mut tier = TextStyle::value(14.0);
+    let up = now.level > start.level;
+    if up {
+        tier.color = theme::HOT;
     }
-    // The total rolls up once the lines are in.
-    let roll = ((t - n * PAY_STEP) / 1.0).clamp(0.0, 1.0);
-    if roll > 0.0 {
-        let shown = (pay.total() as f32 * (1.0 - (1.0 - roll).powi(3))).round() as u32;
-        let mut s = TextStyle::value(14.0);
-        s.color = theme::HOT;
-        label(p, Vec2::new(x0, y + 5.0), "TOTAL", Align::Left);
-        p.text(Vec2::new(x1, y), &format!("+{shown}"), &s, Align::Right);
+    let tw = p.text(
+        Vec2::new(b, y + 24.0),
+        &format!("T{}", now.level),
+        &tier,
+        Align::Right,
+    );
+    label(
+        p,
+        Vec2::new(b - tw - 8.0, y + 27.0),
+        if up { "STANDING UP" } else { "STANDING" },
+        Align::Right,
+    );
+
+    // The bar: where you stood in the employer's colour's neutral, this match lit.
+    let (bar_y, bar_h, width) = (y + 56.0, 6.0, b - a);
+    p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
+    let from = if up { 0.0 } else { start.progress() };
+    let to = now.progress();
+    if from > 0.0 {
+        p.rect(
+            Vec2::new(a, bar_y),
+            Vec2::new(width * from, bar_h),
+            theme::DIM,
+        );
+    }
+    if to > from {
+        p.rect(
+            Vec2::new(a + width * from, bar_y),
+            Vec2::new(width * (to - from), bar_h),
+            theme::HOT,
+        );
+    }
+    // Quarter ticks under the bar, so the fill reads as distance.
+    for q in 0..=4 {
+        let x = a + width * q as f32 / 4.0;
+        p.line(
+            Vec2::new(x, bar_y + bar_h + 2.0),
+            Vec2::new(x, bar_y + bar_h + 6.0),
+            1.0,
+            theme::FAINT,
+        );
+    }
+    label(
+        p,
+        Vec2::new(b, bar_y + bar_h + 10.0),
+        &format!("{} / {} TO T{}", now.into, now.span, now.level + 1),
+        Align::Right,
+    );
+}
+
+/// Contract pay as one clean number: your crystals, then "+0" beside them
+/// ticking up to the pay, which then folds into the balance.
+fn crystal_tally(p: &mut Painter, before: u32, pay: u32, t: f32, a: f32, b: f32, y: f32) {
+    let now = tally(before, pay, t);
+    label(p, Vec2::new(a, y), "CRYSTALS", Align::Left);
+    label(p, Vec2::new(b, y), "CR", Align::Right);
+    let big = TextStyle::value(22.0);
+    let bw = p.text(
+        Vec2::new(a, y + 18.0),
+        &now.balance.to_string(),
+        &big,
+        Align::Left,
+    );
+    if let Some((k, alpha)) = now.plus {
+        let mut s = TextStyle::value(22.0);
+        s.color = with_alpha(theme::HOT, alpha);
+        p.text(
+            Vec2::new(a + bw + 14.0, y + 18.0),
+            &format!("+{k}"),
+            &s,
+            Align::Left,
+        );
+    }
+    p.line(
+        Vec2::new(a, y + 59.0),
+        Vec2::new(b, y + 59.0),
+        1.0,
+        theme::FAINT,
+    );
+    // Once folded in, what the contract paid, small.
+    let done = ((t - CR_FOLD - CR_FOLD_TIME) / 0.3).clamp(0.0, 1.0);
+    if done > 0.0 {
+        let mut l = TextStyle::LABEL;
+        l.color = with_alpha(theme::DIM, done);
+        p.text(
+            Vec2::new(b, y + 66.0),
+            &format!("+{pay} CONTRACT PAY"),
+            &l,
+            Align::Right,
+        );
     }
 }
 
@@ -900,6 +1073,61 @@ mod tests {
     }
 
     #[test]
+    fn crystals_show_x_then_x_plus_0_then_tick_up_and_fold_in() {
+        // Before anything moves: just the balance.
+        assert_eq!(
+            tally(1200, 250, -0.5),
+            Tally {
+                balance: 1200,
+                plus: None
+            }
+        );
+        // Then "+0" beside it.
+        let t = tally(1200, 250, CR_PLUS + 0.2);
+        assert_eq!((t.balance, t.plus.map(|p| p.0)), (1200, Some(0)));
+        // Ticking up, never past the pay, never backwards.
+        let mut last = 0;
+        let mut t = CR_TICK;
+        while t < CR_FOLD {
+            let k = tally(1200, 250, t).plus.unwrap().0;
+            assert!(k >= last && k <= 250);
+            last = k;
+            t += 1.0 / 60.0;
+        }
+        assert_eq!(last, 250);
+        // Folded in: one clean number.
+        let end = tally(1200, 250, CR_FOLD + CR_FOLD_TIME + 1.0);
+        assert_eq!(
+            end,
+            Tally {
+                balance: 1450,
+                plus: None
+            }
+        );
+    }
+
+    #[test]
+    fn reputation_fills_to_what_was_gained() {
+        assert_eq!(reputation_shown(37, -1.0), 0);
+        assert!(reputation_shown(37, REP_FILL * 0.5) < 37);
+        assert_eq!(reputation_shown(37, REP_FILL), 37);
+    }
+
+    #[test]
+    fn ledger_backs_out_this_matchs_earnings() {
+        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        m.phase = Phase::Over;
+        let mut p = Profile::in_memory();
+        p.reputation[m.factions[0].index()] = 140;
+        p.crystals = 1000 + Payout::of(&m).total();
+        let l = Ledger::before(&p, &m, 40, true);
+        assert_eq!((l.reputation, l.crystals), (100, 1000));
+        // Pay not banked yet: the balance is still the one before.
+        p.crystals = 1000;
+        assert_eq!(Ledger::before(&p, &m, 40, false).crystals, 1000);
+    }
+
+    #[test]
     fn round_over_has_buttons() {
         let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
         let t = &m.world.tanks[0];
@@ -910,8 +1138,17 @@ mod tests {
         };
         let mut hud = Hud::new();
         let draw = |hud: &mut Hud, m: &Match| {
-            hud.draw(m, &m.world.tanks, &camera, 1600.0, 900.0, 0.0, true)
-                .hits
+            hud.draw(
+                m,
+                &m.world.tanks,
+                &camera,
+                1600.0,
+                900.0,
+                0.0,
+                true,
+                Ledger::default(),
+            )
+            .hits
         };
         // Mid-round the scoreboard has nothing to click.
         assert!(draw(&mut hud, &m).is_empty());
@@ -948,7 +1185,16 @@ mod tests {
         let mut hud = Hud::new();
         for (w, h) in [(1600.0, 900.0), (800.0, 600.0), (3840.0, 2160.0)] {
             let v = hud
-                .draw(&m, &m.world.tanks, &camera, w, h, 1.0 / 60.0, true)
+                .draw(
+                    &m,
+                    &m.world.tanks,
+                    &camera,
+                    w,
+                    h,
+                    1.0 / 60.0,
+                    true,
+                    Ledger::default(),
+                )
                 .verts;
             assert!(!v.is_empty());
             // A little slack for halos and anti-aliasing at the screen edge.

@@ -56,6 +56,8 @@ pub struct TextStyle {
     /// Boldness: 1.0 is the font's own weight, each 0.1 above thickens strokes by 0.05 px.
     pub weight: f32,
     pub color: Rgba,
+    /// Keep lowercase letters (sentence-case body text); otherwise all caps.
+    pub lower: bool,
 }
 
 impl TextStyle {
@@ -65,6 +67,7 @@ impl TextStyle {
         tracking: 1.6,
         weight: 1.0,
         color: theme::DIM,
+        lower: false,
     };
     /// Readout numbers.
     pub fn value(size: f32) -> TextStyle {
@@ -73,6 +76,7 @@ impl TextStyle {
             tracking: size * 0.06,
             weight: 1.2,
             color: theme::FG,
+            lower: false,
         }
     }
 }
@@ -404,7 +408,7 @@ fn layout<'a>(text: &str, style: &TextStyle) -> Vec<(f32, &'a font::Glyph)> {
     let mut x = 0.0;
     let mut prev: Option<&font::Glyph> = None;
     for c in text.chars() {
-        let Some(g) = f.glyph(c) else {
+        let Some(g) = f.glyph_as(c, style.lower) else {
             x += f.space * em + style.tracking;
             prev = None;
             continue;
@@ -428,7 +432,7 @@ pub fn measure(text: &str, style: &TextStyle) -> f32 {
     let mut n = 0;
     for c in text.chars() {
         n += 1;
-        let Some(g) = f.glyph(c) else {
+        let Some(g) = f.glyph_as(c, style.lower) else {
             w += f.space * em + style.tracking;
             prev = None;
             continue;

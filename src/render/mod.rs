@@ -8,6 +8,8 @@ pub mod lod;
 pub mod material;
 pub mod mesh;
 pub mod surface;
+#[cfg(test)]
+pub mod zfight;
 
 use std::sync::Arc;
 
@@ -22,6 +24,15 @@ use mesh::{Instance, MeshData, MeshId, Vertex};
 
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The camera's near and far planes, m.
+const CAM_NEAR: f32 = 0.2;
+/// Waiting longer than this for the window's next image is logged.
+const SLOW_ACQUIRE: std::time::Duration = std::time::Duration::from_millis(50);
+const CAM_FAR: f32 = 600.0;
+/// The camera's depth buffer is reverse Z (see `Camera::view_proj`): nearer
+/// is greater, and it clears to the far plane, 0. The sun's shadow map is
+/// orthographic, evenly precise either way, and stays 0-near.
+const CAM_DEPTH_CLEAR: f32 = 0.0;
 const SHADOW_SIZE: u32 = 4096;
 const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
@@ -33,9 +44,13 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// Reverse Z: depth 1 at the near plane, 0 at the far one. With a
+    /// float depth buffer that keeps precision even across the whole range
+    /// (a standard 0-near mapping spends it all up close), so surfaces a
+    /// fraction of a millimetre apart don't z-fight even far off.
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         let view = look_at_mat4(self.pos, self.target, Vec3::Y);
-        let proj = proj::perspective(self.fov_y, aspect, 0.2, 600.0);
+        let proj = proj::perspective(self.fov_y, aspect, CAM_FAR, CAM_NEAR);
         proj * view
     }
 }
@@ -625,7 +640,7 @@ impl Renderer {
             },
             // The depth prepass has already laid down the nearest surface:
             // shade only that one.
-            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::LessEqual)),
+            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::GreaterEqual)),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &scene_src,
@@ -652,7 +667,7 @@ impl Renderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Greater)),
             multisample: Default::default(),
             fragment: None,
             multiview_mask: None,
@@ -696,7 +711,7 @@ impl Renderer {
                 buffers: &[],
             },
             primitive: Default::default(),
-            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::LessEqual)),
+            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::GreaterEqual)),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &scene_src,
@@ -726,7 +741,7 @@ impl Renderer {
                 })],
             },
             primitive: Default::default(),
-            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::LessEqual)),
+            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::GreaterEqual)),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &particle_src,
@@ -1188,7 +1203,29 @@ impl Renderer {
         let Some((surface, config)) = &self.surface else {
             return;
         };
-        let tex = match surface.get_current_texture() {
+        let asked = std::time::Instant::now();
+        let got = surface.get_current_texture();
+        let waited = asked.elapsed();
+        let outcome = match &got {
+            wgpu::CurrentSurfaceTexture::Success(_) => None,
+            wgpu::CurrentSurfaceTexture::Suboptimal(_) => Some("suboptimal"),
+            wgpu::CurrentSurfaceTexture::Timeout => Some("timed out"),
+            wgpu::CurrentSurfaceTexture::Occluded => Some("occluded"),
+            wgpu::CurrentSurfaceTexture::Outdated => Some("outdated"),
+            wgpu::CurrentSurfaceTexture::Lost => Some("lost"),
+            _ => Some("failed"),
+        };
+        // A window that holds back its next image stalls the whole frame: say so.
+        // (Minimized it's occluded every frame, and that's expected.)
+        if waited > SLOW_ACQUIRE || outcome.is_some_and(|o| !matches!(o, "suboptimal" | "occluded"))
+        {
+            crate::hitch::report(format_args!(
+                "window image {} after {:.0} ms",
+                outcome.unwrap_or("acquired"),
+                waited.as_secs_f64() * 1e3
+            ));
+        }
+        let tex = match got {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -1782,7 +1819,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(CAM_DEPTH_CLEAR),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -2156,4 +2193,10 @@ fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)
         trace: wgpu::Trace::Off,
     }))
     .context("request device")
+}
+
+impl mesh::MeshStore for Renderer {
+    fn add_mesh(&mut self, mesh: &MeshData) -> MeshId {
+        Renderer::add_mesh(self, mesh)
+    }
 }

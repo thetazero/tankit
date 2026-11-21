@@ -27,7 +27,7 @@ impl Faction {
         Faction::Ithessar,
     ];
 
-    /// Position in `ALL`, for per-faction tables (trust).
+    /// Position in `ALL`, for per-faction tables (reputation).
     pub fn index(self) -> usize {
         self as usize
     }

@@ -5,7 +5,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::audio::dsp::{Noise, Smooth, Svf};
+use crate::audio::dsp::{Noise, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
 
@@ -41,8 +41,8 @@ impl Loop for Traverse {
             + self.clack_b.run(x, 1350.0, 6.0, sr).band * 0.3;
         let grind = self.grind.run(n, 260.0 + 120.0 * turret, 0.8, sr).low
             * (0.7 + 0.6 * (1.0 - self.tooth));
-        self.hum = (self.hum + (46.0 + 8.0 * turret) / sr).fract();
-        let hum = (self.hum * TAU).sin() * 0.5 + (self.hum * TAU * 2.0).sin() * 0.25;
+        self.hum = (self.hum + (46.0 + 8.0 * turret) / sr).fract_q();
+        let hum = (self.hum * TAU).sin_q() * 0.5 + (self.hum * TAU * 2.0).sin_q() * 0.25;
         (clack * 1.6 + grind * 2.4 + hum * 0.25) * turret.sqrt() * 0.3
     }
 }

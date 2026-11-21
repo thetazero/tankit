@@ -7,9 +7,10 @@
 //! is the player, on side 0; bots fill both sides.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
-use rapier3d::prelude::{QueryFilter, Ray};
+use rapier3d::parry::query::details::ShapeCastOptions;
+use rapier3d::prelude::{Ball, Collider, ColliderHandle, Pose, QueryFilter, Ray};
 
-use crate::ai::{self, Bot, Contact, NavGrid};
+use crate::ai::{self, Bot, Brain, Contact, NavGrid};
 use crate::arrival::{ARRIVAL_TIME, Arrival};
 use crate::economy::Levels;
 use crate::faction::Faction;
@@ -24,7 +25,8 @@ use crate::rng::Rng;
 use crate::sim::{Command, GRAVITY, HullKind, Tank, TurretKind, World, wrap_angle, yaw_of};
 
 pub const ROUND_TIME: f32 = 300.0;
-pub const RESPAWN_TIME: f32 = 4.0;
+/// Seconds dead before a tank comes back: long enough that dying costs you.
+pub const RESPAWN_TIME: f32 = 10.0;
 /// Tanks wear their own paint, not their side's color: sides are told apart
 /// by their markers on the HUD.
 pub const TANK_PAINT: Vec3 = Vec3::ONE;
@@ -40,8 +42,12 @@ const TRACER_STREAK: f32 = 22.0;
 /// ...and how long it lingers, fading, once it's reached where the shot
 /// landed, s (at close range the flight itself is shorter than a frame).
 const TRACER_FADE: f32 = 0.08;
-/// Vertical aim assist: a target this close (horizontally, radians) to the gun line gets the elevation.
+/// Aim assist: a tank this close (horizontally, radians) to the gun line gets it.
 const ASSIST_CONE: f32 = 0.09;
+/// ...and the most it bends the gun to the side to hit it (1 degree).
+const ASSIST_NUDGE: f32 = 0.017_453_3;
+/// How far inside a tank's edge a gun just missing it is put on, m.
+const ASSIST_INSET: f32 = 0.25;
 const ASSIST_RANGE: f32 = 150.0;
 pub const FEED_TIME: f32 = 6.0;
 /// Knocked off the edge this soon after a hit: the hit gets the kill, s.
@@ -52,10 +58,10 @@ pub const HUSK_STRONG: f32 = 2.0;
 pub const HUSK_FADE: f32 = 3.0;
 /// A husk's cracked bell tolls this often while it runs, s.
 pub const HUSK_TOLL: f32 = 1.25;
-/// Trust with your employer for each enemy the player kills, paid the moment it dies.
-pub const KILL_TRUST: u32 = 10;
-/// How long a trust popup stays on screen, seconds.
-pub const TRUST_POP_TIME: f32 = 2.0;
+/// Reputation with your employer for each enemy the player kills, paid the moment it dies.
+pub const KILL_REPUTATION: u32 = 10;
+/// How long a reputation popup stays on screen, seconds.
+pub const REPUTATION_POP_TIME: f32 = 2.0;
 
 /// Weapon numbers per turret.
 #[derive(Clone, Copy)]
@@ -67,11 +73,30 @@ pub struct Gun {
     /// Spin-up guns: seconds of holding the trigger from still to full spin.
     /// They fire from the first moment, but slowly (`SPOOL_FLOOR`). 0: none.
     pub spool: f32,
+    /// Charge guns: seconds of holding the trigger before the shot goes,
+    /// which it does by itself. Letting go first cancels it. 0: none.
+    pub charge: f32,
     pub action: Action,
 }
 
 /// A spin-up gun's fire rate when it's barely turning, as a fraction of full.
 pub const SPOOL_FLOOR: f32 = 0.3;
+
+/// A cancelled charge drains away over this long, s (the bell exhales)...
+pub const CHARGE_DRAIN: f32 = 0.4;
+/// ...and the gun can't start another for this long, s.
+pub const CHARGE_LOCK: f32 = 0.5;
+/// While a charge builds, the tank braces: drive and traverse are cut to
+/// this share.
+pub const CHARGE_BRACE: f32 = 0.4;
+/// What a Knell's toll hands the tank it lands on, N·s: more than it kicks
+/// its own hull back with (`TurretKind::recoil`).
+pub const KNELL_KNOCK: f32 = 200_000.0;
+/// ...thrown up as well as away: this much lift per unit of shove.
+const KNELL_LIFT: f32 = 0.3;
+/// A toll strikes any tank this close to its path, m: it's a wide ring of
+/// sound and light, not a slug.
+const TOLL_RADIUS: f32 = 1.4;
 
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -119,9 +144,30 @@ pub enum Look {
     Bolt { size: f32 },
     /// A puff of crystal fire that swells as it flies.
     Flame,
+    /// A Knell's toll: a ring of crystal light and sound, `TOLL_RADIUS` wide.
+    Toll,
+}
+
+/// How big a flame puff is drawn (its scale, m) at `f` of its life: small
+/// at the nozzle, swelling, then guttering out.
+fn flame_size(f: f32) -> f32 {
+    (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt()
+}
+
+/// A puff is drawn as three balls of radius 0.375-0.475 `flame_size` set
+/// 0.3 of it off its centre, so the fire it shows reaches about this far.
+const FLAME_BODY: f32 = 0.7;
+
+/// How far from its centre a flame puff burns: the fire it shows.
+fn flame_reach(s: &Shell) -> f32 {
+    FLAME_BODY * flame_size(s.age / s.spec.life)
 }
 
 /// An Ammeth orb shrinks a little at every skip.
+/// A plasma orb's solid heart, as a radius per unit of its `size`: drawn as
+/// a sphere `size * 0.26` across (see `effect_instances`), and it hits as one.
+const HEART: f32 = 0.13;
+
 fn plasma_shrink(s: &Shell) -> f32 {
     let spent = 1.0 - s.bounces as f32 / s.spec.bounces.max(1) as f32;
     1.0 - 0.18 * spent
@@ -195,6 +241,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 38.0,
             reload: 1.4,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(cannon),
         },
         // Imperium twin short guns: light hits, alternating barrels, fast;
@@ -203,14 +250,17 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 15.0,
             reload: 0.5,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(cannon),
         },
         // Ithessar: an orb of plasma charged in a crystal cradle. Slow, and it
-        // skips off walls and ground, a little weaker each time.
+        // skips off walls and ground, a little weaker each time. Slow enough
+        // to dodge, so each one that lands hits hard.
         TurretKind::Ammeth => Gun {
-            damage: 32.0,
+            damage: 48.0,
             reload: 1.2,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 38.0,
                 life: 3.4,
@@ -226,6 +276,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 6.0,
             reload: 0.11,
             spool: 1.1,
+            charge: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 68.0,
                 life: 1.4,
@@ -241,6 +292,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 34.0,
             reload: 0.0,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Beam {
                 range: 160.0,
                 thermal_mass: 1.6,
@@ -251,6 +303,7 @@ pub fn gun(kind: TurretKind) -> Gun {
             damage: 1.0,
             reload: 1.0 / 60.0,
             spool: 0.0,
+            charge: 0.0,
             action: Action::Shell(ShellSpec {
                 speed: 24.0,
                 life: 0.65,
@@ -258,6 +311,24 @@ pub fn gun(kind: TurretKind) -> Gun {
                 bounces: 0,
                 spread: 0.11,
                 look: Look::Flame,
+                instant: false,
+            }),
+        },
+        // Resonant siege bell: hold to ring it up; at full it tolls by
+        // itself, one shot that throws whatever it strikes (and its own
+        // hull back). Let go early and the rite is broken.
+        TurretKind::Knell => Gun {
+            damage: 85.0,
+            reload: 3.0,
+            spool: 0.0,
+            charge: 1.8,
+            action: Action::Shell(ShellSpec {
+                speed: 120.0,
+                life: 0.95,
+                gravity: 0.0,
+                bounces: 0,
+                spread: 0.0,
+                look: Look::Toll,
                 instant: false,
             }),
         },
@@ -343,6 +414,10 @@ pub struct Fighter {
     /// Beam weapons: heat 0..1, and whether it overheated and is locked until cool.
     pub heat: f32,
     pub overheated: bool,
+    /// Charge guns: how far the shot has built up, 0..1, and whether it's
+    /// building (the trigger held since it started).
+    pub charge: f32,
+    pub charging: bool,
     /// Where this tank's beam ends this step, while it's firing one.
     pub beam: Option<Vec3>,
     /// What that beam is burning (for the sound of it).
@@ -389,6 +464,9 @@ pub struct Shell {
     pub bounces: u8,
     /// Random 0..1 per shot, for visual variety.
     pub seed: f32,
+    /// Tanks a flame puff has already poured through (and burnt, if they
+    /// were enemies): it passes them by from then on.
+    pub passed: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -413,12 +491,16 @@ pub enum BlastKind {
 
 /// Damage an Ithessar orb keeps through each skip.
 const BOUNCE_KEEP: f32 = 0.85;
+/// An Ithessar shot shoves what it strikes this much harder than its gun
+/// kicks back.
+const ITHESSAR_KNOCK: f32 = 1.5;
 
 /// The burst a shot makes where it lands (on a tank: `hit`).
 fn impact_kind(spec: &ShellSpec, hit: bool) -> BlastKind {
     match spec.look {
         Look::Plasma { size } => BlastKind::Plasma(size * if hit { 1.6 } else { 1.0 }),
         Look::Bolt { size } => BlastKind::Plasma(size * if hit { 0.9 } else { 0.6 }),
+        Look::Toll => BlastKind::Shatter(if hit { 2.6 } else { 1.8 }),
         _ if hit => BlastKind::Hit,
         _ => BlastKind::Impact,
     }
@@ -463,8 +545,8 @@ pub struct Kill {
     pub age: f32,
 }
 
-/// Trust the player just earned, for the HUD popup.
-pub struct TrustPop {
+/// Reputation the player just earned, for the HUD popup.
+pub struct ReputationPop {
     pub amount: u32,
     pub reason: &'static str,
     pub age: f32,
@@ -519,6 +601,13 @@ pub enum Sound {
     BeamReady {
         tank: usize,
         at: Vec3,
+    },
+    /// A Knell let go before it tolled: the rite broken, the charge
+    /// (0..1, how far it got) exhaled.
+    ChargeCancel {
+        tank: usize,
+        at: Vec3,
+        charge: f32,
     },
     /// The player's shot made a kill.
     Confirm,
@@ -598,13 +687,13 @@ pub enum Phase {
 pub struct Match {
     pub world: World,
     pub fighters: Vec<Fighter>,
-    bots: Vec<Option<Bot>>,
+    bots: Vec<Option<Brain>>,
     pub shells: Vec<Shell>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
-    /// Trust the player has earned with their side (`factions[0]`) this match.
-    pub trust: u32,
-    pub trust_pops: Vec<TrustPop>,
+    /// Reputation the player has earned with their side (`factions[0]`) this match.
+    pub reputation: u32,
+    pub reputation_pops: Vec<ReputationPop>,
     /// Audible events since the app last took them.
     pub sounds: Vec<Sound>,
     pub repairs: Repairs,
@@ -614,6 +703,8 @@ pub struct Match {
     pub time_left: f32,
     pub phase: Phase,
     pub contract: Contract,
+    /// The mission's rating, in upgrade steps (0 is M0, 5 is M0.5).
+    pub rating: u8,
     /// The site, under the Hold contract.
     pub hold: Option<Hold>,
     /// Seconds since the round ended (the results screen counts up with it).
@@ -657,7 +748,9 @@ impl Match {
             let (at, yaw) = spawn_point(&world, &mut rng, team, &placed);
             world.spawn_tank(TANK_PAINT, at, yaw, hull, turret);
             fighters.push(fighter(team, max_health(hull)));
-            brains.push(Some(Bot::new(seed.wrapping_add(b as u64 * 7919))));
+            brains.push(Some(Brain::Bot(Bot::new(
+                seed.wrapping_add(b as u64 * 7919),
+            ))));
         }
         let ambience = crate::ambience::Ambience::new(&world.map);
         Match {
@@ -668,13 +761,14 @@ impl Match {
             shells: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
-            trust: 0,
-            trust_pops: Vec::new(),
+            reputation: 0,
+            reputation_pops: Vec::new(),
             sounds: Vec::new(),
             repairs,
             factions,
             time_left: ROUND_TIME,
             contract: Contract::Attrition,
+            rating: 0,
             hold: None,
             phase: Phase::Playing,
             over_for: 0.0,
@@ -683,8 +777,90 @@ impl Match {
         }
     }
 
+    /// Hand tank 0 to a bot as well, in a kit of its side's own like the
+    /// rest (for bot-only matches: `--arena`).
+    pub fn bots_only(&mut self, seed: u64) {
+        let faction = self.factions[self.fighters[0].team];
+        let hulls = faction.hulls();
+        let hull = hulls[self.rng.index(hulls.len())];
+        let guns = faction.turrets();
+        let turret = guns[self.rng.index(guns.len())];
+        self.world.tanks[0].turret_kind = turret;
+        self.world.set_hull(0, hull);
+        self.fighters[0].health = self.fighters[0].levels.max_health(hull);
+        self.fit_hull(0);
+        self.bots[0] = Some(Brain::Bot(Bot::new(seed ^ 0x5EED)));
+    }
+
+    /// Refit tank `i` with `hull` and `turret` at full health, under the
+    /// current bot brain or the baseline one (duels: `--duel`).
+    pub fn refit_bot(
+        &mut self,
+        i: usize,
+        hull: HullKind,
+        turret: TurretKind,
+        current: bool,
+        seed: u64,
+    ) {
+        self.world.tanks[i].turret_kind = turret;
+        self.world.set_hull(i, hull);
+        self.fighters[i].health = self.fighters[i].levels.max_health(hull);
+        self.fit_hull(i);
+        self.bots[i] = Some(if current {
+            Brain::Bot(Bot::new(seed))
+        } else {
+            Brain::Baseline(ai::baseline::Bot::new(seed))
+        });
+    }
+
+    /// Leave tank `i` without a brain: it sits still (tests).
+    #[cfg(test)]
+    pub fn idle(&mut self, i: usize) {
+        self.bots[i] = None;
+    }
+
+    /// Destroy the player now, credited to the nearest enemy (death-screen
+    /// shots: `--screen dead`).
+    pub fn destroy_player(&mut self) {
+        let me = self.fighters[0].team;
+        let p = self.world.tanks[0].pos;
+        let killer = (1..self.fighters.len())
+            .filter(|&j| self.fighters[j].team != me)
+            .min_by(|&a, &b| {
+                let d = |j: usize| self.world.tanks[j].pos.distance(p);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap_or(0);
+        self.fighters[0].health = 0.0;
+        self.kill(killer, 0);
+    }
+
+    /// Swap side `team`'s bots for the frozen baseline brain (`ai::baseline`).
+    pub fn baseline_side(&mut self, team: usize, seed: u64) {
+        for i in 0..self.fighters.len() {
+            if self.fighters[i].team == team && self.bots[i].is_some() {
+                let s = seed.wrapping_add(i as u64 * 7919);
+                self.bots[i] = Some(Brain::Baseline(ai::baseline::Bot::new(s)));
+            }
+        }
+    }
+
     pub fn player(&self) -> &Fighter {
         &self.fighters[0]
+    }
+
+    /// Rate the round (in upgrade steps; 5 is M0.5) before it starts: every bot
+    /// is refitted with gear drawn about that rating (see `Levels::rated`), and
+    /// the contract pays more (see `economy::pay_factor`).
+    pub fn set_rating(&mut self, rating: u8) {
+        self.rating = rating;
+        for i in 1..self.fighters.len() {
+            let levels = Levels::rated(rating, &mut self.rng);
+            let f = &mut self.fighters[i];
+            f.levels = levels;
+            f.health = levels.max_health(self.world.tanks[i].hull_kind);
+            self.fit_hull(i);
+        }
     }
 
     /// Switch to `contract` (before the round starts).
@@ -743,6 +919,13 @@ impl Match {
         let frac = f.health / f.levels.max_health(self.world.tanks[0].hull_kind);
         self.world.set_hull(0, kind);
         f.health = frac * f.levels.max_health(kind);
+        self.fit_hull(0);
+    }
+
+    /// Tank `i`'s drive at its fighter's upgrade level.
+    fn fit_hull(&mut self, i: usize) {
+        let t = &mut self.world.tanks[i];
+        t.hull = self.fighters[i].levels.hull(t.hull_kind);
     }
 
     /// Set the player's upgrade levels now, at full health (before a round starts).
@@ -750,6 +933,7 @@ impl Match {
         let f = &mut self.fighters[0];
         f.levels = levels;
         f.health = levels.max_health(self.world.tanks[0].hull_kind);
+        self.fit_hull(0);
     }
 
     /// One fixed step. `player` drives tank 0; `fire` is the trigger held.
@@ -789,19 +973,34 @@ impl Match {
             })
             .collect();
         let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
+        // Repair crates anyone can see: coming down under their canopies, or down.
+        let crates: Vec<Vec2> = self
+            .repairs
+            .drops
+            .iter()
+            .filter_map(|d| d.crate_pos().map(|_| d.at))
+            .collect();
         let mut cmds = Vec::with_capacity(self.fighters.len());
         let mut triggers = Vec::with_capacity(self.fighters.len());
         for i in 0..self.fighters.len() {
             let (c, f) = match &mut self.bots[i] {
                 _ if !self.fighters[i].alive || !playing => (Command::default(), false),
-                Some(bot) => bot.think(i, &self.world, &contacts, objective, &self.nav, DT),
+                Some(bot) => {
+                    bot.think(i, &self.world, &contacts, objective, &crates, &self.nav, DT)
+                }
                 None => (player, fire),
             };
-            // A husk's drive fades with it.
+            // A husk's drive fades with it; a tank ringing up a charge braces.
             let s = self.fighters[i].strength();
+            let brace = if self.fighters[i].charging {
+                CHARGE_BRACE
+            } else {
+                1.0
+            };
             cmds.push(Command {
-                throttle: c.throttle * s,
-                steer: c.steer * s.sqrt(),
+                throttle: c.throttle * s * brace,
+                steer: c.steer * s.sqrt() * brace,
+                turret: c.turret * brace,
                 ..c
             });
             triggers.push(f);
@@ -838,7 +1037,7 @@ impl Match {
             f.since_repair += DT;
             f.beam = None;
             f.burning = Burn::Air;
-            match gun(self.world.tanks[i].turret_kind).action {
+            match f.levels.gun(self.world.tanks[i].turret_kind).action {
                 Action::Beam {
                     range,
                     thermal_mass,
@@ -880,7 +1079,9 @@ impl Match {
                         };
                         t.spin += DT * (1.5 + 26.0 * t.spool);
                     }
-                    if trigger && f.alive && f.reload_in <= 0.0 {
+                    if g.charge > 0.0 {
+                        self.charge(i, trigger, g.charge);
+                    } else if trigger && f.alive && f.reload_in <= 0.0 {
                         self.shoot(i);
                     }
                 }
@@ -890,6 +1091,7 @@ impl Match {
         for (t, f) in self.world.tanks.iter_mut().zip(&self.fighters) {
             t.heat = f.heat;
             t.overheated = f.overheated;
+            t.charge = f.charge;
             t.beaming = f.beam.is_some();
         }
 
@@ -916,23 +1118,32 @@ impl Match {
             k.age += DT;
         }
         self.feed.retain(|k| k.age < FEED_TIME);
-        for x in &mut self.trust_pops {
+        for x in &mut self.reputation_pops {
             x.age += DT;
         }
-        self.trust_pops.retain(|x| x.age < TRUST_POP_TIME);
+        self.reputation_pops.retain(|x| x.age < REPUTATION_POP_TIME);
     }
 
-    /// Elevate each gun onto a tank roughly along its line of fire (Tanki-style
-    /// vertical auto-aim), so hills and ramps don't make every shot miss.
+    /// Aim assist (Tanki-style, but gentle): bend each gun as little as it
+    /// takes to hit a tank near its line of fire. Down the turret's heading,
+    /// held level, the gun's line either strikes a tank already (then it's
+    /// left alone, only lifted for the shot's drop) or passes it by; then it
+    /// swings onto the nearest point of the tank (hull or turret), a little
+    /// way in, up or down within the usual elevation range, and at most
+    /// [`ASSIST_NUDGE`] to the side. Where on the tank the shot lands is the
+    /// player's to choose: aim at its left side to spin it one way, its right
+    /// the other, its turret to rock it. Far off, the nudge covers most of a
+    /// tank, as aiming is little more than luck there anyway.
     fn aim_assist(&mut self) {
         let n = self.world.tanks.len();
         for i in 0..n {
             let t = &self.world.tanks[i];
-            let eye = t.pos + t.up() * t.gun_height();
+            let eye = t.turret_frame().transform_point3(t.turret_kind.trunnion());
             let yaw = t.turret_yaw();
-            let g = gun(t.turret_kind);
+            let level = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+            let g = self.fighters[i].levels.gun(t.turret_kind);
             let range = g.range().min(ASSIST_RANGE);
-            let mut best: Option<(f32, f32)> = None;
+            let mut best: Option<(f32, Vec3)> = None;
             for j in 0..n {
                 if j == i
                     || !self.fighters[j].alive
@@ -942,29 +1153,120 @@ impl Match {
                     continue;
                 }
                 let o = &self.world.tanks[j];
-                let aim = o.pos + o.up() * (o.chassis.hull_top * 0.7);
-                let to = aim - eye;
+                let centre = o.pos + o.up() * (o.chassis.hull_top * 0.7);
+                let to = centre - eye;
                 let flat = Vec2::new(to.x, to.z);
                 let d = flat.length();
                 if !(2.0..=range).contains(&d) || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE
                 {
                     continue;
                 }
-                if !ai::can_see(&self.world, eye, o) {
+                if best.is_some_and(|(bd, _)| d >= bd) {
                     continue;
                 }
-                // Lift for the shot's drop over the flight time.
-                let t_flight = to.length() / g.speed();
-                let pitch = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
-                if best.is_none_or(|(bd, _)| d < bd) {
-                    best = Some((d, pitch));
+                let Some(aim) = self.aim_point(eye, level, j) else {
+                    continue;
+                };
+                // Only where the gun can see: walls and hills still hide,
+                // and so does a teammate (the shot would only stop on them).
+                let to = aim - eye;
+                let len = to.length();
+                if self.world.raycast(eye, to / len, len) < len - 0.3
+                    || self.ally_in_way(i, eye, aim)
+                {
+                    continue;
                 }
+                best = Some((d, aim));
             }
             let t = &mut self.world.tanks[i];
-            let hull_pitch = t.turret_dir().y.clamp(-1.0, 1.0).asin();
-            let want = best.map_or(0.0, |(_, p)| (p - hull_pitch).clamp(-0.15, 0.3));
-            t.gun_pitch += (want - t.gun_pitch) * (1.0 - (-DT * 12.0).exp());
+            let (pitch, side) = best.map_or((0.0, 0.0), |(_, aim)| {
+                let to = aim - eye;
+                // Never zero: the aim point can sit right over or under the
+                // gun (a tank pressed up against it), and the lift would be NaN.
+                let d = Vec2::new(to.x, to.z).length().max(0.5);
+                // Lift for the shot's drop over the flight time.
+                let t_flight = to.length() / g.speed();
+                let lift = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
+                let hull_pitch = t.turret_dir().y.clamp(-1.0, 1.0).asin();
+                let side = wrap_angle(yaw_of(Vec2::new(to.x, to.z)) - yaw);
+                (
+                    (lift - hull_pitch).clamp(-0.15, 0.3),
+                    side.clamp(-ASSIST_NUDGE, ASSIST_NUDGE),
+                )
+            });
+            let k = 1.0 - (-DT * 12.0).exp();
+            t.gun_pitch += (pitch - t.gun_pitch) * k;
+            t.gun_yaw += (side - t.gun_yaw) * k;
         }
+    }
+
+    /// One step of tank `i`'s charge gun, which takes `secs` of holding the
+    /// trigger to ring up. Full, it fires by itself; let go first and the
+    /// charge drains away, and the gun is locked for a moment.
+    fn charge(&mut self, i: usize, trigger: bool, secs: f32) {
+        let f = &mut self.fighters[i];
+        if trigger && f.alive && (f.charging || f.reload_in <= 0.0) {
+            f.charging = true;
+            f.charge = (f.charge + DT / secs).min(1.0);
+            if f.charge >= 1.0 {
+                f.charge = 0.0;
+                f.charging = false;
+                self.shoot(i);
+            }
+            return;
+        }
+        if f.charging {
+            f.charging = false;
+            f.reload_in = f.reload_in.max(CHARGE_LOCK);
+            if f.alive {
+                self.sounds.push(Sound::ChargeCancel {
+                    tank: i,
+                    at: muzzle(&self.world.tanks[i]),
+                    charge: f.charge,
+                });
+            }
+        }
+        let f = &mut self.fighters[i];
+        f.charge = (f.charge - DT / CHARGE_DRAIN).max(0.0);
+    }
+
+    /// Where a gun at `eye`, aimed level along `dir`, should put its shot on
+    /// tank `j` for the least correction: where that line strikes the tank's
+    /// hull or turret, or, missing, the point of them nearest the line, moved
+    /// [`ASSIST_INSET`] in so the shot lands on it, not grazing past.
+    fn aim_point(&self, eye: Vec3, dir: Vec3, j: usize) -> Option<Vec3> {
+        let o = &self.world.tanks[j];
+        let parts: Vec<&Collider> = [o.collider, o.turret_hitbox]
+            .iter()
+            .filter_map(|&c| self.world.physics.colliders.get(c))
+            .collect();
+        let ray = Ray::new(eye, dir);
+        let struck = parts
+            .iter()
+            .filter_map(|c| {
+                c.shape()
+                    .cast_ray(c.position(), &ray, ASSIST_RANGE * 2.0, true)
+            })
+            .min_by(f32::total_cmp);
+        if let Some(toi) = struck {
+            return Some(eye + dir * toi);
+        }
+        // Nearest points of a line and a convex shape: hop between the two a
+        // few times (each hop only gets closer).
+        let on_line = |p: Vec3| eye + dir * (p - eye).dot(dir).max(0.0);
+        let mut p = on_line(o.pos);
+        let mut near = None;
+        for _ in 0..6 {
+            let (q, c) = parts
+                .iter()
+                .map(|c| (c.shape().project_point(c.position(), p, true).point, *c))
+                .min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p)))?;
+            near = Some((q, c));
+            p = on_line(q);
+        }
+        let (q, c) = near?;
+        let inward = (c.compute_aabb().center() - q).normalize_or_zero();
+        Some(q + inward * ASSIST_INSET)
     }
 
     fn shoot(&mut self, i: usize) {
@@ -982,7 +1284,7 @@ impl Match {
             );
             dir = (dir + jitter * spec.spread).normalize();
         }
-        let from = muzzle(t);
+        let from = self.clear_muzzle(t);
         self.sounds.push(Sound::Shot {
             tank: i,
             turret: t.turret_kind,
@@ -999,6 +1301,7 @@ impl Match {
             spec,
             bounces: spec.bounces,
             seed: self.rng.f32(),
+            passed: Vec::new(),
         };
         if spec.instant {
             // Land it now, then send off a tracer that stops where it landed.
@@ -1019,8 +1322,10 @@ impl Match {
         let f = &mut self.fighters[i];
         f.reload_in = f.reload_in.max(-DT) + reload;
         if spec.look != Look::Flame {
-            // A flamethrower pours: no per-puff kick or muzzle flash.
             self.world.fire(i);
+        } else {
+            // A flamethrower pours: each puff pushes back, but no muzzle flash.
+            self.world.recoil(i);
         }
         if let Some(b) = &mut self.bots[i] {
             b.fired();
@@ -1031,14 +1336,14 @@ impl Match {
     /// up close. It bends onto an enemy just off its line.
     fn beam(&mut self, i: usize, range: f32) {
         let t = &self.world.tanks[i];
-        let from = muzzle(t);
+        let from = self.clear_muzzle(t);
         let dir = self.beam_assist(i, from, t.gun_dir(), range);
         let t = &self.world.tanks[i];
         let hit = self.world.physics.cast_ray(
             &Ray::new(from, dir),
             range,
             true,
-            QueryFilter::default().exclude_collider(t.collider),
+            QueryFilter::default().exclude_rigid_body(t.body),
         );
         let (end, victim, d) = match hit {
             Some((c, toi)) => (from + dir * toi, self.world.tank_of(c), toi),
@@ -1068,6 +1373,49 @@ impl Match {
         }
     }
 
+    /// Where `t`'s shots start: its muzzle, or, if the barrel is poking
+    /// into something, just short of where it goes in, so a gun shoved
+    /// against a wall can't shoot through it.
+    fn clear_muzzle(&self, t: &Tank) -> Vec3 {
+        let (breech, muzzle) = (t.breech(), t.muzzle());
+        let to = muzzle - breech;
+        let len = to.length();
+        match self.world.physics.cast_ray(
+            &Ray::new(breech, to / len),
+            len,
+            true,
+            QueryFilter::default().exclude_rigid_body(t.body),
+        ) {
+            Some((_, toi)) => breech + to / len * (toi - 0.05).max(0.0),
+            None => muzzle,
+        }
+    }
+
+    /// Whether one of tank `i`'s teammates stands on the line from `from` to
+    /// `to`: the assist never lays a gun on an enemy through a friend.
+    fn ally_in_way(&self, i: usize, from: Vec3, to: Vec3) -> bool {
+        let d = to - from;
+        let len = d.length();
+        if len < 1e-3 {
+            return false;
+        }
+        let team = self.fighters[i].team;
+        let ally = |c: ColliderHandle, _: &Collider| {
+            self.world
+                .tank_of(c)
+                .is_some_and(|k| k != i && self.fighters[k].team == team)
+        };
+        self.world
+            .physics
+            .cast_ray(
+                &Ray::new(from, d / len),
+                len,
+                true,
+                QueryFilter::default().predicate(&ally),
+            )
+            .is_some()
+    }
+
     /// Where tank `i`'s beam goes: `dir`, or straight onto the visible enemy
     /// closest (by angle, within `BEAM_ASSIST`) to it.
     fn beam_assist(&self, i: usize, from: Vec3, dir: Vec3, range: f32) -> Vec3 {
@@ -1086,7 +1434,7 @@ impl Match {
             if off > BEAM_ASSIST || best.is_some_and(|(b, _)| off >= b) {
                 continue;
             }
-            if ai::can_see(&self.world, from, o) {
+            if ai::can_see(&self.world, from, o) && !self.ally_in_way(i, from, from + to) {
                 best = Some((off, to / d));
             }
         }
@@ -1112,81 +1460,194 @@ impl Match {
                 s.pos += step * left.clamp(0.0, 1.0);
                 return true;
             }
-            self.travel(s, step)
+            let alive = self.travel(s, step);
+            if alive && s.spec.look == Look::Flame {
+                self.engulf(s);
+            }
+            if alive && s.spec.look == Look::Toll {
+                return !self.strike(s);
+            }
+            alive
         });
         self.shells = shells;
     }
 
     /// Move shell `s` by `step`, or until it hits something on the way: a
     /// tank takes the hit, a wall stops it or (if it has bounces left) turns
-    /// it. False once it's spent.
-    fn travel(&mut self, s: &mut Shell, step: Vec3) -> bool {
-        let len = step.length();
-        if len < 1e-6 {
-            return true;
-        }
-        let owner = self.world.tanks[s.owner].collider;
-        let hit = self.world.physics.cast_ray_and_get_normal(
-            &Ray::new(s.pos, step / len),
-            len,
-            true,
-            QueryFilter::default().exclude_collider(owner),
-        );
-        match hit {
-            None => {
+    /// it. A flame pours on through tanks, burning each enemy once, and only
+    /// walls stop it. False once it's spent.
+    fn travel(&mut self, s: &mut Shell, mut step: Vec3) -> bool {
+        loop {
+            let len = step.length();
+            if len < 1e-6 {
+                return true;
+            }
+            let owner = self.world.tanks[s.owner].body;
+            let world = &self.world;
+            let skip = |c: ColliderHandle, _: &Collider| {
+                world.tank_of(c).is_none_or(|j| !s.passed.contains(&j))
+            };
+            let filter = QueryFilter::default()
+                .exclude_rigid_body(owner)
+                .predicate(&skip);
+            // A plasma orb is as big as its white-hot heart: it sweeps that
+            // ball along, so it strikes whatever the heart touches. Everything
+            // else is a point.
+            let heart = match s.spec.look {
+                Look::Plasma { size } => size * plasma_shrink(s) * HEART,
+                _ => 0.0,
+            };
+            let hit = if heart > 0.0 {
+                self.world
+                    .physics
+                    .cast_shape(
+                        &Pose::from_translation(s.pos),
+                        step / len,
+                        &Ball::new(heart),
+                        ShapeCastOptions::with_max_time_of_impact(len),
+                        filter,
+                    )
+                    // The struck collider comes first: `normal1` is its outward normal.
+                    .map(|(c, h)| (c, h.time_of_impact, h.normal1))
+            } else {
+                self.world
+                    .physics
+                    .cast_ray_and_get_normal(&Ray::new(s.pos, step / len), len, true, filter)
+                    .map(|(c, ri)| (c, ri.time_of_impact, ri.normal))
+            };
+            let Some((c, toi, normal)) = hit else {
                 s.pos += step;
+                return true;
+            };
+            // Where it struck: the heart's surface, against what it touched.
+            let at = s.pos + step / len * toi - normal * heart;
+            match self.world.tank_of(c) {
+                Some(j) if s.spec.look == Look::Flame => {
+                    self.hit(s, j, at);
+                    s.passed.push(j);
+                    // Carry on from where it touched, with the rest of the step.
+                    step -= at - s.pos;
+                    s.pos = at;
+                }
+                _ => return self.land(s, c, at, normal, heart),
+            }
+        }
+    }
+
+    /// Flame puff `s` burns every tank inside the fire it shows (not just
+    /// those its centre passes through), each once, unless a wall stands
+    /// between its centre and the tank.
+    fn engulf(&mut self, s: &mut Shell) {
+        let reach = flame_reach(s);
+        for j in 0..self.world.tanks.len() {
+            if j == s.owner || s.passed.contains(&j) {
+                continue;
+            }
+            if let Some(near) = self.within(s.pos, j, reach) {
+                self.hit(s, j, near);
+                s.passed.push(j);
+            }
+        }
+    }
+
+    /// A toll `s` strikes the nearest enemy within `TOLL_RADIUS` of it (a
+    /// wall between them shields it; a teammate it passes by is left be,
+    /// though one it runs straight into still stops it, as any shot). True
+    /// if it struck one, and is spent.
+    fn strike(&mut self, s: &mut Shell) -> bool {
+        let team = self.fighters[s.owner].team;
+        let near = (0..self.world.tanks.len())
+            .filter(|&j| self.fighters[j].team != team)
+            .filter_map(|j| self.within(s.pos, j, TOLL_RADIUS).map(|p| (j, p)))
+            .min_by(|a, b| a.1.distance(s.pos).total_cmp(&b.1.distance(s.pos)));
+        let Some((j, at)) = near else {
+            return false;
+        };
+        s.pos = at;
+        self.hit(s, j, at);
+        true
+    }
+
+    /// The nearest point of tank `j`'s hull or turret to `from`, if it's
+    /// within `reach` and no wall (or the ground) stands between them.
+    fn within(&self, from: Vec3, j: usize, reach: f32) -> Option<Vec3> {
+        let t = &self.world.tanks[j];
+        let (near, d) = [t.collider, t.turret_hitbox]
+            .iter()
+            .filter_map(|&c| self.world.physics.colliders.get(c))
+            .map(|col| {
+                let p = col.shape().project_point(col.position(), from, true).point;
+                (p, p.distance(from))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        if d > reach {
+            return None;
+        }
+        // Walls (and the ground) still stop it: only tanks are see-through.
+        let world = &self.world;
+        let tank = |c: ColliderHandle, _: &Collider| world.tank_of(c).is_none();
+        let blocked = d > 1e-3
+            && self
+                .world
+                .physics
+                .cast_ray(
+                    &Ray::new(from, (near - from) / d),
+                    d,
+                    true,
+                    QueryFilter::default().predicate(&tank),
+                )
+                .is_some();
+        (!blocked).then_some(near)
+    }
+
+    /// Shell `s` ran into collider `c` at `at` (surface normal `n`).
+    /// A shell of radius `r` (0 for a point) is kept that far off the surface.
+    fn land(&mut self, s: &mut Shell, c: ColliderHandle, at: Vec3, n: Vec3, r: f32) -> bool {
+        s.pos = at;
+        match self.world.tank_of(c) {
+            Some(j) => {
+                self.hit(s, j, at);
+                false
+            }
+            None if s.bounces > 0 => {
+                // Ricochet: mirror off the surface and carry on.
+                s.vel -= 2.0 * s.vel.dot(n) * n;
+                s.pos = at + n * (r + 0.05);
+                s.bounces -= 1;
+                // The skin sheds plasma at every skip.
+                s.damage *= BOUNCE_KEEP;
+                self.blasts
+                    .push(Blast::new(at, impact_kind(&s.spec, false)));
+                self.sounds.push(Sound::Bounce { at });
                 true
             }
-            Some((c, ri)) => {
-                let at = s.pos + step / len * ri.time_of_impact;
-                s.pos = at;
-                match self.world.tank_of(c) {
-                    Some(j) => {
-                        self.hit(s, j, at);
-                        false
-                    }
-                    None if s.bounces > 0 => {
-                        // Ricochet: mirror off the surface and carry on.
-                        let n = ri.normal;
-                        s.vel -= 2.0 * s.vel.dot(n) * n;
-                        s.pos = at + n * 0.05;
-                        s.bounces -= 1;
-                        // The skin sheds plasma at every skip.
-                        s.damage *= BOUNCE_KEEP;
-                        self.blasts
-                            .push(Blast::new(at, impact_kind(&s.spec, false)));
-                        self.sounds.push(Sound::Bounce { at });
-                        true
-                    }
-                    None => {
-                        if s.spec.look != Look::Flame {
-                            self.blasts
-                                .push(Blast::new(at, impact_kind(&s.spec, false)));
-                            self.sounds.push(Sound::Impact {
-                                at,
-                                plasma: matches!(
-                                    s.spec.look,
-                                    Look::Plasma { .. } | Look::Bolt { .. }
-                                ),
-                            });
-                        }
-                        false
-                    }
+            None => {
+                if s.spec.look != Look::Flame {
+                    self.blasts
+                        .push(Blast::new(at, impact_kind(&s.spec, false)));
+                    self.sounds.push(Sound::Impact {
+                        at,
+                        plasma: matches!(s.spec.look, Look::Plasma { .. } | Look::Bolt { .. }),
+                    });
                 }
+                false
             }
         }
     }
 
     fn hit(&mut self, s: &Shell, j: usize, at: Vec3) {
-        // No friendly fire: an ally just stops the shot.
+        // No friendly fire: an ally just stops the shot (a flame pours on
+        // past it unharmed), though the shot still shoves it.
         if self.fighters[j].team == self.fighters[s.owner].team {
             if s.spec.look != Look::Flame {
                 self.blasts
                     .push(Blast::new(at, impact_kind(&s.spec, false)));
                 self.sounds.push(Sound::Hit { at, victim: j });
+                self.knock(s, j, at);
             }
             return;
         }
+        self.knock(s, j, at);
         if s.spec.look != Look::Flame {
             self.blasts.push(Blast::new(at, impact_kind(&s.spec, true)));
             self.sounds.push(if self.fighters[j].alive {
@@ -1197,17 +1658,35 @@ impl Match {
                     plasma: matches!(s.spec.look, Look::Plasma { .. } | Look::Bolt { .. }),
                 }
             });
-            // A shove through the hull's centre, scaled by how hard the shot
-            // hits: felt, but never enough to roll it.
-            let (mass, center) = (
-                self.world.tanks[j].chassis.mass,
-                self.world.tanks[j].pos + self.world.tanks[j].up() * 0.8,
-            );
-            let shove = s.vel.normalize_or_zero() * Vec3::new(1.0, 0.3, 1.0);
-            let weight = (s.damage / 38.0).min(1.0);
-            self.world.push(j, shove * mass * 0.35 * weight, center);
         }
         self.damage(s.owner, j, s.damage);
+    }
+
+    /// Shot `s` landing on tank `j` at `at` hands it the momentum its gun
+    /// kicked back with (less what it shed skipping off walls), along its
+    /// flight, where it lands: a hit off-centre slews the hull round, one
+    /// high on the turret rocks it hard, one low near its centre of mass
+    /// barely tips it. A Knell's toll hands it far more, and throws it up
+    /// as well.
+    fn knock(&mut self, s: &Shell, j: usize, at: Vec3) {
+        let d = s.vel.normalize_or_zero();
+        if s.spec.look == Look::Toll {
+            // Up and away from right where it struck: a high hit bowls it over.
+            self.world
+                .push(j, (d + Vec3::Y * KNELL_LIFT) * KNELL_KNOCK, at);
+            return;
+        }
+        let kind = self.world.tanks[s.owner].turret_kind;
+        let skips = s.spec.bounces.saturating_sub(s.bounces) as i32;
+        // Plasma and crystal darts hit harder than they kick: they land
+        // with more shove than the gun takes back.
+        let hits_harder = if kind.maker() == Faction::Ithessar {
+            ITHESSAR_KNOCK
+        } else {
+            1.0
+        };
+        let momentum = kind.recoil() * hits_harder * BOUNCE_KEEP.powi(skips);
+        self.world.push(j, d * momentum, at);
     }
 
     /// `owner` deals `amount` to tank `j` (spawn shields and the round's end permitting).
@@ -1246,7 +1725,7 @@ impl Match {
         if killer != victim {
             self.fighters[killer].kills += 1;
             if killer == 0 {
-                self.award(KILL_TRUST, "KILL");
+                self.award(KILL_REPUTATION, "KILL");
                 self.sounds.push(Sound::Confirm);
             }
         }
@@ -1374,15 +1853,15 @@ impl Match {
     }
 
     fn award(&mut self, amount: u32, reason: &'static str) {
-        self.trust += amount;
-        self.trust_pops.push(TrustPop {
+        self.reputation += amount;
+        self.reputation_pops.push(ReputationPop {
             amount,
             reason,
             age: 0.0,
         });
     }
 
-    /// Bank time for the side holding the site; pay the player trust for their
+    /// Bank time for the side holding the site; pay the player reputation for their
     /// own time on it, and end the round when a side reaches the target.
     fn hold_site(&mut self) {
         let Some(h) = &mut self.hold else { return };
@@ -1391,14 +1870,15 @@ impl Match {
         h.step(DT, &self.world.tanks, |i| {
             fighters[i].alive.then_some(fighters[i].team)
         });
-        let paid = (h.own[0] / hold::TRUST_EVERY).floor() > (before / hold::TRUST_EVERY).floor();
+        let paid =
+            (h.own[0] / hold::REPUTATION_EVERY).floor() > (before / hold::REPUTATION_EVERY).floor();
         let won = h.winner().is_some();
         if let Some(cue) = h.cue() {
             self.sounds.push(Sound::Hold(cue));
         }
         if paid {
             self.sounds.push(Sound::Hold(hold::Cue::Paid));
-            self.award(hold::HOLD_TRUST, "HOLDING");
+            self.award(hold::HOLD_REPUTATION, "HOLDING");
         }
         if won {
             self.end_round();
@@ -1472,6 +1952,7 @@ impl Match {
             if let Some(levels) = self.fighters[i].next_levels.take() {
                 self.fighters[i].levels = levels;
             }
+            self.fit_hull(i);
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
                 .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
@@ -1489,6 +1970,8 @@ impl Match {
             f.reload_in = 0.5;
             f.heat = 0.0;
             f.overheated = false;
+            f.charge = 0.0;
+            f.charging = false;
             if i == 0 {
                 self.sounds.push(Sound::Link);
             }
@@ -1521,29 +2004,57 @@ impl Match {
         self.world.tanks[i].interpolated(alpha)
     }
 
-    /// Where a shot from `t` would land if it fired now, for a gun that
-    /// lands instantly (else None): the first thing along its line, or the
-    /// end of its reach.
-    pub fn instant_landing(&self, t: &Tank) -> Option<Vec3> {
-        let Action::Shell(spec) = gun(t.turret_kind).action else {
-            return None;
+    /// Where a shot from `t` would land if it fired now, down the gun as the
+    /// aim assist has laid it: the first thing along its line (a beam's, or
+    /// a shell's arc as it drops), or the end of its reach. What the
+    /// crosshair marks. `t` is the player's tank (it reaches as far as their
+    /// upgrades).
+    pub fn aim_landing(&self, t: &Tank) -> Vec3 {
+        let from = self.clear_muzzle(t);
+        let ray = |from: Vec3, dir: Vec3, len: f32| {
+            self.world
+                .physics
+                .cast_ray(
+                    &Ray::new(from, dir),
+                    len,
+                    true,
+                    QueryFilter::default().exclude_rigid_body(t.body),
+                )
+                .map(|(_, toi)| from + dir * toi)
         };
-        if !spec.instant {
-            return None;
+        let spec = match self.fighters[0].levels.gun(t.turret_kind).action {
+            Action::Beam { range, .. } => {
+                let dir = self.beam_assist(0, from, t.gun_dir(), range);
+                return ray(from, dir, range).unwrap_or(from + dir * range);
+            }
+            Action::Shell(spec) => spec,
+        };
+        if spec.instant {
+            let reach = spec.speed * spec.life;
+            return ray(from, t.gun_dir(), reach).unwrap_or(from + t.gun_dir() * reach);
         }
-        let (from, dir) = (muzzle(t), t.gun_dir());
-        let reach = spec.speed * spec.life;
-        let toi = self
-            .world
-            .physics
-            .cast_ray(
-                &Ray::new(from, dir),
-                reach,
-                true,
-                QueryFilter::default().exclude_collider(t.collider),
-            )
-            .map_or(reach, |(_, toi)| toi);
-        Some(from + dir * toi)
+        // Fly it as `fly_shells` would, a step at a time.
+        let (mut pos, mut vel) = (from, t.gun_dir() * spec.speed);
+        for _ in 0..(spec.life / DT).ceil() as usize {
+            vel.y -= spec.gravity * GRAVITY * DT;
+            let step = vel * DT;
+            let len = step.length();
+            if let Some(at) = ray(pos, step / len, len) {
+                return at;
+            }
+            pos += step;
+            // A toll strikes whatever it passes close to.
+            if spec.look == Look::Toll
+                && let Some(at) = (1..self.world.tanks.len())
+                    .filter(|&j| {
+                        self.fighters[j].alive && self.fighters[j].team != self.fighters[0].team
+                    })
+                    .find_map(|j| self.within(pos, j, TOLL_RADIUS))
+            {
+                return at;
+            }
+        }
+        pos
     }
 
     /// The tanks to draw this frame: interpolated, with wrecks charred and
@@ -1646,6 +2157,27 @@ impl Match {
                         d * 5.0,
                     ));
                     out.push(glow(p, size * 0.5, PLASMA, 1.6 * born, Vec3::ZERO));
+                }
+                // The toll: a great bloom of crystal light, trailing.
+                Look::Toll => {
+                    out.push(glow(p, TOLL_RADIUS * 2.6, CRYSTAL, 1.8 * born, Vec3::ZERO));
+                    out.push(glow(
+                        p,
+                        TOLL_RADIUS * 1.1,
+                        CRYSTAL_HOT,
+                        2.2 * born,
+                        Vec3::ZERO,
+                    ));
+                    for k in 1..4 {
+                        let k = k as f32;
+                        out.push(glow(
+                            p - d * k * 1.6,
+                            TOLL_RADIUS * (1.8 - 0.35 * k),
+                            CRYSTAL,
+                            (1.2 - 0.3 * k) * born,
+                            Vec3::ZERO,
+                        ));
+                    }
                 }
                 _ => {}
             }
@@ -1763,7 +2295,7 @@ impl Match {
                 Look::Flame => {
                     // A lumpy cloud of three blobs, tumbling as it swells.
                     let f = s.age / s.spec.life;
-                    let size = (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt();
+                    let size = flame_size(f);
                     let hot = Vec3::new(0.9, 0.97, 1.0)
                         .lerp(Vec3::new(0.25, 0.55, 1.0), (f * 2.0).min(1.0))
                         .lerp(Vec3::new(0.06, 0.15, 0.7), (f * 1.5 - 0.5).clamp(0.0, 1.0));
@@ -1776,12 +2308,45 @@ impl Match {
                         out.push(ball(p + off, r, hot.extend(glow)));
                     }
                 }
+                // A ring of crystal shards round the flight path, widening
+                // from the bell's lip as it goes, turning, with a pale
+                // ripple of the sound itself inside it.
+                Look::Toll => {
+                    let f = (s.age / s.spec.life).min(1.0);
+                    let r = TOLL_RADIUS * (0.65 + 0.35 * f.sqrt());
+                    let side = d.any_orthonormal_vector();
+                    let n = 12;
+                    for k in 0..n {
+                        let a = k as f32 / n as f32 * std::f32::consts::TAU + s.age * 6.0;
+                        let out_dir = Quat::from_axis_angle(d, a) * side;
+                        let tangent = d.cross(out_dir);
+                        out.push((
+                            MeshId::GEM,
+                            Instance::new(
+                                Mat4::from_scale_rotation_translation(
+                                    Vec3::new(0.12, 0.7, 0.12),
+                                    Quat::from_rotation_arc(Vec3::Y, tangent),
+                                    p + out_dir * r,
+                                ),
+                                CRYSTAL_HOT.extend(5.0),
+                            ),
+                        ));
+                    }
+                    for (back, w) in [(0.0, 0.5), (1.2, 0.35), (2.4, 0.2)] {
+                        out.push(ball(
+                            p - d * back,
+                            r * w,
+                            CRYSTAL.extend(1.5 * (1.0 - back / 3.0)),
+                        ));
+                    }
+                }
             }
         }
         // Laser beams: a hot core inside a wider green glow, and a burn spot where it lands.
         for (f, t) in self.fighters.iter().zip(&self.world.tanks) {
             let Some(end) = f.beam else { continue };
-            let from = muzzle(t);
+            // From the muzzle as it's drawn this frame.
+            let from = muzzle(&t.interpolated(alpha));
             let to = end - from;
             let len = to.length();
             if len < 0.1 {
@@ -2033,6 +2598,8 @@ fn fighter(team: usize, health: f32) -> Fighter {
         repaired: 0.0,
         heat: 0.0,
         overheated: false,
+        charge: 0.0,
+        charging: false,
         beam: None,
         burning: Burn::Air,
         levels: Levels::default(),
@@ -2042,9 +2609,9 @@ fn fighter(team: usize, health: f32) -> Fighter {
     }
 }
 
-/// Where tank `t`'s shots leave the gun.
+/// Where tank `t`'s shots leave the gun: the muzzle that's drawn.
 pub(crate) fn muzzle(t: &Tank) -> Vec3 {
-    t.pos + t.up() * t.gun_height() + t.gun_dir() * 2.6
+    t.muzzle()
 }
 
 fn flat(p: Vec3) -> Vec2 {
@@ -2097,6 +2664,8 @@ fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2
 mod tests {
     use super::*;
     use crate::sim::dir2;
+    use rapier3d::prelude::{ColliderBuilder, Pose};
+    use std::f32::consts::{FRAC_PI_2, PI};
 
     /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
@@ -2185,10 +2754,12 @@ mod tests {
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
-        assert_eq!(m.trust, m.fighters[0].kills * KILL_TRUST);
+        assert_eq!(m.reputation, m.fighters[0].kills * KILL_REPUTATION);
     }
 
-    /// The player with `turret` and a dummy `dist` m straight ahead, shields down, settled.
+    /// The player with `turret` and a dummy `dist` m straight ahead, shields
+    /// down, settled. The dummy never fires (with no bot, it would pull the
+    /// player's trigger).
     fn duel(turret: TurretKind, dist: f32) -> Match {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
         m.world.tanks[0].turret_kind = turret;
@@ -2207,6 +2778,7 @@ mod tests {
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
+        m.fighters[1].reload_in = f32::INFINITY;
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
@@ -2277,7 +2849,9 @@ mod tests {
     /// Every faction's turret can kill a tank in front of it at close range.
     #[test]
     fn every_turret_kills_at_close_range() {
-        for &k in &TurretKind::ALL {
+        // The Knell's kill is two tolls, or the fall after one: its own
+        // tests below.
+        for &k in TurretKind::ALL.iter().filter(|&&k| k != TurretKind::Knell) {
             let mut m = duel(k, 11.0);
             for _ in 0..(8.0 / DT) as usize {
                 m.step(Command::default(), true);
@@ -2320,6 +2894,557 @@ mod tests {
         }
     }
 
+    /// Every action has an equal and opposite reaction: whatever the gun kicks
+    /// its own tank back with, the shot hands the tank it lands on (half as
+    /// much again for Ithessar shots, on purpose). Up in the
+    /// air, away from the ground's friction, the two cancel exactly.
+    /// How much harder a gun's shot lands than it kicks back.
+    fn hit_harder(k: TurretKind) -> f32 {
+        if k.maker() == Faction::Ithessar {
+            ITHESSAR_KNOCK
+        } else {
+            1.0
+        }
+    }
+
+    #[test]
+    fn a_hit_shoves_the_target_as_hard_as_the_gun_kicks_back() {
+        for &k in &TurretKind::ALL {
+            // The Knell hands its target more than it kicks back with (its
+            // own test below), and has to ring up first.
+            if !matches!(gun(k).action, Action::Shell(_)) || k == TurretKind::Knell {
+                continue;
+            }
+            let mut m = duel(k, 10.0);
+            for t in &m.world.tanks {
+                let b = &mut m.world.physics.bodies[t.body];
+                b.set_translation(b.translation() + Vec3::Y * 40.0, true);
+                b.set_linvel(Vec3::ZERO, true);
+                b.set_angvel(Vec3::ZERO, true);
+            }
+            let ahead = m.world.tanks[0].turret_dir();
+            let flat = |m: &Match, i: usize| {
+                let b = &m.world.physics.bodies[m.world.tanks[i].body];
+                b.linvel() * Vec3::new(1.0, 0.0, 1.0) * b.mass()
+            };
+            m.step(Command::default(), true);
+            for _ in 0..(0.6 / DT) as usize {
+                m.step(Command::default(), false);
+            }
+            let (kick, shove) = (flat(&m, 0), flat(&m, 1));
+            let shot = k.recoil();
+            // Ithessar shots land harder than they kick, on purpose.
+            let hard = hit_harder(k);
+            assert!(
+                kick.dot(ahead) < -0.95 * shot,
+                "{k:?}: kicked back {:.0} N·s, wants {shot:.0}",
+                -kick.dot(ahead)
+            );
+            assert!(
+                shove.dot(ahead) > 0.9 * shot * hard,
+                "{k:?}: the target took {:.0} N·s of {:.0}",
+                shove.dot(ahead),
+                shot * hard
+            );
+            assert!(
+                (kick + shove / hard).length() < 0.1 * shot,
+                "{k:?}: momentum not conserved: {kick} vs {shove}"
+            );
+        }
+    }
+
+    /// Shots tank 0 fired in the steps taken by `run`.
+    fn shots_by_player(m: &mut Match) -> usize {
+        m.sounds
+            .drain(..)
+            .filter(|s| matches!(s, Sound::Shot { tank: 0, .. }))
+            .count()
+    }
+
+    /// Holding the trigger rings a Knell up; nothing leaves the bell until
+    /// it's full, and then it tolls by itself, once, holding or not.
+    #[test]
+    fn a_knell_charges_then_tolls_by_itself() {
+        let mut m = duel(TurretKind::Knell, 40.0);
+        let secs = gun(TurretKind::Knell).charge;
+        let mut shots = 0;
+        let mut fired_at = None;
+        for n in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), true);
+            let s = shots_by_player(&mut m);
+            if s > 0 && fired_at.is_none() {
+                fired_at = Some(n as f32 * DT);
+            }
+            shots += s;
+        }
+        let at = fired_at.expect("the Knell never tolled");
+        assert!(
+            (at - secs).abs() < 0.05,
+            "tolled after {at:.2} s, wants {secs} s"
+        );
+        assert_eq!(shots, 1, "one toll, then it reloads");
+    }
+
+    /// Letting go before it's full breaks the rite: nothing fires, the
+    /// charge drains away, the bell exhales, and it's locked for a moment.
+    #[test]
+    fn letting_go_cancels_a_knell() {
+        let mut m = duel(TurretKind::Knell, 40.0);
+        for _ in 0..(1.2 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(m.fighters[0].charge > 0.5 && m.fighters[0].charging);
+        assert!(m.world.tanks[0].charge > 0.5, "the art sees the charge");
+        m.sounds.clear();
+        m.step(Command::default(), false);
+        assert!(
+            m.sounds
+                .iter()
+                .any(|s| matches!(s, Sound::ChargeCancel { tank: 0, .. })),
+            "no exhale"
+        );
+        assert!(!m.fighters[0].charging);
+        assert!(m.fighters[0].reload_in > 0.4, "locked after a cancel");
+        let mut shots = shots_by_player(&mut m);
+        for _ in 0..(CHARGE_DRAIN / DT) as usize + 2 {
+            m.step(Command::default(), false);
+            shots += shots_by_player(&mut m);
+        }
+        assert_eq!(m.fighters[0].charge, 0.0, "the charge drained");
+        assert_eq!(shots, 0, "a cancelled Knell never fires");
+        assert_eq!(m.fighters[1].health, max_health(HullKind::Kataphrakt));
+    }
+
+    /// The toll throws its own hull back hard, and its target harder, up as
+    /// well as away; and it hurts.
+    #[test]
+    fn a_knell_throws_both_tanks() {
+        let mut m = duel(TurretKind::Knell, 30.0);
+        for t in &m.world.tanks {
+            let b = &mut m.world.physics.bodies[t.body];
+            b.set_translation(b.translation() + Vec3::Y * 40.0, true);
+            b.set_linvel(Vec3::ZERO, true);
+            b.set_angvel(Vec3::ZERO, true);
+        }
+        let ahead = m.world.tanks[0].turret_dir();
+        let momentum = |m: &Match, i: usize| {
+            let b = &m.world.physics.bodies[m.world.tanks[i].body];
+            b.linvel() * b.mass()
+        };
+        let charge = gun(TurretKind::Knell).charge;
+        let mut kick = Vec3::ZERO;
+        for _ in 0..((charge + 2.0 * DT) / DT) as usize {
+            m.step(Command::default(), true);
+            kick = momentum(&m, 0);
+        }
+        // Pin the shooter's kick before the toll has flown to the target.
+        let kicked = -(kick * Vec3::new(1.0, 0.0, 1.0)).dot(ahead);
+        let recoil = TurretKind::Knell.recoil();
+        assert!(
+            kicked > 0.9 * recoil,
+            "kicked back {kicked:.0} of {recoil:.0} N·s"
+        );
+        let v0 = momentum(&m, 1);
+        for _ in 0..(0.5 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        // Gravity pulls both down the same; take it out of the target's lift.
+        let fall = m.world.physics.bodies[m.world.tanks[1].body].mass() * GRAVITY * 0.5;
+        let shove = momentum(&m, 1) - v0;
+        assert!(
+            shove.dot(ahead) > 0.9 * KNELL_KNOCK,
+            "the target took {:.0} of {KNELL_KNOCK:.0} N·s",
+            shove.dot(ahead)
+        );
+        assert!(
+            shove.y + fall > 0.3 * KNELL_LIFT * KNELL_KNOCK,
+            "thrown up by {:.0} N·s",
+            shove.y + fall
+        );
+        let left = m.fighters[1].health;
+        let hurt = max_health(HullKind::Kataphrakt) - left;
+        assert!(
+            (hurt - gun(TurretKind::Knell).damage).abs() < 1.0,
+            "took {hurt}"
+        );
+    }
+
+    /// The toll is wide: a shot that would pass a tank by a hull's half-width
+    /// still strikes it.
+    #[test]
+    fn a_toll_strikes_what_it_passes_close_to() {
+        let mut m = duel(TurretKind::Knell, 30.0);
+        // Turn the target's line a little off the gun: the muzzle's line
+        // passes about 1 m beside the hull, clear of a plain shot.
+        let rot = m.world.tanks[0].rot;
+        let side = m.world.tanks[0].turret_dir().cross(Vec3::Y).normalize();
+        let t = &m.world.tanks[1];
+        let off = side * (t.chassis.track_x + t.chassis.track_width * 0.5 + 0.9);
+        let b = &mut m.world.physics.bodies[t.body];
+        let p = *b.position();
+        b.set_position(Pose::from_parts(p.translation + off, rot), true);
+        for _ in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        assert!(
+            m.fighters[1].health < max_health(HullKind::Kataphrakt),
+            "the toll passed it by"
+        );
+    }
+
+    /// On flat ground, a toll bowls a light tank over: struck high, it
+    /// rolls, where a rail cannon only rocks it.
+    #[test]
+    fn a_toll_rolls_a_light_tank() {
+        let mut m = duel(TurretKind::Knell, 25.0);
+        // Broadside on.
+        let t = &m.world.tanks[1];
+        let rot = m.world.tanks[0].rot * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let b = &mut m.world.physics.bodies[t.body];
+        let p = *b.position();
+        b.set_position(Pose::from_parts(p.translation, rot), true);
+        for _ in 0..30 {
+            m.step(Command::default(), false);
+        }
+        let mut tilt = 0.0f32;
+        for _ in 0..(4.0 / DT) as usize {
+            m.step(Command::default(), true);
+            tilt = tilt.max(m.world.tanks[1].up().angle_between(Vec3::Y));
+        }
+        assert!(tilt > 1.0, "it only tipped {tilt:.2} rad");
+    }
+
+    /// Fire from the settled duel `m` (one shot, or holding the trigger for
+    /// `hold` s) and watch both tanks for two seconds: how far each tipped
+    /// and turned (degrees, at the worst), and how far each moved along the
+    /// line of fire (m).
+    fn exchange(m: &mut Match, hold: f32) -> ([f32; 2], [f32; 2], [f32; 2]) {
+        let ahead = m.world.tanks[0].turret_dir();
+        let t0 = [m.world.tanks[0].clone(), m.world.tanks[1].clone()];
+        m.step(Command::default(), true);
+        let (mut tilt, mut turn) = ([0.0f32; 2], [0.0f32; 2]);
+        for n in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), (n as f32) * DT < hold);
+            for i in 0..2 {
+                let t = &m.world.tanks[i];
+                tilt[i] = tilt[i].max(t.up().angle_between(t0[i].up()).to_degrees());
+                turn[i] = turn[i].max(wrap_angle(t.yaw() - t0[i].yaw()).abs().to_degrees());
+            }
+        }
+        let moved = [0, 1].map(|i| (m.world.tanks[i].pos - t0[i].pos).dot(ahead));
+        (tilt, turn, moved)
+    }
+
+    /// On the ground, a rail cannon hit is plain to see: the shooter rocks and
+    /// slides back, and the target slides away.
+    #[test]
+    fn a_cannon_hit_visibly_knocks_both_tanks() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        let (tilt, _, moved) = exchange(&mut m, 0.0);
+        assert!(moved[0] < -0.3, "shooter slid back only {:.2} m", -moved[0]);
+        assert!(moved[1] > 0.3, "target slid away only {:.2} m", moved[1]);
+        assert!(tilt[0] > 8.0 && tilt[1] > 8.0, "rocked {tilt:?} deg");
+        assert!(m.world.tanks[1].up().y > 0.9, "the hit must not roll it");
+    }
+
+    /// Duel `k` at `dist` m with the target turned `turn` from facing the
+    /// shooter, settled.
+    fn turned_duel(k: TurretKind, dist: f32, turn: f32) -> Match {
+        let mut m = duel(k, dist);
+        let t = &m.world.tanks[1];
+        let (at, yaw) = (Vec2::new(t.pos.x, t.pos.z), t.yaw() + PI + turn);
+        m.world.teleport(1, at, yaw);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        m
+    }
+
+    /// Equal and opposite, to the eye: for every gun that fires something, a
+    /// hit rocks the tank it lands on about as hard as firing it rocks the
+    /// shooter (same hull both ends, face to face so both rock back), and a
+    /// hit in the flank rolls it at least half as hard. That's plain physics:
+    /// aimed level, the shot lands high on the turret, near the height the
+    /// gun kicked its own hull from. The light streams are held a second, as
+    /// they're fired.
+    #[test]
+    fn a_hit_rocks_the_target_about_as_hard_as_firing_rocks_the_shooter() {
+        for &k in &TurretKind::ALL {
+            // The Knell hands its target far more than it kicks back with,
+            // on purpose (`a_knell_throws_both_tanks`).
+            if k.recoil() == 0.0 || k == TurretKind::Knell {
+                continue;
+            }
+            let stream = matches!(k, TurretKind::Ossrin | TurretKind::Hymn);
+            let hold = if stream { 1.0 } else { 0.0 };
+            let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, 0.0), hold);
+            let hard = hit_harder(k);
+            assert!(
+                tilt[1] > 0.75 * hard * tilt[0] && tilt[1] < 1.25 * hard * tilt[0],
+                "{k:?} head on: shooter rocked {:.2} deg, target {:.2}",
+                tilt[0],
+                tilt[1]
+            );
+            let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, FRAC_PI_2), hold);
+            assert!(
+                tilt[1] > 0.5 * tilt[0],
+                "{k:?} in the flank: shooter rocked {:.2} deg, target {:.2}",
+                tilt[0],
+                tilt[1]
+            );
+        }
+    }
+
+    /// A hit off-centre spins the target round; the same shot taken dead
+    /// centre leaves it pointing straight.
+    #[test]
+    fn an_off_centre_hit_spins_the_target() {
+        let spin = |side: f32| {
+            let mut m = duel(TurretKind::Kontos, 20.0);
+            let t = &m.world.tanks[1];
+            let at = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw() - FRAC_PI_2) * side;
+            m.world.teleport(1, at, t.yaw());
+            for _ in 0..60 {
+                m.step(Command::default(), false);
+            }
+            let hp = m.fighters[1].health;
+            let (_, turn, _) = exchange(&mut m, 0.0);
+            assert!(m.fighters[1].health < hp, "the shot at {side} m missed");
+            turn[1]
+        };
+        let (centre, off) = (spin(0.0), spin(1.2));
+        assert!(
+            centre < 1.0,
+            "a centred hit turned the target {centre:.1} deg"
+        );
+        assert!(
+            off > 5.0,
+            "an off-centre hit turned the target only {off:.1} deg"
+        );
+    }
+
+    /// Swing the shooter's turret `off` radians from the target in the duel
+    /// `m`, let the assist settle, then fire once: whether it hit, the gun's
+    /// sideways nudge, and which way the target turned (radians, + = toward
+    /// +yaw) two seconds later.
+    fn shot_aside(m: &mut Match, off: f32) -> (bool, f32, f32) {
+        m.world.tanks[0].turret_rel += off;
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let nudge = m.world.tanks[0].gun_yaw;
+        let (hp, yaw) = (m.fighters[1].health, m.world.tanks[1].yaw());
+        m.step(Command::default(), true);
+        for _ in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        let hit = m.fighters[1].health < hp;
+        (hit, nudge, wrap_angle(m.world.tanks[1].yaw() - yaw))
+    }
+
+    /// The assist bends the gun no more than it has to. Laid on the tank
+    /// already, the gun isn't swung toward its middle at all, so where you aim
+    /// is where it lands: its left side spins it one way, its right the other.
+    #[test]
+    fn aimed_on_a_tank_the_assist_leaves_the_aim_alone() {
+        let mut turns = [0.0; 2];
+        for (n, off) in [0.03f32, -0.03].into_iter().enumerate() {
+            let mut m = duel(TurretKind::Kontos, 20.0);
+            let (hit, nudge, turn) = shot_aside(&mut m, off);
+            assert!(hit, "aimed {off} rad aside, on the hull, it missed");
+            assert!(nudge.abs() < 1e-3, "the gun was swung {nudge:.4} rad");
+            turns[n] = turn;
+        }
+        assert!(
+            turns[0] * turns[1] < 0.0 && turns[0].abs() > 0.05 && turns[1].abs() > 0.05,
+            "hit on either side, the target turned {turns:?} rad"
+        );
+    }
+
+    /// Aimed just past a tank's edge, the gun is nudged (by at most a degree)
+    /// onto its nearest edge, and the shot lands; aimed further out it isn't
+    /// pulled in, and the shot misses.
+    #[test]
+    fn a_near_miss_is_nudged_onto_the_edge_and_a_wide_one_misses() {
+        // At 40 m the Kataphrakt's 1.45 m half-width spans 0.036 rad.
+        let (hit, nudge, _) = shot_aside(&mut duel(TurretKind::Kontos, 40.0), 0.045);
+        assert!(hit, "a near miss wasn't nudged on");
+        assert!(
+            nudge < 0.0 && nudge >= -ASSIST_NUDGE - 1e-4,
+            "nudge {nudge:.4} rad"
+        );
+        let (hit, nudge, _) = shot_aside(&mut duel(TurretKind::Kontos, 40.0), 0.07);
+        assert!(!hit, "a wide miss was pulled onto the tank");
+        assert!(nudge.abs() <= ASSIST_NUDGE + 1e-4, "nudge {nudge:.4} rad");
+    }
+
+    /// The crosshair follows the assist: turned a little off a tank, every
+    /// gun's mark moves onto it as the gun is bent on (not left down the
+    /// turret's heading); turned well off, it stays off.
+    #[test]
+    fn the_crosshair_follows_the_assist() {
+        for k in TurretKind::ALL {
+            let range = gun(k).range();
+            let dist = (range * 0.5).min(40.0);
+            let near = |off: f32| {
+                let mut m = duel(k, dist);
+                m.world.tanks[0].turret_rel += off;
+                for _ in 0..60 {
+                    m.step(Command::default(), false);
+                }
+                let at = m.aim_landing(&m.world.tanks[0]);
+                m.within(at, 1, 0.5).is_some()
+            };
+            assert!(near(0.0), "{k:?}: laid on, the crosshair isn't on the tank");
+            assert!(
+                near(0.05),
+                "{k:?}: the crosshair didn't follow the assist on"
+            );
+            assert!(
+                !near(0.3),
+                "{k:?}: turned away, the crosshair is still on it"
+            );
+        }
+    }
+
+    /// Adds a teammate of the player's to the duel `m`, `ahead` m down the
+    /// player's heading and `aside` m to its side, facing the same way.
+    fn add_friend(m: &mut Match, ahead: f32, aside: f32) -> usize {
+        let t = &m.world.tanks[0];
+        let yaw = t.yaw();
+        let at = Vec2::new(t.pos.x, t.pos.z) + dir2(yaw) * ahead + dir2(yaw - FRAC_PI_2) * aside;
+        m.world
+            .spawn_tank(Vec3::ONE, at, 0.0, HullKind::Kataphrakt, TurretKind::Kontos);
+        let k = m.world.tanks.len() - 1;
+        m.world.teleport(k, at, yaw);
+        m.fighters
+            .push(fighter(0, max_health(HullKind::Kataphrakt)));
+        m.bots.push(None);
+        m.fighters[k].shield = 0.0;
+        m.fighters[k].reload_in = f32::INFINITY;
+        k
+    }
+
+    /// A toll passing close by a teammate isn't drawn onto them: it flies on
+    /// to the enemy behind, and the crosshair marks the enemy, not the friend.
+    #[test]
+    fn a_toll_passes_a_friend_by() {
+        let mut m = duel(TurretKind::Knell, 30.0);
+        let friend = add_friend(&mut m, 14.0, 2.3);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let at = m.aim_landing(&m.world.tanks[0]);
+        assert!(
+            m.within(at, friend, 0.5).is_none(),
+            "the crosshair sits on the friend"
+        );
+        assert!(
+            m.within(at, 1, 0.5).is_some(),
+            "the crosshair isn't on the enemy"
+        );
+        let hp = (m.fighters[1].health, m.fighters[friend].health);
+        // Held until it tolls, then let it fly.
+        let secs = gun(TurretKind::Knell).charge;
+        let mut tolled = false;
+        for _ in 0..((secs + 2.0) / DT) as usize {
+            m.step(Command::default(), !tolled);
+            tolled |= shots_by_player(&mut m) > 0;
+        }
+        assert!(tolled, "the Knell never tolled");
+        assert!(
+            m.fighters[1].health < hp.0,
+            "the toll never reached the enemy"
+        );
+        assert_eq!(m.fighters[friend].health, hp.1);
+    }
+
+    /// The assist never lays a gun on an enemy through a teammate: with a
+    /// friend standing between, turned a little off the enemy behind them,
+    /// no gun is bent onto it and no crosshair lands on it.
+    #[test]
+    fn the_assist_never_aims_through_a_friend() {
+        for k in TurretKind::ALL {
+            let dist = (gun(k).range() * 0.5).min(40.0);
+            let mut m = duel(k, dist);
+            add_friend(&mut m, dist * 0.5, 0.0);
+            m.world.tanks[0].turret_rel += 0.05;
+            for _ in 0..60 {
+                m.step(Command::default(), false);
+            }
+            let nudge = m.world.tanks[0].gun_yaw;
+            assert!(
+                nudge.abs() < 1e-3,
+                "{k:?}: the gun was bent {nudge:.4} rad onto the enemy behind a friend"
+            );
+            // A toll flies on past the friend and strikes the enemy as it
+            // goes by (`a_toll_passes_a_friend_by`): its mark is right there.
+            if k == TurretKind::Knell {
+                continue;
+            }
+            let at = m.aim_landing(&m.world.tanks[0]);
+            assert!(
+                m.within(at, 1, 0.5).is_none(),
+                "{k:?}: the crosshair sits on the enemy through a friend"
+            );
+        }
+    }
+
+    /// Up and down it still lays the gun on: a tank on a rise above the
+    /// shooter is hit, high on its hull or turret.
+    #[test]
+    fn the_assist_still_elevates_onto_a_tank_uphill() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        let t = &m.world.tanks[1];
+        // Held up 3 m, in place (kinematic: not scenery, which would hide it).
+        let b = &mut m.world.physics.bodies[t.body];
+        let p = b.translation() + Vec3::Y * 3.0;
+        b.set_translation(p, true);
+        b.set_body_type(
+            rapier3d::prelude::RigidBodyType::KinematicPositionBased,
+            true,
+        );
+        let hp = m.fighters[1].health;
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        assert!(
+            m.world.tanks[0].gun_pitch > 0.05,
+            "pitch {}",
+            m.world.tanks[0].gun_pitch
+        );
+        m.step(Command::default(), true);
+        for _ in 0..10 {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[1].health < hp, "the shot uphill missed");
+    }
+
+    /// A broadside from the heaviest gun rocks the lightest tracked hull hard,
+    /// but never rolls it.
+    #[test]
+    fn a_broadside_rocks_but_never_rolls() {
+        let mut m = duel(TurretKind::Kontos, 20.0);
+        m.world.set_hull(1, HullKind::Vigil);
+        // Turn the target side-on.
+        let t = &m.world.tanks[1];
+        let at = Vec2::new(t.pos.x, t.pos.z);
+        m.world
+            .teleport(1, at, t.yaw() + std::f32::consts::FRAC_PI_2);
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        let mut worst = 1.0f32;
+        for _ in 0..4 {
+            m.step(Command::default(), true);
+            for _ in 0..(1.5 / DT) as usize {
+                m.step(Command::default(), false);
+                worst = worst.min(m.world.tanks[1].up().y);
+            }
+        }
+        assert!(worst > 0.5, "the target tipped to up.y = {worst:.2}");
+    }
+
     /// Nothing to lead with an Imperium gun; everyone else's shells still fly.
     #[test]
     fn only_imperium_guns_are_instant() {
@@ -2347,6 +3472,140 @@ mod tests {
         }
         assert_eq!(m.fighters[1].health, max_health(HullKind::Kataphrakt));
         assert!(!m.shells.is_empty(), "the flamer should be pouring fire");
+    }
+
+    /// The flamer pours at a tank 11 m off with something 5 m off in the
+    /// way: another tank of team `front` (None: nothing), or a wall. How
+    /// much the tank at the back has lost after a second of fire.
+    fn flame_through(front: Option<usize>, wall: bool) -> f32 {
+        let probe = Match::new(Map::yard(200.0), 0, 0, 1);
+        let (pos, yaw) = (probe.world.tanks[0].pos, probe.world.tanks[0].yaw());
+        let at = |d: f32| Vec2::new(pos.x, pos.z) + dir2(yaw) * d;
+        let mut map = Map::yard(200.0);
+        if wall {
+            let c = at(5.5);
+            map.solids.push(crate::map::Solid {
+                min: Vec3::new(c.x - 3.0, 0.0, c.y - 3.0),
+                max: Vec3::new(c.x + 3.0, 6.0, c.y + 3.0),
+            });
+        }
+        let mut m = Match::new(map, 0, 0, 1);
+        assert_eq!(m.world.tanks[0].pos, pos);
+        m.world.tanks[0].turret_kind = TurretKind::Hymn;
+        let spawn = |m: &mut Match, d: f32, team: usize| {
+            m.world.spawn_tank(
+                Vec3::ONE,
+                at(d),
+                0.0,
+                HullKind::Kataphrakt,
+                TurretKind::Kontos,
+            );
+            m.fighters
+                .push(fighter(team, max_health(HullKind::Kataphrakt)));
+            m.bots.push(None);
+        };
+        if let Some(team) = front {
+            spawn(&mut m, 5.0, team);
+        }
+        spawn(&mut m, 11.0, 1);
+        let back = m.fighters.len() - 1;
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        max_health(HullKind::Kataphrakt) - m.fighters[back].health
+    }
+
+    /// How much an enemy `ahead` m in front of the flamer and `side` m off
+    /// its line loses to a second of fire, with (if `wall`) a thin wall
+    /// standing across the line from `wall` m out.
+    fn flame_burn(ahead: f32, side: f32, wall: Option<f32>) -> f32 {
+        let probe = Match::new(Map::yard(200.0), 0, 0, 1);
+        let t = &probe.world.tanks[0];
+        let (pos, yaw, fwd) = (Vec2::new(t.pos.x, t.pos.z), t.yaw(), dir2(t.yaw()));
+        let at = |d: f32, x: f32| pos + fwd * d + Vec2::new(-fwd.y, fwd.x) * x;
+        let mut map = Map::yard(200.0);
+        if let Some(w) = wall {
+            // 0.4 m thick and 8 m wide, facing the flamer (which faces down an axis).
+            let (a, b) = (at(w, -4.0), at(w + 0.4, 4.0));
+            map.solids.push(crate::map::Solid {
+                min: Vec3::new(a.x.min(b.x), 0.0, a.y.min(b.y)),
+                max: Vec3::new(a.x.max(b.x), 6.0, a.y.max(b.y)),
+            });
+        }
+        let mut m = Match::new(map, 0, 0, 1);
+        m.world.tanks[0].turret_kind = TurretKind::Hymn;
+        m.world.spawn_tank(
+            Vec3::ONE,
+            at(ahead, side),
+            yaw,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
+        m.bots.push(None);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..60 {
+            m.step(Command::default(), false);
+        }
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), true);
+        }
+        max_health(HullKind::Kataphrakt) - m.fighters[1].health
+    }
+
+    /// The flame burns what it visibly engulfs, not just what its puffs'
+    /// centres pass through, and still nothing clearly outside it.
+    #[test]
+    fn flame_burns_what_it_engulfs() {
+        let dead_on = flame_burn(8.0, 0.0, None);
+        assert!(dead_on > 40.0, "dead on at 8 m: {dead_on}");
+        // Hull side about 1 m off the barrel line, well inside the fire.
+        let edge = flame_burn(8.0, 2.5, None);
+        assert!(edge > 10.0, "engulfed at its edge: {edge}");
+        // Further out, where the fire has swelled: hull side 1.5 m off.
+        let far = flame_burn(11.0, 3.0, None);
+        assert!(far > 3.0, "engulfed at 11 m: {far}");
+        // Hull side 3.5 m off: nowhere near the fire.
+        assert_eq!(flame_burn(8.0, 5.0, None), 0.0);
+    }
+
+    /// The fire a puff shows doesn't reach round a thin wall onto a tank
+    /// pressed right up behind it.
+    #[test]
+    fn flame_fire_stops_at_thin_walls() {
+        // The hull's nose is 0.3 m behind the wall's back face.
+        let open = flame_burn(9.7, 0.0, None);
+        assert!(open > 20.0, "nothing in the way: {open}");
+        assert_eq!(flame_burn(9.7, 0.0, Some(7.0)), 0.0);
+    }
+
+    #[test]
+    fn flame_pours_through_tanks_but_not_walls() {
+        let open = flame_through(None, false);
+        assert!(open > 5.0, "the flamer should reach 11 m: {open}");
+        // An enemy in front burns too, and doesn't shield the one behind.
+        let past_enemy = flame_through(Some(1), false);
+        assert!(
+            past_enemy > open * 0.5,
+            "open {open}, past an enemy {past_enemy}"
+        );
+        // Nor does an ally.
+        let past_ally = flame_through(Some(0), false);
+        assert!(
+            past_ally > open * 0.5,
+            "open {open}, past an ally {past_ally}"
+        );
+        // A wall does.
+        assert_eq!(flame_through(None, true), 0.0);
     }
 
     /// Damage per second of beam contact at distance `dist`.
@@ -2390,6 +3649,55 @@ mod tests {
             m.step(Command::default(), true);
         }
         assert_eq!(m.fighters[1].health, hp);
+    }
+
+    /// The beam starts at the muzzle and runs down the barrel, on every hull,
+    /// with the turret traversed and the gun elevated. (Aimed away from the
+    /// enemy, so the beam doesn't bend onto it.)
+    #[test]
+    fn beam_leaves_the_muzzle_along_the_barrel() {
+        for hull in [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ] {
+            let mut m = duel(TurretKind::Lumen, 80.0);
+            m.world.set_hull(0, hull);
+            m.world.tanks[0].lean = 0.1;
+            for (turn, pitch) in [(0.4, 0.0), (0.9, 0.12), (-2.0, -0.08)] {
+                let t = &mut m.world.tanks[0];
+                t.turret_rel = turn;
+                t.gun_pitch = pitch;
+                m.beam(0, 160.0);
+                let t = &m.world.tanks[0];
+                let (from, dir) = (t.muzzle(), t.gun_dir());
+                let end = m.fighters[0].beam.expect("beaming");
+                let off = (end - from).normalize().angle_between(dir);
+                assert!(off < 1e-3, "{hull:?} {turn}: beam {off} rad off the barrel");
+                // The muzzle is at the end of the gun, ahead of the trunnion.
+                let reach = from.distance(t.breech());
+                assert!((reach - TurretKind::Lumen.reach()).abs() < 1e-3);
+                assert!((from - t.breech()).normalize().angle_between(dir) < 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn a_gun_against_a_wall_cant_shoot_through_it() {
+        let mut m = duel(TurretKind::Lumen, 80.0);
+        let t = &m.world.tanks[0];
+        // Something between the trunnion and the muzzle.
+        let mid = (t.breech() + t.muzzle()) * 0.5;
+        m.world
+            .physics
+            .insert_collider(ColliderBuilder::ball(0.5).translation(mid), None);
+        let hp = m.fighters[1].health;
+        for _ in 0..30 {
+            m.step(Command::default(), true);
+        }
+        assert_eq!(m.fighters[1].health, hp, "the beam went through the wall");
     }
 
     #[test]
@@ -2454,6 +3762,7 @@ mod tests {
             spec,
             bounces: spec.bounces,
             seed: 0.0,
+            passed: Vec::new(),
         });
         for _ in 0..(0.2 / DT) as usize {
             m.step(Command::default(), false);
@@ -2479,6 +3788,7 @@ mod tests {
             spec: dart,
             bounces: 0,
             seed: 0.0,
+            passed: Vec::new(),
         }];
         for _ in 0..(0.2 / DT) as usize {
             m.step(Command::default(), false);
@@ -2491,11 +3801,11 @@ mod tests {
         let mut m = arena(2);
         m.kill(1, 2);
         m.kill(0, 0);
-        assert_eq!(m.trust, 0);
+        assert_eq!(m.reputation, 0);
         m.kill(0, 1);
-        assert_eq!(m.trust, KILL_TRUST);
+        assert_eq!(m.reputation, KILL_REPUTATION);
         assert_eq!(
-            m.trust_pops.len(),
+            m.reputation_pops.len(),
             1,
             "one popup, for the player's own kill"
         );
@@ -2778,17 +4088,17 @@ mod tests {
     }
 
     #[test]
-    fn holding_pays_trust_and_reaching_the_target_ends_the_round() {
+    fn holding_pays_reputation_and_reaching_the_target_ends_the_round() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
-        m.hold.as_mut().unwrap().own[0] = hold::TRUST_EVERY - 0.1;
+        m.hold.as_mut().unwrap().own[0] = hold::REPUTATION_EVERY - 0.1;
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
-        assert_eq!(m.trust, hold::HOLD_TRUST);
-        assert_eq!(m.trust_pops.last().map(|x| x.reason), Some("HOLDING"));
+        assert_eq!(m.reputation, hold::HOLD_REPUTATION);
+        assert_eq!(m.reputation_pops.last().map(|x| x.reason), Some("HOLDING"));
         let heard: Vec<_> = m
             .sounds
             .iter()
@@ -2991,6 +4301,7 @@ mod tests {
             },
             bounces: 0,
             seed: 0.0,
+            passed: Vec::new(),
         };
         m.hit(&shell(0), ally, Vec3::ZERO);
         assert!(m.fighters[ally].alive);
@@ -3084,5 +4395,142 @@ mod hover_bots_stay_upright {
         assert!(hover >= 5, "only {hover} hover hulls");
         let flipped: Vec<usize> = (0..n).filter(|&i| tipped[i]).collect();
         assert!(flipped.is_empty(), "hover bots {flipped:?} tipped over");
+    }
+}
+
+#[cfg(test)]
+mod bot_duels {
+    use super::*;
+
+    /// Bot 0 in `a` (current brain) against bot 1 in `b` (the baseline) on
+    /// open ground, `start` m apart, for up to `secs`: the match afterwards.
+    fn duel(
+        a: (HullKind, TurretKind),
+        b: (HullKind, TurretKind),
+        start: f32,
+        secs: f32,
+        seed: u64,
+    ) -> Match {
+        let mut m = Match::new(Map::empty(400.0), 0, 1, seed);
+        m.refit_bot(0, a.0, a.1, true, seed * 31 + 1);
+        m.refit_bot(1, b.0, b.1, false, seed * 31 + 2);
+        let yaw = seed as f32 * 0.7;
+        let off = Vec2::new(yaw.sin(), yaw.cos()) * start * 0.5;
+        m.world.teleport(0, Vec2::splat(200.0) - off, yaw);
+        m.world.teleport(1, Vec2::splat(200.0) + off, yaw + 3.0);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        for _ in 0..(secs / DT) as usize {
+            m.step(Command::default(), false);
+            m.sounds.clear();
+            if m.fighters[1].deaths > 0 || !m.fighters[0].alive {
+                break;
+            }
+        }
+        m
+    }
+
+    /// A Knell's toll throws its own hull back. Bots used to toll with the
+    /// bell swung out across a Vigil's narrow hull and roll themselves onto
+    /// their backs; now the hull comes in line while it rings up.
+    #[test]
+    fn knell_bots_dont_toll_themselves_over() {
+        for seed in 0..6 {
+            let mut m = duel(
+                (HullKind::Vigil, TurretKind::Knell),
+                (HullKind::Kataphrakt, TurretKind::Kontos),
+                85.0,
+                0.0,
+                seed,
+            );
+            let mut tolls = 0;
+            for _ in 0..(12.0 / DT) as usize {
+                m.fighters[0].health = 85.0;
+                m.step(Command::default(), false);
+                tolls += m
+                    .sounds
+                    .drain(..)
+                    .filter(|s| matches!(s, Sound::Shot { tank: 0, .. }))
+                    .count();
+                assert!(
+                    m.world.tanks[0].up().y > 0.5,
+                    "seed {seed}: the Knell tipped over"
+                );
+            }
+            assert!(tolls >= 2, "seed {seed}: only {tolls} tolls in 12 s");
+        }
+    }
+
+    /// The flamethrower drives in and stays on its target: from 20 m it
+    /// beats a rail cannon, which the old bots never managed.
+    #[test]
+    fn flamers_win_at_close_quarters() {
+        let wins = (0..4)
+            .filter(|&seed| {
+                let m = duel(
+                    (HullKind::Vigil, TurretKind::Hymn),
+                    (HullKind::Kataphrakt, TurretKind::Kontos),
+                    20.0,
+                    30.0,
+                    seed,
+                );
+                m.fighters[1].deaths > 0
+            })
+            .count();
+        assert!(wins >= 3, "the flamer won only {wins} of 4");
+    }
+}
+
+#[cfg(test)]
+mod bank_shots {
+    use super::*;
+    use crate::map::Solid;
+
+    /// An Ammeth whose target ducks behind a block, with a wall off to the
+    /// side: it banks its orbs off the wall and hits the tank it can't see.
+    #[test]
+    fn ammeth_bots_bank_off_walls_at_tanks_out_of_sight() {
+        let mut map = Map::empty(200.0);
+        // The block between them, and the wall beside.
+        map.solids.push(Solid {
+            min: Vec3::new(92.0, 0.0, 97.0),
+            max: Vec3::new(108.0, 5.0, 103.0),
+        });
+        map.solids.push(Solid {
+            min: Vec3::new(114.0, 0.0, 60.0),
+            max: Vec3::new(116.0, 6.0, 140.0),
+        });
+        let mut m = Match::new(map, 0, 1, 3);
+        m.refit_bot(0, HullKind::Sethuun, TurretKind::Ammeth, true, 5);
+        m.refit_bot(1, HullKind::Kataphrakt, TurretKind::Kontos, false, 6);
+        m.idle(1);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        // In sight a moment, off to the side, then behind the block.
+        m.world.teleport(0, Vec2::new(100.0, 80.0), 0.0);
+        m.world
+            .teleport(1, Vec2::new(80.0, 115.0), std::f32::consts::PI);
+        for _ in 0..(0.6 / DT) as usize {
+            m.fighters[0].reload_in = 1.0;
+            m.step(Command::default(), false);
+        }
+        m.world
+            .teleport(1, Vec2::new(100.0, 112.0), std::f32::consts::PI);
+        let mut hidden_hits = 0.0;
+        for _ in 0..(6.0 / DT) as usize {
+            let before = m.fighters[1].health;
+            m.step(Command::default(), false);
+            let eye = m.world.tanks[0].pos + Vec3::Y * m.world.tanks[0].gun_height();
+            if !ai::can_see(&m.world, eye, &m.world.tanks[1]) {
+                hidden_hits += (before - m.fighters[1].health).max(0.0);
+            }
+            m.sounds.clear();
+        }
+        assert!(
+            hidden_hits > 20.0,
+            "only {hidden_hits:.0} damage dealt out of sight"
+        );
     }
 }

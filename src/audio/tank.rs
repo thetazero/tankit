@@ -35,6 +35,8 @@ pub struct TankParams {
     pub heat: f32,
     /// Flamethrower pouring (0/1).
     pub flame: f32,
+    /// A Knell ringing up: how far its charge has got, 0..1.
+    pub charge: f32,
     /// A broken Vigil running on: how much light still pours out, 0..1.
     pub husk: f32,
     /// Spawn shield up: its loudness (0 when down), and how much of it is
@@ -63,6 +65,7 @@ impl TankParams {
             beam: 1.0,
             heat: 1.0,
             flame: 1.0,
+            charge: 1.0,
             husk: 1.0,
             shield: shield::level(0),
             shield_left: 1.0,
@@ -113,6 +116,7 @@ pub fn params(
                 },
                 heat: f.map_or(0.0, |f| f.heat),
                 flame: flaming as u8 as f32,
+                charge: t.charge,
                 husk: f.filter(|f| f.is_husk()).map_or(0.0, |f| f.strength()),
                 shield: f
                     .filter(|f| f.shield > 0.0)
@@ -143,6 +147,7 @@ struct Loops {
     traverse: turret::Traverse,
     buzz: beam::Buzz,
     flame: guns::Flame,
+    hum: guns::Hum,
     husk: vigil::Husk,
     ward: shield::Ward,
     rush: knocks::Rush,
@@ -156,6 +161,7 @@ impl Loops {
         f(&mut self.traverse);
         f(&mut self.buzz);
         f(&mut self.flame);
+        f(&mut self.hum);
         f(&mut self.husk);
         f(&mut self.ward);
         f(&mut self.rush);

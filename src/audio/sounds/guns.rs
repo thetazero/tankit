@@ -4,10 +4,10 @@
 use glam::Vec3;
 
 use super::Play;
-use crate::audio::dsp::{Noise, OnePole, Smooth, Svf};
+use crate::audio::dsp::{Noise, OnePole, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
-use crate::audio::voice::{Filt, Layer, noise, sine};
+use crate::audio::voice::{Filt, Layer, noise, ring, sine};
 use crate::sim::TurretKind;
 
 /// How long a flamer keeps roaring after its last puff, s.
@@ -40,6 +40,7 @@ impl Flames {
             TurretKind::Pelekys => PELEKYS,
             TurretKind::Ammeth => WISP,
             TurretKind::Ossrin => TRIAD,
+            TurretKind::Knell => KNELL,
             TurretKind::Hymn => {
                 if let Some(t) = self.until.get_mut(tank) {
                     *t = time + FLAME_HOLD;
@@ -120,6 +121,88 @@ pub const TRIAD: &[Layer] = &[
     sine(110.0, 80.0, 0.05, 0.05, 0.2),
 ];
 
+/// The Knell's bell, far under the Vigil's: hum, prime, minor third,
+/// fifth, nominal, twelfth, Hz.
+const KNELL_BELL: [f32; 6] = [55.0, 110.0, 132.0, 165.0, 220.0, 330.0];
+
+/// Resonant siege bell tolling: a blow like a building falling, the great
+/// bell struck and left to ring, and a long rolling wash of air after it.
+pub const KNELL: &[Layer] = &[
+    // The blow.
+    sine(90.0, 34.0, 0.1, 0.35, 0.7),
+    noise(Filt::Low, 2400.0, 160.0, 0.08, 0.4, 0.9),
+    Layer {
+        q: 0.7,
+        ..noise(Filt::Band, 600.0, 220.0, 0.2, 0.5, 0.6)
+    },
+    // The bell.
+    ring(KNELL_BELL[0], 1.6, 0.45),
+    ring(KNELL_BELL[1], 1.4, 0.4),
+    ring(KNELL_BELL[2], 1.1, 0.22),
+    ring(KNELL_BELL[3], 0.9, 0.18),
+    ring(KNELL_BELL[4], 0.7, 0.16),
+    ring(KNELL_BELL[5], 0.45, 0.1),
+    // Crystal singing over it.
+    sine(1760.0, 1745.0, 0.5, 0.8, 0.04),
+    // The wash rolling out.
+    Layer {
+        delay: 0.12,
+        attack: 0.1,
+        ..noise(Filt::Low, 500.0, 90.0, 1.0, 1.0, 0.45)
+    },
+];
+
+/// A Knell let go early: the pipes' breath sighing out, falling, louder
+/// the further the charge had got.
+pub fn exhale(at: Vec3, charge: f32) -> Play {
+    Play::at(EXHALE, at, 0.4 + 0.8 * charge, 0.7 + 0.4 * charge)
+}
+
+const EXHALE: &[Layer] = &[
+    Layer {
+        attack: 0.02,
+        q: 1.5,
+        ..noise(Filt::Band, 1400.0, 300.0, 0.25, 0.3, 0.45)
+    },
+    sine(220.0, 110.0, 0.2, 0.3, 0.2),
+    sine(330.0, 150.0, 0.2, 0.25, 0.12),
+];
+
+/// A Knell ringing up: an organ chord breathed through the pipes, rising
+/// and swelling as the charge builds, with the crystal's shimmer over it.
+#[derive(Default)]
+pub struct Hum {
+    level: Smooth,
+    phase: [f32; 4],
+    breath: Svf,
+}
+
+impl Loop for Hum {
+    fn set(&mut self, p: &TankParams) {
+        self.level.target = p.charge;
+    }
+
+    fn next(&mut self, n: f32, _noise: &mut Noise, sr: f32, k: &Coefs) -> f32 {
+        let c = self.level.next(k.fast);
+        if c <= 0.001 {
+            return 0.0;
+        }
+        // Root, fifth, octave and a shimmering twelfth, all climbing an
+        // octave over the charge.
+        let root = 55.0 * (1.0 + c);
+        let mut tone = 0.0;
+        for (i, (mul, gain)) in [(1.0, 0.5), (1.5, 0.3), (2.0, 0.25), (3.0 + 0.004, 0.12)]
+            .into_iter()
+            .enumerate()
+        {
+            self.phase[i] = (self.phase[i] + root * mul / sr).fract_q();
+            tone += (self.phase[i] * std::f32::consts::TAU).sin_q() * gain;
+        }
+        let breath = self.breath.run(n, 700.0 + 1800.0 * c, 1.2, sr).band;
+        (tone + breath * 0.3) * c.powf(1.5) * 0.8
+    }
+}
+
 /// Flamethrower: a roar with crackle in it.
 #[derive(Default)]
 pub struct Flame {
@@ -166,6 +249,8 @@ mod tests {
             ("pelekys", PELEKYS),
             ("wisp", WISP),
             ("triad", TRIAD),
+            ("knell", KNELL),
+            ("exhale", EXHALE),
         ]);
     }
 
@@ -176,9 +261,9 @@ mod tests {
     fn imperium_guns_boom_not_snap() {
         let sr = 48_000.0;
         let render = |layers: &'static [Layer]| {
-            let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+            let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 0.0), 1.0, 7, sr);
             let mut buf = vec![0.0; 2 * (length(layers) * sr) as usize];
-            v.render(&mut buf, sr);
+            v.render(&mut buf);
             buf.iter().step_by(2).copied().collect::<Vec<f32>>()
         };
         for (name, layers) in [("kontos", KONTOS), ("pelekys", PELEKYS)] {

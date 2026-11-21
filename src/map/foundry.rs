@@ -25,7 +25,7 @@ const MID: f32 = SIZE * 0.5;
 const CENTER: Vec2 = Vec2::new(MID, MID);
 /// Clearance a spawn needs from anything solid: the Gravis's corner
 /// radius, so it can face any way without touching.
-const TANK_CLEAR: f32 = 4.4;
+const TANK_CLEAR: f32 = 4.6;
 
 /// The hall: walls from `HALL_MIN` to `HALL_MAX`, `HALL_H` tall.
 const HALL_MIN: Vec2 = Vec2::new(56.0, 52.0);
@@ -157,6 +157,7 @@ impl Map {
         map.production_lines(&mut rng);
         map.stockpiles(&mut rng);
         map.fallen_cubes(&mut rng);
+        map.yard_wall();
         map.foundry_spawns();
         map.perimeter(false);
         map.foundry_horizon(&mut rng);
@@ -895,6 +896,94 @@ impl Map {
         }
     }
 
+    /// The works' yard wall round the edge: the hall's pale shell panels on
+    /// a dark plinth, lower, chipped and broken down here and there, and
+    /// where a panel was blown out the hole is stopped with tungsten cubes.
+    /// Built on the west half and mirrored.
+    fn yard_wall(&mut self) {
+        let mut rng = Rng::new(0x00ba_11ed);
+        const PANEL: f32 = 6.0;
+        // (start, end) of each run, west edge and the west halves of the
+        // north and south edges, overlapping at the corners.
+        let t = WALL_T * 0.5;
+        let runs = [
+            (Vec2::new(0.0, -t), Vec2::new(0.0, SIZE + t)),
+            (Vec2::new(-t, 0.0), Vec2::new(MID, 0.0)),
+            (Vec2::new(-t, SIZE), Vec2::new(MID, SIZE)),
+        ];
+        // Piers at the corners and where the halves meet, a little taller
+        // and thicker than the panels.
+        for at in [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.0, SIZE),
+            Vec2::new(MID, 0.0),
+            Vec2::new(MID, SIZE),
+        ] {
+            self.twin(
+                at,
+                Vec2::splat(0.9),
+                -0.6,
+                7.4,
+                SHELL_DARK,
+                Material::Concrete,
+                true,
+            );
+        }
+        for (a, b) in runs {
+            let len = a.distance(b);
+            let dir = (b - a) / len;
+            let n = (len / PANEL).ceil() as usize;
+            let seg = len / n as f32;
+            for k in 0..n {
+                let mid = a + dir * (seg * (k as f32 + 0.5));
+                let half = if dir.x.abs() > 0.5 {
+                    Vec2::new(seg * 0.5, t)
+                } else {
+                    Vec2::new(t, seg * 0.5)
+                };
+                if rng.chance(0.14) {
+                    // Blown out and stopped: two great cubes in the gap,
+                    // a smaller one dropped on top now and then.
+                    let s = 4.0;
+                    for side in [-1.0f32, 1.0] {
+                        let at = mid + dir * side * 2.0;
+                        self.cube(at, -0.6, s, rng.range(-0.08, 0.08), 0.0, true, true);
+                    }
+                    if rng.chance(0.5) {
+                        let at = mid + dir * rng.range(-1.0, 1.0);
+                        let small = rng.range(1.6, 2.4);
+                        self.cube(at, s - 0.6, small, rng.range(0.0, TAU), 0.0, false, true);
+                    }
+                    continue;
+                }
+                // The plinth stands a little proud of the panel (which runs down
+                // through it to the ground).
+                let plinth = half + Vec2::new(dir.y.abs(), dir.x.abs()) * 0.1;
+                self.twin(mid, plinth, -0.6, 1.0, SHELL_DARK, Material::Concrete, true);
+                let broken = rng.chance(0.2);
+                let top = if broken {
+                    rng.range(2.8, 4.2)
+                } else {
+                    rng.range(5.6, 6.6)
+                };
+                let panel = self.twin(mid, half, -0.6, top, SHELL, Material::Painted, true);
+                self.edit_twin(panel, |o| {
+                    o.broken = broken;
+                    o.chip = 0.15;
+                });
+                // The green seam along it, proud of both faces.
+                let lit = !broken && rng.chance(0.4);
+                let seam = half + Vec2::new(dir.y.abs(), dir.x.abs()) * 0.16;
+                let (color, mat) = if lit {
+                    (GREEN, Material::Glow)
+                } else {
+                    (SHELL_DARK, Material::Concrete)
+                };
+                self.twin(mid, seam, 1.05, 1.2, color, mat, false);
+            }
+        }
+    }
+
     /// Bases at the west and east edges; roam points along the lanes and
     /// in the hall; repair crates in the hall and the north and south yards.
     fn foundry_spawns(&mut self) {
@@ -1059,6 +1148,13 @@ mod tests {
                 assert!(!nav.path(p, g).is_empty(), "no path from {p} to {g}");
             }
         }
+    }
+
+    /// The yard wall closes the edge all round: nowhere can a tank drive
+    /// up to the backstop.
+    #[test]
+    fn the_yard_wall_closes_the_edge() {
+        Map::foundry().assert_edge_walled(0.3, |_| false);
     }
 
     #[test]

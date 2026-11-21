@@ -5,7 +5,7 @@
 //! radiator fins on the rear deck behind the citadel.
 //! Green light runs in its seams. And the Lumen turret, in the same style.
 
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::model::{
     CARBON, CARBON_LIGHT, HullModel, METAL, Rig, Running, Skin, TurretModel, at_x, at_z, block,
@@ -251,10 +251,11 @@ pub fn gravis() -> HullModel {
         SHELL_DARK,
     );
 
-    // Turret ring plinth.
+    // Turret ring plinth, standing proud of the citadel's roof (flush, its
+    // top would z-fight with the roof).
     round(
         &mut m,
-        &[at_y_ring(1.15, 2.74), at_y_ring(1.1, 2.8)],
+        &[at_y_ring(1.15, 2.76), at_y_ring(1.1, 2.84)],
         0.02,
         CARBON_LIGHT,
     );
@@ -331,11 +332,15 @@ pub fn gravis() -> HullModel {
         );
     }
 
+    // Everything outboard of the citadel's core moves out a side.
+    widen(&mut m);
+    widen(&mut light);
+
     HullModel {
         body: m,
         heat_light: light,
         running: Running {
-            track_x: 1.6,
+            track_x: 1.6 + WIDEN,
             track_width: 0.86,
             // A high sprocket at the back, so the track climbs to it.
             sprocket: Wheel {
@@ -354,7 +359,51 @@ pub fn gravis() -> HullModel {
                 })
                 .collect(),
         },
-        mount: v(0.0, 2.8, MOUNT_Z),
+    }
+}
+
+/// How much wider a side the Gravis is than the coordinates above say:
+/// the shell, citadel flanks, pods and tracks all sit this much further out.
+/// A wider stance lets its long tracks turn (see `HullStats::GRAVIS`).
+pub(crate) const WIDEN: f32 = 0.25;
+/// Points closer to the centerline than this stay put (the tub between the
+/// tracks, the turret ring, the centre panels); the rest move out by
+/// `WIDEN`. A face with points on both sides of it is stretched, so its
+/// normals are turned to match its new slope.
+const WIDEN_FROM: f32 = 1.2;
+
+fn widen(mesh: &mut MeshData) {
+    let moved: Vec<bool> = mesh
+        .verts
+        .iter()
+        .map(|v| v.pos[0].abs() > WIDEN_FROM)
+        .collect();
+    let before: Vec<Vec3> = mesh.verts.iter().map(|v| Vec3::from(v.pos)).collect();
+    for (vert, &m) in mesh.verts.iter_mut().zip(&moved) {
+        if m {
+            vert.pos[0] += WIDEN * vert.pos[0].signum();
+        }
+    }
+    let mut turned = vec![false; mesh.verts.len()];
+    for tri in mesh.indices.chunks_exact(3) {
+        let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| i as usize);
+        if moved[a] == moved[b] && moved[b] == moved[c] {
+            continue;
+        }
+        let face = |p: [Vec3; 3]| (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+        let old = face([before[a], before[b], before[c]]);
+        let new = face([a, b, c].map(|i| Vec3::from(mesh.verts[i].pos)));
+        if old == Vec3::ZERO || new == Vec3::ZERO {
+            continue;
+        }
+        let turn = Quat::from_rotation_arc(old, new);
+        for i in [a, b, c] {
+            if std::mem::replace(&mut turned[i], true) {
+                continue;
+            }
+            let n = turn * Vec3::from(mesh.verts[i].normal);
+            mesh.verts[i].normal = n.into();
+        }
     }
 }
 
@@ -554,9 +603,8 @@ pub fn lumen() -> TurretModel {
         barrel_light,
         mantlet,
         barrel,
-        pivot: v(0.0, 0.42, 0.92) * LUMEN_SCALE,
         barrels: vec![Vec3::ZERO],
-        muzzle: 3.2 * LUMEN_SCALE,
+        muzzle: crate::sim::TurretKind::Lumen.reach(),
         rig: Rig::Recoil,
         recoil: 0.0,
     }

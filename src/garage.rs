@@ -60,7 +60,7 @@ const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
 /// What you'll deploy with.
 const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
-/// Parts you can't buy yet (not enough trust with their maker).
+/// Parts you can't buy yet (not enough reputation with their maker).
 const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
 const LOCKED_NAME: Rgba = [0.86, 0.47, 0.38, 0.5];
 /// Open/close transition speed (1 / seconds).
@@ -86,7 +86,7 @@ pub const HULLS: [HullKind; 5] = [
     HullKind::Vigil,
     HullKind::Gravis,
 ];
-pub const TURRETS: [TurretKind; 6] = TurretKind::ALL;
+pub const TURRETS: [TurretKind; 7] = TurretKind::ALL;
 
 pub fn hull_name(k: HullKind) -> &'static str {
     match k {
@@ -106,6 +106,7 @@ pub fn turret_name(k: TurretKind) -> &'static str {
         TurretKind::Ossrin => "OSSRIN",
         TurretKind::Lumen => "LUMEN",
         TurretKind::Hymn => "HYMN",
+        TurretKind::Knell => "KNELL",
     }
 }
 
@@ -143,7 +144,7 @@ const HULL_STATS: [Stat; 7] = [
         name: "TOP SPEED",
         unit: "KM/H",
         decimals: 0,
-        get: |p, _| HullStats::of(hull_of(p)).max_speed * 3.6,
+        get: |p, l| l.hull(hull_of(p)).max_speed * 3.6,
     },
     Stat {
         name: "ACCEL",
@@ -155,7 +156,7 @@ const HULL_STATS: [Stat; 7] = [
         name: "TURN",
         unit: "°/S",
         decimals: 0,
-        get: |p, _| HullStats::of(hull_of(p)).turn_rate.to_degrees(),
+        get: |p, l| l.hull(hull_of(p)).turn_rate.to_degrees(),
     },
     Stat {
         name: "TRAVERSE",
@@ -890,7 +891,7 @@ impl Garage {
 
     /// One card: the part's thumbnail (dimmed if it isn't yours, darker and
     /// padlocked if you can't buy it yet), its name, and EQUIPPED, OWNED, a
-    /// price or the trust it needs.
+    /// price or the reputation it needs.
     fn draw_card(
         &self,
         p: &mut Painter,
@@ -957,14 +958,14 @@ impl Garage {
             Align::Left,
         );
 
-        let level = format!("M{}", profile.levels.of(part));
+        let level = crate::economy::level_label(profile.levels.of(part));
         let (tag, color) = if equipped {
             (format!("EQUIPPED · {level}"), EQUIPPED)
         } else if owned {
             (format!("OWNED · {level}"), theme::DIM)
         } else if let Some(price) = price {
             if locked {
-                (format!("TRUST {}", price.standing), LOCKED)
+                (format!("REPUTATION {}", price.standing), LOCKED)
             } else if profile.crystals >= price.crystals {
                 (format!("{} CR", price.crystals), theme::FG)
             } else {
@@ -988,7 +989,9 @@ impl Garage {
         };
         let card_w = STATS_W + 2.0 * PANEL_PAD;
         let x = w - PANEL_TOP - card_w;
-        let card_h = 78.0 + stats.len() as f32 * 20.0 + 16.0;
+        let owned = profile.owns(part);
+        let track_h = if owned { UPGRADE_TRACK_H } else { 0.0 };
+        let card_h = 78.0 + track_h + stats.len() as f32 * 20.0 + 16.0;
         p.rect(
             Vec2::new(x, PANEL_TOP),
             Vec2::new(card_w, card_h),
@@ -1013,6 +1016,10 @@ impl Garage {
             Align::Left,
         );
         y += 36.0;
+        if owned {
+            upgrade_track(p, Vec2::new(x, y - 6.0), STATS_W, profile.levels.of(part));
+            y += track_h;
+        }
         for stat in stats {
             draw_stat(
                 p,
@@ -1054,6 +1061,33 @@ impl Garage {
         if ready {
             hits.add(p, min, size, Hit::Key(input));
         }
+    }
+}
+
+/// Height the upgrade track adds to the spec card.
+const UPGRADE_TRACK_H: f32 = 30.0;
+
+/// An owned part's climb to M3: its level, then one notch per upgrade step, filled up
+/// to where it is, with the marks (M1, M2) standing taller.
+fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8) {
+    use crate::economy::{MAX_LEVEL, STEPS_PER_MARK, level_label};
+    let lw = label(p, at, "UPGRADE ", Align::Left);
+    p.text(
+        at + Vec2::new(lw + TextStyle::LABEL.tracking, 0.0),
+        &level_label(level),
+        &TextStyle::LABEL,
+        Align::Left,
+    );
+    let y = at.y + 16.0;
+    let gap = 2.0;
+    let n = MAX_LEVEL as f32;
+    let notch = (w - gap * (n - 1.0)) / n;
+    for i in 0..MAX_LEVEL {
+        let x = at.x + i as f32 * (notch + gap);
+        let mark = (i + 1) % STEPS_PER_MARK == 0;
+        let h = if mark { 8.0 } else { 5.0 };
+        let color = if i < level { theme::FG } else { theme::FAINT };
+        p.rect(Vec2::new(x, y + 8.0 - h), Vec2::new(notch, h), color);
     }
 }
 
@@ -1115,13 +1149,13 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
     } else {
         match profile.can_buy(part) {
             Ok(cost) => (format!("BUY · {cost} CR"), true),
-            Err(Refusal::Trust(f, s)) => {
+            Err(Refusal::Reputation(f, s)) => {
                 let have = profile.standing_for(part);
                 // The longest that fits the button.
                 let text = [
-                    format!("LOCKED · {} TRUST {s} · YOU {have}", f.name()),
-                    format!("NEEDS {} TRUST {s} · YOU {have}", f.name()),
-                    format!("NEEDS TRUST {s} · YOU {have}"),
+                    format!("LOCKED · {} REPUTATION {s} · YOU {have}", f.name()),
+                    format!("NEEDS {} REPUTATION {s} · YOU {have}", f.name()),
+                    format!("NEEDS REPUTATION {s} · YOU {have}"),
                 ]
                 .into_iter()
                 .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
@@ -1139,10 +1173,10 @@ fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
     if !profile.owns(part) {
         return None;
     }
-    let next = profile.levels.of(part) + 1;
+    let next = crate::economy::level_label(profile.levels.of(part) + 1);
     Some(match profile.can_upgrade(part) {
-        Ok(cost) => (format!("UPGRADE TO M{next} · {cost} CR"), true),
-        Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO M{next} · NEED {cost} CR"), false),
+        Ok(cost) => (format!("UPGRADE TO {next} · {cost} CR"), true),
+        Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO {next} · NEED {cost} CR"), false),
         Err(_) => ("FULLY UPGRADED".to_string(), false),
     })
 }
@@ -1267,7 +1301,7 @@ mod tests {
     /// A pilot who owns everything.
     fn rich() -> Profile {
         let mut p = Profile::in_memory();
-        p.set_trust_all(100_000);
+        p.set_reputation_all(100_000);
         p.crystals = 100_000;
         for part in crate::economy::PARTS {
             let _ = p.buy(part);
@@ -1385,7 +1419,7 @@ mod tests {
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Buy(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
         // Once bought it's equipped.
-        p.set_trust_all(100_000);
+        p.set_reputation_all(100_000);
         p.crystals = 100_000;
         p.buy(pelekys).unwrap();
         let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);

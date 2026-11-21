@@ -531,7 +531,8 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(apply_fog(c, v.wpos), 1.0);
 }
 
-// Sky: fullscreen triangle at the far plane, drawn after geometry.
+// Sky: fullscreen triangle at the far plane (depth 0: the camera's depth is
+// reverse Z), drawn after geometry.
 struct SkyOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) ndc: vec2<f32>,
@@ -541,15 +542,15 @@ struct SkyOut {
 fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
     var o: SkyOut;
-    o.clip = vec4<f32>(p, 1.0, 1.0);
+    o.clip = vec4<f32>(p, 0.0, 1.0);
     o.ndc = p;
     return o;
 }
 
 @fragment
 fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
-    let far = g.inv_view_proj * vec4<f32>(v.ndc, 1.0, 1.0);
-    let near = g.inv_view_proj * vec4<f32>(v.ndc, 0.0, 1.0);
+    let far = g.inv_view_proj * vec4<f32>(v.ndc, 0.0, 1.0);
+    let near = g.inv_view_proj * vec4<f32>(v.ndc, 1.0, 1.0);
     let dir = normalize(far.xyz / far.w - near.xyz / near.w);
     return vec4<f32>(sky_color(dir), 1.0);
 }

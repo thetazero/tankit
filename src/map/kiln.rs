@@ -1,6 +1,6 @@
 //! The Kiln: Ithessar ground, and their weapons' ground. Slow plasma wants
 //! walls to bank off and corners to wait behind, so this is a warren: lanes
-//! winding through a forest of worked crystal, opening into small courts,
+//! winding between walls of squared stone, opening into small courts,
 //! with nowhere you can see (or shoot) more than a few dozen meters down.
 //! In the middle the Ithessar keep a sun: six great crystals lean in over a
 //! raised court and hold a ball of plasma between their tips. The Imperium
@@ -11,9 +11,9 @@
 //!
 //! - north: the canyon, wide and sunken, a river of plasma down its floor
 //! - middle: short and straight through a court to the kiln, the fast way in
-//! - south: the gallery, narrow and twisting, crystals leaning in overhead
+//! - south: the gallery, narrow and twisting between sheer stone walls
 //!
-//! Cross-cuts link the three near each base. Crystal fills everything else.
+//! Cross-cuts link the three near each base. Stone fills everything else.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -88,6 +88,8 @@ const BASE_MIN: Vec2 = Vec2::new(3.0, 62.0);
 const BASE_MAX: Vec2 = Vec2::new(27.0, 118.0);
 
 const SLATE: Vec3 = Vec3::new(0.19, 0.2, 0.22);
+/// The warren's worked stone: a cold blue-grey, a shade above the ground.
+const STONE: Vec3 = Vec3::new(0.15, 0.16, 0.19);
 const GLASS: Vec3 = Vec3::new(0.02, 0.065, 0.17);
 const CONCRETE: Vec3 = Vec3::new(0.56, 0.57, 0.6);
 const IMPERIAL: Vec3 = Vec3::new(0.78, 0.82, 0.9);
@@ -215,6 +217,7 @@ impl Map {
         map.river(&mut rng);
         map.ithessar_base();
         map.imperium_base(&mut rng);
+        map.kiln_rim();
         map.kiln_spawns();
         map.perimeter(false);
         map.kiln_horizon(&mut rng);
@@ -306,15 +309,15 @@ impl Map {
             let a = i as f32 / 6.0 * TAU;
             let out = Vec2::new(a.cos(), a.sin());
             let at = CENTER + out * (DAIS_R + 2.5);
-            self.crystal(at, rng.range(2.6, 3.4), 1.3, out, 0.25, i % 2 == 0, rng);
+            self.crystal(at, rng.range(2.6, 3.4), 1.3, out, 0.04, i % 2 == 0, rng);
             let beside = at + Vec2::new(-out.y, out.x) * 2.2;
-            self.crystal(beside, rng.range(1.6, 2.2), 0.9, out, 0.4, false, rng);
+            self.crystal(beside, rng.range(1.6, 2.2), 0.9, out, 0.06, false, rng);
         }
     }
 
-    /// Crystal everywhere that isn't a lane, court or base: tall along the
-    /// lane edges so they read as walls (and block sight), leaning out over
-    /// the lanes; sparser and bigger deeper in. Placed on the west half and
+    /// Stone everywhere that isn't a lane, court or base: worked blocks
+    /// along the lane edges, plumb and flat-faced so they read as walls,
+    /// block sight, and bank plasma true; sparser and bigger deeper in. Placed on the west half and
     /// mirrored, so both sides fight in the same warren.
     fn warren(&mut self, rng: &mut Rng) {
         let step = 4.2;
@@ -333,52 +336,55 @@ impl Map {
                 if depth > 10.0 && !rng.chance(0.18) {
                     continue;
                 }
-                // Lean out over whichever way is open.
+                // A block of stone squared to the lane beside it: its face
+                // flat and plumb, so plasma banks off it true. Each is a
+                // little wider than the grid, so they close up into a wall.
                 let e = 1.0;
                 let grad = Vec2::new(
                     openness(p + Vec2::X * e) - openness(p - Vec2::X * e),
                     openness(p + Vec2::Y * e) - openness(p - Vec2::Y * e),
                 );
                 let edge = depth < 6.0;
-                let r = (depth - 1.0).min(if edge { 2.4 } else { 4.5 }) * rng.range(0.75, 1.0);
                 let h = if edge {
-                    rng.range(6.0, 11.0)
+                    rng.range(6.0, 9.0)
                 } else {
-                    rng.range(8.0, 18.0)
+                    rng.range(8.0, 16.0)
                 };
-                let lean = if edge {
-                    rng.range(0.08, 0.28)
+                let shade = rng.range(0.85, 1.15);
+                let normal = if grad.length() > 0.01 {
+                    grad.normalize()
                 } else {
-                    rng.range(0.0, 0.2)
-                };
-                let lit = edge && rng.chance(0.22);
-                let dir = if grad.length() > 0.01 {
-                    grad
-                } else {
-                    Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0))
+                    Vec2::from_angle(rng.range(0.0, TAU))
                 };
                 let mirror = |q: Vec2| Vec2::new(SIZE - q.x, q.y);
                 let flip = |d: Vec2| Vec2::new(-d.x, d.y);
-                let seed = rng.next_u64();
-                for (q, d) in [(p, dir), (mirror(p), flip(dir))] {
-                    let mut r1 = Rng::new(seed);
-                    self.crystal(q, h, r.max(0.8), d, lean, lit, &mut r1);
-                }
-                // Edge walls get a small chip at their foot, so the wall
-                // isn't a clean line.
-                if edge && rng.chance(0.4) {
-                    let off = dir.normalize_or(Vec2::X) * (r * 0.9);
-                    let (ch, cr) = (rng.range(1.2, 2.5), rng.range(0.5, 0.9));
-                    let seed = rng.next_u64();
-                    if openness(p + off) < 3.0 {
-                        for (q, d) in [(p + off, dir), (mirror(p + off), flip(dir))] {
-                            let mut r1 = Rng::new(seed);
-                            self.crystal(q, ch, cr, d, 0.5, false, &mut r1);
-                        }
-                    }
+                for (q, n) in [(p, normal), (mirror(p), flip(normal))] {
+                    self.warren_block(q, n, h, shade, !edge);
                 }
             }
         }
+    }
+
+    /// One block of the warren at `at`, its face turned to `normal`
+    /// (along the ground), `h` tall; deep ones bigger.
+    fn warren_block(&mut self, at: Vec2, normal: Vec2, h: f32, shade: f32, deep: bool) {
+        let along = normal.perp();
+        let g = self.ground_height(at.x, at.y);
+        let size = if deep { 3.4 } else { 2.6 };
+        self.oboxes.push(OBox {
+            center: at,
+            // Local +z along the wall, local +x out of its face.
+            yaw: along.x.atan2(along.y),
+            half: Vec2::new(2.4, size),
+            y0: g - 1.0,
+            y1: g + h,
+            color: STONE * shade,
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
+            solid: true,
+            chip: 0.25,
+            ..OBox::default()
+        });
     }
 
     /// Plasma showing through cracks in the canyon floor: one jagged
@@ -535,6 +541,32 @@ impl Map {
                 solid: false,
                 ..OBox::default()
             });
+        }
+    }
+
+    /// The edge: the crystal grows thick all round, a palisade too tall
+    /// and too close-set to get through, leaning out over the berm. Behind
+    /// the Imperium's breach on the east it's knocked low and askew, leaning
+    /// in where they blasted their way through, but still standing.
+    fn kiln_rim(&mut self) {
+        let mut rng = Rng::new(0x0e0d_9e11);
+        for (p, inward) in self.edge_points(2.6, 4.0) {
+            let at = p - inward * rng.range(0.3, 1.0)
+                + Vec2::new(-inward.y, inward.x) * rng.range(-0.4, 0.4);
+            let breach = p.x > SIZE - 0.5 && (p.y - MID).abs() < 36.0;
+            let r = rng.range(2.5, 3.4);
+            let jitter = Vec2::new(rng.range(-0.6, 0.6), rng.range(-0.6, 0.6));
+            let (h, lean, dir) = if breach {
+                (rng.range(3.5, 6.5), rng.range(0.25, 0.5), inward + jitter)
+            } else {
+                (
+                    rng.range(8.0, 17.0),
+                    rng.range(0.05, 0.25),
+                    -inward + jitter,
+                )
+            };
+            let lit = !breach && rng.chance(0.12);
+            self.crystal(at, h, r, dir, lean, lit, &mut rng);
         }
     }
 
@@ -708,6 +740,13 @@ mod tests {
                 assert!(!nav.path(p, g).is_empty(), "no path from {p} to {g}");
             }
         }
+    }
+
+    /// Crystal closes the edge all round: nowhere can a tank drive up to
+    /// the backstop.
+    #[test]
+    fn the_edge_is_crystal() {
+        Map::kiln().assert_edge_walled(0.5, |_| false);
     }
 
     #[test]
