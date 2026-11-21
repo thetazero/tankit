@@ -195,6 +195,17 @@ fn tank_surface(m: i32, base: vec3<f32>, lpos: vec3<f32>, ln: vec3<f32>, wpos: v
         let fleck = smoothstep(0.95, 0.99, noise2(uv * 31.0 + vec2<f32>(lpos.y * 5.0, 0.0)));
         let flick = 0.6 + 0.4 * sin(g.params.x * 2.0 + lpos.z * 3.0);
         s.emissive = vec3<f32>(1.0, 0.36, 0.62) * fleck * 0.35 * flick;
+    } else if (m == MAT_ORE) {
+        // Raw crystal, uncut: cloudy and frosted, not glassy, crusted with
+        // rock dust in patches, and only a faint cold light deep in its
+        // clearer parts. Nobody's: the crystal both sides fight over.
+        let n = noise2(uv * 3.0) * 0.6 + noise2(uv * 11.0) * 0.4;
+        let crust = smoothstep(0.52, 0.78, noise2(uv * 1.7 + vec2<f32>(lpos.y * 0.6, 3.7)) * 0.75 + noise2(uv * 9.0) * 0.25);
+        let frost = 0.82 + 0.36 * n;
+        s.albedo = mix(base * frost, vec3<f32>(0.42, 0.34, 0.27) * (0.8 + 0.3 * n), crust * 0.8);
+        s.rough = mix(0.62, 0.92, crust);
+        let clear = (1.0 - crust) * smoothstep(0.62, 0.9, noise2(uv * 5.0 + vec2<f32>(1.3, lpos.y * 2.0)));
+        s.emissive = vec3<f32>(0.25, 0.55, 1.0) * clear * 0.07;
     } else if (m == MAT_METAL) {
         // Bare gunmetal: brushed along the part's long axis.
         let brush = noise2(vec2<f32>(uv.x * 3.0, uv.y * 80.0));
@@ -597,7 +608,7 @@ fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>)
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
     let m = i32(round(v.color.a));
-    let is_tank = m == MAT_CARBON || m == MAT_PAINT || m == MAT_TREAD || m == MAT_GLOW || m == MAT_METAL || m == MAT_WORN || m == MAT_VHAAL;
+    let is_tank = m == MAT_CARBON || m == MAT_PAINT || m == MAT_TREAD || m == MAT_GLOW || m == MAT_METAL || m == MAT_WORN || m == MAT_VHAAL || m == MAT_ORE;
     // On tanks the instance tint is the team color and only affects paint.
     let paint = m == MAT_PAINT || m == MAT_WORN;
     let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);

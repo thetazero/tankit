@@ -64,6 +64,12 @@ pub enum Material {
     /// Layered sandstone cliff face: beds, partings, joints, worked out in
     /// world space at the scale of a whole cliff (`cliff_surface`).
     Cliff,
+
+    // Tanks' object-space detail, on the map.
+    /// Raw crystal as it comes out of the rock: cloudy and frosted, crusted
+    /// with rock dust, a faint cold light deep in its clearer patches. The
+    /// same crystal glows (Glow, in crystal blue) once it's cut.
+    Ore,
 }
 
 impl Material {
@@ -91,6 +97,7 @@ impl Material {
         Material::Cloth,
         Material::Wood,
         Material::Cliff,
+        Material::Ore,
     ];
 
     /// What goes in the vertex color's alpha channel.
@@ -123,6 +130,7 @@ impl Material {
             Material::Cloth => "CLOTH",
             Material::Wood => "WOOD",
             Material::Cliff => "CLIFF",
+            Material::Ore => "ORE",
         }
     }
 
