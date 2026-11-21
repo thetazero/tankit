@@ -25,6 +25,8 @@ pub enum Action {
     Fire,
     CameraUp,
     CameraDown,
+    /// Ease the chase camera back to its usual tilt.
+    CameraReset,
     Scoreboard,
     /// Opens the garage in battle; in the garage it deploys.
     Garage,
@@ -57,7 +59,7 @@ impl Context {
 pub const SLOTS: usize = 2;
 
 /// Every action, in the order the settings panel lists them.
-pub const ACTIONS: [Action; 17] = [
+pub const ACTIONS: [Action; 18] = [
     Action::Forward,
     Action::Reverse,
     Action::TurnLeft,
@@ -68,6 +70,7 @@ pub const ACTIONS: [Action; 17] = [
     Action::Fire,
     Action::CameraUp,
     Action::CameraDown,
+    Action::CameraReset,
     Action::Scoreboard,
     Action::Garage,
     Action::NextHull,
@@ -95,6 +98,7 @@ impl Action {
             Action::Fire => "FIRE",
             Action::CameraUp => "CAMERA UP",
             Action::CameraDown => "CAMERA DOWN",
+            Action::CameraReset => "CAMERA RESET",
             Action::Scoreboard => "SCOREBOARD",
             Action::Garage => "GARAGE",
             Action::NextHull => "NEXT HULL",
@@ -118,6 +122,7 @@ impl Action {
             Action::Fire => "fire",
             Action::CameraUp => "camera_up",
             Action::CameraDown => "camera_down",
+            Action::CameraReset => "camera_reset",
             Action::Scoreboard => "scoreboard",
             Action::Garage => "garage",
             Action::NextHull => "next_hull",
@@ -151,8 +156,10 @@ impl Action {
             Action::TurretRight => (K::KeyX, None),
             Action::CenterTurret => (K::KeyC, None),
             Action::Fire => (K::Space, None),
-            Action::CameraUp => (K::PageUp, None),
-            Action::CameraDown => (K::PageDown, None),
+            // Q/E as in Tanki; in the garage they're the tab switch and equip.
+            Action::CameraUp => (K::KeyQ, Some(K::PageUp)),
+            Action::CameraDown => (K::KeyE, Some(K::PageDown)),
+            Action::CameraReset => (K::KeyR, None),
             Action::Scoreboard => (K::Tab, None),
             Action::Garage => (K::KeyG, None),
             Action::NextHull => (K::Digit1, None),
@@ -377,6 +384,22 @@ impl<'de> Deserialize<'de> for Binds {
             }
             binds.0[a.index()] = keys;
         }
+        // Saved before Q/E tilted the camera (camera_reset came with them):
+        // camera keys still on their old defaults get Q/E too, unless the
+        // pilot has put Q or E on something else in battle.
+        if !map.contains_key(Action::CameraReset.key()) {
+            for (action, old, new) in [
+                (Action::CameraUp, KeyCode::PageUp, KeyCode::KeyQ),
+                (Action::CameraDown, KeyCode::PageDown, KeyCode::KeyE),
+            ] {
+                let taken = ACTIONS.iter().any(|&o| {
+                    o != action && o.context().overlaps(action.context()) && binds.is(o, new)
+                });
+                if binds.keys(action) == [Some(old), None] && !taken {
+                    binds.0[action.index()] = [Some(new), Some(old)];
+                }
+            }
+        }
         Ok(binds)
     }
 }
@@ -408,6 +431,12 @@ mod tests {
         // Tab is the scoreboard in battle and the tab switch in the garage.
         assert!(b.is(Action::Scoreboard, KeyCode::Tab));
         assert!(b.is(Action::SwitchTab, KeyCode::Tab));
+        // Q/E tilt the camera in battle and work the garage there.
+        assert!(b.is(Action::CameraUp, KeyCode::KeyQ));
+        assert!(b.is(Action::SwitchTab, KeyCode::KeyQ));
+        assert!(b.is(Action::CameraDown, KeyCode::KeyE));
+        assert!(b.is(Action::Equip, KeyCode::KeyE));
+        assert!(b.is(Action::CameraReset, KeyCode::KeyR));
     }
 
     #[test]
@@ -451,5 +480,30 @@ mod tests {
         );
         let none: Binds = serde_json::from_str(r#"{"fire": []}"#).unwrap();
         assert_eq!(none.keys(Action::Fire), [None, None]);
+    }
+
+    #[test]
+    fn old_profiles_get_q_and_e_on_the_camera() {
+        // Saved with the old camera defaults: Q/E join them.
+        let old: Binds =
+            serde_json::from_str(r#"{"camera_up": ["PageUp"], "camera_down": ["PageDown"]}"#)
+                .unwrap();
+        assert_eq!(old, Binds::default());
+        // Rebound by the pilot, or Q already firing: left alone.
+        let old: Binds = serde_json::from_str(
+            r#"{"camera_up": ["Home"], "camera_down": ["PageDown"], "fire": ["KeyE"]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.keys(Action::CameraUp), [Some(KeyCode::Home), None]);
+        assert_eq!(
+            old.keys(Action::CameraDown),
+            [Some(KeyCode::PageDown), None]
+        );
+        // Saved since: what's there stays.
+        let new: Binds = serde_json::from_str(
+            r#"{"camera_up": ["PageUp"], "camera_down": ["PageDown"], "camera_reset": ["KeyR"]}"#,
+        )
+        .unwrap();
+        assert_eq!(new.keys(Action::CameraUp), [Some(KeyCode::PageUp), None]);
     }
 }

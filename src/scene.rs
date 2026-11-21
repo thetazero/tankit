@@ -445,12 +445,14 @@ const DODGE_RAISES: [f32; 7] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.25];
 const DODGE_SWINGS: [f32; 9] = [0.0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, 2.6, -2.6];
 /// The steepest the boom goes: not quite straight down at the tank.
 const BOOM_STEEPEST: f32 = 1.4;
+/// The chase camera's usual tilt, where it starts and where a reset eases it back.
+pub const TILT_HOME: f32 = 0.35;
 
 impl ChaseCam {
     pub fn new() -> ChaseCam {
         ChaseCam {
             yaw: 0.0,
-            tilt: 0.35,
+            tilt: TILT_HOME,
             focus: Vec3::ZERO,
             initialized: false,
             kick: 0.0,
