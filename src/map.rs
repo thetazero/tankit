@@ -1128,9 +1128,10 @@ impl Map {
         }
     }
 
-    /// Past the arena's edge: out of the fight (see `combat`).
+    /// Well past the arena's edge (12 m, so it rarely comes up): out of the
+    /// fight (see `combat`).
     pub fn is_out(&self, p: Vec3) -> bool {
-        let m = 1.0;
+        let m = 12.0;
         p.x < -m || p.z < -m || p.x > self.size + m || p.z > self.size + m
     }
 
