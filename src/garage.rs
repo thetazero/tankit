@@ -1181,27 +1181,6 @@ fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
     })
 }
 
-/// A slow orbit around `tank` at the garage's framing (tank right of the
-/// panel), for the main menu. `angle` is the camera's world yaw around it.
-pub fn orbit_camera(world: &World, tank: &Tank, angle: f32, aspect: f32) -> Camera {
-    let focus = tank.pos + Vec3::Y * 1.0;
-    let dir = Vec3::new(
-        angle.sin() * ORBIT_DIST,
-        ORBIT_HEIGHT,
-        angle.cos() * ORBIT_DIST,
-    );
-    let len = dir.length();
-    let hit = world.raycast(focus, dir / len, len);
-    let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
-    let right = (focus - pos).cross(Vec3::Y).normalize_or_zero();
-    let shift = (focus - pos).length() * 0.28 * (aspect / (16.0 / 9.0)).clamp(0.6, 1.2);
-    Camera {
-        pos,
-        target: focus - right * shift,
-        fov_y: 50f32.to_radians(),
-    }
-}
-
 /// The front three-quarter view angle for `tank`, where the garage swings to.
 pub fn front_angle(tank: &Tank) -> f32 {
     let f = tank.forward();

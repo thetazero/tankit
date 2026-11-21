@@ -30,6 +30,7 @@ mod sweep;
 mod tank;
 mod thumbs;
 mod ui;
+mod vista;
 
 use anyhow::{Context, Result, bail};
 use glam::Vec3;
@@ -858,9 +859,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         game.step(sim::Command::default(), false);
     }
     let (w, h) = (shot.width as f32, shot.height as f32);
-    let angle = garage::front_angle(&game.world.tanks[0]) + shot.time * 0.06;
+    let angle = vista::sway(garage::front_angle(&game.world.tanks[0]), shot.time);
     let tanks = game.display_tanks(1.0);
-    let camera = garage::orbit_camera(&game.world, &tanks[0], angle, w / h);
+    let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
     let mut frame = scene::build(&game.world, &tanks, &art, camera);
     frame.ui = menu.draw(&profile, h, 1.0).verts;
     if profile.settings.debug {

@@ -45,8 +45,6 @@ const HITCH_WORK: f32 = 0.05;
 /// Likewise a gap this long between frames that the frame's work doesn't
 /// explain (the window, the driver or the OS held the loop).
 const HITCH_GAP: f32 = 0.1;
-/// Main menu camera drift around the parked tank, rad/s.
-const MENU_ORBIT: f32 = 0.06;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
@@ -114,8 +112,10 @@ struct App {
     paid: bool,
     menu: Menu,
     pause: Pause,
-    /// Main menu camera angle around the parked tank.
+    /// The menu camera's angle around the parked tank, which it sways about.
     menu_orbit: f32,
+    /// Seconds the menu has been up (drives the camera's sway).
+    menu_time: f32,
     /// The mission (and side) whose map the menu backdrop shows.
     backdrop: (usize, usize),
     /// How long the mission screen has pointed at a different contract than
@@ -214,6 +214,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         menu: Menu::new(),
         pause: Pause::new(),
         menu_orbit,
+        menu_time: 0.0,
         backdrop: (0, 0),
         backdrop_wait: 0.0,
         backdrop_job: None,
@@ -274,12 +275,12 @@ fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
     p.finish()
 }
 
-/// The main menu's backdrop: the first mission's map, empty, your tank parked in it.
+/// The main menu's backdrop: the first mission's map, empty, your tank parked at its vista.
 pub fn menu_match(kit: garage::Loadout) -> Match {
     backdrop_match(0, 0, kit)
 }
 
-/// Mission `MISSIONS[i]`'s map, empty, your tank parked at side `side`'s base:
+/// Mission `MISSIONS[i]`'s map, empty, your tank parked at side `side`'s vista:
 /// the menu's backdrop while that contract is selected.
 pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
     let mission = &MISSIONS[i];
@@ -293,6 +294,7 @@ pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
         kit,
     );
     m.time_left = f32::INFINITY;
+    crate::vista::park(&mut m.world, crate::vista::of(mission.map_kind, side));
     // Already parked: no arrival (or its sound) each time the backdrop
     // changes, and no shield to drop with a cue.
     let me = &mut m.fighters[0];
@@ -992,7 +994,7 @@ impl App {
         }
         self.player_alive = alive;
         if self.mode == Mode::Menu && !self.garage.is_open() {
-            self.menu_orbit += MENU_ORBIT * dt;
+            self.menu_time += dt;
             self.follow_backdrop(dt);
         }
         let queued = self.queued();
@@ -1009,9 +1011,12 @@ impl App {
             // arrival draws it.
             let anchor = self.game.camera_tank(0, alpha);
             let mut camera = match (self.mode, self.camera) {
-                (Mode::Menu, _) => {
-                    garage::orbit_camera(&self.game.world, &anchor, self.menu_orbit, w / h)
-                }
+                (Mode::Menu, _) => crate::vista::camera(
+                    &self.game.world,
+                    &anchor,
+                    crate::vista::sway(self.menu_orbit, self.menu_time),
+                    w / h,
+                ),
                 // Frozen: hold the last frame's view.
                 (Mode::Paused, Some(c)) => c,
                 _ => self.cam.update(&self.game.world, &anchor, dt),
