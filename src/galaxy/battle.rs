@@ -75,9 +75,9 @@ pub struct Settled {
     pub shield_down: bool,
 }
 
-/// A system's name for the HUD: its catalogue number.
+/// A system's name for the HUD: its name, and its catalogue number.
 pub fn system_name(s: usize) -> String {
-    format!("SYSTEM {s:04}")
+    format!("{} · {s:04}", super::theater::system_name(s))
 }
 
 impl Stake {
@@ -96,11 +96,25 @@ impl Stake {
 /// Draw match `m`'s battle from the galaxy (before the round starts): where
 /// it's fought, and each side's hull allocation.
 pub fn deploy(g: &mut Galaxy, m: &mut Match) -> Battle {
-    let seats = (0..m.factions.len())
+    let b = g.muster(&m.factions, seats(m));
+    begin(g, m, b)
+}
+
+/// Draw match `m`'s battle at a theater's site: in `system`, over `site`
+/// (index into `Galaxy::sites`), between the match's teams.
+pub fn deploy_at(g: &Galaxy, m: &mut Match, system: usize, site: usize) -> Battle {
+    let b = g.muster_at(system, &m.factions, seats(m), Some(site));
+    begin(g, m, b)
+}
+
+fn seats(m: &Match) -> usize {
+    (0..m.factions.len())
         .map(|t| m.fighters.iter().filter(|f| f.team == t).count())
         .max()
-        .unwrap_or(1);
-    let b = g.muster(&m.factions, seats);
+        .unwrap_or(1)
+}
+
+fn begin(g: &Galaxy, m: &mut Match, b: Battle) -> Battle {
     m.set_allocation(&b.allocation);
     m.place = Some(system_name(b.system));
     log::info!(
@@ -206,6 +220,21 @@ impl Galaxy {
         } else {
             picks[self.rng.index(picks.len())]
         };
+        self.muster_at(system, factions, seats, None)
+    }
+
+    /// A battle between `factions` in system `system`, over `site` (index into
+    /// `Galaxy::sites`) if it's given, else a production site of whichever
+    /// side holds most there: what each side brings, as for `muster`.
+    pub fn muster_at(
+        &self,
+        system: usize,
+        factions: &[Faction],
+        seats: usize,
+        site: Option<usize>,
+    ) -> Battle {
+        let sides: Vec<usize> = factions.iter().map(|f| f.index()).collect();
+        let cap = PER_SEAT as f32 * seats as f32;
         let mut allocation = Vec::new();
         let mut sources = Vec::new();
         for &f in &sides {
@@ -225,13 +254,17 @@ impl Galaxy {
             allocation.push(want as u32);
             sources.push(from);
         }
-        // The site at stake: a production site of whichever side holds most here.
+        // The site at stake: the one asked for, else a production site of
+        // whichever side holds most here.
         let sys = &self.systems[system];
         let holder = sides.iter().copied().max_by_key(|&f| sys.held[f]);
         let (a, b) = sys.sites;
-        let site = (a as usize..b as usize).find(|&i| {
-            let site = &self.sites[i];
-            Some(site.owner as usize) == holder && matches!(site.kind, SiteKind::Production { .. })
+        let site = site.or_else(|| {
+            (a as usize..b as usize).find(|&i| {
+                let site = &self.sites[i];
+                Some(site.owner as usize) == holder
+                    && matches!(site.kind, SiteKind::Production { .. })
+            })
         });
         Battle {
             system,
@@ -289,9 +322,21 @@ impl Galaxy {
             match stake {
                 Stake::Hulls => {}
                 Stake::Site => {
-                    if let Some(i) = battle.site
-                        && self.sites[i].owner as usize != w
+                    // Only a loser's site is lost (never a bystander's).
+                    let at_stake = battle.site.filter(|&i| {
+                        let owner = self.sites[i].owner as usize;
+                        owner != w && battle.sides.contains(&owner)
+                    });
+                    if let Some(i) = at_stake
+                        && self.sites[i].kind == (SiteKind::Shield { down: 0 })
                     {
+                        // A generator that's up is knocked down first, as
+                        // the galaxy's own battles do; taken once it's down.
+                        self.sites[i].kind = SiteKind::Shield {
+                            down: super::REPAIR_TICKS,
+                        };
+                        shield_down = true;
+                    } else if let Some(i) = at_stake {
                         let old = self.sites[i].owner as usize;
                         self.sites[i].owner = w as u8;
                         let sys = &mut self.systems[battle.system];
@@ -305,11 +350,16 @@ impl Galaxy {
                     let (a, b) = self.systems[battle.system].sites;
                     let losers: Vec<usize> =
                         battle.sides.iter().copied().filter(|&f| f != w).collect();
-                    let i = (a as usize..b as usize).find(|&i| {
-                        let site = &self.sites[i];
+                    let up = |i: &usize| {
+                        let site = &self.sites[*i];
                         losers.contains(&(site.owner as usize))
                             && site.kind == (SiteKind::Shield { down: 0 })
-                    });
+                    };
+                    // The battle's own site if it's a losers' generator.
+                    let i = battle
+                        .site
+                        .filter(up)
+                        .or_else(|| (a as usize..b as usize).find(up));
                     if let Some(i) = i {
                         self.sites[i].kind = SiteKind::Shield {
                             down: super::REPAIR_TICKS,

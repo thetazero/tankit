@@ -21,8 +21,10 @@ use crate::bay::{self, BayArt};
 use crate::binds::{Action, Binds};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
+use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
 use crate::galaxy::save::War;
+use crate::galaxy::theater::Sortie;
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -115,6 +117,11 @@ struct App {
     battle: Option<Battle>,
     /// Rounds are missions: drawn from the galaxy.
     in_war: bool,
+    /// The theater site this round is fought at (a replay fights it again).
+    sortie: Option<Sortie>,
+    /// Where the Company has you posted, for each employer: a system, kept
+    /// until its fight is settled.
+    postings: [Option<usize>; 4],
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -209,6 +216,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
             launch.bots,
             launch.contract,
             loadout,
+            None,
         )
     };
     if launch.showroom.is_none() {
@@ -229,6 +237,8 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         war: War::load(),
         battle: None,
         in_war: false,
+        sortie: None,
+        postings: [None; 4],
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -287,8 +297,15 @@ pub fn new_match(
     bots: usize,
     contract: Contract,
     kit: garage::Loadout,
+    factions: Option<&[Faction]>,
 ) -> Match {
     let mut map = make_map(map_kind, map_seed);
+    // A theater's site, fought on a borrowed map: the theater's sides, not the map's.
+    if let Some(f) = factions
+        && f.len() == map.factions.len()
+    {
+        map.factions = f.to_vec();
+    }
     if side > 0 {
         map.swap_sides(side);
     }
@@ -335,6 +352,7 @@ pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
         0,
         Contract::Attrition,
         kit,
+        None,
     );
     m.time_left = f32::INFINITY;
     let v = crate::vista::of(&m.world.map, mission.map_kind, side);
@@ -478,10 +496,11 @@ impl App {
             self.bots,
             self.contract,
             kit,
+            self.sortie.map(|o| o.factions).as_ref().map(|f| &f[..]),
         );
         m.set_rating(self.rating);
         m.prize = self.unstolen_prize();
-        self.battle = self.in_war.then(|| battle::deploy(self.war.get(), &mut m));
+        self.battle = self.in_war.then(|| self.draw_battle(&mut m));
         self.load(m);
         self.mode = Mode::Playing;
     }
@@ -491,15 +510,27 @@ impl App {
         self.prize.filter(|&p| !self.profile.owns(p))
     }
 
-    /// Start mission `MISSIONS[i]`, hired by its side `side`.
-    fn start_mission(&mut self, i: usize, side: usize) {
+    /// Draw this round's battle from the galaxy: at the theater's site when
+    /// it's a sortie, else wherever the galaxy picks.
+    fn draw_battle(&mut self, m: &mut Match) -> Battle {
+        let g = self.war.get();
+        match self.sortie {
+            Some(o) => battle::deploy_at(g, m, o.system, o.site),
+            None => battle::deploy(g, m),
+        }
+    }
+
+    /// Deploy into a theater's site: its mission's map and contract, the
+    /// theater's sides (you with your employer, as side 0).
+    fn start_sortie(&mut self, o: Sortie, prize: Option<Part>) {
         self.leave_battle();
-        let m = &MISSIONS[i];
+        let m = &MISSIONS[o.mission];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
         // A generated map is a new one each sortie (the same again on a replay).
         self.map_seed = fresh_seed();
-        (self.contract, self.side, self.rating) = (m.contract, side, m.rating);
-        self.prize = m.prize(side);
+        (self.contract, self.side, self.rating) = (m.contract, 0, m.rating);
+        self.prize = prize;
+        self.sortie = Some(o);
         let mut game = new_match(
             self.seed,
             self.map_kind,
@@ -509,21 +540,45 @@ impl App {
             self.bots,
             self.contract,
             self.profile.loadout,
+            Some(&o.factions),
         );
         game.set_rating(self.rating);
         game.prize = self.unstolen_prize();
         self.in_war = true;
-        self.battle = Some(battle::deploy(self.war.get(), &mut game));
+        self.battle = Some(self.draw_battle(&mut game));
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(
-            "deployed: {} ({} {}, {}) for the {}",
-            m.name,
+            "deployed: {} site {} ({} {}, {}) for the {} against the {}",
+            battle::system_name(o.system),
+            o.site,
             m.rating_label(),
             m.contract.name(),
             m.map,
-            m.sides[side].name()
+            o.factions[0].name(),
+            o.factions[1].name(),
         );
+    }
+
+    /// Put the employer's theater on the missions screen, if it's showing
+    /// and isn't already up to date with the galaxy.
+    fn sync_theater(&mut self) {
+        let Some(f) = self.menu.posted_for() else {
+            return;
+        };
+        let rank = self.profile.rank().level;
+        let keep = self.postings[f.index()];
+        let g = self.war.get();
+        if self
+            .menu
+            .theater()
+            .is_some_and(|t| t.employer == f.index() && t.tick == g.tick)
+        {
+            return;
+        }
+        let t = g.theater(f.index(), keep, rank);
+        self.postings[f.index()] = t.as_ref().map(|t| t.system);
+        self.menu.set_theater(t);
     }
 
     /// Puts the menu backdrop on the selected contract's map once the
@@ -595,6 +650,7 @@ impl App {
     fn back_to_menu(&mut self) {
         self.leave_battle();
         self.in_war = false;
+        self.sortie = None;
         self.load(menu_match(self.profile.loadout));
         self.backdrop = (0, 0);
         self.backdrop_job = None;
@@ -846,15 +902,16 @@ impl App {
     }
 
     fn menu_action(&mut self, action: Option<menu::Action>, event_loop: &ActiveEventLoop) {
+        self.sync_theater();
         match action {
-            Some(menu::Action::Deploy(i, side)) => {
-                let m = &MISSIONS[i];
-                if m.open_at(self.profile.rank().level) {
-                    self.start_mission(i, side);
-                } else {
-                    // Not trusted with this one yet.
-                    self.audio.garage(audio::GarageCue::Refused);
-                }
+            Some(menu::Action::Fight(o)) => {
+                let owns = |p| self.profile.owns(p);
+                let prize = crate::galaxy::theater::prize(o.factions[1], o.site, owns);
+                self.start_sortie(o, prize);
+            }
+            Some(menu::Action::Refused) => {
+                // Your side isn't fighting there this tick.
+                self.audio.garage(audio::GarageCue::Refused);
             }
             Some(menu::Action::Garage) => {
                 if let Some(cam) = self.camera {
@@ -1153,9 +1210,9 @@ impl App {
             } else {
                 let (ui, hits) = match self.mode {
                     Mode::Menu => {
-                        let menu = self
-                            .menu
-                            .draw(&self.profile, h, 1.0 - self.garage.presence());
+                        let menu =
+                            self.menu
+                                .draw(&self.profile, w, h, 1.0 - self.garage.presence());
                         let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
                         // The dip around a backdrop swap, under the panel.
                         let mut ui = backdrop_dip(self.backdrop_dark, w, h);
@@ -1296,7 +1353,6 @@ mod tests {
         let (t2, homing) = tilt_step(0.0, false, true, true, dt);
         assert_eq!((t2, homing), (0.0, false));
     }
-    use crate::faction::Faction;
 
     /// Moving the menu between contracts swaps the backdrop's map: the tank is
     /// already parked there, so nothing arrives, rings or drops a shield.
@@ -1369,8 +1425,8 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let a = new_match(m.seed, m.map_kind, m.seed, 0, 0, 3, m.contract, kit);
-        let b = new_match(m.seed, m.map_kind, m.seed, 1, 0, 3, m.contract, kit);
+        let a = new_match(m.seed, m.map_kind, m.seed, 0, 0, 3, m.contract, kit, None);
+        let b = new_match(m.seed, m.map_kind, m.seed, 1, 0, 3, m.contract, kit, None);
         assert_eq!(a.factions, m.sides);
         assert_eq!(b.factions, [m.sides[1], m.sides[0]]);
         assert_eq!(b.world.map.bases[0], a.world.map.bases[1]);
