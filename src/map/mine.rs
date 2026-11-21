@@ -50,7 +50,8 @@ use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::crag;
 use super::landmarks::Rig;
-use super::valley::{hash, noise, noise2};
+use super::rocks;
+use super::valley::{noise, noise2};
 use super::vault;
 use super::{Ambient, Core, Crystal, Map, OBox, Terrain};
 use crate::faction::Faction;
@@ -782,6 +783,7 @@ impl Map {
             terrain: None,
             scenery_terrain: None,
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: Some(SAND),
             sounds: Vec::new(),
             open_spots: Vec::new(),
             spawn_yaw: None,
@@ -883,7 +885,6 @@ impl Map {
         map.mesa_face();
         map.mine_spawns();
         map.mine_horizon(&mut rng);
-        map.rock_lumps();
         map.mine_sounds();
         map
     }
@@ -916,48 +917,31 @@ impl Map {
         }
     }
 
-    /// A box of rock, solid, with chipped edges.
-    #[allow(clippy::too_many_arguments)]
-    fn stone(
-        &mut self,
-        center: Vec2,
-        yaw: f32,
-        half: Vec2,
-        y0: f32,
-        y1: f32,
-        color: Vec3,
-        chip: f32,
-    ) {
-        self.oboxes.push(OBox {
-            center,
-            yaw,
-            half,
-            y0,
-            y1,
-            color,
-            side_mat: Material::Rubble,
-            top_mat: Material::Rubble,
-            chip,
-            ..OBox::default()
-        });
+    /// A block of rock, solid (see `rocks::block`).
+    fn stone(&mut self, center: Vec2, yaw: f32, half: Vec2, y0: f32, y1: f32, color: Vec3) {
+        self.oboxes
+            .push(rocks::block(center, yaw, half, y0, y1, color));
+    }
+
+    /// The box just placed is rock from the rocks toolkit, of this `kind`
+    /// (ore heaped in a bin or a car: broken lumps, the heap a block).
+    fn last_is_rock(&mut self, kind: rocks::Kind) {
+        if let Some(o) = self.oboxes.last_mut() {
+            o.rock = Some(kind);
+        }
     }
 
     /// A boulder: a lump of rock (drawn and collided as one).
     fn boulder(&mut self, rng: &mut Rng, at: Vec2, size: f32, solid: bool) {
         let g = self.level(at);
         let shades = [STONE, STONE_DARK, STONE_PALE];
+        let yaw = rng.range(0.0, TAU);
+        let half = Vec2::new(size * rng.range(0.8, 1.1), size * rng.range(0.6, 0.9));
+        let top = g + size * rng.range(0.9, 1.4);
+        let color = shades[rng.index(shades.len())] * rng.range(0.9, 1.08);
         self.oboxes.push(OBox {
-            center: at,
-            yaw: rng.range(0.0, TAU),
-            half: Vec2::new(size * rng.range(0.8, 1.1), size * rng.range(0.6, 0.9)),
-            y0: g - size * 0.4,
-            y1: g + size * rng.range(0.9, 1.4),
-            color: shades[rng.index(shades.len())] * rng.range(0.9, 1.08),
-            side_mat: Material::Rubble,
-            top_mat: Material::Rubble,
-            chip: size.max(0.6),
             solid,
-            ..OBox::default()
+            ..rocks::boulder(at, yaw, half, g - size * 0.4, top, color)
         });
     }
 
@@ -1111,15 +1095,7 @@ impl Map {
             (Vec2::new(136.0, 134.0), -0.4),
         ] {
             let g = self.ground_height(p.x, p.y);
-            self.stone(
-                p,
-                yaw,
-                Vec2::new(3.2, 1.4),
-                g - 0.5,
-                g + 1.5,
-                STONE_DARK,
-                0.25,
-            );
+            self.stone(p, yaw, Vec2::new(3.2, 1.4), g - 0.5, g + 1.5, STONE_DARK);
         }
         rocks
     }
@@ -1151,7 +1127,6 @@ impl Map {
                 ROOF.0,
                 ROOF.0 + 14.0,
                 STONE_DARK,
-                0.0,
             );
         }
         // The seams: crystal growing out of them all the way up.
@@ -1771,8 +1746,8 @@ impl Map {
             y0: 4.0,
             y1: 4.12,
             color: STEEL * 0.4,
-            side_mat: Material::Rubble,
-            top_mat: Material::Rubble,
+            side_mat: Material::Metal,
+            top_mat: Material::Metal,
             solid: false,
             ..OBox::default()
         });
@@ -1900,7 +1875,6 @@ impl Map {
                 -0.6,
                 top,
                 [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.05),
-                0.5,
             );
             // Only a stand-in, so what's placed round it after stays where
             // it was: the Face is sculpted (`mesa_face`), and these blocks
@@ -1961,18 +1935,14 @@ impl Map {
             }
             let p = Vec2::new(x, face(x) + FACE_RISE + rng.range(0.0, 2.0));
             let g = self.ground_height(p.x, p.y);
+            let yaw = rng.range(-0.4, 0.4);
+            let half = Vec2::new(rng.range(1.2, 2.0), rng.range(0.9, 1.4));
+            let top = g + rng.range(1.0, 2.0);
+            let tilt = rng.range(-0.3, 0.3);
+            let color = STONE * rng.range(0.85, 1.05);
             self.oboxes.push(OBox {
-                center: p,
-                yaw: rng.range(-0.4, 0.4),
-                half: Vec2::new(rng.range(1.2, 2.0), rng.range(0.9, 1.4)),
-                y0: g - 1.0,
-                y1: g + rng.range(1.0, 2.0),
-                tilt: rng.range(-0.3, 0.3),
-                color: STONE * rng.range(0.85, 1.05),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: 0.6,
-                ..OBox::default()
+                tilt,
+                ..rocks::boulder(p, yaw, half, g - 1.0, top, color)
             });
         }
     }
@@ -2481,7 +2451,7 @@ impl Map {
                 Vec2::new(CAVE_WALL * 0.5, (hi - lo) * 0.5)
             };
             let shade = [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.0);
-            self.stone(c, 0.0, half, -0.5, y1, shade, 0.3);
+            self.stone(c, 0.0, half, -0.5, y1, shade);
             // The lining is drawn in its place (see `cave_lining`).
             if let Some(o) = self.oboxes.last_mut() {
                 o.hidden = true;
@@ -2765,7 +2735,6 @@ impl Map {
                     -0.5,
                     top,
                     [STONE, STONE_PALE][rng.index(2)] * rng.range(0.9, 1.0),
-                    0.2,
                 );
             }
         }
@@ -3474,8 +3443,9 @@ impl Map {
                 shade * rng.range(0.9, 1.1),
                 Material::Rubble,
                 false,
-                s * 0.4,
+                0.0,
             );
+            m.last_is_rock(rocks::Kind::Rubble);
         };
         if !full {
             for _ in 0..6 {
@@ -3553,19 +3523,14 @@ impl Map {
             let g = self.ground_height(c.x, c.y);
             let r = rng.range(0.3, 0.65);
             let shade = [ORE, ORE * 0.75, ORE * 1.2][rng.index(3)];
+            let yaw = rng.range(0.0, TAU);
+            let tilt = rng.range(-0.4, 0.4);
+            let half = Vec2::new(r * rng.range(0.8, 1.2), r * rng.range(0.8, 1.2));
+            let top = g + r * rng.range(0.6, 1.0);
             self.oboxes.push(OBox {
-                center: c,
-                yaw: rng.range(0.0, TAU),
-                tilt: rng.range(-0.4, 0.4),
-                half: Vec2::new(r * rng.range(0.8, 1.2), r * rng.range(0.8, 1.2)),
-                y0: g - r * 0.4,
-                y1: g + r * rng.range(0.6, 1.0),
-                color: shade,
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: r * 0.4,
+                tilt,
                 solid: false,
-                ..OBox::default()
+                ..rocks::rubble(c, yaw, half, g - r * 0.4, top, shade)
             });
         }
     }
@@ -3784,8 +3749,9 @@ impl Map {
                 shade * rng.range(0.9, 1.1),
                 Material::Rubble,
                 false,
-                s * 0.4,
+                0.0,
             );
+            m.last_is_rock(rocks::Kind::Rubble);
         };
         rig.part(
             self,
@@ -3797,6 +3763,7 @@ impl Map {
             false,
             0.0,
         );
+        self.last_is_rock(rocks::Kind::Block);
         let heap = |x: f32, z: f32| {
             let u = (1.0 - (x / bx).powi(2)) * (1.0 - (z / bz).powi(2));
             rim - 0.2 + 1.5 * u.max(0.0)
@@ -3864,18 +3831,17 @@ impl Map {
         for k in 0..4 {
             let p = b + ahead * (0.5 + k as f32 * 0.25) + Vec3::Y * (0.4 - k as f32 * 0.35);
             let s = rng.range(0.22, 0.32);
-            self.oboxes.push(OBox {
-                center: Vec2::new(p.x, p.z) + Vec2::new(across.x, across.z) * rng.range(-0.5, 0.5),
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::splat(s),
-                y0: p.y - s,
-                y1: p.y + s,
-                color: ORE * rng.range(0.8, 1.2),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: s * 0.4,
-                ..OBox::default()
-            });
+            let at = Vec2::new(p.x, p.z) + Vec2::new(across.x, across.z) * rng.range(-0.5, 0.5);
+            let yaw = rng.range(0.0, TAU);
+            let color = ORE * rng.range(0.8, 1.2);
+            self.oboxes.push(rocks::rubble(
+                at,
+                yaw,
+                Vec2::splat(s),
+                p.y - s,
+                p.y + s,
+                color,
+            ));
         }
         // Its supports. The belt crosses the rails just short of the bin,
         // so its last bent stands on the frame's end beam over them, not
@@ -4036,7 +4002,6 @@ impl Map {
                 g - 1.0,
                 g + rng.range(1.8, 2.6),
                 [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.9, 1.0),
-                0.7,
             );
             if let Some(o) = self.oboxes.last_mut() {
                 o.broken = true;
@@ -4449,6 +4414,7 @@ impl Map {
                 false,
                 0.0,
             );
+            self.last_is_rock(rocks::Kind::Rubble);
         }
         rig.part(
             self,
@@ -4460,6 +4426,7 @@ impl Map {
             false,
             0.0,
         );
+        self.last_is_rock(rocks::Kind::Block);
         for _ in 0..4 {
             let p = Vec3::new(
                 rng.range(-hx + 0.4, hx - 0.4),
@@ -4643,37 +4610,27 @@ impl Map {
             let g = self.ground_height(x, z);
             let w = rng.range(1.8, 2.4);
             let lean = Vec2::new(rng.range(-0.3, 0.3), rng.range(-0.3, 0.3));
-            // Base, waist, cap: narrower in the middle.
-            self.stone(
-                p,
-                rng.range(0.0, TAU),
-                Vec2::splat(w),
-                g - 1.0,
-                g + h * 0.45,
-                STONE * rng.range(0.9, 1.05),
-                0.6,
-            );
-            self.stone(
+            // Base, waist, cap: narrower in the middle, the soft rock
+            // under the cap weathered round.
+            let (yaw, color) = (rng.range(0.0, TAU), STONE * rng.range(0.9, 1.05));
+            // (A boulder stands on less of its box than a block: sized up to
+            // stand on what the hoodoo always has.)
+            let w = w * 1.15;
+            let base = rocks::boulder(p, yaw, Vec2::splat(w), g - 1.0, g + h * 0.45, color);
+            let (yaw, color) = (rng.range(0.0, TAU), STONE_PALE * rng.range(0.9, 1.0));
+            let waist = rocks::boulder(
                 p + lean,
-                rng.range(0.0, TAU),
+                yaw,
                 Vec2::splat(w * 0.7),
                 g + h * 0.4,
                 g + h * 0.85,
-                STONE_PALE * rng.range(0.9, 1.0),
-                0.5,
+                color,
             );
-            self.stone(
-                p + lean * 1.6,
-                rng.range(0.0, TAU),
-                Vec2::new(w * 1.15, w * 0.95),
-                g + h * 0.82,
-                g + h,
-                STONE_DARK * rng.range(0.9, 1.05),
-                0.6,
-            );
-            if let Some(o) = self.oboxes.last_mut() {
-                o.broken = true;
-            }
+            // The cap: a lump of the harder rock, wider than what holds it up.
+            let (yaw, color) = (rng.range(0.0, TAU), STONE_DARK * rng.range(0.9, 1.05));
+            let half = Vec2::new(w * 1.15, w * 0.95);
+            let cap = rocks::boulder(p + lean * 1.6, yaw, half, g + h * 0.82, g + h, color);
+            self.oboxes.extend([base, waist, cap]);
         }
         // The fins' rock, standing out of the sand drifted against them.
         for &(a, b, _) in &FINS {
@@ -4692,7 +4649,6 @@ impl Map {
                     g - rise - 0.3,
                     g + rng.range(0.6, 1.8),
                     [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.88, 1.02),
-                    0.5,
                 );
                 if let Some(o) = self.oboxes.last_mut() {
                     o.broken = true;
@@ -4953,97 +4909,6 @@ impl Map {
         self.oboxes.retain(|o| !(o.hidden && o.color == FACE_BLOCK));
     }
 
-    /// Every block of stone on the map drawn as rock, not a box: rounded,
-    /// lumpy, over its box (still its collider). The map's edge,
-    /// the box cut's sides, the hoodoos, boulders and rubble.
-    fn rock_lumps(&mut self) {
-        let mut mesh = std::mem::take(&mut self.sculpted);
-        for (k, o) in self.oboxes.iter_mut().enumerate() {
-            let stone = o.side_mat == Material::Rubble && o.top_mat == Material::Rubble;
-            if !stone || o.hidden || o.sculpted {
-                continue;
-            }
-            o.sculpted = true;
-            let hy = (o.y1 - o.y0) * 0.5;
-            let half = Vec3::new(o.half.x, hy, o.half.y);
-            let centre = o.center3();
-            let rot = o.rotation();
-            let seed = k as u32 * 7 + 3;
-            let small = half.min_element();
-            // Big blocks get more facets.
-            let big = half.max_element() > 2.0;
-            let (rows, cols) = if half.max_element() > 6.0 {
-                (12usize, 18usize)
-            } else if big {
-                (8, 12)
-            } else {
-                (6, 8)
-            };
-            let jag = |i: usize, j: usize, c: u32| hash(i as i32, j as i32, seed + c) - 0.5;
-            // A rounded box over the block, a little proud of it so its
-            // corners don't show, broken into facets.
-            let spow = |c: f32, e: f32| c.signum() * c.abs().powf(e);
-            let point = |i: usize, j: usize| {
-                let j = j % cols;
-                let wobble = if i == 0 || i == rows - 1 {
-                    0.0
-                } else {
-                    0.35 * jag(i, j, 0)
-                };
-                let phi = -FRAC_PI_2 + PI * (i as f32 + wobble * 0.5) / (rows - 1) as f32;
-                let th = TAU * (j as f32 + wobble) / cols as f32 + seed as f32;
-                // Flat-ish top and steep sides, round across.
-                let (ev, eh) = (0.45, 0.8);
-                let d = Vec3::new(
-                    spow(phi.cos(), ev) * spow(th.cos(), eh),
-                    spow(phi.sin(), ev),
-                    spow(phi.cos(), ev) * spow(th.sin(), eh),
-                );
-                let q = d * half * 1.1;
-                let w = rot * q + centre;
-                // Lumps across it, and every corner pushed in or out.
-                let lump = noise2(w.x * 0.35 + w.z * 0.15, w.y * 0.4, seed) - 0.5;
-                let push = (0.45 * lump + 0.35 * jag(i, j, 1))
-                    * (0.4 * small + 0.15).min(1.2 + 0.08 * half.max_element());
-                w + (rot * d.normalize_or_zero()) * push
-            };
-            let at = |i: usize, j: usize| point(i, j);
-            let mut tris: Vec<[Vec3; 3]> = Vec::new();
-            for i in 0..rows - 1 {
-                for j in 0..cols {
-                    let q = [at(i, j), at(i, j + 1), at(i + 1, j + 1), at(i + 1, j)];
-                    tris.push([q[0], q[2], q[1]]);
-                    tris.push([q[0], q[3], q[2]]);
-                }
-            }
-            // Flat shaded: each facet its own plane.
-            for t in tris {
-                let mut n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
-                let mid = (t[0] + t[1] + t[2]) / 3.0;
-                if n.dot(mid - centre) < 0.0 {
-                    n = -n;
-                }
-                let shade = 0.88
-                    + 0.24
-                        * hash(
-                            (mid.x * 3.0) as i32,
-                            (mid.y * 3.0 + mid.z * 5.0) as i32,
-                            seed,
-                        );
-                let base = mesh.verts.len() as u32;
-                for p in t {
-                    mesh.verts.push(crate::render::mesh::Vertex {
-                        pos: p.to_array(),
-                        normal: n.to_array(),
-                        color: (o.color * shade).extend(Material::Cliff.id()).to_array(),
-                    });
-                }
-                mesh.indices.extend([base, base + 1, base + 2]);
-            }
-        }
-        self.sculpted = mesh;
-    }
-
     /// The edge: a wall of boulders all the way round, on whatever ground
     /// it meets (the flats, the mesa, the adit's floor).
     fn edge_rocks(&mut self, rng: &mut Rng) {
@@ -5071,18 +4936,17 @@ impl Map {
                     self.ground_height(p.x, p.y)
                 })
                 .fold(g, f32::min);
-            self.oboxes.push(OBox {
-                center: at,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(size, size * rng.range(0.85, 1.0)),
-                y0: low.min(g - 1.5),
-                y1: g + tall,
-                color: shades[rng.index(shades.len())] * rng.range(0.85, 1.05),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: 1.0,
-                ..OBox::default()
-            });
+            let yaw = rng.range(0.0, TAU);
+            let half = Vec2::new(size, size * rng.range(0.85, 1.0));
+            let color = shades[rng.index(shades.len())] * rng.range(0.85, 1.05);
+            self.oboxes.push(rocks::boulder(
+                at,
+                yaw,
+                half,
+                low.min(g - 1.5),
+                g + tall,
+                color,
+            ));
         }
     }
 
@@ -5258,18 +5122,14 @@ impl Map {
             let g = scenery_ground(at.x, at.y) - 2.0;
             let w = rng.range(10.0, 30.0);
             let h = rng.range(12.0, 40.0);
+            let yaw = rng.range(0.0, TAU);
+            let half = Vec2::new(w, w * rng.range(0.5, 0.9));
+            let color = [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.0);
+            // Buttes: flat-topped, broken off a mesa long ago.
             self.oboxes.push(OBox {
-                center: at,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(w, w * rng.range(0.5, 0.9)),
-                y0: g,
-                y1: g + h,
-                color: [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.0),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: 1.0,
                 solid: false,
-                ..OBox::default()
+                broken: true,
+                ..rocks::boulder(at, yaw, half, g, g + h, color)
             });
         }
     }
@@ -5891,15 +5751,16 @@ mod tests {
         from - w.raycast(Vec3::new(p.x, from, p.y), -Vec3::Y, from + 20.0)
     }
 
-    /// No block of stone on the map is drawn as a box (#249): each is
-    /// drawn as a lump of rock, or stands in for a sculpted face.
+    /// No block of stone on the map is drawn as a box (#249): each is a
+    /// rock from the rocks toolkit (#268), or stands in for a sculpted face.
     #[test]
     fn no_stone_drawn_as_a_box() {
         let map = Map::mine();
         for o in &map.oboxes {
-            let stone = o.side_mat == Material::Rubble && o.top_mat == Material::Rubble;
+            let stone = [Material::Rubble, Material::Cliff].contains(&o.side_mat)
+                && o.top_mat == o.side_mat;
             assert!(
-                !stone || o.hidden || o.sculpted,
+                !stone || o.hidden || o.rock.is_some(),
                 "a stone box drawn at {} ({}..{})",
                 o.center,
                 o.y0,
@@ -6720,7 +6581,7 @@ mod play {
             let on_map = o.center.min_element() > 0.0 && o.center.max_element() < SIZE;
             // Rock on the ground (not ore heaped in a car), short of the
             // edge's wall.
-            if o.side_mat != Material::Rubble
+            if o.rock.is_none()
                 || o.broken
                 || !on_map
                 || o.y0 >= m.ground_height(o.center.x, o.center.y)

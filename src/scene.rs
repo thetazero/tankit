@@ -4,6 +4,7 @@
 use crate::render::material::Material;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
+use crate::map::rocks::{Dust, Rock};
 use crate::map::{Hash, Map, Terrain, Wedge};
 use crate::render::mesh::{MeshData, Vertex};
 use crate::render::{Camera, Scene};
@@ -72,11 +73,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
     // Each is drawn grown by its own fraction of a millimetre instead, never
     // the same as any box it touches: the depth buffer tells them apart at
     // any range, and nothing visibly moves.
-    let oboxes: Vec<&crate::map::OBox> = map
-        .oboxes
-        .iter()
-        .filter(|o| !o.hidden && !o.sculpted)
-        .collect();
+    let oboxes: Vec<&crate::map::OBox> = map.oboxes.iter().filter(|o| !o.hidden).collect();
     let bounds: Vec<(Vec3, Vec3)> = map
         .boxes
         .iter()
@@ -97,8 +94,13 @@ pub fn map_mesh(map: &Map) -> MeshData {
             b.color.extend(b.top_mat.id()),
         );
     }
+    let ground = |p: Vec2| map.ground_height(p.x, p.y);
+    let dust = map.rock_dust.map(|color| Dust {
+        color,
+        ground: &ground,
+    });
     for (o, g) in oboxes.into_iter().zip(&mut grow) {
-        add_obox(o, g, &mut m);
+        add_obox(o, g, dust, &mut m);
     }
     for c in &map.crystals {
         c.mesh(&mut m);
@@ -162,10 +164,12 @@ fn growths(bounds: &[(Vec3, Vec3)]) -> Vec<f32> {
 
 /// A box turned about +y: built as an axis-aligned box at the origin, grown
 /// by `grow` (see `map_mesh`), then rotated into place.
-fn add_obox(o: &crate::map::OBox, grow: f32, m: &mut MeshData) {
+fn add_obox(o: &crate::map::OBox, grow: f32, dust: Option<Dust>, m: &mut MeshData) {
     let mut local = MeshData::default();
     let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
-    if o.chip > 0.0 || o.broken {
+    if let Some(rock) = Rock::of(o) {
+        rock.mesh(&mut local, o.center3(), o.rotation(), dust, false);
+    } else if o.chip > 0.0 || o.broken {
         worn_box(o, &mut local);
     } else {
         local.add_box(
@@ -204,21 +208,6 @@ fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
     let raw = (o.color * Vec3::new(0.78, 0.72, 0.66)).extend(Material::Rubble.id());
     let chip = o.chip.min(0.45 * hx.min(hz)).max(0.0);
 
-    // Rocks (heavily chipped rubble): an irregular outline, tapering to a
-    // lumpy top, instead of a chipped rectangle. The collider is the same shape.
-    if let Some(rock) = o.rock() {
-        let n = rock.ring.len();
-        for i in 0..n {
-            let (a, da) = rock.ring[i];
-            let (b, db) = rock.ring[(i + 1) % n];
-            let (ba, bb) = (rock.bottom(a), rock.bottom(b));
-            let (ta, tb) = (rock.top(a, da), rock.top(b, db));
-            m.facet([ba, bb, tb], Vec3::ZERO, face);
-            m.facet([ba, tb, ta], Vec3::ZERO, face);
-            m.facet([rock.peak, ta, tb], Vec3::new(0.0, -rock.hy, 0.0), top_c);
-        }
-        return;
-    }
     // Footprint ring, counter-clockwise, with per-point top drop and whether
     // the side face after this point is a chip face.
     let corners = [

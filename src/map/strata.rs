@@ -16,7 +16,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Quat, Vec2, Vec3, Vec3Swizzles};
+use glam::{Vec2, Vec3, Vec3Swizzles};
 
 use crate::render::material::Material;
 use crate::render::mesh::{MeshData, Vertex};
@@ -633,72 +633,4 @@ fn core(m: &mut MeshData, t: &Tower) {
         }
     }
     push(m, &pos, &nrm, &col, &mat, &tris);
-}
-
-/// A block of rock lying loose: a rounded box `half` across, lumpy, turned
-/// by `rot`, at `at`.
-pub fn block(
-    m: &mut MeshData,
-    at: Vec3,
-    half: Vec3,
-    rot: Quat,
-    color: Vec3,
-    floor: &dyn Fn(Vec2) -> f32,
-    key: u32,
-) {
-    let k = 5;
-    let r = (half.min_element() * 0.45).min(0.5);
-    let core = half - Vec3::splat(r);
-    let mut pos = Vec::new();
-    let mut want = Vec::new();
-    let mut tris = Vec::new();
-    // Six faces of a cube, each a grid.
-    let faces = [
-        (Vec3::X, Vec3::Y, Vec3::Z),
-        (-Vec3::X, Vec3::Z, Vec3::Y),
-        (Vec3::Y, Vec3::Z, Vec3::X),
-        (-Vec3::Y, Vec3::X, Vec3::Z),
-        (Vec3::Z, Vec3::X, Vec3::Y),
-        (-Vec3::Z, Vec3::Y, Vec3::X),
-    ];
-    for (nf, u, v) in faces {
-        let base = pos.len();
-        for i in 0..=k {
-            for j in 0..=k {
-                let c = nf
-                    + u * (i as f32 / k as f32 * 2.0 - 1.0)
-                    + v * (j as f32 / k as f32 * 2.0 - 1.0);
-                let q = c * half;
-                let inner = q.clamp(-core, core);
-                let n = (q - inner).normalize_or(nf);
-                let lp = inner + n * r;
-                let lump = 0.12 * half.min_element() * noise(lp * 0.9, key)
-                    + 0.04 * noise(lp * 2.5, key + 1);
-                let n = rot * n;
-                pos.push(at + rot * lp + n * lump);
-                want.push(n);
-            }
-        }
-        let mut local = Vec::new();
-        grid(&pos[base..], &want[base..], k + 1, k + 1, &mut local);
-        tris.extend(local.into_iter().map(|t| t.map(|i| i + base)));
-    }
-    // The faces' edges meet: share their normals.
-    let mut nrm = normals(&pos, &tris);
-    let mut shared: std::collections::HashMap<[i32; 3], Vec3> = Default::default();
-    let key_of = |p: Vec3| (p * 1000.0).round().as_ivec3().to_array();
-    let flat: Vec<Vec3> = pos.iter().map(|&p| p - at).collect();
-    for (p, n) in flat.iter().zip(&nrm) {
-        *shared.entry(key_of(*p)).or_default() += *n;
-    }
-    for (p, n) in flat.iter().zip(nrm.iter_mut()) {
-        *n = shared[&key_of(*p)];
-    }
-    let col: Vec<Vec3> = pos
-        .iter()
-        .zip(&nrm)
-        .map(|(&p, &n)| tint(p, n.normalize_or_zero(), floor(p.xz()), color, key))
-        .collect();
-    let mats = vec![Material::Cliff; pos.len()];
-    push(m, &pos, &nrm, &col, &mats, &tris);
 }

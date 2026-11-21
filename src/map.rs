@@ -16,6 +16,7 @@ mod kiln;
 mod landmarks;
 mod mine;
 mod props;
+pub mod rocks;
 mod ruins;
 mod saltmarket;
 mod sanctum;
@@ -86,9 +87,8 @@ pub struct OBox {
     /// Collides but isn't drawn: the collider for something drawn another
     /// way (a sculpted rock face).
     pub hidden: bool,
-    /// Drawn in the map's sculpted surfaces, not as a box (a block of stone
-    /// drawn as a lump of rock): seen, but not drawn here.
-    pub sculpted: bool,
+    /// Drawn as a rock from the rocks toolkit (see `rocks`), not a box.
+    pub rock: Option<rocks::Kind>,
 }
 
 impl Default for OBox {
@@ -109,7 +109,7 @@ impl Default for OBox {
             broken: false,
             ramp: false,
             hidden: false,
-            sculpted: false,
+            rock: None,
         }
     }
 }
@@ -134,47 +134,9 @@ impl Hash {
     }
 }
 
-/// A rock's shape, in its box's local frame (centered): an irregular ring
-/// round the foot, tapering to a lumpy top round a peak. Both the mesh and
-/// the collider are built from it, so tanks hit the rock they see.
-pub struct RockShape {
-    /// Foot outline, counter-clockwise, with how far each point's top drops (0..1).
-    pub ring: Vec<(Vec2, f32)>,
-    /// How much narrower the top ring is than the foot.
-    pub taper: f32,
-    pub peak: Vec3,
-    /// Half the box height.
-    pub hy: f32,
-}
-
-impl RockShape {
-    pub fn bottom(&self, p: Vec2) -> Vec3 {
-        Vec3::new(p.x, -self.hy, p.y)
-    }
-
-    pub fn top(&self, p: Vec2, drop: f32) -> Vec3 {
-        Vec3::new(
-            p.x * self.taper,
-            self.hy - drop * self.hy * 0.5,
-            p.y * self.taper,
-        )
-    }
-
-    /// Every vertex of the rock (local frame): its convex hull is the rock.
-    pub fn points(&self) -> Vec<Vec3> {
-        let mut out: Vec<Vec3> = self
-            .ring
-            .iter()
-            .flat_map(|&(p, d)| [self.bottom(p), self.top(p, d)])
-            .collect();
-        out.push(self.peak);
-        out
-    }
-}
-
 /// Convex hull of points on the ground plane, counter-clockwise (Andrew's
 /// monotone chain).
-fn convex_hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
+pub(crate) fn convex_hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
     pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     if pts.len() < 3 {
         return pts;
@@ -202,7 +164,7 @@ fn convex_hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
 }
 
 /// Distance from `p` to a convex counter-clockwise polygon (0 inside).
-fn polygon_distance(poly: &[Vec2], p: Vec2) -> f32 {
+pub(crate) fn polygon_distance(poly: &[Vec2], p: Vec2) -> f32 {
     match poly.len() {
         0 => return f32::MAX,
         1 => return poly[0].distance(p),
@@ -254,44 +216,20 @@ impl OBox {
         Vec2::new(d.dot(ax), d.dot(az))
     }
 
-    /// Heavily chipped rubble is drawn as a rock, not a box (see `rock`).
+    /// A rock (see `rocks`) that's drawn and collided as its own hull inside
+    /// the box, not the box: a boulder or rubble (a block keeps its box).
     pub fn is_rock(&self) -> bool {
-        self.chip >= 0.6 && self.side_mat == Material::Rubble
+        matches!(self.rock, Some(rocks::Kind::Boulder | rocks::Kind::Rubble))
     }
 
-    /// The rock this box is drawn as, if it's one: an irregular outline
-    /// inside the box, tapering to a lumpy top.
-    pub fn rock(&self) -> Option<RockShape> {
+    /// The rock's surface points in world space, if it collides as one (see
+    /// `is_rock`): their hull is what collides.
+    pub fn rock_points(&self) -> Option<Vec<Vec3>> {
         if !self.is_rock() {
             return None;
         }
-        let mut rng = Hash::of(Vec3::new(self.center.x, self.y0 + self.y1, self.center.y));
-        let (hx, hz) = (self.half.x, self.half.y);
-        let hy = (self.y1 - self.y0) * 0.5;
-        let n = 7 + (rng.f() * 3.0) as usize;
-        let phase = rng.f() * 6.28;
-        let ring = (0..n)
-            .map(|k| {
-                let a = k as f32 / n as f32 * std::f32::consts::TAU + phase + (rng.f() - 0.5) * 0.4;
-                let rad = 0.75 + 0.25 * rng.f();
-                (Vec2::new(a.cos() * hx, a.sin() * hz) * rad, rng.f())
-            })
-            .collect();
-        let taper = 0.55 + 0.2 * rng.f();
-        let peak = Vec3::new((rng.f() - 0.5) * hx * 0.3, hy, (rng.f() - 0.5) * hz * 0.3);
-        Some(RockShape {
-            ring,
-            taper,
-            peak,
-            hy,
-        })
-    }
-
-    /// The rock's vertices in world space, if this box is a rock.
-    pub fn rock_points(&self) -> Option<Vec<Vec3>> {
         let (c, r) = (self.center3(), self.rotation());
-        self.rock()
-            .map(|rock| rock.points().into_iter().map(|p| c + r * p).collect())
+        rocks::Rock::of(self).map(|rock| rock.points().into_iter().map(|p| c + r * p).collect())
     }
 
     /// Whether the box is turned out of the upright (tilted or rolled).
@@ -661,6 +599,8 @@ pub struct Map {
     /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
     /// drawn as they are, never collide.
     pub sculpted: crate::render::mesh::MeshData,
+    /// The sand or dust lying on the map's rocks (see `rocks`), if any.
+    pub rock_dust: Option<Vec3>,
     /// Things that make a sound of their own (a crystal singing, a furnace,
     /// a banner in the wind): heard as you get near (see
     /// `audio::sounds::places`).
@@ -1089,6 +1029,7 @@ impl Map {
             hold_name: "DEPOSIT",
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: None,
             sounds: Vec::new(),
         }
     }

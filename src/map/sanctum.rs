@@ -21,6 +21,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Quat, Vec2, Vec3};
 
+use super::rocks::{self, Dust, Kind, Rock};
 use super::strata;
 use super::{Ambient, DEFAULT_SIDES, GlowPath, Map, OBox, Terrain};
 use crate::render::material::Material;
@@ -120,6 +121,25 @@ fn mesa_top(x: f32, z: f32) -> f32 {
     let a = (z - CENTER.y).atan2(x - CENTER.x);
     let roll = 0.3 * (x * 0.07).sin() * (z * 0.05).cos() * smoothstep(60.0, 80.0, r);
     roll - bumps(a, &NOTCHES) * smoothstep(-8.0, -1.0, past_edge(p))
+}
+
+/// A block of sandstone lying loose on the floor at `at`, turned by `rot`:
+/// looks only, from the rocks toolkit.
+fn loose_block(m: &mut Map, at: Vec3, half: Vec3, rot: Quat, color: Vec3, rng: &mut Rng) {
+    let rock = Rock {
+        half,
+        kind: Kind::Block,
+        key: rng.next_u64() as u32,
+        color,
+        material: Material::Cliff,
+        broken: false,
+    };
+    let floor = |p: Vec2| ground(p.x, p.y);
+    let dust = Dust {
+        color: SAND,
+        ground: &floor,
+    };
+    rock.draw(&mut m.sculpted, at, rot, Some(dust));
 }
 
 fn ground(x: f32, z: f32) -> f32 {
@@ -243,6 +263,7 @@ impl Map {
             hold_name: "ALTAR",
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
+            rock_dust: Some(SAND),
             sounds: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 151, 151, ground);
@@ -304,20 +325,15 @@ impl Map {
         let mut rng = Rng::new(0x0b01_de55);
         let boulder = |m: &mut Map, rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| {
             let g = m.ground_height(at.x, at.y);
+            let yaw = rng.range(0.0, TAU);
+            let half = Vec2::new(s, s * rng.range(0.7, 1.0));
+            let (tilt, roll) = (rng.range(-0.15, 0.15), rng.range(-0.15, 0.15));
+            let color = STONE * rng.range(0.72, 0.92);
             m.oboxes.push(OBox {
-                center: at,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(s, s * rng.range(0.7, 1.0)),
-                y0: g - 1.5,
-                y1: g + h,
-                tilt: rng.range(-0.15, 0.15),
-                roll: rng.range(-0.15, 0.15),
-                color: STONE * rng.range(0.72, 0.92),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
+                tilt,
+                roll,
                 solid,
-                chip: 0.75,
-                ..OBox::default()
+                ..rocks::boulder(at, yaw, half, g - 1.5, g + h, color)
             });
         };
         for (p, inward) in self.edge_points(2.6, 4.0) {
@@ -385,14 +401,13 @@ impl Map {
                 * Quat::from_rotation_x(rng.range(-0.45, 0.45))
                 * Quat::from_rotation_z(rng.range(-0.45, 0.45));
             let color = shades[rng.index(shades.len())] * rng.range(0.9, 1.08);
-            strata::block(
-                &mut m.sculpted,
+            loose_block(
+                m,
                 Vec3::new(p.x, g + half.y * 0.35, p.y),
                 half,
                 rot,
                 color,
-                &floor,
-                rng.next_u64() as u32,
+                rng,
             );
         };
         // Slabs that came out of the face, at its foot below where they were.
@@ -450,16 +465,10 @@ impl Map {
                 let d = rng.range(r + 3.0, r + 8.0);
                 let p = c + Vec2::new(f.angle.cos(), f.angle.sin()) * d;
                 let g = ground(p.x, p.y);
-                strata::block(
-                    &mut self.sculpted,
-                    Vec3::new(p.x, g + half.y * 0.35, p.y),
-                    half,
-                    Quat::from_rotation_y(rng.range(0.0, TAU))
-                        * Quat::from_rotation_x(rng.range(-0.4, 0.4)),
-                    shades[k % shades.len()],
-                    &floor,
-                    rng.next_u64() as u32,
-                );
+                let rot = Quat::from_rotation_y(rng.range(0.0, TAU))
+                    * Quat::from_rotation_x(rng.range(-0.4, 0.4));
+                let at = Vec3::new(p.x, g + half.y * 0.35, p.y);
+                loose_block(self, at, half, rot, shades[k % shades.len()], rng);
             }
         }
     }
