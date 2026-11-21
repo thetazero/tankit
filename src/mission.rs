@@ -128,7 +128,7 @@ pub const MISSIONS: &[Mission] = &[
             "Keep the Resonant out of the mine. Most kills holds it.",
             "The seam is holy. Drive the miners off it.",
         ],
-        rating: 0,
+        rating: 10,
         standing: 1,
     },
 ];
@@ -203,10 +203,22 @@ mod tests {
         assert!(m.open_at(2));
         // Pays half as much again as an M0 contract.
         assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 3 / 2);
-        // The rest stay M0, open from the start.
-        for m in MISSIONS.iter().filter(|m| m.name != "FOUR WINDS") {
+        // The rest are open from the start, and all but Deep Vein are M0.
+        for m in MISSIONS
+            .iter()
+            .filter(|m| !["FOUR WINDS", "DEEP VEIN"].contains(&m.name))
+        {
             assert_eq!((m.rating, m.open_at(1)), (0, true), "{}", m.name);
         }
+    }
+
+    #[test]
+    fn deep_vein_is_t1() {
+        let m = MISSIONS.iter().find(|m| m.name == "DEEP VEIN").unwrap();
+        assert_eq!(m.rating_label(), "T1");
+        assert!(m.open_at(1), "open to a new pilot");
+        // Pays twice what a T0 contract does.
+        assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 2);
     }
 
     #[test]
