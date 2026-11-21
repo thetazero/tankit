@@ -76,7 +76,8 @@ take it alone hires a company to make up the difference. The company is
 **capital**: it puts its own machines at risk for a price, and realms pay it
 to carry that risk. A contract pays some crystal up front and a bonus if the
 world falls, and caps how many machines the company can lose; past that, it
-pulls out. Each realm that hires is better off for it, but hired force makes
+pulls out. A company is paid in crystal and buys its machines as it needs
+them, from whichever realm nearby sells cheapest. Each realm that hires is better off for it, but hired force makes
 war cheap to start, so the galaxy is more violent and poorer for the
 Company's being in it.
 
