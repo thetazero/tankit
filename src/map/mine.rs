@@ -328,6 +328,8 @@ const RAW: Vec3 = Vec3::new(0.1, 0.125, 0.17);
 const STEEL: Vec3 = Vec3::new(0.2, 0.21, 0.24);
 const RUST: Vec3 = Vec3::new(0.36, 0.22, 0.14);
 const TIMBER: Vec3 = Vec3::new(0.42, 0.32, 0.22);
+/// Black iron, gone brown at the edges: cart wheels and binding.
+const IRON: Vec3 = Vec3::new(0.16, 0.13, 0.11);
 const CONCRETE: Vec3 = Vec3::new(0.6, 0.57, 0.52);
 /// How bright a plasma lamp's light is, and how far it reaches (m).
 const LAMP_BRIGHT: f32 = 4.5;
@@ -2052,56 +2054,206 @@ impl Map {
         self.disc(hc, axle * 1.25, 0.6, PLASMA, Material::Glow);
     }
 
-    /// A small ore cart at `at` heading `yaw`: a steel tub on a steel
-    /// frame, full of raw crystal.
+    /// A small ore cart at `at` heading `yaw`: an open-top wooden tub,
+    /// plank sides bound in iron, on an iron frame and four iron wheels,
+    /// heaped over the rim with ore from the Crag. A plain box the size of
+    /// the tub is what tanks hit and hide behind.
     fn ore_cart(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
+        // Its detail comes from its own stream; the map's advances by what
+        // the old cart drew from it (three shards of eight draws), so
+        // everything built after keeps its layout.
+        skip(rng, 24);
+        let rng = &mut own_rng(at);
         let g = self.ground_height(at.x, at.y);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
             rot: Quat::from_rotation_y(yaw),
         };
-        rig.part(
+        let part = |m: &mut Map, c: Vec3, h: Vec3, color: Vec3, mat: Material, solid: bool| {
+            rig.part(m, c, h, Quat::IDENTITY, color, mat, solid, 0.0);
+        };
+        // The frame under the tub, and the axles.
+        part(
             self,
-            Vec3::new(0.0, 0.5, 0.0),
-            Vec3::new(0.9, 0.25, 1.5),
-            Quat::IDENTITY,
-            STEEL,
-            Material::Metal,
+            Vec3::new(0.0, 0.62, 0.0),
+            Vec3::new(0.7, 0.1, 1.45),
+            IRON,
+            Material::Rust,
             true,
-            0.0,
         );
-        rig.part(
-            self,
-            Vec3::new(0.0, 1.35, 0.0),
-            Vec3::new(1.05, 0.6, 1.6),
-            Quat::IDENTITY,
-            RUST * 1.1,
-            Material::Painted,
-            true,
-            0.0,
-        );
+        for z in [-1.0, 1.0] {
+            let a = rig.point(Vec3::new(-0.92, 0.35, z));
+            let b = rig.point(Vec3::new(0.92, 0.35, z));
+            self.segment(a, b, 0.06, IRON * 0.8, Material::Metal, false);
+            part(
+                self,
+                Vec3::new(0.0, 0.5, z),
+                Vec3::new(0.75, 0.08, 0.1),
+                IRON,
+                Material::Rust,
+                false,
+            );
+        }
+        // Iron wheels: a flanged rim, spokes' dark between, and a hub.
         for (x, z) in [(-0.95, -1.0), (0.95, -1.0), (-0.95, 1.0), (0.95, 1.0)] {
             let c = rig.point(Vec3::new(x, 0.35, z));
+            let axis = rig.rot * Vec3::X;
+            self.disc(c, axis * 0.07, 0.35, IRON * 0.75, Material::Metal);
             self.disc(
-                c,
-                rig.rot * Vec3::X * 0.08,
-                0.32,
-                STEEL * 0.8,
+                c - axis * (0.06 * x.signum()),
+                axis * 0.03,
+                0.42,
+                IRON * 0.65,
+                Material::Rust,
+            );
+            self.disc(
+                c + axis * (0.07 * x.signum()),
+                axis * 0.05,
+                0.12,
+                IRON * 1.2,
                 Material::Metal,
             );
         }
-        for _ in 0..3 {
-            let p = rig.point(Vec3::new(rng.range(-0.6, 0.6), 1.7, rng.range(-1.0, 1.0)));
-            let dir = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-            self.shard(
-                rng.next_u64(),
-                p,
-                rng.range(0.4, 0.9),
-                0.25,
-                dir,
-                rng.range(0.2, 0.6),
-                rng.chance(0.5),
+        // The tub's floor.
+        part(
+            self,
+            Vec3::new(0.0, 0.82, 0.0),
+            Vec3::new(0.95, 0.07, 1.5),
+            TIMBER * 0.7,
+            Material::Wood,
+            false,
+        );
+        // Dark inner boarding, seen through the gaps between the planks.
+        for s in [-1.0f32, 1.0] {
+            part(
+                self,
+                Vec3::new(s * 0.94, 1.35, 0.0),
+                Vec3::new(0.02, 0.58, 1.5),
+                TIMBER * 0.25,
+                Material::Wood,
                 false,
+            );
+            part(
+                self,
+                Vec3::new(0.0, 1.35, s * 1.49),
+                Vec3::new(0.9, 0.58, 0.02),
+                TIMBER * 0.25,
+                Material::Wood,
+                false,
+            );
+        }
+        // Plank sides, three boards high, each its own shade.
+        let (y0, board) = (0.75, 0.4);
+        for k in 0..3 {
+            let y = y0 + board * (k as f32 + 0.5);
+            let h = board * 0.43;
+            for s in [-1.0f32, 1.0] {
+                let shade = TIMBER * rng.range(0.55, 0.75);
+                part(
+                    self,
+                    Vec3::new(s * 0.98, y, 0.0),
+                    Vec3::new(0.07, h, 1.6),
+                    shade,
+                    Material::Wood,
+                    false,
+                );
+                let shade = TIMBER * rng.range(0.55, 0.75);
+                part(
+                    self,
+                    Vec3::new(0.0, y, s * 1.53),
+                    Vec3::new(0.91, h, 0.07),
+                    shade,
+                    Material::Wood,
+                    false,
+                );
+            }
+        }
+        // Iron binding: corner posts, and a strap round the middle of each
+        // side.
+        for (x, z) in [(-1.0, -1.55), (1.0, -1.55), (-1.0, 1.55), (1.0, 1.55)] {
+            part(
+                self,
+                Vec3::new(x, 1.35, z),
+                Vec3::new(0.09, 0.62, 0.09),
+                IRON * 0.8,
+                Material::Metal,
+                false,
+            );
+        }
+        for s in [-1.0f32, 1.0] {
+            for z in [-0.55, 0.55] {
+                part(
+                    self,
+                    Vec3::new(s * 1.06, 1.35, z),
+                    Vec3::new(0.02, 0.6, 0.08),
+                    IRON * 0.8,
+                    Material::Metal,
+                    false,
+                );
+            }
+            part(
+                self,
+                Vec3::new(0.0, 1.35, s * 1.61),
+                Vec3::new(0.08, 0.6, 0.02),
+                IRON * 0.8,
+                Material::Metal,
+                false,
+            );
+        }
+        // What tanks hit: the tub, as before.
+        self.hidden_part(&rig, Vec3::new(0.0, 1.35, 0.0), Vec3::new(1.05, 0.6, 1.6));
+        // The ore, heaped over the rim, highest down the middle.
+        let heap =
+            |x: f32, z: f32| 1.85 + 0.45 * (1.0 - (x / 1.0).powi(2)) * (1.0 - (z / 1.6).powi(2));
+        for _ in 0..28 {
+            let x = rng.range(-0.75, 0.75);
+            let z = rng.range(-1.3, 1.3);
+            let s = rng.range(0.13, 0.26);
+            let shade = [ORE, ORE * 0.75, ORE * 1.2, MESA_TOP * 0.8][rng.index(4)];
+            let turn = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                rng.range(0.0, TAU),
+                rng.range(-0.6, 0.6),
+                rng.range(-0.6, 0.6),
+            );
+            rig.part(
+                self,
+                Vec3::new(x, heap(x, z) - s * 0.4, z),
+                Vec3::new(
+                    s * rng.range(0.8, 1.2),
+                    s * rng.range(0.55, 0.85),
+                    s * rng.range(0.8, 1.2),
+                ),
+                turn,
+                shade * rng.range(0.9, 1.1),
+                Material::Rubble,
+                false,
+                s * 0.4,
+            );
+        }
+        // A bed of it filling the tub below the lumps.
+        part(
+            self,
+            Vec3::new(0.0, 1.75, 0.0),
+            Vec3::new(0.9, 0.12, 1.45),
+            ORE * 0.8,
+            Material::Rubble,
+            false,
+        );
+        // Raw crystal showing in the rock.
+        for _ in 0..2 {
+            let x = rng.range(-0.5, 0.5);
+            let z = rng.range(-1.0, 1.0);
+            let s = rng.range(0.15, 0.24);
+            rig.part(
+                self,
+                Vec3::new(x, heap(x, z), z),
+                Vec3::new(s, s * 0.7, s * 1.3),
+                Quat::from_euler(glam::EulerRot::YXZ, rng.range(0.0, TAU), 0.4, 0.3),
+                RAW * 1.15,
+                Material::Ore,
+                false,
+                0.0,
             );
         }
     }
