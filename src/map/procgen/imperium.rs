@@ -107,7 +107,7 @@ impl Style for Imperium {
         map.arch(rng, s, sk.ground(s.at));
     }
 
-    fn lot(&self, map: &mut Map, _sk: &Skeleton, lot: &Lot, rng: &mut Rng) -> Vec<Drift> {
+    fn lot(&self, map: &mut Map, sk: &Skeleton, lot: &Lot, rng: &mut Rng) -> Vec<Drift> {
         match lot.kind {
             LotKind::Big | LotKind::Small => {
                 ruins::building_in(map, rng, lot.footprint, lot.front, &|_| true, &CAST)
@@ -120,6 +120,10 @@ impl Style for Imperium {
                 map.rubble_lot(rng, &lot.footprint);
                 Vec::new()
             }
+            LotKind::Distant => {
+                map.distant_block(rng, &lot.footprint, sk);
+                Vec::new()
+            }
         }
     }
 
@@ -129,7 +133,7 @@ impl Style for Imperium {
 
     fn edge(&self, map: &mut Map, _sk: &Skeleton, e: &Edge, rng: &mut Rng) {
         match e.kind {
-            EdgeKind::Wall => map.edge_blocks(rng, e),
+            EdgeKind::Barricade => map.street_barricade(rng, e),
             EdgeKind::Blockade => map.rubble_bank(rng, e.start, e.along, e.inward, (e.from, e.to)),
         }
     }
@@ -663,11 +667,22 @@ impl Map {
     /// A solid round drum of stone from `a` to `b`: the pipe's ring of
     /// plates, capped at both ends (a broken or fallen column shows its
     /// section, not a hollow tube).
+    ///
+    /// The caps sit a few centimetres in from the pipe's ends, their rims
+    /// halfway through its plates: flush with either (the end plane or the
+    /// plates' outer faces) they'd z-fight wherever the map's millimetre
+    /// separation happened to land two faces together.
     fn drum(&mut self, a: Vec3, b: Vec3, r: f32, color: Vec3) {
         self.pipe(a, b, r, color, Material::Concrete, true);
-        let d = (b - a).normalize_or(Vec3::Y) * 0.03;
-        for end in [a + d, b - d] {
-            self.disc(end, d, r * 0.99, color * 0.9, Material::Concrete);
+        let axis = (b - a).normalize_or(Vec3::Y);
+        let d = axis * 0.03;
+        // The pipe's plates: 12 of them, `thick` through (see `pipe`).
+        let thick = (r * 0.12).clamp(0.01, 0.06);
+        let cos15 = (std::f32::consts::PI / 12.0).cos();
+        let cap_r = r - thick / cos15;
+        let inset = axis * 0.05;
+        for end in [a + d + inset, b - d - inset] {
+            self.disc(end, d, cap_r, color * 0.9, Material::Concrete);
         }
     }
 
@@ -1309,46 +1324,79 @@ impl Map {
         }
     }
 
-    /// A wall of the edge: the city goes on, and its first row of blocks
-    /// closes the arena in, shoulder to shoulder, some shelled to a ragged
-    /// top.
-    fn edge_blocks(&mut self, rng: &mut Rng, e: &Edge) {
-        let (start, along, inward) = (e.start, e.along, e.inward);
-        let mut t = e.from;
-        while t < e.to - 0.01 {
-            // In blocks no shorter than 11 m, the last one fitting the end.
-            let left = e.to - t;
-            let len = if left <= 22.0 {
-                left
-            } else if left < 34.0 {
-                left * 0.5
-            } else {
-                rng.range(12.0, 22.0)
-            };
-            let depth = rng.range(10.0, 16.0);
-            let inset = rng.range(0.4, 1.0);
-            let c = start + along * (t + len * 0.5) - inward * (depth * 0.5 - inset);
-            let half = (along * len * 0.5 + inward * depth * 0.5).abs();
-            let h = rng.range(9.0, 24.0);
-            let broken = rng.chance(0.4);
-            let k = crate::map::imperial::face_index(inward);
+    /// A building far out past the edge, seen only from afar: a plain
+    /// tower on its lot, turned to the lot's street grid, taller the further
+    /// out. Visual only.
+    fn distant_block(&mut self, rng: &mut Rng, lot: &OBox, sk: &Skeleton) {
+        let p = lot.center;
+        let out = (-p).max(p - Vec2::splat(sk.size)).max_element();
+        let broken = rng.f32() < 0.3;
+        // Built square to the map round its middle, then turned onto the lot.
+        let toward = lot.local_point(sk.center()).signum();
+        let start = self.oboxes.len();
+        if out < super::city::NEAR + 40.0 {
+            // The first rows: dressed on the faces toward the city.
             let mut faces = [false; 4];
-            faces[k] = true;
+            for (k, n) in [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y].iter().enumerate() {
+                faces[k] = n.dot(toward) > 0.0;
+            }
+            let h = rng.range(12.0, 26.0);
             self.imperial_block(
                 rng,
                 &crate::map::imperial::Block {
-                    center: c,
-                    half,
+                    center: p,
+                    half: lot.half,
                     y0: -0.5,
                     h,
-                    solid: true,
+                    solid: false,
                     broken,
                     faces,
-                    near: true,
-                    banners: true,
+                    near: false,
+                    banners: false,
                 },
             );
-            t += len;
+        } else {
+            let h = rng.range(10.0, 26.0) + out * rng.range(0.03, 0.12);
+            let shade = rng.range(0.82, 0.95);
+            self.skyline_tower(rng, p, lot.half, h, broken, shade, toward);
+        }
+        let (ax, az) = lot.axes();
+        for o in &mut self.oboxes[start..] {
+            let d = o.center - p;
+            o.center = p + ax * d.x + az * d.y;
+            o.yaw += lot.yaw;
+        }
+    }
+
+    /// Barriers across a side street where it crosses the edge: concrete
+    /// blocks and barriers set down in a ragged line, a gap here and there.
+    fn street_barricade(&mut self, rng: &mut Rng, e: &Edge) {
+        let mut t = e.from + rng.range(0.0, 1.5);
+        while t < e.to {
+            let at = e.start + e.along * t - e.inward * rng.range(-1.5, 1.5);
+            let across = angle(e.along) + rng.range(-0.35, 0.35);
+            let color = CONCRETE * rng.range(0.8, 1.0);
+            let half = if rng.chance(0.6) {
+                // A road barrier.
+                Vec2::new(rng.range(1.6, 2.2), 0.35)
+            } else {
+                // A block.
+                Vec2::splat(rng.range(0.7, 1.0))
+            };
+            let h = rng.range(1.0, 1.4);
+            self.oboxes.push(OBox {
+                center: at,
+                yaw: -across,
+                half,
+                y0: -0.2,
+                y1: h,
+                color,
+                side_mat: Material::Concrete,
+                top_mat: Material::Concrete,
+                solid: true,
+                ..OBox::default()
+            });
+            t += half.x * 2.0 + rng.range(0.6, 4.5);
         }
     }
 
@@ -1595,9 +1643,17 @@ impl Map {
         // arena it sinks out of sight.
         let (cell, reach) = (4.0f32, 560.0f32);
         let n = ((size + 2.0 * reach) / cell) as usize + 1;
+        // (A shallow step at the edge, then down: its normals at the edge stay
+        // flat, so it shades like the play ground there and no seam shows.)
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
-            let inside = x > 0.01 && z > 0.01 && x < size - 0.01 && z < size - 0.01;
-            if inside { -8.0 } else { 0.0 }
+            let inside = |m: f32| x > m && z > m && x < size - m && z < size - m;
+            if inside(cell + 0.01) {
+                -8.0
+            } else if inside(0.01) {
+                -0.25
+            } else {
+                0.0
+            }
         });
         t.color = GROUND;
         t.material = Material::Concrete;
@@ -1606,10 +1662,12 @@ impl Map {
         let mut placed: Vec<OBox> = Vec::new();
         for _ in 0..1600 {
             let p = Vec2::new(
-                rng.range(-320.0, size + 320.0),
-                rng.range(-320.0, size + 320.0),
+                rng.range(-380.0, size + 380.0),
+                rng.range(-380.0, size + 380.0),
             );
-            let outside = p.x < -24.0 || p.y < -24.0 || p.x > size + 24.0 || p.y > size + 24.0;
+            // Past where the city's own streets are laid out.
+            let edge = super::city::SPRAWL - 6.0;
+            let outside = p.x < -edge || p.y < -edge || p.x > size + edge || p.y > size + edge;
             let d = p - Vec2::splat(mid);
             // Kept open down each avenue, out past its end.
             let vista = avenues.iter().any(|a| {

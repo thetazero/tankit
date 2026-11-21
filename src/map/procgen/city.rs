@@ -2,10 +2,14 @@
 //! building on a raised plaza in the middle. Avenues run from the plaza out
 //! to the edges, each through a gate; between them, districts of blocks on
 //! a loose grid of streets, each district's grid turned its own way, with a
-//! square here and there; a court in a corner for each side; and the city's
-//! own buildings closing the arena in, a heap of rubble across each
-//! avenue's end. Whose city it is comes later (see `imperium`): nothing
-//! here is anyone's architecture.
+//! square here and there. The city is laid out well past the arena's edge
+//! (`SPRAWL`), so its streets run on through it; out past `NEAR` its
+//! buildings are only seen. Then a court is cleared in a corner for each
+//! side, and wherever a street crosses the edge something is heaped across
+//! it: rubble at an avenue's end, barriers on a side street (they slow a
+//! tank down more than they stop it; past the edge it's out of the fight
+//! anyway). Whose city it is comes later (see `imperium`): nothing here is
+//! anyone's architecture.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
@@ -49,6 +53,13 @@ pub const PLANET: crate::planet::Look = crate::planet::Look {
 /// Half-width of an avenue, kerb to kerb.
 pub const AVENUE_HALF: f32 = 14.0;
 
+/// How far past the arena's edge the city is laid out, m.
+pub const SPRAWL: f32 = 130.0;
+
+/// Past this far out from the edge a building is only seen, from afar
+/// (`LotKind::Distant`).
+pub const NEAR: f32 = 34.0;
+
 /// Lays out a city for `sides` sides (2 to 4), one corner court each.
 pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
     let size = 20.0 * rng.int(16, 18) as f32;
@@ -75,14 +86,9 @@ pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
     };
     let mut streets = Vec::new();
     // The edges, counter-clockwise from the south: (start, along, inward).
-    let sides4 = [
-        (Vec2::new(0.0, 0.0), Vec2::X, Vec2::Y),
-        (Vec2::new(size, 0.0), Vec2::Y, -Vec2::X),
-        (Vec2::new(size, size), -Vec2::X, -Vec2::Y),
-        (Vec2::new(0.0, size), -Vec2::Y, Vec2::X),
-    ];
+    let sides4 = self::sides(size);
     // Mouths along each edge, as (t from, t to).
-    let mut mouths: [Vec<(f32, f32)>; 4] = Default::default();
+    let mut mouths: Mouths = Default::default();
     for (k, &(start, along, _)) in sides4.iter().enumerate() {
         if skip == Some(k) {
             continue;
@@ -125,10 +131,13 @@ pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
         _ => &[0, 1, 2, 3],
     };
     let court = rng.range(42.0, 48.0);
+    // Each a little in from its corner, by its own amount: the city's
+    // buildings stand behind it too.
     let bases = order
         .iter()
         .map(|&k| Base {
-            corner: corners[k].0,
+            corner: corners[k].0
+                + corners[k].1 * Vec2::new(rng.range(3.0, 16.0), rng.range(3.0, 16.0)),
             inward: corners[k].1,
             size: court,
         })
@@ -148,42 +157,12 @@ pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
         repair_spots: Vec::new(),
     };
 
-    // The edge: walls of buildings, a blockade across each avenue's mouth.
-    for (k, &(start, along, inward)) in sides4.iter().enumerate() {
-        let mut t = -18.0;
-        for &(m0, m1) in &mouths[k] {
-            sk.edges.push(Edge {
-                start,
-                along,
-                inward,
-                from: t,
-                to: m0,
-                kind: EdgeKind::Wall,
-            });
-            sk.edges.push(Edge {
-                start,
-                along,
-                inward,
-                from: m0,
-                to: m1,
-                kind: EdgeKind::Blockade,
-            });
-            t = m1;
-        }
-        sk.edges.push(Edge {
-            start,
-            along,
-            inward,
-            from: t,
-            to: size + 18.0,
-            kind: EdgeKind::Wall,
-        });
-    }
-
     squares(&mut sk, rng);
     gates_and_lines(&mut sk, rng);
     plaza_dressing(&mut sk, rng);
     districts(&mut sk, rng);
+    clear_courts(&mut sk, rng);
+    cordon(&mut sk, rng, &mouths);
 
     // Repair drops: down the middle of each avenue, twice, and between
     // the avenues on the plaza where they land clear.
@@ -196,6 +175,173 @@ pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
     }
     sk.repair_spots = repairs;
     sk
+}
+
+/// Where the avenues meet each edge (counter-clockwise from the south), as
+/// (t from, t to) along it.
+type Mouths = [Vec<(f32, f32)>; 4];
+
+/// The edges, counter-clockwise from the south: (start, along, inward).
+pub fn sides(size: f32) -> [(Vec2, Vec2, Vec2); 4] {
+    [
+        (Vec2::new(0.0, 0.0), Vec2::X, Vec2::Y),
+        (Vec2::new(size, 0.0), Vec2::Y, -Vec2::X),
+        (Vec2::new(size, size), -Vec2::X, -Vec2::Y),
+        (Vec2::new(0.0, size), -Vec2::Y, Vec2::X),
+    ]
+}
+
+/// Each court cleared out of the city: no lot on it or just round it, nor
+/// across the way out of either gap in its barriers. Then buildings set
+/// square to it wherever there's room round it (where the city's own grid
+/// left a street or a gap): it stands among buildings, not in the open.
+fn clear_courts(sk: &mut Skeleton, rng: &mut Rng) {
+    let rect = |b: &Base, u0: f32, v0: f32, u1: f32, v1: f32| {
+        let (a, z) = (b.at(u0, v0), b.at(u1, v1));
+        OBox {
+            center: (a + z) * 0.5,
+            half: (z - a).abs() * 0.5,
+            ..OBox::default()
+        }
+    };
+    let mut keep_off = Vec::new();
+    for b in &sk.bases {
+        let s = b.size;
+        // The court and its walls, then the two ways out.
+        keep_off.push(rect(b, -1.0, -1.0, s + 1.4, s + 1.4));
+        keep_off.push(rect(b, s, s * 0.3, s + 30.0, s * 0.7));
+        keep_off.push(rect(b, s * 0.3, s, s * 0.7, s + 30.0));
+    }
+    sk.lots
+        .retain(|l| !keep_off.iter().any(|o| l.footprint.overlaps(o, 3.0)));
+    let bases = sk.bases.clone();
+    for b in &bases {
+        let s = b.size;
+        // Round all four sides, a few meters off the wall: (how far along
+        // it, along u (else v), behind the court (else in front)).
+        let mut spots = Vec::new();
+        let mut w = -12.0;
+        while w < s + 12.0 {
+            for side in [(true, false), (true, true), (false, false), (false, true)] {
+                spots.push((w, side.0, side.1));
+            }
+            w += rng.range(15.0, 19.0);
+        }
+        for (w, along_u, behind) in spots {
+            let half = Vec2::new(rng.range(5.5, 8.0), rng.range(5.5, 8.0));
+            let off = |h: f32| {
+                if behind {
+                    -(h + 4.5)
+                } else {
+                    s + 1.4 + h + 4.5
+                }
+            };
+            let (u, v) = if along_u {
+                (w, off(half.y))
+            } else {
+                (off(half.x), w)
+            };
+            let lot = OBox {
+                center: b.at(u, v),
+                half,
+                y0: 0.0,
+                y1: 1.0,
+                ..OBox::default()
+            };
+            if lot
+                .corners()
+                .iter()
+                .chain([lot.center].iter())
+                .any(|&q| sk.reserved(q))
+                || keep_off.iter().any(|o| lot.overlaps(o, 2.5))
+                || sk.lots.iter().any(|l| l.footprint.overlaps(&lot, 4.0))
+            {
+                continue;
+            }
+            // Its front on the court.
+            let to = lot.local_point(b.middle());
+            let front = if to.x.abs() > to.y.abs() {
+                (0, to.x.signum())
+            } else {
+                (1, to.y.signum())
+            };
+            let kind = if rng.chance(0.25) {
+                LotKind::Small
+            } else {
+                LotKind::Big
+            };
+            sk.lots.push(Lot {
+                footprint: lot,
+                front,
+                kind,
+            });
+        }
+    }
+}
+
+/// Where a street crosses the edge, something across it: rubble banked
+/// across an avenue's mouth, barriers across a side street. Where the edge
+/// runs a long way between buildings (down a street, across open ground),
+/// barriers in clumps here and there, not a line all along it: they slow a
+/// tank down more than they stop it.
+fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
+    let size = sk.size;
+    // Where a tank would run into a building on the edge line.
+    let walled = |sk: &Skeleton, p: Vec2| {
+        sk.lots.iter().any(|l| {
+            matches!(l.kind, LotKind::Big | LotKind::Small) && {
+                let q = l.footprint.local_point(p).abs() - l.footprint.half;
+                q.max_element() < -0.5
+            }
+        })
+    };
+    for (k, &(start, along, inward)) in sides(size).iter().enumerate() {
+        let edge = |from: f32, to: f32, kind: EdgeKind, off: f32| Edge {
+            start: start + inward * off,
+            along,
+            inward,
+            from,
+            to,
+            kind,
+        };
+        // The open stretches of the edge, (from, to), a meter at a time,
+        // bar the avenues' mouths.
+        let mut open: Vec<(f32, f32)> = Vec::new();
+        let mut t = -4.0;
+        while t <= size + 4.0 {
+            let mouth = mouths[k].iter().any(|m| (m.0..=m.1).contains(&t));
+            if !mouth && !walled(sk, start + along * t) {
+                match open.last_mut() {
+                    Some(run) if run.1 >= t - 1.01 => run.1 = t,
+                    _ => open.push((t, t)),
+                }
+            }
+            t += 1.0;
+        }
+        for &(m0, m1) in &mouths[k] {
+            sk.edges.push(edge(m0, m1, EdgeKind::Blockade, 0.0));
+        }
+        for (from, to) in open {
+            if to - from < 3.0 {
+                continue;
+            }
+            if to - from <= 24.0 {
+                // A street crossing: across it, into the buildings either
+                // side a little.
+                let off = rng.range(-2.0, 1.0);
+                sk.edges
+                    .push(edge(from - 1.5, to + 1.5, EdgeKind::Barricade, off));
+                continue;
+            }
+            let mut t = from + rng.range(0.0, 8.0);
+            while t < to {
+                let end = (t + rng.range(6.0, 12.0)).min(to);
+                let off = rng.range(-7.0, 2.0);
+                sk.edges.push(edge(t, end, EdgeKind::Barricade, off));
+                t = end + rng.range(14.0, 28.0);
+            }
+        }
+    }
 }
 
 /// Directions halfway between each avenue and the next round the middle.
@@ -384,7 +530,8 @@ fn districts(sk: &mut Skeleton, rng: &mut Rng) {
         );
         let step = rng.range(26.0, 30.0);
         let off = Vec2::new(rng.range(0.0, step), rng.range(0.0, step));
-        let reach = (sk.size / step) as i32 + 2;
+        let reach = ((sk.size * 0.5 + SPRAWL) / step) as i32 + 3;
+        let size = sk.size;
         for i in -reach..=reach {
             for j in -reach..=reach {
                 let q = Vec2::new(i as f32, j as f32) * step + off;
@@ -396,8 +543,12 @@ fn districts(sk: &mut Skeleton, rng: &mut Rng) {
                 if !(a0..a1).contains(&ang) {
                     continue;
                 }
+                // How far out past the edge it stands (negative: inside).
+                let out = (-p).max(p - Vec2::splat(size)).max_element();
                 let r = rng.f32();
-                let kind = if r < raised {
+                let kind = if out > NEAR {
+                    LotKind::Distant
+                } else if r < raised {
                     LotKind::Raised
                 } else if r < 1.0 - rubble {
                     if rng.chance(0.18) {
@@ -423,11 +574,12 @@ fn districts(sk: &mut Skeleton, rng: &mut Rng) {
                     y1: 1.0,
                     ..OBox::default()
                 };
+                let beyond = |q: Vec2| q.min_element() < -SPRAWL || q.max_element() > size + SPRAWL;
                 if lot
                     .corners()
                     .iter()
                     .chain([p].iter())
-                    .any(|&q| sk.reserved(q))
+                    .any(|&q| sk.reserved(q) || beyond(q))
                     || sk.lots.iter().any(|l| l.footprint.overlaps(&lot, 5.0))
                 {
                     continue;

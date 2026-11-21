@@ -261,6 +261,7 @@ impl Map {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::OBox;
 
     /// The seeds the tests build: enough to catch a grammar that only
     /// sometimes goes wrong, few enough to build in a debug test run.
@@ -310,12 +311,94 @@ mod tests {
         assert_eq!(again.landmark.center, sk[1].landmark.center);
     }
 
-    /// Blocks and rubble close the edge all round: nowhere can a tank
-    /// drive out of the arena.
+    /// Along the edge, never a long way without a building or something
+    /// put across it; and each avenue's end is heaped with rubble.
     #[test]
-    fn the_city_closes_the_edge() {
+    fn the_edge_is_cordoned() {
         for seed in SEEDS {
-            Map::city(seed).assert_edge_walled(0.3, |_| false);
+            let sk = skeleton(&spec(seed));
+            for (start, along, _) in city::sides(sk.size) {
+                let mut open = 0.0;
+                let mut t = 0.0;
+                while t <= sk.size {
+                    let p = start + along * t;
+                    let in_building = sk.lots.iter().any(|l| {
+                        matches!(l.kind, LotKind::Big | LotKind::Small) && {
+                            let q = l.footprint.local_point(p).abs() - l.footprint.half;
+                            q.max_element() < 0.0
+                        }
+                    });
+                    let across = sk
+                        .edges
+                        .iter()
+                        .any(|e| e.along == along && e.from <= t && t <= e.to);
+                    open = if in_building || across {
+                        0.0
+                    } else {
+                        open + 0.5
+                    };
+                    assert!(open < 40.0, "seed {seed}: the edge is open for 40 m to {p}");
+                    t += 0.5;
+                }
+            }
+            for a in sk.avenues() {
+                assert!(
+                    sk.edges.iter().any(|e| e.kind == EdgeKind::Blockade
+                        && (a.to - e.start).perp_dot(e.along).abs() < 0.01
+                        && (e.from..=e.to).contains(&(a.to - e.start).dot(e.along))),
+                    "seed {seed}: nothing across the avenue to {}",
+                    a.to
+                );
+            }
+        }
+    }
+
+    /// The city doesn't stop at the edge: its blocks run on out past it on
+    /// every side.
+    #[test]
+    fn the_city_runs_on_past_the_edge() {
+        for seed in SEEDS {
+            let sk = skeleton(&spec(seed));
+            for (start, _, inward) in city::sides(sk.size) {
+                let out = |p: Vec2| -(p - start).dot(inward);
+                let near = sk
+                    .lots
+                    .iter()
+                    .filter(|l| (4.0..city::NEAR).contains(&out(l.footprint.center)))
+                    .count();
+                let far = sk
+                    .lots
+                    .iter()
+                    .filter(|l| out(l.footprint.center) > city::NEAR + 20.0)
+                    .count();
+                assert!(
+                    near >= 4 && far >= 8,
+                    "seed {seed}: {near} near, {far} far past {start}"
+                );
+            }
+        }
+    }
+
+    /// The courts are cleared out of the city, not put down in the open:
+    /// buildings stand right round each one.
+    #[test]
+    fn buildings_stand_round_every_court() {
+        for seed in SEEDS {
+            let sk = skeleton(&spec(seed));
+            for (k, b) in sk.bases.iter().enumerate() {
+                let (a, z) = (b.at(0.0, 0.0), b.at(b.size, b.size));
+                let court = OBox {
+                    center: (a + z) * 0.5,
+                    half: (z - a).abs() * 0.5,
+                    ..OBox::default()
+                };
+                let round = sk
+                    .lots
+                    .iter()
+                    .filter(|l| l.kind != LotKind::Distant && l.footprint.overlaps(&court, 20.0))
+                    .count();
+                assert!(round >= 4, "seed {seed}: {round} lots round court {k}");
+            }
         }
     }
 

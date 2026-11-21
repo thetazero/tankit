@@ -128,15 +128,6 @@ const FACES: [Vec2; 4] = [
     Vec2::new(0.0, -1.0),
 ];
 
-/// Which of `FACES` (and `Block::faces`) faces along `n`.
-pub(super) fn face_index(n: Vec2) -> usize {
-    FACES
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.dot(n).total_cmp(&b.1.dot(n)))
-        .map_or(0, |(k, _)| k)
-}
-
 impl Map {
     /// A visual-only axis-aligned box from `lo` to `hi`.
     fn trim_box(&mut self, lo: Vec3, hi: Vec3, color: Vec3, mat: Material) {
