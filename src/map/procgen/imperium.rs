@@ -667,11 +667,22 @@ impl Map {
     /// A solid round drum of stone from `a` to `b`: the pipe's ring of
     /// plates, capped at both ends (a broken or fallen column shows its
     /// section, not a hollow tube).
+    ///
+    /// The caps sit a few centimetres in from the pipe's ends, their rims
+    /// halfway through its plates: flush with either (the end plane or the
+    /// plates' outer faces) they'd z-fight wherever the map's millimetre
+    /// separation happened to land two faces together.
     fn drum(&mut self, a: Vec3, b: Vec3, r: f32, color: Vec3) {
         self.pipe(a, b, r, color, Material::Concrete, true);
-        let d = (b - a).normalize_or(Vec3::Y) * 0.03;
-        for end in [a + d, b - d] {
-            self.disc(end, d, r * 0.99, color * 0.9, Material::Concrete);
+        let axis = (b - a).normalize_or(Vec3::Y);
+        let d = axis * 0.03;
+        // The pipe's plates: 12 of them, `thick` through (see `pipe`).
+        let thick = (r * 0.12).clamp(0.01, 0.06);
+        let cos15 = (std::f32::consts::PI / 12.0).cos();
+        let cap_r = r - thick / cos15;
+        let inset = axis * 0.05;
+        for end in [a + d + inset, b - d - inset] {
+            self.disc(end, d, cap_r, color * 0.9, Material::Concrete);
         }
     }
 
