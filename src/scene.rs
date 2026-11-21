@@ -549,6 +549,7 @@ mod tests {
             ("kiln", Map::kiln()),
             ("capital", Map::capital()),
             ("foundry", Map::foundry()),
+            ("mine", Map::mine()),
         ] {
             let fights = map_fights(name, &map);
             let area: f32 = fights.iter().map(|f| f.area).sum();

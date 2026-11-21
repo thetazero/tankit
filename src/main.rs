@@ -41,11 +41,12 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|capital|foundry>
+  --map <saltmarket|sanctum|kiln|capital|foundry|mine>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), or the Capital
-                          (Imperium city, all four factions), or the Foundry (a wrecked
-                          Uthenn tungsten cube factory)
+                          (Imperium city, all four factions), the Foundry (a wrecked
+                          Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
+                          mine: caves, rails and stacked levels)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
@@ -181,6 +182,8 @@ pub enum MapKind {
     Capital,
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
+    /// The Seam: an Ithessar crystal mine in the desert, on three levels.
+    Mine,
 }
 
 pub fn make_map(kind: MapKind) -> map::Map {
@@ -190,6 +193,7 @@ pub fn make_map(kind: MapKind) -> map::Map {
         MapKind::Kiln => map::Map::kiln(),
         MapKind::Capital => map::Map::capital(),
         MapKind::Foundry => map::Map::foundry(),
+        MapKind::Mine => map::Map::mine(),
     }
 }
 
@@ -348,9 +352,10 @@ fn parse_args() -> Result<Args> {
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("capital") => map_kind = MapKind::Capital,
                 Some("foundry") => map_kind = MapKind::Foundry,
+                Some("mine") => map_kind = MapKind::Mine,
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, capital or foundry, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, capital, foundry or mine, got {other:?}"
                     )
                 }
             },

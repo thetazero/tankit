@@ -161,6 +161,11 @@ What everyone fights over: your pay, the Resonant's sacrament, and the reason
 anyone fights over dead worlds. They're the progression currency in the arcade
 loop.
 
+**The Seam:** an Ithessar crystal mine in a rocky desert. An open pit cut
+down to the seam, galleries under the plateaus, and their own freight
+railroad: their combat machines float, but their ore still goes by rail. The
+Resonant call the seam holy and have come to take it back.
+
 ## Modes are contracts
 
 - **Attrition** (team deathmatch): hired by one side and dropped into its
