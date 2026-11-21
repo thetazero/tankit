@@ -96,7 +96,7 @@ const CAVES: [(Vec2, Vec2); 6] = [
 const BOX_CUT: (Vec2, Vec2) = (Vec2::new(112.0, 200.0), Vec2::new(150.0, 210.0));
 /// The hall's rock pillars, left standing to hold the roof up.
 const PILLARS: [Vec2; 4] = [
-    Vec2::new(72.0, 179.0),
+    Vec2::new(71.0, 180.0),
     Vec2::new(84.0, 179.0),
     Vec2::new(72.0, 190.0),
     Vec2::new(84.0, 190.0),
@@ -1283,8 +1283,9 @@ impl Map {
             widths,
             color: PLASMA * 0.85,
         });
-        // Crystal not yet cut, in the hall's west end.
-        for (x, z, h) in [(66.0, 184.0, 3.2), (78.0, 174.0, 2.4), (78.0, 195.0, 2.6)] {
+        // Crystal not yet cut, in the hall's west end (clear of the way in
+        // from the west adit, round the pillar to the hall's middle).
+        for (x, z, h) in [(66.0, 184.0, 3.2), (65.5, 175.5, 2.4), (78.0, 195.0, 2.6)] {
             self.outcrop(rng, Vec2::new(x, z), h);
         }
         // Cut blocks stacked for the train, by the crosscut.
@@ -2675,64 +2676,101 @@ impl Map {
         }
     }
 
-    /// The ways round for bots, on every level: over the bridge and under
-    /// it, through the caves under each plateau (in at a gallery, along
-    /// the rail tunnel, out at the other gallery), over each plateau's top.
+    /// The ways round for bots, on every level: over the rail bridge into
+    /// the mine and along the wash's floor under it, through the mine (in at the west
+    /// adit, through the hall, along the drift, out at the breach), over
+    /// the mesa's top above it, and down the box cut into it.
     fn mine_routes(&mut self) {
-        let floor = -PIT_DEPTH;
-        let mut ways = vec![
-            // Over the deck, rim to rim: crossing from the lane south of
-            // the pit on one side to the one north of it on the other, and
-            // the other way about.
+        // On whatever's underfoot seen from above (the flats, the wash's
+        // floor, the mesa's top), on the bridge's deck, in the mine (under
+        // its roof).
+        let g = |m: &Map, x: f32, z: f32| Vec3::new(x, m.ground_height(x, z), z);
+        let (a, b) = BRIDGE;
+        let deck = |t: f32| {
+            let p = a.lerp(b, t);
+            Vec3::new(p.x, DECK_TOP, p.y)
+        };
+        let off_deck = |m: &Map, t: f32| {
+            let p = a.lerp(b, t);
+            g(m, p.x, p.y)
+        };
+        let mine = |x: f32, z: f32| Vec3::new(x, 0.0, z);
+        let top = |x: f32, z: f32| Vec3::new(x, TOP, z);
+        let m = &*self;
+        let ways = vec![
+            // From the west flats over the deck and in at the adit's mouth
+            // (and the other way, out of the mine onto the flats).
             vec![
-                Vec3::new(MID - 12.0, 0.0, DECK_Z.0 - 5.0),
-                Vec3::new(MID, DECK_TOP, DECK_Z.0 + 5.0),
-                Vec3::new(MID, DECK_TOP, DECK_Z.1 - 5.0),
-                Vec3::new(MID + 14.0, 0.0, DECK_Z.1 + 11.0),
+                g(m, 66.0, 96.0),
+                off_deck(m, 1.15),
+                deck(0.8),
+                deck(0.2),
+                mine(106.0, 160.0),
+                mine(106.0, 174.0),
             ],
+            // Along the wash's floor under the bridge: down the west ramp,
+            // between the piers, up the east one.
             vec![
-                Vec3::new(MID + 12.0, 0.0, DECK_Z.0 - 5.0),
-                Vec3::new(MID, DECK_TOP, DECK_Z.0 + 5.0),
-                Vec3::new(MID, DECK_TOP, DECK_Z.1 - 5.0),
-                Vec3::new(MID - 14.0, 0.0, DECK_Z.1 + 11.0),
+                g(m, 92.0, 106.0),
+                g(m, 86.0, 127.0),
+                g(m, 98.0, 125.0),
+                g(m, 107.0, 129.0),
+                g(m, 113.0, 131.0),
+                g(m, 121.0, 132.0),
+                g(m, 135.0, 126.0),
+                g(m, 143.0, 130.0),
+                g(m, 155.0, 149.0),
             ],
-            // Across the pit floor, down one haul road and up the other,
-            // between the bridge's piers.
+            // The wash end to end, on its floor.
             vec![
-                Vec3::new(ROAD_X.0 + 6.0, floor * 0.5, MID + 8.0),
-                Vec3::new(ROAD_X.1 + 2.0, floor, MID - 8.0),
-                Vec3::new(MID, floor, MID),
-                Vec3::new(SIZE - ROAD_X.1 - 2.0, floor, MID - 8.0),
-                Vec3::new(SIZE - ROAD_X.0 - 6.0, floor * 0.5, MID + 8.0),
+                g(m, 44.0, 118.0),
+                g(m, 70.0, 127.0),
+                g(m, 98.0, 125.0),
+                g(m, 113.0, 131.0),
+                g(m, 121.0, 132.0),
+                g(m, 140.0, 129.0),
+                g(m, 160.0, 112.0),
+                g(m, 174.0, 88.0),
+            ],
+            // Through the mine: in at the west adit, through the hall and
+            // the crosscut, along the drift, out at the breach.
+            vec![
+                g(m, 71.0, 140.0),
+                mine(71.0, 165.0),
+                mine(78.0, 185.0),
+                mine(97.0, 185.0),
+                mine(106.0, 191.0),
+                mine(130.0, 191.0),
+                mine(153.0, 180.0),
+                mine(153.0, 156.0),
+                g(m, 160.0, 140.0),
+            ],
+            // Over the mesa's top, over the mine: up the west end, along,
+            // down the scree.
+            vec![
+                g(m, 14.0, 167.0),
+                top(60.0, 174.0),
+                top(78.0, 184.0),
+                top(106.0, 176.0),
+                top(132.0, 172.0),
+                top(166.0, 170.0),
+                g(m, 181.0, 160.0),
+                g(m, 181.0, 124.0),
+            ],
+            // Off the mesa's east down the box cut into the mine, and out
+            // at the west adit.
+            vec![
+                top(176.0, 196.0),
+                top(153.0, 205.0),
+                g(m, 131.0, 205.0),
+                mine(114.0, 205.0),
+                mine(106.0, 192.0),
+                mine(97.0, 185.0),
+                mine(78.0, 185.0),
+                mine(71.0, 162.0),
+                g(m, 71.0, 140.0),
             ],
         ];
-        for north in [false, true] {
-            let place = |x: f32, y: f32, z: f32| {
-                let p = if north {
-                    flip(Vec2::new(x, z))
-                } else {
-                    Vec2::new(x, z)
-                };
-                Vec3::new(p.x, y, p.y)
-            };
-            // Under the plateau: in at the west gallery's mouth, across to
-            // the tunnel, out along the east one.
-            ways.push(vec![
-                place(81.0, 0.0, 56.0),
-                place(81.0, 0.0, 34.0),
-                place(96.0, 0.0, 25.0),
-                place(MID, 0.0, 25.0),
-                place(SIZE - 96.0, 0.0, 25.0),
-                place(SIZE - 81.0, 0.0, 34.0),
-                place(SIZE - 81.0, 0.0, 56.0),
-            ]);
-            // Over its top, end to end.
-            ways.push(vec![
-                place(MID - PLATEAU_FLAT + 4.0, PLATEAU_H, 30.0),
-                place(MID, PLATEAU_H, 36.0),
-                place(MID + PLATEAU_FLAT - 4.0, PLATEAU_H, 30.0),
-            ]);
-        }
         self.routes = ways;
     }
 
@@ -3096,38 +3134,44 @@ mod tests {
         }
     }
 
-    /// Routes keep to the level they're on: along the deck over the pit,
-    /// across the pit floor under it, through the caves under a plateau,
-    /// over the plateau's top above them.
+    /// Routes keep to the level they're on: along the deck over the wash,
+    /// along the wash's floor under it, through the mine, over the mesa's
+    /// top above it.
     #[test]
     fn routes_keep_to_their_level() {
-        let nav = NavGrid::build(&Map::mine());
-        let floor = -PIT_DEPTH;
+        let m = Map::mine();
+        let nav = NavGrid::build(&m);
+        let deck = |t: f32| {
+            let p = BRIDGE.0.lerp(BRIDGE.1, t);
+            Vec3::new(p.x, DECK_TOP, p.y)
+        };
+        let floor = |x: f32, z: f32| Vec3::new(x, m.ground_height(x, z), z);
         let cases = [
+            (deck(0.15), deck(0.85), DECK_TOP, 1.0),
+            // Under the deck, from one side of it to the other.
+            (floor(100.0, 131.0), floor(126.0, 133.0), -WASH_DEPTH, 1.0),
+            // From the west adit, through the hall and along the drift.
             (
-                Vec3::new(MID, DECK_TOP, DECK_Z.0 + 6.0),
-                Vec3::new(MID, DECK_TOP, DECK_Z.1 - 6.0),
-                DECK_TOP,
+                Vec3::new(71.0, 0.0, 160.0),
+                Vec3::new(140.0, 0.0, 191.0),
+                0.0,
+                1.0,
             ),
+            // Over the hall and the adit, on the roof.
             (
-                Vec3::new(MID - 10.0, floor, MID + 12.0),
-                Vec3::new(MID + 10.0, floor, MID + 12.0),
-                floor,
-            ),
-            (Vec3::new(81.0, 0.0, 34.0), Vec3::new(MID, 0.0, 25.0), 0.0),
-            (
-                Vec3::new(66.0, PLATEAU_H, 26.0),
-                Vec3::new(SIZE - 66.0, PLATEAU_H, 26.0),
-                PLATEAU_H,
+                Vec3::new(70.0, TOP, 186.0),
+                Vec3::new(128.0, TOP, 176.0),
+                TOP,
+                1.0,
             ),
         ];
-        for (a, b, y) in cases {
+        for (a, b, y, slack) in cases {
             let r = nav.route(a, b);
             assert!(!r.is_empty(), "no route from {a} to {b}");
             let end = *r.last().unwrap();
             assert!(end.distance(b) < 3.0, "route from {a} to {b} ends at {end}");
             assert!(
-                r.iter().all(|p| (p.y - y).abs() < 1.0),
+                r.iter().all(|p| (p.y - y).abs() < slack),
                 "route from {a} to {b} leaves its level: {r:?}"
             );
         }
@@ -3174,20 +3218,25 @@ mod tests {
         nearest
     }
 
-    /// After a tank on the pit floor under the bridge, a bot coming up
-    /// the lane to the bridge doesn't drive out over it on the deck: it
-    /// goes down a haul road and in under.
+    /// After a tank on the wash's floor under the bridge, a bot up on the
+    /// flats by the bridge's end doesn't drive out over it on the deck: it
+    /// goes down a haul ramp and in under.
     #[test]
     fn a_bot_gets_under_the_bridge() {
-        let d = chase(Vec2::new(MID, 68.0), 0.0, Vec2::new(MID, MID + 10.0), 40.0);
+        let d = chase(Vec2::new(118.0, 98.0), 0.0, Vec2::new(112.0, 133.0), 40.0);
         assert!(d < 12.0, "got no nearer than {d:.1} m");
     }
 
-    /// After a tank in the rail tunnel, a bot on the plateau's top over it
+    /// After a tank in the pillared hall, a bot on the mesa's top over it
     /// finds the way down and in.
     #[test]
-    fn a_bot_gets_into_the_tunnel_under_it() {
-        let d = chase(Vec2::new(66.0, 26.0), FRAC_PI_2, Vec2::new(MID, 30.0), 40.0);
+    fn a_bot_gets_into_the_mine_under_it() {
+        let d = chase(
+            Vec2::new(78.0, 186.0),
+            FRAC_PI_2,
+            Vec2::new(78.0, 176.0),
+            60.0,
+        );
         assert!(d < 12.0, "got no nearer than {d:.1} m");
     }
 
@@ -3284,20 +3333,21 @@ mod play {
     }
 
     /// The levels a tank can be on in the mine.
-    const LEVELS: [&str; 6] = ["deck", "under bridge", "pit", "caves", "plateau", "lanes"];
+    const LEVELS: [&str; 6] = ["deck", "under bridge", "wash", "mine", "mesa", "flats"];
 
     /// Which of `LEVELS` a tank at `p` is on.
     fn level(p: Vec3) -> usize {
         let q = Vec2::new(p.x, p.z);
-        if (p.x - MID).abs() < DECK_HALF && (DECK_Z.0..DECK_Z.1).contains(&p.z) && p.y > -2.0 {
+        let (d, t) = seg(q, BRIDGE.0, BRIDGE.1);
+        if on_bridge(q) && p.y > -2.0 {
             0
-        } else if (p.x - MID).abs() < DECK_HALF + 3.0 && pit_sdf(q) < 0.0 && p.y < -4.0 {
+        } else if d < DECK_HALF + 4.0 && t > 0.0 && t < 1.0 && p.y < -3.0 {
             1
-        } else if pit_sdf(q) < -1.0 && p.y < -2.0 {
+        } else if wash(q) < -3.0 && p.y < -2.0 {
             2
-        } else if cave_distance(q) == 0.0 && plateau_mask(q) > 0.3 && p.y < 4.0 {
+        } else if cave_distance(q) == 0.0 && mesa(q) > 0.5 && p.y < 4.0 {
             3
-        } else if p.y > 5.0 {
+        } else if p.y > 6.0 {
             4
         } else {
             5
@@ -3387,10 +3437,13 @@ mod play {
                 h.retain(|&(s, _)| s > now - 1.0);
                 if let Some(&(_, q)) = h.iter().max_by(|a, b| a.1.y.total_cmp(&b.1.y)) {
                     let (drop, across) = (q.y - p.y, Vec2::new(q.x - p.x, q.z - p.z).length());
-                    if drop > 3.0 && drop > across * 0.6 && across > 1.0 {
+                    if drop > 3.0 && drop > across * 0.8 && across > 1.0 {
                         if f.arrived > 3.0 && !f.is_husk() && launched[i] < now - 2.0 {
                             falls += 1;
-                            eprintln!("t={now:.0} tank {i} fell {drop:.1} m: {q} to {p}");
+                            eprintln!(
+                                "t={now:.0} tank {i} fell {drop:.1} m: {q} to {p} ({:?})",
+                                t.hull_kind
+                            );
                         }
                         h.clear();
                     }
@@ -3409,9 +3462,9 @@ mod play {
         }
     }
 
-    /// Bots get round the whole mine and fight on every level of it: over
-    /// the bridge and under it, in the pit, the caves, on the plateaus and
-    /// in the lanes. They don't fall off things, sit stuck, or all crowd
+    /// Bots get round the whole map and fight on every level of it: over
+    /// the bridge and under it, along the wash, in the mine, on the mesa
+    /// and out on the flats. They don't fall off things, sit stuck, or all crowd
     /// into one spot. Slow (`--ignored --release --nocapture`).
     #[test]
     #[ignore]
@@ -3449,15 +3502,15 @@ mod play {
             );
         }
         // Over the three rounds, some of the fighting is on every level,
-        // and a fair share of it off the lanes.
+        // and a fair share of it off the flats.
         for (l, name) in LEVELS.iter().enumerate() {
             assert!(fighting[l] > 0.002, "nobody fought {name}");
         }
         assert!(
             fighting[5] < 0.9,
-            "{:.0}% of the fighting in the lanes",
+            "{:.0}% of the fighting on the flats",
             fighting[5] * 100.0
         );
-        assert!(time[3] > 0.02 && time[4] > 0.03, "caves {time:?}");
+        assert!(time[3] > 0.02 && time[4] > 0.03, "mine and mesa {time:?}");
     }
 }

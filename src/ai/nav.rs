@@ -4,7 +4,7 @@
 //! high enough over the ground for a tank to drive under it, the floor
 //! beneath as well. A route steps from a floor to a floor in the next cell
 //! only at about the same height, so a bot on a bridge's deck plans along
-//! the deck, one under it plans along the pit floor, and the two only meet
+//! the deck, one under it along the ground beneath, and the two only meet
 //! where the levels do (a ramp, a road, a cave mouth).
 //!
 //! On a map with nothing stacked every cell has just the one floor, and the
@@ -99,12 +99,17 @@ impl NavGrid {
             }
             let reach = o.half.length().max((y1 - y0) * 0.5) + CLEARANCE;
             let (lo, hi) = (o.center - Vec2::splat(reach), o.center + Vec2::splat(reach));
+            // A rail standing on a deck: kept only a little off from either
+            // side, so where a deck meets the ground at its end a rail's
+            // end doesn't close the way on.
+            let deck = nav.floors_at(o.center)[TOP];
+            let on_deck = deck > nav.ground(o.center) + 0.1 && (o.y0 - deck).abs() < 0.1;
             nav.mark(lo, hi, |c, f, on_slab| {
                 // Only what stands on this floor, up into a tank's way.
                 if y0 >= f + 1.0 || y1 <= f + 0.6 {
                     return false;
                 }
-                let keep = if on_slab && y1 < f + 1.2 {
+                let keep = if (on_slab || on_deck) && y1 < f + 1.2 {
                     RAIL_CLEARANCE
                 } else {
                     CLEARANCE
