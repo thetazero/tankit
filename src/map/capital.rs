@@ -135,6 +135,11 @@ fn frame(x: Vec3, y: Vec3) -> Quat {
 
 impl Map {
     pub fn capital() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        Map::built_once(&BUILT, Map::build_capital)
+    }
+
+    fn build_capital() -> Map {
         let factions = Faction::ALL.to_vec();
         let mut map = Map {
             size: SIZE,

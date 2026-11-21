@@ -171,6 +171,11 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
 
 impl Map {
     pub fn kiln() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        Map::built_once(&BUILT, Map::build_kiln)
+    }
+
+    fn build_kiln() -> Map {
         let mut map = Map {
             size: SIZE,
             solids: Vec::new(),

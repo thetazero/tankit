@@ -622,6 +622,11 @@ fn yaw_along(dir: Vec2) -> f32 {
 
 impl Map {
     pub fn mine() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        Map::built_once(&BUILT, Map::build_mine)
+    }
+
+    fn build_mine() -> Map {
         let sides = [Faction::Ithessar, Faction::Resonant];
         let mut map = Map {
             size: SIZE,
