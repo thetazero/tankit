@@ -198,6 +198,11 @@ fn talus(d: f32, r: f32, h: f32) -> f32 {
 
 impl Map {
     pub fn sanctum() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        Map::built_once(&BUILT, Map::build_sanctum)
+    }
+
+    fn build_sanctum() -> Map {
         let mut map = Map {
             size: SIZE,
             solids: Vec::new(),

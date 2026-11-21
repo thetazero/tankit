@@ -688,6 +688,14 @@ impl Map {
     pub fn sound(&mut self, kind: Ambient, at: Vec3) {
         self.sounds.push(Emitter { kind, at });
     }
+
+    /// A copy of the map `build` makes, built only the first time it's
+    /// asked for. The big maps take seconds to lay out in a debug build,
+    /// and the tests ask for them over and over; a copy takes well under
+    /// a millisecond. Building is deterministic, so a copy is the same map.
+    fn built_once(cell: &'static std::sync::OnceLock<Map>, build: fn() -> Map) -> Map {
+        cell.get_or_init(build).clone()
+    }
 }
 
 /// A glowing ribbon on the ground: a bright core fading out to its edges.

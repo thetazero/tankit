@@ -610,6 +610,11 @@ impl Map {
     }
 
     pub fn saltmarket() -> Map {
+        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
+        Map::built_once(&BUILT, Map::build_saltmarket)
+    }
+
+    fn build_saltmarket() -> Map {
         let mut map = Map::saltmarket_town();
         // The engine's arena starts at 0: shift the town and the ground
         // round it over.
