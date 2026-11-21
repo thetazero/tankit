@@ -23,6 +23,8 @@ pub fn run(args: &crate::Args, rounds: u32, improve: Option<Faction>) -> anyhow:
     let mut totals = vec![0u32; sides.len()];
     // Kills and deaths per (side, gun), summed over every round.
     let mut by_gun: std::collections::BTreeMap<(usize, &str), (u32, u32, u32)> = Default::default();
+    // With --front: every round a battle in this galaxy's war.
+    let mut war = args.front.then(|| crate::galaxy::Galaxy::warmed(args.seed));
     for r in 0..rounds as u64 {
         let seed = args.seed.wrapping_add(r * 1_000_003);
         let mut m = Match::new(args.map(), (r as usize) % 4, args.bots, seed);
@@ -33,6 +35,9 @@ pub fn run(args: &crate::Args, rounds: u32, improve: Option<Faction>) -> anyhow:
                 m.baseline_side(team, seed);
             }
         }
+        let battle = war
+            .as_mut()
+            .map(|g| (crate::galaxy::battle::deploy(g, &mut m), g.census()));
         // Time the sim alone, not building the map.
         let (clock, mut steps) = (Instant::now(), 0u32);
         while m.phase == Phase::Playing {
@@ -56,6 +61,34 @@ pub fn run(args: &crate::Args, rounds: u32, improve: Option<Faction>) -> anyhow:
         match m.leader() {
             Some(t) => wins[t] += 1,
             None => draws += 1,
+        }
+        if let (Some(g), Some((b, before))) = (war.as_mut(), battle) {
+            println!(
+                "  {} ({:.0} s left): allocation {:?}, lost {:?}, left {:?}",
+                crate::galaxy::battle::system_name(b.system),
+                m.time_left,
+                b.allocation,
+                m.lost(),
+                m.hulls.as_ref().unwrap(),
+            );
+            let s = crate::galaxy::battle::conclude(g, &b, &m);
+            println!(
+                "  {}",
+                crate::galaxy::battle::describe(&b, &s).replace('\n', "\n  ")
+            );
+            let after = g.census();
+            for &f in &b.sides {
+                println!(
+                    "  galaxy: {:<9} hulls {:8.0} -> {:8.0}  share {:4.1}% -> {:4.1}%  (tick {} -> {})",
+                    Faction::ALL[f].name(),
+                    before.hulls[f],
+                    after.hulls[f],
+                    before.share[f] * 100.0,
+                    after.share[f] * 100.0,
+                    before.tick,
+                    after.tick,
+                );
+            }
         }
         println!(
             "round {r:>3} seed {seed:>12}: {}  ({:.0} s, {ms_per_step:.3} ms a step)",

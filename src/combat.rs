@@ -1,6 +1,12 @@
 //! Team fights: two factions, five-minute rounds, no friendly fire; each side
-//! spawns at its own base. Under the Attrition contract the side with the
-//! most kills wins; under Hold, the side that holds the site longest (`hold`).
+//! spawns at its own base. Under the Attrition contract (a raid on an enemy
+//! camp) the side that costs the other most hulls wins; under Hold, the side
+//! that holds the site longest (`hold`).
+//!
+//! A battle drawn from the galaxy (`galaxy::battle`) gives each side a hull
+//! allocation: every tank it puts in play is one, and when they're spent it
+//! has no more. A side out of hulls and tanks is out of the fight, and the
+//! last side still in wins whatever the objective says.
 //!
 //! Wraps the physics `World` with what a fight needs: shells in flight, hull
 //! health, kills and deaths, respawns, the round clock, and the bots. Tank 0
@@ -844,6 +850,11 @@ pub struct Match {
     pub raid: Option<Raid>,
     /// Seconds since the round ended (the results screen counts up with it).
     pub over_for: f32,
+    /// Under a hull allocation: each side's hulls not yet in play (None:
+    /// tanks respawn without end).
+    pub hulls: Option<Vec<u32>>,
+    /// Where in the galaxy it's fought, for the HUD.
+    pub place: Option<String>,
     nav: NavGrid,
     rng: Rng,
     /// Blowing sand, drifting dust, trickles, track dust (visual only).
@@ -912,6 +923,8 @@ impl Match {
             raid: None,
             phase: Phase::Playing,
             over_for: 0.0,
+            hulls: None,
+            place: None,
             nav,
             rng,
         }
@@ -989,6 +1002,52 @@ impl Match {
         &self.fighters[0]
     }
 
+    /// Fight on a hull allocation (before the round starts): side `t` has
+    /// `allocation[t]` hulls all told, the tanks it has in play now among them.
+    pub fn set_allocation(&mut self, allocation: &[u32]) {
+        let left = (0..self.factions.len())
+            .map(|t| {
+                let seats = self.fighters.iter().filter(|f| f.team == t).count() as u32;
+                allocation
+                    .get(t)
+                    .copied()
+                    .unwrap_or(seats)
+                    .saturating_sub(seats)
+            })
+            .collect();
+        self.hulls = Some(left);
+    }
+
+    /// Side `team`'s hulls not yet in play, under an allocation.
+    pub fn hulls_left(&self, team: usize) -> Option<u32> {
+        self.hulls.as_ref().map(|h| h[team])
+    }
+
+    /// Side `team` has spent its allocation: no hulls left and no tank in play.
+    pub fn spent(&self, team: usize) -> bool {
+        self.hulls_left(team) == Some(0) && !self.fighters.iter().any(|f| f.team == team && f.alive)
+    }
+
+    /// The sides still in the fight (all of them, without an allocation).
+    pub fn contenders(&self) -> Vec<usize> {
+        (0..self.factions.len())
+            .filter(|&t| !self.spent(t))
+            .collect()
+    }
+
+    /// Hulls each side has lost: its tanks destroyed.
+    pub fn lost(&self) -> Vec<u32> {
+        (0..self.factions.len())
+            .map(|t| {
+                self.fighters
+                    .iter()
+                    .filter(|f| f.team == t)
+                    .map(|f| f.deaths)
+                    .sum()
+            })
+            .collect()
+    }
+
     /// Rate the round (in upgrade steps; 5 is M0.5) before it starts: every bot
     /// is refitted with gear drawn about that rating (see `Levels::rated`), and
     /// the contract pays more (see `economy::pay_factor`).
@@ -1046,14 +1105,18 @@ impl Match {
     }
 
     /// The side ahead on score (under Raid, on captures and then on the
-    /// time they took), or None while the lead is shared.
+    /// time they took), or None while the lead is shared. A side that's spent
+    /// its hulls can't lead; the last side still in leads whatever the score.
     pub fn leader(&self) -> Option<usize> {
-        if let Some(r) = &self.raid {
-            return r.leader();
+        let still = self.contenders();
+        if still.len() == 1 {
+            return Some(still[0]);
         }
-        let scores: Vec<u32> = (0..self.factions.len()).map(|t| self.score(t)).collect();
-        let best = *scores.iter().max()?;
-        let mut top = (0..scores.len()).filter(|&t| scores[t] == best);
+        if let Some(r) = &self.raid {
+            return r.leader().filter(|t| still.contains(t));
+        }
+        let best = still.iter().map(|&t| self.score(t)).max()?;
+        let mut top = still.iter().copied().filter(|&t| self.score(t) == best);
         let first = top.next()?;
         top.next().is_none().then_some(first)
     }
@@ -1283,6 +1346,10 @@ impl Match {
 
         self.fly_shells();
         self.respawns();
+        if playing && self.hulls.is_some() && self.contenders().len() <= 1 {
+            // A side (or all but one) out of hulls: the fight's over.
+            self.end_round();
+        }
         let tanks: Vec<(&crate::sim::Tank, bool)> = self
             .world
             .tanks
@@ -2264,6 +2331,10 @@ impl Match {
         self.shells.clear();
         let mut placed: Vec<(usize, Vec2)> = Vec::new();
         for i in 0..self.fighters.len() {
+            // A wreck comes back only on a fresh hull.
+            if !self.fighters[i].alive && !self.take_hull(self.fighters[i].team) {
+                continue;
+            }
             self.revive(i, &placed);
             placed.push((self.fighters[i].team, flat(self.world.tanks[i].pos)));
         }
@@ -2346,11 +2417,29 @@ impl Match {
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
             }
+            if !self.take_hull(self.fighters[i].team) {
+                // The side's allocation is spent: this tank stays a wreck.
+                self.fighters[i].respawn_in = 0.0;
+                continue;
+            }
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
                 .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
                 .collect();
             self.revive(i, &living);
+        }
+    }
+
+    /// Put one of side `team`'s hulls in play, if it has one left (always,
+    /// without an allocation).
+    fn take_hull(&mut self, team: usize) -> bool {
+        match &mut self.hulls {
+            None => true,
+            Some(h) if h[team] > 0 => {
+                h[team] -= 1;
+                true
+            }
+            Some(_) => false,
         }
     }
 
@@ -5145,6 +5234,81 @@ mod tests {
         assert!(
             kills >= 2,
             "only {kills} kills in a minute of bot deathmatch"
+        );
+    }
+
+    /// Destroy tank `i` for good now (a Vigil's husk too).
+    fn destroy(m: &mut Match, i: usize) {
+        let killer = (0..m.fighters.len())
+            .find(|&j| m.fighters[j].team != m.fighters[i].team)
+            .unwrap();
+        m.kill(killer, i);
+        if m.fighters[i].alive {
+            m.wreck(i);
+        }
+    }
+
+    fn respawn(m: &mut Match) {
+        for _ in 0..((RESPAWN_TIME + 0.5) / DT) as usize {
+            m.step(Command::default(), false);
+        }
+    }
+
+    /// Each respawn takes one of the side's hulls; once they're spent, a
+    /// destroyed tank stays a wreck. Without an allocation, tanks come back
+    /// without end.
+    #[test]
+    fn respawns_spend_the_allocation() {
+        let mut m = arena(3);
+        // Nobody fights but us.
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[3, 10]);
+        assert_eq!(
+            m.hulls_left(0),
+            Some(1),
+            "two tanks in play are two of three"
+        );
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(m.fighters[0].alive);
+        assert_eq!(m.hulls_left(0), Some(0));
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(!m.fighters[0].alive, "no hull to come back in");
+        assert!(!m.spent(0), "a tank still in play");
+        assert_eq!(m.lost()[0], 2);
+
+        let mut free = arena(3);
+        for _ in 0..3 {
+            destroy(&mut free, 0);
+            respawn(&mut free);
+            assert!(free.fighters[0].alive);
+        }
+    }
+
+    /// A side out of hulls and tanks is out: the round ends and the other
+    /// side wins, whatever the score.
+    #[test]
+    fn running_out_of_hulls_loses() {
+        let mut m = arena(1);
+        m.set_allocation(&[5, 1]);
+        // The player's side is behind on kills...
+        destroy(&mut m, 0);
+        destroy(&mut m, 0);
+        m.fighters[1].kills = 0;
+        m.fighters[0].kills = 0;
+        m.fighters[1].kills = 3;
+        assert_eq!(m.leader(), Some(1));
+        // ...but the enemy's last hull goes.
+        destroy(&mut m, 1);
+        m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.leader(), Some(0));
+        assert_eq!(
+            crate::economy::Payout::of(&m).outcome,
+            crate::economy::Outcome::Won
         );
     }
 }

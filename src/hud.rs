@@ -185,6 +185,10 @@ impl Hud {
             &TextStyle::value(14.0),
             Align::Left,
         );
+        // Where in the war this battle is.
+        if let Some(place) = &m.place {
+            label(&mut p, Vec2::new(MARGIN, MARGIN + 92.0), place, Align::Left);
+        }
 
         // Top right: kill feed, newest on top, each side in its colour.
         let tr = Vec2::new(w - MARGIN, MARGIN);
@@ -294,6 +298,15 @@ impl Hud {
                 1.0,
                 theme::FAINT,
             );
+            for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
+                hulls_left(
+                    &mut p,
+                    m,
+                    team,
+                    Vec2::new(top.x + dir * 14.0, sy + 24.0),
+                    align,
+                );
+            }
         } else {
             // Free-for-all: every side's score in a row, yours first.
             let step = 110.0;
@@ -310,8 +323,11 @@ impl Hud {
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
                 emblem::faction_name(&mut p, Vec2::new(x, sy + 20.0), f, &l, Align::Center);
+                hulls_left(&mut p, m, team, Vec2::new(x, sy + 36.0), Align::Center);
             }
         }
+        // The meters go under the hulls left, if there's an allocation.
+        let sy = if m.hulls.is_some() { sy + 16.0 } else { sy };
         if let Some(hd) = &m.hold
             && !board
         {
@@ -498,25 +514,38 @@ impl Hud {
                     Align::Center,
                 );
             }
-            // The countdown: whole seconds left, big, over a bar that fills
-            // as the new chassis comes up.
-            let left = me.respawn_in.max(0.0);
-            p.text(
-                c + Vec2::new(0.0, 74.0),
-                "RESPAWN IN",
-                &TextStyle::LABEL,
-                Align::Center,
-            );
-            p.text(
-                c + Vec2::new(0.0, 104.0),
-                &(left.ceil().max(1.0) as u32).to_string(),
-                &TextStyle::value(30.0),
-                Align::Center,
-            );
-            let done = 1.0 - (left / crate::combat::RESPAWN_TIME).clamp(0.0, 1.0);
-            let (bw, o) = (160.0, c + Vec2::new(-80.0, 146.0));
-            p.line(o, o + Vec2::new(bw, 0.0), 1.0, theme::DIM);
-            p.line(o, o + Vec2::new(bw * done, 0.0), 2.0, theme::HOT);
+            // Your side's allocation spent: there's no chassis to come back in.
+            if m.hulls_left(me.team) == Some(0) {
+                let mut s = TextStyle::value(16.0);
+                s.color = theme::HOT;
+                p.text(c + Vec2::new(0.0, 84.0), "NO HULLS LEFT", &s, Align::Center);
+                p.text(
+                    c + Vec2::new(0.0, 112.0),
+                    "YOUR SIDE HAS SPENT ITS ALLOCATION",
+                    &TextStyle::LABEL,
+                    Align::Center,
+                );
+            } else {
+                // The countdown: whole seconds left, big, over a bar that fills
+                // as the new chassis comes up.
+                let left = me.respawn_in.max(0.0);
+                p.text(
+                    c + Vec2::new(0.0, 74.0),
+                    "RESPAWN IN",
+                    &TextStyle::LABEL,
+                    Align::Center,
+                );
+                p.text(
+                    c + Vec2::new(0.0, 104.0),
+                    &(left.ceil().max(1.0) as u32).to_string(),
+                    &TextStyle::value(30.0),
+                    Align::Center,
+                );
+                let done = 1.0 - (left / crate::combat::RESPAWN_TIME).clamp(0.0, 1.0);
+                let (bw, o) = (160.0, c + Vec2::new(-80.0, 146.0));
+                p.line(o, o + Vec2::new(bw, 0.0), 1.0, theme::DIM);
+                p.line(o, o + Vec2::new(bw * done, 0.0), 2.0, theme::HOT);
+            }
         }
 
         // Renown popups, just above the crosshair, drifting up as they fade.
@@ -611,6 +640,27 @@ impl Hud {
 
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
+/// Side `team`'s hulls not yet in play, under its score: "18 HULLS", hot
+/// when the last few are going, struck through once they're all spent.
+fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
+    let Some(n) = m.hulls_left(team) else { return };
+    let mut s = TextStyle::LABEL;
+    let seats = m.fighters.iter().filter(|f| f.team == team).count() as u32;
+    s.color = if m.spent(team) {
+        theme::DIM
+    } else if n <= seats {
+        theme::HOT
+    } else {
+        with_alpha(theme::FG, 0.85)
+    };
+    let text = if m.spent(team) {
+        "OUT OF HULLS".to_string()
+    } else {
+        format!("{n} HULLS")
+    };
+    p.text(at, &text, &s, align);
+}
+
 fn scoreboard(
     p: &mut Painter,
     hits: &mut Hits<Hit>,

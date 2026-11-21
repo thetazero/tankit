@@ -1,9 +1,9 @@
 //! The forever war as a simulation of its own (#303, from the design on #302).
 //!
 //! Some ten thousand colonized star systems, each a few numbers, ticking
-//! forward: one tick of the whole galaxy per battle the player plays. Nothing
-//! in the game reads it yet; hooking it up to the player's battles and to
-//! postings comes later.
+//! forward: one tick of the whole galaxy per battle the player plays. Each
+//! battle the player plays is drawn from it and fed back into it (`battle`,
+//! #304); postings come later.
 //!
 //! **State.** A system is a point in a 2D region (light years) with a few
 //! planets. Each planet has **sites**: production sites, each owned by a
@@ -35,7 +35,9 @@
 //! holds too much of the galaxy, the other three stop fighting each other and
 //! go for it together.
 
+pub mod battle;
 pub mod chart;
+pub mod save;
 
 use glam::Vec2;
 
@@ -61,7 +63,7 @@ const REPAIR_TICKS: u8 = 4;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: f32 = 2.0;
 /// A system counts as at war when two sides each have this many hulls in it.
-const AT_WAR: f32 = 0.5;
+pub const AT_WAR: f32 = 0.5;
 
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
@@ -168,6 +170,8 @@ impl System {
 
 /// The whole war.
 pub struct Galaxy {
+    /// What it was generated from (the layout of systems and sites).
+    pub seed: u64,
     pub systems: Vec<System>,
     pub sites: Vec<Site>,
     /// Each system's reachable neighbors (nearest first), `NEIGHBORS` slots
@@ -292,6 +296,7 @@ impl Galaxy {
         }
         let neighbors = find_neighbors(&systems, region);
         let mut g = Galaxy {
+            seed,
             spare: vec![[0.0; SIDES]; systems.len()],
             systems,
             sites,
@@ -328,7 +333,7 @@ impl Galaxy {
         out
     }
 
-    fn neighbors(&self, s: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
+    pub fn neighbors(&self, s: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
         self.neighbors[s * NEIGHBORS..(s + 1) * NEIGHBORS]
             .iter()
             .take_while(|n| n.0 != u32::MAX)
@@ -354,7 +359,7 @@ impl Galaxy {
         }
     }
 
-    fn update_share(&mut self) {
+    pub(crate) fn update_share(&mut self) {
         let mut held = [0u32; SIDES];
         for s in &self.systems {
             for f in 0..SIDES {

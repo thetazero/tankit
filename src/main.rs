@@ -56,7 +56,7 @@ tankit [OPTIONS]
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold|raid>
-                          game mode: team deathmatch (default), hold the site, or raid
+                          game mode: a raid on an enemy camp for its hulls (default), hold the site, or raid
                           (one-sided capture the flag, two-sided maps only)
   --employer <faction>    which of the map's sides hires you (default: its first)
                           (with --screen factions|missions: whose missions the menu shows)
@@ -68,6 +68,10 @@ tankit [OPTIONS]
                           print each faction's share and how long a tick takes; with --shot,
                           save a chart of the run there
   --improve <faction>     (with --arena) that side's bots run the current brain
+  --front                 (with --arena or --shot) each round is a battle drawn from a galaxy at war
+                          (from --seed; never the one you play in): the sides fight on hull
+                          allocations, and --arena prints the galaxy's numbers before and after
+  --hulls <n,n,...>       (with --shot) each side's hull allocation, all told
   --duel <hull,turret,hull,turret,metres,count>
                           one bot against one on open ground, that far apart, count times: the
                           first kit under the current brain (then the baseline) against the
@@ -162,6 +166,10 @@ pub struct Args {
     duel: Option<(garage::Loadout, garage::Loadout, f32, u32)>,
     /// Run the galaxy's war on its own for this many ticks.
     galaxy: Option<u64>,
+    /// Rounds are battles drawn from a galaxy (`--front`).
+    pub front: bool,
+    /// Each side's hull allocation, for shots.
+    hulls: Option<Vec<u32>>,
 }
 
 impl Args {
@@ -349,6 +357,8 @@ fn parse_args() -> Result<Args> {
     let mut bench: Option<f32> = None;
     let mut arena: Option<u32> = None;
     let mut galaxy: Option<u64> = None;
+    let mut front = false;
+    let mut hulls: Option<Vec<u32>> = None;
     let mut improve: Option<faction::Faction> = None;
     let mut duel: Option<(garage::Loadout, garage::Loadout, f32, u32)> = None;
     let mut time: Option<f32> = None;
@@ -476,6 +486,16 @@ fn parse_args() -> Result<Args> {
                     args.next()
                         .context("--galaxy needs a tick count")?
                         .parse()?,
+                )
+            }
+            "--front" => front = true,
+            "--hulls" => {
+                let v = args.next().context("--hulls needs n,n,...")?;
+                hulls = Some(
+                    v.split(',')
+                        .map(|n| n.parse())
+                        .collect::<Result<_, _>>()
+                        .context("--hulls needs whole numbers")?,
                 )
             }
             "--duel" => {
@@ -641,6 +661,8 @@ fn parse_args() -> Result<Args> {
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
         arena: arena.map(|n| (n, improve)),
+        front,
+        hulls,
         duel,
         galaxy,
         shot: shot.map(|out| ShotArgs {
@@ -717,6 +739,13 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         game.world.tanks[0].turret_kind = args.loadout.1;
     }
     game.set_player_levels(profile.levels);
+    if args.front {
+        let mut g = galaxy::Galaxy::warmed(args.seed);
+        galaxy::battle::deploy(&mut g, &mut game);
+    }
+    if let Some(h) = &args.hulls {
+        game.set_allocation(h);
+    }
     if args.screen == Some(Screen::Results) {
         // A still shows the results settled; a clip starts as they begin to count.
         let lead = if shot.frames > 1 { 0.3 } else { 4.0 };
