@@ -208,6 +208,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            beams: Vec::new(),
             lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
@@ -287,6 +288,7 @@ impl Map {
             color: GLASS * rng.range(0.85, 1.2),
             lit,
             solid: true,
+            raw: false,
         });
     }
 
@@ -652,6 +654,7 @@ impl Map {
                 color: GLASS,
                 lit: rng.chance(0.15),
                 solid: false,
+                raw: false,
             });
         }
         // The great spires, tallest to the west.
@@ -672,6 +675,7 @@ impl Map {
                 color: GLASS,
                 lit: rng.chance(0.7),
                 solid: false,
+                raw: false,
             });
             // Some in pairs: a shorter one leaning against it.
             if rng.chance(0.5) {
@@ -686,6 +690,7 @@ impl Map {
                     color: GLASS,
                     lit: true,
                     solid: false,
+                    raw: false,
                 });
             }
         }

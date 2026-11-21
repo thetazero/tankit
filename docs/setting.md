@@ -161,10 +161,17 @@ What everyone fights over: your pay, the Resonant's sacrament, and the reason
 anyone fights over dead worlds. They're the progression currency in the arcade
 loop.
 
+Crystal is nobody's: one substance, the same wherever it's found. Raw, in the
+rock and in the ore, it's cloudy blue-grey and dull, crusted with rock dust,
+only a faint cold light deep in it. Cut, it glows crystal blue, as it does at
+the Resonant's sanctum. The Ithessar's machines are their own worked crystal,
+near-black glass, a different thing from the ore they dig.
+
 **The Seam:** an Ithessar crystal mine dug into a desert escarpment. The seam
 crops out on the floor of a dry wash and runs up into the cliff; the Ithessar
 have quarried the face back to sheer stone and followed the vein in, with a
-rail adit and a pillared hall under the mesa, and their own freight railroad
+rail adit and a pillared hall under the mesa, a new heading where a
+plasma borer holds its beam on the rock day and night, and their own freight railroad
 out of the adit's mouth over the wash: their combat machines float, but their
 ore still goes by rail. The Resonant call the seam holy, and have dug their
 own way into the rock from the east to take it back.

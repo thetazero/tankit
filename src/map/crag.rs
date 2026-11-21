@@ -33,8 +33,9 @@ const TOP: Vec3 = Vec3::new(0.46, 0.27, 0.18);
 /// Freshly cut stone, and the scorch along a plasma cut.
 const CUT: Vec3 = Vec3::new(0.74, 0.56, 0.42);
 const SCORCH: Vec3 = Vec3::new(0.24, 0.14, 0.13);
-/// Raw seam crystal, showing in the rock.
-const VEIN: Vec3 = Vec3::new(0.05, 0.09, 0.2);
+/// Raw seam crystal, showing in the rock: the Seam's raw crystal (cloudy
+/// blue-grey, nobody's), a little darker where it's still in the stone.
+const VEIN: Vec3 = Vec3::new(0.22, 0.27, 0.36);
 const SAND: Vec3 = Vec3::new(0.66, 0.46, 0.3);
 /// Strata band height, m.
 const BAND: f32 = 3.4;

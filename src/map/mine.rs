@@ -17,12 +17,19 @@
 //!   in benches along its foot where they're cutting into it. Nothing
 //!   climbs it; it splits the mesa in two, and you drive round its foot.
 //! - **The mine**, under the mesa and the Crag: the rail adit straight in
-//!   from the Crag's face, the new heading beside it (still being cut, a
-//!   rig at its end), the pillared hall where the seam is worked west of
-//!   it, the west adit out to the Face, the east drift to the Resonant's
-//!   breach, and the box cut, a slot sawn up through the Crag from the
-//!   adit's end to the mesa's east top. Tanks on the mesa drive over tanks
-//!   in the hall's west end.
+//!   from the Crag's face, the new heading beside it, the pillared hall
+//!   where the seam is worked west of it (high where the Crag is over it,
+//!   a wide crosscut through to the adit), the west adit out to the Face,
+//!   the east drift to the Resonant's breach, and the box cut, a slot sawn
+//!   up through the Crag from the adit's end to the mesa's east top. Tanks
+//!   on the mesa drive over tanks in the hall's west end. Inside it's
+//!   smooth rock (`vault`), the walls arching over into the roof, veins of
+//!   crystal showing in them; steel sets hold up the tunnels and round
+//!   pillars of rock the hall.
+//! - **The borer's bay**, at the new heading's end: a high chamber where
+//!   an Ithessar plasma borer stands braced on the floor, its beam held on
+//!   for good into the round bore it's cutting east, the face molten where
+//!   it strikes. Driving into the beam destroys you (bots keep clear).
 //! - **The wash**, a dry ravine 7 m deep winding right across the map
 //!   under the face, in at the west edge by the Ithessar's yard and out at
 //!   the east edge below the Resonant's camp: the seam crops out on its
@@ -43,8 +50,9 @@ use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::crag;
 use super::landmarks::Rig;
-use super::valley::noise;
-use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
+use super::valley::{noise, noise2};
+use super::vault;
+use super::{Ambient, Core, Crystal, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::render::mesh::MeshData;
@@ -96,11 +104,10 @@ const CRAG_CUT: f32 = 12.0;
 /// the terrain's 2 m grid so the cut is clean.
 const ADIT: (Vec2, Vec2) = (Vec2::new(100.0, 140.0), Vec2::new(112.0, 212.0));
 const HALL: (Vec2, Vec2) = (Vec2::new(62.0, 170.0), Vec2::new(94.0, 198.0));
-const CAVES: [(Vec2, Vec2); 7] = [
+const CAVES: [(Vec2, Vec2); 9] = [
     ADIT,
     HALL,
-    // The crosscut from the hall to the adit.
-    (Vec2::new(94.0, 180.0), Vec2::new(100.0, 190.0)),
+    CROSSCUT,
     // The west adit, from the hall out to the face.
     (Vec2::new(66.0, 140.0), Vec2::new(76.0, 170.0)),
     // The east drift, along to the breach.
@@ -110,8 +117,28 @@ const CAVES: [(Vec2, Vec2); 7] = [
     // The new heading: the Ithessar's newest tunnel into the Crag, still
     // being cut.
     HEADING,
+    BAY,
+    BORE,
 ];
-const HEADING: (Vec2, Vec2) = (Vec2::new(120.0, 146.0), Vec2::new(132.0, 170.0));
+/// The crosscut from the hall to the adit, wide and high where the cut
+/// crystal is stacked for the train.
+const CROSSCUT: (Vec2, Vec2) = (Vec2::new(94.0, 176.0), Vec2::new(100.0, 194.0));
+const HEADING: (Vec2, Vec2) = (Vec2::new(120.0, 146.0), Vec2::new(132.0, 160.0));
+/// The borer's bay at the heading's end: a big chamber, high under the
+/// Crag, where the plasma borer stands cutting the bore on east.
+const BAY: (Vec2, Vec2) = (Vec2::new(114.0, 160.0), Vec2::new(136.0, 184.0));
+/// The bore: the round tunnel the borer is cutting, its face still molten.
+const BORE: (Vec2, Vec2) = (Vec2::new(136.0, 168.0), Vec2::new(140.0, 176.0));
+/// The borer's beam: from its emitter to the bore's face, and how thick.
+const BEAM: (Vec3, Vec3, f32) = (
+    Vec3::new(130.6, 2.1, 172.0),
+    Vec3::new(140.0, 2.1, 172.0),
+    0.55,
+);
+/// Roofs this high (their underside) in the high rooms: the bay, and the
+/// hall and crosscut where they're under the Crag.
+const BAY_ROOF: f32 = 12.0;
+const HALL_ROOF: f32 = 11.0;
 /// The Crag's mouths in its face: the rail adit and the new heading.
 const MOUTHS: [(Vec2, Vec2); 2] = [ADIT, HEADING];
 /// The box cut: an open trench climbing east from the adit's end to the
@@ -120,7 +147,7 @@ const BOX_CUT: (Vec2, Vec2) = (Vec2::new(112.0, 200.0), Vec2::new(150.0, 210.0))
 /// The hall's rock pillars, left standing to hold the roof up.
 const PILLARS: [Vec2; 4] = [
     Vec2::new(71.0, 180.0),
-    Vec2::new(84.0, 179.0),
+    Vec2::new(84.5, 177.5),
     Vec2::new(72.0, 190.0),
     Vec2::new(84.0, 190.0),
 ];
@@ -320,9 +347,11 @@ const SAND: Vec3 = Vec3::new(0.66, 0.46, 0.3);
 const TAILINGS: Vec3 = Vec3::new(0.47, 0.41, 0.35);
 /// The mesa's top: weathered rock, and the cave roofs laid flush with it.
 const MESA_TOP: Vec3 = Vec3::new(0.46, 0.26, 0.17);
-/// Ithessar worked crystal (their piers, cars and rigs), and raw seam crystal.
+/// Ithessar worked crystal: their piers, cars, rigs and lamps.
 const GLASS: Vec3 = Vec3::new(0.03, 0.07, 0.16);
-const RAW: Vec3 = Vec3::new(0.05, 0.1, 0.2);
+/// Raw crystal, in the rock and in the ore: the crystal everyone's here
+/// for, nobody's yet. Cloudy blue-grey, dull until it's cut.
+const RAW: Vec3 = Vec3::new(0.1, 0.125, 0.17);
 const STEEL: Vec3 = Vec3::new(0.2, 0.21, 0.24);
 const RUST: Vec3 = Vec3::new(0.36, 0.22, 0.14);
 const TIMBER: Vec3 = Vec3::new(0.42, 0.32, 0.22);
@@ -330,8 +359,14 @@ const CONCRETE: Vec3 = Vec3::new(0.6, 0.57, 0.52);
 /// How bright a plasma lamp's light is, and how far it reaches (m).
 const LAMP_BRIGHT: f32 = 4.5;
 const LAMP_REACH: f32 = 10.0;
-/// The Resonant's crystal light.
-const HOLY: Vec3 = Vec3::new(0.25, 0.55, 1.0);
+/// Fresh-cut stone, and the scorch along a plasma cut.
+const CUT: Vec3 = Vec3::new(0.66, 0.47, 0.34);
+const SCORCH: Vec3 = Vec3::new(0.2, 0.12, 0.11);
+/// Crystal's light: the Resonant's blue, and how cut crystal glows.
+const HOLY: Vec3 = super::CRYSTAL_LIGHT;
+/// How bright cut crystal stacked for the train glows, against the
+/// Resonant's set crystal.
+const CUT_GLOW: f32 = 0.32;
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -764,6 +799,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            beams: Vec::new(),
             lights: Vec::new(),
             fall_y: None,
             hold_name: "SEAM",
@@ -805,8 +841,10 @@ impl Map {
         map.crag_lid();
         map.rough_face(&mut rng);
         map.scree_rocks(&mut rng);
-        map.mine_caves(&mut rng);
-        map.pillared_hall(&mut rng);
+        // The mine's inside has its own dice too.
+        let mut inside = Rng::new(0x1a5e_0254);
+        map.mine_caves(&mut inside);
+        map.pillared_hall(&mut inside);
         map.breach(&mut rng);
         map.box_cut(&mut rng);
         map.railroad();
@@ -814,7 +852,10 @@ impl Map {
         map.wash_rocks(&mut rng);
         map.cutting_rig(Vec2::new(97.0, 131.5), PI * 0.5 + 0.35, -WASH_DEPTH);
         map.cutting_rig(Vec2::new(90.0, 174.5), -PI * 0.5 - 0.3, 0.0);
-        map.heading_face(&mut rng);
+        // (Its own dice, so what it strews about doesn't move the rest.)
+        map.borer_bay(&mut Rng::new(0xb0e3_0254));
+        map.mine_supports();
+        map.mine_gear(&mut Rng::new(0x9ea3_0254));
         map.tipple();
         map.ore_train(&mut rng);
         map.headframe(Vec2::new(60.0, 207.0));
@@ -845,6 +886,9 @@ impl Map {
             .collect();
         found.push((Ambient::Machine, Vec3::new(97.0, -4.0, 131.5)));
         found.push((Ambient::Machine, Vec3::new(90.0, 3.0, 174.5)));
+        // The borer: its machinery, and the beam's roar on the rock.
+        found.push((Ambient::Machine, Vec3::new(BEAM.0.x - 5.0, 3.0, BEAM.0.z)));
+        found.push((Ambient::Core, BEAM.1));
         let (at, _) = track_at(track_len(3) + 18.0);
         let g = self.ground_height(at.x, at.y);
         found.push((Ambient::Hull, Vec3::new(at.x, g + 2.5, at.y)));
@@ -938,9 +982,10 @@ impl Map {
             radius: r,
             sides: 5 + (seed % 3) as u32,
             seed: (seed >> 8) as u32,
-            color: RAW * (0.85 + 0.4 * ((seed >> 40) % 1000) as f32 / 1000.0),
+            color: RAW * (0.85 + 0.3 * ((seed >> 40) % 1000) as f32 / 1000.0),
             lit,
             solid,
+            raw: true,
         });
     }
 
@@ -976,22 +1021,11 @@ impl Map {
         }
     }
 
-    /// The seam: a river of plasma along the wash floor where the rock is
-    /// cut back to it (it runs on up the Crag's face, and through the hall).
-    /// Crystal breaks out along it.
+    /// The seam: where the crystal crops out along the wash floor (it runs
+    /// on up the Crag's face, and through the hall). Crystal breaks out
+    /// along it.
     fn seam(&mut self, rng: &mut Rng) {
         let line = seam_line();
-        let mut pts = Vec::new();
-        let mut widths = Vec::new();
-        for p in &line {
-            pts.push(Vec3::new(p.x, self.ground_height(p.x, p.y) + 0.05, p.y));
-            widths.push(0.8 + 0.45 * (p.x * 0.3).sin().abs());
-        }
-        self.glow_paths.push(GlowPath {
-            points: pts,
-            widths,
-            color: PLASMA * 0.9,
-        });
         // Crystal along the seam on the wash floor, cover under the bridge
         // and either side of it.
         for (x, h) in [
@@ -1038,8 +1072,7 @@ impl Map {
     /// The Crag's face, sculpted along its foot: down its west side, along
     /// the Face (quarried in benches, the natural rock overhanging the cut),
     /// up its east side and in and out of the box cut's slot. Colliders
-    /// along it, lintels over its mouths, crystal breaking out of its veins,
-    /// the seam glowing up it by the adit, fresh plasma cuts on the benches.
+    /// along it, lintels over its mouths, crystal breaking out of its veins.
     fn crag_face(&mut self, rng: &mut Rng) {
         let feet = crag_feet(self);
         let mut mesh = std::mem::take(&mut self.sculpted);
@@ -1093,35 +1126,14 @@ impl Map {
                 0.0,
             );
         }
-        // The seams: plasma glowing along the middle of each where it's
-        // thick, crystal growing out of it all the way up.
+        // The seams: crystal growing out of them all the way up.
         let n = feet.len();
         let mut placed = 0;
-        let mut prev: Vec<(u32, Vec3)> = Vec::new();
         for i in (0..n).step_by(2) {
             let f = feet[i];
-            let mut here = Vec::new();
-            for (k, y, width, present) in crag::veins_at(&f) {
+            for (_, y, width, present) in crag::veins_at(&f) {
                 if f.mouth && y < ROOF.0 + 0.5 {
                     continue;
-                }
-                let q = f.p + f.nrm * (crag::out(&f, y) + 0.05);
-                let at = Vec3::new(q.x, y, q.y);
-                if present * width > 0.3 {
-                    // Joined to the same seam's point a step back, if near.
-                    if let Some(&(_, b)) =
-                        prev.iter().find(|(kk, b)| *kk == k && b.distance(at) < 2.6)
-                    {
-                        self.segment(
-                            b,
-                            at,
-                            0.05 + 0.08 * width,
-                            PLASMA * 0.7,
-                            Material::Glow,
-                            false,
-                        );
-                    }
-                    here.push((k, at));
                 }
                 // Not low on the Face itself: the way along its foot is
                 // narrow between the wash and the rock.
@@ -1133,37 +1145,11 @@ impl Map {
                     placed += 1;
                 }
             }
-            prev = here;
         }
         debug_assert!(placed > 40, "{placed} crystal clusters on the Crag");
-        // The seam up the face, west of the adit's mouth: from the wash's
-        // seam at the foot, wandering up the cut and on up the rock.
-        let front: Vec<&crag::Foot> = feet.iter().filter(|f| f.nrm.y < -0.7).collect();
-        let on_face = |x: f32, y: f32| {
-            let f = front
-                .iter()
-                .min_by(|a, b| (a.p.x - x).abs().total_cmp(&(b.p.x - x).abs()))
-                .unwrap();
-            let q = f.p + f.nrm * (crag::out(f, y) + 0.08);
-            Vec3::new(q.x, y, q.y)
-        };
-        let k_max = 22;
-        for k in 0..k_max {
-            let at = |k: usize| {
-                let t = k as f32 / k_max as f32;
-                let x = 95.0 + 1.8 * (t * 6.0).sin() + 2.0 * t;
-                on_face(x, -0.3 + t * 30.0)
-            };
-            self.segment(
-                at(k),
-                at(k + 1),
-                0.26 - 0.008 * k as f32,
-                PLASMA * 0.85,
-                Material::Glow,
-                false,
-            );
-        }
-        // Fresh plasma cuts along the benches, where they're cutting now.
+        // The benches once had plasma cuts glowing along them, gone now (the
+        // rock is nobody's); their draws stay, so the rest of the map is
+        // laid out as it was.
         let (x0, x1) = (crag_west(150.0) + 3.0, crag_east(150.0) - 3.0);
         let mut cuts = 0;
         for _ in 0..40 {
@@ -1178,17 +1164,7 @@ impl Map {
             {
                 continue;
             }
-            let bench = rng.index(3) as f32 + 1.0;
-            let mut x = start;
-            while x < end {
-                let y = |x: f32| {
-                    let g = self.ground_height(x, face(x) - 2.0);
-                    g + crag::BENCH * bench + 0.12
-                };
-                let (a, b) = (on_face(x, y(x)), on_face(x + 0.7, y(x + 0.7)));
-                self.segment(a, b, 0.07, PLASMA * 0.75, Material::Glow, false);
-                x += 0.7;
-            }
+            rng.index(3);
             cuts += 1;
         }
     }
@@ -1268,57 +1244,494 @@ impl Map {
                 radius: r,
                 sides: 5 + rng.index(3) as u32,
                 seed: rng.next_u64() as u32,
-                color: RAW * rng.range(0.85, 1.3),
+                color: RAW * rng.range(0.85, 1.15),
                 lit: rng.chance(0.65),
                 solid: low && k == 0,
+                raw: true,
             });
         }
     }
 
-    /// The new heading's working end: a cutting rig at the face, the seam
-    /// running in along the floor to raw crystal still in the rock, spoil
-    /// and timber by its mouth.
-    fn heading_face(&mut self, rng: &mut Rng) {
-        let (a, b) = HEADING;
-        let xc = (a.x + b.x) * 0.5;
-        self.cutting_rig(Vec2::new(xc + 2.0, b.y - 10.0), 0.0, 0.0);
-        // The seam along the floor, out from the face it's cut from.
-        let mut pts = Vec::new();
-        let mut widths = Vec::new();
-        let z0 = face(xc) + 1.0;
-        for k in 0..=10 {
-            let t = k as f32 / 10.0;
-            let z = b.y - 0.6 - t * (b.y - 0.6 - z0);
-            let x = xc - 2.5 + 1.2 * (t * 5.0).sin();
-            pts.push(Vec3::new(x, 0.04, z));
-            widths.push(0.7 - 0.3 * t);
+    /// The borer's bay at the new heading's end: the plasma borer, braced
+    /// on the floor, its beam held on into the bore it's cutting east; the
+    /// power it draws held in a core behind it; spoil, raw crystal and the
+    /// gear round it.
+    fn borer_bay(&mut self, rng: &mut Rng) {
+        let (from, to, radius) = BEAM;
+        self.beams.push(crate::map::Beam { from, to, radius });
+        let dir = (to - from).normalize();
+        let rig = Rig {
+            pos: Vec3::new(from.x - 5.8 * dir.x, 0.0, from.z - 5.8 * dir.z),
+            rot: Quat::from_rotation_y(yaw_along(Vec2::new(dir.x, dir.z))),
+        };
+        let axis_y = from.y;
+        // Hover pads under it, glowing on the floor.
+        for (x, z) in [
+            (-2.1, -3.6),
+            (2.1, -3.6),
+            (-2.3, 0.0),
+            (2.3, 0.0),
+            (-2.1, 3.4),
+            (2.1, 3.4),
+        ] {
+            rig.part(
+                self,
+                Vec3::new(x, 0.42, z),
+                Vec3::new(0.75, 0.3, 1.0),
+                Quat::IDENTITY,
+                STEEL,
+                Material::Metal,
+                false,
+                0.0,
+            );
+            rig.part(
+                self,
+                Vec3::new(x, 0.1, z),
+                Vec3::new(0.6, 0.04, 0.85),
+                Quat::IDENTITY,
+                PLASMA,
+                Material::Glow,
+                false,
+                0.0,
+            );
         }
-        self.glow_paths.push(GlowPath {
-            points: pts,
-            widths,
-            color: PLASMA * 0.85,
+        // What a tank hits: one block from the floor up, nothing to climb.
+        let c = rig.point(Vec3::new(0.0, 0.0, -0.6));
+        self.oboxes.push(OBox {
+            center: Vec2::new(c.x, c.z),
+            yaw: rig.rot.to_euler(glam::EulerRot::YXZ).0,
+            half: Vec2::new(2.9, 4.6),
+            y0: -0.2,
+            y1: 3.6,
+            hidden: true,
+            ..OBox::default()
         });
-        // Raw crystal at the face, either side of the rig's cut.
-        for (x, h) in [(a.x + 1.8, 3.4), (b.x - 1.6, 2.8)] {
-            self.outcrop(rng, Vec2::new(x, b.y - 1.8), h);
+        // The body: worked crystal, a plasma seam round it.
+        rig.part(
+            self,
+            Vec3::new(0.0, 1.45, -0.6),
+            Vec3::new(2.5, 0.75, 4.4),
+            Quat::IDENTITY,
+            GLASS,
+            Material::Vhaal,
+            true,
+            0.0,
+        );
+        rig.part(
+            self,
+            Vec3::new(0.0, 2.24, -0.6),
+            Vec3::new(2.55, 0.05, 4.45),
+            Quat::IDENTITY,
+            PLASMA,
+            Material::Glow,
+            false,
+            0.0,
+        );
+        rig.part(
+            self,
+            Vec3::new(0.0, 2.9, -1.4),
+            Vec3::new(2.0, 0.65, 3.4),
+            Quat::IDENTITY,
+            GLASS * 1.25,
+            Material::Vhaal,
+            true,
+            0.0,
+        );
+        // Heat fins along its back, plasma glowing between them.
+        for k in 0..6 {
+            let z = -4.0 + k as f32 * 1.05;
+            rig.part(
+                self,
+                Vec3::new(0.0, 3.95, z),
+                Vec3::new(1.5, 0.42, 0.12),
+                Quat::IDENTITY,
+                STEEL * 0.8,
+                Material::Metal,
+                false,
+                0.0,
+            );
         }
-        for _ in 0..6 {
-            let x = rng.range(a.x + 0.5, b.x - 0.5);
-            let h = rng.range(0.8, 2.0);
-            self.shard(
-                rng.next_u64(),
-                Vec3::new(x, rng.range(1.0, 5.5), b.y - 0.2),
-                h,
-                0.3,
-                -Vec2::Y,
-                rng.range(0.9, 1.3),
+        rig.part(
+            self,
+            Vec3::new(0.0, 3.6, -1.4),
+            Vec3::new(1.4, 0.06, 2.9),
+            Quat::IDENTITY,
+            PLASMA,
+            Material::Glow,
+            false,
+            0.0,
+        );
+        // The operator's cab on its left, a slit of light for a window.
+        rig.part(
+            self,
+            Vec3::new(-2.0, 3.6, 1.6),
+            Vec3::new(0.8, 0.7, 1.0),
+            Quat::IDENTITY,
+            GLASS * 1.5,
+            Material::Vhaal,
+            true,
+            0.0,
+        );
+        rig.part(
+            self,
+            Vec3::new(-2.0, 3.8, 2.62),
+            Vec3::new(0.6, 0.12, 0.03),
+            Quat::IDENTITY,
+            PLASMA,
+            Material::Glow,
+            false,
+            0.0,
+        );
+        // The barrel, out of the body's front to the emitter, ringed with
+        // focusing crystal.
+        let barrel0 = rig.point(Vec3::new(0.0, axis_y, 1.5));
+        let barrel1 = rig.point(Vec3::new(0.0, axis_y, 5.0));
+        self.pipe(barrel0, barrel1, 1.05, GLASS * 1.1, Material::Vhaal, true);
+        for (k, z) in [2.3f32, 3.4, 4.5].into_iter().enumerate() {
+            let c = rig.point(Vec3::new(0.0, axis_y, z));
+            let ax = dir * 0.16;
+            self.disc(c, ax, 1.55 - 0.1 * k as f32, GLASS * 1.6, Material::Vhaal);
+            self.disc(c, ax * 0.5, 1.65 - 0.1 * k as f32, PLASMA, Material::Glow);
+        }
+        // The emitter: four crystal claws reaching in round the beam.
+        for k in 0..4 {
+            let a = k as f32 * FRAC_PI_2 + PI * 0.25;
+            let (sa, ca) = a.sin_cos();
+            let root = rig.point(Vec3::new(ca * 1.0, axis_y + sa * 1.0, 4.9));
+            let knee = rig.point(Vec3::new(ca * 1.35, axis_y + sa * 1.35, 5.6));
+            let tip = rig.point(Vec3::new(ca * 0.62, axis_y + sa * 0.62, 6.4));
+            self.segment(root, knee, 0.2, GLASS * 1.4, Material::Vhaal, false);
+            self.segment(knee, tip, 0.14, GLASS * 1.6, Material::Vhaal, false);
+        }
+        let mouth = rig.point(Vec3::new(0.0, axis_y, 5.25));
+        self.disc(mouth, dir * 0.25, 0.75, PLASMA, Material::Glow);
+        // Jacks braced down to the floor against its kick.
+        for (x, z) in [(-2.4, 2.8), (2.4, 2.8), (-2.4, -4.6), (2.4, -4.6)] {
+            let top = rig.point(Vec3::new(x, 1.6, z));
+            let foot = rig.point(Vec3::new(x * 1.45, 0.0, z + 0.9 * z.signum()));
+            self.segment(top, foot, 0.17, STEEL, Material::Metal, false);
+            let f = Vec2::new(foot.x, foot.z);
+            self.oboxes.push(OBox {
+                center: f,
+                yaw: rng.range(0.0, 0.2),
+                half: Vec2::splat(0.45),
+                y0: -0.1,
+                y1: 0.12,
+                color: STEEL,
+                side_mat: Material::Metal,
+                top_mat: Material::Metal,
+                solid: false,
+                ..OBox::default()
+            });
+        }
+        // What it draws on: a core held between two monoliths behind it.
+        let mut prongs = Vec::new();
+        for x in [-1.7f32, 1.7] {
+            let foot = rig.point(Vec3::new(x, 0.0, -6.2));
+            self.oboxes.push(OBox {
+                center: Vec2::new(foot.x, foot.z),
+                yaw: rig.rot.to_euler(glam::EulerRot::YXZ).0,
+                half: Vec2::new(0.45, 0.55),
+                y0: -0.2,
+                y1: 5.4,
+                color: GLASS * 1.3,
+                side_mat: Material::Vhaal,
+                top_mat: Material::Vhaal,
+                chip: 0.12,
+                ..OBox::default()
+            });
+            prongs.push(rig.point(Vec3::new(x * 0.8, 5.5, -6.2)));
+        }
+        // The beam lights the bay: the blaze on the face, and along it.
+        for (at, k) in [(to - dir * 1.2, 2.2), ((from + to) * 0.5, 1.2)] {
+            self.lights.push(crate::render::PointLight {
+                pos: at,
+                color: PLASMA.lerp(PLASMA_HOT, 0.5) * LAMP_BRIGHT * k,
+                radius: LAMP_REACH * k,
+            });
+        }
+        self.cores.push(Core {
+            at: rig.point(Vec3::new(0.0, 4.4, -6.2)),
+            radius: 0.85,
+            prongs,
+        });
+        // Conduits of their dark glass along the floor, from the core to
+        // the body.
+        for x in [-0.9f32, 0.9] {
+            let a = rig.point(Vec3::new(x, 0.12, -5.6));
+            let b = rig.point(Vec3::new(x, 0.12, -4.4));
+            self.segment(a, b, 0.12, GLASS * 1.2, Material::Vhaal, false);
+        }
+        // Spoil from the bore, heaped either side of its mouth, clear of
+        // the beam.
+        let (a, b) = BAY;
+        for &(x, z, size) in &[
+            (b.x - 2.2, BORE.0.y - 3.0, 1.3),
+            (b.x - 4.5, BORE.0.y - 4.6, 0.8),
+            (b.x - 2.0, BORE.1.y + 3.2, 1.2),
+            (b.x - 4.0, BORE.1.y + 5.0, 0.9),
+        ] {
+            self.rock_pile(rng, Vec2::new(x, z), size);
+        }
+        // Raw crystal standing out of the floor and walls in the bay's far
+        // corners: the seam they're after, thick here.
+        for (x, z, h) in [
+            (a.x + 3.0, b.y - 3.0, 3.6),
+            (b.x - 3.0, b.y - 2.6, 2.8),
+            (a.x + 2.6, a.y + 3.2, 2.4),
+        ] {
+            self.outcrop(rng, Vec2::new(x, z), h);
+        }
+        for _ in 0..7 {
+            let side = rng.index(3);
+            let (p, out) = match side {
+                0 => (Vec2::new(rng.range(a.x + 2.0, b.x - 2.0), b.y), Vec2::Y),
+                1 => (Vec2::new(a.x, rng.range(a.y + 2.0, b.y - 2.0)), -Vec2::X),
+                _ => (Vec2::new(rng.range(a.x + 2.0, b.x - 6.0), a.y), -Vec2::Y),
+            };
+            // Not over the way in from the heading.
+            if side == 2 && p.x > HEADING.0.x - 1.0 && p.x < HEADING.1.x + 1.0 {
+                continue;
+            }
+            // A cluster, growing out of the wall where the seam shows.
+            let y = rng.range(1.2, 6.5);
+            for _ in 0..4 {
+                let q = p + out.perp() * rng.range(-0.8, 0.8) + out * 0.3;
+                self.shard(
+                    rng.next_u64(),
+                    Vec3::new(q.x, y + rng.range(-0.5, 0.5) + 1.0, q.y),
+                    rng.range(0.5, 1.4),
+                    0.26,
+                    -out + out.perp() * rng.range(-0.5, 0.5),
+                    rng.range(0.6, 1.0),
+                    rng.chance(0.6),
+                    false,
+                );
+            }
+        }
+        // Columns of steel and crystal holding up the bay's high roof.
+        for x in [a.x + 4.0, b.x - 7.0] {
+            self.prop_column(Vec2::new(x, b.y - 4.5), drawn_roof(Vec2::new(x, b.y - 4.5)));
+        }
+        // Floodlights on stands, turned on the borer.
+        for &(x, z) in &[(a.x + 2.0, a.y + 2.2), (b.x - 2.0, a.y + 2.0)] {
+            self.floodlight(Vec2::new(x, z), Vec2::new(rig.pos.x, rig.pos.z));
+        }
+        // An ore cart waiting by the way in, and cut crystal stacked.
+        self.ore_cart(rng, Vec2::new(HEADING.1.x + 1.6, a.y + 2.6), FRAC_PI_2);
+        self.block_stack(rng, Vec2::new(a.x + 2.6, (a.y + b.y) * 0.5 + 6.0), 0.2);
+    }
+
+    /// Steel sets holding up the tunnels' roofs: a post up each wall and a
+    /// cap across under the arch, braced at its corners, a lamp under it;
+    /// every 8 m, where both walls are rock (never across a way in).
+    fn mine_supports(&mut self) {
+        let runs = [
+            (ADIT, true, 4.0),
+            (CAVES[3], true, 4.0),
+            (CAVES[4], false, 6.0),
+            (HEADING, true, 4.0),
+        ];
+        for ((a, b), along_z, first) in runs {
+            let (lo, hi) = if along_z { (a.y, b.y) } else { (a.x, b.x) };
+            let mut t = lo + first;
+            while t < hi - 2.0 {
+                let (p0, p1, out) = if along_z {
+                    (Vec2::new(a.x, t), Vec2::new(b.x, t), Vec2::X)
+                } else {
+                    (Vec2::new(t, a.y), Vec2::new(t, b.y), Vec2::Y)
+                };
+                let walls = in_rock(p0 - out * 1.2)
+                    && in_rock(p1 + out * 1.2)
+                    && in_rock(p0 - out * 1.2 + out.perp() * 1.0)
+                    && in_rock(p0 - out * 1.2 - out.perp() * 1.0)
+                    && in_rock(p1 + out * 1.2 + out.perp() * 1.0)
+                    && in_rock(p1 + out * 1.2 - out.perp() * 1.0);
+                if walls && roofed(p0) && roofed(p1) {
+                    self.steel_set(p0 + out * 0.3, p1 - out * 0.3);
+                }
+                t += 8.0;
+            }
+        }
+    }
+
+    /// One steel set, its posts at `a` and `b` (against the walls).
+    fn steel_set(&mut self, a: Vec2, b: Vec2) {
+        let mid = (a + b) * 0.5;
+        let h = drawn_roof(mid) - arch(a).max(arch(b)) - 0.1;
+        let across = (b - a).normalize();
+        for p in [a, b] {
+            self.pipe(
+                Vec3::new(p.x, -0.2, p.y),
+                Vec3::new(p.x, h, p.y),
+                0.26,
+                STEEL,
+                Material::Metal,
                 true,
+            );
+        }
+        // The cap, into the rock at each end (over every tank: it's never
+        // in the way).
+        let w = a.distance(b) * 0.5 + 0.8;
+        self.oboxes.push(OBox {
+            center: mid,
+            yaw: yaw_along(across.perp()),
+            half: Vec2::new(w, 0.22),
+            y0: h - 0.05,
+            y1: h + 0.45,
+            color: STEEL * 0.9,
+            side_mat: Material::Metal,
+            top_mat: Material::Metal,
+            solid: false,
+            ..OBox::default()
+        });
+        // Knee braces.
+        for (p, s) in [(a, 1.0), (b, -1.0)] {
+            self.segment(
+                Vec3::new(p.x, h - 1.3, p.y),
+                Vec3::new(p.x + across.x * s * 1.3, h, p.y + across.y * s * 1.3),
+                0.1,
+                STEEL,
+                Material::Metal,
                 false,
             );
         }
-        // An ore cart waiting to be filled.
-        let _ = xc;
-        self.ore_cart(rng, Vec2::new(b.x - 2.0, b.y - 16.0), 0.1);
+    }
+
+    /// The mine's gear along its tunnels: the vent duct down the adit, cable
+    /// trays along the drift, cut crystal stacked in the crosscut.
+    fn mine_gear(&mut self, rng: &mut Rng) {
+        // The duct, high up the adit's west wall, in sections.
+        let x = ADIT.0.x + 0.95;
+        let mut z = 158.0;
+        while z < 208.0 {
+            let (a, b) = (Vec3::new(x, 5.0, z), Vec3::new(x, 5.0, z + 3.9));
+            self.pipe(a, b, 0.42, RUST, Material::Rust, false);
+            self.pipe(
+                b - Vec3::Z * 0.12,
+                b + Vec3::Z * 0.1,
+                0.5,
+                STEEL,
+                Material::Metal,
+                false,
+            );
+            z += 4.0;
+        }
+        // Cable trays along the drift's north wall, plasma conduit in them.
+        let (a, b) = CAVES[4];
+        let zt = b.y - 0.45;
+        self.oboxes.push(OBox {
+            center: Vec2::new((a.x + b.x) * 0.5, zt),
+            half: Vec2::new((b.x - a.x) * 0.5 - 1.0, 0.25),
+            y0: 3.9,
+            y1: 4.0,
+            color: STEEL,
+            side_mat: Material::Metal,
+            top_mat: Material::Metal,
+            solid: false,
+            ..OBox::default()
+        });
+        self.oboxes.push(OBox {
+            center: Vec2::new((a.x + b.x) * 0.5, zt),
+            half: Vec2::new((b.x - a.x) * 0.5 - 1.0, 0.07),
+            y0: 4.0,
+            y1: 4.12,
+            color: STEEL * 0.4,
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
+            solid: false,
+            ..OBox::default()
+        });
+        // Cut crystal in the crosscut, waiting for the train.
+        let (a, b) = CROSSCUT;
+        self.block_stack(rng, Vec2::new(b.x - 1.6, b.y - 1.8), 0.1);
+        self.block_stack(rng, Vec2::new(a.x + 1.2, a.y + 1.6), -0.15);
+    }
+
+    /// A column of steel from the floor to the roof at `top`, its foot and
+    /// head spread on plates, a crystal collar lit half way up.
+    fn prop_column(&mut self, at: Vec2, top: f32) {
+        let foot = Vec3::new(at.x, 0.0, at.y);
+        let head = Vec3::new(at.x, top + 0.3, at.y);
+        self.pipe(
+            foot - Vec3::Y * 0.3,
+            head,
+            0.42,
+            STEEL,
+            Material::Metal,
+            true,
+        );
+        for (y0, y1) in [(-0.1, 0.25), (top - 0.35, top + 0.3)] {
+            self.oboxes.push(OBox {
+                center: at,
+                half: Vec2::splat(0.85),
+                y0,
+                y1,
+                color: STEEL * 0.8,
+                side_mat: Material::Metal,
+                top_mat: Material::Metal,
+                ..OBox::default()
+            });
+        }
+        self.pipe(
+            foot + Vec3::Y * 3.0,
+            foot + Vec3::Y * 3.4,
+            0.52,
+            STEEL * 0.8,
+            Material::Metal,
+            false,
+        );
+    }
+
+    /// A floodlight on a steel stand at `at`, its lamp turned toward `look`.
+    fn floodlight(&mut self, at: Vec2, look: Vec2) {
+        let base = Vec3::new(at.x, 0.0, at.y);
+        let top = base + Vec3::Y * 4.6;
+        for k in 0..3 {
+            let a = k as f32 * TAU / 3.0;
+            let leg = base + Vec3::new(a.cos(), 0.0, a.sin()) * 0.9;
+            self.segment(
+                leg,
+                top - Vec3::Y * 1.2,
+                0.07,
+                STEEL,
+                Material::Metal,
+                false,
+            );
+        }
+        self.pipe(
+            base + Vec3::Y * 1.0,
+            top,
+            0.09,
+            STEEL,
+            Material::Metal,
+            false,
+        );
+        let d = (look - at).normalize_or(Vec2::X);
+        let rig = Rig {
+            pos: top,
+            rot: Quat::from_rotation_y(yaw_along(d)) * Quat::from_rotation_x(0.35),
+        };
+        rig.part(
+            self,
+            Vec3::ZERO,
+            Vec3::new(0.7, 0.4, 0.3),
+            Quat::IDENTITY,
+            STEEL * 0.7,
+            Material::Metal,
+            false,
+            0.0,
+        );
+        rig.part(
+            self,
+            Vec3::new(0.0, 0.0, 0.31),
+            Vec3::new(0.6, 0.3, 0.02),
+            Quat::IDENTITY,
+            Vec3::new(1.0, 0.85, 0.95),
+            Material::Glow,
+            false,
+            0.0,
+        );
     }
 
     /// Broken natural rock along the rest of the Face, so it reads as stone,
@@ -1461,19 +1874,19 @@ impl Map {
                 }
             }
         }
+        let cell = 2.0;
         // Roofs: the 2 m cells within the walls' reach of a cave, back from
         // the Face's lip, gathered into slabs that don't overlap.
-        let cell = 2.0;
-        // Each run is (from, to, under the Crag).
-        let mut rows: Vec<(f32, Vec<(f32, f32, bool)>)> = Vec::new();
+        // Each run is (from, to, (under the Crag, underside)).
+        let mut rows: Vec<(f32, Vec<RoofRun>)> = Vec::new();
         let mut z = 136.0;
         while z < SIZE + 6.0 {
             let mut runs = Vec::new();
             let mut x = 56.0;
-            let mut start: Option<(f32, bool)> = None;
+            let mut start: Option<(f32, (bool, f32))> = None;
             while x <= 164.0 {
                 let c = Vec2::new(x + cell * 0.5, z + cell * 0.5);
-                let on = (x < 164.0 && roofed(c)).then(|| under_crag(c));
+                let on = (x < 164.0 && roofed(c)).then(|| (under_crag(c), slab_under(c)));
                 match (on, start) {
                     (Some(k), None) => start = Some((x, k)),
                     (on, Some((s, k))) if on != Some(k) => {
@@ -1488,8 +1901,8 @@ impl Map {
             z += cell;
         }
         // Merge rows with the same runs into slabs.
-        let mut open: Vec<((f32, f32, bool), f32)> = Vec::new();
-        let mut slabs: Vec<(Vec2, Vec2, bool)> = Vec::new();
+        let mut open: Vec<(RoofRun, f32)> = Vec::new();
+        let mut slabs: Vec<(Vec2, Vec2, (bool, f32))> = Vec::new();
         for (z, runs) in rows
             .iter()
             .chain(std::iter::once(&(SIZE + 6.0, Vec::new())))
@@ -1509,11 +1922,11 @@ impl Map {
             }
             open = next;
         }
-        for (a, b, tall) in slabs {
+        for (a, b, (tall, under)) in slabs {
             self.oboxes.push(OBox {
                 center: (a + b) * 0.5,
                 half: (b - a) * 0.5,
-                y0: ROOF.0,
+                y0: under,
                 y1: if tall { CRAG_ROOF } else { ROOF.1 },
                 color: MESA_TOP,
                 side_mat: Material::Rubble,
@@ -1528,6 +1941,7 @@ impl Map {
             });
         }
         self.roof_lid();
+        self.cave_lining();
         // Lamps: plasma in a crystal cage on the walls every 12 m (the
         // Resonant's breach is lit their own way), and veins of raw crystal
         // breaking out of the walls.
@@ -1777,6 +2191,97 @@ impl Map {
         }
     }
 
+    /// The mine's inside drawn as smooth rock over its boxes: walls that
+    /// wander in and out, arching over into the roof (see `vault`).
+    fn cave_lining(&mut self) {
+        let wall_here = |c: Vec2, n: Vec2| {
+            let back = c + n;
+            cave_distance(c) < 1.0 && in_rock(back) && back.y < SIZE && !within(BOX_CUT, c, 1.0)
+        };
+        let cave = vault::Cave {
+            sdf: &open_sdf,
+            roof: &drawn_roof,
+            arch: &arch,
+            wall_here: &wall_here,
+            roof_here: &roofed,
+            shade: &rock_shade,
+            veins: &rock_veins,
+            vein_color: RAW,
+        };
+        vault::line(
+            &mut self.sculpted,
+            &cave,
+            Vec2::new(56.0, 136.0),
+            Vec2::new(166.0, SIZE + 2.0),
+        );
+    }
+
+    /// A pillar of rock left standing to hold a roof up, at `at`, `r`
+    /// across, up to the roof at `top`: round, flaring into the floor and
+    /// the roof, drawn smooth over an eight-sided collider.
+    fn rock_pillar(&mut self, at: Vec2, r: f32, top: f32) {
+        // Four bars, 45 degrees apart, make the eight sides.
+        for k in 0..4 {
+            self.oboxes.push(OBox {
+                center: at,
+                yaw: k as f32 * PI * 0.25,
+                half: Vec2::new(r, r * (PI / 8.0).tan()),
+                y0: -0.5,
+                y1: top + 0.2,
+                hidden: true,
+                ..OBox::default()
+            });
+        }
+        let seed = (at.x * 7.0 + at.y * 13.0) as u32;
+        let radius = |a: f32, y: f32| {
+            let flare = smoothstep(1.2, -0.4, y) * 0.12 + smoothstep(top - 2.4, top + 0.2, y) * 0.8;
+            r * (1.09 + flare)
+                + 0.18 * noise2(a * 1.3, y / 1.7, seed)
+                + 0.06 * noise2(a * 4.0, y / 0.6, seed + 1)
+        };
+        let point = |a: f32, y: f32| {
+            let rr = radius(a, y);
+            Vec3::new(at.x + a.cos() * rr, y, at.y + a.sin() * rr)
+        };
+        let (sides, rows) = (28usize, 16usize);
+        let y_at = |k: f32| -0.5 + (top + 0.4) * k / rows as f32;
+        let m = &mut self.sculpted;
+        let base = m.verts.len() as u32;
+        for j in 0..=rows {
+            for i in 0..=sides {
+                let a = i as f32 / sides as f32 * TAU;
+                let y = y_at(j as f32);
+                let p = point(a, y);
+                let e = 0.02;
+                let da = point(a + e, y) - point(a - e, y);
+                let dy = point(a, y_at(j as f32 + 0.1)) - point(a, y_at(j as f32 - 0.1));
+                let mut n = da.cross(dy).normalize_or_zero();
+                if n.dot(Vec3::new(a.cos(), 0.0, a.sin())) < 0.0 {
+                    n = -n;
+                }
+                let (c, mat) = rock_shade(p, n);
+                m.verts.push(crate::render::mesh::Vertex {
+                    pos: p.to_array(),
+                    normal: n.to_array(),
+                    color: c.extend(mat.id()).to_array(),
+                });
+            }
+        }
+        let row = sides as u32 + 1;
+        for j in 0..rows as u32 {
+            for i in 0..sides as u32 {
+                let q = [
+                    base + j * row + i,
+                    base + j * row + i + 1,
+                    base + (j + 1) * row + i + 1,
+                    base + (j + 1) * row + i,
+                ];
+                // Wound to face out.
+                m.indices.extend([q[0], q[2], q[1], q[0], q[3], q[2]]);
+            }
+        }
+    }
+
     /// A plasma lamp on a cave wall at `at`, on a bracket standing out
     /// along `out`.
     fn lamp(&mut self, at: Vec2, out: Vec2) {
@@ -1787,8 +2292,19 @@ impl Map {
     fn cave_wall(&mut self, rng: &mut Rng, a: Vec2, b: Vec2, out: Vec2) {
         let len = a.distance(b);
         let along = (b - a) / len;
+        // Is there rock past each end, round the corner?
+        let ext = (
+            in_rock(a - along * 1.0 + out * 1.0),
+            in_rock(b + along * 1.0 + out * 1.0),
+        );
         // In pieces 4-6 m long, their faces flush (a step between two
         // would catch a tank scraping along the wall and throw it).
+        // As high as the room's roof: a high room's, where the Crag's rock
+        // is over the wall (not out under the mesa's top).
+        let top = |p: Vec2| match high_roof(p - out * 1.0) {
+            Some(h) if crag_depth(p + out * CAVE_WALL) > 0.5 => h + 0.3,
+            _ => ROOF.0 + 0.3,
+        };
         let mut t = 0.0;
         while t < len - 0.01 {
             let piece = rng.range(4.0, 6.0).min(len - t);
@@ -1797,14 +2313,40 @@ impl Map {
             } else {
                 piece
             };
-            let c = a + along * (t + piece * 0.5) + out * (CAVE_WALL * 0.5 - 0.02);
-            let half = if along.x.abs() > 0.5 {
-                Vec2::new(piece * 0.5 + CAVE_WALL * 0.5, CAVE_WALL * 0.5)
+            // Where the height changes, in 2 m pieces (on the roof's grid).
+            let at = |d: f32| top(a + along * (t + d));
+            let piece = if at(0.5) != at(piece - 0.5) {
+                2.0f32.min(len - t)
             } else {
-                Vec2::new(CAVE_WALL * 0.5, piece * 0.5 + CAVE_WALL * 0.5)
+                piece
+            };
+            let y1 = at(0.5).max(at(piece - 0.5));
+            // Each piece runs on past its ends into the rock to close the
+            // corners, but not past the wall's own ends where it stops at a
+            // way through (it would stand there unseen in the way).
+            let back = if t < 0.01 && !ext.0 {
+                0.0
+            } else {
+                CAVE_WALL * 0.5
+            };
+            let on = if t + piece > len - 0.01 && !ext.1 {
+                0.0
+            } else {
+                CAVE_WALL * 0.5
+            };
+            let (lo, hi) = (t - back, t + piece + on);
+            let c = a + along * ((lo + hi) * 0.5) + out * (CAVE_WALL * 0.5 - 0.02);
+            let half = if along.x.abs() > 0.5 {
+                Vec2::new((hi - lo) * 0.5, CAVE_WALL * 0.5)
+            } else {
+                Vec2::new(CAVE_WALL * 0.5, (hi - lo) * 0.5)
             };
             let shade = [STONE, STONE_DARK, STONE_PALE][rng.index(3)] * rng.range(0.85, 1.0);
-            self.stone(c, 0.0, half, -0.5, ROOF.0 + 0.3, shade, 0.3);
+            self.stone(c, 0.0, half, -0.5, y1, shade, 0.3);
+            // The lining is drawn in its place (see `cave_lining`).
+            if let Some(o) = self.oboxes.last_mut() {
+                o.hidden = true;
+            }
             t += piece;
         }
     }
@@ -1813,37 +2355,27 @@ impl Map {
     /// hold the roof, the vein glowing across the floor between them,
     /// crystal standing where it hasn't been cut yet, a stack of cut blocks.
     fn pillared_hall(&mut self, rng: &mut Rng) {
-        for (k, &p) in PILLARS.iter().enumerate() {
-            let s = rng.range(2.3, 2.8);
-            self.stone(
-                p,
-                rng.range(-0.08, 0.08),
-                Vec2::new(s, s * rng.range(0.85, 1.0)),
-                -0.5,
-                ROOF.0 + 0.1,
-                [STONE, STONE_DARK][k % 2] * rng.range(0.9, 1.0),
-                0.5,
-            );
+        for &p in &PILLARS {
+            let s = rng.range(2.1, 2.5);
+            let top = drawn_roof(p) + 0.3;
+            self.rock_pillar(p, s, top);
+            // Steel straps round it, to keep it from spalling.
+            let band = 2.6 + rng.range(0.0, 0.6);
+            for y in [band, band + 1.1] {
+                self.pipe(
+                    Vec3::new(p.x, y, p.y),
+                    Vec3::new(p.x, y + 0.3, p.y),
+                    s * 1.12 + 0.15,
+                    STEEL * 0.8,
+                    Material::Metal,
+                    false,
+                );
+            }
             // A lamp on each pillar's face toward the middle.
             let mid = (HALL.0 + HALL.1) * 0.5;
             let out = if p.x < mid.x { Vec2::X } else { -Vec2::X };
-            self.lamp(p + out * (s + 0.1), out);
+            self.lamp(p + out * (s * 1.1 + 0.2), out);
         }
-        // The vein across the hall floor, west to east toward the adit.
-        let mut pts = Vec::new();
-        let mut widths = Vec::new();
-        for k in 0..=14 {
-            let t = k as f32 / 14.0;
-            let x = HALL.0.x + 2.0 + t * (ADIT.1.x - 2.0 - HALL.0.x - 2.0);
-            let z = 184.5 + 3.0 * (t * 7.0).sin() - 2.0 * t;
-            pts.push(Vec3::new(x, 0.04, z));
-            widths.push(0.6 + 0.3 * (t * 11.0).sin().abs());
-        }
-        self.glow_paths.push(GlowPath {
-            points: pts,
-            widths,
-            color: PLASMA * 0.85,
-        });
         // Crystal not yet cut, in the hall's west end (clear of the way in
         // from the west adit, round the pillar to the hall's middle).
         for (x, z, h) in [(66.0, 184.0, 3.2), (65.5, 175.5, 2.4), (78.0, 195.0, 2.6)] {
@@ -1853,7 +2385,8 @@ impl Map {
         self.block_stack(rng, Vec2::new(92.0, 195.0), 0.0);
     }
 
-    /// Cut crystal blocks, stacked: a big one with smaller round it.
+    /// Cut crystal blocks, stacked: a big one with smaller round it. Cut,
+    /// the crystal glows, as it does at the Resonant's sanctum.
     fn block_stack(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
         let g = self.ground_height(at.x, at.y);
         let rot = Vec2::from_angle(-yaw);
@@ -1873,9 +2406,9 @@ impl Map {
                 half: Vec2::splat(0.9 - 0.02 * k as f32),
                 y0: g - 0.2,
                 y1: g + h,
-                color: GLASS * rng.range(1.0, 1.4),
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
+                color: HOLY * CUT_GLOW * rng.range(0.85, 1.1),
+                side_mat: Material::Glow,
+                top_mat: Material::Glow,
                 ..OBox::default()
             });
         }
@@ -2567,8 +3100,8 @@ impl Map {
                 Vec3::new(x, heap(x, z), z),
                 Vec3::new(s, s * 0.7, s * 1.3),
                 Quat::from_euler(glam::EulerRot::YXZ, rng.range(0.0, TAU), 0.4, 0.3),
-                RAW * 1.3,
-                Material::Vhaal,
+                RAW * 1.15,
+                Material::Ore,
                 false,
                 0.0,
             );
@@ -3353,8 +3886,8 @@ impl Map {
                 p,
                 Vec3::new(s, s * 2.6, s),
                 tip,
-                RAW * 1.4,
-                Material::Vhaal,
+                RAW * (0.85 + (s - 0.1) * 3.75),
+                Material::Ore,
                 false,
                 0.0,
             );
@@ -3417,7 +3950,14 @@ impl Map {
                 bow(1.0, swirl),
             ];
             for w in pts.windows(2) {
-                self.segment(w[0], w[1], 0.014 * size, RAW * 2.2, Material::Vhaal, false);
+                self.segment(
+                    w[0],
+                    w[1],
+                    0.014 * size,
+                    GLASS * 3.0,
+                    Material::Vhaal,
+                    false,
+                );
             }
         }
         // The point it's pinched to, below, a bead of plasma on it.
@@ -3772,6 +4312,7 @@ impl Map {
                 color: GLASS * 1.2,
                 lit: true,
                 solid: true,
+                raw: false,
             });
             prongs.push(base + axis);
         }
@@ -3823,11 +4364,20 @@ impl Map {
                 rng.range(5.0, 8.0)
             };
             let size = rng.range(3.2, 4.2);
+            // Down to the lowest ground under it (on a slope, the wash's
+            // bank, its low side mustn't leave a gap under it).
+            let low = (0..8)
+                .map(|k| {
+                    let a = k as f32 * TAU / 8.0;
+                    let p = at + Vec2::new(a.cos(), a.sin()) * size * 1.4;
+                    self.ground_height(p.x, p.y)
+                })
+                .fold(g, f32::min);
             self.oboxes.push(OBox {
                 center: at,
                 yaw: rng.range(0.0, TAU),
                 half: Vec2::new(size, size * rng.range(0.85, 1.0)),
-                y0: g - 1.5,
+                y0: low.min(g - 1.5),
                 y1: g + tall,
                 color: shades[rng.index(shades.len())] * rng.range(0.85, 1.05),
                 side_mat: Material::Rubble,
@@ -4462,6 +5012,160 @@ fn locomotive(m: &mut MeshData) {
     }
 }
 
+/// A high room's roof over a point in it (not out in its walls), if it's
+/// in one: the bay, and the hall and crosscut where the Crag is deep over
+/// them (not where the mesa's top is just over the roof).
+fn high_roof(p: Vec2) -> Option<f32> {
+    if within(BAY, p, 0.0) {
+        Some(BAY_ROOF)
+    } else if (within(HALL, p, 0.0) || within(CROSSCUT, p, 0.0)) && crag_depth(p) > 4.0 {
+        Some(HALL_ROOF)
+    } else {
+        None
+    }
+}
+
+/// A roof slab's underside over 2 m cell `c`: a high room's, as high in the
+/// rock round one, the usual elsewhere.
+fn slab_under(c: Vec2) -> f32 {
+    if let Some(h) = high_roof(c) {
+        return h;
+    }
+    if !in_cave(c) {
+        let mut best: Option<f32> = None;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let q = c + Vec2::new(dx as f32, dz as f32) * 2.0;
+                if let Some(h) = high_roof(q) {
+                    best = Some(best.map_or(h, |b: f32| b.max(h)));
+                }
+            }
+        }
+        if let Some(h) = best {
+            return h;
+        }
+    }
+    ROOF.0
+}
+
+/// The roof's underside as drawn over a point: just under the slabs, and
+/// in a high room rising from where it meets a low one.
+fn drawn_roof(p: Vec2) -> f32 {
+    let under = ROOF.0 - 0.08;
+    let target = if rect_distance(BAY, p) < 3.0 {
+        BAY_ROOF
+    } else if rect_distance(HALL, p) < 3.0 || rect_distance(CROSSCUT, p) < 3.0 {
+        HALL_ROOF
+    } else {
+        return under;
+    };
+    // How far it is to the nearest low room's cell.
+    let cell = 2.0;
+    let i0 = (p / cell).floor();
+    let mut d = 4.0f32;
+    for dz in -3..=3 {
+        for dx in -3..=3 {
+            let a = (i0 + Vec2::new(dx as f32, dz as f32)) * cell;
+            let c = a + Vec2::splat(cell * 0.5);
+            if in_cave(c) && high_roof(c).is_none() {
+                d = d.min(rect_distance((a, a + Vec2::splat(cell)), p));
+            }
+        }
+    }
+    under + (target - ROOF.0) * smoothstep(0.0, 3.5, d)
+}
+
+/// The open space underground, as a distance (negative inside): the
+/// caves and the box cut, their corners rounded, and the air out past the
+/// Face.
+fn open_sdf(p: Vec2) -> f32 {
+    let mut d = p.y - (face(p.x) + FACE_RISE * 0.5);
+    d = d.min(vault::rect_sdf(BOX_CUT, 0.3, p));
+    for &r in &CAVES {
+        // The bore is round: its end too.
+        let round = if r == BORE { 3.0 } else { 0.8 };
+        d = vault::smin(d, vault::rect_sdf(r, round, p), 1.0);
+    }
+    d
+}
+
+/// How far the walls arch over into the roof: wide in the high rooms,
+/// right over in the bore (it's round).
+fn arch(c: Vec2) -> f32 {
+    let near = |r: (Vec2, Vec2), w: f32| 1.0 - smoothstep(0.0, w, rect_distance(r, c));
+    let mut a: f32 = 2.2;
+    a = a.max(2.2 + 1.7 * near(BORE, 1.0));
+    a = a.max(2.2 + 1.6 * near(BAY, 2.0));
+    a = a.max(2.2 + 1.0 * near(HALL, 2.0) * smoothstep(3.0, 6.0, crag_depth(c)));
+    a
+}
+
+/// The veins of raw crystal showing in the mine's walls at edge point
+/// `c`: two, low and high, pinching out and swelling, thick where the borer
+/// is cutting (they bore where the seam is richest); none in the
+/// Resonant's breach.
+fn rock_veins(c: Vec2) -> [vault::Vein; 2] {
+    let mut out = [vault::Vein::default(); 2];
+    if rect_distance(CAVES[5], c) < 1.0 {
+        return out;
+    }
+    let u = c.x + c.y;
+    let rich = 1.0 - smoothstep(2.0, 8.0, rect_distance(BAY, c));
+    for (k, v) in out.iter_mut().enumerate() {
+        let k = k as u32;
+        let y = [1.5, 4.4][k as usize] + 1.6 * (noise(u / 13.0, 30 + k) * 2.0 - 1.0);
+        let present = smoothstep(
+            0.45,
+            0.65,
+            noise(u / 15.0 + 3.7 * k as f32, 34 + k) + 0.35 * rich,
+        );
+        let half = (0.08 + 0.3 * noise(u / 6.0, 32 + k) + 0.25 * rich) * present;
+        v.y = y;
+        v.half = half;
+    }
+    out
+}
+
+/// The mine's rock at a point on its lining facing `n`: red beds, stained
+/// dark round the veins; the bore freshly cut and scorched, molten at its
+/// face.
+fn rock_shade(p: Vec3, n: Vec3) -> (Vec3, Material) {
+    let q = Vec2::new(p.x, p.z);
+    let u = p.x + p.z;
+    let bed = noise(p.y / 1.3 + 0.4 * noise(u / 9.0, 20), 21);
+    let mut c = STONE_DARK.lerp(STONE, bed) * (0.82 + 0.12 * noise(u / 2.3, 22));
+    if n.y < -0.6 {
+        // The roof: darker, smoke-stained.
+        c *= 0.72;
+    }
+    // Darker round the veins, where the crystal's dust stains it.
+    if n.y > -0.6 {
+        let near = rock_veins(q)
+            .iter()
+            .map(|v| {
+                (1.0 - smoothstep(v.half, v.half + 0.9, (p.y - v.y).abs()))
+                    * (v.half > 0.0) as u8 as f32
+            })
+            .fold(0.0, f32::max);
+        c = c.lerp(STONE_DARK * 0.55, 0.6 * near);
+    }
+    // The bore: cut clean and smooth, scorched toward its face, where the
+    // beam strikes (its glow is drawn with the beam).
+    let strike = p.distance(BEAM.1);
+    let bore = 1.0 - smoothstep(0.0, 1.5, rect_distance(BORE, q));
+    if bore > 0.0 || strike < 7.0 {
+        let fresh = c.lerp(CUT, bore.max(1.0 - smoothstep(4.0, 7.0, strike)));
+        let scorch =
+            (1.0 - smoothstep(2.0, 6.0, strike)).max(0.3 * bore * noise(u * 0.9 + p.y, 38));
+        c = fresh.lerp(SCORCH, scorch);
+    }
+    (c, Material::Cliff)
+}
+
+/// A run of roof cells along a row: from, to, and what's over it (under
+/// the Crag, the underside's height).
+type RoofRun = (f32, f32, (bool, f32));
+
 /// Length of the track up to its point `k`.
 fn track_len(k: usize) -> f32 {
     line_len(&TRACK, k)
@@ -4697,13 +5401,31 @@ mod tests {
         }
     }
 
-    /// Every hull drives in at the new heading's mouth, up it to the rig.
+    /// Every hull drives in at the new heading's mouth, up it into the bay
+    /// (and on into the borer's side: no climbing it either).
     #[test]
     fn tanks_drive_into_the_heading() {
         let x = HEADING.0.x + 3.0;
         for hull in HULLS {
-            let (end, _, high) = drive(hull, Vec2::new(x, face(x) - 4.0), 0.0, 6.0);
-            assert!(end.z > face(x) + 6.0, "{hull:?} only got to {end}");
+            let mut w = crate::sim::World::empty(Map::mine());
+            w.spawn_tank(
+                Vec3::ONE,
+                Vec2::new(x, face(x) - 4.0),
+                0.0,
+                hull,
+                crate::sim::TurretKind::Kontos,
+            );
+            let cmd = crate::sim::Command {
+                throttle: 1.0,
+                ..Default::default()
+            };
+            let mut high = f32::NEG_INFINITY;
+            for _ in 0..(6.0 / crate::game::DT) as usize {
+                w.step(&[cmd]);
+                high = high.max(w.tanks[0].pos.y);
+            }
+            let end = w.tanks[0].pos;
+            assert!(end.z > BAY.0.y + 2.0, "{hull:?} only got to {end}");
             assert!(high < 3.0, "{hull:?} went up to {high}");
         }
     }
@@ -4713,7 +5435,7 @@ mod tests {
     #[test]
     fn the_crag_stops_tanks() {
         let m = Map::mine();
-        assert!(m.ground_height(118.0, 178.0) > CRAG_TOP - 1.0);
+        assert!(m.ground_height(88.0, 164.0) > CRAG_TOP - 1.0);
         for x in [86.0, 96.0, 116.0, 138.0] {
             for hull in HULLS {
                 let (end, _, high) = drive(hull, Vec2::new(x, face(x) - 8.0), 0.0, 6.0);
@@ -4797,7 +5519,30 @@ mod tests {
             for (s, e, _) in FORDS {
                 for (a, b) in [(s, e), (e, s)] {
                     let dir = (b - a).normalize();
-                    let (end, low, _) = drive(hull, a - dir * 4.0, yaw_along(dir), 12.0);
+                    // Until it's across (then it's done: what's strewn on
+                    // past the far top isn't the crossing).
+                    let mut w = crate::sim::World::empty(Map::mine());
+                    w.spawn_tank(
+                        Vec3::ONE,
+                        a - dir * 4.0,
+                        yaw_along(dir),
+                        hull,
+                        crate::sim::TurretKind::Kontos,
+                    );
+                    let cmd = crate::sim::Command {
+                        throttle: 1.0,
+                        ..Default::default()
+                    };
+                    let mut low = f32::INFINITY;
+                    for _ in 0..(12.0 / crate::game::DT) as usize {
+                        w.step(&[cmd]);
+                        let p = w.tanks[0].pos;
+                        low = low.min(p.y);
+                        if (Vec2::new(p.x, p.z) - b).dot(dir) > 2.0 {
+                            break;
+                        }
+                    }
+                    let end = w.tanks[0].pos;
                     assert!(
                         low < -WASH_DEPTH + 1.5,
                         "{hull:?} never got down into the wash from {a} ({end})"

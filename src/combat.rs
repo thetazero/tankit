@@ -460,6 +460,28 @@ fn landed(map: &Map, t: &Tank) -> bool {
     clearance < LANDED_CLEARANCE || (t.grounded() && t.vel.y > -1.0)
 }
 
+/// Some part of the tank (its hull, the turret on it) is in the beam.
+pub fn in_beam(b: &crate::map::Beam, t: &Tank) -> bool {
+    let c = t.chassis;
+    // A quick miss: nowhere near the beam's line.
+    if b.distance(t.pos) > b.radius + 6.0 {
+        return false;
+    }
+    let inv = t.rot.inverse();
+    let len = b.from.distance(b.to);
+    let steps = (len / 0.25).ceil().max(1.0) as usize;
+    let r = b.radius;
+    (0..=steps).any(|k| {
+        let p = b.from.lerp(b.to, k as f32 / steps as f32);
+        let l = inv * (p - t.pos);
+        l.x.abs() < c.hull_half_x + r
+            && l.y > -r
+            && l.y < c.hull_top + 1.0 + r
+            && l.z > c.hull_z.0 - 0.3 - r
+            && l.z < c.hull_z.1 + 0.4 + r
+    })
+}
+
 /// A tank out of the arena has come down on the ground out there (or on
 /// anything, or has dropped well below it: it never falls for long).
 fn landed_out(map: &Map, t: &Tank) -> bool {
@@ -1119,6 +1141,7 @@ impl Match {
             .extend(self.world.knocks.iter().map(|&k| Sound::Knock(k)));
         self.falls();
         self.outs();
+        self.beams();
         self.husks();
         self.aim_assist();
 
@@ -1999,6 +2022,31 @@ impl Match {
         }
     }
 
+    /// Into a borer's beam (see `Map::beams`): destroyed outright, a Vigil
+    /// husk and all. Whoever hit it last in the last few seconds drove it
+    /// in and gets the kill, as for a fall.
+    fn beams(&mut self) {
+        if self.world.map.beams.is_empty() {
+            return;
+        }
+        let map = &self.world.map;
+        let hit: Vec<usize> = (0..self.fighters.len())
+            .filter(|&i| {
+                self.fighters[i].alive && map.beams.iter().any(|b| in_beam(b, &self.world.tanks[i]))
+            })
+            .collect();
+        for i in hit {
+            let f = &self.fighters[i];
+            if !f.is_husk() {
+                let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
+                self.kill(killer, i);
+            }
+            if self.fighters[i].alive {
+                self.wreck(i);
+            }
+        }
+    }
+
     /// Run down every husk's time: light leaks out of its cracks, and when
     /// the time is up it's wrecked.
     fn husks(&mut self) {
@@ -2301,6 +2349,9 @@ impl Match {
         for c in &self.world.map.cores {
             core_glow(c, self.world.time, out);
         }
+        for b in &self.world.map.beams {
+            beam_glow(b, self.world.time, out);
+        }
         for (_, a) in self.arrivals() {
             a.glow(out);
         }
@@ -2456,6 +2507,9 @@ impl Match {
         }
         for c in &self.world.map.cores {
             core_instances(c, self.world.time, out);
+        }
+        for b in &self.world.map.beams {
+            beam_instances(b, self.world.time, out);
         }
         if let Some(h) = &self.hold {
             let paint: Vec<Vec3> = self.factions.iter().map(|f| f.paint()).collect();
@@ -2757,6 +2811,95 @@ pub fn core_instances(c: &crate::map::Core, time: f32, out: &mut Vec<(MeshId, In
             ));
         }
     }
+}
+
+/// A borer's beam as light: a halo down its length that crawls toward the
+/// rock, pulses running along it, a blaze where it strikes, and sparks
+/// and molten drops thrown back off the face.
+fn beam_glow(b: &crate::map::Beam, time: f32, out: &mut Vec<Particle>) {
+    let d = b.to - b.from;
+    let len = d.length();
+    let dir = d / len;
+    let r = b.radius;
+    let n = (len / 0.7).ceil() as usize;
+    for k in 0..=n {
+        let t = k as f32 / n as f32;
+        let p = b.from + d * t;
+        let flicker = 1.0 + 0.15 * (time * 41.0 + k as f32 * 1.7).sin();
+        out.push(Particle::glow(p, r * 3.2 * flicker, PLASMA, 0.7, dir * 0.6));
+        out.push(Particle::glow(p, r * 1.3, PLASMA_HOT, 1.4, dir * 0.6));
+    }
+    // Pulses running down it into the rock.
+    for k in 0..4 {
+        let t = (time * 1.6 + k as f32 * 0.25).fract();
+        out.push(Particle::glow(
+            b.from + d * t,
+            r * 4.5,
+            PLASMA_HOT,
+            1.2,
+            dir * 1.2,
+        ));
+    }
+    // The emitter's mouth, and the blaze on the face.
+    out.push(Particle::glow(b.from, r * 4.0, PLASMA_HOT, 1.6, Vec3::ZERO));
+    let blaze = 1.0 + 0.12 * (time * 23.0).sin() + 0.08 * (time * 57.0).sin();
+    out.push(Particle::glow(b.to, 5.5 * blaze, PLASMA, 1.2, Vec3::ZERO));
+    out.push(Particle::glow(
+        b.to,
+        2.2 * blaze,
+        PLASMA_HOT,
+        2.2,
+        Vec3::ZERO,
+    ));
+    // Sparks and drops, back off the face, falling.
+    let side = dir.any_orthonormal_vector();
+    let up = dir.cross(side);
+    for k in 0..28 {
+        let kf = k as f32;
+        let age = (time * (0.9 + 0.013 * kf) + kf * 0.618).fract();
+        let a = kf * 2.39996;
+        let spread = 0.4 + 0.6 * ((kf * 0.37).sin() * 0.5 + 0.5);
+        let v = -dir * (5.0 + 3.0 * spread) + (side * a.cos() + up * a.sin()) * 4.5 * spread;
+        let fly = 0.9 * age;
+        let p = b.to + v * fly - Vec3::Y * 4.9 * fly * fly;
+        let vel = v - Vec3::Y * 9.8 * fly;
+        out.push(Particle::glow(
+            p,
+            0.16 + 0.1 * (k % 3) as f32,
+            PLASMA_HOT,
+            2.2 * (1.0 - age),
+            vel * 0.03,
+        ));
+    }
+}
+
+/// A borer's beam, solid: its white-hot core, a sheath round it that
+/// shivers, and the white blaze where it strikes the rock.
+pub fn beam_instances(b: &crate::map::Beam, time: f32, out: &mut Vec<(MeshId, Instance)>) {
+    let d = b.to - b.from;
+    let len = d.length();
+    let q = Quat::from_rotation_arc(Vec3::Y, d / len);
+    let mid = (b.from + b.to) * 0.5;
+    let rod = |w: f32, color: Vec4| {
+        (
+            MeshId::CYLINDER,
+            Instance::new(
+                Mat4::from_scale_rotation_translation(Vec3::new(w, len, w), q, mid),
+                color,
+            ),
+        )
+    };
+    let shiver = 1.0 + 0.08 * (time * 37.0).sin() + 0.05 * (time * 91.0).sin();
+    out.push(rod(b.radius * 0.7, PLASMA_HOT.extend(8.0)));
+    out.push(rod(b.radius * 1.5 * shiver, PLASMA.extend(3.0)));
+    let blaze = 1.0 + 0.1 * (time * 23.0).sin();
+    out.push((
+        MeshId::SPHERE,
+        Instance::new(
+            Mat4::from_scale_rotation_translation(Vec3::splat(1.6 * blaze), Quat::IDENTITY, b.to),
+            PLASMA_HOT.extend(7.0),
+        ),
+    ));
 }
 
 fn fighter(team: usize, health: f32) -> Fighter {
@@ -4369,6 +4512,45 @@ mod tests {
         m.hold.as_mut().unwrap().held[0] = 5.5;
         assert_eq!((m.score(0), m.score(1)), (5, 0));
         assert_eq!(m.leader(), Some(0));
+    }
+
+    /// The Seam's borer's beam: a tank parked beside it is fine, one that
+    /// drives into it is destroyed, and so is a bot put in it.
+    #[test]
+    fn driving_into_the_borers_beam_kills() {
+        let mut m = Match::new(Map::mine(), 0, 1, 1);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        let b = m.world.map.beams[0];
+        let x = b.from.x + 3.0;
+        // South of it, clear, facing it.
+        m.world.teleport(0, Vec2::new(x, b.to.z - 6.0), 0.0);
+        m.world.teleport(1, Vec2::new(x - 4.0, b.to.z - 6.0), 0.0);
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[0].alive, "died beside the beam");
+        let drive = Command {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..(3.0 / DT) as usize {
+            m.step(drive, false);
+            if !m.fighters[0].alive {
+                break;
+            }
+        }
+        assert!(
+            !m.fighters[0].alive,
+            "drove through at {}",
+            m.world.tanks[0].pos
+        );
+        assert_eq!(m.fighters[0].deaths, 1);
+        // A bot, put in it.
+        m.world.teleport(1, Vec2::new(x, b.to.z), 0.0);
+        m.step(Command::default(), false);
+        assert!(!m.fighters[1].alive, "the bot lived in the beam");
     }
 
     /// Off the mesa's edge: dead when it drops past the fall line, and the
