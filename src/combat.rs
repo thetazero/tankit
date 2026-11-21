@@ -1575,6 +1575,12 @@ impl Match {
         let (near, d) = [t.collider, t.turret_hitbox]
             .iter()
             .filter_map(|&c| self.world.physics.colliders.get(c))
+            // Out of reach of its bounding box is out of reach of the shape:
+            // skips the exact (and costly) projection for the far tanks.
+            .filter(|col| {
+                let b = col.compute_aabb();
+                from.clamp(b.mins, b.maxs).distance(from) <= reach
+            })
             .map(|col| {
                 let p = col.shape().project_point(col.position(), from, true).point;
                 (p, p.distance(from))

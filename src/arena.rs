@@ -25,7 +25,6 @@ pub fn run(args: &crate::Args, rounds: u32, improve: Option<Faction>) -> anyhow:
     let mut by_gun: std::collections::BTreeMap<(usize, &str), (u32, u32, u32)> = Default::default();
     for r in 0..rounds as u64 {
         let seed = args.seed.wrapping_add(r * 1_000_003);
-        let clock = Instant::now();
         let mut m = Match::new(args.map(), (r as usize) % 4, args.bots, seed);
         m.set_contract(args.contract);
         m.bots_only(seed);
@@ -34,10 +33,14 @@ pub fn run(args: &crate::Args, rounds: u32, improve: Option<Faction>) -> anyhow:
                 m.baseline_side(team, seed);
             }
         }
+        // Time the sim alone, not building the map.
+        let (clock, mut steps) = (Instant::now(), 0u32);
         while m.phase == Phase::Playing {
             m.step(Default::default(), false);
             m.sounds.clear();
+            steps += 1;
         }
+        let ms_per_step = clock.elapsed().as_secs_f64() * 1e3 / steps.max(1) as f64;
         for (f, t) in m.fighters.iter().zip(&m.world.tanks) {
             let e = by_gun
                 .entry((f.team, crate::garage::turret_name(t.turret_kind)))
@@ -55,7 +58,7 @@ pub fn run(args: &crate::Args, rounds: u32, improve: Option<Faction>) -> anyhow:
             None => draws += 1,
         }
         println!(
-            "round {r:>3} seed {seed:>12}: {}  ({:.0} s)",
+            "round {r:>3} seed {seed:>12}: {}  ({:.0} s, {ms_per_step:.3} ms a step)",
             scores
                 .iter()
                 .zip(&names)
