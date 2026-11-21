@@ -1,6 +1,7 @@
 //! Tank visuals: the modular kit (hulls x turrets) uploaded once, and the
 //! per-frame instance list for an animated tank.
 
+mod clearance;
 pub mod ithessar;
 pub mod model;
 pub mod resonant;
@@ -112,6 +113,8 @@ struct HullArt {
     sprocket: MeshId,
     idler: MeshId,
     running: Running,
+    /// How far each road wheel may rise before it meets the armor over it.
+    stops: Vec<f32>,
     links: usize,
 }
 
@@ -184,13 +187,16 @@ impl TankArt {
         let hulls = kit
             .hulls
             .into_iter()
-            .map(|(h, [link, road, sprocket, idler])| {
-                let run = h.running;
-                let mut wheels: Vec<Wheel> = run.road.clone();
-                wheels.push(run.sprocket);
-                wheels.push(run.idler);
+            .map(|(h, parts)| {
+                let mut wheels: Vec<Wheel> = h.running.road.clone();
+                wheels.push(h.running.sprocket);
+                wheels.push(h.running.idler);
                 let belt = Belt::new(&wheels, LINK_HALF);
                 let links = (belt.length() / LINK_PITCH).round() as usize;
+                let stops = clearance::Clearance::new(&h, &parts, links)
+                    .bump_stops(crate::sim::SUSPENSION_TRAVEL_UP);
+                let [link, road, sprocket, idler] = parts;
+                let run = h.running;
                 HullArt {
                     body: r.add_mesh(&h.body),
                     heat_light: light_mesh(r, &h.heat_light),
@@ -199,6 +205,7 @@ impl TankArt {
                     sprocket: r.add_mesh(&sprocket),
                     idler: r.add_mesh(&idler),
                     running: run,
+                    stops,
                     links,
                 }
             })
@@ -263,60 +270,21 @@ impl TankArt {
             out.push((light, Instance::new(sprung, heat_tint(t))));
         }
 
-        let run = &hull.running;
-        let per_side = run.road.len();
-        for (side, sign) in [(0usize, 1.0f32), (1, -1.0)] {
-            let dist = t.track_dist[side];
-            // Road wheels ride their suspension; the belt wraps whatever shape that makes.
-            let road: Vec<Wheel> = run
-                .road
-                .iter()
-                .enumerate()
-                .map(|(k, w)| {
-                    let lift = t
-                        .wheel_lift
-                        .get(side * per_side + k)
-                        .copied()
-                        .unwrap_or(0.0);
-                    Wheel {
-                        center: w.center + Vec2::new(0.0, lift),
-                        radius: w.radius,
-                    }
-                })
-                .collect();
-            let mut wheels = road.clone();
-            wheels.push(run.sprocket);
-            wheels.push(run.idler);
-            let belt = Belt::new(&wheels, LINK_HALF);
-
-            // Mirror the -x side so wheel hubs and link details face outward.
-            let flip = Mat4::from_scale(Vec3::new(sign, 1.0, 1.0));
-            let x = sign * run.track_x;
-            let wheel = |w: &Wheel| {
-                base * Mat4::from_translation(Vec3::new(x, w.center.y, w.center.x))
-                    * flip
-                    * Mat4::from_rotation_x(dist / w.radius)
+        let per_side = hull.running.road.len();
+        let lift = |side: usize, k: usize| {
+            t.wheel_lift
+                .get(side * per_side + k)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        for (part, m) in running_gear(&hull.running, &hull.stops, hull.links, &lift, t.track_dist) {
+            let (mesh, tint) = match part {
+                Gear::Link => (hull.link, plain),
+                Gear::Road => (hull.road, tint),
+                Gear::Sprocket => (hull.sprocket, tint),
+                Gear::Idler => (hull.idler, tint),
             };
-            for w in &road {
-                out.push((hull.road, Instance::new(wheel(w), tint)));
-            }
-            out.push((hull.sprocket, Instance::new(wheel(&run.sprocket), tint)));
-            out.push((hull.idler, Instance::new(wheel(&run.idler), tint)));
-
-            let pitch = belt.length() / hull.links as f32;
-            for i in 0..hull.links {
-                let p = belt.at(i as f32 * pitch + dist);
-                // Link frame: x across, y = outward normal, z = along the belt.
-                let ny = Vec3::new(0.0, p.normal.y, p.normal.x);
-                let nz = Vec3::X.cross(ny);
-                let m = Mat4::from_cols(
-                    Vec4::X,
-                    ny.extend(0.0),
-                    nz.extend(0.0),
-                    Vec3::new(x, p.pos.y, p.pos.x).extend(1.0),
-                );
-                out.push((hull.link, Instance::new(base * m * flip, plain)));
-            }
+            out.push((mesh, Instance::new(base * m, tint)));
         }
     }
 
@@ -1016,6 +984,64 @@ mod tests {
         }
     }
 
+    /// No wheel or tread link cuts through the armor over it, standing or
+    /// driving: at rest, with the links run round by part of a pitch, and
+    /// with the road wheels thrown up and down their whole travel (each
+    /// stops short of the armor).
+    #[test]
+    fn treads_stay_clear_of_the_armor() {
+        use crate::sim::{SUSPENSION_SAG, SUSPENSION_TRAVEL_UP};
+        let kit = KitMeshes::build();
+        for (i, (h, parts)) in kit.hulls.iter().enumerate() {
+            let r = &h.running;
+            let mut wheels = r.road.clone();
+            wheels.push(r.sprocket);
+            wheels.push(r.idler);
+            let links = (Belt::new(&wheels, LINK_HALF).length() / LINK_PITCH).round() as usize;
+            let c = clearance::Clearance::new(h, parts, links);
+            let stops = c.bump_stops(SUSPENSION_TRAVEL_UP);
+            // The stops leave the suspension most of its travel.
+            for (k, &s) in stops.iter().enumerate() {
+                assert!(s > 0.25, "hull {i} wheel {k}: bump stop at {s}");
+            }
+            let n = r.road.len();
+            let mut poses: Vec<(Vec<f32>, [f32; 2])> = (0..3)
+                .map(|k| {
+                    (
+                        vec![0.0; 2 * n],
+                        [k as f32 * LINK_PITCH / 3.0, -0.07 * k as f32],
+                    )
+                })
+                .collect();
+            // Every wheel up, every wheel down, and a rough road: wheels
+            // alternately up and down, both phases.
+            poses.push((vec![SUSPENSION_TRAVEL_UP; 2 * n], [0.03, 0.11]));
+            poses.push((vec![-SUSPENSION_SAG; 2 * n], [0.05, 0.02]));
+            for phase in 0..2 {
+                let lifts = (0..2 * n)
+                    .map(|k| {
+                        if (k + phase) % 2 == 0 {
+                            SUSPENSION_TRAVEL_UP
+                        } else {
+                            -0.1
+                        }
+                    })
+                    .collect();
+                poses.push((lifts, [0.08, 0.13]));
+            }
+            for (lifts, travel) in &poses {
+                let lift = |side: usize, k: usize| lifts[side * n + k];
+                let clips = c.clips(&stops, &lift, *travel, &|_, _| true);
+                assert!(
+                    clips.is_empty(),
+                    "hull {i}, lifts {lifts:?}: {} clips, e.g. {:?}",
+                    clips.len(),
+                    &clips[..clips.len().min(4)]
+                );
+            }
+        }
+    }
+
     #[test]
     fn recoil_snaps_back_then_returns() {
         assert_eq!(recoil_curve(0.0).0, 0.0);
@@ -1023,6 +1049,81 @@ mod tests {
         assert!(recoil_curve(1.0).0 < 0.05);
         assert_eq!(recoil_curve(0.5).1, 0.0);
     }
+}
+
+/// A piece of running gear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gear {
+    Link,
+    Road,
+    Sprocket,
+    Idler,
+}
+
+/// Where each piece of a hull's running gear sits in the hull's frame:
+/// road wheels lifted by `lift(side, wheel)` (side 0 is +x), the sprocket
+/// and idler fixed, and `links` tread links spaced round the belt that wraps
+/// them, moved on by each side's track travel.
+fn running_gear(
+    run: &Running,
+    stops: &[f32],
+    links: usize,
+    lift: &dyn Fn(usize, usize) -> f32,
+    travel: [f32; 2],
+) -> Vec<(Gear, Mat4)> {
+    let mut out = Vec::new();
+    for (side, sign) in [(0usize, 1.0f32), (1, -1.0)] {
+        let dist = travel[side];
+        // Road wheels ride their suspension; the belt wraps whatever shape
+        // that makes. Each stops short of the armor over it.
+        let road: Vec<Wheel> = run
+            .road
+            .iter()
+            .enumerate()
+            .map(|(k, w)| Wheel {
+                center: w.center
+                    + Vec2::new(
+                        0.0,
+                        lift(side, k).min(stops.get(k).copied().unwrap_or(f32::INFINITY)),
+                    ),
+                radius: w.radius,
+            })
+            .collect();
+        let mut wheels = road.clone();
+        wheels.push(run.sprocket);
+        wheels.push(run.idler);
+        let belt = Belt::new(&wheels, LINK_HALF);
+
+        // Mirror the -x side so wheel hubs and link details face outward.
+        let flip = Mat4::from_scale(Vec3::new(sign, 1.0, 1.0));
+        let x = sign * run.track_x;
+        let wheel = |w: &Wheel| {
+            Mat4::from_translation(Vec3::new(x, w.center.y, w.center.x))
+                * flip
+                * Mat4::from_rotation_x(dist / w.radius)
+        };
+        for w in &road {
+            out.push((Gear::Road, wheel(w)));
+        }
+        out.push((Gear::Sprocket, wheel(&run.sprocket)));
+        out.push((Gear::Idler, wheel(&run.idler)));
+
+        let pitch = belt.length() / links as f32;
+        for i in 0..links {
+            let p = belt.at(i as f32 * pitch + dist);
+            // Link frame: x across, y = outward normal, z = along the belt.
+            let ny = Vec3::new(0.0, p.normal.y, p.normal.x);
+            let nz = Vec3::X.cross(ny);
+            let m = Mat4::from_cols(
+                Vec4::X,
+                ny.extend(0.0),
+                nz.extend(0.0),
+                Vec3::new(x, p.pos.y, p.pos.x).extend(1.0),
+            );
+            out.push((Gear::Link, m * flip));
+        }
+    }
+    out
 }
 
 /// A model's heat lights on the GPU, if it has any.
