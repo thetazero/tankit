@@ -143,6 +143,7 @@ impl Map {
                 dust: Vec3::new(0.28, 0.24, 0.21),
                 // Ash and soot settle here, not sand.
                 settle: Vec3::new(0.2, 0.19, 0.18),
+                ambient: 1.0,
             },
             bases: Map::no_bases(&sides),
             factions: sides.to_vec(),
@@ -153,6 +154,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "SMELTER",
+            routes: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, ground);
         terrain.color = ASH;

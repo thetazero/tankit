@@ -255,6 +255,7 @@ impl Arrival<'_> {
                         color: DUST.extend(0.55 * (1.0 - dust)).to_array(),
                         stretch: [0.0; 3],
                         glow: 0.0,
+                        billow: 0.0,
                     });
                 }
             }

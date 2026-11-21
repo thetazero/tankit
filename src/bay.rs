@@ -70,6 +70,7 @@ pub fn atmosphere() -> Atmosphere {
         blowing_sand: 0.0,
         dust: Vec3::new(0.5, 0.48, 0.45),
         settle: crate::render::SAND_SETTLE,
+        ambient: 1.0,
     }
 }
 

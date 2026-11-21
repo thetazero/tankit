@@ -501,7 +501,8 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
 
     let sky_amb = mix(g.sky_horizon.rgb, g.sky_zenith.rgb, 0.35);
-    let hemi = mix(g.ground_color.rgb, sky_amb, n.y * 0.5 + 0.5);
+    // ground_color.w: the map's ambient scale (fill for faces in shade).
+    let hemi = mix(g.ground_color.rgb, sky_amb, n.y * 0.5 + 0.5) * g.ground_color.w;
     // Metals: tinted specular, darker diffuse, and a sky/ground reflection.
     let spec_col = mix(vec3<f32>(1.0), s.albedo * 1.6, s.metal);
     let f = mix(fresnel, 0.6 + 0.4 * fresnel, s.metal);

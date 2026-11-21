@@ -10,6 +10,7 @@ use crate::faction::Faction;
 
 mod capital;
 mod foundry;
+mod imperial;
 mod kiln;
 mod landmarks;
 mod mine;
@@ -511,6 +512,10 @@ pub struct Terrain {
     pub heights: Vec<f32>,
     pub color: Vec3,
     pub material: Material,
+    /// Per-vertex color, row-major like `heights`, multiplied into `color`
+    /// (empty: the whole ground is `color`). Rock showing on a slope, a
+    /// different soil in a hollow.
+    pub tint: Vec<Vec3>,
 }
 
 impl Terrain {
@@ -535,7 +540,30 @@ impl Terrain {
             heights,
             color: Vec3::new(0.36, 0.5, 0.28),
             material: Material::Grass,
+            tint: Vec::new(),
         }
+    }
+
+    /// Tint every vertex by `f(x, z, height, slope)` (slope: rise over run).
+    pub fn paint(&mut self, f: impl Fn(f32, f32, f32, f32) -> Vec3) {
+        let mut tint = Vec::with_capacity(self.heights.len());
+        for iz in 0..self.nz {
+            for ix in 0..self.nx {
+                let h = |dx: i64, dz: i64| {
+                    let x = (ix as i64 + dx).clamp(0, self.nx as i64 - 1) as usize;
+                    let z = (iz as i64 + dz).clamp(0, self.nz as i64 - 1) as usize;
+                    self.at(x, z)
+                };
+                let slope =
+                    Vec2::new(h(1, 0) - h(-1, 0), h(0, 1) - h(0, -1)).length() / (2.0 * self.cell);
+                let (x, z) = (
+                    self.origin.x + ix as f32 * self.cell,
+                    self.origin.y + iz as f32 * self.cell,
+                );
+                tint.push(f(x, z, h(0, 0), slope));
+            }
+        }
+        self.tint = tint;
     }
 
     pub fn size(&self) -> Vec2 {
@@ -599,6 +627,12 @@ pub struct Map {
     pub fall_y: Option<f32>,
     /// What the Hold site is called on the HUD.
     pub hold_name: &'static str,
+    /// Ways round the map worth taking to a fight, each a line of points
+    /// on their level (over a bridge's deck, under it, through caves, along
+    /// high ground): making for the fight, bots often take one, so they
+    /// spread over all of it instead of all meeting on the straight line
+    /// between the sides. Empty on most maps.
+    pub routes: Vec<Vec<Vec3>>,
     /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
     /// drawn as they are, never collide.
     pub sculpted: crate::render::mesh::MeshData,
@@ -1012,6 +1046,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             sounds: Vec::new(),
         }

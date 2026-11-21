@@ -540,6 +540,7 @@ impl Map {
                 blowing_sand: 1.0,
                 dust: Vec3::new(0.74, 0.62, 0.45),
                 settle: crate::render::SAND_SETTLE,
+                ambient: 1.0,
             },
             bases: Map::no_bases(&DEFAULT_SIDES),
             factions: DEFAULT_SIDES.to_vec(),
@@ -557,6 +558,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             sounds: Vec::new(),
         };

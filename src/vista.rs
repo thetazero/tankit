@@ -35,8 +35,9 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         ],
         // Chimneys and girders, from either end.
         MapKind::Foundry => &[(123.0, 18.0, 2.88), (158.0, 83.0, 1.83)],
-        // The pit, the bridge and the conveyors, from either side.
-        MapKind::Mine => &[(77.0, 83.0, 3.66), (143.0, 83.0, 2.62)],
+        // The Face, the adit's mouth and the bridge out of it over the wash,
+        // from either side of the bridge.
+        MapKind::Mine => &[(98.0, 108.0, 2.88), (133.0, 113.0, 2.88)],
     }
 }
 

@@ -599,21 +599,24 @@ pub fn kataphrakt() -> HullModel {
         &mut m,
         &[
             at_z(&trap(0.74, 0.82, 0.45, 1.02, 0.08), -2.38),
-            at_z(&trap(0.86, 0.9, 0.3, 1.1, 0.1), -1.9),
-            at_z(&trap(0.86, 0.9, 0.3, 1.1, 0.1), 1.6),
+            at_z(&trap(0.86, 0.9, 0.3, 1.2, 0.1), -1.9),
+            at_z(&trap(0.86, 0.9, 0.3, 1.2, 0.1), 1.6),
             at_z(&trap(0.66, 0.76, 0.5, 0.92, 0.08), 2.45),
         ],
         0.04,
         CARBON,
     );
-    // Upper deck spanning the tracks, wedge nose.
+    // Upper deck spanning the tracks, wedge nose. Its underside clears the
+    // tread's top run, and the nose narrows to the tub before it dips past
+    // the sprockets.
     solid(
         &mut m,
         &[
             at_z(&trap(1.32, 1.18, 0.98, 1.3, 0.06), -2.42),
-            at_z(&trap(1.46, 1.32, 0.96, 1.42, 0.08), -1.95),
-            at_z(&trap(1.46, 1.32, 0.96, 1.42, 0.08), 0.95),
-            at_z(&trap(1.26, 0.98, 0.92, 1.25, 0.07), 1.95),
+            at_z(&trap(1.46, 1.32, 1.15, 1.42, 0.08), -1.95),
+            at_z(&trap(1.46, 1.32, 1.15, 1.42, 0.08), 0.95),
+            at_z(&trap(1.26, 0.98, 1.16, 1.25, 0.04), 1.95),
+            at_z(&trap(0.88, 0.75, 1.08, 1.14, 0.025), 2.25),
             at_z(&trap(0.8, 0.52, 0.86, 1.02, 0.05), 2.55),
         ],
         0.04,
@@ -650,21 +653,22 @@ pub fn kataphrakt() -> HullModel {
         [
             v(0.98, 1.5, 1.09),
             v(1.66, 1.3, 1.09),
-            v(1.52, 0.98, 2.3),
-            v(0.96, 1.2, 2.3),
+            v(1.52, 1.18, 2.3),
+            v(0.96, 1.28, 2.3),
         ],
         0.07,
         inside,
         CRIMSON,
     );
-    // Claw plates angling down over the front of the sprockets.
+    // Claw plates angling down over the front of the sprockets, clear of
+    // the tread wrapping round them.
     plate2(
         &mut m,
         [
-            v(0.95, 1.16, 2.33),
-            v(1.55, 0.95, 2.33),
-            v(1.42, 0.5, 2.68),
-            v(0.98, 0.6, 2.62),
+            v(0.95, 1.24, 2.36),
+            v(1.55, 1.14, 2.36),
+            v(1.42, 0.5, 2.8),
+            v(0.98, 0.6, 2.74),
         ],
         0.065,
         inside,
@@ -719,10 +723,10 @@ pub fn kataphrakt() -> HullModel {
     plate2(
         &mut m,
         [
-            v(1.62, 1.27, 1.75),
-            v(1.5, 1.05, 2.3),
-            v(1.52, 0.86, 2.2),
-            v(1.72, 1.1, 1.75),
+            v(1.7, 1.27, 1.75),
+            v(1.6, 1.13, 2.3),
+            v(1.6, 0.86, 2.2),
+            v(1.8, 1.1, 1.75),
         ],
         0.05,
         inside,
@@ -858,8 +862,8 @@ pub fn kastron() -> HullModel {
         &mut m,
         &[
             at_z(&trap(0.8, 0.86, 0.42, 1.2, 0.08), -2.42),
-            at_z(&trap(0.9, 0.94, 0.32, 1.28, 0.1), -2.0),
-            at_z(&trap(0.9, 0.94, 0.32, 1.28, 0.1), 1.8),
+            at_z(&trap(0.86, 0.9, 0.32, 1.28, 0.1), -2.0),
+            at_z(&trap(0.86, 0.9, 0.32, 1.28, 0.1), 1.8),
             at_z(&trap(0.8, 0.88, 0.45, 1.08, 0.08), 2.45),
         ],
         0.04,
@@ -868,10 +872,10 @@ pub fn kastron() -> HullModel {
     solid(
         &mut m,
         &[
-            at_z(&trap(1.5, 1.4, 1.08, 1.58, 0.08), -2.48),
-            at_z(&trap(1.56, 1.46, 1.06, 1.62, 0.09), -2.1),
-            at_z(&trap(1.56, 1.46, 1.06, 1.62, 0.09), 1.3),
-            at_z(&trap(1.5, 1.3, 1.0, 1.36, 0.08), 2.3),
+            at_z(&trap(1.5, 1.4, 1.12, 1.58, 0.08), -2.48),
+            at_z(&trap(1.56, 1.46, 1.22, 1.62, 0.09), -2.1),
+            at_z(&trap(1.56, 1.46, 1.22, 1.62, 0.09), 1.3),
+            at_z(&trap(1.5, 1.3, 1.14, 1.36, 0.06), 2.3),
             at_z(&trap(1.3, 1.1, 0.95, 1.12, 0.06), 2.6),
         ],
         0.04,
@@ -943,7 +947,8 @@ pub fn kastron() -> HullModel {
     for i in 0..4 {
         let z0 = -2.35 + i as f32 * 1.12;
         let z1 = z0 + 1.2;
-        let x = if i % 2 == 0 { 1.66 } else { 1.71 };
+        // Outboard of the wheel hubs.
+        let x = if i % 2 == 0 { 1.7 } else { 1.75 };
         let low = if i == 3 { 0.62 } else { 0.5 };
         let skin = if i == 1 { CARBON_LIGHT } else { CRIMSON };
         plate2(
@@ -977,10 +982,10 @@ pub fn kastron() -> HullModel {
     plate2(
         &mut m,
         [
-            v(1.81, 1.18, -1.1),
-            v(1.81, 1.18, -0.2),
-            v(1.815, 1.12, -0.2),
-            v(1.815, 1.12, -1.1),
+            v(1.85, 1.18, -1.1),
+            v(1.85, 1.18, -0.2),
+            v(1.855, 1.12, -0.2),
+            v(1.855, 1.12, -1.1),
         ],
         0.015,
         inside,
@@ -991,8 +996,8 @@ pub fn kastron() -> HullModel {
         &mut m,
         [
             v(1.36, 1.6, -2.4),
-            v(1.8, 1.45, -2.4),
-            v(1.8, 1.45, 2.2),
+            v(1.84, 1.45, -2.4),
+            v(1.84, 1.45, 2.2),
             v(1.36, 1.6, 2.2),
         ],
         0.06,

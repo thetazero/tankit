@@ -37,6 +37,10 @@ pub mod theme {
     pub const PANEL: Rgba = [0.03, 0.03, 0.035, 1.0];
     /// Extra halo width on each side, logical px.
     pub const HALO_PX: f32 = 1.5;
+    /// Text's halo: this dark at full strength, and full strength once the
+    /// text is `1 / TEXT_HALO_GAIN` opaque, so even dim labels get a solid rim.
+    pub const TEXT_HALO_ALPHA: f32 = 0.8;
+    pub const TEXT_HALO_GAIN: f32 = 1.8;
 }
 
 pub fn with_alpha(c: Rgba, a: f32) -> Rgba {
@@ -181,6 +185,8 @@ impl<T> Layer<T> {
 pub struct Painter {
     pub scale: f32,
     halo: Option<(Rgba, f32)>,
+    /// Text goes straight onto the 3D scene (the HUD), not onto a panel.
+    over_scene: bool,
     clip: Option<(Vec2, Vec2)>,
     verts: Vec<UiVertex>,
     under: Vec<UiVertex>,
@@ -191,6 +197,7 @@ impl Painter {
         Painter {
             scale,
             halo: Some((theme::HALO, theme::HALO_PX)),
+            over_scene: false,
             clip: None,
             verts: Vec::new(),
             under: Vec::new(),
@@ -199,6 +206,14 @@ impl Painter {
 
     pub fn set_halo(&mut self, halo: Option<(Rgba, f32)>) {
         self.halo = halo;
+    }
+
+    /// Text from here on lands straight on the 3D scene (or, `false`, on a
+    /// panel). Over the scene, text that's merely dim on a dark panel would
+    /// vanish into bright sky and sand: its fill is lifted toward opaque
+    /// (see `scene_alpha`), keeping the order of strengths and fades to 0.
+    pub fn set_over_scene(&mut self, over_scene: bool) {
+        self.over_scene = over_scene;
     }
 
     /// Restrict drawing to a logical-px rectangle (min, max): lines, rects
@@ -345,18 +360,22 @@ impl Painter {
         let s = self.scale;
         // Heavier styles thicken the strokes a touch; the halo is a soft dark rim around them.
         let dilate = (style.weight - 1.0) * 0.5 * s;
+        let mut style = *style;
+        if self.over_scene {
+            style.color[3] = scene_alpha(style.color[3]);
+        }
+        let style = &style;
+        let halo = self
+            .halo
+            .map(|(hc, hw)| text_halo(hc, hw, style, em * s, s, dilate));
         for (pen, g) in layout(text, style) {
             if g.size == Vec2::ZERO {
                 continue;
             }
             let min = Vec2::new(x + pen, baseline) + g.offset * em;
             let size = g.size * em;
-            if let Some((hc, hw)) = self.halo {
-                // Darker than a line's: letters are small and busy, and need more to stand on.
-                let halo = with_alpha(hc, (style.color[3] * 1.5).min(1.0));
-                // Narrower than a line's halo: a wide one fills the gaps between small letters.
-                let sdf = [dilate + 0.35 * hw * s, (0.8 * hw * s).max(1.0)];
-                self.glyph_quad(true, min, size, g, halo, sdf);
+            if let Some((hc, hw)) = halo {
+                self.glyph_quad(true, min, size, g, hc, [dilate + hw.0, hw.1]);
             }
             self.glyph_quad(false, min, size, g, style.color, [dilate, 1.0]);
         }
@@ -400,6 +419,42 @@ impl Painter {
             v(a.x, b.y, u0.x, u1.y),
         ]);
     }
+}
+
+/// Text alpha over the 3D scene: dim (0.6) comes up to about 0.9 and faint
+/// (0.24) to a half, while full stays full and 0 stays 0. The UI blends in
+/// linear light, where a 60% pale fill over bright sand is barely brighter
+/// than the sand.
+pub fn scene_alpha(a: f32) -> f32 {
+    let a = a.clamp(0.0, 1.0);
+    1.0 - (1.0 - a).powf(2.5)
+}
+
+/// A text halo's colour and its distance-field (offset, ramp) in screen px,
+/// for a line halo of `hc` and `hw` (logical px), text drawn `em_px` screen
+/// px per em, and `scale` screen px per logical px.
+///
+/// Much darker and wider than a line's halo: pale letters a few pixels tall
+/// over bright sky or sand only stay readable on a solid dark rim. The rim
+/// is as wide as the glyph's distance field reaches, less a margin; past
+/// that the field runs out at the cell edge and the halo would show as a box.
+fn text_halo(
+    hc: Rgba,
+    hw: f32,
+    style: &TextStyle,
+    em_px: f32,
+    scale: f32,
+    dilate: f32,
+) -> (Rgba, (f32, f32)) {
+    let alpha = (style.color[3] * theme::TEXT_HALO_GAIN).min(1.0);
+    let color = [hc[0], hc[1], hc[2], theme::TEXT_HALO_ALPHA * alpha];
+    // How far past the outline the field reaches, screen px.
+    let reach = font::SPREAD * em_px / font::EM;
+    let ramp = (0.6 * hw * scale).max(1.0);
+    let offset = (0.8 * hw * scale)
+        .min(0.8 * reach - dilate - 0.5 * ramp)
+        .max(0.0);
+    (color, (offset, ramp))
 }
 
 /// Each glyph of `text` with its pen position (logical px from the start):
@@ -552,6 +607,46 @@ fn push_line(out: &mut Vec<UiVertex>, a: Vec2, b: Vec2, width: f32, color: Rgba)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_alpha_lifts_dim_text_and_keeps_order() {
+        assert_eq!(scene_alpha(0.0), 0.0);
+        assert_eq!(scene_alpha(1.0), 1.0);
+        assert!(scene_alpha(theme::DIM[3]) > 0.85);
+        let mut last = 0.0;
+        for i in 1..=100 {
+            let a = scene_alpha(i as f32 / 100.0);
+            assert!(a > last);
+            last = a;
+        }
+    }
+
+    #[test]
+    fn text_halo_stays_inside_the_glyph_field() {
+        // Past the field's reach the halo would fill the whole glyph cell.
+        let f = font::font();
+        for scale in [0.5, 1.0, 1.2, 2.4] {
+            for size in [6.0, 8.5, 10.0, 16.0, 30.0] {
+                for weight in [1.0, 1.2, 1.6] {
+                    let style = TextStyle {
+                        size,
+                        weight,
+                        ..TextStyle::LABEL
+                    };
+                    let em_px = size / f.cap_height * scale;
+                    let dilate = (weight - 1.0) * 0.5 * scale;
+                    let (_, (offset, ramp)) =
+                        text_halo(theme::HALO, theme::HALO_PX, &style, em_px, scale, dilate);
+                    let reach = font::SPREAD * em_px / font::EM;
+                    assert!(offset >= 0.0 && ramp >= 1.0);
+                    assert!(
+                        dilate + offset + 0.5 * ramp <= reach.max(dilate + 0.5 * ramp) + 1e-4,
+                        "size {size} scale {scale} weight {weight}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn line_is_three_strips_plus_halo() {

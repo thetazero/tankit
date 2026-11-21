@@ -10,6 +10,7 @@ mod binds;
 mod combat;
 mod economy;
 mod faction;
+mod fx;
 mod game;
 mod garage;
 mod hitch;

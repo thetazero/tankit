@@ -60,12 +60,17 @@ const STONE: Vec3 = Vec3::new(0.86, 0.83, 0.76);
 const CRIMSON: Vec3 = Vec3::new(0.46, 0.05, 0.06);
 const GOLD: Vec3 = Vec3::new(0.86, 0.66, 0.28);
 
-const CONCRETES: [Vec3; 5] = [
-    Vec3::new(0.56, 0.55, 0.52),
-    Vec3::new(0.48, 0.48, 0.47),
-    Vec3::new(0.6, 0.57, 0.52),
-    Vec3::new(0.44, 0.44, 0.45),
-    Vec3::new(0.52, 0.49, 0.45),
+/// The ordinary blocks' walls: raw concrete, travertine, stained brown,
+/// dark grey and an ochre render, dark enough to keep their colour in the
+/// sun.
+const CONCRETES: [Vec3; 7] = [
+    Vec3::new(0.46, 0.45, 0.43),
+    Vec3::new(0.38, 0.38, 0.39),
+    Vec3::new(0.56, 0.5, 0.41),
+    Vec3::new(0.42, 0.36, 0.31),
+    Vec3::new(0.3, 0.3, 0.32),
+    Vec3::new(0.52, 0.41, 0.3),
+    Vec3::new(0.5, 0.48, 0.44),
 ];
 /// The ordinary blocks: cast concrete in greys.
 const CAST: Style = Style {
@@ -153,6 +158,7 @@ impl Map {
                 blowing_sand: 0.25,
                 dust: Vec3::new(0.62, 0.6, 0.57),
                 settle: crate::render::SAND_SETTLE,
+                ambient: 1.0,
             },
             bases: Map::no_bases(&factions),
             factions,
@@ -163,6 +169,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "ROTUNDA",
+            routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             sounds: Vec::new(),
         };
@@ -254,7 +261,7 @@ impl Map {
 
     /// A crimson banner hanging flat against a wall facing `out`, from
     /// `top` down `len`, `w` wide, with a small gold disc near the top.
-    fn banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32) {
+    pub(super) fn banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32) {
         self.side_banner(top, out, w, len, CRIMSON, true);
     }
 
@@ -745,7 +752,7 @@ impl Map {
     /// floor: stubs of wall and column standing on its flat top. (The
     /// renderer's jagged `broken` top is for thin pieces; on a wide top its
     /// fan of slivers shades into a starburst.)
-    fn ragged_top(&mut self, rng: &mut Rng, o: &OBox) {
+    pub(super) fn ragged_top(&mut self, rng: &mut Rng, o: &OBox) {
         let (ax, az) = o.axes();
         let stubs = 3 + (o.half.x * o.half.y / 40.0).min(4.0) as usize;
         for _ in 0..stubs {
@@ -1286,7 +1293,8 @@ impl Map {
         let lift = 6.5;
         let floors = rng.int(3, 6) as f32;
         let top = lift + floors * 3.6;
-        let color = CONCRETES[rng.index(CONCRETES.len())] * rng.range(0.92, 1.0);
+        let fin = super::imperial::Finish::pick(rng);
+        let color = fin.body;
         let put = |map: &mut Map, c: Vec3, half: Vec3, color: Vec3, mat: Material, solid: bool| {
             rig.part(
                 map,
@@ -1304,7 +1312,7 @@ impl Map {
             self,
             Vec3::new(0.0, lift * 0.5, -hd * 0.35),
             Vec3::new(hw * 0.32, lift * 0.5, hd * 0.4),
-            color * 0.9,
+            fin.trim,
             Material::Concrete,
             true,
         );
@@ -1363,15 +1371,48 @@ impl Map {
                 }
                 y += 3.6;
             }
+            // Slit windows down the end wall.
+            let end = if x0 < 0.0 { -hw - 0.06 } else { hw + 0.06 };
+            let mut z = -hd + 1.4;
+            while z < hd + over - 1.0 {
+                put(
+                    self,
+                    Vec3::new(end, (lift + 1.4 + y1 - 1.8) * 0.5, z),
+                    Vec3::new(0.08, (y1 - 1.8 - lift - 1.4).max(0.2) * 0.5, 0.35),
+                    CONCRETE_DARK * 0.6,
+                    Material::Concrete,
+                    false,
+                );
+                z += 2.6;
+            }
+            // The underside, in shadow, reads darker: a soffit.
+            put(
+                self,
+                Vec3::new((x0 + x1) * 0.5, lift - 0.15, over * 0.5),
+                Vec3::new((x1 - x0) * 0.5 - 0.1, 0.2, hd + over * 0.5 - 0.1),
+                fin.trim * 0.8,
+                Material::Concrete,
+                false,
+            );
         }
+        // A fascia of dressed stone round the top of what stands.
+        let (fx0, fx1) = if shelled { (0.0, hw) } else { (-hw, hw) };
+        put(
+            self,
+            Vec3::new((fx0 + fx1) * 0.5, top - 0.5, over * 0.5),
+            Vec3::new((fx1 - fx0) * 0.5 + 0.3, 0.6, hd + over * 0.5 + 0.3),
+            fin.trim,
+            Material::Concrete,
+            false,
+        );
         // Fins up the front, and the banner.
         if !shelled {
             let mut x = -hw + 1.5;
             while x < hw - 1.0 {
                 put(
                     self,
-                    Vec3::new(x, (lift + top) * 0.5, hd + over + 0.45),
-                    Vec3::new(0.18, (top - lift) * 0.5, 0.45),
+                    Vec3::new(x, (lift + top) * 0.5, hd + over + 0.4),
+                    Vec3::new(0.18, (top - lift) * 0.5, 0.5),
                     color * 0.95,
                     Material::Concrete,
                     false,
@@ -1450,40 +1491,23 @@ impl Map {
                 let half = (along * len * 0.5 + inward * depth * 0.5).abs();
                 let h = rng.range(9.0, 24.0);
                 let broken = rng.chance(0.4);
-                let block = OBox {
-                    center: c,
-                    half,
-                    y0: -0.5,
-                    y1: h,
-                    color: CONCRETES[rng.index(CONCRETES.len())] * rng.range(0.85, 1.0),
-                    side_mat: Material::Concrete,
-                    top_mat: Material::Concrete,
-                    solid: true,
-                    chip: 0.25,
-                    ..OBox::default()
-                };
-                self.oboxes.push(block);
-                if broken {
-                    self.ragged_top(&mut rng, &block);
-                }
-                // Ribbon windows on the face toward the city.
-                let face = c + inward * (depth * 0.5 + 0.05);
-                let strip = (along * (len * 0.5 - 1.0) + inward * 0.08).abs();
-                let mut y = 3.0;
-                while y + 2.5 < h - if broken { 3.0 } else { 0.0 } {
-                    self.oboxes.push(OBox {
-                        center: face,
-                        half: strip,
-                        y0: y,
-                        y1: y + 1.1,
-                        color: CONCRETE_DARK * 0.5,
-                        side_mat: Material::Concrete,
-                        top_mat: Material::Concrete,
-                        solid: false,
-                        ..OBox::default()
-                    });
-                    y += 3.6;
-                }
+                let k = super::imperial::face_index(inward);
+                let mut faces = [false; 4];
+                faces[k] = true;
+                self.imperial_block(
+                    &mut rng,
+                    &super::imperial::Block {
+                        center: c,
+                        half,
+                        y0: -0.5,
+                        h,
+                        solid: true,
+                        broken,
+                        faces,
+                        near: true,
+                        banners: true,
+                    },
+                );
                 t += len;
             }
         }
@@ -1812,55 +1836,11 @@ impl Map {
                 continue;
             }
             let h = rng.range(10.0, 26.0) + far * rng.range(0.1, 0.3);
-            // Darker than the city inside: they sit back in the haze.
-            let color = CONCRETES[rng.index(CONCRETES.len())] * rng.range(0.6, 0.75);
-            let broken = rng.f32() < 0.35;
-            let tower = OBox {
-                y0: 0.0,
-                y1: h,
-                color,
-                side_mat: Material::Concrete,
-                top_mat: Material::Concrete,
-                solid: false,
-                ..lot
-            };
-            self.oboxes.push(tower);
-            if broken {
-                self.ragged_top(rng, &tower);
-            }
-            // Ribbon windows on the faces toward the city, for the nearer
-            // ones (the far ones are haze).
-            if far < 140.0 {
-                let toward = Vec2::new(-d.x.signum(), -d.y.signum());
-                let mut y = 3.0;
-                while y + 2.5 < h - if broken { 3.0 } else { 0.0 } {
-                    for (axis, sign) in [(0, toward.x), (1, toward.y)] {
-                        let (c, hh) = if axis == 0 {
-                            (
-                                p + Vec2::new(sign * (half.x + 0.05), 0.0),
-                                Vec2::new(0.08, half.y - 1.0),
-                            )
-                        } else {
-                            (
-                                p + Vec2::new(0.0, sign * (half.y + 0.05)),
-                                Vec2::new(half.x - 1.0, 0.08),
-                            )
-                        };
-                        self.oboxes.push(OBox {
-                            center: c,
-                            half: hh,
-                            y0: y,
-                            y1: y + 1.1,
-                            color: CONCRETE_DARK * 0.5,
-                            side_mat: Material::Concrete,
-                            top_mat: Material::Concrete,
-                            solid: false,
-                            ..OBox::default()
-                        });
-                    }
-                    y += 3.6;
-                }
-            }
+            // A little darker than the city inside: they sit back in the haze.
+            let broken = rng.f32() < 0.3;
+            let toward = Vec2::new(-d.x.signum(), -d.y.signum());
+            let shade = rng.range(0.8, 0.95);
+            self.skyline_tower(rng, p, half, h, broken, shade, toward);
             placed.push(lot);
         }
 
@@ -1877,8 +1857,50 @@ impl Map {
                 y0: 0.0,
                 y1: h,
                 color: CONCRETE * 0.7,
-                side_mat: Material::Concrete,
+                side_mat: Material::Wall,
                 top_mat: Material::Concrete,
+                solid: false,
+                ..OBox::default()
+            });
+            // A crown of setbacks, each under a cornice, and a mast.
+            let mut hh = half;
+            let mut y = h;
+            for rise in [0.0, 7.0, 5.0] {
+                if rise > 0.0 {
+                    self.oboxes.push(OBox {
+                        center: p,
+                        half: hh,
+                        y0: y,
+                        y1: y + rise,
+                        color: CONCRETE * 0.66,
+                        side_mat: Material::Concrete,
+                        top_mat: Material::Concrete,
+                        solid: false,
+                        ..OBox::default()
+                    });
+                    y += rise;
+                }
+                self.oboxes.push(OBox {
+                    center: p,
+                    half: hh + Vec2::splat(0.8),
+                    y0: y - 1.2,
+                    y1: y + 0.1,
+                    color: CONCRETE_DARK,
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
+                    solid: false,
+                    ..OBox::default()
+                });
+                hh -= Vec2::splat(3.0);
+            }
+            self.oboxes.push(OBox {
+                center: p,
+                half: Vec2::splat(0.5),
+                y0: y,
+                y1: y + 22.0,
+                color: CONCRETE_DARK,
+                side_mat: Material::Metal,
+                top_mat: Material::Metal,
                 solid: false,
                 ..OBox::default()
             });
