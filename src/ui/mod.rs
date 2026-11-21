@@ -29,9 +29,12 @@ pub mod theme {
     /// Repair crates and hull mended by them.
     pub const MEND: Rgba = [0.45, 1.0, 0.58, 1.0];
     pub const HALO: Rgba = [0.0, 0.0, 0.0, 0.4];
-    /// Fill behind boxes of text (scoreboard, pause, garage): dark and nearly
+    /// Fill behind boxes of text (scoreboard, pause, settings): dark and
     /// opaque, so the battle behind never competes with what's written on it.
-    pub const PANEL: Rgba = [0.03, 0.03, 0.035, 0.94];
+    /// The UI blends in linear light, where even 6% of bright sand behind a
+    /// near-black fill lifts it to a mid grey with the scene plainly showing
+    /// through, so anything short of 1.0 reads as see-through.
+    pub const PANEL: Rgba = [0.03, 0.03, 0.035, 1.0];
     /// Extra halo width on each side, logical px.
     pub const HALO_PX: f32 = 1.5;
 }
