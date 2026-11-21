@@ -86,6 +86,9 @@ pub struct OBox {
     /// Collides but isn't drawn: the collider for something drawn another
     /// way (a sculpted rock face).
     pub hidden: bool,
+    /// Drawn in the map's sculpted surfaces, not as a box (a block of stone
+    /// drawn as a lump of rock): seen, but not drawn here.
+    pub sculpted: bool,
 }
 
 impl Default for OBox {
@@ -106,6 +109,7 @@ impl Default for OBox {
             broken: false,
             ramp: false,
             hidden: false,
+            sculpted: false,
         }
     }
 }
