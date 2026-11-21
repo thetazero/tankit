@@ -285,10 +285,8 @@ impl Map {
         }
 
         // Down on the desert floor, a ring of boulders closes the arena (a
-        // Vigil runs on a while after the fall); the walls behind it only
-        // catch wrecks thrown over.
+        // Vigil runs on a while after the fall).
         map.floor_rim();
-        map.perimeter_at(LOW - 10.0, LOW + 12.0);
         map
     }
 
@@ -1466,7 +1464,7 @@ mod tests {
     }
 
     /// Boulders close the desert floor's edge all round: a Vigil running
-    /// on after the fall never reaches the walls behind them.
+    /// on after the fall never drives out of the arena.
     #[test]
     fn boulders_close_the_floor() {
         Map::sanctum().assert_edge_walled(0.5, |_| false);

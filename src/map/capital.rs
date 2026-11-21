@@ -194,7 +194,6 @@ impl Map {
         map.staging_courts(&mut rng);
         map.city_edge();
         map.capital_spawns();
-        map.perimeter(false);
         map.skyline(&mut rng);
         for o in &mut map.oboxes {
             let masonry =
@@ -1935,7 +1934,7 @@ mod tests {
     }
 
     /// Blocks and rubble close the edge all round: nowhere can a tank
-    /// drive up to the backstop.
+    /// drive out of the arena.
     #[test]
     fn the_city_closes_the_edge() {
         Map::capital().assert_edge_walled(0.3, |_| false);

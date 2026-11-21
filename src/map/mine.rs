@@ -640,7 +640,6 @@ impl Map {
         map.edge_rocks(&mut rng);
         map.mine_spawns();
         map.mine_routes();
-        map.perimeter(false);
         map.mine_horizon(&mut rng);
         map.mine_sounds();
         map

@@ -222,7 +222,6 @@ impl Map {
         map.imperium_base(&mut rng);
         map.kiln_rim();
         map.kiln_spawns();
-        map.perimeter(false);
         map.kiln_horizon(&mut rng);
         map.kiln_sounds();
         map
@@ -746,7 +745,7 @@ mod tests {
     }
 
     /// Crystal closes the edge all round: nowhere can a tank drive up to
-    /// the backstop.
+    /// out of the arena.
     #[test]
     fn the_edge_is_crystal() {
         Map::kiln().assert_edge_walled(0.5, |_| false);

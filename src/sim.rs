@@ -19,7 +19,7 @@ use glam::{Mat4, Quat, Vec2, Vec3};
 use rapier3d::prelude::*;
 
 use crate::game::DT;
-use crate::map::{Map, Wedge};
+use crate::map::{Map, Terrain, Wedge};
 
 pub const GRAVITY: f32 = 9.81;
 
@@ -1273,29 +1273,22 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
     };
     match &map.terrain {
         Some(t) => {
-            // Column-major, rows advance along z and columns along x.
-            let mut data = Vec::with_capacity(t.nx * t.nz);
-            for ix in 0..t.nx {
-                for iz in 0..t.nz {
-                    data.push(t.at(ix, iz));
+            added.push(physics.insert_collider(
+                terrain_collider(t, |_| true).friction(ground_friction),
+                None,
+            ));
+            // Flat apron around (not under) the terrain. Where the map has
+            // ground of its own beyond the edge, only the part of the apron
+            // inside the arena (if the play terrain stops short of its edge).
+            let arena = |(min, max): (Vec2, Vec2)| match map.scenery_terrain {
+                None => Some((min, max)),
+                Some(_) => {
+                    let (min, max) = (min.max(Vec2::ZERO), max.min(Vec2::splat(map.size)));
+                    (min.x < max.x && min.y < max.y).then_some((min, max))
                 }
-            }
-            let size = t.size();
-            let heights = rapier3d::parry::utils::Array2::new(t.nz, t.nx, data);
-            added.push(
-                physics.insert_collider(
-                    ColliderBuilder::heightfield(heights, Vec3::new(size.x, 1.0, size.y))
-                        .translation(Vec3::new(
-                            t.origin.x + size.x * 0.5,
-                            0.0,
-                            t.origin.y + size.y * 0.5,
-                        ))
-                        .friction(ground_friction),
-                    None,
-                ),
-            );
-            // Flat apron around (not under) the terrain.
-            for (min, max) in apron_rects(t.origin, t.origin + size, map.size) {
+            };
+            let rects = apron_rects(t.origin, t.origin + t.size(), map.size);
+            for (min, max) in rects.into_iter().filter_map(arena) {
                 let (pose, shape) =
                     cuboid(Vec3::new(min.x, -2.0, min.y), Vec3::new(max.x, 0.0, max.y));
                 add(ground_friction, pose, shape);
@@ -1316,6 +1309,17 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
             );
             add(ground_friction, pose, shape);
         }
+    }
+    // The ground beyond the edge (dunes, rock, ash flats) is solid where
+    // it's drawn: a tank knocked out of the arena lands on what you see
+    // (and dies of it, see `combat`). Under the arena it's cut away.
+    if let Some(st) = &map.scenery_terrain {
+        let s = map.size;
+        let outside = |c: Vec2| c.x < 0.0 || c.y < 0.0 || c.x > s || c.y > s;
+        added.push(physics.insert_collider(
+            terrain_collider(st, outside).friction(ground_friction),
+            None,
+        ));
     }
     for s in &map.solids {
         let (pose, shape) = cuboid(s.min, s.max);
@@ -1365,6 +1369,35 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
         ));
     }
     added
+}
+
+/// A heightfield collider for `t`, keeping only the cells whose centers
+/// `keep` says yes to.
+fn terrain_collider(t: &Terrain, keep: impl Fn(Vec2) -> bool) -> ColliderBuilder {
+    use rapier3d::parry::shape::{HeightField, HeightFieldCellStatus};
+    // Column-major, rows advance along z and columns along x.
+    let mut data = Vec::with_capacity(t.nx * t.nz);
+    for ix in 0..t.nx {
+        for iz in 0..t.nz {
+            data.push(t.at(ix, iz));
+        }
+    }
+    let size = t.size();
+    let heights = rapier3d::parry::utils::Array2::new(t.nz, t.nx, data);
+    let mut hf = HeightField::new(heights, Vec3::new(size.x, 1.0, size.y));
+    for iz in 0..t.nz - 1 {
+        for ix in 0..t.nx - 1 {
+            let c = t.origin + (Vec2::new(ix as f32, iz as f32) + 0.5) * t.cell;
+            if !keep(c) {
+                hf.set_cell_status(iz, ix, HeightFieldCellStatus::CELL_REMOVED);
+            }
+        }
+    }
+    ColliderBuilder::new(SharedShape::new(hf)).translation(Vec3::new(
+        t.origin.x + size.x * 0.5,
+        0.0,
+        t.origin.y + size.y * 0.5,
+    ))
 }
 
 /// Four rects surrounding the terrain rect [a, b], reaching well beyond the arena.
