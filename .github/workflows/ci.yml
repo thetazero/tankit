@@ -63,3 +63,37 @@ jobs:
       - name: Run tests
         run: cargo test --locked
         timeout-minutes: 2
+
+  # The whole suite again, optimized. Some tests are too slow to mean anything
+  # unoptimized (`maps_hardly_z_fight` takes minutes in debug, seconds here)
+  # or time things, so they're `ignore`d under `debug_assertions` and only run
+  # here. A separate job, so it builds alongside the debug one.
+  release-test:
+    name: Release-only tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 2
+
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+        timeout-minutes: 3
+
+      - name: Install ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+        timeout-minutes: 3
+
+      - name: Build tests (release)
+        run: cargo test --release --locked --no-run
+        timeout-minutes: 12
+
+      # The time cap: the whole optimized suite, slow tests included, takes
+      # well under a minute; past this it's a hang or a regression.
+      - name: Run tests (release)
+        run: cargo test --release --locked
+        timeout-minutes: 3
