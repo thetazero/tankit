@@ -5,8 +5,9 @@
 //! battle the player plays is drawn from it and fed back into it (`battle`,
 //! #304); postings come later.
 //!
-//! **State.** A system is a point in a 2D region (light years) with a few
-//! planets. Each planet has **sites**: production sites, each owned by a
+//! **State.** A system is a point in a slab of a spiral galaxy's disk (light
+//! years; see `structure`: two arms, the gap between, a spur across it) with
+//! a few planets. Each planet has **sites**: production sites, each owned by a
 //! faction and turning out hulls (into that faction's storage in the system)
 //! and crystals (into the faction's one global supply: crystal is light, so
 //! moving it costs nothing), and one or two **shield generators** (at least
@@ -22,25 +23,38 @@
 //!    an enemy shield generator, or, once that planet's are all down, takes a
 //!    site. A side alone in a system repairs its downed generators, one step a
 //!    tick, several ticks to bring one back up.
-//! 3. *Sending hulls.* Each faction looks at every system it could reach
+//! 3. *Supply.* A side's systems that hang together (within FTL range of
+//!    each other) fewer than a few dozen are a **pocket**: once an enemy
+//!    borders it, it builds slower, can't repair its generators, and every
+//!    enemy around goes for it. Enclaves don't last.
+//! 4. *Offensives.* A side banks crystals until it can afford a push, aims it
+//!    at the stretch of its border where it's strongest against the defense,
+//!    brings hulls up toward it, and fights there with the initiative (a
+//!    fire bonus). The push rolls on from what it takes, until the crystals
+//!    run low or it stalls. Then quiet, while it banks for the next.
+//! 5. *Sending hulls.* Each faction looks at every system it could reach
 //!    (within FTL range of systems where it has hulls to spare) and sends
-//!    hulls where it sees a high chance of capture: several systems can send
-//!    to one, so no defender is out of reach for long. FTL costs crystals per
-//!    hull per light year. Landing on a planet under an enemy's shield is
+//!    hulls where it sees a high chance of capture: to defend anywhere, but
+//!    to attack only within its offensive, or a pocket. Several systems can
+//!    send to one. FTL costs crystals per hull by distance. Landing on a planet under an enemy's shield is
 //!    limited in rate and costs crystals per hull; once all of a planet's
 //!    generators are down, landing is free.
 //!
+//! A step runs ticks until somewhere is at war: the player is posted to a
+//! battle, so quiet ticks pass unseen.
+//!
 //! **What keeps the war forever:** defenders build hulls where they stand,
 //! attackers pay to move theirs (a defensive asymmetry); and when one faction
-//! holds too much of the galaxy, the other three stop fighting each other and
-//! go for it together.
+//! holds too much of the galaxy, the sides bordering it stop fighting each
+//! other and go for it together, until it's well back under the line.
 
 pub mod battle;
 pub mod chart;
 pub mod save;
 pub mod theater;
+pub mod structure;
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 
 use crate::faction::Faction;
 use crate::rng::Rng;
@@ -50,10 +64,11 @@ pub const SIDES: usize = 4;
 
 /// Colonized systems in the war.
 pub const SYSTEMS: usize = 10_000;
-/// The region the war fills, in light years.
-pub const REGION: Vec2 = Vec2::new(400.0, 250.0);
+/// The region the war fills, in light years (in the galaxy's plane; see
+/// `structure` for its depth and shape).
+pub const REGION: Vec2 = Vec2::new(8800.0, 5500.0);
 /// How far a faction sends hulls in one jump, light years.
-pub const FTL_RANGE: f32 = 9.0;
+pub const FTL_RANGE: f32 = 250.0;
 /// Most systems a system can send to (the nearest ones within range).
 const NEIGHBORS: usize = 12;
 
@@ -63,6 +78,8 @@ const RESONANT_HULL_COST: f32 = 0.005;
 const REPAIR_TICKS: u8 = 4;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: f32 = 2.0;
+/// Most quiet ticks a step skips looking for the next war.
+const QUIET_SKIP: usize = 1000;
 /// A system counts as at war when two sides each have this many hulls in it.
 pub const AT_WAR: f32 = 0.5;
 
@@ -72,7 +89,7 @@ pub struct Rules {
     /// Hulls wear out at this fraction a tick (so a garrison levels off at
     /// production / wear).
     pub wear: f32,
-    /// Crystals per hull per light year of FTL.
+    /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
     /// Crystals per hull to land through an enemy's shield.
     pub breach_cost: f32,
@@ -88,11 +105,43 @@ pub struct Rules {
     pub raid: f32,
     /// An attacker needs this many times the defense (its fire) to go in.
     pub odds: f32,
-    /// ... and only this much when going for a dominant faction.
+    /// ... and only this much when going for a dominant faction (or a pocket),
     pub gang_odds: f32,
+    /// ... and this much anywhere off its offensive.
+    pub opportunity: f32,
     /// A faction holding more than this share of the galaxy's sites is dominant:
-    /// the other three go for it together, and leave each other alone.
+    /// the other three go for it together, and leave each other alone...
     pub dominant: f32,
+    /// ... until it's back under this share. A side joins the alliance only
+    /// if this many of its systems border the dominant faction.
+    pub release: f32,
+    pub ally_border: u32,
+    /// A side's systems hanging together (by FTL range) fewer than this are a
+    /// pocket, cut off from the rest: once an enemy borders it, it builds hulls
+    /// slower and can't repair its shield generators, and the enemy goes for it.
+    pub pocket: u32,
+    /// How much of its hull production a pocket keeps.
+    pub cut_off: f32,
+    /// A side launches an offensive once it has banked this many ticks of
+    /// crystal income...
+    pub launch: f32,
+    /// ... and it runs until the bank is down to this many ticks of income,
+    pub spent: f32,
+    /// ... or until this many ticks pass without taking a site.
+    pub stall: u32,
+    /// Fire bonus for a side fighting where its offensive is: it picked the
+    /// time and place, and massed for it.
+    pub initiative: f32,
+    /// Most a side can take of a system in one won tick (sites or generators).
+    pub blitz: u32,
+    /// How far from where it's aimed an offensive attacks, light years...
+    pub front: f32,
+    /// ... and how far behind it hulls are brought up toward it.
+    pub staging: f32,
+    /// Share of a quiet system's spare hulls brought up a tick...
+    pub bring_up: f32,
+    /// ... spending at most this many ticks of crystal income a tick on it.
+    pub tempo: f32,
     /// A side keeps at least this fraction of a quiet system's hulls home.
     pub keep: f32,
     /// An attack takes at least this share of what could reach the target.
@@ -109,7 +158,7 @@ impl Default for Rules {
     fn default() -> Rules {
         Rules {
             wear: 0.03,
-            ftl_cost: 0.25,
+            ftl_cost: 2.25,
             breach_cost: 1.0,
             breach_rate: 12.0,
             kill: 0.35,
@@ -117,11 +166,25 @@ impl Default for Rules {
             raid: 0.5,
             odds: 1.5,
             gang_odds: 1.15,
+            opportunity: 3.0,
             dominant: 0.3,
+            release: 0.27,
+            ally_border: 20,
+            pocket: 20,
+            cut_off: 0.4,
+            launch: 60.0,
+            spent: 2.0,
+            stall: 30,
+            initiative: 1.0,
+            blitz: 2,
+            front: 1000.0,
+            staging: 3000.0,
+            bring_up: 0.5,
+            tempo: 0.5,
             keep: 0.3,
             commit: 0.6,
             reserve: 0.0,
-            hoard: 30.0,
+            hoard: 80.0,
         }
     }
 }
@@ -146,8 +209,8 @@ pub struct Site {
 
 #[derive(Clone, Debug)]
 pub struct System {
-    /// Light years, in `REGION`.
-    pub pos: Vec2,
+    /// Light years: in `REGION` in the plane, `z` off the midplane.
+    pub pos: Vec3,
     pub planets: u8,
     /// This system's sites, a range of `Galaxy::sites`.
     pub sites: (u32, u32),
@@ -185,8 +248,17 @@ pub struct Galaxy {
     /// Each side's share of all sites (updated each tick).
     pub share: [f32; SIDES],
     pub rules: Rules,
-    /// The faction the other three are ganging up on, if any.
-    dominant: Option<usize>,
+    /// The faction the others are ganging up on, if any.
+    pub dominant: Option<usize>,
+    /// The sides allied against it: those that border it (a side with no
+    /// border with it has nothing to gain from the alliance and stays out).
+    pub allied: [bool; SIDES],
+    /// Who's at peace with whom (the allies, with each other).
+    peace: [[bool; SIDES]; SIDES],
+    /// Each side's offensive, if it's on one.
+    pub offensives: [Option<Offensive>; SIDES],
+    /// Systems whose holder is cut off from the rest of its space (a pocket).
+    pub cut: Vec<bool>,
     pub tick: u64,
     /// This tick: hull sendings, shield generators destroyed, sites taken.
     pub sent: u32,
@@ -195,6 +267,16 @@ pub struct Galaxy {
     rng: Rng,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[f32; SIDES]>,
+}
+
+/// A side pushing into one stretch of the front: it attacks only there
+/// (and into enemy pockets), until its crystals run low or the push stalls.
+#[derive(Clone, Copy, Debug)]
+pub struct Offensive {
+    /// Where it's aimed.
+    pub at: Vec3,
+    /// The last tick it took a site.
+    pub gained: u64,
 }
 
 /// One tick's numbers, for charts and tests.
@@ -243,16 +325,12 @@ impl Galaxy {
                 hearts.push((cell * region, f as u8));
             }
         }
+        let disk = structure::Disk::new(region, &mut rng);
         let mut systems = Vec::with_capacity(count);
         let mut sites = Vec::new();
-        for _ in 0..count {
-            let pos = Vec2::new(rng.f32(), rng.f32()) * region;
-            // Nearest heartland.
-            let owner = hearts
-                .iter()
-                .min_by(|a, b| a.0.distance(pos).total_cmp(&b.0.distance(pos)))
-                .map(|h| h.1)
-                .unwrap_or(0);
+        let spots = disk.scatter(count, &mut rng);
+        let owners = settle(&spots, &hearts);
+        for (pos, owner) in spots.into_iter().zip(owners) {
             let planets = match rng.f32() {
                 x if x < 0.5 => 1,
                 x if x < 0.85 => 2,
@@ -306,6 +384,10 @@ impl Galaxy {
             income: [0.0; SIDES],
             share: [0.0; SIDES],
             dominant: None,
+            allied: [false; SIDES],
+            peace: [[false; SIDES]; SIDES],
+            offensives: [None; SIDES],
+            cut: vec![false; count],
             rules,
             tick: 0,
             sent: 0,
@@ -319,6 +401,7 @@ impl Galaxy {
             g.systems[s].hulls[owner] = g.production(s)[owner] / rules.wear * 0.8;
         }
         g.update_share();
+        g.update_supply();
         g
     }
 
@@ -369,16 +452,155 @@ impl Galaxy {
         }
         let total = held.iter().sum::<u32>().max(1) as f32;
         self.share = held.map(|h| h as f32 / total);
-        self.dominant = (0..SIDES).find(|&f| self.share[f] > self.rules.dominant);
+        // The three stay allies until the dominant faction is well back
+        // under the line, so the alliance doesn't flicker on and off.
+        if self
+            .dominant
+            .is_none_or(|d| self.share[d] < self.rules.release)
+        {
+            self.dominant = (0..SIDES).find(|&f| self.share[f] > self.rules.dominant);
+        }
+    }
+
+    /// Finds the pockets: systems whose holder's space there (systems it
+    /// holds, linked by FTL range) is small and bordered by an enemy.
+    pub(crate) fn update_supply(&mut self) {
+        let n = self.systems.len();
+        let owner: Vec<usize> = self.systems.iter().map(|s| s.owner()).collect();
+        let mut root: Vec<u32> = (0..n as u32).collect();
+        fn find(root: &mut [u32], mut i: usize) -> usize {
+            while root[i] as usize != i {
+                root[i] = root[root[i] as usize];
+                i = root[i] as usize;
+            }
+            i
+        }
+        for s in 0..n {
+            for k in 0..NEIGHBORS {
+                let t = self.neighbors[s * NEIGHBORS + k].0;
+                if t == u32::MAX {
+                    break;
+                }
+                if owner[t as usize] == owner[s] {
+                    let (a, b) = (find(&mut root, s), find(&mut root, t as usize));
+                    root[a] = b as u32;
+                }
+            }
+        }
+        // Who borders whom, and so who joins the alliance.
+        let mut border = [[0u32; SIDES]; SIDES];
+        for s in 0..n {
+            let mut seen = [false; SIDES];
+            for (t, _) in self.neighbors(s) {
+                seen[owner[t]] = true;
+            }
+            for g in 0..SIDES {
+                border[owner[s]][g] += (seen[g] && g != owner[s]) as u32;
+            }
+        }
+        self.allied = [false; SIDES];
+        self.peace = [[false; SIDES]; SIDES];
+        if let Some(d) = self.dominant {
+            for f in 0..SIDES {
+                self.allied[f] = f != d && border[f][d] >= self.rules.ally_border;
+            }
+            for f in 0..SIDES {
+                for g in 0..SIDES {
+                    self.peace[f][g] = self.allied[f] && self.allied[g];
+                }
+            }
+        }
+        let mut size = vec![0u32; n];
+        for s in 0..n {
+            let r = find(&mut root, s);
+            size[r] += 1;
+        }
+        for s in 0..n {
+            let small = size[find(&mut root, s)] < self.rules.pocket;
+            self.cut[s] = small
+                && self
+                    .neighbors(s)
+                    .any(|(t, _)| self.hostile(owner[s], owner[t]));
+        }
+    }
+
+    /// Each side starts or ends its offensive.
+    fn plan(&mut self) {
+        for f in 0..SIDES {
+            let bank = self.crystals[f] / self.income[f].max(1.0);
+            if let Some(o) = self.offensives[f] {
+                if bank < self.rules.spent || self.tick > o.gained + self.rules.stall as u64 {
+                    self.offensives[f] = None;
+                }
+            } else if bank >= self.rules.launch {
+                self.offensives[f] = self.aim(f);
+            }
+        }
+    }
+
+    /// Where side `f` should push: of a sample of the enemy systems on its
+    /// border (the dominant faction's, while there is one), the one where its
+    /// hulls nearby most outweigh the defense.
+    fn aim(&mut self, f: usize) -> Option<Offensive> {
+        let n = self.systems.len();
+        let (dom, peace, allied) = (self.dominant, self.peace, self.allied[f]);
+        let target = move |g: usize| match dom {
+            Some(d) if allied => g == d,
+            _ => hostile(peace, f, g),
+        };
+        let mut best: Option<(f32, usize)> = None;
+        for _ in 0..400 {
+            let t = self.rng.index(n);
+            if !target(self.systems[t].owner()) {
+                continue;
+            }
+            let ours: f32 = self
+                .neighbors(t)
+                .filter(|&(s, _)| self.systems[s].owner() == f)
+                .map(|(s, _)| self.systems[s].hulls[f])
+                .sum();
+            if ours <= 0.0 {
+                continue;
+            }
+            let defense: f32 = self
+                .fire(t)
+                .iter()
+                .enumerate()
+                .filter(|&(g, _)| target(g))
+                .map(|(_, x)| x)
+                .sum();
+            let score = ours / (defense + 1.0);
+            if best.is_none_or(|b| score > b.0) {
+                best = Some((score, t));
+            }
+        }
+        best.map(|(_, t)| Offensive {
+            at: self.systems[t].pos,
+            gained: self.tick,
+        })
+    }
+
+    /// Run the whole galaxy forward to its next battle: one tick, or, if
+    /// that leaves nowhere at war, on through the quiet until somewhere is
+    /// (the player is always posted to a war, so quiet ticks pass unseen).
+    pub fn step(&mut self) {
+        (self.sent, self.shields_down, self.taken) = (0, 0, 0);
+        for _ in 0..QUIET_SKIP {
+            self.advance_tick();
+            if self.systems.iter().any(|s| s.at_war()) {
+                break;
+            }
+        }
     }
 
     /// Run the whole galaxy forward one tick.
-    pub fn step(&mut self) {
+    fn advance_tick(&mut self) {
         self.tick += 1;
-        (self.sent, self.shields_down, self.taken) = (0, 0, 0);
         self.produce();
         self.battles();
         self.update_share();
+        self.update_supply();
+        self.plan();
         self.send();
     }
 
@@ -391,10 +613,13 @@ impl Galaxy {
             for h in &mut sys.hulls {
                 *h *= 1.0 - self.rules.wear;
             }
+            // A pocket's yards run short of what the rest of its space sends them.
+            let holder = sys.owner();
+            let cut = if self.cut[s] { self.rules.cut_off } else { 1.0 };
             for site in &self.sites[a as usize..b as usize] {
                 if let SiteKind::Production { hulls, crystals: c } = site.kind {
                     let f = site.owner as usize;
-                    sys.hulls[f] += hulls;
+                    sys.hulls[f] += if f == holder { hulls * cut } else { hulls };
                     crystals[f] += c;
                     if f == resonant {
                         crystals[f] -= hulls * RESONANT_HULL_COST;
@@ -417,22 +642,25 @@ impl Galaxy {
         let mut fire = [0.0; SIDES];
         for f in 0..SIDES {
             fire[f] = sys.hulls[f] * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
+            if self.offensives[f].is_some_and(|o| o.at.distance(sys.pos) <= self.rules.front) {
+                fire[f] *= 1.0 + self.rules.initiative;
+            }
         }
         fire
     }
 
-    /// Are `f` and `g` fighting each other? Everyone is, except while one
-    /// faction is dominant: then the other three are allies against it.
+    /// Are `f` and `g` fighting each other? Everyone is, except the allies
+    /// against a dominant faction.
     fn hostile(&self, f: usize, g: usize) -> bool {
-        hostile(self.dominant, f, g)
+        hostile(self.peace, f, g)
     }
 
     fn battles(&mut self) {
-        let dom = self.dominant;
+        let peace = self.peace;
         for s in 0..self.systems.len() {
             let hulls = self.systems[s].hulls;
             let present = hulls.map(|h| h >= AT_WAR);
-            let fighting = |f: usize| (0..SIDES).any(|g| present[g] && hostile(dom, f, g));
+            let fighting = |f: usize| (0..SIDES).any(|g| present[g] && hostile(peace, f, g));
             if !(0..SIDES).any(|f| present[f] && fighting(f)) {
                 // Nobody here to fight: each side holds what it has, repairs
                 // its generators, and walks into any enemy site left unguarded.
@@ -450,7 +678,7 @@ impl Galaxy {
             let mut losses = [0.0; SIDES];
             // Each side's fire spreads over its enemies here by how many hulls each has.
             for g in (0..SIDES).filter(|&g| present[g]) {
-                let enemies = |f: usize| present[f] && hostile(dom, f, g);
+                let enemies = |f: usize| present[f] && hostile(peace, f, g);
                 let targets: f32 = (0..SIDES).filter(|&f| enemies(f)).map(|f| hulls[f]).sum();
                 for f in (0..SIDES).filter(|&f| enemies(f)) {
                     losses[f] += self.rules.kill * fire[g] * hulls[f] / targets;
@@ -467,7 +695,7 @@ impl Galaxy {
                 .unwrap_or(0);
             let against = |f: usize| -> f32 {
                 (0..SIDES)
-                    .filter(|&g| present[g] && hostile(dom, f, g))
+                    .filter(|&g| present[g] && hostile(peace, f, g))
                     .map(|g| fire[g])
                     .sum()
             };
@@ -527,9 +755,10 @@ impl Galaxy {
     fn hold(&mut self, s: usize, f: usize) {
         let (a, b) = self.systems[s].sites;
         let mut enemy_sites = false;
+        let cut = self.cut[s];
         for i in a as usize..b as usize {
             let owner = self.sites[i].owner as usize;
-            if owner == f {
+            if owner == f && !cut {
                 if let SiteKind::Shield { down } = &mut self.sites[i].kind {
                     *down = down.saturating_sub(1);
                 }
@@ -559,7 +788,11 @@ impl Galaxy {
             .filter(|&p| enemy[p] > 0)
             .min_by_key(|&p| (up[p], enemy[p]))
         else {
-            // Nothing of the enemy's here: a defender's won tick counts toward repairs.
+            // Nothing of the enemy's here: a defender's won tick counts
+            // toward repairs (except in a pocket, with no parts coming).
+            if self.cut[s] {
+                return;
+            }
             for site in &mut self.sites[a..b] {
                 if site.owner as usize == w
                     && let SiteKind::Shield { down } = &mut site.kind
@@ -569,8 +802,9 @@ impl Galaxy {
             }
             return;
         };
-        // A clear win takes more than one thing in a tick.
-        let steps = if margin > 3.0 { 2 } else { 1 };
+        // A clear win takes more than one thing in a tick: a step for each
+        // time over the enemy's fire, up to the blitz.
+        let steps = (margin as u32).clamp(1, self.rules.blitz);
         for _ in 0..steps {
             // A shield up first; else the planet's production, its generators last.
             let candidate = |site: &Site, production: bool| {
@@ -603,6 +837,14 @@ impl Galaxy {
                 sys.held[old] -= 1;
                 sys.held[w] += 1;
                 self.taken += 1;
+                // An offensive rolls on from what it takes.
+                let pos = self.systems[s].pos;
+                if let Some(o) = &mut self.offensives[w]
+                    && o.at.distance(pos) <= self.rules.front
+                {
+                    o.gained = self.tick;
+                    o.at = pos;
+                }
             }
         }
     }
@@ -649,11 +891,58 @@ impl Galaxy {
         for i in (1..SIDES).rev() {
             order.swap(i, self.rng.index(i + 1));
         }
+        self.stage();
         let offset = self.rng.index(n);
         for f in order {
             for i in 0..n {
                 self.consider((i + offset) % n, f);
             }
+        }
+    }
+
+    /// Each side on an offensive brings hulls up toward it: every quiet system
+    /// of its own behind the front sends some of its spare hulls one jump on,
+    /// to its own system nearest the offensive's aim (paying the FTL).
+    fn stage(&mut self) {
+        let n = self.systems.len();
+        let mut moves: Vec<(usize, usize, usize, f32)> = Vec::new();
+        for f in 0..SIDES {
+            let Some(o) = self.offensives[f] else {
+                continue;
+            };
+            let first = moves.len();
+            let mut cost = 0.0;
+            for s in 0..n {
+                let here = self.systems[s].pos.distance(o.at);
+                if self.spare[s][f] < MIN_SEND || here > self.rules.staging {
+                    continue;
+                }
+                let next = self
+                    .neighbors(s)
+                    .filter(|&(t, _)| self.systems[t].held[f] > 0)
+                    .map(|(t, d)| (t, d, self.systems[t].pos.distance(o.at)))
+                    .filter(|&(_, _, there)| there < here)
+                    .min_by(|a, b| a.2.total_cmp(&b.2));
+                if let Some((t, d, _)) = next {
+                    let m = self.spare[s][f] * self.rules.bring_up;
+                    cost += m * d / FTL_RANGE * self.rules.ftl_cost;
+                    moves.push((f, s, t, m));
+                }
+            }
+            // Bring up only what this tick's budget pays for, from everywhere alike.
+            let budget = (self.rules.tempo * self.income[f])
+                .min(self.crystals[f])
+                .max(0.0);
+            let afford = if cost > budget { budget / cost } else { 1.0 };
+            for mv in &mut moves[first..] {
+                mv.3 *= afford;
+            }
+            self.crystals[f] -= cost * afford;
+        }
+        for (f, s, t, m) in moves {
+            self.spare[s][f] -= m;
+            self.systems[s].hulls[f] -= m;
+            self.systems[t].hulls[f] += m;
         }
     }
 
@@ -675,10 +964,18 @@ impl Galaxy {
         if !enemy {
             return;
         }
-        let odds = if self.dominant.is_some_and(|d| d != f) {
+        // Defending is always on. An attack goes in where the side's
+        // offensive is, or on an enemy pocket (which nobody leaves standing);
+        // anywhere else only at long odds.
+        let pocket = self.cut[t] && !ours;
+        let pushing =
+            self.offensives[f].is_some_and(|o| o.at.distance(sys.pos) <= self.rules.front);
+        let odds = if pocket || (self.allied[f] && self.dominant.is_some_and(|d| sys.held[d] > 0)) {
             self.rules.gang_odds
-        } else {
+        } else if ours || pushing {
             self.rules.odds
+        } else {
+            self.rules.opportunity
         };
         // Already winning there by enough: nothing to add.
         if have >= odds * defense && defense > 0.0 {
@@ -701,7 +998,7 @@ impl Galaxy {
         let frac = send / pool;
         let cost: f32 = self
             .neighbors(t)
-            .map(|(s, d)| self.spare[s][f] * frac * (d * self.rules.ftl_cost + breach))
+            .map(|(s, d)| self.spare[s][f] * frac * (d / FTL_RANGE * self.rules.ftl_cost + breach))
             .sum();
         // Defending a world of ours (or an ally's) may spend everything;
         // an attack only what's above the reserve.
@@ -737,10 +1034,39 @@ impl Galaxy {
     }
 }
 
-/// Are `f` and `g` fighting each other, while `dominant` is? Everyone is,
-/// except while one faction is dominant: then the other three are allies.
-fn hostile(dominant: Option<usize>, f: usize, g: usize) -> bool {
-    f != g && dominant.is_none_or(|d| f == d || g == d)
+/// Are `f` and `g` fighting each other, given who's at `peace`?
+fn hostile(peace: [[bool; SIDES]; SIDES], f: usize, g: usize) -> bool {
+    f != g && !peace[f][g]
+}
+
+/// Who holds each system at the start: the side of its nearest heartland,
+/// with each side's reach stretched or shrunk until all four hold about as
+/// many systems (the stars are thicker in some heartlands than others).
+fn settle(spots: &[Vec3], hearts: &[(Vec2, u8)]) -> Vec<u8> {
+    let mut reach = [0.0f32; SIDES];
+    let mut owners = vec![0u8; spots.len()];
+    for _ in 0..40 {
+        let mut count = [0usize; SIDES];
+        for (p, o) in spots.iter().zip(&mut owners) {
+            let p = p.truncate();
+            *o = hearts
+                .iter()
+                .min_by(|a, b| {
+                    let da = a.0.distance(p) - reach[a.1 as usize];
+                    let db = b.0.distance(p) - reach[b.1 as usize];
+                    da.total_cmp(&db)
+                })
+                .map(|h| h.1)
+                .unwrap_or(0);
+            count[*o as usize] += 1;
+        }
+        let fair = spots.len() as f32 / SIDES as f32;
+        for f in 0..SIDES {
+            // A side with too much pulls in its borders, and vice versa.
+            reach[f] += 60.0 * (1.0 - count[f] as f32 / fair).clamp(-1.0, 1.0);
+        }
+    }
+    owners
 }
 
 /// Each system's nearest neighbors within FTL range, via a grid.
@@ -748,7 +1074,7 @@ fn find_neighbors(systems: &[System], region: Vec2) -> Vec<(u32, f32)> {
     let cell = FTL_RANGE;
     let cols = (region.x / cell).ceil() as usize + 1;
     let rows = (region.y / cell).ceil() as usize + 1;
-    let key = |p: Vec2| {
+    let key = |p: Vec3| {
         let c = ((p.x / cell) as usize).min(cols - 1);
         let r = ((p.y / cell) as usize).min(rows - 1);
         (c, r)
@@ -799,7 +1125,9 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
     let mut snaps = vec![chart::Snapshot::take(&g)];
     let every = (ticks / 25).max(1);
     let (mut total, mut worst) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
-    for _ in 0..ticks {
+    // Steps skip quiet ticks, so go by the tick count, not the steps.
+    let (mut printed, mut snapped) = (0, 1);
+    while g.tick < ticks {
         let t = std::time::Instant::now();
         g.step();
         let dt = t.elapsed();
@@ -807,14 +1135,18 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
         worst = worst.max(dt);
         let c = g.census();
         history.push(c);
-        if g.tick % every == 0 {
+        if g.tick / every > printed {
+            printed = g.tick / every;
             let names = Faction::ALL.map(|f| f.name());
             let shares: Vec<String> = (0..SIDES)
-                .map(|f| format!("{} {:4.1}%", &names[f][..3], c.share[f] * 100.0))
+                .map(|f| {
+                    let push = if g.offensives[f].is_some() { '>' } else { ' ' };
+                    format!("{}{push}{:4.1}%", &names[f][..3], c.share[f] * 100.0)
+                })
                 .collect();
             let hulls: f32 = c.hulls.iter().sum();
             println!(
-                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  crystals {:?}",
+                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  bank {:?} pockets {}",
                 g.tick,
                 shares.join("  "),
                 c.at_war * 100.0,
@@ -822,16 +1154,20 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
                 g.shields_down,
                 g.taken,
                 hulls,
-                c.crystals.map(|x| x as i64),
+                (0..SIDES)
+                    .map(|f| (g.crystals[f] / g.income[f].max(1.0)) as i64)
+                    .collect::<Vec<_>>(),
+                g.cut.iter().filter(|&&c| c).count(),
             );
         }
-        if [ticks / 3, 2 * ticks / 3, ticks].contains(&g.tick) {
+        if snapped < 4 && (g.tick >= snapped * ticks / 3 || g.tick >= ticks) {
+            snapped += 1;
             snaps.push(chart::Snapshot::take(&g));
         }
     }
     println!(
-        "tick: {:.2?} on average, {:.2?} at worst",
-        total / ticks.max(1) as u32,
+        "tick: {:.2?} on average, a step {:.2?} at worst (quiet ticks included)",
+        total / g.tick.max(1) as u32,
         worst
     );
     if let Some(out) = out {

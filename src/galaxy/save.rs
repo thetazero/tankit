@@ -5,10 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
-use super::{Galaxy, REGION, Rules, SIDES, SiteKind};
+use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
 
 /// The war every new pilot joins: one seed for everyone.
@@ -31,6 +31,12 @@ struct Saved {
     hulls: Vec<f32>,
     crystals: [f32; SIDES],
     income: [f32; SIDES],
+    /// The faction being ganged up on, and each side's offensive (where it's
+    /// aimed, the last tick it took a site).
+    #[serde(default)]
+    dominant: Option<usize>,
+    #[serde(default)]
+    offensives: [Option<([f32; 3], u64)>; SIDES],
 }
 
 impl Galaxy {
@@ -53,6 +59,10 @@ impl Galaxy {
             hulls: self.systems.iter().flat_map(|s| s.hulls).collect(),
             crystals: self.crystals,
             income: self.income,
+            dominant: self.dominant,
+            offensives: self
+                .offensives
+                .map(|o| o.map(|o| (o.at.to_array(), o.gained))),
         }
     }
 
@@ -87,7 +97,19 @@ impl Galaxy {
         }
         (g.tick, g.crystals, g.income) = (s.tick, s.crystals, s.income);
         g.rng = Rng::from_state(s.rng);
+        anyhow::ensure!(
+            s.dominant.is_none_or(|d| d < SIDES),
+            "a dominant faction with no side"
+        );
+        g.dominant = s.dominant;
+        g.offensives = s.offensives.map(|o| {
+            o.map(|(at, gained)| Offensive {
+                at: Vec3::from_array(at),
+                gained,
+            })
+        });
         g.update_share();
+        g.update_supply();
         Ok(g)
     }
 

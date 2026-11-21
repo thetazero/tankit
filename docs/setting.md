@@ -33,9 +33,20 @@ takes them a while.
 Some ten thousand colonized star systems. A world's factories build machines
 on the ground, so defending is cheap; moving machines between stars is
 expensive, so attacking is not. Most of the region is quiet at any one time,
-but there is always war somewhere: a side masses machines from its nearby
-systems and pushes where it sees a good chance of taking ground. If one side
-grows too strong, the other three turn on it. Nobody wins.
+but there is always war somewhere.
+
+**Realms, not empires.** News crosses the stars slowly, so no faction is run
+as one state. The four factions are four peoples (a faith, a culture, a way
+of building machines), and the war is fought by their **realms**: a ruler
+holding a handful of systems from a seat, with its own crystal in its own
+vaults. A realm goes to war for its own reasons: a neighbor's mines and
+factories, when it sees a good chance of taking them. What it takes becomes
+its own. Realms of one people rarely fight each other, though sometimes they
+do.
+
+No realm can rule far from its seat. Holdings too distant break away as
+realms of their own, and small neighbors of one people fold together. Realms
+grow by conquest, split at their edges, and merge, and nobody ever wins.
 
 A contested system is a **theater**: its worlds, their shield generators,
 mines and factories, and the machines each side holds there.
@@ -44,27 +55,44 @@ mines and factories, and the machines each side holds there.
 
 A **mercenary pilot** of the Company, remote-linked into each chassis,
 working for whoever pays. Losing a chassis just drops the link, and you're
-linked into the next of your employer's machines in that battle. That's the
+linked into the next of your company's machines in that battle. That's the
 in-world reason for respawns, and it isn't free: every side brings only so
 many machines to a battle, and each one lost is gone from the theater. What
 the pilot is, is left deliberately vague.
 
 ## The Company
 
-The mercenaries are a faction of their own: **the Company**, a galactic
-mercenary outfit that sells its pilots to whichever side of the war is
-paying. It isn't one of the war's sides and doesn't hold ground; it fights
-inside other people's battles.
+The mercenaries are a faction of their own: **the Company**, the name many
+free companies fight under. It isn't one of the war's sides and doesn't hold
+ground; it fights inside other people's battles.
 
-**Postings.** The Company signs with one side in a theater and posts you
-there until the theater is settled or the contract's battles run out. Its
-pilots are never on both sides of a battle. Within the Company you're a free
-agent: for a price in crystals, you can transfer to a different posting. A
-theater you leave goes on without you.
+**Companies are ships.** Each free company is a single ship, with its own
+machines, pilots and crystal aboard. It goes where the work is and pays to
+cross the stars like anyone else. Your garage is a hangar aboard your
+company's ship, in orbit over the world it's contracted to fight for.
 
-**In a match**, you're the one tank in the Company's colors among the hiring
-side's machines: hired help, and it shows. For now only the player is
-Company; later some battles may be more or less merc-heavy.
+**Why realms hire it.** A realm that wants its neighbor's world but can't
+take it alone hires a company to make up the difference. The company is
+**capital**: it puts its own machines at risk for a price, and realms pay it
+to carry that risk. A contract pays some crystal up front and a bonus if the
+world falls, and caps how many machines the company can lose; past that, it
+pulls out. A company is paid in crystal and buys its machines as it needs
+them, from whichever realm nearby sells cheapest. Each realm that hires is better off for it, but hired force makes
+war cheap to start, so the galaxy is more violent and poorer for the
+Company's being in it.
+
+A company that grows too rich splits, since one ship can only work one
+contract at a time; one too small to change any fight joins another.
+
+**Postings.** Your company signs with one side in a theater and you fight
+there until the world falls, the contract's battles or losses run out, or
+the attack fails. A company is never on both sides of a battle. Within the
+Company you're a free agent: for a price in crystals, you can transfer to
+another company's ship. A theater you leave goes on without you.
+
+**In a match**, your company's machines fight in the Company's colors among
+the hiring side's: hired help, and it shows. Some battles have only you,
+some a whole wing of amber.
 
 **Colors:** hazard amber over black, a working color nobody's war is fought
 in. On a Company tank the amber goes over the maker's paint wherever it was
@@ -91,7 +119,7 @@ come later.
 
 ## Factions
 
-Four sides at war. Any of them can hire the Company.
+Four peoples at war, each split into many realms. Any realm can hire the Company.
 
 | Faction | Who they are |
 |---|---|
