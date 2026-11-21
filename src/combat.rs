@@ -155,13 +155,79 @@ fn flame_size(f: f32) -> f32 {
     (0.3 + f * 2.6) * (1.0 - f * f * f).max(0.0).sqrt()
 }
 
-/// A puff is drawn as three balls of radius 0.375-0.475 `flame_size` set
-/// 0.3 of it off its centre, so the fire it shows reaches about this far.
+/// A puff is drawn as a billow of flame `FLAME_PUFF` `flame_size` across
+/// (see `glow_particles`), whose lumps thin out at about 0.88 of that, so
+/// the fire it shows reaches about this far.
 const FLAME_BODY: f32 = 0.7;
+const FLAME_PUFF: f32 = FLAME_BODY / 0.88;
 
 /// How far from its centre a flame puff burns: the fire it shows.
 fn flame_reach(s: &Shell) -> f32 {
     FLAME_BODY * flame_size(s.age / s.spec.life)
+}
+
+/// Crystal fire hottest at the nozzle: white-blue.
+const FLAME_HOT: Vec3 = Vec3::new(0.62, 0.86, 1.0);
+/// Crystal fire dying out: deep violet.
+const FLAME_DYING: Vec3 = Vec3::new(0.26, 0.16, 0.85);
+
+/// The colour of a Hymn puff `f` of the way through its life: white-blue
+/// off the nozzle, crystal blue through its body, violet as it goes out.
+fn flame_color(f: f32) -> Vec3 {
+    if f < 0.35 {
+        FLAME_HOT.lerp(CRYSTAL, f / 0.35)
+    } else {
+        CRYSTAL.lerp(FLAME_DYING, ((f - 0.35) / 0.65).min(1.0))
+    }
+}
+
+/// One puff of a Hymn's stream, drawn at `p` flying along `d`, faded in by
+/// `born`. Soft, self-lit billows that overlap into one licking tongue of
+/// fire, not a row of balls: each churns as it swells and fades as it
+/// cools. They stay round: the stream bends as the turret swings, but each
+/// puff flies straight, so one drawn out along its flight would cut across
+/// the tongue.
+fn crystal_flame(s: &Shell, p: Vec3, d: Vec3, born: f32, out: &mut Vec<Particle>) {
+    let f = (s.age / s.spec.life).min(1.0);
+    let size = flame_size(f) * FLAME_PUFF;
+    let heat = (1.0 - f).powf(1.4);
+    // Its lumps roll over as it flies, so the tongue writhes.
+    let churn = s.seed + s.age * 0.35;
+    let flicker = 0.85 + 0.15 * (s.age * 31.0 + s.seed * 17.0).sin();
+    out.push(Particle::fire(
+        p,
+        size,
+        flame_color(f),
+        1.7 * heat * flicker * born,
+        Vec3::ZERO,
+        churn,
+    ));
+    // The white-hot jet at its heart, close to the nozzle.
+    if f < 0.4 {
+        let hot = 1.0 - f / 0.4;
+        out.push(Particle::glow(
+            p,
+            (size * 0.45).max(0.22),
+            CRYSTAL_HOT,
+            1.1 * hot * born,
+            Vec3::ZERO,
+        ));
+    }
+    // A shard's glint in one puff in three, tumbling out of the fire.
+    let pick = (s.seed * 7.31).fract();
+    if pick < 0.34 && f > 0.1 && f < 0.8 {
+        let a = s.seed * 40.0 + s.age * 5.0;
+        let side = d.any_orthonormal_vector();
+        let out_dir = Quat::from_axis_angle(d, a) * side;
+        let twinkle = (s.age * 23.0 + s.seed * 50.0).sin().max(0.0);
+        out.push(Particle::glow(
+            p + out_dir * size * 0.6 + Vec3::Y * size * 0.2,
+            0.06,
+            CRYSTAL_HOT,
+            3.5 * twinkle * (1.0 - f),
+            (out_dir + d).normalize_or_zero() * 2.0,
+        ));
+    }
 }
 
 /// An Ammeth orb shrinks a little at every skip.
@@ -2232,6 +2298,10 @@ impl Match {
                     ));
                     out.push(glow(p, size * 0.5, PLASMA, 1.6 * born, Vec3::ZERO));
                 }
+                // Crystal fire: a jet of white-blue light out of the nozzle
+                // that blooms into licking blue flame, cools to violet and
+                // goes out, with a glint of shard in some of it.
+                Look::Flame => crystal_flame(s, p, d, born, out),
                 // The toll: a great bloom of crystal light, trailing.
                 Look::Toll => {
                     out.push(glow(p, TOLL_RADIUS * 2.6, CRYSTAL, 1.8 * born, Vec3::ZERO));
@@ -2375,23 +2445,8 @@ impl Match {
                 Look::Bolt { size } => {
                     out.push(streak(0.06 * size, 1.4 * size, PLASMA_HOT.extend(6.0)));
                 }
-                // Crystal fire: white-hot at the nozzle, swelling into blue, then gone.
-                Look::Flame => {
-                    // A lumpy cloud of three blobs, tumbling as it swells.
-                    let f = s.age / s.spec.life;
-                    let size = flame_size(f);
-                    let hot = Vec3::new(0.9, 0.97, 1.0)
-                        .lerp(Vec3::new(0.25, 0.55, 1.0), (f * 2.0).min(1.0))
-                        .lerp(Vec3::new(0.06, 0.15, 0.7), (f * 1.5 - 0.5).clamp(0.0, 1.0));
-                    let glow = 1.0 + 3.0 * (1.0 - f);
-                    let spin = s.seed * std::f32::consts::TAU + s.age * 9.0;
-                    for k in 0..3 {
-                        let a = spin + k as f32 * 2.1;
-                        let off = Vec3::new(a.cos(), (a * 1.7).sin() * 0.6, a.sin()) * size * 0.3;
-                        let r = size * (0.75 + 0.2 * (k as f32 + s.seed * 3.0).sin());
-                        out.push(ball(p + off, r, hot.extend(glow)));
-                    }
-                }
+                // Crystal fire is all light: see `glow_particles`.
+                Look::Flame => {}
                 // A ring of crystal shards round the flight path, widening
                 // from the bell's lip as it goes, turning, with a pale
                 // ripple of the sound itself inside it.
