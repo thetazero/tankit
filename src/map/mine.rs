@@ -125,7 +125,8 @@ const PILLARS: [Vec2; 4] = [
 /// Cave roofs: underside and top (flush with the mesa).
 const ROOF: (f32, f32) = (7.4, TOP + 0.05);
 /// A roof's top under the Crag: just under its top (the lid over the
-/// tunnels is drawn at the top itself, see `crag_lid`).
+/// tunnels is drawn at the top itself, see `crag_lid`), lower under the
+/// rim's cap where its lip dips (see `roof_top`).
 const CRAG_ROOF: f32 = CRAG_TOP - 0.3;
 /// Cave walls stand this thick round each corridor.
 const CAVE_WALL: f32 = 2.4;
@@ -539,6 +540,18 @@ fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
 /// Play ground: dunes on the flats, the mesa along the north with the mine
 /// cut out under it, the wash across under it, the dump and the fins.
 pub fn ground(x: f32, z: f32) -> f32 {
+    ground_cut(x, z, true)
+}
+
+/// The ground as it's seen from above: the mine's roofs over the caves,
+/// not the caves cut out under them (what the ground is painted by, and
+/// what the roofs' lid is drawn on).
+fn surface(x: f32, z: f32) -> f32 {
+    ground_cut(x, z, false)
+}
+
+/// The ground, the caves cut out of the rock or not.
+fn ground_cut(x: f32, z: f32, caves: bool) -> f32 {
     let p = Vec2::new(x, z);
     let m = mesa(p);
     let dunes = 0.45 * (0.061 * x + 0.3).sin() * (0.047 * z).cos()
@@ -565,8 +578,10 @@ pub fn ground(x: f32, z: f32) -> f32 {
         * smoothstep(4.0, 10.0, rect_distance(BOX_CUT, p))
         * smoothstep(3.0, 8.0, crag_depth(p));
     let relief = relief * (1.0 - c) + crag_relief;
-    let mut rock =
-        (TOP * m + (CRAG_TOP - TOP) * c + relief) * smoothstep(0.0, 2.0, cave_distance(p));
+    let mut rock = TOP * m + (CRAG_TOP - TOP) * c + relief;
+    if caves {
+        rock *= smoothstep(0.0, 2.0, cave_distance(p));
+    }
     // The box cut, down through the rock.
     let cut = rect_distance(BOX_CUT, p);
     rock = rock
@@ -661,16 +676,97 @@ fn paint(x: f32, z: f32, h: f32, slope: f32) -> Vec3 {
         Vec3::new(0.5, 0.38, 0.28) * mottle,
         0.6 * (1.0 - smoothstep(2.5, 4.0, way)),
     );
-    // Ballast along the track.
+    // Ballast along the track (not on the rock it runs on in under).
     c = c.lerp(
         Vec3::new(0.36, 0.32, 0.3),
-        1.0 - smoothstep(2.4, 3.6, track_distance(p)),
+        (1.0 - smoothstep(2.4, 3.6, track_distance(p))) * (1.0 - smoothstep(0.4, 0.6, mesa(p))),
     );
-    // The mine's floors.
-    if mesa(p) > 0.5 && cave_distance(p) < 0.5 {
-        c = STONE_DARK * 0.8 * mottle;
-    }
     c
+}
+
+/// The mine's floors: dim stone (`None` outside the mine).
+fn cave_floor(p: Vec2) -> Option<Vec3> {
+    let mottle = 1.0
+        + 0.06 * (0.37 * p.x + 0.8 * (0.11 * p.y).sin()).sin()
+        + 0.04 * (0.9 * p.y - 0.3 * p.x).sin();
+    (mesa(p) > 0.5 && cave_distance(p) < 0.5).then(|| STONE_DARK * 0.8 * mottle)
+}
+
+/// The highest upward-facing sculpted rock over each point (above some
+/// height), on a 0.5 m grid: the Crag rim's cap, lying back over its top.
+struct CapHeights {
+    heights: Vec<f32>,
+}
+
+impl CapHeights {
+    const CELL: f32 = 0.5;
+    const N: usize = ((SIZE + 12.0) / Self::CELL) as usize;
+
+    fn of(m: &crate::render::mesh::MeshData, above: f32) -> CapHeights {
+        let mut heights = vec![f32::NAN; Self::N * Self::N];
+        for t in m.indices.chunks_exact(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|k| Vec3::from(m.verts[k as usize].pos));
+            let n = (b - a).cross(c - a);
+            if n.y.abs() < 0.5 * n.length() || a.y.min(b.y).min(c.y) < above {
+                continue;
+            }
+            let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
+            let (x0, x1) = (
+                (lo.x / Self::CELL).ceil() as i64,
+                (hi.x / Self::CELL).floor() as i64,
+            );
+            let (z0, z1) = (
+                (lo.z / Self::CELL).ceil() as i64,
+                (hi.z / Self::CELL).floor() as i64,
+            );
+            for iz in z0.max(0)..=z1.min(Self::N as i64 - 1) {
+                for ix in x0.max(0)..=x1.min(Self::N as i64 - 1) {
+                    let p = Vec2::new(ix as f32, iz as f32) * Self::CELL;
+                    let (u, v) = (
+                        Vec2::new(b.x - a.x, b.z - a.z),
+                        Vec2::new(c.x - a.x, c.z - a.z),
+                    );
+                    let w = p - Vec2::new(a.x, a.z);
+                    let d = u.perp_dot(v);
+                    let (s, t) = (w.perp_dot(v) / d, u.perp_dot(w) / d);
+                    if s < -1e-4 || t < -1e-4 || s + t > 1.0 + 1e-4 {
+                        continue;
+                    }
+                    let y = a.y + (b.y - a.y) * s + (c.y - a.y) * t;
+                    let h = &mut heights[iz as usize * Self::N + ix as usize];
+                    if h.is_nan() || y > *h {
+                        *h = y;
+                    }
+                }
+            }
+        }
+        CapHeights { heights }
+    }
+
+    /// The cap's height at `p` (a point on the grid), if it's over it.
+    fn at(&self, p: Vec2) -> Option<f32> {
+        let (ix, iz) = ((p.x / Self::CELL).round(), (p.y / Self::CELL).round());
+        if ix < 0.0 || iz < 0.0 || ix >= Self::N as f32 || iz >= Self::N as f32 {
+            return None;
+        }
+        let h = self.heights[iz as usize * Self::N + ix as usize];
+        (!h.is_nan()).then_some(h)
+    }
+}
+
+/// The ground's colour at `p`, as `surface` is shaped there.
+fn paint_surface(p: Vec2) -> Vec3 {
+    let (h, n) = surface_normal(p);
+    paint(p.x, p.y, h, Vec2::new(n.x, n.z).length() / n.y)
+}
+
+/// `surface`'s height and normal at `p`, over the terrain's 2 m cells (so
+/// it shades as the terrain does).
+fn surface_normal(p: Vec2) -> (f32, Vec3) {
+    let d = 2.0;
+    let h = |dx: f32, dz: f32| surface(p.x + dx, p.y + dz);
+    let n = Vec3::new(h(-d, 0.0) - h(d, 0.0), 2.0 * d, h(0.0, -d) - h(0.0, d)).normalize();
+    (h(0.0, 0.0), n)
 }
 
 /// Position and heading `s` m along the track.
@@ -753,7 +849,34 @@ impl Map {
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 111, 111, ground);
         terrain.color = Vec3::ONE;
         terrain.material = Material::Sand;
-        terrain.paint(paint);
+        // Painted by the ground as it's seen from above, so the rock over
+        // the caves takes the colour the roofs' lid does (not that of a
+        // slope falling into a cave nobody sees).
+        terrain.paint(|x, z, _, _| {
+            let p = Vec2::new(x, z);
+            cave_floor(p).unwrap_or_else(|| paint_surface(p))
+        });
+        // Shaded by it too where the ground is the top of the rock: a
+        // vertex by a roof's edge would otherwise lean toward the cave
+        // under it, and draw the roof's outline on the ground.
+        terrain.normals = (0..terrain.nz)
+            .flat_map(|iz| (0..terrain.nx).map(move |ix| (ix, iz)))
+            .map(|(ix, iz)| {
+                let p = Vec2::new(ix as f32, iz as f32) * terrain.cell + terrain.origin;
+                let (h, n) = surface_normal(p);
+                if (terrain.at(ix, iz) - h).abs() < 0.01 {
+                    n
+                } else {
+                    let h = |dx: i64, dz: i64| {
+                        let x = (ix as i64 + dx).clamp(0, terrain.nx as i64 - 1) as usize;
+                        let z = (iz as i64 + dz).clamp(0, terrain.nz as i64 - 1) as usize;
+                        terrain.at(x, z)
+                    };
+                    Vec3::new(h(-1, 0) - h(1, 0), 2.0 * terrain.cell, h(0, -1) - h(0, 1))
+                        .normalize()
+                }
+            })
+            .collect();
         map.terrain = Some(terrain);
         // The ways round first (they're on the ground and the deck), so
         // what's strewn about keeps off them.
@@ -762,10 +885,11 @@ impl Map {
 
         map.seam(&mut rng);
         map.crag_face(&mut rng);
-        map.crag_lid();
+        let cap = CapHeights::of(&map.sculpted, CRAG_TOP - 8.0);
+        map.crag_lid(&cap);
         map.rough_face(&mut rng);
         map.scree_rocks(&mut rng);
-        map.mine_caves(&mut rng);
+        map.mine_caves(&mut rng, &cap);
         map.pillared_hall(&mut rng);
         map.breach(&mut rng);
         map.box_cut(&mut rng);
@@ -1003,7 +1127,11 @@ impl Map {
     fn crag_face(&mut self, rng: &mut Rng) {
         let feet = crag_feet(self);
         let mut mesh = std::mem::take(&mut self.sculpted);
-        let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
+        // Its cap lies back over the top, over the roofs' lid where it's
+        // over a tunnel (not sunk under it to the cave's floor).
+        let fronts = crag::sculpt(&mut mesh, &feet, &|q| {
+            self.ground_height(q.x, q.y).max(surface(q.x, q.y) + 0.03)
+        });
         self.sculpted = mesh;
         // Colliders: one thin slab per stretch of face, from its most
         // forward point at tank height back into the rock.
@@ -1153,12 +1281,14 @@ impl Map {
         }
     }
 
-    /// The Crag's top over its tunnels: drawn as the ground there would be,
-    /// over the roofs, so the top reads as one stretch of rock (the roofs
-    /// stay for colliding, just under it).
-    fn crag_lid(&mut self) {
+    /// The rock over the tunnels, on the mesa and the Crag: drawn as the
+    /// ground there would be, painted as it is round about, over the roofs,
+    /// so the top reads as one stretch of rock and sand (the roofs stay for
+    /// colliding, just under it).
+    fn crag_lid(&mut self, cap: &CapHeights) {
         let cell = 2.0;
-        let lid = |p: Vec2| crag_depth(p) > 3.5 && !within(BOX_CUT, p, 2.5);
+        // Up to the box cut's rim: its sides' cap lies back over the lid.
+        let crag_lid = |p: Vec2| crag_depth(p) > 3.5 && !within(BOX_CUT, p, 0.0);
         let m = &mut self.sculpted;
         let up = Vec3::Y.to_array();
         let mut iz = 0;
@@ -1171,22 +1301,48 @@ impl Map {
                     a + Vec2::new(cell, cell),
                     a + Vec2::new(0.0, cell),
                 ];
-                if !corners.iter().all(|&c| lid(c))
-                    || !corners.iter().any(|&c| cave_distance(c) < 4.5)
+                let mid = a + Vec2::splat(cell * 0.5);
+                // Over every roof's slab (its cells are these), and on the
+                // Crag all round over its tunnels; on the ground, or on the
+                // slab where it stands higher.
+                let (top, crag) = if roofed(mid) {
+                    (roof_top(cap, a), under_crag(mid))
+                } else if corners.iter().all(|&c| crag_lid(c))
+                    && corners.iter().any(|&c| cave_distance(c) < 4.5)
                 {
+                    (CRAG_ROOF, true)
+                } else {
                     continue;
+                };
+                // On the Crag, in finer quads, kept under the rim's cap
+                // where it lies over them (lower than the top where the
+                // lip dips).
+                let n = if crag { 4 } else { 1 };
+                let step = cell / n as f32;
+                for sz in 0..n {
+                    for sx in 0..n {
+                        let b = a + Vec2::new(sx as f32, sz as f32) * step;
+                        let base = m.verts.len() as u32;
+                        for c in [
+                            b,
+                            b + Vec2::new(step, 0.0),
+                            b + Vec2::new(step, step),
+                            b + Vec2::new(0.0, step),
+                        ] {
+                            let mut y = surface(c.x, c.y).max(top) + 0.03;
+                            if let Some(h) = cap.at(c) {
+                                y = y.min(h - 0.04);
+                            }
+                            m.verts.push(crate::render::mesh::Vertex {
+                                pos: [c.x, y, c.y],
+                                normal: up,
+                                color: paint_surface(c).extend(Material::Sand.id()).to_array(),
+                            });
+                        }
+                        m.indices
+                            .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+                    }
                 }
-                let base = m.verts.len() as u32;
-                for c in corners {
-                    let color = paint(c.x, c.y, CRAG_TOP, 0.0);
-                    m.verts.push(crate::render::mesh::Vertex {
-                        pos: [c.x, CRAG_TOP + 0.03, c.y],
-                        normal: up,
-                        color: color.extend(Material::Sand.id()).to_array(),
-                    });
-                }
-                m.indices
-                    .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
             }
             iz += 1;
         }
@@ -1388,7 +1544,7 @@ impl Map {
     /// The mine: rock walls round every corridor, roofs flush with the
     /// mesa, plasma lamps, crystal veins in the walls, timber portals at the
     /// Ithessar's mouths, ore carts.
-    fn mine_caves(&mut self, rng: &mut Rng) {
+    fn mine_caves(&mut self, rng: &mut Rng, cap: &CapHeights) {
         // Walls: along every edge of every cave, where the other side is
         // rock (not another cave, the box cut, or open air past the Face).
         let step = 2.0;
@@ -1424,16 +1580,17 @@ impl Map {
         // Roofs: the 2 m cells within the walls' reach of a cave, back from
         // the Face's lip, gathered into slabs that don't overlap.
         let cell = 2.0;
-        // Each run is (from, to, under the Crag).
-        let mut rows: Vec<(f32, Vec<(f32, f32, bool)>)> = Vec::new();
+        // Each run is (from, to, its top in cm).
+        let mut rows: Vec<(f32, Vec<(f32, f32, i32)>)> = Vec::new();
         let mut z = 136.0;
         while z < SIZE + 6.0 {
             let mut runs = Vec::new();
             let mut x = 56.0;
-            let mut start: Option<(f32, bool)> = None;
+            let mut start: Option<(f32, i32)> = None;
             while x <= 164.0 {
                 let c = Vec2::new(x + cell * 0.5, z + cell * 0.5);
-                let on = (x < 164.0 && roofed(c)).then(|| under_crag(c));
+                let on = (x < 164.0 && roofed(c))
+                    .then(|| (roof_top(cap, Vec2::new(x, z)) * 100.0).round() as i32);
                 match (on, start) {
                     (Some(k), None) => start = Some((x, k)),
                     (on, Some((s, k))) if on != Some(k) => {
@@ -1448,8 +1605,8 @@ impl Map {
             z += cell;
         }
         // Merge rows with the same runs into slabs.
-        let mut open: Vec<((f32, f32, bool), f32)> = Vec::new();
-        let mut slabs: Vec<(Vec2, Vec2, bool)> = Vec::new();
+        let mut open: Vec<((f32, f32, i32), f32)> = Vec::new();
+        let mut slabs: Vec<(Vec2, Vec2, i32)> = Vec::new();
         for (z, runs) in rows
             .iter()
             .chain(std::iter::once(&(SIZE + 6.0, Vec::new())))
@@ -1469,12 +1626,12 @@ impl Map {
             }
             open = next;
         }
-        for (a, b, tall) in slabs {
+        for (a, b, top) in slabs {
             self.oboxes.push(OBox {
                 center: (a + b) * 0.5,
                 half: (b - a) * 0.5,
                 y0: ROOF.0,
-                y1: if tall { CRAG_ROOF } else { ROOF.1 },
+                y1: top as f32 / 100.0,
                 color: MESA_TOP,
                 side_mat: Material::Rubble,
                 top_mat: Material::Sand,
@@ -3884,6 +4041,24 @@ fn roofed(p: Vec2) -> bool {
         && mesa(Vec2::new(p.x, p.y - 1.0)) > 0.9
         && !within(BOX_CUT, p, 0.0)
         && p.y < SIZE + 6.0
+}
+
+/// The top of the roof's 2 m cell from `a`: flush with the mesa, or just
+/// under the Crag's top, and under the rim's cap where that lies lower
+/// over it (where the lip dips), so it doesn't show through.
+fn roof_top(cap: &CapHeights, a: Vec2) -> f32 {
+    if !under_crag(a + Vec2::ONE) {
+        return ROOF.1;
+    }
+    let mut top = CRAG_ROOF;
+    for iz in 0..=4 {
+        for ix in 0..=4 {
+            if let Some(h) = cap.at(a + Vec2::new(ix as f32, iz as f32) * 0.5) {
+                top = top.min(h - 0.1);
+            }
+        }
+    }
+    top
 }
 
 /// Length of the track up to its point `k`.

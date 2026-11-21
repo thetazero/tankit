@@ -518,6 +518,10 @@ pub struct Terrain {
     /// (empty: the whole ground is `color`). Rock showing on a slope, a
     /// different soil in a hollow.
     pub tint: Vec<Vec3>,
+    /// Per-vertex shading normal, row-major like `heights` (empty: from the
+    /// heights). For ground drawn over what's cut out under it, so the cut
+    /// doesn't shade through.
+    pub normals: Vec<Vec3>,
 }
 
 impl Terrain {
@@ -543,6 +547,7 @@ impl Terrain {
             color: Vec3::new(0.36, 0.5, 0.28),
             material: Material::Grass,
             tint: Vec::new(),
+            normals: Vec::new(),
         }
     }
 

@@ -387,12 +387,18 @@ fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
                 h(ix, iz),
                 t.origin.y + iz as f32 * t.cell,
             );
-            let n = Vec3::new(
-                h(ix - 1, iz) - h(ix + 1, iz),
-                2.0 * t.cell,
-                h(ix, iz - 1) - h(ix, iz + 1),
-            )
-            .normalize();
+            let n = t
+                .normals
+                .get((iz * t.nx as i64 + ix) as usize)
+                .copied()
+                .unwrap_or_else(|| {
+                    Vec3::new(
+                        h(ix - 1, iz) - h(ix + 1, iz),
+                        2.0 * t.cell,
+                        h(ix, iz - 1) - h(ix, iz + 1),
+                    )
+                    .normalize()
+                });
             m.verts.push(Vertex {
                 pos: p.to_array(),
                 normal: n.to_array(),
