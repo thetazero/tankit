@@ -44,7 +44,7 @@ use glam::{Quat, Vec2, Vec3};
 use super::crag;
 use super::landmarks::Rig;
 use super::valley::noise;
-use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
+use super::{Ambient, Core, Crystal, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
 use crate::rng::Rng;
@@ -942,22 +942,11 @@ impl Map {
         }
     }
 
-    /// The seam: a river of plasma along the wash floor where the rock is
-    /// cut back to it (it runs on up the Crag's face, and through the hall).
-    /// Crystal breaks out along it.
+    /// The seam: where the crystal crops out along the wash floor (it runs
+    /// on up the Crag's face, and through the hall). Crystal breaks out
+    /// along it.
     fn seam(&mut self, rng: &mut Rng) {
         let line = seam_line();
-        let mut pts = Vec::new();
-        let mut widths = Vec::new();
-        for p in &line {
-            pts.push(Vec3::new(p.x, self.ground_height(p.x, p.y) + 0.05, p.y));
-            widths.push(0.8 + 0.45 * (p.x * 0.3).sin().abs());
-        }
-        self.glow_paths.push(GlowPath {
-            points: pts,
-            widths,
-            color: PLASMA * 0.9,
-        });
         // Crystal along the seam on the wash floor, cover under the bridge
         // and either side of it.
         for (x, h) in [
@@ -1004,8 +993,7 @@ impl Map {
     /// The Crag's face, sculpted along its foot: down its west side, along
     /// the Face (quarried in benches, the natural rock overhanging the cut),
     /// up its east side and in and out of the box cut's slot. Colliders
-    /// along it, lintels over its mouths, crystal breaking out of its veins,
-    /// the seam glowing up it by the adit, fresh plasma cuts on the benches.
+    /// along it, lintels over its mouths, crystal breaking out of its veins.
     fn crag_face(&mut self, rng: &mut Rng) {
         let feet = crag_feet(self);
         let mut mesh = std::mem::take(&mut self.sculpted);
@@ -1059,35 +1047,14 @@ impl Map {
                 0.0,
             );
         }
-        // The seams: plasma glowing along the middle of each where it's
-        // thick, crystal growing out of it all the way up.
+        // The seams: crystal growing out of them all the way up.
         let n = feet.len();
         let mut placed = 0;
-        let mut prev: Vec<(u32, Vec3)> = Vec::new();
         for i in (0..n).step_by(2) {
             let f = feet[i];
-            let mut here = Vec::new();
-            for (k, y, width, present) in crag::veins_at(&f) {
+            for (_, y, width, present) in crag::veins_at(&f) {
                 if f.mouth && y < ROOF.0 + 0.5 {
                     continue;
-                }
-                let q = f.p + f.nrm * (crag::out(&f, y) + 0.05);
-                let at = Vec3::new(q.x, y, q.y);
-                if present * width > 0.3 {
-                    // Joined to the same seam's point a step back, if near.
-                    if let Some(&(_, b)) =
-                        prev.iter().find(|(kk, b)| *kk == k && b.distance(at) < 2.6)
-                    {
-                        self.segment(
-                            b,
-                            at,
-                            0.05 + 0.08 * width,
-                            PLASMA * 0.7,
-                            Material::Glow,
-                            false,
-                        );
-                    }
-                    here.push((k, at));
                 }
                 // Not low on the Face itself: the way along its foot is
                 // narrow between the wash and the rock.
@@ -1099,64 +1066,8 @@ impl Map {
                     placed += 1;
                 }
             }
-            prev = here;
         }
         debug_assert!(placed > 40, "{placed} crystal clusters on the Crag");
-        // The seam up the face, west of the adit's mouth: from the wash's
-        // seam at the foot, wandering up the cut and on up the rock.
-        let front: Vec<&crag::Foot> = feet.iter().filter(|f| f.nrm.y < -0.7).collect();
-        let on_face = |x: f32, y: f32| {
-            let f = front
-                .iter()
-                .min_by(|a, b| (a.p.x - x).abs().total_cmp(&(b.p.x - x).abs()))
-                .unwrap();
-            let q = f.p + f.nrm * (crag::out(f, y) + 0.08);
-            Vec3::new(q.x, y, q.y)
-        };
-        let k_max = 22;
-        for k in 0..k_max {
-            let at = |k: usize| {
-                let t = k as f32 / k_max as f32;
-                let x = 95.0 + 1.8 * (t * 6.0).sin() + 2.0 * t;
-                on_face(x, -0.3 + t * 30.0)
-            };
-            self.segment(
-                at(k),
-                at(k + 1),
-                0.26 - 0.008 * k as f32,
-                PLASMA * 0.85,
-                Material::Glow,
-                false,
-            );
-        }
-        // Fresh plasma cuts along the benches, where they're cutting now.
-        let (x0, x1) = (crag_west(150.0) + 3.0, crag_east(150.0) - 3.0);
-        let mut cuts = 0;
-        for _ in 0..40 {
-            if cuts >= 7 {
-                break;
-            }
-            let start = rng.range(x0, x1 - 6.0);
-            let end = start + rng.range(4.0, 9.0);
-            if MOUTHS
-                .iter()
-                .any(|(a, b)| start < b.x + 2.0 && end > a.x - 2.0)
-            {
-                continue;
-            }
-            let bench = rng.index(3) as f32 + 1.0;
-            let mut x = start;
-            while x < end {
-                let y = |x: f32| {
-                    let g = self.ground_height(x, face(x) - 2.0);
-                    g + crag::BENCH * bench + 0.12
-                };
-                let (a, b) = (on_face(x, y(x)), on_face(x + 0.7, y(x + 0.7)));
-                self.segment(a, b, 0.07, PLASMA * 0.75, Material::Glow, false);
-                x += 0.7;
-            }
-            cuts += 1;
-        }
     }
 
     /// The Crag's top over its tunnels: drawn as the ground there would be,
@@ -1242,29 +1153,13 @@ impl Map {
         }
     }
 
-    /// The new heading's working end: a cutting rig at the face, the seam
-    /// running in along the floor to raw crystal still in the rock, spoil
+    /// The new heading's working end: a cutting rig at the face, raw
+    /// crystal still in the rock, spoil
     /// and timber by its mouth.
     fn heading_face(&mut self, rng: &mut Rng) {
         let (a, b) = HEADING;
         let xc = (a.x + b.x) * 0.5;
         self.cutting_rig(Vec2::new(xc + 2.0, b.y - 10.0), 0.0, 0.0);
-        // The seam along the floor, out from the face it's cut from.
-        let mut pts = Vec::new();
-        let mut widths = Vec::new();
-        let z0 = face(xc) + 1.0;
-        for k in 0..=10 {
-            let t = k as f32 / 10.0;
-            let z = b.y - 0.6 - t * (b.y - 0.6 - z0);
-            let x = xc - 2.5 + 1.2 * (t * 5.0).sin();
-            pts.push(Vec3::new(x, 0.04, z));
-            widths.push(0.7 - 0.3 * t);
-        }
-        self.glow_paths.push(GlowPath {
-            points: pts,
-            widths,
-            color: PLASMA * 0.85,
-        });
         // Raw crystal at the face, either side of the rig's cut.
         for (x, h) in [(a.x + 1.8, 3.4), (b.x - 1.6, 2.8)] {
             self.outcrop(rng, Vec2::new(x, b.y - 1.8), h);
@@ -1633,21 +1528,6 @@ impl Map {
             let out = if p.x < mid.x { Vec2::X } else { -Vec2::X };
             self.lamp(p + out * (s + 0.1), out);
         }
-        // The vein across the hall floor, west to east toward the adit.
-        let mut pts = Vec::new();
-        let mut widths = Vec::new();
-        for k in 0..=14 {
-            let t = k as f32 / 14.0;
-            let x = HALL.0.x + 2.0 + t * (ADIT.1.x - 2.0 - HALL.0.x - 2.0);
-            let z = 184.5 + 3.0 * (t * 7.0).sin() - 2.0 * t;
-            pts.push(Vec3::new(x, 0.04, z));
-            widths.push(0.6 + 0.3 * (t * 11.0).sin().abs());
-        }
-        self.glow_paths.push(GlowPath {
-            points: pts,
-            widths,
-            color: PLASMA * 0.85,
-        });
         // Crystal not yet cut, in the hall's west end (clear of the way in
         // from the west adit, round the pillar to the hall's middle).
         for (x, z, h) in [(66.0, 184.0, 3.2), (65.5, 175.5, 2.4), (78.0, 195.0, 2.6)] {
