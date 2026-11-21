@@ -90,6 +90,10 @@ pub struct Atmosphere {
     pub blowing_sand: f32,
     /// Color of dust kicked up or blown about.
     pub dust: Vec3,
+    /// Scales the sky and ground fill that lights faces the sun misses
+    /// (1 on daylit maps). A dusk map keeps its dark sky but turns this up
+    /// so walls and tanks in shade still read.
+    pub ambient: f32,
 }
 
 impl Default for Atmosphere {
@@ -104,6 +108,7 @@ impl Default for Atmosphere {
             wind: Vec2::new(2.5, 1.0),
             blowing_sand: 0.0,
             dust: Vec3::new(0.52, 0.5, 0.47),
+            ambient: 1.0,
         }
     }
 }
@@ -1579,7 +1584,11 @@ impl Renderer {
                 .sky_horizon
                 .extend(scene.atmosphere.blowing_sand)
                 .to_array(),
-            ground_color: scene.atmosphere.ground_color.extend(0.0).to_array(),
+            ground_color: scene
+                .atmosphere
+                .ground_color
+                .extend(scene.atmosphere.ambient)
+                .to_array(),
             params: [scene.time, scene.atmosphere.fog_density, w, h],
         };
         self.queue
