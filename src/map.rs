@@ -1,5 +1,5 @@
 //! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln,
-//! the Capital, the Foundry, the Seam)
+//! the Foundry, the Seam), the generated ones (`procgen`: the imperial city),
 //! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
@@ -8,13 +8,13 @@ use glam::{Vec2, Vec3};
 
 use crate::faction::Faction;
 
-mod capital;
 mod crag;
 mod foundry;
 mod imperial;
 mod kiln;
 mod landmarks;
 mod mine;
+pub mod procgen;
 mod props;
 pub mod rocks;
 mod ruins;
@@ -195,6 +195,31 @@ impl OBox {
     /// Box center in 3D.
     pub fn center3(&self) -> Vec3 {
         Vec3::new(self.center.x, (self.y0 + self.y1) * 0.5, self.center.y)
+    }
+
+    /// Whether a ray from `from` along unit `dir` meets the box within
+    /// `len` (the box as built: a rock counts as its box).
+    pub fn ray_hit(&self, from: Vec3, dir: Vec3, len: f32) -> bool {
+        let inv = self.rotation().inverse();
+        let o = inv * (from - self.center3());
+        let d = inv * dir;
+        let h = Vec3::new(self.half.x, (self.y1 - self.y0) * 0.5, self.half.y);
+        let (mut near, mut far) = (0.0f32, len);
+        for k in 0..3 {
+            if d[k].abs() < 1e-6 {
+                if o[k].abs() > h[k] {
+                    return false;
+                }
+                continue;
+            }
+            let (t0, t1) = ((-h[k] - o[k]) / d[k], (h[k] - o[k]) / d[k]);
+            near = near.max(t0.min(t1));
+            far = far.min(t0.max(t1));
+            if near > far {
+                return false;
+            }
+        }
+        true
     }
 
     /// A sloped slab tanks drive up (gets ground friction, doesn't block bots).
@@ -646,6 +671,9 @@ pub struct Map {
     /// a banner in the wind): heard as you get near (see
     /// `audio::sounds::places`).
     pub sounds: Vec<Emitter>,
+    /// Where the menus show the tank off, one per side: (spot, the camera's
+    /// yaw round it; see `vista`). Empty: `vista`'s hand-picked spots.
+    pub vistas: Vec<(Vec2, f32)>,
 }
 
 /// A place on the map that sounds: what it is, and where.
@@ -1077,6 +1105,7 @@ impl Map {
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,
             sounds: Vec::new(),
+            vistas: Vec::new(),
         }
     }
 

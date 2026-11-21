@@ -266,6 +266,7 @@ impl Map {
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: Some(SAND),
             sounds: Vec::new(),
+            vistas: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 151, 151, ground);
         terrain.color = SAND;

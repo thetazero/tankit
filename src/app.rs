@@ -77,6 +77,8 @@ enum Mode {
 /// How the app starts.
 pub struct Launch {
     pub seed: u64,
+    /// Which map a generated kind builds.
+    pub map_seed: u64,
     pub map_kind: MapKind,
     pub spawn: usize,
     pub bots: usize,
@@ -92,6 +94,8 @@ pub struct Launch {
 
 struct App {
     seed: u64,
+    /// Which map a generated kind builds: kept for a replay, new each sortie.
+    map_seed: u64,
     map_kind: MapKind,
     spawn: usize,
     bots: usize,
@@ -176,7 +180,12 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     };
     let loadout = launch.loadout.unwrap_or(profile.loadout);
     let mut game = if launch.showroom.is_some() {
-        let mut m = Match::new(make_map(launch.map_kind), launch.spawn, 0, launch.seed);
+        let mut m = Match::new(
+            make_map(launch.map_kind, launch.map_seed),
+            launch.spawn,
+            0,
+            launch.seed,
+        );
         m.world = showroom::world();
         m
     } else if launch.menu {
@@ -185,6 +194,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         new_match(
             launch.seed,
             launch.map_kind,
+            launch.map_seed,
             launch.side,
             launch.spawn,
             launch.bots,
@@ -199,6 +209,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     let volume = profile.settings.volume();
     let mut app = App {
         seed: launch.seed,
+        map_seed: launch.map_seed,
         map_kind: launch.map_kind,
         spawn: launch.spawn,
         bots: launch.bots,
@@ -257,13 +268,14 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
 pub fn new_match(
     seed: u64,
     map_kind: MapKind,
+    map_seed: u64,
     side: usize,
     spawn: usize,
     bots: usize,
     contract: Contract,
     kit: garage::Loadout,
 ) -> Match {
-    let mut map = make_map(map_kind);
+    let mut map = make_map(map_kind, map_seed);
     if side > 0 {
         map.swap_sides(side);
     }
@@ -272,6 +284,13 @@ pub fn new_match(
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
+}
+
+/// A seed nobody picked: from the clock.
+fn fresh_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
 }
 
 /// Black over the whole menu scene at `dark` (0..1), eased.
@@ -297,6 +316,7 @@ pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
     let mut m = new_match(
         mission.seed,
         mission.map_kind,
+        mission.seed,
         side,
         0,
         0,
@@ -304,7 +324,8 @@ pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
         kit,
     );
     m.time_left = f32::INFINITY;
-    crate::vista::park(&mut m.world, crate::vista::of(mission.map_kind, side));
+    let v = crate::vista::of(&m.world.map, mission.map_kind, side);
+    crate::vista::park(&mut m.world, v);
     // Already parked: no arrival (or its sound) each time the backdrop
     // changes, and no shield to drop with a cue.
     let me = &mut m.fighters[0];
@@ -437,6 +458,7 @@ impl App {
         let mut m = new_match(
             self.seed,
             self.map_kind,
+            self.map_seed,
             self.side,
             self.spawn,
             self.bots,
@@ -458,11 +480,14 @@ impl App {
     fn start_mission(&mut self, i: usize, side: usize) {
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
+        // A generated map is a new one each sortie (the same again on a replay).
+        self.map_seed = fresh_seed();
         (self.contract, self.side, self.rating) = (m.contract, side, m.rating);
         self.prize = m.prize(side);
         let mut game = new_match(
             self.seed,
             self.map_kind,
+            self.map_seed,
             self.side,
             self.spawn,
             self.bots,
@@ -1303,8 +1328,8 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let a = new_match(m.seed, m.map_kind, 0, 0, 3, m.contract, kit);
-        let b = new_match(m.seed, m.map_kind, 1, 0, 3, m.contract, kit);
+        let a = new_match(m.seed, m.map_kind, m.seed, 0, 0, 3, m.contract, kit);
+        let b = new_match(m.seed, m.map_kind, m.seed, 1, 0, 3, m.contract, kit);
         assert_eq!(a.factions, m.sides);
         assert_eq!(b.factions, [m.sides[1], m.sides[0]]);
         assert_eq!(b.world.map.bases[0], a.world.map.bases[1]);

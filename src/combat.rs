@@ -3160,9 +3160,9 @@ mod tests {
         Match::new(Map::saltmarket(), 0, bots, 21)
     }
 
-    /// A free-for-all: all four factions, in the Capital.
+    /// A free-for-all: all four factions, in an imperial city.
     fn four_sides(bots: usize) -> Match {
-        let map = Map::capital();
+        let map = Map::city(0);
         Match::new(map, 0, bots, 21)
     }
 
@@ -4891,7 +4891,7 @@ mod tests {
             ("saltmarket", Map::saltmarket()),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
-            ("capital", Map::capital()),
+            ("city", Map::city(0)),
             ("foundry", Map::foundry()),
             ("mine", Map::mine()),
         ] {
