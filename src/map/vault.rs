@@ -43,9 +43,10 @@ pub(super) struct Cave<'a> {
     pub shade: &'a dyn Fn(Vec3, Vec3) -> (Vec3, Material),
     /// Veins showing in the wall at an edge point, each the same one from
     /// point to point (0 thick where it pinches out): its middle's height,
-    /// half its thickness, and half the thickness of the plasma thread down
-    /// its middle.
+    /// and half its thickness.
     pub veins: &'a dyn Fn(Vec2) -> [Vein; 2],
+    /// The veins' crystal: its colour.
+    pub vein_color: Vec3,
 }
 
 /// A vein of crystal across a wall, at one point along it.
@@ -53,12 +54,7 @@ pub(super) struct Cave<'a> {
 pub(super) struct Vein {
     pub y: f32,
     pub half: f32,
-    pub thread: f32,
 }
-
-/// Raw crystal in the walls, and the plasma threading it.
-const CRYSTAL: Vec3 = Vec3::new(0.05, 0.1, 0.2);
-const PLASMA: Vec3 = crate::tank::ithessar::PLASMA;
 
 impl Cave<'_> {
     /// Out of the open space, into the rock, at `p`.
@@ -231,14 +227,12 @@ fn strip(m: &mut MeshData, cave: &Cave, a: Vec2, b: Vec2) {
             tri(m, t, into);
         }
     }
-    // The veins, laid on the wall: the crystal, and the thread on it.
+    // The veins, laid on the wall: raw crystal.
     let (va, vb) = ((cave.veins)(a), (cave.veins)(b));
     for k in 0..2 {
         let (x, y) = (va[k], vb[k]);
-        for (half, lift, color, mat) in [
-            ((x.half, y.half), 0.03, CRYSTAL, Material::Vhaal),
-            ((x.thread, y.thread), 0.06, PLASMA, Material::Glow),
-        ] {
+        {
+            let (half, lift, color, mat) = ((x.half, y.half), 0.03, cave.vein_color, Material::Ore);
             if half.0 <= 0.0 && half.1 <= 0.0 {
                 continue;
             }
@@ -350,6 +344,7 @@ mod tests {
             roof_here: &|p| sdf(p) < 2.0,
             shade: &|_, _| (Vec3::ONE, Material::Cliff),
             veins: &|_| [Vein::default(); 2],
+            vein_color: Vec3::ONE,
         };
         line(&mut m, &cave, Vec2::splat(-4.0), Vec2::new(14.0, 34.0));
         m

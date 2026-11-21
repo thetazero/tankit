@@ -785,10 +785,18 @@ pub struct Crystal {
     /// Varies the facets.
     pub seed: u32,
     pub color: Vec3,
-    /// A seam of plasma up one face.
+    /// A seam of light up one face: plasma on worked crystal, the crystal's
+    /// own faint light on raw.
     pub lit: bool,
     pub solid: bool,
+    /// Raw crystal, as it grows in the rock (cloudy, dull, nobody's), not
+    /// the Ithessar's worked crystal.
+    pub raw: bool,
 }
+
+/// The light crystal gives off: faint in raw crystal, bright once it's cut
+/// (the Resonant's sanctum, their machines, their blue).
+pub const CRYSTAL_LIGHT: Vec3 = Vec3::new(0.25, 0.55, 1.0);
 
 impl Crystal {
     /// Cross-section rings from base to tip, `sides` points each. Every
@@ -856,22 +864,30 @@ impl Crystal {
             .fold(f32::INFINITY, f32::min)
     }
 
-    /// Append its mesh: dark worked crystal, and a seam of plasma up one
-    /// face if it's lit.
+    /// Append its mesh: raw crystal or dark worked crystal, and a seam of
+    /// light up one face if it's lit (plasma on worked crystal, a faint
+    /// glint of the crystal's own light on raw).
     pub fn mesh(&self, m: &mut crate::render::mesh::MeshData) {
         use crate::tank::model::{Skin, round};
         let c = self.color;
-        let skin = Skin::new(
-            c.extend(Material::Vhaal.id()),
-            (c * 1.3).extend(Material::Vhaal.id()),
-        );
+        let mat = if self.raw {
+            Material::Ore
+        } else {
+            Material::Vhaal
+        };
+        let skin = Skin::new(c.extend(mat.id()), (c * 1.15).extend(mat.id()));
         let rings = self.rings();
         // Every facet the same glass (no lighter chamfer faces).
         round(m, &rings, 0.0, skin);
         if self.lit {
             // Up the middle of face 0, from near the ground to near the tip,
             // standing just proud of it.
-            let glow = crate::tank::ithessar::PLASMA.extend(Material::Glow.id());
+            let light = if self.raw {
+                CRYSTAL_LIGHT * 0.3
+            } else {
+                crate::tank::ithessar::PLASMA
+            };
+            let glow = light.extend(Material::Glow.id());
             let (lo, hi) = (0usize, 3usize);
             let mid = |r: &Vec<Vec3>, f: f32| r[0].lerp(r[1], f);
             for w in rings[lo..=hi].windows(2) {
