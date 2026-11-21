@@ -13,7 +13,7 @@
 //! Drawn as a solid panel on the left, the highlighted part's stats in a card
 //! top right, the tank framed in the space between.
 //!
-//! It opens in the depot bay (`bay`): the camera swings round the tank where
+//! It opens in the ship's bay (`bay`): the camera swings round the tank where
 //! it stands, the screen dips to black, and comes up on the tank turning on
 //! the bay's turntable. Closing runs the same way back.
 
