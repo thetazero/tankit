@@ -5,19 +5,24 @@
 //!
 //! 220 m square (+x east, +z north). The Ithessar come in from the west
 //! edge, the Resonant from the east. Nothing is mirrored: each side has its
-//! own way up, its own way in and its own cover, matched for distance.
+//! own way up, its own way in and its own cover.
 //!
-//! - **The Face**, along the north: an escarpment 10 m high. Where the
-//!   Ithessar have quarried it, in the middle, it's sheer cut stone with
-//!   the seam glowing up it; elsewhere it's broken natural rock. Its top is
-//!   the mesa, open ground with the headframe on it. The Ithessar drive up
-//!   its long west end; the Resonant climb the scree where the face fell in,
-//!   in the east.
-//! - **The mine**, under the mesa: the rail adit straight in from the face,
-//!   the pillared hall where the seam is worked west of it, the west adit
-//!   out to the face, the east drift to the Resonant's breach, and the box
-//!   cut, an open ramp climbing from the adit's end to the mesa top. Tanks
-//!   on the mesa drive over tanks in the mine.
+//! - **The Face**, along the north: an escarpment 10 m high, broken
+//!   natural rock. Its top is the mesa, open ground with the headframe on
+//!   it. The Ithessar drive up its long west end; the Resonant climb the
+//!   scree where the face fell in, in the east.
+//! - **The Crag**, rising 40 m sheer out of the middle of the Face, over the
+//!   mine and back past the north edge: the Ithessar's crystal-rich cliff,
+//!   seams of crystal and plasma running through its red beds, quarried flat
+//!   in benches along its foot where they're cutting into it. Nothing
+//!   climbs it; it splits the mesa in two, and you drive round its foot.
+//! - **The mine**, under the mesa and the Crag: the rail adit straight in
+//!   from the Crag's face, the new heading beside it (still being cut, a
+//!   rig at its end), the pillared hall where the seam is worked west of
+//!   it, the west adit out to the Face, the east drift to the Resonant's
+//!   breach, and the box cut, a slot sawn up through the Crag from the
+//!   adit's end to the mesa's east top. Tanks on the mesa drive over tanks
+//!   in the hall's west end.
 //! - **The wash**, a dry ravine 7 m deep winding right across the map
 //!   under the face, in at the west edge by the Ithessar's yard and out at
 //!   the east edge below the Resonant's camp: the seam crops out on its
@@ -34,7 +39,9 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Quat, Vec2, Vec3};
 
+use super::crag;
 use super::landmarks::Rig;
+use super::valley::noise;
 use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
@@ -69,20 +76,23 @@ const FACE: [(f32, f32); 14] = [
 ];
 /// How far the Face's foot is from its lip (horizontally).
 const FACE_RISE: f32 = 4.0;
-/// The quarried stretch of the Face: cut stone, sheer (x).
-const QUARRY: (f32, f32) = (78.0, 146.0);
 /// The scree, where the Face fell in (x): a long slope instead of a cliff,
 /// from `SCREE_RUN` m out from the foot up to the lip.
 const SCREE: (f32, f32) = (166.0, 196.0);
 const SCREE_RUN: f32 = 30.0;
 /// The mesa's west end slopes down to the floor between these (x).
 const WEST_RAMP: (f32, f32) = (8.0, 48.0);
+/// The Crag: sheer rock rising from the middle of the Face to this height,
+/// over the mine, back past the north edge. Nothing climbs it.
+const CRAG_TOP: f32 = 40.0;
+/// Its foot is quarried flat this high (over the floor) along its face.
+const CRAG_CUT: f32 = 12.0;
 
 /// The mine, under the mesa: (min, max) on the ground plane, every edge on
 /// the terrain's 2 m grid so the cut is clean.
 const ADIT: (Vec2, Vec2) = (Vec2::new(100.0, 140.0), Vec2::new(112.0, 212.0));
 const HALL: (Vec2, Vec2) = (Vec2::new(62.0, 170.0), Vec2::new(94.0, 198.0));
-const CAVES: [(Vec2, Vec2); 6] = [
+const CAVES: [(Vec2, Vec2); 7] = [
     ADIT,
     HALL,
     // The crosscut from the hall to the adit.
@@ -93,7 +103,13 @@ const CAVES: [(Vec2, Vec2); 6] = [
     (Vec2::new(112.0, 186.0), Vec2::new(148.0, 196.0)),
     // The Resonant's breach, in from the face.
     (Vec2::new(148.0, 150.0), Vec2::new(158.0, 196.0)),
+    // The new heading: the Ithessar's newest tunnel into the Crag, still
+    // being cut.
+    HEADING,
 ];
+const HEADING: (Vec2, Vec2) = (Vec2::new(120.0, 146.0), Vec2::new(132.0, 170.0));
+/// The Crag's mouths in its face: the rail adit and the new heading.
+const MOUTHS: [(Vec2, Vec2); 2] = [ADIT, HEADING];
 /// The box cut: an open trench climbing east from the adit's end to the
 /// mesa's top.
 const BOX_CUT: (Vec2, Vec2) = (Vec2::new(112.0, 200.0), Vec2::new(150.0, 210.0));
@@ -106,6 +122,9 @@ const PILLARS: [Vec2; 4] = [
 ];
 /// Cave roofs: underside and top (flush with the mesa).
 const ROOF: (f32, f32) = (7.4, TOP + 0.05);
+/// A roof's top under the Crag: just under its top (the lid over the
+/// tunnels is drawn at the top itself, see `crag_lid`).
+const CRAG_ROOF: f32 = CRAG_TOP - 0.3;
 /// Cave walls stand this thick round each corridor.
 const CAVE_WALL: f32 = 2.4;
 
@@ -195,7 +214,7 @@ const SPOTS: [(f32, f32); 28] = [
     (130.0, 191.0),
     (153.0, 172.0),
     (40.0, 176.0),
-    (70.0, 210.0),
+    (52.0, 214.0),
     (190.0, 160.0),
     (170.0, 200.0),
     (200.0, 180.0),
@@ -213,7 +232,7 @@ const ITHESSAR_YARD: Vec2 = Vec2::new(37.0, 72.0);
 /// and the worn track up the scree.
 const WAYS_UP: [(Vec2, Vec2); 2] = [
     (Vec2::new(8.0, 167.0), Vec2::new(60.0, 167.0)),
-    (Vec2::new(181.0, 118.0), Vec2::new(181.0, 166.0)),
+    (Vec2::new(181.0, 118.0), Vec2::new(181.0, 174.0)),
 ];
 
 /// The waste dump in the west of the flats: its middle, rough radius, the
@@ -287,6 +306,32 @@ fn face(x: f32) -> f32 {
 fn scree(x: f32) -> f32 {
     smoothstep(SCREE.0 - 4.0, SCREE.0 + 6.0, x)
         * (1.0 - smoothstep(SCREE.1 - 6.0, SCREE.1 + 4.0, x))
+}
+
+/// The Crag's west side (x), at `z`.
+fn crag_west(z: f32) -> f32 {
+    let z = z.min(SIZE);
+    // Flaring west as it runs back, into the massif beyond the edge.
+    82.0 - 14.0 * smoothstep(160.0, 205.0, z) + 1.6 * (z * 0.13).sin() + 1.0 * (z * 0.31).sin()
+}
+
+/// The Crag's east side (x), at `z`.
+fn crag_east(z: f32) -> f32 {
+    let z = z.min(SIZE);
+    141.0 + 1.5 * (z * 0.11 + 1.0).sin() + 0.8 * (z * 0.27).sin()
+}
+
+/// How far into the Crag a point is (m; negative: outside). Its front
+/// rises behind the mesa's own face.
+fn crag_depth(p: Vec2) -> f32 {
+    (p.x - crag_west(p.y))
+        .min(crag_east(p.y) - p.x)
+        .min(p.y - face(p.x) - FACE_RISE)
+}
+
+/// How much of the Crag (0..1) stands over a point.
+fn crag(p: Vec2) -> f32 {
+    smoothstep(0.0, 3.0, crag_depth(p))
 }
 
 /// How high the mesa stands at a point, before the mine is cut out: 0..1
@@ -439,7 +484,16 @@ pub fn ground(x: f32, z: f32) -> f32 {
         * smoothstep(f + FACE_RISE + 1.0, f + FACE_RISE + 9.0, z)
         * smoothstep(4.0, 10.0, rect_distance(BOX_CUT, p))
         * m.powi(4);
-    let mut rock = (TOP * m + relief) * smoothstep(0.0, 2.0, cave_distance(p));
+    // The Crag over it, its top rolling too (flat over the mine's roofs).
+    let c = crag(p);
+    let crag_relief = (1.0 * (0.05 * x + 1.3).sin() * (0.06 * z + 0.4).cos()
+        + 0.5 * (0.17 * x + 0.11 * z).sin())
+        * smoothstep(5.0, 14.0, cave_distance(p))
+        * smoothstep(4.0, 10.0, rect_distance(BOX_CUT, p))
+        * smoothstep(3.0, 8.0, crag_depth(p));
+    let relief = relief * (1.0 - c) + crag_relief;
+    let mut rock =
+        (TOP * m + (CRAG_TOP - TOP) * c + relief) * smoothstep(0.0, 2.0, cave_distance(p));
     // The box cut, down through the rock.
     let cut = rect_distance(BOX_CUT, p);
     rock = rock
@@ -460,7 +514,8 @@ fn scenery_ground(x: f32, z: f32) -> f32 {
     // The edge's ground carried on out, the mesa solid (its adit runs on
     // under the rock).
     let edge = p.clamp(Vec2::ZERO, Vec2::splat(SIZE));
-    let base = ground(edge.x, edge.y).max(TOP * mesa(Vec2::new(edge.x, z.max(edge.y))));
+    let q = Vec2::new(edge.x, z.max(edge.y));
+    let base = ground(edge.x, edge.y).max(TOP * mesa(q) + (CRAG_TOP - TOP) * crag(q));
     let hills = smoothstep(6.0, 60.0, d)
         * (6.0 * ((x * 0.017).sin() * (z * 0.021).cos()).abs()
             + 4.0 * ((x * 0.007 - z * 0.005).sin() + 1.0)
@@ -611,10 +666,14 @@ impl Map {
         terrain.material = Material::Sand;
         terrain.paint(paint);
         map.terrain = Some(terrain);
+        // The ways round first (they're on the ground and the deck), so
+        // what's strewn about keeps off them.
+        map.mine_routes();
         let mut rng = Rng::new(0x5ea3_0213);
 
         map.seam(&mut rng);
-        map.quarry_face(&mut rng);
+        map.crag_face(&mut rng);
+        map.crag_lid();
         map.rough_face(&mut rng);
         map.scree_rocks(&mut rng);
         map.mine_caves(&mut rng);
@@ -626,9 +685,10 @@ impl Map {
         map.wash_rocks(&mut rng);
         map.cutting_rig(Vec2::new(97.0, 131.5), PI * 0.5 + 0.35, -WASH_DEPTH);
         map.cutting_rig(Vec2::new(90.0, 174.5), -PI * 0.5 - 0.3, 0.0);
+        map.heading_face(&mut rng);
         map.tipple();
         map.ore_train(&mut rng);
-        map.headframe(Vec2::new(82.0, 206.0));
+        map.headframe(Vec2::new(60.0, 207.0));
         map.mesa_cover(&mut rng);
         map.dump_cover(&mut rng);
         map.sorting_house(&mut rng);
@@ -639,7 +699,6 @@ impl Map {
         map.mine_resonant_base(&mut rng);
         map.edge_rocks(&mut rng);
         map.mine_spawns();
-        map.mine_routes();
         map.perimeter(false);
         map.mine_horizon(&mut rng);
         map.mine_sounds();
@@ -790,8 +849,8 @@ impl Map {
     }
 
     /// The seam: a river of plasma along the wash floor where the rock is
-    /// cut back to it, a vein glowing up the quarried Face by the adit's
-    /// mouth, and on through the hall. Crystal breaks out along it.
+    /// cut back to it (it runs on up the Crag's face, and through the hall).
+    /// Crystal breaks out along it.
     fn seam(&mut self, rng: &mut Rng) {
         let line = seam_line();
         let mut pts = Vec::new();
@@ -805,33 +864,6 @@ impl Map {
             widths,
             color: PLASMA * 0.9,
         });
-        // The vein up the Face, west of the adit's mouth: from the foot up
-        // the cut stone to the lip, wandering and thinning.
-        let n = 9;
-        let at = |k: usize| {
-            let t = k as f32 / n as f32;
-            let x = 95.5 + 2.2 * (t * 5.0).sin() + 1.5 * t;
-            // In front of the cut stone (the lower tier's face, then the
-            // upper's, set back).
-            let z = face(x) - 0.12 + if t > 0.5 { 1.2 } else { 0.0 };
-            Vec3::new(x, -0.3 + t * (TOP + 0.2), z)
-        };
-        for k in 0..n {
-            let (a, b) = (at(k), at(k + 1));
-            let b = if k == n / 2 {
-                Vec3::new(b.x, b.y, a.z)
-            } else {
-                b
-            };
-            self.segment(
-                a,
-                b,
-                0.22 - 0.012 * k as f32,
-                PLASMA * 0.85,
-                Material::Glow,
-                false,
-            );
-        }
         // Crystal along the seam on the wash floor, cover under the bridge
         // and either side of it.
         for (x, h) in [
@@ -875,79 +907,290 @@ impl Map {
         }
     }
 
-    /// The quarried Face: sheer cut stone in big blocks, two tiers, the top
-    /// one set back, scorched along the plasma cuts. Clear of the mouths.
-    fn quarry_face(&mut self, rng: &mut Rng) {
-        let mut x = QUARRY.0;
-        while x < QUARRY.1 {
-            let w = rng.range(5.0, 8.0).min(QUARRY.1 - x);
-            let c = x + w * 0.5;
-            x += w;
-            if CAVES.iter().any(|(a, b)| {
-                c + w * 0.5 > a.x - 0.5 && c - w * 0.5 < b.x + 0.5 && a.y < face(c) + FACE_RISE
-            }) {
+    /// The Crag's face, sculpted along its foot: down its west side, along
+    /// the Face (quarried in benches, the natural rock overhanging the cut),
+    /// up its east side and in and out of the box cut's slot. Colliders
+    /// along it, lintels over its mouths, crystal breaking out of its veins,
+    /// the seam glowing up it by the adit, fresh plasma cuts on the benches.
+    fn crag_face(&mut self, rng: &mut Rng) {
+        let feet = crag_feet(self);
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
+        self.sculpted = mesh;
+        // Colliders: one thin slab per stretch of face, from its most
+        // forward point at tank height back into the rock.
+        for k in (0..feet.len() - 1).step_by(2) {
+            let j = (k + 2).min(feet.len() - 1);
+            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
+                continue;
+            };
+            let along = b - a;
+            let len = along.length();
+            if len < 1e-3 || len > 4.0 {
                 continue;
             }
-            // Along the face here.
-            let (f0, f1) = (face(c - w * 0.5), face(c + w * 0.5));
-            let along = Vec2::new(w, f1 - f0).normalize();
-            let yaw = (-along.y).atan2(along.x);
-            let inward = Vec2::new(-along.y, along.x);
-            let foot = Vec2::new(c, (f0 + f1) * 0.5);
-            let shade = [STONE, STONE_PALE, STONE * 1.1][rng.index(3)] * rng.range(0.92, 1.05);
-            // The lower tier, its face on the foot; the upper set back.
-            let low = rng.range(4.5, 6.0);
+            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
+            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
+            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
             let depth = 3.0;
+            let dir = along / len;
+            let floor = feet[k].floor.min(feet[j].floor);
             self.oboxes.push(OBox {
-                center: foot + inward * (depth * 0.5),
-                yaw,
-                half: Vec2::new(w * 0.5 + 0.02, depth * 0.5),
-                y0: -1.0,
-                y1: low,
-                color: shade,
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: 0.15,
+                center: mid - nrm * depth * 0.5,
+                yaw: (-dir.y).atan2(dir.x),
+                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
+                y0: floor - 3.0,
+                y1: floor + 10.0,
+                hidden: true,
                 ..OBox::default()
             });
-            let back = rng.range(1.2, 2.0);
-            self.oboxes.push(OBox {
-                center: foot + inward * (back + depth * 0.5),
-                yaw,
-                half: Vec2::new(w * 0.5 + 0.03, depth * 0.5),
-                y0: low - 0.2,
-                y1: TOP + rng.range(0.1, 0.5),
-                color: shade * rng.range(0.9, 1.0),
-                side_mat: Material::Rubble,
-                top_mat: Material::Rubble,
-                chip: 0.2,
-                ..OBox::default()
-            });
-            // A plasma scorch along the cut, now and then.
-            if rng.chance(0.5) {
-                let y = rng.range(1.5, low - 1.0);
-                self.oboxes.push(OBox {
-                    center: foot - inward * 0.03,
-                    yaw,
-                    half: Vec2::new(w * 0.5 * rng.range(0.5, 0.9), 0.03),
-                    y0: y,
-                    y1: y + 0.12,
-                    color: PLASMA * 0.6,
-                    side_mat: Material::Glow,
-                    top_mat: Material::Glow,
-                    solid: false,
-                    ..OBox::default()
-                });
+        }
+        // Lintels over the mouths in the Face: rock from the face back to
+        // where the tunnel's roof starts.
+        for (a, b) in MOUTHS {
+            let xc = (a.x + b.x) * 0.5;
+            let z0 = face(xc) - 0.1;
+            let mut z1 = face(xc);
+            while !roofed(Vec2::new(xc, z1)) {
+                z1 += 0.5;
             }
-            // Spoil at the foot.
-            if rng.chance(0.4) {
-                let q = foot - inward * rng.range(2.5, 4.0) + along * rng.range(-2.0, 2.0);
-                if wash(q) > -0.5 && seg(q, BRIDGE.0, BRIDGE.1).0 > DECK_HALF + 2.0 {
-                    let s = rng.range(0.5, 1.1);
-                    self.boulder(rng, q, s, false);
+            let z1 = (z1 / 2.0).ceil() * 2.0 + 0.2;
+            self.stone(
+                Vec2::new(xc, (z0 + z1) * 0.5),
+                0.0,
+                Vec2::new((b.x - a.x) * 0.5 + 0.6, (z1 - z0) * 0.5),
+                ROOF.0,
+                ROOF.0 + 14.0,
+                STONE_DARK,
+                0.0,
+            );
+        }
+        // The seams: plasma glowing along the middle of each where it's
+        // thick, crystal growing out of it all the way up.
+        let n = feet.len();
+        let mut placed = 0;
+        let mut prev: Vec<(u32, Vec3)> = Vec::new();
+        for i in (0..n).step_by(2) {
+            let f = feet[i];
+            let mut here = Vec::new();
+            for (k, y, width, present) in crag::veins_at(&f) {
+                if f.mouth && y < ROOF.0 + 0.5 {
+                    continue;
+                }
+                let q = f.p + f.nrm * (crag::out(&f, y) + 0.05);
+                let at = Vec3::new(q.x, y, q.y);
+                if present * width > 0.3 {
+                    // Joined to the same seam's point a step back, if near.
+                    if let Some(&(_, b)) =
+                        prev.iter().find(|(kk, b)| *kk == k && b.distance(at) < 2.6)
+                    {
+                        self.segment(
+                            b,
+                            at,
+                            0.05 + 0.08 * width,
+                            PLASMA * 0.7,
+                            Material::Glow,
+                            false,
+                        );
+                    }
+                    here.push((k, at));
+                }
+                // Not low on the Face itself: the way along its foot is
+                // narrow between the wash and the rock.
+                let low_front = f.nrm.y < -0.7 && f.p.y < 170.0 && y < f.floor + 4.0;
+                if present > 0.5 && !low_front && rng.chance(0.18 + 0.25 * width) {
+                    // Now and then a great mass of it, standing out.
+                    let big = rng.chance(0.15) && y > f.floor + 5.0;
+                    self.wall_crystals(rng, &f, y, big);
+                    placed += 1;
                 }
             }
+            prev = here;
         }
+        debug_assert!(placed > 40, "{placed} crystal clusters on the Crag");
+        // The seam up the face, west of the adit's mouth: from the wash's
+        // seam at the foot, wandering up the cut and on up the rock.
+        let front: Vec<&crag::Foot> = feet.iter().filter(|f| f.nrm.y < -0.7).collect();
+        let on_face = |x: f32, y: f32| {
+            let f = front
+                .iter()
+                .min_by(|a, b| (a.p.x - x).abs().total_cmp(&(b.p.x - x).abs()))
+                .unwrap();
+            let q = f.p + f.nrm * (crag::out(f, y) + 0.08);
+            Vec3::new(q.x, y, q.y)
+        };
+        let k_max = 22;
+        for k in 0..k_max {
+            let at = |k: usize| {
+                let t = k as f32 / k_max as f32;
+                let x = 95.0 + 1.8 * (t * 6.0).sin() + 2.0 * t;
+                on_face(x, -0.3 + t * 30.0)
+            };
+            self.segment(
+                at(k),
+                at(k + 1),
+                0.26 - 0.008 * k as f32,
+                PLASMA * 0.85,
+                Material::Glow,
+                false,
+            );
+        }
+        // Fresh plasma cuts along the benches, where they're cutting now.
+        let (x0, x1) = (crag_west(150.0) + 3.0, crag_east(150.0) - 3.0);
+        let mut cuts = 0;
+        for _ in 0..40 {
+            if cuts >= 7 {
+                break;
+            }
+            let start = rng.range(x0, x1 - 6.0);
+            let end = start + rng.range(4.0, 9.0);
+            if MOUTHS
+                .iter()
+                .any(|(a, b)| start < b.x + 2.0 && end > a.x - 2.0)
+            {
+                continue;
+            }
+            let bench = rng.index(3) as f32 + 1.0;
+            let mut x = start;
+            while x < end {
+                let y = |x: f32| {
+                    let g = self.ground_height(x, face(x) - 2.0);
+                    g + crag::BENCH * bench + 0.12
+                };
+                let (a, b) = (on_face(x, y(x)), on_face(x + 0.7, y(x + 0.7)));
+                self.segment(a, b, 0.07, PLASMA * 0.75, Material::Glow, false);
+                x += 0.7;
+            }
+            cuts += 1;
+        }
+    }
+
+    /// The Crag's top over its tunnels: drawn as the ground there would be,
+    /// over the roofs, so the top reads as one stretch of rock (the roofs
+    /// stay for colliding, just under it).
+    fn crag_lid(&mut self) {
+        let cell = 2.0;
+        let lid = |p: Vec2| crag_depth(p) > 3.5 && !within(BOX_CUT, p, 2.5);
+        let m = &mut self.sculpted;
+        let up = Vec3::Y.to_array();
+        let mut iz = 0;
+        while (iz as f32) * cell < SIZE + 6.0 {
+            for ix in 0..(SIZE / cell) as usize {
+                let a = Vec2::new(ix as f32 * cell, iz as f32 * cell);
+                let corners = [
+                    a,
+                    a + Vec2::new(cell, 0.0),
+                    a + Vec2::new(cell, cell),
+                    a + Vec2::new(0.0, cell),
+                ];
+                if !corners.iter().all(|&c| lid(c))
+                    || !corners.iter().any(|&c| cave_distance(c) < 4.5)
+                {
+                    continue;
+                }
+                let base = m.verts.len() as u32;
+                for c in corners {
+                    let color = paint(c.x, c.y, CRAG_TOP, 0.0);
+                    m.verts.push(crate::render::mesh::Vertex {
+                        pos: [c.x, CRAG_TOP + 0.03, c.y],
+                        normal: up,
+                        color: color.extend(Material::Sand.id()).to_array(),
+                    });
+                }
+                m.indices
+                    .extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+            }
+            iz += 1;
+        }
+    }
+
+    /// A cluster of crystal growing out of the Crag's face at `f`, height
+    /// `y`: bigger low down, where a tank can hide behind it.
+    fn wall_crystals(&mut self, rng: &mut Rng, f: &crag::Foot, y: f32, big: bool) {
+        let low = y < f.floor + 3.0;
+        let count = if big {
+            4 + rng.index(3)
+        } else {
+            1 + rng.index(3)
+        };
+        for k in 0..count {
+            let dy = if k == 0 { 0.0 } else { rng.range(-0.8, 0.8) };
+            let side = f.nrm.perp() * rng.range(-1.0, 1.0) * k as f32;
+            let yy = (y + dy).max(f.floor + 0.3);
+            let o = crag::out(f, yy);
+            let at = f.p + f.nrm * o + side;
+            // Out of the rock and up, turned a little sideways.
+            let rise = rng.range(0.4, 1.4);
+            let dir = Vec3::new(f.nrm.x, rise, f.nrm.y) + Vec3::new(side.x, 0.0, side.y) * 0.3;
+            let dir = dir.normalize();
+            let (h, r) = if big {
+                let s = if k == 0 { 1.0 } else { rng.range(0.45, 0.8) };
+                (rng.range(4.5, 7.0) * s, rng.range(0.9, 1.4) * s)
+            } else if low && k == 0 {
+                (rng.range(2.4, 3.6), rng.range(0.6, 0.9))
+            } else {
+                (
+                    rng.range(1.4, 3.6) * (1.0 - 0.3 * k as f32 / 3.0),
+                    rng.range(0.28, 0.6),
+                )
+            };
+            self.crystals.push(Crystal {
+                base: Vec3::new(at.x, yy, at.y) - dir * 0.7,
+                axis: dir * (h + 0.7),
+                radius: r,
+                sides: 5 + rng.index(3) as u32,
+                seed: rng.next_u64() as u32,
+                color: RAW * rng.range(0.85, 1.3),
+                lit: rng.chance(0.65),
+                solid: low && k == 0,
+            });
+        }
+    }
+
+    /// The new heading's working end: a cutting rig at the face, the seam
+    /// running in along the floor to raw crystal still in the rock, spoil
+    /// and timber by its mouth.
+    fn heading_face(&mut self, rng: &mut Rng) {
+        let (a, b) = HEADING;
+        let xc = (a.x + b.x) * 0.5;
+        self.cutting_rig(Vec2::new(xc + 2.0, b.y - 10.0), 0.0, 0.0);
+        // The seam along the floor, out from the face it's cut from.
+        let mut pts = Vec::new();
+        let mut widths = Vec::new();
+        let z0 = face(xc) + 1.0;
+        for k in 0..=10 {
+            let t = k as f32 / 10.0;
+            let z = b.y - 0.6 - t * (b.y - 0.6 - z0);
+            let x = xc - 2.5 + 1.2 * (t * 5.0).sin();
+            pts.push(Vec3::new(x, 0.04, z));
+            widths.push(0.7 - 0.3 * t);
+        }
+        self.glow_paths.push(GlowPath {
+            points: pts,
+            widths,
+            color: PLASMA * 0.85,
+        });
+        // Raw crystal at the face, either side of the rig's cut.
+        for (x, h) in [(a.x + 1.8, 3.4), (b.x - 1.6, 2.8)] {
+            self.outcrop(rng, Vec2::new(x, b.y - 1.8), h);
+        }
+        for _ in 0..6 {
+            let x = rng.range(a.x + 0.5, b.x - 0.5);
+            let h = rng.range(0.8, 2.0);
+            self.shard(
+                rng.next_u64(),
+                Vec3::new(x, rng.range(1.0, 5.5), b.y - 0.2),
+                h,
+                0.3,
+                -Vec2::Y,
+                rng.range(0.9, 1.3),
+                true,
+                false,
+            );
+        }
+        // An ore cart waiting to be filled.
+        let _ = xc;
+        self.ore_cart(rng, Vec2::new(b.x - 2.0, b.y - 16.0), 0.1);
     }
 
     /// Broken natural rock along the rest of the Face, so it reads as stone,
@@ -958,7 +1201,7 @@ impl Map {
             let w = rng.range(2.0, 3.4);
             let c = x + w;
             x += w * 2.0 - 0.5;
-            if (QUARRY.0 - 1.0..QUARRY.1 + 1.0).contains(&c) || scree(c) > 0.3 {
+            if (crag_west(face(c)) + 1.0..crag_east(face(c)) - 1.0).contains(&c) || scree(c) > 0.3 {
                 continue;
             }
             if CAVES
@@ -1093,19 +1336,21 @@ impl Map {
         // Roofs: the 2 m cells within the walls' reach of a cave, back from
         // the Face's lip, gathered into slabs that don't overlap.
         let cell = 2.0;
-        let mut rows: Vec<(f32, Vec<(f32, f32)>)> = Vec::new();
+        // Each run is (from, to, under the Crag).
+        let mut rows: Vec<(f32, Vec<(f32, f32, bool)>)> = Vec::new();
         let mut z = 136.0;
         while z < SIZE + 6.0 {
             let mut runs = Vec::new();
             let mut x = 56.0;
-            let mut start: Option<f32> = None;
+            let mut start: Option<(f32, bool)> = None;
             while x <= 164.0 {
-                let on = x < 164.0 && roofed(Vec2::new(x + cell * 0.5, z + cell * 0.5));
+                let c = Vec2::new(x + cell * 0.5, z + cell * 0.5);
+                let on = (x < 164.0 && roofed(c)).then(|| under_crag(c));
                 match (on, start) {
-                    (true, None) => start = Some(x),
-                    (false, Some(s)) => {
-                        runs.push((s, x));
-                        start = None;
+                    (Some(k), None) => start = Some((x, k)),
+                    (on, Some((s, k))) if on != Some(k) => {
+                        runs.push((s, x, k));
+                        start = on.map(|k| (x, k));
                     }
                     _ => {}
                 }
@@ -1115,8 +1360,8 @@ impl Map {
             z += cell;
         }
         // Merge rows with the same runs into slabs.
-        let mut open: Vec<((f32, f32), f32)> = Vec::new();
-        let mut slabs: Vec<(Vec2, Vec2)> = Vec::new();
+        let mut open: Vec<((f32, f32, bool), f32)> = Vec::new();
+        let mut slabs: Vec<(Vec2, Vec2, bool)> = Vec::new();
         for (z, runs) in rows
             .iter()
             .chain(std::iter::once(&(SIZE + 6.0, Vec::new())))
@@ -1126,7 +1371,7 @@ impl Map {
                 if runs.contains(&run) {
                     next.push((run, z0));
                 } else {
-                    slabs.push((Vec2::new(run.0, z0), Vec2::new(run.1, *z)));
+                    slabs.push((Vec2::new(run.0, z0), Vec2::new(run.1, *z), run.2));
                 }
             }
             for &run in runs {
@@ -1136,12 +1381,12 @@ impl Map {
             }
             open = next;
         }
-        for (a, b) in slabs {
+        for (a, b, tall) in slabs {
             self.oboxes.push(OBox {
                 center: (a + b) * 0.5,
                 half: (b - a) * 0.5,
                 y0: ROOF.0,
-                y1: ROOF.1,
+                y1: if tall { CRAG_ROOF } else { ROOF.1 },
                 color: MESA_TOP,
                 side_mat: Material::Rubble,
                 top_mat: Material::Sand,
@@ -1152,7 +1397,7 @@ impl Map {
         // Lamps: plasma in a crystal cage on the walls every 12 m (the
         // Resonant's breach is lit their own way), and veins of raw crystal
         // breaking out of the walls.
-        for &(a, b) in &CAVES[..5] {
+        for &(a, b) in CAVES[..5].iter().chain(&CAVES[6..]) {
             let long_z = b.y - a.y > b.x - a.x;
             let len = if long_z { b.y - a.y } else { b.x - a.x };
             let n = (len / 12.0) as usize;
@@ -1199,8 +1444,8 @@ impl Map {
                 }
             }
         }
-        // Timber portals at the Ithessar's two mouths in the Face.
-        for (a, b) in [CAVES[0], CAVES[3]] {
+        // Timber portals at the Ithessar's mouths in the Face.
+        for (a, b) in [CAVES[0], CAVES[3], HEADING] {
             let xc = (a.x + b.x) * 0.5;
             let mut z = face(xc);
             while !roofed(Vec2::new(xc, z)) {
@@ -1427,6 +1672,11 @@ impl Map {
             while x < b.x {
                 let w = rng.range(4.0, 6.0).min(b.x - x);
                 let c = x + w * 0.5;
+                x += w;
+                // Inside the Crag the cut's sides are its sculpted face.
+                if c + w * 0.5 < crag_east(z) - 0.5 {
+                    continue;
+                }
                 let top = TOP + 0.3;
                 self.stone(
                     Vec2::new(c, z + out * (CAVE_WALL * 0.5 - 0.02)),
@@ -1437,7 +1687,6 @@ impl Map {
                     [STONE, STONE_PALE][rng.index(2)] * rng.range(0.9, 1.0),
                     0.2,
                 );
-                x += w;
             }
         }
     }
@@ -1681,6 +1930,7 @@ impl Map {
                     .iter()
                     .chain(&FORDS)
                     .any(|&(s, e, h)| seg(q, s, e).0 < h + 3.0)
+                || self.on_way(q)
                 || self
                     .oboxes
                     .iter()
@@ -1786,7 +2036,7 @@ impl Map {
         self.disc(hc, axle * 1.25, 0.6, PLASMA, Material::Glow);
     }
 
-    /// A small ore cart at `at` heading `yaw`: a crystal tub on a steel
+    /// A small ore cart at `at` heading `yaw`: a steel tub on a steel
     /// frame, full of raw crystal.
     fn ore_cart(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
         let g = self.ground_height(at.x, at.y);
@@ -1809,8 +2059,8 @@ impl Map {
             Vec3::new(0.0, 1.35, 0.0),
             Vec3::new(1.05, 0.6, 1.6),
             Quat::IDENTITY,
-            GLASS * 1.2,
-            Material::Vhaal,
+            RUST * 1.1,
+            Material::Painted,
             true,
             0.0,
         );
@@ -2207,9 +2457,9 @@ impl Map {
             half: Vec2::new(3.2, 2.6),
             y0: g - 0.3,
             y1: g + 4.2,
-            color: GLASS * 1.15,
-            side_mat: Material::Vhaal,
-            top_mat: Material::Vhaal,
+            color: RUST,
+            side_mat: Material::Painted,
+            top_mat: Material::Rust,
             ..OBox::default()
         });
         self.oboxes.push(OBox {
@@ -2243,6 +2493,9 @@ impl Map {
             (Vec2::new(66.0, 212.0), 0.2, 3.5),
             (Vec2::new(166.0, 178.0), -0.7, 3.5),
         ] {
+            if crag_depth(p) > -6.0 {
+                continue;
+            }
             let g = self.ground_height(p.x, p.y);
             self.stone(
                 p,
@@ -2272,10 +2525,8 @@ impl Map {
             let s = rng.range(1.5, 2.1);
             self.rock_pile(rng, p, s);
         }
-        self.block_stack(rng, Vec2::new(98.0, 166.0), 0.3);
-        // Blocks cut from the Face, waiting on the landing below it.
-        self.block_stack(rng, Vec2::new(60.0, 143.0), 0.15);
-        self.block_stack(rng, Vec2::new(164.0, 176.0), -0.2);
+        // Timber waiting on the landing below the Face.
+        self.crib(rng, Vec2::new(60.0, 143.0), 0.15);
         // The Resonant's shards at the top of the scree, facing the mine.
         for (x, z, h) in [
             (172.0, 165.0, 4.0),
@@ -2540,10 +2791,20 @@ impl Map {
     /// or the ground.
     fn level(&self, p: Vec2) -> f32 {
         if roofed(p) {
-            ROOF.1
+            if under_crag(p) { CRAG_ROOF } else { ROOF.1 }
         } else {
             self.ground_height(p.x, p.y)
         }
+    }
+
+    /// Near a point on one of the ways round the bots take, or the Hold
+    /// site (kept open).
+    fn on_way(&self, q: Vec2) -> bool {
+        self.routes
+            .iter()
+            .flatten()
+            .any(|w| Vec2::new(w.x, w.z).distance(q) < 4.5)
+            || self.hold_site.is_some_and(|h| h.distance(q) < 7.0)
     }
 
     /// Something solid to hide behind near `p`, at the ground's level.
@@ -2589,7 +2850,7 @@ impl Map {
                 continue;
             }
             let q = p + Vec2::new(rng.range(-2.0, 2.0), rng.range(-2.0, 2.0));
-            if keep_clear(q) {
+            if keep_clear(q) || self.on_way(q) {
                 continue;
             }
             let g = self.level(q);
@@ -2617,12 +2878,7 @@ impl Map {
                 }
                 let s = rng.range(0.8, 1.2);
                 self.boulder(rng, q + Vec2::new(2.6, 1.0), s, true);
-            } else if roll < 0.5 {
-                {
-                    let v = rng.range(0.0, PI);
-                    self.block_stack(rng, q, v);
-                }
-            } else if roll < 0.65 {
+            } else if roll < 0.6 {
                 {
                     let v = rng.range(0.0, PI);
                     self.crib(rng, q, v);
@@ -2701,6 +2957,9 @@ impl Map {
         for (p, inward) in self.edge_points(3.2, 2.0) {
             let at = p + inward * rng.range(0.4, 1.0);
             let q = at.clamp(Vec2::splat(0.5), Vec2::splat(SIZE - 0.5));
+            if crag_depth(q) > 1.5 {
+                continue;
+            }
             let g = self.ground_height(q.x, q.y);
             // Lower inside the adit, under its roof.
             let tall = if cave_distance(q) < 1.0 {
@@ -2726,8 +2985,9 @@ impl Map {
 
     /// The ways round for bots, on every level: over the rail bridge into
     /// the mine and along the wash's floor under it, through the mine (in at the west
-    /// adit, through the hall, along the drift, out at the breach), over
-    /// the mesa's top above it, and down the box cut into it.
+    /// adit, through the hall, along the drift, out at the breach), along
+    /// the Crag's foot into the new heading, and down the box cut into the
+    /// mine.
     fn mine_routes(&mut self) {
         // On whatever's underfoot seen from above (the flats, the wash's
         // floor, the mesa's top), on the bridge's deck, in the mine (under
@@ -2803,17 +3063,13 @@ impl Map {
                 mine(153.0, 156.0),
                 g(m, 160.0, 140.0),
             ],
-            // Over the mesa's top, over the mine: up the west end, along,
-            // down the scree.
+            // From the east landing along the Crag's foot and into the new
+            // heading.
             vec![
-                g(m, 14.0, 167.0),
-                top(60.0, 174.0),
-                top(78.0, 184.0),
-                top(106.0, 176.0),
-                top(132.0, 172.0),
-                top(166.0, 170.0),
-                g(m, 181.0, 160.0),
-                g(m, 181.0, 124.0),
+                g(m, 160.0, 140.0),
+                g(m, 136.0, 148.5),
+                g(m, 126.0, 148.0),
+                mine(123.0, 153.0),
             ],
             // Off the mesa's east down the box cut into the mine, and out
             // at the west adit.
@@ -2852,6 +3108,8 @@ impl Map {
         self.open_spots = spots
             .into_iter()
             .filter_map(|(x, z)| self.open_near(Vec2::new(x, z), TANK_CLEAR))
+            // Not up on the Crag, where nothing gets.
+            .filter(|&q| crag_depth(q) < -4.0)
             .collect();
         self.repair_spots = REPAIRS.to_vec();
         for side in 0..2 {
@@ -2914,6 +3172,96 @@ impl Map {
     }
 }
 
+/// The Crag's foot, end to end: down its west side from past the north
+/// edge, along the Face, up its east side to the box cut, in round the
+/// slot's walls, on up to past the edge.
+fn crag_feet(m: &Map) -> Vec<crag::Foot> {
+    let mut corners = Vec::new();
+    let zw = face(crag_west(150.0));
+    let mut z = SIZE + 6.0;
+    while z > zw + 3.0 {
+        corners.push(Vec2::new(crag_west(z), z));
+        z -= 3.0;
+    }
+    let (xw, xe) = (crag_west(zw), crag_east(face(crag_east(152.0))));
+    let mut x = xw;
+    while x < xe {
+        corners.push(Vec2::new(x, face(x)));
+        x += 2.0;
+    }
+    let ze = face(xe);
+    let (s0, s1) = (BOX_CUT.0.y, BOX_CUT.1.y);
+    let mut z = ze + 3.0;
+    while z < s0 {
+        corners.push(Vec2::new(crag_east(z), z));
+        z += 3.0;
+    }
+    corners.push(Vec2::new(crag_east(s0), s0));
+    corners.push(Vec2::new(BOX_CUT.0.x, s0));
+    corners.push(Vec2::new(BOX_CUT.0.x, s1));
+    corners.push(Vec2::new(crag_east(s1), s1));
+    let mut z = s1 + 3.0;
+    while z < SIZE + 6.0 {
+        corners.push(Vec2::new(crag_east(z), z));
+        z += 3.0;
+    }
+    let pts = crag::resample(&corners, 0.7, 1.2);
+    let n = pts.len();
+    let mut along = 0.0;
+    let mut feet = Vec::with_capacity(n);
+    for i in 0..n {
+        let (p, dir) = pts[i];
+        if i > 0 {
+            along += p.distance(pts[i - 1].0);
+        }
+        let nrm = Vec2::new(dir.y, -dir.x);
+        let in_slot = p.y > s0 - 0.6 && p.y < s1 + 0.6 && p.x < crag_east(p.y) - 0.5;
+        let on_front = nrm.y < -0.7 && p.y < 170.0;
+        let mouth = (on_front && MOUTHS.iter().any(|(a, b)| p.x > a.x && p.x < b.x))
+            || (in_slot && nrm.x > 0.7 && p.y > s0 + 0.2 && p.y < s1 - 0.2);
+        let q = p + nrm * 1.2;
+        let base = m.level(q);
+        // How sharply the foot turns here, over a few meters.
+        let (d0, d1) = (pts[i.saturating_sub(6)].1, pts[(i + 6).min(n - 1)].1);
+        let bend = 1.0 - smoothstep(0.25, 1.0, d0.angle_to(d1).abs());
+        let by_mouth = MOUTHS
+            .iter()
+            .map(|(a, b)| (a.x - p.x).max(p.x - b.x).max(0.0))
+            .fold(f32::INFINITY, f32::min);
+        let plain = if on_front {
+            smoothstep(0.5, 5.0, by_mouth)
+        } else {
+            1.0
+        };
+        let lip = if in_slot {
+            CRAG_TOP
+        } else {
+            CRAG_TOP
+                + 1.6 * ((noise(along / 7.0, 14) * 4.0).floor() / 4.0 - 0.4)
+                + 0.9 * (noise(along / 4.0, 16) - 0.5)
+                - 3.5 * smoothstep(0.78, 0.92, noise(along / 16.0, 17))
+        };
+        let cut = if in_slot {
+            CRAG_TOP + 1.0
+        } else if on_front {
+            base + CRAG_CUT + 2.5 * (noise(along / 13.0, 21) - 0.5)
+        } else {
+            -100.0
+        };
+        feet.push(crag::Foot {
+            p,
+            nrm,
+            along,
+            floor: if mouth { ROOF.0 } else { base },
+            lip,
+            cut,
+            mouth,
+            relief: bend * plain * if in_slot { 0.35 } else { 1.0 },
+        });
+    }
+    feet
+}
+
 /// Ground the cover fill leaves open: the spawns and the camps, the track
 /// and the bridge, the ramps and crossings, the wash's banks, the mine's
 /// corridors, the box cut and the run out of its top, the scree's way up, the top of the Face.
@@ -2923,11 +3271,14 @@ fn keep_clear(p: Vec2) -> bool {
         || (p.x > 188.0 && (84.0..152.0).contains(&p.y))
         || p.distance(Vec2::new(192.0, 108.0)) < 12.0;
     let (d, along) = wash_near(p);
-    let (_, half) = wash_profile(along);
+    let (depth, half) = wash_profile(along);
     let bank = d > half - 1.5 && d < half + WASH_BANK + 2.5;
+    // The way along the wash's floor, down its middle.
+    let floor_way = depth > 1.0 && d < 3.0;
     let f = face(p.x);
     spawns
         || bank
+        || floor_way
         || track_distance(p) < 6.0
         || seg(p, BRIDGE.0, BRIDGE.1).0 < DECK_HALF + 5.0
         || RAMPS
@@ -2936,6 +3287,7 @@ fn keep_clear(p: Vec2) -> bool {
             .any(|&(s, e, h)| seg(p, s, e).0 < h + 4.0)
         || cave_distance(p) < 4.0 && mesa(p) > 0.3 && !roofed(p)
         || within((BOX_CUT.0, BOX_CUT.1 + Vec2::new(14.0, 0.0)), p, 4.0)
+        || crag_depth(p) > -4.0
         || (p.y > f - 8.0 && p.y < f + FACE_RISE + 5.0)
         || WAYS_UP.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
         || SPOTS
@@ -2944,6 +3296,11 @@ fn keep_clear(p: Vec2) -> bool {
         || REPAIRS.iter().any(|&q| p.distance(q) < 6.0)
         || p.min_element() < 7.0
         || p.max_element() > SIZE - 7.0
+}
+
+/// Under the Crag's rock (a roof there is the Crag's, up to its top).
+fn under_crag(p: Vec2) -> bool {
+    crag(p) > 0.5
 }
 
 /// Under a cave roof (or on top of one): within the walls' reach of a
@@ -2991,17 +3348,19 @@ mod tests {
             "wash floor at {}",
             land_on(&w, p, -1.0)
         );
-        // Over the adit, the hall and the drift: the mesa's top, and the
-        // mine's floor.
+        // Over the adit, the hall and the drift: the mesa's top (or the
+        // Crag's), and the mine's floor.
         for p in [
             Vec2::new(106.0, 175.0),
-            Vec2::new(78.0, 184.0),
+            Vec2::new(64.0, 184.0),
+            Vec2::new(86.0, 184.0),
             Vec2::new(130.0, 191.0),
         ] {
+            let roof = if under_crag(p) { CRAG_ROOF } else { ROOF.1 };
             assert!(
-                (land_on(&w, p, 30.0) - ROOF.1).abs() < 0.1,
+                (land_on(&w, p, 60.0) - roof).abs() < 0.1,
                 "roof over {p} at {}",
-                land_on(&w, p, 30.0)
+                land_on(&w, p, 60.0)
             );
             assert!(
                 land_on(&w, p, ROOF.0 - 0.5).abs() < 0.6,
@@ -3010,13 +3369,16 @@ mod tests {
             );
         }
         // The mesa's top elsewhere.
-        let top = land_on(&w, Vec2::new(129.0, 167.0), 30.0);
+        let top = land_on(&w, Vec2::new(176.0, 190.0), 30.0);
         assert!(top > TOP - 1.0 && top < TOP + 2.0, "mesa top at {top}");
+        // The Crag over the mine.
+        let top = land_on(&w, Vec2::new(116.0, 176.0), 60.0);
+        assert!(top > CRAG_TOP - 1.0, "the Crag's top at {top}");
     }
 
     /// From each side's spawns, every part of the map is a nav path away,
-    /// and each side is about as far as the other from what's worth taking:
-    /// the bridge, the wash, the mine's mouths, the mesa's top.
+    /// and neither side is much further than the other from what's worth
+    /// taking: the bridge, the wash, the mine's mouths, the mesa's top.
     #[test]
     fn every_spawn_reaches_everything_and_the_sides_are_fair() {
         let m = Map::mine();
@@ -3037,7 +3399,7 @@ mod tests {
             ("the east landing", Vec2::new(160.0, 140.0)),
             ("the mesa's west", Vec2::new(44.0, 190.0)),
             ("the mesa's east", Vec2::new(176.0, 196.0)),
-            ("the mine", Vec2::new(80.0, 184.0)),
+            ("the mine", Vec2::new(64.0, 184.0)),
         ];
         let length = |path: &[Vec2], from: Vec2| {
             let mut at = from;
@@ -3069,9 +3431,12 @@ mod tests {
                 .map(|&(_, g)| length(&nav.path(mid(side), g), mid(side)))
                 .sum::<f32>()
         };
+        // Not held close: the Crag splits the mesa, so its west end (and the
+        // hall's roof under it) are the Ithessar's, and fairness isn't the
+        // point here. Neither side is shut out of anything, though.
         let (a, b) = (total(0), total(1));
         assert!(
-            (a - b).abs() / a.max(b) < 0.12,
+            (a - b).abs() / a.max(b) < 0.3,
             "sides are {a:.0} m and {b:.0} m from it all"
         );
     }
@@ -3147,6 +3512,48 @@ mod tests {
             let (end, _, _) = drive(hull, Vec2::new(72.0, 142.0), 0.0, 6.0);
             assert!(end.z > 165.0, "{hull:?} only got to {end}");
             assert!(end.y < 2.0, "{hull:?} is up at {end}");
+        }
+    }
+
+    /// Every hull drives in at the new heading's mouth, up it to the rig.
+    #[test]
+    fn tanks_drive_into_the_heading() {
+        let x = HEADING.0.x + 3.0;
+        for hull in HULLS {
+            let (end, _, high) = drive(hull, Vec2::new(x, face(x) - 4.0), 0.0, 6.0);
+            assert!(end.z > face(x) + 6.0, "{hull:?} only got to {end}");
+            assert!(high < 3.0, "{hull:?} went up to {high}");
+        }
+    }
+
+    /// The Crag stands tall over the mine, and nothing drives up it: a
+    /// tank driven at its face from the landing stops at its foot.
+    #[test]
+    fn the_crag_stops_tanks() {
+        let m = Map::mine();
+        assert!(m.ground_height(118.0, 178.0) > CRAG_TOP - 1.0);
+        for x in [86.0, 96.0, 116.0, 138.0] {
+            for hull in HULLS {
+                let (end, _, high) = drive(hull, Vec2::new(x, face(x) - 8.0), 0.0, 6.0);
+                // It may slide along the foot into a mouth, but not into
+                // the rock.
+                let at = Vec2::new(end.x, end.z);
+                assert!(
+                    end.z < face(end.x) + 0.5 || in_cave(at),
+                    "{hull:?} got in to {end} at {x}"
+                );
+                // (Rearing against the rock where the foot runs slantwise
+                // lifts it a little, no more.)
+                assert!(high < 5.0, "{hull:?} climbed to {high} at {x}");
+            }
+        }
+        // Nor up its sides from the mesa.
+        for (p, yaw) in [
+            (Vec2::new(64.0, 196.0), FRAC_PI_2),
+            (Vec2::new(164.0, 190.0), -FRAC_PI_2),
+        ] {
+            let (end, _, high) = drive(HULLS[0], p, yaw, 8.0);
+            assert!(high < TOP + 2.5, "climbed to {high} from {p} ({end})");
         }
     }
 
@@ -3246,10 +3653,10 @@ mod tests {
                 0.0,
                 1.0,
             ),
-            // Over the hall and the adit, on the roof.
+            // Over the hall's west end, on the roof.
             (
-                Vec3::new(70.0, TOP, 186.0),
-                Vec3::new(128.0, TOP, 176.0),
+                Vec3::new(64.0, TOP, 176.0),
+                Vec3::new(64.0, TOP, 196.0),
                 TOP,
                 1.0,
             ),
@@ -3321,7 +3728,7 @@ mod tests {
     #[test]
     fn a_bot_gets_into_the_mine_under_it() {
         let d = chase(
-            Vec2::new(78.0, 186.0),
+            Vec2::new(64.0, 190.0),
             FRAC_PI_2,
             Vec2::new(78.0, 176.0),
             60.0,
@@ -3333,9 +3740,10 @@ mod tests {
     fn the_edge_is_rock() {
         // Inside a cave's wall the rock is solid up to the roof: no tank
         // gets in there to reach the edge.
+        // Nor up the Crag (its face has colliders of its own).
         Map::mine().assert_edge_walled(0.5, |p| {
             let d = cave_distance(p);
-            d > 0.0 && d < CAVE_WALL
+            (d > 0.0 && d < CAVE_WALL) || crag_depth(p) > -1.0
         });
     }
 
