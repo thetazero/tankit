@@ -34,7 +34,7 @@ pub struct Skeleton {
     pub lots: Vec<Lot>,
     /// Things standing over a street (a gate, a bridge), leaving it open.
     pub spans: Vec<Span>,
-    /// What closes the arena in, round its edge.
+    /// What lies across the streets where they cross the arena's edge.
     pub edges: Vec<Edge>,
     /// Smaller things standing on the ground.
     pub decos: Vec<Deco>,
@@ -167,6 +167,8 @@ pub enum LotKind {
     Raised,
     /// A lot that's been flattened: heaps to drive between.
     Rubble,
+    /// A building far out past the edge, only ever seen from afar.
+    Distant,
 }
 
 /// A building plot: its footprint (`y0`, `y1` unused), the side facing the
@@ -193,9 +195,10 @@ pub struct Span {
 /// What a stretch of the edge is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeKind {
-    /// A row of buildings shoulder to shoulder.
-    Wall,
-    /// Across a street's end: a heap too high to climb, low enough to see over.
+    /// Across a street: barriers and blocks, with gaps a tank might squeeze
+    /// through (past the edge it's out of the fight anyway).
+    Barricade,
+    /// Across an avenue's end: a heap too high to climb, low enough to see over.
     Blockade,
 }
 
@@ -272,17 +275,20 @@ impl Skeleton {
     }
 
     /// Ground kept open for streets and set pieces: no lot may cover it.
+    /// (The courts are cleared out of the city once it's laid out.)
     pub fn reserved(&self, p: Vec2) -> bool {
         let street = self.streets.iter().any(|s| s.distance(p) < s.half + 7.0);
+        // An avenue runs on out past the edge, out of sight.
+        let vista = self.avenues().any(|a| {
+            let (d, q) = (a.dir(), p - a.to);
+            q.dot(d) > 0.0 && q.perp_dot(d).abs() < a.half + 7.0
+        });
         let plaza = self.plaza().sdf(p) < self.plaza().ramp + 10.0;
-        let base = self.bases.iter().any(|b| b.contains(p, 8.0));
         let square = self
             .squares
             .iter()
             .any(|s| s.center.distance(p) < s.radius + 4.0);
-        let s = self.size;
-        let edge = p.x < 6.0 || p.y < 6.0 || p.x > s - 6.0 || p.y > s - 6.0;
-        street || plaza || base || square || edge
+        street || vista || plaza || square
     }
 
     /// A blank map the size of the arena, for `factions`, with the
@@ -407,6 +413,7 @@ impl Skeleton {
                 LotKind::Small => (6.0, Vec3::new(0.55, 0.55, 0.6)),
                 LotKind::Raised => (0.0, Vec3::new(0.35, 0.45, 0.6)),
                 LotKind::Rubble => (1.2, Vec3::new(0.5, 0.42, 0.35)),
+                LotKind::Distant => (16.0, Vec3::new(0.38, 0.38, 0.4)),
             };
             match lot.kind {
                 LotKind::Raised => {
@@ -425,6 +432,10 @@ impl Skeleton {
                 LotKind::Rubble => {
                     // Not solid: heaps a tank winds between.
                     put(&mut map, f.center, f.yaw, f.half * 0.8, (0.0, h), c);
+                    map.oboxes.last_mut().unwrap().solid = false;
+                }
+                LotKind::Distant => {
+                    put(&mut map, f.center, f.yaw, f.half, (0.0, h), c);
                     map.oboxes.last_mut().unwrap().solid = false;
                 }
                 _ => put(&mut map, f.center, f.yaw, f.half, (0.0, h), c),
@@ -450,7 +461,7 @@ impl Skeleton {
             let c = e.start + e.along * (e.from + len * 0.5) - e.inward * 6.0;
             let half = (e.along * len * 0.5 + e.inward * 6.5).abs();
             let (h, col) = match e.kind {
-                EdgeKind::Wall => (14.0, Vec3::new(0.4, 0.4, 0.42)),
+                EdgeKind::Barricade => (1.2, Vec3::new(0.6, 0.55, 0.45)),
                 EdgeKind::Blockade => (5.0, Vec3::new(0.5, 0.42, 0.35)),
             };
             put(&mut map, c, 0.0, half, (-0.5, h), col);
