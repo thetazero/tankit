@@ -2704,7 +2704,7 @@ impl Map {
             Vec3::new(0.7, 0.1, 1.45),
             IRON,
             Material::Rust,
-            true,
+            false,
         );
         for z in [-1.0, 1.0] {
             let a = rig.point(Vec3::new(-0.92, 0.35, z));
@@ -2825,7 +2825,10 @@ impl Map {
                 false,
             );
         }
-        // What tanks hit: the tub, as before.
+        // What tanks hit: the old cart's frame and tub, exactly. The fill
+        // that places cover after reads these, so the rest of the map keeps
+        // its layout.
+        self.hidden_part(&rig, Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.9, 0.25, 1.5));
         self.hidden_part(&rig, Vec3::new(0.0, 1.35, 0.0), Vec3::new(1.05, 0.6, 1.6));
         // The ore, heaped over the rim, highest down the middle.
         self.heaped_ore(
