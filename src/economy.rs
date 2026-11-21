@@ -267,10 +267,12 @@ impl Payout {
     pub fn of(m: &Match) -> Payout {
         let me = m.player();
         // A draw only if your side shares the lead; trailing a tie is a loss.
-        let best = (0..m.factions.len()).map(|t| m.score(t)).max().unwrap_or(0);
+        // A side out of hulls is out of it: no draw for it.
+        let still = m.contenders();
+        let best = still.iter().map(|&t| m.score(t)).max().unwrap_or(0);
         let outcome = match m.leader() {
             Some(t) if t == me.team => Outcome::Won,
-            None if m.score(me.team) == best => Outcome::Draw,
+            None if still.contains(&me.team) && m.score(me.team) == best => Outcome::Draw,
             _ => Outcome::Lost,
         };
         let mut pay = Payout {
@@ -470,7 +472,7 @@ mod tests {
 
     #[test]
     fn rated_missions_pay_more_and_field_better_gear() {
-        let mut m = Match::new(crate::map::Map::capital(), 0, 15, 3);
+        let mut m = Match::new(crate::map::Map::city(0), 0, 15, 3);
         m.fighters[0].kills = 2;
         m.fighters[0].damage_dealt = 300.0;
         let base = Payout::of(&m).total();

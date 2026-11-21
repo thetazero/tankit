@@ -3,7 +3,7 @@
 //! crackle and the plasma river burbles; the Foundry's crucible still roars
 //! and its wrecked presses hum, hiss and clank; the Sanctum's altar crystal
 //! is a choir, its crystal clusters ring like rubbed glass and the wind
-//! stirs the bell; the Capital's banners flap and its broken dome moans;
+//! stirs the bell; the imperial city's banners flap and its broken dome moans;
 //! Saltmarket's cables sing, its stall cloths snap and its wrecks creak.
 //!
 //! Where each one is comes from the map ([`crate::map::Map::sounds`]). Each
@@ -557,7 +557,7 @@ mod tests {
             ("kiln", Map::kiln(), &[Crystal, Core, River][..]),
             ("foundry", Map::foundry(), &[Furnace, Machine]),
             ("sanctum", Map::sanctum(), &[Altar, Shrine, Bell]),
-            ("capital", Map::capital(), &[Banner, Dome]),
+            ("city", Map::city(0), &[Banner, Dome]),
             ("saltmarket", Map::saltmarket(), &[Cable, Cloth, Hull]),
         ] {
             for k in want {
@@ -614,7 +614,7 @@ mod tests {
             ("kiln", Map::kiln()),
             ("foundry", Map::foundry()),
             ("sanctum", Map::sanctum()),
-            ("capital", Map::capital()),
+            ("city", Map::city(0)),
             ("saltmarket", Map::saltmarket()),
         ] {
             let mut m = Mixer::new(RATE as f32);

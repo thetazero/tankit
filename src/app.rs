@@ -21,6 +21,8 @@ use crate::bay::{self, BayArt};
 use crate::binds::{Action, Binds};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
+use crate::galaxy::battle::{self, Battle};
+use crate::galaxy::save::War;
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -77,6 +79,8 @@ enum Mode {
 /// How the app starts.
 pub struct Launch {
     pub seed: u64,
+    /// Which map a generated kind builds.
+    pub map_seed: u64,
     pub map_kind: MapKind,
     pub spawn: usize,
     pub bots: usize,
@@ -92,6 +96,8 @@ pub struct Launch {
 
 struct App {
     seed: u64,
+    /// Which map a generated kind builds: kept for a replay, new each sortie.
+    map_seed: u64,
     map_kind: MapKind,
     spawn: usize,
     bots: usize,
@@ -102,6 +108,13 @@ struct App {
     prize: Option<Part>,
     /// Which of the map's sides hired you.
     side: usize,
+    /// The galaxy's war, which a mission's battles are drawn from and fed
+    /// back into.
+    war: War,
+    /// This round's battle in it (missions only), until it's settled.
+    battle: Option<Battle>,
+    /// Rounds are missions: drawn from the galaxy.
+    in_war: bool,
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -176,7 +189,12 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     };
     let loadout = launch.loadout.unwrap_or(profile.loadout);
     let mut game = if launch.showroom.is_some() {
-        let mut m = Match::new(make_map(launch.map_kind), launch.spawn, 0, launch.seed);
+        let mut m = Match::new(
+            make_map(launch.map_kind, launch.map_seed),
+            launch.spawn,
+            0,
+            launch.seed,
+        );
         m.world = showroom::world();
         m
     } else if launch.menu {
@@ -185,6 +203,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         new_match(
             launch.seed,
             launch.map_kind,
+            launch.map_seed,
             launch.side,
             launch.spawn,
             launch.bots,
@@ -199,6 +218,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     let volume = profile.settings.volume();
     let mut app = App {
         seed: launch.seed,
+        map_seed: launch.map_seed,
         map_kind: launch.map_kind,
         spawn: launch.spawn,
         bots: launch.bots,
@@ -206,6 +226,9 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         rating: 0,
         prize: None,
         side: launch.side,
+        war: War::load(),
+        battle: None,
+        in_war: false,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -254,16 +277,18 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
 }
 
 /// A round under `contract`, hired by the map's side `side`, with the player in `kit`.
+#[allow(clippy::too_many_arguments)]
 pub fn new_match(
     seed: u64,
     map_kind: MapKind,
+    map_seed: u64,
     side: usize,
     spawn: usize,
     bots: usize,
     contract: Contract,
     kit: garage::Loadout,
 ) -> Match {
-    let mut map = make_map(map_kind);
+    let mut map = make_map(map_kind, map_seed);
     if side > 0 {
         map.swap_sides(side);
     }
@@ -272,6 +297,13 @@ pub fn new_match(
     m.set_player_hull(kit.0);
     m.world.tanks[0].turret_kind = kit.1;
     m
+}
+
+/// A seed nobody picked: from the clock.
+fn fresh_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
 }
 
 /// Black over the whole menu scene at `dark` (0..1), eased.
@@ -297,6 +329,7 @@ pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
     let mut m = new_match(
         mission.seed,
         mission.map_kind,
+        mission.seed,
         side,
         0,
         0,
@@ -304,7 +337,8 @@ pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
         kit,
     );
     m.time_left = f32::INFINITY;
-    crate::vista::park(&mut m.world, crate::vista::of(mission.map_kind, side));
+    let v = crate::vista::of(&m.world.map, mission.map_kind, side);
+    crate::vista::park(&mut m.world, v);
     // Already parked: no arrival (or its sound) each time the backdrop
     // changes, and no shield to drop with a cue.
     let me = &mut m.fighters[0];
@@ -433,10 +467,12 @@ impl App {
 
     /// Start a new round on the current map settings, keeping the player's queued kit.
     fn restart(&mut self) {
+        self.leave_battle();
         let kit = self.queued();
         let mut m = new_match(
             self.seed,
             self.map_kind,
+            self.map_seed,
             self.side,
             self.spawn,
             self.bots,
@@ -445,6 +481,7 @@ impl App {
         );
         m.set_rating(self.rating);
         m.prize = self.unstolen_prize();
+        self.battle = self.in_war.then(|| battle::deploy(self.war.get(), &mut m));
         self.load(m);
         self.mode = Mode::Playing;
     }
@@ -456,13 +493,17 @@ impl App {
 
     /// Start mission `MISSIONS[i]`, hired by its side `side`.
     fn start_mission(&mut self, i: usize, side: usize) {
+        self.leave_battle();
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
+        // A generated map is a new one each sortie (the same again on a replay).
+        self.map_seed = fresh_seed();
         (self.contract, self.side, self.rating) = (m.contract, side, m.rating);
         self.prize = m.prize(side);
         let mut game = new_match(
             self.seed,
             self.map_kind,
+            self.map_seed,
             self.side,
             self.spawn,
             self.bots,
@@ -471,6 +512,8 @@ impl App {
         );
         game.set_rating(self.rating);
         game.prize = self.unstolen_prize();
+        self.in_war = true;
+        self.battle = Some(battle::deploy(self.war.get(), &mut game));
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(
@@ -537,7 +580,21 @@ impl App {
         }
     }
 
+    /// A battle left before it's over still costs what was lost in it, and
+    /// nobody wins it.
+    fn leave_battle(&mut self) {
+        if let Some(b) = self.battle.take() {
+            let g = self.war.get();
+            let s = g.settle(&b, &self.game.lost(), None, battle::Stake::Hulls);
+            g.step();
+            log::info!("left early: {}", battle::describe(&b, &s));
+            self.war.save();
+        }
+    }
+
     fn back_to_menu(&mut self) {
+        self.leave_battle();
+        self.in_war = false;
         self.load(menu_match(self.profile.loadout));
         self.backdrop = (0, 0);
         self.backdrop_job = None;
@@ -587,7 +644,7 @@ impl App {
         }
     }
 
-    /// Do what the garage asked. `voiced`: play the depot bay's sound for
+    /// Do what the garage asked. `voiced`: play the bay's sound for
     /// it (a swap or a refusal), not just the menu click already played.
     fn garage_event(&mut self, event: garage::Event, voiced: bool) {
         match event {
@@ -1003,6 +1060,11 @@ impl App {
             }
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
+            if let Some(b) = self.battle.take() {
+                let settled = battle::conclude(self.war.get(), &b, &self.game);
+                log::info!("{}", battle::describe(&b, &settled));
+                self.war.save();
+            }
         }
         laps.lap("sim");
 
@@ -1020,6 +1082,10 @@ impl App {
         }
         let queued = self.queued();
         let scores = self.held(Action::Scoreboard);
+        if let (Some(r), Some(bay)) = (&mut self.renderer, &mut self.bay) {
+            // The planet out of the bay is the world this map is on.
+            bay.show_world(r, self.game.world.map.planet);
+        }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
             let alpha = if self.mode == Mode::Paused {
@@ -1303,8 +1369,8 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let a = new_match(m.seed, m.map_kind, 0, 0, 3, m.contract, kit);
-        let b = new_match(m.seed, m.map_kind, 1, 0, 3, m.contract, kit);
+        let a = new_match(m.seed, m.map_kind, m.seed, 0, 0, 3, m.contract, kit);
+        let b = new_match(m.seed, m.map_kind, m.seed, 1, 0, 3, m.contract, kit);
         assert_eq!(a.factions, m.sides);
         assert_eq!(b.factions, [m.sides[1], m.sides[0]]);
         assert_eq!(b.world.map.bases[0], a.world.map.bases[1]);

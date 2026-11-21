@@ -3,6 +3,7 @@
 use glam::{Vec2, Vec3};
 
 use crate::MapKind;
+use crate::map::Map;
 use crate::render::Camera;
 use crate::sim::{Tank, World};
 
@@ -26,13 +27,8 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::Sanctum => &[(68.0, 113.0, 3.40), (78.0, 203.0, 4.71)],
         // Crystal spires over the kiln; crystals and the plasma river.
         MapKind::Kiln => &[(53.0, 93.0, 4.97), (141.0, 128.5, 6.02)],
-        // The triumphal arch; a bannered block; banners and a tower; the city.
-        MapKind::Capital => &[
-            (112.5, 172.0, 1.57),
-            (124.0, 112.5, 1.57),
-            (218.0, 233.0, 2.62),
-            (133.0, 233.0, 2.36),
-        ],
+        // Generated: each city picks its own (`Map::vistas`).
+        MapKind::City => &[],
         // Chimneys and girders, from either end.
         MapKind::Foundry => &[(123.0, 18.0, 2.88), (158.0, 83.0, 1.83)],
         // The Face, the adit's mouth and the bridge out of it over the wash,
@@ -41,8 +37,13 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
     }
 }
 
-/// The spot the menus show `kind` from while side `side` is picked.
-pub fn of(kind: MapKind, side: usize) -> Vista {
+/// The spot the menus show `map` (of kind `kind`) from while side `side`
+/// is picked: the map's own, if it picked them, else `spots`.
+pub fn of(map: &Map, kind: MapKind, side: usize) -> Vista {
+    if !map.vistas.is_empty() {
+        let (at, view) = map.vistas[side % map.vistas.len()];
+        return Vista { at, view };
+    }
     let s = spots(kind);
     let (x, z, view) = s[side % s.len()];
     Vista {
@@ -196,18 +197,21 @@ mod tests {
     #[test]
     fn picked_spots_are_clear() {
         let mut bad = Vec::new();
-        for kind in [
-            MapKind::Saltmarket,
-            MapKind::Sanctum,
-            MapKind::Kiln,
-            MapKind::Capital,
-            MapKind::Foundry,
-            MapKind::Mine,
+        for (kind, seed) in [
+            (MapKind::Saltmarket, 0),
+            (MapKind::Sanctum, 0),
+            (MapKind::Kiln, 0),
+            (MapKind::City, 0),
+            (MapKind::City, 1),
+            (MapKind::City, 2),
+            (MapKind::Foundry, 0),
+            (MapKind::Mine, 0),
         ] {
-            let world = World::new(make_map(kind), 0);
+            let world = World::new(make_map(kind, seed), 0);
             let sun = world.map.atmosphere.sun_dir.normalize();
-            for side in 0..spots(kind).len() {
-                let v = of(kind, side);
+            let n = spots(kind).len().max(world.map.vistas.len());
+            for side in 0..n {
+                let v = of(&world.map, kind, side);
                 let g = world.map.ground_height(v.at.x, v.at.y);
                 let at = Vec3::new(v.at.x, g + 0.7, v.at.y);
                 let why = fault(&world, v.at, g, v.view)
@@ -220,7 +224,7 @@ mod tests {
                             .then(|| "something overhead".to_string())
                     });
                 if let Some(why) = why {
-                    bad.push(format!("{kind:?} side {side}: {why}"));
+                    bad.push(format!("{kind:?} (seed {seed}) side {side}: {why}"));
                 }
             }
         }
@@ -270,11 +274,10 @@ mod tests {
             MapKind::Saltmarket,
             MapKind::Sanctum,
             MapKind::Kiln,
-            MapKind::Capital,
             MapKind::Foundry,
             MapKind::Mine,
         ] {
-            let world = World::new(make_map(kind), 0);
+            let world = World::new(make_map(kind, 0), 0);
             let s = world.map.size;
             let sun = world.map.atmosphere.sun_dir.normalize();
             let mut found = Vec::new();
@@ -359,7 +362,7 @@ mod tests {
             }
             println!("{kind:?} (size {s}):");
             for side in 0..spots(kind).len() {
-                let v = of(kind, side);
+                let v = of(&world.map, kind, side);
                 let ok =
                     |q: Vec2| fault(&world, q, world.map.ground_height(q.x, q.y), v.view).is_none();
                 let mut best = None;

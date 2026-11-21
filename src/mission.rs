@@ -10,7 +10,9 @@ use crate::sim::{HullKind, TurretKind};
 /// What a mission pays you for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Contract {
-    /// Team deathmatch: paid per kill, most kills for your side wins.
+    /// A raid on an enemy camp: no ground changes hands; the job is to cost
+    /// the enemy hulls. Paid per kill; the side that destroys most wins (or
+    /// the side still in, if the other runs out of hulls).
     #[default]
     Attrition,
     /// King of the hill: secure a crystal deposit; the side that holds it
@@ -79,8 +81,8 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
         briefs: &[
-            "The Imperium want the town back. Most kills takes it.",
-            "The Resonant want the town kept. Most kills takes it.",
+            "Raid the Resonant camp in the town. Cost them the most hulls.",
+            "Raid the Imperium camp in the town. Cost them the most hulls.",
         ],
         rating: 0,
         rank: 1,
@@ -121,8 +123,8 @@ pub const MISSIONS: &[Mission] = &[
     Mission {
         name: "FOUR WINDS",
         contract: Contract::Attrition,
-        map: "THE CAPITAL",
-        map_kind: MapKind::Capital,
+        map: "IMPERIAL CITY",
+        map_kind: MapKind::City,
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,
@@ -156,7 +158,7 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Resonant],
         briefs: &[
-            "Keep the Resonant out of the mine. Most kills holds it.",
+            "Raid the Resonant camp at the mine. Cost them the most hulls.",
             "The seam is holy. Drive the miners off it.",
         ],
         rating: 10,
@@ -240,7 +242,7 @@ mod tests {
     #[test]
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
-            assert_eq!(m.sides, crate::make_map(m.map_kind).factions);
+            assert_eq!(m.sides, crate::make_map(m.map_kind, m.seed).factions);
         }
     }
 

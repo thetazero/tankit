@@ -785,6 +785,8 @@ impl Map {
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: Some(SAND),
             sounds: Vec::new(),
+            vistas: Vec::new(),
+            planet: None,
             open_spots: Vec::new(),
             spawn_yaw: None,
             // Hot late afternoon: a low gold sun, a hazy sky going white at

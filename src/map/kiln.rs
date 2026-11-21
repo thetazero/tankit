@@ -218,6 +218,8 @@ impl Map {
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,
             sounds: Vec::new(),
+            vistas: Vec::new(),
+            planet: None,
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, ground);
         terrain.color = SLATE;

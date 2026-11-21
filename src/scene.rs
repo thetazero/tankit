@@ -752,7 +752,7 @@ mod tests {
             ("saltmarket", Map::saltmarket()),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
-            ("capital", Map::capital()),
+            ("city", Map::city(0)),
             ("foundry", Map::foundry()),
             ("mine", Map::mine()),
         ] {

@@ -23,7 +23,7 @@
 //! (`--arena`, `--duel`).
 
 pub mod baseline;
-mod nav;
+pub(crate) mod nav;
 
 pub use nav::NavGrid;
 

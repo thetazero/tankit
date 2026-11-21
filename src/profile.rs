@@ -225,7 +225,7 @@ impl Drop for Disk {
 }
 
 /// Write then rename, so a crash mid-save can't leave a half-written profile.
-fn write_file(path: &Path, text: &str) -> anyhow::Result<()> {
+pub(crate) fn write_file(path: &Path, text: &str) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

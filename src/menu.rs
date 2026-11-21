@@ -1451,7 +1451,7 @@ mod tests {
             (Nav::Select, None)
         );
         assert_eq!(m.screen, Screen::Factions);
-        // The Ithessar: only their kiln and the four-way capital.
+        // The Ithessar: only their kiln and the four-way imperial city.
         assert_eq!(
             click_drawn(&mut m, &profile, Hit::Row(3)),
             (Nav::Select, None)

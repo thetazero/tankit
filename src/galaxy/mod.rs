@@ -1,9 +1,9 @@
 //! The forever war as a simulation of its own (#303, from the design on #302).
 //!
 //! Some ten thousand colonized star systems, each a few numbers, ticking
-//! forward: one tick of the whole galaxy per battle the player plays. Nothing
-//! in the game reads it yet; hooking it up to the player's battles and to
-//! postings comes later.
+//! forward: one tick of the whole galaxy per battle the player plays. Each
+//! battle the player plays is drawn from it and fed back into it (`battle`,
+//! #304); postings come later.
 //!
 //! **State.** A system is a point in a slab of a spiral galaxy's disk (light
 //! years; see `structure`: two arms, the gap between, a spur across it) with
@@ -48,7 +48,9 @@
 //! holds too much of the galaxy, the sides bordering it stop fighting each
 //! other and go for it together, until it's well back under the line.
 
+pub mod battle;
 pub mod chart;
+pub mod save;
 pub mod structure;
 
 use glam::{Vec2, Vec3};
@@ -78,7 +80,7 @@ const MIN_SEND: f32 = 2.0;
 /// Most quiet ticks a step skips looking for the next war.
 const QUIET_SKIP: usize = 1000;
 /// A system counts as at war when two sides each have this many hulls in it.
-const AT_WAR: f32 = 0.5;
+pub const AT_WAR: f32 = 0.5;
 
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
@@ -231,6 +233,8 @@ impl System {
 
 /// The whole war.
 pub struct Galaxy {
+    /// What it was generated from (the layout of systems and sites).
+    pub seed: u64,
     pub systems: Vec<System>,
     pub sites: Vec<Site>,
     /// Each system's reachable neighbors (nearest first), `NEIGHBORS` slots
@@ -370,6 +374,7 @@ impl Galaxy {
         }
         let neighbors = find_neighbors(&systems, region);
         let mut g = Galaxy {
+            seed,
             spare: vec![[0.0; SIDES]; systems.len()],
             systems,
             sites,
@@ -411,7 +416,7 @@ impl Galaxy {
         out
     }
 
-    fn neighbors(&self, s: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
+    pub fn neighbors(&self, s: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
         self.neighbors[s * NEIGHBORS..(s + 1) * NEIGHBORS]
             .iter()
             .take_while(|n| n.0 != u32::MAX)
@@ -437,7 +442,7 @@ impl Galaxy {
         }
     }
 
-    fn update_share(&mut self) {
+    pub(crate) fn update_share(&mut self) {
         let mut held = [0u32; SIDES];
         for s in &self.systems {
             for f in 0..SIDES {
@@ -458,7 +463,7 @@ impl Galaxy {
 
     /// Finds the pockets: systems whose holder's space there (systems it
     /// holds, linked by FTL range) is small and bordered by an enemy.
-    fn update_supply(&mut self) {
+    pub(crate) fn update_supply(&mut self) {
         let n = self.systems.len();
         let owner: Vec<usize> = self.systems.iter().map(|s| s.owner()).collect();
         let mut root: Vec<u32> = (0..n as u32).collect();

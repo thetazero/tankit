@@ -1,4 +1,4 @@
-//! The garage's depot bay: a part bought, a hull or turret swapped on by
+//! The garage's bay aboard ship: a part bought, a hull or turret swapped on by
 //! the gantry crane, a purchase refused, and the turntable the tank stands
 //! on, turning. Heard the same wherever the camera is: you're in the bay.
 
