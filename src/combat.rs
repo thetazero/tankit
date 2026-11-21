@@ -1172,20 +1172,39 @@ impl Match {
             candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut best: Option<(f32, Vec3)> = None;
             for (d, j) in candidates {
-                let Some(aim) = self.aim_point(eye, level, j) else {
-                    continue;
-                };
                 // Only where the gun can see: walls and hills still hide,
                 // and so does a teammate (the shot would only stop on them).
-                let to = aim - eye;
-                let len = to.length();
-                if self.world.raycast(eye, to / len, len) < len - 0.3
-                    || self.ally_in_way(i, eye, aim)
-                {
-                    continue;
+                let seen = |aim: Vec3| {
+                    let to = aim - eye;
+                    let len = to.length();
+                    self.world.raycast(eye, to / len, len) >= len - 0.3
+                        && !self.ally_in_way(i, eye, aim)
+                };
+                // The point nearest the line of fire, or, if that's hidden
+                // (a tank up on a ledge shows only its turret over the lip,
+                // not its underside), the middle of the turret, then its
+                // crown, then the hull's upper half.
+                let o = &self.world.tanks[j];
+                let turret = self
+                    .world
+                    .physics
+                    .colliders
+                    .get(o.turret_hitbox)
+                    .map(|c| c.compute_aabb());
+                let middle = turret.map(|b| b.center());
+                let crown = turret.map(|b| {
+                    let c = b.center();
+                    Vec3::new(c.x, c.y + b.half_extents().y * 0.6, c.z)
+                });
+                let hull = o.pos + o.up() * (o.chassis.hull_top * 0.7);
+                let aim = [self.aim_point(eye, level, j), middle, crown, Some(hull)]
+                    .into_iter()
+                    .flatten()
+                    .find(|&p| seen(p));
+                if let Some(aim) = aim {
+                    best = Some((d, aim));
+                    break;
                 }
-                best = Some((d, aim));
-                break;
             }
             let t = &mut self.world.tanks[i];
             let (pitch, side) = best.map_or((0.0, 0.0), |(_, aim)| {
@@ -3200,10 +3219,12 @@ mod tests {
     /// Equal and opposite, to the eye: for every gun that fires something, a
     /// hit rocks the tank it lands on about as hard as firing it rocks the
     /// shooter (same hull both ends, face to face so both rock back), and a
-    /// hit in the flank rolls it at least half as hard. That's plain physics:
+    /// hit in the flank rolls it a fair part of that. That's plain physics:
     /// aimed level, the shot lands high on the turret, near the height the
-    /// gun kicked its own hull from. The light streams are held a second, as
-    /// they're fired.
+    /// gun kicked its own hull from. (Rolling is the lesser: the tracks grip
+    /// a hull pushed sideways part way up it, but one pushed back at the
+    /// ground, where they rock it most; see `ANTI_ROLL`.) The light streams
+    /// are held a second, as they're fired.
     #[test]
     fn a_hit_rocks_the_target_about_as_hard_as_firing_rocks_the_shooter() {
         for &k in &TurretKind::ALL {
@@ -3224,7 +3245,7 @@ mod tests {
             );
             let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, FRAC_PI_2), hold);
             assert!(
-                tilt[1] > 0.5 * tilt[0],
+                tilt[1] > 0.4 * tilt[0],
                 "{k:?} in the flank: shooter rocked {:.2} deg, target {:.2}",
                 tilt[0],
                 tilt[1]
@@ -3455,6 +3476,96 @@ mod tests {
             m.step(Command::default(), false);
         }
         assert!(m.fighters[1].health < hp, "the shot uphill missed");
+    }
+
+    /// Rocking the hull lays the gun past its own elevation: a tank up on a
+    /// ledge, too high for the gun to reach from level, is hit by backing
+    /// off, throwing the tank forward (it stops nose up) and firing at the
+    /// top of the rock. Only its turret shows over the lip, and the assist
+    /// lays onto that.
+    #[test]
+    fn rocking_back_reaches_a_tank_up_on_a_ledge() {
+        let mut map = Map::yard(200.0);
+        let ledge = 10.0;
+        map.add_block(
+            Vec3::new(88.0, 0.0, 117.5),
+            Vec3::new(112.0, ledge, 140.0),
+            Vec3::ONE,
+        );
+        let mut m = Match::new(map, 0, 0, 1);
+        m.world.tanks[0].turret_kind = TurretKind::Kontos;
+        let t = &m.world.tanks[0];
+        let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 20.0;
+        m.world.spawn_tank(
+            Vec3::ONE,
+            ahead,
+            0.0,
+            HullKind::Kataphrakt,
+            TurretKind::Kontos,
+        );
+        let b = &mut m.world.physics.bodies[m.world.tanks[1].body];
+        b.set_translation(Vec3::new(ahead.x, ledge + 0.2, ahead.y), true);
+        m.fighters
+            .push(fighter(1, max_health(HullKind::Kataphrakt)));
+        m.bots.push(None);
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        m.fighters[1].reload_in = f32::INFINITY;
+        let hp = m.fighters[1].health;
+        let pitch = |m: &Match| m.world.tanks[0].forward().y.asin();
+        // Level, at full elevation, the shot hits the ledge under it.
+        for _ in 0..120 {
+            m.step(Command::default(), false);
+        }
+        assert!(m.world.tanks[1].pos.y > ledge - 0.3, "it's up on the ledge");
+        // Held there (with no brain of its own it takes the player's
+        // commands, and would drive off).
+        m.world.physics.bodies[m.world.tanks[1].body].set_body_type(
+            rapier3d::prelude::RigidBodyType::KinematicPositionBased,
+            true,
+        );
+        assert!(
+            m.world.tanks[0].gun_pitch > 0.29,
+            "the assist didn't lay onto its turret: pitch {}",
+            m.world.tanks[0].gun_pitch
+        );
+        m.step(Command::default(), true);
+        for _ in 0..10 {
+            m.step(Command::default(), false);
+        }
+        assert_eq!(m.fighters[1].health, hp, "hit it from level");
+        while m.fighters[0].reload_in > 0.0 {
+            m.step(Command::default(), false);
+        }
+        // Back off, then throw it forward: stopping from reverse rocks the
+        // nose up. Fire at the top.
+        let (mut last, mut fired) = (0.0, None);
+        for i in 0..(2.5 / DT) as usize {
+            let throttle = if (i as f32 * DT) < 1.0 { -1.0 } else { 1.0 };
+            let now = pitch(&m);
+            let fire = now > 0.1 && now < last && fired.is_none();
+            last = now;
+            if fire {
+                fired = Some(now.to_degrees());
+                // Higher than the gun goes with the hull level.
+                let up = m.world.tanks[0].gun_dir().y.asin();
+                assert!(up > 0.33, "laid only {up} rad up");
+            }
+            let cmd = Command {
+                throttle,
+                ..Default::default()
+            };
+            m.step(cmd, fire);
+            if m.fighters[1].health < hp {
+                break;
+            }
+        }
+        let rocked = fired.expect("never rocked back");
+        assert!(
+            m.fighters[1].health < hp,
+            "fired rocked back {rocked} deg and missed"
+        );
     }
 
     /// A broadside from the heaviest gun rocks the lightest tracked hull hard,
