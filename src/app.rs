@@ -587,7 +587,7 @@ impl App {
         }
     }
 
-    /// Do what the garage asked. `voiced`: play the depot bay's sound for
+    /// Do what the garage asked. `voiced`: play the bay's sound for
     /// it (a swap or a refusal), not just the menu click already played.
     fn garage_event(&mut self, event: garage::Event, voiced: bool) {
         match event {

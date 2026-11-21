@@ -1,17 +1,21 @@
-//! The depot bay the garage opens in: a concrete hangar with the chassis on a
-//! turntable under a skylight, maintenance arms either side, a gantry crane
-//! overhead, a sealed blast door behind, lamps, racks and a link console.
+//! The bay the garage opens in: a hangar aboard a Company ship in orbit, the
+//! chassis on a turntable (the drop lift down to the launch tube) under a
+//! viewport in the roof, maintenance arms either side, a gantry crane
+//! overhead, a long viewport behind looking out on a planet and the stars,
+//! an airlock door, lamps, racks and a link console.
 //!
 //! It has its own geometry (drawn as instances, the map's static mesh off),
-//! its own light (sun through the skylight, dim ambient, dust in the beam)
-//! and a fixed camera; the tank turns on the deck instead of the camera
-//! orbiting. Coordinates are bay-local: the turntable's center is the origin.
+//! its own light (the star through the roof viewport, lamps, a dark sky, dust
+//! in the beam) and a fixed camera; the tank turns on the deck instead of the
+//! camera orbiting. Coordinates are bay-local: the turntable's center is the
+//! origin.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
+use crate::planet;
 use crate::render::material::Material;
 use crate::render::mesh::{Instance, MeshData, MeshId};
-use crate::render::{Atmosphere, Camera, Particle, Renderer, Scene};
+use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::sim::Tank;
 use crate::tank::TankArt;
 
@@ -22,10 +26,10 @@ const DECK_R: f32 = 4.2;
 const ROOM_MIN: Vec2 = Vec2::new(-13.0, -11.0);
 const ROOM_MAX: Vec2 = Vec2::new(13.0, 14.0);
 const ROOF: f32 = 10.0;
-/// The skylight in the roof (xz min, max), offset toward the sun so its beam lands on the deck.
+/// The viewport in the roof (xz min, max), offset toward the star so its beam lands on the deck.
 const SKY_MIN: Vec2 = Vec2::new(-0.5, 0.0);
 const SKY_MAX: Vec2 = Vec2::new(6.5, 8.0);
-/// A second, narrow skylight toward the back: a stripe of light before the door.
+/// A second, narrow roof viewport toward the back: a stripe of light before the window.
 const SKY2_MIN: Vec2 = Vec2::new(-9.0, -5.6);
 const SKY2_MAX: Vec2 = Vec2::new(9.0, -4.2);
 /// Camera: world yaw of its offset from the deck, distance and height above the focus.
@@ -39,13 +43,28 @@ const LAMPS: [Vec3; 4] = [
     Vec3::new(2.5, 5.6, -6.8),
     Vec3::new(8.0, 5.9, -7.2),
 ];
-const LAMP_LIGHT: Vec3 = Vec3::new(1.0, 0.78, 0.5);
+const LAMP_LIGHT: Vec3 = Vec3::new(0.86, 0.9, 1.0);
 const LINK: Vec3 = Vec3::new(0.35, 0.85, 1.0);
+/// The viewport in the back wall (x from, to; y from, to).
+const PORT_X: (f32, f32) = (-12.2, 9.0);
+const PORT_Y: (f32, f32) = (1.5, 7.1);
+/// The planet outside: center and radius, far out and below the ship.
+const PLANET: Vec3 = Vec3::new(-75.0, -58.0, -125.0);
+const PLANET_R: f32 = 60.0;
+/// Which world it is: a dry one, like most the Company is posted to.
+const PLANET_SEED: u64 = 7;
+/// How far off the stars are drawn, and the black backdrop behind them.
+const STARS: f32 = 230.0;
+const SPACE: f32 = 260.0;
+/// The airlock door in the right wall (z from, to; height).
+const AIRLOCK: (f32, f32, f32) = (2.4, 5.6, 3.6);
 
 /// The bay's meshes, uploaded once.
 pub struct BayArt {
     room: MeshId,
     deck: MeshId,
+    planet: MeshId,
+    space: MeshId,
 }
 
 impl BayArt {
@@ -53,23 +72,28 @@ impl BayArt {
         BayArt {
             room: r.add_mesh(&room_mesh()),
             deck: r.add_mesh(&deck_mesh()),
+            planet: r.add_mesh(&planet::mesh(PLANET_SEED, &planet::DRY)),
+            space: r.add_mesh(&space_mesh()),
         }
     }
 }
 
-/// The light in the bay: a warm sun through the skylight, a dim cool room.
+/// The light in the bay: the star through the roof viewport, a cool room
+/// filled by its lamps. The sky's colors only fill the room's shade: out of
+/// the viewports the camera sees black space (`space_mesh`), and there's
+/// barely any haze, so the planet and stars far out stay clear.
 pub fn atmosphere() -> Atmosphere {
     Atmosphere {
         sun_dir: Vec3::new(0.3, 1.0, 0.45).normalize(),
-        sun_color: Vec3::new(2.6, 2.25, 1.8),
-        sky_zenith: Vec3::new(0.42, 0.48, 0.56),
-        sky_horizon: Vec3::new(0.2, 0.2, 0.21),
-        ground_color: Vec3::new(0.24, 0.22, 0.2),
-        fog_density: 0.012,
+        sun_color: Vec3::new(2.7, 2.55, 2.3),
+        sky_zenith: Vec3::new(0.36, 0.42, 0.52),
+        sky_horizon: Vec3::new(0.17, 0.18, 0.21),
+        ground_color: Vec3::new(0.2, 0.21, 0.22),
+        fog_density: 0.0004,
         wind: Vec2::ZERO,
         blowing_sand: 0.0,
-        dust: Vec3::new(0.5, 0.48, 0.45),
-        settle: crate::render::SAND_SETTLE,
+        dust: Vec3::new(0.5, 0.5, 0.5),
+        settle: Vec3::new(0.3, 0.31, 0.32),
         ambient: 1.0,
     }
 }
@@ -119,7 +143,30 @@ pub fn scene(
     let white = Vec4::new(1.0, 1.0, 1.0, 0.0);
     instances.push((bay.room, Instance::new(Mat4::IDENTITY, white)));
     instances.push((bay.deck, Instance::new(Mat4::from_rotation_y(-spin), white)));
+    // Black space, self-lit so no light reaches it.
+    instances.push((bay.space, Instance::new(Mat4::IDENTITY, Vec4::ONE)));
+    // The planet turns, slowly.
+    instances.push((
+        bay.planet,
+        Instance::new(
+            Mat4::from_scale_rotation_translation(
+                Vec3::splat(PLANET_R * 2.0),
+                Quat::from_rotation_y(time * 0.004),
+                PLANET,
+            ),
+            white,
+        ),
+    ));
     lights(time, &mut particles);
+    stars(&mut particles);
+    let lamps = LAMPS
+        .iter()
+        .map(|&pos| PointLight {
+            pos,
+            color: LAMP_LIGHT * 14.0,
+            radius: 12.0,
+        })
+        .collect();
     let atmosphere = atmosphere();
     Scene {
         camera,
@@ -130,7 +177,7 @@ pub fn scene(
         shadow_radius: 17.0,
         instances,
         particles,
-        lights: Vec::new(),
+        lights: lamps,
         ui: Vec::new(),
         world: false,
     }
@@ -157,7 +204,7 @@ fn lights(time: f32, out: &mut Vec<Particle>) {
             Vec3::ZERO,
         ));
     }
-    // The link console's screen, and status lights on the door.
+    // The link console's screen, and status lights over the airlock.
     out.push(Particle::glow(
         Vec3::new(7.2, 1.55, -2.6),
         1.1,
@@ -165,17 +212,17 @@ fn lights(time: f32, out: &mut Vec<Particle>) {
         0.18,
         Vec3::ZERO,
     ));
-    for (i, x) in [-5.6f32, 3.6].into_iter().enumerate() {
+    for (i, z) in [AIRLOCK.0 - 0.35, AIRLOCK.1 + 0.35].into_iter().enumerate() {
         let blink = (0.5 + 0.5 * (time * 2.0 + i as f32 * 1.7).sin()).powi(3);
         out.push(Particle::glow(
-            Vec3::new(x, 6.8, ROOM_MIN.y + 0.45),
+            Vec3::new(ROOM_MAX.x - 0.45, AIRLOCK.2 + 0.5, z),
             0.35,
             Vec3::new(1.0, 0.25, 0.12),
             0.25 + 0.6 * blink,
             Vec3::ZERO,
         ));
     }
-    // A faint shaft down from the skylight.
+    // A faint shaft down from the roof viewport.
     let sun = atmosphere().sun_dir;
     let top = Vec3::new(
         (SKY_MIN.x + SKY_MAX.x) * 0.5,
@@ -215,6 +262,66 @@ fn lights(time: f32, out: &mut Vec<Particle>) {
             0.008 + 0.01 * s,
             Vec3::new(1.0, 0.9, 0.75),
             0.15 + 0.25 * s,
+            Vec3::ZERO,
+        ));
+    }
+}
+
+/// The stars through the back viewport: fixed seeds, scattered over the
+/// sky beyond it, a few bright, most faint, white to blue and amber.
+fn stars(out: &mut Vec<Particle>) {
+    // The planet's thin air, lit at its limb: a ring of faint glow round
+    // its outline as seen from the bay.
+    let view = (PLANET - camera(16.0 / 9.0, 1.0).pos).normalize();
+    let u = view.cross(Vec3::Y).normalize();
+    let v = u.cross(view);
+    for k in 0..120 {
+        let a = k as f32 / 120.0 * std::f32::consts::TAU;
+        let at = PLANET + (u * a.cos() + v * a.sin()) * PLANET_R * 1.005;
+        out.push(Particle::glow(
+            at,
+            3.5,
+            Vec3::new(0.55, 0.7, 1.0),
+            0.12,
+            Vec3::ZERO,
+        ));
+    }
+    let mut h = 0x2545_f491u32;
+    let mut rnd = || {
+        h ^= h << 13;
+        h ^= h >> 17;
+        h ^= h << 5;
+        (h >> 8) as f32 / 16_777_216.0
+    };
+    for _ in 0..420 {
+        let (a, b, c, d) = (rnd(), rnd(), rnd(), rnd());
+        // Directions out the back and a little to either side, up and down.
+        let yaw = (a - 0.5) * 2.2;
+        let pitch = (b - 0.45) * 1.0;
+        let dir = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        );
+        let at = dir * STARS;
+        // Behind the planet: hidden.
+        let along = dir.dot(PLANET);
+        if along > 0.0 && (PLANET - dir * along).length() < PLANET_R * 1.03 {
+            continue;
+        }
+        let bright = c * c * c;
+        let tint = if d < 0.2 {
+            Vec3::new(0.7, 0.8, 1.0)
+        } else if d > 0.88 {
+            Vec3::new(1.0, 0.82, 0.6)
+        } else {
+            Vec3::ONE
+        };
+        out.push(Particle::glow(
+            at,
+            0.35 + 0.6 * bright,
+            tint,
+            0.35 + 1.8 * bright,
             Vec3::ZERO,
         ));
     }
@@ -287,12 +394,25 @@ fn deck_mesh() -> MeshData {
     m
 }
 
+/// Black space beyond the back viewport and over the roof: the inside of a
+/// box round the ship, far enough out that the stars and planet stand in front.
+fn space_mesh() -> MeshData {
+    let mut m = MeshData::default();
+    let c = col([0.004, 0.005, 0.009], Material::Plain);
+    let (r, t) = (SPACE, 10.0);
+    bx(&mut m, Vec3::new(-r, -r, -r - t), Vec3::new(r, r, -r), c);
+    bx(&mut m, Vec3::new(-r - t, -r, -r), Vec3::new(-r, r, r), c);
+    bx(&mut m, Vec3::new(r, -r, -r), Vec3::new(r + t, r, r), c);
+    bx(&mut m, Vec3::new(-r, -r - t, -r), Vec3::new(r, -r, r), c);
+    m
+}
+
 /// Everything that stands still.
 fn room_mesh() -> MeshData {
     let mut m = MeshData::default();
-    let concrete = col([0.46, 0.45, 0.43], Material::Concrete);
-    let wall = col([0.42, 0.41, 0.39], Material::Concrete);
-    let steel = col([0.22, 0.25, 0.24], Material::Painted);
+    let concrete = col([0.4, 0.41, 0.42], Material::Painted);
+    let wall = col([0.36, 0.38, 0.4], Material::Painted);
+    let steel = col([0.2, 0.22, 0.25], Material::Painted);
     let dark = col([0.12, 0.12, 0.13], Material::Metal);
     let hazard = col([0.8, 0.6, 0.12], Material::Painted);
     let black = col([0.06, 0.06, 0.06], Material::Painted);
@@ -303,7 +423,7 @@ fn room_mesh() -> MeshData {
     let (lo, hi) = (ROOM_MIN, ROOM_MAX);
     const T: f32 = 0.6;
 
-    // Floor, with a shallow pit for the turntable's ring.
+    // Deck plating, with a shallow pit for the turntable's ring.
     bx(
         &mut m,
         Vec3::new(lo.x - T, -0.4, lo.y - T),
@@ -352,13 +472,84 @@ fn room_mesh() -> MeshData {
         }
     }
 
-    // Walls, with steel columns and a ring beam.
+    // Seams between the deck plates: a grid of dark strips, clear of the turntable.
+    let seam = col([0.14, 0.15, 0.16], Material::Metal);
+    let mut x = lo.x + 3.0;
+    while x < hi.x {
+        for (z0, z1) in [(lo.y, -DECK_R - 0.6), (DECK_R + 0.6, hi.y)] {
+            bx(
+                &mut m,
+                Vec3::new(x - 0.03, 0.0, z0),
+                Vec3::new(x + 0.03, 0.004, z1),
+                seam,
+            );
+        }
+        x += 3.0;
+    }
+    let mut z = lo.y + 3.0;
+    while z < hi.y {
+        if z.abs() > DECK_R + 0.6 {
+            bx(
+                &mut m,
+                Vec3::new(lo.x, 0.0, z - 0.03),
+                Vec3::new(hi.x, 0.003, z + 0.03),
+                seam,
+            );
+        }
+        z += 3.0;
+    }
+
+    // Walls, with steel ribs and a ring beam. The back wall frames the long
+    // viewport: solid below, above and either side of it.
+    let (px0, px1) = PORT_X;
+    let (py0, py1) = PORT_Y;
+    for (a, b) in [
+        (
+            Vec3::new(lo.x - T, 0.0, lo.y - T),
+            Vec3::new(hi.x + T, py0, lo.y),
+        ),
+        (
+            Vec3::new(lo.x - T, py1, lo.y - T),
+            Vec3::new(hi.x + T, ROOF, lo.y),
+        ),
+        (
+            Vec3::new(lo.x - T, py0, lo.y - T),
+            Vec3::new(px0, py1, lo.y),
+        ),
+        (
+            Vec3::new(px1, py0, lo.y - T),
+            Vec3::new(hi.x + T, py1, lo.y),
+        ),
+    ] {
+        bx(&mut m, a, b, wall);
+    }
+    // The viewport's frame: a thick sill and lintel, and a hazard edge on the sill.
     bx(
         &mut m,
-        Vec3::new(lo.x - T, 0.0, lo.y - T),
-        Vec3::new(hi.x + T, ROOF, lo.y),
-        wall,
+        Vec3::new(px0 - 0.3, py0 - 0.35, lo.y),
+        Vec3::new(px1 + 0.3, py0, lo.y + 0.7),
+        steel,
     );
+    bx(
+        &mut m,
+        Vec3::new(px0 - 0.3, py1, lo.y),
+        Vec3::new(px1 + 0.3, py1 + 0.35, lo.y + 0.7),
+        steel,
+    );
+    bx(
+        &mut m,
+        Vec3::new(px0, py0 - 0.07, lo.y + 0.7),
+        Vec3::new(px1, py0 - 0.02, lo.y + 0.72),
+        hazard,
+    );
+    for x in [px0 - 0.3, px1] {
+        bx(
+            &mut m,
+            Vec3::new(x, py0, lo.y),
+            Vec3::new(x + 0.3, py1, lo.y + 0.7),
+            steel,
+        );
+    }
     bx(
         &mut m,
         Vec3::new(lo.x - T, 0.0, hi.y),
@@ -488,92 +679,65 @@ fn room_mesh() -> MeshData {
         );
     }
 
-    // The blast door: frame, ribbed leaves split down the middle, hazard edging.
-    let (d0, d1, dh, dz) = (-5.0f32, 3.0f32, 6.4f32, lo.y);
+    // The airlock in the right wall: a frame, two leaves split down the
+    // middle, hazard edging, and warning lamps either side (their glow is
+    // added per frame).
+    let (d0, d1, dh) = AIRLOCK;
+    let dx = hi.x;
     bx(
         &mut m,
-        Vec3::new(d0 - 0.7, 0.0, dz),
-        Vec3::new(d0, dh + 0.7, dz + 0.6),
+        Vec3::new(dx - 0.5, 0.0, d0 - 0.5),
+        Vec3::new(dx, dh + 0.5, d0),
         steel,
     );
     bx(
         &mut m,
-        Vec3::new(d1, 0.0, dz),
-        Vec3::new(d1 + 0.7, dh + 0.7, dz + 0.6),
+        Vec3::new(dx - 0.5, 0.0, d1),
+        Vec3::new(dx, dh + 0.5, d1 + 0.5),
         steel,
     );
     bx(
         &mut m,
-        Vec3::new(d0 - 0.7, dh, dz),
-        Vec3::new(d1 + 0.7, dh + 0.7, dz + 0.6),
+        Vec3::new(dx - 0.5, dh, d0 - 0.5),
+        Vec3::new(dx, dh + 0.5, d1 + 0.5),
         steel,
     );
-    let leaf = col([0.3, 0.32, 0.3], Material::Painted);
+    let leaf = col([0.3, 0.32, 0.34], Material::Painted);
     bx(
         &mut m,
-        Vec3::new(d0, 0.0, dz),
-        Vec3::new(d1, dh, dz + 0.2),
+        Vec3::new(dx - 0.2, 0.0, d0),
+        Vec3::new(dx, dh, d1),
         leaf,
     );
     let mid = (d0 + d1) * 0.5;
     bx(
         &mut m,
-        Vec3::new(mid - 0.05, 0.0, dz),
-        Vec3::new(mid + 0.05, dh, dz + 0.26),
+        Vec3::new(dx - 0.26, 0.0, mid - 0.05),
+        Vec3::new(dx, dh, mid + 0.05),
         black,
     );
-    let mut y = 0.9;
-    while y < dh - 0.3 {
-        bx(
-            &mut m,
-            Vec3::new(d0 + 0.2, y, dz),
-            Vec3::new(mid - 0.2, y + 0.18, dz + 0.32),
-            leaf,
-        );
-        bx(
-            &mut m,
-            Vec3::new(mid + 0.2, y, dz),
-            Vec3::new(d1 - 0.2, y + 0.18, dz + 0.32),
-            leaf,
-        );
-        y += 0.75;
-    }
-    // Hazard band along the bottom: diagonal stripes, clipped to the band.
     bx(
         &mut m,
-        Vec3::new(d0, 0.0, dz),
-        Vec3::new(d1, 0.6, dz + 0.24),
+        Vec3::new(dx - 0.24, 0.0, d0),
+        Vec3::new(dx, 0.5, d1),
         black,
     );
-    let mut x = d0 + 0.2;
-    while x < d1 - 0.1 {
+    let mut z = d0 + 0.2;
+    while z < d1 - 0.1 {
         obox(
             &mut m,
-            Vec3::new(x, 0.3, dz + 0.25),
-            Vec3::new(0.22, 0.62, 0.02),
-            Quat::from_rotation_z(0.6),
+            Vec3::new(dx - 0.25, 0.25, z),
+            Vec3::new(0.02, 0.52, 0.22),
+            Quat::from_rotation_x(0.6),
             hazard,
         );
-        x += 0.55;
+        z += 0.55;
     }
-    bx(
-        &mut m,
-        Vec3::new(d0 - 0.7, 0.0, dz + 0.6),
-        Vec3::new(d0, 0.6, dz + 0.62),
-        hazard,
-    );
-    bx(
-        &mut m,
-        Vec3::new(d1, 0.0, dz + 0.6),
-        Vec3::new(d1 + 0.7, 0.6, dz + 0.62),
-        hazard,
-    );
-    // Warning lamps either side of the door (the glow is added per frame).
-    for x in [d0 - 0.35, d1 + 0.35] {
+    for z in [d0 - 0.35, d1 + 0.35] {
         bx(
             &mut m,
-            Vec3::new(x - 0.2, 6.6, dz + 0.6),
-            Vec3::new(x + 0.2, 7.0, dz + 0.85),
+            Vec3::new(dx - 0.75, dh + 0.3, z - 0.2),
+            Vec3::new(dx - 0.5, dh + 0.7, z + 0.2),
             col([1.0, 0.3, 0.15], Material::Glow),
         );
     }
@@ -854,5 +1018,41 @@ mod tests {
         let up = sun * (ROOF / sun.y);
         let at = Vec2::new(up.x, up.z);
         assert!(at.x > SKY_MIN.x && at.x < SKY_MAX.x && at.y > SKY_MIN.y && at.y < SKY_MAX.y);
+    }
+
+    /// From the camera, the planet's top shows through the back viewport,
+    /// in front of the black backdrop, and the stars are out past it.
+    #[test]
+    fn planet_shows_through_the_viewport() {
+        let cam = camera(16.0 / 9.0, 1.0).pos;
+        // The top of the planet's outline, as the camera sees it.
+        let view = (PLANET - cam).normalize();
+        let up = view.cross(Vec3::Y).cross(view).normalize();
+        let top = PLANET + up * PLANET_R;
+        let d = top - cam;
+        let t = (ROOM_MIN.y - cam.z) / d.z;
+        let hit = cam + d * t;
+        assert!(hit.x > PORT_X.0 && hit.x < PORT_X.1, "{hit}");
+        assert!(hit.y > PORT_Y.0 && hit.y < PORT_Y.1, "{hit}");
+        assert!(PLANET.length() + PLANET_R < SPACE);
+        assert!(PLANET.length() + PLANET_R < STARS && STARS < SPACE);
+    }
+
+    /// The bay's own geometry hardly z-fights.
+    #[test]
+    fn bay_hardly_z_fights() {
+        use crate::render::zfight::Soup;
+        let mut soup = Soup::new();
+        let white = Vec4::new(1.0, 1.0, 1.0, 0.0);
+        soup.add("room", &room_mesh(), Mat4::IDENTITY, white);
+        soup.add("deck", &deck_mesh(), Mat4::IDENTITY, white);
+        let fights = soup.fights();
+        let area: f32 = fights.iter().map(|f| f.area).sum();
+        let report: Vec<String> = fights
+            .iter()
+            .take(10)
+            .map(|f| format!("{:.3} m² at {:.2} (faces {:.2?})", f.area, f.at, f.faces))
+            .collect();
+        assert!(area < 0.05, "{area:.3} m²:\n{}", report.join("\n"));
     }
 }

@@ -21,6 +21,7 @@ mod keys;
 mod map;
 mod menu;
 mod mission;
+mod planet;
 mod profile;
 mod raid;
 mod render;
