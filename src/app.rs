@@ -21,6 +21,8 @@ use crate::bay::{self, BayArt};
 use crate::binds::{Action, Binds};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
+use crate::galaxy::battle::{self, Battle};
+use crate::galaxy::save::War;
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -102,6 +104,13 @@ struct App {
     prize: Option<Part>,
     /// Which of the map's sides hired you.
     side: usize,
+    /// The galaxy's war, which a mission's battles are drawn from and fed
+    /// back into.
+    war: War,
+    /// This round's battle in it (missions only), until it's settled.
+    battle: Option<Battle>,
+    /// Rounds are missions: drawn from the galaxy.
+    in_war: bool,
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -206,6 +215,9 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         rating: 0,
         prize: None,
         side: launch.side,
+        war: War::load(),
+        battle: None,
+        in_war: false,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -433,6 +445,7 @@ impl App {
 
     /// Start a new round on the current map settings, keeping the player's queued kit.
     fn restart(&mut self) {
+        self.leave_battle();
         let kit = self.queued();
         let mut m = new_match(
             self.seed,
@@ -445,6 +458,7 @@ impl App {
         );
         m.set_rating(self.rating);
         m.prize = self.unstolen_prize();
+        self.battle = self.in_war.then(|| battle::deploy(self.war.get(), &mut m));
         self.load(m);
         self.mode = Mode::Playing;
     }
@@ -456,6 +470,7 @@ impl App {
 
     /// Start mission `MISSIONS[i]`, hired by its side `side`.
     fn start_mission(&mut self, i: usize, side: usize) {
+        self.leave_battle();
         let m = &MISSIONS[i];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
         (self.contract, self.side, self.rating) = (m.contract, side, m.rating);
@@ -471,6 +486,8 @@ impl App {
         );
         game.set_rating(self.rating);
         game.prize = self.unstolen_prize();
+        self.in_war = true;
+        self.battle = Some(battle::deploy(self.war.get(), &mut game));
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(
@@ -537,7 +554,21 @@ impl App {
         }
     }
 
+    /// A battle left before it's over still costs what was lost in it, and
+    /// nobody wins it.
+    fn leave_battle(&mut self) {
+        if let Some(b) = self.battle.take() {
+            let g = self.war.get();
+            let s = g.settle(&b, &self.game.lost(), None, battle::Stake::Hulls);
+            g.step();
+            log::info!("left early: {}", battle::describe(&b, &s));
+            self.war.save();
+        }
+    }
+
     fn back_to_menu(&mut self) {
+        self.leave_battle();
+        self.in_war = false;
         self.load(menu_match(self.profile.loadout));
         self.backdrop = (0, 0);
         self.backdrop_job = None;
@@ -1003,6 +1034,11 @@ impl App {
             }
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
+            if let Some(b) = self.battle.take() {
+                let settled = battle::conclude(self.war.get(), &b, &self.game);
+                log::info!("{}", battle::describe(&b, &settled));
+                self.war.save();
+            }
         }
         laps.lap("sim");
 

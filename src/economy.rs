@@ -267,10 +267,12 @@ impl Payout {
     pub fn of(m: &Match) -> Payout {
         let me = m.player();
         // A draw only if your side shares the lead; trailing a tie is a loss.
-        let best = (0..m.factions.len()).map(|t| m.score(t)).max().unwrap_or(0);
+        // A side out of hulls is out of it: no draw for it.
+        let still = m.contenders();
+        let best = still.iter().map(|&t| m.score(t)).max().unwrap_or(0);
         let outcome = match m.leader() {
             Some(t) if t == me.team => Outcome::Won,
-            None if m.score(me.team) == best => Outcome::Draw,
+            None if still.contains(&me.team) && m.score(me.team) == best => Outcome::Draw,
             _ => Outcome::Lost,
         };
         let mut pay = Payout {
