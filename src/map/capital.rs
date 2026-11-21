@@ -172,6 +172,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            beams: Vec::new(),
             fall_y: None,
             hold_name: "ROTUNDA",
             routes: Vec::new(),
