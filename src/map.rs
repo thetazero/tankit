@@ -10,6 +10,7 @@ use crate::faction::Faction;
 
 mod capital;
 mod foundry;
+mod imperial;
 mod kiln;
 mod landmarks;
 mod mine;
