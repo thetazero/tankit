@@ -66,8 +66,9 @@ pub fn compound_parts_near(compound: &Compound, pose: &Pose, aabb: &Aabb) -> Vec
 }
 
 /// Like [`ball_heightfield`], against a compound (placed at `pose`): boxes in
-/// closed form, any other part through parry's cast. Looks only at `parts`
-/// (from [`compound_parts_near`] over a box holding the whole sweep).
+/// closed form, any other part through parry's cast with `options` (whose
+/// `max_time_of_impact` is the reach). Looks only at `parts` (from
+/// [`compound_parts_near`] over a box holding the whole sweep).
 pub fn ball_compound(
     compound: &Compound,
     pose: &Pose,
@@ -75,8 +76,9 @@ pub fn ball_compound(
     center: Vec3,
     dir: Vec3,
     r: f32,
-    max: f32,
+    options: ShapeCastOptions,
 ) -> Option<Hit> {
+    let max = options.max_time_of_impact;
     let c = pose.inverse_transform_point(center);
     let d = pose.rotation.inverse() * dir;
     let aabb = swept_aabb(c, d, r, max);
@@ -95,9 +97,7 @@ pub fn ball_compound(
         } else {
             let options = ShapeCastOptions {
                 max_time_of_impact: limit,
-                target_distance: 0.0,
-                stop_at_penetration: true,
-                compute_impact_geometry_on_penetration: true,
+                ..options
             };
             let at = Pose::from_translation(c);
             cast_shapes(
@@ -243,8 +243,9 @@ fn ball_triangle(c: Vec3, d: Vec3, r: f32, max: f32, a: Vec3, b: Vec3, e: Vec3) 
     // The face: the ball's lowest point reaches the plane inside the triangle.
     // That's the earliest there can be: edges and corners only touch later,
     // or where the face misses.
+    // Only from at least r off the plane: closer, that touch was in the past.
     let dn = d.dot(n);
-    if dn < 0.0 {
+    if dn < 0.0 && s >= r {
         let t = (s - r) / -dn;
         let p = c + d * t - n * r;
         if t <= max && inside(p, a, b, e, n) {
@@ -360,6 +361,16 @@ mod tests {
     use rapier3d::parry::shape::{Shape, SharedShape};
     use rapier3d::parry::utils::Array2;
 
+    /// The options the wheels cast with (see `sim::drive`), reaching `max`.
+    fn wheel_options(max: f32) -> ShapeCastOptions {
+        ShapeCastOptions {
+            max_time_of_impact: max,
+            target_distance: 0.0,
+            stop_at_penetration: true,
+            compute_impact_geometry_on_penetration: true,
+        }
+    }
+
     /// Casts many random wheel-like balls with both `ours` and parry's own
     /// cast against `shape` (at `pose`), and checks they agree.
     fn agrees(
@@ -380,12 +391,7 @@ mod tests {
             let dir = Vec3::new(rng.range(-0.6, 0.6), -1.0, rng.range(-0.6, 0.6)).normalize();
             let r = rng.range(0.2, 0.5);
             let max = rng.range(0.5, 2.5);
-            let options = ShapeCastOptions {
-                max_time_of_impact: max,
-                target_distance: 0.0,
-                stop_at_penetration: true,
-                compute_impact_geometry_on_penetration: true,
-            };
+            let options = wheel_options(max);
             let at = Pose::from_translation(center);
             let want =
                 cast_shapes(pose, Vec3::ZERO, shape, &at, dir, &Ball::new(r), options).unwrap();
@@ -414,6 +420,41 @@ mod tests {
             }
         }
         assert!(hits > 500, "only {hits} hits: the test isn't testing much");
+    }
+
+    #[test]
+    fn no_touch_in_the_past_beside_a_steep_face() {
+        // A wall-like triangle; the ball starts closer than r to its plane
+        // but past its bottom edge, moving down and slightly toward the plane.
+        // Back along its path the ball would have touched the face: that's
+        // not a hit (it must not come back as a negative distance).
+        let (a, b, e) = (
+            Vec3::ZERO,
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        );
+        let c = Vec3::new(0.1, -0.5, 0.5);
+        let d = Vec3::new(-0.2, -1.0, 0.0).normalize();
+        let got = ball_triangle(c, d, 0.3, 2.0, a, b, e);
+        assert!(got.is_none_or(|h| h.0 >= 0.0), "{got:?}");
+        let tri = rapier3d::parry::shape::Triangle::new(a, b, e);
+        let options = ShapeCastOptions::with_max_time_of_impact(2.0);
+        let at = Pose::from_translation(c);
+        let want = cast_shapes(
+            &Pose::IDENTITY,
+            Vec3::ZERO,
+            &tri,
+            &at,
+            d,
+            &Ball::new(0.3),
+            options,
+        )
+        .unwrap();
+        assert_eq!(
+            want.is_some(),
+            got.is_some(),
+            "parry {want:?} vs ours {got:?}"
+        );
     }
 
     #[test]
@@ -472,7 +513,7 @@ mod tests {
         let c = compound.as_compound().unwrap();
         agrees(c, &pose, 9.0, |ctr, d, r, max| {
             let parts = compound_parts_near(c, &pose, &swept_aabb(ctr, d, r, max));
-            ball_compound(c, &pose, &parts, ctr, d, r, max)
+            ball_compound(c, &pose, &parts, ctr, d, r, wheel_options(max))
         });
     }
 }

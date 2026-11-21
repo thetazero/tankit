@@ -19,9 +19,7 @@ use glam::{Mat4, Quat, Vec2, Vec3};
 use rapier3d::prelude::*;
 
 use crate::game::DT;
-use crate::map::Map;
-#[cfg(test)]
-use crate::map::Wedge;
+use crate::map::{Map, Wedge};
 
 pub const GRAVITY: f32 = 9.81;
 
@@ -276,24 +274,28 @@ impl Chassis {
     /// How far from the body's origin this hull or its wheels' sweeps can
     /// reach (m).
     pub fn reach(kind: HullKind) -> f32 {
-        static REACH: std::sync::OnceLock<Vec<(HullKind, f32)>> = std::sync::OnceLock::new();
+        use HullKind::*;
+        // Exhaustive, so a new hull kind can't go without its reach.
+        let index = |k: HullKind| match k {
+            Kataphrakt => 0,
+            Kastron => 1,
+            Sethuun => 2,
+            Vigil => 3,
+            Gravis => 4,
+        };
+        static REACH: std::sync::OnceLock<[f32; 5]> = std::sync::OnceLock::new();
         let all = REACH.get_or_init(|| {
-            use HullKind::*;
-            [Kataphrakt, Kastron, Sethuun, Vigil, Gravis]
-                .into_iter()
-                .map(|k| {
-                    let c = Chassis::of(k);
-                    let hull = c
-                        .collider_points()
-                        .iter()
-                        .fold(0.0f32, |m, p| m.max(p.length()));
-                    let wheels = (0..c.wheel_count())
-                        .fold(0.0f32, |m, i| m.max(c.mount(i).length() + c.free_len()));
-                    (k, hull.max(wheels))
-                })
-                .collect()
+            let mut all = [0.0; 5];
+            for k in [Kataphrakt, Kastron, Sethuun, Vigil, Gravis] {
+                let c = Chassis::of(k);
+                let hull = (c.collider_points().iter()).fold(0.0f32, |m, p| m.max(p.length()));
+                let wheels = (0..c.wheel_count())
+                    .fold(0.0f32, |m, i| m.max(c.mount(i).length() + c.free_len()));
+                all[index(k)] = hull.max(wheels);
+            }
+            all
         });
-        all.iter().find(|r| r.0 == kind).map_or(10.0, |r| r.1)
+        all[index(kind)]
     }
 
     /// Suspension mount for wheel `i` (left side first, then right).
@@ -1013,7 +1015,13 @@ impl World {
     /// (another tank, or anything else put in the world) this step. Most of
     /// the time they can't, and their sweeps skip the general cast.
     fn crowded(&self) -> Vec<bool> {
-        let extra = self.physics.colliders.len() > self.ground.len() + 2 * self.tanks.len();
+        // Anything that's neither the map nor a tank's (a test's ledge, say):
+        // every tank's wheels might touch it.
+        let tanks_own = |h: ColliderHandle| {
+            (self.tanks.iter()).any(|t| t.collider == h || t.turret_hitbox == h)
+        };
+        let extra = (self.physics.colliders.iter())
+            .any(|(h, _)| !self.ground.contains(&h) && !tanks_own(h));
         let reach: Vec<f32> = self
             .tanks
             .iter()
@@ -1330,7 +1338,7 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
         }
     }
     for w in &map.wedges {
-        if let Some(b) = SharedShape::convex_hull(&w.points()) {
+        if let Some(b) = wedge_shape(w) {
             add(ground_friction, Pose::IDENTITY, b);
         }
     }
@@ -1354,9 +1362,8 @@ pub fn apron_rects(a: Vec2, b: Vec2, size: f32) -> [(Vec2, Vec2); 4] {
     ]
 }
 
-#[cfg(test)]
-fn wedge_collider(w: &Wedge) -> Option<ColliderBuilder> {
-    ColliderBuilder::convex_hull(&w.points())
+fn wedge_shape(w: &Wedge) -> Option<SharedShape> {
+    SharedShape::convex_hull(&w.points())
 }
 
 fn sync_from_body(t: &mut Tank, physics: &PhysicsWorld) {
@@ -1484,7 +1491,11 @@ fn drive(
                 let hit = if let Some(hf) = shape.as_heightfield() {
                     crate::sweep::ball_heightfield(hf, at, origin, -up, wheel_r, reach)
                 } else if let Some(cp) = shape.as_compound() {
-                    crate::sweep::ball_compound(cp, at, parts, origin, -up, wheel_r, reach)
+                    let options = rapier3d::parry::query::ShapeCastOptions {
+                        max_time_of_impact: reach,
+                        ..options
+                    };
+                    crate::sweep::ball_compound(cp, at, parts, origin, -up, wheel_r, options)
                 } else {
                     None
                 };
@@ -2458,7 +2469,7 @@ mod tests {
             color: Vec3::ONE,
         };
         w.physics
-            .insert_collider(wedge_collider(&kicker).unwrap(), None);
+            .insert_collider(ColliderBuilder::new(wedge_shape(&kicker).unwrap()), None);
         w.map.wedges.push(kicker);
         place(&mut w, Vec3::new(100.0, 0.2, 70.0), Quat::IDENTITY);
         run(&mut w, Command::default(), 1.0);

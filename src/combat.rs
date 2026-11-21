@@ -1458,9 +1458,15 @@ impl Match {
                 (b.center, b.radius)
             })
         };
-        self.bounds = (self.world.tanks.iter())
-            .map(|t| [sphere(t.collider), sphere(t.turret_hitbox)])
-            .collect();
+        // Only flames and tolls look at them.
+        let reaching = |s: &Shell| matches!(s.spec.look, Look::Flame | Look::Toll);
+        self.bounds = if self.shells.iter().any(reaching) {
+            (self.world.tanks.iter())
+                .map(|t| [sphere(t.collider), sphere(t.turret_hitbox)])
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut shells = std::mem::take(&mut self.shells);
         shells.retain_mut(|s| {
             s.age += DT;
