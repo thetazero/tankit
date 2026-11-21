@@ -315,7 +315,7 @@ fn sculpt_rock(m: &mut crate::render::mesh::MeshData, rock: &Rock) {
                     hash(ii, k0 + r as u32 * 2 + 1) - 0.5,
                 )
             };
-            let a = (i as f32 + ja * 0.6) / n as f32 * TAU;
+            let a = (i as f32 + ja * 0.15) / n as f32 * TAU;
             let dir = Vec2::new(a.cos(), a.sin());
             let edge = (rock.rim)(a);
             let lip = (rock.top)(rock.center + dir * (edge - 1.6).max(0.0));
@@ -426,7 +426,7 @@ fn sculpt_rock(m: &mut crate::render::mesh::MeshData, rock: &Rock) {
                     if sandy[k] {
                         Material::Sand
                     } else {
-                        Material::Rubble
+                        Material::Cliff
                     }
                     .id(),
                 )
