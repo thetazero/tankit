@@ -412,10 +412,20 @@ const SUSPENSION_DAMPING_RATIO: f32 = 0.6;
 /// suspension geometry, so a hard turn doesn't heel the hull onto its
 /// outer track.
 const ANTI_ROLL: f32 = 0.6;
-/// The same along the tracks, for the engine and the brakes alike: the hull
-/// squats a little pulling away and dives more stopping hard (the brakes
-/// push harder than the engine), but never throws the gun far off its mark.
-const ANTI_SQUAT: f32 = 0.6;
+/// The same along the tracks while the push speeds the hull up (the
+/// engine): pulling away squats it only a little, so the gun stays near its
+/// mark.
+const ANTI_SQUAT: f32 = 0.85;
+/// ...and while it slows the hull (the brakes, pressing against the way
+/// it's going): less, so a hard stop dives the nose (or from reverse,
+/// throws it up), enough to tip the gun onto something.
+const ANTI_DIVE: f32 = 0.35;
+/// Below this speed, m/s, the brakes' lift fades into the engine's, so
+/// braking through a stop into reverse (the push keeps its way while the
+/// lift would change) and pivoting (the tracks push opposite ways) never
+/// jolt the hull. Moving, the lift changes only as the push flips, when
+/// it's nothing.
+const DIVE_FADE_SPEED: f32 = 2.0;
 /// Drivetrain inertia seen at each belt, as a fraction of the tank's mass.
 const BELT_MASS_FRAC: f32 = 0.08;
 /// Below this speed with no input, the parking brake holds the tank.
@@ -1753,11 +1763,18 @@ fn drive(
         }
         let com = b.center_of_mass();
         // Track forces act part way up from the ground toward the center
-        // of mass: along the track by [`ANTI_SQUAT`], across it by
-        // [`ANTI_ROLL`].
+        // of mass: along the track by [`ANTI_SQUAT`] speeding up and
+        // [`ANTI_DIVE`] slowing down, across it by [`ANTI_ROLL`].
+        let fade = (v_now.abs() / DIVE_FADE_SPEED).clamp(0.0, 1.0);
+        let fade = fade * fade * (3.0 - 2.0 * fade);
         for (along, across, p) in impulses {
             let arm = (com - p).dot(up).max(0.0);
-            b.apply_impulse_at_point(along, p + up * arm * ANTI_SQUAT, true);
+            let lift = if along.dot(fwd) * v_now < 0.0 {
+                ANTI_SQUAT + (ANTI_DIVE - ANTI_SQUAT) * fade
+            } else {
+                ANTI_SQUAT
+            };
+            b.apply_impulse_at_point(along, p + up * arm * lift, true);
             b.apply_impulse_at_point(across, p + up * arm * ANTI_ROLL, true);
         }
     }
@@ -2159,7 +2176,7 @@ mod tests {
     }
 
     /// The most a hull may tip pulling away flat out, degrees.
-    const LAUNCH_PITCH: f32 = 4.5;
+    const LAUNCH_PITCH: f32 = 3.0;
 
     fn hull_pitch(t: &Tank) -> f32 {
         t.forward().y.asin().to_degrees()
@@ -2207,7 +2224,7 @@ mod tests {
             }
             assert!(up < LAUNCH_PITCH, "{hull:?} squatted {up} deg pulling away");
             assert!(
-                -down > up,
+                -down > 2.0 * up,
                 "{hull:?}: braking dived {down} deg, launching {up}"
             );
             assert!(
@@ -2221,6 +2238,50 @@ mod tests {
                 hull_pitch(t)
             );
         }
+    }
+
+    /// Braking to a stop and holding on into reverse, or pivoting in
+    /// place, never jolts the hull: the brakes' lift fades into the
+    /// engine's as the speed falls, so the hull's pitching never kicks
+    /// harder than it did the moment the brakes went on.
+    #[test]
+    fn braking_through_a_stop_never_jolts() {
+        let mut w = parked_tank(HullKind::Kataphrakt);
+        run(&mut w, throttle(1.0), 4.0);
+        let pitch = |w: &World| hull_pitch(&w.tanks[0]);
+        // How sharply the pitch's acceleration changes in a step: a lift
+        // that jumped would jump the torque, and with it this.
+        let (mut last, mut rate, mut accel) = (pitch(&w), 0.0f32, 0.0f32);
+        let (mut on, mut through) = (0.0f32, 0.0f32);
+        for i in 0..(2.5 / DT) as usize {
+            w.step(&[throttle(-1.0)]);
+            let now = pitch(&w);
+            let r = (now - last) / DT;
+            let a = (r - rate) / DT;
+            let kick = (a - accel).abs();
+            (last, rate, accel) = (now, r, a);
+            if (2..5).contains(&i) {
+                on = on.max(kick);
+            } else if i >= 5 && w.tanks[0].speed().abs() < 3.0 {
+                through = through.max(kick);
+            }
+        }
+        assert!(w.tanks[0].speed() < -2.0, "never got going in reverse");
+        assert!(
+            through < on,
+            "pitch jolted {through:.0} deg/s² per step through the stop, \
+             {on:.0} as the brakes went on"
+        );
+        let mut w = parked_tank(HullKind::Kataphrakt);
+        let mut worst = 0.0f32;
+        for _ in 0..(3.0 / DT) as usize {
+            w.step(&[Command {
+                steer: 1.0,
+                ..Default::default()
+            }]);
+            worst = worst.max(pitch(&w).abs());
+        }
+        assert!(worst < 1.5, "pivoting pitched it {worst} deg");
     }
 
     /// Cruising flat out in a straight line, the hull rides level: no
