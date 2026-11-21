@@ -61,6 +61,31 @@ pub struct Contact {
     pub health: f32,
 }
 
+/// Somewhere a bot is sent: it makes for it and patrols inside the ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Objective {
+    pub at: Vec2,
+    pub radius: f32,
+    /// The floor it's on (a cave's, under a roof), or infinity for the
+    /// floor seen from above.
+    pub level: f32,
+    /// Whether it leaves the ring to fight enemies that come close. A flag
+    /// carrier doesn't: it drives on, shooting what it sees on the way.
+    pub fight: bool,
+}
+
+impl Objective {
+    /// A ring on the floor seen from above, guarded (the Hold site).
+    pub fn ring(at: Vec2, radius: f32) -> Objective {
+        Objective {
+            at,
+            radius,
+            level: f32::INFINITY,
+            fight: true,
+        }
+    }
+}
+
 /// The distance a gun is best fought at, m: where it hits hard and reliably
 /// but the enemy isn't on top of it.
 pub fn ideal_range(kind: TurretKind) -> f32 {
@@ -97,14 +122,21 @@ impl Brain {
         me: usize,
         world: &World,
         contacts: &[Contact],
-        objective: Option<(Vec2, f32)>,
+        objective: Option<Objective>,
         crates: &[Vec2],
         nav: &NavGrid,
         dt: f32,
     ) -> (Command, bool) {
         match self {
             Brain::Bot(b) => b.think(me, world, contacts, objective, crates, nav, dt),
-            Brain::Baseline(b) => b.think(me, world, contacts, objective, nav, dt),
+            Brain::Baseline(b) => b.think(
+                me,
+                world,
+                contacts,
+                objective.map(|o| (o.at, o.radius)),
+                nav,
+                dt,
+            ),
         }
     }
 
@@ -236,12 +268,14 @@ impl Bot {
         me: usize,
         world: &World,
         contacts: &[Contact],
-        objective: Option<(Vec2, f32)>,
+        objective: Option<Objective>,
         crates: &[Vec2],
         nav: &NavGrid,
         dt: f32,
     ) -> (Command, bool) {
         let t = &world.tanks[me];
+        // Sent somewhere it isn't to stop and fight on the way (carrying the flag).
+        let runs = objective.is_some_and(|o| !o.fight);
         let g = crate::combat::gun(t.turret_kind);
         // A broken Vigil has a few seconds left whatever it does: it spends
         // them going for the throat.
@@ -296,7 +330,10 @@ impl Bot {
                 score += contacts[j].health * 30.0;
                 score += (d - reach).max(0.0) * 0.5;
                 // Holding: the enemies that matter are the ones on or near the site.
-                if let Some((c, r)) = objective {
+                if let Some(Objective {
+                    at: c, radius: r, ..
+                }) = objective
+                {
                     score += (flat(o.pos).distance(c) - r).max(0.0) * 0.6;
                 }
                 if best.is_none_or(|(_, s)| score < s) {
@@ -325,21 +362,23 @@ impl Bot {
         // only give it up if the target gets well out of it or out of sight.
         let target_d = target.map_or(f32::INFINITY, |o| flat(o.pos).distance(my2));
         self.engaged = !brawler
+            && !runs
             && visible
             && target_d < reach
             && target_d < ideal * if self.engaged { 1.5 } else { 1.2 };
 
         // Hurt and not in the thick of it: a repair crate nearby is worth
         // the drive.
-        let mend = (!husk && contacts[me].health < MEND_BELOW && !(visible && target_d < 25.0))
-            .then(|| {
-                crates
-                    .iter()
-                    .copied()
-                    .filter(|c| c.distance(my2) < MEND_REACH)
-                    .min_by(|a, b| a.distance(my2).total_cmp(&b.distance(my2)))
-            })
-            .flatten();
+        let mend =
+            (!husk && !runs && contacts[me].health < MEND_BELOW && !(visible && target_d < 25.0))
+                .then(|| {
+                    crates
+                        .iter()
+                        .copied()
+                        .filter(|c| c.distance(my2) < MEND_REACH)
+                        .min_by(|a, b| a.distance(my2).total_cmp(&b.distance(my2)))
+                })
+                .flatten();
         if mend.is_some() {
             self.engaged = false;
         }
@@ -425,14 +464,23 @@ impl Bot {
         let goal = match (mend, objective, target) {
             (Some(c), _, _) => up(c),
             (None, Some(_), Some(o)) if husk => o.pos,
-            (None, Some((c, r)), t) => {
+            (None, Some(ob), t) => {
+                let (c, r) = (ob.at, ob.radius);
+                let on = |p: Vec2| Vec3::new(p.x, ob.level, p.y);
                 let chase = t.map(|o| flat(o.pos)).filter(|&p| {
-                    visible && (p.distance(my2) < GUARD_CHASE || p.distance(c) < r + 8.0)
+                    ob.fight
+                        && visible
+                        && (p.distance(my2) < GUARD_CHASE || p.distance(c) < r + 8.0)
                 });
                 match chase {
                     Some(p) => at_level(approach(p)),
-                    None => up({
-                        if self.post.is_some_and(|p| p.distance(my2) < 4.0) {
+                    None => on({
+                        // Reached, or left behind by an objective that moved
+                        // (a flag on the go): a new one.
+                        if self
+                            .post
+                            .is_some_and(|p| p.distance(my2) < 4.0 || p.distance(c) > r)
+                        {
                             self.post = None;
                         }
                         *self.post.get_or_insert_with(|| {
@@ -489,7 +537,7 @@ impl Bot {
 
         // Driving.
         let mut cmd = Command::default();
-        let close = brawler && visible && target_d < standoff && mend.is_none();
+        let close = brawler && !runs && visible && target_d < standoff && mend.is_none();
         if let Some(wp) = self.path.first().map(|&p| flat(p)) {
             let err = wrap_angle(yaw_of(wp - my2) - t.yaw());
             cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
@@ -518,7 +566,8 @@ impl Bot {
         // A close-range gun with its target in sight and nothing in between
         // drives straight for it (where it's going, a moment ahead), not
         // along a path planned to where it was.
-        if let Some(o) = target.filter(|_| brawler && visible && !close && mend.is_none()) {
+        if let Some(o) = target.filter(|_| brawler && !runs && visible && !close && mend.is_none())
+        {
             let ahead = flat(o.pos) + flat(o.vel) * (target_d / 25.0).min(1.0);
             if nav.clear_from(t.pos, ahead) {
                 let err = wrap_angle(yaw_of(ahead - my2) - t.yaw());
@@ -550,7 +599,8 @@ impl Bot {
             }
         }
         if let (true, Some(o)) = (self.engaged, target) {
-            cmd = self.circle(t, flat(o.pos), ideal, objective, nav, dt);
+            let ring = objective.map(|o| (o.at, o.radius));
+            cmd = self.circle(t, flat(o.pos), ideal, ring, nav, dt);
         }
 
         // Stuck against something: back off with the wheel turned, then replan.
@@ -663,7 +713,7 @@ impl Bot {
         };
         self.bank_in -= dt;
         match target {
-            Some(o) if bounces > 0 && !visible && target_d < BANK_REACH => {
+            Some(o) if bounces > 0 && !visible && target_d < BANK_REACH && !runs => {
                 if self.bank_in <= 0.0 {
                     self.bank_in = 0.25;
                     self.bank = bank_shot(world, t, o, g.speed());

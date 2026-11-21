@@ -14,6 +14,7 @@ use crate::faction::Faction;
 use crate::hold::{self, Control};
 use crate::mission::Contract;
 use crate::profile::{Profile, Rank};
+use crate::raid;
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::sim::Tank;
@@ -333,6 +334,48 @@ impl Hud {
                     );
                 }
             }
+        }
+
+        if let Some(r) = &m.raid
+            && !board
+            && !r.done()
+        {
+            raid_meter(&mut p, m, r, Vec2::new(top.x, sy + 32.0));
+            let mut tag = |at: Vec3, text: &str, color: Rgba| {
+                if let Some((x, y)) = project(vp, at, width, height) {
+                    let at = Vec2::new(x, y) / scale;
+                    if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
+                        let mut s = TextStyle::LABEL;
+                        s.color = color;
+                        p.text(at, text, &s, Align::Center);
+                    }
+                }
+            };
+            let dist = |at: Vec3| Vec2::new(tank.pos.x, tank.pos.z).distance(Vec2::new(at.x, at.z));
+            // The flag, wherever it is, through walls: unless you have it.
+            let flag = r.flag_at(tanks);
+            if r.carrier() != Some(0) {
+                let color = m.factions[r.defenders()].ui();
+                tag(
+                    flag + Vec3::Y * 7.0,
+                    &format!("FLAG  {:.0} M", dist(flag)),
+                    color,
+                );
+            }
+            // Where it's being carried to, once it's on its way.
+            if r.carrier().is_some() {
+                let home = r.capture_point();
+                tag(
+                    home + Vec3::Y * 9.0,
+                    &format!("CAPTURE  {:.0} M", dist(home)),
+                    m.factions[r.attackers()].ui(),
+                );
+            }
+        }
+        if let Some(r) = &m.raid
+            && r.paused()
+        {
+            raid_break(&mut p, m, r, Vec2::new(w * 0.5, h * 0.28));
         }
 
         // Crosshair where the shot would land, down the gun as the aim assist
@@ -849,6 +892,91 @@ fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     }
 }
 
+/// The Raid under the scores: the round and whether your side attacks or
+/// defends it, then where the flag is.
+fn raid_meter(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
+    let mine = m.player().team;
+    let attacking = r.attackers() == mine;
+    let mut l = TextStyle::LABEL;
+    l.color = m.factions[mine].ui();
+    p.text(
+        at,
+        &format!(
+            "ROUND {}/{}  ·  {}",
+            r.round + 1,
+            raid::ROUNDS,
+            if attacking { "ATTACK" } else { "DEFEND" }
+        ),
+        &l,
+        Align::Center,
+    );
+    let (text, color) = match r.flag {
+        raid::Flag::Home if attacking => ("TAKE THEIR FLAG".to_string(), theme::DIM),
+        raid::Flag::Home => ("YOUR FLAG IS HOME".to_string(), theme::DIM),
+        raid::Flag::Carried(0) => ("YOU HAVE THE FLAG: TAKE IT HOME".to_string(), theme::HOT),
+        raid::Flag::Carried(i) => (
+            format!("{} HAS THE FLAG", m.factions[m.fighters[i].team].name()),
+            m.factions[m.fighters[i].team].ui(),
+        ),
+        raid::Flag::Dropped { for_, .. } => (
+            format!(
+                "FLAG DROPPED  ·  HOME IN {:.0}",
+                (raid::RETURN_TIME - for_).ceil()
+            ),
+            theme::HOT,
+        ),
+    };
+    let mut s = TextStyle::LABEL;
+    s.color = color;
+    p.text(at + Vec2::new(0.0, 18.0), &text, &s, Align::Center);
+}
+
+/// Between a Raid's rounds: how the round went, and what's next.
+fn raid_break(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
+    let Some(last) = r.played.last() else { return };
+    let mine = m.player().team;
+    let att = m.factions[last.attackers];
+    let def = m.factions[1 - last.attackers];
+    let (text, side) = match last.captured {
+        Some(t) => {
+            let t = t.round() as u32;
+            (
+                format!("{} TOOK THE FLAG  {}:{:02}", att.name(), t / 60, t % 60),
+                last.attackers,
+            )
+        }
+        None => (
+            format!("{} HELD THEIR FLAG", def.name()),
+            1 - last.attackers,
+        ),
+    };
+    let mut big = TextStyle::value(22.0);
+    big.color = m.factions[side].ui();
+    p.text(at, &text, &big, Align::Center);
+    if !r.done() {
+        // The sides swap when the break ends.
+        let next = if r.attackers() == mine {
+            "DEFEND"
+        } else {
+            "ATTACK"
+        };
+        let mut l = TextStyle::LABEL;
+        l.color = theme::FG;
+        p.text(
+            at + Vec2::new(0.0, 34.0),
+            &format!(
+                "ROUND {}/{}: YOU {}  ·  {:.0}",
+                r.round + 2,
+                raid::ROUNDS,
+                next,
+                r.break_left.ceil()
+            ),
+            &l,
+            Align::Center,
+        );
+    }
+}
+
 fn hold_color(m: &Match, c: Control) -> Rgba {
     match c {
         Control::Held(s) => m.factions[s].ui(),
@@ -1171,7 +1299,7 @@ mod tests {
 
     #[test]
     fn draws_at_any_size() {
-        for contract in [Contract::Attrition, Contract::Hold] {
+        for contract in [Contract::Attrition, Contract::Hold, Contract::Raid] {
             draws_at_any_size_under(contract);
         }
     }

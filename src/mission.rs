@@ -16,6 +16,9 @@ pub enum Contract {
     /// King of the hill: secure a crystal deposit; the side that holds it
     /// longest wins.
     Hold,
+    /// One-sided capture the flag: one side defends a flag at its base,
+    /// the other carries it home; sides swap each round (see `raid`).
+    Raid,
 }
 
 impl Contract {
@@ -23,6 +26,7 @@ impl Contract {
         match self {
             Contract::Attrition => "ATTRITION",
             Contract::Hold => "HOLD",
+            Contract::Raid => "RAID",
         }
     }
 }
@@ -159,6 +163,23 @@ pub const MISSIONS: &[Mission] = &[
         rank: T1_RANK,
         prizes: &[KNELL, AMMETH],
     },
+    Mission {
+        name: "STOLEN FLAG",
+        contract: Contract::Raid,
+        map: "THE SEAM",
+        map_kind: MapKind::Mine,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Ithessar, Faction::Resonant],
+        briefs: &[
+            "Take the Resonant flag from their camp and bring it home. Then keep yours.",
+            "Take the miners' flag from their yard and bring it home. Then keep yours.",
+        ],
+        rating: 10,
+        rank: T1_RANK,
+        // Crystals only: every schematic is already some mission's prize.
+        prizes: &[None, None],
+    },
 ];
 
 /// The missions `faction` hires for, locked or not: indices into `MISSIONS`.
@@ -252,10 +273,10 @@ mod tests {
         assert!(m.open_at(T0_5_RANK));
         // Pays half as much again as an M0 contract.
         assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 3 / 2);
-        // The rest but Deep Vein are T0, open from the start.
+        // The rest but the Seam's two are T0, open from the start.
         for m in MISSIONS
             .iter()
-            .filter(|m| !["FOUR WINDS", "DEEP VEIN"].contains(&m.name))
+            .filter(|m| !["FOUR WINDS", "DEEP VEIN", "STOLEN FLAG"].contains(&m.name))
         {
             assert_eq!((m.rating, m.open_at(1)), (0, true), "{}", m.name);
         }
@@ -320,16 +341,30 @@ mod tests {
         }
     }
 
+    /// A map can carry more than one contract, but never the same one twice.
     #[test]
-    fn one_map_per_contract() {
+    fn one_mission_per_map_and_contract() {
         for (i, a) in MISSIONS.iter().enumerate() {
             for b in &MISSIONS[i + 1..] {
-                assert_ne!(
-                    a.map_kind, b.map_kind,
-                    "{} and {} share a map",
-                    a.name, b.name
+                assert!(
+                    a.map_kind != b.map_kind || a.contract != b.contract,
+                    "{} and {} are the same contract on the same map",
+                    a.name,
+                    b.name
                 );
             }
         }
+    }
+
+    #[test]
+    fn raid_is_on_the_seam() {
+        let m = MISSIONS
+            .iter()
+            .find(|m| m.contract == Contract::Raid)
+            .unwrap();
+        assert_eq!(m.map_kind, MapKind::Mine);
+        // The Seam's tier, like Deep Vein.
+        assert_eq!(m.rating_label(), "T1");
+        assert!(m.open_at(T1_RANK));
     }
 }
