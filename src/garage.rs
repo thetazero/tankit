@@ -53,8 +53,8 @@ const BUTTONS_TOP: f32 = 746.0;
 const BUTTON_H: f32 = 30.0;
 /// The stats card's content width.
 const STATS_W: f32 = 300.0;
-/// Near-opaque so the text reads over any map.
-const PANEL_FILL: Rgba = [0.006, 0.007, 0.009, 0.95];
+/// Opaque so the text reads over any map (see `theme::PANEL` for why not nearly).
+const PANEL_FILL: Rgba = [0.006, 0.007, 0.009, 1.0];
 const CARD_FILL: Rgba = [0.94, 0.91, 0.86, 0.035];
 const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
