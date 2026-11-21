@@ -3405,10 +3405,11 @@ impl Map {
         }
     }
 
-    /// The loading tipple over the track south of the bridge: a crystal bin
-    /// on four legs high enough to run a train (or a tank) under, its chute
-    /// over the rails, and the conveyor climbing to it out of the wash from
-    /// the cutting rig.
+    /// The loading tipple over the track south of the bridge: a steel ore
+    /// bin heaped over its rim, on four braced legs high enough to run a
+    /// train (or a tank) under, its hopper narrowing to a spout over the
+    /// rails, and the conveyor climbing to it out of the wash from the
+    /// cutting rig and tipping onto the heap.
     fn tipple(&mut self) {
         let (at, dir) = track_at(track_len(3) + 6.0);
         let g = self.ground_height(at.x, at.y);
@@ -3416,57 +3417,270 @@ impl Map {
             pos: Vec3::new(at.x, g, at.y),
             rot: Quat::from_rotation_y(yaw_along(dir)),
         };
-        let (bin0, bin1) = (7.5, 11.0);
+        // Its detail from its own stream (the car under it has the one at
+        // `at`), so nothing else on the map moves.
+        let rng = &mut own_rng(at + Vec2::splat(0.5));
+        // The legs' tops and the bin's floor, its rim, the hopper's throat
+        // and the spout's mouth, the clearance over the rails.
+        let (deck, rim, throat, mouth) = (8.0f32, 11.0f32, 6.9f32, 6.1f32);
+        let (lx, lz) = (3.6f32, 5.4f32);
+        let (bx, bz) = (3.9f32, 5.7f32);
         for (sx, sz) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-            let foot = rig.point(Vec3::new(sx * 3.6, 0.0, sz * 5.4));
+            let foot = rig.point(Vec3::new(sx * lx, 0.0, sz * lz));
             let gf = self.ground_height(foot.x, foot.z);
             self.oboxes.push(OBox {
                 center: Vec2::new(foot.x, foot.z),
                 yaw: yaw_along(dir),
-                half: Vec2::splat(0.4),
+                half: Vec2::splat(0.3),
                 y0: gf - 0.3,
-                y1: g + bin0,
+                y1: g + deck,
                 color: RUST,
                 side_mat: Material::Rust,
                 top_mat: Material::Rust,
                 ..OBox::default()
             });
+            // A footing under each leg.
+            self.oboxes.push(OBox {
+                center: Vec2::new(foot.x, foot.z),
+                yaw: yaw_along(dir),
+                half: Vec2::splat(0.55),
+                y0: gf - 0.3,
+                y1: gf + 0.35,
+                color: STEEL * 1.4,
+                side_mat: Material::Metal,
+                top_mat: Material::Metal,
+                chip: 0.08,
+                ..OBox::default()
+            });
         }
-        rig.part(
-            self,
-            Vec3::new(0.0, (bin0 + bin1) * 0.5, 0.0),
-            Vec3::new(4.0, (bin1 - bin0) * 0.5, 5.8),
-            Quat::IDENTITY,
-            GLASS * 1.1,
-            Material::Vhaal,
-            true,
-            0.0,
+        let piece = |m: &mut Map, a: Vec3, b: Vec3, r: f32| {
+            m.segment(rig.point(a), rig.point(b), r, RUST, Material::Rust, false);
+        };
+        // The long sides, outside the rails: a girt at half height and an X
+        // in each bay, below it and above it.
+        let girt = 4.0;
+        for sx in [-1.0f32, 1.0] {
+            let x = sx * (lx + 0.05);
+            piece(self, Vec3::new(x, girt, -lz), Vec3::new(x, girt, lz), 0.16);
+            for (y0, y1) in [(0.5, girt), (girt, deck - 0.4)] {
+                piece(self, Vec3::new(x, y0, -lz), Vec3::new(x, y1, lz), 0.11);
+                piece(self, Vec3::new(x, y0, lz), Vec3::new(x, y1, -lz), 0.11);
+            }
+        }
+        // Across the track, only knee braces up under the frame, clear of
+        // anything that runs under it.
+        for sz in [-1.0f32, 1.0] {
+            let z = sz * (lz + 0.05);
+            for sx in [-1.0f32, 1.0] {
+                piece(
+                    self,
+                    Vec3::new(sx * lx, deck - 2.0, z),
+                    Vec3::new(sx * (lx - 1.8), deck - 0.4, z),
+                    0.12,
+                );
+            }
+        }
+        // The frame round the legs' tops, the bin's floor sitting on it.
+        for sx in [-1.0f32, 1.0] {
+            rig.part(
+                self,
+                Vec3::new(sx * lx, deck - 0.25, 0.0),
+                Vec3::new(0.3, 0.25, lz + 0.3),
+                Quat::IDENTITY,
+                RUST,
+                Material::Rust,
+                false,
+                0.0,
+            );
+        }
+        for sz in [-1.0f32, 1.0] {
+            rig.part(
+                self,
+                Vec3::new(0.0, deck - 0.25, sz * lz),
+                Vec3::new(lx + 0.3, 0.25, 0.3),
+                Quat::IDENTITY,
+                RUST,
+                Material::Rust,
+                false,
+                0.0,
+            );
+        }
+        // The bin: steel walls, the hopper under them narrowing to the
+        // throat, the spout below that. What shots hit is a box round the
+        // walls, as the old bin was.
+        let mut m = MeshData::default();
+        let inside = Vec3::new(0.0, (deck + rim) * 0.5, 0.0);
+        let ring = |y: f32, hx: f32, hz: f32| {
+            [
+                Vec3::new(hx, y, -hz),
+                Vec3::new(hx, y, hz),
+                Vec3::new(-hx, y, hz),
+                Vec3::new(-hx, y, -hz),
+            ]
+        };
+        let (top, bot) = (ring(rim, bx, bz), ring(deck, bx, bz));
+        let (hop, neck) = (ring(deck, bx, bz), ring(throat, 0.9, 1.1));
+        let funnel = Vec3::new(0.0, deck + 2.0, 0.0);
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            model::plate(&mut m, [bot[i], bot[j], top[j], top[i]], 0.14, inside, BIN);
+            model::plate(
+                &mut m,
+                [neck[i], neck[j], hop[j], hop[i]],
+                0.14,
+                funnel,
+                BIN,
+            );
+        }
+        let spout = model::rect(Vec2::ZERO, Vec2::new(0.9, 1.1), 0.12);
+        let lip = model::rect(Vec2::new(0.0, -0.3), Vec2::new(0.7, 0.8), 0.12);
+        model::solid(
+            &mut m,
+            &[model::at_y(&lip, mouth), model::at_y(&spout, throat + 0.05)],
+            0.04,
+            BIN,
         );
+        self.sculpt(&rig, &m);
+        self.hidden_part(
+            &rig,
+            Vec3::new(0.0, (deck + rim) * 0.5, 0.0),
+            Vec3::new(bx, (rim - deck) * 0.5, bz),
+        );
+        // Ribs up the walls and an angle round the rim.
+        for sx in [-1.0f32, 1.0] {
+            for k in 0..5 {
+                let z = -bz + 0.4 + k as f32 * (2.0 * bz - 0.8) / 4.0;
+                rig.part(
+                    self,
+                    Vec3::new(sx * (bx + 0.12), (deck + rim) * 0.5, z),
+                    Vec3::new(0.1, (rim - deck) * 0.5, 0.14),
+                    Quat::IDENTITY,
+                    RUST,
+                    Material::Rust,
+                    false,
+                    0.0,
+                );
+            }
+            rig.part(
+                self,
+                Vec3::new(sx * (bx + 0.1), rim - 0.1, 0.0),
+                Vec3::new(0.14, 0.14, bz + 0.2),
+                Quat::IDENTITY,
+                RUST,
+                Material::Rust,
+                false,
+                0.0,
+            );
+        }
+        for sz in [-1.0f32, 1.0] {
+            for k in 0..3 {
+                let x = -bx + 0.5 + k as f32 * (bx - 0.5);
+                rig.part(
+                    self,
+                    Vec3::new(x, (deck + rim) * 0.5, sz * (bz + 0.12)),
+                    Vec3::new(0.14, (rim - deck) * 0.5, 0.1),
+                    Quat::IDENTITY,
+                    RUST,
+                    Material::Rust,
+                    false,
+                    0.0,
+                );
+            }
+            rig.part(
+                self,
+                Vec3::new(0.0, rim - 0.1, sz * (bz + 0.1)),
+                Vec3::new(bx + 0.2, 0.14, 0.14),
+                Quat::IDENTITY,
+                RUST,
+                Material::Rust,
+                false,
+                0.0,
+            );
+        }
+        // The ore, heaped up over the rim, highest under the conveyor's
+        // head; raw crystal in it.
+        let lump = |m: &mut Map, rng: &mut Rng, at: Vec3, s: f32| {
+            let shade = [ORE, ORE * 0.75, ORE * 1.2, MESA_TOP * 0.8][rng.index(4)];
+            let turn = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                rng.range(0.0, TAU),
+                rng.range(-0.6, 0.6),
+                rng.range(-0.6, 0.6),
+            );
+            rig.part(
+                m,
+                at,
+                Vec3::new(
+                    s * rng.range(0.8, 1.2),
+                    s * rng.range(0.55, 0.85),
+                    s * rng.range(0.8, 1.2),
+                ),
+                turn,
+                shade * rng.range(0.9, 1.1),
+                Material::Rubble,
+                false,
+                s * 0.4,
+            );
+        };
         rig.part(
             self,
-            Vec3::new(0.0, bin0 - 0.8, 0.0),
-            Vec3::new(1.4, 0.8, 1.4),
+            Vec3::new(0.0, rim - 0.35, 0.0),
+            Vec3::new(bx - 0.1, 0.3, bz - 0.1),
             Quat::IDENTITY,
-            STEEL,
-            Material::Metal,
+            ORE * 0.7,
+            Material::Rubble,
             false,
             0.0,
         );
-        rig.part(
-            self,
-            Vec3::new(0.0, bin1 - 0.7, 0.0),
-            Vec3::new(4.05, 0.1, 5.85),
-            Quat::IDENTITY,
-            PLASMA,
-            Material::Glow,
-            false,
-            0.0,
-        );
+        let heap = |x: f32, z: f32| {
+            let u = (1.0 - (x / bx).powi(2)) * (1.0 - (z / bz).powi(2));
+            rim - 0.2 + 1.5 * u.max(0.0)
+        };
+        for _ in 0..44 {
+            let x = rng.range(-bx + 0.5, bx - 0.5);
+            let z = rng.range(-bz + 0.5, bz - 0.5);
+            let s = rng.range(0.35, 0.75);
+            lump(self, rng, Vec3::new(x, heap(x, z) - s * 0.3, z), s);
+        }
+        for _ in 0..6 {
+            let x = rng.range(-2.4, 2.4);
+            let z = rng.range(-3.6, 3.6);
+            let s = rng.range(0.25, 0.4);
+            rig.part(
+                self,
+                Vec3::new(x, heap(x, z), z),
+                Vec3::new(s, s * 0.7, s * 1.3),
+                Quat::from_euler(glam::EulerRot::YXZ, rng.range(0.0, TAU), 0.4, 0.3),
+                RAW * 1.15,
+                Material::Ore,
+                false,
+                0.0,
+            );
+        }
+        // Ore caught in the spout's mouth, and what's missed the cars and
+        // lies along the rails.
+        for _ in 0..3 {
+            let at = Vec3::new(
+                rng.range(-0.4, 0.4),
+                mouth - rng.range(0.0, 0.25),
+                -0.3 + rng.range(-0.5, 0.5),
+            );
+            let s = rng.range(0.25, 0.4);
+            lump(self, rng, at, s);
+        }
+        for _ in 0..12 {
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let x = side * rng.range(1.6, 3.4);
+            let z = rng.range(-lz, lz);
+            let p = rig.point(Vec3::new(x, 0.0, z));
+            let gp = self.ground_height(p.x, p.z) - g;
+            let s = rng.range(0.2, 0.42);
+            lump(self, rng, Vec3::new(x, gp + s * 0.3, z), s);
+        }
         // The conveyor from beside the rig in the wash, up over the bank,
-        // to the bin's side.
+        // to its head over the heap.
         let a = Vec3::new(101.0, -WASH_DEPTH + 1.4, 128.0);
-        let side = rig.point(Vec3::new(-4.0, bin1 - 0.3, 0.0));
-        let b = Vec3::new(side.x, side.y, side.z);
+        let b = rig.point(Vec3::new(-bx + 1.2, rim + 1.6, 0.0));
         self.segment(a, b, 0.5, STEEL, Material::Metal, false);
         if let Some(o) = self.oboxes.last_mut() {
             o.half.x = 0.9;
@@ -3482,14 +3696,57 @@ impl Map {
         if let Some(o) = self.oboxes.last_mut() {
             o.half.x = 0.5;
         }
-        for f in [0.2f32, 0.42, 0.64, 0.84] {
+        // Its head drum, and the ore going over it onto the heap.
+        let across = (b - a).cross(Vec3::Y).normalize();
+        self.segment(
+            b - across * 1.0,
+            b + across * 1.0,
+            0.45,
+            RUST,
+            Material::Rust,
+            false,
+        );
+        let ahead = (b - a).normalize();
+        for k in 0..4 {
+            let p = b + ahead * (0.5 + k as f32 * 0.25) + Vec3::Y * (0.4 - k as f32 * 0.35);
+            let s = rng.range(0.22, 0.32);
+            self.oboxes.push(OBox {
+                center: Vec2::new(p.x, p.z) + Vec2::new(across.x, across.z) * rng.range(-0.5, 0.5),
+                yaw: rng.range(0.0, TAU),
+                half: Vec2::splat(s),
+                y0: p.y - s,
+                y1: p.y + s,
+                color: ORE * rng.range(0.8, 1.2),
+                side_mat: Material::Rubble,
+                top_mat: Material::Rubble,
+                chip: s * 0.4,
+                ..OBox::default()
+            });
+        }
+        // Its supports. The belt crosses the rails just short of the bin,
+        // so its last bent stands on the frame's end beam over them, not
+        // between them.
+        let (la, lb) = (
+            rig.rot.inverse() * (a - rig.pos),
+            rig.rot.inverse() * (b - rig.pos),
+        );
+        let over_end = (-lz - la.z) / (lb.z - la.z);
+        for f in [0.2f32, 0.42, 0.64, over_end] {
             let p = a.lerp(b, f);
-            let gp = self.ground_height(p.x, p.z);
-            let side = (b - a).cross(Vec3::Y).normalize();
+            let side = if f == over_end {
+                rig.rot * Vec3::X
+            } else {
+                (b - a).cross(Vec3::Y).normalize()
+            };
             for s in [-1.0f32, 1.0] {
                 let top = p + side * s - Vec3::Y * 0.4;
+                let foot = if f == over_end {
+                    g + deck
+                } else {
+                    self.ground_height(top.x, top.z) - 0.3
+                };
                 self.segment(
-                    Vec3::new(top.x, gp - 0.3, top.z),
+                    Vec3::new(top.x, foot, top.z),
                     top,
                     0.18,
                     RUST,
@@ -5082,6 +5339,11 @@ const SEAM: Skin = Skin::new(
 const LOOSE: Skin = Skin::new(
     Vec4::new(0.42, 0.13, 0.3, Material::Glow.id()),
     Vec4::new(0.6, 0.22, 0.42, Material::Glow.id()),
+);
+/// The tipple's bin: plain mine steel, edges worn bright.
+const BIN: Skin = Skin::new(
+    Vec4::new(STEEL.x, STEEL.y, STEEL.z, Material::Metal.id()),
+    Vec4::new(0.34, 0.33, 0.33, Material::Metal.id()),
 );
 /// Ore from the Crag's red beds.
 const ORE: Vec3 = Vec3::new(0.36, 0.15, 0.09);
