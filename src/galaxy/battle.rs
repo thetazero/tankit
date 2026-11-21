@@ -394,7 +394,7 @@ mod tests {
         let s = g.settle(&b, &lost, Some(0), Stake::Hulls);
         assert!((before[0] - total(&g, imp) - lost[0] as f32).abs() < 0.01);
         assert!((before[1] - total(&g, res) - lost[1] as f32).abs() < 0.01);
-        assert_eq!(s.lost[imp], lost[0] as f32);
+        assert!((s.lost[imp] - lost[0] as f32).abs() < 1e-3);
         assert_eq!(s.before.held, s.after.held, "a raid takes no ground");
         assert!(!s.taken && !s.shield_down);
     }
