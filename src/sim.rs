@@ -1177,6 +1177,26 @@ impl World {
             .cast_ray(&ray, max, true, QueryFilter::only_fixed())
             .map_or(max, |(_, toi)| toi)
     }
+
+    /// How far a ball of radius `r` at `origin` moves along unit `dir` (up
+    /// to `max`) before it touches the static world. Anything it starts in
+    /// and moves out of doesn't stop it.
+    pub fn ballcast(&self, origin: Vec3, dir: Vec3, r: f32, max: f32) -> f32 {
+        let options = rapier3d::parry::query::ShapeCastOptions {
+            max_time_of_impact: max,
+            stop_at_penetration: false,
+            ..Default::default()
+        };
+        self.physics
+            .cast_shape(
+                &Pose::from_translation(origin),
+                dir,
+                &Ball::new(r),
+                options,
+                QueryFilter::only_fixed(),
+            )
+            .map_or(max, |(_, h)| h.time_of_impact)
+    }
 }
 
 fn insert_tank_body(

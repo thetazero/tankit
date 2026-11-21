@@ -384,7 +384,7 @@ impl Map {
         let g = self.ground_height(at.x, at.y);
         let size = if deep { 3.4 } else { 2.6 };
         // Local +z along the wall, local +x out of its face. A block from
-        // the rocks toolkit: it collides as its box, so its face stays
+        // the rocks toolkit: it collides as what's drawn, its face near
         // plumb.
         let yaw = along.x.atan2(along.y);
         self.oboxes.push(OBox {

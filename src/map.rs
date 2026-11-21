@@ -216,10 +216,10 @@ impl OBox {
         Vec2::new(d.dot(ax), d.dot(az))
     }
 
-    /// A rock (see `rocks`) that's drawn and collided as its own hull inside
-    /// the box, not the box: a boulder or rubble (a block keeps its box).
+    /// A rock (see `rocks`): drawn inside the box and collided as the hull
+    /// of what's drawn, not the box.
     pub fn is_rock(&self) -> bool {
-        matches!(self.rock, Some(rocks::Kind::Boulder | rocks::Kind::Rubble))
+        self.rock.is_some()
     }
 
     /// The rock's surface points in world space, if it collides as one (see

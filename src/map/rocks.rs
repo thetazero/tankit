@@ -12,10 +12,10 @@
 //! underneath, and dust lying on what faces up.
 //!
 //! On the map a rock is an `OBox` with `rock` set (see `boulder`, `block`
-//! and `rubble`). A boulder or rubble collides as the convex hull of the
-//! surface drawn, so tanks and shots meet the rock they see. A block
-//! collides as its box, its faces kept near flat and plumb, so plasma banks
-//! off it true. `Rock::draw` puts
+//! and `rubble`). Every rock collides as the convex hull of the surface
+//! drawn, so tanks, shots and the camera meet the rock they see (a block's
+//! faces are kept near flat and plumb, so plasma still banks off it nearly
+//! true). `Rock::draw` puts
 //! a rock straight into a mesh when it's only looks.
 
 use std::collections::HashMap;
@@ -33,8 +33,8 @@ pub enum Kind {
     /// A lump of natural rock: rounded, broken by fracture faces, bedded
     /// flat underneath. Collides as its own hull.
     Boulder,
-    /// A block of stone: square, edges worn round, faces nearly flat. Its
-    /// collider stays its box.
+    /// A block of stone: square, edges worn round, faces nearly flat.
+    /// Collides as its own hull.
     Block,
     /// A broken chunk (concrete, masonry, ore): square-ish, sharply broken
     /// across at odd angles. Collides as its own hull.
@@ -244,7 +244,7 @@ impl Rock {
         // Narrower at the top than the foot, a little.
         let taper = match self.kind {
             Kind::Boulder => 0.1 + 0.15 * rng.f(),
-            // Its box is its collider: a face stays near plumb.
+            // Squared stone: a face stays near plumb.
             Kind::Block => 0.03 * rng.f(),
             Kind::Rubble => 0.0,
         };
@@ -556,7 +556,7 @@ mod tests {
         }
     }
 
-    /// A block's faces stay close to its box (it collides as the box), and
+    /// A block's faces stay close to its box (squared stone), and
     /// a boulder is round, nothing like one.
     #[test]
     fn blocks_are_square_and_boulders_round() {
@@ -588,6 +588,57 @@ mod tests {
             assert!(corner(&b) > 0.75, "block {key}: corners worn right off");
             let r = rock(Kind::Boulder, half, key);
             assert!(corner(&r) < 0.8, "boulder {key}: has a box's corners");
+        }
+    }
+
+    /// What collides is what's drawn: the hull of a rock's surface (its
+    /// collider) is nowhere far off the surface itself, whatever the kind
+    /// (#284: blocks collided as their box, out past their worn corners).
+    #[test]
+    fn a_rock_collides_where_its_drawn() {
+        use rapier3d::parry::query::{PointQuery, Ray, RayCast};
+        use rapier3d::parry::shape::{SharedShape, TriMesh};
+        for (kind, half) in [
+            (Kind::Boulder, Vec3::new(3.5, 4.0, 3.2)),
+            (Kind::Boulder, Vec3::new(1.0, 0.8, 0.8)),
+            (Kind::Block, Vec3::new(2.4, 3.0, 3.4)),
+            (Kind::Block, Vec3::new(1.0, 0.6, 1.5)),
+            (Kind::Rubble, Vec3::new(1.0, 0.7, 0.8)),
+        ] {
+            // Collides as its hull (see `rock_hull` in `sim`), not its box.
+            assert!(
+                OBox {
+                    rock: Some(kind),
+                    ..OBox::default()
+                }
+                .is_rock(),
+                "{kind:?}"
+            );
+            for key in 0..10u32 {
+                let r = rock(kind, half, key);
+                let s = r.surface();
+                let drawn = TriMesh::new(s.pos.clone(), s.tris.clone()).unwrap();
+                let hull = SharedShape::convex_hull(&r.points()).unwrap();
+                // Points all over the hull, each this far from the surface.
+                let n = 1500;
+                let worst = (0..n)
+                    .map(|i| {
+                        let y = 1.0 - 2.0 * (i as f32 + 0.5) / n as f32;
+                        let a = i as f32 * 2.399_963;
+                        let w = (1.0 - y * y).sqrt();
+                        let d = Vec3::new(a.cos() * w, y, a.sin() * w);
+                        let ray = Ray::new(d * 50.0, -d);
+                        // (A ray skimming a hull's edge can slip past it.)
+                        hull.cast_local_ray(&ray, 100.0, true).map_or(0.0, |t| {
+                            drawn.distance_to_local_point(ray.point_at(t), true)
+                        })
+                    })
+                    .fold(0.0, f32::max);
+                assert!(
+                    worst < 0.25,
+                    "{kind:?} {half} key {key}: collider {worst:.2} m off the rock"
+                );
+            }
         }
     }
 }
