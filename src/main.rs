@@ -52,8 +52,7 @@ tankit [OPTIONS]
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold>
                           game mode: team deathmatch (default) or hold the site
-  --employer <faction>    which of the map's sides hires you (default: its first);
-                          your reputation in the match goes to them
+  --employer <faction>    which of the map's sides hires you (default: its first)
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
@@ -85,12 +84,14 @@ tankit [OPTIONS]
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
                           screen and its respawn countdown
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
-                          --frames): scoreboard, reputation gained and crystal tally
-  --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds'
-  --reputation <n>        (with --shot) reputation with every faction for menu, garage and pause shots
+                          --frames): scoreboard, renown gained, crystal tally
+                          and (with --mission, if you won) the schematic stolen
+  --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds';
+                          (with --screen results) the round was this mission, for its prize
+  --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --upgrade <steps>       (with --shot) every part the pilot owns is this many upgrade steps up (10 a mark)
-  --earned <n>            (with --screen results) reputation earned this match, for the results graphic
+  --earned <n>            (with --screen results) renown earned this match, for the results graphic
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
   --dist <meters>         showroom: camera distance (default 24)
@@ -115,14 +116,14 @@ pub struct Args {
     /// A match flag was given: skip the menu.
     play: bool,
     garage: bool,
-    /// Parts the shot's pilot has bought.
+    /// Parts the shot's pilot has stolen.
     own: Vec<economy::Part>,
     /// Garage shot: highlight this part instead of --hull/--turret.
     preview: Option<economy::Part>,
     screen: Option<Screen>,
-    reputation: u32,
+    renown: u32,
     crystals: u32,
-    /// Results shot: reputation earned in the match.
+    /// Results shot: renown earned in the match.
     earned: u32,
     /// Shots: upgrade steps on every owned part.
     upgrade: u8,
@@ -150,7 +151,7 @@ impl Args {
     /// An in-memory pilot for headless shots (never saved).
     fn profile(&self) -> profile::Profile {
         let mut p = profile::Profile::in_memory();
-        p.set_reputation_all(self.reputation);
+        p.renown = self.renown;
         p.crystals = self.crystals;
         p.settings.debug = self.debug;
         for &part in &self.own {
@@ -325,7 +326,7 @@ fn parse_args() -> Result<Args> {
     let mut preview = None;
     let (mut kit_given, mut play) = (false, false);
     let mut screen = None;
-    let (mut reputation, mut crystals, mut earned) = (0, 0, 0);
+    let (mut renown, mut crystals, mut earned) = (0, 0, 0);
     let mut upgrade = 0;
     let mut debug = false;
     let mut room = ShowroomArgs {
@@ -497,12 +498,7 @@ fn parse_args() -> Result<Args> {
                     }
                 })
             }
-            "--reputation" | "--trust" => {
-                reputation = args
-                    .next()
-                    .context("--reputation needs a number")?
-                    .parse()?
-            }
+            "--renown" => renown = args.next().context("--renown needs a number")?.parse()?,
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--upgrade" => upgrade = args.next().context("--upgrade needs a number")?.parse()?,
             "--earned" => earned = args.next().context("--earned needs a number")?.parse()?,
@@ -572,7 +568,7 @@ fn parse_args() -> Result<Args> {
         own,
         preview,
         screen,
-        reputation,
+        renown,
         crystals,
         earned,
         upgrade,
@@ -662,7 +658,12 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         // A still shows the results settled; a clip starts as they begin to count.
         let lead = if shot.frames > 1 { 0.3 } else { 4.0 };
         game.time_left = (shot.time - lead).max(0.1);
-        game.reputation = args.earned;
+        game.renown = args.earned;
+        if let Some(i) = args.mission {
+            game.prize = mission::MISSIONS[i]
+                .prize(args.side)
+                .filter(|&p| !profile.owns(p));
+        }
     }
     let mut cam = scene::ChaseCam::new();
     cam.tilt = args.tilt;
@@ -777,11 +778,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
             if args.screen == Some(Screen::Pause) {
                 frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame.ui.extend(
-                    menu::Pause::new()
-                        .draw(&profile, game.factions[0], game.reputation, w, h)
-                        .verts,
-                );
+                frame
+                    .ui
+                    .extend(menu::Pause::new().draw(&profile, game.renown, w, h).verts);
             }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));

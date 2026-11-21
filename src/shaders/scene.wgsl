@@ -611,7 +611,13 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let is_tank = m == MAT_CARBON || m == MAT_PAINT || m == MAT_TREAD || m == MAT_GLOW || m == MAT_METAL || m == MAT_WORN || m == MAT_VHAAL || m == MAT_ORE;
     // On tanks the instance tint is the team color and only affects paint.
     let paint = m == MAT_PAINT || m == MAT_WORN;
-    let base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
+    var base = select(v.color.rgb * v.tint.rgb, v.color.rgb, is_tank && !paint);
+    // A Company tank (tint alpha < 0): its paint is the Company's color, painted over
+    // the maker's, keeping a little of how light or dark each panel was.
+    if (is_tank && paint && v.tint.a < 0.0) {
+        let l = dot(v.color.rgb, vec3<f32>(0.3, 0.59, 0.11));
+        base = v.tint.rgb * clamp(0.8 + 0.5 * l, 0.8, 1.2);
+    }
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
     let dxz = fwidth(v.wpos.xz);
     let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);

@@ -8,11 +8,12 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase, REPUTATION_POP_TIME};
+use crate::combat::{FEED_TIME, Match, Phase, RENOWN_POP_TIME};
 use crate::economy::Payout;
+use crate::faction::Faction;
 use crate::hold::{self, Control};
 use crate::mission::Contract;
-use crate::profile::{Profile, Standing};
+use crate::profile::{Profile, Rank};
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::sim::Tank;
@@ -52,21 +53,21 @@ pub enum Hit {
 }
 
 /// The pilot's books as the match started, for the round-over screen to count
-/// up from: reputation with the employer before this match's was banked, and
+/// up from: renown with the Company before this match's was banked, and
 /// crystals before the contract paid.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Ledger {
-    pub reputation: u32,
+    pub renown: u32,
     pub crystals: u32,
 }
 
 impl Ledger {
-    /// Backs this match's earnings out of `profile`: `banked` reputation is
+    /// Backs this match's earnings out of `profile`: `banked` renown is
     /// already in it, and the contract pay too once `paid`.
     pub fn before(profile: &Profile, m: &Match, banked: u32, paid: bool) -> Ledger {
         let pay = if paid { Payout::of(m).total() } else { 0 };
         Ledger {
-            reputation: profile.reputation_of(m.factions[0]).saturating_sub(banked),
+            renown: profile.renown.saturating_sub(banked),
             crystals: profile.crystals.saturating_sub(pay),
         }
     }
@@ -134,7 +135,7 @@ impl Hud {
             theme::FAINT,
         );
 
-        // Top left: round clock, kills / deaths, reputation.
+        // Top left: round clock, kills / deaths, renown.
         let secs = m.time_left.ceil() as u32;
         label(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
         let mut clock = TextStyle::value(20.0);
@@ -174,12 +175,12 @@ impl Hud {
         label(
             &mut p,
             Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "REPUTATION",
+            "RENOWN",
             Align::Left,
         );
         p.text(
             Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
-            &format!("+{}", m.reputation),
+            &format!("+{}", m.renown),
             &TextStyle::value(14.0),
             Align::Left,
         );
@@ -475,15 +476,15 @@ impl Hud {
             p.line(o, o + Vec2::new(bw * done, 0.0), 2.0, theme::HOT);
         }
 
-        // Reputation popups, just above the crosshair, drifting up as they fade.
+        // Renown popups, just above the crosshair, drifting up as they fade.
         if !board {
-            for (row, x) in m.reputation_pops.iter().rev().take(3).enumerate() {
-                let fade = ((REPUTATION_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
+            for (row, x) in m.renown_pops.iter().rev().take(3).enumerate() {
+                let fade = ((RENOWN_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
                     * (x.age / 0.08).clamp(0.0, 1.0);
                 let at = Vec2::new(w * 0.5, h * 0.30 - x.age * 14.0 - row as f32 * 30.0);
                 let mut s = TextStyle::value(16.0);
                 s.color = with_alpha(theme::HOT, fade);
-                p.text(at, &format!("+{} REPUTATION", x.amount), &s, Align::Center);
+                p.text(at, &format!("+{} RENOWN", x.amount), &s, Align::Center);
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(theme::FG, 0.8 * fade);
                 p.text(at + Vec2::new(0.0, 24.0), x.reason, &l, Align::Center);
@@ -597,8 +598,14 @@ fn scoreboard(
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = theme::PANEL;
+    let stolen = Payout::of(m).schematic.filter(|_| m.phase == Phase::Over);
+    let banner = if stolen.is_some() {
+        66.0 + STOLEN_H
+    } else {
+        66.0
+    };
     let height = if m.phase == Phase::Over {
-        24.0 + 66.0 + 18.0 + RESULTS_H + 24.0 + BUTTON_H + 24.0
+        24.0 + banner + 18.0 + RESULTS_H + 24.0 + BUTTON_H + 24.0
     } else {
         28.0
     } + body;
@@ -630,7 +637,20 @@ fn scoreboard(
                 p.text(at, "DRAW", &s, Align::Center);
             }
         }
-        y += 66.0;
+        if let Some(part) = stolen {
+            // The mission's prize: its maker's schematic, now the Company's.
+            let mut s = TextStyle::value(12.0);
+            s.color = theme::HOT;
+            emblem::tagged(
+                p,
+                Vec2::new(top.x, y + 56.0),
+                part.maker(),
+                &format!("SCHEMATIC STOLEN · {}", part.name()),
+                &s,
+                Align::Center,
+            );
+        }
+        y += banner;
     }
     let order = m.standings();
     for team in 0..sides {
@@ -693,18 +713,8 @@ fn scoreboard(
     y += body;
     if m.phase == Phase::Over {
         let y = y + 18.0;
-        let employer = m.factions[0];
         let t = m.over_for - RESULTS_DELAY;
-        reputation_gained(
-            p,
-            employer,
-            ledger.reputation,
-            m.reputation,
-            t,
-            x0,
-            x0 + col,
-            y,
-        );
+        renown_gained(p, ledger.renown, m.renown, t, x0, x0 + col, y);
         crystal_tally(
             p,
             ledger.crystals,
@@ -849,10 +859,12 @@ fn hold_color(m: &Match, c: Control) -> Rgba {
 
 /// Seconds after the round ends before the results start moving.
 const RESULTS_DELAY: f32 = 0.6;
-/// Height of the reputation and crystal blocks under the tables.
+/// Height of the renown and crystal blocks under the tables.
 const RESULTS_H: f32 = 84.0;
+/// The line under the winner saying which schematic you stole.
+const STOLEN_H: f32 = 26.0;
 
-/// Reputation: the bar fills from where you stood over this long.
+/// Renown: the bar fills from where you stood over this long.
 const REP_FILL: f32 = 1.2;
 /// Crystals: "+0" joins the balance, ticks up to the pay, then folds into it.
 const CR_PLUS: f32 = 0.2;
@@ -865,8 +877,8 @@ fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
 }
 
-/// How much of `gained` the reputation graphic shows `t` seconds in.
-fn reputation_shown(gained: u32, t: f32) -> u32 {
+/// How much of `gained` the renown graphic shows `t` seconds in.
+fn renown_shown(gained: u32, t: f32) -> u32 {
     (gained as f32 * ease_out(t / REP_FILL)).round() as u32
 }
 
@@ -890,26 +902,17 @@ fn tally(before: u32, pay: u32, t: f32) -> Tally {
     Tally { balance, plus }
 }
 
-/// Reputation gained with your employer, as a graphic: the standing bar filling
-/// from where you stood, the new part lit, the standing ticking over if it fills.
+/// Renown gained with the Company, as a graphic: the rank bar filling from
+/// where you stood, the new part lit, the rank ticking over if it fills.
 #[allow(clippy::too_many_arguments)]
-fn reputation_gained(
-    p: &mut Painter,
-    employer: crate::faction::Faction,
-    before: u32,
-    gained: u32,
-    t: f32,
-    a: f32,
-    b: f32,
-    y: f32,
-) {
-    let shown = reputation_shown(gained, t);
-    let start = Standing::of(before);
-    let now = Standing::of(before + shown);
-    label(p, Vec2::new(a, y), "REPUTATION", Align::Left);
+fn renown_gained(p: &mut Painter, before: u32, gained: u32, t: f32, a: f32, b: f32, y: f32) {
+    let shown = renown_shown(gained, t);
+    let start = Rank::of(before);
+    let now = Rank::of(before + shown);
+    label(p, Vec2::new(a, y), "RENOWN", Align::Left);
     let mut name = TextStyle::LABEL;
-    name.color = employer.ui();
-    emblem::faction_name(p, Vec2::new(b, y), employer, &name, Align::Right);
+    name.color = Faction::Company.ui();
+    emblem::faction_name(p, Vec2::new(b, y), Faction::Company, &name, Align::Right);
 
     let mut big = TextStyle::value(22.0);
     big.color = theme::HOT;
@@ -933,11 +936,11 @@ fn reputation_gained(
     label(
         p,
         Vec2::new(b - tw - 8.0, y + 27.0),
-        if up { "STANDING UP" } else { "STANDING" },
+        if up { "RANK UP" } else { now.title() },
         Align::Right,
     );
 
-    // The bar: where you stood in the employer's colour's neutral, this match lit.
+    // The bar: where you stood in neutral, this match lit.
     let (bar_y, bar_h, width) = (y + 56.0, 6.0, b - a);
     p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
     let from = if up { 0.0 } else { start.progress() };
@@ -1111,10 +1114,10 @@ mod tests {
     }
 
     #[test]
-    fn reputation_fills_to_what_was_gained() {
-        assert_eq!(reputation_shown(37, -1.0), 0);
-        assert!(reputation_shown(37, REP_FILL * 0.5) < 37);
-        assert_eq!(reputation_shown(37, REP_FILL), 37);
+    fn renown_fills_to_what_was_gained() {
+        assert_eq!(renown_shown(37, -1.0), 0);
+        assert!(renown_shown(37, REP_FILL * 0.5) < 37);
+        assert_eq!(renown_shown(37, REP_FILL), 37);
     }
 
     #[test]
@@ -1122,10 +1125,10 @@ mod tests {
         let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
         m.phase = Phase::Over;
         let mut p = Profile::in_memory();
-        p.reputation[m.factions[0].index()] = 140;
+        p.renown = 140;
         p.crystals = 1000 + Payout::of(&m).total();
         let l = Ledger::before(&p, &m, 40, true);
-        assert_eq!((l.reputation, l.crystals), (100, 1000));
+        assert_eq!((l.renown, l.crystals), (100, 1000));
         // Pay not banked yet: the balance is still the one before.
         p.crystals = 1000;
         assert_eq!(Ledger::before(&p, &m, 40, false).crystals, 1000);

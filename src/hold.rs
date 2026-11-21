@@ -17,9 +17,9 @@ use crate::sim::Tank;
 pub const RADIUS: f32 = 13.0;
 /// Seconds held by one side that win the round outright.
 pub const TARGET: f32 = 120.0;
-/// The player earns `HOLD_REPUTATION` for every `REPUTATION_EVERY` seconds of their own on the site.
-pub const REPUTATION_EVERY: f32 = 10.0;
-pub const HOLD_REPUTATION: u32 = 5;
+/// The player earns `HOLD_RENOWN` for every `RENOWN_EVERY` seconds of their own on the site.
+pub const RENOWN_EVERY: f32 = 10.0;
+pub const HOLD_RENOWN: u32 = 5;
 /// Tanks further than this above or below the ring's ground (a roof, a ledge) don't count.
 const REACH_Y: f32 = 4.0;
 /// Seconds a new state of the site must last before it's announced, so a

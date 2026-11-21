@@ -12,6 +12,7 @@ use glam::Vec2;
 use winit::keyboard::KeyCode;
 
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
+use crate::economy::Part;
 use crate::faction::Faction;
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{self, MISSIONS};
@@ -433,6 +434,8 @@ impl Menu {
                     &TextStyle::value(12.0),
                     Align::Left,
                 );
+                y += 34.0;
+                company_rank(&mut p, Vec2::new(x, y), profile);
                 "Enter  select"
             }
             Screen::Factions => {
@@ -453,33 +456,18 @@ impl Menu {
                 }
                 y += drawn + 26.0;
 
-                // Your standing with them: what decides which of their work you get.
-                let f = self.employer();
-                let s = profile.standing(f);
+                // Your Company rank: what decides which of their work the Company takes.
+                let rank = profile.rank();
                 let work = self.missions();
                 let open = work
                     .iter()
-                    .filter(|&&i| MISSIONS[i].open_at(s.level))
+                    .filter(|&&i| MISSIONS[i].open_at(rank.level))
                     .count();
-                p.text(
-                    Vec2::new(x, y),
-                    &format!("Rank {}", s.level),
-                    &TextStyle::value(22.0),
-                    Align::Left,
-                );
-                p.text(
-                    Vec2::new(x + PANEL_W, y + 11.0),
-                    &format!("{} / {} to Rank {}", s.into, s.span, s.level + 1),
-                    &BODY,
-                    Align::Right,
-                );
-                y += 34.0;
-                widgets::hairbar(&mut p, Vec2::new(x, y), PANEL_W, s.progress(), theme::FG);
-                y += 16.0;
+                y += company_rank(&mut p, Vec2::new(x, y), profile) + 4.0;
                 let contracts = if open == work.len() {
-                    format!("Standing · {} contracts open", work.len())
+                    format!("{} contracts open", work.len())
                 } else {
-                    format!("Standing · {open} of {} contracts open", work.len())
+                    format!("{open} of {} contracts open at your rank", work.len())
                 };
                 body(&mut p, Vec2::new(x, y), &contracts, theme::DIM);
                 "Enter  choose     Esc  back"
@@ -487,7 +475,7 @@ impl Menu {
             Screen::Missions => {
                 let employer = self.employer();
                 let work = self.missions();
-                let s = profile.standing(employer);
+                let rank = profile.rank().level;
                 // The one place their colour goes: who's hiring.
                 let mut style = BODY;
                 style.color = employer.ui();
@@ -503,12 +491,12 @@ impl Menu {
                 let names: Vec<Item> = work.iter().map(|&i| Item::Acts(MISSIONS[i].name)).collect();
                 let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.mission);
                 for (k, &i) in work.iter().enumerate() {
-                    // Each contract's rating; a locked one says the standing it needs.
+                    // Each contract's rating; a locked one says the rank it needs.
                     let m = &MISSIONS[i];
-                    let (tag, color) = if m.open_at(s.level) {
+                    let (tag, color) = if m.open_at(rank) {
                         (m.rating_label(), theme::DIM)
                     } else {
-                        (format!("Needs Rank {}", m.standing), theme::HOT)
+                        (format!("Needs Rank {}", m.rank), theme::HOT)
                     };
                     let mut style = BODY;
                     style.color = color;
@@ -555,16 +543,19 @@ impl Menu {
                     "For a win, plus kills",
                     theme::DIM,
                 );
-                if !m.open_at(s.level) {
-                    y += 34.0;
+                y += 34.0;
+                prize(
+                    &mut p,
+                    Vec2::new(x, y),
+                    m.prize(m.side_of(employer)),
+                    profile,
+                );
+                if !m.open_at(rank) {
+                    y += 58.0;
                     body(
                         &mut p,
                         Vec2::new(x, y),
-                        &format!(
-                            "Opens at Rank {} with the {}",
-                            m.standing,
-                            title(employer.name())
-                        ),
+                        &format!("The Company takes it at Rank {}", m.rank),
                         theme::HOT,
                     );
                     "Esc  back"
@@ -601,6 +592,98 @@ impl Menu {
         Layer {
             verts: fade(p.finish(), alpha),
             hits,
+        }
+    }
+}
+
+/// Your Company rank at `at`: the Company's emblem and name, the rank's number
+/// and title, and the bar to the next. Returns its height.
+fn company_rank(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
+    let (x, mut y) = (at.x, at.y);
+    let r = profile.rank();
+    let mut style = BODY;
+    style.color = Faction::Company.ui();
+    emblem::tagged(
+        p,
+        Vec2::new(x, y),
+        Faction::Company,
+        "The Company",
+        &style,
+        Align::Left,
+    );
+    y += 24.0;
+    p.text(
+        Vec2::new(x, y),
+        &format!("Rank {}", r.level),
+        &TextStyle::value(22.0),
+        Align::Left,
+    );
+    p.text(
+        Vec2::new(x + PANEL_W, y + 11.0),
+        &title(r.title()),
+        &BODY,
+        Align::Right,
+    );
+    y += 34.0;
+    widgets::hairbar(p, Vec2::new(x, y), PANEL_W, r.progress(), theme::FG);
+    y += 10.0;
+    let mut faint = BODY;
+    faint.color = theme::FAINT;
+    p.text(
+        Vec2::new(x + PANEL_W, y),
+        &format!("{} / {} renown to Rank {}", r.into, r.span, r.level + 1),
+        &faint,
+        Align::Right,
+    );
+    y += 26.0;
+    y - at.y
+}
+
+/// A contract's prize at `at`: the schematic a win steals, its maker's emblem
+/// beside it; or that you already have it, or that there's none.
+fn prize(p: &mut Painter, at: Vec2, part: Option<Part>, profile: &Profile) {
+    let (x, y) = (at.x, at.y);
+    match part {
+        Some(part) if !profile.owns(part) => {
+            let mut style = TextStyle::value(16.0);
+            style.color = theme::HOT;
+            emblem::tagged(
+                p,
+                Vec2::new(x, y),
+                part.maker(),
+                part.name(),
+                &style,
+                Align::Left,
+            );
+            let kind = match part {
+                Part::Hull(_) => "hull",
+                Part::Turret(_) => "turret",
+            };
+            body(
+                p,
+                Vec2::new(x, y + 28.0),
+                &format!(
+                    "Prize · the {} {kind} schematic, if you win",
+                    title(part.maker().name())
+                ),
+                theme::DIM,
+            );
+        }
+        Some(part) => {
+            body(
+                p,
+                Vec2::new(x, y),
+                &format!("{} schematic stolen · pays crystals", title(part.name())),
+                theme::DIM,
+            );
+        }
+        None => {
+            body(
+                p,
+                Vec2::new(x, y),
+                "No schematic · pays crystals",
+                theme::DIM,
+            );
         }
     }
 }
@@ -711,13 +794,12 @@ impl Pause {
         (nav, self.input(nav))
     }
 
-    /// Dims the battle and draws the box. `match_reputation` is what this match has
-    /// earned you with `employer` so far.
+    /// Dims the battle and draws the box. `match_renown` is what this match has
+    /// earned you with the Company so far.
     pub fn draw(
         &self,
         profile: &Profile,
-        employer: Faction,
-        match_reputation: u32,
+        match_renown: u32,
         width: f32,
         height: f32,
     ) -> Layer<Hit> {
@@ -790,20 +872,22 @@ impl Pause {
         label(&mut p, Vec2::new(x, y + 1.0), "THIS MATCH", Align::Left);
         p.text(
             Vec2::new(x + PANEL_W, y),
-            &format!("+{match_reputation} REPUTATION"),
+            &format!("+{match_renown} RENOWN"),
             &TextStyle::value(11.0),
             Align::Right,
         );
         y += 20.0;
-        let r = profile.standing(employer);
+        let r = profile.rank();
         // The bar starts past the name, however long it runs.
+        let mut style = TextStyle::LABEL;
+        style.color = Faction::Company.ui();
         let bar_x = 132.0_f32.max(
             emblem::tagged(
                 &mut p,
                 Vec2::new(x, y + 1.0),
-                employer,
-                &format!("{} RANK {}", employer.name(), r.level),
-                &TextStyle::LABEL,
+                Faction::Company,
+                &r.label(),
+                &style,
                 Align::Left,
             ) + 12.0,
         );
@@ -1326,11 +1410,9 @@ mod tests {
             for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
                 for v in [
                     m.draw(&profile, h, 1.0).verts,
-                    Pause::new()
-                        .draw(&profile, Faction::Imperium, 30, w, h)
-                        .verts,
-                    settings.draw(&profile, Faction::Imperium, 30, w, h).verts,
-                    controls.draw(&profile, Faction::Imperium, 30, w, h).verts,
+                    Pause::new().draw(&profile, 30, w, h).verts,
+                    settings.draw(&profile, 30, w, h).verts,
+                    controls.draw(&profile, 30, w, h).verts,
                 ] {
                     assert!(!v.is_empty());
                     assert!(v.iter().all(|v| v.pos[0] > -4.0
@@ -1407,7 +1489,7 @@ mod tests {
         let profile = Profile::in_memory();
         let mut p = Pause::new();
         let click = |p: &mut Pause, hit: Hit| {
-            let hits = p.draw(&profile, Faction::Imperium, 0, 1600.0, 900.0).hits;
+            let hits = p.draw(&profile, 0, 1600.0, 900.0).hits;
             let (id, at) = hits.at(hits.center_of(hit).unwrap()).unwrap();
             p.click(id, at, &profile.settings)
         };

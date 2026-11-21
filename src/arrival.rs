@@ -120,8 +120,9 @@ impl Arrival<'_> {
     /// still being kindled or made). `shown` is the interpolated tank.
     pub fn pose(&self, shown: &mut Tank) {
         let t = self.t;
+        // The Company (never a side of its own yet) drops in the Imperium's way.
         match self.faction {
-            Faction::Imperium => {
+            Faction::Imperium | Faction::Company => {
                 let f = span(0.0, DROP_TIME, t);
                 shown.pos.y += DROP_HEIGHT * (1.0 - f * f);
             }
@@ -142,7 +143,7 @@ impl Arrival<'_> {
     /// The solid and self-lit pieces of the arrival.
     pub fn instances(&self, out: &mut Vec<(MeshId, Instance)>) {
         match self.faction {
-            Faction::Imperium => self.imperium(out),
+            Faction::Imperium | Faction::Company => self.imperium(out),
             Faction::Resonant => self.resonant(out),
             Faction::Uthenn => self.uthenn(out),
             Faction::Ithessar => self.ithessar(out),
@@ -152,7 +153,7 @@ impl Arrival<'_> {
     /// Its soft light, drawn in the particle pass.
     pub fn glow(&self, out: &mut Vec<Particle>) {
         match self.faction {
-            Faction::Imperium => self.imperium_glow(out),
+            Faction::Imperium | Faction::Company => self.imperium_glow(out),
             Faction::Resonant => self.resonant_glow(out),
             Faction::Uthenn => self.uthenn_glow(out),
             Faction::Ithessar => self.ithessar_glow(out),

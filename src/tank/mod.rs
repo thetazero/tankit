@@ -262,7 +262,7 @@ impl TankArt {
     /// A tracked hull: body, wheels on their suspension, and the belt of
     /// links wrapped round them.
     fn tracked(&self, hull: &HullArt, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
-        let tint = t.color.extend(0.0);
+        let tint = t.paint_tint();
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let sprung = base;
         out.push((hull.body, Instance::new(sprung, tint)));
@@ -295,7 +295,7 @@ impl TankArt {
     /// the tracks.
     fn vigil(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let g = &self.vigil;
-        let tint = t.color.extend(0.0);
+        let tint = t.paint_tint();
         let time = t.age;
         let effort = (t.belt[0].abs().max(t.belt[1].abs()) / t.hull.max_speed).min(1.0);
         // Light strength, and how far the plates have let go (0 held .. 1 fallen).
@@ -366,7 +366,7 @@ impl TankArt {
     fn hovering(&self, t: &Tank, base: Mat4, out: &mut Vec<(MeshId, Instance)>) {
         let h = &self.hover;
         let c = t.chassis;
-        let tint = t.color.extend(0.0);
+        let tint = t.paint_tint();
         let plain = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let alive = t.color.max_element() > 0.2;
         let body =
@@ -456,7 +456,7 @@ impl TankArt {
         out: &mut Vec<(MeshId, Instance)>,
         glow: &mut Vec<Particle>,
     ) {
-        let tint = t.color.extend(0.0);
+        let tint = t.paint_tint();
         let alive = t.color.max_element() > 0.2;
         let tm = t.turret_frame();
         out.push((turret.head, Instance::new(tm, tint)));

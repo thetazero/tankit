@@ -14,14 +14,48 @@ on purpose.
 
 ## The player
 
-A **mercenary pilot**, remote-linked into each chassis, working for whoever
-pays. Losing a chassis just drops the link; the next contract drops you a new
-one. That's the in-world reason for respawns. What the pilot is, is left
-deliberately vague.
+A **mercenary pilot** of the Company, remote-linked into each chassis,
+working for whoever pays. Losing a chassis just drops the link; the next
+contract drops you a new one. That's the in-world reason for respawns. What
+the pilot is, is left deliberately vague.
+
+## The Company
+
+The mercenaries are a faction of their own: **the Company**, a galactic
+mercenary outfit that sells its pilots to whichever side of the war is
+paying. It isn't one of the war's sides and doesn't hold ground; it fights
+inside other people's battles.
+
+**In a match**, you're the one tank in the Company's colors among the hiring
+side's machines: hired help, and it shows. For now only the player is
+Company; later some battles may be more or less merc-heavy.
+
+**Colors:** hazard amber over black, a working color nobody's war is fought
+in. On a Company tank the amber goes over the maker's paint wherever it was
+built; the maker's own fittings (gilt, glass, crystal) stay.
+
+**The emblem:** a blade through a coin. Paid work, done with a weapon.
+
+**One rank.** The Company ranks its pilots, and the rank decides which
+contracts it trusts you with: harder tiers open as you climb. It's a number
+with a title (Recruit, Hireling, Freelance, Gunhand, Veteran, Sergeant,
+Lieutenant, Captain, Marshal, Warlord, five ranks to each), and there are a
+lot of them: renown earned in the field (kills, time on a held site) climbs
+it, slower the higher you go.
+
+**Stolen gear.** The Company makes nothing of its own yet. Its pilots start
+on the Imperium's basic kit (Kataphrakt and Kontos), the most common machine
+in the galaxy, refitted in Company amber. Everything else is **stolen**: each
+contract names a schematic from a side you're fighting there as its prize,
+and winning it brings the schematic home. Lose or draw and you don't get it.
+Once the Company has a schematic, that contract just pays crystals. A
+Company tank is a set of stolen parts from different makers, which is the
+mercenary's look: mixed builds are the merc identity. Company-made gear may
+come later.
 
 ## Factions
 
-Four sides. Any of them can hire you.
+Four sides at war. Any of them can hire the Company.
 
 | Faction | Who they are |
 |---|---|
@@ -39,15 +73,18 @@ wherever it appears on screen (`src/ui/emblem.rs`):
 - **Resonant:** a crystal in a pointed-arch window, a relic in its case.
 - **Uthenn:** a tungsten cube.
 - **Ithessar:** plasma held in crystal: an orb in an almond-shaped lens.
+- **The Company:** a blade through a coin.
 
 ## Factions vs. gameplay
 
 Gameplay stays **arcade tanks**: any hull with any turret, unlocked through
 play. Factions are the world, never a lock on your build. They show up as:
 
-- **Employers**: who the contract is for. Every faction starts you on basic
-  kit; work its contracts and your **reputation** with it grows, and its standing decides
-  which of its parts it'll sell you. Parts you've bought stay yours whoever hires you next.
+- **Employers**: who the contract is for. Whoever hires you, you're the
+  Company's: renown goes to your one Company rank, not to the employer.
+- **Schematic sources**: the parts the Company doesn't start with are stolen
+  from their makers, as the prize of a mission against them. Stolen parts
+  stay yours whoever hires you next.
 - **Enemies**: who the bots are, how they look, and the guns they bring (each
   side's bots use its own faction's turrets).
 - **Map owners**: whose territory a map is.
@@ -128,8 +165,9 @@ long ago stopped needing a reason. Ritual for its own sake.
 the Imperium. Their machines are mass-made and identical, stamped with the
 emblem and sent down from orbit.
 
-**They hire mercenaries** for the same reason as everyone else: they want to
-win.
+**They hire the Company** for the same reason as everyone else: they want
+to win. Its pilots start on Imperium kit, so the Imperium's machines are the
+ones a merc knows first.
 
 **The emblem:** a planet under a halo: a gold disc with an arch over it.
 
@@ -158,8 +196,8 @@ they make is tungsten cubes. How the Ithessar feel about them is unknown;
 ## Crystals
 
 What everyone fights over: your pay, the Resonant's sacrament, and the reason
-anyone fights over dead worlds. They're the progression currency in the arcade
-loop.
+anyone fights over dead worlds. They're the currency in the arcade loop:
+contracts pay them, and they buy upgrades to the parts you've stolen.
 
 Crystal is nobody's: one substance, the same wherever it's found. Raw, in the
 rock and in the ore, it's cloudy blue-grey and dull, crusted with rock dust,
@@ -178,8 +216,8 @@ own way into the rock from the east to take it back.
 
 ## Modes are contracts
 
-- **Attrition** (team deathmatch): hired by one side and dropped into its
-  battle, paid per kill. The side with more kills when the clock runs out wins.
+- **Attrition** (team deathmatch): the Company is hired by one side and
+  drops you into its battle, paid per kill. The side with more kills when the clock runs out wins.
   Most battles are two sides; some are all four at once, every side against
   every other.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,

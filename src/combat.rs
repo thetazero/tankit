@@ -29,7 +29,8 @@ pub const ROUND_TIME: f32 = 300.0;
 /// Seconds dead before a tank comes back: long enough that dying costs you.
 pub const RESPAWN_TIME: f32 = 10.0;
 /// Tanks wear their own paint, not their side's color: sides are told apart
-/// by their markers on the HUD.
+/// by their markers on the HUD. The player's tank is painted over in the
+/// Company's (see `Tank::company`).
 pub const TANK_PAINT: Vec3 = Vec3::ONE;
 /// Freshly spawned tanks can't be hurt (and bots ignore them) for this long.
 pub const SPAWN_SHIELD: f32 = 2.0;
@@ -59,10 +60,10 @@ pub const HUSK_STRONG: f32 = 2.0;
 pub const HUSK_FADE: f32 = 3.0;
 /// A husk's cracked bell tolls this often while it runs, s.
 pub const HUSK_TOLL: f32 = 1.25;
-/// Reputation with your employer for each enemy the player kills, paid the moment it dies.
-pub const KILL_REPUTATION: u32 = 10;
-/// How long a reputation popup stays on screen, seconds.
-pub const REPUTATION_POP_TIME: f32 = 2.0;
+/// Renown with your employer for each enemy the player kills, paid the moment it dies.
+pub const KILL_RENOWN: u32 = 10;
+/// How long a renown popup stays on screen, seconds.
+pub const RENOWN_POP_TIME: f32 = 2.0;
 
 /// Weapon numbers per turret.
 #[derive(Clone, Copy)]
@@ -670,8 +671,8 @@ pub struct Kill {
     pub age: f32,
 }
 
-/// Reputation the player just earned, for the HUD popup.
-pub struct ReputationPop {
+/// Renown the player just earned, for the HUD popup.
+pub struct RenownPop {
     pub amount: u32,
     pub reason: &'static str,
     pub age: f32,
@@ -820,9 +821,9 @@ pub struct Match {
     bounds: Vec<[(Vec3, f32); 2]>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
-    /// Reputation the player has earned with their side (`factions[0]`) this match.
-    pub reputation: u32,
-    pub reputation_pops: Vec<ReputationPop>,
+    /// Renown the player has earned with the Company this match.
+    pub renown: u32,
+    pub renown_pops: Vec<RenownPop>,
     /// Audible events since the app last took them.
     pub sounds: Vec<Sound>,
     pub repairs: Repairs,
@@ -834,6 +835,8 @@ pub struct Match {
     pub contract: Contract,
     /// The mission's rating, in upgrade steps (0 is M0, 5 is M0.5).
     pub rating: u8,
+    /// The schematic this contract's win steals, if it offers one you don't have.
+    pub prize: Option<crate::economy::Part>,
     /// The site, under the Hold contract.
     pub hold: Option<Hold>,
     /// Seconds since the round ended (the results screen counts up with it).
@@ -857,6 +860,8 @@ impl Match {
         let mut world = World::new(map, spawn);
         let mut rng = Rng::new(seed ^ 0xD3A7);
         world.tanks[0].color = TANK_PAINT;
+        // You're the Company's, among whoever hired you: in its colors, not theirs.
+        world.tanks[0].company = true;
         if !world.map.bases[0].is_empty() {
             let (at, yaw) = spawn_point(&world, &mut rng, 0, &[]);
             world.teleport(0, at, yaw);
@@ -891,14 +896,15 @@ impl Match {
             bounds: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
-            reputation: 0,
-            reputation_pops: Vec::new(),
+            renown: 0,
+            renown_pops: Vec::new(),
             sounds: Vec::new(),
             repairs,
             factions,
             time_left: ROUND_TIME,
             contract: Contract::Attrition,
             rating: 0,
+            prize: None,
             hold: None,
             phase: Phase::Playing,
             over_for: 0.0,
@@ -1250,10 +1256,10 @@ impl Match {
             k.age += DT;
         }
         self.feed.retain(|k| k.age < FEED_TIME);
-        for x in &mut self.reputation_pops {
+        for x in &mut self.renown_pops {
             x.age += DT;
         }
-        self.reputation_pops.retain(|x| x.age < REPUTATION_POP_TIME);
+        self.renown_pops.retain(|x| x.age < RENOWN_POP_TIME);
     }
 
     /// Aim assist (Tanki-style, but gentle): bend each gun as little as it
@@ -1917,7 +1923,7 @@ impl Match {
         if killer != victim {
             self.fighters[killer].kills += 1;
             if killer == 0 {
-                self.award(KILL_REPUTATION, "KILL");
+                self.award(KILL_RENOWN, "KILL");
                 self.sounds.push(Sound::Confirm);
             }
         }
@@ -2095,15 +2101,15 @@ impl Match {
     }
 
     fn award(&mut self, amount: u32, reason: &'static str) {
-        self.reputation += amount;
-        self.reputation_pops.push(ReputationPop {
+        self.renown += amount;
+        self.renown_pops.push(RenownPop {
             amount,
             reason,
             age: 0.0,
         });
     }
 
-    /// Bank time for the side holding the site; pay the player reputation for their
+    /// Bank time for the side holding the site; pay the player renown for their
     /// own time on it, and end the round when a side reaches the target.
     fn hold_site(&mut self) {
         let Some(h) = &mut self.hold else { return };
@@ -2112,15 +2118,14 @@ impl Match {
         h.step(DT, &self.world.tanks, |i| {
             fighters[i].alive.then_some(fighters[i].team)
         });
-        let paid =
-            (h.own[0] / hold::REPUTATION_EVERY).floor() > (before / hold::REPUTATION_EVERY).floor();
+        let paid = (h.own[0] / hold::RENOWN_EVERY).floor() > (before / hold::RENOWN_EVERY).floor();
         let won = h.winner().is_some();
         if let Some(cue) = h.cue() {
             self.sounds.push(Sound::Hold(cue));
         }
         if paid {
             self.sounds.push(Sound::Hold(hold::Cue::Paid));
-            self.award(hold::HOLD_REPUTATION, "HOLDING");
+            self.award(hold::HOLD_RENOWN, "HOLDING");
         }
         if won {
             self.end_round();
@@ -3078,7 +3083,7 @@ mod tests {
         );
         assert!(m.feed.iter().any(|k| k.killer == 0 && k.victim == 1));
         // Paid per kill, on the spot.
-        assert_eq!(m.reputation, m.fighters[0].kills * KILL_REPUTATION);
+        assert_eq!(m.renown, m.fighters[0].kills * KILL_RENOWN);
     }
 
     /// The player with `turret` and a dummy `dist` m straight ahead, shields
@@ -4185,11 +4190,11 @@ mod tests {
         let mut m = arena(2);
         m.kill(1, 2);
         m.kill(0, 0);
-        assert_eq!(m.reputation, 0);
+        assert_eq!(m.renown, 0);
         m.kill(0, 1);
-        assert_eq!(m.reputation, KILL_REPUTATION);
+        assert_eq!(m.renown, KILL_RENOWN);
         assert_eq!(
-            m.reputation_pops.len(),
+            m.renown_pops.len(),
             1,
             "one popup, for the player's own kill"
         );
@@ -4472,17 +4477,17 @@ mod tests {
     }
 
     #[test]
-    fn holding_pays_reputation_and_reaching_the_target_ends_the_round() {
+    fn holding_pays_renown_and_reaching_the_target_ends_the_round() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
-        m.hold.as_mut().unwrap().own[0] = hold::REPUTATION_EVERY - 0.1;
+        m.hold.as_mut().unwrap().own[0] = hold::RENOWN_EVERY - 0.1;
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
-        assert_eq!(m.reputation, hold::HOLD_REPUTATION);
-        assert_eq!(m.reputation_pops.last().map(|x| x.reason), Some("HOLDING"));
+        assert_eq!(m.renown, hold::HOLD_RENOWN);
+        assert_eq!(m.renown_pops.last().map(|x| x.reason), Some("HOLDING"));
         let heard: Vec<_> = m
             .sounds
             .iter()
