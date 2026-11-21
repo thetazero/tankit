@@ -1742,7 +1742,7 @@ impl Match {
             1.0
         };
         let momentum = kind.recoil() * hits_harder * BOUNCE_KEEP.powi(skips);
-        self.world.push(j, d * momentum, at);
+        self.world.kick(j, d * momentum, at);
     }
 
     /// `owner` deals `amount` to tank `j` (spawn shields and the round's end permitting).
@@ -3219,12 +3219,13 @@ mod tests {
     /// Equal and opposite, to the eye: for every gun that fires something, a
     /// hit rocks the tank it lands on about as hard as firing it rocks the
     /// shooter (same hull both ends, face to face so both rock back), and a
-    /// hit in the flank rolls it a fair part of that. That's plain physics:
+    /// hit in the flank rolls it some part of that. That's plain physics:
     /// aimed level, the shot lands high on the turret, near the height the
     /// gun kicked its own hull from. (Rolling is the lesser: the tracks grip
     /// a hull pushed sideways part way up it, but one pushed back at the
-    /// ground, where they rock it most; see `ANTI_ROLL`.) The light streams
-    /// are held a second, as they're fired.
+    /// ground, where they rock it most, see `ANTI_ROLL`; and a sideways kick
+    /// acts lower down, see `World::kick`.) The light streams are held a
+    /// second, as they're fired.
     #[test]
     fn a_hit_rocks_the_target_about_as_hard_as_firing_rocks_the_shooter() {
         for &k in &TurretKind::ALL {
@@ -3245,7 +3246,7 @@ mod tests {
             );
             let (tilt, _, _) = exchange(&mut turned_duel(k, 10.0, FRAC_PI_2), hold);
             assert!(
-                tilt[1] > 0.4 * tilt[0],
+                tilt[1] > 0.25 * tilt[0],
                 "{k:?} in the flank: shooter rocked {:.2} deg, target {:.2}",
                 tilt[0],
                 tilt[1]

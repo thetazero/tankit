@@ -446,8 +446,25 @@ const HOVER_LEVEL_K: f32 = 40.0;
 const HOVER_LEVEL_DAMP: f32 = 10.0;
 const HOVER_LEVEL_MAX: f32 = 30.0;
 const HOVER_LEVEL_ON_CUSHION: f32 = 0.25;
-/// Seconds upside down (and slow) before the tank rights itself.
+/// Hull tilt from upright (degrees) where the tracks start to lose their
+/// footing, and where they've lost it: on a face that steep they slip, so a
+/// tank nosing up a cliff, a toppled slab or another tank slides back down,
+/// and one heeled over on a side slope slides sideways, instead of climbing
+/// on until it goes over. Kickers and ledges ask for up to ~30 degrees.
+const FOOTING_FIRM: f32 = 35.0;
+const FOOTING_LOST: f32 = 50.0;
+/// Fraction of a shot's sideways lever arm about the center of mass that
+/// [`World::kick`] takes away. Fired or taken broadside at gun height, a
+/// Kontos round rolled a Kataphrakt at over 3 rad/s: on flat ground it rocked
+/// back, but cresting a dune or glancing off a wall it went over.
+const SIDE_KICK_ANTI_ROLL: f32 = 0.6;
+/// Seconds on its side or roof (and not tumbling) before the tank rights itself.
 const FLIP_RECOVER_TIME: f32 = 2.5;
+/// Tipped this far (the hull's up axis this close to level) counts as over:
+/// past 60 degrees, a hull that's still there isn't driving anywhere.
+const FLIP_UP_Y: f32 = 0.5;
+/// Spinning faster than this (rad/s), it's still tumbling: the clock waits.
+const FLIP_TUMBLING: f32 = 1.5;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Command {
@@ -937,7 +954,8 @@ impl World {
         let t = &self.tanks[i];
         let b = &mut self.physics.bodies[t.body];
         let at = b.translation() + t.rot * Vec3::Y * t.gun_height();
-        b.apply_impulse_at_point(-t.gun_dir() * t.turret_kind.recoil(), at, true);
+        let impulse = -t.gun_dir() * t.turret_kind.recoil();
+        self.kick(i, impulse, at);
     }
 
     /// Put tank `i` down at `at` facing `yaw`, at rest, turret forward (respawns).
@@ -968,6 +986,21 @@ impl World {
     pub fn push(&mut self, i: usize, impulse: Vec3, at: Vec3) {
         let b = &mut self.physics.bodies[self.tanks[i].body];
         b.apply_impulse_at_point(impulse, at, true);
+    }
+
+    /// Shove tank `i` with a shot's momentum (N·s) at a world point: a gun's
+    /// recoil, or a shell landing. Along the hull it acts where it lands, so
+    /// the hull rocks on its springs. Across the hull it acts part way down
+    /// toward the center of mass (by [`SIDE_KICK_ANTI_ROLL`]): a broadside
+    /// still rocks the hull, but doesn't roll one that's already leaning over.
+    pub fn kick(&mut self, i: usize, impulse: Vec3, at: Vec3) {
+        let t = &self.tanks[i];
+        let (up, across) = (t.up(), t.rot * Vec3::X);
+        let b = &mut self.physics.bodies[t.body];
+        let side = across * impulse.dot(across);
+        let arm = (at - b.center_of_mass()).dot(up);
+        b.apply_impulse_at_point(impulse - side, at, true);
+        b.apply_impulse_at_point(side, at - up * arm * SIDE_KICK_ANTI_ROLL, true);
     }
 
     /// Spin tank `i` (angular impulse, N·m·s): wrecks tumbling after a kill.
@@ -1698,6 +1731,11 @@ fn drive(
         // Both directions share one friction limit per contact. Whatever the
         // ground pushes on the hull, it pushes back on the belt.
         let share = mass / contacts.len() as f32;
+        let (firm, lost) = (
+            FOOTING_FIRM.to_radians().cos(),
+            FOOTING_LOST.to_radians().cos(),
+        );
+        let footing = ((up.y - lost) / (firm - lost)).clamp(0.0, 1.0);
         let mut per_side = [0usize; 2];
         for ct in &contacts {
             per_side[ct.side] += 1;
@@ -1726,8 +1764,8 @@ fn drive(
                 };
                 let mut j_long = m_eff * slip;
                 let mut j_lat = -share * v.dot(lateral);
-                let max_long = ct.grip * ct.load * DT;
-                let max_lat = h.grip_lat * ct.load * DT;
+                let max_long = ct.grip * ct.load * DT * footing;
+                let max_lat = h.grip_lat * ct.load * DT * footing;
                 let usage = ((j_long / max_long.max(1e-6)).powi(2)
                     + (j_lat / max_lat.max(1e-6)).powi(2))
                 .sqrt();
@@ -2010,13 +2048,15 @@ struct Feel {
     tipped: bool,
 }
 
-/// Upside down or on its side for a while: put it back on its tracks.
+/// Upside down or on its side for a while: put it back on its tracks. The
+/// clock runs whenever it's over and settled, however it slides or scrapes
+/// along (a tank on its roof against a wall is never quite still), and only
+/// waits while it's still tumbling.
 fn recover_if_flipped(t: &mut Tank, physics: &mut PhysicsWorld) {
-    let tipped = t.up().y < 0.3;
-    if tipped && t.vel.length() < 3.0 {
-        t.flipped_time += DT;
-    } else {
+    if t.up().y >= FLIP_UP_Y {
         t.flipped_time = 0.0;
+    } else if physics.bodies[t.body].angvel().length() < FLIP_TUMBLING {
+        t.flipped_time += DT;
     }
     if t.flipped_time > FLIP_RECOVER_TIME {
         t.flipped_time = 0.0;
@@ -3055,6 +3095,104 @@ mod tests {
         assert!(
             w.tanks[0].up().y > 0.95,
             "did not recover: {:?}",
+            w.tanks[0].up()
+        );
+    }
+
+    /// Upside down and sliding, it still rights itself: the clock runs
+    /// however fast it's going (it used to need it nearly still, so a tank
+    /// on its roof that kept scraping along never came back).
+    #[test]
+    fn rights_itself_while_sliding_on_its_roof() {
+        let mut w = flat_world();
+        place(
+            &mut w,
+            Vec3::new(100.0, 2.5, 100.0),
+            Quat::from_rotation_z(PI),
+        );
+        run(&mut w, Command::default(), 1.0);
+        assert!(w.tanks[0].up().y < 0.0, "should be upside down first");
+        let mut speed = 0.0;
+        for _ in 0..(3.0 / DT) as usize {
+            // Shoved along its roof, again and again.
+            let b = &mut w.physics.bodies[w.tanks[0].body];
+            b.set_linvel(Vec3::new(5.0, b.linvel().y, 0.0), true);
+            w.step(&[throttle(1.0)]);
+            if w.tanks[0].up().y > 0.95 {
+                break;
+            }
+            speed = w.tanks[0].vel.length();
+        }
+        assert!(
+            speed > 3.0,
+            "only sliding at {speed:.1} m/s as it came back"
+        );
+        assert!(
+            w.tanks[0].up().y > 0.95,
+            "did not recover: {:?}",
+            w.tanks[0].up()
+        );
+    }
+
+    /// Full throttle at a slope: one a kicker's pitch it climbs; one far
+    /// steeper it noses up, loses its footing and slides back down, still on
+    /// its tracks, instead of climbing on until it goes over backwards.
+    #[test]
+    fn slides_back_off_a_face_too_steep_to_climb() {
+        for (deg, climbs) in [(25.0f32, true), (55.0, false)] {
+            let mut map = Map::yard(200.0);
+            let grade = deg.to_radians().tan();
+            map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 1.0, 201, 201, move |_, z| {
+                ((z - 108.0) * grade).clamp(0.0, 10.0)
+            }));
+            let mut w = World::new(map, 0);
+            let (mut top, mut lowest_up) = (0.0f32, 1.0f32);
+            for _ in 0..(8.0 / DT) as usize {
+                w.step(&[throttle(1.0)]);
+                top = top.max(w.tanks[0].pos.y);
+                lowest_up = lowest_up.min(w.tanks[0].up().y);
+            }
+            if climbs {
+                assert!(top > 9.0, "{deg} deg: only got {top:.1} m up");
+            } else {
+                assert!(top < 4.0, "{deg} deg: climbed {top:.1} m up the face");
+            }
+            assert!(lowest_up > 0.4, "{deg} deg: tipped to up.y {lowest_up:.2}");
+        }
+    }
+
+    /// Parked across a side slope, a Kontos fired broadside uphill kicks the
+    /// hull downhill at gun height. It rocks, but not far: taken at full
+    /// height, the kick heeled it to 55 degrees, past where the tracks lose
+    /// their footing (moving, cresting a dune, that rolled tanks over).
+    #[test]
+    fn a_broadside_on_a_side_slope_rocks_but_not_far() {
+        let mut map = Map::yard(200.0);
+        let grade = 26f32.to_radians().tan();
+        map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, move |x, _| {
+            x * grade
+        }));
+        let mut w = World::new(map, 0);
+        w.tanks[0].turret_kind = TurretKind::Kontos;
+        w.tanks[0].turret_rel = std::f32::consts::FRAC_PI_2;
+        run(&mut w, Command::default(), 2.0);
+        assert!(
+            w.tanks[0].gun_dir().x > 0.8,
+            "gun not uphill: {:?}",
+            w.tanks[0].gun_dir()
+        );
+        let mut lowest_up = 1.0f32;
+        for _ in 0..3 {
+            w.fire(0);
+            for _ in 0..(1.5 / DT) as usize {
+                w.step(&[Command::default()]);
+                lowest_up = lowest_up.min(w.tanks[0].up().y);
+            }
+        }
+        assert!(lowest_up > 0.7, "rolled to up.y {lowest_up:.2}");
+        assert!(
+            w.tanks[0].up().y > 0.85,
+            "didn't settle back: {:?}",
             w.tanks[0].up()
         );
     }
