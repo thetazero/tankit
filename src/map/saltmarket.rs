@@ -539,6 +539,7 @@ impl Map {
                 wind: Vec2::new(5.0, 2.3),
                 blowing_sand: 1.0,
                 dust: Vec3::new(0.74, 0.62, 0.45),
+                ambient: 1.0,
             },
             bases: Map::no_bases(&DEFAULT_SIDES),
             factions: DEFAULT_SIDES.to_vec(),

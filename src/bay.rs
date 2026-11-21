@@ -69,6 +69,7 @@ pub fn atmosphere() -> Atmosphere {
         wind: Vec2::ZERO,
         blowing_sand: 0.0,
         dust: Vec3::new(0.5, 0.48, 0.45),
+        ambient: 1.0,
     }
 }
 

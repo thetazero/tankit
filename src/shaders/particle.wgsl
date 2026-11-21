@@ -129,7 +129,7 @@ fn fs_particle(v: POut) -> @location(0) vec4<f32> {
     }
     // Lit like a sunlit cloud of grains: sun from above, sky and bounce fill.
     let sun = g.sun_color.rgb * (0.35 + 0.35 * max(g.sun_dir.y, 0.0)) * sunlit(v.wpos);
-    let fill = mix(g.ground_color.rgb, g.sky_horizon.rgb, 0.6) * 0.55;
+    let fill = mix(g.ground_color.rgb, g.sky_horizon.rgb, 0.6) * 0.55 * g.ground_color.w;
     var c = v.color.rgb * (sun + fill);
     // Same haze as the scene.
     c = mix(c, g.sky_horizon.rgb, d_fog);
