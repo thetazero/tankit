@@ -431,6 +431,10 @@ pub struct ChaseCam {
 /// turret) the chase camera tries, in order, to keep out of its own tank.
 const DODGE_RAISES: [f32; 7] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.25];
 const DODGE_SWINGS: [f32; 9] = [0.0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9, 2.6, -2.6];
+/// The chase camera keeps this far from the static world (and 0.6 m short
+/// of a wall straight behind it): its near plane (0.2 m out, its corners
+/// about 0.3 m) clear of it at any angle.
+const CAM_BALL: f32 = 0.4;
 /// The steepest the boom goes: not quite straight down at the tank.
 const BOOM_STEEPEST: f32 = 1.4;
 /// The chase camera's usual tilt, where it starts and where a reset eases it back.
@@ -475,8 +479,11 @@ impl ChaseCam {
             let back = dir2(yaw + dodge.x);
             let p = (pitch + dodge.y).min(BOOM_STEEPEST);
             let dir = Vec3::new(-back.x * p.cos(), p.sin(), -back.y * p.cos());
-            let hit = world.raycast(focus, dir, len);
-            let pos = focus + dir * (hit - 0.6).max(0.0);
+            // A ball, not a ray: a lump of rock beside the boom keeps out of
+            // the near plane too, not only one straight along it.
+            let ray = world.raycast(focus, dir, len) - 0.6;
+            let ball = world.ballcast(focus, dir, CAM_BALL, len);
+            let pos = focus + dir * ray.min(ball).max(0.0);
             (pos, depth_in_tank(tank, pos))
         };
         // The least dodge that keeps out of the tank (or, boxed in, the one
