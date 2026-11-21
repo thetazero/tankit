@@ -4,7 +4,7 @@
 use glam::Vec3;
 
 use super::Play;
-use crate::audio::dsp::{Noise, OnePole, Smooth, Svf};
+use crate::audio::dsp::{Noise, OnePole, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
 use crate::audio::voice::{Filt, Layer, noise, ring, sine};
@@ -195,8 +195,8 @@ impl Loop for Hum {
             .into_iter()
             .enumerate()
         {
-            self.phase[i] = (self.phase[i] + root * mul / sr).fract();
-            tone += (self.phase[i] * std::f32::consts::TAU).sin() * gain;
+            self.phase[i] = (self.phase[i] + root * mul / sr).fract_q();
+            tone += (self.phase[i] * std::f32::consts::TAU).sin_q() * gain;
         }
         let breath = self.breath.run(n, 700.0 + 1800.0 * c, 1.2, sr).band;
         (tone + breath * 0.3) * c.powf(1.5) * 0.8
@@ -261,9 +261,9 @@ mod tests {
     fn imperium_guns_boom_not_snap() {
         let sr = 48_000.0;
         let render = |layers: &'static [Layer]| {
-            let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+            let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 0.0), 1.0, 7, sr);
             let mut buf = vec![0.0; 2 * (length(layers) * sr) as usize];
-            v.render(&mut buf, sr);
+            v.render(&mut buf);
             buf.iter().step_by(2).copied().collect::<Vec<f32>>()
         };
         for (name, layers) in [("kontos", KONTOS), ("pelekys", PELEKYS)] {

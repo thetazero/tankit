@@ -141,9 +141,9 @@ mod tests {
     #[test]
     fn hits_crunch_not_ping() {
         let sr = 48_000.0;
-        let mut v = Voice::new(HIT, 1.0, 1.0, (1.0, 0.0), 1.0, 7);
+        let mut v = Voice::new(HIT, 1.0, 1.0, (1.0, 0.0), 1.0, 7, sr);
         let mut buf = vec![0.0; 2 * (crate::audio::voice::length(HIT) * sr) as usize];
-        v.render(&mut buf, sr);
+        v.render(&mut buf);
         let x: Vec<f32> = buf.iter().step_by(2).copied().collect();
         let body = band(&x, 100.0, 900.0, sr);
         let ping = band(&x, 1000.0, 6000.0, sr);

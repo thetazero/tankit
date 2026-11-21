@@ -7,7 +7,7 @@ use std::f32::consts::TAU;
 use glam::Vec3;
 
 use super::Play;
-use crate::audio::dsp::{Noise, OnePole, Panner, Smooth, Svf};
+use crate::audio::dsp::{Noise, OnePole, Panner, Quick, Smooth, Svf};
 use crate::audio::mixer::{Coefs, OneShot};
 use crate::audio::tank::{Loop, TankParams};
 use crate::audio::voice::{Filt, L, Layer, Src, noise, ring, sine};
@@ -192,15 +192,15 @@ impl Loop for Buzz {
             return 0.0;
         }
         let f = 120.0 + 80.0 * heat;
-        self.saw_a = (self.saw_a + f / sr).fract();
-        self.saw_b = (self.saw_b + f * 1.006 / sr).fract();
+        self.saw_a = (self.saw_a + f / sr).fract_q();
+        self.saw_b = (self.saw_b + f * 1.006 / sr).fract_q();
         let saws = self.saw_a + self.saw_b - 1.0;
         // Two formants make the buzz nasal and biting rather than a drone.
         let nasal = self.nasal.run(saws, 900.0 + 500.0 * heat, 2.5, sr).band;
         let bite = self.bite.run(saws, 2400.0 + 900.0 * heat, 3.0, sr).band;
         let body = self.body.run(saws, 350.0, 0.7, sr).low;
-        self.throb = (self.throb + (6.0 + 6.0 * heat) / sr).fract();
-        let throb = 0.75 + 0.25 * (self.throb * TAU).sin();
+        self.throb = (self.throb + (6.0 + 6.0 * heat) / sr).fract_q();
+        let throb = 0.75 + 0.25 * (self.throb * TAU).sin_q();
         // Arcing: snaps of static, more of them hot.
         let spark = if noise.unit() < (40.0 + 80.0 * heat) / sr {
             noise.next() * 3.0

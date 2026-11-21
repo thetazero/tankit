@@ -6,7 +6,7 @@ use super::dsp::Svf;
 use super::mixer::Mixer;
 use super::sounds::beam::BurnParams;
 use super::tank::TankParams;
-use super::voice::{Layer, Voice, length};
+use super::voice::{Layer, Voice, length, reference};
 use super::{Camera, Listener};
 
 /// At the origin, looking down -Z.
@@ -78,16 +78,53 @@ pub fn alone(tank: TankParams, burn: BurnParams) -> Vec<f32> {
 pub fn sane(patches: &[(&str, &'static [Layer])]) {
     let sr = 48_000.0;
     for &(name, layers) in patches {
-        let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 1.0), 1.0, 99);
+        let mut v = Voice::new(layers, 1.0, 1.0, (1.0, 1.0), 1.0, 99, sr);
         let len = length(layers);
         let frames = (len * sr) as usize + 64;
         let mut buf = vec![0.0; frames * 2];
-        v.render(&mut buf, sr);
+        v.render(&mut buf);
         assert!(v.done(), "{name} never ends");
         let peak = buf.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(buf.iter().all(|x| x.is_finite()), "{name} not finite");
         assert!(peak > 0.02, "{name} silent: {peak}");
         assert!(peak < 4.0, "{name} too hot: {peak}");
         assert!(len < 12.0, "{name} too long: {len}");
+        same_as_reference(name, layers, &buf, sr);
+    }
+}
+
+/// `played` (stereo, from a [`Voice`] at unit gain and pan, seed 99)
+/// sounds like the patch as [`reference`] plays it. Sample for sample over
+/// the first 100 ms the quick maths is out by under -70 dB; after that a
+/// tone's phase drifts a hair (as the reference's own rounding drifts from
+/// the exact maths, by far more), so from there on it's the loudness, every
+/// 10 ms, that must agree, to 0.1 dB, down to 40 dB under its loudest.
+fn same_as_reference(name: &str, layers: &'static [Layer], played: &[f32], sr: f32) {
+    let want = reference(layers, 99, sr, played.len() / 2);
+    // The reference stops where the voice ends; `played` runs on a little.
+    let got: Vec<f32> = played.iter().step_by(2).take(want.len()).copied().collect();
+    let early = (0.1 * sr) as usize;
+    let early = early.min(want.len());
+    let err: Vec<f32> = want[..early].iter().zip(&got).map(|(a, b)| a - b).collect();
+    // (Some patches are silent at first: no error is fine then too.)
+    let (err, signal) = (rms(&err), rms(&want[..early]));
+    assert!(
+        err <= signal * 10f32.powf(-70.0 / 20.0),
+        "{name} is {:.1} dB off the reference",
+        20.0 * (err / signal).log10()
+    );
+    let window = (0.01 * sr) as usize;
+    let loud = want.chunks(window).map(rms).fold(0.0, f32::max);
+    for (i, (w, g)) in want.chunks(window).zip(got.chunks(window)).enumerate() {
+        let (w, g) = (rms(w), rms(g));
+        // (Far down the tail, layers under -80 dB are skipped: not counted.)
+        if w > loud * 1e-2 {
+            let db = 20.0 * (g / w).log10();
+            assert!(
+                db.abs() < 0.1,
+                "{name} at {} ms is {db:.2} dB off the reference",
+                i * 10
+            );
+        }
     }
 }
