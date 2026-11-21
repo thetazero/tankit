@@ -434,6 +434,7 @@ mod tests {
         let mut pcm = vec![0.0; 2 * (rate as f32 * dt) as usize];
         let (mut up, mut ren) = (Vec::new(), Vec::new());
         let mut sink = 0.0;
+        let mut peak = [0; 4];
         for i in 0..(40.0 / dt) as u32 {
             game.step(crate::game::autopilot(game.world.time), true);
             let camera = cam.update(&game.world, &game.world.tanks[0], dt);
@@ -444,6 +445,10 @@ mod tests {
             audio.render(&mut pcm);
             let t2 = Instant::now();
             sink += pcm[0];
+            let now = audio.offline.as_ref().unwrap().busy();
+            for (p, n) in peak.iter_mut().zip(now) {
+                *p = (*p).max(n);
+            }
             if i as f32 * dt > 10.0 {
                 up.push(t1 - t0);
                 ren.push(t2 - t1);
@@ -462,6 +467,13 @@ mod tests {
         };
         report("update", &mut up);
         report("render", &mut ren);
+        let core =
+            ren.iter().map(|d| d.as_secs_f64()).sum::<f64>() / (ren.len() as f64 * dt as f64);
+        println!("render takes {:.1}% of one core", core * 100.0);
+        println!(
+            "at most {} one-shots, {} tanks' loops, {} beam burns and {} places sounding",
+            peak[0], peak[1], peak[2], peak[3]
+        );
         println!("({sink})");
     }
 

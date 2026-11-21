@@ -287,6 +287,18 @@ impl Mixer {
         self.voices.len()
     }
 
+    /// What's sounding: one-shots, and tank loops, beam burns and places
+    /// that aren't silent.
+    #[cfg(test)]
+    pub fn busy(&self) -> [usize; 4] {
+        [
+            self.voices.len(),
+            self.tanks.iter().filter(|t| !t.silent()).count(),
+            self.burns.iter().filter(|b| !b.silent()).count(),
+            self.places.iter().filter(|p| !p.silent()).count(),
+        ]
+    }
+
     /// Fill `out` with interleaved stereo frames.
     pub fn render(&mut self, out: &mut [f32]) {
         let _flush = FlushDenormals::new();
