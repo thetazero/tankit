@@ -123,6 +123,7 @@ impl Hud {
         let scale = height / REF_HEIGHT;
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
+        p.set_over_scene(true);
         let mut hits = Hits::new();
 
         widgets::corners(
@@ -492,6 +493,8 @@ impl Hud {
         if board {
             // Four sides stack two rows of tables: start higher.
             let top = if m.factions.len() > 2 { 0.17 } else { 0.28 };
+            // The tables sit on opaque panels.
+            p.set_over_scene(false);
             scoreboard(
                 &mut p,
                 &mut hits,
@@ -500,6 +503,7 @@ impl Hud {
                 ledger,
                 Vec2::new(w * 0.5, h * top),
             );
+            p.set_over_scene(true);
         }
 
         // Bottom left: speed.

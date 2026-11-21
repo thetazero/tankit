@@ -25,7 +25,7 @@ const CHARSET: &str = concat!(
 );
 
 /// Atlas pixels per em.
-const EM: f32 = 48.0;
+pub const EM: f32 = 48.0;
 /// The glyphs are rasterized this many times larger before being shrunk into the atlas.
 const OVERSAMPLE: usize = 4;
 /// How far (atlas px) the field reaches either side of an outline; also each cell's padding.
