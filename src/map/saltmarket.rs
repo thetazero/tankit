@@ -615,9 +615,6 @@ impl Map {
         // round it over.
         map.translate(Vec2::splat(MARGIN));
         map.size = SIZE + 2.0 * MARGIN;
-        // A backstop at the playable ground's edge, inside the rock and the
-        // sand behind the barricade: nothing reaches it.
-        map.perimeter(false);
         map
     }
 

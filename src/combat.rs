@@ -460,6 +460,13 @@ fn landed(map: &Map, t: &Tank) -> bool {
     clearance < LANDED_CLEARANCE || (t.grounded() && t.vel.y > -1.0)
 }
 
+/// A tank out of the arena has come down on the ground out there (or on
+/// anything, or has dropped well below it: it never falls for long).
+fn landed_out(map: &Map, t: &Tank) -> bool {
+    let clearance = t.pos.y - map.ground_beyond(t.pos.x, t.pos.z);
+    clearance < LANDED_CLEARANCE || t.grounded()
+}
+
 /// A beam's damage multiplier at distance `d` out of `range`.
 pub fn beam_falloff(d: f32, range: f32) -> f32 {
     let x = ((d / range - BEAM_FULL) / (1.0 - BEAM_FULL)).clamp(0.0, 1.0);
@@ -1111,6 +1118,7 @@ impl Match {
         self.sounds
             .extend(self.world.knocks.iter().map(|&k| Sound::Knock(k)));
         self.falls();
+        self.outs();
         self.husks();
         self.aim_assist();
 
@@ -1963,6 +1971,31 @@ impl Match {
             }
             let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
             self.kill(killer, i);
+        }
+    }
+
+    /// Out of the arena (knocked over the edge wall by a hard shot, say):
+    /// dead as soon as it comes down on the ground out there, a Vigil
+    /// included, husk and all. Whoever hit it last knocked it out and gets
+    /// the kill, as for a fall.
+    fn outs(&mut self) {
+        let map = &self.world.map;
+        let out: Vec<usize> = (0..self.fighters.len())
+            .filter(|&i| {
+                let t = &self.world.tanks[i];
+                let f = &self.fighters[i];
+                f.alive && map.is_out(t.pos) && (f.is_husk() || landed_out(map, t))
+            })
+            .collect();
+        for i in out {
+            let f = &self.fighters[i];
+            if !f.is_husk() {
+                let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
+                self.kill(killer, i);
+            }
+            if self.fighters[i].alive {
+                self.wreck(i);
+            }
         }
     }
 
@@ -4383,6 +4416,77 @@ mod tests {
             alive_low = alive_low.min(h);
         }
         (alive_low, died_at, 0.5 - floor)
+    }
+
+    /// Throw tank `i` out over the middle of the arena's west edge, as a hard
+    /// shot from tank 0 would, and run until it dies (or `secs` pass): how
+    /// long it took, and whether it had come down (on the ground out there,
+    /// or on a rock) when it died.
+    fn throw_out(m: &mut Match, i: usize, secs: f32) -> Option<(f32, bool)> {
+        let at = Vec2::new(-6.0, m.world.map.size * 0.5);
+        m.world.teleport(i, at, 0.0);
+        let y = m.world.map.ground_beyond(at.x, at.y) + 12.0;
+        let b = &mut m.world.physics.bodies[m.world.tanks[i].body];
+        b.set_translation(Vec3::new(at.x, y, at.y), true);
+        b.set_linvel(Vec3::new(-6.0, 2.0, 0.0), true);
+        m.fighters[i].hit_by = Some(0);
+        m.fighters[i].since_hit = 0.0;
+        let deaths = m.fighters[i].deaths;
+        for k in 0..(secs / DT) as usize {
+            m.step(Command::default(), false);
+            if m.fighters[i].deaths > deaths {
+                let t = &m.world.tanks[i];
+                let h = t.pos.y - m.world.map.ground_beyond(t.pos.x, t.pos.z);
+                // (A mesa's fall line can call it a moment before the
+                // floor: its own floor height is the arena's edge's.)
+                return Some((
+                    k as f32 * DT,
+                    t.grounded() || h.abs() < LANDED_CLEARANCE + 0.5,
+                ));
+            }
+        }
+        None
+    }
+
+    /// Knocked out of the arena on any map, a tank comes down on the ground
+    /// out there and dies of it within a few seconds (no long fall, no
+    /// invisible wall to catch it), and whoever knocked it out gets the kill.
+    #[test]
+    fn a_tank_knocked_out_of_any_map_dies_out_there() {
+        for (name, map) in [
+            ("saltmarket", Map::saltmarket()),
+            ("sanctum", Map::sanctum()),
+            ("kiln", Map::kiln()),
+            ("capital", Map::capital()),
+            ("foundry", Map::foundry()),
+            ("mine", Map::mine()),
+        ] {
+            let mut m = Match::new(map, 0, 1, 1);
+            for f in &mut m.fighters {
+                f.shield = 0.0;
+            }
+            let (secs, down) =
+                throw_out(&mut m, 1, 6.0).unwrap_or_else(|| panic!("{name}: never died"));
+            assert!(secs < 4.0, "{name}: took {secs:.1} s to die");
+            assert!(down, "{name}: died in mid-air");
+            assert!(!m.fighters[1].alive, "{name}");
+            assert_eq!(m.fighters[1].killed_by, Some(0), "{name}");
+        }
+    }
+
+    /// Every hull, a Vigil too: out of the arena there's no running on as a
+    /// husk.
+    #[test]
+    fn every_hull_knocked_out_is_wrecked() {
+        for hull in crate::garage::HULLS {
+            let mut m = Match::new(Map::saltmarket(), 0, 1, 1);
+            for f in &mut m.fighters {
+                f.shield = 0.0;
+            }
+            m.world.set_hull(1, hull);
+            throw_out(&mut m, 1, 6.0).unwrap_or_else(|| panic!("{hull:?} never died"));
+            assert!(!m.fighters[1].alive, "{hull:?}");
+        }
     }
 
     /// Over the edge, it falls the whole way and blows up on the floor, not

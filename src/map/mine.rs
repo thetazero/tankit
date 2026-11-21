@@ -699,7 +699,6 @@ impl Map {
         map.mine_resonant_base(&mut rng);
         map.edge_rocks(&mut rng);
         map.mine_spawns();
-        map.perimeter(false);
         map.mine_horizon(&mut rng);
         map.mine_sounds();
         map

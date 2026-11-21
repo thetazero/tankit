@@ -888,21 +888,15 @@ impl Map {
     /// Visible arena walls (the test kit's yard).
     #[cfg(test)]
     fn perimeter_walls(&mut self) {
-        self.perimeter(true);
-    }
-
-    /// Invisible arena walls spanning heights `y0`..`y1` (a map whose floor
-    /// isn't at 0).
-    fn perimeter_at(&mut self, y0: f32, y1: f32) {
         let s = self.size;
-        let t = 2.0;
+        let (t, h) = (2.0, 5.0);
         for (min, max) in [
-            (Vec3::new(-t, y0, -t), Vec3::new(s + t, y1, 0.0)),
-            (Vec3::new(-t, y0, s), Vec3::new(s + t, y1, s + t)),
-            (Vec3::new(-t, y0, 0.0), Vec3::new(0.0, y1, s)),
-            (Vec3::new(s, y0, 0.0), Vec3::new(s + t, y1, s)),
+            (Vec3::new(-t, 0.0, -t), Vec3::new(s + t, h, 0.0)),
+            (Vec3::new(-t, 0.0, s), Vec3::new(s + t, h, s + t)),
+            (Vec3::new(-t, 0.0, 0.0), Vec3::new(0.0, h, s)),
+            (Vec3::new(s, 0.0, 0.0), Vec3::new(s + t, h, s)),
         ] {
-            self.solids.push(Solid { min, max });
+            self.add_block(min, max, Vec3::new(0.40, 0.40, 0.42));
         }
     }
 
@@ -925,33 +919,6 @@ impl Map {
             }
         }
         out
-    }
-
-    /// The arena boundary: solid walls, drawn as grey walls or (for maps
-    /// whose edge is scenery, like dunes) invisible.
-    fn perimeter(&mut self, visible: bool) {
-        let s = self.size;
-        let (t, h) = (2.0, 5.0);
-        let walls = [
-            (Vec3::new(-t, 0.0, -t), Vec3::new(s + t, h, 0.0)),
-            (Vec3::new(-t, 0.0, s), Vec3::new(s + t, h, s + t)),
-            (Vec3::new(-t, 0.0, 0.0), Vec3::new(0.0, h, s)),
-            (Vec3::new(s, 0.0, 0.0), Vec3::new(s + t, h, s)),
-        ];
-        for (min, max) in walls {
-            self.solids.push(Solid { min, max });
-            if !visible {
-                continue;
-            }
-            self.boxes.push(VisBox {
-                min,
-                max,
-                color: Vec3::new(0.40, 0.40, 0.42),
-                side_mat: Material::Plain,
-                top_mat: Material::Plain,
-            });
-            self.solids.push(Solid { min, max });
-        }
     }
 
     /// On Saltmarket (in the shifted frame `Map::saltmarket` returns), how
@@ -1059,10 +1026,26 @@ impl Map {
         self.terrain.as_ref().map_or(0.0, |t| t.height_at(x, z))
     }
 
+    /// Ground height at a point outside the arena: what's drawn there (the
+    /// map's ground beyond the edge, which tanks land on), or the play
+    /// ground if it has none.
+    pub fn ground_beyond(&self, x: f32, z: f32) -> f32 {
+        match &self.scenery_terrain {
+            Some(t) => t.height_at(x, z),
+            None => self.ground_height(x, z),
+        }
+    }
+
+    /// Past the arena's edge: out of the fight (see `combat`).
+    pub fn is_out(&self, p: Vec3) -> bool {
+        let m = 1.0;
+        p.x < -m || p.z < -m || p.x > self.size + m || p.z > self.size + m
+    }
+
     /// Every point a little inside the arena's edge (`inset` m in, every
     /// half meter, bar the ones `skip` says nothing can reach) stands in
     /// something solid and visible, too tall for a tank to climb: no tank
-    /// gets to the backstop at the edge.
+    /// drives out over the edge.
     #[cfg(test)]
     pub(crate) fn assert_edge_walled(&self, inset: f32, skip: impl Fn(Vec2) -> bool) {
         let tall = 2.5;

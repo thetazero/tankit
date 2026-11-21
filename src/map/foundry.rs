@@ -170,7 +170,6 @@ impl Map {
         map.yard_wall();
         map.litter();
         map.foundry_spawns();
-        map.perimeter(false);
         map.foundry_horizon(&mut rng);
         map.foundry_sounds();
         map
@@ -1366,7 +1365,7 @@ mod tests {
     }
 
     /// The yard wall closes the edge all round: nowhere can a tank drive
-    /// up to the backstop.
+    /// out of the arena.
     #[test]
     fn the_yard_wall_closes_the_edge() {
         Map::foundry().assert_edge_walled(0.3, |_| false);

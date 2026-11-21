@@ -846,11 +846,10 @@ fn orient(pos: &[Vec3], mut t: [usize; 3], want: Vec3) -> [usize; 3] {
 mod tests {
     use super::*;
 
-    /// The arena's own boundary (a hidden backstop at the playable ground's
-    /// edge) is out of reach everywhere: deep in the rock, or behind the
-    /// barricade.
+    /// The arena's own boundary (past it a tank is out, and dies) is out
+    /// of reach everywhere: deep in the rock, or behind the barricade.
     #[test]
-    fn backstop_is_out_of_reach() {
+    fn arena_edge_is_out_of_reach() {
         let (lo, hi) = (-MARGIN, SIZE + MARGIN);
         let mut t = lo;
         while t <= hi {
