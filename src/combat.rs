@@ -4439,7 +4439,10 @@ mod tests {
                 let h = t.pos.y - m.world.map.ground_beyond(t.pos.x, t.pos.z);
                 // (A mesa's fall line can call it a moment before the
                 // floor: its own floor height is the arena's edge's.)
-                return Some((k as f32 * DT, t.grounded() || h.abs() < LANDED_CLEARANCE + 0.5));
+                return Some((
+                    k as f32 * DT,
+                    t.grounded() || h.abs() < LANDED_CLEARANCE + 0.5,
+                ));
             }
         }
         None
