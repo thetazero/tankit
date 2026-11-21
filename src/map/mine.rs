@@ -877,6 +877,9 @@ impl Map {
         map.warehouse(&mut rng);
         map.fins_and_hoodoos(&mut rng);
         map.flats_cover(&mut rng);
+        // Boulders before the fill, so they take the open ground first
+        // (on their own dice).
+        map.boulder_fields(&mut Rng::new(0xb01d_0281));
         map.fill_cover(&mut rng);
         map.mine_ithessar_base(&mut rng);
         map.mine_resonant_base(&mut rng);
@@ -4862,6 +4865,75 @@ impl Map {
         }
     }
 
+    /// More boulders (#281): over the open ground, wherever there's room
+    /// and nothing else close, a boulder bigger than a tank, now and then
+    /// with a second one fallen against it. Each keeps a tank's width and
+    /// more from everything else, so the ground stays drivable between.
+    fn boulder_fields(&mut self, rng: &mut Rng) {
+        const STEP: f32 = 6.0;
+        // Clear ground between a new rock and anything else: wider than
+        // the widest hull (4.3 m).
+        const GAP: f32 = 5.0;
+        let mut z = STEP * 0.5;
+        while z < SIZE {
+            let mut x = STEP * 0.5;
+            while x < SIZE {
+                let p = Vec2::new(x, z) + Vec2::new(rng.range(-2.5, 2.5), rng.range(-2.5, 2.5));
+                let s = rng.range(1.8, 2.8);
+                if rng.chance(0.9) && self.boulder_room(p, s, GAP, None) {
+                    self.boulder(rng, p, s, true);
+                    if rng.chance(0.5) {
+                        let a = rng.range(0.0, TAU);
+                        let q = p + Vec2::new(a.cos(), a.sin()) * s * rng.range(1.3, 1.6);
+                        let t = rng.range(1.8, 2.3);
+                        // Fallen against the first, clear of all else.
+                        let first = self.oboxes.len() - 1;
+                        if self.boulder_room(q, t, GAP, Some(first)) {
+                            self.boulder(rng, q, t, true);
+                        }
+                    }
+                }
+                x += STEP;
+            }
+            z += STEP;
+        }
+    }
+
+    /// Room for a boulder of half-width `s` at `p`, with `gap` of clear
+    /// ground round it: off everything kept clear for driving, out of the
+    /// caves, on fairly flat ground, and that far from any other piece.
+    /// (`except`: a piece it may lean on.)
+    fn boulder_room(&self, p: Vec2, s: f32, gap: f32, except: Option<usize>) -> bool {
+        let r = s * 1.1;
+        if keep_clear(p) || roofed(p) || in_cave(p) || !self.room(p, r + 3.0) {
+            return false;
+        }
+        let g = self.ground_height(p.x, p.y);
+        let flat = (0..8).all(|k| {
+            let a = k as f32 * TAU / 8.0;
+            let q = p + Vec2::new(a.cos(), a.sin()) * (r + 1.5);
+            !roofed(q) && (self.ground_height(q.x, q.y) - g).abs() < 1.2
+        });
+        if !flat {
+            return false;
+        }
+        let near = r + gap;
+        let clamp = |min: Vec3, max: Vec3| {
+            max.y > g - 1.0
+                && min.y < g + 6.0
+                && (p.clamp(Vec2::new(min.x, min.z), Vec2::new(max.x, max.z)) - p).length() < near
+        };
+        !self.oboxes.iter().enumerate().any(|(i, o)| {
+            if Some(i) == except {
+                return false;
+            }
+            let (lo, hi) = o.y_range();
+            hi > g - 1.0 && lo < g + 6.0 && o.distance(p) < near
+        }) && !self.crystals.iter().any(|c| c.distance(p) < near)
+            && !self.solids.iter().any(|b| clamp(b.min, b.max))
+            && !self.boxes.iter().any(|b| clamp(b.min, b.max))
+    }
+
     /// The Ithessar's yard at the west edge: a plasma core held over it, as
     /// at every Ithessar place, and worked crystal standing round.
     fn mine_ithessar_base(&mut self, rng: &mut Rng) {
@@ -6572,7 +6644,7 @@ mod play {
     }
 
     /// The rocks strewn about run big: more over a tank's width than
-    /// pebbles (#267).
+    /// pebbles (#267), and plenty of them (#281).
     #[test]
     fn rocks_run_big() {
         let m = Map::mine();
@@ -6596,7 +6668,8 @@ mod play {
             }
         }
         assert!(small < 60, "{small} small rocks");
-        assert!(big > 70, "only {big} big rocks");
+        // Over 100 since #281 asked for more boulders (87 before it).
+        assert!(big > 105, "only {big} big rocks");
     }
 }
 
