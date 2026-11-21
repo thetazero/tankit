@@ -18,6 +18,7 @@ mod props;
 mod ruins;
 mod saltmarket;
 mod sanctum;
+mod strata;
 #[cfg(test)]
 mod test_kit;
 mod valley;

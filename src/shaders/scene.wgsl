@@ -449,6 +449,125 @@ fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Deta
     return s;
 }
 
+fn hash3(p: vec3<f32>) -> f32 {
+    return hash2(p.xy + p.z * vec2<f32>(17.13, 31.71));
+}
+
+// Value noise in 3D, 0..1.
+fn noise3(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = mix(mix(hash3(i), hash3(i + vec3<f32>(1.0, 0.0, 0.0)), u.x),
+        mix(hash3(i + vec3<f32>(0.0, 1.0, 0.0)), hash3(i + vec3<f32>(1.0, 1.0, 0.0)), u.x), u.y);
+    let b = mix(mix(hash3(i + vec3<f32>(0.0, 0.0, 1.0)), hash3(i + vec3<f32>(1.0, 0.0, 1.0)), u.x),
+        mix(hash3(i + vec3<f32>(0.0, 1.0, 1.0)), hash3(i + vec3<f32>(1.0, 1.0, 1.0)), u.x), u.y);
+    return mix(a, b, u.z);
+}
+
+// Sandstone cliff: what a point of the face is like. Everything is a function
+// of world position alone (no projection, so nothing stretches round a
+// curved face): beds are horizontal slices, warped a little; joints are
+// level-lines of noise across the ground plane, run straight up and down.
+struct CliffAt {
+    // Relief, m (out of the face).
+    h: f32,
+    // Which bed (for its tint), and how far into a parting (1 = in it).
+    bed: f32,
+    parting: f32,
+    // The small-scale relief alone, 0..1 (0 = down in a pit).
+    chips: f32,
+};
+
+// `fade`: 1 close up, 0 where the fine detail would be smaller than a pixel.
+fn cliff_at(p: vec3<f32>, fade: f32) -> CliffAt {
+    var o: CliffAt;
+    // Bedding, rising and falling gently along the face.
+    let y = p.y + 1.6 * noise3(p * 0.035) + 0.3 * noise3(p * 0.19 + 7.0);
+    // Beds of uneven thickness, 1.3 to 5 m (the warp keeps yb rising with y).
+    let yb = y / 2.1 + 0.8 * noise2(vec2<f32>(y * 0.25, 3.7));
+    o.bed = floor(yb);
+    let f = fract(yb);
+    // How deeply this bed's top has weathered back: some partings are deep
+    // grooves, some barely show.
+    let deep = hash2(vec2<f32>(o.bed, 9.3));
+    let w = mix(0.05, 0.16, deep);
+    // The parting under a bed: the bed above overhangs it a little (sharp
+    // above, rounding off into the bed below).
+    o.parting = (1.0 - smoothstep(0.0, w, f) * (1.0 - smoothstep(1.0 - w * 0.4, 1.0, f))) * mix(0.15, 1.0, deep * deep);
+    // Fine laminations inside each bed.
+    let lam = noise2(vec2<f32>(y * 4.0, o.bed * 1.3));
+    // Blocky, broken surface: big lumps, then smaller ones close up. Beds
+    // weather each their own way, so the lumps change from bed to bed.
+    let q = p + vec3<f32>(0.0, 0.0, o.bed * 13.7);
+    let lumps = noise3(q * 0.3) * 0.6 + noise3(q * 0.85 + 11.0) * 0.4;
+    // Broken, pitted rock a hand or two across, and grit, close up only.
+    let chips = (noise3(q * 1.9 + 23.0) * 0.65 + noise3(q * 4.3 + 5.0) * 0.35) * fade;
+    let grit = noise3(p * 9.0 + 2.0) * fade;
+    o.chips = mix(0.5, chips + 0.15 * (grit - 0.5), fade);
+    o.h = 0.6 * lumps + 0.14 * chips + 0.012 * grit + 0.03 * lam * fade - 0.18 * o.parting;
+    return o;
+}
+
+struct Cliff {
+    s: Surface,
+    n: vec3<f32>,
+};
+
+// `px`: how big a pixel is on the face, m (fwidth of the world position).
+fn cliff_surface(base: vec3<f32>, wpos: vec3<f32>, n_geo: vec3<f32>, px: f32) -> Cliff {
+    let n0 = normalize(n_geo);
+    let fade = 1.0 - smoothstep(0.03, 0.12, px);
+    let c = cliff_at(wpos, fade);
+    // Normal from the relief's slope across the face.
+    var t = cross(vec3<f32>(0.0, 1.0, 0.0), n0);
+    if (dot(t, t) < 0.01) {
+        t = cross(vec3<f32>(1.0, 0.0, 0.0), n0);
+    }
+    t = normalize(t);
+    let b = cross(n0, t);
+    let e = 0.06;
+    let ht = cliff_at(wpos + t * e, fade).h;
+    let hb = cliff_at(wpos + b * e, fade).h;
+    var out: Cliff;
+    out.n = normalize(n0 - ((ht - c.h) * t + (hb - c.h) * b) / e * 0.9);
+    // Joints: vertical cracks a few metres apart, where a noise field over
+    // the ground plane crosses one level, each running down a few beds. Their
+    // width is measured along the face (the field's slope along it), so they
+    // stay thin straight cracks; where the face runs along a level line they
+    // would smear into a streak, so they're left out there. They fade before
+    // they get thinner than a pixel.
+    let jp = wpos.xz * 0.22 + vec2<f32>(0.0, 0.06 * wpos.y);
+    let j0 = noise2(jp) - 0.5;
+    let slope = abs(noise2(jp + t.xz * 0.022) - 0.5 - j0) / 0.1;
+    let gap = abs(j0) / max(slope, 1e-4);
+    let gate = smoothstep(0.45, 0.62, noise3(wpos * vec3<f32>(0.15, 0.06, 0.15) + 3.0))
+        * smoothstep(0.04, 0.1, slope) * (1.0 - smoothstep(0.06, 0.25, px));
+    let joint = (1.0 - smoothstep(0.03, 0.09, gap)) * gate;
+
+    var s: Surface;
+    // Each bed its own shade of the band's color; laminations faint in it.
+    let tint = hash2(vec2<f32>(c.bed, 4.1));
+    let lam = noise2(vec2<f32>(wpos.y * 4.0, c.bed * 1.3));
+    let blotch = noise3(wpos * 0.12 + 2.0);
+    s.albedo = base * (0.86 + 0.16 * tint) * (0.9 + 0.2 * blotch) * (0.96 + 0.08 * lam * fade);
+    // Harder beds stand out paler; the partings and joints hold shadow and grit.
+    s.albedo *= 1.0 - 0.14 * c.parting - 0.4 * joint;
+    s.ao = (1.0 - 0.3 * c.parting) * (1.0 - 0.6 * joint);
+    // Pits hold shadow and darker grit, so the rock reads in the shade too.
+    s.albedo *= 0.9 + 0.2 * c.chips;
+    s.ao *= min(0.8 + 0.4 * c.chips, 1.0);
+    s.rough = 0.93;
+    s.emissive = vec3<f32>(0.0);
+    s.metal = 0.0;
+    // Sand caught on the ledges.
+    let up = clamp(n0.y, 0.0, 1.0);
+    let dust = smoothstep(0.55, 0.85, up) * smoothstep(0.3, 0.6, noise3(wpos * 0.35 + 5.0));
+    s.albedo = mix(s.albedo, SAND_COL, dust * 0.45);
+    out.s = s;
+    return out;
+}
+
 // GGX / Smith / Schlick specular, scaled by pi to match this renderer's
 // un-normalized Lambert diffuse.
 fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
@@ -479,10 +598,15 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     let duv = fwidth(plane_uv(v.lpos, normalize(v.lnormal)));
     let dxz = fwidth(v.wpos.xz);
     let detail = surface_detail(v.lpos, v.lnormal, v.ax, v.ay, v.az, 0.45, 0.35);
-    let is_world_detail = m == MAT_SAND || m == MAT_PLASTER || m == MAT_CONCRETE || m == MAT_RUBBLE || m == MAT_RUST || m == MAT_PAINTED || m == MAT_CLOTH || m == MAT_WOOD;
+    let px = length(fwidth(v.wpos));
+    let is_world_detail = m == MAT_SAND || m == MAT_PLASTER || m == MAT_CONCRETE || m == MAT_RUBBLE || m == MAT_RUST || m == MAT_PAINTED || m == MAT_CLOTH || m == MAT_WOOD || m == MAT_CLIFF;
     var s: Surface;
     if (is_tank) {
         s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
+    } else if (m == MAT_CLIFF) {
+        let c = cliff_surface(base, v.wpos, n, px);
+        n = c.n;
+        s = c.s;
     } else if (is_world_detail) {
         n = detail.normal;
         s = world_surface(m, base, v.wpos, n, detail);
