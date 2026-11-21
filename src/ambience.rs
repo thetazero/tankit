@@ -282,6 +282,7 @@ impl Ambience {
                     color: p.color.extend(p.alpha * fade).to_array(),
                     stretch: (dir * p.stretch).to_array(),
                     glow: 0.0,
+                    billow: 0.0,
                 }
             })
             .collect()
