@@ -853,6 +853,125 @@ impl Map {
         }
     }
 
+    /// A grave slab set into the ground at `p` (ground height `g`), long
+    /// along z: flat enough to drive over.
+    fn grave_slab(&mut self, p: Vec2, g: f32, rng: &mut Rng) {
+        self.oboxes.push(OBox {
+            center: p,
+            yaw: rng.range(-0.06, 0.06),
+            half: Vec2::new(0.5, 0.9),
+            y0: g - 0.3,
+            y1: g + rng.range(0.06, 0.12),
+            color: STONE * rng.range(0.78, 0.9),
+            side_mat: Material::Plaster,
+            top_mat: Material::Rubble,
+            chip: 0.06,
+            solid: false,
+            ..OBox::default()
+        });
+    }
+
+    /// `n` small Resonant shards grown up out of the soil at `p`, glowing
+    /// faintly: a grave's marker, small enough to drive through.
+    fn grave_shards(&mut self, p: Vec2, g: f32, n: usize, rng: &mut Rng) {
+        for _ in 0..n {
+            let a = rng.range(0.0, TAU);
+            let at = p + Vec2::new(a.cos(), a.sin()) * rng.range(0.05, 0.3);
+            let w = rng.range(0.09, 0.15);
+            self.oboxes.push(OBox {
+                center: at,
+                yaw: FRAC_PI_2 - a,
+                half: Vec2::splat(w),
+                y0: g - 0.3,
+                y1: g + rng.range(0.35, 0.75),
+                color: CRYSTAL * rng.range(0.3, 0.4),
+                side_mat: Material::Glow,
+                top_mat: Material::Glow,
+                tilt: rng.range(0.1, 0.4),
+                solid: false,
+                ..OBox::default()
+            });
+        }
+    }
+
+    /// A solid tomb at `p`, long along z: a chest tomb on a plinth, or a
+    /// small mausoleum with a stepped roof and a door at its south end.
+    fn tomb(&mut self, p: Vec2, mausoleum: bool, rng: &mut Rng) {
+        let g = self.ground_height(p.x, p.y);
+        let half = if mausoleum {
+            Vec2::new(1.5, 2.1)
+        } else {
+            Vec2::new(1.1, 1.8)
+        };
+        let shade = rng.range(0.86, 0.95);
+        let block = |m: &mut Map, half: Vec2, y0: f32, y1: f32, color: Vec3, chip: f32| {
+            m.oboxes.push(OBox {
+                center: p,
+                half,
+                y0,
+                y1,
+                color,
+                side_mat: Material::Plaster,
+                top_mat: Material::Rubble,
+                chip,
+                ..OBox::default()
+            });
+        };
+        // The plinth, then the body.
+        block(
+            self,
+            half + Vec2::splat(0.3),
+            g - 0.6,
+            g + 0.35,
+            STONE * shade * 0.9,
+            0.1,
+        );
+        if mausoleum {
+            block(self, half, g, g + 3.0, STONE * shade, 0.12);
+            // A cornice, and a roof stepped up from it.
+            block(
+                self,
+                half + Vec2::splat(0.25),
+                g + 3.0,
+                g + 3.35,
+                STONE * shade * 0.92,
+                0.0,
+            );
+            for k in 0..3 {
+                let f = k as f32 / 3.0;
+                let y = g + 3.35 + k as f32 * 0.4;
+                block(self, half * (1.0 - f * 0.55), y, y + 0.4, SLATE, 0.0);
+            }
+            // The door: dark, flush with the south face.
+            self.oboxes.push(OBox {
+                center: p - Vec2::new(0.0, half.y + 0.02),
+                half: Vec2::new(0.55, 0.05),
+                y0: g + 0.35,
+                y1: g + 2.2,
+                color: SLATE * 0.6,
+                side_mat: Material::Metal,
+                top_mat: Material::Metal,
+                solid: false,
+                ..OBox::default()
+            });
+        } else {
+            block(self, half, g, g + 1.5, STONE * shade, 0.1);
+            // The lid, overhanging.
+            block(
+                self,
+                half + Vec2::splat(0.15),
+                g + 1.5,
+                g + 1.8,
+                STONE * shade * 0.95,
+                0.05,
+            );
+        }
+        // Shards grown up against its foot.
+        let corner = Vec2::new(half.x + 0.45, half.y * rng.range(-0.6, 0.6));
+        let side = if rng.range(0.0, 1.0) < 0.5 { -1.0 } else { 1.0 };
+        self.grave_shards(p + corner * Vec2::new(side, 1.0), g, 2, rng);
+    }
+
     fn church(&mut self, rng: &mut Rng) {
         let (z0, z1) = (CENTER.y - HALF_W, CENTER.y + HALF_W);
         let (cx0, cx1) = (CENTER.x - HALF_W, CENTER.x + HALF_W);
@@ -1393,25 +1512,47 @@ impl Map {
             }
         }
 
-        // Graves in the yards west of the church: rows of small stones.
-        for (gx, gz) in [(78.0f32, 128.0f32), (110.0, 186.0), (184.0, 116.0)] {
+        // Graveyards round the church: rows of graves you drive over (flat
+        // slabs set in the ground, and Resonant shards grown up out of the
+        // soil marking them), and two solid tombs in each, spaced out so
+        // there's open ground to steer through between them, and kept off
+        // the walls and chapels near by so they don't make dead ends.
+        // Tombs: (offset from the yard's middle, a mausoleum or a plain tomb).
+        let w = Vec2::new;
+        for (gx, gz, tombs) in [
+            (
+                78.0f32,
+                128.0f32,
+                [(w(-4.6, -3.6), true), (w(4.6, -3.6), false)],
+            ),
+            (110.0, 186.0, [(w(4.6, 3.6), true), (w(-1.0, -4.4), false)]),
+            (184.0, 116.0, [(w(-4.6, 3.6), true), (w(4.6, -3.6), false)]),
+        ] {
+            let c = Vec2::new(gx + 4.5, gz + 5.2);
+            for &(off, mausoleum) in &tombs {
+                self.tomb(c + off, mausoleum, rng);
+            }
             for i in 0..4 {
                 for j in 0..5 {
                     let p = Vec2::new(gx + i as f32 * 3.0, gz + j as f32 * 2.6)
-                        + Vec2::new(rng.range(-0.3, 0.3), rng.range(-0.3, 0.3));
-                    self.oboxes.push(OBox {
-                        center: p,
-                        yaw: rng.range(-0.15, 0.15),
-                        half: Vec2::new(0.45, 0.12),
-                        y0: -0.3,
-                        y1: rng.range(0.6, 1.1),
-                        color: STONE * rng.range(0.8, 0.95),
-                        side_mat: Material::Rubble,
-                        top_mat: Material::Rubble,
-                        tilt: rng.range(-0.2, 0.2),
-                        solid: false,
-                        ..OBox::default()
-                    });
+                        + Vec2::new(rng.range(-0.2, 0.2), rng.range(-0.2, 0.2));
+                    if tombs
+                        .iter()
+                        .any(|&(off, _)| (p - (c + off)).abs().cmplt(Vec2::new(2.6, 3.0)).all())
+                    {
+                        continue;
+                    }
+                    let g = self.ground_height(p.x, p.y);
+                    if rng.range(0.0, 1.0) < 0.6 {
+                        self.grave_slab(p, g, rng);
+                        // A shard at its head, now and then.
+                        if rng.range(0.0, 1.0) < 0.5 {
+                            self.grave_shards(p + Vec2::new(0.0, 1.15), g, 1, rng);
+                        }
+                    } else {
+                        let n = 2 + rng.index(2);
+                        self.grave_shards(p, g, n, rng);
+                    }
                 }
             }
         }
