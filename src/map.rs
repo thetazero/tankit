@@ -23,6 +23,7 @@ mod strata;
 #[cfg(test)]
 mod test_kit;
 mod valley;
+mod vault;
 
 /// Blocking collider.
 #[derive(Clone, Copy, Debug)]
@@ -624,6 +625,9 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// Beams of plasma held on for good (a borer cutting rock): drawn with
+    /// the effects, and death to any tank that drives into one.
+    pub beams: Vec<Beam>,
     /// Lamps: they light what faces them.
     pub lights: Vec<crate::render::PointLight>,
     /// Maps up high (a mesa): a tank that drops below this height has gone
@@ -697,6 +701,25 @@ impl Map {
     /// a millisecond. Building is deterministic, so a copy is the same map.
     fn built_once(cell: &'static std::sync::OnceLock<Map>, build: fn() -> Map) -> Map {
         cell.get_or_init(build).clone()
+    }
+}
+
+/// A beam of plasma held on from `from` to `to` (where it strikes), `radius`
+/// thick: drawn and animated with the effects; a tank that touches it is
+/// destroyed (see `combat`), and bots keep clear of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Beam {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub radius: f32,
+}
+
+impl Beam {
+    /// Distance from a point to the beam's line.
+    pub fn distance(&self, p: Vec3) -> f32 {
+        let d = self.to - self.from;
+        let t = ((p - self.from).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+        p.distance(self.from + d * t)
     }
 }
 
@@ -1006,6 +1029,10 @@ impl Map {
                 *p += by3;
             }
         }
+        for b in &mut self.beams {
+            b.from += by3;
+            b.to += by3;
+        }
         for v in &mut self.sculpted.verts {
             v.pos[0] += by.x;
             v.pos[2] += by.y;
@@ -1039,6 +1066,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            beams: Vec::new(),
             lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",

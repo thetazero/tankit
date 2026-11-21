@@ -131,6 +131,21 @@ impl NavGrid {
                 );
             }
         }
+        // Beams (a borer's): nowhere near one, wherever it runs low enough
+        // over a floor to touch a tank.
+        for b in &map.beams {
+            let steps = (b.from.distance(b.to) / 0.5).ceil().max(1.0) as usize;
+            for k in 0..=steps {
+                let p = b.from.lerp(b.to, k as f32 / steps as f32);
+                let q = Vec2::new(p.x, p.z);
+                let reach = b.radius + CLEARANCE + 1.5;
+                nav.mark(
+                    q - Vec2::splat(reach),
+                    q + Vec2::splat(reach),
+                    |cc, f, _| p.y < f + 4.0 && p.y > f - 1.5 && cc.distance(q) <= reach,
+                );
+            }
+        }
         // Floors too steep to drive up (cliffs, steep banks, a deck's edge).
         for i in 0..n * n {
             let c = nav.center(i);

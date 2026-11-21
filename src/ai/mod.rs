@@ -610,6 +610,22 @@ impl Bot {
                 self.reverse_for = 0.0;
             }
         }
+        // Never into a borer's beam, whatever else says to: brake, and
+        // back away from it.
+        if cmd.throttle != 0.0 {
+            let dir = flat(t.forward()).normalize_or_zero() * cmd.throttle.signum();
+            let ahead = my2 + dir * (3.5 + t.speed().abs() * 0.8);
+            let at = Vec3::new(ahead.x, t.pos.y + 1.0, ahead.y);
+            if world
+                .map
+                .beams
+                .iter()
+                .any(|b| b.distance(at) < b.radius + 3.0)
+            {
+                cmd.throttle = -cmd.throttle.signum() * 0.6;
+                self.reverse_for = 0.0;
+            }
+        }
         // Anywhere: not off a drop either (a plateau's cliff, the pit's
         // wall, the side of a deck). No route goes down one.
         // Where it's driving, and where it's sliding (a hover hull drifts
