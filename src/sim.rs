@@ -786,6 +786,10 @@ impl Tank {
     }
 }
 
+/// How far in from the arena's edge `World::keep_in_arena` puts a tank
+/// that was already out, m.
+const EDGE_GAP: f32 = 1.0;
+
 pub struct World {
     pub map: Map,
     pub tanks: Vec<Tank>,
@@ -1011,10 +1015,43 @@ impl World {
         self.physics.step();
         self.knocks.clear();
         for i in 0..self.tanks.len() {
+            self.keep_in_arena(i);
             sync_from_body(&mut self.tanks[i], &self.physics);
             self.feel(i);
             recover_if_flipped(&mut self.tanks[i], &mut self.physics);
         }
+    }
+
+    /// The backstop under the map's boundary walls: if tank `i`'s middle
+    /// has got past the arena's edge however it got there (over a wall,
+    /// thrown, squeezed through), it goes back to where it was at the start
+    /// of the step, or onto the edge if that was out too, and loses its
+    /// speed outward.
+    fn keep_in_arena(&mut self, i: usize) {
+        let s = self.map.size;
+        let t = &self.tanks[i];
+        let b = &mut self.physics.bodies[t.body];
+        let p = b.translation();
+        let inside = |q: Vec3| q.x >= 0.0 && q.x <= s && q.z >= 0.0 && q.z <= s;
+        if inside(p) {
+            return;
+        }
+        let back = if inside(t.prev_pos) {
+            t.prev_pos
+        } else {
+            let x = p.x.clamp(EDGE_GAP, s - EDGE_GAP);
+            let z = p.z.clamp(EDGE_GAP, s - EDGE_GAP);
+            Vec3::new(x, p.y.max(self.map.ground_height(x, z) + 0.5), z)
+        };
+        let mut v = b.linvel();
+        if (p.x < 0.0 && v.x < 0.0) || (p.x > s && v.x > 0.0) {
+            v.x = 0.0;
+        }
+        if (p.z < 0.0 && v.z < 0.0) || (p.z > s && v.z > 0.0) {
+            v.z = 0.0;
+        }
+        b.set_translation(back, true);
+        b.set_linvel(v, true);
     }
 
     /// For each tank, whether its wheels could touch anything but the map
@@ -3227,5 +3264,113 @@ mod rock_tests {
             down > 9.95,
             "a box corner of empty air stopped a ray at {down:.2} (ground is at 10)"
         );
+    }
+}
+
+/// No tank gets out of the arena on any map (#215).
+#[cfg(test)]
+mod arena_edge {
+    use super::*;
+    use crate::map::WALL_OVER;
+    use std::f32::consts::PI;
+
+    fn maps() -> Vec<(&'static str, Map)> {
+        vec![
+            ("Saltmarket", Map::saltmarket()),
+            ("Sanctum", Map::sanctum()),
+            ("Kiln", Map::kiln()),
+            ("Capital", Map::capital()),
+            ("Foundry", Map::foundry()),
+            ("Seam", Map::mine()),
+        ]
+    }
+
+    /// All round every map, just outside the edge, something solid stands
+    /// from under the ground to `WALL_OVER` m over the highest ground a
+    /// few meters in: ground that rises at the edge never buries the
+    /// boundary for a tank to drive over (the Seam's plateaus did).
+    #[test]
+    fn every_edge_is_walled_over_the_ground() {
+        for (name, m) in maps() {
+            for (p, inward) in m.edge_points(0.5, 0.0) {
+                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                for d in [0.0, 1.0, 3.0] {
+                    let q = (p + inward * d).clamp(Vec2::ZERO, Vec2::splat(m.size));
+                    let g = m.ground_height(q.x, q.y);
+                    lo = lo.min(g);
+                    hi = hi.max(g);
+                }
+                let out = p - inward * 0.5;
+                let walled = m.solids.iter().any(|s| {
+                    s.min.x <= out.x
+                        && out.x <= s.max.x
+                        && s.min.z <= out.y
+                        && out.y <= s.max.z
+                        && s.min.y <= lo + 0.01
+                        && s.max.y >= hi + WALL_OVER - 0.01
+                });
+                assert!(
+                    walled,
+                    "{name}: the boundary at {p} doesn't stand {WALL_OVER} m over the ground ({lo}..{hi})"
+                );
+            }
+        }
+    }
+
+    /// Flat out at the Seam's north and south edges, off the plateau tops
+    /// and along the cutting between them, every hull stays in (these got
+    /// out over the plateaus' edge before).
+    #[test]
+    fn tanks_cant_drive_off_the_seam() {
+        let m = Map::mine();
+        for hull in [HullKind::Kataphrakt, HullKind::Sethuun, HullKind::Vigil] {
+            for x in [60.0, 100.0, 110.0, 160.0] {
+                for (z, yaw) in [(14.0, PI), (206.0, 0.0)] {
+                    let mut w = World::empty(m.clone());
+                    w.spawn_tank(Vec3::ONE, Vec2::new(x, z), yaw, hull, TurretKind::Kontos);
+                    let cmd = Command {
+                        throttle: 1.0,
+                        ..Default::default()
+                    };
+                    for _ in 0..(8.0 / DT) as usize {
+                        w.step(&[cmd]);
+                        let p = w.tanks[0].pos;
+                        assert!(
+                            (0.0..=m.size).contains(&p.x) && (0.0..=m.size).contains(&p.z),
+                            "{hull:?} from ({x}, {z}) got out to {p}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A tank flung up and out over the edge (a blast, a ram, a rock gone
+    /// wrong) halfway along each side of every map comes down inside.
+    #[test]
+    fn thrown_tanks_stay_in() {
+        for (name, m) in maps() {
+            let s = m.size;
+            for (edge, inward) in [
+                (Vec2::new(s * 0.5, 0.0), Vec2::Y),
+                (Vec2::new(s * 0.5, s), -Vec2::Y),
+                (Vec2::new(0.0, s * 0.37), Vec2::X),
+                (Vec2::new(s, s * 0.63), -Vec2::X),
+            ] {
+                let mut w = World::empty(m.clone());
+                let at = edge + inward * 8.0;
+                w.spawn_tank(Vec3::ONE, at, 0.0, HullKind::Kataphrakt, TurretKind::Kontos);
+                let fling = Vec3::new(-inward.x, 0.0, -inward.y) * 30.0 + Vec3::Y * 25.0;
+                w.physics.bodies[w.tanks[0].body].set_linvel(fling, true);
+                for _ in 0..(5.0 / DT) as usize {
+                    w.step(&[Command::default()]);
+                    let p = w.tanks[0].pos;
+                    assert!(
+                        (0.0..=s).contains(&p.x) && (0.0..=s).contains(&p.z),
+                        "{name}: thrown from {at}, got out to {p}"
+                    );
+                }
+            }
+        }
     }
 }

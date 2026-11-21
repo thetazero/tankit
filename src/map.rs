@@ -834,6 +834,15 @@ pub struct Core {
 }
 
 /// The matchup on maps that don't name their own.
+/// How far the arena's boundary walls stand over the ground along them, m:
+/// more than any tank can climb or rock up onto.
+pub const WALL_OVER: f32 = 5.0;
+/// How thick the boundary walls are, m.
+const WALL_THICK: f32 = 2.0;
+/// The lengths the boundary walls are built in, m: each as tall as the
+/// highest ground along it needs.
+const WALL_STEP: f32 = 4.0;
+
 pub const DEFAULT_SIDES: [Faction; 2] = [Faction::Imperium, Faction::Resonant];
 
 impl Map {
@@ -855,25 +864,22 @@ impl Map {
         self.perimeter(true);
     }
 
-    /// Invisible arena walls spanning heights `y0`..`y1` (a map whose floor
-    /// isn't at 0).
+    /// Invisible arena walls spanning at least heights `y0`..`y1` (a map
+    /// whose floor isn't at 0), and `WALL_OVER` m over the ground wherever
+    /// it rises higher.
     fn perimeter_at(&mut self, y0: f32, y1: f32) {
-        let s = self.size;
-        let t = 2.0;
-        for (min, max) in [
-            (Vec3::new(-t, y0, -t), Vec3::new(s + t, y1, 0.0)),
-            (Vec3::new(-t, y0, s), Vec3::new(s + t, y1, s + t)),
-            (Vec3::new(-t, y0, 0.0), Vec3::new(0.0, y1, s)),
-            (Vec3::new(s, y0, 0.0), Vec3::new(s + t, y1, s)),
-        ] {
-            self.solids.push(Solid { min, max });
+        for (min, max) in self.perimeter_walls_over_ground() {
+            self.solids.push(Solid {
+                min: min.with_y(min.y.min(y0)),
+                max: max.with_y(max.y.max(y1)),
+            });
         }
     }
 
     /// Points round the arena's edge every `step` m, each side running
     /// `past` m beyond its corners (so the sides overlap there): the point,
     /// and the way into the arena.
-    fn edge_points(&self, step: f32, past: f32) -> Vec<(Vec2, Vec2)> {
+    pub(crate) fn edge_points(&self, step: f32, past: f32) -> Vec<(Vec2, Vec2)> {
         let s = self.size;
         let mut out = Vec::new();
         for (start, along, inward) in [
@@ -892,17 +898,14 @@ impl Map {
     }
 
     /// The arena boundary: solid walls, drawn as grey walls or (for maps
-    /// whose edge is scenery, like dunes) invisible.
+    /// whose edge is scenery, like dunes) invisible. Each wall stands
+    /// `WALL_OVER` m above the highest ground (and the top of anything
+    /// solid) along it, in lengths of `WALL_STEP` m, so ground that rises at
+    /// the edge (a plateau running out to it) doesn't bury the wall for a
+    /// tank to drive over. Tracks can crawl up a sheer face, so no wall is
+    /// enough alone: `World::keep_in_arena` backs them up.
     fn perimeter(&mut self, visible: bool) {
-        let s = self.size;
-        let (t, h) = (2.0, 5.0);
-        let walls = [
-            (Vec3::new(-t, 0.0, -t), Vec3::new(s + t, h, 0.0)),
-            (Vec3::new(-t, 0.0, s), Vec3::new(s + t, h, s + t)),
-            (Vec3::new(-t, 0.0, 0.0), Vec3::new(0.0, h, s)),
-            (Vec3::new(s, 0.0, 0.0), Vec3::new(s + t, h, s)),
-        ];
-        for (min, max) in walls {
+        for (min, max) in self.perimeter_walls_over_ground() {
             self.solids.push(Solid { min, max });
             if !visible {
                 continue;
@@ -914,8 +917,90 @@ impl Map {
                 side_mat: Material::Plain,
                 top_mat: Material::Plain,
             });
-            self.solids.push(Solid { min, max });
         }
+    }
+
+    /// The boxes of `perimeter`'s walls: each side cut into lengths, each
+    /// one from under the lowest ground along it to `WALL_OVER` m over the
+    /// highest ground or solid top there or beside it (neighbours the same
+    /// height merged).
+    fn perimeter_walls_over_ground(&self) -> Vec<(Vec3, Vec3)> {
+        let s = self.size;
+        let t = WALL_THICK;
+        // What's solid by the edge, that a tank might get up onto (the
+        // Seam's rocks round its rim): its footprint and top.
+        let reach = 4.0;
+        let near_edge = |c: Vec2, r: f32| c.min_element().min(s - c.max_element()) < r + reach;
+        let mut tops: Vec<(Vec<Vec2>, f32)> = (self.oboxes.iter())
+            .filter(|o| o.solid && near_edge(o.center, o.half.length() + (o.y1 - o.y0)))
+            .map(|o| (o.shadow(), o.y_range().1))
+            .collect();
+        for b in &self.solids {
+            let (lo, hi) = (Vec2::new(b.min.x, b.min.z), Vec2::new(b.max.x, b.max.z));
+            if near_edge((lo + hi) * 0.5, (hi - lo).length() * 0.5) {
+                let foot = vec![lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)];
+                tops.push((foot, b.max.y));
+            }
+        }
+        // Lowest and highest ground along the edge from `a` to `b` and a few
+        // meters in from it, the highest counting the tops of what stands
+        // there.
+        let span = |a: Vec2, b: Vec2, inward: Vec2| {
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            let n = ((a.distance(b) / 0.5).ceil() as usize).max(1);
+            for k in 0..=n {
+                let p = a.lerp(b, k as f32 / n as f32);
+                for d in [0.0, 1.0, 3.0] {
+                    let q = (p + inward * d).clamp(Vec2::ZERO, Vec2::splat(s));
+                    let g = self.ground_height(q.x, q.y);
+                    lo = lo.min(g);
+                    hi = hi.max(g);
+                }
+            }
+            let mid = (a + b) * 0.5 + inward * (reach * 0.5);
+            let near = a.distance(b) * 0.5 + reach * 0.5;
+            for (foot, top) in &tops {
+                if polygon_distance(foot, mid) < near {
+                    hi = hi.max(*top);
+                }
+            }
+            let floor = if lo < 0.0 { lo - 1.0 } else { 0.0 };
+            (floor, hi + WALL_OVER)
+        };
+        let mut out = Vec::new();
+        // Each side, running past its corners by the wall's thickness on
+        // the first two (so the corners are closed): start, end, inward.
+        for (a, b, inward) in [
+            (Vec2::new(-t, 0.0), Vec2::new(s + t, 0.0), Vec2::Y),
+            (Vec2::new(-t, s), Vec2::new(s + t, s), -Vec2::Y),
+            (Vec2::new(0.0, 0.0), Vec2::new(0.0, s), Vec2::X),
+            (Vec2::new(s, 0.0), Vec2::new(s, s), -Vec2::X),
+        ] {
+            let n = ((a.distance(b) / WALL_STEP).ceil() as usize).max(1);
+            let at = |k: usize| a.lerp(b, k as f32 / n as f32);
+            let spans: Vec<(f32, f32)> = (0..n).map(|k| span(at(k), at(k + 1), inward)).collect();
+            let mut runs: Vec<(Vec2, Vec2, f32, f32)> = Vec::new();
+            for k in 0..n {
+                let (p, q) = (at(k), at(k + 1));
+                // As tall as its neighbours too: a tank coming off high
+                // ground beside a low stretch (a cutting through a
+                // plateau) is still up in the air over it.
+                let y0 = spans[k].0;
+                let y1 = spans[k.saturating_sub(1)..(k + 2).min(n)]
+                    .iter()
+                    .fold(f32::NEG_INFINITY, |m, s| m.max(s.1));
+                match runs.last_mut() {
+                    Some(r) if r.2 == y0 && r.3 == y1 => r.1 = q,
+                    _ => runs.push((p, q, y0, y1)),
+                }
+            }
+            for (p, q, y0, y1) in runs {
+                let out_p = p - inward * t;
+                let (lo, hi) = (p.min(q).min(out_p), p.max(q).max(out_p));
+                out.push((Vec3::new(lo.x, y0, lo.y), Vec3::new(hi.x, y1, hi.y)));
+            }
+        }
+        out
     }
 
     /// On Saltmarket (in the shifted frame `Map::saltmarket` returns), how
