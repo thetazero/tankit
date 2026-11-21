@@ -2202,7 +2202,12 @@ impl Map {
         let m = &mut self.sculpted;
         // A convex polygon, its corners in order round it, wound to face
         // along `n`.
-        let mut poly = |q: &[Vec3], n: &[Vec3], c: &[Vec3], mat: Material| {
+        // Leaving out the triangles `skip` picks.
+        let mut poly = |q: &[Vec3],
+                        n: &[Vec3],
+                        c: &[Vec3],
+                        mat: Material,
+                        skip: &dyn Fn([Vec3; 3]) -> bool| {
             if q.len() < 3 {
                 return;
             }
@@ -2216,6 +2221,9 @@ impl Map {
             }
             let flip = (q[1] - q[0]).cross(q[2] - q[0]).dot(n[0]) < 0.0;
             for k in 1..q.len() as u32 - 1 {
+                if skip([q[0], q[k as usize], q[k as usize + 1]]) {
+                    continue;
+                }
                 let (b, c) = if flip { (k + 1, k) } else { (k, k + 1) };
                 m.indices.extend([base, base + b, base + c]);
             }
@@ -2259,7 +2267,16 @@ impl Map {
                     .zip(&norms)
                     .map(|(p, n)| paint(p.x, p.z, p.y, Vec2::new(n.x, n.z).length() / n.y))
                     .collect();
-                poly(&top, &norms, &colors, Material::Sand);
+                // Where three of the cell's corners are on the terrain and
+                // take in the diagonal it's split along, that triangle is
+                // the terrain's own: drawing it again would z-fight it (on
+                // the Crag's cliff over the bore).
+                let on_ground =
+                    |p: Vec3| q.iter().any(|&c| c == p) && (p.y - ground(p.x, p.z)).abs() < 1e-4;
+                let terrains = |t: [Vec3; 3]| {
+                    t.iter().all(|&p| on_ground(p)) && t.contains(&q[0]) && t.contains(&q[2])
+                };
+                poly(&top, &norms, &colors, Material::Sand, &terrains);
                 // The cave's ceiling.
                 let under: Vec<Vec3> = top.iter().map(|p| Vec3::new(p.x, ROOF.0, p.z)).collect();
                 let shade: Vec<Vec3> = under.iter().map(|&p| rock(p, 0.6)).collect();
@@ -2268,6 +2285,7 @@ impl Map {
                     &vec![Vec3::NEG_Y; under.len()],
                     &shade,
                     Material::Rubble,
+                    &|_| false,
                 );
                 // Rock faces where the lid ends (in the terrain, or over a
                 // mouth back from the Face).
@@ -2297,7 +2315,7 @@ impl Map {
                     ];
                     let out = Vec3::new(di as f32, 0.0, dj as f32);
                     let shade = side.map(|p| rock(p, 0.2));
-                    poly(&side, &[out; 4], &shade, Material::Rubble);
+                    poly(&side, &[out; 4], &shade, Material::Rubble, &|_| false);
                 }
             }
         }
