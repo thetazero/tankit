@@ -145,6 +145,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "SMELTER",
+            routes: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 101, 101, ground);
         terrain.color = ASH;
