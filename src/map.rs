@@ -624,6 +624,8 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// Lamps: they light what faces them.
+    pub lights: Vec<crate::render::PointLight>,
     /// Maps up high (a mesa): a tank that drops below this height has gone
     /// over the edge and dies on impact.
     pub fall_y: Option<f32>,
@@ -1021,6 +1023,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
             routes: Vec::new(),

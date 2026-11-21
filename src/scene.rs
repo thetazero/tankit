@@ -710,6 +710,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         shadow_radius: world.map.size * 0.75,
         instances,
         particles,
+        lights: world.map.lights.clone(),
         ui: Vec::new(),
         world: true,
     }

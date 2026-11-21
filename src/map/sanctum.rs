@@ -237,6 +237,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            lights: Vec::new(),
             fall_y: Some(FALL_Y),
             hold_name: "ALTAR",
             routes: Vec::new(),
