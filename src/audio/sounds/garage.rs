@@ -4,7 +4,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::audio::dsp::{Noise, OnePole, Smooth, Svf};
+use crate::audio::dsp::{Noise, OnePole, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::voice::{Filt, Layer, Src, noise, ring, sine};
 
@@ -286,25 +286,25 @@ impl Turntable {
                 self.tock_f = if self.high { 150.0 } else { 118.0 };
             }
             // Motor: 50 Hz with a buzz of harmonics; whine wanders a little.
-            self.motor = (self.motor + 50.0 / sr).fract();
+            self.motor = (self.motor + 50.0 / sr).fract_q();
             let m = self.motor * TAU;
-            let drone = m.sin() * 0.5 + (2.0 * m).sin() * 0.35 + (3.0 * m).sin() * 0.12;
+            let drone = m.sin_q() * 0.5 + (2.0 * m).sin_q() * 0.35 + (3.0 * m).sin_q() * 0.12;
             let wander = self.whine_bend.run(self.noise.next(), bend);
-            self.whine = (self.whine + (412.0 + 60.0 * wander) / sr).fract();
+            self.whine = (self.whine + (412.0 + 60.0 * wander) / sr).fract_q();
             let w = self.whine * TAU;
-            let whine = w.sin() + 0.4 * (2.0 * w).sin();
+            let whine = w.sin_q() + 0.4 * (2.0 * w).sin_q();
             let rumble = self.rumble.run(self.noise.next(), 90.0, 0.9, sr).band;
             // Grit in the bearing: a thin band of noise that swells and sags.
             let grit = self.grit.run(self.noise.next(), 1300.0, 2.5, sr).band * (0.6 + wander);
             // Tock: a damped low knock with a tap of noise on top.
             let mut tock = 0.0;
             if self.tock < 0.4 {
-                self.tock_phase = (self.tock_phase + self.tock_f / sr).fract();
+                self.tock_phase = (self.tock_phase + self.tock_f / sr).fract_q();
                 let env = (-self.tock / 0.07).exp();
                 let tap = (-self.tock / 0.006).exp() * self.noise.next() * 0.3;
                 let p = self.tock_phase * TAU;
                 // Low knock, and a hollow wooden partial so small speakers hear it.
-                let knock = p.sin() + 0.35 * (4.1 * p).sin() * (-self.tock / 0.03).exp();
+                let knock = p.sin_q() + 0.35 * (4.1 * p).sin_q() * (-self.tock / 0.03).exp();
                 tock = (knock + tap) * env;
                 self.tock += 1.0 / sr;
             } else {

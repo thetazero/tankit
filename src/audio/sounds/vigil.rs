@@ -7,7 +7,7 @@ use std::f32::consts::TAU;
 use glam::Vec3;
 
 use super::Play;
-use crate::audio::dsp::{Noise, Smooth, Svf};
+use crate::audio::dsp::{Noise, Quick, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
 use crate::audio::voice::{Filt, L, Layer, Src, noise, ring, sine};
@@ -195,15 +195,15 @@ impl Loop for Husk {
         let sag = 0.9 + 0.1 * husk;
         let mut glass = 0.0;
         for (j, &(f, g, rate)) in HUSK_PARTIALS.iter().enumerate() {
-            self.tone[j] = (self.tone[j] + f * sag / sr).fract();
-            self.swell[j] = (self.swell[j] + rate / sr).fract();
-            let swell = 0.5 + 0.5 * (self.swell[j] * TAU).sin();
-            glass += (self.tone[j] * TAU).sin() * g * swell * swell;
+            self.tone[j] = (self.tone[j] + f * sag / sr).fract_q();
+            self.swell[j] = (self.swell[j] + rate / sr).fract_q();
+            let swell = 0.5 + 0.5 * (self.swell[j] * TAU).sin_q();
+            glass += (self.tone[j] * TAU).sin_q() * g * swell * swell;
         }
-        let breath = 0.5 + 0.5 * (self.swell[0] * TAU * 0.5).cos();
+        let breath = 0.5 + 0.5 * (self.swell[0] * TAU * 0.5).cos_q();
         let pour = self.air.run(n, 3800.0 + 2400.0 * breath, 2.5, sr).band;
-        self.hum = (self.hum + VIGIL_BELL[0] * sag / sr).fract();
-        let hum = (self.hum * TAU).sin();
+        self.hum = (self.hum + VIGIL_BELL[0] * sag / sr).fract_q();
+        let hum = (self.hum * TAU).sin_q();
         let crack = if noise.unit() < 18.0 * husk / sr {
             0.6 + noise.unit()
         } else {

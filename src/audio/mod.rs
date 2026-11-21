@@ -16,8 +16,10 @@
 //! Everything is placed relative to the camera: quieter and duller with
 //! distance, panned left or right.
 //!
-//! The game thread sets targets once a frame; `mixer` eases toward them and
-//! renders on the audio thread. With no audio device the game runs silent.
+//! The game thread sets targets once a frame, in an inbox the audio thread
+//! collects from before each buffer; `mixer` eases toward them and renders
+//! there. The game never waits on the audio thread. With no audio device the
+//! game runs silent.
 //!
 //! **Adding a sound?** Each sound lives with its family in `sounds/`; see
 //! the note at the top of `sounds/mod.rs` for where each part goes.
@@ -39,7 +41,7 @@ use crate::combat::{Match, Sound};
 use crate::render::Camera;
 
 use dsp::Noise;
-use mixer::{Mixer, OneShot};
+use mixer::{Inbox, Mixer, OneShot};
 pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
 use sounds::{
@@ -125,7 +127,11 @@ impl Placed {
 }
 
 pub struct Audio {
-    mixer: Option<Arc<Mutex<Mixer>>>,
+    /// Where the game's asks go (none: silent).
+    inbox: Option<Arc<Mutex<Inbox>>>,
+    /// Offline only: the mixer rendered by hand. With a device it lives on
+    /// the audio thread.
+    offline: Option<Mixer>,
     _stream: Option<cpal::Stream>,
     noise: Noise,
     time: f32,
@@ -137,15 +143,16 @@ pub struct Audio {
 impl Audio {
     /// Open the default output device; silent (but harmless) if there is none.
     pub fn new() -> Audio {
-        let (mixer, stream) = match device::open() {
-            Ok((m, s)) => (Some(m), Some(s)),
+        let (inbox, stream) = match device::open() {
+            Ok((i, s)) => (Some(i), Some(s)),
             Err(e) => {
                 log::warn!("no sound: {e:#}");
                 (None, None)
             }
         };
         Audio {
-            mixer,
+            inbox,
+            offline: None,
             _stream: stream,
             noise: Noise::new(0xA0D10),
             time: 0.0,
@@ -158,7 +165,8 @@ impl Audio {
     /// No device: render by hand with [`Audio::render`] (the `--wav` recorder, tests).
     pub fn offline(sample_rate: u32) -> Audio {
         Audio {
-            mixer: Some(Arc::new(Mutex::new(Mixer::new(sample_rate as f32)))),
+            inbox: Some(Default::default()),
+            offline: Some(Mixer::new(sample_rate as f32)),
             _stream: None,
             noise: Noise::new(0xA0D10),
             time: 0.0,
@@ -169,13 +177,18 @@ impl Audio {
     }
 
     /// Fill `out` with interleaved stereo frames (offline only; a device pulls its own).
-    pub fn render(&self, out: &mut [f32]) {
-        self.with(|m| m.render(out));
+    pub fn render(&mut self, out: &mut [f32]) {
+        if let (Some(m), Some(inbox)) = (&mut self.offline, &self.inbox) {
+            m.collect(inbox);
+            m.render(out);
+        }
     }
 
-    fn with(&self, f: impl FnOnce(&mut Mixer)) {
-        if let Some(Ok(mut m)) = self.mixer.as_ref().map(|m| m.lock()) {
-            f(&mut m);
+    /// The audio thread holds the inbox only to swap it out, so this never
+    /// waits long.
+    fn with(&self, f: impl FnOnce(&mut Inbox)) {
+        if let Some(Ok(mut i)) = self.inbox.as_ref().map(|i| i.lock()) {
+            f(&mut i);
         }
     }
 
@@ -220,7 +233,7 @@ impl Audio {
     /// Once a frame: play what happened in the match since last frame and set
     /// every tank's loops. `live` is false while the world is frozen (paused).
     pub fn update(&mut self, game: &Match, sounds: &[Sound], cam: &Camera, live: bool, dt: f32) {
-        if self.mixer.is_none() {
+        if self.inbox.is_none() {
             return;
         }
         if live {
@@ -246,9 +259,9 @@ impl Audio {
         self.with(|m| {
             m.set_world(if live { 1.0 } else { 0.0 });
             m.set_wind(WIND);
-            m.set_tanks(&params);
-            m.set_burns(&burns);
-            m.set_places(&places);
+            m.set_tanks(params);
+            m.set_burns(burns);
+            m.set_places(places);
             for s in shots {
                 m.play(s);
             }
@@ -402,6 +415,54 @@ mod tests {
         let hot = buf.iter().filter(|x| x.abs() > 0.95).count() as f32 / buf.len() as f32;
         assert!(rms > 0.01, "rms {rms}");
         assert!(hot < 0.01, "{:.2}% of samples near full scale", hot * 100.0);
+    }
+
+    /// Not a check: what sound costs in a big fight, on the game thread
+    /// (`update`) and the audio thread (`render`). Run with
+    /// `cargo test --release audio_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn audio_cost() {
+        use std::time::{Duration, Instant};
+        let map = crate::map::Map::saltmarket();
+        let mut game = Match::new(map, 0, 12, 3);
+        let rate = 48_000;
+        let mut audio = Audio::offline(rate);
+        audio.set_volume(0.8);
+        let mut cam = crate::scene::ChaseCam::new();
+        let dt = crate::game::DT;
+        let mut pcm = vec![0.0; 2 * (rate as f32 * dt) as usize];
+        let (mut up, mut ren) = (Vec::new(), Vec::new());
+        let mut sink = 0.0;
+        for i in 0..(40.0 / dt) as u32 {
+            game.step(crate::game::autopilot(game.world.time), true);
+            let camera = cam.update(&game.world, &game.world.tanks[0], dt);
+            let sounds = std::mem::take(&mut game.sounds);
+            let t0 = Instant::now();
+            audio.update(&game, &sounds, &camera, true, dt);
+            let t1 = Instant::now();
+            audio.render(&mut pcm);
+            let t2 = Instant::now();
+            sink += pcm[0];
+            if i as f32 * dt > 10.0 {
+                up.push(t1 - t0);
+                ren.push(t2 - t1);
+            }
+        }
+        let report = |name: &str, v: &mut Vec<Duration>| {
+            v.sort();
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
+            let mean = v.iter().map(|d| ms(*d)).sum::<f64>() / v.len() as f64;
+            println!(
+                "{name}: mean {mean:.3} p95 {:.3} max {:.3} ms per {:.1} ms of sound",
+                ms(v[v.len() * 95 / 100]),
+                ms(*v.last().unwrap()),
+                dt * 1e3
+            );
+        };
+        report("update", &mut up);
+        report("render", &mut ren);
+        println!("({sink})");
     }
 
     #[test]

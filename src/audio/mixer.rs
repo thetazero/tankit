@@ -1,8 +1,11 @@
 //! The audio thread's side: every tank's loops, the burn where each beam
 //! lands, the wind, the places on the map, and one-shot voices, mixed to
 //! stereo. The places duck under the one-shots, so a fight comes through.
-//! The game thread only sets targets; everything eases toward them here.
+//! The game thread only sets targets, through an [`Inbox`]; everything
+//! eases toward them here.
 //! What each loop sounds like lives with its family in `sounds/`.
+
+use std::sync::Mutex;
 
 use super::dsp::{FlushDenormals, OnePole, Smooth, pan_gains};
 use super::sounds::beam::{BurnParams, BurnVoice};
@@ -19,6 +22,64 @@ const MAX_VOICES: usize = 48;
 /// How hard the one-shots duck the places: at a one-shot level of `x` the
 /// places play at `1 / (1 + DUCK * x)`.
 const DUCK: f32 = 12.0;
+
+/// One-shots waiting in an [`Inbox`] past this are dropped (the audio
+/// thread has stopped coming for them: the device stalled).
+const MAX_WAITING: usize = 4 * MAX_VOICES;
+
+/// What the game thread has asked of the mixer since the audio thread last
+/// looked. The game thread never touches the [`Mixer`] itself: rendering a
+/// buffer can take milliseconds, and the game would wait on all of it. It
+/// writes here instead, and the audio thread collects everything before each
+/// buffer, holding the lock only to swap it out. Targets are overwritten
+/// (only the latest counts); one-shots queue up.
+#[derive(Default)]
+pub struct Inbox {
+    master: Option<f32>,
+    world: Option<f32>,
+    wind: Option<f32>,
+    turntable: Option<f32>,
+    tanks: Option<Vec<TankParams>>,
+    burns: Option<Vec<BurnParams>>,
+    places: Option<Vec<PlaceParams>>,
+    shots: Vec<OneShot>,
+}
+
+impl Inbox {
+    pub fn set_master(&mut self, gain: f32) {
+        self.master = Some(gain);
+    }
+
+    pub fn set_world(&mut self, gain: f32) {
+        self.world = Some(gain);
+    }
+
+    pub fn set_wind(&mut self, gain: f32) {
+        self.wind = Some(gain);
+    }
+
+    pub fn set_turntable(&mut self, gain: f32) {
+        self.turntable = Some(gain);
+    }
+
+    pub fn set_tanks(&mut self, params: Vec<TankParams>) {
+        self.tanks = Some(params);
+    }
+
+    pub fn set_burns(&mut self, params: Vec<BurnParams>) {
+        self.burns = Some(params);
+    }
+
+    pub fn set_places(&mut self, params: Vec<PlaceParams>) {
+        self.places = Some(params);
+    }
+
+    pub fn play(&mut self, s: OneShot) {
+        if self.shots.len() < MAX_WAITING {
+            self.shots.push(s);
+        }
+    }
+}
 
 /// A one-shot to start.
 pub struct OneShot {
@@ -79,6 +140,56 @@ impl Mixer {
             scratch: Vec::new(),
             scratch_places: Vec::new(),
             sidechain: 0.0,
+        }
+    }
+
+    /// Take in what the game thread has asked for since last time. Never
+    /// waits: if the game thread is writing right now, it's picked up before
+    /// the next buffer instead.
+    pub fn collect(&mut self, inbox: &Mutex<Inbox>) {
+        let Ok(mut held) = inbox.try_lock() else {
+            return;
+        };
+        let new = std::mem::take(&mut *held);
+        drop(held);
+        self.apply(new);
+    }
+
+    /// Do what an inbox asked, in the order the game thread used to.
+    pub fn apply(&mut self, inbox: Inbox) {
+        let Inbox {
+            master,
+            world,
+            wind,
+            turntable,
+            tanks,
+            burns,
+            places,
+            shots,
+        } = inbox;
+        if let Some(g) = master {
+            self.set_master(g);
+        }
+        if let Some(g) = turntable {
+            self.set_turntable(g);
+        }
+        if let Some(g) = world {
+            self.set_world(g);
+        }
+        if let Some(g) = wind {
+            self.set_wind(g);
+        }
+        if let Some(p) = tanks {
+            self.set_tanks(&p);
+        }
+        if let Some(p) = burns {
+            self.set_burns(&p);
+        }
+        if let Some(p) = places {
+            self.set_places(&p);
+        }
+        for s in shots {
+            self.play(s);
         }
     }
 
@@ -167,6 +278,7 @@ impl Mixer {
             pan_gains(s.pan),
             OnePole::coef(s.air, self.sr),
             self.seed,
+            self.sr,
         ));
     }
 
@@ -215,7 +327,7 @@ impl Mixer {
 
         // The one-shots first, alone in `out`, so they can duck the places.
         for v in &mut self.voices {
-            v.render(out, sr);
+            v.render(out);
         }
         self.voices.retain(|v| !v.done());
 
@@ -257,6 +369,35 @@ mod tests {
     use super::super::sounds::{hits, ui};
     use super::super::testkit::{driving, rms, settle};
     use super::*;
+
+    /// The audio thread never waits on the game thread either: if the inbox
+    /// is held, it renders with what it has and picks the news up next time.
+    #[test]
+    fn the_inbox_never_blocks() {
+        let inbox = Mutex::new(Inbox::default());
+        let mut m = Mixer::new(48_000.0);
+        inbox.lock().unwrap().set_master(1.0);
+        inbox.lock().unwrap().set_world(1.0);
+        inbox.lock().unwrap().set_tanks(vec![driving(0.8)]);
+        {
+            let _game = inbox.lock().unwrap();
+            m.collect(&inbox);
+            assert!(rms(&settle(&mut m)) < 1e-6);
+        }
+        m.collect(&inbox);
+        assert!(rms(&settle(&mut m)) > 1e-3);
+        // Collected once: the targets stay, nothing is played twice.
+        inbox.lock().unwrap().play(OneShot {
+            layers: hits::KILL,
+            pitch: 1.0,
+            gain: 1.0,
+            pan: 0.0,
+            air: 16_000.0,
+        });
+        m.collect(&inbox);
+        m.collect(&inbox);
+        assert_eq!(m.voices(), 1);
+    }
 
     #[test]
     fn silent_until_asked() {
