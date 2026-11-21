@@ -31,7 +31,7 @@ frames, or a wait on the window's next image) is logged as a `hitch` warning
 saying where the time went, with the machine's memory and disk pressure, and
 appended to `hitches.log` next to the profile.
 `--arena <rounds>` plays bot-only rounds headless and prints each side's wins
-and each gun's kills and deaths: every side runs the old bots (`src/ai/baseline.rs`)
+and each gun's kills and deaths, and what each round's sim cost a step: every side runs the old bots (`src/ai/baseline.rs`)
 except the one `--improve <faction>` names, which runs the current ones.
 `--duel` does the same for one bot against one on open ground.
 
