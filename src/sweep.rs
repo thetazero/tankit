@@ -10,7 +10,7 @@
 //! hulls) still go through parry's cast; there are few of them.
 
 use glam::Vec3;
-use rapier3d::parry::bounding_volume::Aabb;
+use rapier3d::parry::bounding_volume::{Aabb, BoundingVolume};
 use rapier3d::parry::math::Pose;
 use rapier3d::parry::query::{ShapeCastOptions, cast_shapes};
 use rapier3d::parry::shape::{Ball, Compound, Cuboid, HeightField};
@@ -29,7 +29,7 @@ fn earliest(best: &mut Option<Hit>, hit: Option<Hit>) {
 }
 
 /// The swept ball's bounds, in the frame its center and direction are in.
-fn swept_aabb(c: Vec3, d: Vec3, r: f32, max: f32) -> Aabb {
+pub fn swept_aabb(c: Vec3, d: Vec3, r: f32, max: f32) -> Aabb {
     let end = c + d * max;
     Aabb::new(c.min(end) - Vec3::splat(r), c.max(end) + Vec3::splat(r))
 }
@@ -50,16 +50,28 @@ pub fn ball_heightfield(
     let mut best: Option<Hit> = None;
     hf.map_elements_in_local_aabb(&swept_aabb(c, d, r, max), &mut |_, tri| {
         let limit = best.map_or(max, |b| b.0);
-        earliest(&mut best, ball_triangle(c, d, r, limit, tri.a, tri.b, tri.c));
+        earliest(
+            &mut best,
+            ball_triangle(c, d, r, limit, tri.a, tri.b, tri.c),
+        );
     });
     best.map(|(t, n)| (t, pose.rotation * n))
 }
 
+/// The parts of a compound (placed at `pose`) whose bounds meet the world
+/// box `aabb`: what a group of sweeps inside that box should look at.
+pub fn compound_parts_near(compound: &Compound, pose: &Pose, aabb: &Aabb) -> Vec<u32> {
+    let local = aabb.transform_by(&pose.inverse());
+    compound.bvh().intersect_aabb(&local).collect()
+}
+
 /// Like [`ball_heightfield`], against a compound (placed at `pose`): boxes in
-/// closed form, any other part through parry's cast.
+/// closed form, any other part through parry's cast. Looks only at `parts`
+/// (from [`compound_parts_near`] over a box holding the whole sweep).
 pub fn ball_compound(
     compound: &Compound,
     pose: &Pose,
+    parts: &[u32],
     center: Vec3,
     dir: Vec3,
     r: f32,
@@ -68,10 +80,13 @@ pub fn ball_compound(
     let c = pose.inverse_transform_point(center);
     let d = pose.rotation.inverse() * dir;
     let aabb = swept_aabb(c, d, r, max);
-    let parts = compound.shapes();
+    let (shapes, bounds) = (compound.shapes(), compound.aabbs());
     let mut best: Option<Hit> = None;
-    for i in compound.bvh().intersect_aabb(&aabb) {
-        let (part_pose, shape) = &parts[i as usize];
+    for &i in parts {
+        if !bounds[i as usize].intersects(&aabb) {
+            continue;
+        }
+        let (part_pose, shape) = &shapes[i as usize];
         let limit = best.map_or(max, |b| b.0);
         let hit = if let Some(cuboid) = shape.as_cuboid() {
             let pc = part_pose.inverse_transform_point(c);
@@ -85,11 +100,24 @@ pub fn ball_compound(
                 compute_impact_geometry_on_penetration: true,
             };
             let at = Pose::from_translation(c);
-            cast_shapes(part_pose, Vec3::ZERO, &**shape, &at, d, &Ball::new(r), options)
-                .ok()
-                .flatten()
-                // parry gives the normal in the part's own frame.
-                .map(|h| (h.time_of_impact, part_pose.rotation * h.normal1.normalize_or_zero()))
+            cast_shapes(
+                part_pose,
+                Vec3::ZERO,
+                &**shape,
+                &at,
+                d,
+                &Ball::new(r),
+                options,
+            )
+            .ok()
+            .flatten()
+            // parry gives the normal in the part's own frame.
+            .map(|h| {
+                (
+                    h.time_of_impact,
+                    part_pose.rotation * h.normal1.normalize_or_zero(),
+                )
+            })
         };
         earliest(&mut best, hit);
     }
@@ -156,7 +184,10 @@ fn ball_cuboid(cuboid: &Cuboid, c: Vec3, d: Vec3, r: f32, max: f32) -> Option<Hi
     for i in 0..8u32 {
         for bit in [1u32, 2, 4] {
             if i & bit == 0 {
-                earliest(&mut best, ball_segment(c, d, r, max, corner(i), corner(i | bit)));
+                earliest(
+                    &mut best,
+                    ball_segment(c, d, r, max, corner(i), corner(i | bit)),
+                );
             }
         }
     }
@@ -181,18 +212,32 @@ fn ball_triangle(c: Vec3, d: Vec3, r: f32, max: f32, a: Vec3, b: Vec3, e: Vec3) 
         s = -s;
     }
 
-    // Already touching.
-    let q = closest_on_triangle(c, a, b, e);
-    let off = c - q;
-    let d2 = off.length_squared();
-    if d2 < r * r {
-        let normal = if d2 > 1e-12 { off / d2.sqrt() } else { n };
-        return Some((0.0, normal));
-    }
-
     // Too far to reach, even straight on.
     if s - r > max {
         return None;
+    }
+    // Nowhere near the ball's path: its bounding sphere is out of reach of
+    // the swept segment.
+    let mid = (a + b + e) / 3.0;
+    let rad2 = (a - mid)
+        .length_squared()
+        .max((b - mid).length_squared())
+        .max((e - mid).length_squared());
+    let along = (mid - c).dot(d).clamp(0.0, max);
+    let reach = rad2.sqrt() + r;
+    if (c + d * along).distance_squared(mid) > reach * reach {
+        return None;
+    }
+
+    // Already touching (only possible within r of its plane).
+    if s < r {
+        let q = closest_on_triangle(c, a, b, e);
+        let off = c - q;
+        let d2 = off.length_squared();
+        if d2 < r * r {
+            let normal = if d2 > 1e-12 { off / d2.sqrt() } else { n };
+            return Some((0.0, normal));
+        }
     }
 
     // The face: the ball's lowest point reaches the plane inside the triangle.
@@ -256,9 +301,7 @@ fn ball_point(c: Vec3, d: Vec3, r: f32, max: f32, v: Vec3) -> Option<Hit> {
         return None;
     }
     let t = -qb - disc.sqrt();
-    (0.0..=max)
-        .contains(&t)
-        .then(|| (t, (c + d * t - v) / r))
+    (0.0..=max).contains(&t).then(|| (t, (c + d * t - v) / r))
 }
 
 /// Whether `p`, on the plane of triangle (a, b, e) with unit normal `n`, lies
@@ -344,8 +387,8 @@ mod tests {
                 compute_impact_geometry_on_penetration: true,
             };
             let at = Pose::from_translation(center);
-            let want = cast_shapes(pose, Vec3::ZERO, shape, &at, dir, &Ball::new(r), options)
-                .unwrap();
+            let want =
+                cast_shapes(pose, Vec3::ZERO, shape, &at, dir, &Ball::new(r), options).unwrap();
             let got = ours(center, dir, r, max);
             match (want, got) {
                 (None, None) => {}
@@ -397,24 +440,39 @@ mod tests {
         let mut rng = crate::rng::Rng::new(3);
         let mut parts = Vec::new();
         for i in 0..40 {
-            let at = Vec3::new(rng.range(-8.0, 8.0), rng.range(-0.3, 0.8), rng.range(-8.0, 8.0));
+            let at = Vec3::new(
+                rng.range(-8.0, 8.0),
+                rng.range(-0.3, 0.8),
+                rng.range(-8.0, 8.0),
+            );
             let rot = glam::Quat::from_rotation_y(rng.range(0.0, 3.0))
                 * glam::Quat::from_rotation_x(rng.range(-0.3, 0.3));
             let shape = if i % 5 == 0 {
                 let pts: Vec<Vec3> = (0..12)
                     .map(|_| {
-                        Vec3::new(rng.range(-0.8, 0.8), rng.range(-0.5, 0.5), rng.range(-0.8, 0.8))
+                        Vec3::new(
+                            rng.range(-0.8, 0.8),
+                            rng.range(-0.5, 0.5),
+                            rng.range(-0.8, 0.8),
+                        )
                     })
                     .collect();
                 SharedShape::convex_hull(&pts).unwrap()
             } else {
-                SharedShape::cuboid(rng.range(0.1, 1.5), rng.range(0.05, 0.6), rng.range(0.1, 1.5))
+                SharedShape::cuboid(
+                    rng.range(0.1, 1.5),
+                    rng.range(0.05, 0.6),
+                    rng.range(0.1, 1.5),
+                )
             };
             parts.push((Pose::from_parts(at, rot), shape));
         }
         let compound = SharedShape::compound(parts);
         let pose = Pose::from_translation(Vec3::new(0.5, 0.0, -0.25));
         let c = compound.as_compound().unwrap();
-        agrees(c, &pose, 9.0, |ctr, d, r, max| ball_compound(c, &pose, ctr, d, r, max));
+        agrees(c, &pose, 9.0, |ctr, d, r, max| {
+            let parts = compound_parts_near(c, &pose, &swept_aabb(ctr, d, r, max));
+            ball_compound(c, &pose, &parts, ctr, d, r, max)
+        });
     }
 }

@@ -273,6 +273,29 @@ impl Chassis {
         self.road_z.len() * 2
     }
 
+    /// How far from the body's origin this hull or its wheels' sweeps can
+    /// reach (m).
+    pub fn reach(kind: HullKind) -> f32 {
+        static REACH: std::sync::OnceLock<Vec<(HullKind, f32)>> = std::sync::OnceLock::new();
+        let all = REACH.get_or_init(|| {
+            use HullKind::*;
+            [Kataphrakt, Kastron, Sethuun, Vigil, Gravis]
+                .into_iter()
+                .map(|k| {
+                    let c = Chassis::of(k);
+                    let hull = c
+                        .collider_points()
+                        .iter()
+                        .fold(0.0f32, |m, p| m.max(p.length()));
+                    let wheels = (0..c.wheel_count())
+                        .fold(0.0f32, |m, i| m.max(c.mount(i).length() + c.free_len()));
+                    (k, hull.max(wheels))
+                })
+                .collect()
+        });
+        all.iter().find(|r| r.0 == kind).map_or(10.0, |r| r.1)
+    }
+
     /// Suspension mount for wheel `i` (left side first, then right).
     pub fn mount(&self, i: usize) -> Vec3 {
         let n = self.road_z.len();
@@ -685,7 +708,12 @@ impl Tank {
             self.hitbox_kind = self.turret_kind;
         }
         let (_, rot, at) = self.turret_mount().to_scale_rotation_translation();
-        c.set_position_wrt_parent(Pose::from_parts(at, rot));
+        let pose = Pose::from_parts(at, rot);
+        // Re-placing it makes rapier re-insert it in the broad phase and
+        // recompute the body's mass: only when the turret has moved.
+        if c.position_wrt_parent() != Some(&pose) {
+            c.set_position_wrt_parent(pose);
+        }
     }
 
     /// The gun in the world: origin at its trunnion, +z down the barrel.
@@ -952,6 +980,7 @@ impl World {
         for t in &mut self.tanks {
             t.snapshot();
         }
+        let crowded = self.crowded();
         for i in 0..self.tanks.len() {
             let cmd = cmds.get(i).copied().unwrap_or_default();
             let t = &mut self.tanks[i];
@@ -962,7 +991,7 @@ impl World {
                     c.set_friction(friction);
                 }
             }
-            drive(t, &cmd, &mut self.physics, &self.ground);
+            drive(t, &cmd, &mut self.physics, &self.ground, crowded[i]);
             turret(t, &cmd, DT);
             t.place_turret_hitbox(&mut self.physics);
             t.since_fire += DT;
@@ -978,6 +1007,27 @@ impl World {
             self.feel(i);
             recover_if_flipped(&mut self.tanks[i], &mut self.physics);
         }
+    }
+
+    /// For each tank, whether its wheels could touch anything but the map
+    /// (another tank, or anything else put in the world) this step. Most of
+    /// the time they can't, and their sweeps skip the general cast.
+    fn crowded(&self) -> Vec<bool> {
+        let extra = self.physics.colliders.len() > self.ground.len() + 2 * self.tanks.len();
+        let reach: Vec<f32> = self
+            .tanks
+            .iter()
+            .map(|t| Chassis::reach(t.hull_kind))
+            .collect();
+        (0..self.tanks.len())
+            .map(|i| {
+                extra
+                    || (0..self.tanks.len()).any(|j| {
+                        j != i
+                            && self.tanks[i].pos.distance(self.tanks[j].pos) < reach[i] + reach[j]
+                    })
+            })
+            .collect()
     }
 
     /// What tank `i` felt in the step just taken: the speed the contact
@@ -1183,11 +1233,12 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
     let mut added = Vec::new();
     // (friction, parts), one compound each.
     let mut groups: Vec<(f32, Vec<(Pose, SharedShape)>)> = Vec::new();
-    let mut add = |friction: f32, pose: Pose, shape: SharedShape| {
-        match groups.iter_mut().find(|g| g.0 == friction) {
-            Some(g) => g.1.push((pose, shape)),
-            None => groups.push((friction, vec![(pose, shape)])),
-        }
+    let mut add = |friction: f32, pose: Pose, shape: SharedShape| match groups
+        .iter_mut()
+        .find(|g| g.0 == friction)
+    {
+        Some(g) => g.1.push((pose, shape)),
+        None => groups.push((friction, vec![(pose, shape)])),
     };
     let cuboid = |min: Vec3, max: Vec3| {
         let half = (max - min) * 0.5;
@@ -1207,29 +1258,37 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
             }
             let size = t.size();
             let heights = rapier3d::parry::utils::Array2::new(t.nz, t.nx, data);
-            added.push(physics.insert_collider(
-                ColliderBuilder::heightfield(heights, Vec3::new(size.x, 1.0, size.y))
-                    .translation(Vec3::new(
-                        t.origin.x + size.x * 0.5,
-                        0.0,
-                        t.origin.y + size.y * 0.5,
-                    ))
-                    .friction(ground_friction),
-                None,
-            ));
+            added.push(
+                physics.insert_collider(
+                    ColliderBuilder::heightfield(heights, Vec3::new(size.x, 1.0, size.y))
+                        .translation(Vec3::new(
+                            t.origin.x + size.x * 0.5,
+                            0.0,
+                            t.origin.y + size.y * 0.5,
+                        ))
+                        .friction(ground_friction),
+                    None,
+                ),
+            );
             // Flat apron around (not under) the terrain.
             for (min, max) in apron_rects(t.origin, t.origin + size, map.size) {
-                let (pose, shape) = cuboid(
-                    Vec3::new(min.x, -2.0, min.y),
-                    Vec3::new(max.x, 0.0, max.y),
-                );
+                let (pose, shape) =
+                    cuboid(Vec3::new(min.x, -2.0, min.y), Vec3::new(max.x, 0.0, max.y));
                 add(ground_friction, pose, shape);
             }
         }
         None => {
             let (pose, shape) = cuboid(
-                Vec3::new(map.size * 0.5 - map.size * 2.0, -2.0, map.size * 0.5 - map.size * 2.0),
-                Vec3::new(map.size * 0.5 + map.size * 2.0, 0.0, map.size * 0.5 + map.size * 2.0),
+                Vec3::new(
+                    map.size * 0.5 - map.size * 2.0,
+                    -2.0,
+                    map.size * 0.5 - map.size * 2.0,
+                ),
+                Vec3::new(
+                    map.size * 0.5 + map.size * 2.0,
+                    0.0,
+                    map.size * 0.5 + map.size * 2.0,
+                ),
             );
             add(ground_friction, pose, shape);
         }
@@ -1348,6 +1407,7 @@ fn drive(
     cmd: &Command,
     physics: &mut PhysicsWorld,
     ground: &[ColliderHandle],
+    crowded: bool,
 ) {
     if t.chassis.hover {
         hover(t, cmd, physics);
@@ -1387,20 +1447,44 @@ fn drive(
             stop_at_penetration: true,
             compute_impact_geometry_on_penetration: true,
         };
+        // The map's parts near any of the wheels, gathered once for all of them.
+        use rapier3d::parry::bounding_volume::{Aabb, BoundingVolume};
+        let mut around: Option<Aabb> = None;
+        for i in 0..n_wheels {
+            let origin = pose.transform_point(c.mount(i));
+            let b = crate::sweep::swept_aabb(origin, -up, wheel_r, options.max_time_of_impact);
+            around = Some(around.map_or(b, |a| a.merged(&b)));
+        }
+        let near: Vec<(&Collider, Vec<u32>)> = match around {
+            Some(around) => ground
+                .iter()
+                .filter_map(|&h| physics.colliders.get(h))
+                .map(|col| {
+                    let parts = col.shape().as_compound().map_or(Vec::new(), |cp| {
+                        crate::sweep::compound_parts_near(cp, col.position(), &around)
+                    });
+                    (col, parts)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         for (i, hit) in ray_hits.iter_mut().enumerate() {
             let origin = pose.transform_point(c.mount(i));
             let at = Pose::from_parts(origin, pose.rotation);
             // The ground's outward normal (normal2 is the wheel's own).
-            let mut first = qp
-                .cast_shape(&at, -up, &ball, options)
-                .map(|(_, h)| (h.time_of_impact, h.normal1.normalize_or_zero()));
-            for col in ground.iter().filter_map(|&h| physics.colliders.get(h)) {
+            let mut first = if crowded {
+                qp.cast_shape(&at, -up, &ball, options)
+                    .map(|(_, h)| (h.time_of_impact, h.normal1.normalize_or_zero()))
+            } else {
+                None
+            };
+            for (col, parts) in &near {
                 let reach = first.map_or(options.max_time_of_impact, |f| f.0);
                 let (shape, at) = (col.shape(), col.position());
                 let hit = if let Some(hf) = shape.as_heightfield() {
                     crate::sweep::ball_heightfield(hf, at, origin, -up, wheel_r, reach)
                 } else if let Some(cp) = shape.as_compound() {
-                    crate::sweep::ball_compound(cp, at, origin, -up, wheel_r, reach)
+                    crate::sweep::ball_compound(cp, at, parts, origin, -up, wheel_r, reach)
                 } else {
                     None
                 };
@@ -1994,6 +2078,41 @@ mod tests {
     use super::tests_support::*;
     use super::*;
     use crate::map::{Rise, Terrain};
+
+    #[test]
+    fn wheels_still_stand_on_another_tank() {
+        // A tank dropped onto another's roof: its wheels land on that hull,
+        // which only the general cast sees (the map's own sweep doesn't).
+        let mut w = World::empty(Map::yard(200.0));
+        let at = Vec2::new(100.0, 100.0);
+        w.spawn_tank(Vec3::ONE, at, 0.0, HullKind::Gravis, TurretKind::Kontos);
+        w.spawn_tank(
+            Vec3::ONE,
+            at + Vec2::new(60.0, 0.0),
+            0.0,
+            HullKind::Vigil,
+            TurretKind::Kontos,
+        );
+        // Far apart, neither is crowded.
+        assert_eq!(w.crowded(), vec![false, false]);
+        // Just over the Gravis's roof.
+        let roof = Vec3::new(at.x, Chassis::GRAVIS.hull_top + 0.15, at.y);
+        w.physics.bodies[w.tanks[1].body].set_position(Pose::from_translation(roof), true);
+        w.tanks[1].pos = roof;
+        assert_eq!(w.crowded(), vec![true, true]);
+        // A few steps: the physics moves its collider up there on the first.
+        for _ in 0..10 {
+            w.step(&[]);
+        }
+        assert!(
+            w.tanks[1].wheels_down > 0,
+            "its wheels found the hull under them"
+        );
+        assert!(
+            w.tanks[1].pos.y > Chassis::GRAVIS.hull_top - 0.2,
+            "and it stands up there"
+        );
+    }
 
     /// Ride on a course: (mean |pitch/roll rate|, peak pitch/roll rate,
     /// worst vertical velocity change in one step, airborne fraction).

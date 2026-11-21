@@ -689,6 +689,10 @@ pub struct Match {
     pub fighters: Vec<Fighter>,
     bots: Vec<Option<Brain>>,
     pub shells: Vec<Shell>,
+    /// Each tank's hull and turret bounding spheres (center, radius) this
+    /// step, so a flame can pass over the far ones cheaply. Filled only
+    /// while shells fly (the tanks don't move then).
+    bounds: Vec<[(Vec3, f32); 2]>,
     pub blasts: Vec<Blast>,
     pub feed: Vec<Kill>,
     /// Reputation the player has earned with their side (`factions[0]`) this match.
@@ -759,6 +763,7 @@ impl Match {
             fighters,
             bots: brains,
             shells: Vec::new(),
+            bounds: Vec::new(),
             blasts: Vec::new(),
             feed: Vec::new(),
             reputation: 0,
@@ -1143,27 +1148,30 @@ impl Match {
             let level = Vec3::new(yaw.sin(), 0.0, yaw.cos());
             let g = self.fighters[i].levels.gun(t.turret_kind);
             let range = g.range().min(ASSIST_RANGE);
+            // The nearest enemy in the cone that the gun can see. Nearest
+            // first, so the costly checks stop at the first that passes.
+            let mut candidates: Vec<(f32, usize)> = (0..n)
+                .filter(|&j| {
+                    j != i
+                        && self.fighters[j].alive
+                        && !self.fighters[j].is_husk()
+                        && self.fighters[j].team != self.fighters[i].team
+                })
+                .filter_map(|j| {
+                    let o = &self.world.tanks[j];
+                    let centre = o.pos + o.up() * (o.chassis.hull_top * 0.7);
+                    let to = centre - eye;
+                    let flat = Vec2::new(to.x, to.z);
+                    let d = flat.length();
+                    ((2.0..=range).contains(&d)
+                        && wrap_angle(yaw_of(flat) - yaw).abs() <= ASSIST_CONE)
+                        .then_some((d, j))
+                })
+                .collect();
+            // Stable: equally near ones keep their order, as before.
+            candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut best: Option<(f32, Vec3)> = None;
-            for j in 0..n {
-                if j == i
-                    || !self.fighters[j].alive
-                    || self.fighters[j].is_husk()
-                    || self.fighters[j].team == self.fighters[i].team
-                {
-                    continue;
-                }
-                let o = &self.world.tanks[j];
-                let centre = o.pos + o.up() * (o.chassis.hull_top * 0.7);
-                let to = centre - eye;
-                let flat = Vec2::new(to.x, to.z);
-                let d = flat.length();
-                if !(2.0..=range).contains(&d) || wrap_angle(yaw_of(flat) - yaw).abs() > ASSIST_CONE
-                {
-                    continue;
-                }
-                if best.is_some_and(|(bd, _)| d >= bd) {
-                    continue;
-                }
+            for (d, j) in candidates {
                 let Some(aim) = self.aim_point(eye, level, j) else {
                     continue;
                 };
@@ -1177,6 +1185,7 @@ impl Match {
                     continue;
                 }
                 best = Some((d, aim));
+                break;
             }
             let t = &mut self.world.tanks[i];
             let (pitch, side) = best.map_or((0.0, 0.0), |(_, aim)| {
@@ -1442,6 +1451,16 @@ impl Match {
     }
 
     fn fly_shells(&mut self) {
+        let physics = &self.world.physics;
+        let sphere = |c: ColliderHandle| {
+            physics.colliders.get(c).map_or((Vec3::ZERO, -1.0), |col| {
+                let b = col.shape().compute_bounding_sphere(col.position());
+                (b.center, b.radius)
+            })
+        };
+        self.bounds = (self.world.tanks.iter())
+            .map(|t| [sphere(t.collider), sphere(t.turret_hitbox)])
+            .collect();
         let mut shells = std::mem::take(&mut self.shells);
         shells.retain_mut(|s| {
             s.age += DT;
@@ -1470,6 +1489,9 @@ impl Match {
             alive
         });
         self.shells = shells;
+        // Only good while the tanks stand still: `within` elsewhere does
+        // without.
+        self.bounds.clear();
     }
 
     /// Move shell `s` by `step`, or until it hits something on the way: a
@@ -1572,15 +1594,18 @@ impl Match {
     /// within `reach` and no wall (or the ground) stands between them.
     fn within(&self, from: Vec3, j: usize, reach: f32) -> Option<Vec3> {
         let t = &self.world.tanks[j];
+        // Out of reach of its bounding sphere is out of reach of the shape:
+        // skips the exact (and costly) projection for the far tanks.
+        let near_enough = |k: usize| {
+            self.bounds
+                .get(j)
+                .is_none_or(|b| b[k].0.distance(from) - b[k].1 <= reach)
+        };
         let (near, d) = [t.collider, t.turret_hitbox]
             .iter()
-            .filter_map(|&c| self.world.physics.colliders.get(c))
-            // Out of reach of its bounding box is out of reach of the shape:
-            // skips the exact (and costly) projection for the far tanks.
-            .filter(|col| {
-                let b = col.compute_aabb();
-                from.clamp(b.mins, b.maxs).distance(from) <= reach
-            })
+            .enumerate()
+            .filter(|&(k, _)| near_enough(k))
+            .filter_map(|(_, &c)| self.world.physics.colliders.get(c))
             .map(|col| {
                 let p = col.shape().project_point(col.position(), from, true).point;
                 (p, p.distance(from))
