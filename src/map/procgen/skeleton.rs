@@ -1,0 +1,505 @@
+//! The skeleton: a map laid out in placeholders, before anyone's
+//! architecture is put on it. A biome's grammar (see `city`) makes one from
+//! a seed; a style (see `imperium`) fills each placeholder in.
+//!
+//! Nothing here knows whose map it is. A lot is "a big building", not an
+//! Imperium block; the landmark is "the big thing in the middle with doors
+//! on these sides", not a rotunda. Each placeholder is also an envelope the
+//! style must keep to: a lot's solid parts stay on its footprint, a
+//! street's clear strip stays clear, a landmark's doors stay open. That's
+//! what lets the skeleton be checked for play (see `check`) before it's
+//! dressed: the greybox (`Skeleton::greybox`) is the skeleton drawn as
+//! plain boxes, and what drives on the greybox drives on the dressed map.
+
+use glam::{Vec2, Vec3};
+
+use crate::faction::Faction;
+use crate::map::{Map, OBox, Terrain};
+use crate::render::material::Material;
+
+/// The arena, laid out.
+#[derive(Clone, Debug)]
+pub struct Skeleton {
+    /// Arena spans [0, size] on x and z.
+    pub size: f32,
+    /// Raised ground, sloping down to the rest at its edge.
+    pub platforms: Vec<Platform>,
+    pub streets: Vec<Street>,
+    /// Open ground among the buildings, with a deco in the middle.
+    pub squares: Vec<Square>,
+    /// The thing in the middle the fight is about: the Hold site.
+    pub landmark: Landmark,
+    /// One per side, in side order.
+    pub bases: Vec<Base>,
+    pub lots: Vec<Lot>,
+    /// Things standing over a street (a gate, a bridge), leaving it open.
+    pub spans: Vec<Span>,
+    /// What closes the arena in, round its edge.
+    pub edges: Vec<Edge>,
+    /// Smaller things standing on the ground.
+    pub decos: Vec<Deco>,
+    pub repair_spots: Vec<Vec2>,
+}
+
+/// Raised ground: a rounded square, flat on top, sloping down over `ramp`
+/// at its edge (drivable all round).
+#[derive(Clone, Copy, Debug)]
+pub struct Platform {
+    pub center: Vec2,
+    pub half: f32,
+    /// Corner radius.
+    pub round: f32,
+    pub height: f32,
+    pub ramp: f32,
+}
+
+impl Platform {
+    /// Signed distance to the top's edge (negative on top).
+    pub fn sdf(&self, p: Vec2) -> f32 {
+        let q = (p - self.center).abs() - Vec2::splat(self.half - self.round);
+        q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - self.round
+    }
+
+    pub fn height_at(&self, p: Vec2) -> f32 {
+        self.height * (1.0 - smoothstep(0.0, self.ramp, self.sdf(p)))
+    }
+}
+
+pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How important a street is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rank {
+    /// A wide way from the middle out to the edge: the long sight lines.
+    Avenue,
+}
+
+/// A straight street from `from` to `to`.
+#[derive(Clone, Copy, Debug)]
+pub struct Street {
+    pub from: Vec2,
+    pub to: Vec2,
+    /// Half its width, kerb to kerb: no building stands in it.
+    pub half: f32,
+    /// Half the strip down its middle kept clear at tank height (decos
+    /// stand between it and the kerb).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub clear: f32,
+    pub rank: Rank,
+}
+
+impl Street {
+    pub fn dir(&self) -> Vec2 {
+        (self.to - self.from).normalize()
+    }
+
+    pub fn len(&self) -> f32 {
+        self.from.distance(self.to)
+    }
+
+    /// Distance from the center line (as a segment).
+    pub fn distance(&self, p: Vec2) -> f32 {
+        let d = self.to - self.from;
+        let t = ((p - self.from).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+        p.distance(self.from + d * t)
+    }
+}
+
+/// Open ground among the buildings.
+#[derive(Clone, Copy, Debug)]
+pub struct Square {
+    pub center: Vec2,
+    pub radius: f32,
+}
+
+/// The big thing in the middle: round, `radius` across, standing on the
+/// ground at `center`, with a `precinct` round it (a ring the style may
+/// stand things on, open where the streets come in).
+#[derive(Clone, Debug)]
+pub struct Landmark {
+    pub center: Vec2,
+    pub radius: f32,
+    pub precinct: f32,
+    /// Ways in, as directions out from the middle: these stay open.
+    pub doors: Vec<Vec2>,
+    /// The way a side of it has fallen in, if it has (war damage).
+    pub fallen: Option<Vec2>,
+}
+
+/// A side's base: a square court in a corner, `size` on a side, along two
+/// of the map's edges. `inward` points from the corner into the map.
+#[derive(Clone, Copy, Debug)]
+pub struct Base {
+    pub corner: Vec2,
+    pub inward: Vec2,
+    pub size: f32,
+}
+
+impl Base {
+    /// The point `u` m in along x from the corner and `v` along z.
+    pub fn at(&self, u: f32, v: f32) -> Vec2 {
+        self.corner + Vec2::new(self.inward.x * u, self.inward.y * v)
+    }
+
+    /// The middle of the court.
+    pub fn middle(&self) -> Vec2 {
+        self.at(self.size * 0.5, self.size * 0.5)
+    }
+
+    /// Inside the court, grown by `margin`.
+    pub fn contains(&self, p: Vec2, margin: f32) -> bool {
+        let q = (p - self.corner).abs();
+        q.x < self.size + margin && q.y < self.size + margin
+    }
+}
+
+/// What a lot holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LotKind {
+    /// A big building, several storeys.
+    Big,
+    /// A low building.
+    Small,
+    /// A building lifted on pillars: tanks drive under it.
+    Raised,
+    /// A lot that's been flattened: heaps to drive between.
+    Rubble,
+}
+
+/// A building plot: its footprint (`y0`, `y1` unused), the side facing the
+/// street (local axis and sign), and what stands on it.
+#[derive(Clone, Copy, Debug)]
+pub struct Lot {
+    pub footprint: OBox,
+    pub front: (usize, f32),
+    pub kind: LotKind,
+}
+
+/// Something standing over a street at `at` (across `along`, the street's
+/// direction): piers either side of an opening `opening` m each side of
+/// the center line, which stays clear.
+#[derive(Clone, Copy, Debug)]
+pub struct Span {
+    pub at: Vec2,
+    pub along: Vec2,
+    pub opening: f32,
+    /// Half broken down.
+    pub ruined: bool,
+}
+
+/// What a stretch of the edge is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeKind {
+    /// A row of buildings shoulder to shoulder.
+    Wall,
+    /// Across a street's end: a heap too high to climb, low enough to see over.
+    Blockade,
+}
+
+/// A stretch of the edge: from `start + along * from` to `start + along *
+/// to`, the arena lying toward `inward`.
+#[derive(Clone, Copy, Debug)]
+pub struct Edge {
+    pub start: Vec2,
+    pub along: Vec2,
+    pub inward: Vec2,
+    pub from: f32,
+    pub to: f32,
+    pub kind: EdgeKind,
+}
+
+/// What a deco is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecoKind {
+    /// A figure on a plinth, facing `face`.
+    Monument,
+    /// A tall pole with something flying from it, across `face`.
+    Mast,
+    /// A round basin, 6 m across, with something standing in it.
+    Fountain,
+    /// Low cover: a broken wall, barriers, something knocked over.
+    Cover,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Deco {
+    pub at: Vec2,
+    pub face: Vec2,
+    pub kind: DecoKind,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl DecoKind {
+    /// How far its solid parts may reach from where it stands, m.
+    pub fn reach(self) -> f32 {
+        match self {
+            DecoKind::Monument => 3.0,
+            DecoKind::Mast => 1.6,
+            DecoKind::Fountain => 7.0,
+            DecoKind::Cover => 8.0,
+        }
+    }
+}
+
+/// How far a lot's solid parts at tank height may stand off its footprint
+/// (a collapsed floor sloping to the street, a heap spilling out).
+#[cfg_attr(not(test), allow(dead_code))]
+pub const LOT_SPILL: f32 = 4.0;
+
+impl Skeleton {
+    pub fn center(&self) -> Vec2 {
+        self.landmark.center
+    }
+
+    /// Ground height before anything's heaped on it.
+    pub fn ground(&self, p: Vec2) -> f32 {
+        self.platforms
+            .iter()
+            .map(|pl| pl.height_at(p))
+            .fold(0.0, f32::max)
+    }
+
+    /// The main platform (the one under the landmark).
+    pub fn plaza(&self) -> &Platform {
+        &self.platforms[0]
+    }
+
+    pub fn avenues(&self) -> impl Iterator<Item = &Street> {
+        self.streets.iter().filter(|s| s.rank == Rank::Avenue)
+    }
+
+    /// Ground kept open for streets and set pieces: no lot may cover it.
+    pub fn reserved(&self, p: Vec2) -> bool {
+        let street = self.streets.iter().any(|s| s.distance(p) < s.half + 7.0);
+        let plaza = self.plaza().sdf(p) < self.plaza().ramp + 10.0;
+        let base = self.bases.iter().any(|b| b.contains(p, 8.0));
+        let square = self
+            .squares
+            .iter()
+            .any(|s| s.center.distance(p) < s.radius + 4.0);
+        let s = self.size;
+        let edge = p.x < 6.0 || p.y < 6.0 || p.x > s - 6.0 || p.y > s - 6.0;
+        street || plaza || base || square || edge
+    }
+
+    /// A blank map the size of the arena, for `factions`, with the
+    /// skeleton's gameplay already on it (Hold site, repair drops); spawns
+    /// and open spots come once it's built (`finish`).
+    pub fn blank(&self, factions: &[Faction]) -> Map {
+        let mut map = Map::empty(self.size);
+        map.factions = factions.to_vec();
+        map.bases = Map::no_bases(factions);
+        map.open_spots = Vec::new();
+        map.spawn_yaw = None;
+        map.hold_site = Some(self.landmark.center);
+        map.repair_spots = self.repair_spots.clone();
+        map
+    }
+
+    /// The ground under the arena: the platforms, and `heaps` on them.
+    pub fn terrain(&self, heaps: impl Fn(Vec2) -> f32) -> Terrain {
+        let cell = 2.0;
+        let n = (self.size / cell).round() as usize + 1;
+        Terrain::from_fn(Vec2::ZERO, cell, n, n, |x, z| {
+            let p = Vec2::new(x, z);
+            self.ground(p) + heaps(p)
+        })
+    }
+
+    /// Once everything's built: each side's spawns in its court, the open
+    /// spots, and the repair drops that landed clear.
+    pub fn finish(&self, map: &mut Map) {
+        let clear = |m: &Map, p: Vec2| {
+            !m.oboxes
+                .iter()
+                .any(|o| o.solid && o.distance(p) < TANK_CLEAR)
+        };
+        for (k, b) in self.bases.iter().enumerate() {
+            let mut spots = Vec::new();
+            for i in 0..5 {
+                for j in 0..5 {
+                    let p = b.at(9.0 + i as f32 * 7.0, 9.0 + j as f32 * 7.0);
+                    if clear(map, p) {
+                        spots.push(p);
+                    }
+                }
+            }
+            map.bases[k] = spots;
+        }
+        let step = 10.0;
+        let n = (self.size / step) as i32;
+        let mut open = Vec::new();
+        for i in 0..n {
+            for j in 0..n {
+                let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
+                if clear(map, p) && p.distance(self.landmark.center) > self.landmark.radius + 2.0 {
+                    open.push(p);
+                }
+            }
+        }
+        map.open_spots = open;
+        let repairs = std::mem::take(&mut map.repair_spots);
+        map.repair_spots = repairs.into_iter().filter(|&p| clear(map, p)).collect();
+    }
+
+    /// The skeleton drawn as plain boxes: what `check` drives on, and what
+    /// `--greybox` shows. Each kind of placeholder has its own color.
+    pub fn greybox(&self, factions: &[Faction]) -> Map {
+        let mut map = self.blank(factions);
+        let mut terrain = self.terrain(|_| 0.0);
+        terrain.color = Vec3::splat(0.3);
+        terrain.material = Material::Concrete;
+        map.terrain = Some(terrain);
+        let put = |map: &mut Map, center: Vec2, yaw: f32, half: Vec2, y: (f32, f32), c: Vec3| {
+            map.oboxes.push(OBox {
+                center,
+                yaw,
+                half,
+                y0: y.0,
+                y1: y.1,
+                color: c,
+                side_mat: Material::Concrete,
+                top_mat: Material::Concrete,
+                ..OBox::default()
+            });
+        };
+        let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
+        // The landmark: a ring wall, open at its doors and where it fell.
+        let lm = &self.landmark;
+        let g = self.ground(lm.center);
+        let segs = 40;
+        for k in 0..segs {
+            let a = (k as f32 + 0.5) / segs as f32 * std::f32::consts::TAU;
+            let dir = Vec2::new(a.cos(), a.sin());
+            if lm.doors.iter().any(|d| d.dot(dir) > 0.985) {
+                continue;
+            }
+            let h = if lm.fallen.is_some_and(|f| f.dot(dir) > 0.73) {
+                3.0
+            } else {
+                16.0
+            };
+            let half = Vec2::new(lm.radius * std::f32::consts::PI / segs as f32 * 1.02, 1.3);
+            put(
+                &mut map,
+                lm.center + dir * (lm.radius - 1.3),
+                -a + std::f32::consts::FRAC_PI_2,
+                half,
+                (g, g + h),
+                Vec3::new(0.7, 0.6, 0.3),
+            );
+        }
+        put(
+            &mut map,
+            lm.center,
+            0.0,
+            Vec2::splat(1.6),
+            (g, g + 8.0),
+            Vec3::new(0.7, 0.6, 0.3),
+        );
+        for lot in &self.lots {
+            let f = &lot.footprint;
+            let (h, c) = match lot.kind {
+                LotKind::Big => (16.0, Vec3::new(0.45, 0.45, 0.5)),
+                LotKind::Small => (6.0, Vec3::new(0.55, 0.55, 0.6)),
+                LotKind::Raised => (0.0, Vec3::new(0.35, 0.45, 0.6)),
+                LotKind::Rubble => (1.2, Vec3::new(0.5, 0.42, 0.35)),
+            };
+            match lot.kind {
+                LotKind::Raised => {
+                    // A core and pillars; the mass up over the street.
+                    let (ax, az) = f.axes();
+                    put(&mut map, f.center, f.yaw, f.half * 0.35, (0.0, 6.5), c);
+                    for px in [-1.0f32, 1.0] {
+                        for pz in [-1.0f32, 1.0] {
+                            let p =
+                                f.center + ax * px * (f.half.x - 1.2) + az * pz * (f.half.y - 1.2);
+                            put(&mut map, p, f.yaw, Vec2::splat(0.7), (0.0, 6.5), c);
+                        }
+                    }
+                    put(&mut map, f.center, f.yaw, f.half, (6.5, 18.0), c);
+                }
+                LotKind::Rubble => {
+                    // Not solid: heaps a tank winds between.
+                    put(&mut map, f.center, f.yaw, f.half * 0.8, (0.0, h), c);
+                    map.oboxes.last_mut().unwrap().solid = false;
+                }
+                _ => put(&mut map, f.center, f.yaw, f.half, (0.0, h), c),
+            }
+        }
+        for s in &self.spans {
+            let side = Vec2::new(-s.along.y, s.along.x);
+            for k in [-1.0f32, 1.0] {
+                let p = s.at + side * k * (s.opening + 3.0);
+                let top = if s.ruined && k > 0.0 { 7.0 } else { 20.0 };
+                put(
+                    &mut map,
+                    p,
+                    yaw_of(s.along),
+                    Vec2::new(2.5, 3.0),
+                    (0.0, top),
+                    Vec3::new(0.8, 0.5, 0.3),
+                );
+            }
+        }
+        for e in &self.edges {
+            let len = e.to - e.from;
+            let c = e.start + e.along * (e.from + len * 0.5) - e.inward * 6.0;
+            let half = (e.along * len * 0.5 + e.inward * 6.5).abs();
+            let (h, col) = match e.kind {
+                EdgeKind::Wall => (14.0, Vec3::new(0.4, 0.4, 0.42)),
+                EdgeKind::Blockade => (5.0, Vec3::new(0.5, 0.42, 0.35)),
+            };
+            put(&mut map, c, 0.0, half, (-0.5, h), col);
+        }
+        for (k, b) in self.bases.iter().enumerate() {
+            let col = factions.get(k).map_or(Vec3::ONE, |f| f.paint());
+            let s = b.size;
+            // Walls on the two edge sides, barriers with a gap on the others.
+            for (u0, v0, u1, v1, h) in [
+                (0.0, 0.0, s + 1.4, 1.8, 6.5),
+                (0.0, 0.0, 1.8, s + 1.4, 6.5),
+                (2.0, s, s * 0.35, s + 1.4, 1.7),
+                (s * 0.65, s, s + 1.4, s + 1.4, 1.7),
+                (s, 2.0, s + 1.4, s * 0.35, 1.7),
+                (s, s * 0.65, s + 1.4, s, 1.7),
+            ] {
+                let (a, z) = (b.at(u0, v0), b.at(u1, v1));
+                put(
+                    &mut map,
+                    (a + z) * 0.5,
+                    0.0,
+                    (z - a).abs() * 0.5,
+                    (0.0, h),
+                    col,
+                );
+            }
+        }
+        for d in &self.decos {
+            let g = self.ground(d.at);
+            let (half, h) = match d.kind {
+                DecoKind::Monument => (Vec2::splat(1.6), 8.0),
+                DecoKind::Mast => (Vec2::splat(0.2), 14.0),
+                DecoKind::Fountain => (Vec2::splat(6.0), 1.2),
+                DecoKind::Cover => (Vec2::new(3.0, 0.6), 1.6),
+            };
+            put(
+                &mut map,
+                d.at,
+                yaw_of(d.face),
+                half,
+                (g - 0.1, g + h),
+                Vec3::new(0.75, 0.75, 0.7),
+            );
+        }
+        self.finish(&mut map);
+        map
+    }
+}
+
+/// Clearance a spawn needs from anything solid: the biggest hull's (the
+/// Gravis's) corner radius, so it can face any way without touching.
+pub const TANK_CLEAR: f32 = 4.6;

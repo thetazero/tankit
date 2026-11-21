@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn rated_missions_pay_more_and_field_better_gear() {
-        let mut m = Match::new(crate::map::Map::capital(), 0, 15, 3);
+        let mut m = Match::new(crate::map::Map::city(0), 0, 15, 3);
         m.fighters[0].kills = 2;
         m.fighters[0].damage_dealt = 300.0;
         let base = Payout::of(&m).total();

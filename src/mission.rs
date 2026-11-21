@@ -121,8 +121,8 @@ pub const MISSIONS: &[Mission] = &[
     Mission {
         name: "FOUR WINDS",
         contract: Contract::Attrition,
-        map: "THE CAPITAL",
-        map_kind: MapKind::Capital,
+        map: "IMPERIAL CITY",
+        map_kind: MapKind::City,
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn mission_sides_match_the_map() {
         for m in MISSIONS {
-            assert_eq!(m.sides, crate::make_map(m.map_kind).factions);
+            assert_eq!(m.sides, crate::make_map(m.map_kind, m.seed).factions);
         }
     }
 

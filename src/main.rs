@@ -43,14 +43,16 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
+  any of --seed --map-seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|capital|foundry|mine>
+  --map <saltmarket|sanctum|kiln|city|foundry|mine>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
-                          on a mesa, the Hold map), the Kiln (Ithessar ground), or the Capital
-                          (Imperium city, all four factions), the Foundry (a wrecked
+                          on a mesa, the Hold map), the Kiln (Ithessar ground), the city
+                          (a generated Imperium city, all four factions), the Foundry (a wrecked
                           Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
                           mine: caves, rails and stacked levels)
+  --map-seed <n>          which city a generated map (city) builds (default: the --seed)
+  --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold|raid>
@@ -109,6 +111,10 @@ tankit [OPTIONS]
 
 pub struct Args {
     pub seed: u64,
+    /// Which map a generated kind builds (--map-seed, else the seed).
+    pub map_seed: u64,
+    /// --greybox: a generated map's skeleton, undressed.
+    pub greybox: bool,
     pub map: MapKind,
     pub spawn: usize,
     pub bots: usize,
@@ -177,7 +183,10 @@ impl Args {
     }
 
     pub fn map(&self) -> map::Map {
-        let mut m = make_map(self.map);
+        let mut m = match (self.greybox, self.map) {
+            (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
+            _ => make_map(self.map, self.map_seed),
+        };
         if self.side > 0 {
             m.swap_sides(self.side);
         }
@@ -195,21 +204,34 @@ pub enum MapKind {
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
     /// An Imperium city, half ruined round a domed rotunda: four sides.
-    Capital,
+    /// Generated: a different city for each map seed.
+    City,
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// The Seam: an Ithessar crystal mine in the desert, on three levels.
     Mine,
 }
 
-pub fn make_map(kind: MapKind) -> map::Map {
+/// The map `kind` names; `seed` picks which one, for a generated kind (the
+/// hand-built ones are always the same).
+pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
     match kind {
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
-        MapKind::Capital => map::Map::capital(),
+        MapKind::City => map::procgen::map(&city_spec(seed)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::Map::mine(),
+    }
+}
+
+/// The imperial city `seed` names: four sides, one corner each.
+pub fn city_spec(seed: u64) -> map::procgen::Spec {
+    map::procgen::Spec {
+        seed,
+        biome: map::procgen::Biome::City,
+        look: map::procgen::Look::Imperium,
+        sides: faction::Faction::ALL.to_vec(),
     }
 }
 
@@ -292,6 +314,7 @@ fn main() -> Result<()> {
         (Some(shot), None) => screenshot(&args, shot),
         (None, showroom) => app::run(app::Launch {
             seed: args.seed,
+            map_seed: args.map_seed,
             map_kind: args.map,
             spawn: args.spawn,
             bots: args.bots,
@@ -320,6 +343,8 @@ fn parse_args() -> Result<Args> {
         .as_nanos() as u64
         % 100_000;
     let mut shot: Option<String> = None;
+    let mut map_seed: Option<u64> = None;
+    let mut greybox = false;
     let mut wav: Option<String> = None;
     let mut bench: Option<f32> = None;
     let mut arena: Option<u32> = None;
@@ -355,6 +380,7 @@ fn parse_args() -> Result<Args> {
         if matches!(
             a.as_str(),
             "--seed"
+                | "--map-seed"
                 | "--map"
                 | "--spawn"
                 | "--team-size"
@@ -369,16 +395,20 @@ fn parse_args() -> Result<Args> {
         match a.as_str() {
             "--shot" => shot = Some(args.next().context("--shot needs a path")?),
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
+            "--map-seed" => {
+                map_seed = Some(args.next().context("--map-seed needs a number")?.parse()?)
+            }
+            "--greybox" => greybox = true,
             "--map" => match args.next().as_deref() {
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
-                Some("capital") => map_kind = MapKind::Capital,
+                Some("city") => map_kind = MapKind::City,
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, capital, foundry or mine, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, city, foundry or mine, got {other:?}"
                     )
                 }
             },
@@ -549,7 +579,8 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other}\n\n{USAGE}"),
         }
     }
-    let sides = make_map(map_kind).factions;
+    let map_seed = map_seed.unwrap_or(seed);
+    let sides = make_map(map_kind, map_seed).factions;
     let menu_shot = matches!(
         screen,
         Some(
@@ -582,6 +613,8 @@ fn parse_args() -> Result<Args> {
     }
     Ok(Args {
         seed,
+        map_seed,
+        greybox,
         side,
         employer,
         mission,
@@ -711,7 +744,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
-    let bay_art = bay::BayArt::upload(&mut renderer);
+    let mut bay_art = bay::BayArt::upload(&mut renderer);
+    bay_art.show_world(&mut renderer, game.world.map.planet);
     let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
         if args.garage {

@@ -8,7 +8,7 @@ use glam::Vec3;
 use crate::sim::{HullKind, TurretKind};
 use crate::ui::Rgba;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Faction {
     /// Human; automated war machines commanded from orbit.
     Imperium,

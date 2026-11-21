@@ -1,4 +1,4 @@
-//! The Capital's city blocks, dressed as Imperium architecture: stone
+//! Imperium city blocks (the imperial city's edge), dressed as Imperium architecture: stone
 //! plinths with arcades at street level, a regular order of windows above
 //! (ribbons, a punched grid, or a colossal order of pilasters), a heavy
 //! cornice and attic on top, and the Imperium's crimson and gold on the

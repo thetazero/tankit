@@ -1,65 +1,44 @@
-//! The Capital: an Imperium city the war has reached, half ruined, still
-//! kept by ritual. A free-for-all: all four factions, one corner each.
-//!
-//! 340 m square (+x east, +z north), symmetric in all four directions:
-//!
-//! - middle: a raised plaza, and on it the rotunda, a domed basilica in the
-//!   Roman way (a drum of concrete, an oculus in the dome) with the dome
-//!   and drum fallen in on one side. Inside, the emblem on its dais. A ring
-//!   of columns stands around it, some fallen.
-//! - four processional avenues run from the plaza to the edges, each
-//!   through a triumphal arch, lined with statues on plinths and crimson
-//!   banners: the long sight lines.
-//! - between them, districts of ordinary concrete blocks (many shelled) and
-//!   a few brutalist slabs on pillars you can drive under: close quarters.
-//! - a staging court in each corner, one per side.
-//!
-//! The ruin is Roman scale in raw concrete: mass-made monuments, ritual for
+//! The Imperium's style: their cities, half ruined by the war, still kept
+//! by ritual. Roman scale in raw concrete: mass-made monuments, ritual for
 //! its own sake (see docs/setting.md).
+//!
+//! - the landmark: the rotunda, a domed basilica in the Roman way (a drum
+//!   of concrete, an oculus in the dome), fallen in on one side, the emblem
+//!   on its dais inside, a ring of columns round it on its precinct.
+//! - gates: triumphal arches. Monuments: robed statues on plinths. Masts:
+//!   crimson banners on gold crossbars. Fountains: dry basins round broken
+//!   obelisks.
+//! - lots: ordinary concrete blocks (many shelled), brutalist slabs on
+//!   pillars, lots of rubble. The edge: Imperium blocks shoulder to
+//!   shoulder, rubble banked across each avenue's end.
+//! - bases: staging courts behind bastion walls, in each side's colors.
+//! - beyond: the city goes on to the haze, a great tower hung with crimson
+//!   closing each avenue's vista.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Mat3, Quat, Vec2, Vec3};
 
-use super::landmarks::Rig;
-use super::rocks;
-use super::ruins::{self, Drift, Style};
-use super::{Ambient, Map, OBox, Terrain};
+use super::Style;
+use super::skeleton::*;
 use crate::faction::Faction;
+use crate::map::landmarks::Rig;
+use crate::map::rocks;
+use crate::map::ruins::{self, Drift};
+use crate::map::{Ambient, Map, OBox, Terrain};
 use crate::render::material::Material;
 use crate::rng::Rng;
 
-const SIZE: f32 = 340.0;
-const MID: f32 = SIZE * 0.5;
-const CENTER: Vec2 = Vec2::new(MID, MID);
-/// The plaza: a rounded square raised `PLAZA_H`, sloping down over
-/// `PLAZA_RAMP` at its edge (drivable all round).
-const PLAZA_H: f32 = 2.0;
-const PLAZA_HALF: f32 = 62.0;
-const PLAZA_ROUND: f32 = 20.0;
-const PLAZA_RAMP: f32 = 14.0;
-/// Half-width of the four avenues.
-const AVENUE_HALF: f32 = 14.0;
-/// The rotunda's drum: outer radius, wall thickness, height.
-const ROTUNDA_R: f32 = 24.0;
-const DRUM_T: f32 = 2.6;
-const DRUM_H: f32 = 16.0;
-/// The ring of columns round the rotunda.
-const COLONNADE_R: f32 = 44.0;
-/// How far out along each avenue its arch stands.
-const ARCH_AT: f32 = 96.0;
-/// Each corner's staging court.
-const COURT: f32 = 46.0;
-/// Clearance a spawn needs from anything solid: the biggest hull's (the
-/// Gravis's) corner radius, so it can face any way without touching.
-const TANK_CLEAR: f32 = 4.6;
-
-const GROUND: Vec3 = Vec3::new(0.32, 0.32, 0.33);
+pub(super) const GROUND: Vec3 = Vec3::new(0.32, 0.32, 0.33);
 const CONCRETE: Vec3 = Vec3::new(0.54, 0.53, 0.51);
 const CONCRETE_DARK: Vec3 = Vec3::new(0.3, 0.3, 0.3);
 const STONE: Vec3 = Vec3::new(0.86, 0.83, 0.76);
 const CRIMSON: Vec3 = Vec3::new(0.46, 0.05, 0.06);
 const GOLD: Vec3 = Vec3::new(0.86, 0.66, 0.28);
+
+/// The rotunda's drum: wall thickness, height.
+const DRUM_T: f32 = 2.6;
+const DRUM_H: f32 = 16.0;
 
 /// The ordinary blocks' walls: raw concrete, travertine, stained brown,
 /// dark grey and an ochre render, dark enough to keep their colour in the
@@ -74,28 +53,12 @@ const CONCRETES: [Vec3; 7] = [
     Vec3::new(0.5, 0.48, 0.44),
 ];
 /// The ordinary blocks: cast concrete in greys.
-const CAST: Style = Style {
+const CAST: ruins::Style = ruins::Style {
     colors: &CONCRETES,
     wall: Material::Concrete,
 };
 
-fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// Signed distance to the plaza's rounded-square edge (negative inside).
-fn plaza_sdf(p: Vec2) -> f32 {
-    let q = (p - CENTER).abs() - Vec2::splat(PLAZA_HALF - PLAZA_ROUND);
-    q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - PLAZA_ROUND
-}
-
-/// Ground height before rubble: flat, with the plaza raised in the middle.
-pub fn ground(x: f32, z: f32) -> f32 {
-    PLAZA_H * (1.0 - smoothstep(0.0, PLAZA_RAMP, plaza_sdf(Vec2::new(x, z))))
-}
-
-/// The four directions out from the middle: east, north, west, south.
+/// The four directions on the map: east, north, west, south.
 const AXES: [Vec2; 4] = [
     Vec2::new(1.0, 0.0),
     Vec2::new(0.0, 1.0),
@@ -103,108 +66,89 @@ const AXES: [Vec2; 4] = [
     Vec2::new(0.0, -1.0),
 ];
 
-/// Corner courts, one per side in `Faction::ALL` order: southwest,
-/// southeast, northeast, northwest. Each is (corner, direction inward).
-fn courts() -> [(Vec2, Vec2); 4] {
-    [
-        (Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0)),
-        (Vec2::new(SIZE, 0.0), Vec2::new(-1.0, 1.0)),
-        (Vec2::new(SIZE, SIZE), Vec2::new(-1.0, -1.0)),
-        (Vec2::new(0.0, SIZE), Vec2::new(1.0, -1.0)),
-    ]
-}
-
-/// Ground kept open for streets and set pieces: the avenues, the plaza and
-/// its slope, the corner courts and a margin inside the edge.
-fn reserved(p: Vec2) -> bool {
-    let d = p - CENTER;
-    let avenue = d.x.abs() < AVENUE_HALF + 7.0 || d.y.abs() < AVENUE_HALF + 7.0;
-    let plaza = plaza_sdf(p) < PLAZA_RAMP + 10.0;
-    let court = courts().iter().any(|&(c, _)| {
-        let q = (p - c).abs();
-        q.x < COURT + 8.0 && q.y < COURT + 8.0
-    });
-    let edge = p.x < 6.0 || p.y < 6.0 || p.x > SIZE - 6.0 || p.y > SIZE - 6.0;
-    avenue || plaza || court || edge
-}
-
 /// A rotation whose local x, y, z axes are `x`, `y` and their cross.
 fn frame(x: Vec3, y: Vec3) -> Quat {
     let z = x.cross(y);
     Quat::from_mat3(&Mat3::from_cols(x, y, z))
 }
 
-impl Map {
-    pub fn capital() -> Map {
-        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
-        Map::built_once(&BUILT, Map::build_capital)
+/// The angle of a direction on the ground plane.
+fn angle(d: Vec2) -> f32 {
+    d.y.atan2(d.x)
+}
+
+/// How far round from `a` to `b`, radians, either way (0..PI).
+fn apart(a: f32, b: f32) -> f32 {
+    ((a - b + PI).rem_euclid(TAU) - PI).abs()
+}
+
+pub(super) struct Imperium;
+
+impl Style for Imperium {
+    fn hold_name(&self) -> &'static str {
+        "ROTUNDA"
     }
 
-    fn build_capital() -> Map {
-        let factions = Faction::ALL.to_vec();
-        let mut map = Map {
-            size: SIZE,
-            solids: Vec::new(),
-            boxes: Vec::new(),
-            wedges: Vec::new(),
-            oboxes: Vec::new(),
-            terrain: None,
-            scenery_terrain: None,
-            open_spots: Vec::new(),
-            spawn_yaw: None,
-            // A cold, hazy morning: pale sun low in the east, ash in the air.
-            atmosphere: crate::render::Atmosphere {
-                sun_dir: Vec3::new(0.66, 0.36, -0.4),
-                sun_color: Vec3::new(2.05, 1.95, 1.8),
-                sky_zenith: Vec3::new(0.28, 0.34, 0.44),
-                sky_horizon: Vec3::new(0.6, 0.6, 0.58),
-                ground_color: Vec3::new(0.26, 0.25, 0.24),
-                fog_density: 0.0012,
-                wind: Vec2::new(2.0, 1.2),
-                blowing_sand: 0.25,
-                dust: Vec3::new(0.62, 0.6, 0.57),
-                settle: crate::render::SAND_SETTLE,
-                ambient: 1.0,
-            },
-            bases: Map::no_bases(&factions),
-            factions,
-            repair_spots: Vec::new(),
-            hold_site: Some(CENTER),
-            cores: Vec::new(),
-            crystals: Vec::new(),
-            glow_paths: Vec::new(),
-            beams: Vec::new(),
-            lights: Vec::new(),
-            fall_y: None,
-            hold_name: "ROTUNDA",
-            raid_stands: Vec::new(),
-            routes: Vec::new(),
-            sculpted: crate::render::mesh::MeshData::default(),
-            rock_dust: None,
-            sounds: Vec::new(),
-        };
-        let mut rng = Rng::new(0xC4_917A);
-        let mut drifts = map.districts(&mut rng);
-        drifts.extend(map.rotunda(&mut rng));
-        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 171, 171, |x, z| {
-            let p = Vec2::new(x, z);
-            ground(x, z) + drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max)
-        });
-        terrain.color = GROUND;
-        terrain.material = Material::Concrete;
-        map.terrain = Some(terrain);
-        map.plaza_paving();
-        map.plaza_ring_cover(&mut rng);
-        map.fountains(&mut rng);
-        map.colonnade(&mut rng);
-        for (k, &dir) in AXES.iter().enumerate() {
-            map.avenue(&mut rng, dir);
-            map.arch(&mut rng, dir, k == 3);
+    fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
+        let drifts = map.rotunda(rng, &sk.landmark, sk.ground(sk.landmark.center));
+        map.colonnade(rng, &sk.landmark, sk.ground(sk.landmark.center));
+        drifts
+    }
+
+    fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
+        map.paving(p, &sk.landmark);
+    }
+
+    fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
+        map.processional_way(sk, s);
+    }
+
+    fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, rng: &mut Rng) {
+        map.arch(rng, s, sk.ground(s.at));
+    }
+
+    fn lot(&self, map: &mut Map, _sk: &Skeleton, lot: &Lot, rng: &mut Rng) -> Vec<Drift> {
+        match lot.kind {
+            LotKind::Big | LotKind::Small => {
+                ruins::building_in(map, rng, lot.footprint, lot.front, &|_| true, &CAST)
+            }
+            LotKind::Raised => {
+                map.brutalist(rng, &lot.footprint, lot.front);
+                Vec::new()
+            }
+            LotKind::Rubble => {
+                map.rubble_lot(rng, &lot.footprint);
+                Vec::new()
+            }
         }
-        map.staging_courts(&mut rng);
-        map.city_edge();
-        map.capital_spawns();
-        map.skyline(&mut rng);
+    }
+
+    fn base(&self, map: &mut Map, sk: &Skeleton, side: usize, b: &Base, rng: &mut Rng) {
+        map.staging_court(rng, side, b, sk.center());
+    }
+
+    fn edge(&self, map: &mut Map, _sk: &Skeleton, e: &Edge, rng: &mut Rng) {
+        match e.kind {
+            EdgeKind::Wall => map.edge_blocks(rng, e),
+            EdgeKind::Blockade => map.rubble_bank(rng, e.start, e.along, e.inward, (e.from, e.to)),
+        }
+    }
+
+    fn deco(&self, map: &mut Map, sk: &Skeleton, d: &Deco, rng: &mut Rng) {
+        let g = sk.ground(d.at);
+        match d.kind {
+            DecoKind::Monument => map.statue(rng, d.at, d.face, g),
+            DecoKind::Mast => map.mast(d.at, d.face, g),
+            DecoKind::Fountain => map.fountain(rng, d.at, g),
+            DecoKind::Cover => map.cover(rng, d.at, d.face, g),
+        }
+    }
+
+    fn beyond(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) {
+        map.skyline(rng, sk);
+    }
+
+    fn finish(&self, map: &mut Map) {
         for o in &mut map.oboxes {
             let masonry =
                 [Material::Plaster, Material::Concrete, Material::Rubble].contains(&o.side_mat);
@@ -212,11 +156,10 @@ impl Map {
                 o.chip = 0.25;
             }
         }
-        map.drop_tiny_hitboxes();
-        map.separate_coplanar_faces();
-        map
     }
+}
 
+impl Map {
     /// A plain box from `lo` to `hi` (axis aligned), worn at the edges.
     #[allow(clippy::too_many_arguments)]
     fn slab(&mut self, lo: Vec3, hi: Vec3, yaw: f32, color: Vec3, mat: Material, solid: bool) {
@@ -270,7 +213,7 @@ impl Map {
 
     /// A crimson banner hanging flat against a wall facing `out`, from
     /// `top` down `len`, `w` wide, with a small gold disc near the top.
-    pub(super) fn banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32) {
+    pub(in crate::map) fn banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32) {
         self.side_banner(top, out, w, len, CRIMSON, true);
     }
 
@@ -315,21 +258,21 @@ impl Map {
     // The middle
 
     /// Large paving slabs over the plaza top (visual; the terrain carries you).
-    fn plaza_paving(&mut self) {
+    fn paving(&mut self, p: &Platform, lm: &Landmark) {
         let step = 8.0;
-        let n = (PLAZA_HALF * 2.0 / step) as i32;
+        let n = (p.half * 2.0 / step) as i32;
         for i in 0..n {
             for j in 0..n {
-                let c = CENTER - Vec2::splat(PLAZA_HALF)
+                let c = p.center - Vec2::splat(p.half)
                     + Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
                 // Only where the top is flat, and not under the rotunda.
-                if plaza_sdf(c) > -step * 0.75 || c.distance(CENTER) < ROTUNDA_R + 2.0 {
+                if p.sdf(c) > -step * 0.75 || c.distance(lm.center) < lm.radius + 2.0 {
                     continue;
                 }
                 let shade = 0.94 + 0.06 * (((i * 7 + j * 13) % 5) as f32 / 4.0);
                 self.slab(
-                    Vec3::new(c.x - step * 0.48, PLAZA_H - 0.1, c.y - step * 0.48),
-                    Vec3::new(c.x + step * 0.48, PLAZA_H + 0.06, c.y + step * 0.48),
+                    Vec3::new(c.x - step * 0.48, p.height - 0.1, c.y - step * 0.48),
+                    Vec3::new(c.x + step * 0.48, p.height + 0.06, c.y + step * 0.48),
                     0.0,
                     STONE * shade,
                     Material::Concrete,
@@ -343,31 +286,27 @@ impl Map {
     /// coffered dome with an oculus, and the northeast side fallen in (drum
     /// broken down to stumps, dome gone, rubble heaped inside and out).
     /// Inside, a ring of columns and the emblem on its dais.
-    fn rotunda(&mut self, rng: &mut Rng) -> Vec<Drift> {
+    fn rotunda(&mut self, rng: &mut Rng, lm: &Landmark, base: f32) -> Vec<Drift> {
         let mut drifts = Vec::new();
-        let base = PLAZA_H;
+        let (center, radius) = (lm.center, lm.radius);
+        // The way it fell, and how far round from it a piece is.
+        let fall_a = lm.fallen.map(angle);
+        let from_fall = |a: f32| fall_a.map_or(PI, |f| apart(a, f));
+        let door_a: Vec<f32> = lm.doors.iter().map(|&d| angle(d)).collect();
         self.sound(
             Ambient::Dome,
-            Vec3::new(CENTER.x, base + DRUM_H * 0.6, CENTER.y),
+            Vec3::new(center.x, base + DRUM_H * 0.6, center.y),
         );
         let segs = 40;
-        let collapsed = |a: f32| {
-            let d = (a - PI * 0.25 + PI).rem_euclid(TAU) - PI;
-            d.abs() < 0.75
-        };
-        let door = |a: f32| {
-            (0..4).any(|k| {
-                let d = (a - k as f32 * FRAC_PI_2 + PI).rem_euclid(TAU) - PI;
-                d.abs() < 0.16
-            })
-        };
-        let r_mid = ROTUNDA_R - DRUM_T * 0.5;
+        let collapsed = |a: f32| from_fall(a) < 0.75;
+        let door = |a: f32| door_a.iter().any(|&d| apart(a, d) < 0.16);
+        let r_mid = radius - DRUM_T * 0.5;
         // Wide enough that the outer faces meet: no slits between piers.
-        let seg_half = ROTUNDA_R * PI / segs as f32 * 1.02;
+        let seg_half = radius * PI / segs as f32 * 1.02;
         for k in 0..segs {
             let a = (k as f32 + 0.5) / segs as f32 * TAU;
             let dir = Vec2::new(a.cos(), a.sin());
-            let c = CENTER + dir * r_mid;
+            let c = center + dir * r_mid;
             let yaw = -a + FRAC_PI_2;
             let (lo, hi) = (
                 Vec3::new(c.x - seg_half, 0.0, c.y - DRUM_T * 0.5),
@@ -408,7 +347,7 @@ impl Map {
             self.oboxes.last_mut().unwrap().chip = 0.01;
             // Buttress pilasters on every fourth pier.
             if k % 4 == 2 {
-                let p = CENTER + dir * (ROTUNDA_R + 0.6);
+                let p = center + dir * (radius + 0.6);
                 self.slab(
                     Vec3::new(p.x - 1.0, base, p.y - 0.9),
                     Vec3::new(p.x + 1.0, base + DRUM_H + 1.2, p.y + 0.9),
@@ -419,7 +358,7 @@ impl Map {
                 );
             }
             // Cornice ring, overhanging.
-            let p = CENTER + dir * (ROTUNDA_R + 0.2);
+            let p = center + dir * (radius + 0.2);
             self.slab(
                 Vec3::new(p.x - seg_half * 1.05, base + DRUM_H, p.y - 1.4),
                 Vec3::new(p.x + seg_half * 1.05, base + DRUM_H + 1.1, p.y + 1.4),
@@ -436,7 +375,7 @@ impl Map {
                 continue;
             }
             let dir = Vec2::new(a.cos(), a.sin());
-            let p = CENTER + dir * (ROTUNDA_R + 0.05);
+            let p = center + dir * (radius + 0.05);
             self.banner(Vec3::new(p.x, base + DRUM_H - 0.6, p.y), dir, 3.0, 11.0);
         }
 
@@ -444,7 +383,7 @@ impl Map {
         // where it fell in (with a ragged edge).
         let dome_base = base + DRUM_H + 1.0;
         let rings = 7;
-        let r = ROTUNDA_R - 0.6;
+        let r = radius - 0.6;
         for i in 0..rings {
             let p0 = i as f32 / rings as f32 * FRAC_PI_2 * 0.86;
             let p1 = (i + 1) as f32 / rings as f32 * FRAC_PI_2 * 0.86;
@@ -452,7 +391,7 @@ impl Map {
             let n = (segs as f32 * phi.cos()).round().max(10.0) as usize;
             for k in 0..n {
                 let a = (k as f32 + 0.5) / n as f32 * TAU;
-                let d = (a - PI * 0.25 + PI).rem_euclid(TAU) - PI;
+                let d = from_fall(a);
                 // Gone over the fallen drum and up past the crown, ragged.
                 // Widest over the fallen drum, narrowing toward the crown so
                 // the oculus ring still has dome round it.
@@ -461,7 +400,7 @@ impl Map {
                 }
                 let radial = Vec3::new(a.cos() * phi.cos(), phi.sin(), a.sin() * phi.cos());
                 let tangent = Vec3::new(-a.sin(), 0.0, a.cos());
-                let c = Vec3::new(CENTER.x, dome_base, CENTER.y) + radial * r;
+                let c = Vec3::new(center.x, dome_base, center.y) + radial * r;
                 let rig = Rig {
                     pos: c,
                     rot: frame(tangent, radial),
@@ -485,13 +424,12 @@ impl Map {
         // through the hole): meridians, and rings between the plate rings.
         let inner = r - 0.9;
         let at = |a: f32, phi: f32| {
-            Vec3::new(CENTER.x, dome_base, CENTER.y)
+            Vec3::new(center.x, dome_base, center.y)
                 + Vec3::new(a.cos() * phi.cos(), phi.sin(), a.sin() * phi.cos()) * inner
         };
         for k in 0..20 {
             let a = (k as f32) / 20.0 * TAU;
-            let d = (a - PI * 0.25 + PI).rem_euclid(TAU) - PI;
-            if d.abs() < 1.05 {
+            if from_fall(a) < 1.05 {
                 continue;
             }
             for i in 0..rings {
@@ -502,7 +440,7 @@ impl Map {
                     pos: (u + v) * 0.5,
                     rot: frame(
                         Vec3::new(-a.sin(), 0.0, a.cos()),
-                        ((u + v) * 0.5 - Vec3::new(CENTER.x, dome_base, CENTER.y)).normalize(),
+                        ((u + v) * 0.5 - Vec3::new(center.x, dome_base, center.y)).normalize(),
                     ),
                 };
                 rig.part(
@@ -524,7 +462,7 @@ impl Map {
             let radial = Vec3::new(a.cos() * phi.cos(), phi.sin(), a.sin() * phi.cos());
             let tangent = Vec3::new(-a.sin(), 0.0, a.cos());
             let rig = Rig {
-                pos: Vec3::new(CENTER.x, dome_base, CENTER.y) + radial * (r + 0.3),
+                pos: Vec3::new(center.x, dome_base, center.y) + radial * (r + 0.3),
                 rot: frame(tangent, Vec3::Y),
             };
             rig.part(
@@ -542,7 +480,7 @@ impl Map {
         // Inside: a ring of columns (two fallen), and the emblem on its dais.
         for k in 0..8 {
             let a = (k as f32 + 0.5) / 8.0 * TAU;
-            let p = CENTER + Vec2::new(a.cos(), a.sin()) * 14.0;
+            let p = center + Vec2::new(a.cos(), a.sin()) * 14.0;
             if collapsed(a) {
                 // Fallen inward, lying across the floor.
                 let along = Vec2::new(-a.sin(), a.cos()) * 0.4 - Vec2::new(a.cos(), a.sin());
@@ -559,8 +497,8 @@ impl Map {
             self.column(Vec3::new(p.x, base, p.y), 1.0, DRUM_H - 1.0, false);
         }
         self.drum(
-            Vec3::new(CENTER.x, base, CENTER.y),
-            Vec3::new(CENTER.x, base + 1.2, CENTER.y),
+            Vec3::new(center.x, base, center.y),
+            Vec3::new(center.x, base + 1.2, center.y),
             4.5,
             STONE,
         );
@@ -568,35 +506,37 @@ impl Map {
         // greet each door.
         let stele = 1.3;
         self.slab(
-            Vec3::new(CENTER.x - stele, base + 1.2, CENTER.y - stele),
-            Vec3::new(CENTER.x + stele, base + 8.0, CENTER.y + stele),
+            Vec3::new(center.x - stele, base + 1.2, center.y - stele),
+            Vec3::new(center.x + stele, base + 8.0, center.y + stele),
             0.0,
             STONE * 0.95,
             Material::Concrete,
             true,
         );
         self.slab(
-            Vec3::new(CENTER.x - stele - 0.3, base + 8.0, CENTER.y - stele - 0.3),
-            Vec3::new(CENTER.x + stele + 0.3, base + 8.6, CENTER.y + stele + 0.3),
+            Vec3::new(center.x - stele - 0.3, base + 8.0, center.y - stele - 0.3),
+            Vec3::new(center.x + stele + 0.3, base + 8.6, center.y + stele + 0.3),
             0.0,
             STONE * 0.9,
             Material::Concrete,
             false,
         );
         for out in AXES {
-            let at = CENTER + out * (stele + 0.16);
+            let at = center + out * (stele + 0.16);
             self.standing_emblem(Vec3::new(at.x, base + 5.4, at.y), out, 0.62);
         }
 
         // Rubble where it fell: heaps banked against the broken wall, chunks
         // of dome scattered inside and out.
-        let fall = Vec2::new(1.0, 1.0).normalize();
+        let Some(fall) = lm.fallen else {
+            return drifts;
+        };
         for (side, sign) in [(-1.0f32, 1.0f32), (1.0, -1.0)] {
-            let p = CENTER + fall * (ROTUNDA_R + side * 4.0);
+            let p = center + fall * (radius + side * 4.0);
             drifts.push(Drift {
                 b: OBox {
                     center: p,
-                    yaw: -PI * 0.25,
+                    yaw: -angle(fall),
                     half: Vec2::new(10.0, 2.0),
                     y0: 0.0,
                     y1: 1.0,
@@ -609,9 +549,9 @@ impl Map {
             });
         }
         for _ in 0..34 {
-            let a = PI * 0.25 + rng.range(-0.7, 0.7);
-            let d = rng.range(6.0, ROTUNDA_R + 14.0);
-            let p = CENTER + Vec2::new(a.cos(), a.sin()) * d;
+            let a = angle(fall) + rng.range(-0.7, 0.7);
+            let d = rng.range(6.0, radius + 14.0);
+            let p = center + Vec2::new(a.cos(), a.sin()) * d;
             let s = rng.range(0.8, 2.6);
             let yaw = rng.range(0.0, TAU);
             let half = Vec2::new(s, s * rng.range(0.4, 0.9));
@@ -628,116 +568,94 @@ impl Map {
         drifts
     }
 
-    /// A dry fountain in each corner of the plaza: a low round basin wall
-    /// with a broken obelisk standing in it. Cover on the open paving.
-    fn fountains(&mut self, rng: &mut Rng) {
-        for k in 0..4 {
-            let a = PI * 0.25 + k as f32 * FRAC_PI_2;
-            let c = CENTER + Vec2::new(a.cos(), a.sin()) * 62.0;
-            let (r, segs) = (6.0, 16);
-            for i in 0..segs {
-                let t = (i as f32 + 0.5) / segs as f32 * TAU;
-                let p = c + Vec2::new(t.cos(), t.sin()) * r;
-                let half = r * PI / segs as f32 * 1.05;
-                self.slab(
-                    Vec3::new(p.x - half, PLAZA_H - 0.1, p.y - 0.45),
-                    Vec3::new(p.x + half, PLAZA_H + 1.2, p.y + 0.45),
-                    -t + FRAC_PI_2,
-                    STONE * 0.9,
-                    Material::Concrete,
-                    true,
-                );
-                self.oboxes.last_mut().unwrap().chip = 0.01;
-            }
-            let h = rng.range(3.0, 6.0);
+    /// A dry fountain: a low round basin wall with a broken obelisk
+    /// standing in it. Cover on the open paving.
+    fn fountain(&mut self, rng: &mut Rng, c: Vec2, g: f32) {
+        let (r, segs) = (6.0, 16);
+        for i in 0..segs {
+            let t = (i as f32 + 0.5) / segs as f32 * TAU;
+            let p = c + Vec2::new(t.cos(), t.sin()) * r;
+            let half = r * PI / segs as f32 * 1.05;
             self.slab(
-                Vec3::new(c.x - 1.2, PLAZA_H, c.y - 1.2),
-                Vec3::new(c.x + 1.2, PLAZA_H + 1.0, c.y + 1.2),
-                0.0,
-                STONE * 0.85,
+                Vec3::new(p.x - half, g - 0.1, p.y - 0.45),
+                Vec3::new(p.x + half, g + 1.2, p.y + 0.45),
+                -t + FRAC_PI_2,
+                STONE * 0.9,
                 Material::Concrete,
                 true,
             );
-            self.slab(
-                Vec3::new(c.x - 0.7, PLAZA_H + 1.0, c.y - 0.7),
-                Vec3::new(c.x + 0.7, PLAZA_H + 1.0 + h, c.y + 0.7),
-                a,
-                STONE * 0.95,
-                Material::Concrete,
-                true,
-            );
-            self.oboxes.last_mut().unwrap().broken = true;
+            self.oboxes.last_mut().unwrap().chip = 0.01;
         }
+        let h = rng.range(3.0, 6.0);
+        self.slab(
+            Vec3::new(c.x - 1.2, g, c.y - 1.2),
+            Vec3::new(c.x + 1.2, g + 1.0, c.y + 1.2),
+            0.0,
+            STONE * 0.85,
+            Material::Concrete,
+            true,
+        );
+        self.slab(
+            Vec3::new(c.x - 0.7, g + 1.0, c.y - 0.7),
+            Vec3::new(c.x + 0.7, g + 1.0 + h, c.y + 0.7),
+            rng.range(0.0, TAU),
+            STONE * 0.95,
+            Material::Concrete,
+            true,
+        );
+        self.oboxes.last_mut().unwrap().broken = true;
     }
 
-    /// The open ground round the plaza: stubs of broken wall, concrete
-    /// blocks and fallen column drums for cover, kept off the avenues.
-    fn plaza_ring_cover(&mut self, rng: &mut Rng) {
-        let mut placed: Vec<Vec2> = Vec::new();
-        let mut tries = 0;
-        while placed.len() < 120 && tries < 6000 {
-            tries += 1;
-            let p = Vec2::new(rng.range(0.0, SIZE), rng.range(0.0, SIZE));
-            let d = p - CENTER;
-            let s = plaza_sdf(p);
-            if !(PLAZA_RAMP + 3.0..PLAZA_RAMP + 24.0).contains(&s)
-                || d.x.abs() < AVENUE_HALF + 3.0
-                || d.y.abs() < AVENUE_HALF + 3.0
-                || placed.iter().any(|q| q.distance(p) < 8.5)
-            {
-                continue;
+    /// Low cover at `p`, lying along `face`: a stub of broken wall, a row
+    /// of cast barrier blocks, or a column drum on its side.
+    fn cover(&mut self, rng: &mut Rng, p: Vec2, face: Vec2, g: f32) {
+        let yaw = angle(face);
+        match rng.f32() {
+            x if x < 0.5 => {
+                // A stub of wall, broken along the top.
+                let h = rng.range(1.6, 3.4);
+                self.oboxes.push(OBox {
+                    center: p,
+                    yaw,
+                    half: Vec2::new(rng.range(3.5, 7.5), 0.5),
+                    y0: g - 0.2,
+                    y1: g + h,
+                    color: CONCRETES[rng.index(CONCRETES.len())],
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
+                    broken: true,
+                    ..OBox::default()
+                });
             }
-            placed.push(p);
-            let yaw = (d.y).atan2(d.x)
-                + if rng.f32() < 0.5 { 0.0 } else { FRAC_PI_2 }
-                + rng.range(-0.2, 0.2);
-            match rng.f32() {
-                x if x < 0.5 => {
-                    // A stub of wall, broken along the top.
-                    let h = rng.range(1.6, 3.4);
+            x if x < 0.8 => {
+                // A row of cast barrier blocks, one knocked askew.
+                let ax = Vec2::new(yaw.cos(), -yaw.sin());
+                for k in -1..=1 {
+                    let c = p + ax * k as f32 * 2.3;
+                    let skew = if k == 1 { rng.range(0.2, 0.6) } else { 0.0 };
                     self.oboxes.push(OBox {
-                        center: p,
-                        yaw,
-                        half: Vec2::new(rng.range(3.5, 7.5), 0.5),
-                        y0: -0.2,
-                        y1: h,
-                        color: CONCRETES[rng.index(CONCRETES.len())],
+                        center: c,
+                        yaw: yaw + skew,
+                        half: Vec2::new(1.0, 0.7),
+                        y0: g,
+                        y1: g + 1.3,
+                        color: CONCRETE * 0.95,
                         side_mat: Material::Concrete,
                         top_mat: Material::Concrete,
-                        broken: true,
                         ..OBox::default()
                     });
                 }
-                x if x < 0.8 => {
-                    // A row of cast barrier blocks, one knocked askew.
-                    let (ax, _) = (Vec2::new(yaw.cos(), -yaw.sin()), ());
-                    for k in -1..=1 {
-                        let c = p + ax * k as f32 * 2.3;
-                        let skew = if k == 1 { rng.range(0.2, 0.6) } else { 0.0 };
-                        self.oboxes.push(OBox {
-                            center: c,
-                            yaw: yaw + skew,
-                            half: Vec2::new(1.0, 0.7),
-                            y0: 0.0,
-                            y1: 1.3,
-                            color: CONCRETE * 0.95,
-                            side_mat: Material::Concrete,
-                            top_mat: Material::Concrete,
-                            ..OBox::default()
-                        });
-                    }
-                }
-                _ => {
-                    // A column drum on its side, carted off and left.
-                    let a = Vec2::new(yaw.cos(), yaw.sin());
-                    let (u, v) = (p - a * 2.2, p + a * 2.2);
-                    self.drum(
-                        Vec3::new(u.x, 1.0, u.y),
-                        Vec3::new(v.x, 1.0, v.y),
-                        1.05,
-                        STONE * 0.95,
-                    );
-                }
+            }
+            _ => {
+                // A column drum on its side, carted off and left.
+                let a = Vec2::new(yaw.cos(), yaw.sin());
+                let (u, v) = (p - a * 2.2, p + a * 2.2);
+                self.drum(
+                    Vec3::new(u.x, g + 1.0, u.y),
+                    Vec3::new(v.x, g + 1.0, v.y),
+                    1.05,
+                    STONE * 0.95,
+                );
             }
         }
     }
@@ -757,7 +675,7 @@ impl Map {
     /// floor: stubs of wall and column standing on its flat top. (The
     /// renderer's jagged `broken` top is for thin pieces; on a wide top its
     /// fan of slivers shades into a starburst.)
-    pub(super) fn ragged_top(&mut self, rng: &mut Rng, o: &OBox) {
+    pub(in crate::map) fn ragged_top(&mut self, rng: &mut Rng, o: &OBox) {
         let (ax, az) = o.axes();
         let stubs = 3 + (o.half.x * o.half.y / 40.0).min(4.0) as usize;
         for _ in 0..stubs {
@@ -811,23 +729,20 @@ impl Map {
     /// The ring of columns round the rotunda, carrying a beam, opening wide
     /// where the avenues come in. A quarter of the columns are down: broken
     /// off, or lying where they fell.
-    fn colonnade(&mut self, rng: &mut Rng) {
+    fn colonnade(&mut self, rng: &mut Rng, lm: &Landmark, base: f32) {
         let n = 36;
         let h = 11.0;
         let mut standing = vec![false; n];
         for (k, up) in standing.iter_mut().enumerate() {
             let a = (k as f32 + 0.5) / n as f32 * TAU;
             // Open on the avenues.
-            let gate = (0..4).any(|q| {
-                let d = (a - q as f32 * FRAC_PI_2 + PI).rem_euclid(TAU) - PI;
-                d.abs() < 0.2
-            });
+            let gate = lm.doors.iter().any(|&d| apart(a, angle(d)) < 0.2);
             if gate {
                 continue;
             }
             let dir = Vec2::new(a.cos(), a.sin());
-            let p = CENTER + dir * COLONNADE_R;
-            let at = Vec3::new(p.x, PLAZA_H, p.y);
+            let p = lm.center + dir * lm.precinct;
+            let at = Vec3::new(p.x, base, p.y);
             match rng.f32() {
                 x if x < 0.12 => {
                     // Fell outward and sideways, broken in two.
@@ -846,8 +761,8 @@ impl Map {
                     let b1 = p + along * 11.0;
                     for (u, v) in [(a0, a1), (b0, b1)] {
                         self.drum(
-                            Vec3::new(u.x, PLAZA_H + 0.9, u.y),
-                            Vec3::new(v.x, PLAZA_H + 0.9, v.y),
+                            Vec3::new(u.x, base + 0.9, u.y),
+                            Vec3::new(v.x, base + 0.9, v.y),
                             0.9,
                             STONE,
                         );
@@ -861,7 +776,7 @@ impl Map {
             }
         }
         // The beam, only between two standing columns.
-        let r_beam = COLONNADE_R;
+        let r_beam = lm.precinct;
         for k in 0..n {
             let k1 = (k + 1) % n;
             if !(standing[k] && standing[k1]) {
@@ -869,11 +784,11 @@ impl Map {
             }
             let a = (k as f32 + 1.0) / n as f32 * TAU;
             let dir = Vec2::new(a.cos(), a.sin());
-            let p = CENTER + dir * r_beam;
+            let p = lm.center + dir * r_beam;
             let half = r_beam * PI / n as f32 + 1.2;
             self.slab(
-                Vec3::new(p.x - half, PLAZA_H + h, p.y - 1.1),
-                Vec3::new(p.x + half, PLAZA_H + h + 1.4, p.y + 1.1),
+                Vec3::new(p.x - half, base + h, p.y - 1.1),
+                Vec3::new(p.x + half, base + h + 1.4, p.y + 1.1),
                 -a + FRAC_PI_2,
                 STONE * 0.95,
                 Material::Concrete,
@@ -885,65 +800,47 @@ impl Map {
     // -----------------------------------------------------------------------
     // The avenues
 
-    /// An avenue from the plaza out to the edge along `dir`: statues on
-    /// plinths down both sides (some toppled), banner masts between them.
-    fn avenue(&mut self, rng: &mut Rng, dir: Vec2) {
+    /// The processional way down an avenue: big worn stone slabs down the
+    /// middle, from the plaza's foot out to the edge.
+    fn processional_way(&mut self, sk: &Skeleton, s: &Street) {
+        let dir = s.dir();
         let side = Vec2::new(-dir.y, dir.x);
-        let start = PLAZA_HALF + PLAZA_RAMP + 4.0;
-        // The processional way: big worn stone slabs down the middle.
+        let plaza = sk.plaza();
+        let mut start = 0.0;
+        while plaza.sdf(s.from + dir * start) < plaza.ramp + 2.0 {
+            start += 1.0;
+        }
         let (len, across) = (6.0, 4);
-        let width = (AVENUE_HALF - 3.0) * 2.0;
-        let mut d = start - 2.0;
+        let width = (s.half - 3.0) * 2.0;
+        let yaw = -angle(dir);
+        let mut d = start;
         let mut row = 0;
-        while d < MID - 4.0 {
+        while d < s.len() - 4.0 {
             for j in 0..across {
                 let off = -width * 0.5 + (j as f32 + 0.5) * width / across as f32;
-                let c = CENTER + dir * (d + len * 0.5) + side * off;
-                let half = Vec2::new(
-                    (dir * len * 0.48 + side * width / across as f32 * 0.48)
-                        .x
-                        .abs(),
-                    (dir * len * 0.48 + side * width / across as f32 * 0.48)
-                        .y
-                        .abs(),
-                );
+                let c = s.from + dir * (d + len * 0.5) + side * off;
                 let shade = 0.74 + 0.06 * (((row * 5 + j * 3) % 4) as f32 / 3.0);
-                self.slab(
-                    Vec3::new(c.x - half.x, -0.1, c.y - half.y),
-                    Vec3::new(c.x + half.x, 0.05, c.y + half.y),
-                    0.0,
-                    STONE * shade,
-                    Material::Concrete,
-                    false,
-                );
+                self.oboxes.push(OBox {
+                    center: c,
+                    yaw,
+                    half: Vec2::new(len * 0.48, width / across as f32 * 0.48),
+                    y0: -0.1,
+                    y1: 0.05,
+                    color: STONE * shade,
+                    side_mat: Material::Concrete,
+                    top_mat: Material::Concrete,
+                    solid: false,
+                    ..OBox::default()
+                });
             }
             d += len;
             row += 1;
-        }
-        let mut d = start;
-        let mut k = 0;
-        while d < MID - 12.0 {
-            for s in [-1.0f32, 1.0] {
-                let p = CENTER + dir * d + side * s * (AVENUE_HALF - 1.5);
-                // Skip the arch's footprint.
-                if (d - ARCH_AT).abs() < 9.0 {
-                    continue;
-                }
-                if k % 2 == 0 {
-                    self.statue(rng, p, -side * s);
-                } else {
-                    self.mast(p, dir);
-                }
-            }
-            d += 15.0;
-            k += 1;
         }
     }
 
     /// A statue on a plinth facing `face`: a robed figure in blocks. Some
     /// stand, some have lost their heads, some lie toppled beside the plinth.
-    fn statue(&mut self, rng: &mut Rng, at: Vec2, face: Vec2) {
-        let g = 0.0;
+    fn statue(&mut self, rng: &mut Rng, at: Vec2, face: Vec2, g: f32) {
         let yaw = (-face.y).atan2(face.x) + FRAC_PI_2;
         let plinth = 3.6;
         let rig = Rig {
@@ -1021,11 +918,11 @@ impl Map {
     }
 
     /// A tall mast with a long crimson banner on a crossbar.
-    fn mast(&mut self, at: Vec2, along: Vec2) {
+    fn mast(&mut self, at: Vec2, along: Vec2, g: f32) {
         let h = 14.0;
         self.pipe(
-            Vec3::new(at.x, 0.0, at.y),
-            Vec3::new(at.x, h, at.y),
+            Vec3::new(at.x, g, at.y),
+            Vec3::new(at.x, g + h, at.y),
             0.18,
             CONCRETE_DARK,
             Material::Painted,
@@ -1034,7 +931,7 @@ impl Map {
         // Crossbar across the avenue, so the banner faces down it: you see
         // it driving either way.
         let a = Vec3::new(-along.y, 0.0, along.x);
-        let top = Vec3::new(at.x, h - 0.4, at.y);
+        let top = Vec3::new(at.x, g + h - 0.4, at.y);
         self.pipe(
             top - a * 1.4,
             top + a * 1.4,
@@ -1056,15 +953,15 @@ impl Map {
     /// arched opening, an attic on top with the emblem both ways and
     /// banners down the piers. `ruined`: one pier sheared off and the attic
     /// fallen across the road.
-    fn arch(&mut self, rng: &mut Rng, dir: Vec2, ruined: bool) {
-        let c = CENTER + dir * ARCH_AT;
+    fn arch(&mut self, rng: &mut Rng, s: &Span, g: f32) {
+        let (c, dir, ruined) = (s.at, s.along, s.ruined);
         let yaw = (-dir.y).atan2(dir.x);
         let rig = Rig {
-            pos: Vec3::new(c.x, 0.0, c.y),
+            pos: Vec3::new(c.x, g, c.y),
             // Local x across the avenue, z along it.
             rot: Quat::from_rotation_y(yaw - FRAC_PI_2),
         };
-        let (opening, pier_w, depth, pier_h) = (6.5, 6.0, 5.0, 13.0);
+        let (opening, pier_w, depth, pier_h) = (s.opening, 6.0, 5.0, 13.0);
         let pier_x = opening + pier_w * 0.5;
         for s in [-1.0f32, 1.0] {
             let broken = ruined && s > 0.0;
@@ -1176,7 +1073,8 @@ impl Map {
         let attic_w = opening + pier_w;
         if ruined {
             // The attic came down in two pieces either side of the road.
-            for (x, tilt, roll) in [(-10.5f32, 0.25f32, 0.1f32), (10.5, -0.2, -0.35)] {
+            // Beside the piers, off the opening: the road through stays clear.
+            for (x, tilt, roll) in [(-12.0f32, 0.25f32, 0.1f32), (12.0, -0.2, -0.35)] {
                 rig.part(
                     self,
                     Vec3::new(x, 1.8, rng.range(4.0, 6.0)),
@@ -1188,7 +1086,7 @@ impl Map {
                     0.4,
                 );
             }
-            let e = rig.point(Vec3::new(-10.5, 2.3, 6.0 + depth * 0.5 + 0.2));
+            let e = rig.point(Vec3::new(-12.0, 2.3, 6.0 + depth * 0.5 + 0.2));
             self.standing_emblem(e, dir, 1.4);
             return;
         }
@@ -1220,51 +1118,6 @@ impl Map {
 
     // -----------------------------------------------------------------------
     // The districts
-
-    /// Blocks between the avenues: ordinary concrete buildings (many shelled)
-    /// on a loose grid of streets, a brutalist slab on pillars here and
-    /// there, and the odd empty lot of rubble.
-    fn districts(&mut self, rng: &mut Rng) -> Vec<Drift> {
-        let mut drifts = Vec::new();
-        // Lots on a 28 m grid, at most 21 m across: streets at least 7 m
-        // wide between them (two tanks pass), most a little wider.
-        let step = 28.0;
-        let n = (SIZE / step) as i32;
-        for i in 0..n {
-            for j in 0..n {
-                let c = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step
-                    + Vec2::new(rng.range(-1.5, 1.5), rng.range(-1.5, 1.5));
-                let half = Vec2::new(rng.range(7.5, 9.0), rng.range(6.5, 9.0));
-                let yaw = if rng.f32() < 0.5 { 0.0 } else { FRAC_PI_2 } + rng.range(-0.03, 0.03);
-                let lot = OBox {
-                    center: c,
-                    yaw,
-                    half,
-                    y0: 0.0,
-                    y1: 1.0,
-                    ..OBox::default()
-                };
-                if lot.corners().iter().chain([c].iter()).any(|&p| reserved(p)) {
-                    continue;
-                }
-                // The face toward the middle is the front.
-                let to_mid = lot.local_point(CENTER);
-                let front = if (to_mid.x / half.x).abs() > (to_mid.y / half.y).abs() {
-                    (0, to_mid.x.signum())
-                } else {
-                    (1, to_mid.y.signum())
-                };
-                match rng.f32() {
-                    x if x < 0.22 => self.brutalist(rng, &lot, front),
-                    x if x < 0.9 => {
-                        drifts.extend(ruins::building_in(self, rng, lot, front, &|_| true, &CAST))
-                    }
-                    _ => self.rubble_lot(rng, &lot),
-                }
-            }
-        }
-        drifts
-    }
 
     /// A brutalist slab: a heavy mass of concrete lifted on square pillars
     /// round a core, cantilevered out over the street front, banded with
@@ -1298,7 +1151,7 @@ impl Map {
         let lift = 6.5;
         let floors = rng.int(3, 6) as f32;
         let top = lift + floors * 3.6;
-        let fin = super::imperial::Finish::pick(rng);
+        let fin = crate::map::imperial::Finish::pick(rng);
         let color = fin.body;
         let put = |map: &mut Map, c: Vec3, half: Vec3, color: Vec3, mat: Material, solid: bool| {
             rig.part(
@@ -1456,61 +1309,46 @@ impl Map {
         }
     }
 
-    /// The edge: the city goes on, and its first row of blocks closes the
-    /// arena in, shoulder to shoulder, some shelled to a ragged top. Where
-    /// each avenue runs out, a block came down across it: a bank of rubble
-    /// too high and steep to climb, with the avenue's vista still open over
-    /// it.
-    fn city_edge(&mut self) {
-        let mut rng = Rng::new(0x00c1_7ed6);
-        for (start, along, inward) in [
-            (Vec2::new(0.0, 0.0), Vec2::X, Vec2::Y),
-            (Vec2::new(SIZE, 0.0), Vec2::Y, -Vec2::X),
-            (Vec2::new(SIZE, SIZE), -Vec2::X, -Vec2::Y),
-            (Vec2::new(0.0, SIZE), -Vec2::Y, Vec2::X),
-        ] {
-            let mouth = (MID - AVENUE_HALF - 3.0, MID + AVENUE_HALF + 3.0);
-            let mut t = -18.0;
-            while t < SIZE + 18.0 {
-                if t >= mouth.0 && t < mouth.1 {
-                    self.rubble_bank(&mut rng, start, along, inward, mouth);
-                    t = mouth.1;
-                    continue;
-                }
-                // Up to the mouth, in blocks no shorter than 11 m.
-                let left = if t < mouth.0 { mouth.0 - t } else { f32::MAX };
-                let len = if left <= 22.0 {
-                    left
-                } else if left < 34.0 {
-                    left * 0.5
-                } else {
-                    rng.range(12.0, 22.0)
-                };
-                let depth = rng.range(10.0, 16.0);
-                let inset = rng.range(0.4, 1.0);
-                let c = start + along * (t + len * 0.5) - inward * (depth * 0.5 - inset);
-                let half = (along * len * 0.5 + inward * depth * 0.5).abs();
-                let h = rng.range(9.0, 24.0);
-                let broken = rng.chance(0.4);
-                let k = super::imperial::face_index(inward);
-                let mut faces = [false; 4];
-                faces[k] = true;
-                self.imperial_block(
-                    &mut rng,
-                    &super::imperial::Block {
-                        center: c,
-                        half,
-                        y0: -0.5,
-                        h,
-                        solid: true,
-                        broken,
-                        faces,
-                        near: true,
-                        banners: true,
-                    },
-                );
-                t += len;
-            }
+    /// A wall of the edge: the city goes on, and its first row of blocks
+    /// closes the arena in, shoulder to shoulder, some shelled to a ragged
+    /// top.
+    fn edge_blocks(&mut self, rng: &mut Rng, e: &Edge) {
+        let (start, along, inward) = (e.start, e.along, e.inward);
+        let mut t = e.from;
+        while t < e.to - 0.01 {
+            // In blocks no shorter than 11 m, the last one fitting the end.
+            let left = e.to - t;
+            let len = if left <= 22.0 {
+                left
+            } else if left < 34.0 {
+                left * 0.5
+            } else {
+                rng.range(12.0, 22.0)
+            };
+            let depth = rng.range(10.0, 16.0);
+            let inset = rng.range(0.4, 1.0);
+            let c = start + along * (t + len * 0.5) - inward * (depth * 0.5 - inset);
+            let half = (along * len * 0.5 + inward * depth * 0.5).abs();
+            let h = rng.range(9.0, 24.0);
+            let broken = rng.chance(0.4);
+            let k = crate::map::imperial::face_index(inward);
+            let mut faces = [false; 4];
+            faces[k] = true;
+            self.imperial_block(
+                rng,
+                &crate::map::imperial::Block {
+                    center: c,
+                    half,
+                    y0: -0.5,
+                    h,
+                    solid: true,
+                    broken,
+                    faces,
+                    near: true,
+                    banners: true,
+                },
+            );
+            t += len;
         }
     }
 
@@ -1595,197 +1433,152 @@ impl Map {
 
     /// Each corner: a staging court behind low barriers, open toward the
     /// middle, with two masts flying its side's color.
-    fn staging_courts(&mut self, rng: &mut Rng) {
-        let factions = self.factions.clone();
-        for (k, (corner, inward)) in courts().into_iter().enumerate() {
-            let at = |u: f32, v: f32| corner + Vec2::new(inward.x * u, inward.y * v);
-            let box_uv = |map: &mut Map,
-                          u0: f32,
-                          v0: f32,
-                          u1: f32,
-                          v1: f32,
-                          y1: f32,
-                          color: Vec3,
-                          mat: Material,
-                          solid: bool| {
-                let (a, b) = (at(u0, v0), at(u1, v1));
-                let (lo, hi) = (a.min(b), a.max(b));
-                map.slab(
-                    Vec3::new(lo.x, if solid { 0.0 } else { -0.1 }, lo.y),
-                    Vec3::new(hi.x, y1, hi.y),
-                    0.0,
-                    color,
-                    mat,
-                    solid,
-                );
-            };
-            let side = factions[k];
-            let color = side.paint();
-            let ours = side == Faction::Imperium;
-            // A cast pad under the court.
-            let tile = 6.0;
-            let n = (COURT / tile) as i32;
-            for i in 0..n {
-                for j in 0..n {
-                    let (u, v) = (i as f32 * tile, j as f32 * tile);
-                    let shade = 0.62 + 0.05 * (((i * 3 + j * 5) % 3) as f32);
-                    box_uv(
-                        self,
-                        u + 0.08,
-                        v + 0.08,
-                        u + tile - 0.08,
-                        v + tile - 0.08,
-                        0.05,
-                        CONCRETE * shade,
-                        Material::Concrete,
-                        false,
-                    );
-                }
-            }
-            // Bastion walls on the two map-edge sides, banners down their
-            // inner faces in the side's color.
-            box_uv(
-                self,
+    fn staging_court(&mut self, rng: &mut Rng, k: usize, b: &Base, middle: Vec2) {
+        let (corner, inward, court) = (b.corner, b.inward, b.size);
+        let at = |u: f32, v: f32| corner + Vec2::new(inward.x * u, inward.y * v);
+        let box_uv = |map: &mut Map,
+                      u0: f32,
+                      v0: f32,
+                      u1: f32,
+                      v1: f32,
+                      y1: f32,
+                      color: Vec3,
+                      mat: Material,
+                      solid: bool| {
+            let (a, b) = (at(u0, v0), at(u1, v1));
+            let (lo, hi) = (a.min(b), a.max(b));
+            map.slab(
+                Vec3::new(lo.x, if solid { 0.0 } else { -0.1 }, lo.y),
+                Vec3::new(hi.x, y1, hi.y),
                 0.0,
-                0.0,
-                COURT + 1.4,
-                1.8,
-                6.5,
-                CONCRETE * 0.8,
-                Material::Concrete,
-                true,
+                color,
+                mat,
+                solid,
             );
-            box_uv(
-                self,
-                0.0,
-                0.0,
-                1.8,
-                COURT + 1.4,
-                6.5,
-                CONCRETE * 0.8,
-                Material::Concrete,
-                true,
-            );
-            for t in [0.3f32, 0.55, 0.8] {
-                let p = at(COURT * t, 1.8);
-                self.side_banner(
-                    Vec3::new(p.x, 6.2, p.y),
-                    Vec2::new(0.0, inward.y),
-                    2.6,
-                    5.0,
-                    color,
-                    ours,
-                );
-                let p = at(1.8, COURT * t);
-                self.side_banner(
-                    Vec3::new(p.x, 6.2, p.y),
-                    Vec2::new(inward.x, 0.0),
-                    2.6,
-                    5.0,
-                    color,
-                    ours,
-                );
-            }
-            // Barriers along the two inner edges, with a wide gap in each.
-            for (u0, v0, u1, v1) in [
-                (2.0, COURT, COURT * 0.35, COURT + 1.4),
-                (COURT * 0.65, COURT, COURT + 1.4, COURT + 1.4),
-                (COURT, 2.0, COURT + 1.4, COURT * 0.35),
-                (COURT, COURT * 0.65, COURT + 1.4, COURT),
-            ] {
-                box_uv(
-                    self,
-                    u0,
-                    v0,
-                    u1,
-                    v1,
-                    1.7,
-                    CONCRETE * 0.85,
-                    Material::Concrete,
-                    true,
-                );
-            }
-            // Supply containers stacked in the corner, in the side's color.
-            for (u, v, h) in [(3.0f32, 4.0f32, 0.0f32), (3.0, 4.0, 2.6), (7.0, 3.0, 0.0)] {
-                let shade = rng.range(0.8, 1.0);
-                let (a, b) = (at(u - 1.2, v - 0.0), at(u + 1.2, v + 5.0));
-                let (lo, hi) = (a.min(b), a.max(b));
-                self.slab(
-                    Vec3::new(lo.x, h, lo.y),
-                    Vec3::new(hi.x, h + 2.5, hi.y),
-                    0.0,
-                    color * 0.8 * shade + Vec3::splat(0.05),
-                    Material::Painted,
-                    true,
-                );
-            }
-            // Masts at the gaps, flying the side's color.
-            for (u, v) in [(COURT - 3.0, COURT * 0.5), (COURT * 0.5, COURT - 3.0)] {
-                let p = at(u, v);
-                self.pipe(
-                    Vec3::new(p.x, 0.0, p.y),
-                    Vec3::new(p.x, 12.0, p.y),
-                    0.16,
-                    CONCRETE_DARK,
-                    Material::Painted,
-                    true,
-                );
-                let face = (CENTER - p).normalize();
-                self.side_banner(
-                    Vec3::new(p.x, 11.6, p.y) + Vec3::new(face.x, 0.0, face.y) * 0.1,
-                    face,
-                    2.4,
-                    6.0,
-                    color,
-                    ours,
-                );
-            }
-        }
-    }
-
-    fn capital_spawns(&mut self) {
-        let clear = |m: &Map, p: Vec2| {
-            !m.oboxes
-                .iter()
-                .any(|o| o.solid && o.distance(p) < TANK_CLEAR)
         };
-        for (k, (corner, inward)) in courts().into_iter().enumerate() {
-            let mut spots = Vec::new();
-            for i in 0..5 {
-                for j in 0..5 {
-                    let p = corner
-                        + Vec2::new(inward.x, inward.y)
-                            * Vec2::new(9.0 + i as f32 * 7.0, 9.0 + j as f32 * 7.0);
-                    if clear(self, p) {
-                        spots.push(p);
-                    }
-                }
-            }
-            self.bases[k] = spots;
-        }
-        let mut open = Vec::new();
-        let step = 10.0;
-        let n = (SIZE / step) as i32;
+        let side = self.factions[k];
+        let color = side.paint();
+        let ours = side == Faction::Imperium;
+        // A cast pad under the court.
+        let tile = 6.0;
+        let n = (court / tile) as i32;
         for i in 0..n {
             for j in 0..n {
-                let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
-                if clear(self, p) && p.distance(CENTER) > ROTUNDA_R + 2.0 {
-                    open.push(p);
-                }
+                let (u, v) = (i as f32 * tile, j as f32 * tile);
+                let shade = 0.62 + 0.05 * (((i * 3 + j * 5) % 3) as f32);
+                box_uv(
+                    self,
+                    u + 0.08,
+                    v + 0.08,
+                    u + tile - 0.08,
+                    v + tile - 0.08,
+                    // Flush with the ground, barely proud: a parked
+                    // tank stands on it, not on a step.
+                    0.02,
+                    CONCRETE * shade,
+                    Material::Concrete,
+                    false,
+                );
             }
         }
-        self.open_spots = open;
-        // Repair crates: halfway down each avenue, and on the plaza's
-        // diagonals between the colonnade and the edge.
-        let mut repairs = Vec::new();
-        for &d in &AXES {
-            repairs.push(CENTER + d * 130.0);
+        // Bastion walls on the two map-edge sides, banners down their
+        // inner faces in the side's color.
+        box_uv(
+            self,
+            0.0,
+            0.0,
+            court + 1.4,
+            1.8,
+            6.5,
+            CONCRETE * 0.8,
+            Material::Concrete,
+            true,
+        );
+        box_uv(
+            self,
+            0.0,
+            0.0,
+            1.8,
+            court + 1.4,
+            6.5,
+            CONCRETE * 0.8,
+            Material::Concrete,
+            true,
+        );
+        for t in [0.3f32, 0.55, 0.8] {
+            let p = at(court * t, 1.8);
+            self.side_banner(
+                Vec3::new(p.x, 6.2, p.y),
+                Vec2::new(0.0, inward.y),
+                2.6,
+                5.0,
+                color,
+                ours,
+            );
+            let p = at(1.8, court * t);
+            self.side_banner(
+                Vec3::new(p.x, 6.2, p.y),
+                Vec2::new(inward.x, 0.0),
+                2.6,
+                5.0,
+                color,
+                ours,
+            );
         }
-        for k in 0..4 {
-            let a = PI * 0.25 + k as f32 * FRAC_PI_2;
-            repairs.push(CENTER + Vec2::new(a.cos(), a.sin()) * 58.0);
+        // Barriers along the two inner edges, with a wide gap in each.
+        for (u0, v0, u1, v1) in [
+            (2.0, court, court * 0.35, court + 1.4),
+            (court * 0.65, court, court + 1.4, court + 1.4),
+            (court, 2.0, court + 1.4, court * 0.35),
+            (court, court * 0.65, court + 1.4, court),
+        ] {
+            box_uv(
+                self,
+                u0,
+                v0,
+                u1,
+                v1,
+                1.7,
+                CONCRETE * 0.85,
+                Material::Concrete,
+                true,
+            );
         }
-        self.repair_spots = repairs.into_iter().filter(|&p| clear(self, p)).collect();
+        // Supply containers stacked in the corner, in the side's color.
+        for (u, v, h) in [(3.0f32, 4.0f32, 0.0f32), (3.0, 4.0, 2.6), (7.0, 3.0, 0.0)] {
+            let shade = rng.range(0.8, 1.0);
+            let (a, b) = (at(u - 1.2, v - 0.0), at(u + 1.2, v + 5.0));
+            let (lo, hi) = (a.min(b), a.max(b));
+            self.slab(
+                Vec3::new(lo.x, h, lo.y),
+                Vec3::new(hi.x, h + 2.5, hi.y),
+                0.0,
+                color * 0.8 * shade + Vec3::splat(0.05),
+                Material::Painted,
+                true,
+            );
+        }
+        // Masts at the gaps, flying the side's color.
+        for (u, v) in [(court - 3.0, court * 0.5), (court * 0.5, court - 3.0)] {
+            let p = at(u, v);
+            self.pipe(
+                Vec3::new(p.x, 0.0, p.y),
+                Vec3::new(p.x, 12.0, p.y),
+                0.16,
+                CONCRETE_DARK,
+                Material::Painted,
+                true,
+            );
+            let face = (middle - p).normalize();
+            self.side_banner(
+                Vec3::new(p.x, 11.6, p.y) + Vec3::new(face.x, 0.0, face.y) * 0.1,
+                face,
+                2.4,
+                6.0,
+                color,
+                ours,
+            );
+        }
     }
 
     /// Beyond the edge the city goes on, on flat ground out to the haze:
@@ -1793,14 +1586,17 @@ impl Map {
     /// faces toward the city, some broken off, taller the further out. The
     /// avenues' vistas stay open, each closed far off by a great tower
     /// hung with crimson. Visual only.
-    fn skyline(&mut self, rng: &mut Rng) {
+    fn skyline(&mut self, rng: &mut Rng, sk: &Skeleton) {
+        let size = sk.size;
+        let mid = size * 0.5;
+        let avenues: Vec<Street> = sk.avenues().copied().collect();
         // Flat ground from the edge out past the far plane, matching the
-        // play ground at the edge (grid lines on 0 and SIZE); under the
+        // play ground at the edge (grid lines on 0 and size); under the
         // arena it sinks out of sight.
         let (cell, reach) = (4.0f32, 560.0f32);
-        let n = ((SIZE + 2.0 * reach) / cell) as usize + 1;
+        let n = ((size + 2.0 * reach) / cell) as usize + 1;
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
-            let inside = x > 0.01 && z > 0.01 && x < SIZE - 0.01 && z < SIZE - 0.01;
+            let inside = x > 0.01 && z > 0.01 && x < size - 0.01 && z < size - 0.01;
             if inside { -8.0 } else { 0.0 }
         });
         t.color = GROUND;
@@ -1810,16 +1606,20 @@ impl Map {
         let mut placed: Vec<OBox> = Vec::new();
         for _ in 0..1600 {
             let p = Vec2::new(
-                rng.range(-320.0, SIZE + 320.0),
-                rng.range(-320.0, SIZE + 320.0),
+                rng.range(-320.0, size + 320.0),
+                rng.range(-320.0, size + 320.0),
             );
-            let outside = p.x < -24.0 || p.y < -24.0 || p.x > SIZE + 24.0 || p.y > SIZE + 24.0;
-            let d = p - CENTER;
-            let vista = d.x.abs() < AVENUE_HALF + 10.0 || d.y.abs() < AVENUE_HALF + 10.0;
+            let outside = p.x < -24.0 || p.y < -24.0 || p.x > size + 24.0 || p.y > size + 24.0;
+            let d = p - Vec2::splat(mid);
+            // Kept open down each avenue, out past its end.
+            let vista = avenues.iter().any(|a| {
+                let t = (p - a.from).dot(a.dir());
+                t > 0.0 && (p - a.from).perp_dot(a.dir()).abs() < a.half + 10.0
+            });
             if !outside || vista {
                 continue;
             }
-            let far = (d.abs().max_element() - MID).max(0.0);
+            let far = (d.abs().max_element() - mid).max(0.0);
             // Thinner out in the haze.
             if rng.f32() < far / 400.0 {
                 continue;
@@ -1844,13 +1644,15 @@ impl Map {
 
         // At the end of each vista, far out: a great tower, crimson down
         // its face.
-        for dir in AXES {
-            let p = CENTER + dir * (MID + 220.0);
-            let side = Vec2::new(-dir.y, dir.x);
-            let half = (side * 16.0 + dir * 12.0).abs();
+        for a in &avenues {
+            let dir = a.dir();
+            let p = a.to + dir * 220.0;
+            let yaw = -angle(dir);
+            let half = Vec2::new(12.0, 16.0);
             let h = 110.0;
             self.oboxes.push(OBox {
                 center: p,
+                yaw,
                 half,
                 y0: 0.0,
                 y1: h,
@@ -1867,6 +1669,7 @@ impl Map {
                 if rise > 0.0 {
                     self.oboxes.push(OBox {
                         center: p,
+                        yaw,
                         half: hh,
                         y0: y,
                         y1: y + rise,
@@ -1880,6 +1683,7 @@ impl Map {
                 }
                 self.oboxes.push(OBox {
                     center: p,
+                    yaw,
                     half: hh + Vec2::splat(0.8),
                     y0: y - 1.2,
                     y1: y + 0.1,
@@ -1902,8 +1706,7 @@ impl Map {
                 solid: false,
                 ..OBox::default()
             });
-            let face = Vec3::new(p.x, 0.0, p.y)
-                - Vec3::new(dir.x, 0.0, dir.y) * (half.dot(dir.abs()) + 0.1);
+            let face = Vec3::new(p.x, 0.0, p.y) - Vec3::new(dir.x, 0.0, dir.y) * (half.x + 0.1);
             self.side_banner(
                 Vec3::new(face.x, h - 6.0, face.z),
                 -dir,
@@ -1912,67 +1715,6 @@ impl Map {
                 CRIMSON,
                 true,
             );
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn four_sides_each_with_a_court_full_of_spawns() {
-        let m = Map::capital();
-        assert_eq!(m.factions, Faction::ALL.to_vec());
-        assert_eq!(m.bases.len(), 4);
-        for (k, base) in m.bases.iter().enumerate() {
-            assert!(base.len() >= 12, "side {k} has {} spawns", base.len());
-        }
-        assert!(m.open_spots.len() > 100);
-        assert!(m.repair_spots.len() >= 4);
-    }
-
-    /// Blocks and rubble close the edge all round: nowhere can a tank
-    /// drive out of the arena.
-    #[test]
-    fn the_city_closes_the_edge() {
-        Map::capital().assert_edge_walled(0.3, |_| false);
-    }
-
-    #[test]
-    fn plaza_is_raised_and_its_slope_drivable() {
-        let m = Map::capital();
-        assert!((m.ground_height(MID + 40.0, MID) - PLAZA_H).abs() < 0.05);
-        assert!(m.ground_height(MID + 120.0, MID).abs() < 0.05);
-        let mut prev = m.ground_height(MID + 40.0, MID);
-        let mut x = MID + 40.0;
-        while x < MID + 100.0 {
-            x += 1.0;
-            let h = ground(x, MID);
-            assert!((prev - h).abs() < 0.25, "plaza edge too steep at x={x}");
-            prev = h;
-        }
-    }
-
-    #[test]
-    fn the_avenues_are_open_to_the_middle() {
-        let m = Map::capital();
-        // Down each avenue's center line, from the edge to the colonnade,
-        // nothing solid stands at tank height (the ruined arch's fallen
-        // attic lies to one side of the line).
-        for &d in &AXES {
-            let mut r = COLONNADE_R + 4.0;
-            while r < MID - 8.0 {
-                let p = CENTER + d * r + Vec2::new(-d.y, d.x) * 3.0;
-                assert!(
-                    !m.oboxes.iter().any(|o| {
-                        let (y0, _) = o.y_range();
-                        o.solid && y0 < 3.0 && o.distance(p) < 1.0
-                    }),
-                    "avenue {d:?} blocked at {r}"
-                );
-                r += 2.0;
-            }
         }
     }
 }
