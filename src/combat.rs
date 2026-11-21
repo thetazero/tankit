@@ -396,7 +396,7 @@ pub fn gun(kind: TurretKind) -> Gun {
         },
         // Resonant: a short gout of crystal fire; deadly up close, nothing at range.
         TurretKind::Hymn => Gun {
-            damage: 1.0,
+            damage: 1.5,
             reload: 1.0 / 60.0,
             spool: 0.0,
             charge: 0.0,
