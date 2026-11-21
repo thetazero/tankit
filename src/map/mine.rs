@@ -375,11 +375,6 @@ const LAMP_REACH: f32 = 10.0;
 /// Fresh-cut stone, and the scorch along a plasma cut.
 const CUT: Vec3 = Vec3::new(0.66, 0.47, 0.34);
 const SCORCH: Vec3 = Vec3::new(0.2, 0.12, 0.11);
-/// Crystal's light: the Resonant's blue, and how cut crystal glows.
-const HOLY: Vec3 = super::CRYSTAL_LIGHT;
-/// How bright cut crystal stacked for the train glows, against the
-/// Resonant's set crystal.
-const CUT_GLOW: f32 = 0.32;
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -1654,9 +1649,11 @@ impl Map {
         for &(x, z) in &[(a.x + 2.0, a.y + 2.2), (b.x - 2.0, a.y + 2.0)] {
             self.floodlight(Vec2::new(x, z), Vec2::new(rig.pos.x, rig.pos.z));
         }
-        // An ore cart waiting by the way in, and cut crystal stacked.
+        // An ore cart waiting by the way in, and cut crystal crated.
         self.ore_cart(rng, Vec2::new(HEADING.1.x + 1.6, a.y + 2.6), FRAC_PI_2);
-        self.block_stack(rng, Vec2::new(a.x + 2.6, (a.y + b.y) * 0.5 + 6.0), 0.2);
+        // Against the north wall between the columns, clear of them and of
+        // the crystal in the corner.
+        self.block_stack(rng, Vec2::new(123.5, b.y - 3.4), 0.05);
     }
 
     /// Steel sets holding up the tunnels' roofs: a post up each wall and a
@@ -1736,7 +1733,7 @@ impl Map {
     }
 
     /// The mine's gear along its tunnels: the vent duct down the adit, cable
-    /// trays along the drift, cut crystal stacked in the crosscut.
+    /// trays along the drift, cut crystal crated in the crosscut.
     fn mine_gear(&mut self, rng: &mut Rng) {
         // The duct, high up the adit's west wall, in sections.
         let x = ADIT.0.x + 0.95;
@@ -1779,7 +1776,7 @@ impl Map {
             solid: false,
             ..OBox::default()
         });
-        // Cut crystal in the crosscut, waiting for the train.
+        // Cut crystal crated in the crosscut, waiting for the train.
         let (a, b) = CROSSCUT;
         self.block_stack(rng, Vec2::new(b.x - 1.6, b.y - 1.8), 0.1);
         self.block_stack(rng, Vec2::new(a.x + 1.2, a.y + 1.6), -0.15);
@@ -2495,7 +2492,7 @@ impl Map {
 
     /// The hall, where the seam is worked under the rock: pillars left to
     /// hold the roof, the vein glowing across the floor between them,
-    /// crystal standing where it hasn't been cut yet, a stack of cut blocks.
+    /// crystal standing where it hasn't been cut yet, cut crystal crated.
     fn pillared_hall(&mut self, rng: &mut Rng) {
         for &p in &PILLARS {
             let s = rng.range(2.1, 2.5);
@@ -2523,15 +2520,25 @@ impl Map {
         for (x, z, h) in [(66.0, 184.0, 3.2), (65.5, 175.5, 2.4), (78.0, 195.0, 2.6)] {
             self.outcrop(rng, Vec2::new(x, z), h);
         }
-        // Cut blocks stacked for the train, by the crosscut.
+        // Cut crystal crated for the train, by the crosscut.
         self.block_stack(rng, Vec2::new(92.0, 195.0), 0.0);
     }
 
-    /// Cut crystal blocks, stacked: a big one with smaller round it. Cut,
-    /// the crystal glows, as it does at the Resonant's sanctum.
+    /// Cut crystal crated for the train: iron-bound timber crates, two
+    /// stacked in the middle and one either side, and a low one behind
+    /// with its lid off, crystal lumps showing dull in it. Plain boxes
+    /// where the old cut blocks stood are what tanks hit and hide behind.
     fn block_stack(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
+        // Its detail comes from its own stream; the map's advances by what
+        // the old blocks drew from it, so everything built after keeps its
+        // layout.
+        skip(rng, 4);
+        let rng = &mut own_rng(at);
         let g = self.ground_height(at.x, at.y);
-        let rot = Vec2::from_angle(-yaw);
+        let rig = Rig {
+            pos: Vec3::new(at.x, g, at.y),
+            rot: Quat::from_rotation_y(yaw),
+        };
         for (k, (dx, dz, h)) in [
             (-1.9, 0.0, 1.6),
             (0.0, 0.0, 3.0),
@@ -2541,19 +2548,179 @@ impl Map {
         .into_iter()
         .enumerate()
         {
-            let off = rot.rotate(Vec2::new(dx, dz));
-            self.oboxes.push(OBox {
-                center: at + off,
-                yaw,
-                half: Vec2::splat(0.9 - 0.02 * k as f32),
-                y0: g - 0.2,
-                y1: g + h,
-                color: HOLY * CUT_GLOW * rng.range(0.85, 1.1),
-                side_mat: Material::Glow,
-                top_mat: Material::Glow,
-                ..OBox::default()
-            });
+            let half = 0.9 - 0.02 * k as f32;
+            self.hidden_part(
+                &rig,
+                Vec3::new(dx, (h - 0.2) * 0.5, dz),
+                Vec3::new(half, (h + 0.2) * 0.5, half),
+            );
         }
+        let turn = |rng: &mut Rng| rng.range(-0.08, 0.08);
+        let t = turn(rng);
+        self.crystal_crate(rng, &rig, Vec2::new(-1.9, 0.0), 0.0, 0.86, 1.55, t, false);
+        let t = turn(rng);
+        self.crystal_crate(rng, &rig, Vec2::new(0.0, 0.0), 0.0, 0.88, 1.5, t, false);
+        // On the one under it, resting on its lid's battens.
+        let t = turn(rng) + 0.15;
+        self.crystal_crate(
+            rng,
+            &rig,
+            Vec2::new(0.05, -0.05),
+            1.625,
+            0.76,
+            1.375,
+            t,
+            false,
+        );
+        let t = turn(rng);
+        self.crystal_crate(rng, &rig, Vec2::new(1.9, 0.0), 0.0, 0.86, 1.55, t, false);
+        let t = turn(rng);
+        self.crystal_crate(rng, &rig, Vec2::new(0.0, 1.9), 0.0, 0.84, 1.15, t, true);
+    }
+
+    /// One crate in `rig`'s frame, centered at `c` with its foot at `y0`,
+    /// `half` across and `h` high, turned `turn`: plank sides, each board
+    /// its own shade, iron at the corners and banded round, a plank lid,
+    /// or (`open`) no lid and raw crystal heaped to the rim.
+    #[allow(clippy::too_many_arguments)]
+    fn crystal_crate(
+        &mut self,
+        rng: &mut Rng,
+        rig: &Rig,
+        c: Vec2,
+        y0: f32,
+        half: f32,
+        h: f32,
+        turn: f32,
+        open: bool,
+    ) {
+        let rig = Rig {
+            pos: rig.point(Vec3::new(c.x, y0, c.y)),
+            rot: rig.rot * Quat::from_rotation_y(turn),
+        };
+        // Drawn sculpted, in the crate's frame: as map boxes, touching all
+        // over, they'd be grown apart into each other (see `growths`).
+        let mut m = MeshData::default();
+        let part = |m: &mut MeshData, c: Vec3, h: Vec3, color: Vec3, mat: Material| {
+            let col = color.extend(mat.id());
+            m.add_box(c - h, c + h, col, col);
+        };
+        // Dark inside, seen between the boards, the lid resting on it;
+        // lower when open, so the rim stands above what's in it. (Faces
+        // here stay a few cm apart, never a hair, or they'd z-fight.)
+        let core = if open { h - 0.2 } else { h + 0.005 };
+        part(
+            &mut m,
+            Vec3::new(0.0, core * 0.5, 0.0),
+            Vec3::new(half - 0.1, core * 0.5, half - 0.1),
+            TIMBER * 0.2,
+            Material::Wood,
+        );
+        // Boards round the sides.
+        let n = ((h / 0.3).round() as usize).max(3);
+        let pitch = h / n as f32;
+        for k in 0..n {
+            let y = pitch * (k as f32 + 0.5);
+            let bh = pitch * 0.44;
+            for s in [-1.0f32, 1.0] {
+                let shade = TIMBER * rng.range(0.6, 0.85);
+                part(
+                    &mut m,
+                    Vec3::new(s * (half - 0.03), y, 0.0),
+                    Vec3::new(0.03, bh, half - 0.07),
+                    shade,
+                    Material::Wood,
+                );
+                let shade = TIMBER * rng.range(0.6, 0.85);
+                part(
+                    &mut m,
+                    Vec3::new(0.0, y, s * (half - 0.03)),
+                    Vec3::new(half - 0.07, bh, 0.03),
+                    shade,
+                    Material::Wood,
+                );
+            }
+        }
+        // Iron: angle down each corner, and two bands round over it.
+        for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            part(
+                &mut m,
+                Vec3::new(x * (half - 0.04), h * 0.5, z * (half - 0.04)),
+                Vec3::new(0.06, h * 0.5, 0.06),
+                IRON * 0.8,
+                Material::Metal,
+            );
+        }
+        for y in [h * 0.2, h * 0.8] {
+            for s in [-1.0f32, 1.0] {
+                part(
+                    &mut m,
+                    Vec3::new(s * (half + 0.02), y, 0.0),
+                    Vec3::new(0.025, 0.045, half + 0.045),
+                    IRON * 0.7,
+                    Material::Rust,
+                );
+                part(
+                    &mut m,
+                    Vec3::new(0.0, y, s * (half + 0.02)),
+                    Vec3::new(half + 0.045, 0.045, 0.025),
+                    IRON * 0.7,
+                    Material::Rust,
+                );
+            }
+        }
+        if !open {
+            // The lid: three planks across, nailed down on two battens.
+            for k in 0..3 {
+                let z = (k as f32 - 1.0) * half * 0.66;
+                part(
+                    &mut m,
+                    Vec3::new(0.0, h + 0.04, z),
+                    Vec3::new(half + 0.03, 0.035, half * 0.32),
+                    TIMBER * rng.range(0.65, 0.9),
+                    Material::Wood,
+                );
+            }
+            for s in [-1.0f32, 1.0] {
+                part(
+                    &mut m,
+                    Vec3::new(s * half * 0.6, h + 0.1, 0.0),
+                    Vec3::new(0.06, 0.025, half - 0.04),
+                    TIMBER * 0.55,
+                    Material::Wood,
+                );
+            }
+            self.sculpt(&rig, &m);
+            return;
+        }
+        // Open: lumps of raw crystal heaped to the rim, dull blue-grey,
+        // and one long piece laid across them, its faint light up a face.
+        let inner = half - 0.12;
+        for i in 0..3 {
+            for j in 0..3 {
+                let u = (i as f32 - 1.0) * inner * 0.62 + rng.range(-0.08, 0.08);
+                let v = (j as f32 - 1.0) * inner * 0.62 + rng.range(-0.08, 0.08);
+                let mound = 0.12 * (1.0 - (u * u + v * v) / (inner * inner)).max(0.0);
+                let at = Vec3::new(u, core + 0.05 + mound, v);
+                let s = rng.range(0.22, 0.32);
+                let shade = RAW * rng.range(1.0, 1.3);
+                ore_lump(&mut m, rng, at, s, shade, Material::Ore);
+            }
+        }
+        self.sculpt(&rig, &m);
+        let a = rig.point(Vec3::new(-inner * 0.8, core + 0.22, -inner * 0.3));
+        let b = rig.point(Vec3::new(inner * 0.7, core + 0.32, inner * 0.35));
+        self.crystals.push(Crystal {
+            base: a,
+            axis: b - a,
+            radius: 0.17,
+            sides: 6,
+            seed: rng.next_u64() as u32,
+            color: RAW * 1.1,
+            lit: true,
+            solid: false,
+            raw: true,
+        });
     }
 
     /// The Resonant's breach: their own tunnel in from the Face to the
