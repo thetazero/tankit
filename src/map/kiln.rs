@@ -213,6 +213,7 @@ impl Map {
             lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            raid_stands: Vec::new(),
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,

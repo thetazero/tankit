@@ -627,6 +627,10 @@ pub struct Map {
     pub fall_y: Option<f32>,
     /// What the Hold site is called on the HUD.
     pub hold_name: &'static str,
+    /// The Raid contract's stands, one per side, at its base: its flag's
+    /// home when it defends, its capture point when it attacks. Empty: the
+    /// open spot nearest each base's middle (see `raid`).
+    pub raid_stands: Vec<Vec2>,
     /// Ways round the map worth taking to a fight, each a line of points
     /// on their level (over a bridge's deck, under it, through caves, along
     /// high ground): making for the fight, bots often take one, so they
@@ -921,6 +925,9 @@ impl Map {
     pub fn swap_sides(&mut self, side: usize) {
         self.factions.swap(0, side);
         self.bases.swap(0, side);
+        if self.raid_stands.len() > side {
+            self.raid_stands.swap(0, side);
+        }
     }
 
     /// No bases: one empty spawn list per side (spawn anywhere).
@@ -1006,6 +1013,7 @@ impl Map {
             .chain(self.repair_spots.iter_mut())
             .chain(self.bases.iter_mut().flatten())
             .chain(self.hold_site.iter_mut())
+            .chain(self.raid_stands.iter_mut())
         {
             *p += by;
         }
@@ -1064,6 +1072,7 @@ impl Map {
             lights: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            raid_stands: Vec::new(),
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,

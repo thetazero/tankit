@@ -261,6 +261,7 @@ impl Map {
             lights: Vec::new(),
             fall_y: Some(FALL_Y),
             hold_name: "ALTAR",
+            raid_stands: Vec::new(),
             routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: Some(SAND),

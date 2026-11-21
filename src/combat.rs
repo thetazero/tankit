@@ -10,7 +10,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use rapier3d::parry::query::details::ShapeCastOptions;
 use rapier3d::prelude::{Ball, Collider, ColliderHandle, Pose, QueryFilter, Ray};
 
-use crate::ai::{self, Bot, Brain, Contact, NavGrid};
+use crate::ai::{self, Bot, Brain, Contact, NavGrid, Objective};
 use crate::arrival::{ARRIVAL_TIME, Arrival};
 use crate::economy::Levels;
 use crate::faction::Faction;
@@ -19,6 +19,7 @@ use crate::game::DT;
 use crate::hold::{self, Hold};
 use crate::map::Map;
 use crate::mission::Contract;
+use crate::raid::{self, Raid};
 use crate::render::Particle;
 use crate::render::mesh::{Instance, MeshId};
 use crate::repair::Repairs;
@@ -839,6 +840,8 @@ pub struct Match {
     pub prize: Option<crate::economy::Part>,
     /// The site, under the Hold contract.
     pub hold: Option<Hold>,
+    /// The flag, its stands and the rounds, under the Raid contract.
+    pub raid: Option<Raid>,
     /// Seconds since the round ended (the results screen counts up with it).
     pub over_for: f32,
     nav: NavGrid,
@@ -906,6 +909,7 @@ impl Match {
             rating: 0,
             prize: None,
             hold: None,
+            raid: None,
             phase: Phase::Playing,
             over_for: 0.0,
             nav,
@@ -1004,10 +1008,26 @@ impl Match {
         self.contract = contract;
         self.hold =
             (contract == Contract::Hold).then(|| Hold::new(&self.world.map, self.fighters.len()));
+        self.raid = (contract == Contract::Raid).then(|| Raid::new(&self.world.map));
+        self.time_left = self.round_time();
     }
 
-    /// Side `team`'s score: kills under Attrition, whole seconds held under Hold.
+    /// How long a round's clock runs: a Raid's rounds are shorter, as there
+    /// are several to a match.
+    pub fn round_time(&self) -> f32 {
+        if self.raid.is_some() {
+            raid::ROUND_TIME
+        } else {
+            ROUND_TIME
+        }
+    }
+
+    /// Side `team`'s score: kills under Attrition, whole seconds held under
+    /// Hold, captures under Raid.
     pub fn score(&self, team: usize) -> u32 {
+        if let Some(r) = &self.raid {
+            return r.captures(team);
+        }
         match &self.hold {
             Some(h) => h.held[team] as u32,
             None => self
@@ -1025,8 +1045,12 @@ impl Match {
         self.hold.as_ref().map_or(0.0, |h| h.own[i])
     }
 
-    /// The side ahead on score, or None while the lead is shared.
+    /// The side ahead on score (under Raid, on captures and then on the
+    /// time they took), or None while the lead is shared.
     pub fn leader(&self) -> Option<usize> {
+        if let Some(r) = &self.raid {
+            return r.leader();
+        }
         let scores: Vec<u32> = (0..self.factions.len()).map(|t| self.score(t)).collect();
         let best = *scores.iter().max()?;
         let mut top = (0..scores.len()).filter(|&t| scores[t] == best);
@@ -1077,8 +1101,14 @@ impl Match {
         if self.sounds.len() > MAX_SOUNDS {
             self.sounds.drain(..self.sounds.len() - MAX_SOUNDS / 2);
         }
-        if self.phase == Phase::Playing {
-            if self.time_left == ROUND_TIME {
+        // Between a Raid's rounds: everything stands still until the next.
+        let paused = self.raid.as_ref().is_some_and(|r| r.paused());
+        if self.phase == Phase::Playing && paused {
+            if self.raid.as_mut().is_some_and(|r| r.wait(DT)) {
+                self.next_raid_round();
+            }
+        } else if self.phase == Phase::Playing {
+            if self.time_left == self.round_time() {
                 self.sounds.push(Sound::Round(RoundCue::Start));
             }
             let before = self.time_left;
@@ -1091,12 +1121,16 @@ impl Match {
             }
             if self.time_left <= 0.0 {
                 self.time_left = 0.0;
-                self.end_round();
+                // A Raid's round is ended by the flag's step (the
+                // defenders held out), and the match after the last.
+                if self.raid.is_none() {
+                    self.end_round();
+                }
             }
         } else {
             self.over_for += DT;
         }
-        let playing = self.phase == Phase::Playing;
+        let playing = self.phase == Phase::Playing && !paused;
 
         let contacts: Vec<Contact> = self
             .fighters
@@ -1108,7 +1142,9 @@ impl Match {
                 health: f.health / f.max_health(t),
             })
             .collect();
-        let objective = self.hold.as_ref().map(|h| (h.at, hold::RADIUS));
+        let objectives: Vec<Option<Objective>> = (0..self.fighters.len())
+            .map(|i| self.objective(i))
+            .collect();
         // Repair crates anyone can see: coming down under their canopies, or down.
         let crates: Vec<Vec2> = self
             .repairs
@@ -1121,9 +1157,15 @@ impl Match {
         for i in 0..self.fighters.len() {
             let (c, f) = match &mut self.bots[i] {
                 _ if !self.fighters[i].alive || !playing => (Command::default(), false),
-                Some(bot) => {
-                    bot.think(i, &self.world, &contacts, objective, &crates, &self.nav, DT)
-                }
+                Some(bot) => bot.think(
+                    i,
+                    &self.world,
+                    &contacts,
+                    objectives[i],
+                    &crates,
+                    &self.nav,
+                    DT,
+                ),
                 None => (player, fire),
             };
             // A husk's drive fades with it; a tank ringing up a charge braces.
@@ -1133,8 +1175,14 @@ impl Match {
             } else {
                 1.0
             };
+            // The flag weighs its carrier down.
+            let laden = if self.raid.as_ref().and_then(|r| r.carrier()) == Some(i) {
+                raid::CARRIER_THROTTLE
+            } else {
+                1.0
+            };
             cmds.push(Command {
-                throttle: c.throttle * s * brace,
+                throttle: c.throttle * s * brace * laden,
                 steer: c.steer * s.sqrt() * brace,
                 turret: c.turret * brace,
                 ..c
@@ -1246,6 +1294,7 @@ impl Match {
         if playing {
             self.pick_up_repairs();
             self.hold_site();
+            self.raid_flag();
         }
 
         for b in &mut self.blasts {
@@ -2132,6 +2181,94 @@ impl Match {
         }
     }
 
+    /// Where bot `i` is sent, if anywhere: the Hold site; under Raid, the
+    /// flag (to take it, or to send it home), its carrier (to escort it or
+    /// hunt it down), the stand it's on (to guard it), or, carrying it, home.
+    fn objective(&self, i: usize) -> Option<Objective> {
+        if let Some(h) = &self.hold {
+            return Some(Objective::ring(h.at, hold::RADIUS));
+        }
+        let r = self.raid.as_ref()?;
+        let on = |p: Vec3, radius: f32, fight: bool| {
+            Some(Objective {
+                at: flat(p),
+                radius,
+                level: p.y,
+                fight,
+            })
+        };
+        let flag = r.flag_at(&self.world.tanks);
+        let attacking = self.fighters[i].team == r.attackers();
+        match (attacking, r.flag) {
+            (true, raid::Flag::Carried(c)) if c == i => on(r.capture_point(), 3.0, false),
+            (true, raid::Flag::Carried(_)) => on(flag, 14.0, true),
+            (true, _) => on(flag, 2.5, true),
+            (false, raid::Flag::Home) => on(flag, 16.0, true),
+            (false, raid::Flag::Carried(_)) => on(flag, 6.0, true),
+            (false, raid::Flag::Dropped { .. }) => on(flag, 2.5, true),
+        }
+    }
+
+    /// Step the Raid's flag: picked up, carried, dropped, sent home,
+    /// captured. The player hears each from their side's point of view and
+    /// is paid for capturing and for sending it home. The last round over
+    /// is the match over.
+    fn raid_flag(&mut self) {
+        let Some(r) = &mut self.raid else { return };
+        let fighters = &self.fighters;
+        let ended = r.step(DT, self.time_left, &self.world.tanks, |i| {
+            (fighters[i].alive && !fighters[i].is_husk()).then_some(fighters[i].team)
+        });
+        let (att, done) = (r.attackers(), r.done());
+        let events = std::mem::take(&mut r.events);
+        let mine = self.fighters[0].team;
+        let good = |yes: bool| {
+            Sound::Hold(if yes {
+                hold::Cue::Taken
+            } else {
+                hold::Cue::Lost
+            })
+        };
+        for e in events {
+            let sound = match e {
+                raid::Event::Taken { by } => good(self.fighters[by].team == mine),
+                raid::Event::Dropped { .. } => Sound::Hold(hold::Cue::Contested),
+                raid::Event::Returned { by } => {
+                    if by == Some(0) {
+                        self.award(raid::RETURN_REPUTATION, "RETURNED");
+                    }
+                    good(att != mine)
+                }
+                raid::Event::Captured { by } => {
+                    if by == 0 {
+                        self.award(raid::CAPTURE_REPUTATION, "CAPTURED");
+                    }
+                    good(att == mine)
+                }
+                raid::Event::HeldOut => good(att != mine),
+            };
+            self.sounds.push(sound);
+        }
+        if ended {
+            self.shells.clear();
+            if done {
+                self.end_round();
+            }
+        }
+    }
+
+    /// The next of a Raid's rounds: sides swapped (the flag home on the
+    /// other stand), the clock reset, and every tank back at its base, whole.
+    fn next_raid_round(&mut self) {
+        self.time_left = self.round_time();
+        self.shells.clear();
+        let mut placed: Vec<(usize, Vec2)> = Vec::new();
+        for i in 0..self.fighters.len() {
+            self.revive(i, &placed);
+            placed.push((self.fighters[i].team, flat(self.world.tanks[i].pos)));
+        }
+    }
+
     /// The round is over: stop the fight and say how it went.
     fn end_round(&mut self) {
         self.phase = Phase::Over;
@@ -2209,36 +2346,48 @@ impl Match {
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
             }
-            if let Some((hull, turret)) = self.fighters[i].next_kit.take() {
-                self.world.set_hull(i, hull);
-                self.world.tanks[i].turret_kind = turret;
-            }
-            if let Some(levels) = self.fighters[i].next_levels.take() {
-                self.fighters[i].levels = levels;
-            }
-            self.fit_hull(i);
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
                 .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
                 .collect();
-            let team = self.fighters[i].team;
-            let (at, yaw) = spawn_point(&self.world, &mut self.rng, team, &living);
-            self.world.teleport(i, at, yaw);
-            self.world.tanks[i].dead = false;
-            let f = &mut self.fighters[i];
-            f.alive = true;
-            f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
-            f.shield = SPAWN_SHIELD;
-            f.arrived = 0.0;
-            f.hit_by = None;
-            f.reload_in = 0.5;
-            f.heat = 0.0;
-            f.overheated = false;
-            f.charge = 0.0;
-            f.charging = false;
-            if i == 0 {
-                self.sounds.push(Sound::Link);
-            }
+            self.revive(i, &living);
+        }
+    }
+
+    /// Bring tank `i` back at its base in its next kit, whole and shielded,
+    /// away from the tanks in `others` (side, position).
+    fn revive(&mut self, i: usize, others: &[(usize, Vec2)]) {
+        if let Some((hull, turret)) = self.fighters[i].next_kit.take() {
+            self.world.set_hull(i, hull);
+            self.world.tanks[i].turret_kind = turret;
+        }
+        if let Some(levels) = self.fighters[i].next_levels.take() {
+            self.fighters[i].levels = levels;
+        }
+        self.fit_hull(i);
+        let team = self.fighters[i].team;
+        let (at, yaw) = spawn_point(&self.world, &mut self.rng, team, others);
+        self.world.teleport(i, at, yaw);
+        self.world.tanks[i].dead = false;
+        self.world.tanks[i].husk = None;
+        if let Some(b) = &mut self.bots[i] {
+            b.reset();
+        }
+        let f = &mut self.fighters[i];
+        f.alive = true;
+        f.husk = 0.0;
+        f.respawn_in = 0.0;
+        f.health = f.levels.max_health(self.world.tanks[i].hull_kind);
+        f.shield = SPAWN_SHIELD;
+        f.arrived = 0.0;
+        f.hit_by = None;
+        f.reload_in = 0.5;
+        f.heat = 0.0;
+        f.overheated = false;
+        f.charge = 0.0;
+        f.charging = false;
+        if i == 0 {
+            self.sounds.push(Sound::Link);
         }
     }
 
@@ -2519,6 +2668,16 @@ impl Match {
         if let Some(h) = &self.hold {
             let paint: Vec<Vec3> = self.factions.iter().map(|f| f.paint()).collect();
             h.instances(self.world.time, &paint, out);
+        }
+        if let Some(r) = &self.raid {
+            let paint: Vec<Vec3> = self.factions.iter().map(|f| f.paint()).collect();
+            let tanks = &self.world.tanks;
+            r.instances(
+                self.world.time,
+                &paint,
+                |i| tanks[i].interpolated(alpha),
+                out,
+            );
         }
         let tracer = Vec4::new(1.0, 0.72, 0.3, 3.0);
         for s in &self.shells {
@@ -4507,6 +4666,94 @@ mod tests {
         assert_eq!(m.leader(), Some(0));
     }
 
+    /// A yard with a Raid stand for each side, the player (side 0) and
+    /// one enemy standing still.
+    fn raid_yard() -> Match {
+        let mut map = Map::yard(200.0);
+        map.raid_stands = vec![Vec2::new(40.0, 100.0), Vec2::new(160.0, 100.0)];
+        let mut m = Match::new(map, 0, 1, 3);
+        m.set_contract(Contract::Raid);
+        m.idle(1);
+        m.world.teleport(1, Vec2::new(100.0, 170.0), 0.0);
+        m
+    }
+
+    #[test]
+    fn a_raid_capture_ends_the_round_and_the_sides_swap() {
+        let mut m = raid_yard();
+        assert_eq!(m.time_left, raid::ROUND_TIME);
+        let stand = |m: &Match, s: usize| flat(m.raid.as_ref().unwrap().stands[s]);
+        // Take the flag off their stand and drive it home.
+        m.world.teleport(0, stand(&m, 1), 0.0);
+        m.step(Command::default(), false);
+        assert_eq!(m.raid.as_ref().unwrap().carrier(), Some(0));
+        m.world.teleport(0, stand(&m, 0), 0.0);
+        m.step(Command::default(), false);
+        let r = m.raid.as_ref().unwrap();
+        assert!(r.paused());
+        assert_eq!(r.captures(0), 1);
+        assert_eq!(m.score(0), 1);
+        assert_eq!(m.reputation, raid::CAPTURE_REPUTATION);
+        assert_eq!(m.phase, Phase::Playing);
+        // Frozen through the break: the player can't drive.
+        let before = m.world.tanks[0].pos;
+        for _ in 0..(raid::BREAK / DT) as usize - 10 {
+            m.step(
+                Command {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                false,
+            );
+        }
+        assert!(m.world.tanks[0].pos.distance(before) < 0.5);
+        for _ in 0..20 {
+            m.step(Command::default(), false);
+        }
+        // Round two: they attack, the flag's on our stand, the clock is full again.
+        let r = m.raid.as_ref().unwrap();
+        assert_eq!((r.round, r.attackers(), r.flag), (1, 1, raid::Flag::Home));
+        assert!(m.time_left > raid::ROUND_TIME - 1.0);
+        assert!(m.fighters.iter().all(|f| f.alive));
+    }
+
+    #[test]
+    fn a_raid_is_over_after_its_last_round() {
+        let mut m = raid_yard();
+        for round in 0..raid::ROUNDS {
+            assert_eq!(m.phase, Phase::Playing, "round {round}");
+            m.time_left = 0.05;
+            // The clock runs out, then the break.
+            for _ in 0..((raid::BREAK + 0.5) / DT) as usize {
+                m.step(Command::default(), false);
+            }
+        }
+        assert_eq!(m.phase, Phase::Over);
+        let r = m.raid.as_ref().unwrap();
+        assert_eq!(r.played.len(), raid::ROUNDS);
+        assert!(r.played.iter().all(|p| p.captured.is_none()));
+        assert_eq!(m.leader(), None, "nobody captured: a draw");
+    }
+
+    /// Under Raid on the Seam, bots attack and defend: the attackers get the
+    /// flag off its stand.
+    #[test]
+    fn bots_go_for_the_flag() {
+        let mut m = Match::new(Map::mine(), 0, 5, 2);
+        m.set_contract(Contract::Raid);
+        m.bots_only(2);
+        let mut taken = false;
+        for _ in 0..(120.0 / DT) as usize {
+            m.step(Command::default(), false);
+            m.sounds.clear();
+            taken |= m.raid.as_ref().unwrap().carrier().is_some();
+            if taken {
+                break;
+            }
+        }
+        assert!(taken, "nobody took the flag in two minutes");
+    }
+
     #[test]
     fn hold_score_is_time_held_not_kills() {
         let mut m = arena(3);
@@ -4747,6 +4994,42 @@ mod tests {
             (1..m.fighters.len()).any(|i| m.fighters[i].team == 1 && m.held(i) > 0.0),
             "no enemy bot ever stood on a held site"
         );
+    }
+
+    /// A Raid's whole match, bots only on the Seam, once with each side
+    /// attacking first, printed round by round (`cargo test --release
+    /// raid_bot_matches -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn raid_bot_matches() {
+        for swap in [false, true] {
+            for seed in 0..4u64 {
+                let mut map = Map::mine();
+                if swap {
+                    map.swap_sides(1);
+                }
+                let mut m = Match::new(map, 0, 11, seed);
+                m.set_contract(Contract::Raid);
+                m.bots_only(seed);
+                while m.phase == Phase::Playing {
+                    m.step(Command::default(), false);
+                    m.sounds.clear();
+                }
+                let r = m.raid.as_ref().unwrap();
+                let rounds: Vec<String> = r
+                    .played
+                    .iter()
+                    .map(|p| {
+                        let who = m.factions[p.attackers].name();
+                        match p.captured {
+                            Some(t) => format!("{who} took it in {t:.0} s"),
+                            None => format!("{who} held off"),
+                        }
+                    })
+                    .collect();
+                println!("seed {seed}: {}", rounds.join(", "));
+            }
+        }
     }
 
     #[test]

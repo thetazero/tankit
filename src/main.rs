@@ -21,6 +21,7 @@ mod map;
 mod menu;
 mod mission;
 mod profile;
+mod raid;
 mod render;
 mod repair;
 mod rng;
@@ -50,8 +51,9 @@ tankit [OPTIONS]
                           mine: caves, rails and stacked levels)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
-  --contract <attrition|hold>
-                          game mode: team deathmatch (default) or hold the site
+  --contract <attrition|hold|raid>
+                          game mode: team deathmatch (default), hold the site, or raid
+                          (one-sided capture the flag, two-sided maps only)
   --employer <faction>    which of the map's sides hires you (default: its first)
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
@@ -86,6 +88,8 @@ tankit [OPTIONS]
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, renown gained, crystal tally
                           and (with --mission, if you won) the schematic stolen
+  --screen carry          (with --shot --contract raid) the player starts on the enemy's flag,
+                          facing home, and carries it
   --mission <name>        (with --screen missions) select this mission, by name, e.g. 'four winds';
                           (with --screen results) the round was this mission, for its prize
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
@@ -223,6 +227,8 @@ enum Screen {
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
+    /// Raid: the player starts on the enemy's flag, and carries it.
+    Carry,
 }
 
 struct ShotArgs {
@@ -376,7 +382,8 @@ fn parse_args() -> Result<Args> {
             "--contract" => match args.next().as_deref() {
                 Some("attrition") => contract = mission::Contract::Attrition,
                 Some("hold") => contract = mission::Contract::Hold,
-                other => bail!("--contract expects attrition or hold, got {other:?}"),
+                Some("raid") => contract = mission::Contract::Raid,
+                other => bail!("--contract expects attrition, hold or raid, got {other:?}"),
             },
             "--employer" => {
                 let name = args.next().unwrap_or_default();
@@ -491,9 +498,10 @@ fn parse_args() -> Result<Args> {
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
+                    Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, settings, controls, rebind, pause, results or dead, got {other:?}"
+                            "--screen expects menu, factions, missions, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
                         )
                     }
                 })
@@ -551,6 +559,9 @@ fn parse_args() -> Result<Args> {
             )
         })?,
     };
+    if contract == mission::Contract::Raid && sides.len() != 2 {
+        bail!("--contract raid takes a map with two sides");
+    }
     Ok(Args {
         seed,
         side,
@@ -664,6 +675,16 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 .prize(args.side)
                 .filter(|&p| !profile.owns(p));
         }
+    }
+    if args.screen == Some(Screen::Carry) {
+        let r = game
+            .raid
+            .as_ref()
+            .context("--screen carry needs --contract raid")?;
+        let (flag, home) = (r.flag_at(&game.world.tanks), r.capture_point());
+        let to = glam::Vec2::new(home.x - flag.x, home.z - flag.z);
+        game.world
+            .teleport(0, glam::Vec2::new(flag.x, flag.z), sim::yaw_of(to));
     }
     let mut cam = scene::ChaseCam::new();
     cam.tilt = args.tilt;

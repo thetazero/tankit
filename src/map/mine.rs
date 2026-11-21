@@ -813,6 +813,9 @@ impl Map {
             lights: Vec::new(),
             fall_y: None,
             hold_name: "SEAM",
+            // Raid: each side's stand out in front of its spawns, toward the
+            // other side, on open ground.
+            raid_stands: vec![Vec2::new(56.0, 90.0), Vec2::new(182.0, 112.0)],
             routes: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 111, 111, ground);
