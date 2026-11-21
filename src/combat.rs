@@ -166,66 +166,94 @@ fn flame_reach(s: &Shell) -> f32 {
     FLAME_BODY * flame_size(s.age / s.spec.life)
 }
 
-/// Crystal fire hottest at the nozzle: white-blue.
-const FLAME_HOT: Vec3 = Vec3::new(0.62, 0.86, 1.0);
+/// Crystal fire hottest at the nozzle: a fierce, still-blue white.
+const FLAME_HOT: Vec3 = Vec3::new(0.5, 0.78, 1.0);
+/// Crystal fire at its fullest: a deep, saturated blue, richer than the
+/// crystal's own light so the stream holds its colour against bright sand.
+const FLAME_BODY_BLUE: Vec3 = Vec3::new(0.12, 0.36, 1.0);
 /// Crystal fire dying out: deep violet.
-const FLAME_DYING: Vec3 = Vec3::new(0.26, 0.16, 0.85);
+const FLAME_DYING: Vec3 = Vec3::new(0.32, 0.14, 0.95);
 
 /// The colour of a Hymn puff `f` of the way through its life: white-blue
-/// off the nozzle, crystal blue through its body, violet as it goes out.
+/// off the nozzle, deep crystal blue through its body, violet as it goes out.
 fn flame_color(f: f32) -> Vec3 {
-    if f < 0.35 {
-        FLAME_HOT.lerp(CRYSTAL, f / 0.35)
+    if f < 0.3 {
+        FLAME_HOT.lerp(FLAME_BODY_BLUE, f / 0.3)
     } else {
-        CRYSTAL.lerp(FLAME_DYING, ((f - 0.35) / 0.65).min(1.0))
+        FLAME_BODY_BLUE.lerp(FLAME_DYING, ((f - 0.3) / 0.7).min(1.0).powf(1.5))
     }
 }
 
 /// One puff of a Hymn's stream, drawn at `p` flying along `d`, faded in by
-/// `born`. Soft, self-lit billows that overlap into one licking tongue of
-/// fire, not a row of balls: each churns as it swells and fades as it
-/// cools. They stay round: the stream bends as the turret swings, but each
-/// puff flies straight, so one drawn out along its flight would cut across
-/// the tongue.
+/// `born`. Holy fire, not a gas jet: a fierce self-lit billow that holds its
+/// blue to the end, a white-hot heart through its first half, a wide aura
+/// of crystal light round it, and sparks of shard that rise off it like
+/// embers off a censer. The billows stay round: the stream bends as the
+/// turret swings, but each puff flies straight, so one drawn out along its
+/// flight would cut across the tongue.
 fn crystal_flame(s: &Shell, p: Vec3, d: Vec3, born: f32, out: &mut Vec<Particle>) {
     let f = (s.age / s.spec.life).min(1.0);
     let size = flame_size(f) * FLAME_PUFF;
-    let heat = (1.0 - f).powf(1.4);
+    // Burns at full strength most of its life, then goes out quickly.
+    let heat = (1.0 - f * f).max(0.0).powf(0.7);
     // Its lumps roll over as it flies, so the tongue writhes.
     let churn = s.seed + s.age * 0.35;
-    let flicker = 0.85 + 0.15 * (s.age * 31.0 + s.seed * 17.0).sin();
+    let flicker = 0.88 + 0.12 * (s.age * 31.0 + s.seed * 17.0).sin();
     out.push(Particle::fire(
         p,
         size,
         flame_color(f),
-        1.7 * heat * flicker * born,
+        2.3 * heat * flicker * born,
         Vec3::ZERO,
         churn,
     ));
-    // The white-hot jet at its heart, close to the nozzle.
-    if f < 0.4 {
-        let hot = 1.0 - f / 0.4;
+    // A second, tighter billow inside it, turned the other way: the fire
+    // is thick, not a single veil.
+    out.push(Particle::fire(
+        p,
+        size * 0.62,
+        flame_color(f * 0.7),
+        1.8 * heat * born,
+        Vec3::ZERO,
+        churn + 0.5,
+    ));
+    // The white-hot heart, carried well down the stream.
+    if f < 0.6 {
+        let hot = 1.0 - f / 0.6;
         out.push(Particle::glow(
             p,
-            (size * 0.45).max(0.22),
+            (size * 0.4).max(0.25),
             CRYSTAL_HOT,
-            1.1 * hot * born,
+            2.2 * hot * born,
             Vec3::ZERO,
         ));
     }
-    // A shard's glint in one puff in three, tumbling out of the fire.
-    let pick = (s.seed * 7.31).fract();
-    if pick < 0.34 && f > 0.1 && f < 0.8 {
-        let a = s.seed * 40.0 + s.age * 5.0;
+    // An aura of crystal light round it: the fire lights the air.
+    out.push(Particle::glow(
+        p,
+        size * 1.5,
+        CRYSTAL,
+        0.35 * heat * born,
+        Vec3::ZERO,
+    ));
+    // Sparks of shard: two in most puffs, rising off the fire and
+    // twinkling as they tumble.
+    for k in 0..2 {
+        let pick = (s.seed * (7.31 + k as f32 * 3.17)).fract();
+        if pick > 0.7 || f < 0.08 {
+            continue;
+        }
+        let a = s.seed * 40.0 + k as f32 * 2.4 + s.age * 5.0;
         let side = d.any_orthonormal_vector();
         let out_dir = Quat::from_axis_angle(d, a) * side;
-        let twinkle = (s.age * 23.0 + s.seed * 50.0).sin().max(0.0);
+        let rise = Vec3::Y * s.age * (1.5 + pick * 2.0);
+        let twinkle = 0.4 + 0.6 * (s.age * 23.0 + s.seed * 50.0 + k as f32).sin().max(0.0);
         out.push(Particle::glow(
-            p + out_dir * size * 0.6 + Vec3::Y * size * 0.2,
-            0.06,
+            p + out_dir * size * (0.5 + 0.4 * pick) + rise,
+            0.08,
             CRYSTAL_HOT,
-            3.5 * twinkle * (1.0 - f),
-            (out_dir + d).normalize_or_zero() * 2.0,
+            5.0 * twinkle * (1.0 - f),
+            (Vec3::Y + out_dir * 0.5).normalize_or_zero() * 2.5,
         ));
     }
 }
