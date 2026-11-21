@@ -488,6 +488,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: Some(FALL_Y),
             hold_name: "ALTAR",
+            routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             sounds: Vec::new(),
         };

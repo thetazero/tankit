@@ -1,13 +1,18 @@
-//! Bot opponents: a coarse navigation grid over the map, A* paths through it,
-//! and a small brain per bot. It picks a target (near, in sight, already
-//! hurt, in reach of its gun), drives the path to it, and fights the way its
+//! Bot opponents: a coarse navigation grid over the map (with the floor
+//! under a deck or a cave's roof as well as the one on top, see `nav`), A*
+//! paths through it, and a small brain per bot. It picks a target (near, in
+//! sight, already hurt, in reach of its gun), drives the path to it (often
+//! by one of the map's ways round, over a bridge or through the caves, so
+//! a side spreads out), and fights the way its
 //! gun wants: ranged guns hold their distance and circle, the flamethrower
 //! drives straight in and stays nose-on, a broken Vigil spends its last
 //! seconds going for the throat. It leads its shots by where the target
 //! will be (its own motion included), lays the turret against the hull's
 //! turn, waits for a rocking gun to come level, keeps a spin-up gun turning,
 //! rings a bell up with the hull in line so the toll can't roll it over, and
-//! goes for a repair crate when it's hurt. Given an objective (the Hold
+//! goes for a repair crate when it's hurt. It keeps off drops: it slows
+//! for sharp turns and brakes short of a cliff or a pit's wall. Given an
+//! objective (the Hold
 //! site), bots make for it, fight whoever comes near it, and patrol inside
 //! the ring.
 //!
@@ -18,20 +23,15 @@
 //! (`--arena`, `--duel`).
 
 pub mod baseline;
+mod nav;
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+pub use nav::NavGrid;
 
 use glam::{Vec2, Vec3};
 
-use crate::map::Map;
 use crate::rng::Rng;
 use crate::sim::{Command, Tank, TurretKind, World, wrap_angle, yaw_of};
 
-/// Nav cell size, m. Fine enough that narrow gaps between cover show up.
-const NAV_CELL: f32 = 2.0;
-/// How far obstacles are grown so paths keep a hull's width off walls.
-const CLEARANCE: f32 = 2.2;
 /// Bots don't see further than this.
 pub const SIGHT: f32 = 130.0;
 /// Bots open fire inside this range.
@@ -49,310 +49,6 @@ const MEND_REACH: f32 = 70.0;
 /// A bouncing gun banks a shot off a wall at a target out of sight (its
 /// health bar shows through walls, to a player too) at most this far off, m.
 const BANK_REACH: f32 = 60.0;
-
-/// Steepest ground (rise over run) bots will path across.
-const MAX_SLOPE: f32 = 0.7;
-/// On a mesa, bots keep this far back from the edge, m.
-const EDGE_MARGIN: f32 = 7.0;
-
-pub struct NavGrid {
-    nx: usize,
-    nz: usize,
-    blocked: Vec<bool>,
-}
-
-impl NavGrid {
-    pub fn build(map: &Map) -> NavGrid {
-        let n = (map.size / NAV_CELL).ceil() as usize;
-        let mut blocked = vec![false; n * n];
-        for s in &map.solids {
-            // Anything a tank can't drive over: tall, and starting near the ground.
-            if s.max.y - s.min.y < 0.6 || s.min.y > 1.0 {
-                continue;
-            }
-            let (lo, hi) = (s.min2() - CLEARANCE, s.max2() + CLEARANCE);
-            let c0 = ((lo / NAV_CELL).floor().max(Vec2::ZERO)).as_uvec2();
-            let c1 = (hi / NAV_CELL)
-                .ceil()
-                .as_uvec2()
-                .min(glam::UVec2::splat(n as u32));
-            for iz in c0.y as usize..c1.y as usize {
-                for ix in c0.x as usize..c1.x as usize {
-                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
-                    if c.cmpge(lo).all() && c.cmple(hi).all() {
-                        blocked[iz * n + ix] = true;
-                    }
-                }
-            }
-        }
-        for o in &map.oboxes {
-            // Debris and drivable ramps don't block; neither does anything low or overhead.
-            // (A tall leaning spire is tilted like a ramp, but it's a wall.)
-            // Measured as the piece actually stands (tilted, rolled): a
-            // standing post is tall and narrow, not a beam lying flat.
-            let (y0, y1) = o.y_range();
-            if !o.solid
-                || (o.is_ramp() && o.y1 - o.y0 < 1.5)
-                || y1 - y0 < 0.6
-                || y0 > map.ground_height(o.center.x, o.center.y) + 1.0
-            {
-                continue;
-            }
-            let reach = o.half.length().max((y1 - y0) * 0.5) + CLEARANCE;
-            // What's under a tank's height from the piece's lowest point.
-            const TANK_HEIGHT: f32 = 3.0;
-            let (lo, hi) = (o.center - Vec2::splat(reach), o.center + Vec2::splat(reach));
-            let c0 = ((lo / NAV_CELL).floor().max(Vec2::ZERO)).as_uvec2();
-            let c1 = (hi / NAV_CELL)
-                .ceil()
-                .as_uvec2()
-                .min(glam::UVec2::splat(n as u32));
-            for iz in c0.y as usize..c1.y as usize {
-                for ix in c0.x as usize..c1.x as usize {
-                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
-                    if o.base_distance(c, TANK_HEIGHT) <= CLEARANCE {
-                        blocked[iz * n + ix] = true;
-                    }
-                }
-            }
-        }
-        // Crystals: wherever they stand low enough to hit.
-        for c in map.crystals.iter().filter(|c| c.solid) {
-            let g = map.ground_height(c.base.x, c.base.z);
-            for (p, r) in c.footprint(g, 3.0) {
-                let reach = r + CLEARANCE;
-                let c0 = (((p - Vec2::splat(reach)) / NAV_CELL)
-                    .floor()
-                    .max(Vec2::ZERO))
-                .as_uvec2();
-                let c1 = ((p + Vec2::splat(reach)) / NAV_CELL)
-                    .ceil()
-                    .as_uvec2()
-                    .min(glam::UVec2::splat(n as u32));
-                for iz in c0.y as usize..c1.y as usize {
-                    for ix in c0.x as usize..c1.x as usize {
-                        let cc = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
-                        if cc.distance(p) <= reach {
-                            blocked[iz * n + ix] = true;
-                        }
-                    }
-                }
-            }
-        }
-        // Ground too steep to drive up (cliffs, steep banks).
-        if let Some(t) = &map.terrain {
-            for iz in 0..n {
-                for ix in 0..n {
-                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
-                    let h = |d: Vec2| t.height_at(c.x + d.x, c.y + d.y);
-                    let e = NAV_CELL * 0.5;
-                    let gx = (h(Vec2::new(e, 0.0)) - h(Vec2::new(-e, 0.0))) / (2.0 * e);
-                    let gz = (h(Vec2::new(0.0, e)) - h(Vec2::new(0.0, -e))) / (2.0 * e);
-                    if Vec2::new(gx, gz).length() > MAX_SLOPE {
-                        blocked[iz * n + ix] = true;
-                    }
-                }
-            }
-        }
-        // A mesa: keep well back from the edge, wherever the ground drops
-        // away within reach.
-        if let Some(fall_y) = map.fall_y {
-            let drop = fall_y * 0.3;
-            for iz in 0..n {
-                for ix in 0..n {
-                    let c = Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL;
-                    let near_edge = (0..12).any(|k| {
-                        let a = k as f32 / 12.0 * std::f32::consts::TAU;
-                        let p = c + Vec2::new(a.cos(), a.sin()) * EDGE_MARGIN;
-                        map.ground_height(p.x, p.y) < drop
-                    });
-                    if near_edge || map.ground_height(c.x, c.y) < drop {
-                        blocked[iz * n + ix] = true;
-                    }
-                }
-            }
-        }
-        NavGrid {
-            nx: n,
-            nz: n,
-            blocked,
-        }
-    }
-
-    fn cell(&self, p: Vec2) -> (usize, usize) {
-        let c = (p / NAV_CELL).floor();
-        (
-            c.x.clamp(0.0, self.nx as f32 - 1.0) as usize,
-            c.y.clamp(0.0, self.nz as f32 - 1.0) as usize,
-        )
-    }
-
-    fn center(&self, (ix, iz): (usize, usize)) -> Vec2 {
-        Vec2::new(ix as f32 + 0.5, iz as f32 + 0.5) * NAV_CELL
-    }
-
-    pub fn is_blocked(&self, p: Vec2) -> bool {
-        let (ix, iz) = self.cell(p);
-        self.blocked[iz * self.nx + ix]
-    }
-
-    /// Nearest open cell to `p` (search in growing rings).
-    fn nearest_open(&self, p: Vec2) -> Option<(usize, usize)> {
-        let (cx, cz) = self.cell(p);
-        for r in 0..12i32 {
-            let mut best: Option<((usize, usize), f32)> = None;
-            for dz in -r..=r {
-                for dx in -r..=r {
-                    if dx.abs() != r && dz.abs() != r {
-                        continue;
-                    }
-                    let (x, z) = (cx as i32 + dx, cz as i32 + dz);
-                    if x < 0 || z < 0 || x >= self.nx as i32 || z >= self.nz as i32 {
-                        continue;
-                    }
-                    let c = (x as usize, z as usize);
-                    if !self.blocked[c.1 * self.nx + c.0] {
-                        let d = self.center(c).distance_squared(p);
-                        if best.is_none_or(|(_, bd)| d < bd) {
-                            best = Some((c, d));
-                        }
-                    }
-                }
-            }
-            if let Some((c, _)) = best {
-                return Some(c);
-            }
-        }
-        None
-    }
-
-    /// Straight drive from a to b stays in open cells.
-    pub fn clear_line(&self, a: Vec2, b: Vec2) -> bool {
-        let steps = (a.distance(b) / (NAV_CELL * 0.5)).ceil().max(1.0) as usize;
-        (0..=steps).all(|i| !self.is_blocked(a.lerp(b, i as f32 / steps as f32)))
-    }
-
-    /// Waypoints from `from` to `to` (excluding the start), string-pulled so
-    /// bots cut straight across open ground. Empty if unreachable.
-    pub fn path(&self, from: Vec2, to: Vec2) -> Vec<Vec2> {
-        let (Some(start), Some(goal)) = (self.nearest_open(from), self.nearest_open(to)) else {
-            return Vec::new();
-        };
-        let idx = |c: (usize, usize)| c.1 * self.nx + c.0;
-        let h = |c: (usize, usize)| {
-            let (dx, dz) = (
-                (c.0 as f32 - goal.0 as f32).abs(),
-                (c.1 as f32 - goal.1 as f32).abs(),
-            );
-            dx.max(dz) + (std::f32::consts::SQRT_2 - 1.0) * dx.min(dz)
-        };
-        let mut g = vec![f32::INFINITY; self.nx * self.nz];
-        let mut came = vec![usize::MAX; self.nx * self.nz];
-        let mut open = BinaryHeap::new();
-        g[idx(start)] = 0.0;
-        open.push(Node {
-            f: h(start),
-            cell: start,
-        });
-        let mut found = false;
-        while let Some(Node { cell, f }) = open.pop() {
-            if cell == goal {
-                found = true;
-                break;
-            }
-            let gc = g[idx(cell)];
-            if f > gc + h(cell) + 1e-3 {
-                continue;
-            }
-            for (dx, dz) in [
-                (1i32, 0i32),
-                (-1, 0),
-                (0, 1),
-                (0, -1),
-                (1, 1),
-                (1, -1),
-                (-1, 1),
-                (-1, -1),
-            ] {
-                let (x, z) = (cell.0 as i32 + dx, cell.1 as i32 + dz);
-                if x < 0 || z < 0 || x >= self.nx as i32 || z >= self.nz as i32 {
-                    continue;
-                }
-                let n = (x as usize, z as usize);
-                if self.blocked[idx(n)] {
-                    continue;
-                }
-                // No cutting corners past a blocked cell.
-                if dx != 0 && dz != 0 {
-                    let a = (cell.0 as i32 + dx) as usize + cell.1 * self.nx;
-                    let b = cell.0 + (cell.1 as i32 + dz) as usize * self.nx;
-                    if self.blocked[a] || self.blocked[b] {
-                        continue;
-                    }
-                }
-                let cost = gc
-                    + if dx != 0 && dz != 0 {
-                        std::f32::consts::SQRT_2
-                    } else {
-                        1.0
-                    };
-                if cost < g[idx(n)] {
-                    g[idx(n)] = cost;
-                    came[idx(n)] = idx(cell);
-                    open.push(Node {
-                        f: cost + h(n),
-                        cell: n,
-                    });
-                }
-            }
-        }
-        if !found {
-            return Vec::new();
-        }
-        let mut cells = vec![goal];
-        let mut at = idx(goal);
-        while at != idx(start) {
-            at = came[at];
-            cells.push((at % self.nx, at / self.nx));
-        }
-        cells.reverse();
-        // String pulling: from each kept point, skip ahead as far as a straight line stays open.
-        let pts: Vec<Vec2> = cells.iter().map(|&c| self.center(c)).collect();
-        let mut out = Vec::new();
-        let mut i = 0;
-        let mut from_pt = from;
-        while i + 1 < pts.len() {
-            let mut j = pts.len() - 1;
-            while j > i + 1 && !self.clear_line(from_pt, pts[j]) {
-                j -= 1;
-            }
-            out.push(pts[j]);
-            from_pt = pts[j];
-            i = j;
-        }
-        if out.is_empty() {
-            out.push(self.center(goal));
-        }
-        out
-    }
-}
-
-#[derive(PartialEq)]
-struct Node {
-    f: f32,
-    cell: (usize, usize),
-}
-impl Eq for Node {}
-impl Ord for Node {
-    fn cmp(&self, o: &Self) -> Ordering {
-        o.f.partial_cmp(&self.f).unwrap_or(Ordering::Equal)
-    }
-}
-impl PartialOrd for Node {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-        Some(self.cmp(o))
-    }
-}
 
 /// What a bot may know about every tank in the match.
 #[derive(Clone, Copy)]
@@ -430,7 +126,8 @@ impl Brain {
 /// One bot's memory between steps.
 pub struct Bot {
     rng: Rng,
-    path: Vec<Vec2>,
+    /// Waypoints, each on the floor it's on (a deck, under it, a cave).
+    path: Vec<Vec3>,
     replan_in: f32,
     target: Option<usize>,
     retarget_in: f32,
@@ -460,6 +157,10 @@ pub struct Bot {
     /// bots hunting one enemy come at it from different sides.
     flank: f32,
     roam: Option<Vec2>,
+    /// What's left of one of the map's ways round it's taking to the
+    /// fight, and when to think about taking one again.
+    way: Vec<Vec3>,
+    way_in: f32,
     /// Patrol point inside the objective's ring.
     post: Option<Vec2>,
     /// Path searches run so far (each one can cost a whole-grid search).
@@ -498,6 +199,8 @@ impl Bot {
             drive_sign: 1.0,
             flank,
             roam: None,
+            way: Vec::new(),
+            way_in: 0.0,
             post: None,
             plans: 0,
             last_yaw: None,
@@ -515,6 +218,8 @@ impl Bot {
         self.stuck_for = 0.0;
         self.reverse_for = 0.0;
         self.roam = None;
+        self.way.clear();
+        self.way_in = 0.0;
         self.post = None;
         self.engaged = false;
         self.last_yaw = None;
@@ -656,19 +361,77 @@ impl Bot {
             }
         };
 
+        // Making for the fight from far off: like a side spreading out, it
+        // often takes one of the map's ways round that's about on the way
+        // (over a bridge, under it, through the caves, along high ground)
+        // rather than all of them meeting on the straight line between the
+        // sides. It shoots at what it sees on the way, and only leaves the
+        // way to fight an enemy that comes close.
+        let close_fight = visible && target_d < if brawler { 30.0 } else { ideal * 1.5 };
+        let routing = objective.is_none() && mend.is_none() && !husk && !close_fight;
+        if !routing {
+            self.way.clear();
+        }
+        if self
+            .way
+            .first()
+            .is_some_and(|v| flat(*v).distance(my2) < 7.0 && (v.y - t.pos.y).abs() < 3.0)
+        {
+            self.way.remove(0);
+            if self.way.is_empty() {
+                self.way_in = self.rng.range(6.0, 12.0);
+            }
+        }
+        self.way_in -= dt;
+        if routing && self.way.is_empty() && self.way_in <= 0.0 && !world.map.routes.is_empty() {
+            self.way_in = self.rng.range(8.0, 14.0);
+            // Toward the target when it's not far, else the other side's
+            // ground (where its tanks come from), or the target anyway, or
+            // the middle of the map.
+            let theirs = world
+                .map
+                .bases
+                .get(1 - contacts[me].team.min(1))
+                .filter(|b| !b.is_empty() && world.map.bases.len() == 2);
+            let front = match (target.filter(|_| target_d < 90.0), theirs, target) {
+                (Some(o), _, _) => flat(o.pos),
+                (None, Some(b), _) => b.iter().copied().sum::<Vec2>() / b.len() as f32,
+                (None, None, Some(o)) => flat(o.pos),
+                (None, None, None) => world.map.center(),
+            };
+            if self.rng.chance(0.8) {
+                let ways = ways_toward(&world.map.routes, my2, front);
+                if !ways.is_empty() {
+                    self.way = ways[self.rng.index(ways.len())].clone();
+                    self.replan_in = 0.0;
+                }
+            }
+        }
+
         // Where to drive: to fight the target (or where it was last seen),
         // else roam. With an objective: to the site, leaving it only for
-        // enemies close by or on it.
+        // enemies close by or on it. Hunting, it goes to the level the
+        // target is on (the deck, under it, into the caves, up on top); a
+        // ranged gun with it in sight and reach keeps to its own (holding
+        // the high ground, the deck) as it works round to its range.
+        // Anywhere else, the floor seen from above.
+        let level = match target {
+            Some(_) if visible && !brawler && target_d < reach => t.pos.y,
+            Some(o) => o.pos.y,
+            None => f32::INFINITY,
+        };
+        let up = |p: Vec2| Vec3::new(p.x, f32::INFINITY, p.y);
+        let at_level = |p: Vec2| Vec3::new(p.x, level, p.y);
         let goal = match (mend, objective, target) {
-            (Some(c), _, _) => c,
-            (None, Some(_), Some(o)) if husk => flat(o.pos),
+            (Some(c), _, _) => up(c),
+            (None, Some(_), Some(o)) if husk => o.pos,
             (None, Some((c, r)), t) => {
                 let chase = t.map(|o| flat(o.pos)).filter(|&p| {
                     visible && (p.distance(my2) < GUARD_CHASE || p.distance(c) < r + 8.0)
                 });
                 match chase {
-                    Some(p) => approach(p),
-                    None => {
+                    Some(p) => at_level(approach(p)),
+                    None => up({
                         if self.post.is_some_and(|p| p.distance(my2) < 4.0) {
                             self.post = None;
                         }
@@ -684,13 +447,14 @@ impl Bot {
                             }
                             p
                         })
-                    }
+                    }),
                 }
             }
-            (None, None, Some(o)) => approach(flat(o.pos)),
-            (None, None, None) => *self.roam.get_or_insert_with(|| {
+            (None, None, _) if !self.way.is_empty() => self.way[0],
+            (None, None, Some(o)) => at_level(approach(flat(o.pos))),
+            (None, None, None) => up(*self.roam.get_or_insert_with(|| {
                 world.map.open_spots[self.rng.index(world.map.open_spots.len())]
-            }),
+            })),
         };
         if self.roam.is_some_and(|r| r.distance(my2) < 8.0) {
             self.roam = None;
@@ -701,26 +465,32 @@ impl Bot {
         self.replan_in -= dt;
         if self.replan_in <= 0.0 {
             self.replan_in = 1.0 + self.rng.f32() * 0.5;
-            self.path = nav.path(my2, goal);
+            self.path = nav.route(t.pos, goal);
             self.plans += 1;
             if self.path.is_empty() {
                 // Unreachable: give up on that roam spot or patrol point; head
                 // straight for a target or the objective.
                 self.roam = None;
                 self.post = None;
+                self.way.clear();
                 if target.is_some() || objective.is_some() || mend.is_some() {
-                    self.path.push(goal);
+                    self.path.push(Vec3::new(goal.x, t.pos.y, goal.z));
                 }
             }
         }
-        while self.path.len() > 1 && self.path[0].distance(my2) < 4.0 {
+        // Passed a waypoint: on to the next. (One right over or under
+        // the tank, on the other level, isn't reached yet.)
+        while self.path.len() > 1
+            && flat(self.path[0]).distance(my2) < 4.0
+            && (self.path[0].y - t.pos.y).abs() < 3.0
+        {
             self.path.remove(0);
         }
 
         // Driving.
         let mut cmd = Command::default();
         let close = brawler && visible && target_d < standoff && mend.is_none();
-        if let Some(&wp) = self.path.first() {
+        if let Some(wp) = self.path.first().map(|&p| flat(p)) {
             let err = wrap_angle(yaw_of(wp - my2) - t.yaw());
             cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
             cmd.throttle = if err.abs() > 1.1 {
@@ -728,13 +498,29 @@ impl Bot {
             } else {
                 1.0 - err.abs() * 0.5
             };
+            // A sharp turn at the waypoint coming up (onto a road down a
+            // pit's wall, round a corner): slow down for it first. A hover
+            // hull especially, which slides on through a turn taken fast.
+            if let Some(next) = self.path.get(1).map(|&p| flat(p)) {
+                let (into, out) = (wp - my2, next - wp);
+                let turn = into.angle_to(out).abs();
+                let speed = t.speed().abs();
+                let safe = 6.0 + into.length() * 0.5;
+                if turn > 0.7 && speed > safe {
+                    cmd.throttle = if t.hull_kind == crate::sim::HullKind::Sethuun {
+                        -0.5
+                    } else {
+                        cmd.throttle.min(0.2)
+                    };
+                }
+            }
         }
         // A close-range gun with its target in sight and nothing in between
         // drives straight for it (where it's going, a moment ahead), not
         // along a path planned to where it was.
         if let Some(o) = target.filter(|_| brawler && visible && !close && mend.is_none()) {
             let ahead = flat(o.pos) + flat(o.vel) * (target_d / 25.0).min(1.0);
-            if nav.clear_line(my2, ahead) {
+            if nav.clear_from(t.pos, ahead) {
                 let err = wrap_angle(yaw_of(ahead - my2) - t.yaw());
                 cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
                 cmd.throttle = if err.abs() > 1.1 { 0.3 } else { 1.0 };
@@ -823,6 +609,32 @@ impl Bot {
                 cmd.throttle = -cmd.throttle.signum() * 0.6;
                 self.reverse_for = 0.0;
             }
+        }
+        // Anywhere: not off a drop either (a plateau's cliff, the pit's
+        // wall, the side of a deck). No route goes down one.
+        // Where it's driving, and where it's sliding (a hover hull drifts
+        // on through a turn): brake against either.
+        let fwd = flat(t.forward()).normalize_or_zero();
+        if cmd.throttle.abs() > 0.05 {
+            let ahead = my2 + fwd * cmd.throttle.signum() * (2.5 + t.speed().abs() * 0.6);
+            if nav.ledge(t.pos, ahead) {
+                cmd.throttle = -cmd.throttle.signum() * 0.6;
+                self.reverse_for = 0.0;
+            }
+        }
+        let v = flat(t.vel);
+        if v.length() > 2.0 && nav.ledge(t.pos, my2 + v * 0.8 + v.normalize() * 2.0) {
+            // Sliding at it: swing an end of the hull into the slide and
+            // thrust against it (side-on, the tracks or fans can't stop it).
+            let e = wrap_angle(yaw_of(v) - t.yaw());
+            let (e, push) = if e.abs() < std::f32::consts::FRAC_PI_2 {
+                (e, -1.0)
+            } else {
+                (wrap_angle(e + std::f32::consts::PI), 1.0)
+            };
+            cmd.steer = (e * 2.5).clamp(-1.0, 1.0);
+            cmd.throttle = push * (1.0 - e.abs() / std::f32::consts::FRAC_PI_2).max(0.3);
+            self.reverse_for = 0.0;
         }
 
         // A gun whose shots skip off walls can reach a target that's just
@@ -1018,7 +830,7 @@ impl Bot {
             self.strafe_in = self.rng.range(1.8, 4.0);
         }
         let dir_for = |s: f32| (to.perp() * s + to * radial + home).normalize_or_zero();
-        let open = |dir: Vec2| dir != Vec2::ZERO && nav.clear_line(my2, my2 + dir * 7.0);
+        let open = |dir: Vec2| dir != Vec2::ZERO && nav.clear_from(t.pos, my2 + dir * 7.0);
         let mut dir = dir_for(self.strafe);
         if !open(dir) {
             // Wall that way: slide the other way round instead.
@@ -1059,6 +871,56 @@ impl Bot {
     pub fn fired(&mut self) {
         self.aim_err = self.rng.range(-0.04, 0.04);
     }
+}
+
+/// The ways round (each taken from either end, joined at any point along
+/// it) that are about on the way from `from` to `front`: not much longer
+/// than going straight there, and ending nearer it. What's left of each
+/// to drive, from where it's joined.
+fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
+    let direct = from.distance(front);
+    let mut out = Vec::new();
+    if direct < 40.0 {
+        return out;
+    }
+    for way in ways {
+        for reversed in [false, true] {
+            let mut w = way.clone();
+            if reversed {
+                w.reverse();
+            }
+            let end = flat(*w.last().unwrap_or(&Vec3::ZERO));
+            if end.distance(front) > direct - 20.0 {
+                continue;
+            }
+            // Join it at its point nearest here, and drive the rest.
+            let Some(k) = (0..w.len()).min_by(|&a, &b| {
+                from.distance(flat(w[a]))
+                    .total_cmp(&from.distance(flat(w[b])))
+            }) else {
+                continue;
+            };
+            let along: f32 = w[k..]
+                .windows(2)
+                .map(|p| flat(p[0]).distance(flat(p[1])))
+                .sum();
+            let cost = from.distance(flat(w[k])) + along + end.distance(front);
+            // And it has to lead that way, not back.
+            let leads = end.distance(front) < flat(w[k]).distance(front) - 10.0;
+            if leads && cost < direct * 1.5 + 30.0 {
+                // Already there: on to the next point.
+                let k = if from.distance(flat(w[k])) < 7.0 {
+                    k + 1
+                } else {
+                    k
+                };
+                if k < w.len() {
+                    out.push(w[k..].to_vec());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The heading for a shot from `t` at `o` off one wall, if there's a clean
@@ -1160,6 +1022,7 @@ pub fn can_see(world: &World, eye: Vec3, o: &Tank) -> bool {
 mod tests {
     use super::*;
     use crate::game::DT;
+    use crate::map::Map;
 
     #[test]
     fn paths_avoid_buildings() {
@@ -1185,11 +1048,13 @@ mod tests {
             let nav = NavGrid::build(&map);
             // There must be open nav ground right next to each spawn.
             for &p in &map.open_spots {
-                let c = nav.nearest_open(p).expect("spawn with no open ground");
+                let c = nav
+                    .nearest_open_point(p)
+                    .expect("spawn with no open ground");
                 assert!(
-                    nav.center(c).distance(p) < 2.5,
+                    c.distance(p) < 2.5,
                     "spawn {p} is {} m from open ground",
-                    nav.center(c).distance(p)
+                    c.distance(p)
                 );
             }
         }

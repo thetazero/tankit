@@ -599,6 +599,12 @@ pub struct Map {
     pub fall_y: Option<f32>,
     /// What the Hold site is called on the HUD.
     pub hold_name: &'static str,
+    /// Ways round the map worth taking to a fight, each a line of points
+    /// on their level (over a bridge's deck, under it, through caves, along
+    /// high ground): making for the fight, bots often take one, so they
+    /// spread over all of it instead of all meeting on the straight line
+    /// between the sides. Empty on most maps.
+    pub routes: Vec<Vec<Vec3>>,
     /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
     /// drawn as they are, never collide.
     pub sculpted: crate::render::mesh::MeshData,
@@ -1012,6 +1018,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             sounds: Vec::new(),
         }

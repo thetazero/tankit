@@ -203,6 +203,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "DEPOSIT",
+            routes: Vec::new(),
             sculpted: crate::render::mesh::MeshData::default(),
             sounds: Vec::new(),
         };

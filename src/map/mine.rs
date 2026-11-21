@@ -243,6 +243,7 @@ impl Map {
             glow_paths: Vec::new(),
             fall_y: None,
             hold_name: "SEAM",
+            routes: Vec::new(),
         };
         let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 111, 111, ground);
         terrain.color = SAND;
@@ -268,6 +269,7 @@ impl Map {
         map.mine_resonant_base(&mut rng);
         map.edge_rocks(&mut rng);
         map.mine_spawns();
+        map.mine_routes();
         map.perimeter(false);
         map.mine_horizon(&mut rng);
         map.mine_sounds();
@@ -1651,6 +1653,67 @@ impl Map {
         }
     }
 
+    /// The ways round for bots, on every level: over the bridge and under
+    /// it, through the caves under each plateau (in at a gallery, along
+    /// the rail tunnel, out at the other gallery), over each plateau's top.
+    fn mine_routes(&mut self) {
+        let floor = -PIT_DEPTH;
+        let mut ways = vec![
+            // Over the deck, rim to rim: crossing from the lane south of
+            // the pit on one side to the one north of it on the other, and
+            // the other way about.
+            vec![
+                Vec3::new(MID - 12.0, 0.0, DECK_Z.0 - 5.0),
+                Vec3::new(MID, DECK_TOP, DECK_Z.0 + 5.0),
+                Vec3::new(MID, DECK_TOP, DECK_Z.1 - 5.0),
+                Vec3::new(MID + 14.0, 0.0, DECK_Z.1 + 11.0),
+            ],
+            vec![
+                Vec3::new(MID + 12.0, 0.0, DECK_Z.0 - 5.0),
+                Vec3::new(MID, DECK_TOP, DECK_Z.0 + 5.0),
+                Vec3::new(MID, DECK_TOP, DECK_Z.1 - 5.0),
+                Vec3::new(MID - 14.0, 0.0, DECK_Z.1 + 11.0),
+            ],
+            // Across the pit floor, down one haul road and up the other,
+            // between the bridge's piers.
+            vec![
+                Vec3::new(ROAD_X.0 + 6.0, floor * 0.5, MID + 8.0),
+                Vec3::new(ROAD_X.1 + 2.0, floor, MID - 8.0),
+                Vec3::new(MID, floor, MID),
+                Vec3::new(SIZE - ROAD_X.1 - 2.0, floor, MID - 8.0),
+                Vec3::new(SIZE - ROAD_X.0 - 6.0, floor * 0.5, MID + 8.0),
+            ],
+        ];
+        for north in [false, true] {
+            let place = |x: f32, y: f32, z: f32| {
+                let p = if north {
+                    flip(Vec2::new(x, z))
+                } else {
+                    Vec2::new(x, z)
+                };
+                Vec3::new(p.x, y, p.y)
+            };
+            // Under the plateau: in at the west gallery's mouth, across to
+            // the tunnel, out along the east one.
+            ways.push(vec![
+                place(81.0, 0.0, 56.0),
+                place(81.0, 0.0, 34.0),
+                place(96.0, 0.0, 25.0),
+                place(MID, 0.0, 25.0),
+                place(SIZE - 96.0, 0.0, 25.0),
+                place(SIZE - 81.0, 0.0, 34.0),
+                place(SIZE - 81.0, 0.0, 56.0),
+            ]);
+            // Over its top, end to end.
+            ways.push(vec![
+                place(MID - PLATEAU_FLAT + 4.0, PLATEAU_H, 30.0),
+                place(MID, PLATEAU_H, 36.0),
+                place(MID + PLATEAU_FLAT - 4.0, PLATEAU_H, 30.0),
+            ]);
+        }
+        self.routes = ways;
+    }
+
     fn mine_spawns(&mut self) {
         for (side, xs) in [(0, [11.0, 18.0]), (1, [SIZE - 11.0, SIZE - 18.0])] {
             for x in xs {
@@ -1872,6 +1935,101 @@ mod tests {
         }
     }
 
+    /// Routes keep to the level they're on: along the deck over the pit,
+    /// across the pit floor under it, through the caves under a plateau,
+    /// over the plateau's top above them.
+    #[test]
+    fn routes_keep_to_their_level() {
+        let nav = NavGrid::build(&Map::mine());
+        let floor = -PIT_DEPTH;
+        let cases = [
+            (
+                Vec3::new(MID, DECK_TOP, DECK_Z.0 + 6.0),
+                Vec3::new(MID, DECK_TOP, DECK_Z.1 - 6.0),
+                DECK_TOP,
+            ),
+            (
+                Vec3::new(MID - 10.0, floor, MID + 12.0),
+                Vec3::new(MID + 10.0, floor, MID + 12.0),
+                floor,
+            ),
+            (Vec3::new(81.0, 0.0, 34.0), Vec3::new(MID, 0.0, 25.0), 0.0),
+            (
+                Vec3::new(66.0, PLATEAU_H, 26.0),
+                Vec3::new(SIZE - 66.0, PLATEAU_H, 26.0),
+                PLATEAU_H,
+            ),
+        ];
+        for (a, b, y) in cases {
+            let r = nav.route(a, b);
+            assert!(!r.is_empty(), "no route from {a} to {b}");
+            let end = *r.last().unwrap();
+            assert!(end.distance(b) < 3.0, "route from {a} to {b} ends at {end}");
+            assert!(
+                r.iter().all(|p| (p.y - y).abs() < 1.0),
+                "route from {a} to {b} leaves its level: {r:?}"
+            );
+        }
+    }
+
+    /// Every way round the map the bots take is open ground on its level.
+    #[test]
+    fn the_ways_round_are_open() {
+        let m = Map::mine();
+        let nav = NavGrid::build(&m);
+        assert!(m.routes.len() >= 6);
+        for p in m.routes.iter().flatten() {
+            let f = nav.floor_at(*p);
+            assert!(f.is_some_and(|f| (f - p.y).abs() < 1.0), "{p} is on {f:?}");
+        }
+    }
+
+    /// Bot `Hymn` (it drives right up to what it's after) from `at` after
+    /// a parked tank at `goal`, for up to `secs`: how near it got on the
+    /// target's level.
+    fn chase(at: Vec2, yaw: f32, goal: Vec2, secs: f32) -> f32 {
+        use crate::ai::{Bot, Contact};
+        let m = Map::mine();
+        let nav = NavGrid::build(&m);
+        let mut w = crate::sim::World::empty(m);
+        let hull = crate::sim::HullKind::Kataphrakt;
+        w.spawn_tank(Vec3::ONE, at, yaw, hull, crate::sim::TurretKind::Hymn);
+        w.spawn_tank(Vec3::ONE, goal, 0.0, hull, crate::sim::TurretKind::Kontos);
+        let mut bot = Bot::new(5);
+        let contacts = [0, 1].map(|team| Contact {
+            targetable: true,
+            team,
+            health: 1.0,
+        });
+        let mut nearest = f32::INFINITY;
+        for _ in 0..(secs / crate::game::DT) as usize {
+            let (cmd, _) = bot.think(0, &w, &contacts, None, &[], &nav, crate::game::DT);
+            w.step(&[cmd, crate::sim::Command::default()]);
+            let (p, q) = (w.tanks[0].pos, w.tanks[1].pos);
+            if (p.y - q.y).abs() < 2.0 {
+                nearest = nearest.min(p.distance(q));
+            }
+        }
+        nearest
+    }
+
+    /// After a tank on the pit floor under the bridge, a bot coming up
+    /// the lane to the bridge doesn't drive out over it on the deck: it
+    /// goes down a haul road and in under.
+    #[test]
+    fn a_bot_gets_under_the_bridge() {
+        let d = chase(Vec2::new(MID, 68.0), 0.0, Vec2::new(MID, MID + 10.0), 40.0);
+        assert!(d < 12.0, "got no nearer than {d:.1} m");
+    }
+
+    /// After a tank in the rail tunnel, a bot on the plateau's top over it
+    /// finds the way down and in.
+    #[test]
+    fn a_bot_gets_into_the_tunnel_under_it() {
+        let d = chase(Vec2::new(66.0, 26.0), FRAC_PI_2, Vec2::new(MID, 30.0), 40.0);
+        assert!(d < 12.0, "got no nearer than {d:.1} m");
+    }
+
     #[test]
     fn the_edge_is_rock() {
         // Inside a cave's wall the rock is solid up to the roof: no tank
@@ -1948,5 +2106,183 @@ mod play {
         let (a, b) = (m.score(0), m.score(1));
         eprintln!("score {a} : {b}");
         assert!(a > 0 && b > 0, "score {a} : {b}");
+    }
+
+    /// The levels a tank can be on in the mine.
+    const LEVELS: [&str; 6] = ["deck", "under bridge", "pit", "caves", "plateau", "lanes"];
+
+    /// Which of `LEVELS` a tank at `p` is on.
+    fn level(p: Vec3) -> usize {
+        let q = Vec2::new(p.x, p.z);
+        if (p.x - MID).abs() < DECK_HALF && (DECK_Z.0..DECK_Z.1).contains(&p.z) && p.y > -2.0 {
+            0
+        } else if (p.x - MID).abs() < DECK_HALF + 3.0 && pit_sdf(q) < 0.0 && p.y < -4.0 {
+            1
+        } else if pit_sdf(q) < -1.0 && p.y < -2.0 {
+            2
+        } else if cave_distance(q) == 0.0 && plateau_mask(q) > 0.3 && p.y < 4.0 {
+            3
+        } else if p.y > 5.0 {
+            4
+        } else {
+            5
+        }
+    }
+
+    /// What a bots-only round did, level by level.
+    struct Survey {
+        /// Share of bot time on each level, and of the time bots had an
+        /// enemy in sight and in reach.
+        time: [f32; 6],
+        fighting: [f32; 6],
+        deaths: [u32; 6],
+        /// Steep drops of more than 3 m nobody threw them off.
+        falls: u32,
+        /// Share of bot time stopped more than 5 s on end.
+        stuck: f32,
+        /// The most bot time any one 20 m square of the map had.
+        crowd: f32,
+    }
+
+    /// `secs` of a 6v6 round of bots on the mine, watched.
+    fn survey(seed: u64, secs: f32) -> Survey {
+        let mut m = Match::new(Map::mine(), 0, 11, seed);
+        m.bots_only(seed);
+        let dt = crate::game::DT;
+        let n = m.world.tanks.len();
+        let (mut time, mut fighting, mut deaths) = ([0.0f32; 6], [0.0f32; 6], [0u32; 6]);
+        let (mut falls, mut stuck) = (0, 0.0);
+        let mut heat = vec![0.0f32; 11 * 11];
+        let mut last = vec![Vec3::ZERO; n];
+        let mut alive = vec![true; n];
+        let mut still = vec![0.0f32; n];
+        let mut launched = vec![f32::NEG_INFINITY; n];
+        // Each tank's last second of positions.
+        let mut trail: Vec<Vec<(f32, Vec3)>> = vec![Vec::new(); n];
+        for k in 0..(secs / dt) as usize {
+            m.step(Command::default(), false);
+            let now = k as f32 * dt;
+            for i in 0..n {
+                let (t, f) = (&m.world.tanks[i], &m.fighters[i]);
+                let p = t.pos;
+                if alive[i] && !f.alive {
+                    deaths[level(last[i])] += 1;
+                }
+                alive[i] = f.alive;
+                if !f.alive {
+                    still[i] = 0.0;
+                    trail[i].clear();
+                    continue;
+                }
+                last[i] = p;
+                time[level(p)] += dt;
+                let c = (p / 20.0).clamp(Vec3::ZERO, Vec3::splat(10.0));
+                heat[c.z as usize * 11 + c.x as usize] += dt;
+                // In a fight: an enemy in sight and in reach (looked for
+                // every quarter second).
+                if k % 30 == 0 {
+                    let eye = p + Vec3::Y * t.gun_height();
+                    let seen = (0..n).any(|j| {
+                        m.fighters[j].alive
+                            && m.fighters[j].team != f.team
+                            && m.world.tanks[j].pos.distance(p) < 110.0
+                            && crate::ai::can_see(&m.world, eye, &m.world.tanks[j])
+                    });
+                    if seen {
+                        fighting[level(p)] += dt * 30.0;
+                    }
+                }
+                still[i] = if t.speed().abs() < 0.5 {
+                    still[i] + dt
+                } else {
+                    0.0
+                };
+                if still[i] > 5.0 {
+                    stuck += dt;
+                }
+                // Off something: a drop of more than 3 m inside a second,
+                // steeper than any slope, driving on (not a Vigil setting
+                // down where it stands), that no hit or blast threw it into
+                // (and not a spawn's drop in, nor a husk going down).
+                if t.vel.y > 3.0 || f.since_hit < 0.5 {
+                    launched[i] = now;
+                }
+                let h = &mut trail[i];
+                h.push((now, p));
+                h.retain(|&(s, _)| s > now - 1.0);
+                if let Some(&(_, q)) = h.iter().max_by(|a, b| a.1.y.total_cmp(&b.1.y)) {
+                    let (drop, across) = (q.y - p.y, Vec2::new(q.x - p.x, q.z - p.z).length());
+                    if drop > 3.0 && drop > across * 0.6 && across > 1.0 {
+                        if f.arrived > 3.0 && !f.is_husk() && launched[i] < now - 2.0 {
+                            falls += 1;
+                            eprintln!("t={now:.0} tank {i} fell {drop:.1} m: {q} to {p}");
+                        }
+                        h.clear();
+                    }
+                }
+            }
+        }
+        let total: f32 = time.iter().sum();
+        let fights: f32 = fighting.iter().sum::<f32>().max(1e-3);
+        Survey {
+            time: time.map(|t| t / total),
+            fighting: fighting.map(|t| t / fights),
+            deaths,
+            falls,
+            stuck: stuck / total,
+            crowd: heat.iter().fold(0.0f32, |a, &b| a.max(b)) / total,
+        }
+    }
+
+    /// Bots get round the whole mine and fight on every level of it: over
+    /// the bridge and under it, in the pit, the caves, on the plateaus and
+    /// in the lanes. They don't fall off things, sit stuck, or all crowd
+    /// into one spot. Slow (`--ignored --release --nocapture`).
+    #[test]
+    #[ignore]
+    fn bots_play_every_level() {
+        let seeds = [7, 8, 9];
+        let (mut time, mut fighting) = ([0.0f32; 6], [0.0f32; 6]);
+        for seed in seeds {
+            let s = survey(seed, 180.0);
+            eprintln!("seed {seed}:");
+            for (l, name) in LEVELS.iter().enumerate() {
+                eprintln!(
+                    "  {name:>12}: {:5.1}% of bot time, {:5.1}% of the fighting, {} deaths",
+                    s.time[l] * 100.0,
+                    s.fighting[l] * 100.0,
+                    s.deaths[l]
+                );
+                time[l] += s.time[l] / seeds.len() as f32;
+                fighting[l] += s.fighting[l] / seeds.len() as f32;
+            }
+            eprintln!(
+                "  {} falls, {:.1}% stuck, {:.1}% in the busiest 20 m square",
+                s.falls,
+                s.stuck * 100.0,
+                s.crowd * 100.0
+            );
+            for (l, name) in LEVELS.iter().enumerate() {
+                assert!(s.time[l] > 0.0005, "seed {seed}: nobody went {name}");
+            }
+            assert!(s.falls <= 6, "seed {seed}: {} falls", s.falls);
+            assert!(s.stuck < 0.02, "seed {seed}: stuck {:.1}%", s.stuck * 100.0);
+            assert!(
+                s.crowd < 0.08,
+                "seed {seed}: {:.1}% in one square",
+                s.crowd * 100.0
+            );
+        }
+        // Over the three rounds, some of the fighting is on every level,
+        // and a fair share of it off the lanes.
+        for (l, name) in LEVELS.iter().enumerate() {
+            assert!(fighting[l] > 0.002, "nobody fought {name}");
+        }
+        assert!(
+            fighting[5] < 0.9,
+            "{:.0}% of the fighting in the lanes",
+            fighting[5] * 100.0
+        );
+        assert!(time[3] > 0.02 && time[4] > 0.03, "caves {time:?}");
     }
 }
