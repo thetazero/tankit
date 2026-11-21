@@ -1073,7 +1073,8 @@ impl Map {
         let attic_w = opening + pier_w;
         if ruined {
             // The attic came down in two pieces either side of the road.
-            for (x, tilt, roll) in [(-10.5f32, 0.25f32, 0.1f32), (10.5, -0.2, -0.35)] {
+            // Beside the piers, off the opening: the road through stays clear.
+            for (x, tilt, roll) in [(-12.0f32, 0.25f32, 0.1f32), (12.0, -0.2, -0.35)] {
                 rig.part(
                     self,
                     Vec3::new(x, 1.8, rng.range(4.0, 6.0)),
@@ -1085,7 +1086,7 @@ impl Map {
                     0.4,
                 );
             }
-            let e = rig.point(Vec3::new(-10.5, 2.3, 6.0 + depth * 0.5 + 0.2));
+            let e = rig.point(Vec3::new(-12.0, 2.3, 6.0 + depth * 0.5 + 0.2));
             self.standing_emblem(e, dir, 1.4);
             return;
         }

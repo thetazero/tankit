@@ -86,6 +86,7 @@ pub struct Street {
     pub half: f32,
     /// Half the strip down its middle kept clear at tank height (decos
     /// stand between it and the kerb).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub clear: f32,
     pub rank: Rank,
 }
@@ -230,6 +231,7 @@ pub struct Deco {
     pub kind: DecoKind,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl DecoKind {
     /// How far its solid parts may reach from where it stands, m.
     pub fn reach(self) -> f32 {
@@ -244,6 +246,7 @@ impl DecoKind {
 
 /// How far a lot's solid parts at tank height may stand off its footprint
 /// (a collapsed floor sloping to the street, a heap spilling out).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const LOT_SPILL: f32 = 4.0;
 
 impl Skeleton {

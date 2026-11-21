@@ -84,6 +84,7 @@ fn style(look: Look) -> &'static dyn Style {
 
 /// What a filler built: the placeholder, and the range of `oboxes` it added.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum Claim {
     Lot(usize),
     Deco(usize),
@@ -356,8 +357,12 @@ mod tests {
                                 .iter()
                                 .map(|&p| (p - s.at).dot(side).abs())
                                 .fold(f32::MAX, f32::min);
-                            // The ruined one's fallen attic lies to one side.
-                            assert!(near > 3.0, "seed {seed} gate {k} blocks the street");
+                            // Its opening stays clear (the ruined one's
+                            // attic fell beside the piers).
+                            assert!(
+                                near > s.opening - 0.6,
+                                "seed {seed} gate {k} blocks the street: {near} m from the middle"
+                            );
                         }
                     }
                 }
@@ -365,7 +370,7 @@ mod tests {
         }
     }
 
-    /// Down each avenue's middle, from the landmark's precinct to the
+    /// Down each avenue's clear strip, from the landmark's precinct to the
     /// edge, nothing solid stands at tank height.
     #[test]
     fn the_avenues_are_open_to_the_middle() {
@@ -376,14 +381,20 @@ mod tests {
                 let (dir, side) = (a.dir(), Vec2::new(-a.dir().y, a.dir().x));
                 let mut r = sk.landmark.precinct + 4.0;
                 while r < a.len() - 8.0 {
-                    let p = a.from + dir * r + side * 3.0;
-                    assert!(
-                        !m.oboxes.iter().any(|o| {
-                            let (y0, _) = o.y_range();
-                            o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
-                        }),
-                        "seed {seed}: avenue {dir:?} blocked at {r}"
-                    );
+                    for across in [-1.0, 0.0, 1.0] {
+                        let p = a.from + dir * r + side * across * (a.clear - 1.0);
+                        assert!(
+                            !m.oboxes.iter().any(|o| {
+                                let (y0, _) = o.y_range();
+                                o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
+                            }),
+                            "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {:?}",
+                            m.oboxes.iter().find(|o| {
+                                let (y0, _) = o.y_range();
+                                o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
+                            })
+                        );
+                    }
                     r += 2.0;
                 }
             }

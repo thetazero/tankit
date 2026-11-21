@@ -265,6 +265,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
 }
 
 /// A round under `contract`, hired by the map's side `side`, with the player in `kit`.
+#[allow(clippy::too_many_arguments)]
 pub fn new_match(
     seed: u64,
     map_kind: MapKind,
