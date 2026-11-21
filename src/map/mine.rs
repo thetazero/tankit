@@ -1241,16 +1241,27 @@ impl Map {
                     along += p.distance(pts[i - 1].0);
                 }
                 let nrm = Vec2::new(dir.y, -dir.x);
-                let full = mesa(Vec2::new(p.x, face(p.x) + FACE_RISE + 1.0)) * (1.0 - scree(p.x));
-                let base = self.level(p + nrm * 2.5);
-                let lip = TOP * full + 0.8 * (noise(along / 6.0, 31) - 0.5);
+                // The rim is at the mesa's top behind it. Where the Face
+                // gives way to the scree only part of the rise is cliff
+                // (the rest is the scree's slope, up to the same top): the
+                // face is only that part, its foot up on the slope.
+                let top = TOP * mesa(Vec2::new(p.x, face(p.x) + FACE_RISE + 1.0));
+                let cliff = top * (1.0 - scree(p.x));
+                // Ragged, but never below the top: a rim sunk under the
+                // ground behind it leaves the cap over it buried, poking
+                // out in patches (seen from the scree, #290).
+                let mut base = self.level(p + nrm * 2.5);
+                if cliff < top {
+                    base = base.max(top - cliff);
+                }
+                let lip = top + 0.6 * noise(along / 6.0, 31) * smoothstep(0.3, 3.0, top - base);
                 let mouth = mouths.iter().any(|(a, b)| p.x > a.x && p.x < b.x);
                 let by_mouth = mouths
                     .iter()
                     .map(|(a, b)| (a.x - p.x).max(p.x - b.x).max(0.0))
                     .fold(f32::INFINITY, f32::min);
                 // Low where the mesa slopes away: no face at all.
-                if lip - base < 0.3 && !mouth {
+                if top - base < 0.3 && !mouth {
                     if feet.len() > 1 {
                         all_fronts.extend(crag::sculpt(&mut mesh, &feet, &|q| {
                             self.ground_height(q.x, q.y)
@@ -5909,6 +5920,61 @@ mod tests {
                 uncut(p)
             );
         }
+    }
+
+    /// The rock's flat top along the Face is never under the ground (#290):
+    /// where the Face gave way to the scree its rim was set as if the cliff
+    /// stood on the desert floor, and the cap over it lay buried in the
+    /// slope, poking out of it in patches and edges.
+    #[test]
+    fn the_faces_top_is_never_buried() {
+        let map = Map::mine();
+        let (v, ix) = (&map.sculpted.verts, &map.sculpted.indices);
+        let mut buried = 0.0;
+        let mut worst = (0.0, Vec3::ZERO);
+        for t in ix.chunks(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from(v[t[k] as usize].pos));
+            if v[t[0] as usize].color[3] != Material::Cliff.id() {
+                continue;
+            }
+            let n = (b - a).cross(c - a);
+            let area = n.length() * 0.5;
+            // Up-facing: the cap over the rim, not the face.
+            if area < 1e-4 || n.normalize().y < 0.9 {
+                continue;
+            }
+            for w in [
+                Vec3::splat(1.0 / 3.0),
+                Vec3::new(0.5, 0.5, 0.0),
+                Vec3::new(0.0, 0.5, 0.5),
+                Vec3::new(0.5, 0.0, 0.5),
+            ] {
+                let p = a * w.x + b * w.y + c * w.z;
+                // The mesa's Face, in the map: not the mine's insides,
+                // under the ground, or the Crag's top, 40 m up.
+                let q = Vec2::new(p.x, p.z);
+                if cave_distance(q) < 3.0
+                    || crag(q) > 0.5
+                    || q.max_element() > SIZE
+                    || q.min_element() < 0.0
+                {
+                    continue;
+                }
+                let under = ground(p.x, p.z) - p.y;
+                if under > 0.05 {
+                    buried += area / 4.0;
+                }
+                if under > worst.0 {
+                    worst = (under, p);
+                }
+            }
+        }
+        assert!(
+            buried == 0.0,
+            "{buried:.1} m2 of the Face's top under the ground, worst {:.2} m at {}",
+            worst.0,
+            worst.1
+        );
     }
 
     /// How far a point is out of the stone drawn for `o` (< 0: in it). A

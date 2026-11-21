@@ -225,8 +225,18 @@ pub(super) fn sculpt(
         for r in 0..rows {
             let (q, y, c) = if r == 0 {
                 // The cap, back over the top.
+                // Clear of the ground all the way back from the rim, not
+                // just at its far edge: dipping under a rise between them
+                // it'd show through in patches.
                 let q = f.p - f.nrm * BACK;
-                let y = (behind(q) + 0.05).max(f.lip - 0.5);
+                let rim = f.lip + 0.1;
+                let from = f.p + f.nrm * out(f, rim);
+                let y = (1..=8)
+                    .map(|k| {
+                        let t = k as f32 / 8.0;
+                        rim + (behind(from.lerp(q, t)) + 0.05 - rim) / t
+                    })
+                    .fold(f.lip - 0.5, f32::max);
                 (q, y, TOP)
             } else if r == 1 {
                 let y = f.lip + 0.1;
