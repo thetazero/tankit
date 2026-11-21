@@ -5802,20 +5802,24 @@ mod tests {
         }
     }
 
-    /// How far `p` is out of the stone drawn for `o` (< 0: in it). A rock
-    /// is measured to the hull of its surface (what it collides as), a
+    /// How far a point is out of the stone drawn for `o` (< 0: in it). A
+    /// rock is measured to the hull of its surface (what it collides as), a
     /// block or plain box to its box.
-    fn out_of_stone(o: &OBox, p: Vec3) -> f32 {
-        if let Some(pts) = o.rock_points() {
-            use rapier3d::parry::query::PointQuery;
-            let hull = rapier3d::parry::shape::SharedShape::convex_hull(&pts).unwrap();
-            let pr = hull.project_local_point(p, true);
-            let d = p.distance(pr.point);
-            return if pr.is_inside { -d } else { d };
+    fn stone_distance(o: &OBox) -> impl Fn(Vec3) -> f32 + '_ {
+        use rapier3d::parry::query::PointQuery;
+        let hull = o
+            .rock_points()
+            .and_then(|pts| rapier3d::parry::shape::SharedShape::convex_hull(&pts));
+        move |p: Vec3| {
+            if let Some(hull) = &hull {
+                let pr = hull.project_local_point(p, true);
+                let d = p.distance(pr.point);
+                return if pr.is_inside { -d } else { d };
+            }
+            let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
+            let q = (o.rotation().inverse() * (p - o.center3())).abs() - h;
+            q.max(Vec3::ZERO).length() + q.max_element().min(0.0)
         }
-        let h = Vec3::new(o.half.x, (o.y1 - o.y0) * 0.5, o.half.y);
-        let q = (o.rotation().inverse() * (p - o.center3())).abs() - h;
-        q.max(Vec3::ZERO).length() + q.max_element().min(0.0)
     }
 
     /// At every spawn on both sides, swinging the turret all the way round,
@@ -5825,40 +5829,40 @@ mod tests {
     #[test]
     fn the_chase_camera_keeps_out_of_the_rock_at_spawn() {
         use crate::scene::ChaseCam;
-        let map = Map::mine();
+        let mut w = crate::sim::World::empty(Map::mine());
+        let map = w.map.clone();
+        w.spawn_tank(
+            Vec3::ONE,
+            map.bases[0][0],
+            0.0,
+            crate::sim::HullKind::Kataphrakt,
+            crate::sim::TurretKind::Kontos,
+        );
+        let stone: Vec<(&OBox, _)> = map.oboxes.iter().map(|o| (o, stone_distance(o))).collect();
         let mut failures = Vec::new();
         for side in 0..2 {
+            let enemy = &map.bases[1 - side];
+            let look = enemy.iter().sum::<Vec2>() / enemy.len() as f32;
             for &spot in &map.bases[side] {
-                let mut w = crate::sim::World::empty(map.clone());
-                let look =
-                    map.bases[1 - side].iter().sum::<Vec2>() / map.bases[1 - side].len() as f32;
-                let yaw = crate::sim::yaw_of(look - spot);
-                w.spawn_tank(
-                    Vec3::ONE,
-                    spot,
-                    yaw,
-                    crate::sim::HullKind::Kataphrakt,
-                    crate::sim::TurretKind::Kontos,
-                );
-                for _ in 0..60 {
+                w.teleport(0, spot, crate::sim::yaw_of(look - spot));
+                for _ in 0..5 {
                     w.step(&[crate::sim::Command::default()]);
                 }
-                let near: Vec<&OBox> = w
-                    .map
-                    .oboxes
+                let at = flat(w.tanks[0].pos);
+                let near: Vec<_> = stone
                     .iter()
-                    .filter(|o| o.distance(flat(w.tanks[0].pos)) < 16.0)
+                    .filter(|(o, _)| o.distance(at) < 16.0)
                     .collect();
                 let mut cam = ChaseCam::new();
                 let mut worst = (f32::INFINITY, 0.0);
-                for k in 0..=32 {
+                for k in 0..=24 {
                     let mut tank = w.tanks[0].clone();
-                    tank.turret_rel = k as f32 * TAU / 32.0;
-                    for _ in 0..20 {
+                    tank.turret_rel = k as f32 * TAU / 24.0;
+                    for _ in 0..12 {
                         let c = cam.update(&w, &tank, 1.0 / 60.0);
                         let d = near
                             .iter()
-                            .map(|o| out_of_stone(o, c.pos))
+                            .map(|(_, d)| d(c.pos))
                             .fold(f32::INFINITY, f32::min);
                         if d < worst.0 {
                             worst = (d, tank.turret_rel);

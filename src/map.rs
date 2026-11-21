@@ -232,6 +232,36 @@ impl OBox {
         rocks::Rock::of(self).map(|rock| rock.points().into_iter().map(|p| c + r * p).collect())
     }
 
+    /// A rock's shadow on the ground before it's turned by `yaw` or moved
+    /// to its center. Worked out once per rock shape: map building asks
+    /// for rocks' shadows all the time.
+    fn rock_plan(&self) -> Option<std::sync::Arc<Vec<Vec2>>> {
+        use std::collections::HashMap;
+        use std::sync::{Arc, LazyLock, Mutex};
+        type Cache = Mutex<HashMap<([u32; 6], u32, u32), Arc<Vec<Vec2>>>>;
+        static CACHE: LazyLock<Cache> = LazyLock::new(Default::default);
+        if !self.is_rock() {
+            return None;
+        }
+        let rock = rocks::Rock::of(self)?;
+        let key = (rock.id(), self.tilt.to_bits(), self.roll.to_bits());
+        if let Some(plan) = CACHE.lock().unwrap().get(&key) {
+            return Some(plan.clone());
+        }
+        let turn = glam::Quat::from_rotation_x(self.tilt) * glam::Quat::from_rotation_z(self.roll);
+        let plan = Arc::new(convex_hull(
+            rock.points()
+                .iter()
+                .map(|p| {
+                    let q = turn * *p;
+                    Vec2::new(q.x, q.z)
+                })
+                .collect(),
+        ));
+        CACHE.lock().unwrap().insert(key, plan.clone());
+        Some(plan)
+    }
+
     /// Whether the box is turned out of the upright (tilted or rolled).
     pub fn is_turned(&self) -> bool {
         self.tilt != 0.0 || self.roll != 0.0
@@ -268,8 +298,15 @@ impl OBox {
     /// The box's shadow on the ground (straight down): a convex polygon,
     /// counter-clockwise. For an upright box, its footprint.
     pub fn shadow(&self) -> Vec<Vec2> {
-        if let Some(p) = self.rock_points() {
-            return convex_hull(p.iter().map(|p| Vec2::new(p.x, p.z)).collect());
+        if let Some(plan) = self.rock_plan() {
+            let yaw = glam::Quat::from_rotation_y(self.yaw);
+            return plan
+                .iter()
+                .map(|q| {
+                    let w = yaw * Vec3::new(q.x, 0.0, q.y);
+                    self.center + Vec2::new(w.x, w.z)
+                })
+                .collect();
         }
         if !self.is_turned() {
             return self.corners().to_vec();
