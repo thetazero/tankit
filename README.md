@@ -38,6 +38,10 @@ except the one `--improve <faction>` names, which runs the current ones.
 ## Controls
 
 Tanki-style: the camera rides behind the turret, and the turret is turned with keys.
+These are the defaults: every one can be rebound under Settings → Controls
+(in the main menu or the pause menu), two keys per control, and saved with the
+profile. Esc, Enter and Backspace always work the menus, and the arrow keys
+always move through menus and the garage.
 
 | Key | Action |
 |---|---|

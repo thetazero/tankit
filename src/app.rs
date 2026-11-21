@@ -17,6 +17,7 @@ use winit::window::{Window, WindowId};
 
 use crate::audio::{self, Audio};
 use crate::bay::{self, BayArt};
+use crate::binds::{Action, Binds};
 use crate::combat::{Match, Phase};
 use crate::economy::{Part, Payout};
 use crate::game::Clock;
@@ -626,46 +627,90 @@ impl App {
             .unwrap_or(current)
     }
 
-    fn nav(code: KeyCode) -> Option<Nav> {
+    /// What `code` does in a menu: the arrows, Enter and Esc always, and the
+    /// driving keys as bound. Space selects unless it drives.
+    fn nav(code: KeyCode, binds: &Binds) -> Option<Nav> {
+        let driving = [
+            (Action::Forward, Nav::Up),
+            (Action::Reverse, Nav::Down),
+            (Action::TurnLeft, Nav::Left),
+            (Action::TurnRight, Nav::Right),
+        ];
         Some(match code {
-            KeyCode::KeyW | KeyCode::ArrowUp => Nav::Up,
-            KeyCode::KeyS | KeyCode::ArrowDown => Nav::Down,
-            KeyCode::KeyA | KeyCode::ArrowLeft => Nav::Left,
-            KeyCode::KeyD | KeyCode::ArrowRight => Nav::Right,
+            KeyCode::ArrowUp => Nav::Up,
+            KeyCode::ArrowDown => Nav::Down,
+            KeyCode::ArrowLeft => Nav::Left,
+            KeyCode::ArrowRight => Nav::Right,
             KeyCode::Escape | KeyCode::Backspace => Nav::Back,
-            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Nav::Select,
+            KeyCode::Enter | KeyCode::NumpadEnter => Nav::Select,
+            _ => match driving.iter().find(|(a, _)| binds.is(*a, code)) {
+                Some(&(_, nav)) => nav,
+                None if code == KeyCode::Space => Nav::Select,
+                None => return None,
+            },
+        })
+    }
+
+    /// What `code` does in the garage: menu navigation, Esc puts the kit back,
+    /// and the garage's keys as bound (the garage key deploys).
+    fn garage_input(code: KeyCode, binds: &Binds) -> Option<garage::Input> {
+        let bound = [
+            (Action::Garage, garage::Input::Deploy),
+            (Action::Equip, garage::Input::Act),
+            (Action::Upgrade, garage::Input::Upgrade),
+            (Action::SwitchTab, garage::Input::Switch),
+        ];
+        if let Some(&(_, input)) = bound.iter().find(|(a, _)| binds.is(*a, code)) {
+            return Some(input);
+        }
+        Some(match (code, Self::nav(code, binds)?) {
+            (KeyCode::Escape, _) => garage::Input::Revert,
+            (_, Nav::Up) => garage::Input::Up,
+            (_, Nav::Down) => garage::Input::Down,
+            (_, Nav::Left) => garage::Input::Left,
+            (_, Nav::Right) => garage::Input::Right,
+            (KeyCode::Enter | KeyCode::NumpadEnter, Nav::Select) => garage::Input::Deploy,
             _ => return None,
         })
     }
 
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
+        let binds = self.profile.settings.binds;
         if self.garage.is_open() {
-            let input = match code {
-                KeyCode::KeyW | KeyCode::ArrowUp => garage::Input::Up,
-                KeyCode::KeyS | KeyCode::ArrowDown => garage::Input::Down,
-                KeyCode::KeyA | KeyCode::ArrowLeft => garage::Input::Left,
-                KeyCode::KeyD | KeyCode::ArrowRight => garage::Input::Right,
-                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::KeyG => garage::Input::Deploy,
-                KeyCode::Escape => garage::Input::Revert,
-                KeyCode::KeyE => garage::Input::Act,
-                KeyCode::KeyU => garage::Input::Upgrade,
-                KeyCode::Tab | KeyCode::KeyQ => garage::Input::Switch,
-                _ => return,
+            let Some(input) = Self::garage_input(code, &binds) else {
+                return;
             };
             let event = self.garage.input(input, self.queued(), &self.profile);
             self.garage_acted(input, event);
             return;
         }
         match self.mode {
+            // Rebinding: the key goes on the slot, whatever it is.
+            Mode::Menu if self.menu.capturing() => {
+                let action = self.menu.capture(code);
+                self.capture_sound(code, action.is_some() || !self.menu.capturing());
+                self.menu_action(action, event_loop);
+                return;
+            }
+            Mode::Paused if self.pause.capturing() => {
+                let action = self.pause.capture(code);
+                self.capture_sound(code, action.is_some() || !self.pause.capturing());
+                self.pause_action(action, event_loop);
+                return;
+            }
             Mode::Menu => {
-                let Some(nav) = Self::nav(code) else { return };
+                let Some(nav) = Self::nav(code, &binds) else {
+                    return;
+                };
                 self.nav_sound(nav);
                 let action = self.menu.input(nav);
                 self.menu_action(action, event_loop);
                 return;
             }
             Mode::Paused => {
-                let Some(nav) = Self::nav(code) else { return };
+                let Some(nav) = Self::nav(code, &binds) else {
+                    return;
+                };
                 self.nav_sound(nav);
                 let action = self.pause.input(nav);
                 self.pause_action(action, event_loop);
@@ -673,6 +718,10 @@ impl App {
             }
             Mode::Playing => {}
         }
+        let action = binds.find(
+            code,
+            &[Action::Garage, Action::NextHull, Action::NextTurret],
+        );
         match code {
             KeyCode::Escape if self.showroom.is_some() => event_loop.exit(),
             // Round over: back to the menu. Otherwise pause.
@@ -683,7 +732,10 @@ impl App {
                 self.mode = Mode::Paused;
             }
             // Garage: park and pick the hull / turret for the next respawn.
-            KeyCode::KeyG if self.showroom.is_none() && self.game.phase == Phase::Playing => {
+            _ if action == Some(Action::Garage)
+                && self.showroom.is_none()
+                && self.game.phase == Phase::Playing =>
+            {
                 if let Some(cam) = self.camera {
                     self.garage.toggle(&self.game.world, &cam, self.queued());
                 }
@@ -696,11 +748,11 @@ impl App {
                 self.restart();
             }
             // Quick-cycle the kit queued for the next respawn.
-            KeyCode::Digit1 => {
+            _ if action == Some(Action::NextHull) => {
                 let (hull, turret) = self.queued();
                 self.queue((self.next_owned(&garage::HULLS, hull, Part::Hull), turret));
             }
-            KeyCode::Digit2 => {
+            _ if action == Some(Action::NextTurret) => {
                 let (hull, turret) = self.queued();
                 self.queue((
                     hull,
@@ -835,6 +887,17 @@ impl App {
         self.audio.set_volume(settings.volume());
     }
 
+    /// The click for a key pressed while rebinding: `done` if it ended the wait.
+    fn capture_sound(&mut self, code: KeyCode, done: bool) {
+        if done {
+            self.audio.ui(if code == KeyCode::Escape {
+                audio::Ui::Back
+            } else {
+                audio::Ui::Select
+            });
+        }
+    }
+
     fn nav_sound(&mut self, nav: Nav) {
         self.audio.ui(match nav {
             Nav::Select => audio::Ui::Select,
@@ -843,8 +906,12 @@ impl App {
         });
     }
 
-    fn held(&self, codes: &[KeyCode]) -> bool {
-        codes.iter().any(|c| self.keys.contains(c))
+    /// Is a key for `action` held down?
+    fn held(&self, action: Action) -> bool {
+        self.profile
+            .settings
+            .binds
+            .held(action, &|c| self.keys.contains(&c))
     }
 
     fn command(&self) -> Command {
@@ -852,20 +919,12 @@ impl App {
         if self.garage.is_open() || self.mode != Mode::Playing {
             return Command::default();
         }
-        let axis = |pos: &[KeyCode], neg: &[KeyCode]| {
-            (self.held(pos) as i32 - self.held(neg) as i32) as f32
-        };
+        let axis = |pos, neg| (self.held(pos) as i32 - self.held(neg) as i32) as f32;
         Command {
-            throttle: axis(
-                &[KeyCode::KeyW, KeyCode::ArrowUp],
-                &[KeyCode::KeyS, KeyCode::ArrowDown],
-            ),
-            steer: axis(
-                &[KeyCode::KeyA, KeyCode::ArrowLeft],
-                &[KeyCode::KeyD, KeyCode::ArrowRight],
-            ),
-            turret: axis(&[KeyCode::KeyZ], &[KeyCode::KeyX]),
-            center_turret: self.held(&[KeyCode::KeyC]),
+            throttle: axis(Action::Forward, Action::Reverse),
+            steer: axis(Action::TurnLeft, Action::TurnRight),
+            turret: axis(Action::TurretLeft, Action::TurretRight),
+            center_turret: self.held(Action::CenterTurret),
         }
     }
 
@@ -885,12 +944,11 @@ impl App {
         self.loaded = false;
 
         let tilt =
-            (self.held(&[KeyCode::PageUp]) as i32 - self.held(&[KeyCode::PageDown]) as i32) as f32;
+            (self.held(Action::CameraUp) as i32 - self.held(Action::CameraDown) as i32) as f32;
         self.cam.tilt = (self.cam.tilt + tilt * CAM_TILT_SPEED * dt).clamp(0.0, 1.0);
 
         let cmd = self.command();
-        let fire =
-            self.held(&[KeyCode::Space]) && !self.garage.is_open() && self.mode == Mode::Playing;
+        let fire = self.held(Action::Fire) && !self.garage.is_open() && self.mode == Mode::Playing;
         let mut steps = 0;
         if self.mode != Mode::Paused {
             steps = self.clock.advance(dt);
@@ -938,7 +996,7 @@ impl App {
             self.follow_backdrop(dt);
         }
         let queued = self.queued();
-        let scores = self.held(&[KeyCode::Tab]);
+        let scores = self.held(Action::Scoreboard);
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
             let alpha = if self.mode == Mode::Paused {
@@ -1129,6 +1187,48 @@ mod tests {
             .filter(|s| !matches!(s, crate::combat::Sound::Knock(_)))
             .collect();
         assert!(loud.is_empty(), "{loud:?}");
+    }
+
+    #[test]
+    fn menus_and_the_garage_follow_the_driving_keys() {
+        let mut binds = Binds::default();
+        assert_eq!(App::nav(KeyCode::KeyW, &binds), Some(Nav::Up));
+        assert_eq!(App::nav(KeyCode::Space, &binds), Some(Nav::Select));
+        // ESDF driving: E moves up the lists, W does nothing, arrows still work.
+        binds.bind(Action::Forward, 0, KeyCode::KeyE);
+        binds.bind(Action::Reverse, 0, KeyCode::KeyD);
+        binds.bind(Action::TurnLeft, 0, KeyCode::KeyS);
+        binds.bind(Action::TurnRight, 0, KeyCode::KeyF);
+        assert_eq!(App::nav(KeyCode::KeyE, &binds), Some(Nav::Up));
+        assert_eq!(App::nav(KeyCode::KeyW, &binds), None);
+        assert_eq!(App::nav(KeyCode::ArrowUp, &binds), Some(Nav::Up));
+        // E left the garage's equip key; put it on R.
+        assert_eq!(
+            App::garage_input(KeyCode::KeyE, &binds),
+            Some(garage::Input::Up)
+        );
+        assert_eq!(App::garage_input(KeyCode::KeyR, &binds), None);
+        binds.bind(Action::Equip, 0, KeyCode::KeyR);
+        assert_eq!(
+            App::garage_input(KeyCode::KeyR, &binds),
+            Some(garage::Input::Act)
+        );
+        assert_eq!(
+            App::garage_input(KeyCode::Enter, &binds),
+            Some(garage::Input::Deploy)
+        );
+        assert_eq!(
+            App::garage_input(KeyCode::KeyG, &binds),
+            Some(garage::Input::Deploy)
+        );
+        assert_eq!(
+            App::garage_input(KeyCode::Escape, &binds),
+            Some(garage::Input::Revert)
+        );
+        assert_eq!(App::garage_input(KeyCode::Space, &binds), None);
+        // Space driving forward moves up the menus rather than selecting.
+        binds.bind(Action::Forward, 1, KeyCode::Space);
+        assert_eq!(App::nav(KeyCode::Space, &binds), Some(Nav::Up));
     }
 
     /// Hired by side 1, the player fights for that faction from its bases.

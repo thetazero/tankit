@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 
+use crate::binds::Binds;
 use crate::economy::{Levels, PARTS, Part, upgrade_cost};
 use crate::faction::Faction;
 use crate::garage::Loadout;
@@ -90,6 +91,8 @@ pub struct Settings {
     pub debug: bool,
     /// Sound volume in steps, 0 (silent) to [`Settings::MAX_VOLUME`].
     pub volume: u8,
+    /// Which keys do what.
+    pub binds: Binds,
 }
 
 impl Settings {
@@ -112,6 +115,7 @@ impl Default for Settings {
         Settings {
             debug: false,
             volume: 8,
+            binds: Binds::default(),
         }
     }
 }
@@ -464,9 +468,16 @@ mod tests {
         p.buy(PELEKYS).unwrap();
         p.upgrade(PELEKYS).unwrap();
         p.set_loadout((HullKind::Kataphrakt, TurretKind::Pelekys));
+        let mut binds = Binds::default();
+        binds.bind(
+            crate::binds::Action::Fire,
+            0,
+            winit::keyboard::KeyCode::KeyF,
+        );
         p.set_settings(Settings {
             debug: true,
             volume: 3,
+            binds,
         });
         let crystals = p.crystals;
         // Dropping the profile waits for its last save to land.
@@ -482,6 +493,7 @@ mod tests {
         assert_eq!(back.loadout, (HullKind::Kataphrakt, TurretKind::Pelekys));
         assert!(back.settings.debug);
         assert_eq!(back.settings.volume, 3);
+        assert_eq!(back.settings.binds, binds);
 
         // An older profile (XP, no crystals, deploying in a part it never
         // bought) still loads; its XP was earned for the Imperium.
@@ -494,6 +506,8 @@ mod tests {
         assert!(!old.settings.debug);
         // Profiles from before sound get the default volume, not silence.
         assert_eq!(old.settings.volume, Settings::default().volume);
+        // ...and the default keys.
+        assert_eq!(old.settings.binds, Binds::default());
 
         // Profiles from when reputation was called trust keep it.
         std::fs::write(&path, r#"{"trust": {"imperium": 120, "resonant": 7}}"#).unwrap();
