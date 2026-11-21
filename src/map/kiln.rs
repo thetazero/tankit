@@ -193,6 +193,7 @@ impl Map {
                 wind: Vec2::new(-1.5, 0.8),
                 blowing_sand: 0.15,
                 dust: Vec3::new(0.4, 0.4, 0.46),
+                settle: crate::render::SAND_SETTLE,
             },
             bases: Map::no_bases(&[Faction::Ithessar, Faction::Imperium]),
             factions: [Faction::Ithessar, Faction::Imperium].to_vec(),

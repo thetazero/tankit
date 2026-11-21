@@ -233,6 +233,7 @@ impl Map {
                 wind: Vec2::new(3.0, 1.2),
                 blowing_sand: 0.3,
                 dust: Vec3::new(0.72, 0.55, 0.38),
+                settle: crate::render::SAND_SETTLE,
             },
             bases: Map::no_bases(&sides),
             factions: sides.to_vec(),

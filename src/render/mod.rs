@@ -90,7 +90,13 @@ pub struct Atmosphere {
     pub blowing_sand: f32,
     /// Color of dust kicked up or blown about.
     pub dust: Vec3,
+    /// Color of the dust that settles on everything facing up (and cakes
+    /// the foot of plastered walls): desert sand on most maps.
+    pub settle: Vec3,
 }
+
+/// Desert sand, settled: `Atmosphere::settle` on most maps.
+pub const SAND_SETTLE: Vec3 = Vec3::new(0.74, 0.6, 0.42);
 
 impl Default for Atmosphere {
     fn default() -> Atmosphere {
@@ -104,6 +110,7 @@ impl Default for Atmosphere {
             wind: Vec2::new(2.5, 1.0),
             blowing_sand: 0.0,
             dust: Vec3::new(0.52, 0.5, 0.47),
+            settle: SAND_SETTLE,
         }
     }
 }
@@ -170,6 +177,8 @@ struct Globals {
     sky_horizon: [f32; 4],
     ground_color: [f32; 4],
     params: [f32; 4],
+    /// xyz: settled dust color.
+    settle: [f32; 4],
 }
 
 struct GpuMesh {
@@ -1544,6 +1553,7 @@ impl Renderer {
                 .to_array(),
             ground_color: scene.atmosphere.ground_color.extend(0.0).to_array(),
             params: [scene.time, scene.atmosphere.fog_density, w, h],
+            settle: scene.atmosphere.settle.extend(0.0).to_array(),
         };
         self.queue
             .write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
