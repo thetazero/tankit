@@ -331,6 +331,9 @@ fn surface_detail(lpos: vec3<f32>, lnormal: vec3<f32>, ax: vec3<f32>, ay: vec3<f
 // rust. Detail comes from the procedural surface textures; these work in
 // world space (static map geometry has an identity transform).
 
+/// Loose desert sand, drifted onto ledges.
+const SAND_COL: vec3<f32> = vec3<f32>(0.74, 0.6, 0.42);
+
 fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Detail) -> Surface {
     var s: Surface;
     s.albedo = base;
