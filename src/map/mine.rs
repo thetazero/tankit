@@ -318,9 +318,11 @@ const SAND: Vec3 = Vec3::new(0.66, 0.46, 0.3);
 const TAILINGS: Vec3 = Vec3::new(0.47, 0.41, 0.35);
 /// The mesa's top: weathered rock, and the cave roofs laid flush with it.
 const MESA_TOP: Vec3 = Vec3::new(0.46, 0.26, 0.17);
-/// Ithessar worked crystal (their piers, cars and rigs), and raw seam crystal.
+/// Ithessar worked crystal: their piers, cars, rigs and lamps.
 const GLASS: Vec3 = Vec3::new(0.03, 0.07, 0.16);
-const RAW: Vec3 = Vec3::new(0.05, 0.1, 0.2);
+/// Raw crystal, in the rock and in the ore: the crystal everyone's here
+/// for, nobody's yet. Cloudy blue-grey, dull until it's cut.
+const RAW: Vec3 = Vec3::new(0.26, 0.32, 0.42);
 const STEEL: Vec3 = Vec3::new(0.2, 0.21, 0.24);
 const RUST: Vec3 = Vec3::new(0.36, 0.22, 0.14);
 const TIMBER: Vec3 = Vec3::new(0.42, 0.32, 0.22);
@@ -328,8 +330,11 @@ const CONCRETE: Vec3 = Vec3::new(0.6, 0.57, 0.52);
 /// How bright a plasma lamp's light is, and how far it reaches (m).
 const LAMP_BRIGHT: f32 = 4.5;
 const LAMP_REACH: f32 = 10.0;
-/// The Resonant's crystal light.
-const HOLY: Vec3 = Vec3::new(0.25, 0.55, 1.0);
+/// Crystal's light: the Resonant's blue, and how cut crystal glows.
+const HOLY: Vec3 = super::CRYSTAL_LIGHT;
+/// How bright cut crystal stacked for the train glows, against the
+/// Resonant's set crystal.
+const CUT_GLOW: f32 = 0.32;
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -898,9 +903,10 @@ impl Map {
             radius: r,
             sides: 5 + (seed % 3) as u32,
             seed: (seed >> 8) as u32,
-            color: RAW * (0.85 + 0.4 * ((seed >> 40) % 1000) as f32 / 1000.0),
+            color: RAW * (0.85 + 0.3 * ((seed >> 40) % 1000) as f32 / 1000.0),
             lit,
             solid,
+            raw: true,
         });
     }
 
@@ -1228,9 +1234,10 @@ impl Map {
                 radius: r,
                 sides: 5 + rng.index(3) as u32,
                 seed: rng.next_u64() as u32,
-                color: RAW * rng.range(0.85, 1.3),
+                color: RAW * rng.range(0.85, 1.15),
                 lit: rng.chance(0.65),
                 solid: low && k == 0,
+                raw: true,
             });
         }
     }
@@ -1650,7 +1657,8 @@ impl Map {
         self.block_stack(rng, Vec2::new(92.0, 195.0), 0.0);
     }
 
-    /// Cut crystal blocks, stacked: a big one with smaller round it.
+    /// Cut crystal blocks, stacked: a big one with smaller round it. Cut,
+    /// the crystal glows, as it does at the Resonant's sanctum.
     fn block_stack(&mut self, rng: &mut Rng, at: Vec2, yaw: f32) {
         let g = self.ground_height(at.x, at.y);
         let rot = Vec2::from_angle(-yaw);
@@ -1670,9 +1678,9 @@ impl Map {
                 half: Vec2::splat(0.9 - 0.02 * k as f32),
                 y0: g - 0.2,
                 y1: g + h,
-                color: GLASS * rng.range(1.0, 1.4),
-                side_mat: Material::Vhaal,
-                top_mat: Material::Vhaal,
+                color: HOLY * CUT_GLOW * rng.range(0.85, 1.1),
+                side_mat: Material::Glow,
+                top_mat: Material::Glow,
                 ..OBox::default()
             });
         }
@@ -2293,6 +2301,7 @@ impl Map {
                 color: GLASS * 1.4,
                 lit: true,
                 solid: false,
+                raw: false,
             });
         } else {
             rig.part(
@@ -3071,8 +3080,8 @@ impl Map {
                 p,
                 Vec3::new(s, s * 2.6, s),
                 tip,
-                RAW * 1.4,
-                Material::Vhaal,
+                RAW * (0.85 + (s - 0.1) * 3.75),
+                Material::Ore,
                 false,
                 0.0,
             );
@@ -3135,7 +3144,14 @@ impl Map {
                 bow(1.0, swirl),
             ];
             for w in pts.windows(2) {
-                self.segment(w[0], w[1], 0.014 * size, RAW * 2.2, Material::Vhaal, false);
+                self.segment(
+                    w[0],
+                    w[1],
+                    0.014 * size,
+                    GLASS * 3.0,
+                    Material::Vhaal,
+                    false,
+                );
             }
         }
         // The point it's pinched to, below, a bead of plasma on it.
@@ -3490,6 +3506,7 @@ impl Map {
                 color: GLASS * 1.2,
                 lit: true,
                 solid: true,
+                raw: false,
             });
             prongs.push(base + axis);
         }
