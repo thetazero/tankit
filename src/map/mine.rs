@@ -37,7 +37,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::crag;
 use super::landmarks::Rig;
@@ -45,8 +45,10 @@ use super::valley::noise;
 use super::{Ambient, Core, Crystal, GlowPath, Map, OBox, Terrain};
 use crate::faction::Faction;
 use crate::render::material::Material;
+use crate::render::mesh::MeshData;
 use crate::rng::Rng;
 use crate::tank::ithessar::PLASMA;
+use crate::tank::model::{self, Skin};
 
 const SIZE: f32 = 220.0;
 const MID: f32 = SIZE * 0.5;
@@ -2090,12 +2092,15 @@ impl Map {
     }
 
     /// One rail car centered at `at`, its length along `yaw`, rolled `roll`
-    /// onto its side (a derailed car). A hopper of raw crystal, or the
-    /// locomotive (`loco`), its crystal prow toward local +z.
+    /// onto its side (a derailed car): an ore car, or the locomotive (`loco`),
+    /// its prow toward local +z. Ithessar freight runs on rails, but it's
+    /// built like the rest of their machines: knapped crystal over dark
+    /// alloy running gear, each body held a hand's width off its bogies by
+    /// the field, plasma showing through its seams. The hulls are drawn
+    /// sculpted; a plain box round each is what tanks hit and hide behind.
     fn rail_car(&mut self, rng: &mut Rng, at: Vec2, yaw: f32, roll: f32, loco: bool) {
         let g = self.ground_height(at.x, at.y);
-        let len: f32 = if loco { 13.0 } else { 9.0 };
-        let half_w = 1.7;
+        let half_w = 1.75;
         let pivot = Vec3::new(-half_w * roll.signum(), 0.0, 0.0);
         let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(roll);
         let base = Vec3::new(at.x, g + 0.2, at.y);
@@ -2103,142 +2108,180 @@ impl Map {
             pos: base + Quat::from_rotation_y(yaw) * pivot - rot * pivot,
             rot,
         };
-        let id = Quat::IDENTITY;
-        for z in [-(len * 0.5 - 2.0), len * 0.5 - 2.0] {
-            rig.part(
-                self,
-                Vec3::new(0.0, 0.75, z),
-                Vec3::new(1.2, 0.3, 1.5),
-                id,
-                STEEL * 0.8,
-                Material::Metal,
-                true,
-                0.0,
-            );
-            for (x, dz) in [(-1.2, -0.9), (1.2, -0.9), (-1.2, 0.9), (1.2, 0.9)] {
-                let c = rig.point(Vec3::new(x, 0.6, z + dz));
-                self.disc(c, rig.rot * Vec3::X * 0.09, 0.55, STEEL, Material::Metal);
-            }
+        let mut m = MeshData::default();
+        let bogies: [f32; 2] = if loco { [-4.0, 3.0] } else { [-2.5, 2.5] };
+        for z in bogies {
+            bogie(&mut m, z);
         }
+        // The collider: the body, from the bogies' frames to the rim.
+        let (cz, hz, top) = if loco {
+            (-0.3, 6.2, 3.95)
+        } else {
+            (0.0, 4.3, 3.8)
+        };
+        self.hidden_part(
+            &rig,
+            Vec3::new(0.0, (0.45 + top) * 0.5, cz),
+            Vec3::new(half_w, (top - 0.45) * 0.5, hz),
+        );
+        if loco {
+            locomotive(&mut m);
+            self.hidden_part(&rig, Vec3::new(0.0, 4.4, -2.4), Vec3::new(1.0, 0.5, 2.2));
+            // Its drive: a knot of plasma held between two crystal horns
+            // behind the canopy.
+            let core = rig.point(Vec3::new(0.0, 5.25, -5.4));
+            let prongs = [-1.0f32, 1.0]
+                .map(|s| rig.point(Vec3::new(s * 0.75, 5.35, -5.4)))
+                .to_vec();
+            self.cores.push(Core {
+                at: core,
+                radius: 0.32,
+                prongs,
+            });
+        } else {
+            ore_tub(&mut m);
+        }
+        self.sculpt(&rig, &m);
+        if !loco {
+            self.ore_load(rng, &rig, roll.abs() < 0.3);
+        }
+    }
+
+    /// A collider at `local` in `rig` (half extents `half`), not drawn: the
+    /// box round something drawn sculpted.
+    fn hidden_part(&mut self, rig: &Rig, local: Vec3, half: Vec3) {
         rig.part(
             self,
-            Vec3::new(0.0, 1.3, 0.0),
-            Vec3::new(half_w, 0.25, len * 0.5),
-            id,
-            STEEL,
-            Material::Metal,
+            local,
+            half,
+            Quat::IDENTITY,
+            GLASS,
+            Material::Vhaal,
             true,
             0.0,
         );
-        if loco {
-            rig.part(
-                self,
-                Vec3::new(0.0, 2.75, -0.5),
-                Vec3::new(1.4, 1.2, len * 0.5 - 1.0),
-                id,
-                GLASS,
-                Material::Vhaal,
-                true,
-                0.0,
+        if let Some(o) = self.oboxes.last_mut() {
+            o.hidden = true;
+        }
+    }
+
+    /// Draws `m`, built in `rig`'s frame, into the sculpted surfaces.
+    fn sculpt(&mut self, rig: &Rig, m: &MeshData) {
+        let base = self.sculpted.verts.len() as u32;
+        for v in &m.verts {
+            let mut v = *v;
+            v.pos = rig.point(Vec3::from(v.pos)).to_array();
+            v.normal = (rig.rot * Vec3::from(v.normal)).to_array();
+            self.sculpted.verts.push(v);
+        }
+        self.sculpted
+            .indices
+            .extend(m.indices.iter().map(|i| i + base));
+    }
+
+    /// An ore car's load: crystal-rich rock from the Crag heaped up over
+    /// the rim (`full`), raw crystal breaking out of it. Spilled, only a
+    /// few lumps are left in the tub.
+    fn ore_load(&mut self, rng: &mut Rng, rig: &Rig, full: bool) {
+        let lump = |m: &mut Map, rng: &mut Rng, at: Vec3, s: f32| {
+            let shade = [ORE, ORE * 0.75, ORE * 1.2, MESA_TOP * 0.8][rng.index(4)];
+            let turn = Quat::from_euler(
+                glam::EulerRot::YXZ,
+                rng.range(0.0, TAU),
+                rng.range(-0.6, 0.6),
+                rng.range(-0.6, 0.6),
             );
             rig.part(
-                self,
-                Vec3::new(0.0, 4.4, -len * 0.5 + 2.4),
-                Vec3::new(1.55, 0.6, 1.8),
-                id,
-                GLASS * 1.3,
-                Material::Vhaal,
-                true,
-                0.0,
+                m,
+                at,
+                Vec3::new(
+                    s * rng.range(0.8, 1.2),
+                    s * rng.range(0.55, 0.85),
+                    s * rng.range(0.8, 1.2),
+                ),
+                turn,
+                shade * rng.range(0.9, 1.1),
+                Material::Rubble,
+                false,
+                s * 0.4,
             );
-            for x in [-1.42, 1.42] {
-                rig.part(
-                    self,
-                    Vec3::new(x, 2.6, 0.0),
-                    Vec3::new(0.03, 0.12, len * 0.5 - 2.0),
-                    id,
-                    PLASMA,
-                    Material::Glow,
-                    false,
-                    0.0,
+        };
+        if !full {
+            for _ in 0..6 {
+                let at = Vec3::new(
+                    rng.range(-0.9, 0.9),
+                    rng.range(1.7, 2.2),
+                    rng.range(-2.6, 2.6),
                 );
+                let size = rng.range(0.3, 0.55);
+                lump(self, rng, at, size);
             }
-            for k in 0..3 {
-                rig.part(
-                    self,
-                    Vec3::new(0.0, 4.05, 1.0 + k as f32 * 1.6),
-                    Vec3::new(0.5, 0.12, 0.4),
-                    id,
-                    PLASMA,
-                    Material::Glow,
-                    false,
-                    0.0,
-                );
-            }
-            let nose = rig.point(Vec3::new(0.0, 2.6, len * 0.5 - 1.6));
-            let ahead = rig.rot * Vec3::Z;
-            self.crystals.push(Crystal {
-                base: nose,
-                axis: ahead * 3.2 + Vec3::Y * 0.3,
-                radius: 1.1,
-                sides: 6,
-                seed: rng.next_u64() as u32,
-                color: GLASS * 1.4,
-                lit: true,
-                solid: false,
-            });
-        } else {
+            return;
+        }
+        // The heap, highest down the middle.
+        let heap =
+            |x: f32, z: f32| 3.25 + 1.05 * (1.0 - (x / 1.8).powi(2)) * (1.0 - (z / 4.3).powi(2));
+        for _ in 0..26 {
+            let x = rng.range(-1.4, 1.4);
+            let reach = 3.1 + 1.0 * (1.0 - x.abs() / 1.4);
+            let z = rng.range(-reach, reach);
+            let s = rng.range(0.32, 0.7);
+            lump(self, rng, Vec3::new(x, heap(x, z) - s * 0.35, z), s);
+        }
+        // Lumps riding up on the rim, hanging over the side.
+        for _ in 0..4 {
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let at = Vec3::new(side * rng.range(1.4, 1.6), 3.55, rng.range(-2.6, 2.6));
+            let size = rng.range(0.25, 0.42);
+            lump(self, rng, at, size);
+        }
+        // Raw crystal breaking out of the rock, and lumps of it in the heap.
+        for _ in 0..5 {
+            let x = rng.range(-1.1, 1.1);
+            let z = rng.range(-2.8, 2.8);
+            let s = rng.range(0.25, 0.4);
             rig.part(
                 self,
-                Vec3::new(0.0, 2.6, 0.0),
-                Vec3::new(half_w, 1.05, len * 0.5 - 0.3),
-                id,
-                GLASS * 1.1,
+                Vec3::new(x, heap(x, z), z),
+                Vec3::new(s, s * 0.7, s * 1.3),
+                Quat::from_euler(glam::EulerRot::YXZ, rng.range(0.0, TAU), 0.4, 0.3),
+                RAW * 1.3,
                 Material::Vhaal,
-                true,
+                false,
                 0.0,
             );
-            for x in [-half_w + 0.06, half_w - 0.06] {
-                rig.part(
-                    self,
-                    Vec3::new(x, 2.5, 0.0),
-                    Vec3::new(0.02, 0.06, len * 0.5 - 0.6),
-                    id,
-                    PLASMA,
-                    Material::Glow,
-                    false,
-                    0.0,
-                );
-            }
-            if roll.abs() < 0.3 {
-                for _ in 0..5 {
-                    let p = rig.point(Vec3::new(
-                        rng.range(-1.1, 1.1),
-                        3.5,
-                        rng.range(-len * 0.4, len * 0.4),
-                    ));
-                    let dir = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-                    self.shard(
-                        rng.next_u64(),
-                        p,
-                        rng.range(0.6, 1.4),
-                        0.35,
-                        dir,
-                        rng.range(0.1, 0.6),
-                        rng.chance(0.4),
-                        false,
-                    );
-                }
-            }
+        }
+        for k in 0..8 {
+            let x = rng.range(-1.1, 1.1);
+            let z = rng.range(-3.0, 3.0);
+            let p = rig.point(Vec3::new(x, heap(x, z), z));
+            let out = rig.rot * Vec3::new(x, 0.0, z * 0.3);
+            let dir =
+                Vec2::new(out.x, out.z) + Vec2::new(rng.range(-0.4, 0.4), rng.range(-0.4, 0.4));
+            let big = k < 3;
+            self.shard(
+                rng.next_u64(),
+                p,
+                if big {
+                    rng.range(1.5, 2.2)
+                } else {
+                    rng.range(0.7, 1.1)
+                },
+                if big { 0.4 } else { 0.22 },
+                dir,
+                rng.range(0.2, 0.6),
+                big || rng.chance(0.35),
+                false,
+            );
         }
     }
 
     /// The ore train, stopped on the flats headed out: the locomotive, two
-    /// hoppers behind it under the tipple. Far down the line, two cars off
-    /// the rails, one on its side, their load spilled.
+    /// ore cars behind it under the tipple. Far down the line, two cars off
+    /// the rails, one on its side, its load spilled.
     fn ore_train(&mut self, rng: &mut Rng) {
         let s0 = track_len(3) + 6.0;
-        // Hoppers under and past the tipple, then the loco ahead (south).
+        // Ore cars under and past the tipple, then the loco ahead (south).
         for (s, loco) in [(s0, false), (s0 + 10.0, false), (s0 + 22.0, true)] {
             let (p, dir) = track_at(s);
             self.rail_car(rng, p, yaw_along(dir), 0.0, loco);
@@ -2269,6 +2312,27 @@ impl Map {
                 rng.chance(0.3),
                 false,
             );
+        }
+        // The rock it was carrying, strewn out of its mouth.
+        for _ in 0..16 {
+            let c = p - side * rng.range(8.5, 14.0) + dir * rng.range(-5.0, 5.0);
+            let g = self.ground_height(c.x, c.y);
+            let r = rng.range(0.3, 0.65);
+            let shade = [ORE, ORE * 0.75, ORE * 1.2][rng.index(3)];
+            self.oboxes.push(OBox {
+                center: c,
+                yaw: rng.range(0.0, TAU),
+                tilt: rng.range(-0.4, 0.4),
+                half: Vec2::new(r * rng.range(0.8, 1.2), r * rng.range(0.8, 1.2)),
+                y0: g - r * 0.4,
+                y1: g + r * rng.range(0.6, 1.0),
+                color: shade,
+                side_mat: Material::Rubble,
+                top_mat: Material::Rubble,
+                chip: r * 0.4,
+                solid: false,
+                ..OBox::default()
+            });
         }
     }
 
@@ -3309,6 +3373,288 @@ fn roofed(p: Vec2) -> bool {
         && mesa(Vec2::new(p.x, p.y - 1.0)) > 0.9
         && !within(BOX_CUT, p, 0.0)
         && p.y < SIZE + 6.0
+}
+/// Ithessar freight: worked crystal over dark alloy.
+const HULL: Skin = Skin::new(
+    Vec4::new(0.02, 0.05, 0.13, Material::Vhaal.id()),
+    Vec4::new(0.05, 0.12, 0.28, Material::Vhaal.id()),
+);
+/// The locomotive's canopy: a lens of clearer crystal.
+const LENS: Skin = Skin::new(
+    Vec4::new(0.06, 0.14, 0.3, Material::Vhaal.id()),
+    Vec4::new(0.12, 0.24, 0.45, Material::Vhaal.id()),
+);
+const GEAR: Skin = Skin::new(
+    Vec4::new(0.12, 0.11, 0.13, Material::Metal.id()),
+    Vec4::new(0.22, 0.2, 0.23, Material::Metal.id()),
+);
+/// Plasma showing through the seams.
+const SEAM: Skin = Skin::new(
+    Vec4::new(PLASMA.x, PLASMA.y, PLASMA.z, Material::Glow.id()),
+    Vec4::new(PLASMA.x, PLASMA.y, PLASMA.z, Material::Glow.id()),
+);
+/// Loose crystal held in the field, lit rose by the plasma in it.
+const LOOSE: Skin = Skin::new(
+    Vec4::new(0.42, 0.13, 0.3, Material::Glow.id()),
+    Vec4::new(0.6, 0.22, 0.42, Material::Glow.id()),
+);
+/// Ore from the Crag's red beds.
+const ORE: Vec3 = Vec3::new(0.36, 0.15, 0.09);
+
+/// A thin glowing bar through the points of `line` (each a center in the
+/// car's frame and its half size across there).
+fn seam_bar(m: &mut MeshData, line: &[(Vec3, Vec2)]) {
+    let rings: Vec<Vec<Vec3>> = line
+        .iter()
+        .map(|(c, h)| model::at_z(&model::rect(Vec2::new(c.x, c.y), *h, 0.005), c.z))
+        .collect();
+    model::solid(m, &rings, 0.0, SEAM);
+}
+
+/// A bogie centered `z` along the car: a pointed alloy frame on four
+/// wheels, plasma in their hubs, and the field pad on top that holds the
+/// body up.
+fn bogie(m: &mut MeshData, z: f32) {
+    let full = model::trap(0.95, 0.7, 0.4, 0.95, 0.08);
+    let end = model::trap(0.45, 0.3, 0.55, 0.9, 0.05);
+    model::solid(
+        m,
+        &[
+            model::at_z(&end, z - 1.8),
+            model::at_z(&full, z - 1.3),
+            model::at_z(&full, z + 1.3),
+            model::at_z(&end, z + 1.8),
+        ],
+        0.04,
+        GEAR,
+    );
+    for x in [-1.2f32, 1.2] {
+        for dz in [-0.9, 0.9] {
+            let c = Vec2::new(z + dz, 0.6);
+            let wheel = model::ngon(10, 0.5, c);
+            model::round(
+                m,
+                &[model::at_x(&wheel, x - 0.09), model::at_x(&wheel, x + 0.09)],
+                0.03,
+                GEAR,
+            );
+            let hub = model::ngon(6, 0.17, c);
+            let o = x + x.signum() * 0.1;
+            model::round(
+                m,
+                &[
+                    model::at_x(&hub, o),
+                    model::at_x(&hub, o + x.signum() * 0.03),
+                ],
+                0.0,
+                SEAM,
+            );
+        }
+    }
+    seam_bar(
+        m,
+        &[
+            (Vec3::new(0.0, 1.02, z - 1.0), Vec2::new(0.55, 0.03)),
+            (Vec3::new(0.0, 1.02, z + 1.0), Vec2::new(0.55, 0.03)),
+        ],
+    );
+}
+
+/// An ore car's tub: open-topped, flared, pointed at both ends like a
+/// lens, two bands of crystal with plasma glowing between them, on a keel.
+/// A blade stands up off each point.
+fn ore_tub(m: &mut MeshData) {
+    // Plan outline (x, z), going round: the flanks, then a point.
+    let hex = |hw: f32, hz: f32, tip: f32| {
+        [
+            Vec2::new(hw, -hz),
+            Vec2::new(hw, hz),
+            Vec2::new(0.0, tip),
+            Vec2::new(-hw, hz),
+            Vec2::new(-hw, -hz),
+            Vec2::new(0.0, -tip),
+        ]
+    };
+    let (bot, rim) = (hex(1.2, 2.7, 3.7), hex(1.75, 3.25, 4.45));
+    let (y0, y1) = (1.4, 3.45);
+    let at = |i: usize, t: f32, inset: f32| {
+        let p = bot[i % 6].lerp(rim[i % 6], t) * inset;
+        Vec3::new(p.x, y0 + (y1 - y0) * t, p.y)
+    };
+    let inside = Vec3::new(0.0, 2.4, 0.0);
+    for i in 0..6 {
+        for (t0, t1) in [(0.0, 0.46), (0.54, 1.0)] {
+            model::plate(
+                m,
+                [
+                    at(i, t0, 1.0),
+                    at(i + 1, t0, 1.0),
+                    at(i + 1, t1, 1.0),
+                    at(i, t1, 1.0),
+                ],
+                0.12,
+                inside,
+                HULL,
+            );
+        }
+        model::plate(
+            m,
+            [
+                at(i, 0.44, 0.97),
+                at(i + 1, 0.44, 0.97),
+                at(i + 1, 0.56, 0.97),
+                at(i, 0.56, 0.97),
+            ],
+            0.04,
+            inside,
+            SEAM,
+        );
+    }
+    let keel: Vec<Vec2> = bot.iter().map(|p| *p * Vec2::new(0.35, 0.8)).collect();
+    model::solid(
+        m,
+        &[model::at_y(&keel, 1.12), model::at_y(&bot, y0 + 0.02)],
+        0.03,
+        HULL,
+    );
+    // Inside, the floor of the load (the lumps heap up on it).
+    let bed: Vec<Vec2> = rim.iter().map(|p| *p * 0.9).collect();
+    let floor: Vec<Vec2> = bot.iter().map(|p| *p * 0.92).collect();
+    model::solid(
+        m,
+        &[model::at_y(&floor, y0 + 0.1), model::at_y(&bed, 3.2)],
+        0.02,
+        Skin::new(
+            ORE.extend(Material::Rubble.id()),
+            (ORE * 1.15).extend(Material::Rubble.id()),
+        ),
+    );
+    for s in [-1.0f32, 1.0] {
+        model::shard(
+            m,
+            Vec3::new(0.0, 2.7, s * 4.15),
+            Vec3::new(0.0, 1.0, s * 0.6),
+            1.7,
+            0.17,
+            HULL,
+        );
+    }
+}
+
+/// The locomotive's body, prow toward +z: two long blades of crystal split
+/// down the spine, the plasma that drives it glowing up through the split,
+/// raking down to a knife-edged prow; a lens of clearer crystal over the
+/// spine aft, and loose crystals riding the field along the prow.
+fn locomotive(m: &mut MeshData) {
+    // One blade's section (x, y), the right one; the left mirrors it.
+    let blade = [
+        Vec2::new(0.12, 1.25),
+        Vec2::new(1.2, 1.3),
+        Vec2::new(1.72, 2.3),
+        Vec2::new(1.45, 3.3),
+        Vec2::new(0.32, 4.0),
+        Vec2::new(0.12, 3.75),
+    ];
+    // Stations along it: (z, width, height) as fractions of the full section.
+    let stations = [
+        (-6.5, 0.85, 0.82),
+        (-6.0, 1.0, 1.0),
+        (1.6, 1.0, 1.0),
+        (4.4, 0.72, 0.62),
+        (6.3, 0.26, 0.24),
+        (6.9, 0.06, 0.1),
+    ];
+    let foot = 1.55;
+    for side in [-1.0f32, 1.0] {
+        let rings: Vec<Vec<Vec3>> = stations
+            .iter()
+            .map(|&(z, sx, sy)| {
+                blade
+                    .iter()
+                    .map(|p| Vec3::new(side * p.x * sx, foot + (p.y - foot) * sy, z))
+                    .collect()
+            })
+            .collect();
+        model::solid(m, &rings, 0.03, HULL);
+        // Plasma along the chine, where the flank turns in.
+        seam_bar(
+            m,
+            &[
+                (Vec3::new(side * 1.74, 2.3, -6.0), Vec2::new(0.03, 0.05)),
+                (Vec3::new(side * 1.74, 2.3, 1.6), Vec2::new(0.03, 0.05)),
+                (
+                    Vec3::new(side * 1.26, foot + 0.75 * 0.62, 4.4),
+                    Vec2::new(0.03, 0.04),
+                ),
+            ],
+        );
+    }
+    // The plasma in the split.
+    seam_bar(
+        m,
+        &[
+            (Vec3::new(0.0, 2.65, -6.0), Vec2::new(0.1, 1.1)),
+            (Vec3::new(0.0, 2.65, 1.6), Vec2::new(0.1, 1.1)),
+            (Vec3::new(0.0, 2.2, 4.4), Vec2::new(0.07, 0.75)),
+            (Vec3::new(0.0, 1.8, 6.2), Vec2::new(0.025, 0.25)),
+        ],
+    );
+    // The canopy lens, over the spine aft, raked forward.
+    let lens = [
+        Vec2::new(-0.9, 3.6),
+        Vec2::new(0.9, 3.6),
+        Vec2::new(1.05, 4.25),
+        Vec2::new(0.5, 4.85),
+        Vec2::new(-0.5, 4.85),
+        Vec2::new(-1.05, 4.25),
+    ];
+    let lens_at = |z: f32, s: f32, drop: f32| -> Vec<Vec3> {
+        lens.iter()
+            .map(|p| Vec3::new(p.x * s, 3.6 + (p.y - 3.6) * s - drop, z))
+            .collect()
+    };
+    model::solid(
+        m,
+        &[
+            lens_at(-4.9, 0.55, 0.0),
+            lens_at(-4.4, 1.0, 0.0),
+            lens_at(-1.8, 1.0, 0.0),
+            lens_at(0.4, 0.35, 0.1),
+        ],
+        0.03,
+        LENS,
+    );
+    for s in [-1.0f32, 1.0] {
+        seam_bar(
+            m,
+            &[
+                (Vec3::new(s * 1.07, 4.25, -4.3), Vec2::new(0.02, 0.04)),
+                (Vec3::new(s * 1.07, 4.25, -1.9), Vec2::new(0.02, 0.04)),
+            ],
+        );
+        // The horns that hold the drive's plasma, aft of the canopy.
+        model::shard(
+            m,
+            Vec3::new(s * 0.55, 3.7, -5.4),
+            Vec3::new(s * 0.35, 1.0, 0.0),
+            1.75,
+            0.16,
+            HULL,
+        );
+        // Loose crystals riding the field along the prow, points forward.
+        for k in 0..2 {
+            let z = 2.0 + k as f32 * 1.6;
+            let x = 2.15 - (z - 1.6) * 0.2;
+            model::shard(
+                m,
+                Vec3::new(s * x, 2.7 - k as f32 * 0.3, z),
+                Vec3::new(s * 0.1, -0.06, 1.0),
+                0.8 - k as f32 * 0.15,
+                0.07,
+                LOOSE,
+            );
+        }
+    }
 }
 
 /// Length of the track up to its point `k`.
