@@ -119,6 +119,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         Biome::City => city::atmosphere(&mut rng),
     };
     map.hold_name = st.hold_name();
+    map.planet = Some((spec.seed, planet(spec.biome)));
     let mut claims = Vec::new();
     let mut drifts = st.landmark(&mut map, &sk, &mut rng);
     for (k, lot) in sk.lots.iter().enumerate() {
@@ -176,6 +177,13 @@ pub fn map(spec: &Spec) -> Map {
     }
     cache.insert(spec.clone(), m.clone());
     m
+}
+
+/// How a world of `biome` looks from orbit.
+fn planet(biome: Biome) -> crate::planet::Look {
+    match biome {
+        Biome::City => city::PLANET,
+    }
 }
 
 /// The skeleton `spec` lays out, as its greybox.

@@ -8,6 +8,7 @@ use crate::render::material::Material;
 use crate::render::mesh::MeshData;
 
 /// The colors a world is painted in (albedo, before the sun).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     /// Open ground, most of the surface.
     pub land: Vec3,

@@ -65,6 +65,8 @@ pub struct BayArt {
     deck: MeshId,
     planet: MeshId,
     space: MeshId,
+    /// The world `planet` shows: its seed and look.
+    world: (u64, planet::Look),
 }
 
 impl BayArt {
@@ -74,6 +76,18 @@ impl BayArt {
             deck: r.add_mesh(&deck_mesh()),
             planet: r.add_mesh(&planet::mesh(PLANET_SEED, &planet::DRY)),
             space: r.add_mesh(&space_mesh()),
+            world: (PLANET_SEED, planet::DRY),
+        }
+    }
+
+    /// Show `world` out of the viewport (a map's planet: the world it's
+    /// on), or the bay's own for `None`. Builds the planet only when the
+    /// world changes.
+    pub fn show_world(&mut self, r: &mut Renderer, world: Option<(u64, planet::Look)>) {
+        let world = world.unwrap_or((PLANET_SEED, planet::DRY));
+        if world != self.world {
+            r.replace_mesh(self.planet, &planet::mesh(world.0, &world.1));
+            self.world = world;
         }
     }
 }

@@ -744,7 +744,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
-    let bay_art = bay::BayArt::upload(&mut renderer);
+    let mut bay_art = bay::BayArt::upload(&mut renderer);
+    bay_art.show_world(&mut renderer, game.world.map.planet);
     let mut hud = hud::Hud::new();
     let command = |world: &sim::World| {
         if args.garage {

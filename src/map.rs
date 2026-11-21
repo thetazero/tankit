@@ -674,6 +674,9 @@ pub struct Map {
     /// Where the menus show the tank off, one per side: (spot, the camera's
     /// yaw round it; see `vista`). Empty: `vista`'s hand-picked spots.
     pub vistas: Vec<(Vec2, f32)>,
+    /// The world the map is on, seen from orbit (the garage bay's planet):
+    /// its seed and look. `None`: the bay's own.
+    pub planet: Option<(u64, crate::planet::Look)>,
 }
 
 /// A place on the map that sounds: what it is, and where.
@@ -1106,6 +1109,7 @@ impl Map {
             rock_dust: None,
             sounds: Vec::new(),
             vistas: Vec::new(),
+            planet: None,
         }
     }
 

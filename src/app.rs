@@ -1046,6 +1046,10 @@ impl App {
         }
         let queued = self.queued();
         let scores = self.held(Action::Scoreboard);
+        if let (Some(r), Some(bay)) = (&mut self.renderer, &mut self.bay) {
+            // The planet out of the bay is the world this map is on.
+            bay.show_world(r, self.game.world.map.planet);
+        }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
             let alpha = if self.mode == Mode::Paused {

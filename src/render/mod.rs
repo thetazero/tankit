@@ -1223,6 +1223,11 @@ impl Renderer {
         MeshId(self.meshes.len() as u32 - 1)
     }
 
+    /// Replace a registered mesh's geometry.
+    pub fn replace_mesh(&mut self, id: MeshId, mesh: &MeshData) {
+        self.meshes[id.0 as usize] = GpuMesh::new(&self.device, mesh, "mesh");
+    }
+
     /// Upload world geometry that never moves (drawn with an identity transform).
     pub fn set_static_mesh(&mut self, mesh: &MeshData) {
         let (mesh, chunks) = chunked(mesh);

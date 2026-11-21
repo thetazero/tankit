@@ -134,6 +134,7 @@ impl Map {
             rock_dust: None,
             sounds: Vec::new(),
             vistas: Vec::new(),
+            planet: None,
             open_spots: Vec::new(),
             spawn_yaw: None,
             // Late and smoky: a low amber sun through the works' smoke,

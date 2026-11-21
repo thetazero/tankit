@@ -36,6 +36,16 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
     }
 }
 
+/// A city world from orbit: grey-brown land built over, darker basins,
+/// slate seas, a lot of ash cloud.
+pub const PLANET: crate::planet::Look = crate::planet::Look {
+    land: Vec3::new(0.24, 0.22, 0.2),
+    basin: Vec3::new(0.13, 0.12, 0.12),
+    sea: Vec3::new(0.05, 0.07, 0.09),
+    cloud: Vec3::new(0.44, 0.43, 0.42),
+    cloudiness: 0.65,
+};
+
 /// Half-width of an avenue, kerb to kerb.
 pub const AVENUE_HALF: f32 = 14.0;
 

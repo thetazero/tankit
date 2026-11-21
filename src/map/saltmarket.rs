@@ -567,6 +567,7 @@ impl Map {
             rock_dust: Some(SAND),
             sounds: Vec::new(),
             vistas: Vec::new(),
+            planet: None,
         };
         let mut rng = Rng::new(0x5a17_3a2c);
         let reserved = map.street_landmarks();
