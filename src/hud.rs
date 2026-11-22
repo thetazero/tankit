@@ -668,7 +668,10 @@ fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
         with_alpha(theme::FG, 0.85)
     };
     let mercs = m.company_hulls.get(team).copied().unwrap_or(0);
-    let text = if m.spent(team) {
+    let text = if m.crew_out() && team == m.fighters[0].team {
+        // Your company's spent (#361): the realm's may not be.
+        "COMPANY OUT OF HULLS".to_string()
+    } else if m.spent(team) {
         "OUT OF HULLS".to_string()
     } else if mercs > 0 {
         // Of them, the mercs' (#320).
