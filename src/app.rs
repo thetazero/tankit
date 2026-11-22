@@ -491,36 +491,6 @@ impl App {
         }
     }
 
-    /// Start a new round on the current map settings, keeping the player's queued kit.
-    fn restart(&mut self) {
-        self.leave_battle();
-        let kit = self.queued();
-        let mut m = new_match(
-            self.seed,
-            self.map_kind,
-            self.map_seed,
-            self.side,
-            self.spawn,
-            self.bots,
-            self.contract,
-            kit,
-            self.sortie.map(|o| o.factions).as_ref().map(|f| &f[..]),
-        );
-        m.set_rating(self.rating);
-        m.prize = self.unstolen_prize();
-        if self.in_war {
-            self.battle = self.draw_battle(&mut m);
-            if self.battle.is_none() {
-                // Your company's no longer in this fight (its contract's
-                // over, or its hulls are spent): you're not either (#362).
-                self.back_to_menu();
-                return;
-            }
-        }
-        self.load(m);
-        self.mode = Mode::Playing;
-    }
-
     /// The mission's prize, unless it's already yours: then it just pays crystals.
     fn unstolen_prize(&self) -> Option<Part> {
         self.prize.filter(|&p| !self.profile.owns(p))
@@ -709,6 +679,14 @@ impl App {
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
         }
+    }
+
+    /// The battle's over: back to the contract screen (the missions screen),
+    /// to pick the next fight (#381).
+    fn back_to_missions(&mut self) {
+        self.back_to_menu();
+        self.menu.screen = menu::Screen::Missions;
+        self.sync_theater();
     }
 
     fn back_to_menu(&mut self) {
@@ -919,8 +897,8 @@ impl App {
         );
         match code {
             KeyCode::Escape if self.showroom.is_some() => event_loop.exit(),
-            // Round over: back to the menu. Otherwise pause.
-            KeyCode::Escape if self.game.phase == Phase::Over => self.back_to_menu(),
+            // Round over: back to the contract screen. Otherwise pause.
+            KeyCode::Escape if self.game.phase == Phase::Over => self.back_to_missions(),
             KeyCode::Escape => {
                 self.audio.ui(audio::Ui::Back);
                 self.pause = Pause::new();
@@ -935,12 +913,11 @@ impl App {
                     self.garage.toggle(&self.game.world, &cam, self.queued());
                 }
             }
-            // Play the round again once the clock has run out.
+            // Round over: Enter goes on, like the one button there.
             KeyCode::Enter | KeyCode::NumpadEnter
                 if self.showroom.is_none() && self.game.phase == Phase::Over =>
             {
-                self.spawn += 1;
-                self.restart();
+                self.back_to_missions();
             }
             _ if action == Some(Action::CameraReset) => self.cam_homing = true,
             // Quick-cycle the kit queued for the next respawn.
@@ -1067,13 +1044,7 @@ impl App {
                 self.nav_sound(nav);
                 self.pause_action(action, event_loop);
             }
-            UiHit::Hud(h) => self.on_key(
-                match h {
-                    hud::Hit::Again => KeyCode::Enter,
-                    hud::Hit::Menu => KeyCode::Escape,
-                },
-                event_loop,
-            ),
+            UiHit::Hud(hud::Hit::Missions) => self.on_key(KeyCode::Escape, event_loop),
             UiHit::Garage(h) => {
                 let input = match h {
                     garage::Hit::Key(input) => input,

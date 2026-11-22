@@ -47,10 +47,8 @@ const MARGIN: f32 = 40.0;
 /// Something on the HUD that can be clicked: the round-over buttons.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hit {
-    /// Enter: play the round again.
-    Again,
-    /// Esc: back to the menu.
-    Menu,
+    /// Esc or Enter: back to the contract screen.
+    Missions,
 }
 
 /// The pilot's books as the match started, for the round-over screen to count
@@ -841,10 +839,10 @@ const BUTTON_H: f32 = 26.0;
 const BUTTON_PAD: f32 = 12.0;
 const BUTTON_GAP: f32 = 16.0;
 
-/// The round-over choices, side by side and centred on `top`: buttons that
-/// click like their keys.
+/// The round-over choice (back to the contract screen), centred on `top`: a button
+/// that clicks like its key.
 fn round_over_buttons(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, top: Vec2) {
-    let buttons = [("AGAIN", Hit::Again), ("MENU", Hit::Menu)];
+    let buttons = [("MISSIONS", Hit::Missions)];
     let style = TextStyle::LABEL;
     let width = |what: &str| BUTTON_PAD * 2.0 + measure(what, &style);
     let total = buttons.iter().map(|(w, _)| width(w)).sum::<f32>()
@@ -1304,12 +1302,8 @@ mod tests {
         assert!(draw(&mut hud, &m).is_empty());
         m.phase = Phase::Over;
         let hits = draw(&mut hud, &m);
-        for id in [Hit::Again, Hit::Menu] {
-            let at = hits.center_of(id).expect("button drawn");
-            assert_eq!(hits.at(at).map(|(h, _)| h), Some(id));
-        }
-        // Side by side, not on top of each other.
-        assert!(hits.center_of(Hit::Again).unwrap().x < hits.center_of(Hit::Menu).unwrap().x);
+        let at = hits.center_of(Hit::Missions).expect("button drawn");
+        assert_eq!(hits.at(at).map(|(h, _)| h), Some(Hit::Missions));
     }
 
     #[test]
