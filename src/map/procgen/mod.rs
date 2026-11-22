@@ -46,6 +46,16 @@ pub enum Look {
     Imperium,
 }
 
+/// What stands in the middle, the thing the fight's about. Either keeps to
+/// the skeleton's landmark: the same map round it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Centerpiece {
+    /// The style's great building (the Imperium's rotunda).
+    Monument,
+    /// A shield generator: the standard model of whoever holds the place.
+    ShieldGenerator,
+}
+
 /// A map to generate.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Spec {
@@ -53,15 +63,18 @@ pub struct Spec {
     pub biome: Biome,
     pub look: Look,
     pub sides: Vec<Faction>,
+    pub centerpiece: Centerpiece,
 }
 
 /// A style: fills in each kind of placeholder. Each filler builds onto the
 /// map and keeps its solid parts to the placeholder's envelope (see
 /// `skeleton`); heaps it banks up come back as drifts for the terrain.
 pub(in crate::map) trait Style {
-    /// The Hold site's name on the HUD.
-    fn hold_name(&self) -> &'static str;
+    /// The Hold site's name on the HUD, with `piece` in the middle.
+    fn hold_name(&self, piece: Centerpiece) -> &'static str;
     fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift>;
+    /// The style's shield generator, in the landmark's place.
+    fn shield_generator(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift>;
     /// Paving and the like on a platform's top.
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, rng: &mut Rng);
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, rng: &mut Rng);
@@ -118,10 +131,13 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     map.atmosphere = match spec.biome {
         Biome::City => city::atmosphere(&mut rng),
     };
-    map.hold_name = st.hold_name();
+    map.hold_name = st.hold_name(spec.centerpiece);
     map.planet = Some((spec.seed, planet(spec.biome)));
     let mut claims = Vec::new();
-    let mut drifts = st.landmark(&mut map, &sk, &mut rng);
+    let mut drifts = match spec.centerpiece {
+        Centerpiece::Monument => st.landmark(&mut map, &sk, &mut rng),
+        Centerpiece::ShieldGenerator => st.shield_generator(&mut map, &sk, &mut rng),
+    };
     for (k, lot) in sk.lots.iter().enumerate() {
         let start = map.oboxes.len();
         drifts.extend(st.lot(&mut map, &sk, lot, &mut rng));
@@ -255,6 +271,12 @@ impl Map {
     /// The imperial city `seed` names (see `crate::city_spec`).
     pub fn city(seed: u64) -> Map {
         map(&crate::city_spec(seed))
+    }
+
+    /// The imperial city `seed` names, with a shield generator in the
+    /// middle in place of the rotunda (see `crate::shield_city_spec`).
+    pub fn shield_city(seed: u64) -> Map {
+        map(&crate::shield_city_spec(seed))
     }
 }
 
@@ -489,6 +511,40 @@ mod tests {
                     r += 2.0;
                 }
             }
+        }
+    }
+
+    /// The shield generator variant: the same city for the same seed, the
+    /// generator in the rotunda's place, and as playable.
+    #[test]
+    fn the_shield_city_is_the_city_with_a_generator() {
+        for seed in SEEDS {
+            let plain = skeleton(&spec(seed));
+            let shield = crate::shield_city_spec(seed);
+            let sk = skeleton(&shield);
+            assert_eq!(sk.landmark.center, plain.landmark.center);
+            assert_eq!(sk.lots.len(), plain.lots.len());
+            let m = Map::shield_city(seed);
+            assert_eq!(m.hold_name, "GENERATOR");
+            assert_eq!(m.hold_site, Some(sk.landmark.center));
+            if let Err(why) = check::playable(&m) {
+                panic!("seed {seed}: {why}");
+            }
+            assert!(m.open_spots.len() > 100, "seed {seed}");
+            assert_eq!(m.vistas.len(), 4, "seed {seed}");
+            // The mast stands in the middle, its beam up over the city; the
+            // blast wall stays inside the landmark's ring.
+            let c = sk.landmark.center;
+            assert!(
+                m.oboxes
+                    .iter()
+                    .any(|o| o.solid && o.distance(c) < 0.5 && o.y_range().1 > 25.0),
+                "seed {seed}: no mast"
+            );
+            assert!(
+                m.glow_paths.len() >= 2 * sk.landmark.doors.len() - 2,
+                "seed {seed}"
+            );
         }
     }
 

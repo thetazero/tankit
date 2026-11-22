@@ -46,13 +46,14 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|city|foundry|mine>
+  --map <saltmarket|sanctum|kiln|city|shield-city|foundry|mine>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
-                          (a generated Imperium city, all four factions), the Foundry (a wrecked
+                          (a generated Imperium city, all four factions), the shield city (the same
+                          city, a shield generator in place of its rotunda), the Foundry (a wrecked
                           Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
                           mine: caves, rails and stacked levels)
-  --map-seed <n>          which city a generated map (city) builds (default: the --seed)
+  --map-seed <n>          which city a generated map (city, shield-city) builds (default: the --seed)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -199,6 +200,7 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
+            (true, MapKind::ShieldCity) => map::procgen::greybox(&shield_city_spec(self.map_seed)),
             _ => make_map(self.map, self.map_seed),
         };
         if self.side > 0 {
@@ -220,6 +222,9 @@ pub enum MapKind {
     /// An Imperium city, half ruined round a domed rotunda: four sides.
     /// Generated: a different city for each map seed.
     City,
+    /// The same city with an Imperium shield generator in the middle in
+    /// place of the rotunda: the same layout for the same seed.
+    ShieldCity,
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// The Seam: an Ithessar crystal mine in the desert, on three levels.
@@ -234,6 +239,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City => map::procgen::map(&city_spec(seed)),
+        MapKind::ShieldCity => map::procgen::map(&shield_city_spec(seed)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::Map::mine(),
     }
@@ -246,6 +252,15 @@ pub fn city_spec(seed: u64) -> map::procgen::Spec {
         biome: map::procgen::Biome::City,
         look: map::procgen::Look::Imperium,
         sides: faction::Faction::ALL.to_vec(),
+        centerpiece: map::procgen::Centerpiece::Monument,
+    }
+}
+
+/// The imperial city `seed` names, a shield generator in its middle.
+pub fn shield_city_spec(seed: u64) -> map::procgen::Spec {
+    map::procgen::Spec {
+        centerpiece: map::procgen::Centerpiece::ShieldGenerator,
+        ..city_spec(seed)
     }
 }
 
@@ -425,11 +440,12 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => map_kind = MapKind::City,
+                Some("shield-city") => map_kind = MapKind::ShieldCity,
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, city, foundry or mine, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, city, shield-city, foundry or mine, got {other:?}"
                     )
                 }
             },

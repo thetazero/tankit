@@ -14,13 +14,17 @@
 //! - bases: staging courts behind bastion walls, in each side's colors.
 //! - beyond: the city goes on to the haze, a great tower hung with crimson
 //!   closing each avenue's vista.
+//! - the shield generator (`shield`), in the landmark's place where a map
+//!   has one: their standard model, the same on every world they hold.
+
+mod shield;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Mat3, Quat, Vec2, Vec3};
 
-use super::Style;
 use super::skeleton::*;
+use super::{Centerpiece, Style};
 use crate::faction::Faction;
 use crate::map::landmarks::Rig;
 use crate::map::rocks;
@@ -85,14 +89,21 @@ fn apart(a: f32, b: f32) -> f32 {
 pub(super) struct Imperium;
 
 impl Style for Imperium {
-    fn hold_name(&self) -> &'static str {
-        "ROTUNDA"
+    fn hold_name(&self, piece: Centerpiece) -> &'static str {
+        match piece {
+            Centerpiece::Monument => "ROTUNDA",
+            Centerpiece::ShieldGenerator => "GENERATOR",
+        }
     }
 
     fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
         let drifts = map.rotunda(rng, &sk.landmark, sk.ground(sk.landmark.center));
         map.colonnade(rng, &sk.landmark, sk.ground(sk.landmark.center));
         drifts
+    }
+
+    fn shield_generator(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
+        map.shield_generator(rng, &sk.landmark, sk.ground(sk.landmark.center))
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {

@@ -753,6 +753,7 @@ mod tests {
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
+            ("shield-city", Map::shield_city(0)),
             ("foundry", Map::foundry()),
             ("mine", Map::mine()),
         ] {
