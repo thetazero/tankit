@@ -1,10 +1,6 @@
 //! The theater you're posted to (#311): one contested star system, as the
 //! missions screen shows it.
 //!
-//! **Posting.** The Company posts you, for your employer, to a system where
-//! that side is at war: the biggest such fight, kept until it's settled
-//! (then you're posted to the next).
-//!
 //! **Contested sites.** Every side fighting in the system has a front: on each
 //! planet with an enemy site, the enemy's shield generators still up, or, once
 //! they're all down, the enemy's sites there. Those are the contested sites,
@@ -15,6 +11,14 @@
 //! tick would go for, see `Galaxy::target`) and any of its own sites an enemy
 //! attacks. A side at war always has one: an attacker always has a target,
 //! and a defender is always being attacked.
+//!
+//! **Your ship** (#327). You're aboard one of the galaxy's free companies
+//! (see `merc`), and the theater is its contract's: the system it's parked
+//! over, fighting for the realm that hired it. You stay aboard while it's
+//! on the contract; a ship between contracts has no battles to give you, so
+//! the Company moves you to the nearest ship that has (see `Galaxy::berth`).
+//! While there's no battle for you, the war goes on without you until there
+//! is (`Galaxy::await_work`): the galaxy otherwise only ticks with battles.
 //!
 //! **Maps.** Until there are generated maps for sites (#308), each site is
 //! fought on one of the existing missions' maps, picked at random (stable for
@@ -43,6 +47,36 @@ pub struct Theater {
     pub contested: Vec<usize>,
     /// The galaxy's tick this was taken at.
     pub tick: u64,
+    /// The ship you're aboard, parked here on its contract.
+    pub ship: Option<Ship>,
+}
+
+/// Your company's ship, and the contract it's here on.
+#[derive(Clone, Debug)]
+pub struct Ship {
+    /// The company's id (`Company::id`): what the profile keeps.
+    pub id: u32,
+    pub name: String,
+    /// The world it's parked over: where its side's attack goes in this tick.
+    pub over: u8,
+    /// Its crystal, and hulls still aboard (not in the fight).
+    pub crystals: f32,
+    pub aboard: f32,
+    /// The realm that hired it, by its seat's name, and that realm's people
+    /// (index into `Faction::ALL`).
+    pub realm: String,
+    pub side: usize,
+    pub upfront: f32,
+    /// Paid if the world falls.
+    pub bonus: f32,
+    /// Its hulls in the fight, lost so far, and the cap on losses.
+    pub field: f32,
+    pub lost: f32,
+    pub max_loss: f32,
+    /// Ticks until the contract runs out.
+    pub ticks_left: u64,
+    /// The ship you were aboard before, if the Company just moved you off it.
+    pub transferred: Option<String>,
 }
 
 /// One site of the theater.
@@ -97,6 +131,48 @@ pub fn system_name(s: usize) -> String {
     }
     name += END[r.index(END.len())];
     name
+}
+
+/// A company ship's name, from the company's id: "THE IRON TITHE" without
+/// the article.
+pub fn ship_name(id: u32) -> String {
+    const FIRST: [&str; 24] = [
+        "IRON", "SALT", "GREY", "LAST", "BLACK", "HOLLOW", "BRASS", "COLD", "SILENT", "RED",
+        "BITTER", "PALE", "FAR", "WORN", "LONG", "DRY", "ASHEN", "NINTH", "LEAN", "QUIET",
+        "BROKEN", "GILT", "DUSK", "KEEN",
+    ];
+    const SECOND: [&str; 24] = [
+        "TITHE",
+        "LEDGER",
+        "WIDOW",
+        "LANTERN",
+        "HOUND",
+        "MARGIN",
+        "PROMISE",
+        "OATH",
+        "COIN",
+        "ANVIL",
+        "HARVEST",
+        "WAGER",
+        "ERRAND",
+        "DEBT",
+        "VIGIL",
+        "MERCY",
+        "WAKE",
+        "TALLY",
+        "BARGAIN",
+        "HAMMER",
+        "PILGRIM",
+        "WARRANT",
+        "FURROW",
+        "RECKONING",
+    ];
+    let mut r = Rng::new(0x5817_0000 ^ id as u64);
+    format!(
+        "{} {}",
+        FIRST[r.index(FIRST.len())],
+        SECOND[r.index(SECOND.len())]
+    )
 }
 
 /// Planet `p` of a system called `name`: "KESSARA II".
@@ -287,31 +363,99 @@ impl Galaxy {
         out
     }
 
-    /// Where the Company posts a pilot working for side `f`: `keep` if that's
-    /// still a fight `f` is in, else the biggest fight it's in: the most
-    /// sites at stake, then the most hulls.
-    pub fn posting(&self, f: usize, keep: Option<usize>) -> Option<usize> {
-        let ok = |s: usize| !self.commits(s, f).is_empty();
-        if let Some(s) = keep.filter(|&s| s < self.systems.len() && ok(s)) {
-            return Some(s);
-        }
-        (0..self.systems.len())
-            .filter(|&s| self.fighting(s, f))
-            .filter(|&s| ok(s))
-            .max_by(|&a, &b| {
-                let sites = |s: usize| self.site_range(s).len();
-                let total = |s: usize| self.systems[s].hulls.iter().sum::<f32>();
-                sites(a)
-                    .cmp(&sites(b))
-                    .then(total(a).total_cmp(&total(b)))
-                    .then(b.cmp(&a))
-            })
+    /// The ships you could be aboard: companies on a contract with a battle
+    /// to join this tick (indices into `companies`).
+    fn berths(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.companies.len()).filter(|&c| {
+            self.companies[c]
+                .contract
+                .is_some_and(|k| !self.commits(k.target as usize, k.side as usize).is_empty())
+        })
     }
 
-    /// Side `f`'s theater: its posting (see `posting`), as the missions
-    /// screen shows it, with maps picked from the missions open at `rank`.
-    pub fn theater(&self, f: usize, keep: Option<usize>, rank: u32) -> Option<Theater> {
-        let s = self.posting(f, keep)?;
+    /// The ship you're aboard (an index into `companies`), if it has a
+    /// battle for you this tick. You stay aboard `keep` (a company's id)
+    /// while it's on a contract: none if that has no battle this tick. Off
+    /// contract (or gone), the Company moves you to the nearest ship that
+    /// has a battle (nearest `keep`'s ship, if it's still about); a new
+    /// pilot goes to the one in the biggest fight. `prefer` (a side) goes
+    /// first, for shots and tests.
+    pub fn berth(&self, keep: Option<u32>, prefer: Option<usize>) -> Option<usize> {
+        let old = keep.and_then(|id| self.companies.iter().position(|c| c.id == id));
+        if let Some(c) = old.filter(|&c| self.companies[c].contract.is_some()) {
+            return self.berths().find(|&b| b == c);
+        }
+        let from = old.map(|c| self.systems[self.companies[c].at as usize].pos);
+        self.berths().max_by(|&a, &b| {
+            let (ka, kb) = (
+                self.companies[a].contract.unwrap(),
+                self.companies[b].contract.unwrap(),
+            );
+            let side = |k: super::merc::Contract| prefer == Some(k.side as usize);
+            let near = |k: super::merc::Contract| {
+                from.map_or(0.0, |p| -self.systems[k.target as usize].pos.distance(p))
+            };
+            let sites = |k: super::merc::Contract| self.site_range(k.target as usize).len();
+            side(ka)
+                .cmp(&side(kb))
+                .then(near(ka).total_cmp(&near(kb)))
+                .then(sites(ka).cmp(&sites(kb)))
+                .then(ka.field.total_cmp(&kb.field))
+                .then(b.cmp(&a))
+        })
+    }
+
+    /// The theater aboard your ship, as `aboard`; with no battle for you
+    /// this tick, the war goes on without you (up to `ticks` ticks) until
+    /// there is one. True in the second if the galaxy ticked.
+    pub fn await_work(
+        &mut self,
+        keep: Option<u32>,
+        prefer: Option<usize>,
+        rank: u32,
+        ticks: u32,
+    ) -> (Option<Theater>, bool) {
+        for i in 0..=ticks {
+            if let Some(t) = self.aboard(keep, prefer, rank) {
+                return (Some(t), i > 0);
+            }
+            if i < ticks {
+                self.step();
+            }
+        }
+        (None, ticks > 0)
+    }
+
+    /// The theater aboard your ship (see `berth`): its contract's system,
+    /// for the side that hired it. None if there's no battle for you this tick.
+    pub fn aboard(&self, keep: Option<u32>, prefer: Option<usize>, rank: u32) -> Option<Theater> {
+        let c = self.berth(keep, prefer)?;
+        let co = &self.companies[c];
+        let k = co.contract?;
+        let (s, f) = (k.target as usize, k.side as usize);
+        let mut t = self.theater_at(s, f, rank);
+        let over = self.target(s, f).map_or(0, |i| self.sites[i].planet);
+        t.ship = Some(Ship {
+            id: co.id,
+            name: ship_name(co.id),
+            over,
+            crystals: co.crystals,
+            aboard: co.hulls,
+            realm: system_name(self.realms[k.realm as usize].seat as usize),
+            side: f,
+            upfront: k.upfront,
+            bonus: k.bonus,
+            field: k.field,
+            lost: k.lost,
+            max_loss: k.max_loss,
+            ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
+            transferred: keep.filter(|&id| id != co.id).map(ship_name),
+        });
+        Some(t)
+    }
+
+    /// System `s` as side `f` sees it, with maps from the missions open at `rank`.
+    pub fn theater_at(&self, s: usize, f: usize, rank: u32) -> Theater {
         let sys = &self.systems[s];
         let present = self.present(s);
         let mut contested: Vec<usize> = Vec::new();
@@ -359,7 +503,7 @@ impl Galaxy {
             })
             .collect();
         let contested = (0..sites.len()).filter(|&k| sites[k].contested).collect();
-        Some(Theater {
+        Theater {
             system: s,
             name: system_name(s),
             employer: f,
@@ -369,7 +513,8 @@ impl Galaxy {
             sites,
             contested,
             tick: self.tick,
-        })
+            ship: None,
+        }
     }
 }
 
@@ -387,87 +532,110 @@ mod tests {
         g
     }
 
-    /// Every side is posted somewhere it's at war, and there's always a battle
-    /// to join there.
+    /// A small war, ticked on until some ship has a battle to join.
+    fn galaxy_with_work() -> Galaxy {
+        let mut g = galaxy();
+        assert!(
+            g.await_work(None, None, 1, 400).0.is_some(),
+            "no work in 460 ticks"
+        );
+        g
+    }
+
+    /// Every ship on a contract with a battle to join keeps you aboard, and
+    /// there's a battle for you there, for the side that hired it.
     #[test]
-    fn every_posting_has_a_battle_to_join() {
-        let g = galaxy();
-        for f in 0..SIDES {
-            let t = g.theater(f, None, 1).expect("a posting");
-            assert!(g.fighting(t.system, f));
+    fn aboard_a_ship_there_is_a_battle_to_join() {
+        let g = galaxy_with_work();
+        let ships: Vec<usize> = g.berths().collect();
+        assert!(!ships.is_empty(), "no ship on a contract");
+        for c in ships {
+            let co = &g.companies[c];
+            let k = co.contract.unwrap();
+            let t = g.aboard(Some(co.id), None, 1).expect("a theater");
+            let ship = t.ship.as_ref().unwrap();
+            assert_eq!(ship.id, co.id);
+            assert_eq!(ship.transferred, None);
+            assert_eq!((t.system, t.employer), (k.target as usize, k.side as usize));
+            assert!(ship.over < t.planets);
             let committed: Vec<&SiteView> = t.sites.iter().filter(|s| s.committed).collect();
-            assert!(!committed.is_empty(), "{}", Faction::ALL[f].name());
+            assert!(!committed.is_empty(), "{}", ship.name);
             for s in &committed {
                 assert!(s.contested, "a committed site that isn't contested");
-                assert_ne!(s.enemy, f);
-                assert!(g.hostile(f, s.enemy));
+                assert!(g.hostile(t.employer, s.enemy));
             }
             assert!((0..t.contested.len()).any(|k| t.sortie(k).is_some()));
         }
     }
 
-    /// Any war system: every fighting side's target is on its front, and
-    /// contested sites are never the side's own.
+    /// A new pilot goes aboard the ship in the biggest fight (or one working
+    /// for the side asked for); one whose ship's contract is over, or whose
+    /// ship is gone, is moved to the nearest ship that has a fight.
     #[test]
-    fn targets_are_on_the_front() {
-        let g = galaxy();
-        let mut seen = 0;
-        for s in (0..g.systems.len()).filter(|&s| g.systems[s].at_war()) {
-            for f in (0..SIDES).filter(|&f| g.fighting(s, f)) {
-                let front = g.front(s, f);
-                if let Some(t) = g.target(s, f) {
-                    assert!(front.contains(&t));
-                    seen += 1;
-                }
-                for &i in &front {
-                    assert!(g.hostile(f, g.sites[i].owner as usize));
-                }
-            }
-        }
-        assert!(seen > 0, "no war anywhere");
-    }
-
-    /// The tick does to a side's target what `target` says: the site a
-    /// winning side downs or takes is the one it was going for.
-    #[test]
-    fn the_tick_goes_for_the_target() {
-        let mut g = galaxy();
-        let mut checked = 0;
-        let wars: Vec<usize> = (0..g.systems.len())
-            .filter(|&s| g.systems[s].at_war())
-            .collect();
-        for s in wars {
-            let sides: Vec<usize> = (0..SIDES).filter(|&f| g.fighting(s, f)).collect();
-            for f in sides {
-                let Some(t) = g.target(s, f) else { continue };
-                let before = g.sites[t];
-                let (sites, held) = (g.sites.clone(), g.systems[s].held);
-                g.advance(s, f, 1.0);
-                let after = g.sites[t];
-                assert!(
-                    after.owner != before.owner || after.kind != before.kind,
-                    "the tick left the target alone"
-                );
-                g.sites = sites;
-                g.systems[s].held = held;
-                checked += 1;
-            }
-        }
-        assert!(checked > 0);
-    }
-
-    /// A posting sticks while the fight goes on.
-    #[test]
-    fn a_posting_is_kept() {
-        let g = galaxy();
+    fn the_company_moves_you_off_an_idle_ship() {
+        let mut g = galaxy_with_work();
+        let first = g.berth(None, None).expect("a ship");
         for f in 0..SIDES {
-            let fights: Vec<usize> = (0..g.systems.len())
-                .filter(|&s| !g.commits(s, f).is_empty())
-                .collect();
-            if let Some(&other) = fights.iter().rev().nth(1) {
-                assert_eq!(g.posting(f, Some(other)), Some(other));
+            if let Some(c) = g.berth(None, Some(f))
+                && g.berths()
+                    .any(|b| g.companies[b].contract.unwrap().side as usize == f)
+            {
+                assert_eq!(g.companies[c].contract.unwrap().side as usize, f);
             }
         }
+        let id = g.companies[first].id;
+        let at = g.companies[first].contract.unwrap().target as usize;
+        g.companies[first].contract = None;
+        if g.berths().next().is_none() {
+            return; // Its was the only work going.
+        }
+        let t = g.aboard(Some(id), None, 1).expect("another ship");
+        let ship = t.ship.unwrap();
+        assert_ne!(ship.id, id);
+        assert_eq!(ship.transferred, Some(ship_name(id)));
+        let d = |s: usize| g.systems[s].pos.distance(g.systems[at].pos);
+        for b in g.berths() {
+            assert!(d(t.system) <= d(g.companies[b].contract.unwrap().target as usize));
+        }
+        // A ship that's gone (joined another) moves you too.
+        assert!(
+            g.aboard(Some(u32::MAX), None, 1)
+                .unwrap()
+                .ship
+                .unwrap()
+                .transferred
+                .is_some()
+        );
+    }
+
+    /// While your ship is on its contract you stay aboard, even on a tick
+    /// with no battle there for you.
+    #[test]
+    fn you_stay_aboard_while_the_contract_lasts() {
+        let mut g = galaxy_with_work();
+        let c = g.berth(None, None).unwrap();
+        let id = g.companies[c].id;
+        for _ in 0..40 {
+            if g.companies
+                .iter()
+                .find(|co| co.id == id)
+                .is_none_or(|co| co.contract.is_none())
+            {
+                break;
+            }
+            match g.berth(Some(id), None) {
+                Some(b) => assert_eq!(g.companies[b].id, id),
+                None => assert!(g.aboard(Some(id), None, 1).is_none()),
+            }
+            g.step();
+        }
+    }
+
+    #[test]
+    fn ship_names_are_stable_and_varied() {
+        assert_eq!(ship_name(7), ship_name(7));
+        let names: std::collections::HashSet<String> = (0..100).map(ship_name).collect();
+        assert!(names.len() > 80, "{} names", names.len());
     }
 
     #[test]
@@ -480,8 +648,8 @@ mod tests {
     /// A site's map is one of the missions open at your rank, on two sides.
     #[test]
     fn sites_get_open_two_sided_maps() {
-        let g = galaxy();
-        let t = g.theater(0, None, 1).unwrap();
+        let mut g = galaxy();
+        let t = g.await_work(None, None, 1, 400).0.unwrap();
         for s in &t.sites {
             let m = &MISSIONS[s.mission];
             assert!(m.open_at(1) && m.sides.len() == 2, "{}", m.name);
