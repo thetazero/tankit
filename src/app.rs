@@ -58,6 +58,9 @@ const HITCH_GAP: f32 = 0.1;
 const FAST_FORWARD_BUDGET: std::time::Duration = std::time::Duration::from_millis(12);
 /// Steps fast-forwarded between looks at the clock.
 const FAST_FORWARD_CHUNK: usize = 30;
+/// Once you've left a battle (#427) there's nothing else to draw but its
+/// progress, so it may take most of each frame.
+const LEAVING_BUDGET: std::time::Duration = std::time::Duration::from_millis(30);
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
 /// A galaxy saved before it kept your company (#350) takes the profile's.
@@ -85,6 +88,13 @@ enum UiHit {
     Pause(menu::Hit),
     Garage(garage::Hit),
     Hud(hud::Hit),
+}
+
+/// Where you go once a battle you've left has played out (#427).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Leaving {
+    Menu,
+    Quit,
 }
 
 /// What the window is showing.
@@ -153,6 +163,11 @@ struct App {
     banked: u32,
     /// Whether this round's contract pay has been banked.
     paid: bool,
+    /// You've left the battle (#427): it's playing out without you, and
+    /// then you go here.
+    leaving: Option<Leaving>,
+    /// A battle you quit in has played out: the game can close.
+    quit: bool,
     menu: Menu,
     pause: Pause,
     /// The menu camera's angle around the parked tank, which it sways about.
@@ -275,6 +290,8 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         profile,
         banked: 0,
         paid: false,
+        leaving: None,
+        quit: false,
         menu: Menu::new(),
         pause: Pause::new(),
         menu_orbit,
@@ -421,7 +438,7 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.leave(Leaving::Quit, event_loop),
             WindowEvent::KeyboardInput { event, .. } => {
                 // Release what this key pressed, even if what it means changed meanwhile.
                 let code = match event.state {
@@ -476,7 +493,11 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.quit {
+            event_loop.exit();
+            return;
+        }
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -530,7 +551,7 @@ impl App {
     /// Deploy into a theater's site: its mission's map and contract, the
     /// theater's sides (you with your employer, as side 0).
     fn start_sortie(&mut self, o: Sortie, prize: Option<Part>) {
-        self.leave_battle();
+        self.battle = None;
         let m = &MISSIONS[o.mission];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, o.map_kind, 0, m.bots());
         // A generated map is the site's own, the same each time it's fought over.
@@ -725,21 +746,39 @@ impl App {
         }
     }
 
-    /// A battle left before it's over still costs what was lost in it, and
-    /// nobody wins it.
-    fn leave_battle(&mut self) {
-        if let Some(b) = self.battle.take() {
-            let g = self.war.get();
-            let s = g.settle(
-                &b,
-                &self.game.lost(),
-                &self.game.company_lost(),
-                None,
-                battle::Stake::Site,
-            );
-            g.step_played(b.system);
-            log::info!("left early: {}", battle::describe(&b, &s));
-            self.war.save();
+    /// Leave the match for the menu, or close the game. A battle still on
+    /// isn't left there (#427): it plays out without you, fast, under a
+    /// progress bar (see `frame`), and is settled like any finished one
+    /// before you go.
+    fn leave(&mut self, to: Leaving, event_loop: &ActiveEventLoop) {
+        if self.leaving.is_some() {
+            return;
+        }
+        let on = self.battle.is_some()
+            && self.showroom.is_none()
+            && self.mode != Mode::Menu
+            && self.game.phase == Phase::Playing;
+        if !on {
+            match to {
+                Leaving::Menu => self.back_to_menu(),
+                Leaving::Quit => event_loop.exit(),
+            }
+            return;
+        }
+        log::info!("left the battle: it plays out without you");
+        self.game.leave();
+        self.garage.close();
+        self.leaving = Some(to);
+        self.mode = Mode::Playing;
+    }
+
+    /// A battle you left has played out and been settled: go where you
+    /// were going.
+    fn left(&mut self) {
+        match self.leaving.take() {
+            Some(Leaving::Menu) => self.back_to_menu(),
+            Some(Leaving::Quit) => self.quit = true,
+            None => {}
         }
     }
 
@@ -752,7 +791,8 @@ impl App {
     }
 
     fn back_to_menu(&mut self) {
-        self.leave_battle();
+        // Settled by now (or never deployed into).
+        self.battle = None;
         self.in_war = false;
         self.sortie = None;
         self.load(menu_match(self.profile.loadout));
@@ -905,6 +945,10 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
+        // Left: nothing to do but wait for the battle to play out.
+        if self.leaving.is_some() {
+            return;
+        }
         let binds = self.profile.settings.binds;
         if self.garage.is_open() {
             let Some(input) = Self::garage_input(code, &binds) else {
@@ -1047,8 +1091,8 @@ impl App {
                 }
             }
             Some(PauseAction::Setting(c)) => self.change_setting(c),
-            Some(PauseAction::ExitToMenu) => self.back_to_menu(),
-            Some(PauseAction::Quit) => event_loop.exit(),
+            Some(PauseAction::ExitToMenu) => self.leave(Leaving::Menu, event_loop),
+            Some(PauseAction::Quit) => self.leave(Leaving::Quit, event_loop),
             None => {}
         }
     }
@@ -1091,6 +1135,9 @@ impl App {
     /// Left click: whatever's under the pointer, as if its key were pressed.
     /// Right click: back, like Esc (but never pauses the battle).
     fn on_click(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        if self.leaving.is_some() {
+            return;
+        }
         match button {
             MouseButton::Left => {}
             MouseButton::Right | MouseButton::Back => {
@@ -1214,11 +1261,16 @@ impl App {
                     self.game.step(cmd, fire);
                 }
             }
-            // Out for good (#373): the rest of the match plays out without
-            // you, as fast as a slice of each frame allows.
-            if self.showroom.is_none() && self.game.sitting_out() {
+            // Out for good (#373), or left (#427): the rest of the match
+            // plays out without you, as fast as a slice of each frame allows.
+            if self.showroom.is_none() && self.game.playing_out() {
+                let budget = if self.leaving.is_some() {
+                    LEAVING_BUDGET
+                } else {
+                    FAST_FORWARD_BUDGET
+                };
                 let start = Instant::now();
-                while self.game.sitting_out() && start.elapsed() < FAST_FORWARD_BUDGET {
+                while self.game.playing_out() && start.elapsed() < budget {
                     self.game.fast_forward(FAST_FORWARD_CHUNK);
                 }
             }
@@ -1250,6 +1302,10 @@ impl App {
                 log::info!("{}", battle::describe(&b, &settled));
                 self.war.save();
             }
+        }
+        // Left, and it's played out and been settled: go.
+        if self.leaving.is_some() && self.paid {
+            self.left();
         }
         laps.lap("sim");
 
@@ -1370,6 +1426,17 @@ impl App {
                         };
                         hits.extend(garage.hits.map(UiHit::Garage));
                         (ui, hits)
+                    }
+                    Mode::Playing if self.leaving.is_some() => {
+                        let ledger =
+                            Ledger::before(&self.profile, &self.game, self.banked, self.paid);
+                        let mut ui = menu::dim(
+                            self.hud
+                                .draw(&self.game, &tanks, &camera, w, h, dt, false, ledger)
+                                .verts,
+                        );
+                        ui.extend(hud::playing_out(&self.game, w, h));
+                        (ui, Hits::new())
                     }
                     Mode::Playing => {
                         let ledger =

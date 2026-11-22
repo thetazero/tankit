@@ -895,6 +895,9 @@ pub struct Match {
     /// Your company's hulls are spent and you're down: you're done (#361),
     /// and the match plays out without you (#373).
     crew_out: bool,
+    /// You've left the match before its end (#427): a bot has your seat,
+    /// and the match plays out without you.
+    left: bool,
     /// Where in the galaxy it's fought, for the HUD.
     pub place: Option<String>,
     /// Your company's name ("IRON TITHE"), for the HUD (#350).
@@ -1023,6 +1026,7 @@ impl Match {
             company_deaths: Vec::new(),
             crew_team: None,
             crew_out: false,
+            left: false,
             place: None,
             crew: None,
             retired: Vec::new(),
@@ -1186,6 +1190,35 @@ impl Match {
             && !me.alive
             && (self.crew_out || self.hulls_left(me.team) == Some(0))
             && self.bots[0].is_none()
+    }
+
+    /// Leave the match before its end (#427): you're out of it, and a bot
+    /// takes your seat, so your company's tank fights on with the rest.
+    /// Nothing more you'd have done earns renown.
+    pub fn leave(&mut self) {
+        if self.phase != Phase::Playing || self.left {
+            return;
+        }
+        self.left = true;
+        if self.bots[0].is_none() {
+            let seed = self.rng.next_u64();
+            self.bots[0] = Some(Brain::Bot(Bot::new(seed ^ 0x1EF7)));
+        }
+    }
+
+    /// The match is playing out without you: you've left it, or you're
+    /// out for good (`sitting_out`). Then it's fast-forwarded to its end.
+    pub fn playing_out(&self) -> bool {
+        self.phase == Phase::Playing && (self.left || self.sitting_out())
+    }
+
+    /// How far through the round the match is, 0 to 1 (1 once it's over),
+    /// for a fast-forward's progress bar.
+    pub fn progress(&self) -> f32 {
+        if self.phase != Phase::Playing {
+            return 1.0;
+        }
+        (1.0 - self.time_left / self.round_time()).clamp(0.0, 1.0)
     }
 
     /// Play up to `steps` more steps of the match without you (#373), as
@@ -2473,6 +2506,10 @@ impl Match {
     }
 
     fn award(&mut self, amount: u32, reason: &'static str) {
+        // Left (#427): whoever has your seat now earns you nothing.
+        if self.left {
+            return;
+        }
         self.renown += amount;
         self.renown_pops.push(RenownPop {
             amount,
@@ -6015,6 +6052,37 @@ mod tests {
         // A tank down but with a hull to come back in is still in it.
         destroy(&mut m, 2);
         assert!(p(&m, 2).active);
+    }
+
+    /// Left mid-match (#427): a bot takes your seat and the match plays
+    /// out without you, quietly, to a real end, earning you nothing more.
+    #[test]
+    fn leaving_plays_the_match_out_without_you() {
+        let mut m = arena(5);
+        m.set_allocation(&[6, 6]);
+        m.start();
+        for _ in 0..120 {
+            m.step(Command::default(), false);
+        }
+        assert!(!m.playing_out());
+        assert!((m.progress() - 120.0 * DT / ROUND_TIME).abs() < 1e-5);
+        m.leave();
+        assert!(m.playing_out());
+        assert!(m.bots[0].is_some(), "a bot has your seat");
+        let renown = m.renown;
+        m.sounds.clear();
+        m.fast_forward(600);
+        assert_eq!(m.phase, Phase::Playing);
+        assert!(m.sounds.is_empty(), "a fast-forward is quiet");
+        m.fast_forward(usize::MAX);
+        assert_eq!(m.phase, Phase::Over);
+        assert!(!m.playing_out());
+        assert_eq!(m.progress(), 1.0);
+        assert_eq!(m.renown, renown, "nothing earned once you've left");
+        assert!(m.sounds.contains(&Sound::Round(RoundCue::End)));
+        // Leaving a match that's over does nothing.
+        m.leave();
+        assert!(!m.playing_out());
     }
 
     /// Once your company's hulls are spent, you don't come back in the
