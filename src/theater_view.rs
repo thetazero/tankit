@@ -899,6 +899,7 @@ pub fn draw(
     // Which system you're in, and how long you'll fight in it, over it;
     // what the marks mean under it.
     here(p, t, min);
+    forces(p, t, Vec2::new(min.x + 24.0, min.y + 100.0));
     if let Some(ship) = &t.ship {
         term(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
     }
@@ -937,6 +938,40 @@ fn here(p: &mut Painter, t: &Theater, min: Vec2) {
         &style,
         Align::Left,
     );
+}
+
+/// How the theater's going, at `at`: a line per side here, with its
+/// hulls, the hulls its yards build a tick, and the sites it holds.
+fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
+    let mut head = TextStyle::LABEL;
+    head.color = theme::FAINT;
+    let cols = [230.0, 320.0, 384.0];
+    for (c, text) in cols.iter().zip(["HULLS", "PER TICK", "SITES"]) {
+        p.text(at + Vec2::new(*c, 0.0), text, &head, Align::Right);
+    }
+    let mut y = at.y + 18.0;
+    for f in t.sides() {
+        let side = Faction::ALL[f];
+        let mut name = TextStyle::value(13.0);
+        name.color = side.ui();
+        crate::ui::emblem::tagged(p, Vec2::new(at.x, y), side, side.name(), &name, Align::Left);
+        let mut num = TextStyle::value(13.0);
+        num.color = theme::FG;
+        let built = match t.built[f] {
+            b if b < 0.05 => "0".to_string(),
+            b if b < 9.95 => format!("+{b:.1}"),
+            b => format!("+{b:.0}"),
+        };
+        let cells = [
+            format!("{}", t.hulls[f].round() as u32),
+            built,
+            t.held[f].to_string(),
+        ];
+        for (c, text) in cols.iter().zip(&cells) {
+            p.text(Vec2::new(at.x + c, y), text, &num, Align::Right);
+        }
+        y += 22.0;
+    }
 }
 
 /// How much longer your ship fights here, right-aligned at `at`: its
@@ -1268,6 +1303,7 @@ mod tests {
             employer: 0,
             planets,
             hulls: [0.0; 4],
+            built: [0.0; 4],
             held: [0; 4],
             sites: Vec::new(),
             contested: Vec::new(),

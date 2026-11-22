@@ -45,8 +45,9 @@ pub struct Theater {
     /// Who you're posted for: index into `Faction::ALL`.
     pub employer: usize,
     pub planets: u8,
-    /// Each side's hulls here, and sites held.
+    /// Each side's hulls here, hulls its yards here build a tick, and sites held.
     pub hulls: [f32; SIDES],
+    pub built: [f32; SIDES],
     pub held: [u8; SIDES],
     /// Every site in the system, in the galaxy's order.
     pub sites: Vec<SiteView>,
@@ -307,13 +308,6 @@ impl Theater {
             .collect();
         out.sort_by(|&a, &b| self.hulls[b].total_cmp(&self.hulls[a]));
         out
-    }
-
-    /// Generators up and down, all sides'.
-    pub fn shields(&self) -> (usize, usize) {
-        let gens = self.sites.iter().filter(|s| s.is_shield());
-        let down = gens.clone().filter(|s| s.down().is_some()).count();
-        (gens.count() - down, down)
     }
 }
 
@@ -598,6 +592,7 @@ impl Galaxy {
             employer: f,
             planets: sys.planets,
             hulls: sys.hulls,
+            built: self.built(s),
             held: sys.held,
             sites,
             contested,

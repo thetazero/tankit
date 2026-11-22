@@ -611,8 +611,9 @@ impl Menu {
         wrap(p, at + Vec2::new(0.0, 26.0), &text, theme::DIM);
     }
 
-    /// The theater's panel: whose posting, the system, a summary of the war
-    /// there, then its contested sites to pick from.
+    /// The theater's panel: your company, the system, your contract, then
+    /// its contested sites to pick from. (How each side's doing there is in
+    /// the system view beside it.)
     fn draw_theater(&self, p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, t: &Theater) {
         let (x, mut y) = (at.x, at.y);
         let employer = Faction::ALL[t.employer];
@@ -621,7 +622,7 @@ impl Menu {
                 p,
                 Vec2::new(x, y),
                 Faction::Company,
-                &format!("Your company: the {}", title(&ship.name)),
+                &format!("The {}", title(&ship.name)),
             ),
             None => faction_line(
                 p,
@@ -639,79 +640,26 @@ impl Menu {
         );
         y += 34.0;
         let planets = match t.planets {
-            1 => "one world".to_string(),
+            1 => "1 world".to_string(),
             n => format!("{n} worlds"),
         };
-        let lead = match &t.ship {
-            Some(ship) => format!("Parked over {} {}", title(&t.name), numeral(ship.over)),
-            None => "Theater".to_string(),
+        let over = match &t.ship {
+            Some(ship) => format!("Over {} {} · ", title(&t.name), numeral(ship.over)),
+            None => String::new(),
         };
         body(
             p,
             Vec2::new(x, y),
-            &format!("{lead} · {planets} · {} sites", t.sites.len()),
+            &format!("{over}{planets} · {} sites", t.sites.len()),
             theme::DIM,
         );
-        y += 26.0;
+        y += 30.0;
         if let Some(ship) = &t.ship {
-            y = contract(p, Vec2::new(x, y), t, ship) + 14.0;
+            y = contract(p, Vec2::new(x, y), t, ship) + 16.0;
         }
-
-        // Who's here: hulls, and sites held.
-        for f in t.sides() {
-            let side = Faction::ALL[f];
-            let mut style = BODY;
-            style.color = side.ui();
-            emblem::tagged(
-                p,
-                Vec2::new(x, y),
-                side,
-                &title(side.name()),
-                &style,
-                Align::Left,
-            );
-            let held = match t.held[f] {
-                0 => "no sites".to_string(),
-                1 => "1 site".to_string(),
-                n => format!("{n} sites"),
-            };
-            let mut num = BODY;
-            num.color = theme::DIM;
-            p.text(
-                Vec2::new(x + PANEL_W, y),
-                &format!("{} hulls · {held}", t.hulls[f].round() as u32),
-                &num,
-                Align::Right,
-            );
-            y += 20.0;
-        }
-        y += 6.0;
-        let (up, down) = t.shields();
-        let fights = t.sites.iter().filter(|s| s.committed).count();
-        let gens = match (up, down) {
-            (1, 0) => "One shield generator, up".to_string(),
-            (u, 0) => format!("{u} shield generators, all up"),
-            (0, 1) => "One shield generator, down".to_string(),
-            (0, d) => format!("{d} shield generators, all down"),
-            (u, d) => format!("{} shield generators: {u} up, {d} down", u + d),
-        };
-        y = wrap(
-            p,
-            Vec2::new(x, y),
-            &format!(
-                "{gens}. The {} fight for {} this tick.",
-                title(employer.name()),
-                match fights {
-                    1 => "one site".to_string(),
-                    n => format!("{n} sites"),
-                }
-            ),
-            theme::DIM,
-        );
-        y += 16.0;
 
         // The contested sites.
-        body(p, Vec2::new(x, y), "Contested sites", theme::DIM);
+        body(p, Vec2::new(x, y), "Contested", theme::DIM);
         y += 24.0;
         let names: Vec<String> = t
             .contested
@@ -756,8 +704,9 @@ impl Menu {
         }
     }
 
-    /// The site screen's panel: what the site is, who you'd fight, the
-    /// contract and map it's fought with, and the pay. True if you can deploy.
+    /// The site screen's panel: what the site is and where, who you'd fight,
+    /// the contract and map it's fought with, what a win does, and the pay.
+    /// True if you can deploy.
     fn draw_site(
         &self,
         p: &mut Painter,
@@ -778,10 +727,8 @@ impl Menu {
                 Faction::Company,
                 &format!("The {}", title(&ship.name)),
             );
-            y += 24.0;
+            y += 28.0;
         }
-        faction_line(p, Vec2::new(x, y), employer, &planet(t, site));
-        y += 28.0;
         p.text(
             Vec2::new(x, y),
             site.kind_name(),
@@ -789,27 +736,19 @@ impl Menu {
             Align::Left,
         );
         y += 34.0;
-        let state = match (site.is_shield(), site.down()) {
-            (true, Some(_)) => match site.repairs() {
-                Some((0, of)) => format!(" · wrecked, {of} ticks to repair"),
-                Some((done, of)) => format!(" · under repair, {} ticks to go", of - done),
-                None => String::new(),
-            },
-            (true, None) => " · up".to_string(),
-            _ => String::new(),
+        // Where, and (a generator) whether it's up.
+        let state = match (site.is_shield(), site.repairs()) {
+            (true, None) => " · up",
+            (true, Some((0, _))) => " · wrecked",
+            (true, Some(_)) => " · under repair",
+            _ => "",
         };
-        let mut style = BODY;
-        style.color = owner.ui();
-        let lead = body(p, Vec2::new(x, y), "Held by ", theme::DIM);
-        let w = emblem::tagged(
+        body(
             p,
-            Vec2::new(x + lead, y),
-            owner,
-            &title(owner.name()),
-            &style,
-            Align::Left,
+            Vec2::new(x, y),
+            &format!("{}{state}", planet(t, site)),
+            theme::DIM,
         );
-        body(p, Vec2::new(x + lead + w, y), &state, theme::DIM);
         y += 20.0;
         // A generator that's down: how far its repairs have got, a step a tick.
         if let Some((done, of)) = site.repairs() {
@@ -830,16 +769,25 @@ impl Menu {
             );
             y += 20.0;
         }
-        style.color = enemy.ui();
-        let lead = body(p, Vec2::new(x, y), "Against ", theme::DIM);
-        emblem::tagged(
-            p,
-            Vec2::new(x + lead, y),
-            enemy,
-            &format!("the {}", title(enemy.name())),
-            &style,
-            Align::Left,
-        );
+        // Who you fight, and for whom.
+        let tag = |p: &mut Painter, at: Vec2, f: Faction| {
+            let mut style = BODY;
+            style.color = f.ui();
+            emblem::tagged(p, at, f, &title(f.name()), &style, Align::Left)
+        };
+        let mut cx = x;
+        if site.owner == t.employer {
+            cx += body(p, Vec2::new(cx, y), "Defend from ", theme::DIM);
+            tag(p, Vec2::new(cx, y), enemy);
+        } else if site.owner == site.enemy {
+            cx += body(p, Vec2::new(cx, y), "Attack ", theme::DIM);
+            tag(p, Vec2::new(cx, y), enemy);
+        } else {
+            cx += body(p, Vec2::new(cx, y), "Help ", theme::DIM);
+            cx += tag(p, Vec2::new(cx, y), owner);
+            cx += body(p, Vec2::new(cx, y), " against ", theme::DIM);
+            tag(p, Vec2::new(cx, y), enemy);
+        }
         y += 32.0;
 
         let m = &MISSIONS[site.mission];
@@ -850,15 +798,13 @@ impl Menu {
             theme::FG,
         );
         y += 22.0;
-        y = wrap(p, Vec2::new(x, y), &brief(t, site), theme::DIM);
-        y += 4.0;
         y = wrap(
             p,
             Vec2::new(x, y),
             &stake(m.contract, site, employer),
             theme::DIM,
         );
-        y += 22.0;
+        y += 18.0;
         let big = TextStyle::value(22.0);
         let col = x + 150.0;
         p.text(Vec2::new(x, y), &m.rating_label(), &big, Align::Left);
@@ -871,7 +817,7 @@ impl Menu {
         body(p, Vec2::new(col + pw + 6.0, y + 11.0), "CR", theme::DIM);
         y += 32.0;
         body(p, Vec2::new(x, y), "Rating", theme::DIM);
-        body(p, Vec2::new(col, y), "For a win, plus kills", theme::DIM);
+        body(p, Vec2::new(col, y), "Win, plus kills", theme::DIM);
         y += 34.0;
         prize(
             p,
@@ -884,11 +830,11 @@ impl Menu {
             rows(p, hits, Vec2::new(x, y), &[Item::Acts("DEPLOY")], 0);
             true
         } else {
-            wrap(
+            body(
                 p,
                 Vec2::new(x, y),
                 &format!(
-                    "The {} aren't committing to this battle this tick: their machines fight elsewhere in the theater",
+                    "The {} aren't fighting here this tick",
                     title(employer.name())
                 ),
                 theme::HOT,
@@ -905,86 +851,71 @@ fn faction_line(p: &mut Painter, at: Vec2, faction: Faction, text: &str) {
     emblem::tagged(p, at, faction, text, &style, Align::Left);
 }
 
-/// Your ship's contract at `at`: who hired it, the pay, its hulls in the
-/// fight and what it can lose, the time left; and, if the Company just
-/// moved you aboard, from where. Returns the y under it.
+/// Width of the labels down the left of the panel's label-value rows.
+const LABEL_W: f32 = 72.0;
+
+/// A row of the panel at `at`: `label`, dim, then `value` after it.
+fn field(p: &mut Painter, at: Vec2, label: &str, value: &str) {
+    body(p, at, label, theme::DIM);
+    body(p, at + Vec2::new(LABEL_W, 0.0), value, theme::FG);
+}
+
+/// Your ship's contract at `at`: who hired it, the pay, its hulls and crystal; and,
+/// if the Company just moved you, from where. (Its time left and how many
+/// hulls it can lose are over the system view.) Returns the y under it.
 fn contract(p: &mut Painter, at: Vec2, t: &Theater, ship: &Ship) -> f32 {
     let (x, mut y) = (at.x, at.y);
     let employer = Faction::ALL[ship.side];
-    body(p, Vec2::new(x, y), "Contract", theme::DIM);
-    y += 22.0;
-    let lead = body(p, Vec2::new(x, y), "Hired by ", theme::DIM);
+    body(p, Vec2::new(x, y), "Hired by", theme::DIM);
     let mut style = BODY;
     style.color = employer.ui();
     emblem::tagged(
         p,
-        Vec2::new(x + lead, y),
+        Vec2::new(x + LABEL_W, y),
         employer,
-        &format!("the {} of {}", title(employer.name()), title(&ship.realm)),
+        &format!("{} of {}", title(employer.name()), title(&ship.realm)),
         &style,
         Align::Left,
     );
     y += 22.0;
     let n = |v: f32| v.round().max(0.0) as u32;
-    y = wrap(
+    field(
         p,
         Vec2::new(x, y),
+        "Pay",
         &format!(
-            "{} crystal paid up front, {} more if {} falls.",
+            "{} now · +{} if {} falls",
             n(ship.upfront),
             n(ship.bonus),
             title(&t.name)
         ),
-        theme::DIM,
     );
-    let ticks = match ship.ticks_left {
-        1 => "1 tick".to_string(),
-        k => format!("{k} ticks"),
-    };
-    y = wrap(
+    y += 22.0;
+    field(
         p,
         Vec2::new(x, y),
-        &format!(
-            "Our hulls: {} in the fight, {} lost; we pull out at {}. {ticks} left on it.",
-            n(ship.field),
-            n(ship.lost),
-            n(ship.max_loss).max(1),
-        ),
-        theme::DIM,
+        "Hulls",
+        &format!("{} fighting · {} spare", n(ship.field), n(ship.aboard)),
     );
-    y = wrap(
-        p,
-        Vec2::new(x, y),
-        &format!(
-            "Aboard: {}, {} crystal.",
-            match n(ship.aboard) {
-                0 => "no spare hulls".to_string(),
-                1 => "1 spare hull".to_string(),
-                h => format!("{h} spare hulls"),
-            },
-            n(ship.crystals)
-        ),
-        theme::DIM,
-    );
+    y += 22.0;
+    field(p, Vec2::new(x, y), "Crystal", &n(ship.crystals).to_string());
+    y += 22.0;
     let news = match ship.news {
         Some(CrewNews::Joined { from }) => Some(format!(
-            "The {} joined the {}, and you went with it.",
-            title(&ship_name(from)),
-            title(&ship.name)
+            "The {} merged into this ship",
+            title(&ship_name(from))
         )),
         Some(CrewNews::Sailed { from }) => Some(format!(
-            "Out of work too long, we sailed from {} to find some.",
+            "Sailed here from {} for work",
             title(&system_name(from as usize))
         )),
         Some(CrewNews::Gone { from }) => Some(format!(
-            "The {} is gone, so the Company put you with the {}.",
-            title(&ship_name(from)),
-            title(&ship.name)
+            "Moved here: the {} is gone",
+            title(&ship_name(from))
         )),
         None => None,
     };
     if let Some(news) = news {
-        y += 4.0;
         y = wrap(p, Vec2::new(x, y), &news, theme::HOT);
     }
     y
@@ -1000,60 +931,25 @@ fn numeral(p: u8) -> &'static str {
     ["I", "II", "III", "IV"][(p as usize).min(3)]
 }
 
-/// What the fight at `site` is about, from your side's point of view.
-fn brief(t: &Theater, site: &SiteView) -> String {
-    let planet = planet(t, site);
-    let enemy = title(Faction::ALL[site.enemy].name());
-    let kind = site.kind_name().to_lowercase();
-    if site.owner == t.employer {
-        if site.is_shield() {
-            format!("The {enemy} are going for our shield generator on {planet}. Keep it standing.")
-        } else {
-            format!("The {enemy} are going for our {kind} on {planet}. Keep it ours.")
-        }
-    } else if site.enemy == site.owner {
-        if site.is_shield() && site.down().is_none() {
-            format!(
-                "Knock out the {enemy} shield generator on {planet}: while it stands, we land only a trickle."
-            )
-        } else {
-            format!("{planet}'s shields are down. Take the {enemy} {kind} from them.")
-        }
-    } else {
-        let ally = title(Faction::ALL[site.owner].name());
-        format!("Help the {ally} keep their {kind} on {planet} from the {enemy}.")
-    }
-}
-
 /// What a win at `site` does in the war, by the contract it's fought with.
 fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
-    let enemy = title(Faction::ALL[site.enemy].name());
     let ours = site.owner == employer.index();
-    match contract {
-        Contract::Attrition => {
-            format!(
-                "A raid on their camp: a win costs the {enemy} hulls, and no ground changes hands."
-            )
-        }
-        Contract::Hold if site.is_shield() && ours => {
-            "Hold the generator longest and it stays ours.".to_string()
-        }
-        Contract::Hold if site.is_shield() && site.down().is_none() => {
-            "Hold the generator longest and it goes down.".to_string()
-        }
-        Contract::Hold if site.is_shield() => {
-            "Hold the generator longest and the site is ours: we put up our own once it's repaired."
-                .to_string()
-        }
-        Contract::Hold if ours => "Hold the deposit longest and the site stays ours.".to_string(),
-        Contract::Hold => "Hold the deposit longest and the site is ours.".to_string(),
-        Contract::Raid if site.is_shield() && site.down().is_none() && !ours => {
-            "Carry their flag home and the generator goes down.".to_string()
-        }
-        Contract::Raid => {
-            format!("Carry their flag home and one of the {enemy} shield generators goes down.")
-        }
-    }
+    let shield_up = site.is_shield() && site.down().is_none();
+    let what = match contract {
+        Contract::Attrition => "they lose hulls; no ground changes hands",
+        Contract::Hold if ours => "it stays ours",
+        Contract::Hold if shield_up => "it goes down",
+        Contract::Hold if site.is_shield() => "it's ours, and we put up our own",
+        Contract::Hold => "it's ours",
+        Contract::Raid if shield_up && !ours => "it goes down",
+        Contract::Raid => "one of their generators goes down",
+    };
+    let how = match contract {
+        Contract::Attrition => "Win",
+        Contract::Hold => "Hold it longest",
+        Contract::Raid => "Bring their flag home",
+    };
+    format!("{how}: {what}")
 }
 
 /// Your company at `at`, under the rank: its ship's name, or that you're not
@@ -1147,10 +1043,7 @@ fn prize(p: &mut Painter, at: Vec2, part: Option<Part>, profile: &Profile) {
             body(
                 p,
                 Vec2::new(x, y + 28.0),
-                &format!(
-                    "Prize · the {} {kind} schematic, if you win",
-                    title(part.maker().name())
-                ),
+                &format!("Prize: their {kind} schematic, if you win"),
                 theme::DIM,
             );
         }
@@ -1158,17 +1051,12 @@ fn prize(p: &mut Painter, at: Vec2, part: Option<Part>, profile: &Profile) {
             body(
                 p,
                 Vec2::new(x, y),
-                &format!("{} schematic stolen · pays crystals", title(part.name())),
+                &format!("{} schematic: yours already", title(part.name())),
                 theme::DIM,
             );
         }
         None => {
-            body(
-                p,
-                Vec2::new(x, y),
-                "No schematic · pays crystals",
-                theme::DIM,
-            );
+            body(p, Vec2::new(x, y), "No schematic to win", theme::DIM);
         }
     }
 }
