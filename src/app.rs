@@ -504,7 +504,15 @@ impl App {
         );
         m.set_rating(self.rating);
         m.prize = self.unstolen_prize();
-        self.battle = self.in_war.then(|| self.draw_battle(&mut m));
+        if self.in_war {
+            self.battle = self.draw_battle(&mut m);
+            if self.battle.is_none() {
+                // Your company's no longer in this fight (its contract's
+                // over, or its hulls are spent): you're not either (#362).
+                self.back_to_menu();
+                return;
+            }
+        }
         self.load(m);
         self.mode = Mode::Playing;
     }
@@ -514,14 +522,12 @@ impl App {
         self.prize.filter(|&p| !self.profile.owns(p))
     }
 
-    /// Draw this round's battle from the galaxy: at the theater's site when
-    /// it's a sortie, else wherever the galaxy picks.
-    fn draw_battle(&mut self, m: &mut Match) -> Battle {
-        let g = self.war.get();
-        match self.sortie {
-            Some(o) => battle::deploy_at(g, m, o.system, o.site),
-            None => battle::deploy(g, m),
-        }
+    /// Draw this round's battle from the galaxy: at the sortie's site, with
+    /// your company. None if it isn't there: you only fight in your
+    /// company's battles (#362).
+    fn draw_battle(&mut self, m: &mut Match) -> Option<Battle> {
+        let o = self.sortie?;
+        battle::deploy_at(self.war.get(), m, o.system, o.site)
     }
 
     /// Deploy into a theater's site: its mission's map and contract, the
@@ -551,8 +557,14 @@ impl App {
         game.set_rating(self.rating);
         game.prize = self.unstolen_prize();
         game.crew = self.profile.company_name();
+        let Some(b) = self.draw_battle(&mut game) else {
+            // Your company isn't in this one (#362).
+            self.sortie = None;
+            self.audio.garage(audio::GarageCue::Refused);
+            return;
+        };
         self.in_war = true;
-        self.battle = Some(self.draw_battle(&mut game));
+        self.battle = Some(b);
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(

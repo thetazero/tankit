@@ -858,6 +858,12 @@ pub struct Match {
     pub company_hulls: Vec<u32>,
     /// Each side's Company tanks destroyed (the player's among them).
     company_deaths: Vec<u32>,
+    /// Your side, once it's dealt you a seat among its mercs (`set_company`):
+    /// then you come back only in their hulls.
+    crew_team: Option<usize>,
+    /// Your company's hulls are spent and you're down: you're done, and so
+    /// is the match (#361).
+    crew_out: bool,
     /// Where in the galaxy it's fought, for the HUD.
     pub place: Option<String>,
     /// Your company's name ("IRON TITHE"), for the HUD (#350).
@@ -933,6 +939,8 @@ impl Match {
             hulls: None,
             company_hulls: Vec::new(),
             company_deaths: Vec::new(),
+            crew_team: None,
+            crew_out: false,
             place: None,
             crew: None,
             nav,
@@ -1033,9 +1041,18 @@ impl Match {
         self.hulls.as_ref().map(|h| h[team])
     }
 
-    /// Side `team` has spent its allocation: no hulls left and no tank in play.
+    /// Side `team` has spent its allocation: no hulls left and no tank in
+    /// play. On your side, also once your company is out (see `crew_out`).
     pub fn spent(&self, team: usize) -> bool {
-        self.hulls_left(team) == Some(0) && !self.fighters.iter().any(|f| f.team == team && f.alive)
+        (self.hulls_left(team) == Some(0)
+            && !self.fighters.iter().any(|f| f.team == team && f.alive))
+            || (self.crew_out && team == self.fighters[0].team)
+    }
+
+    /// Your company has run out of hulls with you down (#361): the mercs
+    /// are done, and you with them. The round ends there, lost.
+    pub fn crew_out(&self) -> bool {
+        self.crew_out
     }
 
     /// The sides still in the fight (all of them, without an allocation).
@@ -1047,16 +1064,19 @@ impl Match {
 
     /// Side `team` has mercs (before the round starts): `seats` of its tanks
     /// are the Company's, in its colors, and `hulls` of its allocation are
-    /// theirs, those in play among them. The player is always the
-    /// Company's, and one of the `seats` on their side; the rest are its
-    /// bots, first dealt first.
+    /// theirs, those in play among them. The player, on their side, is the
+    /// first of the `seats` (with none, the realm's); the rest are its bots,
+    /// first dealt first.
     pub fn set_company(&mut self, team: usize, seats: usize, hulls: u32) {
         let mut left = seats;
         for i in 0..self.fighters.len() {
             if self.fighters[i].team != team {
                 continue;
             }
-            let company = i == 0 || left > 0;
+            let company = left > 0;
+            if i == 0 && company {
+                self.crew_team = Some(team);
+            }
             self.world.tanks[i].company = company;
             if company {
                 left = left.saturating_sub(1);
@@ -1384,8 +1404,9 @@ impl Match {
 
         self.fly_shells();
         self.respawns();
-        if playing && self.hulls.is_some() && self.contenders().len() <= 1 {
-            // A side (or all but one) out of hulls: the fight's over.
+        if playing && (self.crew_out || self.hulls.is_some() && self.contenders().len() <= 1) {
+            // A side (or all but one) out of hulls, or your company: the
+            // fight's over.
             self.end_round();
         }
         let tanks: Vec<(&crate::sim::Tank, bool)> = self
@@ -2443,19 +2464,11 @@ impl Match {
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
             }
-            let team = self.fighters[i].team;
-            if !self.take_hull(team) {
-                // The side's allocation is spent: this tank stays a wreck.
+            if !self.rehull(i) {
+                // The side's allocation is spent (or your company's): this
+                // tank stays a wreck.
                 self.fighters[i].respawn_in = 0.0;
                 continue;
-            }
-            if self.world.tanks[i].company {
-                // A merc comes back in a merc hull while there are any; then
-                // a bot's seat is the realm's (you're the Company's still).
-                match self.company_hulls.get_mut(team) {
-                    Some(h) if *h > 0 => *h -= 1,
-                    _ => self.world.tanks[i].company = i == 0,
-                }
             }
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
@@ -2463,6 +2476,30 @@ impl Match {
                 .collect();
             self.revive(i, &living);
         }
+    }
+
+    /// Tank `i` is coming back: take it a hull, if its side has one left.
+    /// Under an allocation, a merc comes back in a merc hull while there
+    /// are any; then a bot's seat is the realm's. You come back only in
+    /// your company's: when they're spent, you're out (`crew_out`).
+    fn rehull(&mut self, i: usize) -> bool {
+        let team = self.fighters[i].team;
+        let company = self.world.tanks[i].company && self.hulls.is_some();
+        let mercs = self.company_hulls.get(team).copied().unwrap_or(0);
+        if company && i == 0 && self.crew_team == Some(team) && mercs == 0 {
+            self.crew_out = true;
+            return false;
+        }
+        if !self.take_hull(team) {
+            return false;
+        }
+        if company {
+            match self.company_hulls.get_mut(team) {
+                Some(h) if *h > 0 => *h -= 1,
+                _ => self.world.tanks[i].company = false,
+            }
+        }
+        true
     }
 
     /// Put one of side `team`'s hulls in play, if it has one left (always,
@@ -5342,15 +5379,62 @@ mod tests {
         respawn(&mut m);
         assert!(m.fighters[2].alive);
         assert!(!m.world.tanks[2].company, "no merc hulls left: the realm's");
-        destroy(&mut m, 0);
-        respawn(&mut m);
-        assert!(m.world.tanks[0].company, "you're always the Company's");
-        assert_eq!(m.company_lost(), vec![3, 0]);
-        assert_eq!(m.lost()[0], 3);
-        // With no mercs, it's only you.
+        assert_eq!(m.company_lost(), vec![2, 0]);
+        assert_eq!(m.lost()[0], 2);
+        // With no mercs, nobody's the Company's, you included.
         let mut alone = arena(3);
         alone.set_company(0, 0, 0);
-        assert_eq!(alone.company_seats(0), 1);
+        assert_eq!(alone.company_seats(0), 0);
+    }
+
+    /// Once your company's hulls are spent, you don't come back in the
+    /// realm's (#361): you're out, and the round ends there, lost, with
+    /// the realm's hulls still to spare.
+    #[test]
+    fn out_of_merc_hulls_youre_done() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[10, 10]);
+        // You're the company's only seat, with a merc hull to spare.
+        m.set_company(0, 1, 2);
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(m.fighters[0].alive, "back in the last merc hull");
+        assert!(m.world.tanks[0].company);
+        assert!(!m.crew_out());
+        // Ahead on kills, so it isn't the score that loses it.
+        m.fighters[0].kills = 5;
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(!m.fighters[0].alive, "no merc hulls left: you're done");
+        assert!(m.crew_out());
+        assert!(
+            m.hulls_left(0).unwrap() > 0,
+            "the realm's hulls are still there"
+        );
+        m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Over);
+        assert!(m.spent(0));
+        assert_eq!(m.leader(), Some(1));
+        assert_eq!(
+            crate::economy::Payout::of(&m).outcome,
+            crate::economy::Outcome::Lost
+        );
+        assert_eq!(m.company_lost(), vec![2, 0]);
+    }
+
+    /// Without an allocation (a skirmish), you come back without end.
+    #[test]
+    fn without_an_allocation_youre_never_out() {
+        let mut m = arena(3);
+        for _ in 0..3 {
+            destroy(&mut m, 0);
+            respawn(&mut m);
+            assert!(m.fighters[0].alive);
+        }
+        assert!(!m.crew_out());
     }
 
     /// A side out of hulls and tanks is out: the round ends and the other

@@ -342,6 +342,9 @@ enum Screen {
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
+    /// Your company's last hull destroyed, you in it: the round's over for
+    /// you (needs `--front --hired`).
+    Spent,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -677,10 +680,11 @@ fn parse_args() -> Result<Args> {
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
+                    Some("spent") => Screen::Spent,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent or carry, got {other:?}"
                         )
                     }
                 })
@@ -863,21 +867,23 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     if args.front {
         let mut g = galaxy::Galaxy::warmed(args.seed);
         let b = match args.hired {
-            true => galaxy::battle::deploy_hired(&g, &mut game),
+            true => galaxy::battle::deploy_hired(&mut g, &mut game),
             false => None,
         }
         .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
         // With the company fighting for you there, if there is one; else the
         // one a new pilot would join.
         let side = game.factions.first().map(|f| f.index());
-        g.crew = g
-            .companies
-            .iter()
-            .find(|c| {
-                c.contract
-                    .is_some_and(|k| k.target as usize == b.system && Some(k.side as usize) == side)
-            })
-            .map(|c| c.id);
+        g.crew = b.crew.or_else(|| {
+            g.companies
+                .iter()
+                .find(|c| {
+                    c.contract.is_some_and(|k| {
+                        k.target as usize == b.system && Some(k.side as usize) == side
+                    })
+                })
+                .map(|c| c.id)
+        });
         g.enlist(side);
         profile.ship = g.crew;
         game.crew = profile.company_name();
@@ -952,7 +958,18 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = if args.screen == Some(Screen::Dead) {
+    let mut camera = if args.screen == Some(Screen::Spent) {
+        // Your company's last hull goes, with you in it, a respawn and a
+        // few seconds of results before the shot.
+        let lead = (combat::RESPAWN_TIME + 4.0).min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        let me = game.fighters[0].team;
+        if let Some(h) = game.company_hulls.get_mut(me) {
+            *h = 0;
+        }
+        game.destroy_player();
+        advance(&mut game, &mut cam, &mut garage, lead)
+    } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
         advance(&mut game, &mut cam, &mut garage, shot.time - lead);
