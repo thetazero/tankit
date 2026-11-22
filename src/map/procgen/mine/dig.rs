@@ -3931,7 +3931,7 @@ impl Dig<'_> {
                     let r = 2.0 + k as f32;
                     p + Vec2::new(rng.range(-r, r), rng.range(-r, r))
                 })
-                .find(|&q| !keep_clear(lay, q) && !self.on_way(q))
+                .find(|&q| !keep_clear(lay, q) && !self.on_way(q) && !self.in_the_way(q, 2.5))
             else {
                 continue;
             };
@@ -4128,8 +4128,8 @@ impl Dig<'_> {
         // the far side from the cutting rig where it's working.
         let wash = |u: f32| {
             let (p, t) = line_at(&lay.wash, u);
-            let p = if p.distance(lay.wash_rig.0) < 10.0 {
-                p + Vec2::new(t.y, -t.x) * 4.0
+            let p = if p.distance(lay.wash_rig.0) < 12.0 {
+                p + Vec2::new(t.y, -t.x) * 4.5
             } else {
                 p
             };

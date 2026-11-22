@@ -500,7 +500,7 @@ impl Layout {
         // The scree, past the breach, short of the east edge.
         let x0 = even(bx + 10.0 + rng.range(4.0, 8.0));
         let x1 = (x0 + even(rng.range(26.0, 32.0))).min(s - 20.0);
-        if x1 - x0 < 22.0 {
+        if x1 - x0 < 24.0 {
             return Err(line!());
         }
         self.scree = (x0, x1);
@@ -693,7 +693,7 @@ impl Layout {
             })
             .collect();
         let (p, t, n) = self.wash_frame(b - 16.0);
-        self.wash_rig = (p - n * 2.5, yaw_along(t));
+        self.wash_rig = (p - n * 3.5, yaw_along(t));
         self.hold = self.wash_frame(b - 25.0).0;
         // A ramp's top is out on the flat, in from the edge (not up the
         // scree, not under the Face).
@@ -753,7 +753,7 @@ impl Layout {
         let (x0, x1) = self.scree;
         let best_x = |l: &Layout, r: Ramp| {
             (0..=10)
-                .map(|k| x0 + 7.0 + (x1 - x0 - 14.0) * k as f32 / 10.0)
+                .map(|k| x0 + 10.0 + (x1 - x0 - 20.0) * k as f32 / 10.0)
                 .map(|x| {
                     let (a, b) = scree_way(l, x);
                     (x, seg(r.0, a, b).0.min(seg(r.1, a, b).0))
