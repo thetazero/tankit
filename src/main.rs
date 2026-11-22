@@ -125,6 +125,9 @@ tankit [OPTIONS]
                           system view
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
+  --defend                (with --screen missions|site) the war goes on until your company is hired
+                          to hold one of its employer's worlds, not to take one; (with --front
+                          --hired) the battle is one where a company's hired to hold the world
                           (from 0; default: the first your side fights for)
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
@@ -161,6 +164,8 @@ pub struct Args {
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.
     choice: Option<bool>,
+    /// --defend, for missions shots: your company's on a defense contract.
+    defend: bool,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -511,6 +516,7 @@ fn parse_args() -> Result<Args> {
     let mut site = None;
     let mut transfer = None;
     let mut choice = None;
+    let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -626,6 +632,7 @@ fn parse_args() -> Result<Args> {
                     other => bail!("--choice expects split or merge, got {other:?}"),
                 })
             }
+            "--defend" => defend = true,
             "--straight" => straight = true,
             "--tilt" => {
                 tilt = args
@@ -843,6 +850,7 @@ fn parse_args() -> Result<Args> {
         upgrade,
         debug,
         straight,
+        defend,
         tilt,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
@@ -930,7 +938,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     if args.front {
         let mut g = galaxy::Galaxy::warmed(args.seed);
         let b = match args.hired {
-            true => galaxy::battle::deploy_hired(&mut g, &mut game),
+            true => galaxy::battle::deploy_hired(&mut g, &mut game, args.defend),
             false => None,
         }
         .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
@@ -1209,7 +1217,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let prefer = args.employer.map(|f| f.index());
     let war = || {
         let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-        let t = g.await_work_staying(prefer, profile.rank().level, 100).0;
+        let rank = profile.rank().level;
+        let t = if args.defend {
+            defending(&mut g, prefer, rank)
+        } else {
+            g.await_work_staying(prefer, rank, 100).0
+        };
         (g.crew, t)
     };
     match args.screen {
@@ -1329,6 +1342,35 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         .with_context(|| format!("save {}", shot.out))?;
     println!("wrote menu to {}", shot.out);
     Ok(())
+}
+
+/// The war ticked on until a company hired to hold one of its employer's
+/// worlds (for side `prefer`, if given) has a battle for you, with you in
+/// it: that theater, or None if there's none in 2000 ticks.
+fn defending(
+    g: &mut galaxy::Galaxy,
+    prefer: Option<usize>,
+    rank: u32,
+) -> Option<galaxy::theater::Theater> {
+    for _ in 0..2000 {
+        let ids: Vec<u32> = g
+            .companies
+            .iter()
+            .filter(|c| {
+                c.contract
+                    .is_some_and(|k| k.defend && prefer.is_none_or(|f| k.side as usize == f))
+            })
+            .map(|c| c.id)
+            .collect();
+        for id in ids {
+            g.crew = Some(id);
+            if let Some(t) = g.aboard(rank) {
+                return Some(t);
+            }
+        }
+        g.step();
+    }
+    None
 }
 
 fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs, cam: Option<(Vec3, Vec3)>) -> Result<()> {
