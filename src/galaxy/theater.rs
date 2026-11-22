@@ -80,8 +80,11 @@ pub struct Ship {
     pub field: f32,
     pub lost: f32,
     pub max_loss: f32,
-    /// Ticks until the contract runs out.
+    /// Ticks until the contract runs out (one a battle), of its `term`.
     pub ticks_left: u64,
+    pub term: u64,
+    /// The tick it was signed: a new one is a new contract.
+    pub signed: u64,
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
 }
@@ -529,6 +532,8 @@ impl Galaxy {
             lost: k.lost,
             max_loss: k.max_loss,
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
+            term: self.rules.merc_term as u64,
+            signed: k.signed,
             news: self.crew_news,
         });
         Some(t)

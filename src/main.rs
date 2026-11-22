@@ -115,6 +115,9 @@ tankit [OPTIONS]
   --mission <name>        (with --screen results) the round was this mission, by name, e.g.
                           'four winds', for its prize
   --site <n>              (with --screen missions|site) select the theater's nth contested site
+  --transfer <jump|move>  (with --screen missions) the war goes on until your company moves onto its
+                          next contract (in another system, or the same one): the shot is --time
+                          seconds into the transfer playing over the system view
                           (from 0; default: the first your side fights for)
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
@@ -144,6 +147,9 @@ pub struct Args {
     mission: Option<usize>,
     /// --site, for theater shots: index into the contested sites.
     site: Option<usize>,
+    /// --transfer, for missions shots: the move onto the next contract,
+    /// `--time` seconds in; true to wait for one to another system.
+    transfer: Option<bool>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -448,6 +454,7 @@ fn parse_args() -> Result<Args> {
     let mut generator_down = 0u8;
     let mut mission = None;
     let mut site = None;
+    let mut transfer = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -548,6 +555,13 @@ fn parse_args() -> Result<Args> {
                 );
             }
             "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
+            "--transfer" => {
+                transfer = Some(match args.next().as_deref() {
+                    Some("jump") => true,
+                    Some("move") => false,
+                    other => bail!("--transfer expects jump or move, got {other:?}"),
+                })
+            }
             "--straight" => straight = true,
             "--tilt" => {
                 tilt = args
@@ -743,6 +757,7 @@ fn parse_args() -> Result<Args> {
         employer,
         mission,
         site,
+        transfer,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -1077,6 +1092,39 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let (crew, t) = war();
             profile.ship = crew;
             menu.set_theater(t);
+            if let Some(jump) = args.transfer {
+                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                let rank = profile.rank().level;
+                let mut t = g.await_work(prefer, rank, 100).0;
+                menu.set_theater(t.clone());
+                for _ in 0..2000 {
+                    g.step();
+                    let (next, _) = g.await_work(prefer, rank, 100);
+                    let moved = |a: &Option<galaxy::theater::Theater>| {
+                        a.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| {
+                            theater_view::Transfer::between(a, b) && (a.system != b.system) == jump
+                        })
+                    };
+                    if moved(&t) {
+                        menu.set_theater(next);
+                        break;
+                    }
+                    // Another kind of move: start again from there.
+                    if next.is_some() {
+                        t = next.clone();
+                        menu.set_theater(next);
+                    }
+                }
+                profile.ship = g.crew;
+                let kind = menu
+                    .transfer()
+                    .zip(menu.theater())
+                    .is_some_and(|(tr, t)| tr.jumps(t) == jump);
+                anyhow::ensure!(kind, "no transfer of that kind in 2000 ticks");
+                for _ in 0..(shot.time / 0.01).round() as u32 {
+                    menu.advance(0.01);
+                }
+            }
             if let Some(k) = args.site {
                 menu.pick_site(k);
             }
@@ -1122,8 +1170,8 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         // The missions screen: the system, in 3D.
         Some(t) => {
             let mut sys = theater_view::SystemArt::upload(&mut renderer);
-            sys.show(&mut renderer, t);
-            theater_view::scene(&sys, t, shot.time, theater_view::camera(t, w / h))
+            sys.show(&mut renderer, theater_view::on_screen(t, menu.transfer()));
+            theater_view::scene(&sys, t, menu.transfer(), shot.time, w / h)
         }
         None => scene::build(&game.world, &tanks, &art, camera),
     };
