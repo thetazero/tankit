@@ -62,6 +62,9 @@ struct SavedCompany {
     hulls: f32,
     margin: f32,
     founded: u64,
+    /// Saves from before #355 have none: idle since the save, then.
+    #[serde(default)]
+    idle_since: Option<u64>,
     id: u32,
     contract: Option<SavedContract>,
 }
@@ -136,6 +139,7 @@ impl Galaxy {
                         hulls: c.hulls,
                         margin: c.margin,
                         founded: c.founded,
+                        idle_since: Some(c.idle_since),
                         id: c.id,
                         contract: c.contract.map(|k| SavedContract {
                             realm: k.realm,
@@ -241,6 +245,7 @@ impl Galaxy {
                     hulls: c.hulls,
                     margin: c.margin,
                     founded: c.founded,
+                    idle_since: c.idle_since.unwrap_or(s.tick),
                     id: c.id,
                     contract: c.contract.map(|k| Contract {
                         realm: k.realm,

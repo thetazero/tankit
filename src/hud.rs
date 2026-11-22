@@ -401,11 +401,6 @@ impl Hud {
                 );
             }
         }
-        if let Some(r) = &m.raid
-            && r.paused()
-        {
-            raid_break(&mut p, m, r, Vec2::new(w * 0.5, h * 0.28));
-        }
 
         // Crosshair where the shot would land, down the gun as the aim assist
         // lays it (so it moves onto a tank the assist bends onto); the gap
@@ -963,8 +958,8 @@ fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     }
 }
 
-/// The Raid under the scores: the round and whether your side attacks or
-/// defends it, then where the flag is.
+/// The Raid under the scores: whether your side attacks or defends, then
+/// where the flag is.
 fn raid_meter(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
     let mine = m.player().team;
     let attacking = r.attackers() == mine;
@@ -972,12 +967,7 @@ fn raid_meter(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
     l.color = m.factions[mine].ui();
     p.text(
         at,
-        &format!(
-            "ROUND {}/{}  ·  {}",
-            r.round + 1,
-            raid::ROUNDS,
-            if attacking { "ATTACK" } else { "DEFEND" }
-        ),
+        if attacking { "ATTACK" } else { "DEFEND" },
         &l,
         Align::Center,
     );
@@ -1000,52 +990,6 @@ fn raid_meter(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
     let mut s = TextStyle::LABEL;
     s.color = color;
     p.text(at + Vec2::new(0.0, 18.0), &text, &s, Align::Center);
-}
-
-/// Between a Raid's rounds: how the round went, and what's next.
-fn raid_break(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
-    let Some(last) = r.played.last() else { return };
-    let mine = m.player().team;
-    let att = m.factions[last.attackers];
-    let def = m.factions[1 - last.attackers];
-    let (text, side) = match last.captured {
-        Some(t) => {
-            let t = t.round() as u32;
-            (
-                format!("{} TOOK THE FLAG  {}:{:02}", att.name(), t / 60, t % 60),
-                last.attackers,
-            )
-        }
-        None => (
-            format!("{} HELD THEIR FLAG", def.name()),
-            1 - last.attackers,
-        ),
-    };
-    let mut big = TextStyle::value(22.0);
-    big.color = m.factions[side].ui();
-    p.text(at, &text, &big, Align::Center);
-    if !r.done() {
-        // The sides swap when the break ends.
-        let next = if r.attackers() == mine {
-            "DEFEND"
-        } else {
-            "ATTACK"
-        };
-        let mut l = TextStyle::LABEL;
-        l.color = theme::FG;
-        p.text(
-            at + Vec2::new(0.0, 34.0),
-            &format!(
-                "ROUND {}/{}: YOU {}  ·  {:.0}",
-                r.round + 2,
-                raid::ROUNDS,
-                next,
-                r.break_left.ceil()
-            ),
-            &l,
-            Align::Center,
-        );
-    }
 }
 
 fn hold_color(m: &Match, c: Control) -> Rgba {

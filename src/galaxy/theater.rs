@@ -19,8 +19,9 @@
 //! (`Galaxy::enlist`), and stays with it: if it joins another company, you
 //! go with it. While it has no battle for you (between contracts), the war
 //! goes on without you until it has (`Galaxy::await_work`): the galaxy
-//! otherwise only ticks with battles. A company idle too long sails to the
-//! nearest war to look for work (`Galaxy::seek_work`).
+//! otherwise only ticks with battles. Like every company, yours sails to
+//! the nearest war to look for work when it's idle too long
+//! (`Galaxy::seek_work`, #355).
 //!
 //! **Maps.** A shield generator is fought over on the shield city (#341), a
 //! Hold for the generator: its holder's model, in the shape the site's in
@@ -45,8 +46,9 @@ pub struct Theater {
     /// Who you're posted for: index into `Faction::ALL`.
     pub employer: usize,
     pub planets: u8,
-    /// Each side's hulls here, and sites held.
+    /// Each side's hulls here, hulls its yards here build a tick, and sites held.
     pub hulls: [f32; SIDES],
+    pub built: [f32; SIDES],
     pub held: [u8; SIDES],
     /// Every site in the system, in the galaxy's order.
     pub sites: Vec<SiteView>,
@@ -308,13 +310,6 @@ impl Theater {
         out.sort_by(|&a, &b| self.hulls[b].total_cmp(&self.hulls[a]));
         out
     }
-
-    /// Generators up and down, all sides'.
-    pub fn shields(&self) -> (usize, usize) {
-        let gens = self.sites.iter().filter(|s| s.is_shield());
-        let down = gens.clone().filter(|s| s.down().is_some()).count();
-        (gens.count() - down, down)
-    }
 }
 
 impl Galaxy {
@@ -454,38 +449,11 @@ impl Galaxy {
         self.crew = Some(self.companies[c].id);
     }
 
-    /// Your company, idle (between contracts) too long: it sails to the
-    /// nearest other system at war to look for work, paying the FTL as far
-    /// as its crystal goes. True if it went.
-    pub fn seek_work(&mut self) -> bool {
-        let Some(c) = self.crew_company() else {
-            return false;
-        };
-        let co = self.companies[c];
-        if co.contract.is_some() {
-            return false;
-        }
-        let here = self.systems[co.at as usize].pos;
-        let d = |s: usize| self.systems[s].pos.distance(here);
-        let Some(to) = (0..self.systems.len())
-            .filter(|&s| s != co.at as usize && self.systems[s].at_war())
-            .min_by(|&a, &b| d(a).total_cmp(&d(b)))
-        else {
-            return false;
-        };
-        let fare = self.voyage(co.hulls, d(to)).min(co.crystals.max(0.0));
-        let from = co.at;
-        let co = &mut self.companies[c];
-        co.crystals -= fare;
-        co.at = to as u32;
-        self.crew_news = Some(CrewNews::Sailed { from });
-        true
-    }
-
     /// The theater with your company (see `enlist`); while it has no battle
     /// for you, the war goes on without you (up to `ticks` ticks) until it
-    /// has. If it's still between contracts after that, it goes looking for
-    /// work (`seek_work`). True in the second if the galaxy ticked.
+    /// has. Idle long enough, it goes looking for work like any company
+    /// (`Galaxy::seek_work`, in the galaxy's tick). True in the second if
+    /// the galaxy ticked.
     pub fn await_work(
         &mut self,
         prefer: Option<usize>,
@@ -501,7 +469,6 @@ impl Galaxy {
                 self.step();
             }
         }
-        self.seek_work();
         (None, ticks > 0)
     }
 
@@ -598,6 +565,7 @@ impl Galaxy {
             employer: f,
             planets: sys.planets,
             hulls: sys.hulls,
+            built: self.built(s),
             held: sys.held,
             sites,
             contested,
@@ -702,7 +670,8 @@ mod tests {
     }
 
     /// Your company between contracts: no theater, and the war goes on
-    /// until it has one; idle that long, it sails to the nearest war.
+    /// until it has one; idle that long, it sails to the nearest war, by the
+    /// same rule as every company (#355).
     #[test]
     fn an_idle_company_waits_then_looks_for_work() {
         let mut g = galaxy_with_work();
@@ -710,14 +679,17 @@ mod tests {
         let id = g.companies[c].id;
         g.companies[c].contract = None;
         assert!(g.aboard(1).is_none());
-        let at = g.companies[c].at;
         let (t, ticked) = g.await_work(None, 1, 0);
         assert!(t.is_none() && !ticked);
+        let at = g.companies[c].at;
+        g.companies[c].idle_since = g.tick - g.rules.merc_idle as u64;
+        assert!(g.seek_work() >= 1);
         assert_eq!(g.crew, Some(id));
         let c = g.crew_company().unwrap();
         let to = g.companies[c].at as usize;
         assert_ne!(to as u32, at);
         assert!(g.systems[to].at_war());
+        assert_eq!(g.companies[c].idle_since, g.tick);
         assert_eq!(g.crew_news, Some(CrewNews::Sailed { from: at }));
     }
 

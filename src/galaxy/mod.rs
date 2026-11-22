@@ -199,6 +199,9 @@ pub struct Rules {
     pub merc_term: u32,
     /// How far a company goes for work, light years.
     pub merc_range: f32,
+    /// A company idle this many ticks sails to the nearest war to look for
+    /// work (`Galaxy::seek_work`).
+    pub merc_idle: u32,
     /// A realm pays for a world at most what it turns out over this many
     /// ticks (crystal, and hulls at `hull_price`).
     pub merc_horizon: f32,
@@ -254,6 +257,7 @@ impl Default for Rules {
             merc_loss: 0.5,
             merc_term: 30,
             merc_range: 1200.0,
+            merc_idle: 30,
             merc_horizon: 300.0,
             merc_split: 1000.0,
             merc_join: 40.0,
@@ -531,6 +535,17 @@ impl Galaxy {
             if let SiteKind::Production { hulls, .. } = site.kind {
                 out[site.owner as usize] += hulls;
             }
+        }
+        out
+    }
+
+    /// Hulls each side's yards in system `s` turn out a tick, as `produce`
+    /// adds them: a pocket's holder short by the cut-off.
+    pub fn built(&self, s: usize) -> [f32; SIDES] {
+        let mut out = self.production(s);
+        let holder = self.systems[s].owner();
+        if self.cut[s] {
+            out[holder] *= self.rules.cut_off;
         }
         out
     }
