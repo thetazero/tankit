@@ -68,16 +68,12 @@ pub struct Ship {
     pub name: String,
     /// The world it's parked over: where its side's attack goes in this tick.
     pub over: u8,
-    /// Its crystal, and hulls still aboard (not in the fight).
-    pub crystals: f32,
+    /// Its hulls still aboard (not in the fight).
     pub aboard: f32,
     /// The realm that hired it, by its seat's name, and that realm's people
     /// (index into `Faction::ALL`).
     pub realm: String,
     pub side: usize,
-    pub upfront: f32,
-    /// Paid if the world falls.
-    pub bonus: f32,
     /// Its hulls in the fight; those lost in it so far (on back-to-back
     /// contracts here too: see `Contract::before`), and where that count
     /// reaches this contract's cap on losses.
@@ -488,12 +484,9 @@ impl Galaxy {
             id: co.id,
             name: ship_name(co.id),
             over,
-            crystals: co.crystals,
             aboard: co.hulls,
             realm: system_name(self.realms[k.realm as usize].seat as usize),
             side: f,
-            upfront: k.upfront,
-            bonus: k.bonus,
             field: k.field,
             lost: k.lost_here(),
             max_loss: k.cap_here(),
