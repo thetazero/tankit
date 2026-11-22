@@ -363,9 +363,11 @@ enum Screen {
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
-    /// Your company's last hull destroyed, you in it: the round's over for
-    /// you (needs `--front --hired`).
+    /// Your company's last hull destroyed, you in it: you're out, and the
+    /// match fast-forwards without you (needs `--front --hired`).
     Spent,
+    /// Likewise, once the fast-forward has played the match out: the results.
+    SpentOver,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -710,10 +712,11 @@ fn parse_args() -> Result<Args> {
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
                     Some("spent") => Screen::Spent,
+                    Some("spent-over") => Screen::SpentOver,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over or carry, got {other:?}"
                         )
                     }
                 })
@@ -988,17 +991,24 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = if args.screen == Some(Screen::Spent) {
-        // Your company's last hull goes, with you in it, a respawn and a
-        // few seconds of results before the shot.
-        let lead = (combat::RESPAWN_TIME + 4.0).min(shot.time);
+    let mut camera = if matches!(args.screen, Some(Screen::Spent | Screen::SpentOver)) {
+        // Your company's last hull goes, with you in it, and a respawn's
+        // wait later you're out: the shot catches the fast-forward, or
+        // (spent-over) a few seconds of the results it ends on.
+        let lead = (combat::RESPAWN_TIME + 1.0).min(shot.time);
         advance(&mut game, &mut cam, &mut garage, shot.time - lead);
         let me = game.fighters[0].team;
         if let Some(h) = game.company_hulls.get_mut(me) {
             *h = 0;
         }
         game.destroy_player();
-        advance(&mut game, &mut cam, &mut garage, lead)
+        let camera = advance(&mut game, &mut cam, &mut garage, lead);
+        if args.screen == Some(Screen::SpentOver) {
+            game.fast_forward(usize::MAX);
+            advance(&mut game, &mut cam, &mut garage, 3.0)
+        } else {
+            camera
+        }
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
