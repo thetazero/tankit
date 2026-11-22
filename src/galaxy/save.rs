@@ -85,8 +85,6 @@ struct SavedContract {
     field: f32,
     lost: f32,
     #[serde(default)]
-    orbit: f32,
-    #[serde(default)]
     defend: bool,
 }
 
@@ -155,7 +153,6 @@ impl Galaxy {
                             committed: k.committed,
                             field: k.field,
                             lost: k.lost,
-                            orbit: k.orbit,
                             defend: k.defend,
                         }),
                     })
@@ -262,7 +259,6 @@ impl Galaxy {
                         committed: k.committed,
                         field: k.field,
                         lost: k.lost,
-                        orbit: k.orbit,
                         defend: k.defend,
                     }),
                 })
@@ -441,8 +437,8 @@ mod tests {
             assert_eq!((a.at, a.crystals, a.hulls), (b.at, b.crystals, b.hulls));
             assert_eq!(a.contract.map(|k| k.target), b.contract.map(|k| k.target));
             assert_eq!(
-                a.contract.map(|k| (k.orbit, k.defend)),
-                b.contract.map(|k| (k.orbit, k.defend))
+                a.contract.map(|k| (k.field, k.defend)),
+                b.contract.map(|k| (k.field, k.defend))
             );
         }
         for _ in 0..10 {

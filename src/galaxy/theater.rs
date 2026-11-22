@@ -84,8 +84,7 @@ pub struct Ship {
     pub signed: u64,
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
-    /// Its hulls still committed to the contract (in the fight or waiting
-    /// in orbit), and of them yours alone (#385): left, of how many.
+    /// Its hulls still committed to the contract (in the fight), and of them yours alone (#385): left, of how many.
     pub committed: f32,
     pub own: Own,
 }
@@ -560,7 +559,7 @@ impl Galaxy {
                 id,
                 name: ship_name(id),
                 system: system_name(co.at as usize),
-                hulls: co.hulls + co.contract.map_or(0.0, |k| k.field + k.orbit),
+                hulls: co.hulls + co.contract.map_or(0.0, |k| k.field),
                 crystals: co.crystals,
                 work: co.contract.map(|k| Work {
                     side: k.side as usize,
@@ -647,7 +646,7 @@ impl Galaxy {
         match self.own {
             Some(o) if o.ship == ship && o.signed == k.signed => o,
             _ => {
-                let half = ((k.field + k.orbit).round().max(0.0) as u32).div_ceil(2);
+                let half = ((k.field).round().max(0.0) as u32).div_ceil(2);
                 let of = super::battle::own_hulls(rank).min(half);
                 Own {
                     ship,
@@ -725,7 +724,7 @@ impl Galaxy {
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
             signed: k.signed,
             news: self.crew_news,
-            committed: k.field + k.orbit,
+            committed: k.field,
             own: self.own_on(co.id, k, rank),
         });
         Some(t)
@@ -915,7 +914,7 @@ mod tests {
                 for s in &committed {
                     let sides = [Faction::ALL[t.employer], Faction::ALL[s.enemy]];
                     let b = g
-                        .muster_crew(t.system, &sides, 6, Some(s.index))
+                        .muster_crew(t.system, &sides, Some(s.index))
                         .expect("a battle with your company in it");
                     assert_eq!(b.crew, Some(id));
                     assert!(b.mercs(0).round() >= 1.0);

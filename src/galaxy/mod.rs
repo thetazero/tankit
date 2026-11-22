@@ -47,7 +47,7 @@
 //!    where it sees a high chance of capture: to defend anywhere, but to
 //!    attack only within its offensive, or a pocket. Several systems can send
 //!    to one. FTL costs crystals per hull by distance. Landing on a planet
-//!    under an enemy's shield is limited in rate and costs crystals per hull;
+//!    under an enemy's shield costs crystals per hull;
 //!    once all of a planet's generators are down, landing is free. An attack
 //!    the realm is set on but can't make alone, or a world of its own it
 //!    can't hold alone, can hire a **mercenary company** to make up the
@@ -112,9 +112,6 @@ pub struct Rules {
     pub ftl_cost: f32,
     /// Crystals per hull to land through an enemy's shield.
     pub breach_cost: f32,
-    /// Hulls a tick that can land through one planet's shield (split between its
-    /// generators: two generators halve it).
-    pub breach_rate: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
     pub kill: f32,
     /// Fire bonus for a side fighting on ground it holds (all its sites in the system).
@@ -218,7 +215,6 @@ impl Default for Rules {
             wear: 0.03,
             ftl_cost: 2.25,
             breach_cost: 1.0,
-            breach_rate: 12.0,
             kill: 0.35,
             home_ground: 0.3,
             raid: 0.5,
@@ -362,9 +358,6 @@ pub struct Galaxy {
     survived: Vec<[f32; SIDES]>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[f32; SIDES]>,
-    /// Scratch for sending: hulls each side has landed in each system this
-    /// tick (under enemy shields, they share the landing rate).
-    landed: Vec<[f32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
     members: Vec<u32>,
     spans: Vec<(u32, u32)>,
@@ -491,7 +484,6 @@ impl Galaxy {
         let mut g = Galaxy {
             seed,
             spare: vec![[0.0; SIDES]; systems.len()],
-            landed: vec![[0.0; SIDES]; systems.len()],
             survived: vec![[1.0; SIDES]; systems.len()],
             systems,
             sites,
@@ -1012,10 +1004,10 @@ impl Galaxy {
         }
     }
 
-    /// How side `f` can land in system `s`: (hulls a tick, crystals a hull).
-    /// Free on any planet with no enemy generator up; else through the
-    /// least-shielded planet, slowly and for crystals.
-    fn landing(&self, s: usize, f: usize) -> (f32, f32) {
+    /// Crystals a hull for side `f` to land in system `s`: free on any planet
+    /// with no enemy generator up; else through the least-shielded planet,
+    /// at a price.
+    fn landing_cost(&self, s: usize, f: usize) -> f32 {
         let up = self.shields_up(s, f);
         let least = up[..self.systems[s].planets as usize]
             .iter()
@@ -1023,12 +1015,9 @@ impl Galaxy {
             .min()
             .unwrap_or(0);
         if least == 0 {
-            (f32::INFINITY, 0.0)
+            0.0
         } else {
-            (
-                self.rules.breach_rate / least as f32,
-                self.rules.breach_cost,
-            )
+            self.rules.breach_cost
         }
     }
 
@@ -1055,10 +1044,6 @@ impl Galaxy {
                 *x = (*x - k.field).max(0.0);
             }
         }
-        // Nobody has landed anywhere yet this tick; companies' hulls in
-        // orbit go first.
-        self.landed.iter_mut().for_each(|l| *l = [0.0; SIDES]);
-        self.land_from_orbit();
         // A different people moves first each tick, starting at a different
         // system, so nobody always gets first pick.
         let mut order = [0, 1, 2, 3];
@@ -1195,12 +1180,10 @@ impl Galaxy {
             }
             return;
         }
-        let (rate, breach) = self.landing(t, f);
-        // Under shields, the side's landings here this tick share the rate.
-        let rate = rate - self.landed[t][f];
+        let breach = self.landing_cost(t, f);
         // Go in hard: a decisive blow, not a top-up the defender can match
         // next tick. What's left of it rolls on to the next world.
-        let send = want.max(pool * self.rules.commit).min(pool).min(rate);
+        let send = want.max(pool * self.rules.commit).min(pool);
         if send < MIN_SEND {
             return;
         }
@@ -1242,7 +1225,6 @@ impl Galaxy {
             moved += m;
         }
         self.systems[t].hulls[f] += moved;
-        self.landed[t][f] += moved;
         self.systems[t].realms[f] = r;
     }
 }
