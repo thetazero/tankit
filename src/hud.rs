@@ -530,6 +530,9 @@ impl Hud {
                         &TextStyle::LABEL,
                         Align::Center,
                     );
+                    // How far it's got, so it doesn't look stuck (#427).
+                    let o = c + Vec2::new(-80.0, 170.0);
+                    widgets::hairbar(&mut p, o, 160.0, m.progress(), theme::HOT);
                 }
             } else {
                 // The countdown: whole seconds left, big, over a bar that fills
@@ -1239,6 +1242,50 @@ fn crystal_tally(p: &mut Painter, before: u32, pay: u32, t: f32, a: f32, b: f32,
 }
 
 /// The debug overlay's frame rate, small in the top right corner above the HUD brackets.
+/// Over a battle you've left (#427), dimmed under it: the match playing
+/// out without you, fast, with a bar for how far through it is.
+pub fn playing_out(m: &Match, width: f32, height: f32) -> Vec<UiVertex> {
+    let scale = height / REF_HEIGHT;
+    let (w, h) = (width / scale, REF_HEIGHT);
+    let mut p = Painter::new(scale);
+    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.55]);
+    let size = Vec2::new(480.0, 150.0);
+    let min = Vec2::new(w, h) * 0.5 - size * 0.5;
+    p.rect(min, size, theme::PANEL);
+    widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
+    let x = min.x + 24.0;
+    label(
+        &mut p,
+        Vec2::new(x, min.y + 28.0),
+        "LINK RELEASED",
+        Align::Left,
+    );
+    p.text(
+        Vec2::new(x, min.y + 46.0),
+        "PLAYING OUT THE BATTLE",
+        &TextStyle::value(20.0),
+        Align::Left,
+    );
+    let mut s = TextStyle::LABEL;
+    s.color = theme::DIM;
+    p.text(
+        Vec2::new(x, min.y + 84.0),
+        "YOUR SIDE FIGHTS ON WITHOUT YOU",
+        &s,
+        Align::Left,
+    );
+    let done = m.progress();
+    let bw = size.x - 48.0;
+    widgets::hairbar(&mut p, Vec2::new(x, min.y + 118.0), bw, done, theme::HOT);
+    p.text(
+        Vec2::new(x + bw, min.y + 96.0),
+        &format!("{:.0}%", done * 100.0),
+        &TextStyle::LABEL,
+        Align::Right,
+    );
+    p.finish()
+}
+
 pub fn fps_counter(fps: f32, width: f32, height: f32) -> Vec<UiVertex> {
     let scale = height / REF_HEIGHT;
     let w = width / scale;

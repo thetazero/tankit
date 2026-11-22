@@ -1350,7 +1350,7 @@ const PAUSE_ITEMS: [Item<'static>; 5] = [
     Item::Opens("RESUME"),
     Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
-    Item::Leaves("EXIT TO MENU", "ENDS THE MATCH"),
+    Item::Leaves("EXIT TO MENU", "ENDS WITHOUT YOU"),
     Item::Leaves("QUIT", "CLOSES THE GAME"),
 ];
 
@@ -1584,7 +1584,7 @@ impl Pause {
         label(
             &mut p,
             Vec2::new(x, y),
-            "LEAVING FORFEITS THE CONTRACT PAY",
+            "LEAVING PLAYS IT OUT WITHOUT YOU",
             Align::Left,
         );
         Layer {
