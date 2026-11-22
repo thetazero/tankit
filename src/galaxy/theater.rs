@@ -77,10 +77,10 @@ pub struct Ship {
     /// (index into `Faction::ALL`).
     pub realm: String,
     pub side: usize,
-    /// Its hulls in the fight, lost so far, and the cap on losses.
+    /// Its hulls in the fight, lost so far, and committed to the contract.
     pub field: f32,
     pub lost: f32,
-    pub max_loss: f32,
+    pub committed: f32,
     /// Hired to hold one of the realm's own worlds (#340, #366), not to
     /// take one: it's done when the attack is beaten off.
     pub defend: bool,
@@ -665,7 +665,7 @@ impl Galaxy {
             side: f,
             field: k.field,
             lost: k.lost,
-            max_loss: k.max_loss,
+            committed: k.committed,
             defend: k.defend,
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
             term: self.rules.merc_term as u64,
@@ -692,7 +692,7 @@ impl Galaxy {
             side: shown.side,
             field: 0.0,
             lost: 0.0,
-            max_loss: 0.0,
+            committed: 0.0,
             defend: shown.defend,
             ticks_left: 0,
             term: self.rules.merc_term as u64,

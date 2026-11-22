@@ -982,8 +982,8 @@ fn term(p: &mut Painter, t: &Theater, ship: &Ship, at: Vec2) {
         );
     }
     let lost = (ship.lost.round().max(0.0)) as u32;
-    let cap = (ship.max_loss.round() as u32).max(1);
-    let losses = format!("AT {cap} HULLS LOST ({lost} SO FAR)");
+    let committed = (ship.committed.round() as u32).max(1);
+    let losses = format!("WHEN ITS {committed} HULLS ARE SPENT ({lost} LOST SO FAR)");
     // A defense is done when the attack's beaten off, and over (lost) if
     // the world falls anyway: two lines, to stay clear of the forces table.
     // An attack is done when it falls.
@@ -1376,7 +1376,7 @@ mod tests {
             side: 0,
             field: 0.0,
             lost: 0.0,
-            max_loss: 1.0,
+            committed: 1.0,
             defend: false,
             ticks_left: 10,
             term: 30,
@@ -1411,7 +1411,7 @@ mod tests {
             side: 0,
             field: 0.0,
             lost: 0.0,
-            max_loss: 0.0,
+            committed: 0.0,
             defend: false,
             ticks_left: 0,
             term: 6,

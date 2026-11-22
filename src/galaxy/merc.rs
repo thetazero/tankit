@@ -24,9 +24,9 @@
 //!   orbit (`Contract::orbit`) and land as the rate allows.
 //!
 //! A contract pays that **up front**, plus a **bonus** if the world falls,
-//! and caps the hulls the company can lose (`Rules::merc_loss`). Past the
-//! cap, or `Rules::merc_term` ticks, or with its employer gone, it pulls out
-//! and takes what's left of its hulls back aboard. The bonus comes out of the
+//! for the hulls the company commits. It fights with all of them: once
+//! they're spent, or after `Rules::merc_term` ticks, or with its employer
+//! gone, it's done, and takes back aboard what's left of its hulls. The bonus comes out of the
 //! employer's vaults when the world falls (or, for a defense, when the attack
 //! is beaten off). An employer who can't pay it all pays what it has and
 //! **owes the rest** (#340): the company takes `Rules::merc_dues` of the
@@ -86,8 +86,8 @@ pub struct Contract {
     pub signed: u64,
     pub upfront: f32,
     pub bonus: f32,
-    /// It pulls out once it's lost this many hulls.
-    pub max_loss: f32,
+    /// The hulls it committed to the contract, all told.
+    pub committed: f32,
     /// Its hulls in the fight now, and lost so far.
     pub field: f32,
     pub lost: f32,
@@ -375,7 +375,6 @@ impl Galaxy {
             self.realms[o.seller as usize].crystals += m * o.ask;
             self.books.sold += (m * o.ask) as f64;
         }
-        let max_loss = self.rules.merc_loss * q.hulls;
         // Under shields, what lands now is what's left of its side's rate
         // this tick; the rest waits in orbit.
         let land = q.hulls.min((rate - self.landed[t][f]).max(0.0));
@@ -395,7 +394,7 @@ impl Galaxy {
             signed: self.tick,
             upfront: q.upfront,
             bonus: q.bonus,
-            max_loss,
+            committed: q.hulls,
             field: land,
             lost: 0.0,
             orbit: q.hulls - land,
@@ -502,7 +501,8 @@ impl Galaxy {
                     sys.owner() == f
                 };
             let fell = k.defend && sys.held[f] == 0;
-            let broken = k.lost >= k.max_loss || k.field + k.orbit < 0.5 * MIN_SEND;
+            // Spent: its committed hulls are all but gone.
+            let broken = k.field + k.orbit < 0.5 * MIN_SEND;
             let expired = self.tick >= k.signed + self.rules.merc_term as u64;
             if !(won || broken || expired || gone || fell) {
                 self.companies[c].contract = Some(k);
