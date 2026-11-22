@@ -76,6 +76,8 @@ tankit [OPTIONS]
   --front                 (with --arena or --shot) each round is a battle drawn from a galaxy at war
                           (from --seed; never the one you play in): the sides fight on hull
                           allocations, and --arena prints the galaxy's numbers before and after
+  --hired                 (with --front --shot) the battle is where a company is under contract
+                          for your side (the most merc-heavy there is), so your side has mercs
   --hulls <n,n,...>       (with --shot) each side's hull allocation, all told
   --duel <hull,turret,hull,turret,metres,count>
                           one bot against one on open ground, that far apart, count times: the
@@ -177,6 +179,8 @@ pub struct Args {
     galaxy: Option<u64>,
     /// Rounds are battles drawn from a galaxy (`--front`).
     pub front: bool,
+    /// --hired: the --front battle is one with mercs on your side.
+    pub hired: bool,
     /// Each side's hull allocation, for shots.
     hulls: Option<Vec<u32>>,
 }
@@ -388,6 +392,7 @@ fn parse_args() -> Result<Args> {
     let mut arena: Option<u32> = None;
     let mut galaxy: Option<u64> = None;
     let mut front = false;
+    let mut hired = false;
     let mut hulls: Option<Vec<u32>> = None;
     let mut improve: Option<faction::Faction> = None;
     let mut duel: Option<(garage::Loadout, garage::Loadout, f32, u32)> = None;
@@ -530,6 +535,7 @@ fn parse_args() -> Result<Args> {
                 )
             }
             "--front" => front = true,
+            "--hired" => hired = true,
             "--hulls" => {
                 let v = args.next().context("--hulls needs n,n,...")?;
                 hulls = Some(
@@ -709,6 +715,7 @@ fn parse_args() -> Result<Args> {
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
         arena: arena.map(|n| (n, improve)),
         front,
+        hired,
         hulls,
         duel,
         galaxy,
@@ -788,7 +795,9 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     game.set_player_levels(profile.levels);
     if args.front {
         let mut g = galaxy::Galaxy::warmed(args.seed);
-        galaxy::battle::deploy(&mut g, &mut game);
+        if !(args.hired && galaxy::battle::deploy_hired(&g, &mut game).is_some()) {
+            galaxy::battle::deploy(&mut g, &mut game);
+        }
     }
     if let Some(h) = &args.hulls {
         game.set_allocation(h);

@@ -640,7 +640,13 @@ impl App {
     fn leave_battle(&mut self) {
         if let Some(b) = self.battle.take() {
             let g = self.war.get();
-            let s = g.settle(&b, &self.game.lost(), None, battle::Stake::Hulls);
+            let s = g.settle(
+                &b,
+                &self.game.lost(),
+                &self.game.company_lost(),
+                None,
+                battle::Stake::Hulls,
+            );
             g.step();
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
