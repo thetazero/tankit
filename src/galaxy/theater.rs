@@ -150,6 +150,8 @@ pub enum CrewNews {
     Split { other: u32 },
     /// It joined another, and you went with this one instead: `from` was its id.
     Left { from: u32 },
+    /// You left it for this one (#365): `from` was its id.
+    Switched { from: u32 },
 }
 
 /// Your company just split or joined another: the two ships you can go
@@ -553,23 +555,59 @@ impl Galaxy {
             self.crew_choice = None;
             return None;
         }
-        let ships = choice.ships.map(|id| {
-            let co = &self.companies[self.company(id).unwrap()];
-            Berth {
-                id,
-                name: ship_name(id),
-                system: system_name(co.at as usize),
-                hulls: co.hulls + co.contract.map_or(0.0, |k| k.field),
-                crystals: co.crystals,
-                work: co.contract.map(|k| Work {
-                    side: k.side as usize,
-                    realm: system_name(self.realms[k.realm as usize].seat as usize),
-                    system: system_name(k.target as usize),
-                    defend: k.defend,
-                }),
-            }
-        });
+        let ships = choice.ships.map(|id| self.berth(self.company(id).unwrap()));
         Some(ChoiceView { choice, ships })
+    }
+
+    /// Company `c` (an index into `companies`) as a ship you could go with.
+    fn berth(&self, c: usize) -> Berth {
+        let co = &self.companies[c];
+        Berth {
+            id: co.id,
+            name: ship_name(co.id),
+            system: system_name(co.at as usize),
+            hulls: co.hulls + co.contract.map_or(0.0, |k| k.field),
+            crystals: co.crystals,
+            work: co.contract.map(|k| Work {
+                side: k.side as usize,
+                realm: system_name(self.realms[k.realm as usize].seat as usize),
+                system: system_name(k.target as usize),
+                defend: k.defend,
+            }),
+        }
+    }
+
+    /// The ships you could switch to (#365): up to `n` other companies with
+    /// a battle for you this tick, nearest your ship first (biggest fight
+    /// first while you're with none).
+    pub fn other_ships(&self, n: usize) -> Vec<Berth> {
+        let mine = self.crew_company();
+        let here = mine.map(|c| self.systems[self.companies[c].at as usize].pos);
+        let mut ships: Vec<usize> = self.berths().filter(|&c| Some(c) != mine).collect();
+        let key = |c: usize| match here {
+            Some(h) => self.systems[self.companies[c].at as usize].pos.distance(h),
+            None => -self.companies[c].contract.map_or(0.0, |k| k.field),
+        };
+        ships.sort_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)));
+        ships.truncate(n);
+        ships.into_iter().map(|c| self.berth(c)).collect()
+    }
+
+    /// Leave your company for ship `id` (#365): another company with a
+    /// battle for you this tick. Any choice of ship open is dropped, and
+    /// your own hulls stay with the contract you leave. False (and nothing
+    /// changes) if it's yours, or has no battle for you.
+    pub fn switch_crew(&mut self, id: u32) -> bool {
+        let Some(c) = self.company(id) else {
+            return false;
+        };
+        if self.crew == Some(id) || !self.berths().any(|b| b == c) {
+            return false;
+        }
+        self.crew_news = self.crew.map(|from| CrewNews::Switched { from });
+        self.crew = Some(id);
+        self.crew_choice = None;
+        true
     }
 
     /// Go with ship `id`, one of those the open choice offers: the choice
@@ -1020,6 +1058,63 @@ mod tests {
         assert_eq!(g.crew, Some(other));
         assert_eq!(g.crew_news, Some(CrewNews::Left { from: id }));
         assert!(g.crew_choice().is_none());
+    }
+
+    /// You can leave your company for another ship with a battle for you
+    /// (#365): its theater is yours, and the missions screen says so.
+    #[test]
+    fn you_can_switch_to_another_company() {
+        let mut g = galaxy_with_work();
+        for _ in 0..400 {
+            if !g.other_ships(1).is_empty() {
+                break;
+            }
+            g.step();
+            g.await_work_staying(None, 1, 400);
+        }
+        let mine = g.crew.unwrap();
+        let ships = g.other_ships(5);
+        assert!(!ships.is_empty(), "no other ship at work");
+        assert!(ships.len() <= 5);
+        assert!(ships.iter().all(|b| b.id != mine && b.work.is_some()));
+        // Nearest first.
+        let here = g.systems[g.companies[g.crew_company().unwrap()].at as usize].pos;
+        let d = |b: &Berth| {
+            let c = g.company(b.id).unwrap();
+            g.systems[g.companies[c].at as usize].pos.distance(here)
+        };
+        assert!(ships.windows(2).all(|w| d(&w[0]) <= d(&w[1])));
+        // Not yours, nor a ship that's gone or has no battle.
+        assert!(!g.switch_crew(mine));
+        assert!(!g.switch_crew(u32::MAX));
+        let idle = g
+            .companies
+            .iter()
+            .find(|c| c.contract.is_none())
+            .map(|c| c.id);
+        if let Some(idle) = idle {
+            assert!(!g.switch_crew(idle));
+        }
+        assert_eq!(g.crew, Some(mine));
+        let to = ships[0].id;
+        assert!(g.switch_crew(to));
+        assert_eq!(g.crew, Some(to));
+        assert_eq!(g.crew_news, Some(CrewNews::Switched { from: mine }));
+        let t = g.aboard(1).expect("a battle aboard the new ship");
+        assert_eq!(t.ship.unwrap().id, to);
+        // It's among the ships you could go back to, and yours isn't.
+        assert!(g.other_ships(usize::MAX).iter().all(|b| b.id != to));
+    }
+
+    /// Switching drops a choice of ship left open.
+    #[test]
+    fn switching_closes_a_choice_of_ship() {
+        let mut g = galaxy_with_work();
+        let _ = your_company_splits(&mut g);
+        let to = g.other_ships(1)[0].id;
+        assert!(g.switch_crew(to));
+        assert!(g.crew_choice().is_none());
+        assert_eq!(g.crew, Some(to));
     }
 
     /// An idle company of yours too rich for one ship.

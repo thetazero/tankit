@@ -70,6 +70,9 @@ fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
 /// How long the war may go on without you, on the missions screen, while
 /// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
 const AWAIT_TICKS: u32 = 100;
+
+/// How many ships the companies screen offers to switch to (#365).
+const SHIPS_SHOWN: usize = 5;
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
 /// to come back up after it.
 const DIP_OUT: f32 = 0.18;
@@ -613,6 +616,30 @@ impl App {
         self.profile.set_shown(shown);
     }
 
+    /// Keep the companies screen's ships to switch to the galaxy's, while
+    /// it's showing (#365).
+    fn sync_ships(&mut self) {
+        if !self.menu.wants_ships() {
+            return;
+        }
+        let g = self.war.get();
+        adopt_crew(g, self.profile.ship);
+        self.menu.set_ships(g.other_ships(SHIPS_SHOWN));
+    }
+
+    /// Leave your company for ship `id` (#365), then on to its theater.
+    fn switch_crew(&mut self, id: u32) {
+        let g = self.war.get();
+        if g.switch_crew(id) {
+            let crew = g.crew;
+            self.war.save();
+            self.profile.board(crew);
+            self.menu.screen = menu::Screen::Missions;
+        }
+        self.sync_ships();
+        self.sync_theater();
+    }
+
     /// Go with ship `id`, of those your company's split or join offered (#364).
     fn choose_crew(&mut self, id: u32) {
         let g = self.war.get();
@@ -977,6 +1004,7 @@ impl App {
 
     fn menu_action(&mut self, action: Option<menu::Action>, event_loop: &ActiveEventLoop) {
         self.sync_theater();
+        self.sync_ships();
         match action {
             Some(menu::Action::Fight(o)) => {
                 // Into a battle on the contract on screen: you've seen it.
@@ -991,6 +1019,7 @@ impl App {
                 self.audio.garage(audio::GarageCue::Refused);
             }
             Some(menu::Action::Crew(id)) => self.choose_crew(id),
+            Some(menu::Action::Switch(id)) => self.switch_crew(id),
             Some(menu::Action::Garage) => {
                 if let Some(cam) = self.camera {
                     self.garage.toggle(&self.game.world, &cam, self.queued());

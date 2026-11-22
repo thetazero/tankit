@@ -16,7 +16,7 @@ use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
 use crate::galaxy::theater::{
-    ChoiceView, CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name,
+    Berth, ChoiceView, CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name,
 };
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
@@ -52,6 +52,8 @@ pub enum Screen {
     Settings,
     /// Settings' key bindings.
     Controls,
+    /// The other companies' ships with a battle for you, to switch to (#365).
+    Ships,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,6 +65,9 @@ pub enum Action {
     /// Go with this ship (a `Company::id`), of those your company's split
     /// or join leaves you to choose from (#364).
     Crew(u32),
+    /// Leave your company for this ship (a `Company::id`), one of those
+    /// the companies screen offers (#365).
+    Switch(u32),
     Garage,
     Setting(Change),
     Quit,
@@ -129,8 +134,9 @@ impl<'a> Item<'a> {
     }
 }
 
-const MAIN_ITEMS: [Item<'static>; 4] = [
+const MAIN_ITEMS: [Item<'static>; 5] = [
     Item::Opens("MISSIONS"),
+    Item::Opens("COMPANIES"),
     Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
     Item::Leaves("QUIT", "CLOSES THE GAME"),
@@ -273,6 +279,10 @@ pub struct Menu {
     /// selected.
     choice: Option<ChoiceView>,
     pick: usize,
+    /// The ships on the companies screen (the app keeps them up to date),
+    /// and the one selected.
+    ships: Vec<Berth>,
+    ship: usize,
     setting: usize,
     controls: Controls,
     /// The pointer is on the BACK button.
@@ -290,6 +300,8 @@ impl Menu {
             site: 0,
             choice: None,
             pick: 0,
+            ships: Vec::new(),
+            ship: 0,
             setting: 0,
             controls: Controls::default(),
             back_lit: false,
@@ -313,8 +325,12 @@ impl Menu {
             }
             (Screen::Main, Nav::Select) => match self.cursor {
                 0 => self.screen = Screen::Missions,
-                1 => return Some(Action::Garage),
-                2 => self.screen = Screen::Settings,
+                1 => {
+                    self.ship = 0;
+                    self.screen = Screen::Ships;
+                }
+                2 => return Some(Action::Garage),
+                3 => self.screen = Screen::Settings,
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
@@ -360,6 +376,14 @@ impl Menu {
             (Screen::Settings, _) => return setting_input(self.setting, nav).map(Action::Setting),
             (Screen::Controls, Nav::Back) => self.screen = Screen::Settings,
             (Screen::Controls, _) => return self.controls.input(nav).map(Action::Setting),
+            (Screen::Ships, Nav::Up | Nav::Down) if !self.ships.is_empty() => {
+                self.ship = step(self.ship, self.ships.len(), nav)
+            }
+            (Screen::Ships, Nav::Select) => {
+                return self.ships.get(self.ship).map(|b| Action::Switch(b.id));
+            }
+            (Screen::Ships, Nav::Back) => self.screen = Screen::Main,
+            (Screen::Ships, _) => {}
         }
         None
     }
@@ -367,6 +391,21 @@ impl Menu {
     /// The screen is showing the theater: the app keeps it up to date.
     pub fn wants_theater(&self) -> bool {
         matches!(self.screen, Screen::Missions | Screen::Site)
+    }
+
+    /// The screen is showing the ships to switch to: the app keeps them up to date.
+    pub fn wants_ships(&self) -> bool {
+        self.screen == Screen::Ships
+    }
+
+    /// Show `ships` on the companies screen; the same one stays selected
+    /// while it's there.
+    pub fn set_ships(&mut self, ships: Vec<Berth>) {
+        let was = self.ships.get(self.ship).map(|b| b.id);
+        self.ship = was
+            .and_then(|id| ships.iter().position(|b| b.id == id))
+            .unwrap_or(0);
+        self.ships = ships;
     }
 
     pub fn theater(&self) -> Option<&Theater> {
@@ -508,6 +547,7 @@ impl Menu {
             // Its one row, DEPLOY: nothing to select.
             Screen::Site => return false,
             Screen::Settings | Screen::Controls => &mut self.setting,
+            Screen::Ships => &mut self.ship,
         };
         std::mem::replace(slot, i) != i
     }
@@ -643,6 +683,16 @@ impl Menu {
                     Vec2::new(x, y),
                     &profile.settings,
                     self.setting,
+                );
+            }
+            Screen::Ships => {
+                draw_ships(
+                    &mut p,
+                    &mut hits,
+                    Vec2::new(x, y),
+                    &self.ships,
+                    self.ship,
+                    profile,
                 );
             }
             Screen::Controls => {
@@ -983,6 +1033,10 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
             "Came over when the {} merged into another",
             title(&ship_name(from))
         )),
+        Some(CrewNews::Switched { from }) => Some(format!(
+            "Signed on: you left the {}",
+            title(&ship_name(from))
+        )),
         None => None,
     };
     if let Some(news) = news {
@@ -1017,11 +1071,58 @@ fn draw_choice(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, c: &ChoiceView, 
         )
     };
     y = wrap(p, Vec2::new(x, y), &what, theme::DIM) + 18.0;
-    let names: Vec<String> = c.ships.iter().map(|b| format!("THE {}", b.name)).collect();
+    berths(p, hits, Vec2::new(x, y), &c.ships, pick);
+}
+
+/// The companies screen at `at` (#365): your company, then the other ships
+/// with a battle for you, nearest first, to switch to.
+fn draw_ships(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    at: Vec2,
+    ships: &[Berth],
+    pick: usize,
+    profile: &Profile,
+) {
+    let (x, mut y) = (at.x, at.y);
+    faction_line(p, Vec2::new(x, y), Faction::Company, "The Company");
+    y += 28.0;
+    p.text(
+        Vec2::new(x, y),
+        "SWITCH COMPANY",
+        &TextStyle::value(22.0),
+        Align::Left,
+    );
+    y += 34.0;
+    let what = match profile.company_name() {
+        Some(name) => format!(
+            "You're with the {}. Sign on with another ship with a battle to fight, nearest first:",
+            title(&name)
+        ),
+        None => "You're with no company. Sign on with a ship with a battle to fight:".to_string(),
+    };
+    y = wrap(p, Vec2::new(x, y), &what, theme::DIM) + 18.0;
+    if ships.is_empty() {
+        body(
+            p,
+            Vec2::new(x, y),
+            "No other ship has a battle to join",
+            theme::FAINT,
+        );
+        return;
+    }
+    berths(p, hits, Vec2::new(x, y), ships, pick);
+}
+
+/// Ships to go with at `at`, a row each with where it is, what it has and
+/// its work under it; `pick` selected.
+fn berths(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, ships: &[Berth], pick: usize) {
+    let (x, mut y) = (at.x, at.y);
+    let names: Vec<String> = ships.iter().map(|b| format!("THE {}", b.name)).collect();
     let items: Vec<Item> = names.iter().map(|n| Item::Acts(n)).collect();
     // Each ship's row, then its details under it: lay the rows out one at a time.
     let n = |v: f32| v.round().max(0.0) as u32;
-    for (k, (item, b)) in items.iter().zip(&c.ships).enumerate() {
+    for (k, (item, b)) in items.iter().zip(ships).enumerate() {
         // The whole block, details and all, is the row to click.
         garage::row_hit(p, hits, Vec2::new(x, y), ROW + 2.0 + 50.0, Hit::Row(k));
         let mut scratch = Hits::new();
@@ -1882,6 +1983,7 @@ mod tests {
     fn main_menu_navigation() {
         let mut m = Menu::new();
         assert_eq!(m.input(Nav::Down), None);
+        assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), Some(Action::Garage));
         assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), None);
@@ -1947,6 +2049,47 @@ mod tests {
         let (t, _) = g.await_work_staying(Some(f.index()), 1, 400);
         assert!(t.as_ref().is_some_and(|t| t.ship.is_some()));
         t
+    }
+
+    /// COMPANIES lists the ships to switch to; Enter or a click on one
+    /// switches (#365), and BACK goes back to the main menu.
+    #[test]
+    fn switching_company() {
+        use crate::galaxy::theater::Berth;
+        let berth = |id| Berth {
+            id,
+            name: ship_name(id),
+            system: system_name(1),
+            hulls: 20.0,
+            crystals: 300.0,
+            work: None,
+        };
+        let mut m = Menu::new();
+        m.input(Nav::Down);
+        assert_eq!(m.input(Nav::Select), None);
+        assert_eq!(m.screen, Screen::Ships);
+        assert!(m.wants_ships() && !m.wants_theater());
+        // None to show: Enter does nothing.
+        assert_eq!(m.input(Nav::Select), None);
+        m.set_ships(vec![berth(4), berth(9)]);
+        m.input(Nav::Down);
+        assert_eq!(m.input(Nav::Select), Some(Action::Switch(9)));
+        // The selection follows its ship as the list changes.
+        m.set_ships(vec![berth(2), berth(4), berth(9)]);
+        assert_eq!(m.input(Nav::Select), Some(Action::Switch(9)));
+        // And by click.
+        let p = Profile::in_memory();
+        let layer = m.draw(&p, 1280.0, 720.0, 1.0);
+        assert!(
+            layer.hits.at(Vec2::new(PANEL_X + 10.0, 260.0)).is_some(),
+            "no ship rows drawn"
+        );
+        assert_eq!(
+            m.click(Hit::Row(0), Vec2::ZERO, &p.settings).1,
+            Some(Action::Switch(2))
+        );
+        m.input(Nav::Back);
+        assert_eq!(m.screen, Screen::Main);
     }
 
     /// Your company split: the missions screen asks which ship you go
@@ -2155,7 +2298,7 @@ mod tests {
         assert!(m.hover(Hit::Row(3)));
         assert!(!m.hover(Hit::Row(3)));
         assert_eq!(
-            click_drawn(&mut m, &profile, Hit::Row(1)),
+            click_drawn(&mut m, &profile, Hit::Row(2)),
             (Nav::Select, Some(Action::Garage))
         );
         assert_eq!(
