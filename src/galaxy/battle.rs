@@ -792,110 +792,114 @@ mod merc_tests {
         assert_eq!(g.own.unwrap().left, 1);
     }
 
-    /// A battle where a company is under contract, from a warmed galaxy:
-    /// the company's side first, against the strongest other side there.
-    fn hired_battle(g: &Galaxy) -> Option<Battle> {
-        let k = g
-            .companies
+    /// A fresh galaxy staged for a hired battle, so the numbers are known:
+    /// in system `t`, side `f` has `realm` hulls of its realm's own and
+    /// company 0's `mercs` there on contract; its enemy has 50. No other
+    /// company is on contract anywhere.
+    fn staged(mercs: f32, realm: f32) -> (Galaxy, usize, [Faction; 2]) {
+        let mut g = Galaxy::new(1);
+        let t = 0;
+        let e = g.systems[t].owner();
+        let r = g
+            .realms
             .iter()
-            .filter_map(|c| c.contract)
-            .find(|k| k.field >= 3.0)?;
-        let (t, f) = (k.target as usize, k.side as usize);
-        let enemy = (0..SIDES)
-            .filter(|&e| e != f)
-            .max_by(|&a, &b| g.systems[t].hulls[a].total_cmp(&g.systems[t].hulls[b]))?;
-        let factions = [Faction::ALL[f], Faction::ALL[enemy]];
-        g.muster_at(t, &factions, None, None)
+            .position(|x| x.faction as usize != e && x.systems > 0)
+            .expect("a realm of another people") as u32;
+        let f = g.realms[r as usize].faction as usize;
+        g.systems[t].hulls = [0.0; SIDES];
+        g.systems[t].hulls[f] = realm + mercs;
+        g.systems[t].hulls[e] = 50.0;
+        g.systems[t].realms[f] = r;
+        for c in &mut g.companies {
+            c.contract = None;
+        }
+        g.companies[0].contract = Some(super::super::merc::Contract {
+            realm: r,
+            side: f as u8,
+            target: t as u32,
+            signed: g.tick,
+            upfront: 0.0,
+            bonus: 0.0,
+            committed: mercs,
+            field: mercs,
+            lost: 0.0,
+            defend: false,
+        });
+        (g, t, [Faction::ALL[f], Faction::ALL[e]])
+    }
+
+    /// A second company, on the same contract as company 0, with `hulls`
+    /// of its own there. Returns its id.
+    fn second_company(g: &mut Galaxy, hulls: f32) -> u32 {
+        let k = g.companies[0].contract.unwrap();
+        let id = g.companies.iter().map(|c| c.id).max().unwrap() + 1;
+        g.companies.push(super::super::merc::Company {
+            id,
+            contract: Some(super::super::merc::Contract {
+                committed: hulls,
+                field: hulls,
+                ..k
+            }),
+            ..g.companies[0]
+        });
+        g.systems[k.target as usize].hulls[k.side as usize] += hulls;
+        id
     }
 
     /// Mercs under contract in the battle's system are part of their side's
-    /// allocation, in proportion to their share of its hulls there, and some
-    /// of its seats are the Company's.
+    /// allocation, in proportion to their share of its hulls there, and so
+    /// are its seats: never all of them while the realm brings hulls of its
+    /// own. A side with no company there brings no mercs.
     #[test]
     fn hired_sides_bring_mercs() {
-        let g = Galaxy::warmed(7);
-        let b = hired_battle(&g).expect("a company under contract");
-        let f = b.sides[0];
-        let mercs = b.mercs(0);
-        assert!(mercs > 0.0);
-        let realm: f32 = b.sources[0].iter().map(|s| s.1).sum();
-        assert!(mercs + realm <= b.allocation[0] as f32 + 1e-3);
-        let share = g.on_contract(b.system, f).1 / g.systems[b.system].hulls[f];
-        let drawn_here = mercs + b.sources[0][0].1;
-        assert!((mercs / drawn_here - share).abs() < 1e-3);
-        let seats = b.merc_seats(0, 6);
-        assert!(seats < 6 || realm < 1.0);
-        let want = ((share * 6.0).round() as usize)
-            .min(5)
-            .min(mercs.round() as usize);
-        assert_eq!(seats, want);
-        // A side with no company there brings none.
-        let (_, theirs) = g.on_contract(b.system, b.sides[1]);
-        if theirs == 0.0 {
-            assert_eq!(b.mercs(1), 0.0);
-            assert_eq!(b.merc_seats(1, 6), 0);
-        }
+        let (g, t, sides) = staged(20.0, 40.0);
+        let b = g.muster_at(t, &sides, None, None).unwrap();
+        assert_eq!(b.allocation, vec![60, 50]);
+        assert!((b.mercs(0) - 20.0).abs() < 1e-3);
+        assert_eq!(b.sources[0].len(), 1);
+        assert_eq!(b.sources[0][0].0, t);
+        assert!((b.sources[0][0].1 - 40.0).abs() < 1e-3);
+        assert_eq!(
+            b.merc_seats(0, 6),
+            2,
+            "a third of the hulls, a third of the seats"
+        );
+        assert_eq!(b.mercs(1), 0.0);
+        assert_eq!(b.merc_seats(1, 6), 0);
+        // Mostly mercs: all but one seat, the realm's.
+        let (g, t, sides) = staged(100.0, 5.0);
+        let b = g.muster_at(t, &sides, None, None).unwrap();
+        assert_eq!(b.merc_seats(0, 6), 5);
+        // All mercs: every seat.
+        let (g, t, sides) = staged(20.0, 0.0);
+        let b = g.muster_at(t, &sides, None, None).unwrap();
+        assert_eq!(b.merc_seats(0, 6), 6);
+        // Never more seats than merc hulls.
+        let (g, t, sides) = staged(2.0, 0.0);
+        let b = g.muster_at(t, &sides, None, None).unwrap();
+        assert_eq!(b.merc_seats(0, 6), 2);
     }
 
-    /// Some battles are more merc-heavy than others: across the contracts of
-    /// a warmed galaxy, the Company's seats differ.
-    #[test]
-    fn some_battles_have_more_mercs() {
-        let g = Galaxy::warmed(7);
-        let mut seats = std::collections::BTreeSet::new();
-        for k in g.companies.iter().filter_map(|c| c.contract) {
-            let (t, f) = (k.target as usize, k.side as usize);
-            let enemy = (0..SIDES).find(|&e| e != f).unwrap();
-            let b = g
-                .muster_at(t, &[Faction::ALL[f], Faction::ALL[enemy]], None, None)
-                .unwrap();
-            seats.insert(b.merc_seats(0, 6));
-        }
-        assert!(seats.len() >= 2, "{seats:?}");
-    }
-
-    /// The Company's tanks lost come off their contracts (and count towards
-    /// their caps); the rest come off the realm's; the side loses them all.
+    /// The Company's tanks lost come off its contract; the rest come off
+    /// the realm's hulls; the side loses them all.
     #[test]
     fn merc_losses_come_off_their_contracts() {
-        let mut g = Galaxy::warmed(7);
-        let b = hired_battle(&g).expect("a company under contract");
-        let f = b.sides[0];
-        let field = |g: &Galaxy| -> f32 {
-            b.hired[0]
-                .iter()
-                .filter_map(|&(id, _)| g.companies.iter().find(|c| c.id == id))
-                .filter_map(|c| c.contract)
-                .map(|k| k.field)
-                .sum()
-        };
-        let total = |g: &Galaxy| g.systems.iter().map(|s| s.hulls[f] as f64).sum::<f64>();
-        let (field0, total0) = (field(&g), total(&g));
-        let m = b.mercs(0).floor().min(3.0) as u32;
-        assert!(m >= 1);
-        let s = g.settle(&b, &[m + 2, 0], &[m, 0], None, Stake::Hulls);
-        assert!(
-            (s.merc_lost[f] - m as f32).abs() < 1e-3,
-            "{:?}",
-            s.merc_lost
-        );
-        assert!((field0 - field(&g) - m as f32).abs() < 1e-3);
-        assert!((total0 - total(&g) - (m + 2) as f64).abs() < 1e-2);
-    }
-
-    /// A company under contract with enough hulls to bring, and the side
-    /// it fights against (the strongest other there).
-    fn crew_contract(g: &Galaxy) -> (usize, [Faction; 2]) {
-        let c = (0..g.companies.len())
-            .find(|&c| g.companies[c].contract.is_some_and(|k| k.field >= 3.0))
-            .expect("a company under contract");
-        let k = g.companies[c].contract.unwrap();
-        let (t, f) = (k.target as usize, k.side as usize);
-        let enemy = (0..SIDES)
-            .filter(|&e| e != f)
-            .max_by(|&a, &b| g.systems[t].hulls[a].total_cmp(&g.systems[t].hulls[b]))
-            .unwrap();
-        (c, [Faction::ALL[f], Faction::ALL[enemy]])
+        let (mut g, t, sides) = staged(20.0, 40.0);
+        let f = sides[0].index();
+        let b = g.muster_at(t, &sides, None, None).unwrap();
+        let s = g.settle(&b, &[5, 0], &[3, 0], None, Stake::Hulls);
+        assert!((s.merc_lost[f] - 3.0).abs() < 1e-3, "{:?}", s.merc_lost);
+        assert!((s.lost[f] - 5.0).abs() < 1e-3, "{:?}", s.lost);
+        let k = g.companies[0].contract.unwrap();
+        assert!((k.field - 17.0).abs() < 1e-3);
+        assert!((k.lost - 3.0).abs() < 1e-3);
+        assert!((g.systems[t].hulls[f] - 55.0).abs() < 1e-3);
+        // More Company tanks lost than it brought: the rest are the realm's.
+        let (mut g, t, sides) = staged(2.0, 40.0);
+        let b = g.muster_at(t, &sides, None, None).unwrap();
+        let s = g.settle(&b, &[5, 0], &[5, 0], None, Stake::Hulls);
+        assert!((s.merc_lost[f] - 2.0).abs() < 1e-3, "{:?}", s.merc_lost);
+        assert!((g.systems[t].hulls[f] - 37.0).abs() < 1e-3);
     }
 
     /// You only fight in battles your company is in (#362): on its
@@ -903,26 +907,22 @@ mod merc_tests {
     /// company, there's no battle for you.
     #[test]
     fn you_only_fight_where_your_company_is() {
-        let mut g = Galaxy::warmed(7);
-        let (c, sides) = crew_contract(&g);
-        let k = g.companies[c].contract.unwrap();
-        let t = k.target as usize;
+        let (mut g, t, sides) = staged(20.0, 40.0);
         g.crew = None;
         assert!(g.muster_crew(t, &sides, None).is_none(), "no company");
-        g.crew = Some(g.companies[c].id);
+        g.crew = Some(g.companies[0].id);
         let b = g
             .muster_crew(t, &sides, None)
             .expect("your company's battle");
         assert_eq!(b.crew, g.crew);
-        assert!(b.mercs(0) >= 1.0);
+        assert!((b.mercs(0) - 20.0).abs() < 1e-3);
         assert!(b.merc_seats(0, 6) >= 1, "you're one of its seats");
         // For the other side, or in another system, it isn't there.
         let flipped = [sides[1], sides[0]];
         assert!(g.muster_crew(t, &flipped, None).is_none());
-        let elsewhere = (0..g.systems.len()).find(|&s| s != t).unwrap();
-        assert!(g.muster_crew(elsewhere, &sides, None).is_none());
+        assert!(g.muster_crew(t + 1, &sides, None).is_none());
         // Its contract over, it's not in any battle.
-        g.companies[c].contract = None;
+        g.companies[0].contract = None;
         assert!(g.muster_crew(t, &sides, None).is_none());
     }
 
@@ -931,31 +931,15 @@ mod merc_tests {
     /// hulls, and none of your losses come off it.
     #[test]
     fn your_side_has_only_your_companys_mercs() {
-        let mut g = Galaxy::warmed(7);
-        let (c, sides) = crew_contract(&g);
-        let k = g.companies[c].contract.unwrap();
-        let (t, f) = (k.target as usize, k.side as usize);
-        g.crew = Some(g.companies[c].id);
-        // What your side brings with only your company there.
-        let alone = g.muster_crew(t, &sides, None).unwrap();
-        // Another company, on the same contract, with plenty of hulls there.
-        let o = (0..g.companies.len()).find(|&o| o != c).unwrap();
-        let theirs = 40.0;
-        g.companies[o].contract = Some(super::super::merc::Contract {
-            field: theirs,
-            lost: 0.0,
-            ..k
-        });
-        g.systems[t].hulls[f] += theirs;
-        let (mine, other) = (g.companies[c].id, g.companies[o].id);
+        let (mut g, t, sides) = staged(20.0, 40.0);
+        let f = sides[0].index();
+        let mine = g.companies[0].id;
         g.crew = Some(mine);
+        let alone = g.muster_crew(t, &sides, None).unwrap();
+        let other = second_company(&mut g, 30.0);
         let b = g.muster_crew(t, &sides, None).unwrap();
-        assert!(
-            b.hired[0].iter().all(|&(id, _)| id == mine),
-            "{:?}",
-            b.hired[0]
-        );
-        assert!(b.mercs(0) <= k.field + 1e-3);
+        assert_eq!(b.hired[0].len(), 1);
+        assert_eq!(b.hired[0][0].0, mine);
         // The other company's hulls don't keep you in the fight: what your
         // side brings is the same as without it.
         assert_eq!(b.allocation[0], alone.allocation[0]);
@@ -974,11 +958,9 @@ mod merc_tests {
                 .unwrap()
                 .field
         };
-        let lost = b.mercs(0).floor().min(3.0) as u32;
-        let before = (field(&g, mine), field(&g, other));
-        let s = g.settle(&b, &[lost + 1, 0], &[lost, 0], None, Stake::Hulls);
-        assert!((s.merc_lost[f] - lost as f32).abs() < 1e-3);
-        assert!((before.0 - field(&g, mine) - lost as f32).abs() < 1e-3);
-        assert_eq!(field(&g, other), before.1, "their hulls are their own");
+        let s = g.settle(&b, &[4, 0], &[3, 0], None, Stake::Hulls);
+        assert!((s.merc_lost[f] - 3.0).abs() < 1e-3);
+        assert!((field(&g, mine) - 17.0).abs() < 1e-3);
+        assert_eq!(field(&g, other), 30.0, "their hulls are their own");
     }
 }
