@@ -725,19 +725,14 @@ impl App {
         }
     }
 
-    /// A battle left before it's over still costs what was lost in it, and
-    /// nobody wins it.
+    /// A battle left before it's over still costs what was lost in it
+    /// (your own hulls too), and nobody wins it: a draw, the holder's.
     fn leave_battle(&mut self) {
         if let Some(b) = self.battle.take() {
             let g = self.war.get();
-            let s = g.settle(
-                &b,
-                &self.game.lost(),
-                &self.game.company_lost(),
-                None,
-                battle::Stake::Site,
-            );
-            g.step_played(b.system);
+            let mut played = battle::Played::of(&b, &self.game);
+            played.winner = None;
+            let s = g.step_played(&played);
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
         }

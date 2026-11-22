@@ -855,7 +855,9 @@ fn parse_args() -> Result<Args> {
         if let Some(owner) = generator {
             g.owner = owner;
         }
-        g.condition = map::procgen::shield::Condition::down(generator_down, galaxy::REPAIR_TICKS);
+        // (The galaxy's generators are only working or damaged, #422; a
+        // shot can still show any stage of the art.)
+        g.condition = map::procgen::shield::Condition::down(generator_down, 4);
     }
     let sides = make_map(map_kind, map_seed).factions;
     let menu_shot = matches!(
@@ -1406,9 +1408,13 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
-                let stake = galaxy::battle::Stake::of(mission::MISSIONS[o.mission].contract);
-                let s = g.settle(&b, &[0, 0], &[0, 0], Some(0), stake);
-                g.step_played(b.system);
+                let s = g.step_played(&galaxy::battle::Played {
+                    battle: b.clone(),
+                    lost: vec![0, 0],
+                    company: vec![0, 0],
+                    winner: Some(0),
+                    own_lost: 0,
+                });
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 profile.ship = g.crew;
                 menu.set_theater(g.aboard(rank));

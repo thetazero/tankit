@@ -11,7 +11,7 @@ use crate::sim::{HullKind, TurretKind};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Contract {
     /// A battle of attrition: the job is to cost the enemy hulls (a win
-    /// still takes the site, #419). Paid per kill; the side that destroys most wins (or
+    /// still takes the site, as under any contract: #419, #422). Paid per kill; the side that destroys most wins (or
     /// the side still in, if the other runs out of hulls).
     #[default]
     Attrition,

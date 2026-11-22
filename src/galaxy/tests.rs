@@ -44,7 +44,7 @@ fn shields_cost_the_attacker_a_seat() {
     let (a, b) = g.systems[s].sites;
     for site in &mut g.sites[a as usize..b as usize] {
         if matches!(site.kind, SiteKind::Shield { .. }) {
-            site.kind = SiteKind::Shield { down: REPAIR_TICKS };
+            site.kind = SiteKind::Shield { damaged: true };
         }
     }
     assert!(!g.shielded(s, other));
@@ -61,10 +61,13 @@ fn a_win_takes_a_site_under_shields() {
     let other = (owner + 1) % SIDES;
     let held = g.systems[s].held[other];
     let i = g.target(s, other).expect("something to take");
-    assert_eq!(g.sites[i].kind, SiteKind::Shield { down: 0 });
-    g.advance(s, other, 1);
-    assert_eq!(g.sites[i].owner as usize, other, "taken, not just knocked down");
-    assert_eq!(g.sites[i].kind, SiteKind::Shield { down: REPAIR_TICKS });
+    assert_eq!(g.sites[i].kind, SiteKind::Shield { damaged: false });
+    g.win(s, i, other);
+    assert_eq!(
+        g.sites[i].owner as usize, other,
+        "taken, not just knocked down"
+    );
+    assert_eq!(g.sites[i].kind, SiteKind::Shield { damaged: true });
     assert_eq!(g.systems[s].held[other], held + 1);
     // Every enemy site is on the front, shielded or not.
     g.systems[s].hulls[owner] = 40.0;
@@ -76,19 +79,29 @@ fn a_win_takes_a_site_under_shields() {
     assert_eq!(g.front(s, other).len(), enemy);
 }
 
-/// A downed generator takes several quiet ticks to come back up.
+/// In the galaxy's own battles, a site's attacker wins it or its holder
+/// does (#422): a generator's either taken, damaged, or its holder's and
+/// working; never left damaged with its holder.
 #[test]
-fn repairs_take_several_ticks() {
+fn every_battle_has_a_winner() {
     let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
-    let owner = g.systems[0].owner();
-    let (a, _) = g.systems[0].sites;
-    g.sites[a as usize].kind = SiteKind::Shield { down: REPAIR_TICKS };
-    for _ in 1..REPAIR_TICKS {
-        g.hold(0, owner);
-        assert_ne!(g.sites[a as usize].kind, SiteKind::Shield { down: 0 });
+    let s = 0;
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % SIDES;
+    g.systems[s].hulls[owner] = 40.0;
+    g.systems[s].hulls[other] = 40.0;
+    let i = g.target(s, other).expect("something to take");
+    g.sites[i].kind = SiteKind::Shield { damaged: true };
+    g.battles(None);
+    let site = g.sites[i];
+    if site.owner as usize == owner {
+        assert_eq!(site.kind, SiteKind::Shield { damaged: false });
+    } else {
+        assert_eq!(
+            (site.owner as usize, site.kind),
+            (other, SiteKind::Shield { damaged: true })
+        );
     }
-    g.hold(0, owner);
-    assert_eq!(g.sites[a as usize].kind, SiteKind::Shield { down: 0 });
 }
 
 /// A tick of the whole galaxy has to fit after every battle unnoticed.
