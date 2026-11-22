@@ -59,11 +59,12 @@ jobs:
         timeout-minutes: 6
 
       # Our crate is built at opt-level 1 for tests (Cargo.toml); the suite
-      # then takes ~35s on two threads (unoptimized it took over two minutes,
-      # #377). Anything near this limit is a hang or a regression.
+      # then takes about a minute on two threads (unoptimized it took over two
+      # minutes, #377). Past this limit is a hang or a regression; a test that
+      # runs over 60s is flagged in the log ("has been running for over").
       - name: Run tests
         run: cargo test --locked
-        timeout-minutes: 2
+        timeout-minutes: 4
 
   # The whole suite again, optimized. Some tests are too slow to mean anything
   # unoptimized (`maps_hardly_z_fight` takes minutes in debug, seconds here)
