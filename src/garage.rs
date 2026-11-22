@@ -1168,12 +1168,18 @@ pub fn row_hit<T: Copy>(p: &Painter, hits: &mut Hits<T>, at: Vec2, pitch: f32, i
 
 /// Dark backdrop behind the left-hand panel, so the hairlines read over a bright city.
 pub fn backdrop(p: &mut Painter, h: f32) {
+    backdrop_fading(p, h, 260.0);
+}
+
+/// `backdrop`, fading out over `fade` logical px: short over dark space,
+/// where there's no bright scene to read the panel against.
+pub fn backdrop_fading(p: &mut Painter, h: f32, fade: f32) {
     let shade = theme::PANEL;
     let solid = PANEL_X + PANEL_W + 40.0;
     p.gradient_h(Vec2::ZERO, Vec2::new(solid, h), shade, shade);
     p.gradient_h(
         Vec2::new(solid, 0.0),
-        Vec2::new(260.0, h),
+        Vec2::new(fade, h),
         shade,
         [0.0, 0.0, 0.0, 0.0],
     );

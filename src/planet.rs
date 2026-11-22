@@ -30,6 +30,16 @@ pub const DRY: Look = Look {
     cloudiness: 0.5,
 };
 
+/// A cold world: pale grey-blue land, darker rifts, ice-locked seas, a
+/// thin haze.
+pub const ICE: Look = Look {
+    land: Vec3::new(0.42, 0.45, 0.5),
+    basin: Vec3::new(0.24, 0.27, 0.32),
+    sea: Vec3::new(0.55, 0.6, 0.66),
+    cloud: Vec3::new(0.6, 0.62, 0.66),
+    cloudiness: 0.35,
+};
+
 /// The world `seed` names, as a sphere of radius 0.5 (scale it up where
 /// it's drawn), flat-shaded material, colored per vertex.
 pub fn mesh(seed: u64, look: &Look) -> MeshData {

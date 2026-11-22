@@ -38,6 +38,7 @@ use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::Command;
 use crate::tank::TankArt;
+use crate::theater_view::{self, SystemArt};
 use crate::ui::Hits;
 use crate::{MapKind, ShowroomArgs, make_map, showroom};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -127,6 +128,8 @@ struct App {
     renderer: Option<Renderer>,
     art: Option<TankArt>,
     bay: Option<BayArt>,
+    /// The missions screen's system view.
+    system: Option<SystemArt>,
     showroom: Option<ShowroomArgs>,
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
@@ -247,6 +250,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         renderer: None,
         art: None,
         bay: None,
+        system: None,
         showroom: launch.showroom,
         game,
         profile,
@@ -382,6 +386,7 @@ impl ApplicationHandler for App {
                 }
                 self.art = Some(TankArt::upload(&mut r));
                 self.bay = Some(BayArt::upload(&mut r));
+                self.system = Some(SystemArt::upload(&mut r));
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -1153,6 +1158,14 @@ impl App {
             // The planet out of the bay is the world this map is on.
             bay.show_world(r, self.game.world.map.planet);
         }
+        // The system view, on the missions screen (the bay takes over while
+        // the garage is open over it).
+        let system = (self.mode == Mode::Menu)
+            .then(|| self.menu.system())
+            .flatten();
+        if let (Some(r), Some(art), Some(t)) = (&mut self.renderer, &mut self.system, system) {
+            art.show(r, t);
+        }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
             let alpha = if self.mode == Mode::Paused {
@@ -1204,6 +1217,8 @@ impl App {
                     self.game.world.time,
                     view,
                 )
+            } else if let (Some(t), Some(sys)) = (system, &self.system) {
+                theater_view::scene(sys, t, self.menu_time, theater_view::camera(t, w / h))
             } else {
                 let mut scene = scene::build(&self.game.world, &tanks, art, camera);
                 self.game.effect_instances(alpha, &mut scene.instances);
@@ -1225,7 +1240,11 @@ impl App {
                                 .draw(&self.profile, w, h, 1.0 - self.garage.presence());
                         let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
                         // The dip around a backdrop swap, under the panel.
-                        let mut ui = backdrop_dip(self.backdrop_dark, w, h);
+                        let mut ui = if system.is_some() {
+                            Vec::new()
+                        } else {
+                            backdrop_dip(self.backdrop_dark, w, h)
+                        };
                         ui.extend(menu.verts);
                         ui.extend(garage.verts);
                         // The garage covers the menu panel while it's open.
