@@ -652,15 +652,23 @@ fn your_ended_contracts_are_kept() {
         g.step();
     }
     g.await_work_staying(None, 1, 400).0.expect("work");
+    // Every contract of yours seen ending; `ended` itself never holds more
+    // than ENDED_KEPT, so it's these that say when a few more have ended.
+    let mut seen = std::collections::HashSet::new();
     for _ in 0..1500 {
         g.step();
         g.await_work_staying(None, 1, 400);
-        if g.ended.len() > ENDED_KEPT {
+        seen.extend(g.ended.iter().map(|e| (e.ship, e.signed)));
+        if seen.len() > ENDED_KEPT {
             break;
         }
     }
-    assert!(!g.ended.is_empty(), "no contract of yours ended");
-    assert!(g.ended.len() <= ENDED_KEPT);
+    assert!(
+        seen.len() > ENDED_KEPT,
+        "only {} contracts of yours ended",
+        seen.len()
+    );
+    assert_eq!(g.ended.len(), ENDED_KEPT);
     for e in &g.ended {
         assert!(e.tick >= e.signed);
         assert!(e.lost >= 0.0 && e.lost <= e.committed + 1e-3);

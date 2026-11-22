@@ -587,7 +587,12 @@ mod tests {
     use crate::galaxy::{REGION, Rules, SYSTEMS};
 
     fn galaxy() -> Galaxy {
-        let mut g = Galaxy::with_size(3, SYSTEMS / 4, REGION * 0.5, Rules::default());
+        seeded(3)
+    }
+
+    /// A small galaxy, a little way in: quick to make, even unoptimized.
+    fn seeded(seed: u64) -> Galaxy {
+        let mut g = Galaxy::with_size(seed, SYSTEMS / 4, REGION * 0.5, Rules::default());
         for _ in 0..50 {
             g.step();
         }
@@ -695,8 +700,9 @@ mod tests {
     /// a site you've just won is still yours after it.
     #[test]
     fn a_won_site_survives_its_tick() {
+        let mut tried = 0;
         for seed in 0..20 {
-            let mut g = Galaxy::warmed(seed);
+            let mut g = seeded(seed);
             let b = g.muster(&PAIR, 6);
             let Some(site) = b.site else { continue };
             let holder = g.sites[site].owner as usize;
@@ -708,16 +714,38 @@ mod tests {
             if (0..SIDES).any(|f| !b.sides.contains(&f) && sys.hulls[f] >= AT_WAR) {
                 continue;
             }
+            tried += 1;
             let hulls = sys.hulls;
+            // Companies there whose contracts end this tick sail off with
+            // their hulls: that's leaving, not losing them.
+            let fields = |g: &Galaxy| {
+                let mut on = vec![];
+                for c in &g.companies {
+                    if let Some(k) = c.contract.filter(|k| k.target as usize == b.system) {
+                        on.push((c.id, k.signed, k.side as usize, k.field));
+                    }
+                }
+                on
+            };
+            let before = fields(&g);
             let s = g.step_played(&played(&b, &[0, 0], &[0, 0], Some(1 - t)));
+            let after = fields(&g);
+            let mut gone = [0.0; SIDES];
+            for &(id, signed, side, field) in &before {
+                if !after.iter().any(|&(i, s, ..)| (i, s) == (id, signed)) {
+                    gone[side] += field;
+                }
+            }
             assert!(s.taken);
             assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
             // No second round of fighting there: only wear thins its hulls.
             let wear = 1.0 - g.rules.wear;
             for f in 0..SIDES {
-                assert!(g.systems[b.system].hulls[f] >= hulls[f] * wear - 1e-3);
+                let floor = (hulls[f] - gone[f]) * wear - 1e-3;
+                assert!(g.systems[b.system].hulls[f] >= floor, "seed {seed}");
             }
         }
+        assert!(tried >= 5, "only {tried} seeds had a held site at stake");
     }
 
     /// A shield generator is its holder's, working or damaged (#422): won
