@@ -885,7 +885,7 @@ const BUTTON_GAP: f32 = 16.0;
 /// The round-over choice (back to the contract screen), centred on `top`: a button
 /// that clicks like its key.
 fn round_over_buttons(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, top: Vec2) {
-    let buttons = [("MISSIONS", Hit::Missions)];
+    let buttons = [("CONTRACT", Hit::Missions)];
     let style = TextStyle::LABEL;
     let width = |what: &str| BUTTON_PAD * 2.0 + measure(what, &style);
     let total = buttons.iter().map(|(w, _)| width(w)).sum::<f32>()
