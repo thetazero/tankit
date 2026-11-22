@@ -1412,6 +1412,7 @@ mod tests {
             field: 0.0,
             lost: 0.0,
             max_loss: 0.0,
+            defend: false,
             ticks_left: 0,
             term: 6,
             signed: 10,
