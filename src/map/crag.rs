@@ -1,5 +1,5 @@
 //! A tall rock face sculpted as one smooth-shaded surface along a foot line:
-//! the Seam's crag. Natural sandstone in warped strata with buttresses,
+//! the crystal mine's crags. Natural sandstone in warped strata with buttresses,
 //! ledges and joints, seamed through with veins of crystal; quarried flat
 //! and benched where it's been cut back, the natural rock overhanging the
 //! top of the cut; hanging down only to a lintel over a tunnel's mouth.
@@ -29,11 +29,11 @@ const STRATA: [Vec3; 6] = [
     Vec3::new(0.58, 0.35, 0.23),
 ];
 /// The top: weathered rock.
-const TOP: Vec3 = Vec3::new(0.46, 0.27, 0.18);
+pub(super) const TOP: Vec3 = Vec3::new(0.46, 0.27, 0.18);
 /// Freshly cut stone, and the scorch along a plasma cut.
 const CUT: Vec3 = Vec3::new(0.74, 0.56, 0.42);
 const SCORCH: Vec3 = Vec3::new(0.24, 0.14, 0.13);
-/// Raw seam crystal, showing in the rock: the Seam's raw crystal (cloudy
+/// Raw seam crystal, showing in the rock: the mine's raw crystal (cloudy
 /// blue-grey, nobody's), a little darker where it's still in the stone.
 const VEIN: Vec3 = Vec3::new(0.22, 0.27, 0.36);
 const SAND: Vec3 = Vec3::new(0.66, 0.46, 0.3);
@@ -130,8 +130,12 @@ pub(super) fn out(f: &Foot, y: f32) -> f32 {
     let band = (yw / BAND).floor();
     let fr = yw / BAND - band;
     let set = 0.5 * noise(a / 21.0 + band * 7.31, 4);
-    let ledge =
-        0.6 * (noise(a / 9.0 + band * 3.17, 5) * 1.7 - 0.7).max(0.0) * smoothstep(0.72, 0.94, fr);
+    // (None at the very foot, half in the ground: a ledge there would lie
+    // just under it, and show through in patches.)
+    let ledge = 0.6
+        * (noise(a / 9.0 + band * 3.17, 5) * 1.7 - 0.7).max(0.0)
+        * smoothstep(0.72, 0.94, fr)
+        * smoothstep(0.6, 1.8, y - f.floor);
     // Joints: clefts cut down from the rim.
     let cell = (a / 12.0).floor() as i32;
     let at = (cell as f32 + 0.15 + 0.7 * hash(cell, 1, 8)) * 12.0;
@@ -231,9 +235,9 @@ pub(super) fn sculpt(
                 let q = f.p - f.nrm * BACK;
                 let rim = f.lip + 0.1;
                 let from = f.p + f.nrm * out(f, rim);
-                let y = (1..=8)
+                let y = (1..=16)
                     .map(|k| {
-                        let t = k as f32 / 8.0;
+                        let t = k as f32 / 16.0;
                         rim + (behind(from.lerp(q, t)) + 0.05 - rim) / t
                     })
                     .fold(f.lip - 0.5, f32::max);

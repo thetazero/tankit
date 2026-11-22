@@ -52,9 +52,9 @@ tankit [OPTIONS]
                           (a generated Imperium city, all four factions), the shield city (the same
                           city, a shield generator in place of its rotunda; shield-site: the same
                           on two sides, as a theater's generator is fought on), the Foundry (a
-                          wrecked Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
-                          mine: caves, rails and stacked levels)
-  --map-seed <n>          which city a generated map (city, shield-city, shield-site) builds (default: the --seed)
+                          wrecked Uthenn tungsten cube factory), or the mine (a generated Ithessar
+                          crystal mine: caves, rails and stacked levels)
+  --map-seed <n>          which one a generated map (city, shield-city, shield-site, mine) builds (default: the --seed)
   --generator <faction>   (with --map shield-city or shield-site) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-city or shield-site) the generator's down, n ticks of repair
@@ -216,6 +216,7 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
+            (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
             (true, MapKind::ShieldCity(g)) => {
                 map::procgen::greybox(&shield_spec(self.map_seed, g, false))
             }
@@ -253,7 +254,8 @@ pub enum MapKind {
     ShieldSite(Generator),
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
-    /// The Seam: an Ithessar crystal mine in the desert, on three levels.
+    /// An Ithessar crystal mine in a desert escarpment, on three levels.
+    /// Generated: a different mine for each map seed.
     Mine,
 }
 
@@ -268,7 +270,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::ShieldCity(g) => map::procgen::map(&shield_spec(seed, g, false)),
         MapKind::ShieldSite(g) => map::procgen::map(&shield_spec(seed, g, true)),
         MapKind::Foundry => map::Map::foundry(),
-        MapKind::Mine => map::Map::mine(),
+        MapKind::Mine => map::procgen::map(&mine_spec(seed)),
     }
 }
 
@@ -317,6 +319,18 @@ pub fn shield_spec(seed: u64, g: Generator, site: bool) -> map::procgen::Spec {
         centerpiece: map::procgen::Centerpiece::ShieldGenerator(g.owner, g.condition),
         sides,
         ..city_spec(seed)
+    }
+}
+
+/// The Ithessar crystal mine `seed` names: the Ithessar in the west, the
+/// Resonant in the east.
+pub fn mine_spec(seed: u64) -> map::procgen::Spec {
+    map::procgen::Spec {
+        seed,
+        biome: map::procgen::Biome::Mine,
+        look: map::procgen::Look::Ithessar,
+        sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
+        centerpiece: map::procgen::Centerpiece::Monument,
     }
 }
 

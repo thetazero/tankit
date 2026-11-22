@@ -133,7 +133,7 @@ pub const MISSIONS: &[Mission] = &[
     Mission {
         name: "DEEP VEIN",
         contract: Contract::Attrition,
-        map: "THE SEAM",
+        map: "CRYSTAL MINE",
         map_kind: MapKind::Mine,
         seed: 0,
         team_size: 6,
@@ -145,7 +145,7 @@ pub const MISSIONS: &[Mission] = &[
     Mission {
         name: "STOLEN FLAG",
         contract: Contract::Raid,
-        map: "THE SEAM",
+        map: "CRYSTAL MINE",
         map_kind: MapKind::Mine,
         seed: 0,
         team_size: 6,
@@ -246,7 +246,7 @@ mod tests {
         assert!(m.open_at(T0_5_RANK));
         // Pays half as much again as an M0 contract.
         assert_eq!(m.win_pay(), MISSIONS[0].win_pay() * 3 / 2);
-        // The rest but the Seam's two are T0, open from the start.
+        // The rest but the crystal mine's two are T0, open from the start.
         for m in MISSIONS
             .iter()
             .filter(|m| !["FOUR WINDS", "DEEP VEIN", "STOLEN FLAG"].contains(&m.name))
@@ -326,13 +326,13 @@ mod tests {
     }
 
     #[test]
-    fn raid_is_on_the_seam() {
+    fn raid_is_in_the_crystal_mine() {
         let m = MISSIONS
             .iter()
             .find(|m| m.contract == Contract::Raid)
             .unwrap();
         assert_eq!(m.map_kind, MapKind::Mine);
-        // The Seam's tier, like Deep Vein.
+        // The crystal mine's tier, like Deep Vein.
         assert_eq!(m.rating_label(), "T1");
         assert!(m.open_at(T1_RANK));
     }

@@ -13,12 +13,16 @@ pub const MIN_SPAWNS: usize = 12;
 /// Why `map` isn't playable, if it isn't: a base short of spawns, or a
 /// side that can't drive to the Hold site or to another side's base.
 pub fn playable(map: &Map) -> Result<(), String> {
+    playable_on(map, &NavGrid::build(map))
+}
+
+/// `playable`, on `map`'s nav grid already built.
+pub fn playable_on(map: &Map, nav: &NavGrid) -> Result<(), String> {
     for (k, b) in map.bases.iter().enumerate() {
         if b.len() < MIN_SPAWNS {
             return Err(format!("side {k} has {} spawns", b.len()));
         }
     }
-    let nav = NavGrid::build(map);
     let mid = |b: &[Vec2]| b.iter().copied().sum::<Vec2>() / b.len() as f32;
     let hold = map.hold_site.unwrap_or(map.center());
     for (k, b) in map.bases.iter().enumerate() {

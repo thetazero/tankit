@@ -4899,11 +4899,15 @@ mod tests {
         );
     }
 
-    /// Under Raid on the Seam, bots attack and defend: the attackers get the
+    /// Under Raid on the crystal mine, bots attack and defend: the attackers get the
     /// flag off its stand.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "builds a mine, slow unoptimized: run with cargo test --release"
+    )]
     fn bots_go_for_the_flag() {
-        let mut m = Match::new(Map::mine(), 0, 5, 2);
+        let mut m = Match::new(Map::mine(0), 0, 5, 2);
         m.set_contract(Contract::Raid);
         m.bots_only(2);
         let mut taken = false;
@@ -4930,19 +4934,27 @@ mod tests {
         assert_eq!(m.leader(), Some(0));
     }
 
-    /// The Seam's borer's beam: a tank parked beside it is fine, one that
+    /// The crystal mine borer's beam: a tank parked beside it is fine, one that
     /// drives into it is destroyed, and so is a bot put in it.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "builds a mine, slow unoptimized: run with cargo test --release"
+    )]
     fn driving_into_the_borers_beam_kills() {
-        let mut m = Match::new(Map::mine(), 0, 1, 1);
+        let mut m = Match::new(Map::mine(0), 0, 1, 1);
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
         let b = m.world.map.beams[0];
-        let x = b.from.x + 3.0;
-        // South of it, clear, facing it.
-        m.world.teleport(0, Vec2::new(x, b.to.z - 6.0), 0.0);
-        m.world.teleport(1, Vec2::new(x - 4.0, b.to.z - 6.0), 0.0);
+        // Beside it, clear, facing it (whichever way round the map is).
+        let (from, to) = (Vec2::new(b.from.x, b.from.z), Vec2::new(b.to.x, b.to.z));
+        let along = (to - from).normalize();
+        let out = Vec2::new(along.y, -along.x);
+        let at = from + along * 3.0;
+        let face = crate::sim::yaw_of(-out);
+        m.world.teleport(0, at + out * 6.0, face);
+        m.world.teleport(1, at - along * 4.0 + out * 6.0, face);
         for _ in 0..(1.0 / DT) as usize {
             m.step(Command::default(), false);
         }
@@ -4964,7 +4976,7 @@ mod tests {
         );
         assert_eq!(m.fighters[0].deaths, 1);
         // A bot, put in it.
-        m.world.teleport(1, Vec2::new(x, b.to.z), 0.0);
+        m.world.teleport(1, at, face);
         m.step(Command::default(), false);
         assert!(!m.fighters[1].alive, "the bot lived in the beam");
     }
@@ -5051,14 +5063,18 @@ mod tests {
     /// invisible wall to catch it), and whoever knocked it out gets the kill.
     #[test]
     fn a_tank_knocked_out_of_any_map_dies_out_there() {
-        for (name, map) in [
+        let mut maps = vec![
             ("saltmarket", Map::saltmarket()),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
             ("foundry", Map::foundry()),
-            ("mine", Map::mine()),
-        ] {
+        ];
+        // (The mine is slow to build unoptimized: `cargo test --release`.)
+        if !cfg!(debug_assertions) {
+            maps.push(("mine", Map::mine(0)));
+        }
+        for (name, map) in maps {
             let mut m = Match::new(map, 0, 1, 1);
             for f in &mut m.fighters {
                 f.shield = 0.0;
@@ -5160,15 +5176,15 @@ mod tests {
         );
     }
 
-    /// A Raid's whole match, bots only on the Seam, once with each side
-    /// attacking, printed one line a match (`cargo test --release
+    /// A Raid's whole match, bots only on the crystal mine, once with each
+    /// side attacking, printed one line a match (`cargo test --release
     /// raid_bot_matches -- --ignored --nocapture`).
     #[test]
     #[ignore]
     fn raid_bot_matches() {
         for swap in [false, true] {
             for seed in 0..4u64 {
-                let mut map = Map::mine();
+                let mut map = Map::mine(0);
                 if swap {
                     map.swap_sides(1);
                 }

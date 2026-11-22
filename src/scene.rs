@@ -770,7 +770,7 @@ mod tests {
                 Map::shield_city(0, crate::faction::Faction::Ithessar),
             ),
             ("foundry", Map::foundry()),
-            ("mine", Map::mine()),
+            ("mine", Map::mine(0)),
         ] {
             let fights = map_fights(name, &map);
             let area: f32 = fights.iter().map(|f| f.area).sum();

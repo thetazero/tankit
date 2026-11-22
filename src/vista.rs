@@ -31,9 +31,9 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::City | MapKind::ShieldCity(_) | MapKind::ShieldSite(_) => &[],
         // Chimneys and girders, from either end.
         MapKind::Foundry => &[(123.0, 18.0, 2.88), (158.0, 83.0, 1.83)],
-        // The Face, the adit's mouth and the bridge out of it over the wash,
-        // from either side of the bridge.
-        MapKind::Mine => &[(98.0, 108.0, 2.88), (133.0, 113.0, 2.88)],
+        // Generated: each mine picks its own (the Face, the adit's mouth
+        // and the bridge out of it, from either side of the bridge's end).
+        MapKind::Mine => &[],
     }
 }
 
@@ -206,7 +206,11 @@ mod tests {
             (MapKind::City, 2),
             (MapKind::Foundry, 0),
             (MapKind::Mine, 0),
-        ] {
+        ]
+        .into_iter()
+        // (The mine is slow to build unoptimized: `cargo test --release`.)
+        .filter(|&(kind, _)| !cfg!(debug_assertions) || kind != MapKind::Mine)
+        {
             let world = World::new(make_map(kind, seed), 0);
             let sun = world.map.atmosphere.sun_dir.normalize();
             let n = spots(kind).len().max(world.map.vistas.len());
@@ -275,7 +279,6 @@ mod tests {
             MapKind::Sanctum,
             MapKind::Kiln,
             MapKind::Foundry,
-            MapKind::Mine,
         ] {
             let world = World::new(make_map(kind, 0), 0);
             let s = world.map.size;
