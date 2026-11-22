@@ -3,7 +3,9 @@
 //! ringed; systems at war bright white), the same stretch of it close up at
 //! those moments, and under them each faction's share of the galaxy over the
 //! whole run, with the fraction of systems at war, and how many realms each
-//! people is.
+//! people is; and the mercenary companies (#318): their ships on the maps
+//! (amber, ringed while on a contract), and how many there are, on contract,
+//! and what they're worth over the run.
 
 use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _, point};
 use image::{Rgb, RgbImage};
@@ -24,6 +26,9 @@ const ZOOM: Vec2 = Vec2::new(1100.0, 690.0);
 const ZOOM_W: u32 = (W - 5 * PAD) / 4;
 const ZOOM_H: u32 = (ZOOM_W as f32 * ZOOM.y / ZOOM.x) as u32;
 const REALMS_H: u32 = 180;
+const MERCS_H: u32 = 200;
+const AMBER: Rgb<u8> = Rgb([255, 189, 56]);
+const WORTH: Rgb<u8> = Rgb([110, 200, 225]);
 const PAD: u32 = 10;
 const BG: Rgb<u8> = Rgb([12, 13, 16]);
 
@@ -41,6 +46,8 @@ pub struct Snapshot {
     tick: u64,
     /// (position in the plane, ly; owner; a tint for its realm; its realm's seat; at war)
     dots: Vec<(Vec2, u8, [f32; 3], bool, bool)>,
+    /// Each company's ship: where, and whether it's on a contract.
+    ships: Vec<(Vec2, bool)>,
 }
 
 /// Realm `r`'s tint of its people's color: brighter or darker, a little
@@ -72,6 +79,16 @@ impl Snapshot {
                         shade(r),
                         seat,
                         s.at_war(),
+                    )
+                })
+                .collect(),
+            ships: g
+                .companies
+                .iter()
+                .map(|c| {
+                    (
+                        g.systems[c.at as usize].pos.truncate(),
+                        c.contract.is_some(),
                     )
                 })
                 .collect(),
@@ -114,6 +131,14 @@ impl Snapshot {
                 }
             }
         }
+        // The companies' ships over it all.
+        for &(p, working) in &self.ships {
+            let Some((x, y)) = px(p) else { continue };
+            dot(img, x, y, r + 1, AMBER);
+            if working {
+                ring(img, x, y, r + 4, AMBER);
+            }
+        }
     }
 }
 
@@ -123,7 +148,7 @@ pub fn render(snaps: &[Snapshot], history: &[Census]) -> RgbImage {
     let maps_h = 2 * (MAP_H + PAD) + PAD;
     let zoom_y = maps_h;
     let maps_h = maps_h + ZOOM_H + PAD;
-    let h = maps_h + CHART_H + REALMS_H + PAD;
+    let h = maps_h + CHART_H + REALMS_H + MERCS_H + PAD;
     let mut img = RgbImage::from_pixel(W, h, BG);
     let face = FontRef::try_from_slice(FONT).expect("bundled font parses");
     for (i, snap) in snaps.iter().take(4).enumerate() {
@@ -344,6 +369,90 @@ pub fn render(snaps: &[Snapshot], history: &[Census]) -> RgbImage {
             last.merges,
         ),
         Rgb([230, 230, 230]),
+    );
+    // Companies: how many, how many on a contract (left scale), and what
+    // they're worth all told (right scale), over the run.
+    let (my, mh) = (ry + rh + 56, MERCS_H - 66);
+    fill(&mut img, cx, my, cw, mh, Rgb([20, 22, 27]));
+    let at = |px: u32| &history[(px as usize * (n - 1) / (cw as usize - 1)).min(history.len() - 1)];
+    let count_top = history
+        .iter()
+        .map(|c| c.companies)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32
+        * 1.1;
+    let busy_top = history
+        .iter()
+        .map(|c| c.contracts)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32
+        * 1.1;
+    let worth_top = history.iter().map(|c| c.merc_capital).fold(1.0, f32::max) * 1.1;
+    let line = |img: &mut RgbImage, v: &dyn Fn(&Census) -> f32, top: f32, c: Rgb<u8>| {
+        for px in 0..cw {
+            let y = my + mh - 2 - ((v(at(px)) / top).clamp(0.0, 1.0) * (mh - 2) as f32) as u32;
+            img.put_pixel(cx + px, y, c);
+            img.put_pixel(cx + px, y + 1, c);
+        }
+    };
+    // Contracts: a shaded area, averaged over the ticks each column covers.
+    for px in 0..cw {
+        let a = (px as usize * (n - 1) / cw as usize).min(history.len() - 1);
+        let b = ((px as usize + 1) * (n - 1) / cw as usize).clamp(a + 1, history.len());
+        let span = &history[a..b];
+        let mean = span.iter().map(|c| c.contracts as f32).sum::<f32>() / span.len() as f32;
+        let top = my + mh - ((mean / busy_top).clamp(0.0, 1.0) * mh as f32) as u32;
+        for y in top..my + mh {
+            img.put_pixel(cx + px, y, Rgb([70, 72, 82]));
+        }
+    }
+    line(&mut img, &|c| c.merc_capital, worth_top, WORTH);
+    line(&mut img, &|c| c.companies as f32, count_top, AMBER);
+    text(
+        &mut img,
+        &face,
+        PAD,
+        my - 2,
+        16.0,
+        &format!("{count_top:.0}"),
+        Rgb([180, 180, 180]),
+    );
+    text(
+        &mut img,
+        &face,
+        PAD,
+        my + mh - 16,
+        16.0,
+        "0",
+        Rgb([180, 180, 180]),
+    );
+    text(
+        &mut img,
+        &face,
+        rx,
+        my - 2,
+        16.0,
+        &format!("{:.0}K", worth_top / 1000.0),
+        WORTH,
+    );
+    text(&mut img, &face, rx, my + mh - 16, 16.0, "0", WORTH);
+    text(
+        &mut img,
+        &face,
+        cx,
+        my - 26,
+        18.0,
+        &format!(
+            "COMPANIES (AMBER): {} AT THE START, {} AT THE END  ·  ON A CONTRACT (GRAY, OWN SCALE TO {})  ·  WORTH IN CRYSTAL (BLUE, RIGHT SCALE): {:.0}K TO {:.0}K",
+            first.companies,
+            last.companies,
+            busy_top as u32,
+            first.merc_capital / 1000.0,
+            last.merc_capital / 1000.0,
+        ),
+        AMBER,
     );
     img
 }
