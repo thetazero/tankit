@@ -58,8 +58,9 @@ jobs:
         run: cargo test --locked --no-run
         timeout-minutes: 6
 
-      # The suite takes ~40s on two threads (the physics and map tests are
-      # the slow ones); anything near this limit is a hang or a regression.
+      # Our crate is built at opt-level 1 for tests (Cargo.toml); the suite
+      # then takes ~35s on two threads (unoptimized it took over two minutes,
+      # #377). Anything near this limit is a hang or a regression.
       - name: Run tests
         run: cargo test --locked
         timeout-minutes: 2
