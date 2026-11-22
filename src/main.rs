@@ -1040,7 +1040,15 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let angle = vista::sway(garage::front_angle(&game.world.tanks[0]), shot.time);
     let tanks = game.display_tanks(1.0);
     let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
-    let mut frame = scene::build(&game.world, &tanks, &art, camera);
+    let mut frame = match menu.system() {
+        // The missions screen: the system, in 3D.
+        Some(t) => {
+            let mut sys = theater_view::SystemArt::upload(&mut renderer);
+            sys.show(&mut renderer, t);
+            theater_view::scene(&sys, t, shot.time, theater_view::camera(t, w / h))
+        }
+        None => scene::build(&game.world, &tanks, &art, camera),
+    };
     frame.ui = menu.draw(&profile, w, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));

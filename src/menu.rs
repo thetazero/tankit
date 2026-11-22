@@ -430,9 +430,19 @@ impl Menu {
         (nav, self.input(nav))
     }
 
+    /// The theater whose system the screen shows in 3D instead of a map
+    /// (the missions screen, with sites to pick from).
+    pub fn system(&self) -> Option<&Theater> {
+        self.theater
+            .as_ref()
+            .filter(|t| self.screen == Screen::Missions && !t.contested.is_empty())
+    }
+
     /// The mission whose map the selected site is fought on, and the side
     /// you'd take in it (always the first: the theater's sides stand in for
-    /// the map's): the menu's backdrop shows it. None off the theater.
+    /// the map's): the menu's backdrop shows it (under the system view on
+    /// the missions screen, loaded ready for the site's). None off the
+    /// theater.
     pub fn backdrop(&self) -> Option<(usize, usize)> {
         matches!(self.screen, Screen::Missions | Screen::Site)
             .then(|| self.selected_site().map(|s| (s.mission, 0)))
@@ -449,7 +459,10 @@ impl Menu {
         let w = width / scale;
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
-        garage::backdrop(&mut p, h);
+        match self.system() {
+            Some(_) => garage::backdrop_fading(&mut p, h, 50.0),
+            None => garage::backdrop(&mut p, h),
+        }
         let x = PANEL_X;
         let mut y = 72.0;
 
@@ -481,9 +494,7 @@ impl Menu {
             Screen::Missions => match &self.theater {
                 Some(t) if !t.contested.is_empty() => {
                     self.draw_theater(&mut p, &mut hits, Vec2::new(x, y), t);
-                    let min = Vec2::new(x + PANEL_W + 70.0, 60.0);
-                    let size = Vec2::new((w - 56.0 - min.x).max(200.0), h - 120.0);
-                    crate::theater_view::draw(&mut p, &mut hits, t, self.site, min, size);
+                    crate::theater_view::draw(&mut p, &mut hits, t, self.site, w, h);
                     "Enter  open site     ↑ ↓  site     Esc  back"
                 }
                 _ => {
