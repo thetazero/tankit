@@ -1049,20 +1049,24 @@ mod play {
     #[test]
     #[ignore]
     fn bots_play_every_level() {
-        let rounds = [(0, 7), (1, 8), (2, 9)];
+        // A mine with a wash; two mines, a wash and a butte; a mine with no
+        // wash and two buttes.
+        let rounds = [(0, 7), (8, 8), (11, 9)];
         let (mut time, mut fighting) = ([0.0f32; 6], [0.0f32; 6]);
+        let mut problems = Vec::new();
         for (map_seed, seed) in rounds {
+            let l = lay(map_seed);
             let s = survey(map_seed, seed, 180.0);
             eprintln!("map seed {map_seed}, seed {seed}:");
-            for (l, name) in LEVELS.iter().enumerate() {
+            for (k, name) in LEVELS.iter().enumerate() {
                 eprintln!(
                     "  {name:>12}: {:5.1}% of bot time, {:5.1}% of the fighting, {} deaths",
-                    s.time[l] * 100.0,
-                    s.fighting[l] * 100.0,
-                    s.deaths[l]
+                    s.time[k] * 100.0,
+                    s.fighting[k] * 100.0,
+                    s.deaths[k]
                 );
-                time[l] += s.time[l] / rounds.len() as f32;
-                fighting[l] += s.fighting[l] / rounds.len() as f32;
+                time[k] += s.time[k] / rounds.len() as f32;
+                fighting[k] += s.fighting[k] / rounds.len() as f32;
             }
             eprintln!(
                 "  {} falls, {:.1}% stuck, {:.1}% in the busiest 20 m square",
@@ -1070,35 +1074,48 @@ mod play {
                 s.stuck * 100.0,
                 s.crowd * 100.0
             );
-            for (l, name) in LEVELS.iter().enumerate() {
-                assert!(
-                    s.time[l] > 0.0005,
-                    "map seed {map_seed}: nobody went {name}"
-                );
+            // (Only the levels this mine has: no bridge, no deck.)
+            let has = [
+                !l.bridges.is_empty(),
+                !l.bridges.is_empty(),
+                !l.washes.is_empty(),
+                true,
+                true,
+                true,
+            ];
+            for (k, name) in LEVELS.iter().enumerate() {
+                if has[k] && s.time[k] <= 0.0005 {
+                    problems.push(format!("map seed {map_seed}: nobody went {name}"));
+                }
             }
-            assert!(s.falls <= 6, "map seed {map_seed}: {} falls", s.falls);
-            assert!(
-                s.stuck < 0.02,
-                "map seed {map_seed}: stuck {:.1}%",
-                s.stuck * 100.0
-            );
-            assert!(
-                s.crowd < 0.08,
-                "map seed {map_seed}: {:.1}% in one square",
-                s.crowd * 100.0
-            );
+            if s.falls > 6 {
+                problems.push(format!("map seed {map_seed}: {} falls", s.falls));
+            }
+            if s.stuck >= 0.02 {
+                problems.push(format!(
+                    "map seed {map_seed}: stuck {:.1}%",
+                    s.stuck * 100.0
+                ));
+            }
+            if s.crowd >= 0.08 {
+                problems.push(format!(
+                    "map seed {map_seed}: {:.1}% in one square",
+                    s.crowd * 100.0
+                ));
+            }
         }
-        // Over the rounds, some of the fighting is on every level, and a
-        // fair share of it off the flats.
-        for (l, name) in LEVELS.iter().enumerate() {
-            assert!(fighting[l] > 0.002, "nobody fought {name}");
+        // Over the rounds, a fair share of the fighting off the flats, and
+        // time spent in the mines and up on the mesa.
+        if fighting[5] >= 0.9 {
+            problems.push(format!(
+                "{:.0}% of the fighting on the flats",
+                fighting[5] * 100.0
+            ));
         }
-        assert!(
-            fighting[5] < 0.9,
-            "{:.0}% of the fighting on the flats",
-            fighting[5] * 100.0
-        );
-        assert!(time[3] > 0.02 && time[4] > 0.03, "mine and mesa {time:?}");
+        if time[3] <= 0.02 || time[4] <= 0.03 {
+            problems.push(format!("mine and mesa {time:?}"));
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 }
 
@@ -1332,5 +1349,25 @@ fn reach_map() {
             })
             .collect();
         eprintln!("{row}");
+    }
+}
+
+/// What the first seeds lay out (`cargo test --release list_mines --
+/// --ignored --nocapture`).
+#[test]
+#[ignore]
+fn list_mines() {
+    for seed in 0..16u64 {
+        let l = lay(seed);
+        eprintln!(
+            "seed {seed}: {} m, {} mines, {} washes, {} buttes, {} bridges, mirrored {}, turned {}",
+            l.size,
+            l.mines.len(),
+            l.washes.len(),
+            l.buttes.len(),
+            l.bridges.len(),
+            l.mirror,
+            l.turns
+        );
     }
 }

@@ -1233,15 +1233,25 @@ impl Layout {
             let p = Vec2::new(x, z + (rows as f32 - 1.0) * 3.0);
             goals.iter().map(|g| g.distance(p)).sum::<f32>()
         };
-        let (w, e) = ws
+        // The fairest pairs (within a few percent of the fairest), and of
+        // those the one nearest the escarpment: the sides start near the
+        // mines and the high ground, not out on the far flats.
+        let unfair = |a: &(Vec<f32>, f32, usize), b: &(Vec<f32>, f32, usize)| {
+            let (x, y) = (reach(18.0, a.1, a.2), reach(s - 18.0, b.1, b.2));
+            (x - y).abs() / x.max(y)
+        };
+        let pairs: Vec<_> = ws
             .iter()
             .flat_map(|a| es.iter().map(move |b| (a, b)))
-            .min_by(|(a, b), (c, d)| {
-                let f = |a: &(Vec<f32>, f32, usize), b: &(Vec<f32>, f32, usize)| {
-                    (reach(18.0, a.1, a.2) - reach(s - 18.0, b.1, b.2)).abs()
-                };
-                f(a, b).total_cmp(&f(c, d))
-            })
+            .collect();
+        let best = pairs
+            .iter()
+            .map(|(a, b)| unfair(a, b))
+            .fold(f32::INFINITY, f32::min);
+        let (w, e) = pairs
+            .into_iter()
+            .filter(|(a, b)| unfair(a, b) < best + 0.05)
+            .max_by(|(a, b), (c, d)| (a.1 + b.1).total_cmp(&(c.1 + d.1)))
             .ok_or(line!())?;
         let (w, e) = (w.clone(), e.clone());
         let (zw, ze) = (w.1, e.1);
@@ -1367,6 +1377,10 @@ impl Layout {
     fn find_spots(&self) -> Vec<Vec2> {
         let s = self.size;
         let mut spots = Vec::new();
+        // Out on the flats, as many whatever the map's size (a big map's
+        // flats mustn't draw every bot out onto them); on the high ground,
+        // closer together.
+        let wide = 32.0 * s / 220.0;
         let mut z = 14.0;
         while z < s - 8.0 {
             let mut x = 18.0 + (z * 0.37).sin() * 6.0;
@@ -1375,14 +1389,24 @@ impl Layout {
                 let below = p.y < self.face(p.x) - 6.0
                     && self.washes.iter().all(|w| w.near(p).0 > 12.0)
                     && self.buttes.iter().all(|b| b.distance(p) > 4.0);
-                let above =
-                    p.y > self.face(p.x) + 14.0 && self.mesa(p) > 0.95 && self.crag_depth(p) < -6.0;
-                if below || above {
+                if below {
                     spots.push(p);
                 }
-                x += 32.0;
+                x += wide;
             }
-            z += 30.0;
+            z += wide;
+        }
+        let mut z = 8.0;
+        while z < s - 8.0 {
+            let mut x = 12.0;
+            while x < s - 12.0 {
+                let p = Vec2::new(x, z);
+                if p.y > self.face(p.x) + 12.0 && self.mesa(p) > 0.95 && self.crag_depth(p) < -6.0 {
+                    spots.push(p);
+                }
+                x += 18.0;
+            }
+            z += 16.0;
         }
         for w in &self.washes {
             let mut u = 10.0;
@@ -1398,11 +1422,19 @@ impl Layout {
         spots.push(self.shed.0);
         for m in &self.mines {
             spots.push(Vec2::new(mid(m.adit).x, m.bay.0.y + 10.0));
+            spots.push(Vec2::new(mid(m.adit).x, m.drift.0.y - 4.0));
             spots.push(mid(m.hall));
+            spots.push(Vec2::new(m.hall.0.x + 5.0, m.hall.1.y - 4.0));
             spots.push(mid(m.drift));
             spots.push(Vec2::new(mid(m.breach).x, m.drift.0.y - 14.0));
+            spots.push(Vec2::new(mid(m.heading).x, m.heading.0.y + 8.0));
+            spots.push(Vec2::new(m.bay.0.x + 4.0, m.bay.1.y - 5.0));
         }
-        spots.extend(self.buttes.iter().map(|b| b.center));
+        for b in &self.buttes {
+            spots.push(b.center);
+            let d = Vec2::new(-b.ramp.y, b.ramp.x);
+            spots.push(b.center + d * b.rim(d) * 0.6);
+        }
         spots
     }
 
