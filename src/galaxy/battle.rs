@@ -33,8 +33,9 @@
 //! another company hired for the same side keeps its hulls out of your
 //! battle, so they can't keep you in the fight and your losses never come
 //! off them. You're one of your company's seats, in one of its hulls; when
-//! its hulls are spent, so are you, and the match is over for you (see
-//! `Match::crew_out`).
+//! its hulls are spent, so are you, and the match plays out without you
+//! (see `Match::crew_out`, #373): its result is whatever your side's realm
+//! hulls make of it.
 
 use super::{AT_WAR, Galaxy, SIDES, SiteKind};
 use crate::combat::Match;

@@ -520,17 +520,33 @@ impl Hud {
                     Align::Center,
                 );
             }
-            // Your side's allocation spent: there's no chassis to come back in.
-            if m.hulls_left(me.team) == Some(0) {
+            // Your side's allocation spent, or your company's: there's no
+            // chassis to come back in, and the match plays out without you.
+            let out = if m.crew_out() {
+                Some(("COMPANY OUT OF HULLS", "YOUR COMPANY HAS SPENT ITS HULLS"))
+            } else if m.hulls_left(me.team) == Some(0) {
+                Some(("NO HULLS LEFT", "YOUR SIDE HAS SPENT ITS ALLOCATION"))
+            } else {
+                None
+            };
+            if let Some((head, why)) = out {
                 let mut s = TextStyle::value(16.0);
                 s.color = theme::HOT;
-                p.text(c + Vec2::new(0.0, 84.0), "NO HULLS LEFT", &s, Align::Center);
+                p.text(c + Vec2::new(0.0, 84.0), head, &s, Align::Center);
                 p.text(
                     c + Vec2::new(0.0, 112.0),
-                    "YOUR SIDE HAS SPENT ITS ALLOCATION",
+                    why,
                     &TextStyle::LABEL,
                     Align::Center,
                 );
+                if m.sitting_out() {
+                    p.text(
+                        c + Vec2::new(0.0, 140.0),
+                        "FAST-FORWARDING TO THE END",
+                        &TextStyle::LABEL,
+                        Align::Center,
+                    );
+                }
             } else {
                 // The countdown: whole seconds left, big, over a bar that fills
                 // as the new chassis comes up.
@@ -661,11 +677,11 @@ fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
         with_alpha(theme::FG, 0.85)
     };
     let mercs = m.company_hulls.get(team).copied().unwrap_or(0);
-    let text = if m.crew_out() && team == m.fighters[0].team {
-        // Your company's spent (#361): the realm's may not be.
-        "COMPANY OUT OF HULLS".to_string()
-    } else if m.spent(team) {
+    let text = if m.spent(team) {
         "OUT OF HULLS".to_string()
+    } else if m.crew_out() && team == m.fighters[0].team {
+        // Your company's spent (#361): the realm's fight on (#373).
+        format!("{n} HULLS · COMPANY OUT")
     } else if mercs > 0 {
         // Of them, the mercs' (#320).
         format!("{n} HULLS · {mercs} COMPANY")

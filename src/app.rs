@@ -53,6 +53,11 @@ const HITCH_WORK: f32 = 0.05;
 /// Likewise a gap this long between frames that the frame's work doesn't
 /// explain (the window, the driver or the OS held the loop).
 const HITCH_GAP: f32 = 0.1;
+/// Of each frame, how long the match may fast-forward without you once
+/// you're out for good (#373), well under a hitch.
+const FAST_FORWARD_BUDGET: std::time::Duration = std::time::Duration::from_millis(12);
+/// Steps fast-forwarded between looks at the clock.
+const FAST_FORWARD_CHUNK: usize = 30;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
 /// A galaxy saved before it kept your company (#350) takes the profile's.
@@ -1156,6 +1161,14 @@ impl App {
                     showroom::after_step(w);
                 } else {
                     self.game.step(cmd, fire);
+                }
+            }
+            // Out for good (#373): the rest of the match plays out without
+            // you, as fast as a slice of each frame allows.
+            if self.showroom.is_none() && self.game.sitting_out() {
+                let start = Instant::now();
+                while self.game.sitting_out() && start.elapsed() < FAST_FORWARD_BUDGET {
+                    self.game.fast_forward(FAST_FORWARD_CHUNK);
                 }
             }
         }
