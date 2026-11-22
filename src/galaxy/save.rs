@@ -115,7 +115,7 @@ impl Galaxy {
                 .sites
                 .iter()
                 .map(|s| match s.kind {
-                    SiteKind::Shield { down } => down,
+                    SiteKind::Shield { damaged } => damaged as u8,
                     SiteKind::Production { .. } => 0,
                 })
                 .collect(),
@@ -192,8 +192,9 @@ impl Galaxy {
         for (i, site) in g.sites.iter_mut().enumerate() {
             anyhow::ensure!((s.owners[i] as usize) < SIDES, "a site with no side");
             site.owner = s.owners[i];
-            if let SiteKind::Shield { down } = &mut site.kind {
-                *down = s.down[i];
+            if let SiteKind::Shield { damaged } = &mut site.kind {
+                // (An older save counted repair ticks: any left is damaged.)
+                *damaged = s.down[i] > 0;
             }
         }
         anyhow::ensure!(

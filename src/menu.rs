@@ -824,12 +824,10 @@ impl Menu {
             .map(|&i| {
                 let s = &t.sites[i];
                 let kind = s.kind_name().trim_end_matches(" GENERATOR");
-                match s.repairs() {
-                    Some((0, _)) => format!("{} · {kind} · WRECK", numeral(s.planet)),
-                    Some((done, of)) => {
-                        format!("{} · {kind} · REPAIR {done}/{of}", numeral(s.planet))
-                    }
-                    None => format!("{} · {kind}", numeral(s.planet)),
+                if s.damaged() {
+                    format!("{} · {kind} · DAMAGED", numeral(s.planet))
+                } else {
+                    format!("{} · {kind}", numeral(s.planet))
                 }
             })
             .collect();
@@ -892,11 +890,10 @@ impl Menu {
             Align::Left,
         );
         y += 34.0;
-        // Where, and (a generator) whether it's up.
-        let state = match (site.is_shield(), site.repairs()) {
-            (true, None) => " · up",
-            (true, Some((0, _))) => " · wrecked",
-            (true, Some(_)) => " · under repair",
+        // Where, and (a generator) whether it's working.
+        let state = match (site.is_shield(), site.damaged()) {
+            (true, false) => " · up",
+            (true, true) => " · damaged",
             _ => "",
         };
         body(
@@ -906,25 +903,6 @@ impl Menu {
             theme::DIM,
         );
         y += 20.0;
-        // A generator that's down: how far its repairs have got, a step a tick.
-        if let Some((done, of)) = site.repairs() {
-            let lead = body(p, Vec2::new(x, y), "Repairs ", theme::DIM);
-            widgets::segments(
-                p,
-                Vec2::new(x + lead + 4.0, y + 6.0),
-                120.0,
-                of as usize,
-                done as usize,
-                None,
-            );
-            body(
-                p,
-                Vec2::new(x + lead + 134.0, y),
-                &format!("{done} of {of}"),
-                theme::DIM,
-            );
-            y += 20.0;
-        }
         // Who you fight, and for whom.
         let tag = |p: &mut Painter, at: Vec2, f: Faction| {
             let mut style = BODY;
@@ -1204,18 +1182,14 @@ fn numeral(p: u8) -> &'static str {
     ["I", "II", "III", "IV"][(p as usize).min(3)]
 }
 
-/// What a win at `site` does in the war, by the contract it's fought with.
+/// What a win at `site` does in the war (the same under every contract,
+/// #422), and how the contract it's fought with is won.
 fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
-    // Under any contract, a win at their site takes it (#419); a Raid's
-    // also downs one of their generators.
     let ours = site.owner == employer.index();
-    let raid = contract == Contract::Raid;
     let what = match (ours, site.is_shield()) {
-        (true, _) if raid => "it stays ours, and one of their generators goes down",
+        (true, true) if site.damaged() => "it stays ours, working again",
         (true, _) => "it stays ours",
-        (false, true) if raid => "it's ours, we put up our own, and another of theirs goes down",
-        (false, true) => "it's ours, and we put up our own",
-        (false, false) if raid => "it's ours, and one of their generators goes down",
+        (false, true) => "it's ours, damaged",
         (false, false) => "it's ours",
     };
     let how = match contract {

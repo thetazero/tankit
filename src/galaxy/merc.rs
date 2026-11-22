@@ -421,9 +421,8 @@ impl Galaxy {
         self.debts = debts;
     }
 
-    /// After the tick's battles: each company's hulls in a fight take their
-    /// share of the losses; contracts that are done end; idle companies'
-    /// hulls wear and their margins thin; debts are paid down; and every few
+    /// After the tick's battles: each company's hulls wear, contracts that
+    /// are done end, idle companies' margins thin, debts are paid down; and every few
     /// ticks companies split and join.
     pub(crate) fn mercs(&mut self) {
         let wear = self.rules.wear;
@@ -436,13 +435,9 @@ impl Galaxy {
                 continue;
             };
             let (t, f) = (k.target as usize, k.side as usize);
-            // Its hulls there are worn and shot at like the rest of its side's.
-            let survived = self.survived[t][f];
+            // Its hulls there wear like the rest of its side's (they took
+            // their share of the battle's losses in it: `Galaxy::lose`).
             k.field *= 1.0 - wear;
-            let lost = k.field * (1.0 - survived);
-            k.field -= lost;
-            k.lost += lost;
-            self.books.lost += lost as f64;
             k.field = k.field.min(self.systems[t].hulls[f]);
             let sys = &self.systems[t];
             // A realm that folds into another, or loses the attack's ground
