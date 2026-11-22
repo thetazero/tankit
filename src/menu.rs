@@ -699,7 +699,7 @@ impl Menu {
         );
         y += 30.0;
         if let Some(ship) = &t.ship {
-            y = contract(p, Vec2::new(x, y), ship) + 16.0;
+            y = contract(p, Vec2::new(x, y), ship, &t.name) + 16.0;
         }
 
         // The contested sites.
@@ -904,11 +904,11 @@ fn field(p: &mut Painter, at: Vec2, label: &str, value: &str) {
     body(p, at + Vec2::new(LABEL_W, 0.0), value, theme::FG);
 }
 
-/// Your ship's contract at `at`: who hired it and its hulls; and, if the
-/// Company just moved you, from where. (Its time left and how many hulls it
+/// Your ship's contract at `at`: who hired it, to take the system or hold
+/// it, and its hulls; and, if the Company just moved you, from where. (Its time left and how many hulls it
 /// can lose are over the system view. The company's pay and crystal aren't
 /// shown: they're its business, not the pilot's.) Returns the y under it.
-fn contract(p: &mut Painter, at: Vec2, ship: &Ship) -> f32 {
+fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
     let (x, mut y) = (at.x, at.y);
     let employer = Faction::ALL[ship.side];
     body(p, Vec2::new(x, y), "Hired by", theme::DIM);
@@ -921,6 +921,15 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship) -> f32 {
         &format!("{} of {}", title(employer.name()), title(&ship.realm)),
         &style,
         Align::Left,
+    );
+    y += 22.0;
+    // What for (#366): an attack, or holding one of the realm's own worlds.
+    let job = if ship.defend { "Hold" } else { "Take" };
+    field(
+        p,
+        Vec2::new(x, y),
+        "Job",
+        &format!("{job} {}", title(system)),
     );
     y += 22.0;
     let n = |v: f32| v.round().max(0.0) as u32;
@@ -1003,13 +1012,14 @@ fn draw_choice(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, c: &ChoiceView, 
         );
         y += ROW + 2.0;
         let work = match &b.work {
-            Some((side, realm, target)) => {
-                let f = Faction::ALL[*side];
+            Some(w) => {
+                let f = Faction::ALL[w.side];
                 format!(
-                    "Hired by the {} of {} at {}",
+                    "Hired by the {} of {} to {} {}",
                     title(f.name()),
-                    title(realm),
-                    title(target)
+                    title(&w.realm),
+                    if w.defend { "hold" } else { "take" },
+                    title(&w.system)
                 )
             }
             None => "Between contracts".to_string(),

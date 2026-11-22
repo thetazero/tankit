@@ -15,7 +15,8 @@
 //! **Your company** (#327, #350). You're with one of the galaxy's free
 //! companies (see `merc`), `Galaxy::crew`, and the theater is its
 //! contract's: the system its ship is parked over, fighting for the realm
-//! that hired it. A new pilot joins the company in the biggest fight
+//! that hired it, to take the system or to hold it (#366: then it's parked
+//! over the world under attack). A new pilot joins the company in the biggest fight
 //! (`Galaxy::enlist`), and stays with it: if it joins another company, you
 //! go with it. While it has no battle for you (between contracts), the war
 //! goes on without you until it has (`Galaxy::await_work`): the galaxy
@@ -66,7 +67,8 @@ pub struct Ship {
     /// The company's id (`Company::id`): what the profile keeps.
     pub id: u32,
     pub name: String,
-    /// The world it's parked over: where its side's attack goes in this tick.
+    /// The world it's parked over: where its side's attack goes in this
+    /// tick, or on a defense, the world under attack.
     pub over: u8,
     /// Its hulls still aboard (not in the fight).
     pub aboard: f32,
@@ -78,6 +80,9 @@ pub struct Ship {
     pub field: f32,
     pub lost: f32,
     pub max_loss: f32,
+    /// Hired to hold one of the realm's own worlds (#340, #366), not to
+    /// take one: it's done when the attack is beaten off.
+    pub defend: bool,
     /// Ticks until the contract runs out (one a battle), of its `term`.
     pub ticks_left: u64,
     pub term: u64,
@@ -130,9 +135,20 @@ pub struct Berth {
     pub system: String,
     pub hulls: f32,
     pub crystals: f32,
-    /// On contract: the side that hired it (index into `Faction::ALL`), the
-    /// realm by its seat's name, and the system it's fighting over.
-    pub work: Option<(usize, String, String)>,
+    /// On contract: what for (see `Work`).
+    pub work: Option<Work>,
+}
+
+/// A company's contract, as the missions screen names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Work {
+    /// The side that hired it (index into `Faction::ALL`), and the realm by
+    /// its seat's name.
+    pub side: usize,
+    pub realm: String,
+    /// The system it's fighting over, and whether to hold it (else take it).
+    pub system: String,
+    pub defend: bool,
 }
 
 /// One site of the theater.
@@ -500,12 +516,11 @@ impl Galaxy {
                 system: system_name(co.at as usize),
                 hulls: co.hulls + co.contract.map_or(0.0, |k| k.field + k.orbit),
                 crystals: co.crystals,
-                work: co.contract.map(|k| {
-                    (
-                        k.side as usize,
-                        system_name(self.realms[k.realm as usize].seat as usize),
-                        system_name(k.target as usize),
-                    )
+                work: co.contract.map(|k| Work {
+                    side: k.side as usize,
+                    realm: system_name(self.realms[k.realm as usize].seat as usize),
+                    system: system_name(k.target as usize),
+                    defend: k.defend,
                 }),
             }
         });
@@ -591,7 +606,20 @@ impl Galaxy {
             return None;
         }
         let mut t = self.theater_at(s, f, rank);
-        let over = self.target(s, f).map_or(0, |i| self.sites[i].planet);
+        // Over the world its side attacks; on a defense, the world under
+        // attack (#366). Else whichever it fights over first.
+        let commits = self.commits(s, f);
+        let attacked = commits
+            .iter()
+            .copied()
+            .find(|&i| self.sites[i].owner as usize == f);
+        let over = if k.defend {
+            attacked.or(self.target(s, f))
+        } else {
+            self.target(s, f).or(attacked)
+        }
+        .or(commits.first().copied())
+        .map_or(0, |i| self.sites[i].planet);
         t.ship = Some(Ship {
             id: co.id,
             name: ship_name(co.id),
@@ -602,6 +630,7 @@ impl Galaxy {
             field: k.field,
             lost: k.lost,
             max_loss: k.max_loss,
+            defend: k.defend,
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
             term: self.rules.merc_term as u64,
             signed: k.signed,
@@ -728,6 +757,60 @@ mod tests {
             }
             assert!((0..t.contested.len()).any(|k| t.sortie(k).is_some()));
         }
+    }
+
+    /// With your company hired to hold one of its employer's worlds
+    /// (#366): the theater is that system, for the employer; the ship says
+    /// it's a defense and is parked over a world under attack; some battle
+    /// is the defense of one of the employer's own sites; and every battle
+    /// you can enter musters with your company in it.
+    #[test]
+    fn your_company_hired_to_defend() {
+        let mut g = galaxy();
+        let mut seen = 0;
+        for _ in 0..1500 {
+            g.step();
+            let ids: Vec<u32> = g
+                .companies
+                .iter()
+                .filter(|c| c.contract.is_some_and(|k| k.defend))
+                .map(|c| c.id)
+                .collect();
+            for id in ids {
+                g.crew = Some(id);
+                let Some(t) = g.aboard(1) else { continue };
+                let k = g.companies[g.crew_company().unwrap()].contract.unwrap();
+                let ship = t.ship.as_ref().unwrap();
+                assert!(ship.defend);
+                assert_eq!((t.system, t.employer), (k.target as usize, k.side as usize));
+                let committed: Vec<&SiteView> = t.sites.iter().filter(|s| s.committed).collect();
+                let ours: Vec<&&SiteView> =
+                    committed.iter().filter(|s| s.owner == t.employer).collect();
+                if g.target(t.system, t.employer).is_none() {
+                    assert!(!ours.is_empty(), "nothing to attack, nothing to defend");
+                }
+                if !ours.is_empty() {
+                    assert!(
+                        ours.iter().any(|s| s.planet == ship.over),
+                        "parked over {}, not a world under attack",
+                        ship.over
+                    );
+                }
+                for s in &committed {
+                    let sides = [Faction::ALL[t.employer], Faction::ALL[s.enemy]];
+                    let b = g
+                        .muster_crew(t.system, &sides, 6, Some(s.index))
+                        .expect("a battle with your company in it");
+                    assert_eq!(b.crew, Some(id));
+                    assert!(b.mercs(0).round() >= 1.0);
+                }
+                seen += 1;
+            }
+            if seen >= 20 {
+                return;
+            }
+        }
+        panic!("only {seen} defenses with a battle for you in 1500 ticks");
     }
 
     /// A new pilot joins the company in the biggest fight (or one working

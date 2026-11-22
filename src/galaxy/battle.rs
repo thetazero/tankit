@@ -13,8 +13,8 @@
 //! survivors go back where they came from. What the win changes depends on
 //! the contract (see [`Stake`]). Then the whole galaxy ticks once.
 //!
-//! **Mercs** (#320). A company under contract to take the battle's system
-//! has its hulls there among its employer's side's, so a side's allocation
+//! **Mercs** (#320). A company under contract for the battle's system (to
+//! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
 //! drawn from that system is part merc, in proportion: if a third of the
 //! side's hulls here are a company's, a third of what it brings is. (Mercs
 //! on contract elsewhere stay on their own contracts: they're never drawn
@@ -137,7 +137,7 @@ pub fn deploy(g: &mut Galaxy, m: &mut Match) -> Battle {
 /// Draw match `m`'s battle at a theater's site, with your company: in
 /// `system`, over `site` (index into `Galaxy::sites`), between the match's
 /// teams. None unless your company is there (#362): under contract to take
-/// `system` for the match's first side, and bringing at least a hull.
+/// or hold `system` for the match's first side, and bringing at least a hull.
 pub fn deploy_at(g: &Galaxy, m: &mut Match, system: usize, site: usize) -> Option<Battle> {
     let b = g.muster_crew(system, &m.factions, seats(m), Some(site))?;
     Some(begin(g, m, b))
@@ -146,14 +146,18 @@ pub fn deploy_at(g: &Galaxy, m: &mut Match, system: usize, site: usize) -> Optio
 /// Draw match `m`'s battle where a company is under contract for its first
 /// side, against its second: the most merc-heavy such battle, with you in
 /// that company (it becomes `Galaxy::crew`); none if no company is working
-/// for that side (shots: `--hired`).
-pub fn deploy_hired(g: &mut Galaxy, m: &mut Match) -> Option<Battle> {
+/// for that side (shots: `--hired`). With `defend`, only a company hired
+/// to hold one of the side's worlds (shots: `--hired --defend`, #366).
+pub fn deploy_hired(g: &mut Galaxy, m: &mut Match, defend: bool) -> Option<Battle> {
     let f = m.factions.first()?.index();
     let seats = seats(m);
     let b = g
         .companies
         .iter()
-        .filter(|c| c.contract.is_some_and(|k| k.side as usize == f))
+        .filter(|c| {
+            c.contract
+                .is_some_and(|k| k.side as usize == f && (k.defend || !defend))
+        })
         .filter_map(|c| {
             let k = c.contract?;
             g.muster_at(k.target as usize, &m.factions, seats, None, Some(c.id))
@@ -315,7 +319,7 @@ impl Galaxy {
             .filter(|&(_, h)| h > 0.0)
     }
 
-    /// The companies under contract to take system `t` for side `f`, and
+    /// The companies under contract to take or hold system `t` for side `f`, and
     /// their hulls there: ((`Company::id`, hulls), all told). Never more
     /// than the side has there.
     fn on_contract(&self, t: usize, f: usize) -> (Vec<(u32, f32)>, f32) {
@@ -385,7 +389,7 @@ impl Galaxy {
     }
 
     /// A battle with your company (`Galaxy::crew`) in it, as for
-    /// `muster_at`: None unless it's under contract to take `system` for
+    /// `muster_at`: None unless it's under contract to take or hold `system` for
     /// the first of `factions` and brings at least a hull.
     pub fn muster_crew(
         &self,

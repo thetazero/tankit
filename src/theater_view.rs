@@ -871,7 +871,7 @@ pub fn draw(
     here(p, t, min);
     forces(p, t, Vec2::new(min.x + 24.0, min.y + 100.0));
     if let Some(ship) = &t.ship {
-        term(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
+        term(p, t, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
     }
     p.line(
         Vec2::new(min.x + 16.0, bottom),
@@ -944,12 +944,19 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
     }
 }
 
-/// How much longer your ship fights here, right-aligned at `at`: its
-/// contract's ticks left (a battle each) and a bar of them, of its term.
-fn term(p: &mut Painter, ship: &Ship, at: Vec2) {
+/// What your ship's here for and how much longer it fights here,
+/// right-aligned at `at`: to take the system or hold it, its contract's
+/// ticks left (a battle each) and a bar of them, of its term, and what ends
+/// it sooner.
+fn term(p: &mut Painter, t: &Theater, ship: &Ship, at: Vec2) {
     let mut style = TextStyle::LABEL;
     style.color = theme::DIM;
-    p.text(at, "CONTRACT HERE", &style, Align::Right);
+    p.text(
+        at,
+        &format!("CONTRACT HERE · {} {}", job(ship), t.name),
+        &style,
+        Align::Right,
+    );
     let left = match ship.ticks_left {
         1 => "1 BATTLE LEFT".to_string(),
         k => format!("UP TO {k} BATTLES LEFT"),
@@ -976,12 +983,31 @@ fn term(p: &mut Painter, ship: &Ship, at: Vec2) {
     }
     let lost = (ship.lost.round().max(0.0)) as u32;
     let cap = (ship.max_loss.round() as u32).max(1);
-    p.text(
-        at + Vec2::new(0.0, 64.0),
-        &format!("SOONER IF THE WORLD FALLS, OR AT {cap} HULLS LOST ({lost} SO FAR)"),
-        &style,
-        Align::Right,
-    );
+    let losses = format!("AT {cap} HULLS LOST ({lost} SO FAR)");
+    // A defense is done when the attack's beaten off, and over (lost) if
+    // the world falls anyway: two lines, to stay clear of the forces table.
+    // An attack is done when it falls.
+    let lines = if ship.defend {
+        vec![
+            "SOONER IF THE ATTACK IS BEATEN OFF OR THE WORLD FALLS,".to_string(),
+            format!("OR {losses}"),
+        ]
+    } else {
+        vec![format!("SOONER IF THE WORLD FALLS, OR {losses}")]
+    };
+    for (i, line) in lines.iter().enumerate() {
+        p.text(
+            at + Vec2::new(0.0, 64.0 + 14.0 * i as f32),
+            line,
+            &style,
+            Align::Right,
+        );
+    }
+}
+
+/// What a contract's for, in caps: to hold the system, or to take it.
+fn job(ship: &Ship) -> &'static str {
+    if ship.defend { "HOLD" } else { "TAKE" }
 }
 
 /// What a transfer says over the view: where from and to, a route with
@@ -1046,9 +1072,11 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
         p.text(
             Vec2::new(min.x + 24.0, min.y + 68.0),
             &format!(
-                "{aboard}HIRED BY THE {} OF {} · UP TO {} BATTLES",
+                "{aboard}HIRED BY THE {} OF {} TO {} {} · UP TO {} BATTLES",
                 realm.name(),
                 ship.realm,
+                job(ship),
+                t.name,
                 ship.ticks_left
             ),
             &dim,
@@ -1334,6 +1362,7 @@ mod tests {
             field: 0.0,
             lost: 0.0,
             max_loss: 1.0,
+            defend: false,
             ticks_left: 10,
             term: 30,
             signed: 4,
