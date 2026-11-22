@@ -20,7 +20,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
-use crate::galaxy::theater::{SiteView, Theater, planet_name};
+use crate::galaxy::theater::{Ship, SiteView, Theater, planet_name};
 use crate::garage::{PANEL_W, PANEL_X};
 use crate::menu::Hit;
 use crate::planet;
@@ -185,8 +185,51 @@ fn atmosphere(l: &Layout) -> Atmosphere {
     }
 }
 
-/// The system of `t`, at `time` seconds (the worlds turn), seen by `camera`.
-pub fn scene(art: &SystemArt, t: &Theater, time: f32, camera: Camera) -> Scene {
+/// The system view of `t` on a screen `aspect` wide, at `time` seconds (the
+/// worlds turn), or, while `transfer` plays, that.
+pub fn scene(
+    art: &SystemArt,
+    t: &Theater,
+    transfer: Option<&Transfer>,
+    time: f32,
+    aspect: f32,
+) -> Scene {
+    match transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
+        None => system_scene(art, t, time, camera(t, aspect), parked(&layout(t), time)),
+        Some((tr, leg)) => transfer_scene(art, t, tr, leg, time, aspect),
+    }
+}
+
+/// Where your ship is in a frame, and how hard it's driving.
+#[derive(Clone, Copy, Debug)]
+struct Pose {
+    at: Vec3,
+    /// Turned from bow along +x.
+    yaw: Quat,
+    /// Its drives' glow (1 parked), and how far its wake streams back
+    /// behind it (0 for none).
+    drive: f32,
+    wake: f32,
+}
+
+/// Your ship parked over its world, bow toward the star.
+fn parked(l: &Layout, time: f32) -> Option<Pose> {
+    l.ship.map(|(at, _)| Pose {
+        at: at + Vec3::Y * (time * 0.8).sin() * 0.3,
+        yaw: PARKED_YAW,
+        drive: 1.0,
+        wake: 0.0,
+    })
+}
+
+/// The system of `t`, at `time` seconds, seen by `camera`, your ship at `ship`.
+fn system_scene(
+    art: &SystemArt,
+    t: &Theater,
+    time: f32,
+    camera: Camera,
+    ship: Option<Pose>,
+) -> Scene {
     let l = layout(t);
     let mut instances = Vec::new();
     let mut particles = Vec::new();
@@ -271,33 +314,16 @@ pub fn scene(art: &SystemArt, t: &Theater, time: f32, camera: Camera) -> Scene {
         }
     }
 
-    // Your ship, parked over its world, bow toward the star, drives aglow.
-    if let Some((at, _)) = l.ship {
-        let yaw = Quat::from_rotation_y(PI + 0.45);
-        let bob = Vec3::Y * (time * 0.8).sin() * 0.3;
-        instances.push((
-            art.ship,
-            Instance::new(
-                Mat4::from_scale_rotation_translation(Vec3::splat(SHIP_LEN), yaw, at + bob),
-                Vec4::new(1.0, 1.0, 1.0, 0.0),
-            ),
-        ));
-        let amber = Faction::Company.ui();
-        let amber = Vec3::new(amber[0], amber[1], amber[2]);
-        for dz in [-0.17, 0.17] {
-            let d = at + bob + yaw * (Vec3::new(-0.54, 0.0, dz) * SHIP_LEN);
-            particles.push(Particle::glow(d, 0.9, amber, 1.2, Vec3::ZERO));
-        }
-    }
-
-    // A work light off its bow, toward the camera, so its far side from
-    // the star still shows its shape.
-    let lights = l
-        .ship
-        .map(|(at, _)| PointLight {
-            pos: at + Vec3::new(-4.0, 6.0, 14.0),
-            color: Vec3::new(0.8, 0.85, 1.0) * 10.0,
-            radius: 24.0,
+    // Your ship, drives aglow, and a work light off its bow, toward the
+    // camera, so its far side from the star still shows its shape.
+    let lights = ship
+        .map(|pose| {
+            ship_parts(art, pose, &mut instances, &mut particles);
+            PointLight {
+                pos: pose.at + Vec3::new(-4.0, 6.0, 14.0),
+                color: Vec3::new(0.8, 0.85, 1.0) * 10.0,
+                radius: 24.0,
+            }
         })
         .into_iter()
         .collect();
@@ -318,6 +344,341 @@ pub fn scene(art: &SystemArt, t: &Theater, time: f32, camera: Camera) -> Scene {
         ui: Vec::new(),
         world: false,
     }
+}
+
+/// Your ship in the scene at `pose`: its hull, its drives' glow, and its
+/// wake streaming back behind it while it's under way.
+fn ship_parts(
+    art: &SystemArt,
+    pose: Pose,
+    instances: &mut Vec<(MeshId, Instance)>,
+    particles: &mut Vec<Particle>,
+) {
+    instances.push((
+        art.ship,
+        Instance::new(
+            Mat4::from_scale_rotation_translation(Vec3::splat(SHIP_LEN), pose.yaw, pose.at),
+            Vec4::new(1.0, 1.0, 1.0, 0.0),
+        ),
+    ));
+    let amber = Faction::Company.ui();
+    let amber = Vec3::new(amber[0], amber[1], amber[2]);
+    let back = pose.yaw * -Vec3::X;
+    for dz in [-0.17, 0.17] {
+        let d = pose.at + pose.yaw * (Vec3::new(-0.54, 0.0, dz) * SHIP_LEN);
+        particles.push(Particle::glow(
+            d,
+            0.9 * pose.drive.sqrt(),
+            amber,
+            1.2 * pose.drive,
+            Vec3::ZERO,
+        ));
+        if pose.wake > 0.0 {
+            let len = SHIP_LEN * 0.5 * pose.wake;
+            particles.push(Particle::glow(
+                d + back * len,
+                0.7,
+                Vec3::new(1.0, 0.8, 0.55),
+                0.8,
+                back * (len / 0.7),
+            ));
+        }
+    }
+}
+
+/// Moving onto your company's next contract (#348), played over the system
+/// view: the ship you're aboard leaves the system it was in, jumps, and
+/// arrives over the world of its new one; or, staying in the same system,
+/// flies over to its new contract's world.
+#[derive(Clone, Debug)]
+pub struct Transfer {
+    /// The theater you were in.
+    pub from: Theater,
+    /// Seconds it's played.
+    pub age: f32,
+}
+
+/// A jump to another system: leaving, under way, arriving (seconds).
+const LEAVE_S: f32 = 1.7;
+const JUMP_S: f32 = 1.5;
+const ARRIVE_S: f32 = 2.0;
+/// A move to another world of the same system (or a new contract over the same one).
+const MOVE_S: f32 = 2.6;
+/// How the ship sits parked: bow toward the star, a little toward the camera.
+const PARKED_YAW: Quat = Quat::from_xyzw(0.0, -0.974_794_1, 0.0, 0.223_106_4);
+/// How far off into the deep it goes leaving, and comes from arriving
+/// (inside the black round the camera).
+const DEEP: f32 = 190.0;
+
+/// Which part of a transfer is playing, and how far through it (0..1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Leg {
+    Leave(f32),
+    Jump(f32),
+    Arrive(f32),
+    Move(f32),
+}
+
+impl Transfer {
+    pub fn new(from: Theater) -> Transfer {
+        Transfer { from, age: 0.0 }
+    }
+
+    /// Going from theater `from` to `to` is a transfer: you're aboard
+    /// another ship, or on another contract, or in another system.
+    pub fn between(from: &Theater, to: &Theater) -> bool {
+        match (&from.ship, &to.ship) {
+            (Some(a), Some(b)) => a.id != b.id || a.signed != b.signed || from.system != to.system,
+            _ => false,
+        }
+    }
+
+    /// It jumps to another system (else it moves within the one it's in).
+    pub fn jumps(&self, to: &Theater) -> bool {
+        self.from.system != to.system
+    }
+
+    /// How long it plays, seconds.
+    pub fn length(&self, to: &Theater) -> f32 {
+        if self.jumps(to) {
+            LEAVE_S + JUMP_S + ARRIVE_S
+        } else {
+            MOVE_S
+        }
+    }
+
+    /// How far through it is (0..1).
+    pub fn progress(&self, to: &Theater) -> f32 {
+        (self.age / self.length(to)).clamp(0.0, 1.0)
+    }
+
+    /// What's playing, toward `to`; None once it's done.
+    pub fn leg(&self, to: &Theater) -> Option<Leg> {
+        let a = self.age.max(0.0);
+        if a >= self.length(to) {
+            return None;
+        }
+        Some(if !self.jumps(to) {
+            Leg::Move(a / MOVE_S)
+        } else if a < LEAVE_S {
+            Leg::Leave(a / LEAVE_S)
+        } else if a < LEAVE_S + JUMP_S {
+            Leg::Jump((a - LEAVE_S) / JUMP_S)
+        } else {
+            Leg::Arrive((a - LEAVE_S - JUMP_S) / ARRIVE_S)
+        })
+    }
+}
+
+/// The theater whose worlds are on screen: the one you're leaving while
+/// the ship's still in it, else `t`.
+pub fn on_screen<'a>(t: &'a Theater, transfer: Option<&'a Transfer>) -> &'a Theater {
+    match transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
+        Some((tr, Leg::Leave(_))) => &tr.from,
+        _ => t,
+    }
+}
+
+fn smooth(u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// Away from `camera` past `at`, into the deep beyond it, leaning `side`
+/// to the right (left if negative) so the ship shows its flank as it goes.
+fn deep(camera: Camera, at: Vec3, side: f32) -> Vec3 {
+    let ray = (at - camera.pos).normalize();
+    let right = ray.cross(Vec3::Y).normalize();
+    (ray + right * side).normalize()
+}
+
+/// Turned so its bow points along `dir` (level).
+fn heading(dir: Vec3) -> Quat {
+    Quat::from_rotation_y((-dir.z).atan2(dir.x))
+}
+
+/// A frame of `tr` toward `t`, `leg` of it.
+fn transfer_scene(
+    art: &SystemArt,
+    t: &Theater,
+    tr: &Transfer,
+    leg: Leg,
+    time: f32,
+    aspect: f32,
+) -> Scene {
+    match leg {
+        // It turns out of the system and goes, faster and faster, until it
+        // jumps in a flash.
+        Leg::Leave(u) => {
+            let from = &tr.from;
+            let cam = camera(from, aspect);
+            let Some(mut pose) = parked(&layout(from), time) else {
+                return system_scene(art, from, time, cam, None);
+            };
+            let out = deep(cam, pose.at, 0.3);
+            pose.yaw = PARKED_YAW.slerp(heading(out), smooth(u / 0.4));
+            let go = ((u - 0.3) / 0.7).clamp(0.0, 1.0);
+            pose.at += out * (go * go * go * DEEP);
+            pose.drive = 1.0 + 5.0 * go;
+            pose.wake = 6.0 * go * go;
+            let mut s = system_scene(art, from, time, cam, Some(pose));
+            flash(&mut s, pose.at, ((u - 0.82) / 0.18).clamp(0.0, 1.0));
+            s
+        }
+        // Under way between the stars: the ship, and space streaming past.
+        Leg::Jump(u) => jump_scene(art, u, time),
+        // It drops in from a flash, slows, and settles over its new world.
+        Leg::Arrive(u) => {
+            let cam = camera(t, aspect);
+            let Some(mut pose) = parked(&layout(t), time) else {
+                return system_scene(art, t, time, cam, None);
+            };
+            let dir = -deep(cam, pose.at, -0.35);
+            let k = 1.0 - smooth(u / 0.75);
+            pose.at -= dir * (k * k * DEEP);
+            pose.yaw = heading(dir).slerp(PARKED_YAW, smooth((u - 0.55) / 0.45));
+            pose.drive = 1.0 + 4.0 * k;
+            pose.wake = 5.0 * k * k;
+            let mut s = system_scene(art, t, time, cam, Some(pose));
+            flash(&mut s, pose.at, 1.0 - (u / 0.15).clamp(0.0, 1.0));
+            s
+        }
+        // Up off its world, over to the next, and down to park.
+        Leg::Move(u) => {
+            let l = layout(t);
+            let Some(mut pose) = parked(&l, time) else {
+                return system_scene(art, t, time, camera(t, aspect), None);
+            };
+            let a = layout(&tr.from).ship.map_or(pose.at, |(at, _)| at);
+            let b = pose.at;
+            let e = smooth(u);
+            let flat = Vec3::new(b.x - a.x, 0.0, b.z - a.z);
+            let way = if flat.length() > 1.0 {
+                pose.at = a.lerp(b, e) + Vec3::Y * (34.0 * (PI * e).sin());
+                heading(flat)
+            } else {
+                // The same world: a lap round it, out to the right and back
+                // behind it.
+                let (r, ang) = (30.0, TAU * e);
+                pose.at = b + Vec3::new(ang.sin(), 0.0, ang.cos() - 1.0) * r;
+                heading(Vec3::new(ang.cos(), 0.0, -ang.sin()))
+            };
+            let turn = smooth(u / 0.2) * (1.0 - smooth((u - 0.75) / 0.25));
+            pose.yaw = PARKED_YAW.slerp(way, turn);
+            let speed = (PI * e).sin();
+            pose.drive = 1.0 + 2.5 * speed;
+            pose.wake = 2.0 * speed;
+            system_scene(art, t, time, camera(t, aspect), Some(pose))
+        }
+    }
+}
+
+/// A jump's flash at `at`, `k` (0..1) of its brightest.
+fn flash(s: &mut Scene, at: Vec3, k: f32) {
+    if k <= 0.0 {
+        return;
+    }
+    let white = Vec3::new(0.9, 0.95, 1.0);
+    s.particles.push(Particle::glow(
+        at,
+        6.0 + 30.0 * k,
+        white,
+        3.0 * k,
+        Vec3::ZERO,
+    ));
+    s.particles
+        .push(Particle::glow(at, 2.0, white, 4.0 * k, Vec3::X * 60.0 * k));
+}
+
+/// Between the stars, `u` (0..1) of the way: the ship side on, bow ahead,
+/// and the stars streaming past, longest mid-jump.
+fn jump_scene(art: &SystemArt, u: f32, time: f32) -> Scene {
+    let camera = Camera {
+        pos: Vec3::new(-40.0, 26.0, 150.0),
+        target: Vec3::new(-24.0, 0.0, 0.0),
+        fov_y: 0.62,
+    };
+    let mut instances = vec![(
+        MeshId::SPHERE,
+        Instance::new(
+            Mat4::from_scale_rotation_translation(
+                Vec3::splat(SPACE_R * 2.0),
+                Quat::IDENTITY,
+                camera.pos,
+            ),
+            Vec4::new(0.004, 0.005, 0.009, 1.0),
+        ),
+    )];
+    let mut particles = Vec::new();
+    // Up to speed, and back down.
+    let speed = (PI * u).sin().max(0.0).powf(0.6);
+    let mut h = 0x9E37_79B9u32;
+    let mut rnd = || {
+        h ^= h << 13;
+        h ^= h >> 17;
+        h ^= h << 5;
+        (h >> 8) as f32 / 16_777_216.0
+    };
+    const SPAN: f32 = 900.0;
+    for _ in 0..220 {
+        let (a, b, c, d) = (rnd(), rnd(), rnd(), rnd());
+        let x = (a * SPAN - time * 1400.0).rem_euclid(SPAN) - SPAN * 0.5;
+        let at = Vec3::new(x, (b - 0.5) * 300.0, -60.0 - c * 420.0);
+        let len = 1.0 + 90.0 * speed * (0.4 + d);
+        let color = Vec3::new(0.8 + 0.2 * d, 0.88, 1.0);
+        particles.push(Particle::glow(
+            at,
+            0.4 + 0.6 * d,
+            color,
+            0.25 + 0.7 * d,
+            -Vec3::X * len,
+        ));
+    }
+    let pose = Pose {
+        at: Vec3::Y * (time * 1.7).sin() * 0.4,
+        yaw: heading(Vec3::new(1.0, 0.0, 0.12)),
+        drive: 3.0,
+        wake: 5.0 + 4.0 * speed,
+    };
+    ship_parts(art, pose, &mut instances, &mut particles);
+    let atmosphere = Atmosphere {
+        sun_dir: Vec3::new(-0.3, 0.6, 0.75).normalize(),
+        ..atmosphere(&Layout {
+            star: Vec3::ZERO,
+            worlds: Vec::new(),
+            ship: None,
+        })
+    };
+    // The jump's own light, cold, round the hull.
+    let lights = vec![PointLight {
+        pos: Vec3::new(-6.0, 14.0, 26.0),
+        color: Vec3::new(0.75, 0.85, 1.0) * 5.0,
+        radius: 50.0,
+    }];
+    let mut s = Scene {
+        camera,
+        time,
+        sun_dir: atmosphere.sun_dir,
+        atmosphere,
+        shadow_center: Vec3::new(0.0, -1.0e5, 0.0),
+        shadow_radius: 1.0,
+        instances,
+        particles,
+        lights,
+        ui: Vec::new(),
+        world: false,
+    };
+    flash(
+        &mut s,
+        Vec3::new(30.0, 0.0, 0.0),
+        1.0 - (u / 0.15).clamp(0.0, 1.0),
+    );
+    flash(
+        &mut s,
+        Vec3::new(30.0, 0.0, 0.0),
+        ((u - 0.85) / 0.15).clamp(0.0, 1.0),
+    );
+    s
 }
 
 /// Who holds most of each world's sites (index into `Faction::ALL`).
@@ -441,14 +802,27 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
-pub fn draw(p: &mut Painter, hits: &mut Hits<Hit>, t: &Theater, selected: usize, w: f32, h: f32) {
-    let l = layout(t);
-    let vp = camera(t, w / h).view_proj(w / h);
-    let at = |v: Vec3| project(vp, v, w, h).map(|(x, y)| Vec2::new(x, y));
+/// While `transfer` plays, its caption instead.
+pub fn draw(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    t: &Theater,
+    transfer: Option<&Transfer>,
+    selected: usize,
+    w: f32,
+    h: f32,
+) {
     let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
     let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
     widgets::corners(p, min, max, 14.0, theme::DIM);
     let bottom = max.y - LEGEND_H;
+    if let Some((tr, leg)) = transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
+        caption(p, t, tr, leg, min, max);
+        return;
+    }
+    let l = layout(t);
+    let vp = camera(t, w / h).view_proj(w / h);
+    let at = |v: Vec3| project(vp, v, w, h).map(|(x, y)| Vec2::new(x, y));
     let holders = holders(t);
     // How big a world looks: its radius, projected.
     let right = {
@@ -520,21 +894,12 @@ pub fn draw(p: &mut Painter, hits: &mut Hits<Hit>, t: &Theater, selected: usize,
         label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
     }
 
-    // The theater's name over it, and what the marks mean under it.
-    p.text(
-        Vec2::new(min.x + 24.0, min.y + 22.0),
-        &format!("{} SYSTEM", t.name),
-        &TextStyle::value(14.0),
-        Align::Left,
-    );
-    let mut style = TextStyle::LABEL;
-    style.color = theme::DIM;
-    p.text(
-        Vec2::new(min.x + 24.0, min.y + 44.0),
-        &format!("CATALOGUE {:04} · TICK {}", t.system, t.tick),
-        &style,
-        Align::Left,
-    );
+    // Which system you're in, and how long you'll fight in it, over it;
+    // what the marks mean under it.
+    here(p, t, min);
+    if let Some(ship) = &t.ship {
+        term(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
+    }
     p.line(
         Vec2::new(min.x + 16.0, bottom),
         Vec2::new(max.x - 16.0, bottom),
@@ -546,6 +911,179 @@ pub fn draw(p: &mut Painter, hits: &mut Hits<Hit>, t: &Theater, selected: usize,
         Vec2::new(min.x + 24.0, bottom + 17.0),
         max.x - min.x - 48.0,
     );
+}
+
+/// Which system you're in, at the view's top left.
+fn here(p: &mut Painter, t: &Theater, min: Vec2) {
+    let mut style = TextStyle::LABEL;
+    style.color = theme::DIM;
+    p.text(
+        Vec2::new(min.x + 24.0, min.y + 22.0),
+        "YOU ARE IN",
+        &style,
+        Align::Left,
+    );
+    p.text(
+        Vec2::new(min.x + 24.0, min.y + 38.0),
+        &format!("{} SYSTEM", t.name),
+        &TextStyle::value(20.0),
+        Align::Left,
+    );
+    p.text(
+        Vec2::new(min.x + 24.0, min.y + 68.0),
+        &format!("CATALOGUE {:04} · TICK {}", t.system, t.tick),
+        &style,
+        Align::Left,
+    );
+}
+
+/// How much longer your ship fights here, right-aligned at `at`: its
+/// contract's ticks left (a battle each) and a bar of them, of its term.
+fn term(p: &mut Painter, ship: &Ship, at: Vec2) {
+    let mut style = TextStyle::LABEL;
+    style.color = theme::DIM;
+    p.text(at, "CONTRACT HERE", &style, Align::Right);
+    let left = match ship.ticks_left {
+        1 => "1 BATTLE LEFT".to_string(),
+        k => format!("UP TO {k} BATTLES LEFT"),
+    };
+    let mut big = TextStyle::value(20.0);
+    big.color = Faction::Company.ui();
+    p.text(at + Vec2::new(0.0, 16.0), &left, &big, Align::Right);
+    // A cell a tick, of its term: lit for those left.
+    let n = ship.term.clamp(1, 60) as usize;
+    let lit = (ship.ticks_left as usize).min(n);
+    let (cw, gap, ch) = (6.0, 2.0, 7.0);
+    let x0 = at.x - n as f32 * (cw + gap) + gap;
+    for i in 0..n {
+        let color = if i < lit {
+            with_alpha(Faction::Company.ui(), 0.9)
+        } else {
+            theme::FAINT
+        };
+        p.rect(
+            Vec2::new(x0 + i as f32 * (cw + gap), at.y + 48.0),
+            Vec2::new(cw, ch),
+            color,
+        );
+    }
+    let lost = (ship.lost.round().max(0.0)) as u32;
+    let cap = (ship.max_loss.round() as u32).max(1);
+    p.text(
+        at + Vec2::new(0.0, 64.0),
+        &format!("SOONER IF THE WORLD FALLS, OR AT {cap} HULLS LOST ({lost} SO FAR)"),
+        &style,
+        Align::Right,
+    );
+}
+
+/// What a transfer says over the view: where from and to, a route with
+/// the ship along it, and the contract it's going to.
+fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max: Vec2) {
+    let amber = Faction::Company.ui();
+    let mut style = TextStyle::LABEL;
+    style.color = amber;
+    let what = match leg {
+        Leg::Leave(_) => "CONTRACT DONE · LEAVING",
+        Leg::Jump(_) => "UNDER WAY",
+        Leg::Arrive(_) => "ARRIVING · NEW CONTRACT",
+        Leg::Move(_) => "NEW CONTRACT",
+    };
+    p.text(
+        Vec2::new(min.x + 24.0, min.y + 22.0),
+        what,
+        &style,
+        Align::Left,
+    );
+    let jumps = tr.jumps(t);
+    let world = |th: &Theater| {
+        th.ship
+            .as_ref()
+            .map_or(th.name.clone(), |s| planet_name(&th.name, s.over))
+    };
+    let employer = |th: &Theater| {
+        th.ship.as_ref().map_or(String::new(), |s| {
+            format!("{} OF {}", Faction::ALL[s.side].name(), s.realm)
+        })
+    };
+    // The route's ends: the systems for a jump, else whose contract.
+    let (a, b) = if jumps {
+        (
+            format!("{} SYSTEM", tr.from.name),
+            format!("{} SYSTEM", t.name),
+        )
+    } else {
+        (employer(&tr.from), employer(t))
+    };
+    let head = if jumps {
+        format!("{a}  \u{2192}  {b}")
+    } else if world(&tr.from) == world(t) {
+        format!("STAYING OVER {}", world(t))
+    } else {
+        format!("{}  \u{2192}  {}", world(&tr.from), world(t))
+    };
+    p.text(
+        Vec2::new(min.x + 24.0, min.y + 38.0),
+        &head,
+        &TextStyle::value(20.0),
+        Align::Left,
+    );
+    let mut dim = TextStyle::LABEL;
+    dim.color = theme::DIM;
+    if let Some(ship) = &t.ship {
+        let realm = Faction::ALL[ship.side];
+        let aboard = match &tr.from.ship {
+            Some(old) if old.id != ship.id => format!("ABOARD THE {} · ", ship.name),
+            _ => String::new(),
+        };
+        p.text(
+            Vec2::new(min.x + 24.0, min.y + 68.0),
+            &format!(
+                "{aboard}HIRED BY THE {} OF {} · UP TO {} BATTLES",
+                realm.name(),
+                ship.realm,
+                ship.ticks_left
+            ),
+            &dim,
+            Align::Left,
+        );
+    }
+
+    // The route, along the bottom: from, to, and the ship on its way.
+    let y = max.y - LEGEND_H * 0.5;
+    let (x0, x1) = (min.x + 40.0, max.x - 40.0);
+    let k = smooth(tr.progress(t));
+    let ship_x = x0 + (x1 - x0) * k;
+    p.line(
+        Vec2::new(x0, y),
+        Vec2::new(ship_x, y),
+        2.0,
+        with_alpha(amber, 0.8),
+    );
+    p.line(Vec2::new(ship_x, y), Vec2::new(x1, y), 1.0, theme::FAINT);
+    dot(p, Vec2::new(x0, y), 4.0, theme::DIM);
+    ring(p, Vec2::new(x1, y), 6.0, 1.5, amber);
+    p.text(Vec2::new(x0, y - 24.0), &a, &dim, Align::Left);
+    p.text(Vec2::new(x1, y - 24.0), &b, &dim, Align::Right);
+    ship_glyph(p, Vec2::new(ship_x, y), 0.5);
+}
+
+/// A jump's flash over the whole screen (`w` by `h`), at the cuts between
+/// its legs: under the panel, so it stays readable.
+pub fn veil(p: &mut Painter, t: &Theater, transfer: Option<&Transfer>, w: f32, h: f32) {
+    let Some(leg) = transfer.and_then(|tr| tr.leg(t)) else {
+        return;
+    };
+    let k = match leg {
+        Leg::Leave(u) => (u - 0.88) / 0.12,
+        Leg::Jump(u) => (1.0 - u / 0.12).max((u - 0.88) / 0.12),
+        Leg::Arrive(u) => 1.0 - u / 0.12,
+        Leg::Move(_) => 0.0,
+    }
+    .clamp(0.0, 1.0);
+    if k > 0.0 {
+        p.rect(Vec2::ZERO, Vec2::new(w, h), [0.88, 0.92, 1.0, 0.9 * k]);
+    }
 }
 
 /// A company ship at `at`, `k` times its size: a long hull, bow to the
@@ -744,5 +1282,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The parked heading is the one the ship always had: bow toward the star.
+    #[test]
+    fn parked_yaw_is_bow_to_the_star() {
+        let want = Quat::from_rotation_y(PI + 0.45);
+        assert!(PARKED_YAW.dot(want).abs() > 0.99999);
+        let bow = PARKED_YAW * Vec3::X;
+        assert!(bow.x < -0.8, "{bow}");
+    }
+
+    /// A transfer is a change of ship, contract or system, not of tick.
+    #[test]
+    fn what_counts_as_a_transfer() {
+        let mut a = theater(2);
+        a.ship = Some(Ship {
+            id: 1,
+            name: "TEST".into(),
+            over: 0,
+            crystals: 0.0,
+            aboard: 0.0,
+            realm: "R".into(),
+            side: 0,
+            upfront: 0.0,
+            bonus: 0.0,
+            field: 0.0,
+            lost: 0.0,
+            max_loss: 1.0,
+            ticks_left: 10,
+            term: 30,
+            signed: 4,
+            news: None,
+        });
+        let mut b = a.clone();
+        b.tick += 3;
+        b.ship.as_mut().unwrap().ticks_left = 7;
+        assert!(!Transfer::between(&a, &b));
+        let mut c = b.clone();
+        c.ship.as_mut().unwrap().id = 2;
+        assert!(Transfer::between(&a, &c));
+        let mut d = b.clone();
+        d.system = 8;
+        assert!(Transfer::between(&a, &d));
+        assert!(!Transfer::between(&theater(2), &d), "not from no ship");
+        let tr = Transfer::new(a.clone());
+        assert!(tr.jumps(&d) && !tr.jumps(&c));
+        assert!(tr.length(&d) > tr.length(&c));
     }
 }

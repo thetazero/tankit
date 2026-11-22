@@ -19,6 +19,7 @@ use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
+use crate::theater_view::Transfer;
 use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme};
@@ -264,6 +265,10 @@ pub struct Menu {
     cursor: usize,
     /// The theater on the missions screen (the app keeps it up to date).
     theater: Option<Theater>,
+    /// The last theater shown aboard a ship, to tell a move onto the next
+    /// contract by; and that move, while it plays over the system view.
+    seen: Option<Theater>,
+    transfer: Option<Transfer>,
     /// Index into the theater's contested sites.
     site: usize,
     setting: usize,
@@ -276,6 +281,8 @@ impl Menu {
             screen: Screen::Main,
             cursor: 0,
             theater: None,
+            seen: None,
+            transfer: None,
             site: 0,
             setting: 0,
             controls: Controls::default(),
@@ -372,7 +379,31 @@ impl Menu {
         if t.as_ref().is_none_or(|t| t.contested.is_empty()) && self.screen == Screen::Site {
             self.screen = Screen::Missions;
         }
+        // Onto the next contract (another ship's, or in another system):
+        // the move plays over the system view.
+        if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
+            if let Some(old) = self.seen.take().filter(|old| Transfer::between(old, new)) {
+                self.transfer = Some(Transfer::new(old));
+            }
+            self.seen = Some(new.clone());
+        }
         self.theater = t;
+    }
+
+    /// `dt` seconds on: a transfer plays on while the system view shows.
+    pub fn advance(&mut self, dt: f32) {
+        let Some(t) = self.system() else { return };
+        let done = self.transfer.as_ref().is_some_and(|tr| tr.leg(t).is_none());
+        if done {
+            self.transfer = None;
+        } else if let Some(tr) = &mut self.transfer {
+            tr.age += dt;
+        }
+    }
+
+    /// The move onto the next contract, while it plays.
+    pub fn transfer(&self) -> Option<&Transfer> {
+        self.transfer.as_ref()
     }
 
     /// Select contested site `k` (on the missions or site screen).
@@ -460,7 +491,10 @@ impl Menu {
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
         match self.system() {
-            Some(_) => garage::backdrop_fading(&mut p, h, 50.0),
+            Some(t) => {
+                crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
+                garage::backdrop_fading(&mut p, h, 50.0);
+            }
             None => garage::backdrop(&mut p, h),
         }
         let x = PANEL_X;
@@ -495,7 +529,15 @@ impl Menu {
             Screen::Missions => match &self.theater {
                 Some(t) if !t.contested.is_empty() => {
                     self.draw_theater(&mut p, &mut hits, Vec2::new(x, y), t);
-                    crate::theater_view::draw(&mut p, &mut hits, t, self.site, w, h);
+                    crate::theater_view::draw(
+                        &mut p,
+                        &mut hits,
+                        t,
+                        self.transfer.as_ref(),
+                        self.site,
+                        w,
+                        h,
+                    );
                     "Enter  open site     ↑ ↓  site     Esc  back"
                 }
                 _ => {
@@ -2108,5 +2150,61 @@ mod tests {
         let silent = Settings { volume: 0, ..s };
         assert_eq!(apply(silent, Change::Volume(-1)).volume, 0);
         assert_eq!(apply(silent, Change::CycleVolume).volume, 1);
+    }
+
+    /// Moving onto the next contract plays a transfer over the system view
+    /// (#348): to another system it jumps, else it moves; a new tick on the
+    /// same contract plays nothing. It ends on its own.
+    #[test]
+    fn next_contract_plays_a_transfer() {
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        let t = theater(Faction::Imperium).unwrap();
+        m.set_theater(Some(t.clone()));
+        assert!(m.transfer().is_none());
+
+        // The same contract, a tick on: nothing.
+        let mut later = t.clone();
+        later.tick += 1;
+        m.set_theater(Some(later.clone()));
+        assert!(m.transfer().is_none());
+
+        // A new contract in the same system: a move.
+        let mut next = later.clone();
+        next.ship.as_mut().unwrap().signed += 5;
+        m.set_theater(Some(next.clone()));
+        let tr = m.transfer().expect("a transfer");
+        assert!(!tr.jumps(&next));
+        assert!(matches!(
+            tr.leg(&next),
+            Some(crate::theater_view::Leg::Move(_))
+        ));
+        for _ in 0..1000 {
+            m.advance(0.01);
+        }
+        assert!(m.transfer().is_none(), "it ends");
+
+        // Through a spell between contracts, to another system: a jump.
+        m.set_theater(None);
+        let mut far = next.clone();
+        far.system += 1;
+        m.set_theater(Some(far.clone()));
+        let tr = m.transfer().expect("a transfer");
+        assert!(tr.jumps(&far));
+        let legs: Vec<_> = (0..600)
+            .filter_map(|k| {
+                let mut tr = tr.clone();
+                tr.age = k as f32 * 0.01;
+                tr.leg(&far)
+            })
+            .map(|l| std::mem::discriminant(&l))
+            .collect::<Vec<_>>();
+        let mut order = legs.clone();
+        order.dedup();
+        use crate::theater_view::Leg;
+        assert_eq!(
+            order,
+            [Leg::Leave(0.0), Leg::Jump(0.0), Leg::Arrive(0.0)].map(|l| std::mem::discriminant(&l))
+        );
     }
 }

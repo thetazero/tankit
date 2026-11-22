@@ -1173,6 +1173,7 @@ impl App {
         self.player_alive = alive;
         if self.mode == Mode::Menu && !self.garage.is_open() {
             self.menu_time += dt;
+            self.menu.advance(dt);
             self.follow_backdrop(dt);
             self.sync_crew();
         }
@@ -1188,7 +1189,7 @@ impl App {
             .then(|| self.menu.system())
             .flatten();
         if let (Some(r), Some(art), Some(t)) = (&mut self.renderer, &mut self.system, system) {
-            art.show(r, t);
+            art.show(r, theater_view::on_screen(t, self.menu.transfer()));
         }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
@@ -1242,7 +1243,7 @@ impl App {
                     view,
                 )
             } else if let (Some(t), Some(sys)) = (system, &self.system) {
-                theater_view::scene(sys, t, self.menu_time, theater_view::camera(t, w / h))
+                theater_view::scene(sys, t, self.menu.transfer(), self.menu_time, w / h)
             } else {
                 let mut scene = scene::build(&self.game.world, &tanks, art, camera);
                 self.game.effect_instances(alpha, &mut scene.instances);
