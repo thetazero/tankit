@@ -105,6 +105,7 @@ tankit [OPTIONS]
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
+  --screen pause --garage (with --shot) the garage opened from the pause box, the match frozen under it
   --debug                 (with --shot) debug mode on: FPS counter
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
                           screen and its respawn countdown
@@ -1049,13 +1050,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     hud::Ledger::before(&profile, &game, 0, false),
                 )
                 .verts;
+            // Paused, the box is under the garage (opened from it, with --garage), as in the game.
+            let ui = if args.screen == Some(Screen::Pause) {
+                let mut ui = menu::dim(ui);
+                ui.extend(menu::Pause::new().draw(&profile, game.renown, w, h).verts);
+                ui
+            } else {
+                ui
+            };
             frame.ui = garage.overlay(ui, &driven, equipped, &profile, w, h).verts;
-            if args.screen == Some(Screen::Pause) {
-                frame.ui = menu::dim(std::mem::take(&mut frame.ui));
-                frame
-                    .ui
-                    .extend(menu::Pause::new().draw(&profile, game.renown, w, h).verts);
-            }
             if profile.settings.debug {
                 frame.ui.extend(hud::fps_counter(0.0, w, h));
             }

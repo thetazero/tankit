@@ -1051,13 +1051,17 @@ fn prize(p: &mut Painter, at: Vec2, part: Option<Part>, profile: &Profile) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PauseAction {
     Resume,
+    /// Open the garage over the frozen match: what you pick there is what you
+    /// respawn in next.
+    Garage,
     Setting(Change),
     ExitToMenu,
     Quit,
 }
 
-const PAUSE_ITEMS: [Item<'static>; 4] = [
+const PAUSE_ITEMS: [Item<'static>; 5] = [
     Item::Opens("RESUME"),
+    Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
     Item::Leaves("EXIT TO MENU", "ENDS THE MATCH"),
     Item::Leaves("QUIT", "CLOSES THE GAME"),
@@ -1114,8 +1118,9 @@ impl Pause {
             Nav::Left | Nav::Right => {}
             Nav::Select => match self.cursor {
                 0 => return Some(PauseAction::Resume),
-                1 => self.settings = Some(0),
-                2 => return Some(PauseAction::ExitToMenu),
+                1 => return Some(PauseAction::Garage),
+                2 => self.settings = Some(0),
+                3 => return Some(PauseAction::ExitToMenu),
                 _ => return Some(PauseAction::Quit),
             },
         }
@@ -1172,7 +1177,7 @@ impl Pause {
         let tall = 90.0 + CONTROLS_H + 44.0;
         let size = Vec2::new(
             PANEL_W + 48.0,
-            if self.controls.is_some() { tall } else { 350.0 },
+            if self.controls.is_some() { tall } else { 380.0 },
         );
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
         p.rect(min, size, theme::PANEL);
@@ -1764,6 +1769,8 @@ mod tests {
         assert_eq!(p.input(Nav::Back), Some(PauseAction::Resume));
         assert_eq!(p.input(Nav::Select), Some(PauseAction::Resume));
         p.input(Nav::Down);
+        assert_eq!(p.input(Nav::Select), Some(PauseAction::Garage));
+        p.input(Nav::Down);
         assert_eq!(p.input(Nav::Select), None);
         assert_eq!(
             p.input(Nav::Select),
@@ -1792,6 +1799,7 @@ mod tests {
         let mut profile = Profile::in_memory();
         let mut m = Menu::new();
         let mut settings = Pause::new();
+        settings.input(Nav::Down);
         settings.input(Nav::Down);
         settings.input(Nav::Select);
         let mut controls = Pause::new();
@@ -1909,10 +1917,14 @@ mod tests {
             p.click(id, at, &profile.settings)
         };
         assert_eq!(
-            click(&mut p, Hit::Row(2)),
+            click(&mut p, Hit::Row(3)),
             (Nav::Select, Some(PauseAction::ExitToMenu))
         );
-        assert_eq!(click(&mut p, Hit::Row(1)), (Nav::Select, None));
+        assert_eq!(
+            click(&mut p, Hit::Row(1)),
+            (Nav::Select, Some(PauseAction::Garage))
+        );
+        assert_eq!(click(&mut p, Hit::Row(2)), (Nav::Select, None));
         assert_eq!(
             click(&mut p, Hit::Row(0)).1,
             Some(PauseAction::Setting(Change::Toggle(0)))
@@ -1974,6 +1986,7 @@ mod tests {
     #[test]
     fn rebinding_from_the_pause_box() {
         let mut p = Pause::new();
+        p.input(Nav::Down);
         p.input(Nav::Down);
         p.input(Nav::Select);
         p.input(Nav::Up);
