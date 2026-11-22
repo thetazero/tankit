@@ -1163,7 +1163,7 @@ fn berths(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, ships: &[Berth], pick
             &format!(
                 "Over {} · {} hulls · {} crystal",
                 title(&b.system),
-                n(b.hulls),
+                n(b.hulls as f32),
                 n(b.crystals)
             ),
             theme::DIM,
@@ -2065,7 +2065,7 @@ mod tests {
             id,
             name: ship_name(id),
             system: system_name(1),
-            hulls: 20.0,
+            hulls: 20,
             crystals: 300.0,
             work: None,
         };
@@ -2106,7 +2106,7 @@ mod tests {
             id,
             name: ship_name(id),
             system: system_name(1),
-            hulls: 20.0,
+            hulls: 20,
             crystals: 300.0,
             work: None,
         };
@@ -2628,7 +2628,7 @@ mod tests {
         if a.id == b.id {
             let e = *m.summary().expect("the summary of the contract that ended");
             assert_eq!((e.ship, e.signed), (a.id, a.signed));
-            assert!(e.tick >= e.signed && e.lost <= e.committed + 1e-3);
+            assert!(e.tick >= e.signed && e.lost <= e.committed);
             for _ in 0..1000 {
                 m.advance(0.01);
             }
@@ -2667,8 +2667,8 @@ mod tests {
             tick: old.signed + 4,
             outcome: Outcome::Spent,
             defend: false,
-            committed: 60.0,
-            lost: 58.0,
+            committed: 60,
+            lost: 58,
             own: Own::default(),
         };
         {

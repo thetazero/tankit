@@ -59,7 +59,7 @@ pub struct Company {
     pub at: u32,
     pub crystals: f32,
     /// Hulls aboard (not those out on a contract: see `Contract::field`).
-    pub hulls: f32,
+    pub hulls: u32,
     /// What it asks over its costs, as a fraction of them.
     pub margin: f32,
     pub contract: Option<Contract>,
@@ -84,10 +84,10 @@ pub struct Contract {
     pub upfront: f32,
     pub bonus: f32,
     /// The hulls it committed to the contract, all told.
-    pub committed: f32,
+    pub committed: u32,
     /// Its hulls in the fight now, and lost so far.
-    pub field: f32,
-    pub lost: f32,
+    pub field: u32,
+    pub lost: u32,
     /// Hired to hold one of the employer's own worlds, not to take one.
     pub defend: bool,
 }
@@ -143,7 +143,7 @@ struct Offer {
     s: u32,
     side: u8,
     seller: u32,
-    hulls: f32,
+    hulls: u32,
     /// What the seller gets a hull.
     ask: f32,
     /// What a hull costs the buyer, there: the ask plus its FTL.
@@ -155,8 +155,8 @@ struct Offer {
 struct Quote {
     company: usize,
     /// Hulls it commits, of them bought.
-    hulls: f32,
-    bought: f32,
+    hulls: u32,
+    bought: u32,
     /// What it pays out (hulls bought, FTL).
     cost: f32,
     upfront: f32,
@@ -166,8 +166,8 @@ struct Quote {
 impl Company {
     /// What it's worth: its crystal, and its hulls at the going price.
     pub fn capital(&self, hull_price: f32) -> f32 {
-        let field = self.contract.map_or(0.0, |c| c.field);
-        self.crystals + (self.hulls + field) * hull_price
+        let field = self.contract.map_or(0, |c| c.field);
+        self.crystals + (self.hulls + field) as f32 * hull_price
     }
 }
 
@@ -178,11 +178,11 @@ impl Galaxy {
         for _ in 0..n {
             let at = self.rng.index(self.systems.len()) as u32;
             let crystals = self.rules.merc_capital * self.rng.range(0.5, 1.5);
-            self.new_company(at, crystals, 0.0);
+            self.new_company(at, crystals, 0);
         }
     }
 
-    fn new_company(&mut self, at: u32, crystals: f32, hulls: f32) -> usize {
+    fn new_company(&mut self, at: u32, crystals: f32, hulls: u32) -> usize {
         self.next_company += 1;
         self.companies.push(Company {
             at,
@@ -198,8 +198,8 @@ impl Galaxy {
     }
 
     /// Crystal to move a ship carrying `hulls` hulls `d` light years.
-    pub(super) fn voyage(&self, hulls: f32, d: f32) -> f32 {
-        d / FTL_RANGE * (self.rules.ship_cost + hulls * self.rules.ftl_cost)
+    pub(super) fn voyage(&self, hulls: u32, d: f32) -> f32 {
+        d / FTL_RANGE * (self.rules.ship_cost + hulls as f32 * self.rules.ftl_cost)
     }
 
     /// System `t`'s worth to side `f` over the horizon: what its production
@@ -242,7 +242,7 @@ impl Galaxy {
             }
             // Short of the garrison it levels off at, it asks more.
             let level = self.production(s)[g] / self.rules.wear;
-            let ask = self.rules.hull_price * (level / sys.hulls[g].max(1e-3)).clamp(0.5, 4.0);
+            let ask = self.rules.hull_price * (level / sys.hulls[g].max(1) as f32).clamp(0.5, 4.0);
             out.push(Offer {
                 s: s as u32,
                 side: g as u8,
@@ -264,7 +264,7 @@ impl Galaxy {
     /// Realm `r` (of side `f`) needs `need` more hulls to go into system `t`
     /// (to take it, or to hold it: `defend`): it hires a company if one will
     /// do it for a price worth paying. Returns whether it did.
-    pub(crate) fn hire(&mut self, t: usize, f: usize, r: u32, need: f32, defend: bool) -> bool {
+    pub(crate) fn hire(&mut self, t: usize, f: usize, r: u32, need: u32, defend: bool) -> bool {
         if self.companies.is_empty()
             || self.companies.iter().any(|c| {
                 c.contract
@@ -307,26 +307,26 @@ impl Galaxy {
         for c in near {
             let co = &self.companies[c];
             // Buy what it lacks, cheapest first.
-            let mut short = (need - co.hulls).max(0.0);
-            let (mut bought, mut spend) = (0.0, 0.0);
+            let mut short = need.saturating_sub(co.hulls);
+            let (mut bought, mut spend) = (0, 0.0);
             for o in &offers {
-                if short <= 0.0 {
+                if short == 0 {
                     break;
                 }
                 let m = o.hulls.min(short);
                 bought += m;
-                spend += m * o.price;
+                spend += m as f32 * o.price;
                 short -= m;
             }
             let hulls = co.hulls.min(need) + bought;
-            if hulls < need * 0.75 || hulls < MIN_SEND {
+            if (hulls as f32) < need as f32 * 0.75 || hulls < MIN_SEND {
                 continue;
             }
             let d = self.systems[co.at as usize].pos.distance(pos);
             let cost = spend + self.voyage(co.hulls, d);
             // What a hull it might lose would cost it to replace.
-            let unit = if bought > 0.0 {
-                spend / bought
+            let unit = if bought > 0 {
+                spend / bought as f32
             } else {
                 self.rules.hull_price
             };
@@ -337,7 +337,7 @@ impl Galaxy {
                 bought,
                 cost,
                 upfront: cost * up,
-                bonus: self.rules.merc_bonus * hulls * unit * up,
+                bonus: self.rules.merc_bonus * hulls as f32 * unit * up,
             };
             // It has to be able to pay its way there (the upfront helps).
             if cost > co.crystals + quote.upfront
@@ -355,7 +355,7 @@ impl Galaxy {
         self.realms[r as usize].crystals -= q.upfront;
         let mut short = q.bought;
         for o in &offers {
-            if short <= 0.0 {
+            if short == 0 {
                 break;
             }
             let m = o.hulls.min(short);
@@ -363,8 +363,9 @@ impl Galaxy {
             let (s, g) = (o.s as usize, o.side as usize);
             self.spare[s][g] -= m;
             self.systems[s].hulls[g] -= m;
-            self.realms[o.seller as usize].crystals += m * o.ask;
-            self.books.sold += (m * o.ask) as f64;
+            let paid = m as f32 * o.ask;
+            self.realms[o.seller as usize].crystals += paid;
+            self.books.sold += paid as f64;
         }
         let land = q.hulls;
         let co = &mut self.companies[q.company];
@@ -383,7 +384,7 @@ impl Galaxy {
             bonus: q.bonus,
             committed: q.hulls,
             field: land,
-            lost: 0.0,
+            lost: 0,
             defend,
         });
         self.systems[t].hulls[f] += land;
@@ -428,8 +429,9 @@ impl Galaxy {
         let wear = self.rules.wear;
         self.collect_debts();
         for c in 0..self.companies.len() {
+            let worn = self.rng.binomial(self.companies[c].hulls, wear);
             let co = &mut self.companies[c];
-            co.hulls *= 1.0 - wear;
+            co.hulls -= worn;
             let Some(mut k) = co.contract else {
                 co.margin = (co.margin * (1.0 - self.rules.merc_haggle)).max(self.rules.merc_floor);
                 continue;
@@ -438,8 +440,8 @@ impl Galaxy {
             // Its hulls there wear like the rest of its side's (they took
             // their share of the battle's losses in it: `Galaxy::lose`).
             let before = k.field;
-            k.field *= 1.0 - wear;
-            k.field = k.field.min(self.systems[t].hulls[f]).max(0.0);
+            let worn = self.rng.binomial(k.field, wear);
+            k.field = (k.field - worn).min(self.systems[t].hulls[f]);
             // Worn out or shot down, a hull gone is a hull lost: what it
             // committed is what it's lost plus what it has left (#429).
             k.lost += before - k.field;
@@ -464,7 +466,7 @@ impl Galaxy {
             // Spent: every hull it committed is gone (#402, #429). Not
             // most of them: a company that commits x hulls fights with all
             // x, down to the last.
-            let broken = k.field < 0.5;
+            let broken = k.field == 0;
             let expired = self.tick >= k.signed + self.rules.merc_term as u64;
             if !(won || broken || expired || gone || fell) {
                 self.companies[c].contract = Some(k);
@@ -527,7 +529,7 @@ impl Galaxy {
                 self.ended.drain(..extra);
             }
             // Back aboard, what's left.
-            let back = k.field.min(self.systems[t].hulls[f]).max(0.0);
+            let back = k.field.min(self.systems[t].hulls[f]);
             self.systems[t].hulls[f] -= back;
             let co = &mut self.companies[c];
             co.hulls += back;
@@ -548,7 +550,7 @@ impl Galaxy {
         for c in 0..n {
             let co = self.companies[c];
             if co.contract.is_none() && co.capital(price) > self.rules.merc_split {
-                let (crystals, hulls) = (co.crystals / 2.0, co.hulls / 2.0);
+                let (crystals, hulls) = (co.crystals / 2.0, co.hulls / 2);
                 self.companies[c].crystals -= crystals;
                 self.companies[c].hulls -= hulls;
                 let new = self.new_company(co.at, crystals, hulls);
@@ -591,7 +593,7 @@ impl Galaxy {
             let (crystals, hulls) = if fare <= co.crystals {
                 (co.crystals - fare, co.hulls)
             } else {
-                (co.crystals, 0.0)
+                (co.crystals, 0)
             };
             self.companies[o].crystals += crystals;
             self.companies[o].hulls += hulls;

@@ -50,7 +50,7 @@ pub struct Theater {
     pub employer: usize,
     pub planets: u8,
     /// Each side's hulls here, hulls its yards here build a tick, and sites held.
-    pub hulls: [f32; SIDES],
+    pub hulls: [u32; SIDES],
     pub built: [f32; SIDES],
     pub held: [u8; SIDES],
     /// Every site in the system, in the galaxy's order.
@@ -86,7 +86,7 @@ pub struct Ship {
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
     /// Its hulls still committed to the contract (in the fight), and of them yours alone (#385): left, of how many.
-    pub committed: f32,
+    pub committed: u32,
     pub own: Own,
     /// Your company's last few ended contracts, newest last (#414).
     pub ended: Vec<Ended>,
@@ -139,8 +139,10 @@ pub struct Ended {
     pub outcome: Outcome,
     pub defend: bool,
     /// Company hulls committed to the contract, and how many were lost.
-    pub committed: f32,
-    pub lost: f32,
+    #[serde(deserialize_with = "super::save::whole_hulls")]
+    pub committed: u32,
+    #[serde(deserialize_with = "super::save::whole_hulls")]
+    pub lost: u32,
     /// The player's own hulls on the contract (#385) at the end.
     pub own: Own,
 }
@@ -227,7 +229,7 @@ pub struct Berth {
     pub name: String,
     /// The system it's over.
     pub system: String,
-    pub hulls: f32,
+    pub hulls: u32,
     pub crystals: f32,
     /// On contract: what for (see `Work`).
     pub work: Option<Work>,
@@ -491,7 +493,7 @@ impl Theater {
         let mut out: Vec<usize> = (0..SIDES)
             .filter(|&f| self.hulls[f] >= AT_WAR || self.held[f] > 0)
             .collect();
-        out.sort_by(|&a, &b| self.hulls[b].total_cmp(&self.hulls[a]));
+        out.sort_by_key(|&a| std::cmp::Reverse(self.hulls[a]));
         out
     }
 }
@@ -622,7 +624,7 @@ impl Galaxy {
             side(ka)
                 .cmp(&side(kb))
                 .then(sites(ka).cmp(&sites(kb)))
-                .then(ka.field.total_cmp(&kb.field))
+                .then(ka.field.cmp(&kb.field))
                 .then(b.cmp(&a))
         });
         let Some(c) = best else { return };
@@ -653,7 +655,7 @@ impl Galaxy {
             id: co.id,
             name: ship_name(co.id),
             system: system_name(co.at as usize),
-            hulls: co.hulls + co.contract.map_or(0.0, |k| k.field),
+            hulls: co.hulls + co.contract.map_or(0, |k| k.field),
             crystals: co.crystals,
             work: co.contract.map(|k| Work {
                 side: k.side as usize,
@@ -673,7 +675,7 @@ impl Galaxy {
         let mut ships: Vec<usize> = self.berths().filter(|&c| Some(c) != mine).collect();
         let key = |c: usize| match here {
             Some(h) => self.systems[self.companies[c].at as usize].pos.distance(h),
-            None => -self.companies[c].contract.map_or(0.0, |k| k.field),
+            None => -(self.companies[c].contract.map_or(0, |k| k.field) as f32),
         };
         ships.sort_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)));
         ships.truncate(n);
@@ -771,7 +773,7 @@ impl Galaxy {
         match self.own {
             Some(o) if o.ship == ship && o.signed == k.signed => o,
             _ => {
-                let half = ((k.field).round().max(0.0) as u32).div_ceil(2);
+                let half = k.field.div_ceil(2);
                 let of = super::battle::own_hulls(rank).min(half);
                 Own {
                     ship,
@@ -874,7 +876,7 @@ impl Galaxy {
             ticks_left: 0,
             signed: shown.signed,
             news: None,
-            committed: 0.0,
+            committed: 0,
             own: Own::default(),
             ended: Vec::new(),
         });
@@ -901,7 +903,7 @@ impl Galaxy {
         }
         let strongest = (0..SIDES)
             .filter(|&g| present[g] && self.hostile(f, g))
-            .max_by(|&a, &b| sys.hulls[a].total_cmp(&sys.hulls[b]))
+            .max_by_key(|&a| sys.hulls[a])
             .unwrap_or((f + 1) % SIDES);
         let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(rank, c));
         let shield = crate::mission::for_shields();
@@ -1049,7 +1051,7 @@ mod tests {
                         .muster_crew(t.system, &sides, Some(s.index))
                         .expect("a battle with your company in it");
                     assert_eq!(b.crew, Some(id));
-                    assert!(b.mercs(0).round() >= 1.0);
+                    assert!(b.mercs(0) >= 1);
                 }
                 seen += 1;
             }
@@ -1136,7 +1138,7 @@ mod tests {
             .expect("an idle company");
         let id = g.companies[c].id;
         g.crew = Some(id);
-        (g.companies[c].crystals, g.companies[c].hulls) = (0.0, 0.0);
+        (g.companies[c].crystals, g.companies[c].hulls) = (0.0, 0);
         g.split_and_join();
         assert!(g.company(id).is_none(), "it didn't join");
         assert_ne!(g.crew, Some(id));

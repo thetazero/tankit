@@ -53,7 +53,49 @@ impl Rng {
         (-2.0 * u.ln()).sqrt() * (std::f32::consts::TAU * v).cos()
     }
 
+    /// How many of `n` things, each one with chance `p`, come up: exactly
+    /// for a few dozen, by the normal approximation (rounded, clamped to
+    /// 0..=n) past that.
+    pub fn binomial(&mut self, n: u32, p: f32) -> u32 {
+        let p = p.clamp(0.0, 1.0);
+        if n <= 48 {
+            return (0..n).filter(|_| self.chance(p)).count() as u32;
+        }
+        let mean = n as f32 * p;
+        let sd = (mean * (1.0 - p)).sqrt();
+        (mean + sd * self.normal()).round().clamp(0.0, n as f32) as u32
+    }
+
     pub fn index(&mut self, len: usize) -> usize {
         (self.next_u64() % len.max(1) as u64) as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Rng;
+
+    /// A binomial draw is never more than its trials, and over many draws
+    /// averages `n p`, small `n` (exact) and large (approximated) alike.
+    #[test]
+    fn binomial_averages_n_p() {
+        let mut rng = Rng::new(3);
+        for (n, p) in [(10, 0.3), (40, 0.03), (500, 0.03), (2000, 0.5)] {
+            let draws = 4000;
+            let mut sum = 0u64;
+            for _ in 0..draws {
+                let k = rng.binomial(n, p);
+                assert!(k <= n);
+                sum += k as u64;
+            }
+            let mean = sum as f32 / draws as f32;
+            let want = n as f32 * p;
+            assert!(
+                (mean - want).abs() < 0.05 * want + 0.1,
+                "{n} {p}: {mean} vs {want}"
+            );
+        }
+        assert_eq!(rng.binomial(7, 0.0), 0);
+        assert_eq!(rng.binomial(7, 1.0), 7);
     }
 }

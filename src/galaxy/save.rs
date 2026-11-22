@@ -30,8 +30,13 @@ struct Saved {
     /// generators that are up).
     owners: Vec<u8>,
     down: Vec<u8>,
-    /// Each system's hulls, side by side: `SIDES` numbers a system.
+    /// Each system's hulls, side by side: `SIDES` numbers a system. Whole
+    /// hulls, kept as numbers that needn't be (older saves had
+    /// fractions of hulls: rounded on loading).
     hulls: Vec<f32>,
+    /// Each system's yards, likewise: how far along their next hulls are.
+    #[serde(default)]
+    building: Vec<f32>,
     /// Each system's realm for each side, likewise (`u32::MAX` for none).
     tags: Vec<u32>,
     /// Every realm slot. (A galaxy saved before realms has none of these,
@@ -119,7 +124,12 @@ impl Galaxy {
                     SiteKind::Production { .. } => 0,
                 })
                 .collect(),
-            hulls: self.systems.iter().flat_map(|s| s.hulls).collect(),
+            hulls: self
+                .systems
+                .iter()
+                .flat_map(|s| s.hulls.map(|h| h as f32))
+                .collect(),
+            building: self.systems.iter().flat_map(|s| s.building).collect(),
             tags: self.systems.iter().flat_map(|s| s.realms).collect(),
             realms: self
                 .realms
@@ -141,7 +151,7 @@ impl Galaxy {
                     .map(|c| SavedCompany {
                         at: c.at,
                         crystals: c.crystals,
-                        hulls: c.hulls,
+                        hulls: c.hulls as f32,
                         margin: c.margin,
                         founded: c.founded,
                         idle_since: Some(c.idle_since),
@@ -153,9 +163,9 @@ impl Galaxy {
                             signed: k.signed,
                             upfront: k.upfront,
                             bonus: k.bonus,
-                            committed: k.committed,
-                            field: k.field,
-                            lost: k.lost,
+                            committed: k.committed as f32,
+                            field: k.field as f32,
+                            lost: k.lost as f32,
                             defend: k.defend,
                         }),
                     })
@@ -210,8 +220,10 @@ impl Galaxy {
             "hulls of no realm"
         );
         for (i, sys) in g.systems.iter_mut().enumerate() {
-            sys.hulls
-                .copy_from_slice(&s.hulls[i * SIDES..(i + 1) * SIDES]);
+            for f in 0..SIDES {
+                sys.hulls[f] = whole(s.hulls[i * SIDES + f]);
+                sys.building[f] = s.building.get(i * SIDES + f).copied().unwrap_or(0.0);
+            }
             sys.realms
                 .copy_from_slice(&s.tags[i * SIDES..(i + 1) * SIDES]);
             sys.held = [0; SIDES];
@@ -249,7 +261,7 @@ impl Galaxy {
                 .map(|c| Company {
                     at: c.at,
                     crystals: c.crystals,
-                    hulls: c.hulls,
+                    hulls: whole(c.hulls),
                     margin: c.margin,
                     founded: c.founded,
                     idle_since: c.idle_since.unwrap_or(s.tick),
@@ -261,9 +273,9 @@ impl Galaxy {
                         signed: k.signed,
                         upfront: k.upfront,
                         bonus: k.bonus,
-                        committed: k.committed,
-                        field: k.field,
-                        lost: k.lost,
+                        committed: whole(k.committed),
+                        field: whole(k.field),
+                        lost: whole(k.lost),
                         defend: k.defend,
                     }),
                 })
@@ -424,8 +436,8 @@ mod tests {
             tick: 20,
             outcome: crate::galaxy::theater::Outcome::Fell,
             defend: true,
-            committed: 30.0,
-            lost: 21.5,
+            committed: 30,
+            lost: 21,
             own: Default::default(),
         }];
         let text = serde_json::to_string(&g.saved(REGION * 0.3)).unwrap();
@@ -464,4 +476,16 @@ mod tests {
         }
         assert_eq!(g.share, back.share);
     }
+}
+
+/// A count of hulls as saved: whole (an older save may have
+/// fractions, rounded).
+fn whole(h: f32) -> u32 {
+    h.max(0.0).round() as u32
+}
+
+/// Deserializes a count of hulls saved as a number that may have a
+/// fraction (older saves), rounded to whole hulls.
+pub(crate) fn whole_hulls<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    f32::deserialize(d).map(whole)
 }

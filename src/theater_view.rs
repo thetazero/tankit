@@ -973,11 +973,7 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
             b if b < 9.95 => format!("+{b:.1}"),
             b => format!("+{b:.0}"),
         };
-        let cells = [
-            format!("{}", t.hulls[f].round() as u32),
-            built,
-            t.held[f].to_string(),
-        ];
+        let cells = [format!("{}", t.hulls[f]), built, t.held[f].to_string()];
         for (c, text) in cols.iter().zip(&cells) {
             p.text(Vec2::new(at.x + c, y), text, &num, Align::Right);
         }
@@ -989,7 +985,7 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
 /// pip a hull, yours alone lit first (#385).
 fn hulls(p: &mut Painter, ship: &Ship, at: Vec2) {
     let amber = Faction::Company.ui();
-    let total = ship.committed.round().max(0.0) as u32;
+    let total = ship.committed;
     let yours = ship.own.left.min(total);
     let mut company = TextStyle::LABEL;
     company.color = theme::DIM;
@@ -1178,7 +1174,7 @@ fn summary(
         ),
         (
             "COMPANY HULLS LOST",
-            format!("{:.0} / {:.0}", e.lost.round(), e.committed.round()),
+            format!("{} / {}", e.lost, e.committed),
         ),
     ];
     if e.own.of > 0 {
@@ -1417,7 +1413,7 @@ mod tests {
             name: "TEST".into(),
             employer: 0,
             planets,
-            hulls: [0.0; 4],
+            hulls: [0; 4],
             built: [0.0; 4],
             held: [0; 4],
             sites: Vec::new(),
@@ -1479,7 +1475,7 @@ mod tests {
             ticks_left: 10,
             signed: 4,
             news: None,
-            committed: 0.0,
+            committed: 0,
             own: Default::default(),
             ended: Vec::new(),
         });
@@ -1512,7 +1508,7 @@ mod tests {
             ticks_left: 0,
             signed: 10,
             news: None,
-            committed: 0.0,
+            committed: 0,
             own: Default::default(),
             ended: Vec::new(),
         });
