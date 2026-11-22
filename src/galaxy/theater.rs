@@ -32,7 +32,6 @@
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
 use super::{AT_WAR, Galaxy, SIDES, Site, SiteKind};
-use crate::economy::{PARTS, Part};
 use crate::faction::Faction;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
@@ -396,16 +395,6 @@ pub fn planet_name(name: &str, p: u8) -> String {
     format!("{name} {}", NUMERALS[(p as usize).min(3)])
 }
 
-/// The schematic a win at site `site` (index into `Galaxy::sites`) steals
-/// from `enemy`: one of theirs you don't have yet, or none (crystals only).
-pub fn prize(enemy: Faction, site: usize, owns: impl Fn(Part) -> bool) -> Option<Part> {
-    let left: Vec<Part> = PARTS
-        .into_iter()
-        .filter(|&p| p.maker() == enemy && !p.starter() && !owns(p))
-        .collect();
-    (!left.is_empty()).then(|| left[site % left.len()])
-}
-
 impl SiteView {
     /// What it is, in caps: a shield generator, or what a production site makes most of.
     pub fn kind_name(&self) -> &'static str {
@@ -463,11 +452,6 @@ impl SiteView {
     /// A damaged generator (#422): its shield's down until it's working again.
     pub fn damaged(&self) -> bool {
         self.kind == SiteKind::Shield { damaged: true }
-    }
-
-    /// The schematic a win here steals (see `prize`).
-    pub fn prize(&self, owns: impl Fn(Part) -> bool) -> Option<Part> {
-        prize(Faction::ALL[self.enemy], self.index, owns)
     }
 }
 

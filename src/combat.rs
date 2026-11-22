@@ -864,10 +864,13 @@ pub struct Match {
     pub time_left: f32,
     pub phase: Phase,
     pub contract: Contract,
-    /// The mission's rating, in upgrade steps (0 is M0, 5 is M0.5).
+    /// The enemy's gear tier, in upgrade steps (#438): what the contract
+    /// pays more for (`economy::pay_factor`). 0 outside the galaxy's war.
     pub rating: u8,
-    /// The schematic this contract's win steals, if it offers one you don't have.
-    pub prize: Option<crate::economy::Part>,
+    /// What you'd reverse-engineered of every part when the round started
+    /// (#438): for the results screen to say which schematics your wrecks
+    /// make yours. None outside the war.
+    pub known: Option<crate::economy::Known>,
     /// The site, under the Hold contract.
     pub hold: Option<Hold>,
     /// The flag, its stands and the rounds, under the Raid contract.
@@ -1016,7 +1019,7 @@ impl Match {
             time_left: ROUND_TIME,
             contract: Contract::Attrition,
             rating: 0,
-            prize: None,
+            known: None,
             hold: None,
             raid: None,
             phase: Phase::Playing,
@@ -1351,20 +1354,6 @@ impl Match {
                     .sum()
             })
             .collect()
-    }
-
-    /// Rate the round (in upgrade steps; 5 is M0.5) before it starts: every bot
-    /// is refitted with gear drawn about that rating (see `Levels::rated`), and
-    /// the contract pays more (see `economy::pay_factor`).
-    pub fn set_rating(&mut self, rating: u8) {
-        self.rating = rating;
-        for i in 1..self.fighters.len() {
-            let levels = Levels::rated(rating, &mut self.rng);
-            let f = &mut self.fighters[i];
-            f.levels = levels;
-            f.health = levels.max_health(self.world.tanks[i].hull_kind);
-            self.fit_hull(i);
-        }
     }
 
     /// Switch to `contract` (before the round starts).

@@ -1,7 +1,7 @@
 //! Garage: from the main menu, or G mid-match to park and swing the camera
 //! round your tank. Pick the hull and turret for your next respawn, and
 //! upgrade parts with crystals. The tank you're driving doesn't change. Parts
-//! you don't have yet say which mission's win steals their schematic.
+//! you don't have yet say whose wrecks teach them, and how far you've got.
 //!
 //! Hulls and turrets each have a tab: a scrolling grid of cards with rendered
 //! thumbnails, grouped by maker. Browsing only previews: the orbit camera
@@ -69,7 +69,7 @@ const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
 /// What you'll deploy with.
 const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
-/// Parts whose schematic you haven't stolen yet: the padlock.
+/// Parts whose schematic isn't yours yet: the padlock.
 const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
 /// Open/close transition speed (1 / seconds).
 const BLEND_RATE: f32 = 2.5;
@@ -234,7 +234,7 @@ pub enum Input {
 pub enum Event {
     /// Queue this kit for the next respawn.
     Queue(Loadout),
-    /// E on a part you don't have: refused, it has to be stolen.
+    /// E on a part you don't have: refused, it has to be reverse-engineered.
     Locked(Part),
     Upgrade(Part),
 }
@@ -302,7 +302,7 @@ fn tab_parts(section: usize) -> Vec<Part> {
 }
 
 /// A card's status, right of its name: EQUIPPED or OWNED and the part's
-/// tier; nothing for a part you haven't stolen (its padlock says so).
+/// tier; nothing for a part that isn't yours yet (its padlock says so).
 fn card_tag(part: Part, equipped: bool, profile: &Profile) -> Option<(String, Rgba)> {
     let level = crate::economy::level_label(profile.levels.of(part));
     if equipped {
@@ -1151,7 +1151,7 @@ fn padlock(p: &mut Painter, at: Vec2, color: Rgba) {
 }
 
 /// What E does for `part` (equip it), and whether it can right now; for a part
-/// you don't have, where to steal it.
+/// you don't have, whose wrecks teach it and how far you've got (#438).
 fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bool) {
     if profile.owns(part) {
         if with_part(queued, part) == queued {
@@ -1160,13 +1160,14 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
             (format!("EQUIP {}", part.name()), true)
         }
     } else {
-        // Stolen in a theater, from a side you fight there (#311).
+        // Reverse-engineered from the wrecks of its makers' tanks.
         let maker = part.maker().name();
+        let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
         // The longest that fits the button.
         let text = [
-            format!("STEAL IT: BEAT THE {maker} IN A THEATER"),
-            format!("STEAL IT FROM THE {maker}"),
-            format!("BEAT THE {maker}"),
+            format!("WRECK THE {maker} TO LEARN IT · {pct}%"),
+            format!("WRECK THE {maker} · {pct}%"),
+            format!("{maker} WRECKS · {pct}%"),
         ]
         .into_iter()
         .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
@@ -1425,7 +1426,7 @@ mod tests {
     }
 
     #[test]
-    fn unowned_parts_preview_and_say_where_to_steal_them() {
+    fn unowned_parts_preview_and_say_whose_wrecks_teach_them() {
         let w = world();
         let mut p = Profile::in_memory();
         let mut g = Garage::new();
@@ -1438,13 +1439,13 @@ mod tests {
         let pelekys = Part::Turret(TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Locked(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
-        // The button says whose it is to steal: the side that makes it.
+        // The button says whose wrecks teach it: the side that makes it.
         let (text, can) = primary_action(pelekys, start, &p);
         assert!(!can);
         assert!(text.contains("IMPERIUM"), "{text}");
-        // Once stolen, E equips it and U upgrades it.
+        // Once reverse-engineered, E equips it and U upgrades it.
         p.crystals = 100_000;
-        assert!(p.steal(pelekys));
+        p.known.set(pelekys, 2.0);
         let kit = (HullKind::Kataphrakt, TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Queue(kit)));
         assert_eq!(

@@ -702,8 +702,8 @@ fn scoreboard(
     let mut y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = theme::PANEL;
-    let stolen = Payout::of(m).schematic.filter(|_| m.phase == Phase::Over);
-    let banner = if stolen.is_some() {
+    let learned = Payout::of(m).schematic.filter(|_| m.phase == Phase::Over);
+    let banner = if learned.is_some() {
         66.0 + STOLEN_H
     } else {
         66.0
@@ -741,15 +741,15 @@ fn scoreboard(
                 p.text(at, "DRAW", &s, Align::Center);
             }
         }
-        if let Some(part) = stolen {
-            // The mission's prize: its maker's schematic, now the Company's.
+        if let Some(part) = learned {
+            // A schematic your wrecks made yours (#438).
             let mut s = TextStyle::value(12.0);
             s.color = theme::HOT;
             emblem::tagged(
                 p,
                 Vec2::new(top.x, y + 56.0),
                 part.maker(),
-                &format!("SCHEMATIC STOLEN · {}", part.name()),
+                &format!("SCHEMATIC REVERSE-ENGINEERED · {}", part.name()),
                 &s,
                 Align::Center,
             );
@@ -1082,7 +1082,7 @@ fn hold_color(m: &Match, c: Control) -> Rgba {
 const RESULTS_DELAY: f32 = 0.6;
 /// Height of the renown and crystal blocks under the tables.
 const RESULTS_H: f32 = 84.0;
-/// The line under the winner saying which schematic you stole.
+/// The line under the winner saying which schematic you reverse-engineered.
 const STOLEN_H: f32 = 26.0;
 
 /// Renown: the bar fills from where you stood over this long.
