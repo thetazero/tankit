@@ -41,8 +41,8 @@ impl MineStyle for Ithessar {
         d.plasma_lamp(at, drop, size);
     }
 
-    fn borer(&self, d: &mut Dig, rng: &mut Rng) {
-        d.plasma_borer(rng);
+    fn borer(&self, d: &mut Dig, beam: (Vec3, Vec3, f32), rng: &mut Rng) {
+        d.plasma_borer(beam, rng);
     }
 
     fn rail_car(&self, d: &mut Dig, at: Vec2, yaw: f32, roll: f32, loco: bool) {
@@ -65,9 +65,8 @@ impl MineStyle for Ithessar {
 impl Dig<'_> {
     /// The plasma borer, braced on the bay's floor, its beam held on into
     /// the bore it's cutting; the power it draws held in a core behind it.
-    fn plasma_borer(&mut self, rng: &mut Rng) {
-        let lay = self.l;
-        let (from, to, radius) = lay.beam;
+    fn plasma_borer(&mut self, beam: (Vec3, Vec3, f32), rng: &mut Rng) {
+        let (from, to, radius) = beam;
         self.beams.push(crate::map::Beam { from, to, radius });
         let dir = (to - from).normalize();
         let rig = Rig {

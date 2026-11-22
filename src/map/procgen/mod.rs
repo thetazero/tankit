@@ -364,6 +364,105 @@ impl Map {
         self.atmosphere.wind.x = -self.atmosphere.wind.x;
     }
 
+    /// The map turned a quarter about its middle, counterclockwise seen
+    /// from above (x to z, z to `size - x`): everything on it, the sun and
+    /// wind with it. With `mirror_x`, a generated map laid out with its big
+    /// shapes along one edge can have them along any.
+    pub(in crate::map) fn turn(&mut self) {
+        let s = self.size;
+        let p2 = |p: &mut Vec2| *p = Vec2::new(p.y, s - p.x);
+        let p3 = |p: &mut glam::Vec3| *p = glam::Vec3::new(p.z, p.y, s - p.x);
+        let d3 = |d: &mut glam::Vec3| *d = glam::Vec3::new(d.z, d.y, -d.x);
+        let quarter = std::f32::consts::FRAC_PI_2;
+        for o in &mut self.oboxes {
+            p2(&mut o.center);
+            o.yaw += quarter;
+        }
+        for b in self.solids.iter_mut() {
+            let (lo, hi) = (b.min, b.max);
+            b.min = glam::Vec3::new(lo.z, lo.y, s - hi.x);
+            b.max = glam::Vec3::new(hi.z, hi.y, s - lo.x);
+        }
+        for b in self.boxes.iter_mut() {
+            let (lo, hi) = (b.min, b.max);
+            b.min = glam::Vec3::new(lo.z, lo.y, s - hi.x);
+            b.max = glam::Vec3::new(hi.z, hi.y, s - lo.x);
+        }
+        for w in &mut self.wedges {
+            let (lo, hi) = (w.min, w.max);
+            w.min = Vec2::new(lo.y, s - hi.x);
+            w.max = Vec2::new(hi.y, s - lo.x);
+            w.rise = match w.rise {
+                super::Rise::PosX => super::Rise::NegZ,
+                super::Rise::NegX => super::Rise::PosZ,
+                super::Rise::PosZ => super::Rise::PosX,
+                super::Rise::NegZ => super::Rise::NegX,
+            };
+        }
+        for c in &mut self.crystals {
+            p3(&mut c.base);
+            d3(&mut c.axis);
+        }
+        for c in &mut self.cores {
+            p3(&mut c.at);
+            c.prongs.iter_mut().for_each(p3);
+        }
+        for b in &mut self.beams {
+            p3(&mut b.from);
+            p3(&mut b.to);
+        }
+        for g in &mut self.glow_paths {
+            g.points.iter_mut().for_each(p3);
+        }
+        self.lights.iter_mut().for_each(|l| p3(&mut l.pos));
+        self.sounds.iter_mut().for_each(|e| p3(&mut e.at));
+        self.routes.iter_mut().flatten().for_each(p3);
+        for v in &mut self.sculpted.verts {
+            let (p, n) = (v.pos, v.normal);
+            v.pos = [p[2], p[1], s - p[0]];
+            v.normal = [n[2], n[1], -n[0]];
+        }
+        for t in [&mut self.terrain, &mut self.scenery_terrain]
+            .into_iter()
+            .flatten()
+        {
+            debug_assert!(t.nx == t.nz, "a terrain not square");
+            fn turn<T: Copy>(v: &mut Vec<T>, n: usize) {
+                if v.len() != n * n {
+                    return;
+                }
+                let old = v.clone();
+                for iz in 0..n {
+                    for ix in 0..n {
+                        v[iz * n + ix] = old[ix * n + (n - 1 - iz)];
+                    }
+                }
+            }
+            let n = t.nx;
+            turn(&mut t.heights, n);
+            turn(&mut t.tint, n);
+            turn(&mut t.normals, n);
+            t.normals.iter_mut().for_each(d3);
+        }
+        self.open_spots.iter_mut().for_each(p2);
+        self.bases.iter_mut().flatten().for_each(p2);
+        self.repair_spots.iter_mut().for_each(p2);
+        self.raid_stands.iter_mut().for_each(p2);
+        if let Some(h) = &mut self.hold_site {
+            p2(h);
+        }
+        for (p, view) in &mut self.vistas {
+            p2(p);
+            *view += quarter;
+        }
+        if let Some(y) = &mut self.spawn_yaw {
+            *y += quarter;
+        }
+        d3(&mut self.atmosphere.sun_dir);
+        let w = self.atmosphere.wind;
+        self.atmosphere.wind = Vec2::new(w.y, -w.x);
+    }
+
     /// The imperial city `seed` names (see `crate::city_spec`).
     pub fn city(seed: u64) -> Map {
         map(&crate::city_spec(seed))

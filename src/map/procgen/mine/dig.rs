@@ -31,6 +31,8 @@ use crate::tank::model::{self, Skin};
 /// Sandstone, in a few shades; the desert floor.
 pub(super) const STONE: Vec3 = Vec3::new(0.58, 0.34, 0.22);
 pub(super) const STONE_DARK: Vec3 = Vec3::new(0.4, 0.23, 0.15);
+/// The gap left in a butte's rock face for its ramp (m of rim).
+const BUTTE_GAP: f32 = 7.5;
 /// Marks the stand-ins for the blocks that used to stand along the Face.
 pub(super) const FACE_BLOCK: Vec3 = Vec3::new(0.123, 0.456, 0.789);
 pub(super) const STONE_PALE: Vec3 = Vec3::new(0.7, 0.5, 0.34);
@@ -158,7 +160,9 @@ pub fn greybox(l: &Layout, sides: &[Faction]) -> Map {
     let rng = &mut Rng::new(1);
     d.cave_walls(rng);
     d.roof_slabs();
-    d.rail_bridge();
+    for b in &l.bridges {
+        d.rail_bridge(b);
+    }
     for o in d.oboxes.iter_mut() {
         o.hidden = false;
         o.color = Vec3::new(0.55, 0.45, 0.35);
@@ -181,36 +185,50 @@ impl Dig<'_> {
         let mut rng = dice(0x5ea3_0213);
         self.mine_routes();
         let seam_rocks = self.seam(&mut rng);
-        self.crag_face(&mut rng);
+        for m in &lay.mines {
+            self.crag_face(m, &mut rng);
+        }
         self.crag_lid();
         self.rough_face(&mut rng);
-        self.scree_rocks(&mut rng);
+        for m in &lay.mines {
+            self.scree_rocks(m, &mut rng);
+        }
         let mut inside = dice(0x1a5e_0254);
         self.mine_caves(&mut inside);
-        self.pillared_hall(&mut inside);
-        self.breach(&mut rng);
-        self.box_cut(&mut rng);
+        for m in &lay.mines {
+            self.pillared_hall(m, &mut inside);
+            self.breach(m, &mut rng);
+            self.box_cut(m, &mut rng);
+        }
         self.railroad();
-        self.rail_bridge();
+        for b in &lay.bridges {
+            self.rail_bridge(b);
+        }
         self.wash_rocks(&mut rng, &seam_rocks);
         for &(p, h) in &seam_rocks {
             self.rock_at(p, h);
         }
-        let (p, yaw) = lay.wash_rig;
-        let g = self.ground_height(p.x, p.y);
-        self.cutting_rig(p, yaw, g);
-        let (p, yaw) = lay.hall_rig;
-        self.cutting_rig(p, yaw, 0.0);
-        self.borer_bay(&mut dice(0xb0e3_0254));
-        self.mine_supports();
-        self.mine_gear();
+        if let Some((p, yaw)) = lay.wash_rig {
+            let g = self.ground_height(p.x, p.y);
+            self.cutting_rig(p, yaw, g);
+        }
+        for (k, m) in lay.mines.iter().enumerate() {
+            let (p, yaw) = m.hall_rig;
+            self.cutting_rig(p, yaw, 0.0);
+            self.borer_bay(m, &mut dice(0xb0e3_0254 + k as u64));
+            self.mine_supports(m);
+            self.mine_gear(m);
+            self.headframe(m.headframe);
+        }
         self.tipple();
         self.ore_train(&mut rng);
-        self.headframe(lay.headframe);
         self.mesa_cover(&mut rng);
         self.dump_cover(&mut rng);
         self.warehouse(&mut rng);
         self.fins_and_hoodoos(&mut rng);
+        for b in &lay.buttes {
+            self.butte(b, &mut rng);
+        }
         self.flats_cover(&mut rng);
         self.boulder_fields(&mut dice(0xb01d_0281));
         self.fill_cover(&mut rng);
@@ -236,19 +254,24 @@ impl Dig<'_> {
             .filter(|c| c.lit && c.radius > 0.6)
             .map(|c| (Ambient::Crystal, c.base + c.axis * 0.35))
             .collect();
-        let (p, _) = lay.wash_rig;
-        found.push((Ambient::Machine, Vec3::new(p.x, -4.0, p.y)));
-        let (p, _) = lay.hall_rig;
-        found.push((Ambient::Machine, Vec3::new(p.x, 3.0, p.y)));
-        // The borer: its machinery, and the beam's roar on the rock.
-        let (from, to, _) = lay.beam;
-        found.push((Ambient::Machine, Vec3::new(from.x - 5.0, 3.0, from.z)));
-        found.push((Ambient::Core, to));
+        if let Some((p, _)) = lay.wash_rig {
+            found.push((Ambient::Machine, Vec3::new(p.x, -4.0, p.y)));
+        }
+        for m in &lay.mines {
+            let (p, _) = m.hall_rig;
+            found.push((Ambient::Machine, Vec3::new(p.x, 3.0, p.y)));
+            // The borer: its machinery, and the beam's roar on the rock.
+            let (from, to, _) = m.beam;
+            found.push((Ambient::Machine, Vec3::new(from.x - 5.0, 3.0, from.z)));
+            found.push((Ambient::Core, to));
+        }
         let (at, _) = lay.track_at(lay.track_len(3) + 18.0);
         let g = self.ground_height(at.x, at.y);
         found.push((Ambient::Hull, Vec3::new(at.x, g + 2.5, at.y)));
-        let (p, _) = line_at(&lay.wash, lay.bridge_s);
-        found.push((Ambient::River, Vec3::new(p.x, -6.5, p.y)));
+        for b in &lay.bridges {
+            let (p, _) = line_at(&lay.washes[b.wash].line, b.s);
+            found.push((Ambient::River, Vec3::new(p.x, -6.5, p.y)));
+        }
         for (kind, at) in found {
             self.sound(kind, at);
         }
@@ -290,7 +313,11 @@ impl Dig<'_> {
     fn pick_vistas(&self) -> Vec<(Vec2, f32)> {
         let lay = self.l;
         let sun = self.atmosphere.sun_dir.normalize();
-        let (mouth, end) = lay.bridge();
+        // (No wash under the Face: from out in front of the adit.)
+        let (mouth, end) = match lay.bridges.first() {
+            Some(b) => (b.a, b.b),
+            None => (lay.lines[0][1], lay.lines[0][2]),
+        };
         let view = |p: Vec2| {
             let d = mouth - p;
             (-d.x).atan2(-d.y)
@@ -342,21 +369,21 @@ impl Dig<'_> {
     /// The borer's bay at the new heading's end: the style's machine,
     /// braced on the floor, its beam held on into the bore it's cutting
     /// east; spoil, raw crystal and the gear round it.
-    fn borer_bay(&mut self, rng: &mut Rng) {
+    fn borer_bay(&mut self, m: &Mine, rng: &mut Rng) {
         let lay = self.l;
         let st = self.st;
-        st.borer(self, rng);
-        let (from, to, _) = lay.beam;
+        st.borer(self, m.beam, rng);
+        let (from, to, _) = m.beam;
         let dir = (to - from).normalize();
         let machine = Vec2::new(from.x - 5.8 * dir.x, from.z - 5.8 * dir.z);
         // Spoil from the bore, heaped either side of its mouth, clear of
         // the beam.
-        let (a, b) = lay.bay;
+        let (a, b) = m.bay;
         for &(x, z, size) in &[
-            (b.x - 2.2, lay.bore.0.y - 3.0, 1.3),
-            (b.x - 4.5, lay.bore.0.y - 4.6, 0.8),
-            (b.x - 2.0, lay.bore.1.y + 3.2, 1.2),
-            (b.x - 4.0, lay.bore.1.y + 5.0, 0.9),
+            (b.x - 2.2, m.bore.0.y - 3.0, 1.3),
+            (b.x - 4.5, m.bore.0.y - 4.6, 0.8),
+            (b.x - 2.0, m.bore.1.y + 3.2, 1.2),
+            (b.x - 4.0, m.bore.1.y + 5.0, 0.9),
         ] {
             self.rock_pile(rng, Vec2::new(x, z), size);
         }
@@ -377,7 +404,7 @@ impl Dig<'_> {
                 _ => (Vec2::new(rng.range(a.x + 2.0, b.x - 6.0), a.y), -Vec2::Y),
             };
             // Not over the way in from the heading.
-            if side == 2 && p.x > lay.heading.0.x - 1.0 && p.x < lay.heading.1.x + 1.0 {
+            if side == 2 && p.x > m.heading.0.x - 1.0 && p.x < m.heading.1.x + 1.0 {
                 continue;
             }
             // A cluster, growing out of the wall where the seam shows.
@@ -408,7 +435,7 @@ impl Dig<'_> {
             self.floodlight(Vec2::new(x, z), machine);
         }
         // An ore cart waiting by the way in, and cut crystal crated.
-        self.ore_cart(rng, Vec2::new(lay.heading.1.x + 1.6, a.y + 2.6), FRAC_PI_2);
+        self.ore_cart(rng, Vec2::new(m.heading.1.x + 1.6, a.y + 2.6), FRAC_PI_2);
         // Against the north wall between the columns, clear of them and of
         // the crystal in the corner.
         self.block_stack(Vec2::new(a.x + 9.5, b.y - 3.4), 0.05);
@@ -573,6 +600,9 @@ impl Dig<'_> {
         let lay = self.l;
         let mut rocks = Vec::new();
         let line = lay.seam.clone();
+        if line.is_empty() {
+            return rocks;
+        }
         // Rock along the seam on the wash floor, cover under the bridge and
         // either side of it.
         for (u, h) in [
@@ -584,7 +614,10 @@ impl Dig<'_> {
         ] {
             let (p, t) = line_at(&line, u);
             let p = p + t.perp() * rng.range(-2.5, 2.5);
-            if seg(p, lay.bridge().0, lay.bridge().1).0 < DECK_HALF + 2.0
+            if lay
+                .bridges
+                .iter()
+                .any(|b| seg(p, b.a, b.b).0 < DECK_HALF + 2.0)
                 || !self.room(p, 2.0)
                 || lay
                     .ramps
@@ -616,16 +649,16 @@ impl Dig<'_> {
     /// the Face (quarried in benches, the natural rock overhanging the cut),
     /// up its east side and in and out of the box cut's slot. Colliders
     /// along it, lintels over its mouths, crystal breaking out of its veins.
-    pub(super) fn crag_face(&mut self, rng: &mut Rng) {
+    pub(super) fn crag_face(&mut self, mine: &Mine, rng: &mut Rng) {
         let lay = self.l;
-        let feet = crag_feet(self);
+        let feet = crag_feet(self, mine);
         let mut mesh = std::mem::take(&mut self.sculpted);
         let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
         self.sculpted = mesh;
         self.face_colliders(&feet, &fronts);
         // Lintels over the mouths in the Face: rock from the face back to
         // where the tunnel's roof starts.
-        for (a, b) in lay.mouths() {
+        for (a, b) in mine.mouths() {
             let xc = (a.x + b.x) * 0.5;
             let z0 = lay.face(xc) - 0.1;
             let mut z1 = lay.face(xc);
@@ -653,7 +686,7 @@ impl Dig<'_> {
                 }
                 // Not low on the Face itself: the way along its foot is
                 // narrow between the wash and the rock.
-                let low_front = f.nrm.y < -0.3 && f.p.y < lay.front_limit() && y < f.floor + 4.0;
+                let low_front = f.nrm.y < -0.3 && f.p.y < mine.front_limit() && y < f.floor + 4.0;
                 if present > 0.5 && !low_front && rng.chance(0.18 + 0.25 * width) {
                     // Now and then a great mass of it, standing out.
                     let big = rng.chance(0.15) && y > f.floor + 5.0;
@@ -696,20 +729,92 @@ impl Dig<'_> {
         }
     }
 
+    /// A butte's sides, sculpted as rock like the Face's (colliders and
+    /// all: nothing drives up them), all round but where its ramp comes
+    /// down; blocks fallen at its foot.
+    pub(super) fn butte(&mut self, b: &Butte, rng: &mut Rng) {
+        let lay = self.l;
+        let ramp_at = b.ramp.y.atan2(b.ramp.x);
+        // Round from one side of the ramp to the other.
+        let gap = ((BUTTE_GAP) / b.rim(b.ramp)).min(0.9);
+        let n = (b.radius * TAU / 0.7) as usize;
+        let mut corners = Vec::new();
+        for k in 0..=n {
+            let a = ramp_at + gap + (TAU - 2.0 * gap) * k as f32 / n as f32;
+            let dir = Vec2::new(a.cos(), a.sin());
+            // Clockwise seen from above, so the face looks out.
+            corners.push(b.center + dir * (b.rim(dir) + 1.6));
+        }
+        corners.reverse();
+        let pts = crag::resample(&corners, 0.7, 1.2);
+        let mut feet = Vec::with_capacity(pts.len());
+        let mut along = b.center.x * 3.1;
+        for (i, &(p, dir)) in pts.iter().enumerate() {
+            if i > 0 {
+                along += p.distance(pts[i - 1].0);
+            }
+            let mut nrm = Vec2::new(dir.y, -dir.x);
+            if nrm.dot(p - b.center) < 0.0 {
+                nrm = -nrm;
+            }
+            let base = [1.0, 2.0, 3.0]
+                .iter()
+                .map(|&k| self.ground_height(p.x + nrm.x * k, p.y + nrm.y * k))
+                .fold(f32::NEG_INFINITY, f32::max);
+            feet.push(crag::Foot {
+                p,
+                nrm,
+                along,
+                floor: base,
+                lip: b.height + 0.4 * noise(along / 6.0, 31),
+                cut: -100.0,
+                mouth: false,
+                relief: 0.7,
+            });
+        }
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
+        self.sculpted = mesh;
+        self.face_colliders(&feet, &fronts);
+        // Blocks fallen off it.
+        for _ in 0..rng.int(3, 6) {
+            let a = rng.range(0.0, TAU);
+            let dir = Vec2::new(a.cos(), a.sin());
+            if dir.dot(b.ramp) > 0.7 {
+                continue;
+            }
+            let p = b.center + dir * (b.rim(dir) + rng.range(5.0, 8.0));
+            let size = rng.range(1.2, 2.2);
+            if !keep_clear(lay, p) {
+                self.boulder(rng, p, size, true);
+            }
+        }
+    }
+
     /// The Face out from under the Crag, sculpted as one rock face like the
     /// Crag's: the mesa's cliff, its lip at the mesa's top, hanging down to
     /// a lintel over the west adit and the breach, petering out where the
     /// mesa slopes down at its west end and into the scree.
     pub(super) fn mesa_face(&mut self) {
         let lay = self.l;
-        let mouths = [lay.caves[3], lay.caves[5]];
-        // The stretches: west of the Crag, between it and the scree, and
-        // east of the scree.
-        let spans = [
-            (-6.0, lay.crag_west(lay.face(lay.crag_w)) + 1.0),
-            (lay.crag_east(lay.face(lay.crag_e)) - 1.0, lay.scree.0 + 4.0),
-            (lay.scree.1 - 4.0, lay.size + 6.0),
-        ];
+        let mouths: Vec<Rect> = lay
+            .mines
+            .iter()
+            .flat_map(|m| [m.west_adit, m.breach])
+            .collect();
+        // The stretches: west of each Crag, between it and its scree, and on
+        // east of the last scree.
+        let mut spans = Vec::new();
+        let mut from = -6.0;
+        for m in &lay.mines {
+            spans.push((from, m.crag_west(lay.face(m.crag_w), lay.size) + 1.0));
+            spans.push((
+                m.crag_east(lay.face(m.crag_e), lay.size) - 1.0,
+                m.scree.0 + 4.0,
+            ));
+            from = m.scree.1 - 4.0;
+        }
+        spans.push((from, lay.size + 6.0));
         let mut mesh = std::mem::take(&mut self.sculpted);
         let mut all_feet = Vec::new();
         let mut all_fronts = Vec::new();
@@ -799,7 +904,7 @@ impl Dig<'_> {
     pub(super) fn crag_lid(&mut self) {
         let lay = self.l;
         let cell = 2.0;
-        let lid = |p: Vec2| lay.crag_depth(p) > 3.5 && !within(lay.box_cut, p, 2.5);
+        let lid = |p: Vec2| lay.crag_depth(p) > 3.5 && !lay.in_box_cut(p, 2.5);
         let m = &mut self.sculpted;
         let up = Vec3::Y.to_array();
         let mut iz = 0;
@@ -880,13 +985,13 @@ impl Dig<'_> {
     /// Steel sets holding up the tunnels' roofs: a post up each wall and a
     /// cap across under the arch, braced at its corners, a lamp under it;
     /// every 8 m, where both walls are rock (never across a way in).
-    pub(super) fn mine_supports(&mut self) {
+    pub(super) fn mine_supports(&mut self, m: &Mine) {
         let lay = self.l;
         let runs = [
-            (lay.adit, true, 4.0),
-            (lay.caves[3], true, 4.0),
-            (lay.caves[4], false, 6.0),
-            (lay.heading, true, 4.0),
+            (m.adit, true, 4.0),
+            (m.west_adit, true, 4.0),
+            (m.drift, false, 6.0),
+            (m.heading, true, 4.0),
         ];
         for ((a, b), along_z, first) in runs {
             let (lo, hi) = if along_z { (a.y, b.y) } else { (a.x, b.x) };
@@ -957,12 +1062,12 @@ impl Dig<'_> {
 
     /// The mine's gear along its tunnels: the vent duct down the adit, cable
     /// trays along the drift, cut crystal crated in the crosscut.
-    pub(super) fn mine_gear(&mut self) {
+    pub(super) fn mine_gear(&mut self, m: &Mine) {
         let lay = self.l;
         // The duct, high up the adit's west wall, in sections.
-        let x = lay.adit.0.x + 0.95;
-        let mut z = 158.0;
-        while z < 208.0 {
+        let x = m.adit.0.x + 0.95;
+        let mut z = lay.face(x) + 6.0;
+        while z < lay.size - 12.0 {
             let (a, b) = (Vec3::new(x, 5.0, z), Vec3::new(x, 5.0, z + 3.9));
             self.pipe(a, b, 0.42, RUST, Material::Rust, false);
             self.pipe(
@@ -976,7 +1081,7 @@ impl Dig<'_> {
             z += 4.0;
         }
         // Cable trays along the drift's north wall, plasma conduit in them.
-        let (a, b) = lay.caves[4];
+        let (a, b) = m.drift;
         let zt = b.y - 0.45;
         self.oboxes.push(OBox {
             center: Vec2::new((a.x + b.x) * 0.5, zt),
@@ -1001,7 +1106,7 @@ impl Dig<'_> {
             ..OBox::default()
         });
         // Cut crystal crated in the crosscut, waiting for the train.
-        let (a, b) = lay.crosscut;
+        let (a, b) = m.crosscut;
         self.block_stack(Vec2::new(b.x - 1.6, b.y - 1.8), 0.1);
         self.block_stack(Vec2::new(a.x + 1.2, a.y + 1.6), -0.15);
     }
@@ -1101,9 +1206,11 @@ impl Dig<'_> {
             let w = rng.range(2.0, 3.4);
             let c = x + w;
             x += w * 2.0 - 0.5;
-            if (lay.crag_west(lay.face(c)) + 1.0..lay.crag_east(lay.face(c)) - 1.0).contains(&c)
-                || lay.scree(c) > 0.3
-            {
+            let in_crag = lay.mines.iter().any(|m| {
+                (m.crag_west(lay.face(c), lay.size) + 1.0..m.crag_east(lay.face(c), lay.size) - 1.0)
+                    .contains(&c)
+            });
+            if in_crag || lay.scree(c) > 0.3 {
                 continue;
             }
             if lay.caves.iter().any(|(a, b)| {
@@ -1148,14 +1255,14 @@ impl Dig<'_> {
 
     /// The scree where the Face fell in: rock strewn down the slope, big
     /// blocks to hide behind on the climb.
-    pub(super) fn scree_rocks(&mut self, rng: &mut Rng) {
+    pub(super) fn scree_rocks(&mut self, m: &Mine, rng: &mut Rng) {
         let lay = self.l;
         let mut placed = 0;
         for _ in 0..400 {
             if placed >= 34 {
                 break;
             }
-            let x = rng.range(lay.scree.0 + 2.0, lay.scree.1 - 2.0);
+            let x = rng.range(m.scree.0 + 2.0, m.scree.1 - 2.0);
             let f = lay.face(x);
             let z = rng.range(f - SCREE_RUN + 2.0, f + FACE_RISE);
             let p = Vec2::new(x, z);
@@ -1181,8 +1288,8 @@ impl Dig<'_> {
         }
         // The broken lip at the top: blocks tipped over the edge.
         for k in 0..5 {
-            let x = lay.scree.0 + 5.0 + k as f32 * 5.5 + rng.range(-1.0, 1.0);
-            if (x - lay.ways_up[1].0.x).abs() < 8.0 {
+            let x = m.scree.0 + 5.0 + k as f32 * 5.5 + rng.range(-1.0, 1.0);
+            if (x - m.scree_x).abs() < 8.0 {
                 continue;
             }
             let p = Vec2::new(x, lay.face(x) + FACE_RISE + rng.range(0.0, 2.0));
@@ -1378,7 +1485,11 @@ impl Dig<'_> {
             }
         }
         // Timber portals at the Ithessar's mouths in the Face.
-        for (a, b) in [lay.caves[0], lay.caves[3], lay.heading] {
+        for (a, b) in lay
+            .mines
+            .iter()
+            .flat_map(|m| [m.adit, m.west_adit, m.heading])
+        {
             let xc = (a.x + b.x) * 0.5;
             let mut z = lay.face(xc);
             while !lay.roofed(Vec2::new(xc, z)) {
@@ -1410,12 +1521,14 @@ impl Dig<'_> {
             });
         }
         // Ore carts: on the drift, and in the west adit.
-        for &(x, z, yaw) in &[
-            (lay.drift.0.x + 12.0, lay.drift.0.y + 1.6, FRAC_PI_2),
-            (lay.drift.1.x - 8.0, lay.drift.1.y - 1.6, FRAC_PI_2 + 0.1),
-            (lay.west_adit.0.x + 1.6, lay.hall.0.y - 12.0, 0.0),
-        ] {
-            self.ore_cart(rng, Vec2::new(x, z), yaw);
+        for m in &lay.mines {
+            for &(x, z, yaw) in &[
+                (m.drift.0.x + 12.0, m.drift.0.y + 1.6, FRAC_PI_2),
+                (m.drift.1.x - 8.0, m.drift.1.y - 1.6, FRAC_PI_2 + 0.1),
+                (m.west_adit.0.x + 1.6, m.hall.0.y - 12.0, 0.0),
+            ] {
+                self.ore_cart(rng, Vec2::new(x, z), yaw);
+            }
         }
     }
 
@@ -1440,7 +1553,7 @@ impl Dig<'_> {
                 let a = at(ix, iz);
                 let c = a + Vec2::splat(cell * 0.5);
                 let over_mouth = lay.cave_distance(c) < CAVE_WALL + 0.5
-                    && !within(lay.box_cut, c, 0.0)
+                    && !lay.in_box_cut(c, 0.0)
                     && [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
                         .iter()
                         .any(|&(u, v)| lay.uncut(a + Vec2::new(u, v) * cell) > ROOF.0 + 0.2);
@@ -1617,7 +1730,7 @@ impl Dig<'_> {
             lay.cave_distance(c) < 1.0
                 && lay.in_rock(back)
                 && back.y < lay.size
-                && !within(lay.box_cut, c, 1.0)
+                && !lay.in_box_cut(c, 1.0)
         };
         let cave = vault::Cave {
             sdf: &|p| open_sdf(lay, p),
@@ -1779,9 +1892,9 @@ impl Dig<'_> {
     /// The hall, where the seam is worked under the rock: pillars left to
     /// hold the roof, the vein glowing across the floor between them,
     /// crystal standing where it hasn't been cut yet, cut crystal crated.
-    pub(super) fn pillared_hall(&mut self, rng: &mut Rng) {
+    pub(super) fn pillared_hall(&mut self, m: &Mine, rng: &mut Rng) {
         let lay = self.l;
-        for &p in &lay.pillars {
+        for &p in &m.pillars {
             let s = rng.range(2.1, 2.5);
             let top = lay.drawn_roof(p) + 0.3;
             self.rock_pillar(p, s, top);
@@ -1798,14 +1911,14 @@ impl Dig<'_> {
                 );
             }
             // A lamp on each pillar's face toward the middle.
-            let mid = (lay.hall.0 + lay.hall.1) * 0.5;
+            let mid = (m.hall.0 + m.hall.1) * 0.5;
             let out = if p.x < mid.x { Vec2::X } else { -Vec2::X };
             self.lamp(p + out * (s * 1.1 + 0.2), out);
         }
         // Crystal not yet cut, against the hall's walls (clear of the way
         // in from the west adit, and far enough apart to leave no pocket
         // between them and the wall).
-        let (a, b) = lay.hall;
+        let (a, b) = m.hall;
         for (x, z, h) in [
             (a.x + 4.0, a.y + 14.0, 3.2),
             (a.x + 17.5, a.y + 2.5, 2.4),
@@ -2015,9 +2128,9 @@ impl Dig<'_> {
 
     /// The Resonant's breach: their own tunnel in from the Face to the
     /// drift, rough-cut, rubble at its mouth.
-    pub(super) fn breach(&mut self, rng: &mut Rng) {
+    pub(super) fn breach(&mut self, m: &Mine, rng: &mut Rng) {
         let lay = self.l;
-        let (a, b) = lay.breach;
+        let (a, b) = m.breach;
         // Rubble they dug out heaped by the mouth.
         let f = lay.face((a.x + b.x) * 0.5);
         for p in [Vec2::new(a.x - 6.0, f - 6.0), Vec2::new(b.x + 6.0, f - 8.0)] {
@@ -2027,9 +2140,9 @@ impl Dig<'_> {
 
     /// The box cut: an open trench up from the adit's end to the mesa, its
     /// sides faced in cut stone.
-    pub(super) fn box_cut(&mut self, rng: &mut Rng) {
+    pub(super) fn box_cut(&mut self, m: &Mine, rng: &mut Rng) {
         let lay = self.l;
-        let (a, b) = lay.box_cut;
+        let (a, b) = m.box_cut;
         for (z, out) in [(a.y, -1.0f32), (b.y, 1.0)] {
             let mut x = a.x + 2.0;
             while x < b.x {
@@ -2037,7 +2150,7 @@ impl Dig<'_> {
                 let c = x + w * 0.5;
                 x += w;
                 // Inside the Crag the cut's sides are its sculpted face.
-                if c + w * 0.5 < lay.crag_east(z) - 0.5 {
+                if c + w * 0.5 < m.crag_east(z, lay.size) - 0.5 {
                     continue;
                 }
                 let top = TOP + 0.3;
@@ -2058,7 +2171,9 @@ impl Dig<'_> {
     /// two rails on sleepers. Visual only.
     pub(super) fn railroad(&mut self) {
         let lay = self.l;
-        self.rails(&lay.track, false);
+        for line in &lay.lines {
+            self.rails(line, false);
+        }
         let branch = lay.branch.clone();
         self.rails(&branch, true);
         // The points lever by the junction, on the outside of the curve.
@@ -2158,9 +2273,9 @@ impl Dig<'_> {
     /// The rail bridge out of the adit's mouth over the wash: a deck on
     /// concrete piers, low steel girders along its edges, a truss
     /// over them, tilted plates up onto it at each end.
-    pub(super) fn rail_bridge(&mut self) {
+    pub(super) fn rail_bridge(&mut self, br: &Bridge) {
         let lay = self.l;
-        let (a, b) = lay.bridge();
+        let (a, b) = (br.a, br.b);
         let len = a.distance(b);
         let dir = (b - a) / len;
         let yaw = yaw_along(dir);
@@ -2252,7 +2367,7 @@ impl Dig<'_> {
         // Ten meters apart: room to drive between them, and either side of
         // where the wash's middle runs under the deck (the way along its
         // floor).
-        let cross = (line_at(&lay.wash, lay.bridge_s).0 - a).dot(dir);
+        let cross = (line_at(&lay.washes[br.wash].line, br.s).0 - a).dot(dir);
         let mut t = cross - 5.0;
         while t - 10.0 >= 4.0 {
             t -= 10.0;
@@ -2310,21 +2425,28 @@ impl Dig<'_> {
     pub(super) fn wash_rocks(&mut self, rng: &mut Rng, seam: &[(Vec2, f32)]) {
         let lay = self.l;
         let mut placed = 0;
+        if lay.washes.is_empty() {
+            return;
+        }
         for _ in 0..600 {
-            if placed >= 13 {
+            if placed >= 13 * lay.washes.len() {
                 break;
             }
-            let k = rng.index(lay.wash.len() - 1);
-            let p = lay.wash[k].lerp(lay.wash[k + 1], rng.f32());
+            let w = &lay.washes[rng.index(lay.washes.len())].line;
+            let k = rng.index(w.len() - 1);
+            let p = w[k].lerp(w[k + 1], rng.f32());
             let (_, along) = lay.wash_near(p);
             let (_, half) = lay.wash_profile(along);
-            let dir = (lay.wash[k + 1] - lay.wash[k]).normalize().perp();
+            let dir = (w[k + 1] - w[k]).normalize().perp();
             // Toward one side, so the middle of the floor stays a way through.
             let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
             let q = p + dir * side * rng.range(half * 0.45, half + 0.5);
             if q.min_element() < 12.0
                 || q.max_element() > lay.size - 12.0
-                || seg(q, lay.bridge().0, lay.bridge().1).0 < DECK_HALF + 3.0
+                || lay
+                    .bridges
+                    .iter()
+                    .any(|b| seg(q, b.a, b.b).0 < DECK_HALF + 3.0)
                 || lay
                     .ramps
                     .iter()
@@ -2993,7 +3115,10 @@ impl Dig<'_> {
         }
         // The conveyor from beside the rig in the wash, up over the bank,
         // to its head over the heap.
-        let (rig_at, rig_yaw) = lay.wash_rig;
+        // (None without a wash under the Face to work.)
+        let Some((rig_at, rig_yaw)) = lay.wash_rig else {
+            return;
+        };
         let boom = Vec2::new(rig_yaw.sin(), rig_yaw.cos());
         let toward = (at - rig_at).normalize();
         let foot = rig_at + boom * 4.0 + toward * 3.5;
@@ -3191,9 +3316,9 @@ impl Dig<'_> {
                 let ok = lay.mesa(p) > 0.97
                     && lay.crag_depth(p) < -6.0
                     && lay.cave_distance(p) > CAVE_WALL + 5.0
-                    && !within(lay.box_cut, p, 8.0)
+                    && !lay.in_box_cut(p, 8.0)
                     && lay.ways_up.iter().all(|&(a, b)| seg(p, a, b).0 > 8.0)
-                    && p.distance(lay.headframe) > 16.0
+                    && lay.mines.iter().all(|m| p.distance(m.headframe) > 16.0)
                     && ways.iter().all(|q| q.distance(p) > 11.0)
                     && taken.iter().all(|q| q.distance(p) > 14.0);
                 ok.then(|| {
@@ -3233,9 +3358,11 @@ impl Dig<'_> {
             let s = rng.range(1.5, 2.1);
             self.rock_pile(rng, p, s);
         }
-        // Timber waiting on the landing below the Face, by the west adit.
-        let x = lay.west_adit.0.x - 6.0;
-        self.crib(rng, Vec2::new(x, lay.face(x) - 8.5), 0.15);
+        // Timber waiting on the landing below the Face, by the west adits.
+        for m in &lay.mines {
+            let x = m.west_adit.0.x - 6.0;
+            self.crib(rng, Vec2::new(x, lay.face(x) - 8.5), 0.15);
+        }
     }
 
     /// On and round the dump: ore carts tipped over its edge, boulders on
@@ -3774,10 +3901,10 @@ impl Dig<'_> {
         }
         // Timber cribs: stacked pit props waiting by the west adit's mouth,
         // and by the line, either side of the bridge's end.
-        let (_, end) = lay.bridge();
+        let end = lay.lines[0][2];
         let (p3, dir) = lay.track_at(lay.track_len(3) + 12.0);
-        let x = lay.west_adit.0.x - 2.0;
-        let landing = (lay.face(x) + lay.wash_frame(lay.wash_at_x(x)).0.y) * 0.5;
+        let x = lay.mines[0].west_adit.0.x - 2.0;
+        let landing = lay.face(x) - 9.0;
         for (p, yaw) in [
             (p3 - dir.perp() * 7.0 * lay.branch_side, -0.2),
             (Vec2::new(x, landing), 1.2),
@@ -3960,7 +4087,12 @@ impl Dig<'_> {
                     let s = rng.range(1.4, 2.0);
                     self.rock_pile(rng, q, s);
                 }
-            } else if g > TOP * 0.7 || q.x > lay.crag_e {
+            } else if g > TOP * 0.7
+                || lay
+                    .mines
+                    .iter()
+                    .any(|m| (m.crag_e..m.scree.1 + 20.0).contains(&q.x))
+            {
                 let s = rng.range(1.4, 2.1);
                 self.rock_pile(rng, q, s);
             } else if roll < 0.3 {
@@ -4106,161 +4238,174 @@ impl Dig<'_> {
         }
     }
 
-    /// The ways round for bots, on every level: over the rail bridge into
-    /// the mine and along the wash's floor under it, through the mine (in at the west
-    /// adit, through the hall, along the drift, out at the breach), along
-    /// the Crag's foot into the new heading, and down the box cut into the
-    /// mine.
+    /// The ways round for bots, on every level: over each bridge (into the
+    /// mine, where it's out of the adit) and along the wash's floor under
+    /// it, each wash end to end, through each mine (in at the west adit,
+    /// through the hall, along the drift, out at the breach), along the
+    /// Crag's foot into the heading, down the box cut into the mine, up
+    /// each butte.
     pub(super) fn mine_routes(&mut self) {
         let lay = self.l;
-        // On whatever's underfoot seen from above (the flats, the wash's
-        // floor, the mesa's top), on the bridge's deck, in the mine (under
-        // its roof).
-        let g = |m: &Dig, x: f32, z: f32| {
-            let p = m.open_near(Vec2::new(x, z), 3.5).unwrap_or(Vec2::new(x, z));
+        // On whatever's underfoot seen from above (the flats, a wash's
+        // floor, the mesa's top), on a bridge's deck, in a mine (under its
+        // roof).
+        let g = |m: &Dig, p: Vec2| {
+            let p = m.open_near(p, 3.5).unwrap_or(p);
             Vec3::new(p.x, m.ground_height(p.x, p.y), p.y)
-        };
-        let (a, b) = lay.bridge();
-        let b_end = b;
-        let deck = |t: f32| {
-            let p = a.lerp(b, t);
-            Vec3::new(p.x, DECK_TOP, p.y)
-        };
-        let off_deck = |m: &Dig, t: f32| {
-            let p = a.lerp(b, t);
-            g(m, p.x, p.y)
         };
         let mine = |x: f32, z: f32| Vec3::new(x, 0.0, z);
         let top = |x: f32, z: f32| Vec3::new(x, TOP, z);
         let m = &*self;
-        let at = |p: Vec2| g(m, p.x, p.y);
-        // On the wash's floor `u` m along it: down its middle, or across to
+        let at = |p: Vec2| g(m, p);
+        // On wash `w`'s floor `u` m along it: down its middle, or across to
         // the far side from the cutting rig where it's working.
-        let wash = |u: f32| {
-            let (p, t) = line_at(&lay.wash, u);
-            let p = if p.distance(lay.wash_rig.0) < 12.0 {
+        let wash = |w: usize, u: f32| {
+            let (p, t) = line_at(&lay.washes[w].line, u);
+            let by_rig = lay.wash_rig.is_some_and(|(r, _)| p.distance(r) < 12.0);
+            at(if by_rig {
                 p + Vec2::new(t.y, -t.x) * 4.5
             } else {
                 p
-            };
-            at(p)
+            })
         };
-        let mid = |r: Rect| (r.0 + r.1) * 0.5;
-        let b = lay.bridge_s;
-        let ax = mid(lay.adit).x;
-        let (wa, br, hd, bc) = (
-            mid(lay.west_adit),
-            mid(lay.breach),
-            lay.heading,
-            lay.box_cut,
-        );
-        let drift_z = mid(lay.drift).y;
-        let pillars = lay.pillars.iter().sum::<Vec2>() / 4.0;
-        let cross = mid(lay.crosscut);
-        // On the landing under the Face (the wash's bank can come close).
-        let west_mouth = Vec2::new(wa.x, lay.face(wa.x) - 6.0);
-        // Level ground on the landing east of the breach's mouth.
-        let east_landing = {
-            let level = |p: Vec2| {
-                let g = lay.ground(p.x, p.y);
-                lay.mesa(p) < 0.05
-                    && lay.cave_distance(p) > 3.5
-                    && lay.wash(p) > -0.1
-                    && (0..8).all(|k| {
-                        let a = k as f32 * TAU / 8.0;
-                        let q = p + Vec2::new(a.cos(), a.sin()) * 4.0;
-                        (lay.ground(q.x, q.y) - g).abs() < 0.5
-                    })
-            };
-            let want = Vec2::new(br.x + 7.0, lay.face(br.x + 7.0) - 6.0);
-            (0..30)
-                .flat_map(|i| (0..26).map(move |j| (i, j)))
-                .map(|(i, j)| {
-                    let x = br.x - 8.0 + i as f32;
-                    Vec2::new(x, lay.face(x) - 5.0 - j as f32)
-                })
-                .filter(|&p| level(p))
-                .min_by(|p, q| p.distance(want).total_cmp(&q.distance(want)))
-                .unwrap_or(want)
-        };
-        let s_ramp1 = lay.wash_near(lay.ramps[1].1).1;
-        let (s0, s1) = (
-            lay.wash_near(lay.fords[0].0.lerp(lay.fords[0].1, 0.5)).1,
-            lay.wash_near(lay.fords[1].0.lerp(lay.fords[1].1, 0.5)).1,
-        );
-        // Along the wash's floor between two places on it, every 25 m or so.
-        let along = |from: f32, to: f32| {
-            let n = ((to - from) / 25.0).ceil().max(1.0) as usize;
+        // Along wash `w`'s floor between two places on it, every 25 m or so.
+        let along = |w: usize, from: f32, to: f32| {
+            let n = ((to - from).abs() / 25.0).ceil().max(1.0) as usize;
             (0..=n)
-                .map(|k| wash(from + (to - from) * k as f32 / n as f32))
+                .map(|k| wash(w, from + (to - from) * k as f32 / n as f32))
                 .collect::<Vec<_>>()
         };
-        let mut under = vec![at(lay.ramps[0].0), at(lay.ramps[0].1)];
-        under.extend(along(b - 15.0, s_ramp1.max(b + 10.0)));
-        under.extend([at(lay.ramps[1].1), at(lay.ramps[1].0)]);
-        let mut wash_way = vec![at(lay.fords[0].0), wash(s0)];
-        wash_way.extend(along(s0 + 10.0, s1 - 4.0));
-        wash_way.extend([
-            wash(s1),
-            at(lay.fords[1]
-                .0
-                .lerp(lay.fords[1].1, 0.5)
-                .lerp(lay.fords[1].0, 0.55)),
-        ]);
-        // Off the bridge's end, on the line short of the tipple.
-        let flats = b_end + (b_end - a).normalize() * 5.0;
-        let ways = vec![
-            // From the flats over the deck and in at the adit's mouth (and
-            // the other way, out of the mine onto the flats).
-            vec![
-                at(flats),
-                off_deck(m, 1.15),
-                deck(0.8),
-                deck(0.2),
-                mine(ax, a.y + 7.0),
-                mine(ax, a.y + 21.0),
-            ],
-            // Along the wash's floor under the bridge: down the near ramp,
-            // between the piers, up the far one.
-            under,
-            // The wash end to end, on its floor: down the west crossing by
-            // the west spawns, along, up the east one by the east camp.
-            wash_way,
+        let mid = |r: Rect| (r.0 + r.1) * 0.5;
+        let mut ways = Vec::new();
+        for (bi, br) in lay.bridges.iter().enumerate() {
+            let (a, b) = (br.a, br.b);
+            let dir = (b - a).normalize();
+            let deck = |t: f32| {
+                let p = a.lerp(b, t);
+                Vec3::new(p.x, DECK_TOP, p.y)
+            };
+            // Over the deck: in at the adit's mouth if it starts there, else
+            // off the far end on the line.
+            let mut over = vec![at(b + dir * 5.0), deck(0.8), deck(0.2)];
+            match lay
+                .mines
+                .iter()
+                .find(|m| br.a == lay.lines[br.line][1] && within(m.adit, a, 2.0))
+            {
+                Some(m) => {
+                    let ax = mid(m.adit).x;
+                    over.extend([mine(ax, a.y + 7.0), mine(ax, a.y + 21.0)]);
+                }
+                None => over.push(at(a - dir * 5.0)),
+            }
+            ways.push(over);
+            // Under it on the wash's floor: down one ramp, between the
+            // piers, up the other.
+            let (r0, r1) = (lay.ramps[2 * bi], lay.ramps[2 * bi + 1]);
+            let w = &lay.washes[br.wash];
+            let (s0, s1) = (w.near(r0.1).1, w.near(r1.1).1);
+            let mut under = vec![at(r0.0), at(r0.1)];
+            under.extend(along(br.wash, s0.min(br.s - 15.0), s1.max(br.s + 10.0)));
+            under.extend([at(r1.1), at(r1.0)]);
+            ways.push(under);
+        }
+        // Each wash end to end, on its floor: down one crossing, along, up
+        // the other.
+        for (wi, w) in lay.washes.iter().enumerate() {
+            let fords: Vec<&Ramp> = lay
+                .fords
+                .iter()
+                .filter(|f| w.near(f.0.lerp(f.1, 0.5)).0 < 3.0)
+                .collect();
+            if fords.len() < 2 {
+                continue;
+            }
+            let (f0, f1) = (fords[0], fords[fords.len() - 1]);
+            let (s0, s1) = (
+                w.near(f0.0.lerp(f0.1, 0.5)).1,
+                w.near(f1.0.lerp(f1.1, 0.5)).1,
+            );
+            let mut way = vec![at(f0.0), wash(wi, s0)];
+            way.extend(along(wi, s0 + 10.0, s1 - 4.0));
+            way.extend([wash(wi, s1), at(f1.0.lerp(f1.1, 0.5).lerp(f1.0, 0.55))]);
+            ways.push(way);
+        }
+        for mn in &lay.mines {
+            let ax = mid(mn.adit).x;
+            let (wa, br, hd, bc) = (mid(mn.west_adit), mid(mn.breach), mn.heading, mn.box_cut);
+            let drift_z = mid(mn.drift).y;
+            let pillars = mn.pillars.iter().sum::<Vec2>() / 4.0;
+            let cross = mid(mn.crosscut);
+            // On the landing under the Face (a wash's bank can come close).
+            let west_mouth = Vec2::new(wa.x, lay.face(wa.x) - 6.0);
+            // Level ground on the landing east of the breach's mouth.
+            let east_landing = {
+                let level = |p: Vec2| {
+                    let g = lay.ground(p.x, p.y);
+                    lay.mesa(p) < 0.05
+                        && lay.cave_distance(p) > 3.5
+                        && lay.wash(p) > -0.1
+                        && (0..8).all(|k| {
+                            let a = k as f32 * TAU / 8.0;
+                            let q = p + Vec2::new(a.cos(), a.sin()) * 4.0;
+                            (lay.ground(q.x, q.y) - g).abs() < 0.5
+                        })
+                };
+                let want = Vec2::new(br.x + 7.0, lay.face(br.x + 7.0) - 6.0);
+                (0..30)
+                    .flat_map(|i| (0..26).map(move |j| (i, j)))
+                    .map(|(i, j)| {
+                        let x = br.x - 8.0 + i as f32;
+                        Vec2::new(x, lay.face(x) - 5.0 - j as f32)
+                    })
+                    .filter(|&p| level(p))
+                    .min_by(|p, q| p.distance(want).total_cmp(&q.distance(want)))
+                    .unwrap_or(want)
+            };
             // Through the mine: in at the west adit, through the hall and
             // the crosscut, along the drift, out at the breach.
-            vec![
+            ways.push(vec![
                 at(west_mouth),
-                mine(wa.x, lay.hall.0.y - 5.0),
+                mine(wa.x, mn.hall.0.y - 5.0),
                 mine(pillars.x, pillars.y),
                 mine(cross.x, cross.y),
                 mine(ax, drift_z),
                 mine((ax + br.x) * 0.5, drift_z),
-                mine(br.x, lay.drift.0.y - 6.0),
-                mine(br.x, lay.breach.0.y + 6.0),
+                mine(br.x, mn.drift.0.y - 6.0),
+                mine(br.x, mn.breach.0.y + 6.0),
                 at(east_landing),
-            ],
-            // From the east landing along the Crag's foot and into the new
+            ]);
+            // From the east landing along the Crag's foot and into the
             // heading.
-            vec![
+            ways.push(vec![
                 at(east_landing),
                 at(Vec2::new(hd.1.x + 4.0, lay.face(hd.1.x + 4.0) - 5.0)),
                 at(Vec2::new(mid(hd).x, lay.face(mid(hd).x) - 5.5)),
                 mine(hd.0.x + 3.0, lay.face(hd.0.x + 3.0) + 1.0),
-            ],
-            // Off the mesa's east down the box cut into the mine, and out
-            // at the west adit.
-            vec![
+            ]);
+            // Off the mesa east of the Crag down the box cut into the mine,
+            // and out at the west adit.
+            ways.push(vec![
                 top(bc.1.x + 26.0, lay.size - 24.0),
                 top(bc.1.x + 3.0, mid(bc).y),
                 at(mid(bc)),
-                mine(lay.adit.1.x + 2.0, mid(bc).y),
+                mine(mn.adit.1.x + 2.0, mid(bc).y),
                 mine(ax, drift_z + 1.0),
                 mine(cross.x, cross.y),
                 mine(pillars.x, pillars.y),
-                mine(wa.x, lay.hall.0.y - 8.0),
+                mine(wa.x, mn.hall.0.y - 8.0),
                 at(west_mouth),
-            ],
-        ];
+            ]);
+        }
+        // Up each butte.
+        for b in &lay.buttes {
+            let (foot, up) = b.way();
+            ways.push(vec![
+                at(foot + (foot - b.center).normalize() * 4.0),
+                at(foot),
+                at(up),
+            ]);
+        }
         self.routes = ways;
     }
 
@@ -4383,35 +4528,38 @@ impl Dig<'_> {
 /// The Crag's foot, end to end: down its west side from past the north
 /// edge, along the Face, up its east side to the box cut, in round the
 /// slot's walls, on up to past the edge.
-fn crag_feet(m: &Dig) -> Vec<crag::Foot> {
+fn crag_feet(m: &Dig, mine: &Mine) -> Vec<crag::Foot> {
     let lay = m.l;
     let mut corners = Vec::new();
-    let zw = lay.face(lay.crag_w);
+    let zw = lay.face(mine.crag_w);
     let mut z = lay.size + 6.0;
     while z > zw + 3.0 {
-        corners.push(Vec2::new(lay.crag_west(z), z));
+        corners.push(Vec2::new(mine.crag_west(z, lay.size), z));
         z -= 3.0;
     }
-    let (xw, xe) = (lay.crag_west(zw), lay.crag_east(lay.face(lay.crag_e)));
+    let (xw, xe) = (
+        mine.crag_west(zw, lay.size),
+        mine.crag_east(lay.face(mine.crag_e), lay.size),
+    );
     let mut x = xw;
     while x < xe {
         corners.push(Vec2::new(x, lay.face(x)));
         x += 2.0;
     }
     let ze = lay.face(xe);
-    let (s0, s1) = (lay.box_cut.0.y, lay.box_cut.1.y);
+    let (s0, s1) = (mine.box_cut.0.y, mine.box_cut.1.y);
     let mut z = ze + 3.0;
     while z < s0 {
-        corners.push(Vec2::new(lay.crag_east(z), z));
+        corners.push(Vec2::new(mine.crag_east(z, lay.size), z));
         z += 3.0;
     }
-    corners.push(Vec2::new(lay.crag_east(s0), s0));
-    corners.push(Vec2::new(lay.box_cut.0.x, s0));
-    corners.push(Vec2::new(lay.box_cut.0.x, s1));
-    corners.push(Vec2::new(lay.crag_east(s1), s1));
+    corners.push(Vec2::new(mine.crag_east(s0, lay.size), s0));
+    corners.push(Vec2::new(mine.box_cut.0.x, s0));
+    corners.push(Vec2::new(mine.box_cut.0.x, s1));
+    corners.push(Vec2::new(mine.crag_east(s1, lay.size), s1));
     let mut z = s1 + 3.0;
     while z < lay.size + 6.0 {
-        corners.push(Vec2::new(lay.crag_east(z), z));
+        corners.push(Vec2::new(mine.crag_east(z, lay.size), z));
         z += 3.0;
     }
     let pts = crag::resample(&corners, 0.7, 1.2);
@@ -4424,9 +4572,9 @@ fn crag_feet(m: &Dig) -> Vec<crag::Foot> {
             along += p.distance(pts[i - 1].0);
         }
         let nrm = Vec2::new(dir.y, -dir.x);
-        let in_slot = p.y > s0 - 0.6 && p.y < s1 + 0.6 && p.x < lay.crag_east(p.y) - 0.5;
-        let on_front = nrm.y < -0.7 && p.y < lay.front_limit();
-        let mouth = (on_front && lay.mouths().iter().any(|(a, b)| p.x > a.x && p.x < b.x))
+        let in_slot = p.y > s0 - 0.6 && p.y < s1 + 0.6 && p.x < mine.crag_east(p.y, lay.size) - 0.5;
+        let on_front = nrm.y < -0.7 && p.y < mine.front_limit();
+        let mouth = (on_front && mine.mouths().iter().any(|(a, b)| p.x > a.x && p.x < b.x))
             || (in_slot && nrm.x > 0.7 && p.y > s0 + 0.2 && p.y < s1 - 0.2);
         let q = p + nrm * 1.2;
         let base = m.level(q);
@@ -4489,18 +4637,25 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
         || lay.track_distance(p) < 6.0
         || lay.shed_distance(p) < 6.0
         || lay.shed_doorways(p)
-        || seg(p, lay.bridge().0, lay.bridge().1).0 < DECK_HALF + 5.0
+        || lay
+            .bridges
+            .iter()
+            .any(|b| seg(p, b.a, b.b).0 < DECK_HALF + 5.0)
         || lay
             .ramps
             .iter()
             .chain(&lay.fords)
             .any(|&(s, e, h)| seg(p, s, e).0 < h + 4.0)
         || lay.cave_distance(p) < 4.0 && lay.mesa(p) > 0.3 && !lay.roofed(p)
-        || within(
-            (lay.box_cut.0, lay.box_cut.1 + Vec2::new(14.0, 0.0)),
-            p,
-            4.0,
-        )
+        || lay
+            .mines
+            .iter()
+            .any(|m| within((m.box_cut.0, m.box_cut.1 + Vec2::new(14.0, 0.0)), p, 4.0))
+        || lay.buttes.iter().any(|b| {
+            // Round a butte's foot, and its ramp.
+            let (a, w) = b.way();
+            seg(p, a, w).0 < 8.0 || (b.distance(p) > -3.0 && b.distance(p) < 3.0)
+        })
         || lay.crag_depth(p) > -4.0
         || (p.y > f - 8.0 && p.y < f + FACE_RISE + 5.0)
         || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
@@ -4529,10 +4684,16 @@ pub(super) const ORE: Vec3 = Vec3::new(0.36, 0.15, 0.09);
 /// Face.
 fn open_sdf(lay: &Layout, p: Vec2) -> f32 {
     let mut d = p.y - (lay.face(p.x) + FACE_RISE * 0.5);
-    d = d.min(vault::rect_sdf(lay.box_cut, 0.3, p));
+    for m in &lay.mines {
+        d = d.min(vault::rect_sdf(m.box_cut, 0.3, p));
+    }
     for &r in &lay.caves {
         // The bore is round: its end too.
-        let round = if r == lay.bore { 3.0 } else { 0.8 };
+        let round = if lay.mines.iter().any(|m| m.bore == r) {
+            3.0
+        } else {
+            0.8
+        };
         d = vault::smin(d, vault::rect_sdf(r, round, p), 1.0);
     }
     d
@@ -4543,9 +4704,11 @@ fn open_sdf(lay: &Layout, p: Vec2) -> f32 {
 fn arch(lay: &Layout, c: Vec2) -> f32 {
     let near = |r: (Vec2, Vec2), w: f32| 1.0 - smoothstep(0.0, w, rect_distance(r, c));
     let mut a: f32 = 2.2;
-    a = a.max(2.2 + 1.7 * near(lay.bore, 1.0));
-    a = a.max(2.2 + 1.6 * near(lay.bay, 2.0));
-    a = a.max(2.2 + 1.0 * near(lay.hall, 2.0) * smoothstep(3.0, 6.0, lay.crag_depth(c)));
+    for m in &lay.mines {
+        a = a.max(2.2 + 1.7 * near(m.bore, 1.0));
+        a = a.max(2.2 + 1.6 * near(m.bay, 2.0));
+        a = a.max(2.2 + 1.0 * near(m.hall, 2.0) * smoothstep(3.0, 6.0, lay.crag_depth(c)));
+    }
     a
 }
 
@@ -4555,11 +4718,12 @@ fn arch(lay: &Layout, c: Vec2) -> f32 {
 /// Resonant's breach.
 fn rock_veins(lay: &Layout, c: Vec2) -> [vault::Vein; 2] {
     let mut out = [vault::Vein::default(); 2];
-    if rect_distance(lay.caves[5], c) < 1.0 {
+    if lay.mines.iter().any(|m| rect_distance(m.breach, c) < 1.0) {
         return out;
     }
     let u = c.x + c.y;
-    let rich = 1.0 - smoothstep(2.0, 8.0, rect_distance(lay.bay, c));
+    let m = lay.mine_at(c.x);
+    let rich = 1.0 - smoothstep(2.0, 8.0, rect_distance(m.bay, c));
     for (k, v) in out.iter_mut().enumerate() {
         let k = k as u32;
         let y = [1.5, 4.4][k as usize] + 1.6 * (noise(u / 13.0, 30 + k) * 2.0 - 1.0);
@@ -4600,8 +4764,9 @@ fn rock_shade(lay: &Layout, p: Vec3, n: Vec3) -> (Vec3, Material) {
     }
     // The bore: cut clean and smooth, scorched toward its face, where the
     // beam strikes (its glow is drawn with the beam).
-    let strike = p.distance(lay.beam.1);
-    let bore = 1.0 - smoothstep(0.0, 1.5, rect_distance(lay.bore, q));
+    let m = lay.mine_at(q.x);
+    let strike = p.distance(m.beam.1);
+    let bore = 1.0 - smoothstep(0.0, 1.5, rect_distance(m.bore, q));
     if bore > 0.0 || strike < 7.0 {
         let fresh = c.lerp(CUT, bore.max(1.0 - smoothstep(4.0, 7.0, strike)));
         let scorch =
