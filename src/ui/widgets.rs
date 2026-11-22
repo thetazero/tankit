@@ -33,6 +33,53 @@ pub fn label(p: &mut Painter, pos: Vec2, text: &str, align: Align) -> f32 {
     p.text(pos, text, &TextStyle::LABEL, align)
 }
 
+/// Height of a `back_button`.
+pub const BACK_H: f32 = 30.0;
+
+/// Width of a `back_button`.
+pub fn back_width() -> f32 {
+    BACK_PAD * 2.0 + BACK_CHEVRON + super::measure("BACK", &TextStyle::LABEL)
+}
+
+const BACK_PAD: f32 = 12.0;
+/// The chevron's width and the gap after it.
+const BACK_CHEVRON: f32 = 14.0;
+
+/// The way back off a screen, for the pointer as Esc is for the keys: a
+/// hairline box saying BACK behind a left chevron, filled in when `lit`
+/// (under the pointer). `min` is its top left; it's `back_width()` by
+/// `BACK_H`, and the caller records the click.
+pub fn back_button(p: &mut Painter, min: Vec2, lit: bool) {
+    let size = Vec2::new(back_width(), BACK_H);
+    p.rect(
+        min,
+        size,
+        with_alpha(theme::FG, if lit { 0.16 } else { 0.07 }),
+    );
+    p.rect_outline(min, size, 1.0, theme::FG);
+    let style = TextStyle {
+        color: theme::FG,
+        ..TextStyle::LABEL
+    };
+    let ty = min.y + (BACK_H - style.size) * 0.5;
+    let (cx, cy) = (min.x + BACK_PAD, min.y + BACK_H * 0.5);
+    p.polyline(
+        &[
+            Vec2::new(cx + 4.5, cy - 4.5),
+            Vec2::new(cx, cy),
+            Vec2::new(cx + 4.5, cy + 4.5),
+        ],
+        1.2,
+        theme::FG,
+    );
+    p.text(
+        Vec2::new(cx + BACK_CHEVRON, ty),
+        "BACK",
+        &style,
+        Align::Left,
+    );
+}
+
 /// A square hairline box, filled in when `on`. `pos` is its top left.
 pub fn checkbox(p: &mut Painter, pos: Vec2, size: f32, on: bool) {
     p.rect_outline(

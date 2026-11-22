@@ -1031,6 +1031,13 @@ impl App {
         };
         let lit = hud.is_some() && hud != self.hud.hover;
         self.hud.hover = hud;
+        // Off the BACK button (onto anything else, or nothing): unlit.
+        if !matches!(hit, Some(UiHit::Menu(_))) {
+            self.menu.unhover();
+        }
+        if !matches!(hit, Some(UiHit::Pause(_))) {
+            self.pause.unhover();
+        }
         let Some(hit) = hit else {
             return;
         };
