@@ -370,7 +370,7 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                 let margins: f32 = g.companies.iter().map(|c| c.margin).sum::<f32>()
                     / g.companies.len().max(1) as f32;
                 println!(
-                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  held in orbit {:.0}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {}  margin {:.2}",
+                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  held in orbit {:.0}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {} sailed {}  margin {:.2}",
                     track.join("  "),
                     b.signed,
                     b.defenses,
@@ -392,6 +392,7 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                     b.lost,
                     b.splits,
                     b.joins,
+                    b.sailed,
                     margins,
                 );
             }
@@ -531,4 +532,80 @@ fn companies_split_and_join() {
     // Nothing's lost but the small one's fare over.
     let after: f32 = g.companies.iter().map(|c| c.crystals).sum();
     assert!(after <= total + 1e-2 && after >= total - g.rules.merc_join / 2.0);
+}
+
+/// The longest any company in `g` stays idle over `ticks` more ticks
+/// (stretches still going at the end count as far as they've run), and
+/// the company's id.
+pub fn longest_idle(g: &mut Galaxy, ticks: u64) -> (u64, u32) {
+    use std::collections::HashMap;
+    let end = g.tick + ticks;
+    let mut since: HashMap<u32, u64> = HashMap::new();
+    let mut worst = (0, 0);
+    while g.tick < end {
+        for c in &g.companies {
+            if c.contract.is_some() {
+                if let Some(t) = since.remove(&c.id) {
+                    worst = worst.max((g.tick - t, c.id));
+                }
+            } else {
+                since.entry(c.id).or_insert(g.tick);
+            }
+        }
+        // Those gone (joined another) were idle up to now.
+        since.retain(|id, t| {
+            let here = g.companies.iter().any(|c| c.id == *id);
+            if !here {
+                worst = worst.max((g.tick - *t, *id));
+            }
+            here
+        });
+        g.step();
+    }
+    for (id, t) in since {
+        worst = worst.max((g.tick - t, id));
+    }
+    worst
+}
+
+/// No company stays idle forever: idle long enough, it sails to a war and
+/// gets work there (#355).
+#[test]
+fn no_company_idles_forever() {
+    let mut g = small_war();
+    for _ in 0..100 {
+        g.step();
+    }
+    let (idle, id) = longest_idle(&mut g, 800);
+    assert!(g.books.sailed > 0, "nobody went looking for work");
+    assert!(idle < 300, "company {id} idle {idle} ticks");
+}
+
+/// Idle stretches on the game's galaxy, with idle companies roaming and
+/// without (#355): run with
+/// `cargo test --release judge_idle -- --ignored --nocapture`.
+#[test]
+#[ignore = "a tuning sweep, slow: run by hand in release"]
+fn judge_idle() {
+    for idle in [u32::MAX, 15, 30, 60] {
+        let rules = Rules {
+            merc_idle: idle,
+            ..Rules::default()
+        };
+        let mut g = Galaxy::with_size(super::save::SEED, SYSTEMS, REGION, rules);
+        for _ in 0..200 {
+            g.step();
+        }
+        let (worst, id) = longest_idle(&mut g, 2000);
+        let b = g.books;
+        println!(
+            "merc_idle {idle}: longest idle {worst} (company {id})  sailed {}  signed {} won {} broken {} expired {}  companies {}",
+            b.sailed,
+            b.signed,
+            b.won,
+            b.broken,
+            b.expired,
+            g.companies.len()
+        );
+    }
 }

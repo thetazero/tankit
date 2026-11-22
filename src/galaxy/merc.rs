@@ -44,6 +44,12 @@
 //! can't change a fight, so it joins the nearest company (paying the FTL).
 //! The pilot's company (`Galaxy::crew`) keeps its id when it splits, and
 //! the pilot goes with it when it joins another.
+//!
+//! **Looking for work** (#355). A company idle `Rules::merc_idle` ticks
+//! sails to the nearest other system at war (one with a side no company
+//! works for yet, if there's any), paying the FTL as far as its crystal
+//! goes, and waits there. Nobody stays idle forever: every war is somebody's
+//! chance. The pilot's company is no different.
 
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
 
@@ -60,6 +66,9 @@ pub struct Company {
     pub contract: Option<Contract>,
     /// The tick it was founded (split off, or the war's start).
     pub founded: u64,
+    /// The tick it last went idle: founded, back from a contract, or come
+    /// to a new system looking for work (`Galaxy::seek_work`).
+    pub idle_since: u64,
     /// Its own name, for charts: never reused.
     pub id: u32,
 }
@@ -130,6 +139,8 @@ pub struct Books {
     /// Companies split off and joined into others.
     pub splits: u64,
     pub joins: u64,
+    /// Voyages idle companies made to look for work.
+    pub sailed: u64,
 }
 
 /// A realm's offer of hulls near a target: from system `s`, `hulls` at `price` each, delivered.
@@ -186,6 +197,7 @@ impl Galaxy {
             margin: self.rules.merc_margin,
             contract: None,
             founded: self.tick,
+            idle_since: self.tick,
             id: self.next_company,
         });
         self.companies.len() - 1
@@ -525,7 +537,9 @@ impl Galaxy {
             let co = &mut self.companies[c];
             co.hulls += back + k.orbit;
             co.contract = None;
+            co.idle_since = self.tick;
         }
+        self.seek_work();
         if self.tick.is_multiple_of(self.rules.politics.max(1) as u64) {
             self.split_and_join();
         }
@@ -544,6 +558,7 @@ impl Galaxy {
                 self.companies[c].hulls -= hulls;
                 let new = self.new_company(co.at, crystals, hulls);
                 self.companies[new].margin = co.margin;
+                self.companies[new].idle_since = co.idle_since;
                 self.books.splits += 1;
             }
         }
@@ -596,5 +611,61 @@ impl Galaxy {
             i += 1;
             !gone[i - 1]
         });
+    }
+
+    /// Each company idle `Rules::merc_idle` ticks sails to the nearest other
+    /// system at war to look for work: one where some side fighting has no
+    /// company on its side yet, if there's one, else any. It pays the FTL
+    /// as far as its crystal goes. Returns how many went.
+    pub(crate) fn seek_work(&mut self) -> usize {
+        let wars: Vec<usize> = (0..self.systems.len())
+            .filter(|&s| self.systems[s].at_war())
+            .collect();
+        if wars.is_empty() {
+            return 0;
+        }
+        // Wars with a side fighting that nobody's hired for.
+        let open: Vec<bool> = wars
+            .iter()
+            .map(|&s| {
+                (0..SIDES).any(|f| {
+                    self.fighting(s, f)
+                        && !self.companies.iter().any(|c| {
+                            c.contract
+                                .is_some_and(|k| k.target as usize == s && k.side as usize == f)
+                        })
+                })
+            })
+            .collect();
+        let mut went = 0;
+        for c in 0..self.companies.len() {
+            let co = self.companies[c];
+            if co.contract.is_some() || self.tick < co.idle_since + self.rules.merc_idle as u64 {
+                continue;
+            }
+            let here = self.systems[co.at as usize].pos;
+            let d = |s: usize| self.systems[s].pos.distance(here);
+            let nearest = |want_open: bool| {
+                (0..wars.len())
+                    .filter(|&w| wars[w] != co.at as usize && (!want_open || open[w]))
+                    .min_by(|&a, &b| d(wars[a]).total_cmp(&d(wars[b])))
+                    .map(|w| wars[w])
+            };
+            let Some(to) = nearest(true).or_else(|| nearest(false)) else {
+                continue;
+            };
+            let fare = self.voyage(co.hulls, d(to)).min(co.crystals.max(0.0));
+            let from = co.at;
+            let co = &mut self.companies[c];
+            co.crystals -= fare;
+            co.at = to as u32;
+            co.idle_since = self.tick;
+            if self.crew == Some(co.id) {
+                self.crew_news = Some(super::theater::CrewNews::Sailed { from });
+            }
+            self.books.sailed += 1;
+            went += 1;
+        }
+        went
     }
 }
