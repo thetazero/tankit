@@ -26,9 +26,11 @@
 //!    Stored hulls wear out slowly, so an idle world's garrison levels off.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
-//!    The tick's strongest side then makes progress on one planet: knocks down
-//!    an enemy shield generator, or, once that planet's are all down, takes a
-//!    site. A side alone in a system repairs its downed generators, one step a
+//!    Each side in a fight then may win its objective on one planet, a chance
+//!    by its share of the fire: knock down an enemy shield generator, or,
+//!    once that planet's are all down, take a site. Only so many of a side's
+//!    hulls fire a tick however big it is (`Rules::frontage`), so a world
+//!    holds out for many ticks. A side alone in a system repairs its downed generators, one step a
 //!    tick, several ticks to bring one back up.
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there; contracts done (world taken, hulls spent, time up) end.
@@ -92,15 +94,15 @@ pub const FTL_RANGE: f32 = 250.0;
 const NEIGHBORS: usize = 12;
 
 /// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
-const RESONANT_HULL_COST: f32 = 0.005;
+const RESONANT_HULL_COST: f32 = 0.0005;
 /// Ticks to bring a downed shield generator back up.
 pub const REPAIR_TICKS: u8 = 4;
 /// Smallest sending worth the FTL (hulls).
-const MIN_SEND: f32 = 2.0;
+const MIN_SEND: f32 = 20.0;
 /// Most quiet ticks a step skips looking for the next war.
 const QUIET_SKIP: usize = 1000;
 /// A system counts as at war when two sides each have this many hulls in it.
-pub const AT_WAR: f32 = 0.5;
+pub const AT_WAR: f32 = 5.0;
 
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
@@ -114,11 +116,17 @@ pub struct Rules {
     pub breach_cost: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
     pub kill: f32,
+    /// Most of a side's hulls in a system that can fire in a tick. Machines
+    /// can only be in contact so fast: past this, more hulls don't shoot
+    /// harder, they only last longer, so a big army grinds a world down
+    /// over many ticks instead of erasing it in one.
+    pub frontage: f32,
     /// Fire bonus for a side fighting on ground it holds (all its sites in the system).
     pub home_ground: f32,
-    /// Chance a tick that a side losing a battle still wins a raid on a shield
-    /// generator, scaled by its share of the battle's fire.
-    pub raid: f32,
+    /// Chance a tick that a side in a fight wins its objective there (the next
+    /// shield generator, or once they're down the next site), times its share
+    /// of the fight's fire.
+    pub take: f32,
     /// An attacker needs this many times the defense (its fire) to go in.
     pub odds: f32,
     /// ... and only this much when going for a pocket,
@@ -142,7 +150,8 @@ pub struct Rules {
     /// Fire bonus for a side fighting where its offensive is: it picked the
     /// time and place, and massed for it.
     pub initiative: f32,
-    /// Most a side can take of a system in one won tick (sites or generators).
+    /// Most a side alone in a system walks into of the enemy's unguarded
+    /// sites a tick.
     pub blitz: u32,
     /// How far from where it's aimed an offensive attacks, light years.
     pub front: f32,
@@ -213,11 +222,12 @@ impl Default for Rules {
     fn default() -> Rules {
         Rules {
             wear: 0.03,
-            ftl_cost: 2.25,
-            breach_cost: 1.0,
+            ftl_cost: 0.225,
+            breach_cost: 0.1,
             kill: 0.35,
+            frontage: 85.0,
             home_ground: 0.3,
-            raid: 0.5,
+            take: 0.3,
             odds: 1.5,
             gang_odds: 1.15,
             opportunity: 3.0,
@@ -241,7 +251,7 @@ impl Default for Rules {
             politics: 10,
             companies: 60,
             merc_capital: 150.0,
-            hull_price: 0.3,
+            hull_price: 0.03,
             ship_cost: 3.0,
             merc_margin: 0.3,
             merc_floor: 0.05,
@@ -462,7 +472,7 @@ impl Galaxy {
                         planet,
                         owner,
                         kind: SiteKind::Production {
-                            hulls: rng.range(0.1, 0.5),
+                            hulls: rng.range(1.0, 5.0),
                             crystals: rng.range(0.02, 0.1),
                         },
                     });
@@ -697,7 +707,7 @@ impl Galaxy {
                 continue;
             }
             let defense: f32 = self
-                .fire(t)
+                .strength(t)
                 .iter()
                 .enumerate()
                 .filter(|&(g, _)| g != f)
@@ -773,17 +783,31 @@ impl Galaxy {
         }
     }
 
-    /// Each side's fire in system `s`: its hulls, with the home-ground bonus
-    /// for the share of the system's sites it holds, and the initiative where
-    /// its realm's offensive is.
-    fn fire(&self, s: usize) -> [f32; SIDES] {
+    /// Each side's strength in system `s`: its hulls, with the home-ground
+    /// bonus for the share of the system's sites it holds, and the initiative
+    /// where its realm's offensive is. What a fight there is worth sizing up
+    /// by: more hulls don't fire harder past the frontage, but they last.
+    fn strength(&self, s: usize) -> [f32; SIDES] {
         let sys = &self.systems[s];
         let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
-        let mut fire = [0.0; SIDES];
+        let mut out = [0.0; SIDES];
         for f in 0..SIDES {
-            fire[f] = sys.hulls[f] * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
+            out[f] = sys.hulls[f] * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
             if self.pushing(sys.realms[f], sys.pos) {
-                fire[f] *= 1.0 + self.rules.initiative;
+                out[f] *= 1.0 + self.rules.initiative;
+            }
+        }
+        out
+    }
+
+    /// Each side's fire in system `s` this tick: its strength, from no more
+    /// of its hulls than the frontage.
+    fn fire(&self, s: usize) -> [f32; SIDES] {
+        let hulls = self.systems[s].hulls;
+        let mut fire = self.strength(s);
+        for f in 0..SIDES {
+            if hulls[f] > self.rules.frontage {
+                fire[f] *= self.rules.frontage / hulls[f];
             }
         }
         fire
@@ -841,28 +865,16 @@ impl Galaxy {
                 }
                 sys.hulls[f] = left;
             }
-            // The tick goes to the side with the most fire.
-            let winner = (0..SIDES)
-                .filter(|&f| present[f])
-                .max_by(|&a, &b| fire[a].total_cmp(&fire[b]))
-                .unwrap_or(0);
-            let against = |f: usize| -> f32 {
-                (0..SIDES)
-                    .filter(|&g| present[g] && f != g)
+            // A tick is a battle: each side in the fight may win its
+            // objective, more likely the more of the fire is its own.
+            for f in (0..SIDES).filter(|&f| present[f] && fighting(f)) {
+                let against: f32 = (0..SIDES)
+                    .filter(|&g| present[g] && g != f)
                     .map(|g| fire[g])
-                    .sum()
-            };
-            let margin = fire[winner] / against(winner).max(1e-3);
-            self.advance(s, winner, margin);
-            // The losers can still get at a shield generator: a raid on one
-            // is won by the smaller side often enough that shields alone
-            // never hold a world forever.
-            for f in 0..SIDES {
-                if f != winner && present[f] && fighting(f) {
-                    let odds = (fire[f] / against(f).max(1e-3)).min(1.0);
-                    if self.rng.chance(self.rules.raid * odds) {
-                        self.raid(s, f);
-                    }
+                    .sum();
+                let odds = fire[f] / (fire[f] + against).max(1e-3);
+                if self.rng.chance(self.rules.take * odds) {
+                    self.advance(s, f, 1);
                 }
             }
         }
@@ -878,29 +890,6 @@ impl Galaxy {
             }
         }
         up
-    }
-
-    /// Side `f` destroys an enemy shield generator in system `s`, on the
-    /// planet with fewest of them up, if there is one.
-    fn raid(&mut self, s: usize, f: usize) {
-        let up = self.shields_up(s, f);
-        let Some(p) = (0..self.systems[s].planets as usize)
-            .filter(|&p| up[p] > 0)
-            .min_by_key(|&p| up[p])
-        else {
-            return;
-        };
-        let (a, b) = self.systems[s].sites;
-        let i = (a as usize..b as usize).find(|&i| {
-            let site = &self.sites[i];
-            site.planet as usize == p
-                && self.hostile(f, site.owner as usize)
-                && site.kind == (SiteKind::Shield { down: 0 })
-        });
-        if let Some(i) = i {
-            self.sites[i].kind = SiteKind::Shield { down: REPAIR_TICKS };
-            self.shields_down += 1;
-        }
     }
 
     /// Side `f` has no enemy in system `s`: repairs its generators there,
@@ -920,13 +909,13 @@ impl Galaxy {
             }
         }
         if enemy_sites {
-            self.advance(s, f, 10.0);
+            self.advance(s, f, self.rules.blitz);
         }
     }
 
-    /// Side `w` won a tick in system `s` by `margin` (its fire over its
-    /// enemies'): progress on the planet where it has least in its way.
-    fn advance(&mut self, s: usize, w: usize, margin: f32) {
+    /// Side `w` makes `steps` of progress in system `s`, on the planet where
+    /// it has least in its way.
+    fn advance(&mut self, s: usize, w: usize, steps: u32) {
         let (a, b) = self.systems[s].sites;
         let (a, b) = (a as usize, b as usize);
         let planets = self.systems[s].planets as usize;
@@ -955,9 +944,6 @@ impl Galaxy {
             }
             return;
         };
-        // A clear win takes more than one thing in a tick: a step for each
-        // time over the enemy's fire, up to the blitz.
-        let steps = (margin as u32).clamp(1, self.rules.blitz);
         for _ in 0..steps {
             // A shield up first; else the planet's production, its generators last.
             let candidate = |site: &Site, production: bool| {
@@ -1129,7 +1115,7 @@ impl Galaxy {
     /// from where?
     fn consider(&mut self, t: usize, f: usize, r: u32) {
         let sys = &self.systems[t];
-        let fire = self.fire(t);
+        let fire = self.strength(t);
         // Who's in the way.
         let (mut defense, mut enemy) = (0.0, false);
         for g in (0..SIDES).filter(|&g| g != f) {
@@ -1155,7 +1141,7 @@ impl Galaxy {
         if have >= odds * defense && defense > 0.0 {
             return;
         }
-        let want = odds * defense * 1.2 + 1.0 - have;
+        let want = odds * defense * 1.2 + 10.0 - have;
         // What could reach it: the realm's own spare hulls in range.
         let mine = |g: &Galaxy, s: usize| {
             if g.systems[s].realms[f] == r {
