@@ -866,8 +866,8 @@ pub struct Match {
     /// Your side, once it's dealt you a seat among its mercs (`set_company`):
     /// then you come back only in their hulls.
     crew_team: Option<usize>,
-    /// Your company's hulls are spent and you're down: you're done, and so
-    /// is the match (#361).
+    /// Your company's hulls are spent and you're down: you're done (#361),
+    /// and the match plays out without you (#373).
     crew_out: bool,
     /// Where in the galaxy it's fought, for the HUD.
     pub place: Option<String>,
@@ -1049,17 +1049,43 @@ impl Match {
     }
 
     /// Side `team` has spent its allocation: no hulls left and no tank in
-    /// play. On your side, also once your company is out (see `crew_out`).
+    /// play.
     pub fn spent(&self, team: usize) -> bool {
-        (self.hulls_left(team) == Some(0)
-            && !self.fighters.iter().any(|f| f.team == team && f.alive))
-            || (self.crew_out && team == self.fighters[0].team)
+        self.hulls_left(team) == Some(0) && !self.fighters.iter().any(|f| f.team == team && f.alive)
     }
 
-    /// Your company has run out of hulls with you down (#361): the mercs
-    /// are done, and you with them. The round ends there, lost.
+    /// Your company has run out of hulls with you down (#361): you're done.
+    /// The match isn't: your side fights on in the realm's hulls, and it
+    /// ends however that goes (#373; see `fast_forward`).
     pub fn crew_out(&self) -> bool {
         self.crew_out
+    }
+
+    /// You're down for good with the round still on: your company's out of
+    /// hulls, or your whole side's allocation is spent, while others still
+    /// fight. There's nothing left for you to do but see how it ends.
+    pub fn sitting_out(&self) -> bool {
+        let me = &self.fighters[0];
+        self.phase == Phase::Playing
+            && !me.alive
+            && (self.crew_out || self.hulls_left(me.team) == Some(0))
+            && self.bots[0].is_none()
+    }
+
+    /// Play up to `steps` more steps of the match without you (#373), as
+    /// fast as the sim runs, until it's over. Their sounds are dropped (all
+    /// but the round's end), so a fast-forward is quiet.
+    pub fn fast_forward(&mut self, steps: usize) {
+        for _ in 0..steps {
+            if self.phase != Phase::Playing {
+                break;
+            }
+            let before = self.sounds.len();
+            self.step(Command::default(), false);
+            if self.phase == Phase::Playing {
+                self.sounds.truncate(before);
+            }
+        }
     }
 
     /// The sides still in the fight (all of them, without an allocation).
@@ -1429,9 +1455,8 @@ impl Match {
 
         self.fly_shells();
         self.respawns();
-        if playing && (self.crew_out || self.hulls.is_some() && self.contenders().len() <= 1) {
-            // A side (or all but one) out of hulls, or your company: the
-            // fight's over.
+        if playing && self.hulls.is_some() && self.contenders().len() <= 1 {
+            // A side (or all but one) out of hulls: the fight's over.
             self.end_round();
         }
         let tanks: Vec<(&crate::sim::Tank, bool)> = self
@@ -5519,10 +5544,10 @@ mod tests {
     }
 
     /// Once your company's hulls are spent, you don't come back in the
-    /// realm's (#361): you're out, and the round ends there, lost, with
-    /// the realm's hulls still to spare.
+    /// realm's (#361): you're out. The match isn't over for that (#373): it
+    /// fast-forwards to its end without you, and ends however that goes.
     #[test]
-    fn out_of_merc_hulls_youre_done() {
+    fn out_of_merc_hulls_the_match_plays_on_without_you() {
         let mut m = arena(3);
         for i in 1..4 {
             m.idle(i);
@@ -5535,23 +5560,32 @@ mod tests {
         assert!(m.fighters[0].alive, "back in the last merc hull");
         assert!(m.world.tanks[0].company);
         assert!(!m.crew_out());
-        // Ahead on kills, so it isn't the score that loses it.
+        assert!(!m.sitting_out());
+        // Ahead on kills: the score, not your company, decides it.
         m.fighters[0].kills = 5;
         destroy(&mut m, 0);
         respawn(&mut m);
         assert!(!m.fighters[0].alive, "no merc hulls left: you're done");
         assert!(m.crew_out());
-        assert!(
-            m.hulls_left(0).unwrap() > 0,
-            "the realm's hulls are still there"
-        );
         m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Playing, "your side fights on");
+        assert!(!m.spent(0), "in the realm's hulls");
+        assert!(m.sitting_out());
+        // Half a minute to go, then fast-forward: quiet till the end.
+        m.time_left = 30.0;
+        m.sounds.clear();
+        m.fast_forward(1000);
+        assert_eq!(m.phase, Phase::Playing);
+        assert!(m.sounds.is_empty(), "a fast-forward is quiet");
+        assert!(!m.fighters[0].alive, "you stay down");
+        m.fast_forward(usize::MAX);
         assert_eq!(m.phase, Phase::Over);
-        assert!(m.spent(0));
-        assert_eq!(m.leader(), Some(1));
+        assert!(!m.sitting_out());
+        assert!(m.sounds.contains(&Sound::Round(RoundCue::End)));
+        assert_eq!(m.leader(), Some(0));
         assert_eq!(
             crate::economy::Payout::of(&m).outcome,
-            crate::economy::Outcome::Lost
+            crate::economy::Outcome::Won
         );
         assert_eq!(m.company_lost(), vec![2, 0]);
     }

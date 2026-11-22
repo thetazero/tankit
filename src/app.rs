@@ -24,7 +24,7 @@ use crate::economy::{Part, Payout};
 use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
 use crate::galaxy::save::War;
-use crate::galaxy::theater::Sortie;
+use crate::galaxy::theater::{Shown, Sortie};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -53,6 +53,11 @@ const HITCH_WORK: f32 = 0.05;
 /// Likewise a gap this long between frames that the frame's work doesn't
 /// explain (the window, the driver or the OS held the loop).
 const HITCH_GAP: f32 = 0.1;
+/// Of each frame, how long the match may fast-forward without you once
+/// you're out for good (#373), well under a hitch.
+const FAST_FORWARD_BUDGET: std::time::Duration = std::time::Duration::from_millis(12);
+/// Steps fast-forwarded between looks at the clock.
+const FAST_FORWARD_CHUNK: usize = 30;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
 /// A galaxy saved before it kept your company (#350) takes the profile's.
@@ -491,36 +496,6 @@ impl App {
         }
     }
 
-    /// Start a new round on the current map settings, keeping the player's queued kit.
-    fn restart(&mut self) {
-        self.leave_battle();
-        let kit = self.queued();
-        let mut m = new_match(
-            self.seed,
-            self.map_kind,
-            self.map_seed,
-            self.side,
-            self.spawn,
-            self.bots,
-            self.contract,
-            kit,
-            self.sortie.map(|o| o.factions).as_ref().map(|f| &f[..]),
-        );
-        m.set_rating(self.rating);
-        m.prize = self.unstolen_prize();
-        if self.in_war {
-            self.battle = self.draw_battle(&mut m);
-            if self.battle.is_none() {
-                // Your company's no longer in this fight (its contract's
-                // over, or its hulls are spent): you're not either (#362).
-                self.back_to_menu();
-                return;
-            }
-        }
-        self.load(m);
-        self.mode = Mode::Playing;
-    }
-
     /// The mission's prize, unless it's already yours: then it just pays crystals.
     fn unstolen_prize(&self) -> Option<Part> {
         self.prize.filter(|&p| !self.profile.owns(p))
@@ -612,8 +587,23 @@ impl App {
             self.war.save();
         }
         self.profile.board(crew);
+        // The contract you were last shown, from before this menu (a battle
+        // or a launch ago): a move on from it plays now (#386).
+        if !self.menu.remembers() {
+            let g = self.war.get();
+            if let Some(old) = self.profile.shown.as_ref().and_then(|s| g.shown(s, rank)) {
+                self.menu.remember(old);
+            }
+        }
         self.menu.set_choice(choice);
         self.menu.set_theater(t);
+        self.keep_shown();
+    }
+
+    /// Keep the contract the missions screen has shown you in the profile.
+    fn keep_shown(&mut self) {
+        let shown = self.menu.shown().and_then(Shown::of);
+        self.profile.set_shown(shown);
     }
 
     /// Go with ship `id`, of those your company's split or join offered (#364).
@@ -711,6 +701,14 @@ impl App {
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
         }
+    }
+
+    /// The battle's over: back to the contract screen (the missions screen),
+    /// to pick the next fight (#381).
+    fn back_to_missions(&mut self) {
+        self.back_to_menu();
+        self.menu.screen = menu::Screen::Missions;
+        self.sync_theater();
     }
 
     fn back_to_menu(&mut self) {
@@ -921,8 +919,8 @@ impl App {
         );
         match code {
             KeyCode::Escape if self.showroom.is_some() => event_loop.exit(),
-            // Round over: back to the menu. Otherwise pause.
-            KeyCode::Escape if self.game.phase == Phase::Over => self.back_to_menu(),
+            // Round over: back to the contract screen. Otherwise pause.
+            KeyCode::Escape if self.game.phase == Phase::Over => self.back_to_missions(),
             KeyCode::Escape => {
                 self.audio.ui(audio::Ui::Back);
                 self.pause = Pause::new();
@@ -937,12 +935,11 @@ impl App {
                     self.garage.toggle(&self.game.world, &cam, self.queued());
                 }
             }
-            // Play the round again once the clock has run out.
+            // Round over: Enter goes on, like the one button there.
             KeyCode::Enter | KeyCode::NumpadEnter
                 if self.showroom.is_none() && self.game.phase == Phase::Over =>
             {
-                self.spawn += 1;
-                self.restart();
+                self.back_to_missions();
             }
             _ if action == Some(Action::CameraReset) => self.cam_homing = true,
             // Quick-cycle the kit queued for the next respawn.
@@ -975,6 +972,9 @@ impl App {
         self.sync_theater();
         match action {
             Some(menu::Action::Fight(o)) => {
+                // Into a battle on the contract on screen: you've seen it.
+                self.menu.settle();
+                self.keep_shown();
                 let owns = |p| self.profile.owns(p);
                 let prize = crate::galaxy::theater::prize(o.factions[1], o.site, owns);
                 self.start_sortie(o, prize);
@@ -1069,13 +1069,7 @@ impl App {
                 self.nav_sound(nav);
                 self.pause_action(action, event_loop);
             }
-            UiHit::Hud(h) => self.on_key(
-                match h {
-                    hud::Hit::Again => KeyCode::Enter,
-                    hud::Hit::Menu => KeyCode::Escape,
-                },
-                event_loop,
-            ),
+            UiHit::Hud(hud::Hit::Missions) => self.on_key(KeyCode::Escape, event_loop),
             UiHit::Garage(h) => {
                 let input = match h {
                     garage::Hit::Key(input) => input,
@@ -1171,6 +1165,14 @@ impl App {
                     self.game.step(cmd, fire);
                 }
             }
+            // Out for good (#373): the rest of the match plays out without
+            // you, as fast as a slice of each frame allows.
+            if self.showroom.is_none() && self.game.sitting_out() {
+                let start = Instant::now();
+                while self.game.sitting_out() && start.elapsed() < FAST_FORWARD_BUDGET {
+                    self.game.fast_forward(FAST_FORWARD_CHUNK);
+                }
+            }
         }
 
         // Renown is paid the moment it's earned, to the Company; crystals, and the
@@ -1213,6 +1215,7 @@ impl App {
         if self.mode == Mode::Menu && !self.garage.is_open() {
             self.menu_time += dt;
             self.menu.advance(dt);
+            self.keep_shown();
             self.follow_backdrop(dt);
             self.sync_crew();
         }

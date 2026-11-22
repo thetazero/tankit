@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
+use crate::galaxy::theater::Shown;
 use serde::{Deserialize, Serialize};
 
 use crate::binds::Binds;
@@ -106,6 +107,8 @@ struct Saved {
     settings: Settings,
     /// The company ship you're aboard, by its id in the galaxy.
     ship: Option<u32>,
+    /// The contract the missions screen last showed you (#386).
+    shown: Option<Shown>,
 }
 
 /// Player options from the settings panel, saved with the profile.
@@ -167,6 +170,9 @@ pub struct Profile {
     /// Your company (`Company::id`), once you're with one: kept from the
     /// galaxy's `crew` for the UI (#350).
     pub ship: Option<u32>,
+    /// The contract the missions screen last showed you, so a move onto the
+    /// next one plays even after a battle or a relaunch (#386).
+    pub shown: Option<Shown>,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
     disk: Option<Disk>,
 }
@@ -251,6 +257,7 @@ impl Profile {
             levels: Levels::default(),
             settings: Settings::default(),
             ship: None,
+            shown: None,
             disk: None,
         }
     }
@@ -283,6 +290,7 @@ impl Profile {
         self.crystals = s.crystals;
         self.settings = s.settings;
         self.ship = s.ship;
+        self.shown = s.shown;
         self.stolen = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
         for (name, &mark) in &s.levels {
             if let Some(part) = Part::by_name(name) {
@@ -386,6 +394,14 @@ impl Profile {
         }
     }
 
+    /// You've been shown contract `shown` (see `shown`): save it if it's new.
+    pub fn set_shown(&mut self, shown: Option<Shown>) {
+        if shown.is_some() && shown != self.shown {
+            self.shown = shown;
+            self.save();
+        }
+    }
+
     /// Change the settings and save.
     pub fn set_settings(&mut self, settings: Settings) {
         if settings != self.settings {
@@ -420,6 +436,7 @@ impl Profile {
             levels: BTreeMap::new(),
             settings: self.settings,
             ship: self.ship,
+            shown: self.shown.clone(),
         };
         Ok(serde_json::to_string_pretty(&saved)?)
     }
@@ -502,6 +519,15 @@ mod tests {
             volume: 3,
             binds,
         });
+        let shown = Shown {
+            ship: 7,
+            signed: 201,
+            system: 3,
+            side: 1,
+            over: 2,
+            realm: "KALARUN".into(),
+        };
+        p.set_shown(Some(shown.clone()));
         let crystals = p.crystals;
         // Dropping the profile waits for its last save to land.
         drop(p);
@@ -515,6 +541,7 @@ mod tests {
         assert!(back.settings.debug);
         assert_eq!(back.settings.volume, 3);
         assert_eq!(back.settings.binds, binds);
+        assert_eq!(back.shown, Some(shown));
 
         // An older profile (no crystals, deploying in a part it never owned)
         // still loads.
@@ -522,6 +549,7 @@ mod tests {
         let old = Profile::load(path.clone());
         assert_eq!(old.renown, 0);
         assert_eq!(old.crystals, 0);
+        assert_eq!(old.shown, None);
         assert_eq!(old.loadout, (HullKind::Kataphrakt, TurretKind::Kontos));
         assert!(!old.settings.debug);
         // Profiles from before sound get the default volume, not silence.

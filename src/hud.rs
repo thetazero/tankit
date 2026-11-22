@@ -47,10 +47,8 @@ const MARGIN: f32 = 40.0;
 /// Something on the HUD that can be clicked: the round-over buttons.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hit {
-    /// Enter: play the round again.
-    Again,
-    /// Esc: back to the menu.
-    Menu,
+    /// Esc or Enter: back to the contract screen.
+    Missions,
 }
 
 /// The pilot's books as the match started, for the round-over screen to count
@@ -522,17 +520,33 @@ impl Hud {
                     Align::Center,
                 );
             }
-            // Your side's allocation spent: there's no chassis to come back in.
-            if m.hulls_left(me.team) == Some(0) {
+            // Your side's allocation spent, or your company's: there's no
+            // chassis to come back in, and the match plays out without you.
+            let out = if m.crew_out() {
+                Some(("COMPANY OUT OF HULLS", "YOUR COMPANY HAS SPENT ITS HULLS"))
+            } else if m.hulls_left(me.team) == Some(0) {
+                Some(("NO HULLS LEFT", "YOUR SIDE HAS SPENT ITS ALLOCATION"))
+            } else {
+                None
+            };
+            if let Some((head, why)) = out {
                 let mut s = TextStyle::value(16.0);
                 s.color = theme::HOT;
-                p.text(c + Vec2::new(0.0, 84.0), "NO HULLS LEFT", &s, Align::Center);
+                p.text(c + Vec2::new(0.0, 84.0), head, &s, Align::Center);
                 p.text(
                     c + Vec2::new(0.0, 112.0),
-                    "YOUR SIDE HAS SPENT ITS ALLOCATION",
+                    why,
                     &TextStyle::LABEL,
                     Align::Center,
                 );
+                if m.sitting_out() {
+                    p.text(
+                        c + Vec2::new(0.0, 140.0),
+                        "FAST-FORWARDING TO THE END",
+                        &TextStyle::LABEL,
+                        Align::Center,
+                    );
+                }
             } else {
                 // The countdown: whole seconds left, big, over a bar that fills
                 // as the new chassis comes up.
@@ -664,11 +678,11 @@ fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
         with_alpha(theme::FG, 0.85)
     };
     let mercs = m.company_hulls.get(team).copied().unwrap_or(0);
-    let text = if m.crew_out() && team == m.fighters[0].team {
-        // Your company's spent (#361): the realm's may not be.
-        "COMPANY OUT OF HULLS".to_string()
-    } else if m.spent(team) {
+    let text = if m.spent(team) {
         "OUT OF HULLS".to_string()
+    } else if m.crew_out() && team == m.fighters[0].team {
+        // Your company's spent (#361): the realm's fight on (#373).
+        format!("{n} HULLS · COMPANY OUT")
     } else if let Some((own, of)) = m.own_hulls().filter(|_| team == m.fighters[0].team) {
         // Of the company's, yours alone (#385).
         format!("{n} HULLS · {mercs} COMPANY · YOURS {own} OF {of}")
@@ -845,10 +859,10 @@ const BUTTON_H: f32 = 26.0;
 const BUTTON_PAD: f32 = 12.0;
 const BUTTON_GAP: f32 = 16.0;
 
-/// The round-over choices, side by side and centred on `top`: buttons that
-/// click like their keys.
+/// The round-over choice (back to the contract screen), centred on `top`: a button
+/// that clicks like its key.
 fn round_over_buttons(p: &mut Painter, hits: &mut Hits<Hit>, hover: Option<Hit>, top: Vec2) {
-    let buttons = [("AGAIN", Hit::Again), ("MENU", Hit::Menu)];
+    let buttons = [("MISSIONS", Hit::Missions)];
     let style = TextStyle::LABEL;
     let width = |what: &str| BUTTON_PAD * 2.0 + measure(what, &style);
     let total = buttons.iter().map(|(w, _)| width(w)).sum::<f32>()
@@ -1308,12 +1322,8 @@ mod tests {
         assert!(draw(&mut hud, &m).is_empty());
         m.phase = Phase::Over;
         let hits = draw(&mut hud, &m);
-        for id in [Hit::Again, Hit::Menu] {
-            let at = hits.center_of(id).expect("button drawn");
-            assert_eq!(hits.at(at).map(|(h, _)| h), Some(id));
-        }
-        // Side by side, not on top of each other.
-        assert!(hits.center_of(Hit::Again).unwrap().x < hits.center_of(Hit::Menu).unwrap().x);
+        let at = hits.center_of(Hit::Missions).expect("button drawn");
+        assert_eq!(hits.at(at).map(|(h, _)| h), Some(Hit::Missions));
     }
 
     #[test]

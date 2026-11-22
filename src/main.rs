@@ -117,11 +117,17 @@ tankit [OPTIONS]
   --mission <name>        (with --screen results) the round was this mission, by name, e.g.
                           'four winds', for its prize
   --site <n>              (with --screen missions|site) select the theater's nth contested site
-  --transfer <jump|move>  (with --screen missions) the war goes on until your company moves onto its
-                          next contract (in another system, or the same one): the shot is --time
-                          seconds into the transfer playing over the system view
+  --transfer <jump|move|renew>
+                          (with --screen missions) the war goes on until your company moves onto its
+                          next contract (in another system, the same one, or the same contract
+                          renewed), as if after a battle (a fresh menu, the old contract from the
+                          profile): the shot is --time seconds into the transfer playing over the
+                          system view
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
+  --defend                (with --screen missions|site) the war goes on until your company is hired
+                          to hold one of its employer's worlds, not to take one; (with --front
+                          --hired) the battle is one where a company's hired to hold the world
                           (from 0; default: the first your side fights for)
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
@@ -152,11 +158,14 @@ pub struct Args {
     /// --site, for theater shots: index into the contested sites.
     site: Option<usize>,
     /// --transfer, for missions shots: the move onto the next contract,
-    /// `--time` seconds in; true to wait for one to another system.
-    transfer: Option<bool>,
+    /// `--time` seconds in: to another system (`Jump`), within the one
+    /// it's in (`Move`), or the same contract renewed (`Renew`).
+    transfer: Option<TransferKind>,
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.
     choice: Option<bool>,
+    /// --defend, for missions shots: your company's on a defense contract.
+    defend: bool,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -348,6 +357,31 @@ pub struct ShowroomArgs {
     pub focus: Option<usize>,
 }
 
+/// Which move onto the next contract a `--transfer` shot waits for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TransferKind {
+    Jump,
+    Move,
+    Renew,
+}
+
+impl TransferKind {
+    /// Going from `a` to `b` is a move of this kind.
+    fn is(self, a: &galaxy::theater::Theater, b: &galaxy::theater::Theater) -> bool {
+        if !theater_view::Transfer::between(a, b) {
+            return false;
+        }
+        let (sa, sb) = (a.ship.as_ref().unwrap(), b.ship.as_ref().unwrap());
+        let renewed =
+            sa.id == sb.id && sa.realm == sb.realm && sa.side == sb.side && a.system == b.system;
+        match self {
+            TransferKind::Jump => a.system != b.system,
+            TransferKind::Move => a.system == b.system && !renewed,
+            TransferKind::Renew => renewed,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Menu,
@@ -363,9 +397,11 @@ enum Screen {
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
-    /// Your company's last hull destroyed, you in it: the round's over for
-    /// you (needs `--front --hired`).
+    /// Your company's last hull destroyed, you in it: you're out, and the
+    /// match fast-forwards without you (needs `--front --hired`).
     Spent,
+    /// Likewise, once the fast-forward has played the match out: the results.
+    SpentOver,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -480,6 +516,7 @@ fn parse_args() -> Result<Args> {
     let mut site = None;
     let mut transfer = None;
     let mut choice = None;
+    let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -582,9 +619,10 @@ fn parse_args() -> Result<Args> {
             "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
             "--transfer" => {
                 transfer = Some(match args.next().as_deref() {
-                    Some("jump") => true,
-                    Some("move") => false,
-                    other => bail!("--transfer expects jump or move, got {other:?}"),
+                    Some("jump") => TransferKind::Jump,
+                    Some("move") => TransferKind::Move,
+                    Some("renew") => TransferKind::Renew,
+                    other => bail!("--transfer expects jump, move or renew, got {other:?}"),
                 })
             }
             "--choice" => {
@@ -594,6 +632,7 @@ fn parse_args() -> Result<Args> {
                     other => bail!("--choice expects split or merge, got {other:?}"),
                 })
             }
+            "--defend" => defend = true,
             "--straight" => straight = true,
             "--tilt" => {
                 tilt = args
@@ -710,10 +749,11 @@ fn parse_args() -> Result<Args> {
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
                     Some("spent") => Screen::Spent,
+                    Some("spent-over") => Screen::SpentOver,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over or carry, got {other:?}"
                         )
                     }
                 })
@@ -810,6 +850,7 @@ fn parse_args() -> Result<Args> {
         upgrade,
         debug,
         straight,
+        defend,
         tilt,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
@@ -897,7 +938,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     if args.front {
         let mut g = galaxy::Galaxy::warmed(args.seed);
         let b = match args.hired {
-            true => galaxy::battle::deploy_hired(&mut g, &mut game),
+            true => galaxy::battle::deploy_hired(&mut g, &mut game, args.defend),
             false => None,
         }
         .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
@@ -989,10 +1030,11 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = if args.screen == Some(Screen::Spent) {
-        // Your company's last hull goes, with you in it, a respawn and a
-        // few seconds of results before the shot.
-        let lead = (combat::RESPAWN_TIME + 4.0).min(shot.time);
+    let mut camera = if matches!(args.screen, Some(Screen::Spent | Screen::SpentOver)) {
+        // Your company's last hull goes, with you in it, and a respawn's
+        // wait later you're out: the shot catches the fast-forward, or
+        // (spent-over) a few seconds of the results it ends on.
+        let lead = (combat::RESPAWN_TIME + 1.0).min(shot.time);
         advance(&mut game, &mut cam, &mut garage, shot.time - lead);
         let me = game.fighters[0].team;
         if let Some(h) = game.company_hulls.get_mut(me) {
@@ -1000,7 +1042,13 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         game.own_hulls = 0;
         game.destroy_player();
-        advance(&mut game, &mut cam, &mut garage, lead)
+        let camera = advance(&mut game, &mut cam, &mut garage, lead);
+        if args.screen == Some(Screen::SpentOver) {
+            game.fast_forward(usize::MAX);
+            advance(&mut game, &mut cam, &mut garage, 3.0)
+        } else {
+            camera
+        }
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
@@ -1171,7 +1219,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let prefer = args.employer.map(|f| f.index());
     let war = || {
         let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-        let t = g.await_work_staying(prefer, profile.rank().level, 100).0;
+        let rank = profile.rank().level;
+        let t = if args.defend {
+            defending(&mut g, prefer, rank)
+        } else {
+            g.await_work_staying(prefer, rank, 100).0
+        };
         (g.crew, t)
     };
     match args.screen {
@@ -1190,7 +1243,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 menu.set_choice(g.crew_choice());
                 menu.set_theater(g.aboard(rank));
             }
-            if let Some(jump) = args.transfer {
+            if let Some(kind) = args.transfer {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
                 let rank = profile.rank().level;
                 let mut t = g.await_work_staying(prefer, rank, 100).0;
@@ -1199,11 +1252,19 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     g.step();
                     let (next, _) = g.await_work_staying(prefer, rank, 100);
                     let moved = |a: &Option<galaxy::theater::Theater>| {
-                        a.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| {
-                            theater_view::Transfer::between(a, b) && (a.system != b.system) == jump
-                        })
+                        a.as_ref()
+                            .zip(next.as_ref())
+                            .is_some_and(|(a, b)| kind.is(a, b))
                     };
                     if moved(&t) {
+                        // As the app does back from a battle (or relaunched):
+                        // a fresh menu, and the old contract from the profile.
+                        let shown = t.as_ref().and_then(galaxy::theater::Shown::of);
+                        menu = menu::Menu::new();
+                        menu.input(menu::Nav::Select);
+                        if let Some(old) = shown.and_then(|s| g.shown(&s, rank)) {
+                            menu.remember(old);
+                        }
                         menu.set_theater(next);
                         break;
                     }
@@ -1217,7 +1278,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let kind = menu
                     .transfer()
                     .zip(menu.theater())
-                    .is_some_and(|(tr, t)| tr.jumps(t) == jump);
+                    .is_some_and(|(tr, t)| kind.is(&tr.from, t));
                 anyhow::ensure!(kind, "no transfer of that kind in 2000 ticks");
                 for _ in 0..(shot.time / 0.01).round() as u32 {
                     menu.advance(0.01);
@@ -1283,6 +1344,35 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         .with_context(|| format!("save {}", shot.out))?;
     println!("wrote menu to {}", shot.out);
     Ok(())
+}
+
+/// The war ticked on until a company hired to hold one of its employer's
+/// worlds (for side `prefer`, if given) has a battle for you, with you in
+/// it: that theater, or None if there's none in 2000 ticks.
+fn defending(
+    g: &mut galaxy::Galaxy,
+    prefer: Option<usize>,
+    rank: u32,
+) -> Option<galaxy::theater::Theater> {
+    for _ in 0..2000 {
+        let ids: Vec<u32> = g
+            .companies
+            .iter()
+            .filter(|c| {
+                c.contract
+                    .is_some_and(|k| k.defend && prefer.is_none_or(|f| k.side as usize == f))
+            })
+            .map(|c| c.id)
+            .collect();
+        for id in ids {
+            g.crew = Some(id);
+            if let Some(t) = g.aboard(rank) {
+                return Some(t);
+            }
+        }
+        g.step();
+    }
+    None
 }
 
 fn showroom_shot(shot: &ShotArgs, room: ShowroomArgs, cam: Option<(Vec3, Vec3)>) -> Result<()> {
