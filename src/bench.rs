@@ -75,6 +75,8 @@ pub fn run(
     let mut steps_max = 0;
     let (mut instances, mut particles) = (0usize, 0usize);
     let mut tris = (0, 0);
+    // Triangles drawn each frame, for the camera and for the sun.
+    let (mut seen_tris, mut sun_tris) = (Vec::new(), Vec::new());
     // The slowest frames, with the time in the round and each part's cost.
     let mut worst: Vec<(Duration, f32, u32, [Duration; 6])> = Vec::new();
 
@@ -142,6 +144,9 @@ pub fn run(
             instances = instances.max(frame_scene.instances.len());
             let t = renderer.triangles(&frame_scene);
             tris = (t.0, tris.1.max(t.1));
+            let (seen, sun) = renderer.drawn();
+            seen_tris.push(seen);
+            sun_tris.push(sun);
             particles = particles.max(frame_scene.particles.len());
         }
     }
@@ -155,6 +160,20 @@ pub fn run(
     println!(
         "  triangles: {} in the map, up to {} in tanks and effects",
         tris.0, tris.1
+    );
+    let mean = |v: &[u64]| v.iter().sum::<u64>() / v.len().max(1) as u64;
+    let max = |v: &[u64]| v.iter().copied().max().unwrap_or(0);
+    println!(
+        "  drawn a frame{}: {} for the camera (max {}), {} into the shadow map (max {})",
+        if render::lod::disabled() {
+            " (--no-lod)"
+        } else {
+            ""
+        },
+        mean(&seen_tris),
+        max(&seen_tris),
+        mean(&sun_tris),
+        max(&sun_tris),
     );
     for t in [&sim, &build, &ui, &encode, &gpu, &voice, &total] {
         println!("  {}", t.report());

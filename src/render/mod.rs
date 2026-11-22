@@ -3,6 +3,7 @@
 //!
 //! Frame: sun shadow map -> lit HDR scene + sky -> tonemap to output -> 2D overlay.
 
+pub mod lod;
 pub mod material;
 pub mod mesh;
 pub mod surface;
@@ -246,10 +247,14 @@ struct Globals {
 struct GpuMesh {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
+    /// Indices in the full mesh, the first in `ib`.
     count: u32,
     /// A sphere round every vertex, in the mesh's own space.
     center: Vec3,
     radius: f32,
+    /// Coarser levels after the full mesh in `ib`: their index ranges and how
+    /// far each strays from the full mesh (mesh units), finest first.
+    levels: Vec<(std::ops::Range<u32>, f32)>,
 }
 
 /// The six planes of a view-projection's frustum (wgpu depth 0..1), each
@@ -283,7 +288,32 @@ fn in_frustum(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
 }
 
 impl GpuMesh {
+    /// A mesh and its coarser levels.
     fn new(device: &wgpu::Device, m: &MeshData, label: &str) -> GpuMesh {
+        let welded = lod::Welded::new(m);
+        let mut indices = m.indices.clone();
+        let mut levels = Vec::new();
+        for l in lod::levels(m, &welded, &m.indices, false) {
+            let start = indices.len() as u32;
+            indices.extend_from_slice(&l.indices);
+            levels.push((start..indices.len() as u32, l.error));
+        }
+        let mut g = GpuMesh::plain(
+            device,
+            &MeshData {
+                verts: m.verts.clone(),
+                indices,
+            },
+            label,
+        );
+        g.count = m.indices.len() as u32;
+        g.levels = levels;
+        g
+    }
+
+    /// A mesh drawn whole (`levels` empty).
+    fn plain(device: &wgpu::Device, m: &MeshData, label: &str) -> GpuMesh {
+        let (center, radius) = bounds(m);
         GpuMesh {
             vb: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -296,18 +326,98 @@ impl GpuMesh {
                 usage: wgpu::BufferUsages::INDEX,
             }),
             count: m.indices.len() as u32,
-            center: bounds(m).0,
-            radius: bounds(m).1,
+            center,
+            radius,
+            levels: Vec::new(),
+        }
+    }
+
+    /// The index range of level `k` (0 is the full mesh).
+    fn level(&self, k: usize) -> std::ops::Range<u32> {
+        match k {
+            0 => 0..self.count,
+            k => self.levels[k - 1].0.clone(),
         }
     }
 }
 
-/// One ground cell of the static mesh: its triangles' indices, and a sphere
-/// round them.
+/// One ground cell of the static mesh: its triangles' indices, a sphere
+/// round them, and its coarser levels.
 struct Chunk {
     indices: std::ops::Range<u32>,
     center: Vec3,
     radius: f32,
+    /// Index ranges of coarser copies of the cell, and how far each strays
+    /// from it (meters), finest first. Each keeps the cell's edges where
+    /// they are, so neighbours drawn at different levels still meet.
+    levels: Vec<(std::ops::Range<u32>, f32)>,
+}
+
+impl Chunk {
+    fn level(&self, k: usize) -> std::ops::Range<u32> {
+        match k {
+            0 => self.indices.clone(),
+            k => self.levels[k - 1].0.clone(),
+        }
+    }
+}
+
+/// The world's static geometry ready to upload: its triangles grouped into
+/// ground cells, with each cell's coarser levels after all the full cells.
+/// Building it is the slow part, so it can be done off the render thread.
+pub struct StaticWorld {
+    mesh: MeshData,
+    chunks: Vec<Chunk>,
+}
+
+impl StaticWorld {
+    pub fn new(mesh: &MeshData) -> StaticWorld {
+        let started = std::time::Instant::now();
+        let (mut mesh, mut chunks) = chunked(mesh);
+        let welded = lod::Welded::new(&mesh);
+        // Cells simplify independently: a few threads share them.
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+        let per = chunks.len().div_ceil(threads).max(1);
+        let levels: Vec<Vec<lod::Level>> = std::thread::scope(|scope| {
+            let jobs: Vec<_> = chunks
+                .chunks(per)
+                .map(|part| {
+                    let (mesh, welded) = (&mesh, &welded);
+                    scope.spawn(move || {
+                        part.iter()
+                            .map(|c| {
+                                let own =
+                                    &mesh.indices[c.indices.start as usize..c.indices.end as usize];
+                                lod::levels(mesh, welded, own, true)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .flat_map(|j| j.join().expect("a cell's levels panicked"))
+                .collect()
+        });
+        // Level by level, so neighbouring cells at the same level are
+        // neighbours in the index buffer and draw as one.
+        let deepest = levels.iter().map(Vec::len).max().unwrap_or(0);
+        for k in 0..deepest {
+            for (c, ls) in chunks.iter_mut().zip(&levels) {
+                if let Some(l) = ls.get(k) {
+                    let start = mesh.indices.len() as u32;
+                    mesh.indices.extend_from_slice(&l.indices);
+                    c.levels.push((start..mesh.indices.len() as u32, l.error));
+                }
+            }
+        }
+        log::debug!(
+            "static world: {} cells, {} triangles, levels made in {:.2?}",
+            chunks.len(),
+            chunks.iter().map(|c| c.indices.len() / 3).sum::<usize>(),
+            started.elapsed()
+        );
+        StaticWorld { mesh, chunks }
+    }
 }
 
 /// Ground cell size for [`chunked`], meters.
@@ -346,6 +456,7 @@ fn chunked(mesh: &MeshData) -> (MeshData, Vec<Chunk>) {
             indices: start..indices.len() as u32,
             center,
             radius,
+            levels: Vec::new(),
         });
     }
     let out = MeshData {
@@ -447,10 +558,14 @@ pub struct Renderer {
     thumb_targets: Option<((u32, u32), Targets, wgpu::Texture)>,
     /// GPU timestamps around each pass, for `--bench` (when the GPU has them).
     timer: Option<GpuTimer>,
+    /// Draw distant meshes at coarser levels.
+    lod: bool,
+    /// Triangles the last frame drew for the camera and for the sun.
+    drawn: (u64, u64),
 }
 
-/// Instance ranges to draw, by mesh.
-type Ranges = Vec<(MeshId, std::ops::Range<u32>)>;
+/// Instance ranges to draw, by mesh and level.
+type Ranges = Vec<(MeshId, usize, std::ops::Range<u32>)>;
 
 /// The passes `encode` times, in order.
 pub const PASSES: [&str; 6] = ["shadow", "prepass", "scene", "particles", "ssao", "post+ui"];
@@ -1114,6 +1229,8 @@ impl Renderer {
             meshes,
             static_mesh: None,
             chunks: Vec::new(),
+            lod: !lod::disabled(),
+            drawn: (0, 0),
             instance_buf,
             instance_cap,
             ui_buf,
@@ -1230,10 +1347,23 @@ impl Renderer {
 
     /// Upload world geometry that never moves (drawn with an identity transform).
     pub fn set_static_mesh(&mut self, mesh: &MeshData) {
-        let (mesh, chunks) = chunked(mesh);
-        self.chunks = chunks;
-        self.static_mesh = Some(GpuMesh::new(&self.device, &mesh, "static"));
+        self.set_static_world(StaticWorld::new(mesh));
+    }
+
+    /// `set_static_mesh` with the slow part already done.
+    pub fn set_static_world(&mut self, world: StaticWorld) {
+        self.chunks = world.chunks;
+        let mut gpu = GpuMesh::plain(&self.device, &world.mesh, "static");
+        // Only the full cells count: the shadow cache draws them all.
+        gpu.count = self.chunks.iter().map(|c| c.indices.end).max().unwrap_or(0);
+        self.static_mesh = Some(gpu);
         self.static_gen += 1;
+    }
+
+    /// Triangles drawn in the last frame: for the camera (prepass and scene
+    /// pass each draw these), and into the sun's shadow map.
+    pub fn drawn(&self) -> (u64, u64) {
+        self.drawn
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -1536,25 +1666,58 @@ impl Renderer {
             .collect();
         let mut data = Vec::with_capacity(2 * sorted.len() + 1);
         data.push(Instance::new(Mat4::IDENTITY, Vec4::new(1.0, 1.0, 1.0, 0.0)));
-        let mut pick = |planes: [Vec4; 6]| {
-            let mut ranges = Ranges::new();
-            for ((id, inst), &(c, r)) in sorted.iter().zip(&spheres) {
-                if !in_frustum(&planes, c, r) {
+        // How far a level may stray (meters) for the camera at a distance,
+        // and anywhere in the shadow map. Off, nothing may.
+        let lod = self.lod;
+        let fov = scene.camera.fov_y;
+        let cam = scene.camera.pos;
+        let on_screen = |center: Vec3, radius: f32| {
+            let d = center.distance(cam) - radius;
+            if !lod || d <= CAM_NEAR {
+                return 0.0;
+            }
+            lod::PIXEL_ERROR / lod::pixels_per_meter(h, fov, d)
+        };
+        let in_shadow = if lod {
+            lod::TEXEL_ERROR * 2.0 * r / SHADOW_SIZE as f32
+        } else {
+            0.0
+        };
+        let meshes = &self.meshes;
+        let mut drawn = (0u64, 0u64);
+        let mut pick = |planes: [Vec4; 6], allowed: &dyn Fn(Vec3, f32) -> f32, tris: &mut u64| {
+            let mut keep: Vec<(MeshId, usize, &Instance)> = Vec::new();
+            for ((id, inst), &(c, rad)) in sorted.iter().zip(&spheres) {
+                if !in_frustum(&planes, c, rad) {
                     continue;
                 }
+                let m = &meshes[id.0 as usize];
+                let scale = rad / m.radius.max(1e-6);
+                let k = lod::pick(m.levels.iter().map(|l| l.1), scale, allowed(c, rad));
+                *tris += (m.level(k).len() / 3) as u64;
+                keep.push((*id, k, inst));
+            }
+            keep.sort_by_key(|&(id, k, _)| (id, k));
+            let mut ranges = Ranges::new();
+            for (id, k, inst) in keep {
                 let i = data.len() as u32;
                 match ranges.last_mut() {
-                    Some((last, r)) if last == id && r.end == i => r.end = i + 1,
-                    _ => ranges.push((*id, i..i + 1)),
+                    Some((last, lk, r)) if *last == id && *lk == k && r.end == i => r.end = i + 1,
+                    _ => ranges.push((id, k, i..i + 1)),
                 }
                 data.push(*inst);
             }
             ranges
         };
-        let seen = pick(frustum(view_proj));
-        let shadowed = pick(frustum(light_view_proj));
+        let seen = pick(frustum(view_proj), &on_screen, &mut drawn.0);
+        // A caster's shadow falls near it, so it may not stray more than the
+        // camera would notice there either (or a near tank's shadow on
+        // itself would change).
+        let cast = |c: Vec3, rad: f32| in_shadow.min(on_screen(c, rad));
+        let shadowed = pick(frustum(light_view_proj), &cast, &mut drawn.1);
         self.light_view_proj = light_view_proj;
-        // The static world's cells in view, neighbours merged into one draw.
+        // The static world's cells in view, each at the coarsest level that
+        // passes for it, neighbours merged into one draw.
         let planes = frustum(view_proj);
         let mut world: Vec<std::ops::Range<u32>> = Vec::new();
         if scene.world {
@@ -1562,12 +1725,20 @@ impl Renderer {
                 if !in_frustum(&planes, c.center, c.radius) {
                     continue;
                 }
+                let k = lod::pick(
+                    c.levels.iter().map(|l| l.1),
+                    1.0,
+                    on_screen(c.center, c.radius),
+                );
+                let range = c.level(k);
+                drawn.0 += (range.len() / 3) as u64;
                 match world.last_mut() {
-                    Some(r) if r.end == c.indices.start => r.end = c.indices.end,
-                    _ => world.push(c.indices.clone()),
+                    Some(r) if r.end == range.start => r.end = range.end,
+                    _ => world.push(range),
                 }
             }
         }
+        self.drawn = drawn;
         if data.len() > self.instance_cap {
             self.instance_cap = data.len().next_power_of_two();
             self.instance_buf = make_buffer(
@@ -1663,7 +1834,7 @@ impl Renderer {
     fn draw_geometry<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
-        ranges: &[(MeshId, std::ops::Range<u32>)],
+        ranges: &[(MeshId, usize, std::ops::Range<u32>)],
         world: &[std::ops::Range<u32>],
     ) {
         pass.set_vertex_buffer(1, self.instance_buf.slice(..));
@@ -1674,11 +1845,15 @@ impl Renderer {
                 pass.draw_indexed(r.clone(), 0, 0..1);
             }
         }
-        for (id, r) in ranges {
+        let mut bound = None;
+        for (id, k, r) in ranges {
             let m = &self.meshes[id.0 as usize];
-            pass.set_vertex_buffer(0, m.vb.slice(..));
-            pass.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..m.count, 0, r.clone());
+            if bound != Some(*id) {
+                pass.set_vertex_buffer(0, m.vb.slice(..));
+                pass.set_index_buffer(m.ib.slice(..), wgpu::IndexFormat::Uint32);
+                bound = Some(*id);
+            }
+            pass.draw_indexed(m.level(*k), 0, r.clone());
         }
     }
 

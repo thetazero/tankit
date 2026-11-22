@@ -54,6 +54,7 @@ tankit [OPTIONS]
                           mine: caves, rails and stacked levels)
   --map-seed <n>          which city a generated map (city) builds (default: the --seed)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
+  --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
   --team-size <n>         tanks per side, you included (default 6)
   --contract <attrition|hold|raid>
@@ -418,6 +419,7 @@ fn parse_args() -> Result<Args> {
                 map_seed = Some(args.next().context("--map-seed needs a number")?.parse()?)
             }
             "--greybox" => greybox = true,
+            "--no-lod" => render::lod::disable(),
             "--map" => match args.next().as_deref() {
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("sanctum") => map_kind = MapKind::Sanctum,

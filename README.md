@@ -27,6 +27,11 @@ round's sound headless to a WAV and prints its levels.
 `--bench <seconds>` plays a round headless at 60 frames a second and prints
 what each part of the frame costs (sim, scene, HUD, each GPU pass, sound),
 then its slowest frames part by part; `--size` sets the resolution, `--map` the map.
+Distant things are drawn with fewer triangles (level of detail, `src/render/lod.rs`):
+each mesh and each 24 m cell of the map gets coarser copies, and the renderer
+draws the coarsest that strays under half a pixel from the full mesh.
+`--no-lod` draws everything at full detail, to compare against (with `--bench`
+or `--shot`).
 In a window, a frame that takes over 50 ms (or a gap of over 100 ms between
 frames, or a wait on the window's next image) is logged as a `hitch` warning
 saying where the time went, with the machine's memory and disk pressure, and
