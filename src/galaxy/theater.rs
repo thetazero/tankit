@@ -108,6 +108,9 @@ pub struct Shown {
     pub side: usize,
     pub over: u8,
     pub realm: String,
+    /// Hired to hold the world, not take it (#366).
+    #[serde(default)]
+    pub defend: bool,
 }
 
 impl Shown {
@@ -120,6 +123,7 @@ impl Shown {
             side: s.side,
             over: s.over,
             realm: s.realm.clone(),
+            defend: s.defend,
         })
     }
 }
@@ -689,6 +693,7 @@ impl Galaxy {
             field: 0.0,
             lost: 0.0,
             max_loss: 0.0,
+            defend: shown.defend,
             ticks_left: 0,
             term: self.rules.merc_term as u64,
             signed: shown.signed,

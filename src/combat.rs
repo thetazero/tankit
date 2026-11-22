@@ -516,6 +516,27 @@ pub fn max_health(kind: HullKind) -> f32 {
     }
 }
 
+/// One pilot, one scoreboard row (#389): a seat's merc or the realm's own
+/// who took it over, never both.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pilot {
+    /// The tank they drive (or drove).
+    pub seat: usize,
+    pub team: usize,
+    /// One of the Company's mercs (you're one, on a contract).
+    pub company: bool,
+    pub kills: u32,
+    pub deaths: u32,
+    /// Seconds on the site while their side held it (Hold).
+    pub held: f32,
+    /// Their kit: now, or the last they drove.
+    pub hull: HullKind,
+    pub turret: TurretKind,
+    /// Still in the fight: in a tank, or coming back in one. Not when
+    /// their hulls are spent, or they've left their seat.
+    pub active: bool,
+}
+
 pub struct Fighter {
     /// Side 0 (the player's) or 1.
     pub team: usize,
@@ -868,6 +889,12 @@ pub struct Match {
     pub place: Option<String>,
     /// Your company's name ("IRON TITHE"), for the HUD (#350).
     pub crew: Option<String>,
+    /// Pilots who've left their seat for good: a merc whose seat went over
+    /// to the realm when the company's hulls ran out (#389).
+    retired: Vec<Pilot>,
+    /// Each seat's kills, deaths and time held when its pilot now took it
+    /// (none yet: from the start).
+    took_seat: Vec<(u32, u32, f32)>,
     nav: NavGrid,
     rng: Rng,
     /// Blowing sand, drifting dust, trickles, track dust (visual only).
@@ -943,6 +970,8 @@ impl Match {
             crew_out: false,
             place: None,
             crew: None,
+            retired: Vec::new(),
+            took_seat: Vec::new(),
             nav,
             rng,
         }
@@ -1209,21 +1238,6 @@ impl Match {
         let mut top = still.iter().copied().filter(|&t| self.score(t) == best);
         let first = top.next()?;
         top.next().is_none().then_some(first)
-    }
-
-    /// Fighter indices by standing: most time on the site (under Hold), then
-    /// most kills, then fewest deaths.
-    pub fn standings(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.fighters.len()).collect();
-        order.sort_by_key(|&i| {
-            (
-                std::cmp::Reverse(self.held(i) as u32),
-                std::cmp::Reverse(self.fighters[i].kills),
-                self.fighters[i].deaths,
-                i,
-            )
-        });
-        order
     }
 
     /// Swap the player's hull, keeping health as a fraction of the new maximum.
@@ -2521,10 +2535,72 @@ impl Match {
         if company {
             match self.company_hulls.get_mut(team) {
                 Some(h) if *h > 0 => *h -= 1,
-                _ => self.world.tanks[i].company = false,
+                _ => self.hand_over(i),
             }
         }
         true
+    }
+
+    /// Seat `i`'s merc is done, the company's hulls spent: the seat is the
+    /// realm's now, under a new pilot of its own (#389). The merc keeps
+    /// their row, with what they did in it.
+    fn hand_over(&mut self, i: usize) {
+        let mut merc = self.pilot(i);
+        merc.active = false;
+        self.retired.push(merc);
+        if self.took_seat.len() < self.fighters.len() {
+            self.took_seat.resize(self.fighters.len(), (0, 0, 0.0));
+        }
+        let f = &self.fighters[i];
+        self.took_seat[i] = (f.kills, f.deaths, self.held(i));
+        self.world.tanks[i].company = false;
+    }
+
+    /// Whoever's in seat `i` now, with what they've done since taking it.
+    fn pilot(&self, i: usize) -> Pilot {
+        let (k, d, h) = self.took_seat.get(i).copied().unwrap_or((0, 0, 0.0));
+        let f = &self.fighters[i];
+        let t = &self.world.tanks[i];
+        let company = t.company;
+        // Down and not coming back: the side's hulls are spent, or a
+        // merc's company's are (then the seat goes to the realm).
+        let out = !f.alive
+            && (self.hulls_left(f.team) == Some(0)
+                || (company
+                    && self.hulls.is_some()
+                    && self.company_hulls.get(f.team).copied().unwrap_or(0) == 0));
+        Pilot {
+            seat: i,
+            team: f.team,
+            company,
+            kills: f.kills - k,
+            deaths: f.deaths - d,
+            held: self.held(i) - h,
+            hull: t.hull_kind,
+            turret: t.turret_kind,
+            active: !out,
+        }
+    }
+
+    /// Every pilot in the match, one per scoreboard row (#389): each seat's
+    /// pilot now, and the mercs who've left theirs. In standing order, those
+    /// still in the fight first: most time on the site (under Hold), then
+    /// most kills, then fewest deaths.
+    pub fn pilots(&self) -> Vec<Pilot> {
+        let mut all: Vec<Pilot> = (0..self.fighters.len())
+            .map(|i| self.pilot(i))
+            .chain(self.retired.iter().copied())
+            .collect();
+        all.sort_by_key(|p| {
+            (
+                !p.active,
+                std::cmp::Reverse(p.held as u32),
+                std::cmp::Reverse(p.kills),
+                p.deaths,
+                p.seat,
+            )
+        });
+        all
     }
 
     /// Put one of side `team`'s hulls in play, if it has one left (always,
@@ -5323,7 +5399,8 @@ mod tests {
         m.fighters[2].kills = 3;
         m.fighters[1].kills = 3;
         m.fighters[1].deaths = 1;
-        assert_eq!(m.standings(), vec![2, 1, 0]);
+        let seats: Vec<usize> = m.pilots().iter().map(|p| p.seat).collect();
+        assert_eq!(seats, vec![2, 1, 0]);
     }
 
     /// Left alone, the two sides find each other and fight: kills happen
@@ -5426,6 +5503,75 @@ mod tests {
         let mut alone = arena(3);
         alone.set_company(0, 0, 0);
         assert_eq!(alone.company_seats(0), 0);
+    }
+
+    /// Pilots are pilots (#389): when a merc's seat goes over to the realm,
+    /// the merc keeps their own row, greyed out, with what they did, and the
+    /// realm's pilot gets a row of their own from nothing. No row mixes two.
+    #[test]
+    fn a_seat_handed_to_the_realm_is_a_new_pilot() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[6, 10]);
+        // Tanks 0 (you) and 2: mercs, one merc hull to spare.
+        m.set_company(0, 2, 3);
+        let ours =
+            |m: &Match| -> Vec<Pilot> { m.pilots().into_iter().filter(|p| p.team == 0).collect() };
+        assert_eq!(ours(&m).len(), 2, "one pilot a seat, to start");
+        m.fighters[2].kills = 2;
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        assert!(!m.world.tanks[2].company, "the realm's seat now");
+        m.fighters[2].kills += 1;
+        let rows = ours(&m);
+        assert_eq!(rows.len(), 3, "you, the realm's, and the merc who left");
+        let merc = rows.iter().find(|p| p.seat == 2 && p.company).unwrap();
+        assert_eq!((merc.kills, merc.deaths), (2, 2));
+        assert!(!merc.active, "out of the fight: greyed");
+        let realm = rows.iter().find(|p| p.seat == 2 && !p.company).unwrap();
+        assert_eq!((realm.kills, realm.deaths), (1, 0), "only its own");
+        assert!(realm.active);
+        // Those still in it are listed first; the rows add up to the side's.
+        assert!(!rows.last().unwrap().active);
+        assert_eq!(rows.iter().map(|p| p.kills).sum::<u32>(), m.score(0));
+        assert_eq!(rows.iter().map(|p| p.deaths).sum::<u32>(), m.lost()[0]);
+    }
+
+    /// Pilots out of hulls stay listed, inactive (#389): a side's whose
+    /// allocation is spent, and you once your company's is.
+    #[test]
+    fn pilots_out_of_hulls_are_listed_inactive() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        // Your side's two tanks are all its hulls.
+        m.set_allocation(&[2, 10]);
+        assert!(m.pilots().iter().all(|p| p.active));
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        let p = |m: &Match, seat: usize| *m.pilots().iter().find(|p| p.seat == seat).unwrap();
+        assert!(!p(&m, 2).active, "no hull to come back in");
+        assert!(p(&m, 0).active);
+        assert_eq!(m.pilots().len(), 4, "still all listed");
+
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[10, 10]);
+        // You're the company's only seat, with no merc hull to spare.
+        m.set_company(0, 1, 1);
+        destroy(&mut m, 0);
+        assert!(!p(&m, 0).active, "your company's spent: you're out");
+        assert!(p(&m, 0).company && p(&m, 2).active);
+        // A tank down but with a hull to come back in is still in it.
+        destroy(&mut m, 2);
+        assert!(p(&m, 2).active);
     }
 
     /// Once your company's hulls are spent, you don't come back in the

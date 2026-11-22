@@ -526,6 +526,7 @@ mod tests {
             side: 1,
             over: 2,
             realm: "KALARUN".into(),
+            defend: true,
         };
         p.set_shown(Some(shown.clone()));
         let crystals = p.crystals;
