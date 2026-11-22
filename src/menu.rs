@@ -135,7 +135,7 @@ impl<'a> Item<'a> {
 }
 
 const MAIN_ITEMS: [Item<'static>; 5] = [
-    Item::Opens("MISSIONS"),
+    Item::Opens("CONTRACT"),
     Item::Opens("COMPANIES"),
     Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
@@ -1214,7 +1214,7 @@ fn your_company(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
             );
         }
         None => {
-            body(p, at, "None yet: open Missions to join one", theme::FAINT);
+            body(p, at, "None yet: open Contract to join one", theme::FAINT);
         }
     }
     44.0
