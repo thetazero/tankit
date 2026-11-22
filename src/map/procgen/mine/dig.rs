@@ -340,10 +340,15 @@ impl Dig<'_> {
             let g = self.ground_height(p.x, p.y);
             let at = Vec3::new(p.x, g + 1.9, p.y);
             let blocked = |dir: Vec3, len: f32| self.oboxes.iter().any(|o| o.ray_hit(at, dir, len));
+            // (Each box as its whole rectangle, tilted or not.)
+            let rect = |o: &OBox| {
+                let q = o.local_point(p).abs() - o.half;
+                q.max(Vec2::ZERO).length()
+            };
             let under = self
                 .oboxes
                 .iter()
-                .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0)
+                .any(|o| rect(o) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0)
                 || self.crystals.iter().any(|c| c.distance(p) < 3.4);
             // The foreground the camera sees past the tank as it sways:
             // level, and in the sun.
@@ -382,10 +387,10 @@ impl Dig<'_> {
             .map(|&side| {
                 let want = end + dir * 4.0 + across * side * 18.0;
                 let mut spots = Vec::new();
-                let mut u = -30.0;
-                while u <= 30.0 {
-                    let mut v = -16.0;
-                    while v <= 16.0 {
+                let mut u = -60.0;
+                while u <= 60.0 {
+                    let mut v = -40.0;
+                    while v <= 40.0 {
                         spots.push(want + Vec2::new(u, v));
                         v += 3.0;
                     }
@@ -2689,20 +2694,21 @@ impl Dig<'_> {
             Material::Wood,
             false,
         );
-        // Dark inner boarding, seen through the gaps between the planks.
+        // Dark inner boarding, seen through the gaps between the planks
+        // (its top well under the top plank's, so they don't fight).
         for s in [-1.0f32, 1.0] {
             part(
                 self,
-                Vec3::new(s * 0.94, 1.35, 0.0),
-                Vec3::new(0.02, 0.58, 1.5),
+                Vec3::new(s * 0.94, 1.33, 0.0),
+                Vec3::new(0.02, 0.54, 1.5),
                 TIMBER * 0.25,
                 Material::Wood,
                 false,
             );
             part(
                 self,
-                Vec3::new(0.0, 1.35, s * 1.49),
-                Vec3::new(0.9, 0.58, 0.02),
+                Vec3::new(0.0, 1.33, s * 1.49),
+                Vec3::new(0.9, 0.54, 0.02),
                 TIMBER * 0.25,
                 Material::Wood,
                 false,

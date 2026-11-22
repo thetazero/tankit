@@ -1188,7 +1188,7 @@ impl Layout {
                     // (Well out from under the Face: the chase camera behind
                     // a tank turning about stays out of the rock.)
                     p.y > 10.0
-                        && p.y < self.face(p.x) - 16.0
+                        && p.y < self.face(p.x) - 24.0
                         && self.mesa(p) < 0.01
                         && self.washes.iter().all(|w| w.near(p).0 > 14.0)
                         && self.lines.iter().all(|t| line_distance(t, p) > 12.0)
