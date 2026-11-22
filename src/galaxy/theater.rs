@@ -71,29 +71,36 @@ pub struct Ship {
     /// The world it's parked over: where its side's attack goes in this
     /// tick, or on a defense, the world under attack.
     pub over: u8,
-    /// Its hulls still aboard (not in the fight).
-    pub aboard: f32,
     /// The realm that hired it, by its seat's name, and that realm's people
     /// (index into `Faction::ALL`).
     pub realm: String,
     pub side: usize,
-    /// Its hulls in the fight, lost so far, and the cap on losses.
-    pub field: f32,
-    pub lost: f32,
-    pub max_loss: f32,
     /// Hired to hold one of the realm's own worlds (#340, #366), not to
     /// take one: it's done when the attack is beaten off.
     pub defend: bool,
-    /// Ticks until the contract runs out (one a battle), of its `term`.
+    /// Ticks until the contract runs out (one a battle).
     pub ticks_left: u64,
-    pub term: u64,
     /// The tick it was signed: a new one is a new contract.
     pub signed: u64,
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
-    /// Of its hulls in each battle, how many are yours alone at your rank
-    /// (#385; see `battle::own_hulls`).
-    pub own: u32,
+    /// Its hulls still committed to the contract (in the fight or waiting
+    /// in orbit), and of them yours alone (#385): left, of how many.
+    pub committed: f32,
+    pub own: Own,
+}
+
+/// Your own hulls on your company's contract (#385): set once when you
+/// start on it, by your rank then (`battle::own_hulls`), never more than
+/// half the hulls it has committed. Bots can't spend them; only your
+/// deaths do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Own {
+    /// The company and contract they're on (`Company::id`, `Contract::signed`).
+    pub ship: u32,
+    pub signed: u64,
+    pub left: u32,
+    pub of: u32,
 }
 
 /// The contract you were last shown on the missions screen (#386): kept in
@@ -597,6 +604,7 @@ impl Galaxy {
     ) -> (Option<Theater>, bool) {
         for i in 0..=ticks {
             self.enlist(prefer);
+            self.claim_own(rank);
             if self.crew_choice().is_some() {
                 return (self.aboard(rank), i > 0);
             }
@@ -629,6 +637,54 @@ impl Galaxy {
         (t, ticked)
     }
 
+    /// Your own hulls on contract `k` of company `ship` (#385): the ones
+    /// you have, if they're on it; else the ones you'd get at `rank`.
+    fn own_on(&self, ship: u32, k: super::merc::Contract, rank: u32) -> Own {
+        match self.own {
+            Some(o) if o.ship == ship && o.signed == k.signed => o,
+            _ => {
+                let half = ((k.field + k.orbit).round().max(0.0) as u32).div_ceil(2);
+                let of = super::battle::own_hulls(rank).min(half);
+                Own {
+                    ship,
+                    signed: k.signed,
+                    left: of,
+                    of,
+                }
+            }
+        }
+    }
+
+    /// Set your own hulls for your company's contract at `rank` (#385),
+    /// unless they're already set for it: once a contract, so ranking up
+    /// on it doesn't add any. None without a contract.
+    pub fn claim_own(&mut self, rank: u32) {
+        let on = self.crew_company().and_then(|c| {
+            let co = &self.companies[c];
+            co.contract.map(|k| (co.id, k))
+        });
+        self.own = on.map(|(ship, k)| self.own_on(ship, k, rank));
+    }
+
+    /// Your own hulls left on your company's contract (0 if none are set).
+    pub fn own_left(&self) -> u32 {
+        let on = self.crew_company().and_then(|c| {
+            let co = &self.companies[c];
+            co.contract.map(|k| (co.id, k.signed))
+        });
+        match (self.own, on) {
+            (Some(o), Some((ship, signed))) if o.ship == ship && o.signed == signed => o.left,
+            _ => 0,
+        }
+    }
+
+    /// You lost `n` of your own hulls in a battle.
+    pub fn spend_own(&mut self, n: u32) {
+        if let Some(o) = &mut self.own {
+            o.left = o.left.saturating_sub(n);
+        }
+    }
+
     /// The theater aboard your company's ship: its contract's system, for
     /// the side that hired it. None if you have no company, or it has no
     /// battle for you this tick.
@@ -659,18 +715,14 @@ impl Galaxy {
             id: co.id,
             name: ship_name(co.id),
             over,
-            aboard: co.hulls,
             realm: system_name(self.realms[k.realm as usize].seat as usize),
             side: f,
-            field: k.field,
-            lost: k.lost,
-            max_loss: k.max_loss,
             defend: k.defend,
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
-            term: self.rules.merc_term as u64,
             signed: k.signed,
             news: self.crew_news,
-            own: super::battle::own_hulls(rank),
+            committed: k.field + k.orbit,
+            own: self.own_on(co.id, k, rank),
         });
         Some(t)
     }
@@ -687,18 +739,14 @@ impl Galaxy {
             id: shown.ship,
             name: ship_name(shown.ship),
             over: shown.over,
-            aboard: 0.0,
             realm: shown.realm.clone(),
             side: shown.side,
-            field: 0.0,
-            lost: 0.0,
-            max_loss: 0.0,
             defend: false,
             ticks_left: 0,
-            term: self.rules.merc_term as u64,
             signed: shown.signed,
             news: None,
-            own: 0,
+            committed: 0.0,
+            own: Own::default(),
         });
         Some(t)
     }

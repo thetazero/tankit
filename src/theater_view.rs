@@ -31,7 +31,9 @@ use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::scene::project;
 use crate::ship_model;
 use crate::ui::widgets;
-use crate::ui::{Align, Hits, Painter, Rgba, TextStyle, measure, theme, with_alpha};
+use crate::ui::{
+    Align, Hits, Painter, Rgba, TextStyle, hull_pips, measure, pips_width, theme, with_alpha,
+};
 
 const STAR: Rgba = [1.0, 0.86, 0.62, 1.0];
 /// The fill behind the marks and labels: the black of space.
@@ -866,12 +868,12 @@ pub fn draw(
         label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
     }
 
-    // Which system you're in, and how long you'll fight in it, over it;
+    // Which system you're in, and your company's hulls left, over it;
     // what the marks mean under it.
     here(p, t, min);
     forces(p, t, Vec2::new(min.x + 24.0, min.y + 100.0));
     if let Some(ship) = &t.ship {
-        term(p, t, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
+        hulls(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
     }
     p.line(
         Vec2::new(min.x + 16.0, bottom),
@@ -944,65 +946,32 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
     }
 }
 
-/// What your ship's here for and how much longer it fights here,
-/// right-aligned at `at`: to take the system or hold it, its contract's
-/// ticks left (a battle each) and a bar of them, of its term, and what ends
-/// it sooner.
-fn term(p: &mut Painter, t: &Theater, ship: &Ship, at: Vec2) {
-    let mut style = TextStyle::LABEL;
-    style.color = theme::DIM;
-    p.text(
-        at,
-        &format!("CONTRACT HERE · {} {}", job(ship), t.name),
-        &style,
-        Align::Right,
+/// Your company's hulls left on its contract, right-aligned at `at`: a
+/// pip a hull, yours alone lit first (#385).
+fn hulls(p: &mut Painter, ship: &Ship, at: Vec2) {
+    let amber = Faction::Company.ui();
+    let total = ship.committed.round().max(0.0) as u32;
+    let yours = ship.own.left.min(total);
+    let mut company = TextStyle::LABEL;
+    company.color = theme::DIM;
+    let mut mine = TextStyle::LABEL;
+    mine.color = amber;
+    let (left, right) = (format!("YOURS {yours}"), format!("COMPANY {total}"));
+    let (cell, gap) = (Vec2::new(9.0, 12.0), 3.0);
+    let w = pips_width(total, cell.x, gap)
+        .max(measure(&left, &mine) + 24.0 + measure(&right, &company));
+    let x0 = at.x - w;
+    p.text(Vec2::new(x0, at.y), &left, &mine, Align::Left);
+    p.text(at, &right, &company, Align::Right);
+    hull_pips(
+        p,
+        Vec2::new(x0, at.y + 16.0),
+        total,
+        yours,
+        amber,
+        cell,
+        gap,
     );
-    let left = match ship.ticks_left {
-        1 => "1 BATTLE LEFT".to_string(),
-        k => format!("UP TO {k} BATTLES LEFT"),
-    };
-    let mut big = TextStyle::value(20.0);
-    big.color = Faction::Company.ui();
-    p.text(at + Vec2::new(0.0, 16.0), &left, &big, Align::Right);
-    // A cell a tick, of its term: lit for those left.
-    let n = ship.term.clamp(1, 60) as usize;
-    let lit = (ship.ticks_left as usize).min(n);
-    let (cw, gap, ch) = (6.0, 2.0, 7.0);
-    let x0 = at.x - n as f32 * (cw + gap) + gap;
-    for i in 0..n {
-        let color = if i < lit {
-            with_alpha(Faction::Company.ui(), 0.9)
-        } else {
-            theme::FAINT
-        };
-        p.rect(
-            Vec2::new(x0 + i as f32 * (cw + gap), at.y + 48.0),
-            Vec2::new(cw, ch),
-            color,
-        );
-    }
-    let lost = (ship.lost.round().max(0.0)) as u32;
-    let cap = (ship.max_loss.round() as u32).max(1);
-    let losses = format!("AT {cap} HULLS LOST ({lost} SO FAR)");
-    // A defense is done when the attack's beaten off, and over (lost) if
-    // the world falls anyway: two lines, to stay clear of the forces table.
-    // An attack is done when it falls.
-    let lines = if ship.defend {
-        vec![
-            "SOONER IF THE ATTACK IS BEATEN OFF OR THE WORLD FALLS,".to_string(),
-            format!("OR {losses}"),
-        ]
-    } else {
-        vec![format!("SOONER IF THE WORLD FALLS, OR {losses}")]
-    };
-    for (i, line) in lines.iter().enumerate() {
-        p.text(
-            at + Vec2::new(0.0, 64.0 + 14.0 * i as f32),
-            line,
-            &style,
-            Align::Right,
-        );
-    }
 }
 
 /// What a contract's for, in caps: to hold the system, or to take it.
@@ -1371,18 +1340,14 @@ mod tests {
             id: 1,
             name: "TEST".into(),
             over: 0,
-            aboard: 0.0,
             realm: "R".into(),
             side: 0,
-            field: 0.0,
-            lost: 0.0,
-            max_loss: 1.0,
             defend: false,
             ticks_left: 10,
-            term: 30,
             signed: 4,
             news: None,
-            own: 2,
+            committed: 0.0,
+            own: Default::default(),
         });
         let mut b = a.clone();
         b.tick += 3;
@@ -1407,18 +1372,14 @@ mod tests {
             id: 4,
             name: "A".into(),
             over: 1,
-            aboard: 0.0,
             realm: "KALARUN".into(),
             side: 0,
-            field: 0.0,
-            lost: 0.0,
-            max_loss: 0.0,
             defend: false,
             ticks_left: 0,
-            term: 6,
             signed: 10,
             news: None,
-            own: 2,
+            committed: 0.0,
+            own: Default::default(),
         });
         let tr = Transfer::new(a.clone());
         let mut renewed = a.clone();

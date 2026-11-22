@@ -942,7 +942,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             false => None,
         }
         .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
-        game.set_own_hulls(galaxy::battle::own_hulls(profile.rank().level));
         // With the company fighting for you there, if there is one; else the
         // one a new pilot would join.
         let side = game.factions.first().map(|f| f.index());
@@ -957,6 +956,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 .map(|c| c.id)
         });
         g.enlist(side);
+        g.claim_own(profile.rank().level);
+        game.set_own_hulls(g.own_left());
         profile.ship = g.crew;
         game.crew = profile.company_name();
     }

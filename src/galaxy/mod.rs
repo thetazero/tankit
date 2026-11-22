@@ -348,6 +348,8 @@ pub struct Galaxy {
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
     pub crew: Option<u32>,
+    /// Your own hulls on your company's contract (#385; see `claim_own`).
+    pub own: Option<theater::Own>,
     /// What just happened to your company, for the missions screen (not saved).
     pub crew_news: Option<theater::CrewNews>,
     /// Your company just split or joined another: which ship you go with,
@@ -512,6 +514,7 @@ impl Galaxy {
             debts: Vec::new(),
             next_company: 0,
             crew: None,
+            own: None,
             crew_news: None,
             crew_choice: None,
             destroyed: 0.0,

@@ -35,9 +35,9 @@
 //! off them. You're one of your company's seats, in one of its hulls; when
 //! its hulls are spent, so are you, and the match plays out without you
 //! (see `Match::crew_out`, #373): its result is whatever your side's realm
-//! hulls make of it. Some of its hulls are yours alone, more at higher
-//! rank ([`own_hulls`], #385): its bots can't spend them, so they can't
-//! leave you without a hull while the company has any.
+//! hulls make of it. Some of its hulls are yours alone, set when you start
+//! on its contract, more at higher rank ([`own_hulls`], #385): its bots
+//! can't spend them, only your deaths do.
 
 use super::{AT_WAR, Galaxy, SIDES, SiteKind};
 use crate::combat::Match;
@@ -49,10 +49,10 @@ use crate::mission::Contract;
 /// most battles end on the objective, not with a side out of hulls.
 pub const PER_SEAT: u32 = 10;
 
-/// Of your company's hulls in a battle, how many are yours alone at rank
-/// `rank` (#385): two at first, one more with each title (every five
-/// ranks). Bots can't spend them; see `Match::set_own_hulls`, which also
-/// keeps them under half the company's.
+/// Of your company's hulls on a contract, how many are yours alone if you
+/// start on it at rank `rank` (#385): two at first, one more with each
+/// title (every five ranks); never more than half its hulls (see
+/// `Galaxy::claim_own`).
 pub fn own_hulls(rank: u32) -> u32 {
     2 + rank.saturating_sub(1) / crate::profile::RANKS_PER_TITLE
 }
@@ -215,6 +215,7 @@ pub fn conclude(g: &mut Galaxy, b: &Battle, m: &Match) -> Settled {
         m.leader(),
         Stake::of(m.contract),
     );
+    g.spend_own(m.own_lost());
     g.step();
     s
 }
@@ -757,10 +758,8 @@ mod merc_tests {
     use super::*;
     use crate::galaxy::Galaxy;
 
-    /// A battle where a company is under contract, from a warmed galaxy:
-    /// the company's side first, against the strongest other side there.
-    /// Your own hulls in a battle (#385): a small few at rank 1, more with
-    /// each title, never fewer at a higher rank.
+    /// Your own hulls on a contract (#385): a small few at rank 1, more
+    /// with each title, never fewer at a higher rank.
     #[test]
     fn own_hulls_grow_with_rank() {
         assert_eq!(own_hulls(1), 2);
@@ -772,6 +771,77 @@ mod merc_tests {
         }
     }
 
+    /// A galaxy with you in a company under contract with at least
+    /// `hulls` committed.
+    fn on_contract(hulls: f32) -> Galaxy {
+        let mut g = Galaxy::warmed(7);
+        let c = g
+            .companies
+            .iter()
+            .find(|c| c.contract.is_some_and(|k| k.field + k.orbit >= hulls))
+            .expect("a company under contract")
+            .id;
+        g.crew = Some(c);
+        g
+    }
+
+    /// Your own hulls are set once when you start on a contract, by your
+    /// rank then: ranking up on it adds none, and only your losses take
+    /// them. They're never more than half its hulls.
+    #[test]
+    fn own_hulls_are_set_once_a_contract() {
+        let mut g = on_contract(8.0);
+        assert_eq!(g.own_left(), 0, "none until you start on it");
+        g.claim_own(1);
+        assert_eq!(g.own_left(), 2);
+        g.claim_own(46);
+        assert_eq!(g.own_left(), 2, "a rank up mid-contract adds none");
+        g.spend_own(1);
+        g.claim_own(1);
+        assert_eq!(g.own_left(), 1, "spent ones stay spent");
+        let o = g.own.unwrap();
+        assert_eq!((o.left, o.of), (1, 2));
+
+        // A new contract (or ship) is a new allocation, at your rank then.
+        let mut h = on_contract(8.0);
+        h.claim_own(1);
+        let c = h.crew_company().unwrap();
+        let k = h.companies[c].contract.as_mut().unwrap();
+        k.signed += 1;
+        let half = ((k.field + k.orbit).round() as u32).div_ceil(2);
+        h.claim_own(46);
+        assert_eq!(h.own_left(), own_hulls(46).min(half));
+        assert!(h.own_left() <= half);
+    }
+
+    /// Your own hulls lost in a battle come off yours on the contract.
+    #[test]
+    fn a_battle_spends_your_own_hulls() {
+        let mut g = on_contract(8.0);
+        g.claim_own(1);
+        let c = g.crew_company().unwrap();
+        let k = g.companies[c].contract.unwrap();
+        let (t, f) = (k.target as usize, k.side as usize);
+        let enemy = (0..SIDES)
+            .filter(|&e| e != f)
+            .max_by(|&a, &b| g.systems[t].hulls[a].total_cmp(&g.systems[t].hulls[b]))
+            .unwrap();
+        let mut map = crate::map::Map::saltmarket();
+        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        let mut m = crate::combat::Match::new(map, 0, 5, 21);
+        let b = g
+            .muster_crew(t, &m.factions, seats(&m), None)
+            .expect("your company's battle");
+        let b = begin(&g, &mut m, b);
+        m.set_own_hulls(g.own_left());
+        assert_eq!(m.own_hulls, 2);
+        m.destroy_player();
+        conclude(&mut g, &b, &m);
+        assert_eq!(g.own.unwrap().left, 1);
+    }
+
+    /// A battle where a company is under contract, from a warmed galaxy:
+    /// the company's side first, against the strongest other side there.
     fn hired_battle(g: &Galaxy) -> Option<Battle> {
         let k = g
             .companies
