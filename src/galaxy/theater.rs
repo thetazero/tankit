@@ -108,7 +108,7 @@ pub struct Shown {
     pub side: usize,
     pub over: u8,
     pub realm: String,
-    /// Hired to hold the world, not take it (#366).
+    /// It was hired to hold that world, not take it (#366).
     #[serde(default)]
     pub defend: bool,
 }

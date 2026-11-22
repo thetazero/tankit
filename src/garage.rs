@@ -42,11 +42,19 @@ const TAB_H: f32 = 28.0;
 /// The card grid's viewport: where it starts and how tall it is.
 const GRID_TOP: f32 = 182.0;
 const GRID_VIEW: f32 = 552.0;
-const GRID_COLS: usize = 3;
+/// Two across: no maker has more than two parts of a kind, so a third
+/// column only ever stood empty.
+const GRID_COLS: usize = 2;
 const CARD_GAP: f32 = 10.0;
 const CARD_W: f32 = (GRID_W - CARD_GAP * (GRID_COLS as f32 - 1.0)) / GRID_COLS as f32;
-const THUMB_H: f32 = 66.0;
-const CARD_H: f32 = THUMB_H + 40.0;
+const THUMB_H: f32 = 68.0;
+/// Under the thumbnail: the part's name, and under it whether it's
+/// equipped or owned (a locked part has only its padlock).
+const STRIP_H: f32 = 38.0;
+const CARD_H: f32 = THUMB_H + STRIP_H;
+/// The card's text inset from its edges.
+const CARD_INSET: f32 = 8.0;
+const NAME_SIZE: f32 = 11.0;
 const CARD_PITCH: f32 = CARD_H + 8.0;
 /// A maker's header above its group of cards.
 const HEAD_H: f32 = 22.0;
@@ -61,9 +69,8 @@ const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
 /// What you'll deploy with.
 const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
-/// Parts whose schematic you haven't stolen yet.
+/// Parts whose schematic you haven't stolen yet: the padlock.
 const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
-const LOCKED_NAME: Rgba = [0.86, 0.47, 0.38, 0.5];
 /// Open/close transition speed (1 / seconds).
 const BLEND_RATE: f32 = 2.5;
 /// Orbit camera: distance, height and slow drift around the tank (rad/s).
@@ -291,6 +298,19 @@ fn tab_parts(section: usize) -> Vec<Part> {
         HULLS.iter().map(|&k| Part::Hull(k)).collect()
     } else {
         TURRETS.iter().map(|&k| Part::Turret(k)).collect()
+    }
+}
+
+/// A card's status, right of its name: EQUIPPED or OWNED and the part's
+/// tier; nothing for a part you haven't stolen (its padlock says so).
+fn card_tag(part: Part, equipped: bool, profile: &Profile) -> Option<(String, Rgba)> {
+    let level = crate::economy::level_label(profile.levels.of(part));
+    if equipped {
+        Some((format!("EQUIPPED · {level}"), EQUIPPED))
+    } else if profile.owns(part) {
+        Some((format!("OWNED · {level}"), theme::DIM))
+    } else {
+        None
     }
 }
 
@@ -885,7 +905,8 @@ impl Garage {
     }
 
     /// One card: the part's thumbnail (dark and padlocked if it isn't yours),
-    /// its name, and EQUIPPED, OWNED, or the mission whose win steals it.
+    /// its name, and whether it's EQUIPPED or OWNED, at what tier. Who makes
+    /// it is the header above it, so the card doesn't say it again (#387).
     fn draw_card(
         &self,
         p: &mut Painter,
@@ -930,26 +951,22 @@ impl Garage {
             p.rect_outline(min, size, wd, c);
         }
 
-        let mut s = TextStyle::value(11.0);
-        s.color = if owned { theme::FG } else { LOCKED_NAME };
+        let mut s = TextStyle::value(NAME_SIZE);
+        s.color = if owned { theme::FG } else { theme::DIM };
+        let y = min.y + THUMB_H + 8.0;
         p.text(
-            min + Vec2::new(8.0, THUMB_H + 8.0),
+            Vec2::new(min.x + CARD_INSET, y),
             part.name(),
             &s,
             Align::Left,
         );
 
-        let level = crate::economy::level_label(profile.levels.of(part));
-        let (tag, color) = if equipped {
-            (format!("EQUIPPED · {level}"), EQUIPPED)
-        } else if owned {
-            (format!("OWNED · {level}"), theme::DIM)
-        } else {
-            (format!("FROM THE {}", part.maker().name()), LOCKED)
-        };
-        let mut t = TextStyle::LABEL;
-        t.color = color;
-        p.text(min + Vec2::new(8.0, THUMB_H + 25.0), &tag, &t, Align::Left);
+        if let Some((tag, color)) = card_tag(part, equipped, profile) {
+            let mut t = TextStyle::LABEL;
+            t.color = color;
+            let at = Vec2::new(min.x + CARD_INSET, y + NAME_SIZE + 6.0);
+            p.text(at, &tag, &t, Align::Left);
+        }
     }
 
     /// The highlighted part's spec card, top right over the scene.
@@ -1354,6 +1371,29 @@ mod tests {
         assert_eq!(g.scroll_goal[0], 0.0);
         g.scroll(10_000.0);
         assert_eq!(g.scroll_goal[0], max_scroll(0));
+    }
+
+    #[test]
+    fn card_text_fits_its_card() {
+        // At the longest tier label, every part's name and tag fit across
+        // its card; locked cards have no tag.
+        let mut p = rich();
+        for part in crate::economy::PARTS {
+            p.levels.set(part, crate::economy::MAX_LEVEL - 1);
+        }
+        let room = CARD_W - 2.0 * CARD_INSET;
+        for part in crate::economy::PARTS {
+            let name = crate::ui::measure(part.name(), &TextStyle::value(NAME_SIZE));
+            for equipped in [true, false] {
+                let (tag, _) = card_tag(part, equipped, &p).unwrap();
+                let tag = crate::ui::measure(&tag, &TextStyle::LABEL);
+                assert!(name.max(tag) <= room, "{} doesn't fit", part.name());
+            }
+            let fresh = Profile::in_memory();
+            if !fresh.owns(part) {
+                assert!(card_tag(part, false, &fresh).is_none());
+            }
+        }
     }
 
     #[test]
