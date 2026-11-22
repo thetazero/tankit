@@ -1356,10 +1356,10 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         _ => {}
     }
     // The backdrop follows the selected contract, as in the window.
-    let (kind, side) = menu
+    let (kind, map_seed, side) = menu
         .backdrop()
-        .unwrap_or((mission::MISSIONS[0].map_kind, 0));
-    let mut game = app::backdrop_match(kind, side, profile.loadout);
+        .unwrap_or((mission::MISSIONS[0].map_kind, 0, 0));
+    let mut game = app::backdrop_match(kind, map_seed, side, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
