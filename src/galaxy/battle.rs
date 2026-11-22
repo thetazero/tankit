@@ -342,6 +342,7 @@ impl Galaxy {
                         let sys = &mut self.systems[battle.system];
                         sys.held[old] -= 1;
                         sys.held[w] += 1;
+                        self.claim(battle.system, w);
                         taken = true;
                         self.update_share();
                     }

@@ -1,0 +1,432 @@
+//! Realms: the war's actors (#315).
+//!
+//! A faction is a people, not a state: news crosses the stars too slowly for
+//! anyone to rule them all. What fights is a **realm**: a ruler holding a
+//! handful of systems from a **seat**, with its own crystal in its own vaults.
+//! What a realm takes becomes its own. Realms of one people don't fight each
+//! other (yet), and don't help each other either: each sends hulls only from
+//! its own systems, and only where no other realm of its people already is.
+//!
+//! **Realms change shape** every few ticks (`Rules::politics`), by distance:
+//! - *Split.* No realm can rule far from its seat. Holdings farther than
+//!   `Rules::reach` from it, or cut off from the seat's own stretch of space,
+//!   break away, each stretch of them a realm of its own with its share of
+//!   the vaults.
+//! - *Merge.* A small realm (fewer than `Rules::fold` systems) folds into the
+//!   neighbor of its people with the nearest seat, if that seat is near
+//!   enough to rule all of it (well inside the reach, so it doesn't break
+//!   away again at once).
+//! - *Seat.* A realm whose seat falls moves it to its system nearest the old one.
+//!
+//! So realms grow by conquest, split at their edges, and merge, and nobody
+//! ever wins.
+
+use glam::Vec3;
+
+use super::{AT_WAR, Galaxy, NEIGHBORS, Offensive, SIDES};
+
+/// No realm.
+pub const NONE: u32 = u32::MAX;
+/// A side's hulls left in a system it holds nothing in, below this, are gone
+/// (so a realm's last stragglers don't keep it alive forever).
+const STRAGGLERS: f32 = 0.05 * AT_WAR;
+/// A small realm folds into a neighbor only if that neighbor's seat is
+/// within this share of the reach of all of it.
+const FOLD_REACH: f32 = 0.8;
+
+/// One realm.
+#[derive(Clone, Copy, Debug)]
+pub struct Realm {
+    /// Which people: an index into `Faction::ALL`.
+    pub faction: u8,
+    /// The system it rules from.
+    pub seat: u32,
+    pub crystals: f32,
+    /// Its crystal income last tick.
+    pub income: f32,
+    /// Its offensive, if it's on one.
+    pub offensive: Option<Offensive>,
+    /// The tick it was founded (broke away, or the war's start).
+    pub founded: u64,
+    /// Systems it holds (updated each tick); 0 for a realm that's gone.
+    pub systems: u32,
+}
+
+impl Realm {
+    pub fn new(faction: u8, seat: u32, tick: u64) -> Realm {
+        Realm {
+            faction,
+            seat,
+            crystals: 0.0,
+            income: 0.0,
+            offensive: None,
+            founded: tick,
+            systems: 0,
+        }
+    }
+
+    /// Its bank, in ticks of its income.
+    pub fn bank(&self) -> f32 {
+        self.crystals / self.income.max(0.05)
+    }
+}
+
+/// A union-find's root of `i`.
+pub(crate) fn find(root: &mut [u32], mut i: usize) -> usize {
+    while root[i] as usize != i {
+        root[i] = root[root[i] as usize];
+        i = root[i] as usize;
+    }
+    i
+}
+
+impl Galaxy {
+    /// The realm holding system `s` (the realm of the side holding most of its sites).
+    pub fn holder(&self, s: usize) -> u32 {
+        let sys = &self.systems[s];
+        sys.realms[sys.owner()]
+    }
+
+    /// The realms that are still around, with their indices.
+    pub fn living(&self) -> impl Iterator<Item = (usize, &Realm)> + '_ {
+        self.realms
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.systems > 0)
+    }
+
+    /// The systems realm `r` holds (as of the last bookkeeping).
+    pub fn territory(&self, r: usize) -> &[u32] {
+        let (a, b) = self.spans[r];
+        &self.members[a as usize..b as usize]
+    }
+
+    /// A new realm of `faction` seated at `seat`: in a slot of a realm that's
+    /// gone if there is one.
+    pub(crate) fn found(&mut self, faction: u8, seat: u32) -> u32 {
+        let realm = Realm::new(faction, seat, self.tick);
+        // A slot is free once nothing is tagged with it (`systems` and `alive`
+        // both say so); taking one marks it, so it isn't handed out twice.
+        if let Some(r) = self.free.pop() {
+            self.realms[r as usize] = realm;
+            self.realms[r as usize].systems = 1;
+            r
+        } else {
+            self.realms.push(Realm {
+                systems: 1,
+                ..realm
+            });
+            self.spans.push((0, 0));
+            (self.realms.len() - 1) as u32
+        }
+    }
+
+    /// Side `f` now holds a site in system `s`: make sure a realm of its has
+    /// it. The realm whose hulls are there does; if none are, the realm of `f`
+    /// holding the nearest system within range; else a new one, seated here.
+    pub(crate) fn claim(&mut self, s: usize, f: usize) {
+        if self.systems[s].realms[f] != NONE {
+            return;
+        }
+        let near = self
+            .neighbors(s)
+            .map(|(t, _)| self.systems[t].realms[f])
+            .find(|&r| r != NONE);
+        let r = near.unwrap_or_else(|| self.found(f as u8, s as u32));
+        self.systems[s].realms[f] = r;
+    }
+
+    /// The first realms: each people's space carved into realms around seats
+    /// at least `Rules::found` apart, every system ruled from its nearest seat
+    /// of its people; then whatever's cut off from its seat breaks away.
+    pub(crate) fn form_realms(&mut self) {
+        let n = self.systems.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            order.swap(i, self.rng.index(i + 1));
+        }
+        let mut seats: [Vec<u32>; SIDES] = Default::default();
+        for s in order {
+            let f = self.systems[s].owner();
+            let pos = self.systems[s].pos;
+            let crowded = seats[f]
+                .iter()
+                .any(|&t| self.systems[t as usize].pos.distance(pos) < self.rules.found);
+            if !crowded {
+                seats[f].push(s as u32);
+            }
+        }
+        let mut of_seat = vec![NONE; n];
+        for (f, seats) in seats.iter().enumerate() {
+            for &seat in seats {
+                of_seat[seat as usize] = self.realms.len() as u32;
+                self.realms.push(Realm::new(f as u8, seat, 0));
+                self.spans.push((0, 0));
+            }
+        }
+        for s in 0..n {
+            let f = self.systems[s].owner();
+            let pos = self.systems[s].pos;
+            let seat = seats[f]
+                .iter()
+                .min_by(|&&a, &&b| {
+                    let da = self.systems[a as usize].pos.distance_squared(pos);
+                    let db = self.systems[b as usize].pos.distance_squared(pos);
+                    da.total_cmp(&db)
+                })
+                .copied()
+                .unwrap_or(s as u32);
+            self.systems[s].realms[f] = of_seat[seat as usize];
+        }
+        self.keep_books();
+        self.reshape();
+        self.keep_books();
+        // Vaults part-filled, so the realms don't all launch at once.
+        let income = self.realm_income();
+        for (r, realm) in self.realms.iter_mut().enumerate() {
+            realm.income = income[r];
+            realm.crystals = income[r] * self.rng.range(0.0, self.rules.launch);
+        }
+    }
+
+    /// Each realm's crystal income a tick, as its sites stand.
+    pub(crate) fn realm_income(&self) -> Vec<f32> {
+        let mut out = vec![0.0; self.realms.len()];
+        for sys in &self.systems {
+            for site in &self.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
+                if let super::SiteKind::Production { crystals, .. } = site.kind {
+                    let r = sys.realms[site.owner as usize];
+                    if r != NONE {
+                        out[r as usize] += crystals;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Bookkeeping: drop stragglers, count who holds what, list each realm's
+    /// territory, free the slots of realms that are gone, and move seats that fell.
+    pub(crate) fn keep_books(&mut self) {
+        let n = self.systems.len();
+        let mut tagged = vec![false; self.realms.len()];
+        for sys in &mut self.systems {
+            for f in 0..SIDES {
+                if sys.held[f] == 0 && sys.hulls[f] < STRAGGLERS {
+                    sys.hulls[f] = 0.0;
+                    sys.realms[f] = NONE;
+                }
+                if sys.realms[f] != NONE {
+                    tagged[sys.realms[f] as usize] = true;
+                }
+            }
+        }
+        // Territory, as a list of systems sorted by holder.
+        let holders: Vec<u32> = (0..n).map(|s| self.holder(s)).collect();
+        let mut count = vec![0u32; self.realms.len()];
+        for &h in &holders {
+            if h != NONE {
+                count[h as usize] += 1;
+            }
+        }
+        let mut at = 0u32;
+        for (r, &c) in count.iter().enumerate() {
+            self.spans[r] = (at, at);
+            at += c;
+        }
+        self.members.clear();
+        self.members.resize(at as usize, 0);
+        for (s, &h) in holders.iter().enumerate() {
+            if h != NONE {
+                let span = &mut self.spans[h as usize];
+                self.members[span.1 as usize] = s as u32;
+                span.1 += 1;
+            }
+        }
+        self.free.clear();
+        for r in 0..self.realms.len() {
+            // A realm with hulls out but no system left still counts as one
+            // until they're gone (it might take something yet).
+            self.realms[r].systems = count[r].max(tagged[r] as u32);
+            if !tagged[r] {
+                self.realms[r].offensive = None;
+                self.free.push(r as u32);
+                continue;
+            }
+            let seat = self.realms[r].seat as usize;
+            if count[r] > 0 && holders[seat] != r as u32 {
+                // The seat fell: rule from what's left, nearest the old one.
+                let old = self.systems[seat].pos;
+                let (a, b) = self.spans[r];
+                let next = self.members[a as usize..b as usize]
+                    .iter()
+                    .min_by(|&&x, &&y| {
+                        let dx = self.systems[x as usize].pos.distance_squared(old);
+                        let dy = self.systems[y as usize].pos.distance_squared(old);
+                        dx.total_cmp(&dy)
+                    })
+                    .copied();
+                if let Some(next) = next {
+                    self.realms[r].seat = next;
+                }
+            }
+        }
+        self.free.reverse();
+    }
+
+    /// Realms split and merge, by distance (see the module's notes). Call
+    /// `keep_books` first; it's stale after.
+    pub(crate) fn reshape(&mut self) {
+        let n = self.systems.len();
+        let reach = self.rules.reach;
+        let holders: Vec<u32> = (0..n).map(|s| self.holder(s)).collect();
+        let far: Vec<bool> = (0..n)
+            .map(|s| {
+                let h = holders[s];
+                h != NONE
+                    && self.systems[self.realms[h as usize].seat as usize]
+                        .pos
+                        .distance(self.systems[s].pos)
+                        > reach
+            })
+            .collect();
+        // Stretches of one realm's space, near and far apart.
+        let mut root: Vec<u32> = (0..n as u32).collect();
+        for s in 0..n {
+            for k in 0..NEIGHBORS {
+                let t = self.neighbors[s * NEIGHBORS + k].0;
+                if t == u32::MAX {
+                    break;
+                }
+                let t = t as usize;
+                if holders[t] == holders[s] && far[t] == far[s] {
+                    let (a, b) = (find(&mut root, s), find(&mut root, t));
+                    root[a] = b as u32;
+                }
+            }
+        }
+        // Every stretch but the seat's breaks away.
+        let mut kept = vec![u32::MAX; self.realms.len()];
+        for (r, realm) in self.realms.iter().enumerate() {
+            if realm.systems > 0 && holders[realm.seat as usize] == r as u32 {
+                kept[r] = find(&mut root, realm.seat as usize) as u32;
+            }
+        }
+        // Each breakaway stretch: its systems, and its center.
+        let mut stretch: std::collections::HashMap<u32, (Vec<u32>, Vec3)> = Default::default();
+        for s in 0..n {
+            let h = holders[s];
+            if h == NONE {
+                continue;
+            }
+            let c = find(&mut root, s) as u32;
+            if kept[h as usize] == c {
+                continue;
+            }
+            let e = stretch.entry(c).or_default();
+            e.0.push(s as u32);
+            e.1 += self.systems[s].pos;
+        }
+        let mut breakaways: Vec<(Vec<u32>, Vec3)> = stretch.into_values().collect();
+        // In system order, so the dice (and the realms' slots) don't depend
+        // on the hash map's.
+        breakaways.sort_by_key(|b| b.0[0]);
+        let vaults: Vec<(f32, u32)> = self
+            .realms
+            .iter()
+            .map(|r| (r.crystals, r.systems))
+            .collect();
+        for (members, sum) in breakaways {
+            let old = holders[members[0] as usize];
+            let center = sum / members.len() as f32;
+            let seat = *members
+                .iter()
+                .min_by(|&&a, &&b| {
+                    let da = self.systems[a as usize].pos.distance_squared(center);
+                    let db = self.systems[b as usize].pos.distance_squared(center);
+                    da.total_cmp(&db)
+                })
+                .unwrap_or(&members[0]);
+            let f = self.realms[old as usize].faction;
+            let new = self.found(f, seat);
+            // Its share of the vaults, by systems.
+            let (vault, size) = vaults[old as usize];
+            let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
+            let parent = &mut self.realms[old as usize];
+            parent.crystals = (parent.crystals - take).max(0.0);
+            self.realms[new as usize].crystals = take;
+            for &s in &members {
+                self.systems[s as usize].realms[f as usize] = new;
+            }
+            self.splits += 1;
+        }
+        self.keep_books();
+        self.fold();
+    }
+
+    /// Small realms fold into a neighbor of their people (see the module's notes).
+    fn fold(&mut self) {
+        let n = self.systems.len();
+        let holders: Vec<u32> = (0..n).map(|s| self.holder(s)).collect();
+        let mut small: Vec<usize> = self
+            .living()
+            .filter(|(r, realm)| realm.systems < self.rules.fold && !self.territory(*r).is_empty())
+            .map(|(r, _)| r)
+            .collect();
+        small.sort_by_key(|&r| (self.realms[r].systems, r));
+        let mut into: Vec<u32> = (0..self.realms.len() as u32).collect();
+        // A realm that's taken another in this round can't be folded away.
+        let mut grown = vec![false; self.realms.len()];
+        let mut merged = false;
+        for a in small {
+            if into[a] != a as u32 || grown[a] {
+                continue;
+            }
+            let f = self.realms[a].faction;
+            let seat = self.systems[self.realms[a].seat as usize].pos;
+            let mut best: Option<(f32, usize)> = None;
+            for &s in self.territory(a) {
+                for (t, _) in self.neighbors(s as usize) {
+                    let b = holders[t];
+                    if b == NONE || b as usize == a || into[b as usize] != b {
+                        continue;
+                    }
+                    let realm = &self.realms[b as usize];
+                    if realm.faction != f {
+                        continue;
+                    }
+                    let d = self.systems[realm.seat as usize].pos.distance(seat);
+                    if best.is_none_or(|x| d < x.0) {
+                        best = Some((d, b as usize));
+                    }
+                }
+            }
+            let Some((_, b)) = best else { continue };
+            let there = self.systems[self.realms[b].seat as usize].pos;
+            let ruled = self.territory(a).iter().all(|&s| {
+                self.systems[s as usize].pos.distance(there) <= self.rules.reach * FOLD_REACH
+            });
+            if !ruled {
+                continue;
+            }
+            into[a] = b as u32;
+            grown[b] = true;
+            let take = self.realms[a].crystals;
+            self.realms[b].crystals += take;
+            self.realms[a].crystals = 0.0;
+            self.merges += 1;
+            merged = true;
+        }
+        if !merged {
+            return;
+        }
+        for sys in &mut self.systems {
+            for r in &mut sys.realms {
+                if *r != NONE {
+                    *r = into[*r as usize];
+                }
+            }
+        }
+        self.keep_books();
+    }
+}
