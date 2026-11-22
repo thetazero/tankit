@@ -755,3 +755,51 @@ fn losses_are_rolled() {
     }
     assert!(seen.len() > 3, "always the same losses: {seen:?}");
 }
+
+/// In the galaxy's battles every kill is some pilot's (#438): a company's
+/// pilots learn from the wrecks their side leaves, a part at a time.
+#[test]
+fn galaxy_kills_teach_merc_pilots() {
+    let mut g = Galaxy::warmed(7);
+    let c = g
+        .companies
+        .iter()
+        .position(|c| c.contract.is_some_and(|k| k.field >= 20))
+        .expect("a company under contract");
+    let k = g.companies[c].contract.unwrap();
+    let (s, f) = (k.target as usize, k.side as usize);
+    // Their enemy here geared well above them, and plenty of fighting.
+    let e = (0..SIDES).find(|&e| e != f).unwrap();
+    g.systems[s].hulls[e] = g.systems[s].hulls[e].max(200);
+    if let Some(r) = Some(g.systems[s].realms[e]).filter(|&r| r != super::realm::NONE) {
+        g.realms[r as usize].tier = 20;
+    } else {
+        g.claim(s, e);
+        let r = g.systems[s].realms[e];
+        g.realms[r as usize].tier = 20;
+    }
+    let before: f32 = g.companies[c]
+        .pilots
+        .iter()
+        .map(|p| {
+            crate::economy::PARTS
+                .iter()
+                .map(|&x| p.known.of(x))
+                .sum::<f32>()
+        })
+        .sum();
+    for _ in 0..5 {
+        g.battles(None);
+    }
+    let after: f32 = g.companies[c]
+        .pilots
+        .iter()
+        .map(|p| {
+            crate::economy::PARTS
+                .iter()
+                .map(|&x| p.known.of(x))
+                .sum::<f32>()
+        })
+        .sum();
+    assert!(after > before, "nothing learned: {before} -> {after}");
+}

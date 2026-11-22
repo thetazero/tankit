@@ -133,10 +133,6 @@ struct App {
     spawn: usize,
     bots: usize,
     contract: Contract,
-    /// The mission's rating, in upgrade steps (see `Match::set_rating`).
-    rating: u8,
-    /// The schematic the mission offers the side you took, owned or not.
-    prize: Option<Part>,
     /// Which of the map's sides hired you.
     side: usize,
     /// The galaxy's war, which a mission's battles are drawn from and fed
@@ -268,8 +264,6 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         spawn: launch.spawn,
         bots: launch.bots,
         contract: launch.contract,
-        rating: 0,
-        prize: None,
         side: launch.side,
         war: War::load(),
         battle: None,
@@ -530,11 +524,6 @@ impl App {
         }
     }
 
-    /// The mission's prize, unless it's already yours: then it just pays crystals.
-    fn unstolen_prize(&self) -> Option<Part> {
-        self.prize.filter(|&p| !self.profile.owns(p))
-    }
-
     /// Draw this round's battle from the galaxy: at the sortie's site, with
     /// your company. None if it isn't there: you only fight in your
     /// company's battles (#362).
@@ -550,14 +539,13 @@ impl App {
 
     /// Deploy into a theater's site: its mission's map and contract, the
     /// theater's sides (you with your employer, as side 0).
-    fn start_sortie(&mut self, o: Sortie, prize: Option<Part>) {
+    fn start_sortie(&mut self, o: Sortie) {
         self.battle = None;
         let m = &MISSIONS[o.mission];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, o.map_kind, 0, m.bots());
         // A generated map is the site's own, the same each time it's fought over.
         self.map_seed = o.map_seed;
-        (self.contract, self.side, self.rating) = (m.contract, 0, m.rating);
-        self.prize = prize;
+        (self.contract, self.side) = (m.contract, 0);
         self.sortie = Some(o);
         // What happened to your company has been told by now.
         self.war.get().crew_news = None;
@@ -572,8 +560,7 @@ impl App {
             self.profile.loadout,
             Some(&o.factions),
         );
-        game.set_rating(self.rating);
-        game.prize = self.unstolen_prize();
+        game.known = Some(self.profile.known);
         game.crew = self.profile.company_name();
         let Some(b) = self.draw_battle(&mut game) else {
             // Your company isn't in this one (#362).
@@ -586,14 +573,15 @@ impl App {
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(
-            "deployed: {} site {} ({} {}, {}) for the {} against the {}",
+            "deployed: {} site {} ({}: {}, {}) for the {} against the {} (their gear {})",
             battle::system_name(o.system),
             o.site,
-            m.rating_label(),
+            m.name,
             m.contract.name(),
             m.map,
             o.factions[0].name(),
             o.factions[1].name(),
+            crate::economy::level_label(self.game.rating),
         );
     }
 
@@ -864,7 +852,7 @@ impl App {
                 self.queue(kit)
             }
             // Refusals need no handling beyond the buzz: the garage already shows why E won't work.
-            // A part you don't have: the garage already says which mission steals it.
+            // A part you don't have: the garage already says whose wrecks teach it.
             garage::Event::Locked(_) => {
                 if voiced {
                     self.audio.garage(audio::GarageCue::Refused);
@@ -1060,9 +1048,7 @@ impl App {
                 // Into a battle on the contract on screen: you've seen it.
                 self.menu.settle();
                 self.keep_shown();
-                let owns = |p| self.profile.owns(p);
-                let prize = crate::galaxy::theater::prize(o.factions[1], o.site, owns);
-                self.start_sortie(o, prize);
+                self.start_sortie(o);
             }
             Some(menu::Action::Refused) => {
                 // Your side isn't fighting there this tick.
@@ -1289,10 +1275,12 @@ impl App {
         {
             let pay = Payout::of(&self.game);
             self.profile.add_crystals(pay.total());
-            if let Some(part) = pay.schematic
-                && self.profile.steal(part)
-            {
-                log::info!("stole the {} schematic", part.name());
+            // Take apart what you wrecked (#438): a schematic or two may be yours now.
+            let new = self.profile.scrap(&self.game.player().scrap);
+            for part in &new {
+                log::info!("reverse-engineered the {} schematic", part.name());
+            }
+            if !new.is_empty() {
                 self.audio.garage(audio::GarageCue::Bought);
             }
             self.paid = true;

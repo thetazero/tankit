@@ -1416,6 +1416,7 @@ mod tests {
             hulls: [0; 4],
             built: [0.0; 4],
             held: [0; 4],
+            tiers: [0; 4],
             sites: Vec::new(),
             contested: Vec::new(),
             tick: 0,

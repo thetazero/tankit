@@ -113,11 +113,11 @@ tankit [OPTIONS]
                           screen and its respawn countdown
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, renown gained, crystal tally
-                          and (with --mission, if you won) the schematic stolen
+                          and (with --learned) a schematic reverse-engineered
   --screen carry          (with --shot --contract raid) the player starts on the enemy's flag,
                           facing home, and carries it
-  --mission <name>        (with --screen results) the round was this mission, by name, e.g.
-                          'four winds', for its prize
+  --learned <part>        (with --screen results) the round's wrecks make this part's schematic
+                          yours, e.g. 'pelekys'
   --site <n>              (with --screen missions|site) select the theater's nth contested site
   --transfer <jump|move|renew>
                           (with --screen missions) the war goes on until your company moves onto its
@@ -161,8 +161,9 @@ pub struct Args {
     pub side: usize,
     /// --employer, for menu shots.
     employer: Option<faction::Faction>,
-    /// --mission, for results shots: index into `MISSIONS`.
-    mission: Option<usize>,
+    /// --learned, for results shots: a part whose schematic the round's
+    /// wrecks make yours (#438).
+    learned: Option<economy::Part>,
     /// --site, for theater shots: index into the contested sites.
     site: Option<usize>,
     /// --transfer, for missions shots: the move onto the next contract,
@@ -187,7 +188,7 @@ pub struct Args {
     /// A match flag was given: skip the menu.
     play: bool,
     garage: bool,
-    /// Parts the shot's pilot has stolen.
+    /// Parts the shot's pilot owns.
     own: Vec<economy::Part>,
     /// Garage shot: highlight this part instead of --hull/--turret.
     preview: Option<economy::Part>,
@@ -568,7 +569,7 @@ fn parse_args() -> Result<Args> {
     let mut employer: Option<faction::Faction> = None;
     let mut generator: Option<faction::Faction> = None;
     let mut generator_down = 0u8;
-    let mut mission = None;
+    let mut learned = None;
     let mut site = None;
     let mut transfer = None;
     let mut summary = false;
@@ -670,13 +671,11 @@ fn parse_args() -> Result<Args> {
                         format!("--employer expects a faction name, got {name:?}")
                     })?);
             }
-            "--mission" => {
+            "--learned" => {
                 let name = args.next().unwrap_or_default();
-                mission = Some(
-                    mission::MISSIONS
-                        .iter()
-                        .position(|m| m.name.eq_ignore_ascii_case(&name))
-                        .with_context(|| format!("--mission: no mission called {name:?}"))?,
+                learned = Some(
+                    economy::Part::by_name(&name)
+                        .with_context(|| format!("--learned: no part called {name:?}"))?,
                 );
             }
             "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
@@ -902,7 +901,7 @@ fn parse_args() -> Result<Args> {
         greybox,
         side,
         employer,
-        mission,
+        learned,
         site,
         transfer,
         summary,
@@ -1049,10 +1048,12 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         let lead = if shot.frames > 1 { 0.3 } else { 4.0 };
         game.time_left = (shot.time - lead).max(0.1);
         game.renown = args.earned;
-        if let Some(i) = args.mission {
-            game.prize = mission::MISSIONS[i]
-                .prize(args.side)
-                .filter(|&p| !profile.owns(p));
+        if let Some(part) = args.learned {
+            // One wreck short of its first step: this round's kill makes it yours.
+            let mut known = profile.known;
+            known.set(part, 0.99);
+            game.known = Some(known);
+            game.fighters[0].scrap.push((part, economy::MAX_LEVEL));
         }
     }
     if args.screen == Some(Screen::Carry) {
@@ -1431,6 +1432,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     company: vec![0, 0],
                     winner: Some(0),
                     own_lost: 0,
+                    scrap: Vec::new(),
                 });
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 profile.ship = g.crew;

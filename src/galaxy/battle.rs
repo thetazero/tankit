@@ -89,6 +89,9 @@ pub struct Battle {
     /// are the only ones there. None for a battle you're not in (the
     /// galaxy's picks, for bots-only rounds).
     pub crew: Option<u32>,
+    /// The merc pilots flying the Company's tanks (#438): (fighter, the
+    /// company's `Company::id`, which of its pilots). Set when it begins.
+    pub pilots: Vec<(usize, u32, usize)>,
 }
 
 /// A system's numbers, for the before and after of a battle.
@@ -111,17 +114,31 @@ pub struct Played {
     pub winner: Option<usize>,
     /// Your own hulls lost (#385).
     pub own_lost: u32,
+    /// The wrecks each merc pilot's kills left, to take apart (#438):
+    /// (`Company::id`, which of its pilots, part, level).
+    pub scrap: Vec<(u32, usize, crate::economy::Part, u8)>,
 }
 
 impl Played {
     /// Match `m`'s result (it's over), for battle `b`.
     pub fn of(b: &Battle, m: &Match) -> Played {
+        let scrap = b
+            .pilots
+            .iter()
+            .flat_map(|&(i, id, p)| {
+                m.fighters[i]
+                    .scrap
+                    .iter()
+                    .map(move |&(part, level)| (id, p, part, level))
+            })
+            .collect();
         Played {
             battle: b.clone(),
             lost: m.lost(),
             company: m.company_lost(),
             winner: m.leader(),
             own_lost: m.own_lost(),
+            scrap,
         }
     }
 }
@@ -196,7 +213,7 @@ fn seats(m: &Match) -> usize {
         .unwrap_or(1)
 }
 
-fn begin(g: &Galaxy, m: &mut Match, b: Battle) -> Battle {
+fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
     for team in 0..b.sides.len() {
         if b.shielded[team] {
             m.close_seats(team, SHIELD_SEATS);
@@ -215,6 +232,7 @@ fn begin(g: &Galaxy, m: &mut Match, b: Battle) -> Battle {
             .collect();
         m.set_companies(team, named);
     }
+    kit(g, m, &mut b);
     m.place = Some(system_name(b.system));
     log::info!(
         "battle in {} (galaxy tick {}): {}",
@@ -223,6 +241,49 @@ fn begin(g: &Galaxy, m: &mut Match, b: Battle) -> Battle {
         describe_allocation(&b)
     );
     b
+}
+
+/// Every bot's gear (#438): a realm's tanks fly its tier; the Company's
+/// fly their pilots' own, the company's pilots in turn (your company's on
+/// your side, the biggest hired one's on another). You fly yours. The
+/// contract pays by the gear it's fought against: the enemy realm's tier.
+fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
+    let s = b.system;
+    let tier = |f: usize| match g.systems[s].realms[f] {
+        super::realm::NONE => 0,
+        r => g.realms[r as usize].tier,
+    };
+    b.pilots.clear();
+    for team in 0..b.sides.len() {
+        let f = b.sides[team];
+        let company = if team == 0 && b.crew.is_some() {
+            b.crew
+        } else {
+            b.hired[team]
+                .iter()
+                .max_by_key(|&&(_, h)| h)
+                .map(|&(id, _)| id)
+        }
+        .and_then(|id| g.companies.iter().find(|c| c.id == id));
+        let mut next = 0;
+        for i in 1..m.fighters.len() {
+            if m.fighters[i].team != team {
+                continue;
+            }
+            match company.filter(|_| m.world.tanks[i].company) {
+                Some(c) if !c.pilots.is_empty() => {
+                    let p = next % c.pilots.len();
+                    next += 1;
+                    m.set_gear(i, c.pilots[p].levels());
+                    b.pilots.push((i, c.id, p));
+                }
+                _ => m.set_gear(i, crate::economy::Levels::all(tier(f))),
+            }
+        }
+    }
+    if let Some(&enemy) = b.sides.get(1) {
+        m.rating = tier(enemy);
+    }
 }
 
 /// Feed match `m`'s result (it's over) back into the galaxy: its tick.
@@ -471,6 +532,7 @@ impl Galaxy {
             site,
             shielded,
             crew,
+            pilots: Vec::new(),
         })
     }
 
@@ -552,6 +614,14 @@ impl Galaxy {
             }
         }
         self.spend_own(p.own_lost);
+        // The merc pilots take apart what they wrecked (#438).
+        for &(id, pilot, part, level) in &p.scrap {
+            if let Some(c) = self.companies.iter_mut().find(|c| c.id == id)
+                && let Some(x) = c.pilots.get_mut(pilot)
+            {
+                x.known.scrap(part, level);
+            }
+        }
         if let Some(i) = battle.site {
             // A draw goes to the site's holder; a bystander's site is
             // nobody's to win here.
@@ -642,6 +712,7 @@ mod tests {
             company: company.to_vec(),
             winner,
             own_lost: 0,
+            scrap: Vec::new(),
         }
     }
 
@@ -978,7 +1049,7 @@ mod merc_tests {
                 field: hulls,
                 ..k
             }),
-            ..g.companies[0]
+            ..g.companies[0].clone()
         });
         g.systems[k.target as usize].hulls[k.side as usize] += hulls;
         id
@@ -1100,5 +1171,90 @@ mod merc_tests {
         assert_eq!(s.merc_lost[f], 3);
         assert_eq!(field(&g, mine), 17);
         assert_eq!(field(&g, other), 30, "their hulls are their own");
+    }
+}
+
+#[cfg(test)]
+mod gear_tests {
+    use super::*;
+    use crate::economy::{Known, Levels, PARTS, Part};
+    use crate::galaxy::merc::Pilot;
+
+    /// A played battle's bots fly the gear of who they are (#438): a
+    /// realm's tanks its tier, a company's its pilots' own. The contract
+    /// pays by the enemy realm's tier. The pilots learn from their kills.
+    #[test]
+    fn bots_fly_their_realms_and_pilots_gear() {
+        let mut g = Galaxy::warmed(7);
+        let c = g
+            .companies
+            .iter()
+            .position(|c| c.contract.is_some_and(|k| k.field >= 8))
+            .expect("a company under contract");
+        let k = g.companies[c].contract.unwrap();
+        let (t, f) = (k.target as usize, k.side as usize);
+        g.crew = Some(g.companies[c].id);
+        let enemy = (0..SIDES)
+            .filter(|&e| e != f)
+            .max_by_key(|&a| g.systems[t].hulls[a])
+            .unwrap();
+        for side in [f, enemy] {
+            let r = g.systems[t].realms[side];
+            if r != crate::galaxy::realm::NONE {
+                g.realms[r as usize].tier = if side == f { 4 } else { 13 };
+            }
+        }
+        let mut veteran = Known::default();
+        for p in PARTS {
+            veteran.set(p, 7.5);
+        }
+        g.companies[c].pilots = vec![Pilot { known: veteran }; crate::galaxy::merc::PILOTS];
+        let mut map = crate::map::Map::saltmarket();
+        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        let mut m = crate::combat::Match::new(map, 0, 11, 21);
+        let b = g
+            .muster_crew(t, &m.factions, None)
+            .expect("your company's battle");
+        let b = begin(&g, &mut m, b);
+        assert!(!b.pilots.is_empty(), "the Company's bots fly its pilots");
+        let enemy_realm = g.systems[t].realms[enemy] != crate::galaxy::realm::NONE;
+        for i in 1..m.fighters.len() {
+            let want = if m.world.tanks[i].company {
+                Levels::all(7)
+            } else if m.fighters[i].team == 1 {
+                Levels::all(if enemy_realm { 13 } else { 0 })
+            } else {
+                Levels::all(4)
+            };
+            assert_eq!(m.fighters[i].levels, want, "fighter {i}");
+        }
+        if enemy_realm {
+            assert_eq!(m.rating, 13, "pays by the enemy's gear");
+        }
+        // A pilot's kill of a T1.3 tank teaches them.
+        let (i, id, p) = b.pilots[0];
+        let kontos = Part::Turret(crate::sim::TurretKind::Kontos);
+        m.fighters[i].scrap.push((kontos, 13));
+        let played = Played::of(&b, &m);
+        g.settle(&played);
+        let co = g.companies.iter().find(|c| c.id == id).unwrap();
+        assert!(co.pilots[p].known.of(kontos) > 7.5);
+    }
+
+    /// Realms research their way up a tier at a time (#438), and one that
+    /// breaks away keeps its parent's gear.
+    #[test]
+    fn realms_research_their_gear() {
+        let mut g = Galaxy::warmed(3);
+        let before: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
+        for _ in 0..200 {
+            g.step();
+        }
+        let after: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
+        assert!(
+            after > before,
+            "nobody researched anything: {before} -> {after}"
+        );
+        assert!(g.living().all(|(_, r)| r.tier <= crate::economy::MAX_LEVEL));
     }
 }

@@ -230,6 +230,12 @@ pub struct Rules {
     /// A realm that owes a company a bonus pays back this share of its
     /// income each tick (and no company works for it until it has).
     pub merc_dues: f32,
+    /// A realm puts this share of its crystal income into researching its
+    /// next gear tier (#438)...
+    pub research: f32,
+    /// ... and a step costs this many crystals a system it holds, growing
+    /// a step at a time as upgrades do (`economy::upgrade_cost`).
+    pub research_price: f32,
 }
 
 impl Default for Rules {
@@ -279,6 +285,8 @@ impl Default for Rules {
             merc_split: 1000.0,
             merc_join: 40.0,
             merc_dues: 0.5,
+            research: 0.15,
+            research_price: 1.2,
         }
     }
 }
@@ -828,9 +836,22 @@ impl Galaxy {
             }
         }
         for (realm, c) in self.realms.iter_mut().zip(crystals) {
+            // Some of it goes to research (#438): a step at a time, at a
+            // price by how much there is to refit.
+            let study = self.rules.research * c.max(0.0);
+            realm.research += study;
+            let c = c - study;
+            if let Some(step) = crate::economy::upgrade_cost(realm.tier) {
+                let price = self.rules.research_price * realm.systems.max(1) as f32 * step as f32
+                    / crate::economy::upgrade_cost(0).unwrap_or(1) as f32;
+                if realm.research >= price {
+                    realm.research -= price;
+                    realm.tier += 1;
+                }
+            }
             let cap = self.rules.hoard * c.max(0.05);
             realm.crystals = (realm.crystals + c).clamp(0.0, cap);
-            realm.income = c;
+            realm.income = c + study;
         }
     }
 
@@ -867,8 +888,40 @@ impl Galaxy {
             if self.shielded(s, f) {
                 fire[f] *= short;
             }
+            // Better guns hit harder (#438).
+            fire[f] *= crate::economy::damage_factor(self.gear(s, f));
         }
         fire
+    }
+
+    /// Side `f`'s gear level in system `s` (#438): its realm's tier for the
+    /// realm's hulls, each company's pilots' for its own, by their hulls.
+    pub fn gear(&self, s: usize, f: usize) -> u8 {
+        let sys = &self.systems[s];
+        let realm = match sys.realms[f] {
+            NONE => 0,
+            r => self.realms[r as usize].tier,
+        };
+        let hulls = sys.hulls[f];
+        if hulls == 0 {
+            return realm;
+        }
+        let (mut weight, mut merc) = (0.0, 0.0);
+        for c in &self.companies {
+            if let Some(k) = c.contract
+                && k.target as usize == s
+                && k.side as usize == f
+            {
+                let field = k.field.min(hulls) as f32;
+                let level =
+                    c.pilots.iter().map(|p| p.level()).sum::<f32>() / c.pilots.len().max(1) as f32;
+                weight += field;
+                merc += field * level;
+            }
+        }
+        let weight = weight.min(hulls as f32);
+        let all = (merc + (hulls as f32 - weight) * realm as f32) / hulls as f32;
+        all.round() as u8
     }
 
     /// Side `f` is attacking under an enemy's shield in system `s`: the
@@ -934,6 +987,8 @@ impl Galaxy {
             }
             if war {
                 let mut losses = [0.0; SIDES];
+                // Who does the killing: each side's share of each other's losses.
+                let mut by = [[0.0f32; SIDES]; SIDES];
                 // Each side's fire spreads over its enemies here by how many hulls each has.
                 for g in (0..SIDES).filter(|&g| present[g]) {
                     let enemies = |f: usize| present[f] && f != g;
@@ -942,13 +997,21 @@ impl Galaxy {
                         .map(|f| hulls[f] as f32)
                         .sum();
                     for f in (0..SIDES).filter(|&f| enemies(f)) {
-                        losses[f] += self.rules.kill * fire[g] * hulls[f] as f32 / targets;
+                        let x = self.rules.kill * fire[g] * hulls[f] as f32 / targets;
+                        losses[f] += x;
+                        by[f][g] += x;
                     }
+                }
+                // Better armor takes more stopping (#438).
+                for f in 0..SIDES {
+                    losses[f] /= crate::economy::armor_factor(self.gear(s, f));
                 }
                 // Whole hulls lost: each of a side's hulls here with the
                 // chance its expected losses give it.
                 for f in (0..SIDES).filter(|&f| losses[f] > 0.0 && !in_match(f)) {
                     let lost = self.rng.binomial(hulls[f], losses[f] / hulls[f] as f32);
+                    // Every wreck is some pilot's kill (#438).
+                    self.credit(s, f, lost, &by[f], &hulls);
                     let mercs = self.mercs_share(s, f, lost);
                     let theirs: u32 = mercs.iter().map(|m| m.1).sum();
                     self.lose(s, f, lost - theirs, &mercs);
@@ -981,6 +1044,56 @@ impl Galaxy {
             }
         }
         settled
+    }
+
+    /// Side `f` lost `lost` hulls in system `s` (#438): each is a kill, by a
+    /// side with the chance its share of the fire on `f` gives it (`by`),
+    /// and on that side, by one of its hulls: a company's (one of its pilots
+    /// takes apart the wreck) with the chance its hulls make up of the
+    /// side's here, else the realm's (whose pilots fly its researched tier,
+    /// and learn nothing from wrecks).
+    fn credit(&mut self, s: usize, f: usize, lost: u32, by: &[f32; SIDES], hulls: &[u32; SIDES]) {
+        let total: f32 = by.iter().sum();
+        if lost == 0 || total <= 0.0 {
+            return;
+        }
+        let level = self.gear(s, f);
+        let maker = Faction::ALL[f];
+        let parts: Vec<crate::economy::Part> = crate::economy::PARTS
+            .into_iter()
+            .filter(|p| p.maker() == maker)
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        // The companies here, each side's: (index, side, its hulls here).
+        let here: Vec<(usize, usize, u32)> = (0..self.companies.len())
+            .filter_map(|c| {
+                let k = self.companies[c].contract?;
+                (k.target as usize == s && k.field > 0 && !self.companies[c].pilots.is_empty())
+                    .then_some((c, k.side as usize, k.field))
+            })
+            .collect();
+        for _ in 0..lost {
+            // Whose side, then whose hull.
+            let mut x = self.rng.f32() * total;
+            let Some(g) = (0..SIDES).find(|&g| {
+                x -= by[g];
+                x < 0.0
+            }) else {
+                continue;
+            };
+            let mut y = self.rng.f32() * hulls[g].max(1) as f32;
+            let Some(&(c, ..)) = here.iter().filter(|h| h.1 == g).find(|h| {
+                y -= h.2 as f32;
+                y < 0.0
+            }) else {
+                continue;
+            };
+            let p = self.rng.index(self.companies[c].pilots.len());
+            let part = parts[self.rng.index(parts.len())];
+            self.companies[c].pilots[p].known.scrap(part, level);
+        }
     }
 
     /// Of side `f`'s `lost` hulls in system `s`, each company's there
@@ -1430,8 +1543,34 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
                 .collect();
             let hulls: f32 = c.hulls.iter().sum();
             let pushing = g.living().filter(|(_, r)| r.offensive.is_some()).count();
+            // Realms' gear tiers (#438): lowest, median, highest.
+            let mut tiers: Vec<u8> = g.living().map(|(_, r)| r.tier).collect();
+            tiers.sort();
+            let tier = |q: f32| {
+                let t = tiers
+                    .get(((tiers.len().max(1) - 1) as f32 * q) as usize)
+                    .copied()
+                    .unwrap_or(0);
+                crate::economy::level_label(t)
+            };
+            let tiers = format!("{}/{}/{}", tier(0.0), tier(0.5), tier(1.0));
+            // Merc pilots' gear, averaged over their parts: median and best.
+            let mut pilots: Vec<f32> = g
+                .companies
+                .iter()
+                .flat_map(|c| c.pilots.iter().map(|p| p.level()))
+                .collect();
+            pilots.sort_by(|a, b| a.total_cmp(b));
+            let pilot = |q: f32| {
+                let l = pilots
+                    .get(((pilots.len().max(1) - 1) as f32 * q) as usize)
+                    .copied()
+                    .unwrap_or(0.0);
+                crate::economy::level_label(l.round() as u8)
+            };
+            let tiers = format!("{tiers} pilots {}/{}", pilot(0.5), pilot(1.0));
             println!(
-                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  pushing {pushing:3}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}",
+                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  pushing {pushing:3}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
                 g.tick,
                 shares.join("  "),
                 c.at_war * 100.0,

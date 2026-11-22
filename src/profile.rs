@@ -1,13 +1,14 @@
-//! The pilot profile: your Company rank, crystals, the schematics you've stolen
-//! and the loadout you deploy in. One profile, saved as JSON in the OS data
+//! The pilot profile: your Company rank, crystals, the parts you've
+//! reverse-engineered and the loadout you deploy in. One profile, saved as JSON in the OS data
 //! directory (`~/.local/share/tankit/profile.json` on Linux) whenever it
 //! changes, so there's no save button.
 //!
 //! You're the Company's, whoever hires you. Renown earned in matches climbs one
 //! Company rank, which decides the contracts it takes. The Company starts you
-//! on the Imperium's basic kit; every other part is a schematic stolen by
-//! winning the mission that offers it. Crystals, paid for finished contracts,
-//! buy upgrades.
+//! on the Imperium's basic kit; every other part you reverse-engineer from
+//! the wrecks of the enemies you kill (#438): its schematic is yours once you
+//! know its first step. Crystals, paid for finished contracts, buy upgrades
+//! up to what you know.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ use crate::galaxy::theater::Shown;
 use serde::{Deserialize, Serialize};
 
 use crate::binds::Binds;
-use crate::economy::{Levels, PARTS, Part, upgrade_cost};
+use crate::economy::{Known, Levels, PARTS, Part, upgrade_cost};
 use crate::garage::Loadout;
 use crate::sim::{HullKind, TurretKind};
 
@@ -104,6 +105,9 @@ struct Saved {
     /// never written.
     #[serde(skip_serializing)]
     levels: BTreeMap<String, u8>,
+    /// How far each part is reverse-engineered (#438), in steps, by part
+    /// name; missing means only as far as it's built.
+    known: BTreeMap<String, f32>,
     settings: Settings,
     /// The company ship you're aboard, by its id in the galaxy.
     ship: Option<u32>,
@@ -151,10 +155,13 @@ impl Default for Settings {
 /// Why an upgrade didn't go through.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Refusal {
-    /// The part's schematic hasn't been stolen yet.
+    /// The part's schematic isn't yours yet: not reverse-engineered to its first step.
     NotOwned,
     Crystals(u32),
     MaxLevel,
+    /// The next step isn't known yet: it has to be reverse-engineered from
+    /// wrecks of better gear (#438).
+    Unknown,
 }
 
 pub struct Profile {
@@ -164,8 +171,10 @@ pub struct Profile {
     /// The kit you deploy in (and respawn in, until the garage changes it).
     pub loadout: Loadout,
     /// Stolen schematics, starters not included.
-    stolen: Vec<Part>,
     pub levels: Levels,
+    /// How far you've reverse-engineered each part (#438): you can build a
+    /// part up to what you know of it.
+    pub known: Known,
     pub settings: Settings,
     /// Your company (`Company::id`), once you're with one: kept from the
     /// galaxy's `crew` for the UI (#350).
@@ -253,8 +262,8 @@ impl Profile {
             renown: 0,
             crystals: 0,
             loadout: (HullKind::Kataphrakt, TurretKind::Kontos),
-            stolen: Vec::new(),
             levels: Levels::default(),
+            known: Known::default(),
             settings: Settings::default(),
             ship: None,
             shown: None,
@@ -291,7 +300,10 @@ impl Profile {
         self.settings = s.settings;
         self.ship = s.ship;
         self.shown = s.shown;
-        self.stolen = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
+        // Schematics owned (stolen, before #438): known to their first step.
+        for part in s.owned.iter().filter_map(|n| Part::by_name(n)) {
+            self.known.at_least(part, 1);
+        }
         for (name, &mark) in &s.levels {
             if let Some(part) = Part::by_name(name) {
                 self.levels
@@ -302,6 +314,15 @@ impl Profile {
             if let Some(part) = Part::by_name(name) {
                 self.levels.set(part, level);
             }
+        }
+        for (name, &known) in &s.known {
+            if let Some(part) = Part::by_name(name) {
+                self.known.set(part, known);
+            }
+        }
+        // What you've built, you know (profiles from before #438).
+        for part in crate::economy::PARTS {
+            self.known.at_least(part, self.levels.of(part));
         }
         // Only deploy in parts you own (older profiles predate owning).
         if let Some(Part::Hull(h)) = Part::by_name(&s.hull).filter(|&p| self.owns(p)) {
@@ -316,25 +337,15 @@ impl Profile {
         Rank::of(self.renown)
     }
 
-    /// Own `part` without stealing it (headless shots, tests).
+    /// Own `part` without reverse-engineering it (headless shots, tests).
     pub fn grant(&mut self, part: Part) {
-        if !self.owns(part) {
-            self.stolen.push(part);
-        }
+        self.known.at_least(part, 1);
     }
 
+    /// Its schematic is yours: a starter, or reverse-engineered to its
+    /// first step (#438).
     pub fn owns(&self, part: Part) -> bool {
-        part.starter() || self.stolen.contains(&part)
-    }
-
-    /// Bank a schematic stolen on a mission and save. False if it was already yours.
-    pub fn steal(&mut self, part: Part) -> bool {
-        if self.owns(part) {
-            return false;
-        }
-        self.stolen.push(part);
-        self.save();
-        true
+        part.starter() || self.known.cap(part) >= 1
     }
 
     /// Can `part` be upgraded right now? The cost if so.
@@ -342,7 +353,11 @@ impl Profile {
         if !self.owns(part) {
             return Err(Refusal::NotOwned);
         }
-        let cost = upgrade_cost(self.levels.of(part)).ok_or(Refusal::MaxLevel)?;
+        let level = self.levels.of(part);
+        let cost = upgrade_cost(level).ok_or(Refusal::MaxLevel)?;
+        if level >= self.known.cap(part) {
+            return Err(Refusal::Unknown);
+        }
         if self.crystals < cost {
             return Err(Refusal::Crystals(cost));
         }
@@ -355,6 +370,25 @@ impl Profile {
         self.levels.set(part, self.levels.of(part) + 1);
         self.save();
         Ok(())
+    }
+
+    /// Take apart the wrecks of what you killed (#438): each a part and the
+    /// level it was built to. Saves. Returns the schematics that made yours.
+    pub fn scrap(&mut self, wrecks: &[(Part, u8)]) -> Vec<Part> {
+        if wrecks.is_empty() {
+            return Vec::new();
+        }
+        let had: Vec<bool> = PARTS.iter().map(|&p| self.owns(p)).collect();
+        for &(part, level) in wrecks {
+            self.known.scrap(part, level);
+        }
+        self.save();
+        PARTS
+            .iter()
+            .zip(had)
+            .filter(|&(&p, had)| !had && self.owns(p))
+            .map(|(&p, _)| p)
+            .collect()
     }
 
     /// Bank renown earned for the Company and save.
@@ -427,13 +461,22 @@ impl Profile {
             crystals: self.crystals,
             hull: name(Part::Hull(self.loadout.0)),
             turret: name(Part::Turret(self.loadout.1)),
-            owned: self.stolen.iter().map(|&p| name(p)).collect(),
+            owned: PARTS
+                .iter()
+                .filter(|&&p| !p.starter() && self.owns(p))
+                .map(|&p| name(p))
+                .collect(),
             steps: PARTS
                 .iter()
                 .filter(|&&p| self.levels.of(p) > 0)
                 .map(|&p| (name(p), self.levels.of(p)))
                 .collect(),
             levels: BTreeMap::new(),
+            known: PARTS
+                .iter()
+                .filter(|&&p| self.known.of(p) > 0.0)
+                .map(|&p| (name(p), self.known.of(p)))
+                .collect(),
             settings: self.settings,
             ship: self.ship,
             shown: self.shown.clone(),
@@ -505,7 +548,7 @@ mod tests {
         p.add_renown(300);
         p.add_renown(40);
         p.add_crystals(2000);
-        assert!(p.steal(PELEKYS));
+        p.known.set(PELEKYS, 1.5);
         p.upgrade(PELEKYS).unwrap();
         p.set_loadout((HullKind::Kataphrakt, TurretKind::Pelekys));
         let mut binds = Binds::default();
@@ -538,6 +581,11 @@ mod tests {
         assert_eq!(back.crystals, crystals);
         assert!(back.owns(PELEKYS));
         assert_eq!(back.levels.of(PELEKYS), 1);
+        assert_eq!(
+            back.known.of(PELEKYS),
+            1.5,
+            "what you've reverse-engineered"
+        );
         assert_eq!(back.loadout, (HullKind::Kataphrakt, TurretKind::Pelekys));
         assert!(back.settings.debug);
         assert_eq!(back.settings.volume, 3);
@@ -579,23 +627,36 @@ mod tests {
 
     const PELEKYS: Part = Part::Turret(TurretKind::Pelekys);
 
-    /// The starters are yours from the start; anything else only once stolen, and
-    /// then crystals upgrade it.
+    /// The starters are yours from the start; anything else only once it's
+    /// reverse-engineered to its first step, and then crystals upgrade it up
+    /// to what's known (#438).
     #[test]
-    fn parts_are_stolen_then_upgraded() {
+    fn parts_are_reverse_engineered_then_upgraded() {
         let mut p = Profile::in_memory();
         assert!(p.owns(Part::Hull(HullKind::Kataphrakt)));
         assert!(p.owns(Part::Turret(TurretKind::Kontos)));
         assert!(!p.owns(PELEKYS));
         p.crystals = 100_000;
         assert_eq!(p.upgrade(PELEKYS), Err(Refusal::NotOwned));
-        assert!(p.steal(PELEKYS));
-        assert!(!p.steal(PELEKYS), "already yours");
-        assert!(!p.steal(Part::Turret(TurretKind::Kontos)), "a starter");
-        for _ in 0..crate::economy::MAX_LEVEL {
+        // Wrecks of it: a hundredth of a step each, from T0.1 gear.
+        for _ in 0..99 {
+            p.scrap(&[(PELEKYS, 1)]);
+        }
+        assert!(!p.owns(PELEKYS), "not yet");
+        assert_eq!(p.scrap(&[(PELEKYS, 1)]), vec![PELEKYS], "now yours");
+        assert!(p.owns(PELEKYS));
+        // Only as far as it's known.
+        p.upgrade(PELEKYS).unwrap();
+        assert_eq!(p.upgrade(PELEKYS), Err(Refusal::Unknown));
+        p.known.set(PELEKYS, 2.7);
+        p.upgrade(PELEKYS).unwrap();
+        assert_eq!(p.upgrade(PELEKYS), Err(Refusal::Unknown));
+        p.known.set(PELEKYS, crate::economy::MAX_LEVEL as f32);
+        for _ in 2..crate::economy::MAX_LEVEL {
             p.upgrade(PELEKYS).unwrap();
         }
         assert_eq!(p.upgrade(PELEKYS), Err(Refusal::MaxLevel));
+        p.known.set(Part::Turret(TurretKind::Kontos), 1.0);
         p.crystals = 0;
         assert_eq!(
             p.upgrade(Part::Turret(TurretKind::Kontos)),
