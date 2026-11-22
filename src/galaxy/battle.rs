@@ -893,7 +893,7 @@ mod merc_tests {
     /// A galaxy with you in a company under contract with at least
     /// `hulls` committed.
     fn on_contract(hulls: u32) -> Galaxy {
-        let mut g = Galaxy::warmed(7);
+        let mut g = Galaxy::warmed_by(7, 200);
         let c = g
             .companies
             .iter()
@@ -1185,7 +1185,7 @@ mod gear_tests {
     /// pays by the enemy realm's tier. The pilots learn from their kills.
     #[test]
     fn bots_fly_their_realms_and_pilots_gear() {
-        let mut g = Galaxy::warmed(7);
+        let mut g = Galaxy::warmed_by(7, 200);
         let c = g
             .companies
             .iter()
@@ -1245,7 +1245,7 @@ mod gear_tests {
     /// breaks away keeps its parent's gear.
     #[test]
     fn realms_research_their_gear() {
-        let mut g = Galaxy::warmed(3);
+        let mut g = Galaxy::warmed_by(3, 200);
         let before: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
         for _ in 0..200 {
             g.step();

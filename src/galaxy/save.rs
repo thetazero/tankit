@@ -16,8 +16,10 @@ use crate::rng::Rng;
 
 /// The war every new pilot joins: one seed for everyone.
 pub const SEED: u64 = 1;
-/// Ticks a new galaxy runs before the first battle, so it has fronts.
-const WARMUP: u64 = 200;
+/// Ticks a new galaxy runs before you join it: long enough that it's a
+/// war well under way, its fronts drawn, its realms' research and its merc
+/// pilots' gear grown (#438), not one just starting.
+const WARMUP: u64 = 600;
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -340,10 +342,16 @@ impl Galaxy {
         Galaxy::warmed(SEED)
     }
 
-    /// A galaxy from `seed`, the war already going.
+    /// A galaxy from `seed`, the war already going: as a new pilot joins it.
     pub fn warmed(seed: u64) -> Galaxy {
+        Galaxy::warmed_by(seed, WARMUP)
+    }
+
+    /// A galaxy from `seed` run `ticks` ticks (tests: a war going, quicker
+    /// than the one a pilot joins).
+    pub fn warmed_by(seed: u64, ticks: u64) -> Galaxy {
         let mut g = Galaxy::new(seed);
-        for _ in 0..WARMUP {
+        for _ in 0..ticks {
             g.step();
         }
         g
