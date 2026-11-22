@@ -151,7 +151,7 @@ const HULL_STATS: [Stat; 7] = [
         name: "ACCEL",
         unit: "M/S2",
         decimals: 1,
-        get: |p, _| HullStats::of(hull_of(p)).accel,
+        get: |p, l| l.hull(hull_of(p)).accel,
     },
     Stat {
         name: "TURN",
@@ -168,8 +168,8 @@ const HULL_STATS: [Stat; 7] = [
     Stat {
         name: "MASS",
         unit: "T",
-        decimals: 0,
-        get: |p, _| crate::sim::Chassis::of(hull_of(p)).mass / 1000.0,
+        decimals: 1,
+        get: |p, l| crate::sim::Chassis::of(hull_of(p)).mass * l.hull(hull_of(p)).heft / 1000.0,
     },
     Stat {
         // Seconds of beam fire it adds before overheating.

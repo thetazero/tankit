@@ -99,6 +99,9 @@ struct Curve([f32; MAX_MARK as usize + 1]);
 const ARMOR: Curve = Curve([1.0, 1.25, 1.5, 1.75]);
 /// Hull top speed (forward and reverse) and turn rate.
 const DRIVE: Curve = Curve([1.0, 1.05, 1.10, 1.15]);
+/// Hull mass: the extra armor is extra plate. The engine stays the hull's own,
+/// so a heavier hull pulls away slower, and shells and rams shove it less.
+const HEFT: Curve = Curve([1.0, 1.08, 1.16, 1.24]);
 const DAMAGE: Curve = Curve([1.0, 1.2, 1.4, 1.6]);
 const RELOAD: Curve = Curve([1.0, 0.93, 0.86, 0.80]);
 /// Shot speed, and with it range (or a beam's reach).
@@ -179,11 +182,16 @@ impl Levels {
         combat::max_health(hull) * ARMOR.at(self.of(Part::Hull(hull)))
     }
 
-    /// The hull's drive at its level: faster, and quicker to turn.
+    /// The hull's drive at its level: faster and quicker to turn, but heavier,
+    /// so the same engine pulls away slower.
     pub fn hull(&self, hull: HullKind) -> HullStats {
-        let k = DRIVE.at(self.of(Part::Hull(hull)));
+        let level = self.of(Part::Hull(hull));
+        let k = DRIVE.at(level);
+        let heft = HEFT.at(level);
         let h = HullStats::of(hull);
         HullStats {
+            heft,
+            accel: h.accel / heft,
             max_speed: h.max_speed * k,
             reverse_speed: h.reverse_speed * k,
             turn_rate: h.turn_rate * k,
@@ -357,15 +365,15 @@ mod tests {
             Action::Shell(s) => s.speed,
             Action::Beam { .. } => unreachable!(),
         };
-        // (armor, drive, damage, reload, reach) at M0..M3.
+        // (armor, drive, heft, damage, reload, reach) at M0..M3.
         let marks = [
-            (1.0, 1.0, 1.0, 1.0, 1.0),
-            (1.25, 1.05, 1.2, 0.93, 1.05),
-            (1.5, 1.10, 1.4, 0.86, 1.10),
-            (1.75, 1.15, 1.6, 0.80, 1.15),
+            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            (1.25, 1.05, 1.08, 1.2, 0.93, 1.05),
+            (1.5, 1.10, 1.16, 1.4, 0.86, 1.10),
+            (1.75, 1.15, 1.24, 1.6, 0.80, 1.15),
         ];
         let mut l = Levels::default();
-        for (m, &(armor, drive, damage, reload, reach)) in marks.iter().enumerate() {
+        for (m, &(armor, drive, heft, damage, reload, reach)) in marks.iter().enumerate() {
             let level = m as u8 * STEPS_PER_MARK;
             l.set(Part::Hull(hull), level);
             l.set(Part::Turret(turret), level);
@@ -373,6 +381,8 @@ mod tests {
             let h = l.hull(hull);
             assert!(close(h.max_speed, base_h.max_speed * drive));
             assert!(close(h.turn_rate, base_h.turn_rate * drive));
+            assert!(close(h.heft, heft));
+            assert!(close(h.accel, base_h.accel / heft));
             let g = l.gun(turret);
             assert!(close(g.damage, base_g.damage * damage));
             assert!(close(g.reload, base_g.reload * reload));
@@ -432,6 +442,64 @@ mod tests {
             let (s3, t3) = drive(&l);
             assert!((s3 / s0 - 1.15).abs() < 0.04, "{hull:?} speed {s0} -> {s3}");
             assert!((t3 / t0 - 1.15).abs() < 0.06, "{hull:?} turn {t0} -> {t3}");
+        }
+    }
+
+    /// An upgraded hull is really heavier: its body weighs 24% more at M3, so it
+    /// pulls away slower and the same shell hit shoves it less.
+    #[test]
+    fn upgraded_hulls_are_heavier() {
+        use crate::sim::Command;
+        use crate::sim::tests_support::{flat_world, run};
+        use glam::Vec3;
+        let go = Command {
+            throttle: 1.0,
+            ..Command::default()
+        };
+        let mut l = Levels::default();
+        for hull in [
+            HullKind::Kataphrakt,
+            HullKind::Kastron,
+            HullKind::Sethuun,
+            HullKind::Vigil,
+            HullKind::Gravis,
+        ] {
+            let trial = |l: &Levels| {
+                let mut w = flat_world();
+                w.set_hull(0, hull);
+                w.tanks[0].hull = l.hull(hull);
+                run(&mut w, Command::default(), 1.0);
+                let mass = w.physics.bodies[w.tanks[0].body].mass();
+                // A sideways shove through the center of mass, as a hit does.
+                let v0 = w.tanks[0].vel;
+                let at = w.physics.bodies[w.tanks[0].body].center_of_mass();
+                w.push(0, Vec3::X * 20_000.0, at);
+                let shove = (w.physics.bodies[w.tanks[0].body].linvel() - v0).x;
+                let mut w = flat_world();
+                w.set_hull(0, hull);
+                w.tanks[0].hull = l.hull(hull);
+                run(&mut w, Command::default(), 1.0);
+                run(&mut w, go, 0.5);
+                (mass, shove, w.tanks[0].speed())
+            };
+            l.set(Part::Hull(hull), 0);
+            let (m0, shove0, pull0) = trial(&l);
+            l.set(Part::Hull(hull), MAX_LEVEL);
+            let (m3, shove3, pull3) = trial(&l);
+            let bare = crate::sim::Chassis::of(hull).mass;
+            assert!(
+                (m0 / bare - 1.0).abs() < 0.01,
+                "{hull:?} mass {m0} of {bare}"
+            );
+            assert!((m3 / m0 - 1.24).abs() < 0.01, "{hull:?} mass {m0} -> {m3}");
+            assert!(
+                (shove0 / shove3 - 1.24).abs() < 0.02,
+                "{hull:?} shove {shove0} -> {shove3}"
+            );
+            assert!(
+                pull3 < pull0 * 0.92,
+                "{hull:?} pull-away {pull0} -> {pull3}"
+            );
         }
     }
 
