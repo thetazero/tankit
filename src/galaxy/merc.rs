@@ -43,7 +43,9 @@
 //! `Rules::merc_split` splits in two; one worth less than `Rules::merc_join`
 //! can't change a fight, so it joins the nearest company (paying the FTL).
 //! The pilot's company (`Galaxy::crew`) keeps its id when it splits, and
-//! the pilot goes with it when it joins another.
+//! the pilot goes with it when it joins another; either way, the pilot then
+//! chooses which ship to go with (`Galaxy::crew_choice`, #364): either half
+//! of a split, or, on a join, the company it joined or the next nearest.
 //!
 //! **Looking for work** (#355). A company idle `Rules::merc_idle` ticks
 //! sails to the nearest other system at war (one with a side no company
@@ -559,6 +561,13 @@ impl Galaxy {
                 let new = self.new_company(co.at, crystals, hulls);
                 self.companies[new].margin = co.margin;
                 self.companies[new].idle_since = co.idle_since;
+                if self.crew == Some(co.id) {
+                    self.crew_choice = Some(super::theater::CrewChoice {
+                        from: co.id,
+                        joined: false,
+                        ships: [co.id, self.companies[new].id],
+                    });
+                }
                 self.books.splits += 1;
             }
         }
@@ -598,10 +607,25 @@ impl Galaxy {
             for d in self.debts.iter_mut().filter(|d| d.company == from) {
                 d.company = to;
             }
-            // And you go with it.
+            // And you go with it, or (your choice) with the next nearest.
             if self.crew == Some(from) {
                 self.crew = Some(to);
                 self.crew_news = Some(super::theater::CrewNews::Joined { from });
+                let next = (0..self.companies.len())
+                    .filter(|&n| n != c && n != o && !gone[n])
+                    .min_by(|&a, &b| {
+                        let d = |n: usize| {
+                            self.systems[self.companies[n].at as usize]
+                                .pos
+                                .distance(here)
+                        };
+                        d(a).total_cmp(&d(b))
+                    });
+                self.crew_choice = next.map(|n| super::theater::CrewChoice {
+                    from,
+                    joined: true,
+                    ships: [to, self.companies[n].id],
+                });
             }
             gone[c] = true;
             self.books.joins += 1;

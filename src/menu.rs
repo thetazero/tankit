@@ -15,7 +15,9 @@ use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
-use crate::galaxy::theater::{CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name};
+use crate::galaxy::theater::{
+    ChoiceView, CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name,
+};
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::{Profile, Settings};
@@ -58,6 +60,9 @@ pub enum Action {
     Fight(Sortie),
     /// Enter on a site your side isn't fighting for this tick.
     Refused,
+    /// Go with this ship (a `Company::id`), of those your company's split
+    /// or join leaves you to choose from (#364).
+    Crew(u32),
     Garage,
     Setting(Change),
     Quit,
@@ -272,6 +277,11 @@ pub struct Menu {
     transfer: Option<Transfer>,
     /// Index into the theater's contested sites.
     site: usize,
+    /// Your company split or joined another: the ships to choose from,
+    /// shown on the missions screen before the theater (#364); and the one
+    /// selected.
+    choice: Option<ChoiceView>,
+    pick: usize,
     setting: usize,
     controls: Controls,
 }
@@ -285,6 +295,8 @@ impl Menu {
             seen: None,
             transfer: None,
             site: 0,
+            choice: None,
+            pick: 0,
             setting: 0,
             controls: Controls::default(),
         }
@@ -312,6 +324,15 @@ impl Menu {
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
+            (Screen::Missions, Nav::Up | Nav::Down) if self.choice.is_some() => {
+                self.pick = step(self.pick, 2, nav)
+            }
+            (Screen::Missions, Nav::Select) if self.choice.is_some() => {
+                return self
+                    .choice
+                    .as_ref()
+                    .map(|c| Action::Crew(c.ships[self.pick].id));
+            }
             (Screen::Missions | Screen::Site, Nav::Up | Nav::Down) => {
                 let n = self.contested();
                 if n > 0 {
@@ -356,6 +377,23 @@ impl Menu {
 
     pub fn theater(&self) -> Option<&Theater> {
         self.theater.as_ref()
+    }
+
+    /// Show the choice of ship `c` on the missions screen (None once it's made).
+    pub fn set_choice(&mut self, c: Option<ChoiceView>) {
+        if c.as_ref().map(|c| c.choice) != self.choice.as_ref().map(|c| c.choice) {
+            self.pick = 0;
+        }
+        // A choice to make comes before any site.
+        if c.is_some() && self.screen == Screen::Site {
+            self.screen = Screen::Missions;
+        }
+        self.choice = c;
+    }
+
+    /// The choice of ship on screen, if there's one to make.
+    pub fn choice(&self) -> Option<&ChoiceView> {
+        self.choice.as_ref()
     }
 
     /// Show `t` on the missions screen. The same site stays selected if it's
@@ -435,6 +473,7 @@ impl Menu {
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
+            Screen::Missions if self.choice.is_some() => &mut self.pick,
             Screen::Missions => &mut self.site,
             // Its one row, DEPLOY: nothing to select.
             Screen::Site => return false,
@@ -465,9 +504,9 @@ impl Menu {
     /// The theater whose system the screen shows in 3D instead of a map
     /// (the missions screen, with sites to pick from).
     pub fn system(&self) -> Option<&Theater> {
-        self.theater
-            .as_ref()
-            .filter(|t| self.screen == Screen::Missions && !t.contested.is_empty())
+        self.theater.as_ref().filter(|t| {
+            self.screen == Screen::Missions && self.choice.is_none() && !t.contested.is_empty()
+        })
     }
 
     /// The map the selected site is fought on, and the side you'd take in
@@ -525,6 +564,11 @@ impl Menu {
                 y += company_rank(&mut p, Vec2::new(x, y), profile) + 4.0;
                 your_company(&mut p, Vec2::new(x, y), profile);
                 "Enter  select"
+            }
+            Screen::Missions if self.choice.is_some() => {
+                let c = self.choice.as_ref().unwrap();
+                draw_choice(&mut p, &mut hits, Vec2::new(x, y), c, self.pick);
+                "Enter  go with it     ↑ ↓  ship     Esc  back"
             }
             Screen::Missions => match &self.theater {
                 Some(t) if !t.contested.is_empty() => {
@@ -900,12 +944,91 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship) -> f32 {
             "Moved here: the {} is gone",
             title(&ship_name(from))
         )),
+        Some(CrewNews::Split { other }) => Some(format!(
+            "Split in two: the {} went its own way",
+            title(&ship_name(other))
+        )),
+        Some(CrewNews::Left { from }) => Some(format!(
+            "Came over when the {} merged into another",
+            title(&ship_name(from))
+        )),
         None => None,
     };
     if let Some(news) = news {
         y = wrap(p, Vec2::new(x, y), &news, theme::HOT);
     }
     y
+}
+
+/// The choice of ship at `at`: what happened to your company, then the two
+/// ships to go with, each with where it is, what it has and its work.
+fn draw_choice(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, c: &ChoiceView, pick: usize) {
+    let (x, mut y) = (at.x, at.y);
+    let from = title(&ship_name(c.choice.from));
+    faction_line(p, Vec2::new(x, y), Faction::Company, &format!("The {from}"));
+    y += 28.0;
+    let head = if c.choice.joined {
+        "MERGED"
+    } else {
+        "SPLIT IN TWO"
+    };
+    p.text(Vec2::new(x, y), head, &TextStyle::value(22.0), Align::Left);
+    y += 34.0;
+    let what = if c.choice.joined {
+        format!(
+            "Too small to change a fight, the {from} merged into the {}. Go with it, or with the nearest other ship?",
+            title(&c.ships[0].name)
+        )
+    } else {
+        format!(
+            "One ship works one contract at a time: the {from} split, and the {} took half its crystal and hulls. Which ship do you go with?",
+            title(&c.ships[1].name)
+        )
+    };
+    y = wrap(p, Vec2::new(x, y), &what, theme::DIM) + 18.0;
+    let names: Vec<String> = c.ships.iter().map(|b| format!("THE {}", b.name)).collect();
+    let items: Vec<Item> = names.iter().map(|n| Item::Acts(n)).collect();
+    // Each ship's row, then its details under it: lay the rows out one at a time.
+    let n = |v: f32| v.round().max(0.0) as u32;
+    for (k, (item, b)) in items.iter().zip(&c.ships).enumerate() {
+        // The whole block, details and all, is the row to click.
+        garage::row_hit(p, hits, Vec2::new(x, y), ROW + 2.0 + 50.0, Hit::Row(k));
+        let mut scratch = Hits::new();
+        rows(
+            p,
+            &mut scratch,
+            Vec2::new(x, y),
+            std::slice::from_ref(item),
+            usize::from(pick != k),
+        );
+        y += ROW + 2.0;
+        let work = match &b.work {
+            Some((side, realm, target)) => {
+                let f = Faction::ALL[*side];
+                format!(
+                    "Hired by the {} of {} at {}",
+                    title(f.name()),
+                    title(realm),
+                    title(target)
+                )
+            }
+            None => "Between contracts".to_string(),
+        };
+        body(p, Vec2::new(x + 12.0, y), &work, theme::FG);
+        y += 20.0;
+        body(
+            p,
+            Vec2::new(x + 12.0, y),
+            &format!(
+                "Over {} · {} hulls · {} crystal",
+                title(&b.system),
+                n(b.hulls),
+                n(b.crystals)
+            ),
+            theme::DIM,
+        );
+        y += 30.0;
+    }
 }
 
 /// "Lirset II": the site's world, in title case.
@@ -1758,9 +1881,65 @@ mod tests {
         for _ in 0..60 {
             g.step();
         }
-        let (t, _) = g.await_work(Some(f.index()), 1, 400);
+        let (t, _) = g.await_work_staying(Some(f.index()), 1, 400);
         assert!(t.as_ref().is_some_and(|t| t.ship.is_some()));
         t
+    }
+
+    /// Your company split: the missions screen asks which ship you go
+    /// with before the theater, by key or by click (#364).
+    #[test]
+    fn choosing_a_ship() {
+        use crate::galaxy::theater::{Berth, ChoiceView, CrewChoice};
+        let berth = |id| Berth {
+            id,
+            name: ship_name(id),
+            system: system_name(1),
+            hulls: 20.0,
+            crystals: 300.0,
+            work: None,
+        };
+        let c = ChoiceView {
+            choice: CrewChoice {
+                from: 4,
+                joined: false,
+                ships: [4, 9],
+            },
+            ships: [berth(4), berth(9)],
+        };
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        m.set_theater(theater(Faction::Ithessar));
+        m.set_choice(Some(c.clone()));
+        assert!(m.system().is_none(), "the system view over the choice");
+        assert_eq!(m.input(Nav::Select), Some(Action::Crew(4)));
+        m.input(Nav::Down);
+        assert_eq!(m.input(Nav::Select), Some(Action::Crew(9)));
+        let layer = m.draw(&Profile::in_memory(), 1280.0, 720.0, 1.0);
+        let row = |k| {
+            (0..720)
+                .step_by(4)
+                .flat_map(|y| {
+                    (0..1280)
+                        .step_by(8)
+                        .map(move |x| Vec2::new(x as f32, y as f32))
+                })
+                .find(|&at| layer.hits.at(at).is_some_and(|(h, _)| h == Hit::Row(k)))
+        };
+        let first = row(0).expect("the first ship's row");
+        let (hit, frac) = layer.hits.at(first).unwrap();
+        assert_eq!(
+            m.click(hit, frac, &Profile::in_memory().settings).1,
+            Some(Action::Crew(4))
+        );
+        // Made: the theater's back.
+        m.set_choice(None);
+        assert!(m.system().is_some());
+        // A choice takes you off a site's screen.
+        m.input(Nav::Select);
+        assert_eq!(m.screen, Screen::Site);
+        m.set_choice(Some(c));
+        assert_eq!(m.screen, Screen::Missions);
     }
 
     #[test]

@@ -350,6 +350,11 @@ pub struct Galaxy {
     pub crew: Option<u32>,
     /// What just happened to your company, for the missions screen (not saved).
     pub crew_news: Option<theater::CrewNews>,
+    /// Your company just split or joined another: which ship you go with,
+    /// for you to choose on the missions screen (#364). You're with the
+    /// first meanwhile, and the war waits on your choice (not saved: a
+    /// choice left open when you quit stays the first).
+    pub crew_choice: Option<theater::CrewChoice>,
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
     rng: Rng,
@@ -508,6 +513,7 @@ impl Galaxy {
             next_company: 0,
             crew: None,
             crew_news: None,
+            crew_choice: None,
             destroyed: 0.0,
             rng,
             members: Vec::new(),
