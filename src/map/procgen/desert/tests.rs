@@ -284,4 +284,3 @@ fn the_generator_faces_every_side() {
         }
     }
 }
-

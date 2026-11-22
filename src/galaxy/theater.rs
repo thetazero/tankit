@@ -320,7 +320,7 @@ impl Class {
             MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
                 self == Class::Placeholder
             }
-            MapKind::ShieldCity(_) | MapKind::ShieldSite(_) => false,
+            MapKind::ShieldCity(_) | MapKind::ShieldSite(_) | MapKind::ShieldDesert(_) => false,
         }
     }
 }
