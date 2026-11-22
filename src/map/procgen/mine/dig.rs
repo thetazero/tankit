@@ -779,13 +779,14 @@ impl Dig<'_> {
         // Rocks on its top to fight from behind, clear of where the ramp
         // comes up.
         let mut on_top: Vec<Vec2> = Vec::new();
-        for _ in 0..40 {
-            if on_top.len() >= 3 {
+        let want = 2 + (b.radius / 5.0) as usize;
+        for _ in 0..80 {
+            if on_top.len() >= want {
                 break;
             }
             let a = rng.range(0.0, TAU);
             let dir = Vec2::new(a.cos(), a.sin());
-            let p = b.center + dir * b.rim(dir) * rng.range(0.25, 0.7);
+            let p = b.center + dir * b.rim(dir) * rng.range(0.3, 0.82);
             if dir.dot(b.ramp) > 0.5 || on_top.iter().any(|q| q.distance(p) < 8.0) {
                 continue;
             }
@@ -4054,7 +4055,7 @@ impl Dig<'_> {
             }
             let (lo, hi) = o.y_range();
             let go = self.level(o.center);
-            hi > go + 1.4 && lo < go + 2.0 && (go - g).abs() < 3.0
+            hi > go + 1.4 && lo < go + 2.0 && (go - g).abs() < 4.5
         }) || self.crystals.iter().any(|c| c.solid && c.distance(p) < r)
             || {
                 // A bank or a rise of the ground itself.
@@ -4723,7 +4724,7 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
             seg(p, a, w).0 < 12.0 || (b.distance(p) > -3.0 && b.distance(p) < 3.0)
         })
         || lay.crag_depth(p) > -4.0
-        || (p.y > f - 12.0 && p.y < f + FACE_RISE + 5.0)
+        || (p.y > f - 12.0 && p.y < f + FACE_RISE + 0.5)
         || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
         || lay.spots.iter().any(|&q| p.distance(q) < 6.5)
         || lay.repairs.iter().any(|&q| p.distance(q) < 6.0)
