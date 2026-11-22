@@ -1,7 +1,7 @@
 //! Windowed app: winit event loop, input mapping, fixed-step simulation, rendering.
 //!
 //! The loop: main menu (missions, garage, quit) → a mission's match → Esc
-//! pauses (resume, exit to menu, quit) → when the round ends, Enter plays it
+//! pauses (resume, garage, settings, exit to menu, quit) → when the round ends, Enter plays it
 //! again and Esc goes back to the menu. Renown is banked into the pilot profile
 //! the moment it's earned, a won mission's schematic when the round ends, and
 //! the profile saves itself on every change.
@@ -172,6 +172,9 @@ struct App {
     audio: Audio,
     /// Last frame's camera (the garage starts its orbit from it).
     camera: Option<Camera>,
+    /// Last frame's chase camera, before the garage swung it round: what a
+    /// paused match holds still under the garage's orbit.
+    chase: Option<Camera>,
     /// Whether the player was alive last frame (the garage closes on respawn).
     player_alive: bool,
     clock: Clock,
@@ -278,6 +281,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         garage: Garage::new(),
         audio: Audio::new(),
         camera: None,
+        chase: None,
         player_alive: true,
         clock: Clock::default(),
         keys: HashSet::new(),
@@ -741,6 +745,10 @@ impl App {
                 }
             }
         }
+        // Opened from the pause box: DEPLOY goes back to battle, Esc back to the box.
+        if self.mode == Mode::Paused && input == garage::Input::Deploy && !self.garage.is_open() {
+            self.mode = Mode::Playing;
+        }
     }
 
     /// Do what the garage asked. `voiced`: play the bay's sound for
@@ -970,6 +978,12 @@ impl App {
     fn pause_action(&mut self, action: Option<PauseAction>, event_loop: &ActiveEventLoop) {
         match action {
             Some(PauseAction::Resume) => self.mode = Mode::Playing,
+            // Over the frozen match; what you pick there is your next respawn's kit.
+            Some(PauseAction::Garage) => {
+                if let Some(cam) = self.camera {
+                    self.garage.toggle(&self.game.world, &cam, self.queued());
+                }
+            }
             Some(PauseAction::Setting(c)) => self.change_setting(c),
             Some(PauseAction::ExitToMenu) => self.back_to_menu(),
             Some(PauseAction::Quit) => event_loop.exit(),
@@ -1214,14 +1228,13 @@ impl App {
                     crate::vista::sway(self.menu_orbit, self.menu_time),
                     w / h,
                 ),
-                // Frozen: hold the last frame's view.
-                (Mode::Paused, Some(c)) => c,
+                // Frozen: hold the last frame's view (the garage may still orbit it).
+                (Mode::Paused, Some(c)) => self.chase.unwrap_or(c),
                 _ => self.cam.update(&self.game.world, &anchor, dt),
             };
-            if self.mode != Mode::Paused {
-                self.garage.update(dt);
-                camera = self.garage.camera(camera, &self.game.world, &anchor, w / h);
-            }
+            self.chase = Some(camera);
+            self.garage.update(dt);
+            camera = self.garage.camera(camera, &self.game.world, &anchor, w / h);
             let driven = tanks[0].clone();
             // A couple of card thumbnails a frame, so opening doesn't hitch.
             self.garage
@@ -1326,7 +1339,17 @@ impl App {
                         );
                         let pause = self.pause.draw(&self.profile, self.game.renown, w, h);
                         ui.extend(pause.verts);
-                        (ui, pause.hits.map(UiHit::Pause))
+                        // The garage, opened from the box, fades the box out under it.
+                        let layer = self
+                            .garage
+                            .overlay(ui, &driven, queued, &self.profile, w, h);
+                        let mut hits = if self.garage.is_open() {
+                            Hits::new()
+                        } else {
+                            pause.hits.map(UiHit::Pause)
+                        };
+                        hits.extend(layer.hits.map(UiHit::Garage));
+                        (layer.verts, hits)
                     }
                 };
                 scene.ui = ui;
