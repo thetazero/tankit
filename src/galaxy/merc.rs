@@ -71,6 +71,10 @@ pub struct Company {
     pub idle_since: u64,
     /// Its own name, for charts: never reused.
     pub id: u32,
+    /// The fight its last contract was in (target system, side) and the
+    /// hulls it lost there all told: a new contract in the same fight
+    /// carries the count on (see `Contract::before`).
+    pub fought: Option<(u32, u8, f32)>,
 }
 
 /// A company's work for a realm: help take one system.
@@ -94,6 +98,23 @@ pub struct Contract {
     pub orbit: f32,
     /// Hired to hold one of the employer's own worlds, not to take one.
     pub defend: bool,
+    /// Hulls it lost in this fight (the same system, for the same side) on
+    /// its contracts before this one. They don't count towards this one's
+    /// cap; they're in the count you see, so a contract renewed right after
+    /// your battle doesn't start you back at none lost (#382).
+    pub before: f32,
+}
+
+impl Contract {
+    /// Hulls lost in this fight, its earlier contracts in it included.
+    pub fn lost_here(&self) -> f32 {
+        self.before + self.lost
+    }
+
+    /// Where `lost_here` reaches this contract's cap.
+    pub fn cap_here(&self) -> f32 {
+        self.before + self.max_loss
+    }
 }
 
 /// A bonus a realm didn't pay: it owes `crystals` to company `company` (a `Company::id`).
@@ -199,6 +220,7 @@ impl Galaxy {
             founded: self.tick,
             idle_since: self.tick,
             id: self.next_company,
+            fought: None,
         });
         self.companies.len() - 1
     }
@@ -386,6 +408,10 @@ impl Galaxy {
         co.hulls -= own;
         co.at = t as u32;
         co.margin *= 1.0 + self.rules.merc_raise;
+        let before = co
+            .fought
+            .filter(|&(s, g, _)| s == t as u32 && g == f as u8)
+            .map_or(0.0, |x| x.2);
         co.contract = Some(Contract {
             realm: r,
             side: f as u8,
@@ -398,6 +424,7 @@ impl Galaxy {
             lost: 0.0,
             orbit: q.hulls - land,
             defend,
+            before,
         });
         self.systems[t].hulls[f] += land;
         if self.systems[t].realms[f] == super::realm::NONE {
@@ -538,6 +565,7 @@ impl Galaxy {
             co.hulls += back + k.orbit;
             co.contract = None;
             co.idle_since = self.tick;
+            co.fought = Some((t as u32, f as u8, k.lost_here()));
         }
         self.seek_work();
         if self.tick.is_multiple_of(self.rules.politics.max(1) as u64) {

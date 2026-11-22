@@ -833,6 +833,64 @@ mod merc_tests {
         assert!((total0 - total(&g) - (m + 2) as f64).abs() < 1e-2);
     }
 
+    /// Your deaths are in the hulls-lost count you see after the battle
+    /// (#382), even when your company's contract runs out in that tick and
+    /// it signs on again in the same fight: the count carries on.
+    #[test]
+    fn your_deaths_count_as_hulls_lost() {
+        use crate::game::DT;
+        let mut g = Galaxy::warmed(7);
+        let t = g.await_work(None, 1, 400).0.expect("work for your company");
+        let id = t.ship.as_ref().unwrap().id;
+        let shown = |g: &Galaxy| {
+            g.aboard(1)
+                .filter(|t| t.ship.as_ref().is_some_and(|s| s.id == id))
+                .map(|t| (t.system, t.ship.unwrap().lost))
+        };
+        let before = shown(&g).unwrap();
+        let o = (0..t.contested.len()).find_map(|k| t.sortie(k)).unwrap();
+        let ms = &crate::mission::MISSIONS[o.mission];
+        let mut m = crate::app::new_match(
+            ms.seed,
+            o.map_kind,
+            1,
+            0,
+            0,
+            ms.bots(),
+            ms.contract,
+            crate::profile::Profile::in_memory().loadout,
+            Some(&o.factions),
+        );
+        let b = deploy_at(&g, &mut m, o.system, o.site).expect("your battle");
+        assert!(m.world.tanks[0].company, "you're one of the Company's");
+        for i in 1..m.fighters.len() {
+            m.idle(i);
+        }
+        // You die three times (and come back between).
+        for _ in 0..3 {
+            assert!(m.fighters[0].alive);
+            m.destroy_player();
+            for _ in 0..(15.0 / DT) as usize {
+                m.step(Default::default(), false);
+                if m.fighters[0].alive {
+                    break;
+                }
+            }
+        }
+        assert_eq!(m.company_lost()[0], 3);
+        conclude(&mut g, &b, &m);
+        // With this seed the contract ends in the galaxy's tick and the
+        // company signs on again there: the case the count got wrong.
+        let (system, lost) = shown(&g).expect("still aboard, in a fight");
+        assert_eq!(system, before.0, "the same fight");
+        assert!(
+            lost >= before.1 + 3.0 - 1e-3,
+            "{} lost before, {} after dying three times",
+            before.1,
+            lost
+        );
+    }
+
     /// A company under contract with enough hulls to bring, and the side
     /// it fights against (the strongest other there).
     fn crew_contract(g: &Galaxy) -> (usize, [Faction; 2]) {

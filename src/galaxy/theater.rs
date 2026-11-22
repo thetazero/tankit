@@ -78,13 +78,12 @@ pub struct Ship {
     pub upfront: f32,
     /// Paid if the world falls.
     pub bonus: f32,
-    /// Its hulls in the fight, lost so far, and the cap on losses.
+    /// Its hulls in the fight; those lost in it so far (on back-to-back
+    /// contracts here too: see `Contract::before`), and where that count
+    /// reaches this contract's cap on losses.
     pub field: f32,
     pub lost: f32,
     pub max_loss: f32,
-    /// Ticks until the contract runs out (one a battle), of its `term`.
-    pub ticks_left: u64,
-    pub term: u64,
     /// The tick it was signed: a new one is a new contract.
     pub signed: u64,
     /// What just happened to the company, if anything.
@@ -496,10 +495,8 @@ impl Galaxy {
             upfront: k.upfront,
             bonus: k.bonus,
             field: k.field,
-            lost: k.lost,
-            max_loss: k.max_loss,
-            ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
-            term: self.rules.merc_term as u64,
+            lost: k.lost_here(),
+            max_loss: k.cap_here(),
             signed: k.signed,
             news: self.crew_news,
         });

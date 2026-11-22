@@ -866,12 +866,12 @@ pub fn draw(
         label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
     }
 
-    // Which system you're in, and how long you'll fight in it, over it;
-    // what the marks mean under it.
+    // Which system you're in, and your ship's losses in it, over it; what
+    // the marks mean under it.
     here(p, t, min);
     forces(p, t, Vec2::new(min.x + 24.0, min.y + 100.0));
     if let Some(ship) = &t.ship {
-        term(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
+        losses(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
     }
     p.line(
         Vec2::new(min.x + 16.0, bottom),
@@ -944,22 +944,25 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
     }
 }
 
-/// How much longer your ship fights here, right-aligned at `at`: its
-/// contract's ticks left (a battle each) and a bar of them, of its term.
-fn term(p: &mut Painter, ship: &Ship, at: Vec2) {
+/// Your ship's hulls lost in this fight, right-aligned at `at`: the
+/// count against its cap (where it pulls out), and a bar of the cap, a cell
+/// a hull, lit for those lost (#382).
+fn losses(p: &mut Painter, ship: &Ship, at: Vec2) {
     let mut style = TextStyle::LABEL;
     style.color = theme::DIM;
-    p.text(at, "CONTRACT HERE", &style, Align::Right);
-    let left = match ship.ticks_left {
-        1 => "1 BATTLE LEFT".to_string(),
-        k => format!("UP TO {k} BATTLES LEFT"),
-    };
+    p.text(at, "HULLS LOST", &style, Align::Right);
+    let lost = ship.lost.round().max(0.0) as u32;
+    let cap = (ship.max_loss.round() as u32).max(1);
     let mut big = TextStyle::value(20.0);
     big.color = Faction::Company.ui();
-    p.text(at + Vec2::new(0.0, 16.0), &left, &big, Align::Right);
-    // A cell a tick, of its term: lit for those left.
-    let n = ship.term.clamp(1, 60) as usize;
-    let lit = (ship.ticks_left as usize).min(n);
+    p.text(
+        at + Vec2::new(0.0, 16.0),
+        &format!("{lost} / {cap}"),
+        &big,
+        Align::Right,
+    );
+    let n = cap.min(60) as usize;
+    let lit = (lost as usize).min(n);
     let (cw, gap, ch) = (6.0, 2.0, 7.0);
     let x0 = at.x - n as f32 * (cw + gap) + gap;
     for i in 0..n {
@@ -974,14 +977,6 @@ fn term(p: &mut Painter, ship: &Ship, at: Vec2) {
             color,
         );
     }
-    let lost = (ship.lost.round().max(0.0)) as u32;
-    let cap = (ship.max_loss.round() as u32).max(1);
-    p.text(
-        at + Vec2::new(0.0, 64.0),
-        &format!("SOONER IF THE WORLD FALLS, OR AT {cap} HULLS LOST ({lost} SO FAR)"),
-        &style,
-        Align::Right,
-    );
 }
 
 /// What a transfer says over the view: where from and to, a route with
@@ -1045,12 +1040,7 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
         };
         p.text(
             Vec2::new(min.x + 24.0, min.y + 68.0),
-            &format!(
-                "{aboard}HIRED BY THE {} OF {} · UP TO {} BATTLES",
-                realm.name(),
-                ship.realm,
-                ship.ticks_left
-            ),
+            &format!("{aboard}HIRED BY THE {} OF {}", realm.name(), ship.realm),
             &dim,
             Align::Left,
         );
@@ -1337,14 +1327,12 @@ mod tests {
             field: 0.0,
             lost: 0.0,
             max_loss: 1.0,
-            ticks_left: 10,
-            term: 30,
             signed: 4,
             news: None,
         });
         let mut b = a.clone();
         b.tick += 3;
-        b.ship.as_mut().unwrap().ticks_left = 7;
+        b.ship.as_mut().unwrap().lost = 0.5;
         assert!(!Transfer::between(&a, &b));
         let mut c = b.clone();
         c.ship.as_mut().unwrap().id = 2;

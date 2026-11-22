@@ -67,6 +67,8 @@ struct SavedCompany {
     idle_since: Option<u64>,
     id: u32,
     contract: Option<SavedContract>,
+    #[serde(default)]
+    fought: Option<(u32, u8, f32)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,6 +86,8 @@ struct SavedContract {
     orbit: f32,
     #[serde(default)]
     defend: bool,
+    #[serde(default)]
+    before: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -153,7 +157,9 @@ impl Galaxy {
                             lost: k.lost,
                             orbit: k.orbit,
                             defend: k.defend,
+                            before: k.before,
                         }),
+                        fought: c.fought,
                     })
                     .collect(),
             ),
@@ -259,7 +265,9 @@ impl Galaxy {
                         lost: k.lost,
                         orbit: k.orbit,
                         defend: k.defend,
+                        before: k.before,
                     }),
+                    fought: c.fought,
                 })
                 .collect();
             g.next_company = s.next_company;
