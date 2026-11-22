@@ -253,17 +253,6 @@ impl Controls {
         self.hover(hit);
         (Nav::Select, self.input(Nav::Select))
     }
-
-    /// The keys to show at the bottom.
-    fn hint(&self) -> &'static str {
-        if self.capturing {
-            "Press a key     Backspace  clear     Esc  cancel"
-        } else if self.row == RESET_ROW {
-            "Enter  reset all     Esc  back"
-        } else {
-            "Enter  rebind     ← →  slot     Esc  back"
-        }
-    }
 }
 
 pub struct Menu {
@@ -580,7 +569,7 @@ impl Menu {
         crystals(&mut p, Vec2::new(x + PANEL_W, y + 10.0), profile.crystals);
         y += 72.0;
 
-        let keys = match self.screen {
+        match self.screen {
             Screen::Main => {
                 y += rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor) + 24.0;
                 body(&mut p, Vec2::new(x, y), "Deploying in", theme::DIM);
@@ -594,12 +583,10 @@ impl Menu {
                 y += 34.0;
                 y += company_rank(&mut p, Vec2::new(x, y), profile) + 4.0;
                 your_company(&mut p, Vec2::new(x, y), profile);
-                "Enter  select"
             }
             Screen::Missions if self.choice.is_some() => {
                 let c = self.choice.as_ref().unwrap();
                 draw_choice(&mut p, &mut hits, Vec2::new(x, y), c, self.pick);
-                "Enter  go with it     ↑ ↓  ship     Esc  back"
             }
             Screen::Missions => match &self.theater {
                 Some(t) if !t.contested.is_empty() => {
@@ -613,24 +600,17 @@ impl Menu {
                         w,
                         h,
                     );
-                    "Enter  open site     ↑ ↓  site     Esc  back"
                 }
                 _ => {
                     self.no_posting(&mut p, Vec2::new(x, y), profile);
-                    "Esc  back"
                 }
             },
             Screen::Site => match (&self.theater, self.selected_site()) {
                 (Some(t), Some(site)) => {
-                    if self.draw_site(&mut p, &mut hits, Vec2::new(x, y), t, site, profile) {
-                        "Enter  deploy     ↑ ↓  site     Esc  back"
-                    } else {
-                        "↑ ↓  site     Esc  back"
-                    }
+                    self.draw_site(&mut p, &mut hits, Vec2::new(x, y), t, site, profile);
                 }
                 _ => {
                     self.no_posting(&mut p, Vec2::new(x, y), profile);
-                    "Esc  back"
                 }
             },
             Screen::Settings => {
@@ -643,7 +623,6 @@ impl Menu {
                     &profile.settings,
                     self.setting,
                 );
-                "Enter  select     Esc  back"
             }
             Screen::Controls => {
                 body(&mut p, Vec2::new(x, y), "Settings · Controls", theme::DIM);
@@ -655,10 +634,8 @@ impl Menu {
                     &profile.settings.binds,
                     &self.controls,
                 );
-                self.controls.hint()
             }
-        };
-        body(&mut p, Vec2::new(x, h - 64.0), keys, theme::FAINT);
+        }
         Layer {
             verts: fade(p.finish(), alpha),
             hits,
@@ -781,7 +758,6 @@ impl Menu {
 
     /// The site screen's panel: what the site is and where, who you'd fight,
     /// the contract and map it's fought with, what a win does, and the pay.
-    /// True if you can deploy.
     fn draw_site(
         &self,
         p: &mut Painter,
@@ -790,7 +766,7 @@ impl Menu {
         t: &Theater,
         site: &SiteView,
         profile: &Profile,
-    ) -> bool {
+    ) {
         let (x, mut y) = (at.x, at.y);
         let employer = Faction::ALL[t.employer];
         let owner = Faction::ALL[site.owner];
@@ -903,7 +879,6 @@ impl Menu {
         y += 58.0;
         if site.committed {
             rows(p, hits, Vec2::new(x, y), &[Item::Acts("DEPLOY")], 0);
-            true
         } else {
             body(
                 p,
@@ -914,7 +889,6 @@ impl Menu {
                 ),
                 theme::HOT,
             );
-            false
         }
     }
 }
@@ -1370,12 +1344,6 @@ impl Pause {
                 Vec2::new(x, y),
                 &profile.settings.binds,
                 c,
-            );
-            body(
-                &mut p,
-                Vec2::new(x, min.y + size.y - 32.0),
-                c.hint(),
-                theme::FAINT,
             );
             return Layer {
                 verts: p.finish(),

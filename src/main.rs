@@ -1137,16 +1137,27 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let world = &game.world;
     let t = &world.tanks[0];
     for team in 0..game.factions.len() {
+        // One pilot each (#389): a merc marked, one out of the fight too.
         let board: Vec<String> = game
-            .standings()
+            .pilots()
             .into_iter()
-            .filter(|&i| game.fighters[i].team == team)
-            .map(|i| {
+            .filter(|p| p.team == team)
+            .map(|p| {
                 format!(
-                    "{} {}/{}",
-                    hud::callsign(&game, i),
-                    game.fighters[i].kills,
-                    game.fighters[i].deaths
+                    "{}{} {}/{}{}",
+                    if p.company && p.seat != 0 {
+                        "merc "
+                    } else {
+                        ""
+                    },
+                    if p.seat == 0 {
+                        "YOU"
+                    } else {
+                        garage::turret_name(p.turret)
+                    },
+                    p.kills,
+                    p.deaths,
+                    if p.active { "" } else { " (out)" }
                 )
             })
             .collect();

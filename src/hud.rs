@@ -8,7 +8,7 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase, RENOWN_POP_TIME};
+use crate::combat::{FEED_TIME, Match, Phase, Pilot, RENOWN_POP_TIME};
 use crate::economy::Payout;
 use crate::faction::Faction;
 use crate::hold::{self, Control};
@@ -721,14 +721,16 @@ fn scoreboard(
     let holding = m.contract == Contract::Hold;
     let cols = StatColumns::new(holding);
     // Wide enough for the longest tank name in the match beside the stat columns.
-    let widest = (0..m.fighters.len())
-        .map(|i| measure(&kit_name(m, i), &TextStyle::value(ROW_SIZE)))
+    let pilots = m.pilots();
+    let widest = pilots
+        .iter()
+        .map(|pi| row_name_width(pi))
         .fold(0.0, f32::max);
     let col = (widest + NAME_GAP + cols.width).max(380.0).ceil();
     let gap = 48.0;
     let sides = m.factions.len();
     let rows = (0..sides)
-        .map(|t| m.fighters.iter().filter(|f| f.team == t).count())
+        .map(|t| pilots.iter().filter(|pi| pi.team == t).count())
         .max()
         .unwrap_or(0) as f32;
     // Tables stack two to a row.
@@ -794,7 +796,6 @@ fn scoreboard(
         }
         y += banner;
     }
-    let order = m.standings();
     for team in 0..sides {
         let (a, b) = if team % 2 == 0 {
             (x0, x0 + col)
@@ -827,28 +828,35 @@ fn scoreboard(
             with_alpha(f.ui(), 0.4),
         );
         ty += 10.0;
-        for &i in order.iter().filter(|&&i| m.fighters[i].team == team) {
-            let fi = &m.fighters[i];
-            let mut s = TextStyle::value(ROW_SIZE);
-            if i == 0 {
-                s.color = theme::HOT;
+        for pi in pilots.iter().filter(|pi| pi.team == team) {
+            let s = row_style(pi);
+            let mut x = a;
+            if pi.company {
+                // A merc: the Company's mark, in its colors (#389).
+                let mut c = s;
+                c.color = if pi.active {
+                    Faction::Company.ui()
+                } else {
+                    s.color
+                };
+                x += emblem::mark(p, Vec2::new(x, ty), Faction::Company, &c);
             }
-            p.text(Vec2::new(a, ty), &kit_name(m, i), &s, Align::Left);
+            p.text(Vec2::new(x, ty), &kit_name(pi), &s, Align::Left);
             if let Some(dx) = cols.held {
                 p.text(
                     Vec2::new(b - dx, ty),
-                    &format!("{:.0}", m.held(i).floor()),
+                    &format!("{:.0}", pi.held.floor()),
                     &s,
                     Align::Right,
                 );
             }
             p.text(
                 Vec2::new(b - cols.kills, ty),
-                &fi.kills.to_string(),
+                &pi.kills.to_string(),
                 &s,
                 Align::Right,
             );
-            p.text(Vec2::new(b, ty), &fi.deaths.to_string(), &s, Align::Right);
+            p.text(Vec2::new(b, ty), &pi.deaths.to_string(), &s, Align::Right);
             ty += 22.0;
         }
     }
@@ -904,15 +912,40 @@ const ROW_SIZE: f32 = 11.0;
 const NAME_GAP: f32 = 20.0;
 const STAT_GAP: f32 = 22.0;
 
-/// A tank's scoreboard name: hull and turret, yours marked.
-fn kit_name(m: &Match, i: usize) -> String {
-    let t = &m.world.tanks[i];
+/// A pilot's scoreboard name: their hull and turret, yours marked.
+fn kit_name(pi: &Pilot) -> String {
     format!(
         "{}{} · {}",
-        if i == 0 { "YOU  " } else { "" },
-        crate::garage::hull_name(t.hull_kind),
-        crate::garage::turret_name(t.turret_kind)
+        if pi.seat == 0 { "YOU  " } else { "" },
+        crate::garage::hull_name(pi.hull),
+        crate::garage::turret_name(pi.turret)
     )
+}
+
+/// A scoreboard row's text: yours hot, and greyed out once the pilot's
+/// out of the fight (#389).
+fn row_style(pi: &Pilot) -> TextStyle {
+    let mut s = TextStyle::value(ROW_SIZE);
+    if !pi.active {
+        s.color = OUT_ROW;
+    } else if pi.seat == 0 {
+        s.color = theme::HOT;
+    }
+    s
+}
+
+/// A pilot out of the fight, on the scoreboard: there, but faint.
+const OUT_ROW: Rgba = [0.94, 0.91, 0.86, 0.32];
+
+/// How wide a pilot's name is on its row, the Company's mark among it.
+fn row_name_width(pi: &Pilot) -> f32 {
+    let s = TextStyle::value(ROW_SIZE);
+    let mark = if pi.company {
+        emblem::mark_width(&s)
+    } else {
+        0.0
+    };
+    mark + measure(&kit_name(pi), &s)
 }
 
 /// The scoreboard's right-aligned stat columns, each one's right edge as a
