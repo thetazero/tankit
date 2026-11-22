@@ -127,6 +127,9 @@ tankit [OPTIONS]
                           system view
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
+  --won                   (with --screen missions) your company just won the battle at --site
+                          (default the first it fights for), under that site's contract, and
+                          the war ticked once after, as back from a battle
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -166,6 +169,8 @@ pub struct Args {
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.
     choice: Option<bool>,
+    /// --won, for missions shots: your company just won its battle.
+    won: bool,
     /// --defend, for missions shots: your company's on a defense contract.
     defend: bool,
     pub loadout: garage::Loadout,
@@ -556,6 +561,7 @@ fn parse_args() -> Result<Args> {
     let mut site = None;
     let mut transfer = None;
     let mut choice = None;
+    let mut won = false;
     let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
@@ -676,6 +682,7 @@ fn parse_args() -> Result<Args> {
                     other => bail!("--choice expects split or merge, got {other:?}"),
                 })
             }
+            "--won" => won = true,
             "--defend" => defend = true,
             "--straight" => straight = true,
             "--tilt" => {
@@ -881,6 +888,7 @@ fn parse_args() -> Result<Args> {
         site,
         transfer,
         choice,
+        won,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -1354,6 +1362,27 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 for _ in 0..(shot.time / 0.01).round() as u32 {
                     menu.advance(0.01);
                 }
+            }
+            if args.won {
+                // As back from a won battle: settled, then the war's tick.
+                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                let rank = profile.rank().level;
+                let t = g
+                    .await_work_staying(prefer, rank, 100)
+                    .0
+                    .context("no work for your company")?;
+                let o = t
+                    .sortie(args.site.unwrap_or(0))
+                    .context("your side doesn't fight there")?;
+                let b = g
+                    .muster_crew(o.system, &o.factions, Some(o.site))
+                    .context("your company isn't in it")?;
+                let stake = galaxy::battle::Stake::of(mission::MISSIONS[o.mission].contract);
+                let s = g.settle(&b, &[0, 0], &[0, 0], Some(0), stake);
+                g.step();
+                log::info!("won: {}", galaxy::battle::describe(&b, &s));
+                profile.ship = g.crew;
+                menu.set_theater(g.aboard(rank));
             }
             if let Some(k) = args.site {
                 menu.pick_site(k);
