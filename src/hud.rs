@@ -20,9 +20,7 @@ use crate::scene::project;
 use crate::sim::Tank;
 use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
-use crate::ui::{
-    Align, Hits, Layer, Painter, Rgba, TextStyle, hull_pips, measure, pips_width, theme, with_alpha,
-};
+use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
 
 /// What the HUD calls fighter `i`: "YOU", or its turret.
 pub fn callsign(m: &Match, i: usize) -> &'static str {
@@ -665,9 +663,9 @@ impl Hud {
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
 /// Side `team`'s hulls not yet in play, under its score: "18 HULLS", and
-/// how many of them are mercs' ("18 HULLS · 4 COMPANY"), or on your side
-/// your company's as pips under it, yours alone lit; hot when the last
-/// few are going, struck through once they're all spent.
+/// how many of them are mercs' ("18 HULLS · 4 COMPANY"), the count alone
+/// on your company's side (#412); hot when the last few are going, struck
+/// through once they're all spent.
 fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
     let Some(n) = m.hulls_left(team) else { return };
     let mut s = TextStyle::LABEL;
@@ -685,29 +683,13 @@ fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
     } else if m.crew_out() && team == m.fighters[0].team {
         // Your company's spent (#361): the realm's fight on (#373).
         format!("{n} HULLS · COMPANY OUT")
-    } else if mercs > 0 && m.crew_team() == Some(team) {
-        // Your company's hulls are the pips under it.
-        format!("{n} HULLS")
-    } else if mercs > 0 {
+    } else if mercs > 0 && m.crew_team() != Some(team) {
         // Of them, the mercs' (#320).
         format!("{n} HULLS · {mercs} COMPANY")
     } else {
         format!("{n} HULLS")
     };
     p.text(at, &text, &s, align);
-    // Your company's spare hulls, a pip each, yours alone lit (#385).
-    if m.crew_team() == Some(team) && !m.crew_out() && !m.spent(team) {
-        let (cell, gap) = (Vec2::new(5.0, 7.0), 2.0);
-        let w = pips_width(mercs, cell.x, gap);
-        let x = match align {
-            Align::Left => at.x,
-            Align::Center => at.x - w * 0.5,
-            Align::Right => at.x - w,
-        };
-        let lit = m.own_hulls.min(mercs);
-        let amber = crate::faction::Faction::Company.ui();
-        hull_pips(p, Vec2::new(x, at.y + 15.0), mercs, lit, amber, cell, gap);
-    }
 }
 
 fn scoreboard(
