@@ -3,8 +3,8 @@
 //! A finished contract pays crystals (completion, your side's victory,
 //! contribution, kill bounty, and your time on the site under Hold); renown
 //! with the Company is paid for actions in the match. Parts aren't bought:
-//! their schematics are stolen on missions (see [`crate::mission`]). Crystals
-//! upgrade them a step at a time through M0..M3.
+//! their schematics are reverse-engineered from wrecks ([`Known`]). Crystals
+//! upgrade them a step at a time through T0..T3, up to what you know.
 //!
 //! **Gear tiers come from who's fighting** (#438). A realm kits all its
 //! pilots alike, at the tier it has researched (`galaxy::realm`). A merc
@@ -14,7 +14,6 @@
 
 use crate::combat::{self, Action, Gun, Match, ShellSpec};
 use crate::faction::Faction;
-use crate::rng::Rng;
 use crate::sim::{HullKind, HullStats, TurretKind};
 
 /// A hull or a turret.
@@ -67,7 +66,7 @@ impl Part {
         PARTS.iter().position(|&p| p == self).unwrap_or(0)
     }
 
-    /// Who makes it: whose vaults its schematic is stolen from.
+    /// Who makes it: whose wrecks teach it.
     pub fn maker(self) -> Faction {
         match self {
             Part::Hull(k) => k.maker(),
@@ -76,7 +75,7 @@ impl Part {
     }
 
     /// The Company's starting kit, the Imperium's basic gear: owned from the start.
-    /// Every other part is a schematic stolen on a mission.
+    /// Every other part is reverse-engineered from wrecks (#438).
     pub fn starter(self) -> bool {
         matches!(
             self,
@@ -225,9 +224,6 @@ impl Known {
     }
 }
 
-/// Deviation of a rated mission's bot gear about its rating, in steps.
-const GEAR_SPREAD: f32 = 4.0;
-
 /// Upgrade level of every part.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Levels([u8; PARTS.len()]);
@@ -239,29 +235,6 @@ impl Levels {
 
     pub fn set(&mut self, part: Part, level: u8) {
         self.0[part.index()] = level.min(MAX_LEVEL);
-    }
-
-    /// Gear for a bot on a mission rated `rating` (in steps): each part's level drawn
-    /// from a normal centred on the rating, kept within half a mark below it and a
-    /// mark above (M0.5: M0 to M1.5). Rated M0: all M0.
-    pub fn rated(rating: u8, rng: &mut Rng) -> Levels {
-        let mut levels = Levels::default();
-        if rating == 0 {
-            return levels;
-        }
-        let low = rating.saturating_sub(STEPS_PER_MARK / 2) as f32;
-        let high = (rating + STEPS_PER_MARK).min(MAX_LEVEL) as f32;
-        for part in PARTS {
-            // Redraw out of range rather than clamp, so the ends don't pile up.
-            let level = loop {
-                let l = (rating as f32 + GEAR_SPREAD * rng.normal()).round();
-                if (low..=high).contains(&l) {
-                    break l;
-                }
-            };
-            levels.set(part, level as u8);
-        }
-        levels
     }
 
     /// Every part at `level` (a realm's pilots: kitted alike, #438).
@@ -326,7 +299,7 @@ const DAMAGE_PER_CRYSTAL: f32 = 10.0;
 const BOUNTY: u32 = 15;
 /// Hold contract: crystals per second of your own on the site.
 const HOLD_PER_SECOND: f32 = 1.0;
-/// A rated mission's pay on top, per mark of rating: M0.5 pays half as much again.
+/// Pay on top for the enemy's gear, per mark of it: T0.5 pays half as much again.
 const PAY_PER_MARK: f32 = 1.0;
 
 /// What a mission rated `rating` (in steps) multiplies crystal pay by.
@@ -357,8 +330,8 @@ pub struct Payout {
     /// The mission's rating (in steps), and what it adds on top of the rest.
     pub rating: u8,
     pub rated: u32,
-    /// The schematic stolen: the mission's prize, if your side won (a draw or a
-    /// loss steals nothing).
+    /// A schematic reverse-engineered: one your wrecks this round made yours
+    /// (#438), win or lose.
     pub schematic: Option<Part>,
 }
 
@@ -390,7 +363,16 @@ impl Payout {
             hold: (m.held(0) * HOLD_PER_SECOND) as u32,
             rating: m.rating,
             rated: 0,
-            schematic: m.prize.filter(|_| outcome == Outcome::Won),
+            schematic: m.known.and_then(|before| {
+                // The first schematic your wrecks this round make yours.
+                let mut after = before;
+                for &(part, level) in &me.scrap {
+                    after.scrap(part, level);
+                }
+                PARTS
+                    .into_iter()
+                    .find(|&p| !p.starter() && before.cap(p) == 0 && after.cap(p) >= 1)
+            }),
         };
         let base = pay.total();
         pay.rated = (base as f32 * (pay_factor(m.rating) - 1.0)).round() as u32;
@@ -628,54 +610,36 @@ mod tests {
         assert_eq!(level_label(MAX_LEVEL), "T3");
     }
 
+    /// The results screen names a schematic your wrecks made yours this
+    /// round (#438), win or lose; none outside the war.
     #[test]
-    fn rated_gear_is_spread_about_the_rating() {
-        let mut rng = crate::rng::Rng::new(7);
-        assert_eq!(Levels::rated(0, &mut rng), Levels::default());
-        let mut all = Vec::new();
-        for _ in 0..2000 {
-            let l = Levels::rated(5, &mut rng);
-            all.extend(PARTS.iter().map(|&p| l.of(p) as f32));
-        }
-        // M0.5 enemies: M0 to M1.5, centred on M0.5 (a little above, the range
-        // reaching further up than down), mixed rather than all one level.
-        let (lo, hi) = all
-            .iter()
-            .fold((99.0f32, 0.0f32), |(a, b), &l| (a.min(l), b.max(l)));
-        assert_eq!((lo, hi), (0.0, 15.0));
-        let mean = all.iter().sum::<f32>() / all.len() as f32;
-        assert!((5.0..6.5).contains(&mean), "mean {mean}");
-        let near = all.iter().filter(|&&l| (2.0..=8.0).contains(&l)).count();
-        assert!(near * 10 > all.len() * 5, "most within a few steps of T0.5");
-        let at = |n: f32| all.iter().filter(|&&l| l == n).count();
-        assert!(
-            at(5.0) > at(0.0) && at(5.0) > at(12.0),
-            "peaks at the rating"
-        );
+    fn wrecks_reverse_engineer_a_schematic() {
+        let pelekys = Part::Turret(TurretKind::Pelekys);
+        let mut m = Match::new(crate::map::Map::city(0), 0, 5, 3);
+        m.start();
+        m.fighters[0].scrap.push((pelekys, 20));
+        assert_eq!(Payout::of(&m).schematic, None, "outside the war");
+        let mut known = Known::default();
+        known.set(pelekys, 0.9);
+        m.known = Some(known);
+        assert_eq!(Payout::of(&m).schematic, Some(pelekys));
+        known.set(pelekys, 1.0);
+        m.known = Some(known);
+        assert_eq!(Payout::of(&m).schematic, None, "already yours");
     }
 
     #[test]
-    fn rated_missions_pay_more_and_field_better_gear() {
+    /// Fighting better-geared enemies pays more (#438).
+    fn better_geared_enemies_pay_more() {
         let mut m = Match::new(crate::map::Map::city(0), 0, 15, 3);
         m.start();
         m.fighters[0].kills = 2;
         m.fighters[0].damage_dealt = 300.0;
         let base = Payout::of(&m).total();
-        let health: Vec<f32> = m.fighters.iter().map(|f| f.health).collect();
-        m.set_rating(5);
+        m.rating = 5;
         let p = Payout::of(&m);
         assert_eq!(p.total(), base + (base as f32 * 0.5).round() as u32);
         assert_eq!(pay_factor(5), 1.5);
-        // The player's own gear is theirs; the bots' is better on average.
-        assert_eq!(m.fighters[0].levels, Levels::default());
-        assert_eq!(m.fighters[0].health, health[0]);
-        let tougher = (1..m.fighters.len())
-            .filter(|&i| m.fighters[i].health > health[i])
-            .count();
-        assert!(tougher > m.fighters.len() / 2, "{tougher} tougher");
-        for (i, f) in m.fighters.iter().enumerate().skip(1) {
-            assert_eq!(f.health, f.levels.max_health(m.world.tanks[i].hull_kind));
-        }
     }
 
     #[test]

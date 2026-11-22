@@ -13,7 +13,6 @@ use winit::keyboard::KeyCode;
 
 use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
-use crate::economy::Part;
 use crate::faction::Faction;
 use crate::galaxy::theater::{
     Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name, system_name,
@@ -960,14 +959,27 @@ impl Menu {
         y += 32.0;
         body(p, Vec2::new(x, y), "Their gear", theme::DIM);
         body(p, Vec2::new(col, y), "Win, plus kills", theme::DIM);
-        y += 34.0;
-        prize(
-            p,
-            Vec2::new(x, y),
-            site.prize(|part| profile.owns(part)),
-            profile,
-        );
-        y += 58.0;
+        y += 30.0;
+        // What their wrecks would teach you (#438): their parts you don't
+        // have yet, and how far you've got with each.
+        let unknown: Vec<String> = crate::economy::PARTS
+            .into_iter()
+            .filter(|&part| part.maker() == enemy && !profile.owns(part))
+            .map(|part| {
+                let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
+                format!("{} {pct}%", title(part.name()))
+            })
+            .collect();
+        if !unknown.is_empty() {
+            y = wrap(
+                p,
+                Vec2::new(x, y),
+                &format!("Wrecks teach: {}", unknown.join(" · ")),
+                theme::DIM,
+            );
+            y += 18.0;
+        }
+        y += 4.0;
         if site.committed {
             rows(p, hits, Vec2::new(x, y), &[Item::Acts("DEPLOY")], 0);
         } else {
@@ -1274,47 +1286,6 @@ fn company_rank(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
     );
     y += 26.0;
     y - at.y
-}
-
-/// A contract's prize at `at`: the schematic a win steals, its maker's emblem
-/// beside it; or that you already have it, or that there's none.
-fn prize(p: &mut Painter, at: Vec2, part: Option<Part>, profile: &Profile) {
-    let (x, y) = (at.x, at.y);
-    match part {
-        Some(part) if !profile.owns(part) => {
-            let mut style = TextStyle::value(16.0);
-            style.color = theme::HOT;
-            emblem::tagged(
-                p,
-                Vec2::new(x, y),
-                part.maker(),
-                part.name(),
-                &style,
-                Align::Left,
-            );
-            let kind = match part {
-                Part::Hull(_) => "hull",
-                Part::Turret(_) => "turret",
-            };
-            body(
-                p,
-                Vec2::new(x, y + 28.0),
-                &format!("Prize: their {kind} schematic, if you win"),
-                theme::DIM,
-            );
-        }
-        Some(part) => {
-            body(
-                p,
-                Vec2::new(x, y),
-                &format!("{} schematic: yours already", title(part.name())),
-                theme::DIM,
-            );
-        }
-        None => {
-            body(p, Vec2::new(x, y), "No schematic to win", theme::DIM);
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
