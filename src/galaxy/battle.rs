@@ -107,8 +107,11 @@ pub struct Settled {
     pub lost: [f32; SIDES],
     /// The site changed hands.
     pub taken: bool,
-    /// A shield generator went down.
-    pub shield_down: bool,
+    /// The shield generator that went down, if one did (index into
+    /// `Galaxy::sites`).
+    pub shield_down: Option<usize>,
+    /// The side that won (index into `Faction::ALL`), if anyone did.
+    pub winner: Option<usize>,
     /// Of `lost`, the hulls that were mercs'.
     pub merc_lost: [f32; SIDES],
 }
@@ -208,6 +211,7 @@ pub fn conclude(g: &mut Galaxy, b: &Battle, m: &Match) -> Settled {
         m.leader(),
         Stake::of(m.contract),
     );
+    g.report(b, Stake::of(m.contract), &s);
     g.spend_own(m.own_lost());
     g.step();
     s
@@ -284,7 +288,7 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
     if s.taken {
         out += "\n  the site changed hands";
     }
-    if s.shield_down {
+    if s.shield_down.is_some() {
         out += "\n  a shield generator went down";
     }
     for &f in &b.sides {
@@ -300,6 +304,24 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
 }
 
 impl Galaxy {
+    /// Keep what battle `b`, settled as `s` for `stake`, did, if it was
+    /// yours: for the missions screen to say (#413).
+    pub fn report(&mut self, b: &Battle, stake: Stake, s: &Settled) {
+        if b.crew.is_some()
+            && let (Some(site), &[a, e]) = (b.site, &b.sides[..])
+        {
+            self.crew_fought = Some(super::theater::Fought {
+                system: b.system,
+                site,
+                sides: [a, e],
+                winner: s.winner,
+                stake,
+                taken: s.taken,
+                shield_down: s.shield_down,
+            });
+        }
+    }
+
     /// Side `f`'s hulls in system `s`, but for `kept` of them (another
     /// company's, on your side).
     fn within_reach(&self, s: usize, f: usize, kept: f32) -> f32 {
@@ -530,8 +552,9 @@ impl Galaxy {
                 merc_lost[f] += off_all;
             }
         }
-        let (mut taken, mut shield_down) = (false, false);
-        if let Some(w) = winner.and_then(|t| battle.sides.get(t).copied()) {
+        let (mut taken, mut shield_down) = (false, None);
+        let won_by = winner.and_then(|t| battle.sides.get(t).copied());
+        if let Some(w) = won_by {
             match stake {
                 Stake::Hulls => {}
                 Stake::Site => {
@@ -548,7 +571,7 @@ impl Galaxy {
                         self.sites[i].kind = SiteKind::Shield {
                             down: super::REPAIR_TICKS,
                         };
-                        shield_down = true;
+                        shield_down = Some(i);
                     } else if let Some(i) = at_stake {
                         let old = self.sites[i].owner as usize;
                         self.sites[i].owner = w as u8;
@@ -584,7 +607,7 @@ impl Galaxy {
                         self.sites[i].kind = SiteKind::Shield {
                             down: super::REPAIR_TICKS,
                         };
-                        shield_down = true;
+                        shield_down = Some(i);
                     }
                 }
             }
@@ -595,6 +618,7 @@ impl Galaxy {
             lost: total,
             taken,
             shield_down,
+            winner: won_by,
             merc_lost,
         }
     }
@@ -661,7 +685,7 @@ mod tests {
         assert!((before[1] - total(&g, res) - lost[1] as f32).abs() < 0.01);
         assert!((s.lost[imp] - lost[0] as f32).abs() < 1e-3);
         assert_eq!(s.before.held, s.after.held, "a raid takes no ground");
-        assert!(!s.taken && !s.shield_down);
+        assert!(!s.taken && s.shield_down.is_none());
     }
 
     /// A Hold won by the side that doesn't hold the site takes it; won by
@@ -695,12 +719,12 @@ mod tests {
         let team = b.sides.iter().position(|&x| x == holder).unwrap();
         let s = g.settle(&b, &[0, 0], &[0, 0], Some(1 - team), Stake::Shield);
         if s.before.shields[holder] > 0 {
-            assert!(s.shield_down);
+            assert!(s.shield_down.is_some());
             assert_eq!(s.after.shields[holder] + 1, s.before.shields[holder]);
         }
         // A draw takes nothing.
         let d = g.settle(&b, &[0, 0], &[0, 0], None, Stake::Shield);
-        assert!(!d.shield_down && !d.taken);
+        assert!(d.shield_down.is_none() && !d.taken);
     }
 }
 

@@ -15,8 +15,9 @@ use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
+use crate::galaxy::battle::Stake;
 use crate::galaxy::theater::{
-    Berth, ChoiceView, CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name,
+    Berth, ChoiceView, CrewNews, Fought, Ship, SiteView, Sortie, Theater, ship_name, system_name,
 };
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
@@ -782,7 +783,7 @@ impl Menu {
         );
         y += 30.0;
         if let Some(ship) = &t.ship {
-            y = contract(p, Vec2::new(x, y), ship, &t.name) + 16.0;
+            y = contract(p, Vec2::new(x, y), t, ship) + 16.0;
         }
 
         // The contested sites.
@@ -988,7 +989,8 @@ fn field(p: &mut Painter, at: Vec2, label: &str, value: &str) {
 /// it, and its hulls; and, if the Company just moved you, from where. (Its time left and how many hulls it
 /// can lose are over the system view. The company's pay and crystal aren't
 /// shown: they're its business, not the pilot's.) Returns the y under it.
-fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
+fn contract(p: &mut Painter, at: Vec2, t: &Theater, ship: &Ship) -> f32 {
+    let system = &t.name;
     let (x, mut y) = (at.x, at.y);
     let employer = Faction::ALL[ship.side];
     body(p, Vec2::new(x, y), "Hired by", theme::DIM);
@@ -1042,7 +1044,85 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
     if let Some(news) = news {
         y = wrap(p, Vec2::new(x, y), &news, theme::HOT);
     }
+    // What your last battle did (#413): a win doesn't always take the site.
+    if let Some(said) = ship.fought.and_then(|b| fought(t, &b)) {
+        y = wrap(p, Vec2::new(x, y), &said, theme::HOT);
+    }
     y
+}
+
+/// What battle `b` did, as theater `t` (taken after it) shows its system:
+/// whether the site changed hands, and if it didn't, why not. None if the
+/// site isn't in `t`.
+fn fought(t: &Theater, b: &Fought) -> Option<String> {
+    let at = |i: usize| t.sites.iter().find(|s| s.index == i);
+    let site = at(b.site)?;
+    let place = format!(
+        "the {} on {}",
+        site.kind_name().to_lowercase(),
+        planet(t, site)
+    );
+    let [you, enemy] = b.sides;
+    let them = title(Faction::ALL[enemy].name());
+    let said = match b.winner {
+        None => format!("No one won at {place}: nothing changed hands"),
+        Some(w) if w == you => {
+            if b.taken && site.owner == you {
+                format!("You won {place}: it's ours now")
+            } else if b.taken {
+                format!(
+                    "You won {place}, but the {} have taken it back since",
+                    title(Faction::ALL[site.owner].name())
+                )
+            } else if let Some(g) = b.shield_down.and_then(at) {
+                let back = match g.repairs() {
+                    Some((done, of)) if of - done == 1 => "back up in 1 tick".to_string(),
+                    Some((done, of)) => format!("back up in {} ticks", of - done),
+                    None => "back up already".to_string(),
+                };
+                let world = planet(t, g);
+                // Whether any of the enemy's generators on its world are still up.
+                let up = t.sites.iter().any(|s| {
+                    s.planet == g.planet && s.owner == enemy && s.is_shield() && s.down().is_none()
+                });
+                if g.index == b.site && up {
+                    format!(
+                        "You won: the {them} generator on {world} is down, not taken ({back}). A generator that's up is knocked down first; once every generator on {world} is down, their sites there can be taken"
+                    )
+                } else if g.index == b.site {
+                    format!(
+                        "You won: the {them} generator on {world} is down, not taken ({back}). Every generator on {world} is down: their sites there can be taken now"
+                    )
+                } else {
+                    format!(
+                        "You won: the {them} generator on {world} is down ({back}). A raid takes no ground"
+                    )
+                }
+            } else if b.stake == Stake::Hulls {
+                format!(
+                    "You won at {place}: an attrition fight. The {them} lost hulls, but no ground changes hands"
+                )
+            } else if site.owner == you {
+                format!("You held {place}: it stays ours")
+            } else {
+                format!("You won at {place}: nothing changed hands")
+            }
+        }
+        Some(w) => {
+            let winner = title(Faction::ALL[w].name());
+            if b.taken {
+                format!("You lost {place} to the {winner}")
+            } else if let Some(g) = b.shield_down.and_then(at) {
+                format!(
+                    "You lost: the {winner} knocked out our generator on {}",
+                    planet(t, g)
+                )
+            } else {
+                format!("You lost at {place}: nothing changed hands")
+            }
+        }
+    };
+    Some(said)
 }
 
 /// The choice of ship at `at`: what happened to your company, then the two
@@ -2049,6 +2129,69 @@ mod tests {
         let (t, _) = g.await_work_staying(Some(f.index()), 1, 400);
         assert!(t.as_ref().is_some_and(|t| t.ship.is_some()));
         t
+    }
+
+    /// After your battle the contract screen says what it did (#413): a
+    /// won site is ours; a generator that was up is only knocked down, and
+    /// an attrition win takes no ground, and it says so.
+    #[test]
+    fn the_contract_screen_says_what_your_battle_did() {
+        use crate::galaxy::battle::Stake;
+        use crate::galaxy::{Galaxy, REGION, Rules, SYSTEMS};
+        // A small war with your company at work, and its theater.
+        let war = || {
+            let mut g = Galaxy::with_size(3, SYSTEMS / 4, REGION * 0.5, Rules::default());
+            for _ in 0..60 {
+                g.step();
+            }
+            let t = g.await_work_staying(None, 1, 400).0.expect("work");
+            (g, t)
+        };
+        // Win a fight over site `i` (of `Galaxy::sites`) for `stake`: what
+        // the screen says after, and who holds the site.
+        let win = |i: usize, stake: Stake| {
+            let (mut g, t) = war();
+            let f = t.employer;
+            let enemy = g.sites[i].owner as usize;
+            let b = g
+                .muster_at(
+                    t.system,
+                    &[Faction::ALL[f], Faction::ALL[enemy]],
+                    Some(i),
+                    g.crew,
+                )
+                .expect("your company's battle");
+            let s = g.settle(&b, &[0, 0], &[0, 0], Some(0), stake);
+            g.report(&b, stake, &s);
+            let now = g.theater_at(t.system, f, 1);
+            let said = fought(&now, &g.crew_fought.expect("your battle's kept"));
+            (
+                said.expect("its site is in the theater"),
+                g.sites[i].owner as usize,
+            )
+        };
+        let (_, t) = war();
+        let f = t.employer;
+        let theirs = |shield: bool| {
+            t.sites
+                .iter()
+                .find(|s| s.owner != f && s.is_shield() == shield && s.down().is_none())
+                .map(|s| s.index)
+        };
+
+        let generator = theirs(true).expect("an enemy generator up");
+        let (said, owner) = win(generator, Stake::Site);
+        assert!(said.contains("is down, not taken"), "{said}");
+        assert_ne!(owner, f);
+
+        let site = theirs(false).expect("an enemy foundry or mine");
+        let (said, owner) = win(site, Stake::Hulls);
+        assert!(said.contains("no ground changes hands"), "{said}");
+        assert_ne!(owner, f);
+
+        let (said, owner) = win(site, Stake::Site);
+        assert!(said.contains("it's ours now"), "{said}");
+        assert_eq!(owner, f);
     }
 
     /// COMPANIES lists the ships to switch to; Enter or a click on one

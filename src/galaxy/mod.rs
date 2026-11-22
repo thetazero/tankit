@@ -355,6 +355,8 @@ pub struct Galaxy {
     pub own: Option<theater::Own>,
     /// What just happened to your company, for the missions screen (not saved).
     pub crew_news: Option<theater::CrewNews>,
+    /// What your last battle did, for the missions screen (#413; not saved).
+    pub crew_fought: Option<theater::Fought>,
     /// Your company just split or joined another: which ship you go with,
     /// for you to choose on the missions screen (#364). You're with the
     /// first meanwhile, and the war waits on your choice (not saved: a
@@ -515,6 +517,7 @@ impl Galaxy {
             crew: None,
             own: None,
             crew_news: None,
+            crew_fought: None,
             crew_choice: None,
             destroyed: 0.0,
             rng,

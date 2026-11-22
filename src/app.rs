@@ -540,6 +540,7 @@ impl App {
         self.sortie = Some(o);
         // What happened to your company has been told by now.
         self.war.get().crew_news = None;
+        self.war.get().crew_fought = None;
         let mut game = new_match(
             self.seed,
             self.map_kind,

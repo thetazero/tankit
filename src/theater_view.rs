@@ -853,10 +853,17 @@ pub fn draw(
             &planet_name(&t.name, pl as u8),
             &TextStyle::value(13.0),
         );
-        let parts: Vec<String> = (0..4)
+        let mut parts: Vec<String> = (0..4)
             .filter(|&f| held[f] > 0)
             .map(|f| format!("{} {}", Faction::ALL[f].name(), held[f]))
             .collect();
+        // Generators knocked down but not yet taken (#413): a won fight
+        // over one that's up downs it, and it's still its holder's.
+        let down = sites.iter().filter(|(_, s)| s.down().is_some()).count();
+        if down > 0 {
+            let s = if down == 1 { "" } else { "S" };
+            parts.push(format!("{down} SHIELD{s} DOWN"));
+        }
         let mut style = TextStyle::LABEL;
         style.color = theme::DIM;
         label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
@@ -1340,6 +1347,7 @@ mod tests {
             ticks_left: 10,
             signed: 4,
             news: None,
+            fought: None,
             committed: 0.0,
             own: Default::default(),
         });
@@ -1372,6 +1380,7 @@ mod tests {
             ticks_left: 0,
             signed: 10,
             news: None,
+            fought: None,
             committed: 0.0,
             own: Default::default(),
         });

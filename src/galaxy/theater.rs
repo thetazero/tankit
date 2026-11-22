@@ -31,6 +31,7 @@
 //! picked at random, and on a generated kind the one map its seed names
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
+use super::battle::Stake;
 use super::{AT_WAR, Galaxy, REPAIR_TICKS, SIDES, Site, SiteKind};
 use crate::economy::{PARTS, Part};
 use crate::faction::Faction;
@@ -85,6 +86,8 @@ pub struct Ship {
     pub signed: u64,
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
+    /// What your last battle here did, if you've just fought one (#413).
+    pub fought: Option<Fought>,
     /// Its hulls still committed to the contract (in the fight), and of them yours alone (#385): left, of how many.
     pub committed: f32,
     pub own: Own,
@@ -136,6 +139,25 @@ impl Shown {
             defend: s.defend,
         })
     }
+}
+
+/// What your last battle did (#413), for the missions screen: a win
+/// doesn't always take the site (a generator that's up is knocked down
+/// first; an Attrition only costs hulls), so the screen says what it did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fought {
+    pub system: usize,
+    /// The site fought over (index into `Galaxy::sites`).
+    pub site: usize,
+    /// The match's sides (index into `Faction::ALL`): yours, then the enemy.
+    pub sides: [usize; 2],
+    /// The side that won, if anyone did.
+    pub winner: Option<usize>,
+    pub stake: Stake,
+    /// The site changed hands.
+    pub taken: bool,
+    /// The generator that went down, if one did (index into `Galaxy::sites`).
+    pub shield_down: Option<usize>,
 }
 
 /// What happened to your company that the missions screen tells you.
@@ -808,6 +830,7 @@ impl Galaxy {
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
             signed: k.signed,
             news: self.crew_news,
+            fought: self.crew_fought.filter(|b| b.system == s),
             committed: k.field,
             own: self.own_on(co.id, k, rank),
         });
@@ -832,6 +855,7 @@ impl Galaxy {
             ticks_left: 0,
             signed: shown.signed,
             news: None,
+            fought: None,
             committed: 0.0,
             own: Own::default(),
         });

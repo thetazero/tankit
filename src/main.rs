@@ -126,6 +126,10 @@ tankit [OPTIONS]
                           system view
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
+  --won <attrition|hold|raid>
+                          (with --screen missions) you just won the battle your company fights
+                          for (at --site, if given), under that contract: the screen says what
+                          the win did
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -165,6 +169,9 @@ pub struct Args {
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.
     choice: Option<bool>,
+    /// --won, for missions shots: you just won your company's battle, under
+    /// this contract.
+    won: Option<mission::Contract>,
     /// --defend, for missions shots: your company's on a defense contract.
     defend: bool,
     pub loadout: garage::Loadout,
@@ -540,6 +547,7 @@ fn parse_args() -> Result<Args> {
     let mut site = None;
     let mut transfer = None;
     let mut choice = None;
+    let mut won = None;
     let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
@@ -655,6 +663,14 @@ fn parse_args() -> Result<Args> {
                     Some("split") => false,
                     Some("merge") => true,
                     other => bail!("--choice expects split or merge, got {other:?}"),
+                })
+            }
+            "--won" => {
+                won = Some(match args.next().as_deref() {
+                    Some("attrition") => mission::Contract::Attrition,
+                    Some("hold") => mission::Contract::Hold,
+                    Some("raid") => mission::Contract::Raid,
+                    other => bail!("--won expects attrition, hold or raid, got {other:?}"),
                 })
             }
             "--defend" => defend = true,
@@ -860,6 +876,7 @@ fn parse_args() -> Result<Args> {
         site,
         transfer,
         choice,
+        won,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -1333,6 +1350,28 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 for _ in 0..(shot.time / 0.01).round() as u32 {
                     menu.advance(0.01);
                 }
+            }
+            if let Some(contract) = args.won {
+                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                let rank = profile.rank().level;
+                let t = g
+                    .await_work_staying(prefer, rank, 100)
+                    .0
+                    .context("no work for your company")?;
+                // The fight `--site` picks, else the first your side fights.
+                let o = match args.site {
+                    Some(k) => t.sortie(k),
+                    None => (0..t.contested.len()).find_map(|k| t.sortie(k)),
+                }
+                .context("no battle for your company there")?;
+                let b = g
+                    .muster_crew(o.system, &o.factions, Some(o.site))
+                    .context("your company isn't in it")?;
+                let stake = galaxy::battle::Stake::of(contract);
+                let s = g.settle(&b, &[0, 0], &[0, 0], Some(0), stake);
+                g.report(&b, stake, &s);
+                profile.ship = g.crew;
+                menu.set_theater(g.aboard(rank));
             }
             if let Some(k) = args.site {
                 menu.pick_site(k);
