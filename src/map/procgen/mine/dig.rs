@@ -776,6 +776,23 @@ impl Dig<'_> {
         let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
         self.sculpted = mesh;
         self.face_colliders(&feet, &fronts);
+        // Rocks on its top to fight from behind, clear of where the ramp
+        // comes up.
+        let mut on_top: Vec<Vec2> = Vec::new();
+        for _ in 0..40 {
+            if on_top.len() >= 3 {
+                break;
+            }
+            let a = rng.range(0.0, TAU);
+            let dir = Vec2::new(a.cos(), a.sin());
+            let p = b.center + dir * b.rim(dir) * rng.range(0.25, 0.7);
+            if dir.dot(b.ramp) > 0.5 || on_top.iter().any(|q| q.distance(p) < 8.0) {
+                continue;
+            }
+            on_top.push(p);
+            let size = rng.range(1.5, 2.1);
+            self.boulder(rng, p, size, true);
+        }
         // Blocks fallen off it.
         for _ in 0..rng.int(3, 6) {
             let a = rng.range(0.0, TAU);

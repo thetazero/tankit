@@ -1020,8 +1020,18 @@ impl Layout {
                             })
                     };
                     if let (Some(a), Some(b)) = (end(1.0), end(-1.0)) {
-                        found = Some((a, b, 6.0));
-                        break 'nudge;
+                        // Not across another wash too (where they meet).
+                        let alone = (0..=10).all(|i| {
+                            let q = a.lerp(b, i as f32 / 10.0);
+                            self.washes
+                                .iter()
+                                .enumerate()
+                                .all(|(k, o)| k == wi || o.near(q).0 > 18.0)
+                        });
+                        if alone {
+                            found = Some((a, b, 6.0));
+                            break 'nudge;
+                        }
                     }
                 }
                 self.fords.push(found.ok_or(line!())?);

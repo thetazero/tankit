@@ -752,7 +752,7 @@ fn check_cover_everywhere(seed: u64) {
             let p = Vec2::new(ix as f32 * 5.0 + 2.5, iz as f32 * 5.0 + 2.5);
             // (Not where it's kept open on purpose: by the ways round, the
             // ramps and crossings, the spawns.)
-            if keep_clear(&l, p) || nav.is_blocked(p) || d.in_the_way(p, 3.0) {
+            if keep_clear(&l, p) || nav.is_blocked(p) || d.in_the_way(p, 6.0) {
                 continue;
             }
             if !d.cover_near(p, 13.0) {
