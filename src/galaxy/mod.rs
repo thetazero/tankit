@@ -539,6 +539,17 @@ impl Galaxy {
         out
     }
 
+    /// Hulls each side's yards in system `s` turn out a tick, as `produce`
+    /// adds them: a pocket's holder short by the cut-off.
+    pub fn built(&self, s: usize) -> [f32; SIDES] {
+        let mut out = self.production(s);
+        let holder = self.systems[s].owner();
+        if self.cut[s] {
+            out[holder] *= self.rules.cut_off;
+        }
+        out
+    }
+
     pub fn neighbors(&self, s: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
         self.neighbors[s * NEIGHBORS..(s + 1) * NEIGHBORS]
             .iter()
