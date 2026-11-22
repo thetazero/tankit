@@ -1,13 +1,15 @@
 //! The galaxy on disk: `galaxy.json` beside the profile. Only what changes is
 //! saved (who owns each site, which generators are down, every side's hulls
-//! in every system and whose realm they are, the realms, the clock and the
-//! dice); the layout of systems and sites is regenerated from the seed.
+//! in every system and whose realm they are, the realms, the mercenary
+//! companies, the clock and the dice); the layout of systems and sites is
+//! regenerated from the seed.
 
 use std::path::{Path, PathBuf};
 
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
+use super::merc::{Company, Contract};
 use super::realm::{NONE, Realm};
 use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
@@ -37,6 +39,38 @@ struct Saved {
     realms: Vec<SavedRealm>,
     splits: u64,
     merges: u64,
+    /// The mercenary companies (a galaxy saved before them has none, and
+    /// keeps the ones a fresh galaxy starts with).
+    #[serde(default)]
+    companies: Option<Vec<SavedCompany>>,
+    #[serde(default)]
+    next_company: u32,
+    #[serde(default)]
+    destroyed: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedCompany {
+    at: u32,
+    crystals: f32,
+    hulls: f32,
+    margin: f32,
+    founded: u64,
+    id: u32,
+    contract: Option<SavedContract>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedContract {
+    realm: u32,
+    side: u8,
+    target: u32,
+    signed: u64,
+    upfront: f32,
+    bonus: f32,
+    max_loss: f32,
+    field: f32,
+    lost: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -83,6 +117,32 @@ impl Galaxy {
                 .collect(),
             splits: self.splits,
             merges: self.merges,
+            companies: Some(
+                self.companies
+                    .iter()
+                    .map(|c| SavedCompany {
+                        at: c.at,
+                        crystals: c.crystals,
+                        hulls: c.hulls,
+                        margin: c.margin,
+                        founded: c.founded,
+                        id: c.id,
+                        contract: c.contract.map(|k| SavedContract {
+                            realm: k.realm,
+                            side: k.side,
+                            target: k.target,
+                            signed: k.signed,
+                            upfront: k.upfront,
+                            bonus: k.bonus,
+                            max_loss: k.max_loss,
+                            field: k.field,
+                            lost: k.lost,
+                        }),
+                    })
+                    .collect(),
+            ),
+            next_company: self.next_company,
+            destroyed: self.destroyed,
         }
     }
 
@@ -144,6 +204,42 @@ impl Galaxy {
             })
             .collect();
         g.spans = vec![(0, 0); g.realms.len()];
+        if let Some(companies) = s.companies {
+            let (systems, realms) = (g.systems.len(), g.realms.len());
+            anyhow::ensure!(
+                companies.iter().all(|c| (c.at as usize) < systems
+                    && c.contract
+                        .as_ref()
+                        .is_none_or(|k| (k.realm as usize) < realms
+                            && (k.side as usize) < SIDES
+                            && (k.target as usize) < systems)),
+                "a company nowhere, or working for nobody"
+            );
+            g.companies = companies
+                .into_iter()
+                .map(|c| Company {
+                    at: c.at,
+                    crystals: c.crystals,
+                    hulls: c.hulls,
+                    margin: c.margin,
+                    founded: c.founded,
+                    id: c.id,
+                    contract: c.contract.map(|k| Contract {
+                        realm: k.realm,
+                        side: k.side,
+                        target: k.target,
+                        signed: k.signed,
+                        upfront: k.upfront,
+                        bonus: k.bonus,
+                        max_loss: k.max_loss,
+                        field: k.field,
+                        lost: k.lost,
+                    }),
+                })
+                .collect();
+            g.next_company = s.next_company;
+        }
+        g.destroyed = s.destroyed;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
         g.update_share();
@@ -268,6 +364,11 @@ mod tests {
             assert_eq!(a.realms, b.realms);
         }
         assert_eq!(g.living().count(), back.living().count());
+        assert_eq!(g.companies.len(), back.companies.len());
+        for (a, b) in g.companies.iter().zip(&back.companies) {
+            assert_eq!((a.at, a.crystals, a.hulls), (b.at, b.crystals, b.hulls));
+            assert_eq!(a.contract.map(|k| k.target), b.contract.map(|k| k.target));
+        }
         for _ in 0..10 {
             g.step();
             back.step();

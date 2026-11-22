@@ -306,3 +306,177 @@ fn small_realms_fold_together() {
         }
     }
 }
+
+/// How the mercenary trade plays (#318), over a few seeds of the full
+/// galaxy, each run with companies and again without: run with
+/// `cargo test --release judge_mercs -- --ignored --nocapture`.
+/// Per seed and run: the war (systems at war, sites taken, hulls destroyed,
+/// hulls standing and crystal banked, on average), and with companies their
+/// count and worth over the run and the contracts they worked.
+pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
+    println!("== {label}");
+    for &seed in seeds {
+        for with in [true, false] {
+            let rules = Rules {
+                companies: if with { rules.companies } else { 0 },
+                ..rules
+            };
+            let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, rules);
+            let (mut war, mut hulls, mut vaults, mut taken, mut samples) =
+                (0.0, 0.0, 0.0, 0u64, 0u64);
+            let mut quiet_never = true;
+            let (mut lo, mut hi) = (1.0f32, 0.0f32);
+            let mut track = Vec::new();
+            let mut next = 0;
+            while g.tick < ticks {
+                g.step();
+                taken += g.taken as u64;
+                let c = g.census();
+                quiet_never &= c.at_war > 0.0;
+                if g.tick > 100 {
+                    for f in 0..SIDES {
+                        lo = lo.min(c.share[f]);
+                        hi = hi.max(c.share[f]);
+                    }
+                    war += c.at_war as f64;
+                    hulls += c.hulls.iter().sum::<f32>() as f64;
+                    vaults += c.vaults as f64;
+                    samples += 1;
+                }
+                if g.tick >= next {
+                    next += ticks / 6;
+                    track.push(format!(
+                        "t{} {}co {:.0}cr {}on",
+                        g.tick, c.companies, c.merc_capital, c.contracts
+                    ));
+                }
+            }
+            let k = samples.max(1) as f64;
+            let per = |x: f64| x / (g.tick as f64 / 100.0);
+            println!(
+                "seed {seed} {}: share {:4.1}..{:4.1}%  war {:4.2}% always {}  taken/100 {:5.0}  destroyed/100 {:6.0}  hulls {:7.0}  vaults {:6.0}",
+                if with { "mercs   " } else { "no mercs" },
+                lo * 100.0,
+                hi * 100.0,
+                war / k * 100.0,
+                quiet_never,
+                per(taken as f64),
+                per(g.destroyed),
+                hulls / k,
+                vaults / k,
+            );
+            if with {
+                let b = g.books;
+                let margins: f32 = g.companies.iter().map(|c| c.margin).sum::<f32>()
+                    / g.companies.len().max(1) as f32;
+                println!(
+                    "    {}\n    signed {} won {} broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {}  margin {:.2}",
+                    track.join("  "),
+                    b.signed,
+                    b.won,
+                    b.broken,
+                    b.expired,
+                    b.upfront,
+                    b.bonus,
+                    b.defaulted,
+                    b.worth_won,
+                    b.paid_won,
+                    b.sold,
+                    b.lost,
+                    b.splits,
+                    b.joins,
+                    margins,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "a tuning sweep, slow: run by hand in release"]
+fn judge_mercs_rules() {
+    let ticks = std::env::var("JUDGE_TICKS")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(3000);
+    let seeds: Vec<u64> = std::env::var("JUDGE_SEEDS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or(vec![1, 2, 3]);
+    judge_mercs("default", Rules::default(), &seeds, ticks);
+}
+
+/// Realms hire companies, the companies fight and get paid, and their
+/// hulls in a fight are always some of their side's there.
+#[test]
+fn realms_hire_companies() {
+    let mut g = small_war();
+    assert!(!g.companies.is_empty());
+    let start: f32 = g
+        .companies
+        .iter()
+        .map(|c| c.capital(g.rules.hull_price))
+        .sum();
+    for _ in 0..150 {
+        g.step();
+        for c in &g.companies {
+            assert!(c.crystals >= 0.0 && c.hulls >= 0.0);
+            if let Some(k) = c.contract {
+                let sys = &g.systems[k.target as usize];
+                assert!(k.field <= sys.hulls[k.side as usize] + 1e-3);
+                let r = sys.realms[k.side as usize];
+                assert_eq!(g.realms[r as usize].faction, k.side);
+                assert!(k.lost < k.max_loss + k.field);
+            }
+        }
+    }
+    let b = g.books;
+    assert!(b.signed > 10, "only {} contracts", b.signed);
+    assert!(b.won > 0 && b.broken + b.expired > 0);
+    assert!(b.upfront > 0.0 && b.bonus > 0.0 && b.sold > 0.0);
+    let end: f32 = g
+        .companies
+        .iter()
+        .map(|c| c.capital(g.rules.hull_price))
+        .sum();
+    assert!(
+        end > start,
+        "the companies' capital went from {start} to {end}"
+    );
+}
+
+/// Without companies, nobody's hired, and the war goes on as before.
+#[test]
+fn no_companies_no_contracts() {
+    let rules = Rules {
+        companies: 0,
+        ..Rules::default()
+    };
+    let mut g = Galaxy::with_size(4, SYSTEMS / 4, REGION * 0.5, rules);
+    for _ in 0..30 {
+        g.step();
+    }
+    assert!(g.companies.is_empty());
+    assert_eq!(g.books.signed, 0);
+}
+
+/// An idle company too rich splits in two; one too small joins the nearest.
+#[test]
+fn companies_split_and_join() {
+    let mut g = small_war();
+    for c in &mut g.companies {
+        c.contract = None;
+        c.crystals = 100.0;
+        c.hulls = 0.0;
+    }
+    let n = g.companies.len();
+    g.companies[0].crystals = g.rules.merc_split * 3.0;
+    g.companies[1].crystals = g.rules.merc_join / 2.0;
+    let total: f32 = g.companies.iter().map(|c| c.crystals).sum();
+    g.split_and_join();
+    assert_eq!((g.books.splits, g.books.joins), (1, 1));
+    assert_eq!(g.companies.len(), n);
+    // Nothing's lost but the small one's fare over.
+    let after: f32 = g.companies.iter().map(|c| c.crystals).sum();
+    assert!(after <= total + 1e-2 && after >= total - g.rules.merc_join / 2.0);
+}
