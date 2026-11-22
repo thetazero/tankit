@@ -21,25 +21,24 @@ fn a_step_ends_at_war() {
     }
 }
 
-/// Landing under an enemy shield is slow and costs crystals; once all of a
-/// planet's generators are down it's free.
+/// Landing under an enemy shield costs crystals; once all of a planet's
+/// generators are down it's free.
 #[test]
-fn shields_limit_landing() {
+fn shields_make_landing_cost() {
     let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
     let s = 0;
     let owner = g.systems[s].owner();
     let other = (owner + 1) % SIDES;
-    let (rate, cost) = g.landing(s, other);
-    assert!(rate.is_finite() && cost > 0.0);
+    assert!(g.landing_cost(s, other) > 0.0);
     // The owner lands freely on its own world.
-    assert_eq!(g.landing(s, owner), (f32::INFINITY, 0.0));
+    assert_eq!(g.landing_cost(s, owner), 0.0);
     let (a, b) = g.systems[s].sites;
     for site in &mut g.sites[a as usize..b as usize] {
         if site.planet == 0 && matches!(site.kind, SiteKind::Shield { .. }) {
             site.kind = SiteKind::Shield { down: REPAIR_TICKS };
         }
     }
-    assert_eq!(g.landing(s, other), (f32::INFINITY, 0.0));
+    assert_eq!(g.landing_cost(s, other), 0.0);
 }
 
 /// A downed generator takes several quiet ticks to come back up.
@@ -370,7 +369,7 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                 let margins: f32 = g.companies.iter().map(|c| c.margin).sum::<f32>()
                     / g.companies.len().max(1) as f32;
                 println!(
-                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  held in orbit {:.0}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {} sailed {}  margin {:.2}",
+                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {} sailed {}  margin {:.2}",
                     track.join("  "),
                     b.signed,
                     b.defenses,
@@ -385,7 +384,6 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                     b.written_off,
                     g.debts.iter().map(|d| d.crystals).sum::<f32>(),
                     b.refused,
-                    b.held_up,
                     b.worth_won,
                     b.paid_won,
                     b.sold,
@@ -453,29 +451,15 @@ fn realms_hire_companies() {
     );
 }
 
-/// Defenders hire companies too, and no side of a fight lands under enemy
-/// shields faster than the shields allow, mercs' hulls and its own together
-/// (#340).
+/// Defenders hire companies too (#340).
 #[test]
-fn defenders_hire_and_mercs_keep_the_landing_rate() {
+fn defenders_hire() {
     let mut g = small_war();
     for _ in 0..150 {
         g.step();
-        for t in 0..g.systems.len() {
-            for f in 0..SIDES {
-                let (rate, _) = g.landing(t, f);
-                assert!(
-                    g.landed[t][f] <= rate * 1.0001 + 1e-3,
-                    "tick {}: {} landed under a rate of {rate}",
-                    g.tick,
-                    g.landed[t][f]
-                );
-            }
-        }
     }
     let b = g.books;
     assert!(b.defenses > 0 && b.defended > 0, "{b:?}");
-    assert!(b.held_up > 0.0, "no merc hulls ever waited in orbit");
 }
 
 /// A realm that can't pay a bonus owes it: no company signs with it until

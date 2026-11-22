@@ -18,10 +18,8 @@
 //!   a quiet system, never to an attack on itself; it asks more the further
 //!   below its garrison's level the system is), plus their FTL to the target;
 //! - its own FTL there: the ship, and every hull aboard, by distance;
-//! - the breach, if the target's shields are up. Under enemy shields its
-//!   hulls land no faster than anyone's (#340): its side's landings there
-//!   share the shield's rate each tick, and the rest wait aboard the ship in
-//!   orbit (`Contract::orbit`) and land as the rate allows.
+//! - the breach, if the target's shields are up: crystals a hull, as anyone
+//!   pays to land there.
 //!
 //! A contract pays that **up front**, plus a **bonus** if the world falls,
 //! for the hulls the company commits. It fights with all of them: once
@@ -91,9 +89,6 @@ pub struct Contract {
     /// Its hulls in the fight now, and lost so far.
     pub field: f32,
     pub lost: f32,
-    /// Its hulls still aboard over the target, waiting to land under the
-    /// enemy's shields.
-    pub orbit: f32,
     /// Hired to hold one of the employer's own worlds, not to take one.
     pub defend: bool,
 }
@@ -128,8 +123,6 @@ pub struct Books {
     pub written_off: f64,
     /// Quotes a company would have made but didn't, to a realm in its debt.
     pub refused: u64,
-    /// Hulls that had to wait in orbit for the landing rate.
-    pub held_up: f64,
     /// Crystal realms got for hulls they sold companies.
     pub sold: f64,
     /// Hulls companies lost in fights.
@@ -174,7 +167,7 @@ struct Quote {
 impl Company {
     /// What it's worth: its crystal, and its hulls at the going price.
     pub fn capital(&self, hull_price: f32) -> f32 {
-        let field = self.contract.map_or(0.0, |c| c.field + c.orbit);
+        let field = self.contract.map_or(0.0, |c| c.field);
         self.crystals + (self.hulls + field) * hull_price
     }
 }
@@ -311,7 +304,7 @@ impl Galaxy {
             return false;
         }
         let offers = self.offers(t, f, r);
-        let (rate, breach) = self.landing(t, f);
+        let breach = self.landing_cost(t, f);
         let mut best: Option<Quote> = None;
         for c in near {
             let co = &self.companies[c];
@@ -375,11 +368,7 @@ impl Galaxy {
             self.realms[o.seller as usize].crystals += m * o.ask;
             self.books.sold += (m * o.ask) as f64;
         }
-        // Under shields, what lands now is what's left of its side's rate
-        // this tick; the rest waits in orbit.
-        let land = q.hulls.min((rate - self.landed[t][f]).max(0.0));
-        self.landed[t][f] += land;
-        self.books.held_up += (q.hulls - land) as f64;
+        let land = q.hulls;
         let co = &mut self.companies[q.company];
         co.crystals += q.upfront - q.cost;
         // Its own hulls go in first; the rest stay aboard.
@@ -397,7 +386,6 @@ impl Galaxy {
             committed: q.hulls,
             field: land,
             lost: 0.0,
-            orbit: q.hulls - land,
             defend,
         });
         self.systems[t].hulls[f] += land;
@@ -408,30 +396,6 @@ impl Galaxy {
         self.books.defenses += defend as u64;
         self.books.upfront += q.upfront as f64;
         true
-    }
-
-    /// Hulls waiting in orbit land as far as their side's landing rate there
-    /// allows this tick (before the realms send theirs: they were there first).
-    pub(crate) fn land_from_orbit(&mut self) {
-        for c in 0..self.companies.len() {
-            let Some(mut k) = self.companies[c].contract else {
-                continue;
-            };
-            if k.orbit <= 0.0 {
-                continue;
-            }
-            let (t, f) = (k.target as usize, k.side as usize);
-            let (rate, _) = self.landing(t, f);
-            let land = k.orbit.min((rate - self.landed[t][f]).max(0.0));
-            self.landed[t][f] += land;
-            self.systems[t].hulls[f] += land;
-            if self.systems[t].realms[f] == super::realm::NONE {
-                self.systems[t].realms[f] = k.realm;
-            }
-            k.orbit -= land;
-            k.field += land;
-            self.companies[c].contract = Some(k);
-        }
     }
 
     /// Each realm in a company's debt pays some of it back, out of its income.
@@ -477,7 +441,6 @@ impl Galaxy {
             // Its hulls there are worn and shot at like the rest of its side's.
             let survived = self.survived[t][f];
             k.field *= 1.0 - wear;
-            k.orbit *= 1.0 - wear;
             let lost = k.field * (1.0 - survived);
             k.field -= lost;
             k.lost += lost;
@@ -502,7 +465,7 @@ impl Galaxy {
                 };
             let fell = k.defend && sys.held[f] == 0;
             // Spent: its committed hulls are all but gone.
-            let broken = k.field + k.orbit < 0.5 * MIN_SEND;
+            let broken = k.field < 0.5 * MIN_SEND;
             let expired = self.tick >= k.signed + self.rules.merc_term as u64;
             if !(won || broken || expired || gone || fell) {
                 self.companies[c].contract = Some(k);
@@ -537,7 +500,7 @@ impl Galaxy {
             let back = k.field.min(self.systems[t].hulls[f]).max(0.0);
             self.systems[t].hulls[f] -= back;
             let co = &mut self.companies[c];
-            co.hulls += back + k.orbit;
+            co.hulls += back;
             co.contract = None;
             co.idle_since = self.tick;
         }
