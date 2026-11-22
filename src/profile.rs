@@ -164,8 +164,8 @@ pub struct Profile {
     stolen: Vec<Part>,
     pub levels: Levels,
     pub settings: Settings,
-    /// The company ship you're aboard (`Company::id`), once the Company has
-    /// put you on one.
+    /// Your company (`Company::id`), once you're with one: kept from the
+    /// galaxy's `crew` for the UI (#350).
     pub ship: Option<u32>,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
     disk: Option<Disk>,
@@ -371,6 +371,11 @@ impl Profile {
             self.loadout = kit;
             self.save();
         }
+    }
+
+    /// Your company's name ("IRON TITHE"), once you're with one.
+    pub fn company_name(&self) -> Option<String> {
+        self.ship.map(crate::galaxy::theater::ship_name)
     }
 
     /// Go aboard company ship `id` (see `ship`) and save.

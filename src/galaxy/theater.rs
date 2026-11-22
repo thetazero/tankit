@@ -12,13 +12,15 @@
 //! attacks. A side at war always has one: an attacker always has a target,
 //! and a defender is always being attacked.
 //!
-//! **Your ship** (#327). You're aboard one of the galaxy's free companies
-//! (see `merc`), and the theater is its contract's: the system it's parked
-//! over, fighting for the realm that hired it. You stay aboard while it's
-//! on the contract; a ship between contracts has no battles to give you, so
-//! the Company moves you to the nearest ship that has (see `Galaxy::berth`).
-//! While there's no battle for you, the war goes on without you until there
-//! is (`Galaxy::await_work`): the galaxy otherwise only ticks with battles.
+//! **Your company** (#327, #350). You're with one of the galaxy's free
+//! companies (see `merc`), `Galaxy::crew`, and the theater is its
+//! contract's: the system its ship is parked over, fighting for the realm
+//! that hired it. A new pilot joins the company in the biggest fight
+//! (`Galaxy::enlist`), and stays with it: if it joins another company, you
+//! go with it. While it has no battle for you (between contracts), the war
+//! goes on without you until it has (`Galaxy::await_work`): the galaxy
+//! otherwise only ticks with battles. A company idle too long sails to the
+//! nearest war to look for work (`Galaxy::seek_work`).
 //!
 //! **Maps.** Until there are generated maps for sites (#308), each site is
 //! fought on one of the existing missions' maps, picked at random (stable for
@@ -75,8 +77,19 @@ pub struct Ship {
     pub max_loss: f32,
     /// Ticks until the contract runs out.
     pub ticks_left: u64,
-    /// The ship you were aboard before, if the Company just moved you off it.
-    pub transferred: Option<String>,
+    /// What just happened to the company, if anything.
+    pub news: Option<CrewNews>,
+}
+
+/// What happened to your company that the missions screen tells you.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CrewNews {
+    /// It joined another (yours now): `from` was its id.
+    Joined { from: u32 },
+    /// It had no work for long, and sailed from system `from` for some.
+    Sailed { from: u32 },
+    /// It's gone, and the Company put you with another: `from` was its id.
+    Gone { from: u32 },
 }
 
 /// One site of the theater.
@@ -363,7 +376,7 @@ impl Galaxy {
         out
     }
 
-    /// The ships you could be aboard: companies on a contract with a battle
+    /// The ships with work for you: companies on a contract with a battle
     /// to join this tick (indices into `companies`).
     fn berths(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.companies.len()).filter(|&c| {
@@ -373,66 +386,106 @@ impl Galaxy {
         })
     }
 
-    /// The ship you're aboard (an index into `companies`), if it has a
-    /// battle for you this tick. You stay aboard `keep` (a company's id)
-    /// while it's on a contract: none if that has no battle this tick. Off
-    /// contract (or gone), the Company moves you to the nearest ship that
-    /// has a battle (nearest `keep`'s ship, if it's still about); a new
-    /// pilot goes to the one in the biggest fight. `prefer` (a side) goes
-    /// first, for shots and tests.
-    pub fn berth(&self, keep: Option<u32>, prefer: Option<usize>) -> Option<usize> {
-        let old = keep.and_then(|id| self.companies.iter().position(|c| c.id == id));
-        if let Some(c) = old.filter(|&c| self.companies[c].contract.is_some()) {
-            return self.berths().find(|&b| b == c);
+    /// Company `id`'s index in `companies`, if it's still about.
+    pub fn company(&self, id: u32) -> Option<usize> {
+        self.companies.iter().position(|c| c.id == id)
+    }
+
+    /// Your company (an index into `companies`), if you're with one.
+    pub fn crew_company(&self) -> Option<usize> {
+        self.company(self.crew?)
+    }
+
+    /// Put a pilot with no company (or whose company is gone) with one: the
+    /// one in the biggest fight this tick. `prefer` (a side) goes first, for
+    /// shots and tests. Nothing happens while you have a company, or while
+    /// no company has a fight to give you.
+    pub fn enlist(&mut self, prefer: Option<usize>) {
+        if self.crew_company().is_some() {
+            return;
         }
-        let from = old.map(|c| self.systems[self.companies[c].at as usize].pos);
-        self.berths().max_by(|&a, &b| {
+        let best = self.berths().max_by(|&a, &b| {
             let (ka, kb) = (
                 self.companies[a].contract.unwrap(),
                 self.companies[b].contract.unwrap(),
             );
             let side = |k: super::merc::Contract| prefer == Some(k.side as usize);
-            let near = |k: super::merc::Contract| {
-                from.map_or(0.0, |p| -self.systems[k.target as usize].pos.distance(p))
-            };
             let sites = |k: super::merc::Contract| self.site_range(k.target as usize).len();
             side(ka)
                 .cmp(&side(kb))
-                .then(near(ka).total_cmp(&near(kb)))
                 .then(sites(ka).cmp(&sites(kb)))
                 .then(ka.field.total_cmp(&kb.field))
                 .then(b.cmp(&a))
-        })
+        });
+        let Some(c) = best else { return };
+        if let Some(from) = self.crew {
+            self.crew_news = Some(CrewNews::Gone { from });
+        }
+        self.crew = Some(self.companies[c].id);
     }
 
-    /// The theater aboard your ship, as `aboard`; with no battle for you
-    /// this tick, the war goes on without you (up to `ticks` ticks) until
-    /// there is one. True in the second if the galaxy ticked.
+    /// Your company, idle (between contracts) too long: it sails to the
+    /// nearest other system at war to look for work, paying the FTL as far
+    /// as its crystal goes. True if it went.
+    pub fn seek_work(&mut self) -> bool {
+        let Some(c) = self.crew_company() else {
+            return false;
+        };
+        let co = self.companies[c];
+        if co.contract.is_some() {
+            return false;
+        }
+        let here = self.systems[co.at as usize].pos;
+        let d = |s: usize| self.systems[s].pos.distance(here);
+        let Some(to) = (0..self.systems.len())
+            .filter(|&s| s != co.at as usize && self.systems[s].at_war())
+            .min_by(|&a, &b| d(a).total_cmp(&d(b)))
+        else {
+            return false;
+        };
+        let fare = self.voyage(co.hulls, d(to)).min(co.crystals.max(0.0));
+        let from = co.at;
+        let co = &mut self.companies[c];
+        co.crystals -= fare;
+        co.at = to as u32;
+        self.crew_news = Some(CrewNews::Sailed { from });
+        true
+    }
+
+    /// The theater with your company (see `enlist`); while it has no battle
+    /// for you, the war goes on without you (up to `ticks` ticks) until it
+    /// has. If it's still between contracts after that, it goes looking for
+    /// work (`seek_work`). True in the second if the galaxy ticked.
     pub fn await_work(
         &mut self,
-        keep: Option<u32>,
         prefer: Option<usize>,
         rank: u32,
         ticks: u32,
     ) -> (Option<Theater>, bool) {
         for i in 0..=ticks {
-            if let Some(t) = self.aboard(keep, prefer, rank) {
+            self.enlist(prefer);
+            if let Some(t) = self.aboard(rank) {
                 return (Some(t), i > 0);
             }
             if i < ticks {
                 self.step();
             }
         }
+        self.seek_work();
         (None, ticks > 0)
     }
 
-    /// The theater aboard your ship (see `berth`): its contract's system,
-    /// for the side that hired it. None if there's no battle for you this tick.
-    pub fn aboard(&self, keep: Option<u32>, prefer: Option<usize>, rank: u32) -> Option<Theater> {
-        let c = self.berth(keep, prefer)?;
+    /// The theater aboard your company's ship: its contract's system, for
+    /// the side that hired it. None if you have no company, or it has no
+    /// battle for you this tick.
+    pub fn aboard(&self, rank: u32) -> Option<Theater> {
+        let c = self.crew_company()?;
         let co = &self.companies[c];
         let k = co.contract?;
         let (s, f) = (k.target as usize, k.side as usize);
+        if self.commits(s, f).is_empty() {
+            return None;
+        }
         let mut t = self.theater_at(s, f, rank);
         let over = self.target(s, f).map_or(0, |i| self.sites[i].planet);
         t.ship = Some(Ship {
@@ -449,7 +502,7 @@ impl Galaxy {
             lost: k.lost,
             max_loss: k.max_loss,
             ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
-            transferred: keep.filter(|&id| id != co.id).map(ship_name),
+            news: self.crew_news,
         });
         Some(t)
     }
@@ -532,30 +585,31 @@ mod tests {
         g
     }
 
-    /// A small war, ticked on until some ship has a battle to join.
+    /// A small war, ticked on until some ship has a battle to join, with
+    /// you in a company.
     fn galaxy_with_work() -> Galaxy {
         let mut g = galaxy();
         assert!(
-            g.await_work(None, None, 1, 400).0.is_some(),
+            g.await_work(None, 1, 400).0.is_some(),
             "no work in 460 ticks"
         );
         g
     }
 
-    /// Every ship on a contract with a battle to join keeps you aboard, and
-    /// there's a battle for you there, for the side that hired it.
+    /// With any company that has a battle to join, there's a battle for you
+    /// there, for the side that hired it.
     #[test]
-    fn aboard_a_ship_there_is_a_battle_to_join() {
-        let g = galaxy_with_work();
+    fn with_a_company_at_work_there_is_a_battle_to_join() {
+        let mut g = galaxy_with_work();
         let ships: Vec<usize> = g.berths().collect();
         assert!(!ships.is_empty(), "no ship on a contract");
         for c in ships {
-            let co = &g.companies[c];
+            let co = g.companies[c];
             let k = co.contract.unwrap();
-            let t = g.aboard(Some(co.id), None, 1).expect("a theater");
+            g.crew = Some(co.id);
+            let t = g.aboard(1).expect("a theater");
             let ship = t.ship.as_ref().unwrap();
             assert_eq!(ship.id, co.id);
-            assert_eq!(ship.transferred, None);
             assert_eq!((t.system, t.employer), (k.target as usize, k.side as usize));
             assert!(ship.over < t.planets);
             let committed: Vec<&SiteView> = t.sites.iter().filter(|s| s.committed).collect();
@@ -568,67 +622,95 @@ mod tests {
         }
     }
 
-    /// A new pilot goes aboard the ship in the biggest fight (or one working
-    /// for the side asked for); one whose ship's contract is over, or whose
-    /// ship is gone, is moved to the nearest ship that has a fight.
+    /// A new pilot joins the company in the biggest fight (or one working
+    /// for the side asked for).
     #[test]
-    fn the_company_moves_you_off_an_idle_ship() {
+    fn a_new_pilot_joins_a_company_at_work() {
         let mut g = galaxy_with_work();
-        let first = g.berth(None, None).expect("a ship");
         for f in 0..SIDES {
-            if let Some(c) = g.berth(None, Some(f))
-                && g.berths()
-                    .any(|b| g.companies[b].contract.unwrap().side as usize == f)
+            g.crew = None;
+            g.enlist(Some(f));
+            let c = g.crew_company().expect("a company");
+            assert!(g.berths().any(|b| b == c));
+            if g.berths()
+                .any(|b| g.companies[b].contract.unwrap().side as usize == f)
             {
                 assert_eq!(g.companies[c].contract.unwrap().side as usize, f);
             }
+            assert_eq!(g.crew_news, None);
         }
-        let id = g.companies[first].id;
-        let at = g.companies[first].contract.unwrap().target as usize;
-        g.companies[first].contract = None;
-        if g.berths().next().is_none() {
-            return; // Its was the only work going.
-        }
-        let t = g.aboard(Some(id), None, 1).expect("another ship");
-        let ship = t.ship.unwrap();
-        assert_ne!(ship.id, id);
-        assert_eq!(ship.transferred, Some(ship_name(id)));
-        let d = |s: usize| g.systems[s].pos.distance(g.systems[at].pos);
-        for b in g.berths() {
-            assert!(d(t.system) <= d(g.companies[b].contract.unwrap().target as usize));
-        }
-        // A ship that's gone (joined another) moves you too.
-        assert!(
-            g.aboard(Some(u32::MAX), None, 1)
-                .unwrap()
-                .ship
-                .unwrap()
-                .transferred
-                .is_some()
-        );
     }
 
-    /// While your ship is on its contract you stay aboard, even on a tick
-    /// with no battle there for you.
+    /// You stay with your company through the war: between contracts, and
+    /// when it has no battle for you, it's still yours (#350).
     #[test]
-    fn you_stay_aboard_while_the_contract_lasts() {
+    fn you_stay_with_your_company() {
         let mut g = galaxy_with_work();
-        let c = g.berth(None, None).unwrap();
-        let id = g.companies[c].id;
-        for _ in 0..40 {
-            if g.companies
-                .iter()
-                .find(|co| co.id == id)
-                .is_none_or(|co| co.contract.is_none())
-            {
-                break;
+        let id = g.crew.unwrap();
+        let mut idle = 0;
+        for _ in 0..300 {
+            if g.crew != Some(id) {
+                // Only by joining another company.
+                assert_eq!(g.crew_news, Some(CrewNews::Joined { from: id }));
+                return;
             }
-            match g.berth(Some(id), None) {
-                Some(b) => assert_eq!(g.companies[b].id, id),
-                None => assert!(g.aboard(Some(id), None, 1).is_none()),
+            assert!(g.crew_company().is_some(), "your company's gone");
+            match g.aboard(1) {
+                Some(t) => assert_eq!(t.ship.unwrap().id, id),
+                None => idle += 1,
             }
+            g.enlist(None);
             g.step();
         }
+        assert!(idle > 0, "never between contracts: the test shows nothing");
+    }
+
+    /// Your company between contracts: no theater, and the war goes on
+    /// until it has one; idle that long, it sails to the nearest war.
+    #[test]
+    fn an_idle_company_waits_then_looks_for_work() {
+        let mut g = galaxy_with_work();
+        let c = g.crew_company().unwrap();
+        let id = g.companies[c].id;
+        g.companies[c].contract = None;
+        assert!(g.aboard(1).is_none());
+        let at = g.companies[c].at;
+        let (t, ticked) = g.await_work(None, 1, 0);
+        assert!(t.is_none() && !ticked);
+        assert_eq!(g.crew, Some(id));
+        let c = g.crew_company().unwrap();
+        let to = g.companies[c].at as usize;
+        assert_ne!(to as u32, at);
+        assert!(g.systems[to].at_war());
+        assert_eq!(g.crew_news, Some(CrewNews::Sailed { from: at }));
+    }
+
+    /// When your company joins another, you go with it.
+    #[test]
+    fn you_go_with_your_company_when_it_joins_another() {
+        let mut g = galaxy_with_work();
+        let c = (0..g.companies.len())
+            .find(|&c| g.companies[c].contract.is_none())
+            .expect("an idle company");
+        let id = g.companies[c].id;
+        g.crew = Some(id);
+        (g.companies[c].crystals, g.companies[c].hulls) = (0.0, 0.0);
+        g.split_and_join();
+        assert!(g.company(id).is_none(), "it didn't join");
+        assert_ne!(g.crew, Some(id));
+        assert!(g.crew_company().is_some());
+        assert_eq!(g.crew_news, Some(CrewNews::Joined { from: id }));
+    }
+
+    /// A pilot whose company is gone (say, a save from another galaxy) is put
+    /// with another, and told.
+    #[test]
+    fn a_pilot_whose_company_is_gone_gets_another() {
+        let mut g = galaxy_with_work();
+        g.crew = Some(u32::MAX);
+        g.enlist(None);
+        assert!(g.crew_company().is_some());
+        assert_eq!(g.crew_news, Some(CrewNews::Gone { from: u32::MAX }));
     }
 
     #[test]
@@ -649,7 +731,7 @@ mod tests {
     #[test]
     fn sites_get_open_two_sided_maps() {
         let mut g = galaxy();
-        let t = g.await_work(None, None, 1, 400).0.unwrap();
+        let t = g.await_work(None, 1, 400).0.unwrap();
         for s in &t.sites {
             let m = &MISSIONS[s.mission];
             assert!(m.open_at(1) && m.sides.len() == 2, "{}", m.name);

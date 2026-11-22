@@ -50,6 +50,9 @@ struct Saved {
     debts: Vec<(u32, u32, f32)>,
     #[serde(default)]
     destroyed: f64,
+    /// Your company's id (#350).
+    #[serde(default)]
+    crew: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -157,6 +160,7 @@ impl Galaxy {
                 .map(|d| (d.realm, d.company, d.crystals))
                 .collect(),
             destroyed: self.destroyed,
+            crew: self.crew,
         }
     }
 
@@ -269,6 +273,7 @@ impl Galaxy {
                 .collect();
         }
         g.destroyed = s.destroyed;
+        g.crew = s.crew;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
         g.update_share();
@@ -365,6 +370,21 @@ impl War {
         self.galaxy.get_or_insert_with(Galaxy::fresh)
     }
 
+    /// The galaxy, if it's in (never waits).
+    pub fn try_get(&mut self) -> Option<&mut Galaxy> {
+        if let Some(rx) = &self.job {
+            match rx.try_recv() {
+                Ok(g) => {
+                    self.galaxy = Some(g);
+                    self.job = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.job = None,
+            }
+        }
+        Some(self.galaxy.get_or_insert_with(Galaxy::fresh))
+    }
+
     pub fn save(&mut self) {
         if let Some(path) = self.path.clone() {
             self.get().save(&path);
@@ -384,9 +404,11 @@ mod tests {
         for _ in 0..30 {
             g.step();
         }
+        g.crew = Some(g.companies[0].id);
         let text = serde_json::to_string(&g.saved(REGION * 0.3)).unwrap();
         let mut back = Galaxy::from_json(&text).unwrap();
         assert_eq!(back.tick, g.tick);
+        assert_eq!(back.crew, g.crew);
         for (a, b) in g.systems.iter().zip(&back.systems) {
             assert_eq!(a.held, b.held);
             assert_eq!(a.hulls, b.hulls);

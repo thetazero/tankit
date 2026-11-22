@@ -860,6 +860,8 @@ pub struct Match {
     company_deaths: Vec<u32>,
     /// Where in the galaxy it's fought, for the HUD.
     pub place: Option<String>,
+    /// Your company's name ("IRON TITHE"), for the HUD (#350).
+    pub crew: Option<String>,
     nav: NavGrid,
     rng: Rng,
     /// Blowing sand, drifting dust, trickles, track dust (visual only).
@@ -932,6 +934,7 @@ impl Match {
             company_hulls: Vec::new(),
             company_deaths: Vec::new(),
             place: None,
+            crew: None,
             nav,
             rng,
         }

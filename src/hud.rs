@@ -189,6 +189,19 @@ impl Hud {
         if let Some(place) = &m.place {
             label(&mut p, Vec2::new(MARGIN, MARGIN + 92.0), place, Align::Left);
         }
+        // Whose company you're fighting with.
+        if let Some(crew) = &m.crew {
+            let mut style = TextStyle::LABEL;
+            style.color = Faction::Company.ui();
+            emblem::tagged(
+                &mut p,
+                Vec2::new(MARGIN, MARGIN + 110.0),
+                Faction::Company,
+                &format!("THE {crew}"),
+                &style,
+                Align::Left,
+            );
+        }
 
         // Top right: kill feed, newest on top, each side in its colour.
         let tr = Vec2::new(w - MARGIN, MARGIN);

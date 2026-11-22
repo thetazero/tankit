@@ -341,6 +341,11 @@ pub struct Galaxy {
     pub debts: Vec<Debt>,
     /// Companies founded, all told (each one's `id`).
     pub(crate) next_company: u32,
+    /// Your company (a `Company::id`), once you're with one (#350): you stay
+    /// with it, and go with it if it joins another.
+    pub crew: Option<u32>,
+    /// What just happened to your company, for the missions screen (not saved).
+    pub crew_news: Option<theater::CrewNews>,
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
     rng: Rng,
@@ -497,6 +502,8 @@ impl Galaxy {
             books: Books::default(),
             debts: Vec::new(),
             next_company: 0,
+            crew: None,
+            crew_news: None,
             destroyed: 0.0,
             rng,
             members: Vec::new(),

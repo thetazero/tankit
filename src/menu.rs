@@ -14,7 +14,7 @@ use winit::keyboard::KeyCode;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
-use crate::galaxy::theater::{Ship, SiteView, Sortie, Theater};
+use crate::galaxy::theater::{CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name};
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::{Profile, Settings};
@@ -475,7 +475,8 @@ impl Menu {
                     Align::Left,
                 );
                 y += 34.0;
-                company_rank(&mut p, Vec2::new(x, y), profile);
+                y += company_rank(&mut p, Vec2::new(x, y), profile) + 4.0;
+                your_company(&mut p, Vec2::new(x, y), profile);
                 "Enter  select"
             }
             Screen::Missions => match &self.theater {
@@ -487,7 +488,7 @@ impl Menu {
                     "Enter  open site     ↑ ↓  site     Esc  back"
                 }
                 _ => {
-                    self.no_posting(&mut p, Vec2::new(x, y));
+                    self.no_posting(&mut p, Vec2::new(x, y), profile);
                     "Esc  back"
                 }
             },
@@ -500,7 +501,7 @@ impl Menu {
                     }
                 }
                 _ => {
-                    self.no_posting(&mut p, Vec2::new(x, y));
+                    self.no_posting(&mut p, Vec2::new(x, y), profile);
                     "Esc  back"
                 }
             },
@@ -538,16 +539,23 @@ impl Menu {
 }
 
 impl Menu {
-    /// No theater to show: no ship of the Company's has a battle to join
-    /// (or the galaxy is still loading).
-    fn no_posting(&self, p: &mut Painter, at: Vec2) {
-        faction_line(p, at, Faction::Company, "The Company");
-        wrap(
-            p,
-            at + Vec2::new(0.0, 26.0),
-            "No contract: none of the Company's ships has a battle to join",
-            theme::DIM,
-        );
+    /// No theater to show: your company has no battle for you yet (or
+    /// you're not with one, and none has; or the galaxy is still loading).
+    fn no_posting(&self, p: &mut Painter, at: Vec2, profile: &Profile) {
+        let text = match profile.company_name() {
+            Some(name) => {
+                faction_line(p, at, Faction::Company, &format!("The {}", title(&name)));
+                format!(
+                    "Between contracts: the war goes on while the {} looks for work",
+                    title(&name)
+                )
+            }
+            None => {
+                faction_line(p, at, Faction::Company, "The Company");
+                "No contract: none of the Company's ships has a battle to join".to_string()
+            }
+        };
+        wrap(p, at + Vec2::new(0.0, 26.0), &text, theme::DIM);
     }
 
     /// The theater's panel: whose posting, the system, a summary of the war
@@ -560,7 +568,7 @@ impl Menu {
                 p,
                 Vec2::new(x, y),
                 Faction::Company,
-                &format!("Aboard the {}", title(&ship.name)),
+                &format!("Your company: the {}", title(&ship.name)),
             ),
             None => faction_line(
                 p,
@@ -704,6 +712,15 @@ impl Menu {
         let employer = Faction::ALL[t.employer];
         let owner = Faction::ALL[site.owner];
         let enemy = Faction::ALL[site.enemy];
+        if let Some(ship) = &t.ship {
+            faction_line(
+                p,
+                Vec2::new(x, y),
+                Faction::Company,
+                &format!("The {}", title(&ship.name)),
+            );
+            y += 24.0;
+        }
         faction_line(p, Vec2::new(x, y), employer, &planet(t, site));
         y += 28.0;
         p.text(
@@ -867,17 +884,26 @@ fn contract(p: &mut Painter, at: Vec2, t: &Theater, ship: &Ship) -> f32 {
         ),
         theme::DIM,
     );
-    if let Some(old) = &ship.transferred {
+    let news = match ship.news {
+        Some(CrewNews::Joined { from }) => Some(format!(
+            "The {} joined the {}, and you went with it.",
+            title(&ship_name(from)),
+            title(&ship.name)
+        )),
+        Some(CrewNews::Sailed { from }) => Some(format!(
+            "Out of work too long, we sailed from {} to find some.",
+            title(&system_name(from as usize))
+        )),
+        Some(CrewNews::Gone { from }) => Some(format!(
+            "The {} is gone, so the Company put you with the {}.",
+            title(&ship_name(from)),
+            title(&ship.name)
+        )),
+        None => None,
+    };
+    if let Some(news) = news {
         y += 4.0;
-        y = wrap(
-            p,
-            Vec2::new(x, y),
-            &format!(
-                "The {} had no fight to join, so the Company moved you aboard.",
-                title(old)
-            ),
-            theme::HOT,
-        );
+        y = wrap(p, Vec2::new(x, y), &news, theme::HOT);
     }
     y
 }
@@ -939,6 +965,31 @@ fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
             format!("Carry their flag home and one of the {enemy} shield generators goes down.")
         }
     }
+}
+
+/// Your company at `at`, under the rank: its ship's name, or that you're not
+/// with one yet. Returns its height.
+fn your_company(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
+    body(p, at, "Your company", theme::DIM);
+    let at = at + Vec2::new(0.0, 22.0);
+    match profile.company_name() {
+        Some(name) => {
+            let mut style = TextStyle::value(14.0);
+            style.color = Faction::Company.ui();
+            emblem::tagged(
+                p,
+                at,
+                Faction::Company,
+                &format!("THE {name}"),
+                &style,
+                Align::Left,
+            );
+        }
+        None => {
+            body(p, at, "None yet: open Missions to join one", theme::FAINT);
+        }
+    }
+    44.0
 }
 
 /// Your Company rank at `at`: the Company's emblem and name, the rank's number
@@ -1166,6 +1217,19 @@ impl Pause {
         let x = min.x + 24.0;
         let mut y = min.y + 28.0;
         label(&mut p, Vec2::new(x, y), "LINK HELD", Align::Left);
+        // Whose company you're fighting with.
+        if let Some(name) = profile.company_name() {
+            let mut style = TextStyle::LABEL;
+            style.color = Faction::Company.ui();
+            emblem::tagged(
+                &mut p,
+                Vec2::new(x + PANEL_W, y),
+                Faction::Company,
+                &format!("THE {name}"),
+                &style,
+                Align::Right,
+            );
+        }
         y += 18.0;
         let title = match (self.controls, self.settings) {
             (Some(_), _) => "CONTROLS",
@@ -1725,7 +1789,7 @@ mod tests {
         for _ in 0..60 {
             g.step();
         }
-        let (t, _) = g.await_work(None, Some(f.index()), 1, 400);
+        let (t, _) = g.await_work(Some(f.index()), 1, 400);
         assert!(t.as_ref().is_some_and(|t| t.ship.is_some()));
         t
     }
@@ -1761,7 +1825,7 @@ mod tests {
 
     #[test]
     fn draws_on_screen_at_any_size() {
-        let profile = Profile::in_memory();
+        let mut profile = Profile::in_memory();
         let mut m = Menu::new();
         let mut settings = Pause::new();
         settings.input(Nav::Down);
@@ -1782,7 +1846,14 @@ mod tests {
         ] {
             m.set_theater(t);
             m.screen = screen;
-            for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
+            // With a company and without.
+            for (w, h, ship) in [
+                (1600.0, 900.0, None),
+                (1600.0, 900.0, Some(7)),
+                (1024.0, 768.0, Some(7)),
+                (3840.0, 2160.0, Some(7)),
+            ] {
+                profile.ship = ship;
                 for v in [
                     m.draw(&profile, w, h, 1.0).verts,
                     Pause::new().draw(&profile, 30, w, h).verts,

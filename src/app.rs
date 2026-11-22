@@ -54,6 +54,13 @@ const HITCH_WORK: f32 = 0.05;
 const HITCH_GAP: f32 = 0.1;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
+/// A galaxy saved before it kept your company (#350) takes the profile's.
+fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
+    if g.crew.is_none() {
+        g.crew = profile;
+    }
+}
+
 /// How long the war may go on without you, on the missions screen, while
 /// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
 const AWAIT_TICKS: u32 = 100;
@@ -530,6 +537,8 @@ impl App {
         (self.contract, self.side, self.rating) = (m.contract, 0, m.rating);
         self.prize = prize;
         self.sortie = Some(o);
+        // What happened to your company has been told by now.
+        self.war.get().crew_news = None;
         let mut game = new_match(
             self.seed,
             self.map_kind,
@@ -543,6 +552,7 @@ impl App {
         );
         game.set_rating(self.rating);
         game.prize = self.unstolen_prize();
+        game.crew = self.profile.company_name();
         self.in_war = true;
         self.battle = Some(self.draw_battle(&mut game));
         self.load(game);
@@ -559,30 +569,43 @@ impl App {
         );
     }
 
-    /// Put your ship's theater on the missions screen, if it's showing and
-    /// isn't already up to date with the galaxy. If the Company moves you to
-    /// another ship, you're aboard that one from now on.
+    /// Put your company's theater on the missions screen, if it's showing
+    /// and isn't already up to date with the galaxy.
     fn sync_theater(&mut self) {
         if !self.menu.wants_theater() {
             return;
         }
         let rank = self.profile.rank().level;
-        let keep = self.profile.ship;
         let g = self.war.get();
+        adopt_crew(g, self.profile.ship);
         if self.menu.theater().is_some_and(|t| {
-            t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == keep)
+            t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == g.crew)
         }) {
             return;
         }
         // No battle for you this tick: the war goes on until there is one.
-        let (t, ticked) = g.await_work(keep, None, rank, AWAIT_TICKS);
-        if ticked {
+        let before = g.crew;
+        let (t, ticked) = g.await_work(None, rank, AWAIT_TICKS);
+        let crew = g.crew;
+        if ticked || crew != before {
             self.war.save();
         }
-        if let Some(ship) = t.as_ref().and_then(|t| t.ship.as_ref()) {
-            self.profile.board(Some(ship.id));
-        }
+        self.profile.board(crew);
         self.menu.set_theater(t);
+    }
+
+    /// Keep the profile's company (shown throughout the menus) the galaxy's,
+    /// once it's loaded; a new pilot joins one as soon as there's one at work.
+    fn sync_crew(&mut self) {
+        let Some(g) = self.war.try_get() else { return };
+        adopt_crew(g, self.profile.ship);
+        let before = g.crew;
+        g.enlist(None);
+        let crew = g.crew;
+        if crew != before {
+            self.war.save();
+        }
+        self.profile.board(crew);
     }
 
     /// Puts the menu backdrop on the selected contract's map once the
@@ -1146,6 +1169,7 @@ impl App {
         if self.mode == Mode::Menu && !self.garage.is_open() {
             self.menu_time += dt;
             self.follow_backdrop(dt);
+            self.sync_crew();
         }
         let queued = self.queued();
         let scores = self.held(Action::Scoreboard);

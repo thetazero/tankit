@@ -770,7 +770,7 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
     game.set_contract(args.contract);
-    let profile = args.profile();
+    let mut profile = args.profile();
     // In the garage: --hull/--turret are previewed; what's owned of them is equipped.
     let equipped = (
         if profile.owns(economy::Part::Hull(args.loadout.0)) {
@@ -793,9 +793,25 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     game.set_player_levels(profile.levels);
     if args.front {
         let mut g = galaxy::Galaxy::warmed(args.seed);
-        if !(args.hired && galaxy::battle::deploy_hired(&g, &mut game).is_some()) {
-            galaxy::battle::deploy(&mut g, &mut game);
+        let b = match args.hired {
+            true => galaxy::battle::deploy_hired(&g, &mut game),
+            false => None,
         }
+        .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
+        // With the company fighting for you there, if there is one; else the
+        // one a new pilot would join.
+        let side = game.factions.first().map(|f| f.index());
+        g.crew = g
+            .companies
+            .iter()
+            .find(|c| {
+                c.contract
+                    .is_some_and(|k| k.target as usize == b.system && Some(k.side as usize) == side)
+            })
+            .map(|c| c.id);
+        g.enlist(side);
+        profile.ship = g.crew;
+        game.crew = profile.company_name();
     }
     if let Some(h) = &args.hulls {
         game.set_allocation(h);
@@ -992,14 +1008,20 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
     profile.loadout = args.loadout;
     let mut menu = menu::Menu::new();
+    // A new pilot's galaxy, with the company they join (one working for
+    // --employer, if there is one).
+    let prefer = args.employer.map(|f| f.index());
+    let war = || {
+        let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+        let t = g.await_work(prefer, profile.rank().level, 100).0;
+        (g.crew, t)
+    };
     match args.screen {
+        None | Some(Screen::Menu) => profile.ship = war().0,
         Some(Screen::Missions | Screen::Site) => {
             menu.input(menu::Nav::Select);
-            // A new pilot's galaxy, aboard the ship the Company puts them on
-            // (one working for --employer, if there is one).
-            let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-            let prefer = args.employer.map(|f| f.index());
-            let (t, _) = g.await_work(None, prefer, profile.rank().level, 100);
+            let (crew, t) = war();
+            profile.ship = crew;
             menu.set_theater(t);
             if let Some(k) = args.site {
                 menu.pick_site(k);

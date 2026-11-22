@@ -335,7 +335,7 @@ fn legend(p: &mut Painter, at: Vec2, width: f32) {
             }),
         ),
         (
-            "YOUR SHIP",
+            "YOUR COMPANY",
             Box::new(|p, c| ship_glyph(p, c + Vec2::new(-1.0, 0.0), 0.36)),
         ),
     ];
