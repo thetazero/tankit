@@ -788,6 +788,35 @@ mod tests {
         }
     }
 
+    /// Each side's generator down (#341): wrecked, or halfway back up (one
+    /// of each per side would double the optimized suite's slowest test).
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn downed_generators_hardly_z_fight() {
+        use crate::map::procgen::shield::Condition;
+        for (k, owner) in crate::faction::Faction::ALL.into_iter().enumerate() {
+            let done = if k % 2 == 0 { 0 } else { 2 };
+            let name = format!("shield-city {owner:?} {done}/4 repaired");
+            let map = Map::shield_city_in(0, owner, Condition::Down { done, of: 4 });
+            let fights = map_fights(&name, &map);
+            let area: f32 = fights.iter().map(|f| f.area).sum();
+            let report: Vec<String> = fights
+                .iter()
+                .take(10)
+                .map(|f| format!("{:.3} m² at {:.2} (faces {:.2?})", f.area, f.at, f.faces))
+                .collect();
+            assert!(
+                area < 0.4 && fights.iter().all(|f| f.area < 0.1),
+                "{name}: {} z-fights, {area:.2} m² in all; the biggest:\n{}",
+                fights.len(),
+                report.join("\n")
+            );
+        }
+    }
+
     /// Map boxes that touch grow by different amounts.
     #[test]
     fn touching_boxes_grow_apart() {
