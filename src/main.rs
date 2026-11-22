@@ -50,9 +50,9 @@ tankit [OPTIONS]
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
                           (a generated Imperium city, all four factions), the Foundry (a wrecked
-                          Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
-                          mine: caves, rails and stacked levels)
-  --map-seed <n>          which city a generated map (city) builds (default: the --seed)
+                          Uthenn tungsten cube factory), or the mine (a generated Ithessar
+                          crystal mine: caves, rails and stacked levels)
+  --map-seed <n>          which one a generated map (city, mine) builds (default: the --seed)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -199,6 +199,7 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
+            (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
             _ => make_map(self.map, self.map_seed),
         };
         if self.side > 0 {
@@ -222,7 +223,8 @@ pub enum MapKind {
     City,
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
-    /// The Seam: an Ithessar crystal mine in the desert, on three levels.
+    /// An Ithessar crystal mine in a desert escarpment, on three levels.
+    /// Generated: a different mine for each map seed.
     Mine,
 }
 
@@ -235,7 +237,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City => map::procgen::map(&city_spec(seed)),
         MapKind::Foundry => map::Map::foundry(),
-        MapKind::Mine => map::Map::mine(),
+        MapKind::Mine => map::procgen::map(&mine_spec(seed)),
     }
 }
 
@@ -246,6 +248,17 @@ pub fn city_spec(seed: u64) -> map::procgen::Spec {
         biome: map::procgen::Biome::City,
         look: map::procgen::Look::Imperium,
         sides: faction::Faction::ALL.to_vec(),
+    }
+}
+
+/// The Ithessar crystal mine `seed` names: the Ithessar in the west, the
+/// Resonant in the east.
+pub fn mine_spec(seed: u64) -> map::procgen::Spec {
+    map::procgen::Spec {
+        seed,
+        biome: map::procgen::Biome::Mine,
+        look: map::procgen::Look::Ithessar,
+        sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
     }
 }
 

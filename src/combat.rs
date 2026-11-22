@@ -4828,7 +4828,7 @@ mod tests {
     /// flag off its stand.
     #[test]
     fn bots_go_for_the_flag() {
-        let mut m = Match::new(Map::mine(), 0, 5, 2);
+        let mut m = Match::new(Map::mine(0), 0, 5, 2);
         m.set_contract(Contract::Raid);
         m.bots_only(2);
         let mut taken = false;
@@ -4859,7 +4859,7 @@ mod tests {
     /// drives into it is destroyed, and so is a bot put in it.
     #[test]
     fn driving_into_the_borers_beam_kills() {
-        let mut m = Match::new(Map::mine(), 0, 1, 1);
+        let mut m = Match::new(Map::mine(0), 0, 1, 1);
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
@@ -4982,7 +4982,7 @@ mod tests {
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
             ("foundry", Map::foundry()),
-            ("mine", Map::mine()),
+            ("mine", Map::mine(0)),
         ] {
             let mut m = Match::new(map, 0, 1, 1);
             for f in &mut m.fighters {
@@ -5093,7 +5093,7 @@ mod tests {
     fn raid_bot_matches() {
         for swap in [false, true] {
             for seed in 0..4u64 {
-                let mut map = Map::mine();
+                let mut map = Map::mine(0);
                 if swap {
                     map.swap_sides(1);
                 }

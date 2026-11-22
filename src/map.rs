@@ -1,5 +1,6 @@
 //! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln,
-//! the Foundry, the Seam), the generated ones (`procgen`: the imperial city),
+//! the Foundry), the generated ones (`procgen`: the imperial city, the
+//! crystal mine),
 //! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
@@ -13,7 +14,6 @@ mod foundry;
 mod imperial;
 mod kiln;
 mod landmarks;
-mod mine;
 pub mod procgen;
 mod props;
 pub mod rocks;

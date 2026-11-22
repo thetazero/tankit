@@ -275,14 +275,16 @@ only a faint cold light deep in it. Cut, it glows crystal blue, as it does at
 the Resonant's sanctum. The Ithessar's machines are their own worked crystal,
 near-black glass, a different thing from the ore they dig.
 
-**The Seam:** an Ithessar crystal mine dug into a desert escarpment. The seam
-crops out on the floor of a dry wash and runs up into the cliff; the Ithessar
+**The crystal mines:** Ithessar mines dug into desert escarpments, each one
+its own (the maps are generated: no two the same). The seam crops out on the
+floor of a dry wash and runs up into the cliff; the Ithessar
 have quarried the face back to sheer stone and followed the vein in, with a
 rail adit and a pillared hall under the mesa, a new heading where a
 plasma borer holds its beam on the rock day and night, and their own freight railroad
 out of the adit's mouth over the wash: their combat machines float, but their
 ore still goes by rail. The Resonant call the seam holy, and have dug their
-own way into the rock from the east to take it back.
+own way into the rock from the east to take it back. (The first of them,
+the Seam, was the one hand-built mine; the generated ones are its kind.)
 
 ## Modes are contracts
 
@@ -291,7 +293,7 @@ own way into the rock from the east to take it back.
   Most battles are two sides; some are all four at once, every side against
   every other.
 - **Raid** (one-sided capture the flag): one side guards a flag, the other
-  has to carry it off. First on the Seam.
+  has to carry it off. First in the crystal mines.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,
   carry crystals to your extraction point, deny the enemy theirs. Carrying
   crystals makes you a little stronger, but they resonate, so everyone can see
