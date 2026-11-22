@@ -25,8 +25,7 @@
 //!
 //! A contract pays that **up front**, plus a **bonus** if the world falls,
 //! and caps the hulls the company can lose (`Rules::merc_loss`). Past the
-//! cap, or `Rules::merc_term` ticks, or with its employer gone, it pulls out
-//! and takes what's left of its hulls back aboard. The bonus comes out of the
+//! cap, or with its employer gone, it pulls out and takes what's left of its hulls back aboard. The bonus comes out of the
 //! employer's vaults when the world falls (or, for a defense, when the attack
 //! is beaten off). An employer who can't pay it all pays what it has and
 //! **owes the rest** (#340): the company takes `Rules::merc_dues` of the
@@ -111,7 +110,7 @@ pub struct Debt {
 pub struct Books {
     pub signed: u64,
     /// Contracts that ended with the world taken, with the cap on losses
-    /// reached, and otherwise (ran out of time, employer gone).
+    /// reached, and otherwise (employer gone, or the world it held fell).
     pub won: u64,
     pub broken: u64,
     pub expired: u64,
@@ -503,8 +502,7 @@ impl Galaxy {
                 };
             let fell = k.defend && sys.held[f] == 0;
             let broken = k.lost >= k.max_loss || k.field + k.orbit < 0.5 * MIN_SEND;
-            let expired = self.tick >= k.signed + self.rules.merc_term as u64;
-            if !(won || broken || expired || gone || fell) {
+            if !(won || broken || gone || fell) {
                 self.companies[c].contract = Some(k);
                 continue;
             }

@@ -84,9 +84,6 @@ pub struct Ship {
     /// Hired to hold one of the realm's own worlds (#340, #366), not to
     /// take one: it's done when the attack is beaten off.
     pub defend: bool,
-    /// Ticks until the contract runs out (one a battle), of its `term`.
-    pub ticks_left: u64,
-    pub term: u64,
     /// The tick it was signed: a new one is a new contract.
     pub signed: u64,
     /// What just happened to the company, if anything.
@@ -667,8 +664,6 @@ impl Galaxy {
             lost: k.lost,
             max_loss: k.max_loss,
             defend: k.defend,
-            ticks_left: (k.signed + self.rules.merc_term as u64).saturating_sub(self.tick),
-            term: self.rules.merc_term as u64,
             signed: k.signed,
             news: self.crew_news,
         });
@@ -694,8 +689,6 @@ impl Galaxy {
             lost: 0.0,
             max_loss: 0.0,
             defend: shown.defend,
-            ticks_left: 0,
-            term: self.rules.merc_term as u64,
             signed: shown.signed,
             news: None,
         });

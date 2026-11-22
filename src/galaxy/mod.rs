@@ -193,10 +193,10 @@ pub struct Rules {
     /// A contract's bonus: this many times the hulls it commits, at what
     /// they cost it, with its margin.
     pub merc_bonus: f32,
-    /// A company pulls out once it's lost this fraction of the hulls it committed,
+    /// A company pulls out once it's lost this fraction of the hulls it
+    /// committed. There's no cap on a contract's ticks (#382): it runs until
+    /// the world's won or lost, the cap's reached, or its hulls wear away.
     pub merc_loss: f32,
-    /// ... or after this many ticks.
-    pub merc_term: u32,
     /// How far a company goes for work, light years.
     pub merc_range: f32,
     /// A company idle this many ticks sails to the nearest war to look for
@@ -255,7 +255,6 @@ impl Default for Rules {
             merc_raise: 0.1,
             merc_bonus: 0.5,
             merc_loss: 0.5,
-            merc_term: 30,
             merc_range: 1200.0,
             merc_idle: 30,
             merc_horizon: 300.0,
@@ -1389,7 +1388,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
     );
     let b = g.books;
     println!(
-        "mercs: {} contracts signed, {} won, {} pulled out at their loss cap, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
+        "mercs: {} contracts signed, {} won, {} pulled out at their loss cap, {} ended otherwise; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
         b.signed,
         b.won,
         b.broken,

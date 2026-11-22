@@ -838,6 +838,76 @@ mod merc_tests {
         assert!((total0 - total(&g) - (m + 2) as f64).abs() < 1e-2);
     }
 
+    /// Your deaths are in the hulls-lost count the missions screen shows for
+    /// your company's contract after the battle (#382): the contract's own
+    /// count, not carried from one contract to the next.
+    #[test]
+    fn your_deaths_count_as_hulls_lost() {
+        use crate::game::DT;
+        let mut g = Galaxy::warmed(7);
+        let t = g.await_work(None, 1, 400).0.expect("work for your company");
+        let ship = t.ship.clone().unwrap();
+        let shown = |g: &Galaxy| {
+            g.aboard(1)
+                .and_then(|t| t.ship)
+                .filter(|s| s.id == ship.id && s.signed == ship.signed)
+        };
+        let before = shown(&g).expect("aboard").lost;
+        // No cap on its losses, so the contract's still on after the battle
+        // and its count can be read (a battle often takes it past the cap).
+        for c in g.companies.iter_mut().filter(|c| c.id == ship.id) {
+            c.contract.as_mut().unwrap().max_loss = f32::MAX;
+        }
+        let o = (0..t.contested.len()).find_map(|k| t.sortie(k)).unwrap();
+        let ms = &crate::mission::MISSIONS[o.mission];
+        let mut m = crate::app::new_match(
+            ms.seed,
+            o.map_kind,
+            1,
+            0,
+            0,
+            ms.bots(),
+            ms.contract,
+            crate::profile::Profile::in_memory().loadout,
+            Some(&o.factions),
+        );
+        let b = deploy_at(&g, &mut m, o.system, o.site).expect("your battle");
+        assert!(m.world.tanks[0].company, "you're one of the Company's");
+        for i in 1..m.fighters.len() {
+            m.idle(i);
+        }
+        // You die three times (and come back between).
+        for _ in 0..3 {
+            assert!(m.fighters[0].alive);
+            m.destroy_player();
+            for _ in 0..(15.0 / DT) as usize {
+                m.step(Default::default(), false);
+                if m.fighters[0].alive {
+                    break;
+                }
+            }
+        }
+        assert_eq!(m.company_lost()[0], 3);
+        // The battle settled (as `conclude` does, before the galaxy's tick):
+        // your three hulls come off the contract.
+        g.settle(
+            &b,
+            &m.lost(),
+            &m.company_lost(),
+            m.leader(),
+            Stake::of(m.contract),
+        );
+        let settled = shown(&g).expect("the same contract").lost;
+        assert!(
+            (settled - before - 3.0).abs() < 1e-3,
+            "{before} lost before, {settled} after dying three times"
+        );
+        // Then the galaxy ticks: the fight there loses more, never fewer.
+        g.step();
+        let after = shown(&g).expect("the same contract, still on").lost;
+        assert!(after >= settled, "{settled} lost, then {after}");
+    }
+
     /// A company under contract with enough hulls to bring, and the side
     /// it fights against (the strongest other there).
     fn crew_contract(g: &Galaxy) -> (usize, [Faction; 2]) {

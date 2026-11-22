@@ -944,29 +944,29 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
     }
 }
 
-/// What your ship's here for and how much longer it fights here,
-/// right-aligned at `at`: to take the system or hold it, its contract's
-/// ticks left (a battle each) and a bar of them, of its term, and what ends
-/// it sooner.
+/// What your ship's here for and how its contract stands, right-aligned at
+/// `at` (#382): the job, the hulls it's lost of the cap on its losses, and
+/// a bar of that cap, a cell lit for each hull lost.
 fn term(p: &mut Painter, t: &Theater, ship: &Ship, at: Vec2) {
     let mut style = TextStyle::LABEL;
     style.color = theme::DIM;
     p.text(
         at,
-        &format!("CONTRACT HERE · {} {}", job(ship), t.name),
+        &format!("CONTRACT · {} {}", job(ship), t.name),
         &style,
         Align::Right,
     );
-    let left = match ship.ticks_left {
-        1 => "1 BATTLE LEFT".to_string(),
-        k => format!("UP TO {k} BATTLES LEFT"),
-    };
+    let (lost, cap) = hulls_lost(ship);
     let mut big = TextStyle::value(20.0);
     big.color = Faction::Company.ui();
-    p.text(at + Vec2::new(0.0, 16.0), &left, &big, Align::Right);
-    // A cell a tick, of its term: lit for those left.
-    let n = ship.term.clamp(1, 60) as usize;
-    let lit = (ship.ticks_left as usize).min(n);
+    p.text(
+        at + Vec2::new(0.0, 16.0),
+        &format!("{lost} / {cap} HULLS LOST"),
+        &big,
+        Align::Right,
+    );
+    let n = cap.clamp(1, 60) as usize;
+    let lit = (lost as usize).min(n);
     let (cw, gap, ch) = (6.0, 2.0, 7.0);
     let x0 = at.x - n as f32 * (cw + gap) + gap;
     for i in 0..n {
@@ -981,28 +981,13 @@ fn term(p: &mut Painter, t: &Theater, ship: &Ship, at: Vec2) {
             color,
         );
     }
-    let lost = (ship.lost.round().max(0.0)) as u32;
+}
+
+/// The hulls your ship's contract has lost, and the cap on them, as shown.
+fn hulls_lost(ship: &Ship) -> (u32, u32) {
+    let lost = ship.lost.round().max(0.0) as u32;
     let cap = (ship.max_loss.round() as u32).max(1);
-    let losses = format!("AT {cap} HULLS LOST ({lost} SO FAR)");
-    // A defense is done when the attack's beaten off, and over (lost) if
-    // the world falls anyway: two lines, to stay clear of the forces table.
-    // An attack is done when it falls.
-    let lines = if ship.defend {
-        vec![
-            "SOONER IF THE ATTACK IS BEATEN OFF OR THE WORLD FALLS,".to_string(),
-            format!("OR {losses}"),
-        ]
-    } else {
-        vec![format!("SOONER IF THE WORLD FALLS, OR {losses}")]
-    };
-    for (i, line) in lines.iter().enumerate() {
-        p.text(
-            at + Vec2::new(0.0, 64.0 + 14.0 * i as f32),
-            line,
-            &style,
-            Align::Right,
-        );
-    }
+    (lost, cap)
 }
 
 /// What a contract's for, in caps: to hold the system, or to take it.
@@ -1087,12 +1072,11 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
         p.text(
             Vec2::new(min.x + 24.0, min.y + 68.0),
             &format!(
-                "{aboard}HIRED BY THE {} OF {} TO {} {} · UP TO {} BATTLES",
+                "{aboard}HIRED BY THE {} OF {} TO {} {}",
                 realm.name(),
                 ship.realm,
                 job(ship),
                 t.name,
-                ship.ticks_left
             ),
             &dim,
             Align::Left,
@@ -1378,14 +1362,11 @@ mod tests {
             lost: 0.0,
             max_loss: 1.0,
             defend: false,
-            ticks_left: 10,
-            term: 30,
             signed: 4,
             news: None,
         });
         let mut b = a.clone();
         b.tick += 3;
-        b.ship.as_mut().unwrap().ticks_left = 7;
         assert!(!Transfer::between(&a, &b));
         let mut c = b.clone();
         c.ship.as_mut().unwrap().id = 2;
@@ -1413,8 +1394,6 @@ mod tests {
             lost: 0.0,
             max_loss: 0.0,
             defend: false,
-            ticks_left: 0,
-            term: 6,
             signed: 10,
             news: None,
         });
