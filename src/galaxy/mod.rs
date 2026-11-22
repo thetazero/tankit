@@ -26,20 +26,24 @@
 //!    Stored hulls wear out slowly, so an idle world's garrison levels off.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
-//!    Each side in a fight then may win its objective on one planet, a chance
-//!    by its share of the fire: take an enemy site there. An attacker going
-//!    for a planet under an enemy's shield fights a seat short
-//!    (`Rules::seats`, #426): its fire is cut by one seat in that many, the
-//!    same seat a played battle closes; that's all shields do, so it goes for
-//!    the planet's generators first, to get out from under them. Only so many of a side's
-//!    hulls fire a tick however big it is (`Rules::frontage`), so a world
-//!    holds out for many ticks. A side alone in a system repairs its downed generators, one step a
-//!    tick, several ticks to bring one back up.
+//!    Each side in a fight attacks one site there (`target`), and wins it, a
+//!    chance by its share of the fire; else its holder does. A battle is a
+//!    battle, played or not (#422): its winner takes the site from its holder
+//!    (a generator taken is damaged), or, the holder winning, a damaged
+//!    generator is working again (`Galaxy::win`); a draw is the holder's. A
+//!    damaged generator nobody fights over is working again the next tick.
+//!    An attacker going for a planet under an enemy's working shield fights
+//!    a seat short (`Rules::seats`, #426): its fire is cut by one seat in
+//!    that many, the same seat a played battle closes; that's all shields
+//!    do, so it goes for the planet's generators first, to get out from
+//!    under them. Only so many of a side's hulls fire a tick however big it
+//!    is (`Rules::frontage`), so a world holds out for many ticks.
 //!    Mercenary companies' hulls in a fight take their share of their side's
-//!    losses there; contracts done (world taken, hulls spent, time up) end.
+//!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
+//!    spent, time up) end.
 //! 3. *Supply.* A people's systems that hang together (within FTL range of
 //!    each other) fewer than a few dozen are a **pocket**: once an enemy
-//!    borders it, it builds slower, can't repair its generators, and every
+//!    borders it, it builds slower, and every
 //!    enemy around goes for it. Enclaves don't last. Every few ticks realms
 //!    split and merge.
 //! 4. *Offensives.* A realm banks crystals until it can afford a push, aims
@@ -96,8 +100,6 @@ const NEIGHBORS: usize = 12;
 
 /// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
 const RESONANT_HULL_COST: f32 = 0.0005;
-/// Ticks to bring a downed shield generator back up.
-pub const REPAIR_TICKS: u8 = 4;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: f32 = 20.0;
 /// Most quiet ticks a step skips looking for the next war.
@@ -141,7 +143,7 @@ pub struct Rules {
     pub opportunity: f32,
     /// A people's systems hanging together (by FTL range) fewer than this
     /// are a pocket, cut off from the rest: once an enemy borders it, it
-    /// builds hulls slower and can't repair its shield generators, and the
+    /// builds hulls slower, and the
     /// enemy goes for it.
     pub pocket: u32,
     /// How much of its hull production a pocket keeps.
@@ -280,8 +282,10 @@ pub enum SiteKind {
     /// Turns out hulls (into its holder's storage in the system) and crystals
     /// (into its holder's realm's vaults) each tick.
     Production { hulls: f32, crystals: f32 },
-    /// A shield generator. `down`: 0 while up, else repair ticks still to go.
-    Shield { down: u8 },
+    /// A shield generator: working, or damaged (#422). It's damaged when
+    /// it's taken, and working again once its holder wins a battle for it,
+    /// or a tick goes by without one.
+    Shield { damaged: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -371,9 +375,8 @@ pub struct Galaxy {
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
     rng: Rng,
-    /// Scratch: the share of each side's hulls in each system that came
-    /// through this tick's battle.
-    survived: Vec<[f32; SIDES]>,
+    /// Scratch: the sites fought over this tick (see `Galaxy::win`).
+    assaulted: Vec<bool>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[f32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
@@ -472,7 +475,7 @@ impl Galaxy {
                     sites.push(Site {
                         planet,
                         owner,
-                        kind: SiteKind::Shield { down: 0 },
+                        kind: SiteKind::Shield { damaged: false },
                     });
                 }
                 for _ in 0..rng.int(1, 3) {
@@ -502,7 +505,7 @@ impl Galaxy {
         let mut g = Galaxy {
             seed,
             spare: vec![[0.0; SIDES]; systems.len()],
-            survived: vec![[1.0; SIDES]; systems.len()],
+            assaulted: Vec::new(),
             systems,
             sites,
             neighbors,
@@ -740,36 +743,42 @@ impl Galaxy {
         self.step_from(None);
     }
 
-    /// The tick a played battle in system `s` is part of: your battle is
-    /// that system's battle this tick, settled already (`Galaxy::settle`),
-    /// so the galaxy's own battle there is skipped while every other
-    /// system's fights on (#419). One combined tick, not your battle and
-    /// then another round of fighting over the same ground.
-    pub fn step_played(&mut self, s: usize) {
-        self.step_from(Some(s));
+    /// The tick a played battle is part of: it's its system's battle
+    /// between its sides this tick, settled with the rest of the tick's
+    /// battles (#422; see `Galaxy::settle`), while every other battle
+    /// fights on. One combined tick, not your battle and then another round
+    /// of fighting over the same ground. Returns what the battle did.
+    pub fn step_played(&mut self, played: &battle::Played) -> battle::Settled {
+        self.step_from(Some(played))
+            .expect("a played battle is settled in its tick")
     }
 
-    fn step_from(&mut self, mut played: Option<usize>) {
+    fn step_from(&mut self, mut played: Option<&battle::Played>) -> Option<battle::Settled> {
         (self.sent, self.shields_down, self.taken) = (0, 0, 0);
+        let mut settled = None;
         for _ in 0..QUIET_SKIP {
-            self.advance_tick(played.take());
+            if let Some(s) = self.advance_tick(played.take()) {
+                settled = Some(s);
+            }
             if self.systems.iter().any(|s| s.at_war()) {
                 break;
             }
         }
+        settled
     }
 
     /// Run the whole galaxy forward one tick.
-    /// `played`: a system whose battle this tick was played (see `step_played`).
-    fn advance_tick(&mut self, played: Option<usize>) {
+    /// `played`: a battle this tick that was played (see `step_played`).
+    fn advance_tick(&mut self, played: Option<&battle::Played>) -> Option<battle::Settled> {
         self.tick += 1;
         self.produce();
-        self.battles(played);
+        let settled = self.battles(played);
         self.mercs();
         self.update_share();
         self.update_supply();
         self.plan();
         self.send();
+        settled
     }
 
     fn produce(&mut self) {
@@ -863,19 +872,27 @@ impl Galaxy {
         f != g
     }
 
-    fn battles(&mut self, played: Option<usize>) {
+    /// The tick's battles (#422). In every system at war, each side
+    /// fighting attacks the site it goes for (`target`); the holder wins
+    /// unless the attacker does, a chance by its share of the fire. The
+    /// played battle, if any, is its system's battle between its sides:
+    /// their losses and its winner come from the match instead. Every side's
+    /// losses come off its hulls the one way (`lose`), and every battle's
+    /// winner gets the one thing a win gets (`win`). A damaged generator
+    /// nobody fought over is working again.
+    fn battles(&mut self, played: Option<&battle::Played>) -> Option<battle::Settled> {
+        self.assaulted.clear();
+        self.assaulted.resize(self.sites.len(), false);
+        let mut settled = None;
         for s in 0..self.systems.len() {
-            self.survived[s] = [1.0; SIDES];
-            if played == Some(s) {
-                // Its battle was played, and settled already.
-                continue;
-            }
+            let here = played.filter(|p| p.battle.system == s);
             let hulls = self.systems[s].hulls;
             let present = hulls.map(|h| h >= AT_WAR);
             let fighting = |f: usize| (0..SIDES).any(|g| present[g] && f != g);
-            if !(0..SIDES).any(|f| present[f] && fighting(f)) {
-                // Nobody here to fight: each side holds what it has, repairs
-                // its generators, and walks into any enemy site left unguarded.
+            let war = (0..SIDES).any(|f| present[f] && fighting(f));
+            if !war && here.is_none() {
+                // Nobody here to fight: each side holds what it has, and
+                // walks into any enemy site left unguarded.
                 for f in 0..SIDES {
                     if present[f] {
                         self.hold(s, f);
@@ -883,40 +900,151 @@ impl Galaxy {
                 }
                 continue;
             }
-            let mut fire = self.fire(s);
+            // The played battle's sides fight only it, here, this tick.
+            let in_match = |f: usize| here.is_some_and(|p| p.battle.sides.contains(&f));
+            // Each side's attack, picked before anything changes hands.
+            let targets: [Option<usize>; SIDES] = std::array::from_fn(|f| {
+                (war && present[f] && fighting(f))
+                    .then(|| self.target(s, f))
+                    .flatten()
+            });
+            let mut fire = if war { self.fire(s) } else { [0.0; SIDES] };
             for x in &mut fire {
                 *x *= self.rng.range(0.75, 1.25);
             }
-            let mut losses = [0.0; SIDES];
-            // Each side's fire spreads over its enemies here by how many hulls each has.
-            for g in (0..SIDES).filter(|&g| present[g]) {
-                let enemies = |f: usize| present[f] && f != g;
-                let targets: f32 = (0..SIDES).filter(|&f| enemies(f)).map(|f| hulls[f]).sum();
-                for f in (0..SIDES).filter(|&f| enemies(f)) {
-                    losses[f] += self.rules.kill * fire[g] * hulls[f] / targets;
+            if war {
+                let mut losses = [0.0; SIDES];
+                // Each side's fire spreads over its enemies here by how many hulls each has.
+                for g in (0..SIDES).filter(|&g| present[g]) {
+                    let enemies = |f: usize| present[f] && f != g;
+                    let targets: f32 = (0..SIDES).filter(|&f| enemies(f)).map(|f| hulls[f]).sum();
+                    for f in (0..SIDES).filter(|&f| enemies(f)) {
+                        losses[f] += self.rules.kill * fire[g] * hulls[f] / targets;
+                    }
+                }
+                for f in (0..SIDES).filter(|&f| losses[f] > 0.0 && !in_match(f)) {
+                    let mercs = self.mercs_share(s, f, losses[f]);
+                    let theirs: f32 = mercs.iter().map(|m| m.1).sum();
+                    self.lose(s, f, (losses[f] - theirs).max(0.0), &mercs);
                 }
             }
-            let sys = &mut self.systems[s];
+            if let Some(p) = here {
+                settled = Some(self.settle(p));
+            }
             for f in 0..SIDES {
-                let left = (sys.hulls[f] - losses[f]).max(0.0);
-                self.destroyed += (sys.hulls[f] - left) as f64;
-                if sys.hulls[f] > 0.0 {
-                    self.survived[s][f] = left / sys.hulls[f];
+                let Some(t) = targets[f] else { continue };
+                let holder = self.sites[t].owner as usize;
+                if holder == f || (in_match(f) && in_match(holder)) {
+                    continue;
                 }
-                sys.hulls[f] = left;
-            }
-            // A tick is a battle: each side in the fight may win its
-            // objective, more likely the more of the fire is its own.
-            for f in (0..SIDES).filter(|&f| present[f] && fighting(f)) {
                 let against: f32 = (0..SIDES)
                     .filter(|&g| present[g] && g != f)
                     .map(|g| fire[g])
                     .sum();
                 let odds = fire[f] / (fire[f] + against).max(1e-3);
-                if self.rng.chance(self.rules.take * odds) {
-                    self.advance(s, f, 1);
-                }
+                let won = self.rng.chance(self.rules.take * odds);
+                self.win(s, t, if won { f } else { holder });
             }
+        }
+        // Nobody fought over them: repaired.
+        for (site, &fought) in self.sites.iter_mut().zip(&self.assaulted) {
+            if let SiteKind::Shield { damaged } = &mut site.kind
+                && !fought
+            {
+                *damaged = false;
+            }
+        }
+        settled
+    }
+
+    /// Of side `f`'s `lost` hulls in system `s`, each company's there
+    /// (`Company::id`, hulls): its share of the side's hulls here.
+    fn mercs_share(&self, s: usize, f: usize, lost: f32) -> Vec<(u32, f32)> {
+        let here = self.systems[s].hulls[f];
+        if here <= 0.0 {
+            return Vec::new();
+        }
+        let k = (lost / here).min(1.0);
+        self.companies
+            .iter()
+            .filter_map(|c| {
+                let k2 = c.contract?;
+                (k2.target as usize == s && k2.side as usize == f && k2.field > 0.0)
+                    .then(|| (c.id, k2.field * k))
+            })
+            .collect()
+    }
+
+    /// Side `f` loses hulls in system `s`: `realm` of the realm's, and each
+    /// company in `mercs` (`Company::id`, hulls) some of its contract's
+    /// (never more than it has there). The one effect of a lost hull
+    /// (#422): off the side's hulls here, off the company's contract, and
+    /// counted. Returns (lost all told, of those the mercs').
+    pub(crate) fn lose(
+        &mut self,
+        s: usize,
+        f: usize,
+        realm: f32,
+        mercs: &[(u32, f32)],
+    ) -> (f32, f32) {
+        let mut theirs = 0.0;
+        for &(id, n) in mercs {
+            let Some(k) = self
+                .companies
+                .iter_mut()
+                .find(|c| c.id == id)
+                .and_then(|c| c.contract.as_mut())
+            else {
+                continue;
+            };
+            let off = n.min(k.field).max(0.0);
+            k.field -= off;
+            k.lost += off;
+            self.books.lost += off as f64;
+            theirs += off;
+        }
+        let sys = &mut self.systems[s];
+        let total = (realm.max(0.0) + theirs).min(sys.hulls[f]);
+        sys.hulls[f] -= total;
+        self.destroyed += total as f64;
+        (total, theirs.min(total))
+    }
+
+    /// Side `w` won the battle for site `i` in system `s`: the one effect of
+    /// a won battle, played or the galaxy's (#422). From another side, it
+    /// takes the site (a generator taken is damaged); its holder's, a
+    /// damaged generator is working again.
+    pub(crate) fn win(&mut self, s: usize, i: usize, w: usize) {
+        if let Some(x) = self.assaulted.get_mut(i) {
+            *x = true;
+        }
+        let site = &mut self.sites[i];
+        let old = site.owner as usize;
+        if old == w {
+            if let SiteKind::Shield { damaged } = &mut site.kind {
+                *damaged = false;
+            }
+            return;
+        }
+        site.owner = w as u8;
+        if let SiteKind::Shield { damaged } = &mut site.kind {
+            if !*damaged {
+                self.shields_down += 1;
+            }
+            *damaged = true;
+        }
+        let sys = &mut self.systems[s];
+        sys.held[old] -= 1;
+        sys.held[w] += 1;
+        self.taken += 1;
+        self.claim(s, w);
+        // An offensive rolls on from what it takes.
+        let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
+        if self.pushing(r, pos)
+            && let Some(o) = &mut self.realms[r as usize].offensive
+        {
+            o.gained = self.tick;
+            o.at = pos;
         }
     }
 
@@ -925,79 +1053,22 @@ impl Galaxy {
         let (a, b) = self.systems[s].sites;
         let mut up = [0u8; 4];
         for site in &self.sites[a as usize..b as usize] {
-            if self.hostile(f, site.owner as usize) && site.kind == (SiteKind::Shield { down: 0 }) {
+            if self.hostile(f, site.owner as usize)
+                && site.kind == (SiteKind::Shield { damaged: false })
+            {
                 up[site.planet as usize] += 1;
             }
         }
         up
     }
 
-    /// Side `f` has no enemy in system `s`: repairs its generators there,
-    /// and walks into any enemy site nobody's left to defend.
+    /// Side `f` has no enemy in system `s`: it walks into enemy sites
+    /// nobody's left to defend, a few a tick. (Its damaged generators are
+    /// repaired with everyone's nobody fought over.)
     fn hold(&mut self, s: usize, f: usize) {
-        let (a, b) = self.systems[s].sites;
-        let mut enemy_sites = false;
-        let cut = self.cut[s];
-        for i in a as usize..b as usize {
-            let owner = self.sites[i].owner as usize;
-            if owner == f && !cut {
-                if let SiteKind::Shield { down } = &mut self.sites[i].kind {
-                    *down = down.saturating_sub(1);
-                }
-            } else if self.hostile(f, owner) {
-                enemy_sites = true;
-            }
-        }
-        if enemy_sites {
-            self.advance(s, f, self.rules.blitz);
-        }
-    }
-
-    /// Side `w` makes `steps` of progress in system `s`: each takes the site
-    /// it goes for (`target`).
-    fn advance(&mut self, s: usize, w: usize, steps: u32) {
-        let (a, b) = self.systems[s].sites;
-        let (a, b) = (a as usize, b as usize);
-        for step in 0..steps {
-            let Some(i) = self.target(s, w) else {
-                // Nothing of the enemy's here: a defender's won tick counts
-                // toward repairs (except in a pocket, with no parts coming).
-                if step > 0 || self.cut[s] {
-                    return;
-                }
-                for site in &mut self.sites[a..b] {
-                    if site.owner as usize == w
-                        && let SiteKind::Shield { down } = &mut site.kind
-                    {
-                        *down = down.saturating_sub(1);
-                    }
-                }
-                return;
-            };
-            // Take the site: it's the winning realm's now. A taken
-            // generator has to be repaired.
-            let site = &mut self.sites[i];
-            let old = site.owner as usize;
-            site.owner = w as u8;
-            if let SiteKind::Shield { down } = &mut site.kind {
-                if *down == 0 {
-                    self.shields_down += 1;
-                }
-                *down = REPAIR_TICKS;
-            }
-            let sys = &mut self.systems[s];
-            sys.held[old] -= 1;
-            sys.held[w] += 1;
-            self.taken += 1;
-            self.claim(s, w);
-            // An offensive rolls on from what it takes.
-            let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
-            if self.pushing(r, pos)
-                && let Some(o) = &mut self.realms[r as usize].offensive
-            {
-                o.gained = self.tick;
-                o.at = pos;
-            }
+        for _ in 0..self.rules.blitz {
+            let Some(i) = self.target(s, f) else { return };
+            self.win(s, i, f);
         }
     }
 
