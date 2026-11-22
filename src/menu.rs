@@ -554,9 +554,9 @@ impl Menu {
     /// it (always the first: the theater's sides stand in for the map's):
     /// the menu's backdrop shows it (under the system view on the missions
     /// screen, loaded ready for the site's). None off the theater.
-    pub fn backdrop(&self) -> Option<(MapKind, usize)> {
+    pub fn backdrop(&self) -> Option<(MapKind, u64, usize)> {
         matches!(self.screen, Screen::Missions | Screen::Site)
-            .then(|| self.selected_site().map(|s| (s.map_kind(), 0)))
+            .then(|| self.selected_site().map(|s| (s.map_kind(), s.map_seed, 0)))
             .flatten()
     }
 

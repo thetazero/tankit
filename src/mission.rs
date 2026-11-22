@@ -185,14 +185,15 @@ pub const MISSIONS: &[Mission] = &[
     },
 ];
 
-/// The missions a theater's sites can be fought with at Company rank `rank`
-/// (#311): every two-sided one the Company takes at that rank, its map and
-/// contract standing in for the site's until sites get maps of their own.
-pub fn for_sites(rank: u32) -> Vec<usize> {
+/// The missions a site on a `class` world can be fought with at Company
+/// rank `rank` (#311): every two-sided one the Company takes at that rank
+/// on one of the class's maps, its map and contract standing in for the
+/// site's.
+pub fn for_sites(rank: u32, class: crate::galaxy::theater::Class) -> Vec<usize> {
     (0..MISSIONS.len())
         .filter(|&i| {
             let m = &MISSIONS[i];
-            m.sides.len() == 2 && m.open_at(rank) && !matches!(m.map_kind, MapKind::ShieldSite(_))
+            m.sides.len() == 2 && m.open_at(rank) && class.fights_on(m.map_kind)
         })
         .collect()
 }
@@ -293,8 +294,11 @@ mod tests {
     /// A new pilot's theater has maps to fight on.
     #[test]
     fn sites_have_maps_from_the_start() {
-        assert!(!for_sites(1).is_empty());
-        assert!(for_sites(T1_RANK).len() > for_sites(1).len());
+        use crate::galaxy::theater::Class;
+        for class in [Class::Desert, Class::Placeholder] {
+            assert!(!for_sites(1, class).is_empty(), "{class:?}");
+        }
+        assert!(for_sites(T1_RANK, Class::Desert).len() > for_sites(1, Class::Desert).len());
     }
 
     /// Every part but the starters is some mission's prize, stolen from a side you
