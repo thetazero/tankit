@@ -427,11 +427,11 @@ impl Map {
             .flatten()
         {
             debug_assert!(t.nx == t.nz, "a terrain not square");
-            fn turn<T: Copy>(v: &mut Vec<T>, n: usize) {
+            fn turn<T: Copy>(v: &mut [T], n: usize) {
                 if v.len() != n * n {
                     return;
                 }
-                let old = v.clone();
+                let old = v.to_vec();
                 for iz in 0..n {
                     for ix in 0..n {
                         v[iz * n + ix] = old[ix * n + (n - 1 - iz)];

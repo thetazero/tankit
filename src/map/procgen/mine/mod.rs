@@ -1,37 +1,18 @@
-//! The crystal mine biome: a mine dug into a desert escarpment, on levels
-//! stacked over each other. What's always here (the grammar), laid out
-//! fresh from each seed (`Layout::generate`):
+//! The crystal mine biome: mines dug into a desert escarpment, on levels
+//! stacked over each other. Laid out in layers from each seed (`layout`):
+//! landforms (the escarpment with one or two mines in it, each under its
+//! Crag with a scree beside it; none to two washes, a second one perhaps
+//! running into the first; none to two buttes), then a railroad out of each
+//! mine bridging what it crosses, then whatever's cut off joined up by rule
+//! (haul ramps, crossings, ways up), then each side's spawns where it's
+//! fairest, then the details. The arena is sized to what's there, and the
+//! finished map is mirrored and turned so the escarpment can lie along any
+//! edge.
 //!
-//! - **The Face**, along the north: an escarpment 10 m high, broken
-//!   natural rock, headlands and bays wherever the seed puts them. Its top
-//!   is the mesa. One side drives up the mesa's long west end; the other
-//!   climbs the scree where the Face fell in, in the east.
-//! - **The Crag**, rising 40 m sheer out of the middle of the Face, over the
-//!   mine and back past the north edge: the crystal-rich cliff they're
-//!   cutting into. Nothing climbs it; it splits the mesa in two.
-//! - **The mine**, under the mesa and the Crag: the rail adit straight in
-//!   from the Crag's face, the new heading beside it, the pillared hall
-//!   west of it (high where the Crag is over it, a crosscut through to the
-//!   adit), the west adit out to the Face, the east drift to the breach the
-//!   other side broke in by, and the box cut, a slot sawn up through the
-//!   Crag from the adit's end to the mesa's east top. At the heading's end
-//!   the borer's bay, high under the Crag, with the machine cutting the
-//!   bore on east.
-//! - **The wash**, a dry ravine winding right across the map under the
-//!   Face and out at the east edge: the seam runs along its floor. The rail
-//!   bridge leads out of the adit's mouth across it; haul ramps lead down
-//!   into it, and a crossing near each side's spawns.
-//! - **The flats**, south of the wash: the railroad runs out across them to
-//!   the south edge under the loading tipple, a branch into the warehouse
-//!   on one side or the other; the waste dump, sandstone fins and hoodoos.
-//!
-//! What varies with the seed: the Face's line, where the Crag stands and
-//! how wide, the mine's rooms (their places and sizes, the pillars), the
-//! scree and the mesa's west ramp, the wash's whole course, where the
-//! bridge crosses it and the line runs on to, which side the warehouse is
-//! on, the dump, fins and hoodoos, the spawns and the sun; and which way
-//! round it all is (half the mines are built the other way round, east to
-//! west, so which side has the long ramp and which the scree varies too).
+//! Each mine is the Seam's (the hand-built mine this replaced): the rail
+//! adit in from its Crag's face, the new heading and the borer's bay at its
+//! end, the pillared hall, the west adit, the drift to the breach, the box
+//! cut up through the Crag; its rooms placed and sized by the seed.
 //!
 //! Nothing here is anyone's: whose mine it is (their lamps, their machine
 //! in the bay, their freight, their marker by their spawns) is the style's

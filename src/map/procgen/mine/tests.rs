@@ -1195,7 +1195,8 @@ fn sweep() {
         v.first().copied().unwrap_or(3),
         v.get(1).copied().unwrap_or(33),
     );
-    let checks: [(&str, fn(u64)); 15] = [
+    type Check = (&'static str, fn(u64));
+    let checks: [Check; 15] = [
         (
             "every_seed_is_playable_dressed",
             check_every_seed_is_playable_dressed,
