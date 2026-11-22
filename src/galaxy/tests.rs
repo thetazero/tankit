@@ -760,7 +760,7 @@ fn losses_are_rolled() {
 /// pilots learn from the wrecks their side leaves, a part at a time.
 #[test]
 fn galaxy_kills_teach_merc_pilots() {
-    let mut g = Galaxy::warmed(7);
+    let mut g = Galaxy::warmed_by(7, 200);
     let c = g
         .companies
         .iter()
