@@ -14,10 +14,9 @@
 //! - bases: staging courts behind bastion walls, in each side's colors.
 //! - beyond: the city goes on to the haze, a great tower hung with crimson
 //!   closing each avenue's vista.
-//! - the shield generator (`shield`), in the landmark's place where a map
-//!   has one: their standard model, the same on every world they hold.
+//! - their shield generator (`shield`; see `procgen::shield`).
 
-mod shield;
+pub(super) mod shield;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -92,7 +91,7 @@ impl Style for Imperium {
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "ROTUNDA",
-            Centerpiece::ShieldGenerator => "GENERATOR",
+            Centerpiece::ShieldGenerator(_) => "GENERATOR",
         }
     }
 
@@ -100,10 +99,6 @@ impl Style for Imperium {
         let drifts = map.rotunda(rng, &sk.landmark, sk.ground(sk.landmark.center));
         map.colonnade(rng, &sk.landmark, sk.ground(sk.landmark.center));
         drifts
-    }
-
-    fn shield_generator(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
-        map.shield_generator(rng, &sk.landmark, sk.ground(sk.landmark.center))
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {

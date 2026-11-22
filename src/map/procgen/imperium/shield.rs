@@ -1,5 +1,6 @@
-//! The Imperium's shield generator: the standard model they put up on
-//! every world they hold, the same from one city to the next.
+//! The Imperium's shield generator (see `procgen::shield`): the standard
+//! model they put up on every world they hold, the same from one city to
+//! the next.
 //!
 //! It stands in the landmark's place and keeps to its envelope: a round
 //! blast wall, lower than the rotunda's drum, open on each door; inside, a
@@ -13,6 +14,7 @@
 
 use super::*;
 use crate::map::GlowPath;
+use crate::map::procgen::shield::{between_doors, shelled};
 use crate::render::PointLight;
 
 /// The shield's light: a cold, pale blue.
@@ -32,7 +34,7 @@ const PLINTH_TOP: f32 = 1.1;
 
 impl Map {
     /// The shield generator in the landmark's place (see the module).
-    pub(super) fn shield_generator(
+    pub(in crate::map::procgen) fn imperium_generator(
         &mut self,
         rng: &mut Rng,
         lm: &Landmark,
@@ -47,7 +49,7 @@ impl Map {
             self.transformer(lm, a, base, wrecked);
         }
         self.pylons(lm, base);
-        self.generator_rubble(rng, lm, base)
+        self.generator_rubble(rng, lm, base, CONCRETE)
     }
 
     /// The blast wall: a ring of concrete, open on each door, a stone
@@ -509,72 +511,4 @@ impl Map {
             }
         }
     }
-
-    /// Where it was shelled: rubble banked against the broken wall and
-    /// chunks of it strewn about, inside and out.
-    fn generator_rubble(&mut self, rng: &mut Rng, lm: &Landmark, base: f32) -> Vec<Drift> {
-        let Some(fall) = lm.fallen else {
-            return Vec::new();
-        };
-        let mut drifts = Vec::new();
-        for (side, sign) in [(-1.0f32, 1.0f32), (1.0, -1.0)] {
-            drifts.push(Drift {
-                b: OBox {
-                    center: lm.center + fall * (lm.radius + side * 3.5),
-                    yaw: -angle(fall),
-                    half: Vec2::new(9.0, 2.0),
-                    y0: 0.0,
-                    y1: 1.0,
-                    ..OBox::default()
-                },
-                axis: 1,
-                sign,
-                height: 1.3,
-                run: 7.0,
-            });
-        }
-        for _ in 0..24 {
-            let a = angle(fall) + rng.range(-0.6, 0.6);
-            let d = rng.range(PLINTH_R + 3.0, lm.radius + 12.0);
-            let p = lm.center + Vec2::new(a.cos(), a.sin()) * d;
-            let s = rng.range(0.7, 2.2);
-            let half = Vec2::new(s, s * rng.range(0.4, 0.9));
-            let top = base + s * rng.range(0.3, 0.7);
-            self.oboxes.push(OBox {
-                tilt: rng.range(-0.4, 0.4),
-                roll: rng.range(-0.3, 0.3),
-                solid: s > 1.5,
-                ..rocks::rubble(
-                    p,
-                    rng.range(0.0, TAU),
-                    half,
-                    base - 0.3,
-                    top,
-                    CONCRETE * rng.range(0.85, 1.0),
-                )
-            });
-        }
-        drifts
-    }
-}
-
-/// Is angle `a` round the middle on the side that was shelled?
-fn shelled(lm: &Landmark, a: f32) -> bool {
-    lm.fallen.is_some_and(|f| apart(a, angle(f)) < 0.6)
-}
-
-/// The angles halfway between each door and the next round the middle.
-fn between_doors(lm: &Landmark) -> Vec<f32> {
-    let mut doors: Vec<f32> = lm.doors.iter().map(|&d| angle(d).rem_euclid(TAU)).collect();
-    doors.sort_by(f32::total_cmp);
-    (0..doors.len())
-        .map(|k| {
-            let a0 = doors[k];
-            let mut a1 = doors[(k + 1) % doors.len()];
-            if a1 <= a0 {
-                a1 += TAU;
-            }
-            (a0 + a1) * 0.5
-        })
-        .collect()
 }

@@ -54,6 +54,8 @@ tankit [OPTIONS]
                           Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
                           mine: caves, rails and stacked levels)
   --map-seed <n>          which city a generated map (city, shield-city) builds (default: the --seed)
+  --generator <faction>   (with --map shield-city) whose shield generator stands in it: imperium
+                          (the default), resonant, uthenn or ithessar
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -200,7 +202,9 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
-            (true, MapKind::ShieldCity) => map::procgen::greybox(&shield_city_spec(self.map_seed)),
+            (true, MapKind::ShieldCity(owner)) => {
+                map::procgen::greybox(&shield_city_spec(self.map_seed, owner))
+            }
             _ => make_map(self.map, self.map_seed),
         };
         if self.side > 0 {
@@ -222,9 +226,10 @@ pub enum MapKind {
     /// An Imperium city, half ruined round a domed rotunda: four sides.
     /// Generated: a different city for each map seed.
     City,
-    /// The same city with an Imperium shield generator in the middle in
-    /// place of the rotunda: the same layout for the same seed.
-    ShieldCity,
+    /// The same city with a shield generator in the middle in place of the
+    /// rotunda, the standard model of the side that holds it: the same
+    /// layout for the same seed.
+    ShieldCity(faction::Faction),
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// The Seam: an Ithessar crystal mine in the desert, on three levels.
@@ -239,7 +244,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City => map::procgen::map(&city_spec(seed)),
-        MapKind::ShieldCity => map::procgen::map(&shield_city_spec(seed)),
+        MapKind::ShieldCity(owner) => map::procgen::map(&shield_city_spec(seed, owner)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::Map::mine(),
     }
@@ -256,10 +261,11 @@ pub fn city_spec(seed: u64) -> map::procgen::Spec {
     }
 }
 
-/// The imperial city `seed` names, a shield generator in its middle.
-pub fn shield_city_spec(seed: u64) -> map::procgen::Spec {
+/// The imperial city `seed` names, `owner`'s shield generator in its
+/// middle (whoever holds the city now).
+pub fn shield_city_spec(seed: u64, owner: faction::Faction) -> map::procgen::Spec {
     map::procgen::Spec {
-        centerpiece: map::procgen::Centerpiece::ShieldGenerator,
+        centerpiece: map::procgen::Centerpiece::ShieldGenerator(owner),
         ..city_spec(seed)
     }
 }
@@ -395,6 +401,7 @@ fn parse_args() -> Result<Args> {
     let mut team_size: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
+    let mut generator: Option<faction::Faction> = None;
     let mut mission = None;
     let mut site = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
@@ -440,7 +447,7 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => map_kind = MapKind::City,
-                Some("shield-city") => map_kind = MapKind::ShieldCity,
+                Some("shield-city") => map_kind = MapKind::ShieldCity(faction::Faction::Imperium),
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
                 other => {
@@ -463,6 +470,12 @@ fn parse_args() -> Result<Args> {
                 Some("raid") => contract = mission::Contract::Raid,
                 other => bail!("--contract expects attrition, hold or raid, got {other:?}"),
             },
+            "--generator" => {
+                let name = args.next().unwrap_or_default();
+                generator = Some(faction::Faction::by_name(&name).with_context(|| {
+                    format!("--generator expects a faction name, got {name:?}")
+                })?);
+            }
             "--employer" => {
                 let name = args.next().unwrap_or_default();
                 employer =
@@ -629,6 +642,9 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
+    if let (MapKind::ShieldCity(owner), Some(g)) = (&mut map_kind, generator) {
+        *owner = g;
+    }
     let sides = make_map(map_kind, map_seed).factions;
     let menu_shot = matches!(
         screen,
