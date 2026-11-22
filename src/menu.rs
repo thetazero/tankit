@@ -655,7 +655,7 @@ impl Menu {
         );
         y += 30.0;
         if let Some(ship) = &t.ship {
-            y = contract(p, Vec2::new(x, y), t, ship) + 16.0;
+            y = contract(p, Vec2::new(x, y), ship) + 16.0;
         }
 
         // The contested sites.
@@ -860,10 +860,11 @@ fn field(p: &mut Painter, at: Vec2, label: &str, value: &str) {
     body(p, at + Vec2::new(LABEL_W, 0.0), value, theme::FG);
 }
 
-/// Your ship's contract at `at`: who hired it, the pay, its hulls and crystal; and,
-/// if the Company just moved you, from where. (Its time left and how many
-/// hulls it can lose are over the system view.) Returns the y under it.
-fn contract(p: &mut Painter, at: Vec2, t: &Theater, ship: &Ship) -> f32 {
+/// Your ship's contract at `at`: who hired it and its hulls; and, if the
+/// Company just moved you, from where. (Its time left and how many hulls it
+/// can lose are over the system view. The company's pay and crystal aren't
+/// shown: they're its business, not the pilot's.) Returns the y under it.
+fn contract(p: &mut Painter, at: Vec2, ship: &Ship) -> f32 {
     let (x, mut y) = (at.x, at.y);
     let employer = Faction::ALL[ship.side];
     body(p, Vec2::new(x, y), "Hired by", theme::DIM);
@@ -882,23 +883,9 @@ fn contract(p: &mut Painter, at: Vec2, t: &Theater, ship: &Ship) -> f32 {
     field(
         p,
         Vec2::new(x, y),
-        "Pay",
-        &format!(
-            "{} now · +{} if {} falls",
-            n(ship.upfront),
-            n(ship.bonus),
-            title(&t.name)
-        ),
-    );
-    y += 22.0;
-    field(
-        p,
-        Vec2::new(x, y),
         "Hulls",
         &format!("{} fighting · {} spare", n(ship.field), n(ship.aboard)),
     );
-    y += 22.0;
-    field(p, Vec2::new(x, y), "Crystal", &n(ship.crystals).to_string());
     y += 22.0;
     let news = match ship.news {
         Some(CrewNews::Joined { from }) => Some(format!(
