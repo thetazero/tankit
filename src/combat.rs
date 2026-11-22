@@ -3495,6 +3495,15 @@ fn spawn_point(world: &World, rng: &mut Rng, team: usize, others: &[(usize, Vec2
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fighter already in the fight: for a tank a test sets down itself
+    /// (`World::spawn_tank`) after the round's start, where it stands.
+    fn standing(team: usize, health: f32) -> Fighter {
+        Fighter {
+            alive: true,
+            ..fighter(team, health)
+        }
+    }
     use crate::sim::dir2;
     use rapier3d::prelude::{ColliderBuilder, Pose};
     use std::f32::consts::{FRAC_PI_2, PI};
@@ -3537,7 +3546,8 @@ mod tests {
 
     #[test]
     fn spawns_player_and_bots_apart() {
-        let m = arena(11);
+        let mut m = arena(11);
+        m.start();
         assert_eq!(m.world.tanks.len(), 12);
         for i in 0..12 {
             for j in i + 1..12 {
@@ -3562,7 +3572,7 @@ mod tests {
             TurretKind::Kontos,
         );
         m.fighters
-            .push(fighter(1, max_health(HullKind::Kataphrakt)));
+            .push(standing(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -3608,7 +3618,7 @@ mod tests {
             TurretKind::Kontos,
         );
         m.fighters
-            .push(fighter(1, max_health(HullKind::Kataphrakt)));
+            .push(standing(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -4214,7 +4224,7 @@ mod tests {
         let k = m.world.tanks.len() - 1;
         m.world.teleport(k, at, yaw);
         m.fighters
-            .push(fighter(0, max_health(HullKind::Kataphrakt)));
+            .push(standing(0, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         m.fighters[k].shield = 0.0;
         m.fighters[k].reload_in = f32::INFINITY;
@@ -4398,7 +4408,7 @@ mod tests {
                 TurretKind::Kontos,
             );
             m.fighters
-                .push(fighter(team, max_health(HullKind::Kataphrakt)));
+                .push(standing(team, max_health(HullKind::Kataphrakt)));
             m.bots.push(None);
         };
         if let Some(team) = front {
@@ -4446,7 +4456,7 @@ mod tests {
             TurretKind::Kontos,
         );
         m.fighters
-            .push(fighter(1, max_health(HullKind::Kataphrakt)));
+            .push(standing(1, max_health(HullKind::Kataphrakt)));
         m.bots.push(None);
         for f in &mut m.fighters {
             f.shield = 0.0;
@@ -5435,7 +5445,8 @@ mod tests {
     #[test]
     fn each_side_spawns_at_its_own_base() {
         for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
-            let m = Match::new(map, 0, 11, 5);
+            let mut m = Match::new(map, 0, 11, 5);
+            m.start();
             for (i, f) in m.fighters.iter().enumerate() {
                 let p = Vec2::new(m.world.tanks[i].pos.x, m.world.tanks[i].pos.z);
                 assert!(

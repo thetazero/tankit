@@ -234,6 +234,7 @@ impl Args {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
             (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
+            (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
             (true, MapKind::ShieldCity(g)) => {
                 map::procgen::greybox(&shield_spec(self.map_seed, g, false))
             }
@@ -274,6 +275,9 @@ pub enum MapKind {
     /// An Ithessar crystal mine in a desert escarpment, on three levels.
     /// Generated: a different mine for each map seed.
     Mine,
+    /// Open desert: dunes, buttes and spires of sandstone round the
+    /// Needles in the middle. Generated: a different desert for each seed.
+    Desert,
 }
 
 /// The map `kind` names; `seed` picks which one, for a generated kind (the
@@ -288,6 +292,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::ShieldSite(g) => map::procgen::map(&shield_spec(seed, g, true)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::procgen::map(&mine_spec(seed)),
+        MapKind::Desert => map::procgen::map(&desert_spec(seed)),
     }
 }
 
@@ -347,6 +352,18 @@ pub fn mine_spec(seed: u64) -> map::procgen::Spec {
         biome: map::procgen::Biome::Mine,
         look: map::procgen::Look::Ithessar,
         sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
+        centerpiece: map::procgen::Centerpiece::Monument,
+    }
+}
+
+/// The open desert `seed` names: the default matchup.
+pub fn desert_spec(seed: u64) -> map::procgen::Spec {
+    map::procgen::Spec {
+        seed,
+        biome: map::procgen::Biome::Desert,
+        // Nobody's: the look only matters once something's built there.
+        look: map::procgen::Look::Imperium,
+        sides: map::DEFAULT_SIDES.to_vec(),
         centerpiece: map::procgen::Centerpiece::Monument,
     }
 }
@@ -575,9 +592,10 @@ fn parse_args() -> Result<Args> {
                 }
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
+                Some("desert") => map_kind = MapKind::Desert,
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, city, shield-city, shield-site, foundry or mine, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, city, shield-city, shield-site, foundry, mine or desert, got {other:?}"
                     )
                 }
             },
