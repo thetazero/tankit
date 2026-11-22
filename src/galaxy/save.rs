@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
-use super::merc::{Company, Contract};
+use super::merc::{Company, Contract, Debt};
 use super::realm::{NONE, Realm};
 use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
@@ -45,6 +45,9 @@ struct Saved {
     companies: Option<Vec<SavedCompany>>,
     #[serde(default)]
     next_company: u32,
+    /// Bonuses realms owe companies: (realm, company id, crystals).
+    #[serde(default)]
+    debts: Vec<(u32, u32, f32)>,
     #[serde(default)]
     destroyed: f64,
 }
@@ -71,6 +74,10 @@ struct SavedContract {
     max_loss: f32,
     field: f32,
     lost: f32,
+    #[serde(default)]
+    orbit: f32,
+    #[serde(default)]
+    defend: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -137,11 +144,18 @@ impl Galaxy {
                             max_loss: k.max_loss,
                             field: k.field,
                             lost: k.lost,
+                            orbit: k.orbit,
+                            defend: k.defend,
                         }),
                     })
                     .collect(),
             ),
             next_company: self.next_company,
+            debts: self
+                .debts
+                .iter()
+                .map(|d| (d.realm, d.company, d.crystals))
+                .collect(),
             destroyed: self.destroyed,
         }
     }
@@ -234,10 +248,25 @@ impl Galaxy {
                         max_loss: k.max_loss,
                         field: k.field,
                         lost: k.lost,
+                        orbit: k.orbit,
+                        defend: k.defend,
                     }),
                 })
                 .collect();
             g.next_company = s.next_company;
+            anyhow::ensure!(
+                s.debts.iter().all(|&(r, _, _)| (r as usize) < realms),
+                "a debt owed by nobody"
+            );
+            g.debts = s
+                .debts
+                .iter()
+                .map(|&(realm, company, crystals)| Debt {
+                    realm,
+                    company,
+                    crystals,
+                })
+                .collect();
         }
         g.destroyed = s.destroyed;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
@@ -365,9 +394,23 @@ mod tests {
         }
         assert_eq!(g.living().count(), back.living().count());
         assert_eq!(g.companies.len(), back.companies.len());
+        assert_eq!(
+            g.debts
+                .iter()
+                .map(|d| (d.realm, d.company, d.crystals))
+                .collect::<Vec<_>>(),
+            back.debts
+                .iter()
+                .map(|d| (d.realm, d.company, d.crystals))
+                .collect::<Vec<_>>()
+        );
         for (a, b) in g.companies.iter().zip(&back.companies) {
             assert_eq!((a.at, a.crystals, a.hulls), (b.at, b.crystals, b.hulls));
             assert_eq!(a.contract.map(|k| k.target), b.contract.map(|k| k.target));
+            assert_eq!(
+                a.contract.map(|k| (k.orbit, k.defend)),
+                b.contract.map(|k| (k.orbit, k.defend))
+            );
         }
         for _ in 0..10 {
             g.step();

@@ -49,10 +49,11 @@
 //!    to one. FTL costs crystals per hull by distance. Landing on a planet
 //!    under an enemy's shield is limited in rate and costs crystals per hull;
 //!    once all of a planet's generators are down, landing is free. An attack
-//!    the realm is set on but can't make alone can hire a **mercenary
-//!    company** to make up the difference (see `merc`, #318): paid in crystal,
-//!    up front and a bonus if the world falls; the company buys the hulls it
-//!    lacks from the cheapest realm nearby.
+//!    the realm is set on but can't make alone, or a world of its own it
+//!    can't hold alone, can hire a **mercenary company** to make up the
+//!    difference (see `merc`, #318, #340): paid in crystal, up front and a
+//!    bonus if it comes off; the company buys the hulls it lacks from the
+//!    cheapest realm nearby, and lands at the shields' rate like anyone.
 //!
 //! A step runs ticks until somewhere is at war: the player is posted to a
 //! battle, so quiet ticks pass unseen.
@@ -74,7 +75,7 @@ use glam::{Vec2, Vec3};
 
 use crate::faction::Faction;
 use crate::rng::Rng;
-use merc::{Books, Company};
+use merc::{Books, Company, Debt};
 use realm::{NONE, Realm};
 
 /// The four warring sides (the Company holds no ground).
@@ -205,6 +206,9 @@ pub struct Rules {
     /// than this joins another (crystals, its hulls at `hull_price`).
     pub merc_split: f32,
     pub merc_join: f32,
+    /// A realm that owes a company a bonus pays back this share of its
+    /// income each tick (and no company works for it until it has).
+    pub merc_dues: f32,
 }
 
 impl Default for Rules {
@@ -253,6 +257,7 @@ impl Default for Rules {
             merc_horizon: 300.0,
             merc_split: 1000.0,
             merc_join: 40.0,
+            merc_dues: 0.5,
         }
     }
 }
@@ -332,6 +337,8 @@ pub struct Galaxy {
     /// The mercenary companies, and their trade all told.
     pub companies: Vec<Company>,
     pub books: Books,
+    /// Bonuses realms owe companies.
+    pub debts: Vec<Debt>,
     /// Companies founded, all told (each one's `id`).
     pub(crate) next_company: u32,
     /// Hulls destroyed in the galaxy's battles, all told.
@@ -342,6 +349,9 @@ pub struct Galaxy {
     survived: Vec<[f32; SIDES]>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[f32; SIDES]>,
+    /// Scratch for sending: hulls each side has landed in each system this
+    /// tick (under enemy shields, they share the landing rate).
+    landed: Vec<[f32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
     members: Vec<u32>,
     spans: Vec<(u32, u32)>,
@@ -468,6 +478,7 @@ impl Galaxy {
         let mut g = Galaxy {
             seed,
             spare: vec![[0.0; SIDES]; systems.len()],
+            landed: vec![[0.0; SIDES]; systems.len()],
             survived: vec![[1.0; SIDES]; systems.len()],
             systems,
             sites,
@@ -484,6 +495,7 @@ impl Galaxy {
             merges: 0,
             companies: Vec::new(),
             books: Books::default(),
+            debts: Vec::new(),
             next_company: 0,
             destroyed: 0.0,
             rng,
@@ -1015,6 +1027,10 @@ impl Galaxy {
                 *x = (*x - k.field).max(0.0);
             }
         }
+        // Nobody has landed anywhere yet this tick; companies' hulls in
+        // orbit go first.
+        self.landed.iter_mut().for_each(|l| *l = [0.0; SIDES]);
+        self.land_from_orbit();
         // A different people moves first each tick, starting at a different
         // system, so nobody always gets first pick.
         let mut order = [0, 1, 2, 3];
@@ -1137,14 +1153,23 @@ impl Galaxy {
         };
         let pool: f32 = self.neighbors(t).map(|(s, _)| mine(self, s)).sum();
         if have + pool < odds * defense || pool < MIN_SEND {
-            // Not a good enough chance alone: an attack it's set on can hire
-            // a company to make up the difference, then go in with it.
-            if !ours && (pocket || self.pushing(r, sys.pos)) && self.hire(t, f, r, want - pool) {
+            // Not a good enough chance alone: an attack it's set on, or a
+            // world of its own under attack, can hire a company to make up
+            // the difference, then go in with it.
+            let attacked = (0..SIDES).any(|g| g != f && sys.hulls[g] >= AT_WAR);
+            let worth_it = if ours {
+                attacked
+            } else {
+                pocket || self.pushing(r, sys.pos)
+            };
+            if worth_it && self.hire(t, f, r, want - pool, ours) {
                 self.consider(t, f, r);
             }
             return;
         }
         let (rate, breach) = self.landing(t, f);
+        // Under shields, the side's landings here this tick share the rate.
+        let rate = rate - self.landed[t][f];
         // Go in hard: a decisive blow, not a top-up the defender can match
         // next tick. What's left of it rolls on to the next world.
         let send = want.max(pool * self.rules.commit).min(pool).min(rate);
@@ -1189,6 +1214,7 @@ impl Galaxy {
             moved += m;
         }
         self.systems[t].hulls[f] += moved;
+        self.landed[t][f] += moved;
         self.systems[t].realms[f] = r;
     }
 }
