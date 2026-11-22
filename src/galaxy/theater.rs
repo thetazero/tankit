@@ -88,6 +88,8 @@ pub struct Ship {
     /// Its hulls still committed to the contract (in the fight), and of them yours alone (#385): left, of how many.
     pub committed: f32,
     pub own: Own,
+    /// Your company's last few ended contracts, newest last (#414).
+    pub ended: Vec<Ended>,
 }
 
 /// Your own hulls on your company's contract (#385): set once when you
@@ -102,6 +104,54 @@ pub struct Own {
     pub left: u32,
     pub of: u32,
 }
+
+/// How a contract ended (#414).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Outcome {
+    /// The world taken; on a defense, the attack beaten off.
+    Won,
+    /// A defense, and the world fell anyway.
+    Fell,
+    /// Its committed hulls all but gone.
+    Spent,
+    /// Its employer gone (folded into another, or out of worlds).
+    Gone,
+    /// It ran out of time.
+    Expired,
+}
+
+impl Outcome {
+    /// The contract was done (else it failed).
+    pub fn won(self) -> bool {
+        self == Outcome::Won
+    }
+}
+
+/// One of your company's contracts, as it ended (#414): what the summary
+/// screen shows before the move onto the next one plays.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Ended {
+    /// The company (`Company::id`) and the contract (`Contract::signed`).
+    pub ship: u32,
+    pub signed: u64,
+    /// The tick it ended.
+    pub tick: u64,
+    pub outcome: Outcome,
+    pub defend: bool,
+    /// Crystals it was paid up front, and the bonus: paid, and still owed.
+    pub upfront: f32,
+    pub bonus: f32,
+    pub owed: f32,
+    /// The company's hulls committed, and lost.
+    pub committed: f32,
+    pub lost: f32,
+    /// Your own hulls on it (#385), as it ended.
+    pub own: Own,
+}
+
+/// How many of your company's ended contracts the galaxy keeps: enough to
+/// cover the ones that end while the game is closed.
+pub const ENDED_KEPT: usize = 8;
 
 /// The contract you were last shown on the missions screen (#386): kept in
 /// the profile, so that a move onto the next contract plays whenever it
@@ -810,6 +860,7 @@ impl Galaxy {
             news: self.crew_news,
             committed: k.field,
             own: self.own_on(co.id, k, rank),
+            ended: self.ended.clone(),
         });
         Some(t)
     }
@@ -834,6 +885,7 @@ impl Galaxy {
             news: None,
             committed: 0.0,
             own: Own::default(),
+            ended: Vec::new(),
         });
         Some(t)
     }

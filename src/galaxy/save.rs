@@ -56,6 +56,9 @@ struct Saved {
     /// Your own hulls on its contract (#385).
     #[serde(default)]
     own: Option<super::theater::Own>,
+    /// Its last few ended contracts (#414).
+    #[serde(default)]
+    ended: Vec<super::theater::Ended>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -167,6 +170,7 @@ impl Galaxy {
             destroyed: self.destroyed,
             crew: self.crew,
             own: self.own,
+            ended: self.ended.clone(),
         }
     }
 
@@ -281,6 +285,7 @@ impl Galaxy {
         g.destroyed = s.destroyed;
         g.crew = s.crew;
         g.own = s.own;
+        g.ended = s.ended;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
         g.update_share();
@@ -412,10 +417,24 @@ mod tests {
             g.step();
         }
         g.crew = Some(g.companies[0].id);
+        g.ended = vec![crate::galaxy::theater::Ended {
+            ship: g.companies[0].id,
+            signed: 3,
+            tick: 20,
+            outcome: crate::galaxy::theater::Outcome::Fell,
+            defend: true,
+            upfront: 12.0,
+            bonus: 0.0,
+            owed: 0.0,
+            committed: 30.0,
+            lost: 21.5,
+            own: Default::default(),
+        }];
         let text = serde_json::to_string(&g.saved(REGION * 0.3)).unwrap();
         let mut back = Galaxy::from_json(&text).unwrap();
         assert_eq!(back.tick, g.tick);
         assert_eq!(back.crew, g.crew);
+        assert_eq!(back.ended, g.ended);
         for (a, b) in g.systems.iter().zip(&back.systems) {
             assert_eq!(a.held, b.held);
             assert_eq!(a.hulls, b.hulls);

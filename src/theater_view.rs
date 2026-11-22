@@ -22,7 +22,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
-use crate::galaxy::theater::{Ship, SiteView, Theater, planet_name};
+use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, planet_name};
 use crate::garage::{PANEL_W, PANEL_X};
 use crate::menu::Hit;
 use crate::planet;
@@ -396,6 +396,11 @@ pub struct Transfer {
     pub from: Theater,
     /// Seconds it's played.
     pub age: f32,
+    /// How the contract it leaves ended, if it did: shown first, and the
+    /// move waits until you go on from it (#414).
+    pub summary: Option<Ended>,
+    /// The contract it leaves failed (the caption says so).
+    pub failed: bool,
 }
 
 /// A jump to another system: leaving, under way, arriving (seconds).
@@ -428,7 +433,38 @@ pub enum Leg {
 
 impl Transfer {
     pub fn new(from: Theater) -> Transfer {
-        Transfer { from, age: 0.0 }
+        Transfer {
+            from,
+            age: 0.0,
+            summary: None,
+            failed: false,
+        }
+    }
+
+    /// Onto `to` from `from`, with the summary of how `from`'s contract
+    /// ended first, if the galaxy kept it (it's among `to`'s ship's ended).
+    pub fn after(from: Theater, to: &Theater) -> Transfer {
+        let summary = from
+            .ship
+            .as_ref()
+            .zip(to.ship.as_ref())
+            .and_then(|(old, new)| {
+                new.ended
+                    .iter()
+                    .rev()
+                    .find(|e| e.ship == old.id && e.signed == old.signed)
+                    .copied()
+            });
+        Transfer {
+            summary,
+            failed: summary.is_some_and(|e| !e.outcome.won()),
+            ..Transfer::new(from)
+        }
+    }
+
+    /// The summary's up: the move waits on it.
+    pub fn waiting(&self) -> bool {
+        self.summary.is_some()
     }
 
     /// Going from theater `from` to `to` is a transfer: you're aboard
@@ -767,13 +803,17 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
-/// While `transfer` plays, its caption instead.
+/// While `transfer` plays, its caption instead; and before that, while it
+/// waits on the summary of the contract that ended, the summary, its
+/// CONTINUE lit if `go_lit` (#414).
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
     t: &Theater,
     transfer: Option<&Transfer>,
     selected: usize,
+    go_lit: bool,
     w: f32,
     h: f32,
 ) {
@@ -781,6 +821,10 @@ pub fn draw(
     let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
     widgets::corners(p, min, max, 14.0, theme::DIM);
     let bottom = max.y - LEGEND_H;
+    if let Some((tr, e)) = transfer.and_then(|tr| tr.summary.as_ref().map(|e| (tr, e))) {
+        summary(p, hits, &tr.from, e, go_lit, min, max);
+        return;
+    }
     if let Some((tr, leg)) = transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
         caption(p, t, tr, leg, min, max);
         return;
@@ -983,13 +1027,16 @@ pub fn headline(tr: &Transfer, t: &Theater, leg: Leg) -> &'static str {
         && old.side == new.side
         && old.realm == new.realm
         && tr.from.system == t.system;
-    match leg {
-        Leg::Leave(_) => "CONTRACT DONE · LEAVING",
-        Leg::Jump(_) => "UNDER WAY",
-        Leg::Arrive(_) => "ARRIVING · NEW CONTRACT",
-        Leg::Move(_) if old.signed == new.signed => "ABOARD ANOTHER SHIP",
-        Leg::Move(_) if renewed => "CONTRACT DONE · RENEWED",
-        Leg::Move(_) => "CONTRACT DONE · NEW CONTRACT",
+    match (leg, tr.failed) {
+        (Leg::Leave(_), false) => "CONTRACT DONE · LEAVING",
+        (Leg::Leave(_), true) => "CONTRACT FAILED · LEAVING",
+        (Leg::Jump(_), _) => "UNDER WAY",
+        (Leg::Arrive(_), _) => "ARRIVING · NEW CONTRACT",
+        (Leg::Move(_), _) if old.signed == new.signed => "ABOARD ANOTHER SHIP",
+        (Leg::Move(_), false) if renewed => "CONTRACT DONE · RENEWED",
+        (Leg::Move(_), true) if renewed => "CONTRACT FAILED · RENEWED",
+        (Leg::Move(_), false) => "CONTRACT DONE · NEW CONTRACT",
+        (Leg::Move(_), true) => "CONTRACT FAILED · NEW CONTRACT",
     }
 }
 
@@ -1079,6 +1126,156 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
     p.text(Vec2::new(x0, y - 24.0), &a, &dim, Align::Left);
     p.text(Vec2::new(x1, y - 24.0), &b, &dim, Align::Right);
     ship_glyph(p, Vec2::new(ship_x, y), 0.5);
+}
+
+/// What the summary of an ended contract leads with, and the line under it:
+/// done or failed, and how (#414).
+pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
+    let world = from
+        .ship
+        .as_ref()
+        .map_or(from.name.clone(), |s| planet_name(&from.name, s.over));
+    let head = if e.outcome.won() {
+        "CONTRACT DONE"
+    } else {
+        "CONTRACT FAILED"
+    };
+    let how = match e.outcome {
+        Outcome::Won if e.defend => format!("{world} HELD"),
+        Outcome::Won => format!("{} TAKEN", from.name),
+        Outcome::Fell => format!("{world} FELL"),
+        Outcome::Spent => "THE HULLS ARE SPENT".to_string(),
+        Outcome::Gone => "THE EMPLOYER IS GONE".to_string(),
+        Outcome::Expired => "OUT OF TIME".to_string(),
+    };
+    (head, how)
+}
+
+/// Why it ended, in a sentence.
+fn reason(from: &Theater, e: &Ended) -> String {
+    let realm = from
+        .ship
+        .as_ref()
+        .map_or(String::new(), |s| s.realm.clone());
+    match e.outcome {
+        Outcome::Won if e.defend => "The attack was beaten off, and the world still held".into(),
+        Outcome::Won => format!("The system fell to {realm}: the bonus is due"),
+        Outcome::Fell => "The world fell to the attack it was hired to beat off".into(),
+        Outcome::Spent => "The hulls committed to it were all but lost".into(),
+        Outcome::Gone => format!("{realm} lost its worlds, and nobody's left to pay"),
+        Outcome::Expired if e.defend => "The term ran out with the attack still on".into(),
+        Outcome::Expired => "The term ran out before the system fell".into(),
+    }
+}
+
+/// The summary's box, in the view's middle: width and height.
+const SUMMARY_W: f32 = 600.0;
+const SUMMARY_H: f32 = 300.0;
+const GO_W: f32 = 120.0;
+const GO_H: f32 = 28.0;
+
+/// How contract `e` (the one `from` was on) ended (#414): over the view
+/// between `min` and `max`, ahead of the move onto the next; CONTINUE plays
+/// that.
+fn summary(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    from: &Theater,
+    e: &Ended,
+    lit: bool,
+    min: Vec2,
+    max: Vec2,
+) {
+    let mid = (min + max) * 0.5;
+    let size = Vec2::new(SUMMARY_W, SUMMARY_H);
+    let at = mid - size * 0.5;
+    let tone = if e.outcome.won() {
+        Faction::Company.ui()
+    } else {
+        theme::HOT
+    };
+    p.rect(at, size, theme::PANEL);
+    p.rect_outline(at, size, 1.0, theme::FAINT);
+    p.rect(at, Vec2::new(size.x, 2.0), tone);
+    let (x0, x1) = (at.x + 28.0, at.x + size.x - 28.0);
+    let mut y = at.y + 26.0;
+    let (head, how) = verdict(from, e);
+    let mut style = TextStyle::LABEL;
+    style.color = tone;
+    p.text(Vec2::new(x0, y), head, &style, Align::Left);
+    y += 16.0;
+    p.text(Vec2::new(x0, y), &how, &TextStyle::value(20.0), Align::Left);
+    y += 32.0;
+    let mut dim = TextStyle::LABEL;
+    dim.color = theme::DIM;
+    if let Some(ship) = &from.ship {
+        let job = if ship.defend { "HOLD" } else { "TAKE" };
+        p.text(
+            Vec2::new(x0, y),
+            &format!(
+                "THE {} · FOR THE {} OF {} · TO {job} {}",
+                ship.name,
+                Faction::ALL[ship.side].name(),
+                ship.realm,
+                from.name
+            ),
+            &dim,
+            Align::Left,
+        );
+    }
+    y += 16.0;
+    let mut body = TextStyle::value(11.0);
+    body.color = theme::DIM;
+    p.text(Vec2::new(x0, y), &reason(from, e), &body, Align::Left);
+    y += 30.0;
+
+    // The books: label on the left, figure on the right.
+    let battles = e.tick.saturating_sub(e.signed).max(1);
+    let mut rows: Vec<(&str, String)> = vec![
+        ("BATTLES", battles.to_string()),
+        (
+            "COMPANY HULLS LOST",
+            format!("{:.0} OF {:.0}", e.lost.round(), e.committed.round()),
+        ),
+    ];
+    if e.own.of > 0 {
+        rows.push((
+            "YOUR HULLS LOST",
+            format!("{} OF {}", e.own.of - e.own.left.min(e.own.of), e.own.of),
+        ));
+    }
+    rows.push(("PAID UP FRONT", format!("{:.0} CR", e.upfront)));
+    rows.push((
+        "BONUS",
+        if !e.outcome.won() {
+            "FORFEIT".to_string()
+        } else if e.owed > 0.5 {
+            format!("{:.0} CR · {:.0} OWED", e.bonus, e.owed)
+        } else {
+            format!("{:.0} CR", e.bonus)
+        },
+    ));
+    let value = TextStyle::value(12.0);
+    for (what, figure) in rows {
+        p.text(Vec2::new(x0, y + 2.0), what, &dim, Align::Left);
+        p.text(Vec2::new(x1, y), &figure, &value, Align::Right);
+        y += 20.0;
+    }
+
+    // CONTINUE: the move onto the next contract plays.
+    let go = Vec2::new(mid.x - GO_W * 0.5, at.y + size.y - GO_H - 22.0);
+    let gs = Vec2::new(GO_W, GO_H);
+    p.rect(go, gs, with_alpha(tone, if lit { 0.3 } else { 0.12 }));
+    p.rect_outline(go, gs, 1.0, tone);
+    let mut a = TextStyle::LABEL;
+    a.color = theme::FG;
+    p.text(
+        Vec2::new(mid.x, go.y + (GO_H - a.size) * 0.5),
+        "CONTINUE",
+        &a,
+        Align::Center,
+    );
+    hits.add(p, go, gs, Hit::Continue);
 }
 
 /// A jump's flash over the whole screen (`w` by `h`), at the cuts between
@@ -1342,6 +1539,7 @@ mod tests {
             news: None,
             committed: 0.0,
             own: Default::default(),
+            ended: Vec::new(),
         });
         let mut b = a.clone();
         b.tick += 3;
@@ -1374,6 +1572,7 @@ mod tests {
             news: None,
             committed: 0.0,
             own: Default::default(),
+            ended: Vec::new(),
         });
         let tr = Transfer::new(a.clone());
         let mut renewed = a.clone();

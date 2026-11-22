@@ -123,7 +123,10 @@ tankit [OPTIONS]
                           next contract (in another system, the same one, or the same contract
                           renewed), as if after a battle (a fresh menu, the old contract from the
                           profile): the shot is --time seconds into the transfer playing over the
-                          system view
+                          system view (past the summary of the contract that ended)
+  --summary               (with --transfer) stop at the summary of how the old contract ended, before
+                          the transfer plays
+  --failed                (with --summary) wait for a contract that failed (else the first to end)
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
   --defend                (with --screen missions|site) the war goes on until your company is hired
@@ -162,6 +165,11 @@ pub struct Args {
     /// `--time` seconds in: to another system (`Jump`), within the one
     /// it's in (`Move`), or the same contract renewed (`Renew`).
     transfer: Option<TransferKind>,
+    /// --summary, with --transfer: the shot is the summary of the contract
+    /// that ended, before the move plays.
+    summary: bool,
+    /// --failed, with --summary: a contract that failed.
+    failed: bool,
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.
     choice: Option<bool>,
@@ -539,6 +547,8 @@ fn parse_args() -> Result<Args> {
     let mut mission = None;
     let mut site = None;
     let mut transfer = None;
+    let mut summary = false;
+    let mut failed = false;
     let mut choice = None;
     let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
@@ -650,6 +660,8 @@ fn parse_args() -> Result<Args> {
                     other => bail!("--transfer expects jump, move or renew, got {other:?}"),
                 })
             }
+            "--summary" => summary = true,
+            "--failed" => failed = true,
             "--choice" => {
                 choice = Some(match args.next().as_deref() {
                     Some("split") => false,
@@ -859,6 +871,8 @@ fn parse_args() -> Result<Args> {
         mission,
         site,
         transfer,
+        summary,
+        failed,
         choice,
         map: map_kind,
         spawn,
@@ -1315,8 +1329,11 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                         if let Some(old) = shown.and_then(|s| g.shown(&s, rank)) {
                             menu.remember(old);
                         }
-                        menu.set_theater(next);
-                        break;
+                        menu.set_theater(next.clone());
+                        let won = menu.summary().is_none_or(|e| e.outcome.won());
+                        if !(args.failed && won) {
+                            break;
+                        }
                     }
                     // Another kind of move: start again from there.
                     if next.is_some() {
@@ -1330,6 +1347,18 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     .zip(menu.theater())
                     .is_some_and(|(tr, t)| kind.is(&tr.from, t));
                 anyhow::ensure!(kind, "no transfer of that kind in 2000 ticks");
+                if args.summary {
+                    anyhow::ensure!(
+                        menu.summary().is_some(),
+                        "no summary: the contract didn't end"
+                    );
+                    anyhow::ensure!(
+                        !(args.failed && menu.summary().is_some_and(|e| e.outcome.won())),
+                        "no failed contract in 2000 ticks"
+                    );
+                } else {
+                    menu.go_on();
+                }
                 for _ in 0..(shot.time / 0.01).round() as u32 {
                     menu.advance(0.01);
                 }

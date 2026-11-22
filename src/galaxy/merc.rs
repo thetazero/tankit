@@ -51,6 +51,7 @@
 //! goes, and waits there. Nobody stays idle forever: every war is somebody's
 //! chance. The pilot's company is no different.
 
+use super::theater::{ENDED_KEPT, Ended, Outcome};
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
 
 /// One free company: a ship.
@@ -471,6 +472,7 @@ impl Galaxy {
                 self.companies[c].contract = Some(k);
                 continue;
             }
+            let mut bonus = (0.0, 0.0);
             if won {
                 let realm = &mut self.realms[k.realm as usize];
                 let paid = k.bonus.min(realm.crystals.max(0.0));
@@ -491,10 +493,45 @@ impl Galaxy {
                 self.books.defaulted += owed.max(0.0) as f64;
                 self.books.worth_won += self.worth(t, f, true) as f64;
                 self.books.paid_won += (k.upfront + paid) as f64;
+                bonus = (paid, owed.max(0.0));
             } else if broken {
                 self.books.broken += 1;
             } else {
                 self.books.expired += 1;
+            }
+            // Yours: kept for the summary screen (#414).
+            let id = self.companies[c].id;
+            if self.crew == Some(id) {
+                let outcome = if won {
+                    Outcome::Won
+                } else if fell {
+                    Outcome::Fell
+                } else if broken {
+                    Outcome::Spent
+                } else if gone {
+                    Outcome::Gone
+                } else {
+                    Outcome::Expired
+                };
+                let own = self
+                    .own
+                    .filter(|o| o.ship == id && o.signed == k.signed)
+                    .unwrap_or_default();
+                self.ended.push(Ended {
+                    ship: id,
+                    signed: k.signed,
+                    tick: self.tick,
+                    outcome,
+                    defend: k.defend,
+                    upfront: k.upfront,
+                    bonus: bonus.0,
+                    owed: bonus.1,
+                    committed: k.committed,
+                    lost: k.lost,
+                    own,
+                });
+                let extra = self.ended.len().saturating_sub(ENDED_KEPT);
+                self.ended.drain(..extra);
             }
             // Back aboard, what's left.
             let back = k.field.min(self.systems[t].hulls[f]).max(0.0);

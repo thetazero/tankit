@@ -16,7 +16,7 @@ use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
 use crate::galaxy::theater::{
-    Berth, ChoiceView, CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name,
+    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name, system_name,
 };
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
@@ -101,6 +101,8 @@ pub enum Hit {
     Bind(usize, usize),
     /// The BACK button: what Esc does.
     Back,
+    /// CONTINUE, on the summary of a contract that ended (#414).
+    Continue,
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -242,7 +244,7 @@ impl Controls {
         let (row, slot) = match hit {
             Hit::Row(i) => (i, self.slot),
             Hit::Bind(i, s) => (i, s),
-            Hit::Volume | Hit::Back => return false,
+            Hit::Volume | Hit::Back | Hit::Continue => return false,
         };
         if self.capturing || (row, slot) == (self.row, self.slot) {
             return false;
@@ -287,6 +289,8 @@ pub struct Menu {
     controls: Controls,
     /// The pointer is on the BACK button.
     back_lit: bool,
+    /// The pointer is on CONTINUE, on a contract's summary (#414).
+    go_lit: bool,
 }
 
 impl Menu {
@@ -305,6 +309,7 @@ impl Menu {
             setting: 0,
             controls: Controls::default(),
             back_lit: false,
+            go_lit: false,
         }
     }
 
@@ -337,6 +342,8 @@ impl Menu {
             (Screen::Missions, Nav::Up | Nav::Down) if self.choice.is_some() => {
                 self.pick = step(self.pick, 2, nav)
             }
+            (Screen::Missions, Nav::Select) if self.summary().is_some() => self.go_on(),
+            (Screen::Missions, Nav::Up | Nav::Down) if self.summary().is_some() => {}
             (Screen::Missions, Nav::Select) if self.choice.is_some() => {
                 return self
                     .choice
@@ -455,7 +462,7 @@ impl Menu {
         // the move plays over the system view.
         if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
             if let Some(old) = self.seen.take().filter(|old| Transfer::between(old, new)) {
-                self.transfer = Some(Transfer::new(old));
+                self.transfer = Some(Transfer::after(old, new));
             }
             self.seen = Some(new.clone());
         }
@@ -499,8 +506,24 @@ impl Menu {
         let done = self.transfer.as_ref().is_some_and(|tr| tr.leg(t).is_none());
         if done {
             self.transfer = None;
-        } else if let Some(tr) = &mut self.transfer {
+        } else if let Some(tr) = self.transfer.as_mut().filter(|tr| !tr.waiting()) {
             tr.age += dt;
+        }
+    }
+
+    /// The summary of the contract that ended is up, the move onto the next
+    /// waiting on it (#414).
+    pub fn summary(&self) -> Option<&Ended> {
+        self.transfer
+            .as_ref()
+            .and_then(|tr| tr.summary.as_ref())
+            .filter(|_| self.system().is_some())
+    }
+
+    /// CONTINUE, from the summary: the move onto the next contract plays.
+    pub fn go_on(&mut self) {
+        if let Some(tr) = &mut self.transfer {
+            tr.summary = None;
         }
     }
 
@@ -529,16 +552,21 @@ impl Menu {
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
         if hit == Hit::Back {
+            self.go_lit = false;
             return !std::mem::replace(&mut self.back_lit, true);
         }
         self.back_lit = false;
+        if hit == Hit::Continue {
+            return !std::mem::replace(&mut self.go_lit, true);
+        }
+        self.go_lit = false;
         if self.screen == Screen::Controls {
             return self.controls.hover(hit);
         }
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Back => unreachable!(),
+            Hit::Back | Hit::Continue => unreachable!(),
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
@@ -571,15 +599,16 @@ impl Menu {
                     Some(Action::Setting(volume_click(settings, at.x))),
                 );
             }
-            Hit::Row(_) | Hit::Bind(..) => Nav::Select,
+            Hit::Row(_) | Hit::Bind(..) | Hit::Continue => Nav::Select,
             Hit::Back => unreachable!(),
         };
         (nav, self.input(nav))
     }
 
-    /// The pointer left the BACK button.
+    /// The pointer left the BACK button (or CONTINUE).
     pub fn unhover(&mut self) {
         self.back_lit = false;
+        self.go_lit = false;
     }
 
     /// The theater whose system the screen shows in 3D instead of a map
@@ -658,6 +687,7 @@ impl Menu {
                         t,
                         self.transfer.as_ref(),
                         self.site,
+                        self.go_lit,
                         w,
                         h,
                     );
@@ -1398,7 +1428,7 @@ impl Pause {
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Back => unreachable!(),
+            Hit::Back | Hit::Continue => unreachable!(),
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
         std::mem::replace(slot, i) != i
@@ -1423,7 +1453,7 @@ impl Pause {
                 );
             }
             Hit::Row(_) | Hit::Bind(..) => Nav::Select,
-            Hit::Back => unreachable!(),
+            Hit::Back | Hit::Continue => unreachable!(),
         };
         (nav, self.input(nav))
     }
@@ -2617,6 +2647,21 @@ mod tests {
         // Until it's played, what you've been shown is still the old one:
         // quit now and it plays again.
         assert_eq!(Shown::of(m.shown().unwrap()), Some(shown.clone()));
+        // The same company on a new contract: the old one ended, and its
+        // summary comes first (#414). The move waits on it.
+        let (a, b) = (t.ship.as_ref().unwrap(), next.ship.as_ref().unwrap());
+        if a.id == b.id {
+            let e = *m.summary().expect("the summary of the contract that ended");
+            assert_eq!((e.ship, e.signed), (a.id, a.signed));
+            assert!(e.tick >= e.signed && e.lost <= e.committed + 1e-3);
+            for _ in 0..1000 {
+                m.advance(0.01);
+            }
+            assert_eq!(m.transfer().unwrap().age, 0.0, "waits on CONTINUE");
+            assert_eq!(m.input(Nav::Select), None);
+            assert!(m.summary().is_none());
+            assert_eq!(m.screen, Screen::Missions, "CONTINUE stays on the screen");
+        }
         for _ in 0..1000 {
             m.advance(0.01);
         }
@@ -2629,6 +2674,72 @@ mod tests {
         m.remember(g.shown(&Shown::of(&next).unwrap(), 1).unwrap());
         m.set_theater(Some(next.clone()));
         assert!(m.transfer().is_none());
+    }
+
+    /// A contract that ended shows its summary before the move onto the
+    /// next plays (#414): CONTINUE, by key or by click, plays it. Without a
+    /// record of how it ended (another ship's, say), the move plays at once.
+    #[test]
+    fn a_summary_comes_before_the_move() {
+        use crate::galaxy::theater::{Ended, Outcome, Own};
+        let t = theater(Faction::Imperium).unwrap();
+        let old = t.ship.clone().unwrap();
+        let mut next = t.clone();
+        let ended = Ended {
+            ship: old.id,
+            signed: old.signed,
+            tick: old.signed + 4,
+            outcome: Outcome::Spent,
+            defend: false,
+            upfront: 40.0,
+            bonus: 0.0,
+            owed: 0.0,
+            committed: 60.0,
+            lost: 58.0,
+            own: Own::default(),
+        };
+        {
+            let s = next.ship.as_mut().unwrap();
+            s.signed += 5;
+            s.ended = vec![ended];
+        }
+        let profile = Profile::in_memory();
+        for click in [false, true] {
+            let mut m = Menu::new();
+            m.input(Nav::Select);
+            m.set_theater(Some(t.clone()));
+            m.set_theater(Some(next.clone()));
+            assert_eq!(m.summary(), Some(&ended));
+            // Up and down don't wander off it; time doesn't play the move.
+            m.input(Nav::Down);
+            m.advance(1.0);
+            assert_eq!(m.transfer().unwrap().age, 0.0);
+            let layer = m.draw(&profile, 1600.0, 900.0, 1.0);
+            assert!(layer.hits.center_of(Hit::Continue).is_some());
+            if click {
+                assert!(m.hover(Hit::Continue));
+                m.click(Hit::Continue, Vec2::ZERO, &profile.settings);
+            } else {
+                m.input(Nav::Select);
+            }
+            assert!(m.summary().is_none());
+            assert!(m.transfer().is_some(), "the move plays next");
+            assert!(m.transfer().unwrap().failed, "and says the contract failed");
+            m.advance(0.5);
+            assert!(m.transfer().unwrap().age > 0.0);
+            let layer = m.draw(&profile, 1600.0, 900.0, 1.0);
+            assert!(layer.hits.center_of(Hit::Continue).is_none());
+        }
+
+        // No record of it: straight into the move.
+        next.ship.as_mut().unwrap().ended.clear();
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        m.set_theater(Some(t.clone()));
+        m.set_theater(Some(next));
+        assert!(m.summary().is_none());
+        m.advance(0.5);
+        assert!(m.transfer().unwrap().age > 0.0);
     }
 
     /// Deploying while a transfer plays: you've seen the new contract, so
