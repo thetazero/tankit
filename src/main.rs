@@ -901,6 +901,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             false => None,
         }
         .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
+        game.set_own_hulls(galaxy::battle::own_hulls(profile.rank().level));
         // With the company fighting for you there, if there is one; else the
         // one a new pilot would join.
         let side = game.factions.first().map(|f| f.index());
@@ -997,6 +998,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if let Some(h) = game.company_hulls.get_mut(me) {
             *h = 0;
         }
+        game.own_hulls = 0;
         game.destroy_player();
         advance(&mut game, &mut cam, &mut garage, lead)
     } else if args.screen == Some(Screen::Dead) {

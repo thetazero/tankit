@@ -85,6 +85,9 @@ pub struct Ship {
     pub signed: u64,
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
+    /// Of its hulls in each battle, how many are yours alone at your rank
+    /// (#385; see `battle::own_hulls`).
+    pub own: u32,
 }
 
 /// What happened to your company that the missions screen tells you.
@@ -606,6 +609,7 @@ impl Galaxy {
             term: self.rules.merc_term as u64,
             signed: k.signed,
             news: self.crew_news,
+            own: super::battle::own_hulls(rank),
         });
         Some(t)
     }

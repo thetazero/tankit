@@ -34,7 +34,9 @@
 //! battle, so they can't keep you in the fight and your losses never come
 //! off them. You're one of your company's seats, in one of its hulls; when
 //! its hulls are spent, so are you, and the match is over for you (see
-//! `Match::crew_out`).
+//! `Match::crew_out`). Some of its hulls are yours alone, more at higher
+//! rank ([`own_hulls`], #385): its bots can't spend them, so they can't
+//! leave you without a hull while the company has any.
 
 use super::{AT_WAR, Galaxy, SIDES, SiteKind};
 use crate::combat::Match;
@@ -45,6 +47,14 @@ use crate::mission::Contract;
 /// loses in an even five-minute round (25 to 35 tanks for six seats), so
 /// most battles end on the objective, not with a side out of hulls.
 pub const PER_SEAT: u32 = 10;
+
+/// Of your company's hulls in a battle, how many are yours alone at rank
+/// `rank` (#385): two at first, one more with each title (every five
+/// ranks). Bots can't spend them; see `Match::set_own_hulls`, which also
+/// keeps them under half the company's.
+pub fn own_hulls(rank: u32) -> u32 {
+    2 + rank.saturating_sub(1) / crate::profile::RANKS_PER_TITLE
+}
 
 /// What a win in a played battle takes from the losers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -744,6 +754,19 @@ mod merc_tests {
 
     /// A battle where a company is under contract, from a warmed galaxy:
     /// the company's side first, against the strongest other side there.
+    /// Your own hulls in a battle (#385): a small few at rank 1, more with
+    /// each title, never fewer at a higher rank.
+    #[test]
+    fn own_hulls_grow_with_rank() {
+        assert_eq!(own_hulls(1), 2);
+        assert_eq!(own_hulls(5), 2);
+        assert_eq!(own_hulls(6), 3);
+        assert_eq!(own_hulls(46), 11);
+        for r in 1..60 {
+            assert!(own_hulls(r + 1) >= own_hulls(r));
+        }
+    }
+
     fn hired_battle(g: &Galaxy) -> Option<Battle> {
         let k = g
             .companies

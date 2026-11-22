@@ -1338,6 +1338,7 @@ mod tests {
             term: 30,
             signed: 4,
             news: None,
+            own: 2,
         });
         let mut b = a.clone();
         b.tick += 3;

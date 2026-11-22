@@ -649,7 +649,8 @@ impl Hud {
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
 /// Side `team`'s hulls not yet in play, under its score: "18 HULLS", and
-/// how many of them are mercs' ("18 HULLS · 4 COMPANY"); hot when the last
+/// how many of them are mercs' ("18 HULLS · 4 COMPANY"), and of those
+/// yours alone ("· YOURS 2 OF 3"); hot when the last
 /// few are going, struck through once they're all spent.
 fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
     let Some(n) = m.hulls_left(team) else { return };
@@ -668,6 +669,9 @@ fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
         "COMPANY OUT OF HULLS".to_string()
     } else if m.spent(team) {
         "OUT OF HULLS".to_string()
+    } else if let Some((own, of)) = m.own_hulls().filter(|_| team == m.fighters[0].team) {
+        // Of the company's, yours alone (#385).
+        format!("{n} HULLS · {mercs} COMPANY · YOURS {own} OF {of}")
     } else if mercs > 0 {
         // Of them, the mercs' (#320).
         format!("{n} HULLS · {mercs} COMPANY")

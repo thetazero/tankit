@@ -856,6 +856,11 @@ pub struct Match {
     /// Of those, the mercs': what the Company's tanks come back in. A
     /// Company bot that dies with none left comes back as its side's own.
     pub company_hulls: Vec<u32>,
+    /// Of your company's, yours alone (#385): hulls only you come back in,
+    /// so its bots can't spend them. You use them first, then the
+    /// company's shared pool like anyone. Left now, and of how many.
+    pub own_hulls: u32,
+    own_of: u32,
     /// Each side's Company tanks destroyed (the player's among them).
     company_deaths: Vec<u32>,
     /// Your side, once it's dealt you a seat among its mercs (`set_company`):
@@ -938,6 +943,8 @@ impl Match {
             over_for: 0.0,
             hulls: None,
             company_hulls: Vec::new(),
+            own_hulls: 0,
+            own_of: 0,
             company_deaths: Vec::new(),
             crew_team: None,
             crew_out: false,
@@ -1087,6 +1094,24 @@ impl Match {
                 .resize(self.factions.len().max(team + 1), 0);
         }
         self.company_hulls[team] = hulls.saturating_sub(seats as u32);
+    }
+
+    /// Set aside up to `n` of your company's spare hulls as yours alone
+    /// (after `set_company`; see `own_hulls`): never more than half of
+    /// them (rounded up), so the shared pool stays the larger. None
+    /// without a seat among your side's mercs.
+    pub fn set_own_hulls(&mut self, n: u32) {
+        let spare = self
+            .crew_team
+            .and_then(|t| self.company_hulls.get(t).copied())
+            .unwrap_or(0);
+        self.own_hulls = n.min(spare.div_ceil(2));
+        self.own_of = self.own_hulls;
+    }
+
+    /// Your own hulls: left, and of how many (None if you have none set aside).
+    pub fn own_hulls(&self) -> Option<(u32, u32)> {
+        (self.own_of > 0).then_some((self.own_hulls, self.own_of))
     }
 
     /// The Company's tanks on side `team`, now (the player's among them, on theirs).
@@ -2480,7 +2505,8 @@ impl Match {
 
     /// Tank `i` is coming back: take it a hull, if its side has one left.
     /// Under an allocation, a merc comes back in a merc hull while there
-    /// are any; then a bot's seat is the realm's. You come back only in
+    /// are any but yours (`own_hulls`); then a bot's seat is the realm's.
+    /// You come back in your own first, then in the company's shared ones. You come back only in
     /// your company's: when they're spent, you're out (`crew_out`).
     fn rehull(&mut self, i: usize) -> bool {
         let team = self.fighters[i].team;
@@ -2494,8 +2520,16 @@ impl Match {
             return false;
         }
         if company {
+            // Your own hulls are yours alone: the company's bots leave them.
+            let you = i == 0 && self.crew_team == Some(team);
+            let held = if you { 0 } else { self.own_hulls };
             match self.company_hulls.get_mut(team) {
-                Some(h) if *h > 0 => *h -= 1,
+                Some(h) if *h > held => {
+                    *h -= 1;
+                    if you {
+                        self.own_hulls = self.own_hulls.saturating_sub(1);
+                    }
+                }
                 _ => self.world.tanks[i].company = false,
             }
         }
@@ -5401,6 +5435,87 @@ mod tests {
         let mut alone = arena(3);
         alone.set_company(0, 0, 0);
         assert_eq!(alone.company_seats(0), 0);
+    }
+
+    /// Your own hulls (#385) are yours alone: the company's bots come back
+    /// in its shared ones, and once those are spent, in the realm's, never
+    /// in yours.
+    #[test]
+    fn bots_cant_spend_your_hulls() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[10, 10]);
+        // You and tank 2 are the company's, with four merc hulls to spare.
+        m.set_company(0, 2, 6);
+        m.set_own_hulls(2);
+        assert_eq!(m.own_hulls(), Some((2, 2)));
+        for _ in 0..2 {
+            destroy(&mut m, 2);
+            respawn(&mut m);
+            assert!(m.world.tanks[2].company, "in a shared hull");
+        }
+        assert_eq!(m.company_hulls[0], 2, "only yours are left");
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        assert!(m.fighters[2].alive);
+        assert!(
+            !m.world.tanks[2].company,
+            "back as the realm's, not in yours"
+        );
+        assert_eq!(m.company_hulls[0], 2);
+        assert_eq!(m.own_hulls(), Some((2, 2)));
+    }
+
+    /// You come back in your own hulls first; once they're spent, in the
+    /// company's shared ones like anyone, and you're out only when those are.
+    #[test]
+    fn your_hulls_then_the_shared_pool() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[10, 10]);
+        m.set_company(0, 2, 6);
+        m.set_own_hulls(2);
+        for left in [1, 0] {
+            destroy(&mut m, 0);
+            respawn(&mut m);
+            assert!(m.fighters[0].alive);
+            assert_eq!(m.own_hulls(), Some((left, 2)));
+        }
+        assert_eq!(m.company_hulls[0], 2, "the shared two still there");
+        for _ in 0..2 {
+            destroy(&mut m, 0);
+            respawn(&mut m);
+            assert!(m.fighters[0].alive, "back in a shared hull");
+            assert!(m.world.tanks[0].company);
+        }
+        assert_eq!(m.company_hulls[0], 0);
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(!m.fighters[0].alive);
+        assert!(m.crew_out(), "out once the company is");
+    }
+
+    /// Your own hulls are never more than half the company's spare ones
+    /// (rounded up): the shared pool stays the larger. Without a seat
+    /// among the mercs, you have none.
+    #[test]
+    fn your_hulls_are_the_smaller_share() {
+        let mut m = arena(3);
+        m.set_allocation(&[10, 10]);
+        m.set_company(0, 2, 3);
+        m.set_own_hulls(5);
+        assert_eq!(m.own_hulls(), Some((1, 1)));
+        m.set_company(0, 2, 12);
+        m.set_own_hulls(5);
+        assert_eq!(m.own_hulls(), Some((5, 5)));
+        let mut alone = arena(3);
+        alone.set_allocation(&[10, 10]);
+        alone.set_own_hulls(3);
+        assert_eq!(alone.own_hulls(), None);
     }
 
     /// Once your company's hulls are spent, you don't come back in the
