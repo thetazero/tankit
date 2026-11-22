@@ -26,10 +26,10 @@ use crate::galaxy::theater::{Ship, SiteView, Theater, planet_name};
 use crate::garage::{PANEL_W, PANEL_X};
 use crate::menu::Hit;
 use crate::planet;
-use crate::render::material::Material;
 use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::scene::project;
+use crate::ship_model;
 use crate::ui::widgets;
 use crate::ui::{Align, Hits, Painter, Rgba, TextStyle, measure, theme, with_alpha};
 
@@ -58,9 +58,10 @@ const ORBIT_STEP: f32 = 50.0;
 /// How far round its orbit each world is from the camera's right (radians,
 /// positive away from the camera), so they don't stand in a flat row.
 const PHASE: [f32; MAX_PLANETS] = [0.2, -0.12, 0.06];
-/// Your ship: how high over its world it's parked, and its length.
-const SHIP_UP: f32 = 27.0;
-const SHIP_LEN: f32 = 24.0;
+/// How high over its world your ship is parked, and how big it's drawn
+/// (`ship_model` builds it `ship_model::LEN` long).
+const SHIP_UP: f32 = 29.0;
+const SHIP_SCALE: f32 = 1.35;
 /// How far off the camera is.
 const DIST: f32 = 300.0;
 /// How steeply the camera looks down on the orbits (radians).
@@ -151,7 +152,7 @@ impl SystemArt {
         SystemArt {
             worlds: std::array::from_fn(|_| r.add_mesh(&blank)),
             shown: [None; MAX_PLANETS],
-            ship: r.add_mesh(&ship_mesh()),
+            ship: r.add_mesh(&ship_model::mesh()),
         }
     }
 
@@ -218,7 +219,7 @@ struct Pose {
 fn parked(l: &Layout, time: f32) -> Option<Pose> {
     l.ship.map(|(at, _)| Pose {
         at: at + Vec3::Y * (time * 0.8).sin() * 0.3,
-        yaw: PARKED_YAW,
+        yaw: parked_turn(),
         drive: 1.0,
         wake: 0.0,
     })
@@ -316,15 +317,16 @@ fn system_scene(
         }
     }
 
-    // Your ship, drives aglow, and a work light off its bow, toward the
-    // camera, so its far side from the star still shows its shape.
+    // Your ship, drives aglow, and a cool fill light out toward the camera
+    // and above, so the side away from the star still shows its shape.
     let lights = ship
         .map(|pose| {
             ship_parts(art, pose, &mut instances, &mut particles);
+            let toward = (camera.pos - pose.at).normalize();
             PointLight {
-                pos: pose.at + Vec3::new(-4.0, 6.0, 14.0),
-                color: Vec3::new(0.8, 0.85, 1.0) * 10.0,
-                radius: 24.0,
+                pos: pose.at + toward * 20.0 + Vec3::new(-6.0, 12.0, 0.0),
+                color: Vec3::new(0.75, 0.82, 1.0) * 70.0,
+                radius: 60.0,
             }
         })
         .into_iter()
@@ -359,24 +361,24 @@ fn ship_parts(
     instances.push((
         art.ship,
         Instance::new(
-            Mat4::from_scale_rotation_translation(Vec3::splat(SHIP_LEN), pose.yaw, pose.at),
+            Mat4::from_scale_rotation_translation(Vec3::splat(SHIP_SCALE), pose.yaw, pose.at),
             Vec4::new(1.0, 1.0, 1.0, 0.0),
         ),
     ));
     let amber = Faction::Company.ui();
     let amber = Vec3::new(amber[0], amber[1], amber[2]);
     let back = pose.yaw * -Vec3::X;
-    for dz in [-0.17, 0.17] {
-        let d = pose.at + pose.yaw * (Vec3::new(-0.54, 0.0, dz) * SHIP_LEN);
+    for &(mouth, r) in &ship_model::DRIVES {
+        let d = pose.at + pose.yaw * mouth * SHIP_SCALE;
         particles.push(Particle::glow(
             d,
-            0.9 * pose.drive.sqrt(),
+            r * 1.3 * SHIP_SCALE * pose.drive.sqrt(),
             amber,
             1.2 * pose.drive,
             Vec3::ZERO,
         ));
         if pose.wake > 0.0 {
-            let len = SHIP_LEN * 0.5 * pose.wake;
+            let len = ship_model::LEN * SHIP_SCALE * 0.5 * pose.wake;
             particles.push(Particle::glow(
                 d + back * len,
                 0.7,
@@ -408,6 +410,13 @@ const ARRIVE_S: f32 = 2.0;
 const MOVE_S: f32 = 2.6;
 /// How the ship sits parked: bow toward the star, a little toward the camera.
 const PARKED_YAW: Quat = Quat::from_xyzw(0.0, -0.974_794_1, 0.0, 0.223_106_4);
+/// How far it banks over toward the camera while parked, so its deck shows.
+const PARKED_BANK: f32 = -0.4;
+
+/// How the ship sits parked: `PARKED_YAW`, banked.
+fn parked_turn() -> Quat {
+    PARKED_YAW * Quat::from_rotation_x(PARKED_BANK)
+}
 /// How far off into the deep it goes leaving, and comes from arriving
 /// (inside the black round the camera).
 const DEEP: f32 = 190.0;
@@ -518,7 +527,7 @@ fn transfer_scene(
                 return system_scene(art, from, time, cam, None);
             };
             let out = deep(cam, pose.at, 0.3);
-            pose.yaw = PARKED_YAW.slerp(heading(out), smooth(u / 0.4));
+            pose.yaw = parked_turn().slerp(heading(out), smooth(u / 0.4));
             let go = ((u - 0.3) / 0.7).clamp(0.0, 1.0);
             pose.at += out * (go * go * go * DEEP);
             pose.drive = 1.0 + 5.0 * go;
@@ -538,7 +547,7 @@ fn transfer_scene(
             let dir = -deep(cam, pose.at, -0.35);
             let k = 1.0 - smooth(u / 0.75);
             pose.at -= dir * (k * k * DEEP);
-            pose.yaw = heading(dir).slerp(PARKED_YAW, smooth((u - 0.55) / 0.45));
+            pose.yaw = heading(dir).slerp(parked_turn(), smooth((u - 0.55) / 0.45));
             pose.drive = 1.0 + 4.0 * k;
             pose.wake = 5.0 * k * k;
             let mut s = system_scene(art, t, time, cam, Some(pose));
@@ -566,7 +575,7 @@ fn transfer_scene(
                 heading(Vec3::new(ang.cos(), 0.0, -ang.sin()))
             };
             let turn = smooth(u / 0.2) * (1.0 - smooth((u - 0.75) / 0.25));
-            pose.yaw = PARKED_YAW.slerp(way, turn);
+            pose.yaw = parked_turn().slerp(way, turn);
             let speed = (PI * e).sin();
             pose.drive = 1.0 + 2.5 * speed;
             pose.wake = 2.0 * speed;
@@ -722,48 +731,6 @@ fn stars(eye: Vec3, out: &mut Vec<Particle>) {
     }
 }
 
-/// A Company ship, a unit long along +x (bow forward), centered: a long
-/// grey hull, an amber band, a bridge on top, two drive pods at the stern.
-fn ship_mesh() -> MeshData {
-    let mut m = MeshData::default();
-    let col = |c: [f32; 3], mat: Material| Vec4::new(c[0], c[1], c[2], mat.id());
-    let hull = col([0.24, 0.25, 0.27], Material::Painted);
-    let dark = col([0.16, 0.16, 0.17], Material::Metal);
-    let a = Faction::Company.ui();
-    let amber = col([a[0], a[1], a[2]], Material::Painted);
-    let glow = col([a[0], a[1], a[2]], Material::Glow);
-    let bx = |m: &mut MeshData, min: [f32; 3], max: [f32; 3], c: Vec4| {
-        m.add_box(Vec3::from(min), Vec3::from(max), c, c)
-    };
-    // The spine, and the bow tapering off it.
-    bx(&mut m, [-0.42, -0.07, -0.1], [0.28, 0.07, 0.1], hull);
-    bx(&mut m, [0.28, -0.055, -0.075], [0.4, 0.055, 0.075], hull);
-    bx(&mut m, [0.4, -0.035, -0.045], [0.5, 0.035, 0.045], hull);
-    // The band, a keel, the bridge with its lit windows.
-    bx(&mut m, [0.08, -0.075, -0.105], [0.16, 0.075, 0.105], amber);
-    bx(&mut m, [-0.36, -0.1, -0.04], [0.2, -0.07, 0.04], dark);
-    bx(&mut m, [-0.22, 0.07, -0.06], [-0.04, 0.12, 0.06], hull);
-    bx(&mut m, [-0.05, 0.09, -0.04], [-0.035, 0.11, 0.04], glow);
-    // The drive pods, out on a strut, their nozzles aglow.
-    bx(&mut m, [-0.34, -0.02, -0.2], [-0.28, 0.02, 0.2], dark);
-    for (z0, z1) in [(-0.22, -0.12), (0.12, 0.22)] {
-        bx(&mut m, [-0.5, -0.05, z0], [-0.2, 0.05, z1], hull);
-        bx(
-            &mut m,
-            [-0.42, 0.05, z0 + 0.02],
-            [-0.3, 0.052, z1 - 0.02],
-            amber,
-        );
-        bx(
-            &mut m,
-            [-0.52, -0.035, z0 + 0.015],
-            [-0.5, 0.035, z1 - 0.015],
-            glow,
-        );
-    }
-    m
-}
-
 /// Text on a backing of space's colour.
 fn label(p: &mut Painter, at: Vec2, text: &str, style: &TextStyle) {
     let w = measure(text, style);
@@ -872,11 +839,14 @@ pub fn draw(
 
         // Your ship's name over it.
         if let Some((ship, _)) = l.ship.filter(|&(_, i)| i == pl)
-            && let (Some(s), Some(name)) = (at(ship), t.ship.as_ref().map(|s| &s.name))
+            && let (Some(s), Some(name)) = (
+                at(ship + Vec3::Y * SHIP_SCALE * 4.5),
+                t.ship.as_ref().map(|s| &s.name),
+            )
         {
             let mut style = TextStyle::LABEL;
             style.color = Faction::Company.ui();
-            label(p, s - Vec2::new(0.0, 46.0), name, &style);
+            label(p, s - Vec2::new(0.0, 22.0), name, &style);
         }
 
         // Its name, and who holds what.

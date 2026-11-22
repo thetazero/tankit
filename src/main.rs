@@ -28,6 +28,7 @@ mod render;
 mod repair;
 mod rng;
 mod scene;
+mod ship_model;
 mod showroom;
 mod sim;
 mod sweep;
