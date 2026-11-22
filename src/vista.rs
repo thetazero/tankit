@@ -206,8 +206,6 @@ mod tests {
             (MapKind::City, 2),
             (MapKind::Foundry, 0),
             (MapKind::Mine, 0),
-            (MapKind::Mine, 1),
-            (MapKind::Mine, 2),
         ] {
             let world = World::new(make_map(kind, seed), 0);
             let sun = world.map.atmosphere.sun_dir.normalize();

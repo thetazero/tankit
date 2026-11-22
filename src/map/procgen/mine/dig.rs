@@ -285,21 +285,35 @@ impl Dig<'_> {
             .iter()
             .map(|&want| {
                 let g = |p: Vec2| self.ground_height(p.x, p.y);
+                // Only what's near enough to matter (the search keeps within
+                // 16 m of where it's wanted, and looks 7 m round).
+                let near: Vec<&OBox> = self
+                    .oboxes
+                    .iter()
+                    .filter(|o| o.solid && o.distance(want) < 30.0)
+                    .collect();
+                let clear = |p: Vec2, r: f32| {
+                    let gp = g(p);
+                    !near.iter().any(|o| {
+                        let (lo, hi) = o.y_range();
+                        lo < gp + 3.0 && hi > gp + 0.3 && o.distance(p) < r
+                    }) && !self.crystals.iter().any(|c| c.solid && c.distance(p) < r)
+                };
                 let open = |p: Vec2| {
-                    self.mine_clear(p, 6.0)
+                    clear(p, 6.0)
                         && !self.l.roofed(p)
                         && (0..24).all(|k| {
                             let a = k as f32 * TAU / 24.0;
                             [4.0, 7.0].iter().all(|&r| {
                                 let q = p + Vec2::new(a.cos(), a.sin()) * r;
-                                self.mine_clear(q, 2.0) && (g(q) - g(p)).abs() < 0.8
+                                clear(q, 2.0) && (g(q) - g(p)).abs() < 0.8
                             })
                         })
                 };
                 (0..400)
                     .map(|k| {
                         let a = k as f32 * 2.4;
-                        want + Vec2::new(a.cos(), a.sin()) * (k as f32 * 0.06)
+                        want + Vec2::new(a.cos(), a.sin()) * (k as f32 * 0.04)
                     })
                     .find(|&p| open(p))
                     .unwrap_or(want)
@@ -331,11 +345,29 @@ impl Dig<'_> {
                 .iter()
                 .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0)
                 || self.crystals.iter().any(|c| c.distance(p) < 3.4);
-            let v = view(p);
-            let back = Vec2::new(v.sin(), v.cos());
-            let level = (0..=14).all(|k| {
-                let q = p + back * k as f32;
-                (self.ground_height(q.x, q.y) - g).abs() < 0.3
+            // The foreground the camera sees past the tank as it sways:
+            // level, and in the sun.
+            let lit = |q: Vec2| {
+                let e = 0.5;
+                let dx = self.ground_height(q.x + e, q.y) - self.ground_height(q.x - e, q.y);
+                let dz = self.ground_height(q.x, q.y + e) - self.ground_height(q.x, q.y - e);
+                Vec3::new(-dx, 2.0 * e, -dz).normalize().dot(sun) / sun.y
+            };
+            let level = [-0.22, 0.0, 0.22].iter().all(|&sway| {
+                let v = view(p) + sway;
+                let to_cam = Vec2::new(v.sin(), v.cos());
+                let side = Vec2::new(to_cam.y, -to_cam.x);
+                let mut shaded = 0;
+                let flat = (0..=12).all(|i| {
+                    (-2..=2).all(|j| {
+                        let q = p + to_cam * (i as f32 * 14.0 / 12.0) + side * (j as f32 * 2.0);
+                        if lit(q) < 0.6 {
+                            shaded += 1;
+                        }
+                        (self.ground_height(q.x, q.y) - g).abs() < 1.2
+                    })
+                });
+                flat && shaded <= 4
             });
             level
                 && !under
@@ -4472,7 +4504,15 @@ impl Dig<'_> {
             .collect();
         // Nor anywhere else nobody can drive to (a corner shut in by the
         // edge's rocks): each one a drive from the first side's spawns.
-        if let Some(from) = self.bases.first().and_then(|b| b.first()).copied() {
+        // (Not on the greybox: it's only there to be checked.)
+        let built = !self.routes.is_empty();
+        if let Some(from) = self
+            .bases
+            .first()
+            .and_then(|b| b.first())
+            .copied()
+            .filter(|_| built)
+        {
             let nav = crate::ai::nav::NavGrid::build(self);
             // Each point of the bots' ways round on open ground on its
             // level: moved to the nearest that is (something put down after
@@ -4564,10 +4604,46 @@ impl Dig<'_> {
     /// Beyond the edge: the desert rising into broken hills, and buttes.
     pub(super) fn mine_horizon(&mut self, rng: &mut Rng) {
         let lay = self.l;
-        let (cell, reach) = (4.0f32, 520.0f32);
-        let n = ((lay.size + 2.0 * reach) / cell) as usize + 1;
+        // Far off, coarse: 6 m cells out to about 520 m round the arena
+        // (centred on it, so the map can be turned and mirrored).
+        let cell = 6.0f32;
+        let n = ((lay.size + 2.0 * 520.0) / cell).round() as usize + 1;
+        let reach = ((n - 1) as f32 * cell - lay.size) * 0.5;
+        // The play ground along each side of the arena, every meter, to
+        // look up (out there everything's carried on from its edge).
+        let s = lay.size;
+        let k = s as usize + 1;
+        let at = |i: usize| i as f32 * s / (k - 1) as f32;
+        let side = |p: &dyn Fn(f32) -> Vec2| -> Vec<f32> {
+            (0..k)
+                .map(|i| {
+                    let q = p(at(i));
+                    lay.ground(q.x, q.y)
+                })
+                .collect()
+        };
+        let west = side(&|t| Vec2::new(0.0, t));
+        let east = side(&|t| Vec2::new(s, t));
+        let south = side(&|t| Vec2::new(t, 0.0));
+        let north = side(&|t| Vec2::new(t, s));
+        let look = |v: &[f32], t: f32| {
+            let f = (t / s * (k - 1) as f32).clamp(0.0, (k - 1) as f32);
+            let i = (f as usize).min(k - 2);
+            v[i] + (v[i + 1] - v[i]) * (f - i as f32)
+        };
+        let edge = |e: Vec2| {
+            if e.x <= 0.0 {
+                look(&west, e.y)
+            } else if e.x >= s {
+                look(&east, e.y)
+            } else if e.y <= 0.0 {
+                look(&south, e.x)
+            } else {
+                look(&north, e.x)
+            }
+        };
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
-            lay.scenery_ground(x, z)
+            lay.scenery_ground_with(x, z, &edge)
         });
         t.color = SAND * 0.95;
         t.material = Material::Sand;

@@ -1341,8 +1341,8 @@ impl Layout {
             Vec2::new(x, z + (*rows as f32 - 1.0) * 3.0)
         };
         self.stands = [
-            mid(0) + Vec2::new(36.0, 10.0),
-            mid(1) + Vec2::new(-36.0, 10.0),
+            mid(0) + Vec2::new(26.0, 6.0),
+            mid(1) + Vec2::new(-26.0, 6.0),
         ];
         let f = |x: f32| Vec2::new(x, self.face(x) - 15.0);
         let mut repairs = Vec::new();
@@ -1762,6 +1762,13 @@ impl Layout {
     /// Desert out past the edge: the mesa runs on north, the floor rises
     /// into broken hills.
     pub fn scenery_ground(&self, x: f32, z: f32) -> f32 {
+        self.scenery_ground_with(x, z, &|e: Vec2| self.ground(e.x, e.y))
+    }
+
+    /// `scenery_ground`, with the play ground at the arena's edge given
+    /// (`edge`, at a point on it): looked up, it's much quicker than the
+    /// ground worked out afresh for every point out there.
+    pub fn scenery_ground_with(&self, x: f32, z: f32, edge_ground: &dyn Fn(Vec2) -> f32) -> f32 {
         let size = self.size;
         let p = Vec2::new(x, z);
         let q = (p - self.center()).abs() - Vec2::splat(size * 0.5);
@@ -1771,9 +1778,7 @@ impl Layout {
         }
         let edge = p.clamp(Vec2::ZERO, Vec2::splat(size));
         let q = Vec2::new(edge.x, z.max(edge.y));
-        let base = self
-            .ground(edge.x, edge.y)
-            .max(TOP * self.mesa(q) + (CRAG_TOP - TOP) * self.crag(q));
+        let base = edge_ground(edge).max(TOP * self.mesa(q) + (CRAG_TOP - TOP) * self.crag(q));
         let hills = smoothstep(6.0, 60.0, d)
             * (6.0 * ((x * 0.017).sin() * (z * 0.021).cos()).abs()
                 + 4.0 * ((x * 0.007 - z * 0.005).sin() + 1.0)

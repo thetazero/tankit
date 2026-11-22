@@ -235,7 +235,8 @@ pub fn layout(spec: &Spec) -> Layout {
             }
         };
         let grey = dig::greybox(&l, &spec.sides);
-        match super::check::playable(&grey).and_then(|()| fair(&l, &grey)) {
+        let nav = crate::ai::nav::NavGrid::build(&grey);
+        match super::check::playable_on(&grey, &nav).and_then(|()| fair(&l, &grey, &nav)) {
             Ok(()) => return l,
             Err(why) => log::debug!("mine seed {} attempt {attempt}: {why}", spec.seed),
         }
@@ -248,8 +249,7 @@ pub fn layout(spec: &Spec) -> Layout {
 /// taking, driving there on `map` (the layout's greybox): the spawns were
 /// placed by straight-line distance, and a wash or a mesa between can
 /// make one side's drive much longer.
-fn fair(l: &Layout, map: &Map) -> Result<(), String> {
-    let nav = crate::ai::nav::NavGrid::build(map);
+fn fair(l: &Layout, map: &Map, nav: &crate::ai::nav::NavGrid) -> Result<(), String> {
     let total = |side: usize| {
         let base = &map.bases[side];
         let from = base.iter().copied().sum::<Vec2>() / base.len().max(1) as f32;

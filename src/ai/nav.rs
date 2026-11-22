@@ -370,8 +370,8 @@ impl NavGrid {
         None
     }
 
-    /// The open floor at `p` about its height, if there's one (tests).
-    #[cfg(test)]
+    /// The open floor at `p` about its height, if there's one (tests, and
+    /// generated maps settling their ways round onto it).
     pub fn floor_at(&self, p: Vec3) -> Option<f32> {
         let i = self.cell(Vec2::new(p.x, p.z));
         [TOP, UNDER]

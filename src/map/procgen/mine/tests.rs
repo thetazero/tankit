@@ -15,15 +15,10 @@ use crate::ai::NavGrid;
 use crate::map::OBox;
 use crate::render::material::Material;
 
-/// The seeds the tests build: one in a debug run (CI's has two minutes for
-/// everything); optimized, three of different kinds (one mine and a wash;
-/// two mines; a wash with a tributary and a butte). `sweep` runs the checks
-/// over many more.
-const SEEDS: &[u64] = if cfg!(debug_assertions) {
-    &[0]
-} else {
-    &[0, 3, 9]
-};
+/// The seeds the tests build (in an optimized run: unoptimized, building
+/// and checking a mine takes too long), three of different kinds. `sweep`
+/// runs the checks over many more.
+const SEEDS: &[u64] = &[0, 3, 9];
 
 /// The heaviest hull climbs a little over 20 degrees.
 const CLIMB: f32 = 20.0;
@@ -115,6 +110,10 @@ fn draws_mostly_hold_together() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn different_seeds_make_different_mines() {
     let ls: Vec<Layout> = (0..6).map(lay).collect();
     for (i, a) in ls.iter().enumerate() {
@@ -155,6 +154,10 @@ fn check_every_seed_is_playable_dressed(seed: u64) {
 /// Each map built the way round it's meant to be (mirrored, turned) is
 /// its layout's map moved there piece for piece, and as playable.
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn turned_mines_are_their_layouts_turned() {
     let seed = (0..20)
         .find(|&s| {
@@ -205,6 +208,10 @@ fn check_no_stone_drawn_as_a_box(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn no_stone_drawn_as_a_box() {
     for &seed in SEEDS {
         check_no_stone_drawn_as_a_box(seed);
@@ -250,6 +257,10 @@ fn check_roofs_are_ground_not_slabs(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn roofs_are_ground_not_slabs() {
     for &seed in SEEDS {
         check_roofs_are_ground_not_slabs(seed);
@@ -314,6 +325,10 @@ fn check_the_faces_top_is_never_buried(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn the_faces_top_is_never_buried() {
     for &seed in SEEDS {
         check_the_faces_top_is_never_buried(seed);
@@ -344,6 +359,10 @@ fn stone_distance(o: &OBox) -> impl Fn(Vec3) -> f32 + '_ {
 /// its near plane cuts into it (#284).
 /// its near plane cuts into it (#284).
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn the_chase_camera_keeps_out_of_the_rock_at_spawn() {
     use crate::scene::ChaseCam;
     for &seed in SEEDS {
@@ -706,6 +725,10 @@ fn check_the_edge_is_rock(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn the_edge_is_rock() {
     for &seed in SEEDS {
         check_the_edge_is_rock(seed);
@@ -727,6 +750,10 @@ fn check_repair_spots_are_open_to_the_sky(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn repair_spots_are_open_to_the_sky() {
     for &seed in SEEDS {
         check_repair_spots_are_open_to_the_sky(seed);
@@ -764,6 +791,10 @@ fn check_cover_everywhere(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn cover_everywhere() {
     for &seed in SEEDS {
         check_cover_everywhere(seed);
@@ -801,6 +832,10 @@ fn check_the_halves_differ(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn the_halves_differ() {
     for &seed in SEEDS {
         check_the_halves_differ(seed);
@@ -840,6 +875,10 @@ fn check_rocks_run_big(seed: u64) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn rocks_run_big() {
     for &seed in SEEDS {
         check_rocks_run_big(seed);
@@ -1064,6 +1103,10 @@ mod play {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn every_seed_is_playable_dressed() {
     for &seed in SEEDS {
         check_every_seed_is_playable_dressed(seed);
@@ -1071,6 +1114,10 @@ fn every_seed_is_playable_dressed() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn levels_stack() {
     for &seed in SEEDS {
         check_levels_stack(seed);
@@ -1078,6 +1125,10 @@ fn levels_stack() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn every_spawn_reaches_everything_and_the_sides_are_fair() {
     for &seed in SEEDS {
         check_every_spawn_reaches_everything_and_the_sides_are_fair(seed);
@@ -1085,6 +1136,10 @@ fn every_spawn_reaches_everything_and_the_sides_are_fair() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn ways_are_climbable() {
     for &seed in SEEDS {
         check_ways_are_climbable(seed);
@@ -1092,6 +1147,10 @@ fn ways_are_climbable() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn routes_keep_to_their_level() {
     for &seed in SEEDS {
         check_routes_keep_to_their_level(seed);
@@ -1099,6 +1158,10 @@ fn routes_keep_to_their_level() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn the_warehouse_has_ways_through() {
     for &seed in SEEDS {
         check_the_warehouse_has_ways_through(seed);
@@ -1106,6 +1169,10 @@ fn the_warehouse_has_ways_through() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
 fn the_crags_stand() {
     for &seed in SEEDS {
         check_the_crags_stand(seed);

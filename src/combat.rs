@@ -4864,10 +4864,14 @@ mod tests {
             f.shield = 0.0;
         }
         let b = m.world.map.beams[0];
-        let x = b.from.x + 3.0;
-        // South of it, clear, facing it.
-        m.world.teleport(0, Vec2::new(x, b.to.z - 6.0), 0.0);
-        m.world.teleport(1, Vec2::new(x - 4.0, b.to.z - 6.0), 0.0);
+        // Beside it, clear, facing it (whichever way round the map is).
+        let (from, to) = (Vec2::new(b.from.x, b.from.z), Vec2::new(b.to.x, b.to.z));
+        let along = (to - from).normalize();
+        let out = Vec2::new(along.y, -along.x);
+        let at = from + along * 3.0;
+        let face = crate::sim::yaw_of(-out);
+        m.world.teleport(0, at + out * 6.0, face);
+        m.world.teleport(1, at - along * 4.0 + out * 6.0, face);
         for _ in 0..(1.0 / DT) as usize {
             m.step(Command::default(), false);
         }
@@ -4889,7 +4893,7 @@ mod tests {
         );
         assert_eq!(m.fighters[0].deaths, 1);
         // A bot, put in it.
-        m.world.teleport(1, Vec2::new(x, b.to.z), 0.0);
+        m.world.teleport(1, at, face);
         m.step(Command::default(), false);
         assert!(!m.fighters[1].alive, "the bot lived in the beam");
     }
