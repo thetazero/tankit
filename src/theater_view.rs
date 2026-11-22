@@ -127,17 +127,11 @@ pub fn camera(t: &Theater, aspect: f32) -> Camera {
     }
 }
 
-/// A world's look from orbit, the same for every pilot: one of the kinds
-/// the galaxy has, by its system and place.
+/// A world's look from orbit, the same for every pilot (see
+/// `galaxy::theater::world`).
 fn world_look(system: usize, planet: usize) -> (u64, planet::Look) {
-    let seed = (system as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (planet as u64 + 1) * 0x5851;
-    let looks = [
-        planet::DRY,
-        crate::map::procgen::city::PLANET,
-        planet::ICE,
-        planet::DRY,
-    ];
-    (seed, looks[(seed >> 7) as usize % looks.len()])
+    let (_, seed, look) = crate::galaxy::theater::world(system, planet);
+    (seed, look)
 }
 
 /// The system view's meshes: its worlds, rebuilt when the theater changes,

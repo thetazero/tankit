@@ -105,7 +105,7 @@ tankit [OPTIONS]
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
-  --screen <menu|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
+  --screen <menu|missions|companies|settings|controls|rebind|pause|results>  (with --shot) render that screen
   --screen pause-settings (with --shot) the pause box with its settings open
   --screen pause --garage (with --shot) the garage opened from the pause box, the match frozen under it
   --debug                 (with --shot) debug mode on: FPS counter
@@ -425,6 +425,8 @@ enum Screen {
     Settings,
     /// Settings' key bindings.
     Controls,
+    /// The other companies' ships to switch to (#365).
+    Companies,
     /// The key bindings, waiting for the key to put on FIRE's second slot.
     Rebind,
     Pause,
@@ -487,6 +489,7 @@ fn main() -> Result<()> {
                         | Screen::Missions
                         | Screen::Site
                         | Screen::Settings
+                        | Screen::Companies
                         | Screen::Controls
                         | Screen::Rebind
                 )
@@ -785,6 +788,7 @@ fn parse_args() -> Result<Args> {
                     Some("site") => Screen::Site,
                     Some("settings") => Screen::Settings,
                     Some("controls") => Screen::Controls,
+                    Some("companies") => Screen::Companies,
                     Some("rebind") => Screen::Rebind,
                     Some("pause") => Screen::Pause,
                     Some("pause-settings") => Screen::PauseSettings,
@@ -842,6 +846,7 @@ fn parse_args() -> Result<Args> {
                 | Screen::Missions
                 | Screen::Site
                 | Screen::Settings
+                | Screen::Companies
                 | Screen::Controls
                 | Screen::Rebind
         )
@@ -1357,9 +1362,19 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 menu.input(menu::Nav::Select);
             }
         }
+        Some(Screen::Companies) => {
+            let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+            g.await_work_staying(prefer, profile.rank().level, 100);
+            profile.ship = g.crew;
+            menu.input(menu::Nav::Down);
+            menu.input(menu::Nav::Select);
+            menu.set_ships(g.other_ships(5));
+            menu.input(menu::Nav::Down);
+        }
         Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {
-            menu.input(menu::Nav::Down);
-            menu.input(menu::Nav::Down);
+            for _ in 0..3 {
+                menu.input(menu::Nav::Down);
+            }
             menu.input(menu::Nav::Select);
             if args.screen != Some(Screen::Settings) {
                 // Up wraps round to CONTROLS.
@@ -1377,10 +1392,10 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         _ => {}
     }
     // The backdrop follows the selected contract, as in the window.
-    let (kind, side) = menu
+    let (kind, map_seed, side) = menu
         .backdrop()
-        .unwrap_or((mission::MISSIONS[0].map_kind, 0));
-    let mut game = app::backdrop_match(kind, side, profile.loadout);
+        .unwrap_or((mission::MISSIONS[0].map_kind, 0, 0));
+    let mut game = app::backdrop_match(kind, map_seed, side, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);

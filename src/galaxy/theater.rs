@@ -26,9 +26,10 @@
 //!
 //! **Maps.** A shield generator is fought over on the shield city (#341), a
 //! Hold for the generator: its holder's model, in the shape the site's in
-//! (up, wrecked, or going back up as it's repaired). Until there are
-//! generated maps for the other sites (#308), each is fought on one of the
-//! existing missions' maps, picked at random (stable for the site).
+//! (up, wrecked, or going back up as it's repaired). Every other site is
+//! fought on one of the missions' maps for its planet's class (`Class`),
+//! picked at random, and on a generated kind the one map its seed names
+//! (`SiteView::map_seed`): the site is one place, the same each visit.
 
 use super::{AT_WAR, Galaxy, REPAIR_TICKS, SIDES, Site, SiteKind};
 use crate::economy::{PARTS, Part};
@@ -150,6 +151,8 @@ pub enum CrewNews {
     Split { other: u32 },
     /// It joined another, and you went with this one instead: `from` was its id.
     Left { from: u32 },
+    /// You left it for this one (#365): `from` was its id.
+    Switched { from: u32 },
 }
 
 /// Your company just split or joined another: the two ships you can go
@@ -213,6 +216,9 @@ pub struct SiteView {
     pub enemy: usize,
     /// The mission (index into `MISSIONS`) whose map and contract it's fought with.
     pub mission: usize,
+    /// Which map a generated kind builds here: the site's own, the same
+    /// each time it's fought over.
+    pub map_seed: u64,
 }
 
 /// A battle at a site, to deploy into.
@@ -225,6 +231,8 @@ pub struct Sortie {
     pub mission: usize,
     /// The map, as the site is (a shield generator's its holder's, in its shape).
     pub map_kind: MapKind,
+    /// Which map a generated kind builds: the site's (`SiteView::map_seed`).
+    pub map_seed: u64,
     /// The match's teams: you (your employer) first, then the enemy.
     pub factions: [Faction; 2],
 }
@@ -294,6 +302,44 @@ pub fn ship_name(id: u32) -> String {
     )
 }
 
+/// What kind of world a planet is, which sets the maps its sites are
+/// fought on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// A desert world: its sites are generated (cities, mines, open desert).
+    Desert,
+    /// Not made yet: its sites are fought on the hand-built maps.
+    Placeholder,
+}
+
+impl Class {
+    /// Whether a mission's map is one this class's sites are fought on.
+    pub fn fights_on(self, kind: MapKind) -> bool {
+        match kind {
+            MapKind::City | MapKind::Mine | MapKind::Desert => self == Class::Desert,
+            MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
+                self == Class::Placeholder
+            }
+            MapKind::ShieldCity(_) | MapKind::ShieldSite(_) => false,
+        }
+    }
+}
+
+/// Planet `planet` of system `system`, the same for every pilot: its
+/// class, and how it looks from orbit (the seed and look its globe is made
+/// from). A desert world is dry; a placeholder one any of the others.
+pub fn world(system: usize, planet: usize) -> (Class, u64, crate::planet::Look) {
+    let seed = (system as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((planet as u64 + 1) * 0x5851);
+    let worlds = [
+        (Class::Desert, crate::planet::DRY),
+        (Class::Placeholder, crate::map::procgen::city::PLANET),
+        (Class::Placeholder, crate::planet::ICE),
+        (Class::Placeholder, crate::planet::DRY),
+    ];
+    let (class, look) = worlds[(seed >> 7) as usize % worlds.len()];
+    (class, seed, look)
+}
+
 /// Planet `p` of a system called `name`: "KESSARA II".
 pub fn planet_name(name: &str, p: u8) -> String {
     const NUMERALS: [&str; 4] = ["I", "II", "III", "IV"];
@@ -338,6 +384,7 @@ impl SiteView {
             committed: false,
             enemy: 1,
             mission: 0,
+            map_seed: 0,
         }
     }
 
@@ -392,6 +439,7 @@ impl Theater {
             site: s.index,
             mission: s.mission,
             map_kind: s.map_kind(),
+            map_seed: s.map_seed,
             factions: [Faction::ALL[self.employer], Faction::ALL[s.enemy]],
         })
     }
@@ -553,23 +601,59 @@ impl Galaxy {
             self.crew_choice = None;
             return None;
         }
-        let ships = choice.ships.map(|id| {
-            let co = &self.companies[self.company(id).unwrap()];
-            Berth {
-                id,
-                name: ship_name(id),
-                system: system_name(co.at as usize),
-                hulls: co.hulls + co.contract.map_or(0.0, |k| k.field),
-                crystals: co.crystals,
-                work: co.contract.map(|k| Work {
-                    side: k.side as usize,
-                    realm: system_name(self.realms[k.realm as usize].seat as usize),
-                    system: system_name(k.target as usize),
-                    defend: k.defend,
-                }),
-            }
-        });
+        let ships = choice.ships.map(|id| self.berth(self.company(id).unwrap()));
         Some(ChoiceView { choice, ships })
+    }
+
+    /// Company `c` (an index into `companies`) as a ship you could go with.
+    fn berth(&self, c: usize) -> Berth {
+        let co = &self.companies[c];
+        Berth {
+            id: co.id,
+            name: ship_name(co.id),
+            system: system_name(co.at as usize),
+            hulls: co.hulls + co.contract.map_or(0.0, |k| k.field),
+            crystals: co.crystals,
+            work: co.contract.map(|k| Work {
+                side: k.side as usize,
+                realm: system_name(self.realms[k.realm as usize].seat as usize),
+                system: system_name(k.target as usize),
+                defend: k.defend,
+            }),
+        }
+    }
+
+    /// The ships you could switch to (#365): up to `n` other companies with
+    /// a battle for you this tick, nearest your ship first (biggest fight
+    /// first while you're with none).
+    pub fn other_ships(&self, n: usize) -> Vec<Berth> {
+        let mine = self.crew_company();
+        let here = mine.map(|c| self.systems[self.companies[c].at as usize].pos);
+        let mut ships: Vec<usize> = self.berths().filter(|&c| Some(c) != mine).collect();
+        let key = |c: usize| match here {
+            Some(h) => self.systems[self.companies[c].at as usize].pos.distance(h),
+            None => -self.companies[c].contract.map_or(0.0, |k| k.field),
+        };
+        ships.sort_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)));
+        ships.truncate(n);
+        ships.into_iter().map(|c| self.berth(c)).collect()
+    }
+
+    /// Leave your company for ship `id` (#365): another company with a
+    /// battle for you this tick. Any choice of ship open is dropped, and
+    /// your own hulls stay with the contract you leave. False (and nothing
+    /// changes) if it's yours, or has no battle for you.
+    pub fn switch_crew(&mut self, id: u32) -> bool {
+        let Some(c) = self.company(id) else {
+            return false;
+        };
+        if self.crew == Some(id) || !self.berths().any(|b| b == c) {
+            return false;
+        }
+        self.crew_news = self.crew.map(|from| CrewNews::Switched { from });
+        self.crew = Some(id);
+        self.crew_choice = None;
+        true
     }
 
     /// Go with ship `id`, one of those the open choice offers: the choice
@@ -776,7 +860,7 @@ impl Galaxy {
             .filter(|&g| present[g] && self.hostile(f, g))
             .max_by(|&a, &b| sys.hulls[a].total_cmp(&sys.hulls[b]))
             .unwrap_or((f + 1) % SIDES);
-        let pool = crate::mission::for_sites(rank);
+        let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(rank, c));
         let shield = crate::mission::for_shields();
         let sites: Vec<SiteView> = self
             .site_range(s)
@@ -791,6 +875,10 @@ impl Galaxy {
                         .unwrap_or(strongest)
                 };
                 let mut r = Rng::new(self.seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                let pool = match world(s, site.planet as usize).0 {
+                    Class::Desert => &pools[0],
+                    Class::Placeholder => &pools[1],
+                };
                 SiteView {
                     index: i,
                     planet: site.planet,
@@ -799,10 +887,11 @@ impl Galaxy {
                     contested: contested.contains(&i),
                     committed: commits.contains(&i),
                     enemy,
-                    mission: match (site.kind, pool[r.index(pool.len())]) {
-                        (SiteKind::Shield { .. }, _) => shield,
-                        (_, m) => m,
+                    mission: match site.kind {
+                        SiteKind::Shield { .. } => shield,
+                        _ => pool[r.index(pool.len())],
                     },
+                    map_seed: r.next_u64(),
                 }
             })
             .collect();
@@ -1022,6 +1111,63 @@ mod tests {
         assert!(g.crew_choice().is_none());
     }
 
+    /// You can leave your company for another ship with a battle for you
+    /// (#365): its theater is yours, and the missions screen says so.
+    #[test]
+    fn you_can_switch_to_another_company() {
+        let mut g = galaxy_with_work();
+        for _ in 0..400 {
+            if !g.other_ships(1).is_empty() {
+                break;
+            }
+            g.step();
+            g.await_work_staying(None, 1, 400);
+        }
+        let mine = g.crew.unwrap();
+        let ships = g.other_ships(5);
+        assert!(!ships.is_empty(), "no other ship at work");
+        assert!(ships.len() <= 5);
+        assert!(ships.iter().all(|b| b.id != mine && b.work.is_some()));
+        // Nearest first.
+        let here = g.systems[g.companies[g.crew_company().unwrap()].at as usize].pos;
+        let d = |b: &Berth| {
+            let c = g.company(b.id).unwrap();
+            g.systems[g.companies[c].at as usize].pos.distance(here)
+        };
+        assert!(ships.windows(2).all(|w| d(&w[0]) <= d(&w[1])));
+        // Not yours, nor a ship that's gone or has no battle.
+        assert!(!g.switch_crew(mine));
+        assert!(!g.switch_crew(u32::MAX));
+        let idle = g
+            .companies
+            .iter()
+            .find(|c| c.contract.is_none())
+            .map(|c| c.id);
+        if let Some(idle) = idle {
+            assert!(!g.switch_crew(idle));
+        }
+        assert_eq!(g.crew, Some(mine));
+        let to = ships[0].id;
+        assert!(g.switch_crew(to));
+        assert_eq!(g.crew, Some(to));
+        assert_eq!(g.crew_news, Some(CrewNews::Switched { from: mine }));
+        let t = g.aboard(1).expect("a battle aboard the new ship");
+        assert_eq!(t.ship.unwrap().id, to);
+        // It's among the ships you could go back to, and yours isn't.
+        assert!(g.other_ships(usize::MAX).iter().all(|b| b.id != to));
+    }
+
+    /// Switching drops a choice of ship left open.
+    #[test]
+    fn switching_closes_a_choice_of_ship() {
+        let mut g = galaxy_with_work();
+        let _ = your_company_splits(&mut g);
+        let to = g.other_ships(1)[0].id;
+        assert!(g.switch_crew(to));
+        assert!(g.crew_choice().is_none());
+        assert_eq!(g.crew, Some(to));
+    }
+
     /// An idle company of yours too rich for one ship.
     fn your_company_splits(g: &mut Galaxy) -> (u32, u32) {
         let c = (0..g.companies.len())
@@ -1150,5 +1296,40 @@ mod tests {
             let m = &MISSIONS[s.mission];
             assert!(m.open_at(1) && m.sides.len() == 2, "{}", m.name);
         }
+    }
+
+    /// A desert world's sites are generated, a placeholder's hand-built;
+    /// a shield generator is the shield city on either.
+    #[test]
+    fn a_sites_map_is_its_worlds_class() {
+        let g = galaxy();
+        let mut seen = [false; 2];
+        for sys in 0..g.systems.len() {
+            for s in &g.theater_at(sys, 0, u32::MAX).sites {
+                let class = world(sys, s.planet as usize).0;
+                seen[class as usize] = true;
+                let kind = s.map_kind();
+                if s.is_shield() {
+                    assert!(matches!(kind, MapKind::ShieldSite(_)), "{kind:?}");
+                } else {
+                    assert!(class.fights_on(kind), "{class:?} on {kind:?}");
+                }
+            }
+        }
+        assert_eq!(seen, [true; 2], "both classes of world have sites");
+    }
+
+    /// A site is one place: the same map each time it's looked at, and
+    /// another site's another one.
+    #[test]
+    fn a_site_keeps_its_map() {
+        let g = galaxy();
+        let a = g.theater_at(0, 0, 1).sites;
+        let b = g.theater_at(0, 0, 1).sites;
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!((x.mission, x.map_seed), (y.mission, y.map_seed));
+        }
+        let seeds: std::collections::HashSet<u64> = a.iter().map(|s| s.map_seed).collect();
+        assert_eq!(seeds.len(), a.len());
     }
 }

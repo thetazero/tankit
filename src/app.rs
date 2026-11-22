@@ -70,6 +70,9 @@ fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
 /// How long the war may go on without you, on the missions screen, while
 /// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
 const AWAIT_TICKS: u32 = 100;
+
+/// How many ships the companies screen offers to switch to (#365).
+const SHIPS_SHOWN: usize = 5;
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
 /// to come back up after it.
 const DIP_OUT: f32 = 0.18;
@@ -114,7 +117,7 @@ pub struct Launch {
 
 struct App {
     seed: u64,
-    /// Which map a generated kind builds: kept for a replay, new each sortie.
+    /// Which map a generated kind builds: the sortie site's (kept for a replay).
     map_seed: u64,
     map_kind: MapKind,
     spawn: usize,
@@ -276,7 +279,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         pause: Pause::new(),
         menu_orbit,
         menu_time: 0.0,
-        backdrop: (MISSIONS[0].map_kind, 0),
+        backdrop: (MISSIONS[0].map_kind, 0, 0),
         backdrop_wait: 0.0,
         backdrop_job: None,
         backdrop_ready: None,
@@ -336,13 +339,6 @@ pub fn new_match(
     m
 }
 
-/// A seed nobody picked: from the clock.
-fn fresh_seed() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64)
-}
-
 /// Black over the whole menu scene at `dark` (0..1), eased.
 fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
     if dark <= 0.0 {
@@ -354,19 +350,30 @@ fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
     p.finish()
 }
 
-/// A menu backdrop: a map, and the side whose vista it's seen from.
-type Backdrop = (MapKind, usize);
+/// A menu backdrop: a map (its kind, and which one for a generated kind),
+/// and the side whose vista it's seen from.
+type Backdrop = (MapKind, u64, usize);
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked at its vista.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    backdrop_match(MISSIONS[0].map_kind, 0, kit)
+    backdrop_match(MISSIONS[0].map_kind, 0, 0, kit)
 }
 
-/// Map `kind` (the first of it, for a generated kind), empty, your tank
+/// Map `kind` (the one `map_seed` names, for a generated kind), empty, your tank
 /// parked at side `side`'s vista: the menu's backdrop while a site fought
 /// on it is selected.
-pub fn backdrop_match(kind: MapKind, side: usize, kit: garage::Loadout) -> Match {
-    let mut m = new_match(0, kind, 0, side, 0, 0, Contract::Attrition, kit, None);
+pub fn backdrop_match(kind: MapKind, map_seed: u64, side: usize, kit: garage::Loadout) -> Match {
+    let mut m = new_match(
+        0,
+        kind,
+        map_seed,
+        side,
+        0,
+        0,
+        Contract::Attrition,
+        kit,
+        None,
+    );
     m.time_left = f32::INFINITY;
     m.start();
     let v = crate::vista::of(&m.world.map, kind, side);
@@ -526,8 +533,8 @@ impl App {
         self.leave_battle();
         let m = &MISSIONS[o.mission];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, o.map_kind, 0, m.bots());
-        // A generated map is a new one each sortie (the same again on a replay).
-        self.map_seed = fresh_seed();
+        // A generated map is the site's own, the same each time it's fought over.
+        self.map_seed = o.map_seed;
         (self.contract, self.side, self.rating) = (m.contract, 0, m.rating);
         self.prize = prize;
         self.sortie = Some(o);
@@ -615,6 +622,30 @@ impl App {
         self.profile.set_shown(shown);
     }
 
+    /// Keep the companies screen's ships to switch to the galaxy's, while
+    /// it's showing (#365).
+    fn sync_ships(&mut self) {
+        if !self.menu.wants_ships() {
+            return;
+        }
+        let g = self.war.get();
+        adopt_crew(g, self.profile.ship);
+        self.menu.set_ships(g.other_ships(SHIPS_SHOWN));
+    }
+
+    /// Leave your company for ship `id` (#365), then on to its theater.
+    fn switch_crew(&mut self, id: u32) {
+        let g = self.war.get();
+        if g.switch_crew(id) {
+            let crew = g.crew;
+            self.war.save();
+            self.profile.board(crew);
+            self.menu.screen = menu::Screen::Missions;
+        }
+        self.sync_ships();
+        self.sync_theater();
+    }
+
     /// Go with ship `id`, of those your company's split or join offered (#364).
     fn choose_crew(&mut self, id: u32) {
         let g = self.war.get();
@@ -677,7 +708,7 @@ impl App {
                     let (tx, rx) = mpsc::channel();
                     std::thread::spawn(move || {
                         let started = Instant::now();
-                        let game = backdrop_match(want.0, want.1, kit);
+                        let game = backdrop_match(want.0, want.1, want.2, kit);
                         let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
                         log::debug!(
                             "menu backdrop: {:?} built in {:.0?}",
@@ -725,7 +756,7 @@ impl App {
         self.in_war = false;
         self.sortie = None;
         self.load(menu_match(self.profile.loadout));
-        self.backdrop = (MISSIONS[0].map_kind, 0);
+        self.backdrop = (MISSIONS[0].map_kind, 0, 0);
         self.backdrop_job = None;
         self.backdrop_ready = None;
         self.backdrop_dark = 0.0;
@@ -979,6 +1010,7 @@ impl App {
 
     fn menu_action(&mut self, action: Option<menu::Action>, event_loop: &ActiveEventLoop) {
         self.sync_theater();
+        self.sync_ships();
         match action {
             Some(menu::Action::Fight(o)) => {
                 // Into a battle on the contract on screen: you've seen it.
@@ -993,6 +1025,7 @@ impl App {
                 self.audio.garage(audio::GarageCue::Refused);
             }
             Some(menu::Action::Crew(id)) => self.choose_crew(id),
+            Some(menu::Action::Switch(id)) => self.switch_crew(id),
             Some(menu::Action::Garage) => {
                 if let Some(cam) = self.camera {
                     self.garage.toggle(&self.game.world, &cam, self.queued());
@@ -1483,7 +1516,7 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let mut m = backdrop_match(MISSIONS[0].map_kind, 1, kit);
+        let mut m = backdrop_match(MISSIONS[0].map_kind, 0, 1, kit);
         assert_eq!(m.factions[0], MISSIONS[0].sides[1]);
         for _ in 0..(4.0 / crate::game::DT) as usize {
             m.step(crate::sim::Command::default(), false);
