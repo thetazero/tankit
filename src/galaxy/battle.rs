@@ -470,7 +470,10 @@ impl Galaxy {
                     && matches!(site.kind, SiteKind::Production { .. })
             })
         });
-        let shielded = sides.iter().map(|&f| self.under_shield(system, site, f)).collect();
+        let shielded = sides
+            .iter()
+            .map(|&f| self.under_shield(system, site, f))
+            .collect();
         Some(Battle {
             system,
             sides,
@@ -922,7 +925,10 @@ mod merc_tests {
         assert_eq!(b.shielded, vec![true, false]);
         assert_eq!((m.seats(0), m.seats(1)), (6 - SHIELD_SEATS, 6));
         let fielded = |m: &Match, team: usize| {
-            m.fighters.iter().filter(|f| f.team == team && f.alive).count()
+            m.fighters
+                .iter()
+                .filter(|f| f.team == team && f.alive)
+                .count()
         };
         assert_eq!(fielded(&m, 0), 6 - SHIELD_SEATS);
         assert_eq!(fielded(&m, 1), 6);

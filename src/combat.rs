@@ -1126,12 +1126,7 @@ impl Match {
     /// left out gets one for each of its seats).
     pub fn set_allocation(&mut self, allocation: &[u32]) {
         let hulls = (0..self.factions.len())
-            .map(|t| {
-                allocation
-                    .get(t)
-                    .copied()
-                    .unwrap_or(self.seats(t) as u32)
-            })
+            .map(|t| allocation.get(t).copied().unwrap_or(self.seats(t) as u32))
             .collect();
         self.hulls = Some(hulls);
     }

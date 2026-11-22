@@ -63,7 +63,10 @@ fn a_win_takes_a_site_under_shields() {
     let i = g.target(s, other).expect("something to take");
     assert_eq!(g.sites[i].kind, SiteKind::Shield { down: 0 });
     g.advance(s, other, 1);
-    assert_eq!(g.sites[i].owner as usize, other, "taken, not just knocked down");
+    assert_eq!(
+        g.sites[i].owner as usize, other,
+        "taken, not just knocked down"
+    );
     assert_eq!(g.sites[i].kind, SiteKind::Shield { down: REPAIR_TICKS });
     assert_eq!(g.systems[s].held[other], held + 1);
     // Every enemy site is on the front, shielded or not.
