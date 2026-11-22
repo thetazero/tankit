@@ -640,8 +640,9 @@ impl Hud {
 
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
-/// Side `team`'s hulls not yet in play, under its score: "18 HULLS", hot
-/// when the last few are going, struck through once they're all spent.
+/// Side `team`'s hulls not yet in play, under its score: "18 HULLS", and
+/// how many of them are mercs' ("18 HULLS · 4 COMPANY"); hot when the last
+/// few are going, struck through once they're all spent.
 fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
     let Some(n) = m.hulls_left(team) else { return };
     let mut s = TextStyle::LABEL;
@@ -653,8 +654,12 @@ fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
     } else {
         with_alpha(theme::FG, 0.85)
     };
+    let mercs = m.company_hulls.get(team).copied().unwrap_or(0);
     let text = if m.spent(team) {
         "OUT OF HULLS".to_string()
+    } else if mercs > 0 {
+        // Of them, the mercs' (#320).
+        format!("{n} HULLS · {mercs} COMPANY")
     } else {
         format!("{n} HULLS")
     };

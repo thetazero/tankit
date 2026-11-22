@@ -853,6 +853,11 @@ pub struct Match {
     /// Under a hull allocation: each side's hulls not yet in play (None:
     /// tanks respawn without end).
     pub hulls: Option<Vec<u32>>,
+    /// Of those, the mercs': what the Company's tanks come back in. A
+    /// Company bot that dies with none left comes back as its side's own.
+    pub company_hulls: Vec<u32>,
+    /// Each side's Company tanks destroyed (the player's among them).
+    company_deaths: Vec<u32>,
     /// Where in the galaxy it's fought, for the HUD.
     pub place: Option<String>,
     nav: NavGrid,
@@ -924,6 +929,8 @@ impl Match {
             phase: Phase::Playing,
             over_for: 0.0,
             hulls: None,
+            company_hulls: Vec::new(),
+            company_deaths: Vec::new(),
             place: None,
             nav,
             rng,
@@ -1032,6 +1039,45 @@ impl Match {
     pub fn contenders(&self) -> Vec<usize> {
         (0..self.factions.len())
             .filter(|&t| !self.spent(t))
+            .collect()
+    }
+
+    /// Side `team` has mercs (before the round starts): `seats` of its tanks
+    /// are the Company's, in its colors, and `hulls` of its allocation are
+    /// theirs, those in play among them. The player is always the
+    /// Company's, and one of the `seats` on their side; the rest are its
+    /// bots, first dealt first.
+    pub fn set_company(&mut self, team: usize, seats: usize, hulls: u32) {
+        let mut left = seats;
+        for i in 0..self.fighters.len() {
+            if self.fighters[i].team != team {
+                continue;
+            }
+            let company = i == 0 || left > 0;
+            self.world.tanks[i].company = company;
+            if company {
+                left = left.saturating_sub(1);
+            }
+        }
+        if self.company_hulls.len() <= team {
+            self.company_hulls
+                .resize(self.factions.len().max(team + 1), 0);
+        }
+        self.company_hulls[team] = hulls.saturating_sub(seats as u32);
+    }
+
+    /// The Company's tanks on side `team`, now (the player's among them, on theirs).
+    #[cfg(test)]
+    pub fn company_seats(&self, team: usize) -> usize {
+        (0..self.fighters.len())
+            .filter(|&i| self.fighters[i].team == team && self.world.tanks[i].company)
+            .count()
+    }
+
+    /// Hulls each side has lost in the Company's tanks (the player's among them).
+    pub fn company_lost(&self) -> Vec<u32> {
+        (0..self.factions.len())
+            .map(|t| self.company_deaths.get(t).copied().unwrap_or(0))
             .collect()
     }
 
@@ -2035,6 +2081,13 @@ impl Match {
         let v = &mut self.fighters[victim];
         v.health = 0.0;
         v.deaths += 1;
+        if self.world.tanks[victim].company {
+            let team = v.team;
+            if self.company_deaths.len() <= team {
+                self.company_deaths.resize(team + 1, 0);
+            }
+            self.company_deaths[team] += 1;
+        }
         v.killed_by = Some(killer);
         if killer != victim {
             self.fighters[killer].kills += 1;
@@ -2417,10 +2470,19 @@ impl Match {
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
             }
-            if !self.take_hull(self.fighters[i].team) {
+            let team = self.fighters[i].team;
+            if !self.take_hull(team) {
                 // The side's allocation is spent: this tank stays a wreck.
                 self.fighters[i].respawn_in = 0.0;
                 continue;
+            }
+            if self.world.tanks[i].company {
+                // A merc comes back in a merc hull while there are any; then
+                // a bot's seat is the realm's (you're the Company's still).
+                match self.company_hulls.get_mut(team) {
+                    Some(h) if *h > 0 => *h -= 1,
+                    _ => self.world.tanks[i].company = i == 0,
+                }
             }
             let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
                 .filter(|&j| j != i && self.fighters[j].alive)
@@ -5286,6 +5348,38 @@ mod tests {
             respawn(&mut free);
             assert!(free.fighters[0].alive);
         }
+    }
+
+    /// Mercs: the Company's seats are in its colors, and come back in merc
+    /// hulls while there are any; then a bot's seat comes back as its
+    /// side's own. Their losses are counted apart.
+    #[test]
+    fn company_seats_spend_merc_hulls() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[6, 10]);
+        // Tanks 0 (you) and 2 are your side's; both mercs, one merc hull to spare.
+        m.set_company(0, 2, 3);
+        assert_eq!(m.company_seats(0), 2);
+        assert!(m.world.tanks[2].company && !m.world.tanks[1].company);
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        assert!(m.world.tanks[2].company, "back in the last merc hull");
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        assert!(m.fighters[2].alive);
+        assert!(!m.world.tanks[2].company, "no merc hulls left: the realm's");
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(m.world.tanks[0].company, "you're always the Company's");
+        assert_eq!(m.company_lost(), vec![3, 0]);
+        assert_eq!(m.lost()[0], 3);
+        // With no mercs, it's only you.
+        let mut alone = arena(3);
+        alone.set_company(0, 0, 0);
+        assert_eq!(alone.company_seats(0), 1);
     }
 
     /// A side out of hulls and tanks is out: the round ends and the other
