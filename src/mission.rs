@@ -10,8 +10,8 @@ use crate::sim::{HullKind, TurretKind};
 /// What a mission pays you for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Contract {
-    /// A raid on an enemy camp: no ground changes hands; the job is to cost
-    /// the enemy hulls. Paid per kill; the side that destroys most wins (or
+    /// A battle of attrition: the job is to cost the enemy hulls (a win
+    /// still takes the site, #419). Paid per kill; the side that destroys most wins (or
     /// the side still in, if the other runs out of hulls).
     #[default]
     Attrition,

@@ -735,9 +735,9 @@ impl App {
                 &self.game.lost(),
                 &self.game.company_lost(),
                 None,
-                battle::Stake::Hulls,
+                battle::Stake::Site,
             );
-            g.step();
+            g.step_played(b.system);
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
         }

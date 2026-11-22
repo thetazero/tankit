@@ -1206,16 +1206,17 @@ fn numeral(p: u8) -> &'static str {
 
 /// What a win at `site` does in the war, by the contract it's fought with.
 fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
+    // Under any contract, a win at their site takes it (#419); a Raid's
+    // also downs one of their generators.
     let ours = site.owner == employer.index();
-    let shield_up = site.is_shield() && site.down().is_none();
-    let what = match contract {
-        Contract::Attrition => "they lose hulls; no ground changes hands",
-        Contract::Hold if ours => "it stays ours",
-        Contract::Hold if shield_up => "it goes down",
-        Contract::Hold if site.is_shield() => "it's ours, and we put up our own",
-        Contract::Hold => "it's ours",
-        Contract::Raid if shield_up && !ours => "it goes down",
-        Contract::Raid => "one of their generators goes down",
+    let raid = contract == Contract::Raid;
+    let what = match (ours, site.is_shield()) {
+        (true, _) if raid => "it stays ours, and one of their generators goes down",
+        (true, _) => "it stays ours",
+        (false, true) if raid => "it's ours, we put up our own, and another of theirs goes down",
+        (false, true) => "it's ours, and we put up our own",
+        (false, false) if raid => "it's ours, and one of their generators goes down",
+        (false, false) => "it's ours",
     };
     let how = match contract {
         Contract::Attrition => "Win",

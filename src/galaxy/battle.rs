@@ -9,8 +9,10 @@
 //! once) stay capped as before.
 //!
 //! **Out.** When the battle's done, each side's hulls lost (its tanks
-//! destroyed) come off the system's storage; survivors stay there. What the win changes depends on
-//! the contract (see [`Stake`]). Then the whole galaxy ticks once.
+//! destroyed) come off the system's storage; survivors stay there. A win at the losers' site takes it,
+//! whatever the contract (#419); a Raid's also knocks down one of their
+//! generators (see [`Stake`]). It's that system's battle for the tick:
+//! the rest of the galaxy ticks once with it (`Galaxy::step_played`).
 //!
 //! **Mercs** (#320). A company under contract for the battle's system (to
 //! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
@@ -53,11 +55,11 @@ pub fn own_hulls(rank: u32) -> u32 {
 /// What a win in a played battle takes from the losers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stake {
-    /// A raid on an enemy camp: no ground changes hands, only hulls are lost.
-    Hulls,
-    /// The battle's site: won by anyone but its holder, it changes hands.
+    /// The battle's site: won by anyone but its holder, it changes hands
+    /// (a shield generator too, up or down).
     Site,
-    /// One of the losers' shield generators in the system, knocked down.
+    /// The site, and one of the losers' shield generators in the system
+    /// knocked down besides.
     Shield,
 }
 
@@ -119,13 +121,11 @@ pub fn system_name(s: usize) -> String {
 }
 
 impl Stake {
-    /// What a contract's win takes. Attrition is a raid on an enemy camp:
-    /// only hulls. Hold is for the site. A Raid carries off the flag and
-    /// knocks out a shield generator with it.
+    /// What a contract's win takes. Attrition and Hold take the site. A
+    /// Raid carries off the flag and knocks out a shield generator with it.
     pub fn of(contract: Contract) -> Stake {
         match contract {
-            Contract::Attrition => Stake::Hulls,
-            Contract::Hold => Stake::Site,
+            Contract::Attrition | Contract::Hold => Stake::Site,
             Contract::Raid => Stake::Shield,
         }
     }
@@ -209,7 +209,7 @@ pub fn conclude(g: &mut Galaxy, b: &Battle, m: &Match) -> Settled {
         Stake::of(m.contract),
     );
     g.spend_own(m.own_lost());
-    g.step();
+    g.step_played(b.system);
     s
 }
 
@@ -532,60 +532,40 @@ impl Galaxy {
         }
         let (mut taken, mut shield_down) = (false, false);
         if let Some(w) = winner.and_then(|t| battle.sides.get(t).copied()) {
-            match stake {
-                Stake::Hulls => {}
-                Stake::Site => {
-                    // Only a loser's site is lost (never a bystander's).
-                    let at_stake = battle.site.filter(|&i| {
-                        let owner = self.sites[i].owner as usize;
-                        owner != w && battle.sides.contains(&owner)
-                    });
-                    if let Some(i) = at_stake
-                        && self.sites[i].kind == (SiteKind::Shield { down: 0 })
-                    {
-                        // A generator that's up is knocked down first, as
-                        // the galaxy's own battles do; taken once it's down.
-                        self.sites[i].kind = SiteKind::Shield {
-                            down: super::REPAIR_TICKS,
-                        };
-                        shield_down = true;
-                    } else if let Some(i) = at_stake {
-                        let old = self.sites[i].owner as usize;
-                        self.sites[i].owner = w as u8;
-                        // A taken generator has to be repaired, as in
-                        // the galaxy's own battles: its new holder's
-                        // model, from the wreck.
-                        if let SiteKind::Shield { down } = &mut self.sites[i].kind {
-                            *down = super::REPAIR_TICKS;
-                        }
-                        let sys = &mut self.systems[battle.system];
-                        sys.held[old] -= 1;
-                        sys.held[w] += 1;
-                        self.claim(battle.system, w);
-                        taken = true;
-                        self.update_share();
-                    }
+            // Whatever the contract, a win at a loser's site takes it (#419):
+            // never a bystander's. A generator taken, up or down, has to be
+            // repaired: its new holder's model, from the wreck.
+            let at_stake = battle.site.filter(|&i| {
+                let owner = self.sites[i].owner as usize;
+                owner != w && battle.sides.contains(&owner)
+            });
+            if let Some(i) = at_stake {
+                let old = self.sites[i].owner as usize;
+                self.sites[i].owner = w as u8;
+                if let SiteKind::Shield { down } = &mut self.sites[i].kind {
+                    *down = super::REPAIR_TICKS;
                 }
-                Stake::Shield => {
-                    let (a, b) = self.systems[battle.system].sites;
-                    let losers: Vec<usize> =
-                        battle.sides.iter().copied().filter(|&f| f != w).collect();
-                    let up = |i: &usize| {
-                        let site = &self.sites[*i];
-                        losers.contains(&(site.owner as usize))
-                            && site.kind == (SiteKind::Shield { down: 0 })
+                let sys = &mut self.systems[battle.system];
+                sys.held[old] -= 1;
+                sys.held[w] += 1;
+                self.claim(battle.system, w);
+                taken = true;
+                self.update_share();
+            }
+            if stake == Stake::Shield {
+                // A Raid knocks out one of the losers' generators besides.
+                let (a, b) = self.systems[battle.system].sites;
+                let losers: Vec<usize> = battle.sides.iter().copied().filter(|&f| f != w).collect();
+                let up = |i: &usize| {
+                    let site = &self.sites[*i];
+                    losers.contains(&(site.owner as usize))
+                        && site.kind == (SiteKind::Shield { down: 0 })
+                };
+                if let Some(i) = (a as usize..b as usize).find(up) {
+                    self.sites[i].kind = SiteKind::Shield {
+                        down: super::REPAIR_TICKS,
                     };
-                    // The battle's own site if it's a losers' generator.
-                    let i = battle
-                        .site
-                        .filter(up)
-                        .or_else(|| (a as usize..b as usize).find(up));
-                    if let Some(i) = i {
-                        self.sites[i].kind = SiteKind::Shield {
-                            down: super::REPAIR_TICKS,
-                        };
-                        shield_down = true;
-                    }
+                    shield_down = true;
                 }
             }
         }
@@ -656,47 +636,103 @@ mod tests {
         let (imp, res) = (Faction::Imperium.index(), Faction::Resonant.index());
         let before = [total(&g, imp), total(&g, res)];
         let lost = [b.allocation[0].min(20), b.allocation[1].min(7)];
-        let s = g.settle(&b, &lost, &[0, 0], Some(0), Stake::Hulls);
+        let s = g.settle(&b, &lost, &[0, 0], None, Stake::Site);
         assert!((before[0] - total(&g, imp) - lost[0] as f32).abs() < 0.01);
         assert!((before[1] - total(&g, res) - lost[1] as f32).abs() < 0.01);
         assert!((s.lost[imp] - lost[0] as f32).abs() < 1e-3);
-        assert_eq!(s.before.held, s.after.held, "a raid takes no ground");
+        assert_eq!(s.before.held, s.after.held, "a draw takes no ground");
         assert!(!s.taken && !s.shield_down);
     }
 
-    /// A Hold won by the side that doesn't hold the site takes it; won by
-    /// its holder, nothing changes hands.
+    /// A battle won by the side that doesn't hold the site takes it, under
+    /// any contract (#419); won by its holder, nothing changes hands.
     #[test]
     fn a_won_site_changes_hands() {
+        for contract in [Contract::Attrition, Contract::Hold, Contract::Raid] {
+            let mut g = galaxy();
+            let b = g.muster(&PAIR, 6);
+            let site = b.site.expect("a site at stake");
+            let holder = g.sites[site].owner as usize;
+            let team = |f: usize| b.sides.iter().position(|&x| x == f).unwrap();
+            let other = 1 - team(holder);
+            let stake = Stake::of(contract);
+            let kept = g.settle(&b, &[0, 0], &[0, 0], Some(team(holder)), stake);
+            assert!(!kept.taken, "{contract:?}");
+            let s = g.settle(&b, &[0, 0], &[0, 0], Some(other), stake);
+            assert!(s.taken, "{contract:?}");
+            assert_eq!(g.sites[site].owner as usize, b.sides[other]);
+            assert_eq!(s.after.held[holder] + 1, s.before.held[holder]);
+            assert_eq!(
+                s.after.held[b.sides[other]],
+                s.before.held[b.sides[other]] + 1
+            );
+        }
+    }
+
+    /// Your battle is its system's battle for the tick (#419): the
+    /// galaxy's tick that goes with it doesn't fight there again, so a site
+    /// you've just won is still yours after it.
+    #[test]
+    fn a_won_site_survives_its_tick() {
+        for seed in 0..20 {
+            let mut g = Galaxy::warmed(seed);
+            let b = g.muster(&PAIR, 6);
+            let Some(site) = b.site else { continue };
+            let holder = g.sites[site].owner as usize;
+            let Some(t) = b.sides.iter().position(|&x| x == holder) else {
+                continue;
+            };
+            let s = g.settle(&b, &[0, 0], &[0, 0], Some(1 - t), Stake::Site);
+            let hulls = g.systems[b.system].hulls;
+            g.step_played(b.system);
+            assert!(s.taken);
+            assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
+            // No second round of fighting there: only wear thins its hulls.
+            let wear = 1.0 - g.rules.wear;
+            for f in 0..SIDES {
+                assert!(g.systems[b.system].hulls[f] >= hulls[f] * wear - 1e-3);
+            }
+        }
+    }
+
+    /// A won battle over a shield generator that's up takes it, not only
+    /// knocks it down (#419): it's the winner's, to be repaired.
+    #[test]
+    fn a_won_generator_is_taken_even_up() {
         let mut g = galaxy();
         let b = g.muster(&PAIR, 6);
-        let site = b.site.expect("a site at stake");
-        let holder = g.sites[site].owner as usize;
-        let team = |f: usize| b.sides.iter().position(|&x| x == f).unwrap();
-        let other = 1 - team(holder);
-        let kept = g.settle(&b, &[0, 0], &[0, 0], Some(team(holder)), Stake::Site);
-        assert!(!kept.taken);
+        // The site at stake, made a generator that's up.
+        let gen_ = b.site.unwrap();
+        g.sites[gen_].kind = SiteKind::Shield { down: 0 };
+        let holder = g.sites[gen_].owner as usize;
+        let other = 1 - b.sides.iter().position(|&x| x == holder).unwrap();
         let s = g.settle(&b, &[0, 0], &[0, 0], Some(other), Stake::Site);
         assert!(s.taken);
-        assert_eq!(g.sites[site].owner as usize, b.sides[other]);
-        assert_eq!(s.after.held[holder] + 1, s.before.held[holder]);
+        assert_eq!(g.sites[gen_].owner as usize, b.sides[other]);
         assert_eq!(
-            s.after.held[b.sides[other]],
-            s.before.held[b.sides[other]] + 1
+            g.sites[gen_].kind,
+            SiteKind::Shield {
+                down: crate::galaxy::REPAIR_TICKS
+            }
         );
     }
 
-    /// A won Raid knocks down one of the losers' generators.
+    /// A won Raid takes the site and knocks down another of the losers'
+    /// generators, if one's up.
     #[test]
     fn a_won_raid_downs_a_shield() {
         let mut g = galaxy();
         let b = g.muster(&PAIR, 6);
-        let holder = g.sites[b.site.unwrap()].owner as usize;
+        let site = b.site.unwrap();
+        let holder = g.sites[site].owner as usize;
         let team = b.sides.iter().position(|&x| x == holder).unwrap();
+        let site_up = g.sites[site].kind == (SiteKind::Shield { down: 0 });
         let s = g.settle(&b, &[0, 0], &[0, 0], Some(1 - team), Stake::Shield);
-        if s.before.shields[holder] > 0 {
+        assert!(s.taken);
+        let others_up = s.before.shields[holder] - site_up as u8;
+        if others_up > 0 {
             assert!(s.shield_down);
-            assert_eq!(s.after.shields[holder] + 1, s.before.shields[holder]);
+            assert_eq!(s.after.shields[holder] + 1, others_up);
         }
         // A draw takes nothing.
         let d = g.settle(&b, &[0, 0], &[0, 0], None, Stake::Shield);
@@ -887,7 +923,7 @@ mod merc_tests {
         let (mut g, t, sides) = staged(20.0, 40.0);
         let f = sides[0].index();
         let b = g.muster_at(t, &sides, None, None).unwrap();
-        let s = g.settle(&b, &[5, 0], &[3, 0], None, Stake::Hulls);
+        let s = g.settle(&b, &[5, 0], &[3, 0], None, Stake::Site);
         assert!((s.merc_lost[f] - 3.0).abs() < 1e-3, "{:?}", s.merc_lost);
         assert!((s.lost[f] - 5.0).abs() < 1e-3, "{:?}", s.lost);
         let k = g.companies[0].contract.unwrap();
@@ -897,7 +933,7 @@ mod merc_tests {
         // More Company tanks lost than it brought: the rest are the realm's.
         let (mut g, t, sides) = staged(2.0, 40.0);
         let b = g.muster_at(t, &sides, None, None).unwrap();
-        let s = g.settle(&b, &[5, 0], &[5, 0], None, Stake::Hulls);
+        let s = g.settle(&b, &[5, 0], &[5, 0], None, Stake::Site);
         assert!((s.merc_lost[f] - 2.0).abs() < 1e-3, "{:?}", s.merc_lost);
         assert!((g.systems[t].hulls[f] - 37.0).abs() < 1e-3);
     }
@@ -958,7 +994,7 @@ mod merc_tests {
                 .unwrap()
                 .field
         };
-        let s = g.settle(&b, &[4, 0], &[3, 0], None, Stake::Hulls);
+        let s = g.settle(&b, &[4, 0], &[3, 0], None, Stake::Site);
         assert!((s.merc_lost[f] - 3.0).abs() < 1e-3);
         assert!((field(&g, mine) - 17.0).abs() < 1e-3);
         assert_eq!(field(&g, other), 30.0, "their hulls are their own");
