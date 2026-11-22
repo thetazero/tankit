@@ -364,6 +364,7 @@ mod tests {
     #[test]
     fn a_beam_lights_strikes_and_lets_go() {
         let mut game = Match::new(crate::map::Map::saltmarket(), 0, 3, 7);
+        game.start();
         let mut beams = Moments::default();
         let mut noise = Noise::new(1);
         let mut moments = |game: &Match| beams.update(game, &ears(), &mut noise);
@@ -472,6 +473,7 @@ mod tests {
     #[test]
     fn a_beam_on_your_hull_is_loud() {
         let mut game = Match::new(crate::map::Map::saltmarket(), 0, 3, 7);
+        game.start();
         let e = ears();
         let end = Vec3::new(0.0, 0.0, -10.0);
         game.fighters[1].beam = Some(end);

@@ -660,6 +660,10 @@ pub struct Tank {
     pub age: f32,
     /// Destroyed: a hover hull's field is out and it falls.
     pub dead: bool,
+    /// An empty seat: no tank has been fielded in it (its side had no hull
+    /// for it). Out of the world: its body is disabled (no collisions, no
+    /// queries see it), it isn't driven or drawn. See [`World::set_empty`].
+    pub empty: bool,
     /// Broken but still running (Vigil): how much strength it has left,
     /// 1 down to 0. `None` while whole.
     pub husk: Option<f32>,
@@ -911,6 +915,7 @@ impl World {
             flipped_time: 0.0,
             age: 0.0,
             dead: false,
+            empty: false,
             husk: None,
             lean: 0.0,
             spool: 0.0,
@@ -943,6 +948,7 @@ impl World {
         let chassis = Chassis::of(kind);
         let (body, collider) = insert_tank_body(&mut self.physics, chassis, pose);
         self.physics.bodies[body].set_linvel(old.linvel(), true);
+        self.physics.bodies[body].set_enabled(!t.empty);
         t.body = body;
         t.collider = collider;
         t.turret_hitbox = insert_turret_hitbox(&mut self.physics, body, t.turret_kind);
@@ -970,6 +976,14 @@ impl World {
         let b = &mut self.physics.bodies[t.body];
         let at = b.translation() + t.rot * Vec3::Y * t.gun_height();
         b.apply_impulse_at_point(-t.gun_dir() * t.turret_kind.recoil(), at, true);
+    }
+
+    /// Empty seat `i` (`empty`), taking its tank out of the world, or put
+    /// a tank in it.
+    pub fn set_empty(&mut self, i: usize, empty: bool) {
+        let t = &mut self.tanks[i];
+        t.empty = empty;
+        self.physics.bodies[t.body].set_enabled(!empty);
     }
 
     /// Put tank `i` down at `at` facing `yaw`, at rest, turret forward (respawns).
@@ -1024,6 +1038,9 @@ impl World {
         for i in 0..self.tanks.len() {
             let cmd = cmds.get(i).copied().unwrap_or_default();
             let t = &mut self.tanks[i];
+            if t.empty {
+                continue;
+            }
             t.drive = cmd.throttle.abs().max(cmd.steer.abs()).min(1.0);
             let friction = if t.dead { WRECK_FRICTION } else { 0.0 };
             if let Some(c) = self.physics.colliders.get_mut(t.collider) {
@@ -1044,6 +1061,9 @@ impl World {
         self.physics.step();
         self.knocks.clear();
         for i in 0..self.tanks.len() {
+            if self.tanks[i].empty {
+                continue;
+            }
             sync_from_body(&mut self.tanks[i], &self.physics);
             self.feel(i);
             recover_if_flipped(&mut self.tanks[i], &mut self.physics);
@@ -1071,6 +1091,7 @@ impl World {
                 extra
                     || (0..self.tanks.len()).any(|j| {
                         j != i
+                            && !self.tanks[j].empty
                             && self.tanks[i].pos.distance(self.tanks[j].pos) < reach[i] + reach[j]
                     })
             })

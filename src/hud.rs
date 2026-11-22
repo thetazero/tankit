@@ -1332,6 +1332,7 @@ mod tests {
     #[test]
     fn ledger_backs_out_this_matchs_earnings() {
         let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        m.start();
         m.phase = Phase::Over;
         let mut p = Profile::in_memory();
         p.renown = 140;
@@ -1346,6 +1347,7 @@ mod tests {
     #[test]
     fn round_over_has_buttons() {
         let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        m.start();
         let t = &m.world.tanks[0];
         let camera = Camera {
             pos: t.pos + Vec3::new(0.0, 6.0, -10.0),
@@ -1383,6 +1385,7 @@ mod tests {
 
     fn draws_at_any_size_under(contract: Contract) {
         let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        m.start();
         m.set_contract(contract);
         m.fighters[0].alive = false;
         m.phase = Phase::Over;

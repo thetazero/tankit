@@ -239,6 +239,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
     };
     if launch.showroom.is_none() {
         game.set_player_levels(profile.levels);
+        game.start();
     }
     let menu_orbit = garage::front_angle(&game.world.tanks[0]);
     let volume = profile.settings.volume();
@@ -367,6 +368,7 @@ pub fn menu_match(kit: garage::Loadout) -> Match {
 pub fn backdrop_match(kind: MapKind, side: usize, kit: garage::Loadout) -> Match {
     let mut m = new_match(0, kind, 0, side, 0, 0, Contract::Attrition, kit, None);
     m.time_left = f32::INFINITY;
+    m.start();
     let v = crate::vista::of(&m.world.map, kind, side);
     crate::vista::park(&mut m.world, v);
     // Already parked: no arrival (or its sound) each time the backdrop
@@ -483,6 +485,8 @@ impl App {
     fn load_built(&mut self, game: Match, world: StaticWorld) {
         self.game = game;
         self.game.set_player_levels(self.profile.levels);
+        // All set up (a battle's hulls drawn): the round starts.
+        self.game.start();
         self.banked = 0;
         self.paid = false;
         self.cam = ChaseCam::new();

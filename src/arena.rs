@@ -140,6 +140,7 @@ pub fn duel(
         let (mut shots, mut hits) = (0u32, 0u32);
         for r in 0..reps as u64 {
             let mut m = Match::new(crate::map::Map::empty(500.0), 0, 1, r);
+            m.start();
             m.refit_bot(0, a.0, a.1, current, r * 31 + 1);
             m.refit_bot(1, b.0, b.1, false, r * 31 + 2);
             let yaw = r as f32 * 0.7;

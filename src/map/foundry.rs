@@ -1417,6 +1417,7 @@ mod play {
     #[ignore]
     fn bots_fight_through_the_foundry() {
         let mut m = Match::new(Map::foundry(), 0, 11, 7);
+        m.start();
         let start: Vec<Vec2> = m
             .world
             .tanks

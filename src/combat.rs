@@ -901,6 +901,11 @@ pub struct Match {
     /// Each seat's kills, deaths and time held when its pilot now took it
     /// (none yet: from the start).
     took_seat: Vec<(u32, u32, f32)>,
+    /// The round has started: its seats have been fielded (`start`).
+    started: bool,
+    /// Where you first spawn, on a map without bases: the spawn point you
+    /// picked, not one near your side.
+    you_start: Option<(Vec2, f32)>,
     nav: NavGrid,
     rng: Rng,
     /// Blowing sand, drifting dust, trickles, track dust (visual only).
@@ -922,10 +927,10 @@ impl Match {
         world.tanks[0].color = TANK_PAINT;
         // You're the Company's, among whoever hired you: in its colors, not theirs.
         world.tanks[0].company = true;
-        if !world.map.bases[0].is_empty() {
-            let (at, yaw) = spawn_point(&world, &mut rng, 0, &[]);
-            world.teleport(0, at, yaw);
-        }
+        // On a map without bases you start where you picked (`spawn`).
+        let you_start = world.map.bases[0]
+            .is_empty()
+            .then(|| (flat(world.tanks[0].pos), world.tanks[0].yaw()));
         let mut fighters = vec![fighter(0, max_health(world.tanks[0].hull_kind))];
         let mut brains = vec![None];
         for b in 0..bots {
@@ -936,15 +941,18 @@ impl Match {
             // Each side fields its own faction's guns.
             let guns = factions[team].turrets();
             let turret = guns[rng.index(guns.len())];
-            let placed: Vec<(usize, Vec2)> = (0..world.tanks.len())
-                .map(|j| (fighters[j].team, flat(world.tanks[j].pos)))
-                .collect();
-            let (at, yaw) = spawn_point(&world, &mut rng, team, &placed);
-            world.spawn_tank(TANK_PAINT, at, yaw, hull, turret);
+            // Parked where you are until it's fielded (`start`).
+            let at = flat(world.tanks[0].pos);
+            world.spawn_tank(TANK_PAINT, at, 0.0, hull, turret);
             fighters.push(fighter(team, max_health(hull)));
             brains.push(Some(Brain::Bot(Bot::new(
                 seed.wrapping_add(b as u64 * 7919),
             ))));
+        }
+        // Every seat is empty until the round starts: then each is fielded
+        // the way a tank respawns, if its side has a hull for it (`start`).
+        for i in 0..world.tanks.len() {
+            world.set_empty(i, true);
         }
         let ambience = crate::ambience::Ambience::new(&world.map);
         Match {
@@ -980,8 +988,24 @@ impl Match {
             crew: None,
             retired: Vec::new(),
             took_seat: Vec::new(),
+            started: false,
+            you_start,
             nav,
             rng,
+        }
+    }
+
+    /// Start the round (after all its setup: allocation, mercs, kits): field
+    /// every seat, the player's first, the way a tank respawns (`field`).
+    /// A seat its side has no hull for stays empty. Once; the first step
+    /// starts it if nothing has.
+    pub fn start(&mut self) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        for i in 0..self.fighters.len() {
+            self.field(i);
         }
     }
 
@@ -1058,19 +1082,16 @@ impl Match {
     }
 
     /// Fight on a hull allocation (before the round starts): side `t` has
-    /// `allocation[t]` hulls all told, the tanks it has in play now among them.
+    /// `allocation[t]` hulls all told, its first tanks among them (a side
+    /// left out gets one for each of its seats).
     pub fn set_allocation(&mut self, allocation: &[u32]) {
-        let left = (0..self.factions.len())
+        let hulls = (0..self.factions.len())
             .map(|t| {
                 let seats = self.fighters.iter().filter(|f| f.team == t).count() as u32;
-                allocation
-                    .get(t)
-                    .copied()
-                    .unwrap_or(seats)
-                    .saturating_sub(seats)
+                allocation.get(t).copied().unwrap_or(seats)
             })
             .collect();
-        self.hulls = Some(left);
+        self.hulls = Some(hulls);
     }
 
     /// Side `team`'s hulls not yet in play, under an allocation.
@@ -1127,7 +1148,7 @@ impl Match {
 
     /// Side `team` has mercs (before the round starts): `seats` of its tanks
     /// are the Company's, in its colors, and `hulls` of its allocation are
-    /// theirs, those in play among them. The player, on their side, is the
+    /// theirs, their first tanks among them. The player, on their side, is the
     /// first of the `seats` (with none, the realm's); the rest are its bots,
     /// first dealt first.
     pub fn set_company(&mut self, team: usize, seats: usize, hulls: u32) {
@@ -1149,18 +1170,18 @@ impl Match {
             self.company_hulls
                 .resize(self.factions.len().max(team + 1), 0);
         }
-        self.company_hulls[team] = hulls.saturating_sub(seats as u32);
+        self.company_hulls[team] = hulls;
     }
 
-    /// Set aside up to `n` of your company's spare hulls as yours alone
-    /// (after `set_company`): your own hulls left on its contract, as many
-    /// as this battle brings. None without a seat among your side's mercs.
+    /// Set aside up to `n` of your company's hulls as yours alone (after
+    /// `set_company`): your own hulls left on its contract, as many as this
+    /// battle brings. None without a seat among your side's mercs.
     pub fn set_own_hulls(&mut self, n: u32) {
-        let spare = self
+        let brought = self
             .crew_team
             .and_then(|t| self.company_hulls.get(t).copied())
             .unwrap_or(0);
-        self.own_hulls = n.min(spare);
+        self.own_hulls = n.min(brought);
     }
 
     /// The side you hold a seat among the mercs of, if any.
@@ -1294,6 +1315,7 @@ impl Match {
 
     /// One fixed step. `player` drives tank 0; `fire` is the trigger held.
     pub fn step(&mut self, player: Command, fire: bool) {
+        self.start();
         if self.sounds.len() > MAX_SOUNDS {
             self.sounds.drain(..self.sounds.len() - MAX_SOUNDS / 2);
         }
@@ -2504,6 +2526,7 @@ impl Match {
             if self.fighters[i].alive {
                 continue;
             }
+            let empty = self.world.tanks[i].empty;
             let f = &mut self.fighters[i];
             let before = f.respawn_in;
             f.respawn_in -= DT;
@@ -2514,7 +2537,8 @@ impl Match {
             // scattered by a hash, which leaves the rng alone.
             let tick = |dt: f32| (before / dt).floor() != (f.respawn_in / dt).floor();
             let (from_rng, between) = (tick(0.25), tick(0.1));
-            if from_rng || between {
+            // (An empty seat has no wreck.)
+            if !empty && (from_rng || between) {
                 let (x, z, up) = if from_rng {
                     (
                         self.rng.range(-1.0, 1.0),
@@ -2537,18 +2561,27 @@ impl Match {
             if f.respawn_in > 0.0 || self.phase != Phase::Playing {
                 continue;
             }
-            if !self.rehull(i) {
+            if !self.field(i) {
                 // The side's allocation is spent (or your company's): this
-                // tank stays a wreck.
+                // tank stays a wreck, or its seat empty.
                 self.fighters[i].respawn_in = 0.0;
-                continue;
             }
-            let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
-                .filter(|&j| j != i && self.fighters[j].alive)
-                .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
-                .collect();
-            self.revive(i, &living);
         }
+    }
+
+    /// Put a tank in seat `i`, at the round's start or coming back: in a
+    /// hull its side has left (`rehull`), at its base (`revive`). The one way
+    /// any tank comes into the fight. False if there's no hull for it.
+    fn field(&mut self, i: usize) -> bool {
+        if !self.rehull(i) {
+            return false;
+        }
+        let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
+            .filter(|&j| j != i && self.fighters[j].alive)
+            .map(|j| (self.fighters[j].team, flat(self.world.tanks[j].pos)))
+            .collect();
+        self.revive(i, &living);
+        true
     }
 
     /// Tank `i` is coming back: take it a hull, if its side has one left.
@@ -2557,8 +2590,9 @@ impl Match {
     /// your company's: when they're spent, you're out (`crew_out`).
     fn rehull(&mut self, i: usize) -> bool {
         let team = self.fighters[i].team;
-        let company = self.world.tanks[i].company && self.hulls.is_some();
-        let mercs = self.company_hulls.get(team).copied().unwrap_or(0);
+        let pool = self.merc_hulls(team);
+        let company = self.world.tanks[i].company && pool.is_some();
+        let mercs = pool.unwrap_or(0);
         if company && i == 0 && self.crew_team == Some(team) && mercs == 0 {
             self.crew_out = true;
             return false;
@@ -2576,6 +2610,14 @@ impl Match {
             }
         }
         true
+    }
+
+    /// Side `team`'s merc hulls not yet in play, under an allocation once
+    /// its mercs are dealt (`set_company`). Till then there's no pool, and
+    /// a Company tank comes back in its side's hulls like any.
+    fn merc_hulls(&self, team: usize) -> Option<u32> {
+        self.hulls.as_ref()?;
+        self.company_hulls.get(team).copied()
     }
 
     /// Seat `i`'s merc is done, the company's hulls spent: the seat is the
@@ -2603,9 +2645,7 @@ impl Match {
         // merc's company's are (then the seat goes to the realm).
         let out = !f.alive
             && (self.hulls_left(f.team) == Some(0)
-                || (company
-                    && self.hulls.is_some()
-                    && self.company_hulls.get(f.team).copied().unwrap_or(0) == 0));
+                || (company && self.merc_hulls(f.team) == Some(0)));
         Pilot {
             seat: i,
             team: f.team,
@@ -2615,7 +2655,8 @@ impl Match {
             held: self.held(i) - h,
             hull: t.hull_kind,
             turret: t.turret_kind,
-            active: !out,
+            // An empty seat's pilot never got a tank.
+            active: !out && !t.empty,
         }
     }
 
@@ -2665,7 +2706,10 @@ impl Match {
         }
         self.fit_hull(i);
         let team = self.fighters[i].team;
-        let (at, yaw) = spawn_point(&self.world, &mut self.rng, team, others);
+        let first = if i == 0 { self.you_start.take() } else { None };
+        let (at, yaw) =
+            first.unwrap_or_else(|| spawn_point(&self.world, &mut self.rng, team, others));
+        self.world.set_empty(i, false);
         self.world.teleport(i, at, yaw);
         self.world.tanks[i].dead = false;
         self.world.tanks[i].husk = None;
@@ -3369,9 +3413,10 @@ fn fighter(team: usize, health: f32) -> Fighter {
     Fighter {
         team,
         health,
-        alive: true,
+        // Not in the fight until fielded (`Match::start`).
+        alive: false,
         respawn_in: 0.0,
-        shield: SPAWN_SHIELD,
+        shield: 0.0,
         arrived: 0.0,
         reload_in: 0.5,
         kills: 0,
@@ -3468,6 +3513,7 @@ mod tests {
     #[test]
     fn four_sides_deal_even_teams_and_need_a_sole_leader() {
         let mut m = four_sides(15);
+        m.start();
         for t in 0..4 {
             assert_eq!(m.fighters.iter().filter(|f| f.team == t).count(), 4);
         }
@@ -3504,6 +3550,7 @@ mod tests {
     #[test]
     fn shell_hits_and_kills_a_tank_in_front() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
+        m.start();
         // A dummy straight ahead of the player.
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * 25.0;
@@ -3549,6 +3596,7 @@ mod tests {
     /// player's trigger).
     fn duel(turret: TurretKind, dist: f32) -> Match {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
+        m.start();
         m.world.tanks[0].turret_kind = turret;
         let t = &m.world.tanks[0];
         let ahead = Vec2::new(t.pos.x, t.pos.z) + dir2(t.yaw()) * dist;
@@ -3577,6 +3625,7 @@ mod tests {
     #[test]
     fn arrivals_sound_once_per_spawn() {
         let mut m = four_sides(7);
+        m.start();
         let n = m.fighters.len();
         let mut heard = vec![0; n];
         let mut count = |m: &mut Match, heard: &mut Vec<usize>| {
@@ -4337,6 +4386,7 @@ mod tests {
             });
         }
         let mut m = Match::new(map, 0, 0, 1);
+        m.start();
         assert_eq!(m.world.tanks[0].pos, pos);
         m.world.tanks[0].turret_kind = TurretKind::Hymn;
         let spawn = |m: &mut Match, d: f32, team: usize| {
@@ -4386,6 +4436,7 @@ mod tests {
             });
         }
         let mut m = Match::new(map, 0, 0, 1);
+        m.start();
         m.world.tanks[0].turret_kind = TurretKind::Hymn;
         m.world.spawn_tank(
             Vec3::ONE,
@@ -4594,6 +4645,7 @@ mod tests {
     #[test]
     fn plasma_orbs_bounce_off_the_ground() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
+        m.start();
         let Action::Shell(spec) = gun(TurretKind::Ammeth).action else {
             panic!("Ammeth fires shells");
         };
@@ -4646,6 +4698,7 @@ mod tests {
     #[test]
     fn bots_killing_bots_pays_the_player_nothing() {
         let mut m = arena(2);
+        m.start();
         m.kill(1, 2);
         m.kill(0, 0);
         assert_eq!(m.renown, 0);
@@ -4661,6 +4714,7 @@ mod tests {
     #[test]
     fn round_end_starts_the_results_clock() {
         let mut m = arena(1);
+        m.start();
         m.time_left = DT * 0.5;
         m.step(Command::default(), false);
         assert_eq!(m.phase, Phase::Over);
@@ -4671,6 +4725,7 @@ mod tests {
     #[test]
     fn upgrades_fit_at_the_next_respawn() {
         let mut m = arena(1);
+        m.start();
         let mut up = Levels::default();
         up.set(crate::economy::Part::Hull(m.world.tanks[0].hull_kind), 2);
         m.fighters[0].next_levels = Some(up);
@@ -4692,6 +4747,7 @@ mod tests {
     #[test]
     fn dead_tanks_respawn_with_full_health() {
         let mut m = arena(1);
+        m.start();
         // A Kataphrakt: a Vigil would run on as a husk first.
         m.world.set_hull(1, HullKind::Kataphrakt);
         m.fighters[1].shield = 0.0;
@@ -4834,6 +4890,7 @@ mod tests {
     #[test]
     fn queued_kit_is_fitted_at_respawn() {
         let mut m = arena(1);
+        m.start();
         // Whatever the player has now, queue the other hull.
         let hull = if m.world.tanks[0].hull_kind == HullKind::Kastron {
             HullKind::Kataphrakt
@@ -4876,6 +4933,7 @@ mod tests {
     #[test]
     fn the_round_is_heard_starting_counting_down_and_ending() {
         let mut m = arena(0);
+        m.start();
         m.step(Command::default(), false);
         m.step(Command::default(), false);
         assert_eq!(round_cues(&m), [RoundCue::Start]);
@@ -4893,6 +4951,7 @@ mod tests {
     #[test]
     fn a_round_lost_on_the_clock_sounds_lost() {
         let mut m = arena(1);
+        m.start();
         m.fighters[1].kills = 2;
         m.time_left = DT * 0.5;
         m.step(Command::default(), false);
@@ -4902,6 +4961,7 @@ mod tests {
     #[test]
     fn round_ends_at_the_clock() {
         let mut m = arena(0);
+        m.start();
         m.time_left = 0.05;
         for _ in 0..20 {
             m.step(Command::default(), false);
@@ -4913,6 +4973,7 @@ mod tests {
     #[test]
     fn driving_onto_a_landed_crate_repairs_the_hull() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 1);
+        m.start();
         for _ in 0..60 {
             m.step(Command::default(), false);
         }
@@ -4937,6 +4998,7 @@ mod tests {
     #[test]
     fn holding_pays_renown_and_reaching_the_target_ends_the_round() {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
+        m.start();
         m.set_contract(Contract::Hold);
         let at = m.hold.as_ref().unwrap().at;
         m.world.teleport(0, at, 0.0);
@@ -4971,6 +5033,7 @@ mod tests {
         let mut map = Map::yard(200.0);
         map.raid_stands = vec![Vec2::new(40.0, 100.0), Vec2::new(160.0, 100.0)];
         let mut m = Match::new(map, 0, 1, 3);
+        m.start();
         m.set_contract(Contract::Raid);
         m.idle(1);
         m.world.teleport(1, Vec2::new(100.0, 170.0), 0.0);
@@ -5046,6 +5109,7 @@ mod tests {
     )]
     fn bots_go_for_the_flag() {
         let mut m = Match::new(Map::mine(0), 0, 5, 2);
+        m.start();
         m.set_contract(Contract::Raid);
         m.bots_only(2);
         let mut taken = false;
@@ -5063,6 +5127,7 @@ mod tests {
     #[test]
     fn hold_score_is_time_held_not_kills() {
         let mut m = arena(3);
+        m.start();
         m.set_contract(Contract::Hold);
         for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
             f.kills = 9;
@@ -5081,6 +5146,7 @@ mod tests {
     )]
     fn driving_into_the_borers_beam_kills() {
         let mut m = Match::new(Map::mine(0), 0, 1, 1);
+        m.start();
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
@@ -5124,6 +5190,7 @@ mod tests {
     #[test]
     fn falling_off_the_edge_kills() {
         let mut m = Match::new(Map::sanctum(), 0, 1, 1);
+        m.start();
         for f in &mut m.fighters {
             f.shield = 0.0;
         }
@@ -5214,6 +5281,7 @@ mod tests {
         }
         for (name, map) in maps {
             let mut m = Match::new(map, 0, 1, 1);
+            m.start();
             for f in &mut m.fighters {
                 f.shield = 0.0;
             }
@@ -5232,6 +5300,7 @@ mod tests {
     fn every_hull_knocked_out_is_wrecked() {
         for hull in crate::garage::HULLS {
             let mut m = Match::new(Map::saltmarket(), 0, 1, 1);
+            m.start();
             for f in &mut m.fighters {
                 f.shield = 0.0;
             }
@@ -5246,6 +5315,7 @@ mod tests {
     #[test]
     fn a_tank_that_goes_over_dies_on_the_floor_not_in_the_air() {
         let mut m = Match::new(Map::sanctum(), 0, 0, 1);
+        m.start();
         m.fighters[0].shield = 0.0;
         m.world.set_hull(0, HullKind::Kataphrakt);
         let (alive_low, died_at, drop) = drop_from_the_mesa(&mut m, 0, 6.0);
@@ -5261,6 +5331,7 @@ mod tests {
     fn every_hull_falls_all_the_way_bots_included() {
         for hull in crate::garage::HULLS {
             let mut m = Match::new(Map::sanctum(), 0, 1, 1);
+            m.start();
             for f in &mut m.fighters {
                 f.shield = 0.0;
             }
@@ -5283,6 +5354,7 @@ mod tests {
     #[test]
     fn a_vigil_that_falls_runs_on() {
         let mut m = Match::new(Map::sanctum(), 0, 0, 1);
+        m.start();
         m.fighters[0].shield = 0.0;
         m.world.set_hull(0, HullKind::Vigil);
         m.world.teleport(0, Vec2::new(150.0, 285.0), 0.0);
@@ -5297,6 +5369,7 @@ mod tests {
     #[test]
     fn bots_go_for_the_hold_site() {
         let mut m = Match::new(Map::sanctum(), 0, 5, 5);
+        m.start();
         m.set_contract(Contract::Hold);
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;
@@ -5327,6 +5400,7 @@ mod tests {
                     map.swap_sides(1);
                 }
                 let mut m = Match::new(map, 0, 11, seed);
+                m.start();
                 m.set_contract(Contract::Raid);
                 m.bots_only(seed);
                 while m.phase == Phase::Playing {
@@ -5378,6 +5452,7 @@ mod tests {
     #[test]
     fn allies_take_no_damage_from_each_other() {
         let mut m = arena(3);
+        m.start();
         let ally = (1..4).find(|&i| m.fighters[i].team == 0).unwrap();
         let enemy = (1..4).find(|&i| m.fighters[i].team == 1).unwrap();
         for f in &mut m.fighters {
@@ -5413,6 +5488,7 @@ mod tests {
     #[test]
     fn the_side_with_more_kills_wins_even_if_you_scored_none() {
         let mut m = arena(3);
+        m.start();
         let ally = (1..4).find(|&i| m.fighters[i].team == 0).unwrap();
         let enemy = (1..4).find(|&i| m.fighters[i].team == 1).unwrap();
         m.fighters[ally].kills = 3;
@@ -5433,6 +5509,7 @@ mod tests {
     #[test]
     fn standings_rank_by_kills_then_deaths() {
         let mut m = arena(2);
+        m.start();
         m.fighters[2].kills = 3;
         m.fighters[1].kills = 3;
         m.fighters[1].deaths = 1;
@@ -5445,6 +5522,7 @@ mod tests {
     #[test]
     fn bots_fight_each_other() {
         let mut m = arena(5);
+        m.start();
         // Park the player out of the way, invulnerable.
         for _ in 0..(60.0 / DT) as usize {
             m.fighters[0].shield = 1.0;
@@ -5490,6 +5568,7 @@ mod tests {
             m.idle(i);
         }
         m.set_allocation(&[3, 10]);
+        m.start();
         assert_eq!(
             m.hulls_left(0),
             Some(1),
@@ -5506,11 +5585,116 @@ mod tests {
         assert_eq!(m.lost()[0], 2);
 
         let mut free = arena(3);
+        free.start();
         for _ in 0..3 {
             destroy(&mut free, 0);
             respawn(&mut free);
             assert!(free.fighters[0].alive);
         }
+    }
+
+    /// Every tank comes into the fight the way a respawn does, the first
+    /// ones too: a side fields only the hulls it has, seat by seat, the
+    /// player first. The seats it has none for are empty: not in the fight,
+    /// not in the world, not on the board.
+    #[test]
+    fn a_side_fields_only_the_hulls_it_has() {
+        let mut m = arena(11);
+        let ours: Vec<usize> = (0..m.fighters.len())
+            .filter(|&i| m.fighters[i].team == 0)
+            .collect();
+        assert_eq!(ours.len(), 6);
+        m.set_allocation(&[2, 10]);
+        m.start();
+        let fielded: Vec<usize> = ours
+            .iter()
+            .copied()
+            .filter(|&i| m.fighters[i].alive)
+            .collect();
+        assert_eq!(fielded, ours[..2], "two hulls: the first two seats");
+        assert_eq!(m.hulls_left(0), Some(0));
+        assert_eq!(m.hulls_left(1), Some(4), "six of ten in play");
+        for &i in &ours[2..] {
+            let t = &m.world.tanks[i];
+            assert!(t.empty && !m.fighters[i].alive);
+            assert!(
+                !m.world.physics.bodies[t.body].is_enabled(),
+                "out of the world"
+            );
+        }
+        let board = m.pilots();
+        for &i in &ours[2..] {
+            assert!(!board.iter().find(|p| p.seat == i).unwrap().active);
+        }
+        // They stay empty, and leave no wreck burning.
+        let blasts = m.blasts.len();
+        for _ in 0..20 {
+            m.step(Command::default(), false);
+        }
+        assert!(ours[2..].iter().all(|&i| m.world.tanks[i].empty));
+        assert!(m.blasts.len() <= blasts, "smoke off a tank that never was");
+        assert_eq!(
+            m.fighters.iter().filter(|f| f.alive).count(),
+            8,
+            "two of ours and six of theirs"
+        );
+    }
+
+    /// A side with no hulls fields nobody, you included, and it's out from
+    /// the start: the round ends as it would once its last tank went.
+    #[test]
+    fn a_side_with_no_hulls_fields_none() {
+        let mut m = arena(3);
+        m.set_allocation(&[0, 10]);
+        m.start();
+        assert!((0..4).all(|i| m.fighters[i].alive == (m.fighters[i].team == 1)));
+        assert!(m.world.tanks[0].empty && m.world.tanks[2].empty);
+        assert!(m.spent(0));
+        m.step(Command::default(), false);
+        assert_eq!(m.phase, Phase::Over);
+        assert_eq!(m.leader(), Some(1));
+    }
+
+    /// A first spawn spends a hull just as a respawn does: from the side's
+    /// allocation, and a merc's from the company's.
+    #[test]
+    fn first_spawns_spend_hulls_like_respawns() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[5, 10]);
+        m.set_company(0, 2, 4);
+        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(5), 4));
+        m.start();
+        // Two tanks on our side: two hulls, both mercs'.
+        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(3), 2));
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(2), 1));
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(1), 0));
+    }
+
+    /// With no merc hull for you at the start, you're out from it (#361),
+    /// and the match plays out without you (#373).
+    #[test]
+    fn no_hull_for_you_and_youre_out_from_the_start() {
+        let mut m = arena(3);
+        m.set_allocation(&[10, 10]);
+        m.set_company(0, 1, 0);
+        m.start();
+        assert!(m.crew_out());
+        assert!(!m.fighters[0].alive && m.world.tanks[0].empty);
+        assert!(m.fighters[2].alive, "your side fights on");
+        assert!(m.sitting_out());
+        assert!(!m.pilots().iter().find(|p| p.seat == 0).unwrap().active);
+        m.time_left = 1.0;
+        m.fast_forward(usize::MAX);
+        assert_eq!(m.phase, Phase::Over);
+        assert!(!m.fighters[0].alive);
+        assert_eq!(m.fighters[0].deaths, 0, "never fielded, never lost");
     }
 
     /// Mercs: the Company's seats are in its colors, and come back in merc
@@ -5525,6 +5709,7 @@ mod tests {
         m.set_allocation(&[6, 10]);
         // Tanks 0 (you) and 2 are your side's; both mercs, one merc hull to spare.
         m.set_company(0, 2, 3);
+        m.start();
         assert_eq!(m.company_seats(0), 2);
         assert!(m.world.tanks[2].company && !m.world.tanks[1].company);
         destroy(&mut m, 2);
@@ -5555,6 +5740,7 @@ mod tests {
         // You and tank 2 are the company's, with four merc hulls to spare.
         m.set_company(0, 2, 6);
         m.set_own_hulls(2);
+        m.start();
         assert_eq!(m.own_hulls, 2);
         for _ in 0..2 {
             destroy(&mut m, 2);
@@ -5585,6 +5771,7 @@ mod tests {
         m.set_allocation(&[10, 10]);
         m.set_company(0, 2, 6);
         m.set_own_hulls(2);
+        m.start();
         for (own, pool) in [(1, 3), (0, 2), (0, 1), (0, 0)] {
             destroy(&mut m, 0);
             respawn(&mut m);
@@ -5607,7 +5794,7 @@ mod tests {
         m.set_allocation(&[10, 10]);
         m.set_company(0, 2, 3);
         m.set_own_hulls(5);
-        assert_eq!(m.own_hulls, 1);
+        assert_eq!(m.own_hulls, 3);
         let mut alone = arena(3);
         alone.set_allocation(&[10, 10]);
         alone.set_own_hulls(3);
@@ -5626,6 +5813,7 @@ mod tests {
         m.set_allocation(&[6, 10]);
         // Tanks 0 (you) and 2: mercs, one merc hull to spare.
         m.set_company(0, 2, 3);
+        m.start();
         let ours =
             |m: &Match| -> Vec<Pilot> { m.pilots().into_iter().filter(|p| p.team == 0).collect() };
         assert_eq!(ours(&m).len(), 2, "one pilot a seat, to start");
@@ -5660,6 +5848,7 @@ mod tests {
         }
         // Your side's two tanks are all its hulls.
         m.set_allocation(&[2, 10]);
+        m.start();
         assert!(m.pilots().iter().all(|p| p.active));
         destroy(&mut m, 2);
         respawn(&mut m);
@@ -5675,6 +5864,7 @@ mod tests {
         m.set_allocation(&[10, 10]);
         // You're the company's only seat, with no merc hull to spare.
         m.set_company(0, 1, 1);
+        m.start();
         destroy(&mut m, 0);
         assert!(!p(&m, 0).active, "your company's spent: you're out");
         assert!(p(&m, 0).company && p(&m, 2).active);
@@ -5695,6 +5885,7 @@ mod tests {
         m.set_allocation(&[10, 10]);
         // You're the company's only seat, with a merc hull to spare.
         m.set_company(0, 1, 2);
+        m.start();
         destroy(&mut m, 0);
         respawn(&mut m);
         assert!(m.fighters[0].alive, "back in the last merc hull");
@@ -5734,6 +5925,7 @@ mod tests {
     #[test]
     fn without_an_allocation_youre_never_out() {
         let mut m = arena(3);
+        m.start();
         for _ in 0..3 {
             destroy(&mut m, 0);
             respawn(&mut m);
@@ -5748,6 +5940,7 @@ mod tests {
     fn running_out_of_hulls_loses() {
         let mut m = arena(1);
         m.set_allocation(&[5, 1]);
+        m.start();
         // The player's side is behind on kills...
         destroy(&mut m, 0);
         destroy(&mut m, 0);
@@ -5777,6 +5970,7 @@ mod hover_bots_stay_upright {
     #[test]
     fn ithessar_bots_dont_flip_on_the_kiln() {
         let mut m = Match::new(Map::kiln(), 0, 11, 1);
+        m.start();
         let n = m.world.tanks.len();
         let mut tipped = vec![false; n];
         for _ in 0..(20.0 / DT) as usize {
@@ -5812,6 +6006,7 @@ mod bot_duels {
         seed: u64,
     ) -> Match {
         let mut m = Match::new(Map::empty(400.0), 0, 1, seed);
+        m.start();
         m.refit_bot(0, a.0, a.1, true, seed * 31 + 1);
         m.refit_bot(1, b.0, b.1, false, seed * 31 + 2);
         let yaw = seed as f32 * 0.7;
@@ -5902,6 +6097,7 @@ mod bank_shots {
             max: Vec3::new(116.0, 6.0, 140.0),
         });
         let mut m = Match::new(map, 0, 1, 3);
+        m.start();
         m.refit_bot(0, HullKind::Sethuun, TurretKind::Ammeth, true, 5);
         m.refit_bot(1, HullKind::Kataphrakt, TurretKind::Kontos, false, 6);
         m.idle(1);

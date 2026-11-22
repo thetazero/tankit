@@ -467,6 +467,7 @@ mod tests {
     fn battles_knock_now_and_then() {
         for map in [crate::map::Map::saltmarket(), crate::map::Map::kiln()] {
             let mut game = Match::new(map, 0, 5, 7);
+            game.start();
             let mut n = 0;
             for _ in 0..(20.0 / crate::game::DT) as u32 {
                 game.step(crate::game::autopilot(game.world.time), true);

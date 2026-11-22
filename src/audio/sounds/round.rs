@@ -286,6 +286,7 @@ mod tests {
     #[ignore]
     fn record_round_finish() {
         let mut game = crate::combat::Match::new(crate::map::Map::saltmarket(), 0, 0, 7);
+        game.start();
         game.time_left = 11.0;
         game.fighters[0].kills = 1;
         let out = crate::audio::record(&mut game, 14.0, 48_000, 0.8, |_| {

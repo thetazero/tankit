@@ -897,6 +897,7 @@ mod play {
     fn bots_fight_through_the_mine() {
         for &seed in SEEDS {
             let mut m = Match::new(mine(seed), 0, 11, 7);
+            m.start();
             let steps = (120.0 / crate::game::DT) as usize;
             for _ in 0..steps {
                 m.step(Command::default(), false);
@@ -951,6 +952,7 @@ mod play {
     fn survey(map_seed: u64, seed: u64, secs: f32) -> Survey {
         let l = lay(map_seed);
         let mut m = Match::new(mine(map_seed), 0, 11, seed);
+        m.start();
         m.bots_only(seed);
         let dt = crate::game::DT;
         let n = m.world.tanks.len();

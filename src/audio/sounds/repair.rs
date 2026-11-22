@@ -181,6 +181,7 @@ mod tests {
     fn a_match_drop_is_heard_twice() {
         use crate::repair::{DROP_HEIGHT, FALL_SPEED, FIRST_DROP};
         let mut game = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        game.start();
         let dt = crate::game::DT;
         let mut heard = Vec::new();
         let secs = FIRST_DROP + DROP_HEIGHT / FALL_SPEED + 1.0;
