@@ -707,7 +707,7 @@ impl Galaxy {
                 continue;
             }
             let defense: f32 = self
-                .fire(t)
+                .strength(t)
                 .iter()
                 .enumerate()
                 .filter(|&(g, _)| g != f)
@@ -783,18 +783,31 @@ impl Galaxy {
         }
     }
 
-    /// Each side's fire in system `s`: its hulls, with the home-ground bonus
-    /// for the share of the system's sites it holds, and the initiative where
-    /// its realm's offensive is.
-    fn fire(&self, s: usize) -> [f32; SIDES] {
+    /// Each side's strength in system `s`: its hulls, with the home-ground
+    /// bonus for the share of the system's sites it holds, and the initiative
+    /// where its realm's offensive is. What a fight there is worth sizing up
+    /// by: more hulls don't fire harder past the frontage, but they last.
+    fn strength(&self, s: usize) -> [f32; SIDES] {
         let sys = &self.systems[s];
         let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
-        let mut fire = [0.0; SIDES];
+        let mut out = [0.0; SIDES];
         for f in 0..SIDES {
-            fire[f] = sys.hulls[f].min(self.rules.frontage)
-                * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
+            out[f] = sys.hulls[f] * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
             if self.pushing(sys.realms[f], sys.pos) {
-                fire[f] *= 1.0 + self.rules.initiative;
+                out[f] *= 1.0 + self.rules.initiative;
+            }
+        }
+        out
+    }
+
+    /// Each side's fire in system `s` this tick: its strength, from no more
+    /// of its hulls than the frontage.
+    fn fire(&self, s: usize) -> [f32; SIDES] {
+        let hulls = self.systems[s].hulls;
+        let mut fire = self.strength(s);
+        for f in 0..SIDES {
+            if hulls[f] > self.rules.frontage {
+                fire[f] *= self.rules.frontage / hulls[f];
             }
         }
         fire
@@ -1102,7 +1115,7 @@ impl Galaxy {
     /// from where?
     fn consider(&mut self, t: usize, f: usize, r: u32) {
         let sys = &self.systems[t];
-        let fire = self.fire(t);
+        let fire = self.strength(t);
         // Who's in the way.
         let (mut defense, mut enemy) = (0.0, false);
         for g in (0..SIDES).filter(|&g| g != f) {
