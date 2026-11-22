@@ -100,6 +100,43 @@ pub enum CrewNews {
     Sailed { from: u32 },
     /// It's gone, and the Company put you with another: `from` was its id.
     Gone { from: u32 },
+    /// It split in two, and you went with this half: `other` is the other's id.
+    Split { other: u32 },
+    /// It joined another, and you went with this one instead: `from` was its id.
+    Left { from: u32 },
+}
+
+/// Your company just split or joined another: the two ships you can go
+/// with (#364). You're with the first until you choose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrewChoice {
+    /// Your company as it was (`Company::id`).
+    pub from: u32,
+    /// It joined another (else it split): the first ship is the one it
+    /// joined, the second the next nearest company.
+    pub joined: bool,
+    pub ships: [u32; 2],
+}
+
+/// A choice of ship, as the missions screen shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChoiceView {
+    pub choice: CrewChoice,
+    pub ships: [Berth; 2],
+}
+
+/// A ship you could go with: where it is, what it has, its work.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Berth {
+    pub id: u32,
+    pub name: String,
+    /// The system it's over.
+    pub system: String,
+    pub hulls: f32,
+    pub crystals: f32,
+    /// On contract: the side that hired it (index into `Faction::ALL`), the
+    /// realm by its seat's name, and the system it's fighting over.
+    pub work: Option<(usize, String, String)>,
 }
 
 /// One site of the theater.
@@ -449,9 +486,61 @@ impl Galaxy {
         self.crew = Some(self.companies[c].id);
     }
 
+    /// The choice of ship open to you, if any (dropped once either ship's
+    /// gone, or you're with neither).
+    pub fn crew_choice(&mut self) -> Option<ChoiceView> {
+        let choice = self.crew_choice?;
+        let open = self.crew.is_some_and(|c| choice.ships.contains(&c))
+            && choice.ships.iter().all(|&id| self.company(id).is_some());
+        if !open {
+            self.crew_choice = None;
+            return None;
+        }
+        let ships = choice.ships.map(|id| {
+            let co = &self.companies[self.company(id).unwrap()];
+            Berth {
+                id,
+                name: ship_name(id),
+                system: system_name(co.at as usize),
+                hulls: co.hulls + co.contract.map_or(0.0, |k| k.field + k.orbit),
+                crystals: co.crystals,
+                work: co.contract.map(|k| {
+                    (
+                        k.side as usize,
+                        system_name(self.realms[k.realm as usize].seat as usize),
+                        system_name(k.target as usize),
+                    )
+                }),
+            }
+        });
+        Some(ChoiceView { choice, ships })
+    }
+
+    /// Go with ship `id`, one of those the open choice offers: the choice
+    /// is made. False (and nothing changes) if it isn't one of them.
+    pub fn choose_crew(&mut self, id: u32) -> bool {
+        let Some(view) = self.crew_choice() else {
+            return false;
+        };
+        let c = view.choice;
+        let Some(k) = c.ships.iter().position(|&s| s == id) else {
+            return false;
+        };
+        self.crew = Some(id);
+        self.crew_choice = None;
+        self.crew_news = match (c.joined, k) {
+            (true, 0) => Some(CrewNews::Joined { from: c.from }),
+            (true, _) => Some(CrewNews::Left { from: c.from }),
+            (false, _) => Some(CrewNews::Split {
+                other: c.ships[1 - k],
+            }),
+        };
+        true
+    }
+
     /// The theater with your company (see `enlist`); while it has no battle
     /// for you, the war goes on without you (up to `ticks` ticks) until it
-    /// has. Idle long enough, it goes looking for work like any company
+    /// has, or until you have a ship to choose (`crew_choice`). Idle long enough, it goes looking for work like any company
     /// (`Galaxy::seek_work`, in the galaxy's tick). True in the second if
     /// the galaxy ticked.
     pub fn await_work(
@@ -462,6 +551,9 @@ impl Galaxy {
     ) -> (Option<Theater>, bool) {
         for i in 0..=ticks {
             self.enlist(prefer);
+            if self.crew_choice().is_some() {
+                return (self.aboard(rank), i > 0);
+            }
             if let Some(t) = self.aboard(rank) {
                 return (Some(t), i > 0);
             }
@@ -470,6 +562,25 @@ impl Galaxy {
             }
         }
         (None, ticks > 0)
+    }
+
+    /// `await_work`, but any choice of ship on the way is made for you:
+    /// you stay with the one you're on (for shots and tests, where there's
+    /// nobody to choose).
+    pub fn await_work_staying(
+        &mut self,
+        prefer: Option<usize>,
+        rank: u32,
+        ticks: u32,
+    ) -> (Option<Theater>, bool) {
+        let (mut t, mut ticked) = self.await_work(prefer, rank, ticks);
+        while let Some(crew) = self.crew.filter(|_| self.crew_choice.is_some()) {
+            self.choose_crew(crew);
+            self.crew_choice = None;
+            let (next, more) = self.await_work(prefer, rank, ticks);
+            (t, ticked) = (next, ticked || more);
+        }
+        (t, ticked)
     }
 
     /// The theater aboard your company's ship: its contract's system, for
@@ -594,7 +705,7 @@ mod tests {
     fn galaxy_with_work() -> Galaxy {
         let mut g = galaxy();
         assert!(
-            g.await_work(None, 1, 400).0.is_some(),
+            g.await_work_staying(None, 1, 400).0.is_some(),
             "no work in 460 ticks"
         );
         g
@@ -708,6 +819,83 @@ mod tests {
         assert_ne!(g.crew, Some(id));
         assert!(g.crew_company().is_some());
         assert_eq!(g.crew_news, Some(CrewNews::Joined { from: id }));
+        // And you may go with the next nearest instead (#364).
+        let v = g.crew_choice().expect("a choice");
+        assert!(v.choice.joined);
+        assert_eq!(v.choice.from, id);
+        assert_eq!(Some(v.ships[0].id), g.crew);
+        let other = v.ships[1].id;
+        assert!(g.choose_crew(other));
+        assert_eq!(g.crew, Some(other));
+        assert_eq!(g.crew_news, Some(CrewNews::Left { from: id }));
+        assert!(g.crew_choice().is_none());
+    }
+
+    /// An idle company of yours too rich for one ship.
+    fn your_company_splits(g: &mut Galaxy) -> (u32, u32) {
+        let c = (0..g.companies.len())
+            .find(|&c| g.companies[c].contract.is_none())
+            .expect("an idle company");
+        let id = g.companies[c].id;
+        g.crew = Some(id);
+        g.companies[c].crystals = g.rules.merc_split * 1.6;
+        g.split_and_join();
+        let v = g.crew_choice().expect("a choice");
+        assert!(!v.choice.joined);
+        assert_eq!(v.choice.ships[0], id);
+        (id, v.choice.ships[1])
+    }
+
+    /// When your company splits, you're with the half that keeps its id
+    /// until you choose; you may go with the other (#364).
+    #[test]
+    fn you_choose_which_half_of_a_split_you_go_with() {
+        let mut g = galaxy_with_work();
+        let (id, new) = your_company_splits(&mut g);
+        assert_ne!(id, new);
+        assert_eq!(g.crew, Some(id));
+        let v = g.crew_choice().unwrap();
+        assert_eq!(v.ships[0].crystals, v.ships[1].crystals);
+        // Not a ship on offer: nothing changes.
+        assert!(!g.choose_crew(u32::MAX));
+        assert_eq!(g.crew, Some(id));
+        assert!(g.choose_crew(new));
+        assert_eq!(g.crew, Some(new));
+        assert_eq!(g.crew_news, Some(CrewNews::Split { other: id }));
+        assert!(g.crew_choice().is_none());
+    }
+
+    /// Staying is a choice too.
+    #[test]
+    fn you_may_stay_with_your_half() {
+        let mut g = galaxy_with_work();
+        let (id, new) = your_company_splits(&mut g);
+        assert!(g.choose_crew(id));
+        assert_eq!(g.crew, Some(id));
+        assert_eq!(g.crew_news, Some(CrewNews::Split { other: new }));
+    }
+
+    /// The war waits on your choice: no ticks go by on the missions screen
+    /// while it's open.
+    #[test]
+    fn the_war_waits_on_your_choice() {
+        let mut g = galaxy_with_work();
+        your_company_splits(&mut g);
+        let tick = g.tick;
+        let (_, ticked) = g.await_work(None, 1, 50);
+        assert!(!ticked);
+        assert_eq!(g.tick, tick);
+    }
+
+    /// A choice with one of its ships gone is no choice.
+    #[test]
+    fn a_choice_closes_when_a_ship_is_gone() {
+        let mut g = galaxy_with_work();
+        let (_, new) = your_company_splits(&mut g);
+        let c = g.company(new).unwrap();
+        g.companies.remove(c);
+        assert!(g.crew_choice().is_none());
+        assert!(!g.choose_crew(new));
     }
 
     /// A pilot whose company is gone (say, a save from another galaxy) is put
@@ -740,7 +928,7 @@ mod tests {
     #[test]
     fn generators_are_fought_over_on_the_shield_city() {
         let mut g = galaxy();
-        let t = g.await_work(None, 1, 400).0.unwrap();
+        let t = g.await_work_staying(None, 1, 400).0.unwrap();
         for s in &t.sites {
             match (s.kind, s.map_kind()) {
                 (SiteKind::Shield { down }, MapKind::ShieldSite(made)) => {
@@ -766,7 +954,7 @@ mod tests {
     #[test]
     fn sites_get_open_two_sided_maps() {
         let mut g = galaxy();
-        let t = g.await_work(None, 1, 400).0.unwrap();
+        let t = g.await_work_staying(None, 1, 400).0.unwrap();
         for s in &t.sites {
             let m = &MISSIONS[s.mission];
             assert!(m.open_at(1) && m.sides.len() == 2, "{}", m.name);

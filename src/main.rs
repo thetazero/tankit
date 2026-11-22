@@ -119,6 +119,8 @@ tankit [OPTIONS]
   --transfer <jump|move>  (with --screen missions) the war goes on until your company moves onto its
                           next contract (in another system, or the same one): the shot is --time
                           seconds into the transfer playing over the system view
+  --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
+                          another, and you choose which ship to go with
                           (from 0; default: the first your side fights for)
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
@@ -151,6 +153,9 @@ pub struct Args {
     /// --transfer, for missions shots: the move onto the next contract,
     /// `--time` seconds in; true to wait for one to another system.
     transfer: Option<bool>,
+    /// --choice, for missions shots: your company splits (false) or joins
+    /// another (true), and the screen asks which ship you go with.
+    choice: Option<bool>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -473,6 +478,7 @@ fn parse_args() -> Result<Args> {
     let mut mission = None;
     let mut site = None;
     let mut transfer = None;
+    let mut choice = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -578,6 +584,13 @@ fn parse_args() -> Result<Args> {
                     Some("jump") => true,
                     Some("move") => false,
                     other => bail!("--transfer expects jump or move, got {other:?}"),
+                })
+            }
+            "--choice" => {
+                choice = Some(match args.next().as_deref() {
+                    Some("split") => false,
+                    Some("merge") => true,
+                    other => bail!("--choice expects split or merge, got {other:?}"),
                 })
             }
             "--straight" => straight = true,
@@ -777,6 +790,7 @@ fn parse_args() -> Result<Args> {
         mission,
         site,
         transfer,
+        choice,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -1104,6 +1118,44 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     Ok(())
 }
 
+/// Your company splits (or, `joined`, merges into another), leaving you the
+/// choice of ship; after a split, the war goes on a little, while that
+/// choice stays open, until one of the two halves is at work (so they differ).
+fn force_choice(g: &mut galaxy::Galaxy, joined: bool) -> Result<()> {
+    let c = (0..g.companies.len())
+        .find(|&c| g.companies[c].contract.is_none())
+        .context("no idle company")?;
+    g.crew = Some(g.companies[c].id);
+    let co = &mut g.companies[c];
+    if joined {
+        (co.crystals, co.hulls) = (10.0, 0.0);
+    } else {
+        co.crystals = g.rules.merc_split * 1.6;
+    }
+    g.split_and_join();
+    anyhow::ensure!(g.crew_choice().is_some(), "no choice of ship");
+    if joined {
+        // The ships it could go with are at work or not already: and a
+        // small one of them might join another of its own if we waited.
+        return Ok(());
+    }
+    for _ in 0..300 {
+        let Some(v) = g.crew_choice() else { break };
+        if v.ships.iter().any(|b| b.work.is_some()) {
+            return Ok(());
+        }
+        let keep = (v.choice, g.crew);
+        g.step();
+        // A split or join of its own on the way: keep the one we're showing.
+        if g.crew_choice.is_none_or(|c| c != keep.0) {
+            g.crew_choice = Some(keep.0);
+            g.crew = keep.1;
+        }
+    }
+    anyhow::ensure!(g.crew_choice().is_some(), "the choice closed");
+    Ok(())
+}
+
 /// The main menu or mission select over the menu backdrop, headless.
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
@@ -1114,7 +1166,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let prefer = args.employer.map(|f| f.index());
     let war = || {
         let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-        let t = g.await_work(prefer, profile.rank().level, 100).0;
+        let t = g.await_work_staying(prefer, profile.rank().level, 100).0;
         (g.crew, t)
     };
     match args.screen {
@@ -1124,14 +1176,23 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let (crew, t) = war();
             profile.ship = crew;
             menu.set_theater(t);
+            if let Some(joined) = args.choice {
+                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                let rank = profile.rank().level;
+                g.await_work_staying(prefer, rank, 100);
+                force_choice(&mut g, joined)?;
+                profile.ship = g.crew;
+                menu.set_choice(g.crew_choice());
+                menu.set_theater(g.aboard(rank));
+            }
             if let Some(jump) = args.transfer {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
                 let rank = profile.rank().level;
-                let mut t = g.await_work(prefer, rank, 100).0;
+                let mut t = g.await_work_staying(prefer, rank, 100).0;
                 menu.set_theater(t.clone());
                 for _ in 0..2000 {
                     g.step();
-                    let (next, _) = g.await_work(prefer, rank, 100);
+                    let (next, _) = g.await_work_staying(prefer, rank, 100);
                     let moved = |a: &Option<galaxy::theater::Theater>| {
                         a.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| {
                             theater_view::Transfer::between(a, b) && (a.system != b.system) == jump

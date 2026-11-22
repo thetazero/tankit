@@ -588,20 +588,37 @@ impl App {
         let rank = self.profile.rank().level;
         let g = self.war.get();
         adopt_crew(g, self.profile.ship);
-        if self.menu.theater().is_some_and(|t| {
-            t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == g.crew)
-        }) {
+        let choice = g.crew_choice();
+        let shown = self.menu.choice().map(|c| c.choice) == choice.as_ref().map(|c| c.choice);
+        if shown
+            && self.menu.theater().is_some_and(|t| {
+                t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == g.crew)
+            })
+        {
             return;
         }
         // No battle for you this tick: the war goes on until there is one.
         let before = g.crew;
         let (t, ticked) = g.await_work(None, rank, AWAIT_TICKS);
         let crew = g.crew;
+        let choice = g.crew_choice();
         if ticked || crew != before {
             self.war.save();
         }
         self.profile.board(crew);
+        self.menu.set_choice(choice);
         self.menu.set_theater(t);
+    }
+
+    /// Go with ship `id`, of those your company's split or join offered (#364).
+    fn choose_crew(&mut self, id: u32) {
+        let g = self.war.get();
+        if g.choose_crew(id) {
+            let crew = g.crew;
+            self.war.save();
+            self.profile.board(crew);
+        }
+        self.sync_theater();
     }
 
     /// Keep the profile's company (shown throughout the menus) the galaxy's,
@@ -956,6 +973,7 @@ impl App {
                 // Your side isn't fighting there this tick.
                 self.audio.garage(audio::GarageCue::Refused);
             }
+            Some(menu::Action::Crew(id)) => self.choose_crew(id),
             Some(menu::Action::Garage) => {
                 if let Some(cam) = self.camera {
                     self.garage.toggle(&self.game.world, &cam, self.queued());
