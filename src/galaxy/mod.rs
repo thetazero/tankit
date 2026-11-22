@@ -27,8 +27,11 @@
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
 //!    Each side in a fight then may win its objective on one planet, a chance
-//!    by its share of the fire: knock down an enemy shield generator, or,
-//!    once that planet's are all down, take a site. Only so many of a side's
+//!    by its share of the fire: take an enemy site there. An attacker going
+//!    for a planet under an enemy's shield fights a seat short
+//!    (`Rules::seats`, #426): its fire is cut by one seat in that many, the
+//!    same seat a played battle closes; that's all shields do, so it goes for
+//!    the planet's generators first, to get out from under them. Only so many of a side's
 //!    hulls fire a tick however big it is (`Rules::frontage`), so a world
 //!    holds out for many ticks. A side alone in a system repairs its downed generators, one step a
 //!    tick, several ticks to bring one back up.
@@ -48,14 +51,12 @@
 //!    (within FTL range of its systems with hulls to spare) and sends hulls
 //!    where it sees a high chance of capture: to defend anywhere, but to
 //!    attack only within its offensive, or a pocket. Several systems can send
-//!    to one. FTL costs crystals per hull by distance. Landing on a planet
-//!    under an enemy's shield costs crystals per hull;
-//!    once all of a planet's generators are down, landing is free. An attack
+//!    to one. FTL costs crystals per hull by distance. An attack
 //!    the realm is set on but can't make alone, or a world of its own it
 //!    can't hold alone, can hire a **mercenary company** to make up the
 //!    difference (see `merc`, #318, #340): paid in crystal, up front and a
 //!    bonus if it comes off; the company buys the hulls it lacks from the
-//!    cheapest realm nearby, and lands at the shields' rate like anyone.
+//!    cheapest realm nearby.
 //!
 //! A step runs ticks until somewhere is at war: the player is posted to a
 //! battle, so quiet ticks pass unseen.
@@ -103,6 +104,10 @@ const MIN_SEND: f32 = 20.0;
 const QUIET_SKIP: usize = 1000;
 /// A system counts as at war when two sides each have this many hulls in it.
 pub const AT_WAR: f32 = 5.0;
+/// Seats an attacker fights short while the defender has a shield generator
+/// up on the planet it's fighting for (#426): in a played battle, that many
+/// of its seats stay empty; in the galaxy's, its fire is cut to match.
+pub const SHIELD_SEATS: usize = 1;
 
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
@@ -112,8 +117,6 @@ pub struct Rules {
     pub wear: f32,
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
-    /// Crystals per hull to land through an enemy's shield.
-    pub breach_cost: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
     pub kill: f32,
     /// Most of a side's hulls in a system that can fire in a tick. Machines
@@ -121,11 +124,14 @@ pub struct Rules {
     /// harder, they only last longer, so a big army grinds a world down
     /// over many ticks instead of erasing it in one.
     pub frontage: f32,
+    /// Seats a side fights the galaxy's battles with, as a played one's do:
+    /// an attacker under an enemy's shield fights with `SHIELD_SEATS` fewer,
+    /// its fire cut by that share.
+    pub seats: f32,
     /// Fire bonus for a side fighting on ground it holds (all its sites in the system).
     pub home_ground: f32,
-    /// Chance a tick that a side in a fight wins its objective there (the next
-    /// shield generator, or once they're down the next site), times its share
-    /// of the fight's fire.
+    /// Chance a tick that a side in a fight wins its objective there (the
+    /// next site it goes for), times its share of the fight's fire.
     pub take: f32,
     /// An attacker needs this many times the defense (its fire) to go in.
     pub odds: f32,
@@ -223,9 +229,9 @@ impl Default for Rules {
         Rules {
             wear: 0.03,
             ftl_cost: 0.225,
-            breach_cost: 0.1,
             kill: 0.35,
             frontage: 85.0,
+            seats: 6.0,
             home_ground: 0.3,
             take: 0.3,
             odds: 1.5,
@@ -818,16 +824,29 @@ impl Galaxy {
     }
 
     /// Each side's fire in system `s` this tick: its strength, from no more
-    /// of its hulls than the frontage.
+    /// of its hulls than the frontage, and seats short going for a planet
+    /// under an enemy's shield.
     fn fire(&self, s: usize) -> [f32; SIDES] {
         let hulls = self.systems[s].hulls;
         let mut fire = self.strength(s);
+        let seats = self.rules.seats.max(1.0);
+        let short = (seats - SHIELD_SEATS as f32).max(0.0) / seats;
         for f in 0..SIDES {
             if hulls[f] > self.rules.frontage {
                 fire[f] *= self.rules.frontage / hulls[f];
             }
+            if self.shielded(s, f) {
+                fire[f] *= short;
+            }
         }
         fire
+    }
+
+    /// Side `f` is attacking under an enemy's shield in system `s`: the
+    /// planet it's going for (`target`) has a generator of an enemy's up.
+    pub fn shielded(&self, s: usize, f: usize) -> bool {
+        self.target(s, f)
+            .is_some_and(|i| self.shields_up(s, f)[self.sites[i].planet as usize] > 0)
     }
 
     /// Realm `r`'s offensive (if `r` is a realm, on one) takes in `pos`.
@@ -934,97 +953,51 @@ impl Galaxy {
         }
     }
 
-    /// Side `w` makes `steps` of progress in system `s`, on the planet where
-    /// it has least in its way.
+    /// Side `w` makes `steps` of progress in system `s`: each takes the site
+    /// it goes for (`target`).
     fn advance(&mut self, s: usize, w: usize, steps: u32) {
         let (a, b) = self.systems[s].sites;
         let (a, b) = (a as usize, b as usize);
-        let planets = self.systems[s].planets as usize;
-        let mut up = self.shields_up(s, w);
-        let mut enemy = [0u8; 4];
-        for site in &self.sites[a..b] {
-            if self.hostile(w, site.owner as usize) {
-                enemy[site.planet as usize] += 1;
-            }
-        }
-        let Some(p) = (0..planets)
-            .filter(|&p| enemy[p] > 0)
-            .min_by_key(|&p| (up[p], enemy[p]))
-        else {
-            // Nothing of the enemy's here: a defender's won tick counts
-            // toward repairs (except in a pocket, with no parts coming).
-            if self.cut[s] {
-                return;
-            }
-            for site in &mut self.sites[a..b] {
-                if site.owner as usize == w
-                    && let SiteKind::Shield { down } = &mut site.kind
-                {
-                    *down = down.saturating_sub(1);
+        for step in 0..steps {
+            let Some(i) = self.target(s, w) else {
+                // Nothing of the enemy's here: a defender's won tick counts
+                // toward repairs (except in a pocket, with no parts coming).
+                if step > 0 || self.cut[s] {
+                    return;
                 }
-            }
-            return;
-        };
-        for _ in 0..steps {
-            // A shield up first; else the planet's production, its generators last.
-            let candidate = |site: &Site, production: bool| {
-                site.planet as usize == p
-                    && self.hostile(w, site.owner as usize)
-                    && if up[p] > 0 {
-                        site.kind == (SiteKind::Shield { down: 0 })
-                    } else {
-                        matches!(site.kind, SiteKind::Production { .. }) == production
+                for site in &mut self.sites[a..b] {
+                    if site.owner as usize == w
+                        && let SiteKind::Shield { down } = &mut site.kind
+                    {
+                        *down = down.saturating_sub(1);
                     }
+                }
+                return;
             };
-            let i = (a..b)
-                .find(|&i| candidate(&self.sites[i], true))
-                .or_else(|| (a..b).find(|&i| candidate(&self.sites[i], false)));
-            let Some(i) = i else { break };
+            // Take the site: it's the winning realm's now. A taken
+            // generator has to be repaired.
             let site = &mut self.sites[i];
-            if up[p] > 0 {
-                // Destroy the generator (it stays its owner's, down).
-                site.kind = SiteKind::Shield { down: REPAIR_TICKS };
-                up[p] -= 1;
-                self.shields_down += 1;
-            } else {
-                // Take the site: it's the winning realm's now. A taken
-                // generator has to be repaired.
-                let old = site.owner as usize;
-                site.owner = w as u8;
-                if let SiteKind::Shield { down } = &mut site.kind {
-                    *down = REPAIR_TICKS;
+            let old = site.owner as usize;
+            site.owner = w as u8;
+            if let SiteKind::Shield { down } = &mut site.kind {
+                if *down == 0 {
+                    self.shields_down += 1;
                 }
-                let sys = &mut self.systems[s];
-                sys.held[old] -= 1;
-                sys.held[w] += 1;
-                self.taken += 1;
-                self.claim(s, w);
-                // An offensive rolls on from what it takes.
-                let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
-                if self.pushing(r, pos)
-                    && let Some(o) = &mut self.realms[r as usize].offensive
-                {
-                    o.gained = self.tick;
-                    o.at = pos;
-                }
+                *down = REPAIR_TICKS;
             }
-        }
-    }
-
-    /// Crystals a hull for side `f` to land in system `s`: free on any planet
-    /// with no enemy generator up; else through the least-shielded planet,
-    /// at a price.
-    fn landing_cost(&self, s: usize, f: usize) -> f32 {
-        let up = self.shields_up(s, f);
-        let least = up[..self.systems[s].planets as usize]
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or(0);
-        if least == 0 {
-            0.0
-        } else {
-            self.rules.breach_cost
+            let sys = &mut self.systems[s];
+            sys.held[old] -= 1;
+            sys.held[w] += 1;
+            self.taken += 1;
+            self.claim(s, w);
+            // An offensive rolls on from what it takes.
+            let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
+            if self.pushing(r, pos)
+                && let Some(o) = &mut self.realms[r as usize].offensive
+            {
+                o.gained = self.tick;
+                o.at = pos;
+            }
         }
     }
 
@@ -1187,18 +1160,17 @@ impl Galaxy {
             }
             return;
         }
-        let breach = self.landing_cost(t, f);
         // Go in hard: a decisive blow, not a top-up the defender can match
         // next tick. What's left of it rolls on to the next world.
         let send = want.max(pool * self.rules.commit).min(pool);
         if send < MIN_SEND {
             return;
         }
-        // Pay for it: FTL by distance, plus the breach.
+        // Pay for it: FTL by distance.
         let frac = send / pool;
         let cost: f32 = self
             .neighbors(t)
-            .map(|(s, d)| mine(self, s) * frac * (d / FTL_RANGE * self.rules.ftl_cost + breach))
+            .map(|(s, d)| mine(self, s) * frac * d / FTL_RANGE * self.rules.ftl_cost)
             .sum();
         // Defending a world of ours may spend everything; an attack only
         // what's above the reserve.

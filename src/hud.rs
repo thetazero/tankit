@@ -855,7 +855,7 @@ fn hull_summary(
         with_alpha(f.ui(), 0.25),
     );
     label(p, Vec2::new(a, y + 12.0), "HULLS LEFT", Align::Left);
-    let seats = m.fighters.iter().filter(|x| x.team == team).count() as u32;
+    let seats = m.seats(team) as u32;
     let lines = std::iter::once((f, f.name().to_string(), *realm)).chain(
         companies
             .iter()

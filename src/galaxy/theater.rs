@@ -1,10 +1,10 @@
 //! The theater you're posted to (#311): one contested star system, as the
 //! missions screen shows it.
 //!
-//! **Contested sites.** Every side fighting in the system has a front: on each
-//! planet with an enemy site, the enemy's shield generators still up, or, once
-//! they're all down, the enemy's sites there. Those are the contested sites,
-//! and any of them can be looked at.
+//! **Contested sites.** Every side fighting in the system has a front: the
+//! enemy's sites there, any of which it can take (#426: shields don't stand
+//! in the way, they only cost an attacker a seat). Those are the contested
+//! sites, and any of them can be looked at.
 //!
 //! **Committed sites.** Only the battles your side's automated combat commits
 //! to this tick can be entered: the site it attacks (the one the simulation's
@@ -530,8 +530,9 @@ impl Galaxy {
 
     /// The site side `f` would go for in system `s` this tick, if it won the
     /// tick: the planet with least in its way, and on it an enemy generator
-    /// still up; once those are down, its production; its generators last.
-    /// The same pick as the tick's `advance` makes first.
+    /// still up (it costs a seat while it is: `shielded`); else its
+    /// production; its downed generators last. The pick the tick's `advance`
+    /// makes.
     pub fn target(&self, s: usize, f: usize) -> Option<usize> {
         let (up, enemy) = self.in_the_way(s, f);
         let p = (0..self.systems[s].planets as usize)
@@ -540,32 +541,30 @@ impl Galaxy {
         let candidate = |site: &Site, production: bool| {
             site.planet as usize == p
                 && self.hostile(f, site.owner as usize)
-                && if up[p] > 0 {
-                    site.kind == (SiteKind::Shield { down: 0 })
+                && if production {
+                    matches!(site.kind, SiteKind::Production { .. })
                 } else {
-                    matches!(site.kind, SiteKind::Production { .. }) == production
+                    matches!(site.kind, SiteKind::Shield { .. })
                 }
         };
         let r = self.site_range(s);
+        let up = |i: &usize| {
+            let site = &self.sites[*i];
+            candidate(site, false) && site.kind == (SiteKind::Shield { down: 0 })
+        };
         r.clone()
-            .find(|&i| candidate(&self.sites[i], true))
+            .find(up)
+            .or_else(|| r.clone().find(|&i| candidate(&self.sites[i], true)))
             .or_else(|| r.clone().find(|&i| candidate(&self.sites[i], false)))
     }
 
-    /// The sites side `f` is fighting for in system `s`: on each planet with an
-    /// enemy site, the enemy generators up, or (all down) the enemy's sites.
+    /// The sites side `f` is fighting for in system `s`: every enemy site there.
     pub fn front(&self, s: usize, f: usize) -> Vec<usize> {
         if !self.fighting(s, f) {
             return Vec::new();
         }
-        let (up, _) = self.in_the_way(s, f);
         self.site_range(s)
-            .filter(|&i| {
-                let site = &self.sites[i];
-                self.hostile(f, site.owner as usize)
-                    && (up[site.planet as usize] == 0
-                        || site.kind == (SiteKind::Shield { down: 0 }))
-            })
+            .filter(|&i| self.hostile(f, self.sites[i].owner as usize))
             .collect()
     }
 

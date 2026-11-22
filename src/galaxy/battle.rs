@@ -8,6 +8,13 @@
 //! they're spent, the side has no more tanks. The seats (tanks in play at
 //! once) stay capped as before.
 //!
+//! **Shields** (#426). While the site's holder has a shield generator up on
+//! the site's planet, every other side (its mercs among it) fights
+//! `SHIELD_SEATS` seats short: its last seats stay empty, so its frontage
+//! is smaller and it takes more casualties than the defender. The holder is
+//! never short. That's all shields do here, the same as in the galaxy's
+//! battles.
+//!
 //! **Out.** When the battle's done, each side's hulls lost (its tanks
 //! destroyed) come off the system's storage; survivors stay there. A win at the losers' site takes it,
 //! whatever the contract (#419); a Raid's also knocks down one of their
@@ -39,7 +46,7 @@
 //! on its contract, more at higher rank ([`own_hulls`], #385): its bots
 //! can't spend them, only your deaths do.
 
-use super::{AT_WAR, Galaxy, SIDES, SiteKind};
+use super::{AT_WAR, Galaxy, SHIELD_SEATS, SIDES, SiteKind};
 use crate::combat::Match;
 use crate::faction::Faction;
 use crate::mission::Contract;
@@ -83,6 +90,10 @@ pub struct Battle {
     /// The site fought over (index into `Galaxy::sites`): a production site
     /// of the system's holder among the sides.
     pub site: Option<usize>,
+    /// Each team fights under the site holder's shield: it isn't the holder,
+    /// and the holder has a generator up on the site's planet. Such a team
+    /// fights `SHIELD_SEATS` seats short.
+    pub shielded: Vec<bool>,
     /// Your company (`Company::id`), fighting on the first side: its mercs
     /// are the only ones there. None for a battle you're not in (the
     /// galaxy's picks, for bots-only rounds).
@@ -180,9 +191,14 @@ fn seats(m: &Match) -> usize {
 }
 
 fn begin(g: &Galaxy, m: &mut Match, b: Battle) -> Battle {
+    for team in 0..b.sides.len() {
+        if b.shielded[team] {
+            m.close_seats(team, SHIELD_SEATS);
+        }
+    }
     m.set_allocation(&b.allocation);
     for team in 0..b.sides.len() {
-        let seats = m.fighters.iter().filter(|f| f.team == team).count();
+        let seats = m.seats(team);
         m.set_company(
             team,
             b.merc_seats(team, seats),
@@ -454,6 +470,7 @@ impl Galaxy {
                     && matches!(site.kind, SiteKind::Production { .. })
             })
         });
+        let shielded = sides.iter().map(|&f| self.under_shield(system, site, f)).collect();
         Some(Battle {
             system,
             sides,
@@ -462,8 +479,22 @@ impl Galaxy {
             hired,
             share,
             site,
+            shielded,
             crew,
         })
+    }
+
+    /// Side `f` would fight for `site` (in system `s`) under its holder's
+    /// shield: `f` isn't the holder, and the holder has a generator up on
+    /// the site's planet.
+    pub fn under_shield(&self, s: usize, site: Option<usize>, f: usize) -> bool {
+        let Some(i) = site else { return false };
+        let (owner, planet) = (self.sites[i].owner, self.sites[i].planet);
+        let (a, b) = self.systems[s].sites;
+        owner as usize != f
+            && self.sites[a as usize..b as usize].iter().any(|x| {
+                x.owner == owner && x.planet == planet && x.kind == (SiteKind::Shield { down: 0 })
+            })
     }
 
     pub fn snapshot(&self, s: usize) -> Snapshot {
@@ -870,6 +901,44 @@ mod merc_tests {
             defend: false,
         });
         (g, t, [Faction::ALL[f], Faction::ALL[e]])
+    }
+
+    /// Fighting for a site under its holder's shield, the attacker (mercs
+    /// and all) fights a seat short (#426): its last seat stays empty. The
+    /// holder never does, and with the planet's generators down, nor does
+    /// the attacker.
+    #[test]
+    fn shields_close_an_attackers_seat() {
+        let (mut g, t, sides) = staged(20.0, 40.0);
+        let battle = |g: &Galaxy| {
+            let mut map = crate::map::Map::saltmarket();
+            map.factions = sides.to_vec();
+            let mut m = crate::combat::Match::new(map, 0, 11, 21);
+            let b = begin(g, &mut m, g.muster_at(t, &sides, None, None).unwrap());
+            m.start();
+            (b, m)
+        };
+        let (b, m) = battle(&g);
+        assert_eq!(b.shielded, vec![true, false]);
+        assert_eq!((m.seats(0), m.seats(1)), (6 - SHIELD_SEATS, 6));
+        let fielded = |m: &Match, team: usize| {
+            m.fighters.iter().filter(|f| f.team == team && f.alive).count()
+        };
+        assert_eq!(fielded(&m, 0), 6 - SHIELD_SEATS);
+        assert_eq!(fielded(&m, 1), 6);
+        assert!(m.fighters[0].alive, "never your seat");
+        // Its generators on the site's planet down: no shield.
+        let site = b.site.unwrap();
+        let planet = g.sites[site].planet;
+        let (a, z) = g.systems[t].sites;
+        for x in &mut g.sites[a as usize..z as usize] {
+            if x.planet == planet && matches!(x.kind, SiteKind::Shield { .. }) {
+                x.kind = SiteKind::Shield { down: 2 };
+            }
+        }
+        let (b, m) = battle(&g);
+        assert_eq!(b.shielded, vec![false, false]);
+        assert_eq!((fielded(&m, 0), fielded(&m, 1)), (6, 6));
     }
 
     /// A second company, on the same contract as company 0, with `hulls`
