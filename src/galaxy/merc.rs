@@ -472,7 +472,6 @@ impl Galaxy {
                 self.companies[c].contract = Some(k);
                 continue;
             }
-            let mut bonus = (0.0, 0.0);
             if won {
                 let realm = &mut self.realms[k.realm as usize];
                 let paid = k.bonus.min(realm.crystals.max(0.0));
@@ -493,7 +492,6 @@ impl Galaxy {
                 self.books.defaulted += owed.max(0.0) as f64;
                 self.books.worth_won += self.worth(t, f, true) as f64;
                 self.books.paid_won += (k.upfront + paid) as f64;
-                bonus = (paid, owed.max(0.0));
             } else if broken {
                 self.books.broken += 1;
             } else {
@@ -523,9 +521,6 @@ impl Galaxy {
                     tick: self.tick,
                     outcome,
                     defend: k.defend,
-                    upfront: k.upfront,
-                    bonus: bonus.0,
-                    owed: bonus.1,
                     committed: k.committed,
                     lost: k.lost,
                     own,

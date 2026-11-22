@@ -616,10 +616,6 @@ fn your_ended_contracts_are_kept() {
     for e in &g.ended {
         assert!(e.tick >= e.signed);
         assert!(e.lost >= 0.0 && e.lost <= e.committed + 1e-3);
-        assert!(e.upfront >= 0.0);
-        if e.outcome != Outcome::Won {
-            assert_eq!((e.bonus, e.owed), (0.0, 0.0), "no bonus unless it's won");
-        }
         assert!(e.outcome != Outcome::Fell || e.defend);
     }
     // Ended in order, and not the one your company's still on.

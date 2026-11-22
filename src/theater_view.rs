@@ -1188,17 +1188,6 @@ fn summary(
             format!("{} / {}", e.own.of - e.own.left.min(e.own.of), e.own.of),
         ));
     }
-    rows.push(("PAID UP FRONT", format!("{:.0} CR", e.upfront)));
-    rows.push((
-        "BONUS",
-        if !e.outcome.won() {
-            "FORFEIT".to_string()
-        } else if e.owed > 0.5 {
-            format!("{:.0} OF {:.0} CR PAID", e.bonus, e.bonus + e.owed)
-        } else {
-            format!("{:.0} CR", e.bonus)
-        },
-    ));
 
     const PAD: f32 = 24.0;
     const ROW: f32 = 20.0;

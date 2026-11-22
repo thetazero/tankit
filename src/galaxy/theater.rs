@@ -138,10 +138,6 @@ pub struct Ended {
     pub tick: u64,
     pub outcome: Outcome,
     pub defend: bool,
-    /// Crystals paid up front; bonus crystals actually paid; bonus crystals the employer still owes.
-    pub upfront: f32,
-    pub bonus: f32,
-    pub owed: f32,
     /// Company hulls committed to the contract, and how many were lost.
     pub committed: f32,
     pub lost: f32,
