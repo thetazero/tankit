@@ -376,6 +376,8 @@ pub fn backdrop_match(kind: MapKind, side: usize, kit: garage::Loadout) -> Match
     let me = &mut m.fighters[0];
     me.arrived = crate::arrival::ARRIVAL_TIME;
     me.shield = 0.0;
+    // Nor the link as you're fielded.
+    m.sounds.clear();
     m
 }
 

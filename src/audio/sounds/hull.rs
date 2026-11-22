@@ -112,7 +112,9 @@ mod tests {
     }
 
     fn game() -> Match {
-        Match::new(crate::map::Map::saltmarket(), 0, 5, 7)
+        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        m.start();
+        m
     }
 
     /// Set the player's hull to `frac` of full.

@@ -25,6 +25,7 @@
 
 pub mod check;
 pub mod city;
+pub mod desert;
 mod imperium;
 pub mod mine;
 pub mod shield;
@@ -47,6 +48,8 @@ pub enum Biome {
     City,
     /// A crystal mine dug into a desert escarpment.
     Mine,
+    /// Open desert: dunes, buttes, spires, perhaps a dry wash.
+    Desert,
 }
 
 /// Whose place it is.
@@ -137,6 +140,7 @@ fn build_map(spec: &Spec) -> Map {
     match spec.biome {
         Biome::City => build(spec).0,
         Biome::Mine => mine::build(spec),
+        Biome::Desert => desert::build(spec),
     }
 }
 
@@ -235,13 +239,16 @@ fn planet(biome: Biome) -> crate::planet::Look {
     match biome {
         Biome::City => city::PLANET,
         Biome::Mine => mine::PLANET,
+        Biome::Desert => desert::PALETTES[0].planet,
     }
 }
 
 /// The skeleton `spec` lays out, as its greybox.
 pub fn greybox(spec: &Spec) -> Map {
-    if spec.biome == Biome::Mine {
-        return mine::greybox(spec);
+    match spec.biome {
+        Biome::Mine => return mine::greybox(spec),
+        Biome::Desert => return desert::greybox(spec),
+        Biome::City => {}
     }
     let sk = skeleton(spec);
     let mut map = sk.greybox(&spec.sides);
@@ -524,6 +531,11 @@ impl Map {
             return slot.get_or_init(|| map(&crate::mine_spec(seed))).clone();
         }
         map(&crate::mine_spec(seed))
+    }
+
+    /// The open desert `seed` names (see `crate::desert_spec`).
+    pub fn desert(seed: u64) -> Map {
+        map(&crate::desert_spec(seed))
     }
 
     /// The imperial city `seed` names, with `owner`'s shield generator in

@@ -34,6 +34,9 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         // Generated: each mine picks its own (the Face, the adit's mouth
         // and the bridge out of it, from either side of the bridge's end).
         MapKind::Mine => &[],
+        // Generated: each desert picks its own (by each side's spawns,
+        // looking at the Needles).
+        MapKind::Desert => &[],
     }
 }
 
@@ -206,6 +209,8 @@ mod tests {
             (MapKind::City, 2),
             (MapKind::Foundry, 0),
             (MapKind::Mine, 0),
+            (MapKind::Desert, 0),
+            (MapKind::Desert, 1),
         ]
         .into_iter()
         // (The mine is slow to build unoptimized: `cargo test --release`.)
