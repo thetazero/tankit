@@ -370,15 +370,22 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                 let margins: f32 = g.companies.iter().map(|c| c.margin).sum::<f32>()
                     / g.companies.len().max(1) as f32;
                 println!(
-                    "    {}\n    signed {} won {} broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {}  margin {:.2}",
+                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  held in orbit {:.0}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {}  margin {:.2}",
                     track.join("  "),
                     b.signed,
+                    b.defenses,
                     b.won,
+                    b.defended,
                     b.broken,
                     b.expired,
                     b.upfront,
                     b.bonus,
                     b.defaulted,
+                    b.repaid,
+                    b.written_off,
+                    g.debts.iter().map(|d| d.crystals).sum::<f32>(),
+                    b.refused,
+                    b.held_up,
                     b.worth_won,
                     b.paid_won,
                     b.sold,
@@ -443,6 +450,51 @@ fn realms_hire_companies() {
         end > start,
         "the companies' capital went from {start} to {end}"
     );
+}
+
+/// Defenders hire companies too, and no side of a fight lands under enemy
+/// shields faster than the shields allow, mercs' hulls and its own together
+/// (#340).
+#[test]
+fn defenders_hire_and_mercs_keep_the_landing_rate() {
+    let mut g = small_war();
+    for _ in 0..150 {
+        g.step();
+        for t in 0..g.systems.len() {
+            for f in 0..SIDES {
+                let (rate, _) = g.landing(t, f);
+                assert!(
+                    g.landed[t][f] <= rate * 1.0001 + 1e-3,
+                    "tick {}: {} landed under a rate of {rate}",
+                    g.tick,
+                    g.landed[t][f]
+                );
+            }
+        }
+    }
+    let b = g.books;
+    assert!(b.defenses > 0 && b.defended > 0, "{b:?}");
+    assert!(b.held_up > 0.0, "no merc hulls ever waited in orbit");
+}
+
+/// A realm that can't pay a bonus owes it: no company signs with it until
+/// it's paid, and it pays it back out of its income (#340).
+#[test]
+fn unpaid_bonuses_are_debts() {
+    let mut g = small_war();
+    for _ in 0..150 {
+        g.step();
+        for c in &g.companies {
+            if let Some(k) = c.contract
+                && k.signed == g.tick
+            {
+                assert!(!g.in_debt(k.realm), "tick {}: hired while in debt", g.tick);
+            }
+        }
+    }
+    let b = g.books;
+    assert!(b.defaulted > 0.0 && b.repaid > 0.0, "{b:?}");
+    assert!(b.refused > 0, "{b:?}");
 }
 
 /// Without companies, nobody's hired, and the war goes on as before.
