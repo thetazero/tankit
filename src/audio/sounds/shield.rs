@@ -141,6 +141,7 @@ mod tests {
     #[test]
     fn each_shield_drops_once() {
         let mut game = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        game.start();
         let n = game.fighters.len();
         let mut drops = vec![0; n];
         let mut first = None;
@@ -200,6 +201,7 @@ mod tests {
         std::fs::write("docs/audio/shield.wav", wav(&out, RATE)).unwrap();
 
         let mut game = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        game.start();
         let buf = crate::audio::record(&mut game, 3.5, RATE, volume, |w| {
             crate::game::autopilot(w.time)
         });

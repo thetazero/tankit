@@ -692,7 +692,8 @@ pub fn depth_in_tank(tank: &Tank, p: Vec3) -> f32 {
 pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Scene {
     let mut instances = Vec::new();
     let mut particles = Vec::new();
-    for t in tanks {
+    // An empty seat has no tank to draw.
+    for t in tanks.iter().filter(|t| !t.empty) {
         art.instances(t, &mut instances, &mut particles);
     }
 

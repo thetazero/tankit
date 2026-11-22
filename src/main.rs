@@ -423,6 +423,7 @@ fn main() -> Result<()> {
     let args = parse_args()?;
     if let Some((warmup, seconds, w, h)) = args.bench {
         let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+        game.start();
         game.set_contract(args.contract);
         game.set_player_hull(args.loadout.0);
         game.world.tanks[0].turret_kind = args.loadout.1;
@@ -877,6 +878,7 @@ fn parse_args() -> Result<Args> {
 fn record_wav(args: &Args, out: &str, seconds: f32) -> Result<()> {
     const RATE: u32 = 48_000;
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
+    game.start();
     game.set_contract(args.contract);
     game.set_player_hull(args.loadout.0);
     game.world.tanks[0].turret_kind = args.loadout.1;
@@ -964,6 +966,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     if let Some(h) = &args.hulls {
         game.set_allocation(h);
     }
+    // All set up: the round starts, its tanks fielded.
+    game.start();
     if args.screen == Some(Screen::Results) {
         // A still shows the results settled; a clip starts as they begin to count.
         let lead = if shot.frames > 1 { 0.3 } else { 4.0 };

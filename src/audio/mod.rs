@@ -406,6 +406,7 @@ mod tests {
     fn a_battle_sounds_sane() {
         let map = crate::map::Map::saltmarket();
         let mut game = Match::new(map, 0, 5, 7);
+        game.start();
         let buf = record(&mut game, 6.0, 24_000, 0.8, |w| {
             crate::game::autopilot(w.time)
         });
@@ -426,6 +427,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let map = crate::map::Map::saltmarket();
         let mut game = Match::new(map, 0, 12, 3);
+        game.start();
         let rate = 48_000;
         let mut audio = Audio::offline(rate);
         audio.set_volume(0.8);

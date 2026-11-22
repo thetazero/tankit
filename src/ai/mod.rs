@@ -314,7 +314,11 @@ impl Bot {
             self.retarget_in = 0.4;
             let mut best: Option<(usize, f32)> = None;
             for (j, o) in world.tanks.iter().enumerate() {
-                if j == me || !contacts[j].targetable || contacts[j].team == contacts[me].team {
+                if j == me
+                    || o.empty
+                    || !contacts[j].targetable
+                    || contacts[j].team == contacts[me].team
+                {
                     continue;
                 }
                 let d = t.pos.distance(o.pos);
@@ -636,7 +640,7 @@ impl Bot {
 
         // An enemy Knell ringing up with its bell on us: get out of its line.
         let tolling = world.tanks.iter().enumerate().any(|(j, o)| {
-            if j == me || contacts[j].team == contacts[me].team || o.charge < 0.35 {
+            if j == me || o.empty || contacts[j].team == contacts[me].team || o.charge < 0.35 {
                 return false;
             }
             let to = my2 - flat(o.pos);

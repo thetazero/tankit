@@ -786,6 +786,7 @@ mod merc_tests {
         let b = begin(&g, &mut m, b);
         m.set_own_hulls(g.own_left());
         assert_eq!(m.own_hulls, 2);
+        m.start();
         m.destroy_player();
         conclude(&mut g, &b, &m);
         assert_eq!(g.own.unwrap().left, 1);

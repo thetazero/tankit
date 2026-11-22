@@ -842,6 +842,7 @@ mod play {
     #[ignore]
     fn bots_fight_across_the_kiln() {
         let mut m = Match::new(Map::kiln(), 0, 11, 7);
+        m.start();
         let start: Vec<Vec2> = m
             .world
             .tanks
