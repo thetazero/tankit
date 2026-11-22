@@ -877,6 +877,10 @@ pub struct Match {
     /// Of those, the mercs': what the Company's tanks come back in. A
     /// Company bot that dies with none left comes back as its side's own.
     pub company_hulls: Vec<u32>,
+    /// Each side's merc companies, by name, with the hulls each brought
+    /// (`set_companies`): how its merc hulls left split between them on
+    /// the scoreboard (#423), as the galaxy splits their losses.
+    companies: Vec<Vec<(String, f32)>>,
     /// Of your company's spare hulls, yours alone (#385): its bots can't
     /// come back in them. Your deaths spend them first; once they're gone,
     /// you come back in the company's shared ones like anyone.
@@ -910,6 +914,38 @@ pub struct Match {
     rng: Rng,
     /// Blowing sand, drifting dust, trickles, track dust (visual only).
     pub ambience: crate::ambience::Ambience,
+}
+
+/// `n` split between named shares in proportion to their weights, by
+/// largest remainder: whole numbers that add up to `n`.
+fn apportion(n: u32, shares: &[(String, f32)]) -> Vec<(String, u32)> {
+    let total: f32 = shares.iter().map(|s| s.1.max(0.0)).sum();
+    if total <= 0.0 {
+        let mut out: Vec<_> = shares.iter().map(|s| (s.0.clone(), 0)).collect();
+        if let Some(first) = out.first_mut() {
+            first.1 = n;
+        }
+        return out;
+    }
+    let exact: Vec<f32> = shares
+        .iter()
+        .map(|s| n as f32 * s.1.max(0.0) / total)
+        .collect();
+    let mut out: Vec<(String, u32)> = shares
+        .iter()
+        .zip(&exact)
+        .map(|(s, &x)| (s.0.clone(), x.floor() as u32))
+        .collect();
+    let given: u32 = out.iter().map(|o| o.1).sum();
+    let mut order: Vec<usize> = (0..shares.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (ra, rb) = (exact[a] - exact[a].floor(), exact[b] - exact[b].floor());
+        rb.total_cmp(&ra).then(a.cmp(&b))
+    });
+    for &i in order.iter().cycle().take(n.saturating_sub(given) as usize) {
+        out[i].1 += 1;
+    }
+    out
 }
 
 impl Match {
@@ -979,6 +1015,7 @@ impl Match {
             over_for: 0.0,
             hulls: None,
             company_hulls: Vec::new(),
+            companies: Vec::new(),
             own_hulls: 0,
             own_lost: 0,
             company_deaths: Vec::new(),
@@ -1173,6 +1210,41 @@ impl Match {
         self.company_hulls[team] = hulls;
     }
 
+    /// Side `team`'s merc companies (with `set_company`): each one's name
+    /// and the hulls it brings, for the scoreboard's hull summary (#423).
+    pub fn set_companies(&mut self, team: usize, companies: Vec<(String, f32)>) {
+        if self.companies.len() <= team {
+            self.companies
+                .resize(self.factions.len().max(team + 1), Vec::new());
+        }
+        self.companies[team] = companies;
+    }
+
+    /// Side `team`'s hulls left under an allocation, split (#423): the
+    /// realm's own, then each merc company's by name. A company's share of
+    /// the side's merc hulls left is in proportion to what it brought, as
+    /// its losses are; the shares add up to the merc hulls left.
+    pub fn hull_summary(&self, team: usize) -> Option<(u32, Vec<(String, u32)>)> {
+        let left = self.hulls_left(team)?;
+        let mercs = self.company_hulls.get(team).copied().unwrap_or(0);
+        let named = self.companies.get(team).filter(|c| !c.is_empty());
+        let companies = match named {
+            Some(c) => apportion(mercs, c),
+            // Mercs without names (no galaxy behind the match): the Company's,
+            // or your company on your side.
+            None if mercs > 0 || self.crew_team == Some(team) => {
+                let name = self
+                    .crew
+                    .clone()
+                    .filter(|_| self.crew_team == Some(team))
+                    .unwrap_or_else(|| "COMPANY".to_string());
+                vec![(name, mercs)]
+            }
+            None => Vec::new(),
+        };
+        Some((left.saturating_sub(mercs), companies))
+    }
+
     /// Set aside up to `n` of your company's hulls as yours alone (after
     /// `set_company`): your own hulls left on its contract, as many as this
     /// battle brings. None without a seat among your side's mercs.
@@ -1182,11 +1254,6 @@ impl Match {
             .and_then(|t| self.company_hulls.get(t).copied())
             .unwrap_or(0);
         self.own_hulls = n.min(brought);
-    }
-
-    /// The side you hold a seat among the mercs of, if any.
-    pub fn crew_team(&self) -> Option<usize> {
-        self.crew_team
     }
 
     /// Your own hulls lost this round.
@@ -5686,6 +5753,44 @@ mod tests {
         destroy(&mut m, 0);
         respawn(&mut m);
         assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(1), 0));
+    }
+
+    /// The hull summary (#423): the realm's hulls left, then each merc
+    /// company's, its share of the merc hulls left as it brought them,
+    /// whole hulls adding up to them.
+    #[test]
+    fn hull_summary_splits_the_realms_and_each_companys() {
+        let mut m = arena(3);
+        assert_eq!(m.hull_summary(0), None, "no allocation, no summary");
+        m.set_allocation(&[12, 10]);
+        m.set_company(1, 1, 5);
+        m.set_companies(
+            1,
+            vec![("IRON TITHE".into(), 3.2), ("SALT OATH".into(), 1.8)],
+        );
+        let (realm, cos) = m.hull_summary(1).unwrap();
+        assert_eq!(realm, 5);
+        assert_eq!(cos, vec![("IRON TITHE".into(), 3), ("SALT OATH".into(), 2)]);
+        assert_eq!(
+            m.hull_summary(0),
+            Some((12, vec![])),
+            "no mercs: the realm's alone"
+        );
+        m.company_hulls[1] = 2;
+        let (_, cos) = m.hull_summary(1).unwrap();
+        assert_eq!(cos.iter().map(|c| c.1).sum::<u32>(), 2);
+    }
+
+    /// Mercs without names are the Company's; on your side, your company's.
+    #[test]
+    fn hull_summary_names_unnamed_mercs() {
+        let mut m = arena(3);
+        m.set_allocation(&[8, 8]);
+        m.set_company(0, 1, 3);
+        m.set_company(1, 1, 2);
+        m.crew = Some("IRON TITHE".into());
+        assert_eq!(m.hull_summary(0), Some((5, vec![("IRON TITHE".into(), 3)])));
+        assert_eq!(m.hull_summary(1), Some((6, vec![("COMPANY".into(), 2)])));
     }
 
     /// With no merc hull for you at the start, you're out from it (#361),

@@ -309,15 +309,6 @@ impl Hud {
                 1.0,
                 theme::FAINT,
             );
-            for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
-                hulls_left(
-                    &mut p,
-                    m,
-                    team,
-                    Vec2::new(top.x + dir * 14.0, sy + 24.0),
-                    align,
-                );
-            }
         } else {
             // Free-for-all: every side's score in a row, yours first.
             let step = 110.0;
@@ -334,11 +325,8 @@ impl Hud {
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
                 emblem::faction_name(&mut p, Vec2::new(x, sy + 20.0), f, &l, Align::Center);
-                hulls_left(&mut p, m, team, Vec2::new(x, sy + 36.0), Align::Center);
             }
         }
-        // The meters go under the hulls left, if there's an allocation.
-        let sy = if m.hulls.is_some() { sy + 16.0 } else { sy };
         if let Some(hd) = &m.hold
             && !board
         {
@@ -662,36 +650,6 @@ impl Hud {
 
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
-/// Side `team`'s hulls not yet in play, under its score: "18 HULLS", and
-/// how many of them are mercs' ("18 HULLS · 4 COMPANY"), the count alone
-/// on your company's side (#412); hot when the last few are going, struck
-/// through once they're all spent.
-fn hulls_left(p: &mut Painter, m: &Match, team: usize, at: Vec2, align: Align) {
-    let Some(n) = m.hulls_left(team) else { return };
-    let mut s = TextStyle::LABEL;
-    let seats = m.fighters.iter().filter(|f| f.team == team).count() as u32;
-    s.color = if m.spent(team) {
-        theme::DIM
-    } else if n <= seats {
-        theme::HOT
-    } else {
-        with_alpha(theme::FG, 0.85)
-    };
-    let mercs = m.company_hulls.get(team).copied().unwrap_or(0);
-    let text = if m.spent(team) {
-        "OUT OF HULLS".to_string()
-    } else if m.crew_out() && team == m.fighters[0].team {
-        // Your company's spent (#361): the realm's fight on (#373).
-        format!("{n} HULLS · COMPANY OUT")
-    } else if mercs > 0 && m.crew_team() != Some(team) {
-        // Of them, the mercs' (#320).
-        format!("{n} HULLS · {mercs} COMPANY")
-    } else {
-        format!("{n} HULLS")
-    };
-    p.text(at, &text, &s, align);
-}
-
 fn scoreboard(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
@@ -715,8 +673,17 @@ fn scoreboard(
         .map(|t| pilots.iter().filter(|pi| pi.team == t).count())
         .max()
         .unwrap_or(0) as f32;
+    // Under each table, its hulls left (#423): a line for the realm and
+    // one per merc company, under an allocation.
+    let summaries: Vec<_> = (0..sides).map(|t| m.hull_summary(t)).collect();
+    let lines = summaries
+        .iter()
+        .flatten()
+        .map(|(_, c)| 1 + c.len())
+        .max()
+        .map_or(0.0, |n| SUMMARY_TOP + n as f32 * SUMMARY_ROW);
     // Tables stack two to a row.
-    let block = 56.0 + rows * 22.0;
+    let block = 56.0 + rows * 22.0 + lines;
     let block_gap = 24.0;
     let blocks = sides.div_ceil(2) as f32;
     let body = blocks * block + (blocks - 1.0) * block_gap;
@@ -841,6 +808,10 @@ fn scoreboard(
             p.text(Vec2::new(b, ty), &pi.deaths.to_string(), &s, Align::Right);
             ty += 22.0;
         }
+        if let Some(summary) = &summaries[team] {
+            let ty = y + 56.0 + rows * 22.0;
+            hull_summary(p, m, team, summary, a, b, ty);
+        }
     }
     y += body;
     if m.phase == Phase::Over {
@@ -857,6 +828,54 @@ fn scoreboard(
             y,
         );
         round_over_buttons(p, hits, hover, Vec2::new(top.x, y + RESULTS_H + 24.0));
+    }
+}
+
+/// The hull summary under a table: the space above it, and each line.
+const SUMMARY_TOP: f32 = 32.0;
+const SUMMARY_ROW: f32 = 22.0;
+
+/// Side `team`'s hulls left (#423), between `a` and `b` from `y` down:
+/// under a rule and its header, the realm's, then each merc company's on
+/// its side. Hot when the last few are going; dim once there are none.
+fn hull_summary(
+    p: &mut Painter,
+    m: &Match,
+    team: usize,
+    (realm, companies): &(u32, Vec<(String, u32)>),
+    a: f32,
+    b: f32,
+    y: f32,
+) {
+    let f = m.factions[team];
+    p.line(
+        Vec2::new(a, y + 4.0),
+        Vec2::new(b, y + 4.0),
+        1.0,
+        with_alpha(f.ui(), 0.25),
+    );
+    label(p, Vec2::new(a, y + 12.0), "HULLS LEFT", Align::Left);
+    let seats = m.fighters.iter().filter(|x| x.team == team).count() as u32;
+    let lines = std::iter::once((f, f.name().to_string(), *realm)).chain(
+        companies
+            .iter()
+            .map(|(n, h)| (Faction::Company, n.clone(), *h)),
+    );
+    let mut ly = y + SUMMARY_TOP;
+    for (who, name, n) in lines {
+        let mut s = TextStyle::value(ROW_SIZE);
+        s.color = if n == 0 { theme::DIM } else { who.ui() };
+        emblem::tagged(p, Vec2::new(a, ly), who, &name, &s, Align::Left);
+        let mut v = TextStyle::value(ROW_SIZE);
+        v.color = if n == 0 {
+            theme::DIM
+        } else if n <= seats {
+            theme::HOT
+        } else {
+            theme::FG
+        };
+        p.text(Vec2::new(b, ly), &n.to_string(), &v, Align::Right);
+        ly += SUMMARY_ROW;
     }
 }
 

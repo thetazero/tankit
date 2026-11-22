@@ -188,6 +188,14 @@ fn begin(g: &Galaxy, m: &mut Match, b: Battle) -> Battle {
             b.merc_seats(team, seats),
             b.mercs(team).round() as u32,
         );
+        // Each company by name, for the scoreboard's hull summary (#423):
+        // those bringing at least half a hull, so none shows up empty-handed.
+        let named = b.hired[team]
+            .iter()
+            .filter(|&&(_, h)| h >= 0.5)
+            .map(|&(id, h)| (super::theater::ship_name(id), h))
+            .collect();
+        m.set_companies(team, named);
     }
     m.place = Some(system_name(b.system));
     log::info!(
