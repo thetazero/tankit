@@ -287,17 +287,13 @@ impl Hud {
                 let f = m.factions[team];
                 let mut s = TextStyle::value(16.0);
                 s.color = f.ui();
-                p.text(
-                    Vec2::new(top.x + dir * 14.0, sy),
-                    &m.score(team).to_string(),
-                    &s,
-                    align,
-                );
+                let score = m.score(team).to_string();
+                p.text(Vec2::new(top.x + dir * SCORE_IN, sy), &score, &s, align);
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
                 emblem::faction_name(
                     &mut p,
-                    Vec2::new(top.x + dir * 52.0, sy + 6.0),
+                    Vec2::new(top.x + dir * name_in(&score), sy + 6.0),
                     f,
                     &l,
                     align,
@@ -662,6 +658,18 @@ impl Hud {
 
 /// Each side's standings table, two to a row (your side first, top left),
 /// with a winner banner once the round is over.
+/// How far a side's score sits from the top centre, toward its side.
+const SCORE_IN: f32 = 14.0;
+
+/// How far a side's faction name sits from the top centre, next to its
+/// `score`: where it's always been for up to two digits, and pushed out by
+/// any wider score so the two never touch.
+fn name_in(score: &str) -> f32 {
+    let style = TextStyle::value(16.0);
+    let two = measure("00", &style);
+    52.0 + (measure(score, &style) - two).max(0.0)
+}
+
 /// Side `team`'s hulls not yet in play, under its score: "18 HULLS", and
 /// how many of them are mercs' ("18 HULLS · 4 COMPANY"), the count alone
 /// on your company's side (#412); hot when the last few are going, struck
@@ -1232,6 +1240,17 @@ mod tests {
     use super::*;
     use crate::render::Camera;
     use glam::Vec3;
+
+    #[test]
+    fn a_score_of_any_width_clears_its_faction_name() {
+        let style = TextStyle::value(16.0);
+        let gap = name_in("52") - SCORE_IN - measure("52", &style);
+        assert!(gap > 4.0, "two digits leave {gap}");
+        for score in ["0", "7", "52", "120", "999", "1000", "12345"] {
+            let clear = name_in(score) - SCORE_IN - measure(score, &style);
+            assert!(clear >= gap - 0.01, "{score} leaves {clear}, not {gap}");
+        }
+    }
 
     #[test]
     fn scoreboard_fits_any_kit_on_a_square_screen() {
