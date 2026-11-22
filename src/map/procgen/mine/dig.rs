@@ -4029,9 +4029,15 @@ impl Dig<'_> {
     /// Something solid to hide behind near `p`, at the ground's level.
     pub(super) fn cover_near(&self, p: Vec2, r: f32) -> bool {
         let g = self.level(p);
+        // Something standing tank-high over the ground it's on (on a slope,
+        // its ground, not the ground here), on about this level.
         self.oboxes.iter().any(|o| {
+            if !o.solid || o.ramp || o.distance(p) > r {
+                return false;
+            }
             let (lo, hi) = o.y_range();
-            o.solid && !o.ramp && hi > g + 1.4 && lo < g + 2.0 && o.distance(p) < r
+            let go = self.level(o.center).max(lo);
+            hi > go + 1.4 && (go - g).abs() < 3.0
         }) || self.crystals.iter().any(|c| c.solid && c.distance(p) < r)
             || {
                 // A bank or a rise of the ground itself.
@@ -4436,6 +4442,28 @@ impl Dig<'_> {
         // edge's rocks): each one a drive from the first side's spawns.
         if let Some(from) = self.bases.first().and_then(|b| b.first()).copied() {
             let nav = crate::ai::nav::NavGrid::build(self);
+            // Each point of the bots' ways round on open ground on its
+            // level: moved to the nearest that is (something put down after
+            // the ways were laid out can stand on one), or left out.
+            let routes = std::mem::take(&mut self.routes);
+            self.routes = routes
+                .into_iter()
+                .map(|way| {
+                    way.into_iter()
+                        .filter_map(|p| {
+                            (0..80).find_map(|k| {
+                                let a = k as f32 * 2.4;
+                                let r = k as f32 * 0.08;
+                                let q = Vec3::new(p.x + a.cos() * r, p.y, p.z + a.sin() * r);
+                                nav.floor_at(q)
+                                    .filter(|f| (f - p.y).abs() < 1.0)
+                                    .map(|f| Vec3::new(q.x, f, q.z))
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .filter(|way| way.len() >= 2)
+                .collect();
             let spots = std::mem::take(&mut self.open_spots);
             self.open_spots = spots
                 .into_iter()
@@ -4661,7 +4689,7 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
         || lay.buttes.iter().any(|b| {
             // Round a butte's foot, and its ramp.
             let (a, w) = b.way();
-            seg(p, a, w).0 < 8.0 || (b.distance(p) > -3.0 && b.distance(p) < 3.0)
+            seg(p, a, w).0 < 12.0 || (b.distance(p) > -3.0 && b.distance(p) < 3.0)
         })
         || lay.crag_depth(p) > -4.0
         || (p.y > f - 8.0 && p.y < f + FACE_RISE + 5.0)

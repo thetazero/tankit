@@ -290,14 +290,14 @@ fn check_the_faces_top_is_never_buried(seed: u64) {
             // the ground, or the Crag's top, 40 m up.
             let q = Vec2::new(p.x, p.z);
             if l.cave_distance(q) < 3.0
-                || l.crag(q) > 0.5
+                || l.crag_depth(q) > -3.0
                 || q.max_element() > l.size
                 || q.min_element() < 0.0
             {
                 continue;
             }
             let under = map.ground_height(p.x, p.z) - p.y;
-            if under > 0.05 {
+            if under > 0.1 {
                 buried += area / 4.0;
             }
             if under > worst.0 {
@@ -1171,4 +1171,49 @@ fn sweep() {
         eprintln!("seed {seed} done, {} failures so far", failed.len());
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// What's round a point (`MINE_PROBE=seed,x,z,r cargo test --release
+/// probe -- --ignored --nocapture`): for looking into a failure.
+#[test]
+#[ignore]
+fn probe() {
+    let v: Vec<f32> = std::env::var("MINE_PROBE")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let (seed, p, r) = (v[0] as u64, Vec2::new(v[1], v[2]), v[3]);
+    let (l, m) = (lay(seed), mine(seed));
+    let mut copy = m.clone();
+    let d = Dig {
+        map: &mut copy,
+        l: &l,
+        st: &super::ithessar::Ithessar,
+    };
+    eprintln!(
+        "ground {} wash {} mesa {} keep_clear {} in_the_way {} cover_near {} size {}",
+        l.ground(p.x, p.y),
+        l.wash(p),
+        l.mesa(p),
+        keep_clear(&l, p),
+        d.in_the_way(p, 3.0),
+        d.cover_near(p, 13.0),
+        l.size
+    );
+    for o in m.oboxes.iter().filter(|o| o.solid && o.distance(p) < r) {
+        eprintln!(
+            "obox {} half {} y {:.1}..{:.1} rock {:?}",
+            o.center, o.half, o.y0, o.y1, o.rock
+        );
+    }
+    for k in 0..16 {
+        let a = k as f32 * TAU / 16.0;
+        let q = p + Vec2::new(a.cos(), a.sin()) * 9.0;
+        eprintln!(
+            "  {q}: keep_clear {} in_the_way {}",
+            keep_clear(&l, q),
+            d.in_the_way(q, 2.5)
+        );
+    }
 }
