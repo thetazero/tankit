@@ -63,7 +63,8 @@ tankit [OPTIONS]
   --contract <attrition|hold|raid>
                           game mode: a raid on an enemy camp for its hulls (default), hold the site, or raid
                           (one-sided capture the flag, two-sided maps only)
-  --employer <faction>    which of the map's sides hires you (default: its first)
+  --employer <faction>    which of the map's sides hires you (default: its first); with
+                          --screen missions|site, a ship on contract for that side
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
@@ -97,7 +98,7 @@ tankit [OPTIONS]
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
-  --screen <menu|factions|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
+  --screen <menu|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
                           screen and its respawn countdown
@@ -280,7 +281,6 @@ pub struct ShowroomArgs {
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Menu,
-    Factions,
     Missions,
     /// A contested site of the theater.
     Site,
@@ -338,7 +338,6 @@ fn main() -> Result<()> {
                 args.screen,
                 Some(
                     Screen::Menu
-                        | Screen::Factions
                         | Screen::Missions
                         | Screen::Site
                         | Screen::Settings
@@ -599,7 +598,6 @@ fn parse_args() -> Result<Args> {
             "--screen" => {
                 screen = Some(match args.next().as_deref() {
                     Some("menu") => Screen::Menu,
-                    Some("factions") => Screen::Factions,
                     Some("missions") => Screen::Missions,
                     Some("site") => Screen::Site,
                     Some("settings") => Screen::Settings,
@@ -611,7 +609,7 @@ fn parse_args() -> Result<Args> {
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, site, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
                         )
                     }
                 })
@@ -650,7 +648,6 @@ fn parse_args() -> Result<Args> {
         screen,
         Some(
             Screen::Menu
-                | Screen::Factions
                 | Screen::Missions
                 | Screen::Site
                 | Screen::Settings
@@ -660,7 +657,8 @@ fn parse_args() -> Result<Args> {
     );
     let side = match employer {
         None => 0,
-        // The menu picks the employer first; any faction will do.
+        // The menu's ship works for whoever hired it (--employer picks one
+        // working for that side, if there is one).
         Some(_) if menu_shot => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
@@ -986,23 +984,19 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     profile.loadout = args.loadout;
     let mut menu = menu::Menu::new();
     match args.screen {
-        Some(Screen::Factions | Screen::Missions | Screen::Site) => {
+        Some(Screen::Missions | Screen::Site) => {
             menu.input(menu::Nav::Select);
-            if let Some(f) = args.employer {
-                menu.pick_employer(f);
+            // A new pilot's galaxy, aboard the ship the Company puts them on
+            // (one working for --employer, if there is one).
+            let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+            let prefer = args.employer.map(|f| f.index());
+            let (t, _) = g.await_work(None, prefer, profile.rank().level, 100);
+            menu.set_theater(t);
+            if let Some(k) = args.site {
+                menu.pick_site(k);
             }
-            if args.screen != Some(Screen::Factions) {
+            if args.screen == Some(Screen::Site) {
                 menu.input(menu::Nav::Select);
-                // A new pilot's galaxy, posted for the employer.
-                let g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-                let f = menu.employer().index();
-                menu.set_theater(g.theater(f, None, profile.rank().level));
-                if let Some(k) = args.site {
-                    menu.pick_site(k);
-                }
-                if args.screen == Some(Screen::Site) {
-                    menu.input(menu::Nav::Select);
-                }
             }
         }
         Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {

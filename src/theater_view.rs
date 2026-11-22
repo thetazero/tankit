@@ -4,7 +4,8 @@
 //! shield generators as domes, foundries as squares, crystal mines as
 //! diamonds, in their holder's colour. Contested sites are ringed; the ones
 //! your side fights for this tick are ringed hot and filled. Every contested
-//! site can be clicked (it's a row of the list beside it).
+//! site can be clicked (it's a row of the list beside it). Your company's
+//! ship hangs in amber over the world it's parked over (#327).
 
 use std::f32::consts::{PI, TAU};
 
@@ -156,6 +157,15 @@ pub fn draw(
             }
         }
 
+        // Your ship, parked over it.
+        if let Some(ship) = t.ship.as_ref().filter(|s| s.over as usize == pl) {
+            let at = Vec2::new(c.x, (c.y - ring_r - 70.0).max(top + 40.0));
+            ship_glyph(p, at, 1.4);
+            let mut style = TextStyle::LABEL;
+            style.color = Faction::Company.ui();
+            label(p, at - Vec2::new(0.0, 40.0), &ship.name, &style);
+        }
+
         // Its name, and who holds what.
         let below = c.y + ring_r + 30.0;
         label(
@@ -189,6 +199,48 @@ pub fn draw(
         Align::Left,
     );
     legend(p, Vec2::new(min.x + 24.0, bottom + 17.0), size.x - 48.0);
+}
+
+/// A company ship at `at`, `k` times its size: a long hull, bow to the
+/// right, its drives aglow at the stern, in the Company's amber.
+fn ship_glyph(p: &mut Painter, at: Vec2, k: f32) {
+    let amber = Faction::Company.ui();
+    let pts: Vec<Vec2> = [
+        (30.0, 0.0),
+        (16.0, -6.0),
+        (-6.0, -6.0),
+        (-12.0, -11.0),
+        (-22.0, -11.0),
+        (-20.0, -5.0),
+        (-24.0, -5.0),
+        (-24.0, 5.0),
+        (-20.0, 5.0),
+        (-22.0, 11.0),
+        (-12.0, 11.0),
+        (-6.0, 6.0),
+        (16.0, 6.0),
+        (30.0, 0.0),
+    ]
+    .iter()
+    .map(|&(x, y)| at + Vec2::new(x, y) * k)
+    .collect();
+    // Drives, then the hull's fill and outline.
+    for dy in [-2.5, 2.5] {
+        let d = at + Vec2::new(-27.0, dy) * k;
+        p.disc(d, 6.0 * k, with_alpha(amber, 0.5), with_alpha(amber, 0.0));
+    }
+    p.rect(
+        at + Vec2::new(-20.0, -4.5) * k,
+        Vec2::new(36.0, 9.0) * k,
+        mix(BG, amber, 0.25),
+    );
+    p.polyline(&pts, 1.5, amber);
+    p.line(
+        at + Vec2::new(-6.0, 0.0) * k,
+        at + Vec2::new(14.0, 0.0) * k,
+        1.0,
+        mix(BG, amber, 0.6),
+    );
 }
 
 /// What kind of site it is, as a small glyph in `color` at `at`.
@@ -259,7 +311,7 @@ fn legend(p: &mut Painter, at: Vec2, width: f32) {
     style.color = theme::DIM;
     let shield = SiteView::example(true);
     let mine = SiteView::example(false);
-    let entries: [(&str, Box<dyn Fn(&mut Painter, Vec2)>); 5] = [
+    let entries: [(&str, Box<dyn Fn(&mut Painter, Vec2)>); 6] = [
         ("SHIELD", Box::new(|p, c| glyph(p, c, &shield, theme::DIM))),
         (
             "FOUNDRY",
@@ -281,6 +333,10 @@ fn legend(p: &mut Painter, at: Vec2, width: f32) {
                 dot(p, c, 8.0, mix(BG, theme::HOT, 0.3));
                 ring(p, c, 8.0, 2.0, theme::HOT);
             }),
+        ),
+        (
+            "YOUR SHIP",
+            Box::new(|p, c| ship_glyph(p, c + Vec2::new(-1.0, 0.0), 0.36)),
         ),
     ];
     let mut x = at.x;

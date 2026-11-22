@@ -54,6 +54,9 @@ const HITCH_WORK: f32 = 0.05;
 const HITCH_GAP: f32 = 0.1;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
+/// How long the war may go on without you, on the missions screen, while
+/// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
+const AWAIT_TICKS: u32 = 100;
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
 /// to come back up after it.
 const DIP_OUT: f32 = 0.18;
@@ -119,9 +122,6 @@ struct App {
     in_war: bool,
     /// The theater site this round is fought at (a replay fights it again).
     sortie: Option<Sortie>,
-    /// Where the Company has you posted, for each employer: a system, kept
-    /// until its fight is settled.
-    postings: [Option<usize>; 4],
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -238,7 +238,6 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         battle: None,
         in_war: false,
         sortie: None,
-        postings: [None; 4],
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -560,24 +559,29 @@ impl App {
         );
     }
 
-    /// Put the employer's theater on the missions screen, if it's showing
-    /// and isn't already up to date with the galaxy.
+    /// Put your ship's theater on the missions screen, if it's showing and
+    /// isn't already up to date with the galaxy. If the Company moves you to
+    /// another ship, you're aboard that one from now on.
     fn sync_theater(&mut self) {
-        let Some(f) = self.menu.posted_for() else {
-            return;
-        };
-        let rank = self.profile.rank().level;
-        let keep = self.postings[f.index()];
-        let g = self.war.get();
-        if self
-            .menu
-            .theater()
-            .is_some_and(|t| t.employer == f.index() && t.tick == g.tick)
-        {
+        if !self.menu.wants_theater() {
             return;
         }
-        let t = g.theater(f.index(), keep, rank);
-        self.postings[f.index()] = t.as_ref().map(|t| t.system);
+        let rank = self.profile.rank().level;
+        let keep = self.profile.ship;
+        let g = self.war.get();
+        if self.menu.theater().is_some_and(|t| {
+            t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == keep)
+        }) {
+            return;
+        }
+        // No battle for you this tick: the war goes on until there is one.
+        let (t, ticked) = g.await_work(keep, None, rank, AWAIT_TICKS);
+        if ticked {
+            self.war.save();
+        }
+        if let Some(ship) = t.as_ref().and_then(|t| t.ship.as_ref()) {
+            self.profile.board(Some(ship.id));
+        }
         self.menu.set_theater(t);
     }
 
