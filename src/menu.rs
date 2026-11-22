@@ -941,16 +941,24 @@ impl Menu {
         y += 18.0;
         let big = TextStyle::value(22.0);
         let col = x + 150.0;
-        p.text(Vec2::new(x, y), &m.rating_label(), &big, Align::Left);
+        // What you'd be up against: the enemy realm's gear (#438); harder
+        // pays better.
+        let tier = t.tiers[site.enemy];
+        p.text(
+            Vec2::new(x, y),
+            &crate::economy::level_label(tier),
+            &big,
+            Align::Left,
+        );
         let pw = p.text(
             Vec2::new(col, y),
-            &m.win_pay().to_string(),
+            &crate::economy::win_pay(tier).to_string(),
             &big,
             Align::Left,
         );
         body(p, Vec2::new(col + pw + 6.0, y + 11.0), "CR", theme::DIM);
         y += 32.0;
-        body(p, Vec2::new(x, y), "Rating", theme::DIM);
+        body(p, Vec2::new(x, y), "Their gear", theme::DIM);
         body(p, Vec2::new(col, y), "Win, plus kills", theme::DIM);
         y += 34.0;
         prize(

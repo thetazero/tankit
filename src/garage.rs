@@ -1184,6 +1184,12 @@ fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
     Some(match profile.can_upgrade(part) {
         Ok(cost) => (format!("UPGRADE TO {next} · {cost} CR"), true),
         Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO {next} · NEED {cost} CR"), false),
+        Err(Refusal::Unknown) => {
+            // How far along the next step's reverse engineering is (#438).
+            let known = profile.known.of(part);
+            let pct = ((known - known.floor()) * 100.0) as u32;
+            (format!("{next} UNKNOWN · {pct}% FROM WRECKS"), false)
+        }
         Err(_) => ("FULLY UPGRADED".to_string(), false),
     })
 }

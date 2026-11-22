@@ -1431,6 +1431,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     company: vec![0, 0],
                     winner: Some(0),
                     own_lost: 0,
+                    scrap: Vec::new(),
                 });
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 profile.ship = g.crew;

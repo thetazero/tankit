@@ -5,6 +5,12 @@
 //! with the Company is paid for actions in the match. Parts aren't bought:
 //! their schematics are stolen on missions (see [`crate::mission`]). Crystals
 //! upgrade them a step at a time through M0..M3.
+//!
+//! **Gear tiers come from who's fighting** (#438). A realm kits all its
+//! pilots alike, at the tier it has researched (`galaxy::realm`). A merc
+//! pilot (you among them) kits themself, and can only build what they know:
+//! they learn a part by taking apart the wrecks of better ones ([`Known`]),
+//! and crystals buy the steps up to what they know.
 
 use crate::combat::{self, Action, Gun, Match, ShellSpec};
 use crate::faction::Faction;
@@ -139,6 +145,86 @@ pub fn level_label(level: u8) -> String {
     }
 }
 
+/// What a part's level multiplies its damage by, and its armor by.
+pub fn damage_factor(level: u8) -> f32 {
+    DAMAGE.at(level)
+}
+
+pub fn armor_factor(level: u8) -> f32 {
+    ARMOR.at(level)
+}
+
+/// What a kill teaches of each of the wreck's parts: this share of the gap
+/// between its level and what you know, rounded down to a whole step.
+pub const SCRAP_LEARNING: f32 = 0.01;
+
+/// How far a pilot has reverse-engineered each part (#438), in level steps,
+/// continuous: the highest level they can build it to is this rounded down.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Known([f32; PARTS.len()]);
+
+impl Known {
+    pub fn of(&self, part: Part) -> f32 {
+        self.0[part.index()]
+    }
+
+    /// The highest level `part` can be built to: what's known of it, in whole steps.
+    pub fn cap(&self, part: Part) -> u8 {
+        (self.of(part).floor() as u8).min(MAX_LEVEL)
+    }
+
+    pub fn set(&mut self, part: Part, known: f32) {
+        self.0[part.index()] = known.clamp(0.0, MAX_LEVEL as f32);
+    }
+
+    /// Know `part` to at least `level` (gear already built to it).
+    pub fn at_least(&mut self, part: Part, level: u8) {
+        let i = part.index();
+        self.0[i] = self.0[i].max(level.min(MAX_LEVEL) as f32);
+    }
+
+    /// Take apart a wreck of `part` built to `level`: a share of the gap
+    /// between it and what's known, rounded down (#438). A wreck no better
+    /// than what's known teaches nothing. Returns what was learned.
+    pub fn scrap(&mut self, part: Part, level: u8) -> f32 {
+        let i = part.index();
+        let gap = level as f32 - self.0[i].floor();
+        if gap <= 0.0 {
+            return 0.0;
+        }
+        let learned = SCRAP_LEARNING * gap;
+        // A hundred hundredths make a whole step, not a hair under one.
+        let v = self.0[i] + learned;
+        let whole = v.round();
+        let v = if (v - whole).abs() < 1e-4 { whole } else { v };
+        self.0[i] = v.min(MAX_LEVEL as f32);
+        learned
+    }
+
+    /// What's known of every part, in `PARTS` order (for saves).
+    pub fn steps(&self) -> Vec<f32> {
+        self.0.to_vec()
+    }
+
+    /// From `steps` as saved: missing ones unknown.
+    pub fn from_steps(steps: &[f32]) -> Known {
+        let mut k = Known::default();
+        for (i, &x) in steps.iter().take(PARTS.len()).enumerate() {
+            k.0[i] = x.clamp(0.0, MAX_LEVEL as f32);
+        }
+        k
+    }
+
+    /// Gear built to what's known of every part.
+    pub fn levels(&self) -> Levels {
+        let mut l = Levels::default();
+        for part in PARTS {
+            l.set(part, self.cap(part));
+        }
+        l
+    }
+}
+
 /// Deviation of a rated mission's bot gear about its rating, in steps.
 const GEAR_SPREAD: f32 = 4.0;
 
@@ -176,6 +262,11 @@ impl Levels {
             levels.set(part, level as u8);
         }
         levels
+    }
+
+    /// Every part at `level` (a realm's pilots: kitted alike, #438).
+    pub fn all(level: u8) -> Levels {
+        Levels([level.min(MAX_LEVEL); PARTS.len()])
     }
 
     pub fn max_health(&self, hull: HullKind) -> f32 {
@@ -320,6 +411,31 @@ pub enum Outcome {
 
 #[cfg(test)]
 mod tests {
+    /// A wreck teaches a hundredth of the gap to what you know, rounded
+    /// down to a whole step (#438): a hundred kills of T1.1 gear take a T1
+    /// pilot to T1.1, and one no better teaches nothing.
+    #[test]
+    fn scrap_teaches_a_hundredth_of_the_gap() {
+        let kontos = Part::Turret(TurretKind::Kontos);
+        let mut k = Known::default();
+        k.set(kontos, 10.0);
+        for _ in 0..99 {
+            k.scrap(kontos, 11);
+        }
+        assert_eq!(k.cap(kontos), 10, "not yet");
+        k.scrap(kontos, 11);
+        assert_eq!(k.cap(kontos), 11);
+        assert_eq!(k.scrap(kontos, 11), 0.0, "no better than what's known");
+        assert_eq!(k.scrap(kontos, 3), 0.0);
+        // The gap counts from what's known rounded down: wrecks of T3 teach
+        // a T1.06 pilot as fast as a T1 one.
+        let mut a = Known::default();
+        a.set(kontos, 10.6);
+        let mut b = Known::default();
+        b.set(kontos, 10.0);
+        assert_eq!(a.scrap(kontos, 30), b.scrap(kontos, 30));
+    }
+
     use super::*;
 
     #[test]

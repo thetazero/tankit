@@ -52,8 +52,36 @@
 use super::theater::{ENDED_KEPT, Ended, Outcome};
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
 
+/// Pilots a company flies its hulls with (#438): as many as a side has
+/// seats. They fly remotely, so a hull lost never costs one.
+pub const PILOTS: usize = 6;
+
+/// One of a company's pilots: what they've reverse-engineered of each
+/// part, and so the gear they fly (#438). You're one, in yours.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pilot {
+    pub known: crate::economy::Known,
+}
+
+impl Pilot {
+    /// The gear they fly: every part built to what they know of it.
+    pub fn levels(&self) -> crate::economy::Levels {
+        self.known.levels()
+    }
+
+    /// Their gear's level, averaged over every part.
+    pub fn level(&self) -> f32 {
+        let l = self.levels();
+        crate::economy::PARTS
+            .iter()
+            .map(|&p| l.of(p) as f32)
+            .sum::<f32>()
+            / crate::economy::PARTS.len() as f32
+    }
+}
+
 /// One free company: a ship.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Company {
     /// The system its ship is over.
     pub at: u32,
@@ -70,6 +98,8 @@ pub struct Company {
     pub idle_since: u64,
     /// Its own name, for charts: never reused.
     pub id: u32,
+    /// Its pilots (`PILOTS` of them), each with their own gear (#438).
+    pub pilots: Vec<Pilot>,
 }
 
 /// A company's work for a realm: help take one system.
@@ -193,6 +223,7 @@ impl Galaxy {
             founded: self.tick,
             idle_since: self.tick,
             id: self.next_company,
+            pilots: vec![Pilot::default(); PILOTS],
         });
         self.companies.len() - 1
     }
@@ -548,12 +579,22 @@ impl Galaxy {
         let price = self.rules.hull_price;
         let n = self.companies.len();
         for c in 0..n {
-            let co = self.companies[c];
+            let co = self.companies[c].clone();
             if co.contract.is_none() && co.capital(price) > self.rules.merc_split {
                 let (crystals, hulls) = (co.crystals / 2.0, co.hulls / 2);
                 self.companies[c].crystals -= crystals;
                 self.companies[c].hulls -= hulls;
                 let new = self.new_company(co.at, crystals, hulls);
+                // Its pilots split between the two, every other one; each
+                // ship hires rookies for the seats left empty.
+                let (mut keep, mut go) = (Vec::new(), Vec::new());
+                for (i, &p) in co.pilots.iter().enumerate() {
+                    if i % 2 == 0 { keep.push(p) } else { go.push(p) }
+                }
+                keep.resize(PILOTS, Pilot::default());
+                go.resize(PILOTS, Pilot::default());
+                self.companies[c].pilots = keep;
+                self.companies[new].pilots = go;
                 self.companies[new].margin = co.margin;
                 self.companies[new].idle_since = co.idle_since;
                 if self.crew == Some(co.id) {
@@ -568,7 +609,7 @@ impl Galaxy {
         }
         let mut gone = vec![false; self.companies.len()];
         for c in 0..self.companies.len() {
-            let co = self.companies[c];
+            let co = self.companies[c].clone();
             if gone[c] || co.contract.is_some() || co.capital(price) >= self.rules.merc_join {
                 continue;
             }
@@ -597,6 +638,12 @@ impl Galaxy {
             };
             self.companies[o].crystals += crystals;
             self.companies[o].hulls += hulls;
+            // Joined, the ship keeps its best pilots, from either crew.
+            let mut pilots = self.companies[o].pilots.clone();
+            pilots.extend(co.pilots.iter().copied());
+            pilots.sort_by(|a, b| b.level().total_cmp(&a.level()));
+            pilots.truncate(PILOTS);
+            self.companies[o].pilots = pilots;
             // What realms owed it, they owe the company it joined.
             let (from, to) = (co.id, self.companies[o].id);
             for d in self.debts.iter_mut().filter(|d| d.company == from) {
@@ -658,7 +705,7 @@ impl Galaxy {
             .collect();
         let mut went = 0;
         for c in 0..self.companies.len() {
-            let co = self.companies[c];
+            let co = self.companies[c].clone();
             if co.contract.is_some() || self.tick < co.idle_since + self.rules.merc_idle as u64 {
                 continue;
             }

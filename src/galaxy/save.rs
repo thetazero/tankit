@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
-use super::merc::{Company, Contract, Debt};
+use super::merc::{Company, Contract, Debt, Pilot};
 use super::realm::{NONE, Realm};
 use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
@@ -78,6 +78,10 @@ struct SavedCompany {
     idle_since: Option<u64>,
     id: u32,
     contract: Option<SavedContract>,
+    /// Its pilots, each what they know of every part (#438); none in a
+    /// save from before: a crew of rookies.
+    #[serde(default)]
+    pilots: Vec<Vec<f32>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,6 +109,11 @@ struct SavedRealm {
     founded: u64,
     /// Where its offensive is aimed, and the last tick it took a site.
     offensive: Option<([f32; 3], u64)>,
+    /// Its gear tier and research toward the next (#438).
+    #[serde(default)]
+    tier: u8,
+    #[serde(default)]
+    research: f32,
 }
 
 impl Galaxy {
@@ -141,6 +150,8 @@ impl Galaxy {
                     income: r.income,
                     founded: r.founded,
                     offensive: r.offensive.map(|o| (o.at.to_array(), o.gained)),
+                    tier: r.tier,
+                    research: r.research,
                 })
                 .collect(),
             splits: self.splits,
@@ -168,6 +179,7 @@ impl Galaxy {
                             lost: k.lost as f32,
                             defend: k.defend,
                         }),
+                        pilots: c.pilots.iter().map(|p| p.known.steps()).collect(),
                     })
                     .collect(),
             ),
@@ -241,6 +253,8 @@ impl Galaxy {
                     at: Vec3::from_array(at),
                     gained,
                 }),
+                tier: r.tier.min(crate::economy::MAX_LEVEL),
+                research: r.research,
                 ..Realm::new(r.faction, r.seat, r.founded)
             })
             .collect();
@@ -278,6 +292,17 @@ impl Galaxy {
                         lost: whole(k.lost),
                         defend: k.defend,
                     }),
+                    pilots: {
+                        let mut p: Vec<Pilot> = c
+                            .pilots
+                            .iter()
+                            .map(|k| Pilot {
+                                known: crate::economy::Known::from_steps(k),
+                            })
+                            .collect();
+                        p.resize(super::merc::PILOTS, Pilot::default());
+                        p
+                    },
                 })
                 .collect();
             g.next_company = s.next_company;

@@ -228,7 +228,9 @@ impl Mission {
         self.sides.len() * self.team_size - 1
     }
 
-    /// Crystals a win pays before kills and damage.
+    /// Crystals a win pays before kills and damage, by its rating (a
+    /// skirmish's; a galaxy battle pays by the enemy's gear, #438).
+    #[cfg(test)]
     pub fn win_pay(&self) -> u32 {
         crate::economy::win_pay(self.rating)
     }

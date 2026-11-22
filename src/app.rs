@@ -1289,6 +1289,8 @@ impl App {
         {
             let pay = Payout::of(&self.game);
             self.profile.add_crystals(pay.total());
+            // Take apart what you wrecked (#438).
+            self.profile.scrap(&self.game.player().scrap);
             if let Some(part) = pay.schematic
                 && self.profile.steal(part)
             {

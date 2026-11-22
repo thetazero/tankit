@@ -47,6 +47,11 @@ pub struct Realm {
     pub founded: u64,
     /// Systems it holds (updated each tick); 0 for a realm that's gone.
     pub systems: u32,
+    /// Its gear tier (#438), in upgrade steps (`economy::STEPS_PER_MARK` to
+    /// a mark): every pilot of the realm flies gear built to it.
+    pub tier: u8,
+    /// Crystal put into researching its next tier so far.
+    pub research: f32,
 }
 
 impl Realm {
@@ -59,6 +64,8 @@ impl Realm {
             offensive: None,
             founded: tick,
             systems: 0,
+            tier: 0,
+            research: 0.0,
         }
     }
 
@@ -346,6 +353,8 @@ impl Galaxy {
                 .unwrap_or(&members[0]);
             let f = self.realms[old as usize].faction;
             let new = self.found(f, seat);
+            // It breaks away with the gear it has: its parent's tier.
+            self.realms[new as usize].tier = self.realms[old as usize].tier;
             // Its share of the vaults, by systems.
             let (vault, size) = vaults[old as usize];
             let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
@@ -411,6 +420,8 @@ impl Galaxy {
             let take = self.realms[a].crystals;
             self.realms[b].crystals += take;
             self.realms[a].crystals = 0.0;
+            // Folded together, it keeps the better gear.
+            self.realms[b].tier = self.realms[b].tier.max(self.realms[a].tier);
             self.merges += 1;
             merged = true;
         }

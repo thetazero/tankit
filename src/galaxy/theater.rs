@@ -53,6 +53,8 @@ pub struct Theater {
     pub hulls: [u32; SIDES],
     pub built: [f32; SIDES],
     pub held: [u8; SIDES],
+    /// Each side's gear tier here (#438): its realm's, in upgrade steps.
+    pub tiers: [u8; SIDES],
     /// Every site in the system, in the galaxy's order.
     pub sites: Vec<SiteView>,
     /// The contested sites, as indices into `sites`: the rows of the list.
@@ -949,6 +951,10 @@ impl Galaxy {
             hulls: sys.hulls,
             built: self.built(s),
             held: sys.held,
+            tiers: std::array::from_fn(|g| match sys.realms[g] {
+                super::realm::NONE => 0,
+                r => self.realms[r as usize].tier,
+            }),
             sites,
             contested,
             tick: self.tick,
@@ -990,7 +996,7 @@ mod tests {
         let ships: Vec<usize> = g.berths().collect();
         assert!(!ships.is_empty(), "no ship on a contract");
         for c in ships {
-            let co = g.companies[c];
+            let co = g.companies[c].clone();
             let k = co.contract.unwrap();
             g.crew = Some(co.id);
             let t = g.aboard(1).expect("a theater");

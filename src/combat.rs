@@ -584,6 +584,9 @@ pub struct Fighter {
     /// Seconds a broken Vigil has left to run; 0 while whole. A husk is
     /// already counted dead (the kill is paid) and can't be hurt.
     pub husk: f32,
+    /// The wrecks this tank's kills left, to take apart (#438): each part
+    /// of each enemy it killed, and the level it was built to.
+    pub scrap: Vec<(crate::economy::Part, u8)>,
 }
 
 impl Fighter {
@@ -1431,6 +1434,16 @@ impl Match {
     fn fit_hull(&mut self, i: usize) {
         let t = &mut self.world.tanks[i];
         t.hull = self.fighters[i].levels.hull(t.hull_kind);
+    }
+
+    /// Fit tank `i` with gear built to `levels`, at full health (before a
+    /// round starts): a realm's tier, or a merc pilot's own (#438).
+    pub fn set_gear(&mut self, i: usize, levels: Levels) {
+        let f = &mut self.fighters[i];
+        f.levels = levels;
+        f.next_levels = None;
+        f.health = levels.max_health(self.world.tanks[i].hull_kind);
+        self.fit_hull(i);
     }
 
     /// Set the player's upgrade levels now, at full health (before a round starts).
@@ -2326,6 +2339,15 @@ impl Match {
         }
         v.killed_by = Some(killer);
         if killer != victim {
+            // The wreck's parts, to reverse-engineer (#438): an enemy's only.
+            if self.fighters[killer].team != self.fighters[victim].team {
+                use crate::economy::Part;
+                let (t, l) = (&self.world.tanks[victim], self.fighters[victim].levels);
+                let hull = Part::Hull(t.hull_kind);
+                let turret = Part::Turret(t.turret_kind);
+                let wreck = [(hull, l.of(hull)), (turret, l.of(turret))];
+                self.fighters[killer].scrap.extend(wreck);
+            }
             self.fighters[killer].kills += 1;
             if killer == 0 {
                 self.award(KILL_RENOWN, "KILL");
@@ -3570,6 +3592,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         next_levels: None,
         damage_dealt: 0.0,
         husk: 0.0,
+        scrap: Vec::new(),
     }
 }
 
