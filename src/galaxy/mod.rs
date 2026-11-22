@@ -353,6 +353,8 @@ pub struct Galaxy {
     pub crew: Option<u32>,
     /// Your own hulls on your company's contract (#385; see `claim_own`).
     pub own: Option<theater::Own>,
+    /// Your company's last few ended contracts, newest last (#414).
+    pub ended: Vec<theater::Ended>,
     /// What just happened to your company, for the missions screen (not saved).
     pub crew_news: Option<theater::CrewNews>,
     /// Your company just split or joined another: which ship you go with,
@@ -514,6 +516,7 @@ impl Galaxy {
             next_company: 0,
             crew: None,
             own: None,
+            ended: Vec::new(),
             crew_news: None,
             crew_choice: None,
             destroyed: 0.0,

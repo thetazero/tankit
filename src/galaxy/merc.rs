@@ -51,6 +51,7 @@
 //! goes, and waits there. Nobody stays idle forever: every war is somebody's
 //! chance. The pilot's company is no different.
 
+use super::theater::{ENDED_KEPT, Ended, Outcome};
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
 
 /// One free company: a ship.
@@ -495,6 +496,37 @@ impl Galaxy {
                 self.books.broken += 1;
             } else {
                 self.books.expired += 1;
+            }
+            // If this is the player's company, record how the contract ended for the summary card (#414).
+            let id = self.companies[c].id;
+            if self.crew == Some(id) {
+                let outcome = if won {
+                    Outcome::Won
+                } else if fell {
+                    Outcome::Fell
+                } else if broken {
+                    Outcome::Spent
+                } else if gone {
+                    Outcome::Gone
+                } else {
+                    Outcome::Expired
+                };
+                let own = self
+                    .own
+                    .filter(|o| o.ship == id && o.signed == k.signed)
+                    .unwrap_or_default();
+                self.ended.push(Ended {
+                    ship: id,
+                    signed: k.signed,
+                    tick: self.tick,
+                    outcome,
+                    defend: k.defend,
+                    committed: k.committed,
+                    lost: k.lost,
+                    own,
+                });
+                let extra = self.ended.len().saturating_sub(ENDED_KEPT);
+                self.ended.drain(..extra);
             }
             // Back aboard, what's left.
             let back = k.field.min(self.systems[t].hulls[f]).max(0.0);

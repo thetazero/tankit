@@ -593,3 +593,37 @@ fn judge_idle() {
         );
     }
 }
+
+/// Your company's contracts, as they end, are kept for the summary screen
+/// (#414): which contract, how it ended and its books; only the last few.
+#[test]
+fn your_ended_contracts_are_kept() {
+    use super::theater::{ENDED_KEPT, Outcome};
+    let mut g = Galaxy::with_size(3, SYSTEMS / 4, REGION * 0.5, Rules::default());
+    for _ in 0..60 {
+        g.step();
+    }
+    g.await_work_staying(None, 1, 400).0.expect("work");
+    for _ in 0..1500 {
+        g.step();
+        g.await_work_staying(None, 1, 400);
+        if g.ended.len() > ENDED_KEPT {
+            break;
+        }
+    }
+    assert!(!g.ended.is_empty(), "no contract of yours ended");
+    assert!(g.ended.len() <= ENDED_KEPT);
+    for e in &g.ended {
+        assert!(e.tick >= e.signed);
+        assert!(e.lost >= 0.0 && e.lost <= e.committed + 1e-3);
+        assert!(e.outcome != Outcome::Fell || e.defend);
+    }
+    // Ended in order, and not the one your company's still on.
+    assert!(g.ended.windows(2).all(|w| w[0].tick <= w[1].tick));
+    let now = g.crew_company().and_then(|c| {
+        g.companies[c]
+            .contract
+            .map(|k| (g.companies[c].id, k.signed))
+    });
+    assert!(g.ended.iter().all(|e| Some((e.ship, e.signed)) != now));
+}
