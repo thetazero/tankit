@@ -753,6 +753,22 @@ mod tests {
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
+            (
+                "shield-city imperium",
+                Map::shield_city(0, crate::faction::Faction::Imperium),
+            ),
+            (
+                "shield-city resonant",
+                Map::shield_city(0, crate::faction::Faction::Resonant),
+            ),
+            (
+                "shield-city uthenn",
+                Map::shield_city(0, crate::faction::Faction::Uthenn),
+            ),
+            (
+                "shield-city ithessar",
+                Map::shield_city(0, crate::faction::Faction::Ithessar),
+            ),
             ("foundry", Map::foundry()),
             ("mine", Map::mine()),
         ] {

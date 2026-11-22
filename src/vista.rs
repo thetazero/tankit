@@ -28,7 +28,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         // Crystal spires over the kiln; crystals and the plasma river.
         MapKind::Kiln => &[(53.0, 93.0, 4.97), (141.0, 128.5, 6.02)],
         // Generated: each city picks its own (`Map::vistas`).
-        MapKind::City => &[],
+        MapKind::City | MapKind::ShieldCity(_) => &[],
         // Chimneys and girders, from either end.
         MapKind::Foundry => &[(123.0, 18.0, 2.88), (158.0, 83.0, 1.83)],
         // The Face, the adit's mouth and the bridge out of it over the wash,

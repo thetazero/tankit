@@ -21,6 +21,7 @@
 pub mod check;
 pub mod city;
 mod imperium;
+pub mod shield;
 pub mod skeleton;
 
 use std::collections::HashMap;
@@ -46,6 +47,17 @@ pub enum Look {
     Imperium,
 }
 
+/// What stands in the middle, the thing the fight's about. Either keeps to
+/// the skeleton's landmark: the same map round it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Centerpiece {
+    /// The style's great building (the Imperium's rotunda).
+    Monument,
+    /// A shield generator: the standard model of the side that holds it,
+    /// whoever built the place round it (see `shield`).
+    ShieldGenerator(Faction),
+}
+
 /// A map to generate.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Spec {
@@ -53,14 +65,15 @@ pub struct Spec {
     pub biome: Biome,
     pub look: Look,
     pub sides: Vec<Faction>,
+    pub centerpiece: Centerpiece,
 }
 
 /// A style: fills in each kind of placeholder. Each filler builds onto the
 /// map and keeps its solid parts to the placeholder's envelope (see
 /// `skeleton`); heaps it banks up come back as drifts for the terrain.
 pub(in crate::map) trait Style {
-    /// The Hold site's name on the HUD.
-    fn hold_name(&self) -> &'static str;
+    /// The Hold site's name on the HUD, with `piece` in the middle.
+    fn hold_name(&self, piece: Centerpiece) -> &'static str;
     fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift>;
     /// Paving and the like on a platform's top.
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, rng: &mut Rng);
@@ -118,10 +131,20 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     map.atmosphere = match spec.biome {
         Biome::City => city::atmosphere(&mut rng),
     };
-    map.hold_name = st.hold_name();
+    map.hold_name = st.hold_name(spec.centerpiece);
     map.planet = Some((spec.seed, planet(spec.biome)));
     let mut claims = Vec::new();
-    let mut drifts = st.landmark(&mut map, &sk, &mut rng);
+    let mut drifts = match spec.centerpiece {
+        Centerpiece::Monument => st.landmark(&mut map, &sk, &mut rng),
+        Centerpiece::ShieldGenerator(owner) => {
+            // The city round it is the same as round the monument, block
+            // for block: the generator draws on its own numbers, and the
+            // city's are drawn on past the monument as if it stood here.
+            st.landmark(&mut Map::empty(sk.size), &sk, &mut rng);
+            let mut own = Rng::new(spec.seed ^ 0x5E1D_0000);
+            shield::build(&mut map, &sk, &mut own, owner)
+        }
+    };
     for (k, lot) in sk.lots.iter().enumerate() {
         let start = map.oboxes.len();
         drifts.extend(st.lot(&mut map, &sk, lot, &mut rng));
@@ -255,6 +278,12 @@ impl Map {
     /// The imperial city `seed` names (see `crate::city_spec`).
     pub fn city(seed: u64) -> Map {
         map(&crate::city_spec(seed))
+    }
+
+    /// The imperial city `seed` names, with `owner`'s shield generator in
+    /// the middle in place of the rotunda (see `crate::shield_city_spec`).
+    pub fn shield_city(seed: u64, owner: Faction) -> Map {
+        map(&crate::shield_city_spec(seed, owner))
     }
 }
 
@@ -487,6 +516,78 @@ mod tests {
                         );
                     }
                     r += 2.0;
+                }
+            }
+        }
+    }
+
+    /// The shield generator variants, one per side's model: the same city
+    /// for the same seed, the generator in the rotunda's place, as
+    /// playable, its doors open, and its light high over the middle.
+    #[test]
+    fn the_shield_city_comes_with_any_sides_generator() {
+        for (k, owner) in Faction::ALL.into_iter().enumerate() {
+            for seed in [SEEDS[k], SEEDS[(k + 2) % SEEDS.len()]] {
+                let plain = skeleton(&spec(seed));
+                let sk = skeleton(&crate::shield_city_spec(seed, owner));
+                assert_eq!(sk.landmark.center, plain.landmark.center);
+                assert_eq!(sk.lots.len(), plain.lots.len());
+                let m = Map::shield_city(seed, owner);
+                let what = format!("{owner:?} seed {seed}");
+                // Every block round it as in the plain city (to the
+                // millimetres `separate_coplanar_faces` moves faces by).
+                let (city, claims) = build(&spec(seed));
+                let (ours, our_claims) = build(&crate::shield_city_spec(seed, owner));
+                assert_eq!(claims.len(), our_claims.len(), "{what}");
+                for ((_, a), (_, b)) in claims.iter().zip(&our_claims) {
+                    let (a, b) = (&city.oboxes[a.clone()], &ours.oboxes[b.clone()]);
+                    assert_eq!(a.len(), b.len(), "{what}: the city round it differs");
+                    for (x, y) in a.iter().zip(b) {
+                        assert!(
+                            x.center.distance(y.center) < 0.02
+                                && (x.half - y.half).abs().max_element() < 0.02
+                                && (x.y1 - y.y1).abs() < 0.02,
+                            "{what}: the city round it differs: {x:?} {y:?}"
+                        );
+                    }
+                }
+                assert_eq!(m.hold_name, "GENERATOR");
+                assert_eq!(m.hold_site, Some(sk.landmark.center));
+                if let Err(why) = check::playable(&m) {
+                    panic!("{what}: {why}");
+                }
+                assert!(m.open_spots.len() > 100, "{what}");
+                assert_eq!(m.vistas.len(), 4, "{what}");
+                let lm = &sk.landmark;
+                let g = sk.ground(lm.center);
+                assert!(
+                    m.lights.iter().any(|l| {
+                        Vec2::new(l.pos.x, l.pos.z).distance(lm.center) < 1.0 && l.pos.y > g + 8.0
+                    }),
+                    "{what}: nothing lit high over the middle"
+                );
+                // Each door open (as wide as the skeleton keeps it) from the
+                // plinth out past the precinct.
+                for &d in &lm.doors {
+                    let side = Vec2::new(-d.y, d.x);
+                    let mut r = shield::PLINTH_R + 1.5;
+                    while r < lm.precinct + 4.0 {
+                        for across in [-1.0f32, 0.0, 1.0] {
+                            let p = lm.center + d * r + side * across;
+                            let ground = sk.ground(p);
+                            let hit = m.oboxes.iter().find(|o| {
+                                let (y0, _) = o.y_range();
+                                o.solid && y0 < ground + 3.0 && o.distance(p) < 0.5
+                            });
+                            assert!(hit.is_none(), "{what}: door {d} blocked at {r}: {hit:?}");
+                            assert!(
+                                !m.crystals.iter().any(|c| c.solid
+                                    && Vec2::new(c.base.x, c.base.z).distance(p) < c.radius + 1.0),
+                                "{what}: a crystal in door {d} at {r}"
+                            );
+                        }
+                        r += 1.5;
+                    }
                 }
             }
         }
