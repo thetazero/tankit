@@ -17,9 +17,7 @@
 //!   realms near the target sell cheapest (a realm sells only spare hulls from
 //!   a quiet system, never to an attack on itself; it asks more the further
 //!   below its garrison's level the system is), plus their FTL to the target;
-//! - its own FTL there: the ship, and every hull aboard, by distance;
-//! - the breach, if the target's shields are up: crystals a hull, as anyone
-//!   pays to land there.
+//! - its own FTL there: the ship, and every hull aboard, by distance.
 //!
 //! A contract pays that **up front**, plus a **bonus** if the world falls,
 //! for the hulls the company commits. It fights with all of them: once
@@ -159,7 +157,7 @@ struct Quote {
     /// Hulls it commits, of them bought.
     hulls: f32,
     bought: f32,
-    /// What it pays out (hulls bought, FTL, breach).
+    /// What it pays out (hulls bought, FTL).
     cost: f32,
     upfront: f32,
     bonus: f32,
@@ -305,7 +303,6 @@ impl Galaxy {
             return false;
         }
         let offers = self.offers(t, f, r);
-        let breach = self.landing_cost(t, f);
         let mut best: Option<Quote> = None;
         for c in near {
             let co = &self.companies[c];
@@ -326,7 +323,7 @@ impl Galaxy {
                 continue;
             }
             let d = self.systems[co.at as usize].pos.distance(pos);
-            let cost = spend + self.voyage(co.hulls, d) + breach * hulls;
+            let cost = spend + self.voyage(co.hulls, d);
             // What a hull it might lose would cost it to replace.
             let unit = if bought > 0.0 {
                 spend / bought

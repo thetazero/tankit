@@ -21,24 +21,59 @@ fn a_step_ends_at_war() {
     }
 }
 
-/// Landing under an enemy shield costs crystals; once all of a planet's
-/// generators are down it's free.
+/// An attacker going for a planet under an enemy's shield fights a seat
+/// short (#426): its fire is cut by one seat in `Rules::seats`. The
+/// defender never is, and with the planet's generators down, nor is the
+/// attacker.
 #[test]
-fn shields_make_landing_cost() {
+fn shields_cost_the_attacker_a_seat() {
     let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
     let s = 0;
     let owner = g.systems[s].owner();
     let other = (owner + 1) % SIDES;
-    assert!(g.landing_cost(s, other) > 0.0);
-    // The owner lands freely on its own world.
-    assert_eq!(g.landing_cost(s, owner), 0.0);
+    g.systems[s].hulls = [0.0; SIDES];
+    g.systems[s].hulls[owner] = 40.0;
+    g.systems[s].hulls[other] = 40.0;
+    let strength = g.strength(s);
+    let fire = g.fire(s);
+    assert!(g.shielded(s, other) && !g.shielded(s, owner));
+    let short = (g.rules.seats - SHIELD_SEATS as f32) / g.rules.seats;
+    assert!((fire[other] - strength[other] * short).abs() < 1e-3);
+    assert_eq!(fire[owner], strength[owner], "the defender is never short");
+    // Every generator down: no shield, no seat lost.
     let (a, b) = g.systems[s].sites;
     for site in &mut g.sites[a as usize..b as usize] {
-        if site.planet == 0 && matches!(site.kind, SiteKind::Shield { .. }) {
+        if matches!(site.kind, SiteKind::Shield { .. }) {
             site.kind = SiteKind::Shield { down: REPAIR_TICKS };
         }
     }
-    assert_eq!(g.landing_cost(s, other), 0.0);
+    assert!(!g.shielded(s, other));
+    assert_eq!(g.fire(s)[other], g.strength(s)[other]);
+}
+
+/// Shields don't stand in the way (#426): an attacker's win takes a site
+/// at once, the planet's generators up or not, and goes for an up one first.
+#[test]
+fn a_win_takes_a_site_under_shields() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let s = 0;
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % SIDES;
+    let held = g.systems[s].held[other];
+    let i = g.target(s, other).expect("something to take");
+    assert_eq!(g.sites[i].kind, SiteKind::Shield { down: 0 });
+    g.advance(s, other, 1);
+    assert_eq!(g.sites[i].owner as usize, other, "taken, not just knocked down");
+    assert_eq!(g.sites[i].kind, SiteKind::Shield { down: REPAIR_TICKS });
+    assert_eq!(g.systems[s].held[other], held + 1);
+    // Every enemy site is on the front, shielded or not.
+    g.systems[s].hulls[owner] = 40.0;
+    g.systems[s].hulls[other] = 40.0;
+    let (a, b) = g.systems[s].sites;
+    let enemy = (a as usize..b as usize)
+        .filter(|&i| g.sites[i].owner as usize == owner)
+        .count();
+    assert_eq!(g.front(s, other).len(), enemy);
 }
 
 /// A downed generator takes several quiet ticks to come back up.

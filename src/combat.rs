@@ -905,6 +905,8 @@ pub struct Match {
     /// Each seat's kills, deaths and time held when its pilot now took it
     /// (none yet: from the start).
     took_seat: Vec<(u32, u32, f32)>,
+    /// Seats closed for the round (`close_seats`): they stay empty.
+    closed: Vec<bool>,
     /// The round has started: its seats have been fielded (`start`).
     started: bool,
     /// Where you first spawn, on a map without bases: the spawn point you
@@ -1025,6 +1027,7 @@ impl Match {
             crew: None,
             retired: Vec::new(),
             took_seat: Vec::new(),
+            closed: Vec::new(),
             started: false,
             you_start,
             nav,
@@ -1124,11 +1127,41 @@ impl Match {
     pub fn set_allocation(&mut self, allocation: &[u32]) {
         let hulls = (0..self.factions.len())
             .map(|t| {
-                let seats = self.fighters.iter().filter(|f| f.team == t).count() as u32;
-                allocation.get(t).copied().unwrap_or(seats)
+                allocation
+                    .get(t)
+                    .copied()
+                    .unwrap_or(self.seats(t) as u32)
             })
             .collect();
         self.hulls = Some(hulls);
+    }
+
+    /// Close `n` of side `team`'s seats for the round (before it starts):
+    /// its last ones, never the player's nor its only one. They stay empty,
+    /// so it fights with fewer tanks in play at once (under a shield, #426).
+    pub fn close_seats(&mut self, team: usize, n: usize) {
+        self.closed.resize(self.fighters.len(), false);
+        let mut left = n.min(self.seats(team).saturating_sub(1));
+        for i in (1..self.fighters.len()).rev() {
+            if left == 0 {
+                break;
+            }
+            if self.fighters[i].team == team && !self.closed[i] {
+                self.closed[i] = true;
+                left -= 1;
+            }
+        }
+    }
+
+    /// Side `team`'s seats open this round: tanks it can have in play at once.
+    pub fn seats(&self, team: usize) -> usize {
+        (0..self.fighters.len())
+            .filter(|&i| self.fighters[i].team == team && !self.is_closed(i))
+            .count()
+    }
+
+    fn is_closed(&self, i: usize) -> bool {
+        self.closed.get(i).copied().unwrap_or(false)
     }
 
     /// Side `team`'s hulls not yet in play, under an allocation.
@@ -2640,7 +2673,7 @@ impl Match {
     /// hull its side has left (`rehull`), at its base (`revive`). The one way
     /// any tank comes into the fight. False if there's no hull for it.
     fn field(&mut self, i: usize) -> bool {
-        if !self.rehull(i) {
+        if self.is_closed(i) || !self.rehull(i) {
             return false;
         }
         let living: Vec<(usize, Vec2)> = (0..self.fighters.len())
