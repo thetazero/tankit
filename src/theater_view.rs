@@ -984,18 +984,33 @@ fn term(p: &mut Painter, ship: &Ship, at: Vec2) {
     );
 }
 
+/// What a transfer's caption leads with, `leg` of it toward `t`: the
+/// contract that ended, and whether the company renewed it (#386).
+pub fn headline(tr: &Transfer, t: &Theater, leg: Leg) -> &'static str {
+    let (Some(old), Some(new)) = (&tr.from.ship, &t.ship) else {
+        return "NEW CONTRACT";
+    };
+    let renewed = old.id == new.id
+        && old.side == new.side
+        && old.realm == new.realm
+        && tr.from.system == t.system;
+    match leg {
+        Leg::Leave(_) => "CONTRACT DONE · LEAVING",
+        Leg::Jump(_) => "UNDER WAY",
+        Leg::Arrive(_) => "ARRIVING · NEW CONTRACT",
+        Leg::Move(_) if old.signed == new.signed => "ABOARD ANOTHER SHIP",
+        Leg::Move(_) if renewed => "CONTRACT DONE · RENEWED",
+        Leg::Move(_) => "CONTRACT DONE · NEW CONTRACT",
+    }
+}
+
 /// What a transfer says over the view: where from and to, a route with
 /// the ship along it, and the contract it's going to.
 fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max: Vec2) {
     let amber = Faction::Company.ui();
     let mut style = TextStyle::LABEL;
     style.color = amber;
-    let what = match leg {
-        Leg::Leave(_) => "CONTRACT DONE · LEAVING",
-        Leg::Jump(_) => "UNDER WAY",
-        Leg::Arrive(_) => "ARRIVING · NEW CONTRACT",
-        Leg::Move(_) => "NEW CONTRACT",
-    };
+    let what = headline(tr, t, leg);
     p.text(
         Vec2::new(min.x + 24.0, min.y + 22.0),
         what,
@@ -1353,5 +1368,45 @@ mod tests {
         let tr = Transfer::new(a.clone());
         assert!(tr.jumps(&d) && !tr.jumps(&c));
         assert!(tr.length(&d) > tr.length(&c));
+    }
+    /// The caption says whether the contract that ended was renewed (#386).
+    #[test]
+    fn the_caption_tells_a_renewal() {
+        let mut a = theater(3);
+        a.ship = Some(Ship {
+            id: 4,
+            name: "A".into(),
+            over: 1,
+            aboard: 0.0,
+            realm: "KALARUN".into(),
+            side: 0,
+            field: 0.0,
+            lost: 0.0,
+            max_loss: 0.0,
+            ticks_left: 0,
+            term: 6,
+            signed: 10,
+            news: None,
+        });
+        let tr = Transfer::new(a.clone());
+        let mut renewed = a.clone();
+        renewed.ship.as_mut().unwrap().signed = 16;
+        assert_eq!(
+            headline(&tr, &renewed, Leg::Move(0.0)),
+            "CONTRACT DONE · RENEWED"
+        );
+        let mut other = renewed.clone();
+        other.ship.as_mut().unwrap().realm = "GORGAL".into();
+        assert_eq!(
+            headline(&tr, &other, Leg::Move(0.0)),
+            "CONTRACT DONE · NEW CONTRACT"
+        );
+        let mut ship = a.clone();
+        ship.ship.as_mut().unwrap().id = 5;
+        assert_eq!(headline(&tr, &ship, Leg::Move(0.0)), "ABOARD ANOTHER SHIP");
+        assert_eq!(
+            headline(&tr, &renewed, Leg::Leave(0.0)),
+            "CONTRACT DONE · LEAVING"
+        );
     }
 }

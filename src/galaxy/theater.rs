@@ -36,6 +36,7 @@ use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
 use crate::rng::Rng;
 use crate::{Generator, MapKind};
+use serde::{Deserialize, Serialize};
 
 /// The theater as the missions screen shows it: a snapshot of one system.
 #[derive(Clone, Debug)]
@@ -85,6 +86,37 @@ pub struct Ship {
     pub signed: u64,
     /// What just happened to the company, if anything.
     pub news: Option<CrewNews>,
+}
+
+/// The contract you were last shown on the missions screen (#386): kept in
+/// the profile, so that a move onto the next contract plays whenever it
+/// happened (in the battle just fought, between battles, or while the game
+/// was closed). Enough to show the theater it was in again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shown {
+    /// The ship you were aboard (`Company::id`) and its contract's tick signed.
+    pub ship: u32,
+    pub signed: u64,
+    /// The system it was in, the side that hired it, the world it was over,
+    /// and that side's seat.
+    pub system: usize,
+    pub side: usize,
+    pub over: u8,
+    pub realm: String,
+}
+
+impl Shown {
+    /// What theater `t` shows of your contract, if you're aboard a ship.
+    pub fn of(t: &Theater) -> Option<Shown> {
+        t.ship.as_ref().map(|s| Shown {
+            ship: s.id,
+            signed: s.signed,
+            system: t.system,
+            side: s.side,
+            over: s.over,
+            realm: s.realm.clone(),
+        })
+    }
 }
 
 /// What happened to your company that the missions screen tells you.
@@ -606,6 +638,32 @@ impl Galaxy {
             term: self.rules.merc_term as u64,
             signed: k.signed,
             news: self.crew_news,
+        });
+        Some(t)
+    }
+
+    /// The theater of contract `shown`, as its system is now: what a move
+    /// onto the next contract leaves (#386). None if the galaxy has no such
+    /// system (a new war since).
+    pub fn shown(&self, shown: &Shown, rank: u32) -> Option<Theater> {
+        if shown.system >= self.systems.len() || shown.side >= SIDES {
+            return None;
+        }
+        let mut t = self.theater_at(shown.system, shown.side, rank);
+        t.ship = Some(Ship {
+            id: shown.ship,
+            name: ship_name(shown.ship),
+            over: shown.over,
+            aboard: 0.0,
+            realm: shown.realm.clone(),
+            side: shown.side,
+            field: 0.0,
+            lost: 0.0,
+            max_loss: 0.0,
+            ticks_left: 0,
+            term: self.rules.merc_term as u64,
+            signed: shown.signed,
+            news: None,
         });
         Some(t)
     }

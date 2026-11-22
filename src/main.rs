@@ -117,9 +117,12 @@ tankit [OPTIONS]
   --mission <name>        (with --screen results) the round was this mission, by name, e.g.
                           'four winds', for its prize
   --site <n>              (with --screen missions|site) select the theater's nth contested site
-  --transfer <jump|move>  (with --screen missions) the war goes on until your company moves onto its
-                          next contract (in another system, or the same one): the shot is --time
-                          seconds into the transfer playing over the system view
+  --transfer <jump|move|renew>
+                          (with --screen missions) the war goes on until your company moves onto its
+                          next contract (in another system, the same one, or the same contract
+                          renewed), as if after a battle (a fresh menu, the old contract from the
+                          profile): the shot is --time seconds into the transfer playing over the
+                          system view
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
                           (from 0; default: the first your side fights for)
@@ -152,8 +155,9 @@ pub struct Args {
     /// --site, for theater shots: index into the contested sites.
     site: Option<usize>,
     /// --transfer, for missions shots: the move onto the next contract,
-    /// `--time` seconds in; true to wait for one to another system.
-    transfer: Option<bool>,
+    /// `--time` seconds in: to another system (`Jump`), within the one
+    /// it's in (`Move`), or the same contract renewed (`Renew`).
+    transfer: Option<TransferKind>,
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.
     choice: Option<bool>,
@@ -346,6 +350,31 @@ pub struct ShowroomArgs {
     pub orbit: Option<f32>,
     pub dist: f32,
     pub focus: Option<usize>,
+}
+
+/// Which move onto the next contract a `--transfer` shot waits for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TransferKind {
+    Jump,
+    Move,
+    Renew,
+}
+
+impl TransferKind {
+    /// Going from `a` to `b` is a move of this kind.
+    fn is(self, a: &galaxy::theater::Theater, b: &galaxy::theater::Theater) -> bool {
+        if !theater_view::Transfer::between(a, b) {
+            return false;
+        }
+        let (sa, sb) = (a.ship.as_ref().unwrap(), b.ship.as_ref().unwrap());
+        let renewed =
+            sa.id == sb.id && sa.realm == sb.realm && sa.side == sb.side && a.system == b.system;
+        match self {
+            TransferKind::Jump => a.system != b.system,
+            TransferKind::Move => a.system == b.system && !renewed,
+            TransferKind::Renew => renewed,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -582,9 +611,10 @@ fn parse_args() -> Result<Args> {
             "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
             "--transfer" => {
                 transfer = Some(match args.next().as_deref() {
-                    Some("jump") => true,
-                    Some("move") => false,
-                    other => bail!("--transfer expects jump or move, got {other:?}"),
+                    Some("jump") => TransferKind::Jump,
+                    Some("move") => TransferKind::Move,
+                    Some("renew") => TransferKind::Renew,
+                    other => bail!("--transfer expects jump, move or renew, got {other:?}"),
                 })
             }
             "--choice" => {
@@ -1188,7 +1218,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 menu.set_choice(g.crew_choice());
                 menu.set_theater(g.aboard(rank));
             }
-            if let Some(jump) = args.transfer {
+            if let Some(kind) = args.transfer {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
                 let rank = profile.rank().level;
                 let mut t = g.await_work_staying(prefer, rank, 100).0;
@@ -1197,11 +1227,19 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     g.step();
                     let (next, _) = g.await_work_staying(prefer, rank, 100);
                     let moved = |a: &Option<galaxy::theater::Theater>| {
-                        a.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| {
-                            theater_view::Transfer::between(a, b) && (a.system != b.system) == jump
-                        })
+                        a.as_ref()
+                            .zip(next.as_ref())
+                            .is_some_and(|(a, b)| kind.is(a, b))
                     };
                     if moved(&t) {
+                        // As the app does back from a battle (or relaunched):
+                        // a fresh menu, and the old contract from the profile.
+                        let shown = t.as_ref().and_then(galaxy::theater::Shown::of);
+                        menu = menu::Menu::new();
+                        menu.input(menu::Nav::Select);
+                        if let Some(old) = shown.and_then(|s| g.shown(&s, rank)) {
+                            menu.remember(old);
+                        }
                         menu.set_theater(next);
                         break;
                     }
@@ -1215,7 +1253,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let kind = menu
                     .transfer()
                     .zip(menu.theater())
-                    .is_some_and(|(tr, t)| tr.jumps(t) == jump);
+                    .is_some_and(|(tr, t)| kind.is(&tr.from, t));
                 anyhow::ensure!(kind, "no transfer of that kind in 2000 ticks");
                 for _ in 0..(shot.time / 0.01).round() as u32 {
                     menu.advance(0.01);
