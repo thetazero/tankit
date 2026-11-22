@@ -1293,7 +1293,7 @@ fn force_choice(g: &mut galaxy::Galaxy, joined: bool) -> Result<()> {
     g.crew = Some(g.companies[c].id);
     let co = &mut g.companies[c];
     if joined {
-        (co.crystals, co.hulls) = (10.0, 0.0);
+        (co.crystals, co.hulls) = (10.0, 0);
     } else {
         co.crystals = g.rules.merc_split * 1.6;
     }

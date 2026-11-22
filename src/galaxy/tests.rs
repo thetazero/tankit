@@ -31,9 +31,9 @@ fn shields_cost_the_attacker_a_seat() {
     let s = 0;
     let owner = g.systems[s].owner();
     let other = (owner + 1) % SIDES;
-    g.systems[s].hulls = [0.0; SIDES];
-    g.systems[s].hulls[owner] = 40.0;
-    g.systems[s].hulls[other] = 40.0;
+    g.systems[s].hulls = [0; SIDES];
+    g.systems[s].hulls[owner] = 40;
+    g.systems[s].hulls[other] = 40;
     let strength = g.strength(s);
     let fire = g.fire(s);
     assert!(g.shielded(s, other) && !g.shielded(s, owner));
@@ -70,8 +70,8 @@ fn a_win_takes_a_site_under_shields() {
     assert_eq!(g.sites[i].kind, SiteKind::Shield { damaged: true });
     assert_eq!(g.systems[s].held[other], held + 1);
     // Every enemy site is on the front, shielded or not.
-    g.systems[s].hulls[owner] = 40.0;
-    g.systems[s].hulls[other] = 40.0;
+    g.systems[s].hulls[owner] = 40;
+    g.systems[s].hulls[other] = 40;
     let (a, b) = g.systems[s].sites;
     let enemy = (a as usize..b as usize)
         .filter(|&i| g.sites[i].owner as usize == owner)
@@ -88,8 +88,8 @@ fn every_battle_has_a_winner() {
     let s = 0;
     let owner = g.systems[s].owner();
     let other = (owner + 1) % SIDES;
-    g.systems[s].hulls[owner] = 40.0;
-    g.systems[s].hulls[other] = 40.0;
+    g.systems[s].hulls[owner] = 40;
+    g.systems[s].hulls[other] = 40;
     let i = g.target(s, other).expect("something to take");
     g.sites[i].kind = SiteKind::Shield { damaged: true };
     g.battles(None);
@@ -474,13 +474,13 @@ fn realms_hire_companies() {
     for _ in 0..150 {
         g.step();
         for c in &g.companies {
-            assert!(c.crystals >= 0.0 && c.hulls >= 0.0);
+            assert!(c.crystals >= 0.0);
             if let Some(k) = c.contract {
                 let sys = &g.systems[k.target as usize];
-                assert!(k.field <= sys.hulls[k.side as usize] + 1e-3);
+                assert!(k.field <= sys.hulls[k.side as usize]);
                 let r = sys.realms[k.side as usize];
                 assert_eq!(g.realms[r as usize].faction, k.side);
-                assert!(k.lost <= k.committed + 1e-3);
+                assert!(k.lost <= k.committed);
             }
         }
     }
@@ -552,7 +552,7 @@ fn companies_split_and_join() {
     for c in &mut g.companies {
         c.contract = None;
         c.crystals = 100.0;
-        c.hulls = 0.0;
+        c.hulls = 0;
     }
     let n = g.companies.len();
     g.companies[0].crystals = g.rules.merc_split * 3.0;
@@ -671,9 +671,9 @@ fn your_ended_contracts_are_kept() {
     assert_eq!(g.ended.len(), ENDED_KEPT);
     for e in &g.ended {
         assert!(e.tick >= e.signed);
-        assert!(e.lost >= 0.0 && e.lost <= e.committed + 1e-3);
+        assert!(e.lost <= e.committed);
         // Spent means every hull committed is gone (#429).
-        assert!(e.outcome != Outcome::Spent || e.lost > e.committed - 0.5);
+        assert!(e.outcome != Outcome::Spent || e.lost == e.committed);
         assert!(e.outcome != Outcome::Fell || e.defend);
     }
     // Ended in order, and not the one your company's still on.
@@ -690,7 +690,7 @@ fn your_ended_contracts_are_kept() {
 /// last few fights on with them, and is spent only once they're all gone.
 #[test]
 fn a_contract_is_spent_only_with_every_hull_gone() {
-    let spent = |field: f32| {
+    let spent = |field: u32| {
         let mut g = Galaxy::warmed(7);
         let c = g
             .companies
@@ -707,8 +707,51 @@ fn a_contract_is_spent_only_with_every_hull_gone() {
         g.mercs();
         g.books.broken > broken
     };
-    for field in [3.0, 5.0, 9.0, 15.0] {
+    for field in [3, 5, 9, 15] {
         assert!(!spent(field), "spent with {field} hulls left");
     }
-    assert!(spent(0.0), "not spent with none left");
+    assert!(spent(0), "not spent with none left");
+}
+
+/// A battle goes on to the last hull (mercs' included): a side with a
+/// single hull in a system is still at war there, and a battle can take it.
+#[test]
+fn a_battle_goes_on_to_the_last_hull() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let s = 0;
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % SIDES;
+    g.systems[s].hulls = [0; SIDES];
+    g.systems[s].hulls[owner] = 40;
+    g.systems[s].hulls[other] = 1;
+    assert!(g.systems[s].at_war());
+    assert!(g.fighting(s, other));
+    // Fought for long enough, its last hull goes.
+    for _ in 0..200 {
+        g.battles(None);
+        if g.systems[s].hulls[other] == 0 {
+            break;
+        }
+    }
+    assert_eq!(g.systems[s].hulls[other], 0);
+    assert!(!g.systems[s].at_war());
+}
+
+/// Battles lose whole hulls, rolled: the same fight comes out differently
+/// from one roll to the next.
+#[test]
+fn losses_are_rolled() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let s = 0;
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % SIDES;
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..40 {
+        g.systems[s].hulls = [0; SIDES];
+        g.systems[s].hulls[owner] = 100;
+        g.systems[s].hulls[other] = 100;
+        g.battles(None);
+        seen.insert(100 - g.systems[s].hulls[owner]);
+    }
+    assert!(seen.len() > 3, "always the same losses: {seen:?}");
 }

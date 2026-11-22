@@ -10,7 +10,12 @@
 //! a few planets. Each planet has **sites**: production sites, each held by a
 //! side and turning out hulls (into that side's storage in the system) and
 //! crystals, and one or two **shield generators** (at least one). Hull
-//! storage is per side per system.
+//! storage is per side per system. Hulls are whole: a yard builds toward its
+//! next one and delivers it done; each stored hull has a small chance a tick
+//! of wearing out; a battle's losses are whole hulls, rolled (each of a
+//! side's hulls there with the chance its expected losses give it), the
+//! mercs' among them by their share. A side with a hull in a system is in
+//! the fight there: a battle goes on to the last hull, mercs' included.
 //!
 //! **Realms, not factions, are the actors** (#315; see `realm`). A faction
 //! is a people; what fights is a realm, a ruler holding a handful of systems
@@ -101,11 +106,12 @@ const NEIGHBORS: usize = 12;
 /// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
 const RESONANT_HULL_COST: f32 = 0.0005;
 /// Smallest sending worth the FTL (hulls).
-const MIN_SEND: f32 = 20.0;
+const MIN_SEND: u32 = 20;
 /// Most quiet ticks a step skips looking for the next war.
 const QUIET_SKIP: usize = 1000;
-/// A system counts as at war when two sides each have this many hulls in it.
-pub const AT_WAR: f32 = 5.0;
+/// A system counts as at war when two sides each have a hull in it: a
+/// battle goes on to a side's last hull, mercs' included.
+pub const AT_WAR: u32 = 1;
 /// Seats an attacker fights short while the defender has a shield generator
 /// up on the planet it's fighting for (#426): in a played battle, that many
 /// of its seats stay empty; in the galaxy's, its fire is cut to match.
@@ -114,7 +120,7 @@ pub const SHIELD_SEATS: usize = 1;
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
 pub struct Rules {
-    /// Hulls wear out at this fraction a tick (so a garrison levels off at
+    /// Each hull has this chance a tick of wearing out (so a garrison levels off at
     /// production / wear).
     pub wear: f32,
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
@@ -304,8 +310,10 @@ pub struct System {
     pub planets: u8,
     /// This system's sites, a range of `Galaxy::sites`.
     pub sites: (u32, u32),
-    /// Each side's hulls here.
-    pub hulls: [f32; SIDES],
+    /// Each side's hulls here: whole hulls.
+    pub hulls: [u32; SIDES],
+    /// Each side's yards here: how far along its next hulls are (under one).
+    pub building: [f32; SIDES],
     /// Each side's sites here (kept in step with `sites`).
     pub held: [u8; SIDES],
     /// Whose each side's sites and hulls here are: an index into
@@ -378,7 +386,7 @@ pub struct Galaxy {
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
-    spare: Vec<[f32; SIDES]>,
+    spare: Vec<[u32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
     members: Vec<u32>,
     spans: Vec<(u32, u32)>,
@@ -496,7 +504,8 @@ impl Galaxy {
                 pos,
                 planets,
                 sites: (start, end),
-                hulls: [0.0; SIDES],
+                hulls: [0; SIDES],
+                building: [0.0; SIDES],
                 held,
                 realms: [NONE; SIDES],
             });
@@ -504,7 +513,7 @@ impl Galaxy {
         let neighbors = find_neighbors(&systems, region);
         let mut g = Galaxy {
             seed,
-            spare: vec![[0.0; SIDES]; systems.len()],
+            spare: vec![[0; SIDES]; systems.len()],
             assaulted: Vec::new(),
             systems,
             sites,
@@ -537,7 +546,7 @@ impl Galaxy {
         // Start every garrison near where it would level off.
         for s in 0..g.systems.len() {
             let owner = g.systems[s].owner();
-            g.systems[s].hulls[owner] = g.production(s)[owner] / rules.wear * 0.8;
+            g.systems[s].hulls[owner] = (g.production(s)[owner] / rules.wear * 0.8).round() as u32;
         }
         g.form_realms();
         (g.splits, g.merges) = (0, 0);
@@ -583,7 +592,7 @@ impl Galaxy {
         let mut war = 0;
         for s in &self.systems {
             for f in 0..SIDES {
-                hulls[f] += s.hulls[f];
+                hulls[f] += s.hulls[f] as f32;
             }
             war += s.at_war() as usize;
         }
@@ -713,7 +722,7 @@ impl Galaxy {
             let ours: f32 = self
                 .neighbors(t)
                 .filter(|&(s, _)| self.holder(s) == r as u32)
-                .map(|(s, _)| self.systems[s].hulls[f])
+                .map(|(s, _)| self.systems[s].hulls[f] as f32)
                 .sum();
             if ours <= 0.0 {
                 continue;
@@ -786,17 +795,19 @@ impl Galaxy {
         let resonant = Faction::Resonant.index();
         for s in 0..self.systems.len() {
             let (a, b) = self.systems[s].sites;
-            let sys = &mut self.systems[s];
-            for h in &mut sys.hulls {
-                *h *= 1.0 - self.rules.wear;
+            // Stored hulls wear out, each with a small chance a tick.
+            for f in 0..SIDES {
+                let worn = self.rng.binomial(self.systems[s].hulls[f], self.rules.wear);
+                self.systems[s].hulls[f] -= worn;
             }
+            let sys = &mut self.systems[s];
             // A pocket's yards run short of what the rest of its space sends them.
             let holder = sys.owner();
             let cut = if self.cut[s] { self.rules.cut_off } else { 1.0 };
             for site in &self.sites[a as usize..b as usize] {
                 if let SiteKind::Production { hulls, crystals: c } = site.kind {
                     let f = site.owner as usize;
-                    sys.hulls[f] += if f == holder { hulls * cut } else { hulls };
+                    sys.building[f] += if f == holder { hulls * cut } else { hulls };
                     let r = sys.realms[f];
                     if r == NONE {
                         continue;
@@ -806,6 +817,14 @@ impl Galaxy {
                         crystals[r as usize] -= hulls * RESONANT_HULL_COST;
                     }
                 }
+            }
+        }
+        // The yards deliver whole hulls: those done, the rest still building.
+        for sys in &mut self.systems {
+            for f in 0..SIDES {
+                let done = sys.building[f].floor();
+                sys.hulls[f] += done as u32;
+                sys.building[f] -= done;
             }
         }
         for (realm, c) in self.realms.iter_mut().zip(crystals) {
@@ -824,7 +843,8 @@ impl Galaxy {
         let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
         let mut out = [0.0; SIDES];
         for f in 0..SIDES {
-            out[f] = sys.hulls[f] * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
+            out[f] =
+                sys.hulls[f] as f32 * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
             if self.pushing(sys.realms[f], sys.pos) {
                 out[f] *= 1.0 + self.rules.initiative;
             }
@@ -841,8 +861,8 @@ impl Galaxy {
         let seats = self.rules.seats.max(1.0);
         let short = (seats - SHIELD_SEATS as f32).max(0.0) / seats;
         for f in 0..SIDES {
-            if hulls[f] > self.rules.frontage {
-                fire[f] *= self.rules.frontage / hulls[f];
+            if hulls[f] as f32 > self.rules.frontage {
+                fire[f] *= self.rules.frontage / hulls[f] as f32;
             }
             if self.shielded(s, f) {
                 fire[f] *= short;
@@ -917,15 +937,21 @@ impl Galaxy {
                 // Each side's fire spreads over its enemies here by how many hulls each has.
                 for g in (0..SIDES).filter(|&g| present[g]) {
                     let enemies = |f: usize| present[f] && f != g;
-                    let targets: f32 = (0..SIDES).filter(|&f| enemies(f)).map(|f| hulls[f]).sum();
+                    let targets: f32 = (0..SIDES)
+                        .filter(|&f| enemies(f))
+                        .map(|f| hulls[f] as f32)
+                        .sum();
                     for f in (0..SIDES).filter(|&f| enemies(f)) {
-                        losses[f] += self.rules.kill * fire[g] * hulls[f] / targets;
+                        losses[f] += self.rules.kill * fire[g] * hulls[f] as f32 / targets;
                     }
                 }
+                // Whole hulls lost: each of a side's hulls here with the
+                // chance its expected losses give it.
                 for f in (0..SIDES).filter(|&f| losses[f] > 0.0 && !in_match(f)) {
-                    let mercs = self.mercs_share(s, f, losses[f]);
-                    let theirs: f32 = mercs.iter().map(|m| m.1).sum();
-                    self.lose(s, f, (losses[f] - theirs).max(0.0), &mercs);
+                    let lost = self.rng.binomial(hulls[f], losses[f] / hulls[f] as f32);
+                    let mercs = self.mercs_share(s, f, lost);
+                    let theirs: u32 = mercs.iter().map(|m| m.1).sum();
+                    self.lose(s, f, lost - theirs, &mercs);
                 }
             }
             if let Some(p) = here {
@@ -958,21 +984,29 @@ impl Galaxy {
     }
 
     /// Of side `f`'s `lost` hulls in system `s`, each company's there
-    /// (`Company::id`, hulls): its share of the side's hulls here.
-    fn mercs_share(&self, s: usize, f: usize, lost: f32) -> Vec<(u32, f32)> {
-        let here = self.systems[s].hulls[f];
-        if here <= 0.0 {
-            return Vec::new();
+    /// (`Company::id`, hulls): every hull lost is a company's with the
+    /// chance its hulls make up of the side's here.
+    fn mercs_share(&mut self, s: usize, f: usize, lost: u32) -> Vec<(u32, u32)> {
+        let mut pool = self.systems[s].hulls[f];
+        let mut left = lost.min(pool);
+        let mut out = Vec::new();
+        for c in &self.companies {
+            let Some(k) = c.contract else { continue };
+            if k.target as usize != s || k.side as usize != f || k.field == 0 || pool == 0 {
+                continue;
+            }
+            let field = k.field.min(pool);
+            let theirs = self
+                .rng
+                .binomial(left, field as f32 / pool as f32)
+                .min(field);
+            pool -= field;
+            left -= theirs;
+            if theirs > 0 {
+                out.push((c.id, theirs));
+            }
         }
-        let k = (lost / here).min(1.0);
-        self.companies
-            .iter()
-            .filter_map(|c| {
-                let k2 = c.contract?;
-                (k2.target as usize == s && k2.side as usize == f && k2.field > 0.0)
-                    .then(|| (c.id, k2.field * k))
-            })
-            .collect()
+        out
     }
 
     /// Side `f` loses hulls in system `s`: `realm` of the realm's, and each
@@ -984,10 +1018,10 @@ impl Galaxy {
         &mut self,
         s: usize,
         f: usize,
-        realm: f32,
-        mercs: &[(u32, f32)],
-    ) -> (f32, f32) {
-        let mut theirs = 0.0;
+        realm: u32,
+        mercs: &[(u32, u32)],
+    ) -> (u32, u32) {
+        let mut theirs = 0;
         for &(id, n) in mercs {
             let Some(k) = self
                 .companies
@@ -997,14 +1031,14 @@ impl Galaxy {
             else {
                 continue;
             };
-            let off = n.min(k.field).max(0.0);
+            let off = n.min(k.field);
             k.field -= off;
             k.lost += off;
             self.books.lost += off as f64;
             theirs += off;
         }
         let sys = &mut self.systems[s];
-        let total = (realm.max(0.0) + theirs).min(sys.hulls[f]);
+        let total = (realm + theirs).min(sys.hulls[f]);
         sys.hulls[f] -= total;
         self.destroyed += total as f64;
         (total, theirs.min(total))
@@ -1082,9 +1116,9 @@ impl Galaxy {
             for f in 0..SIDES {
                 self.spare[s][f] = if contested || sys.held[f] == 0 {
                     // Fighting here (or here to fight): nothing to spare.
-                    0.0
+                    0
                 } else {
-                    sys.hulls[f] * (1.0 - self.rules.keep)
+                    (sys.hulls[f] as f32 * (1.0 - self.rules.keep)) as u32
                 };
             }
         }
@@ -1092,7 +1126,7 @@ impl Galaxy {
         for c in &self.companies {
             if let Some(k) = c.contract {
                 let x = &mut self.spare[k.target as usize][k.side as usize];
-                *x = (*x - k.field).max(0.0);
+                *x = x.saturating_sub(k.field);
             }
         }
         // A different people moves first each tick, starting at a different
@@ -1113,7 +1147,7 @@ impl Galaxy {
                 let mut k = 0;
                 for (s, _) in self.neighbors(t) {
                     let r = self.systems[s].realms[f];
-                    if r != NONE && self.spare[s][f] > 0.0 && !from[..k].contains(&r) {
+                    if r != NONE && self.spare[s][f] > 0 && !from[..k].contains(&r) {
                         from[k] = r;
                         k += 1;
                     }
@@ -1153,7 +1187,7 @@ impl Galaxy {
                     .filter(|&(_, _, there)| there < here)
                     .min_by(|a, b| a.2.total_cmp(&b.2));
                 if let Some((t, d, _)) = next {
-                    let m = self.spare[s][f] * self.rules.bring_up;
+                    let m = self.spare[s][f] as f32 * self.rules.bring_up;
                     cost += m * d / FTL_RANGE * self.rules.ftl_cost;
                     moves.push((f, s, t, m));
                 }
@@ -1170,6 +1204,8 @@ impl Galaxy {
             realm.crystals -= cost * afford;
         }
         for (f, s, t, m) in moves {
+            // Whole hulls go.
+            let m = (m as u32).min(self.spare[s][f]);
             self.spare[s][f] -= m;
             self.systems[s].hulls[f] -= m;
             self.systems[t].hulls[f] += m;
@@ -1212,11 +1248,12 @@ impl Galaxy {
             if g.systems[s].realms[f] == r {
                 g.spare[s][f]
             } else {
-                0.0
+                0
             }
         };
-        let pool: f32 = self.neighbors(t).map(|(s, _)| mine(self, s)).sum();
-        if have + pool < odds * defense || pool < MIN_SEND {
+        let pool: u32 = self.neighbors(t).map(|(s, _)| mine(self, s)).sum();
+        let pool_f = pool as f32;
+        if have + pool_f < odds * defense || pool < MIN_SEND {
             // Not a good enough chance alone: an attack it's set on, or a
             // world of its own under attack, can hire a company to make up
             // the difference, then go in with it.
@@ -1226,22 +1263,23 @@ impl Galaxy {
             } else {
                 pocket || self.pushing(r, sys.pos)
             };
-            if worth_it && self.hire(t, f, r, want - pool, ours) {
+            let need = (want - pool_f).max(0.0).ceil() as u32;
+            if worth_it && self.hire(t, f, r, need, ours) {
                 self.consider(t, f, r);
             }
             return;
         }
         // Go in hard: a decisive blow, not a top-up the defender can match
         // next tick. What's left of it rolls on to the next world.
-        let send = want.max(pool * self.rules.commit).min(pool);
-        if send < MIN_SEND {
+        let send = want.max(pool_f * self.rules.commit).min(pool_f);
+        if send < MIN_SEND as f32 {
             return;
         }
         // Pay for it: FTL by distance.
-        let frac = send / pool;
+        let frac = send / pool_f;
         let cost: f32 = self
             .neighbors(t)
-            .map(|(s, d)| mine(self, s) * frac * d / FTL_RANGE * self.rules.ftl_cost)
+            .map(|(s, d)| mine(self, s) as f32 * frac * d / FTL_RANGE * self.rules.ftl_cost)
             .sum();
         // Defending a world of ours may spend everything; an attack only
         // what's above the reserve.
@@ -1257,19 +1295,20 @@ impl Galaxy {
             1.0
         };
         let frac = frac * afford;
-        if frac * pool < MIN_SEND {
+        if frac * pool_f < MIN_SEND as f32 {
             return;
         }
         self.realms[r as usize].crystals -= cost * afford;
         self.sent += 1;
-        let mut moved = 0.0;
+        let mut moved = 0;
         for k in 0..NEIGHBORS {
             let (s, _) = self.neighbors[t * NEIGHBORS + k];
             if s == u32::MAX {
                 break;
             }
             let s = s as usize;
-            let m = mine(self, s) * frac;
+            // Whole hulls go.
+            let m = (mine(self, s) as f32 * frac) as u32;
             self.spare[s][f] -= m;
             self.systems[s].hulls[f] -= m;
             moved += m;

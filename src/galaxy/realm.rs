@@ -23,13 +23,10 @@
 
 use glam::Vec3;
 
-use super::{AT_WAR, Galaxy, NEIGHBORS, Offensive, SIDES};
+use super::{Galaxy, NEIGHBORS, Offensive, SIDES};
 
 /// No realm.
 pub const NONE: u32 = u32::MAX;
-/// A side's hulls left in a system it holds nothing in, below this, are gone
-/// (so a realm's last stragglers don't keep it alive forever).
-const STRAGGLERS: f32 = 0.05 * AT_WAR;
 /// A small realm folds into a neighbor only if that neighbor's seat is
 /// within this share of the reach of all of it.
 const FOLD_REACH: f32 = 0.8;
@@ -205,15 +202,15 @@ impl Galaxy {
         out
     }
 
-    /// Bookkeeping: drop stragglers, count who holds what, list each realm's
+    /// Bookkeeping: let go of systems a realm has nothing left in, count who holds what, list each realm's
     /// territory, free the slots of realms that are gone, and move seats that fell.
     pub(crate) fn keep_books(&mut self) {
         let n = self.systems.len();
         let mut tagged = vec![false; self.realms.len()];
         for sys in &mut self.systems {
             for f in 0..SIDES {
-                if sys.held[f] == 0 && sys.hulls[f] < STRAGGLERS {
-                    sys.hulls[f] = 0.0;
+                // Nothing held and no hull left: the realm's gone from here.
+                if sys.held[f] == 0 && sys.hulls[f] == 0 {
                     sys.realms[f] = NONE;
                 }
                 if sys.realms[f] != NONE {
