@@ -506,6 +506,23 @@ impl Map {
 
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
     pub fn mine(seed: u64) -> Map {
+        // Tests build the same few mines over and over: each once (the
+        // first few seeds only, so a sweep over many doesn't keep them all).
+        #[cfg(test)]
+        if seed < 12 {
+            use std::collections::HashMap;
+            use std::sync::{Arc, Mutex, OnceLock};
+            type Built = Arc<OnceLock<Map>>;
+            static MINES: OnceLock<Mutex<HashMap<u64, Built>>> = OnceLock::new();
+            let slot = MINES
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .entry(seed)
+                .or_default()
+                .clone();
+            return slot.get_or_init(|| map(&crate::mine_spec(seed))).clone();
+        }
         map(&crate::mine_spec(seed))
     }
 

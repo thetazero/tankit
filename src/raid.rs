@@ -665,6 +665,10 @@ mod tests {
     /// On the crystal mine each side's stand is open, drivable ground near its base,
     /// and the stands are far apart.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "builds a mine, slow unoptimized: run with cargo test --release"
+    )]
     fn seam_stands_are_open_and_far_apart() {
         let m = Map::mine(0);
         let r = Raid::new(&m);

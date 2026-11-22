@@ -4929,6 +4929,10 @@ mod tests {
     /// Under Raid on the crystal mine, bots attack and defend: the attackers get the
     /// flag off its stand.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "builds a mine, slow unoptimized: run with cargo test --release"
+    )]
     fn bots_go_for_the_flag() {
         let mut m = Match::new(Map::mine(0), 0, 5, 2);
         m.set_contract(Contract::Raid);
@@ -4960,6 +4964,10 @@ mod tests {
     /// The crystal mine borer's beam: a tank parked beside it is fine, one that
     /// drives into it is destroyed, and so is a bot put in it.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "builds a mine, slow unoptimized: run with cargo test --release"
+    )]
     fn driving_into_the_borers_beam_kills() {
         let mut m = Match::new(Map::mine(0), 0, 1, 1);
         for f in &mut m.fighters {
@@ -5082,14 +5090,18 @@ mod tests {
     /// invisible wall to catch it), and whoever knocked it out gets the kill.
     #[test]
     fn a_tank_knocked_out_of_any_map_dies_out_there() {
-        for (name, map) in [
+        let mut maps = vec![
             ("saltmarket", Map::saltmarket()),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
             ("foundry", Map::foundry()),
-            ("mine", Map::mine(0)),
-        ] {
+        ];
+        // (The mine is slow to build unoptimized: `cargo test --release`.)
+        if !cfg!(debug_assertions) {
+            maps.push(("mine", Map::mine(0)));
+        }
+        for (name, map) in maps {
             let mut m = Match::new(map, 0, 1, 1);
             for f in &mut m.fighters {
                 f.shield = 0.0;

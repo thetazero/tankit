@@ -206,7 +206,11 @@ mod tests {
             (MapKind::City, 2),
             (MapKind::Foundry, 0),
             (MapKind::Mine, 0),
-        ] {
+        ]
+        .into_iter()
+        // (The mine is slow to build unoptimized: `cargo test --release`.)
+        .filter(|&(kind, _)| !cfg!(debug_assertions) || kind != MapKind::Mine)
+        {
             let world = World::new(make_map(kind, seed), 0);
             let sun = world.map.atmosphere.sun_dir.normalize();
             let n = spots(kind).len().max(world.map.vistas.len());
