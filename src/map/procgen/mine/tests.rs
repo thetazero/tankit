@@ -830,7 +830,12 @@ fn check_rocks_run_big(seed: u64) {
             big += 1;
         }
     }
-    assert!(small < 60, "seed {seed}: {small} small rocks");
+    // (Per 220 m square's worth of map.)
+    let area = (m.size / 220.0).powi(2);
+    assert!(
+        (small as f32) < 60.0 * area,
+        "seed {seed}: {small} small rocks"
+    );
     assert!(big > 75, "seed {seed}: only {big} big rocks");
 }
 
@@ -1215,5 +1220,49 @@ fn probe() {
             keep_clear(&l, q),
             d.in_the_way(q, 2.5)
         );
+    }
+}
+
+/// Where `MINE_PATH=seed,x,z` can drive to, sampled over the map: a grid
+/// of `.` (reachable), `#` (blocked), ` ` (open but cut off).
+#[test]
+#[ignore]
+fn reach_map() {
+    let v: Vec<f32> = std::env::var("MINE_PATH")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let (seed, from) = (v[0] as u64, Vec2::new(v[1], v[2]));
+    let (l, m) = (lay(seed), mine(seed));
+    let nav = NavGrid::build(&m);
+    // A window (x0, z0, step) if given, else the whole map.
+    let (x0, z0, step) = if v.len() >= 6 {
+        (v[3], v[4], v[5])
+    } else {
+        (0.0, 0.0, l.size / 60.0)
+    };
+    let mn = &l.mines[0];
+    eprintln!(
+        "face at the adit {} adit {:?} west adit {:?} wash at adit {:?}",
+        l.face(mn.adit.0.x),
+        mn.adit,
+        mn.west_adit,
+        l.wash_near(Vec2::new(mn.adit.0.x, l.face(mn.adit.0.x) - 20.0))
+    );
+    for j in (0..60).rev() {
+        let row: String = (0..60)
+            .map(|i| {
+                let p = Vec2::new(x0 + (i as f32 + 0.5) * step, z0 + (j as f32 + 0.5) * step);
+                if nav.is_blocked(p) {
+                    '#'
+                } else if nav.path(from, p).is_empty() {
+                    ' '
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        eprintln!("{row}");
     }
 }

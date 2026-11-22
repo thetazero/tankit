@@ -609,7 +609,7 @@ impl Layout {
             while z < s {
                 let p = Vec2::new(x, z);
                 let (d, _) = w.near(p);
-                if d < 12.0 && p.y > self.face(p.x) - 7.0 {
+                if d < 12.0 && p.y > self.face(p.x) - 10.0 {
                     return false;
                 }
                 // (Its last stretch may run into another: a junction.)
@@ -664,7 +664,7 @@ impl Layout {
                 let sx = self.mines[k - 1].scree_x;
                 marks.push((sx, self.face(sx) - SCREE_RUN - rng.range(24.0, 30.0)));
             }
-            marks.push((x, self.face(x) - rng.range(19.5, 23.0)));
+            marks.push((x, self.face(x) - rng.range(23.0, 26.0)));
         }
         let at = |x: f32| {
             for w in marks.windows(2) {
@@ -679,7 +679,7 @@ impl Layout {
         let mut x = -14.0;
         while x < turn {
             let z =
-                (at(x) + rng.range(-2.0, 2.0)).min(self.face_range(x - 26.0, x + 26.0).0 - 19.5);
+                (at(x) + rng.range(-2.0, 2.0)).min(self.face_range(x - 26.0, x + 26.0).0 - 23.0);
             pts.push(Vec2::new(x, z));
             x += rng.range(20.0, 27.0);
         }
@@ -1175,8 +1175,10 @@ impl Layout {
             xs.iter().all(|&x| {
                 (0..rows).all(|k| {
                     let p = Vec2::new(x, z0 + k as f32 * 6.0);
+                    // (Well out from under the Face: the chase camera behind
+                    // a tank turning about stays out of the rock.)
                     p.y > 10.0
-                        && p.y < self.face(p.x) - 8.0
+                        && p.y < self.face(p.x) - 16.0
                         && self.mesa(p) < 0.01
                         && self.washes.iter().all(|w| w.near(p).0 > 14.0)
                         && self.lines.iter().all(|t| line_distance(t, p) > 12.0)

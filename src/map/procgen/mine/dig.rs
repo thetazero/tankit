@@ -4036,8 +4036,8 @@ impl Dig<'_> {
                 return false;
             }
             let (lo, hi) = o.y_range();
-            let go = self.level(o.center).max(lo);
-            hi > go + 1.4 && (go - g).abs() < 3.0
+            let go = self.level(o.center);
+            hi > go + 1.4 && lo < go + 2.0 && (go - g).abs() < 3.0
         }) || self.crystals.iter().any(|c| c.solid && c.distance(p) < r)
             || {
                 // A bank or a rise of the ground itself.
@@ -4388,6 +4388,20 @@ impl Dig<'_> {
                 mine(br.x, mn.breach.0.y + 6.0),
                 at(east_landing),
             ]);
+            // Along the landing under the Face, from the west adit's mouth
+            // past the adit's to the east landing.
+            ways.push(vec![
+                at(west_mouth),
+                at(Vec2::new(
+                    (wa.x + ax) * 0.5,
+                    lay.face((wa.x + ax) * 0.5) - 6.0,
+                )),
+                at(Vec2::new(
+                    mn.adit.0.x - 3.0,
+                    lay.face(mn.adit.0.x - 3.0) - 6.0,
+                )),
+                at(east_landing),
+            ]);
             // From the east landing along the Crag's foot and into the
             // heading.
             ways.push(vec![
@@ -4692,7 +4706,7 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
             seg(p, a, w).0 < 12.0 || (b.distance(p) > -3.0 && b.distance(p) < 3.0)
         })
         || lay.crag_depth(p) > -4.0
-        || (p.y > f - 8.0 && p.y < f + FACE_RISE + 5.0)
+        || (p.y > f - 12.0 && p.y < f + FACE_RISE + 5.0)
         || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
         || lay.spots.iter().any(|&q| p.distance(q) < 6.5)
         || lay.repairs.iter().any(|&q| p.distance(q) < 6.0)

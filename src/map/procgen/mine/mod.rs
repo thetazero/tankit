@@ -63,7 +63,7 @@ pub const TOP: f32 = 10.0;
 /// How far the Face's foot is from its lip (horizontally).
 pub const FACE_RISE: f32 = 4.0;
 /// The scree runs this far out from the Face's foot up to the lip.
-const SCREE_RUN: f32 = 30.0;
+const SCREE_RUN: f32 = 34.0;
 /// The Crag rises to this height. Nothing climbs it.
 pub const CRAG_TOP: f32 = 40.0;
 /// Its foot is quarried flat this high (over the floor) along its face.
