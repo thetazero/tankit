@@ -24,7 +24,11 @@
 
 mod ithessar;
 mod resonant;
+mod ruin;
 mod uthenn;
+
+pub use ruin::Condition;
+pub(super) use ruin::{Mark, ruin};
 
 use std::f32::consts::{PI, TAU};
 

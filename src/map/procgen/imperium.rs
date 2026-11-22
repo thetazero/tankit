@@ -91,7 +91,7 @@ impl Style for Imperium {
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "ROTUNDA",
-            Centerpiece::ShieldGenerator(_) => "GENERATOR",
+            Centerpiece::ShieldGenerator(..) => "GENERATOR",
         }
     }
 

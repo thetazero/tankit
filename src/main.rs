@@ -46,16 +46,19 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|city|shield-city|foundry|mine>
+  --map <saltmarket|sanctum|kiln|city|shield-city|shield-site|foundry|mine>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
                           (a generated Imperium city, all four factions), the shield city (the same
-                          city, a shield generator in place of its rotunda), the Foundry (a wrecked
-                          Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
+                          city, a shield generator in place of its rotunda; shield-site: the same
+                          on two sides, as a theater's generator is fought on), the Foundry (a
+                          wrecked Uthenn tungsten cube factory), or the Seam (an Ithessar crystal
                           mine: caves, rails and stacked levels)
-  --map-seed <n>          which city a generated map (city, shield-city) builds (default: the --seed)
-  --generator <faction>   (with --map shield-city) whose shield generator stands in it: imperium
-                          (the default), resonant, uthenn or ithessar
+  --map-seed <n>          which city a generated map (city, shield-city, shield-site) builds (default: the --seed)
+  --generator <faction>   (with --map shield-city or shield-site) whose shield generator stands in it:
+                          imperium (the default), resonant, uthenn or ithessar
+  --generator-down <n>    (with --map shield-city or shield-site) the generator's down, n ticks of repair
+                          to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -207,8 +210,11 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
-            (true, MapKind::ShieldCity(owner)) => {
-                map::procgen::greybox(&shield_city_spec(self.map_seed, owner))
+            (true, MapKind::ShieldCity(g)) => {
+                map::procgen::greybox(&shield_spec(self.map_seed, g, false))
+            }
+            (true, MapKind::ShieldSite(g)) => {
+                map::procgen::greybox(&shield_spec(self.map_seed, g, true))
             }
             _ => make_map(self.map, self.map_seed),
         };
@@ -234,7 +240,11 @@ pub enum MapKind {
     /// The same city with a shield generator in the middle in place of the
     /// rotunda, the standard model of the side that holds it: the same
     /// layout for the same seed.
-    ShieldCity(faction::Faction),
+    ShieldCity(Generator),
+    /// The shield city as a theater's shield generator site is fought on
+    /// (#341): two sides (the theater's), the generator its holder's, in
+    /// the shape the site's in.
+    ShieldSite(Generator),
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// The Seam: an Ithessar crystal mine in the desert, on three levels.
@@ -249,7 +259,8 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City => map::procgen::map(&city_spec(seed)),
-        MapKind::ShieldCity(owner) => map::procgen::map(&shield_city_spec(seed, owner)),
+        MapKind::ShieldCity(g) => map::procgen::map(&shield_spec(seed, g, false)),
+        MapKind::ShieldSite(g) => map::procgen::map(&shield_spec(seed, g, true)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::Map::mine(),
     }
@@ -269,8 +280,36 @@ pub fn city_spec(seed: u64) -> map::procgen::Spec {
 /// The imperial city `seed` names, `owner`'s shield generator in its
 /// middle (whoever holds the city now).
 pub fn shield_city_spec(seed: u64, owner: faction::Faction) -> map::procgen::Spec {
+    shield_spec(seed, Generator::up(owner), false)
+}
+
+/// A shield generator for a map: whose model it is, and what shape it's in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Generator {
+    pub owner: faction::Faction,
+    pub condition: map::procgen::shield::Condition,
+}
+
+impl Generator {
+    pub const fn up(owner: faction::Faction) -> Generator {
+        Generator {
+            owner,
+            condition: map::procgen::shield::Condition::Up,
+        }
+    }
+}
+
+/// The imperial city `seed` names with generator `g` in its middle: all
+/// four sides, or for a theater's site, two (the default matchup, which the
+/// theater's sides stand in for).
+pub fn shield_spec(seed: u64, g: Generator, site: bool) -> map::procgen::Spec {
+    let sides = match site {
+        true => map::DEFAULT_SIDES.to_vec(),
+        false => faction::Faction::ALL.to_vec(),
+    };
     map::procgen::Spec {
-        centerpiece: map::procgen::Centerpiece::ShieldGenerator(owner),
+        centerpiece: map::procgen::Centerpiece::ShieldGenerator(g.owner, g.condition),
+        sides,
         ..city_spec(seed)
     }
 }
@@ -406,6 +445,7 @@ fn parse_args() -> Result<Args> {
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
     let mut generator: Option<faction::Faction> = None;
+    let mut generator_down = 0u8;
     let mut mission = None;
     let mut site = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
@@ -451,12 +491,17 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => map_kind = MapKind::City,
-                Some("shield-city") => map_kind = MapKind::ShieldCity(faction::Faction::Imperium),
+                Some("shield-city") => {
+                    map_kind = MapKind::ShieldCity(Generator::up(faction::Faction::Imperium))
+                }
+                Some("shield-site") => {
+                    map_kind = MapKind::ShieldSite(Generator::up(faction::Faction::Imperium))
+                }
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, city, shield-city, foundry or mine, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, city, shield-city, shield-site, foundry or mine, got {other:?}"
                     )
                 }
             },
@@ -479,6 +524,12 @@ fn parse_args() -> Result<Args> {
                 generator = Some(faction::Faction::by_name(&name).with_context(|| {
                     format!("--generator expects a faction name, got {name:?}")
                 })?);
+            }
+            "--generator-down" => {
+                generator_down = args
+                    .next()
+                    .context("--generator-down needs a number of ticks")?
+                    .parse()?;
             }
             "--employer" => {
                 let name = args.next().unwrap_or_default();
@@ -646,8 +697,11 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
-    if let (MapKind::ShieldCity(owner), Some(g)) = (&mut map_kind, generator) {
-        *owner = g;
+    if let MapKind::ShieldCity(g) | MapKind::ShieldSite(g) = &mut map_kind {
+        if let Some(owner) = generator {
+            g.owner = owner;
+        }
+        g.condition = map::procgen::shield::Condition::down(generator_down, galaxy::REPAIR_TICKS);
     }
     let sides = make_map(map_kind, map_seed).factions;
     let menu_shot = matches!(
@@ -1028,8 +1082,10 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         _ => {}
     }
     // The backdrop follows the selected contract, as in the window.
-    let (i, side) = menu.backdrop().unwrap_or((0, 0));
-    let mut game = app::backdrop_match(i, side, profile.loadout);
+    let (kind, side) = menu
+        .backdrop()
+        .unwrap_or((mission::MISSIONS[0].map_kind, 0));
+    let mut game = app::backdrop_match(kind, side, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);

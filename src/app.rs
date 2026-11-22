@@ -141,16 +141,16 @@ struct App {
     menu_orbit: f32,
     /// Seconds the menu has been up (drives the camera's sway).
     menu_time: f32,
-    /// The mission (and side) whose map the menu backdrop shows.
-    backdrop: (usize, usize),
+    /// The map (and side) the menu backdrop shows.
+    backdrop: Backdrop,
     /// How long the mission screen has pointed at a different contract than
     /// the backdrop shows: it follows once the selection settles.
     backdrop_wait: f32,
     /// A backdrop being built off the main thread (a big map takes most of a
     /// second), for the mission and side it's of.
-    backdrop_job: Option<((usize, usize), Receiver<(Match, StaticWorld)>)>,
+    backdrop_job: Option<(Backdrop, Receiver<(Match, StaticWorld)>)>,
     /// A built backdrop waiting for the screen to go dark before it's swapped in.
-    backdrop_ready: Option<((usize, usize), Match, StaticWorld)>,
+    backdrop_ready: Option<(Backdrop, Match, StaticWorld)>,
     /// How dark the menu scene is (0..1): it dips to black around a backdrop swap.
     backdrop_dark: f32,
     cam: ChaseCam,
@@ -256,7 +256,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         pause: Pause::new(),
         menu_orbit,
         menu_time: 0.0,
-        backdrop: (0, 0),
+        backdrop: (MISSIONS[0].map_kind, 0),
         backdrop_wait: 0.0,
         backdrop_job: None,
         backdrop_ready: None,
@@ -333,28 +333,21 @@ fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
     p.finish()
 }
 
+/// A menu backdrop: a map, and the side whose vista it's seen from.
+type Backdrop = (MapKind, usize);
+
 /// The main menu's backdrop: the first mission's map, empty, your tank parked at its vista.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    backdrop_match(0, 0, kit)
+    backdrop_match(MISSIONS[0].map_kind, 0, kit)
 }
 
-/// Mission `MISSIONS[i]`'s map, empty, your tank parked at side `side`'s vista:
-/// the menu's backdrop while that contract is selected.
-pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
-    let mission = &MISSIONS[i];
-    let mut m = new_match(
-        mission.seed,
-        mission.map_kind,
-        mission.seed,
-        side,
-        0,
-        0,
-        Contract::Attrition,
-        kit,
-        None,
-    );
+/// Map `kind` (the first of it, for a generated kind), empty, your tank
+/// parked at side `side`'s vista: the menu's backdrop while a site fought
+/// on it is selected.
+pub fn backdrop_match(kind: MapKind, side: usize, kit: garage::Loadout) -> Match {
+    let mut m = new_match(0, kind, 0, side, 0, 0, Contract::Attrition, kit, None);
     m.time_left = f32::INFINITY;
-    let v = crate::vista::of(&m.world.map, mission.map_kind, side);
+    let v = crate::vista::of(&m.world.map, kind, side);
     crate::vista::park(&mut m.world, v);
     // Already parked: no arrival (or its sound) each time the backdrop
     // changes, and no shield to drop with a cue.
@@ -524,7 +517,7 @@ impl App {
     fn start_sortie(&mut self, o: Sortie, prize: Option<Part>) {
         self.leave_battle();
         let m = &MISSIONS[o.mission];
-        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
+        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, o.map_kind, 0, m.bots());
         // A generated map is a new one each sortie (the same again on a replay).
         self.map_seed = fresh_seed();
         (self.contract, self.side, self.rating) = (m.contract, 0, m.rating);
@@ -625,8 +618,8 @@ impl App {
                         let game = backdrop_match(want.0, want.1, kit);
                         let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
                         log::debug!(
-                            "menu backdrop: {} built in {:.0?}",
-                            MISSIONS[want.0].map,
+                            "menu backdrop: {:?} built in {:.0?}",
+                            want.0,
                             started.elapsed()
                         );
                         // The menu may have moved on: then nobody's listening.
@@ -662,7 +655,7 @@ impl App {
         self.in_war = false;
         self.sortie = None;
         self.load(menu_match(self.profile.loadout));
-        self.backdrop = (0, 0);
+        self.backdrop = (MISSIONS[0].map_kind, 0);
         self.backdrop_job = None;
         self.backdrop_ready = None;
         self.backdrop_dark = 0.0;
@@ -1372,7 +1365,7 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let mut m = backdrop_match(0, 1, kit);
+        let mut m = backdrop_match(MISSIONS[0].map_kind, 1, kit);
         assert_eq!(m.factions[0], MISSIONS[0].sides[1]);
         for _ in 0..(4.0 / crate::game::DT) as usize {
             m.step(crate::sim::Command::default(), false);

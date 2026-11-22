@@ -54,8 +54,9 @@ pub enum Centerpiece {
     /// The style's great building (the Imperium's rotunda).
     Monument,
     /// A shield generator: the standard model of the side that holds it,
-    /// whoever built the place round it (see `shield`).
-    ShieldGenerator(Faction),
+    /// whoever built the place round it (see `shield`), in the shape it's
+    /// in: up, or down (wrecked, or going back up).
+    ShieldGenerator(Faction, shield::Condition),
 }
 
 /// A map to generate.
@@ -136,13 +137,25 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     let mut claims = Vec::new();
     let mut drifts = match spec.centerpiece {
         Centerpiece::Monument => st.landmark(&mut map, &sk, &mut rng),
-        Centerpiece::ShieldGenerator(owner) => {
+        Centerpiece::ShieldGenerator(owner, condition) => {
             // The city round it is the same as round the monument, block
             // for block: the generator draws on its own numbers, and the
             // city's are drawn on past the monument as if it stood here.
             st.landmark(&mut Map::empty(sk.size), &sk, &mut rng);
             let mut own = Rng::new(spec.seed ^ 0x5E1D_0000);
-            shield::build(&mut map, &sk, &mut own, owner)
+            let mark = shield::Mark::of(&map);
+            let drifts = shield::build(&mut map, &sk, &mut own, owner);
+            let base = sk.ground(sk.landmark.center);
+            shield::ruin(
+                &mut map,
+                &mut own,
+                &sk.landmark,
+                base,
+                &mark,
+                owner,
+                condition,
+            );
+            drifts
         }
     };
     for (k, lot) in sk.lots.iter().enumerate() {
@@ -284,6 +297,16 @@ impl Map {
     /// the middle in place of the rotunda (see `crate::shield_city_spec`).
     pub fn shield_city(seed: u64, owner: Faction) -> Map {
         map(&crate::shield_city_spec(seed, owner))
+    }
+
+    /// The same, the generator in the shape `condition` says: up, wrecked,
+    /// or going back up.
+    pub fn shield_city_in(seed: u64, owner: Faction, condition: shield::Condition) -> Map {
+        map(&crate::shield_spec(
+            seed,
+            crate::Generator { owner, condition },
+            false,
+        ))
     }
 }
 
