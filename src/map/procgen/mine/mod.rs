@@ -1339,8 +1339,11 @@ impl Layout {
             .chain(&self.fords)
             .map(|&(a, b, h)| smoothstep(h + 2.0, h + 8.0, seg(p, a, b).0))
             .fold(1.0, f32::min);
-        let (a, b) = self.ways_up[0];
-        let road = smoothstep(4.0, 10.0, seg(p, a, b).0);
+        let road = self
+            .ways_up
+            .iter()
+            .map(|&(a, b)| smoothstep(4.0, 10.0, seg(p, a, b).0))
+            .fold(1.0, f32::min);
         let flat = smoothstep(3.0, 9.0, self.track_distance(p)) * shed * graded * road * (1.0 - m);
         // The mesa's top rolls a little, away from the mine's roofs and back
         // from the lip.

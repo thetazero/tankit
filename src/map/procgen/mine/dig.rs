@@ -3872,6 +3872,16 @@ impl Dig<'_> {
             .chain(&lay.fords)
             .any(|&(a, b, h)| seg(p, a, b).0 < r + h + 1.5)
             || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < r + 4.0)
+            || (0..9).any(|k| {
+                // Nor where a side spawns.
+                let a = k as f32 * TAU / 8.0;
+                let q = if k == 0 {
+                    p
+                } else {
+                    p + Vec2::new(a.cos(), a.sin()) * (r + 2.0)
+                };
+                lay.by_spawns(q)
+            })
     }
 
     pub(super) fn on_way(&self, q: Vec2) -> bool {
@@ -4153,7 +4163,7 @@ impl Dig<'_> {
         let east_landing = {
             let level = |p: Vec2| {
                 let g = lay.ground(p.x, p.y);
-                lay.mesa(p) < 0.02
+                lay.mesa(p) < 0.05
                     && lay.cave_distance(p) > 3.5
                     && lay.wash(p) > -0.1
                     && (0..8).all(|k| {
@@ -4163,13 +4173,11 @@ impl Dig<'_> {
                     })
             };
             let want = Vec2::new(br.x + 7.0, lay.face(br.x + 7.0) - 6.0);
-            (0..24)
-                .flat_map(|i| (0..16).map(move |j| (i, j)))
+            (0..30)
+                .flat_map(|i| (0..26).map(move |j| (i, j)))
                 .map(|(i, j)| {
-                    Vec2::new(
-                        br.x + 5.0 + i as f32,
-                        lay.face(br.x + 5.0 + i as f32) - 5.0 - j as f32,
-                    )
+                    let x = br.x - 8.0 + i as f32;
+                    Vec2::new(x, lay.face(x) - 5.0 - j as f32)
                 })
                 .filter(|&p| level(p))
                 .min_by(|p, q| p.distance(want).total_cmp(&q.distance(want)))

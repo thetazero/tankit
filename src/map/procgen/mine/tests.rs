@@ -736,30 +736,46 @@ fn tanks_climb_the_box_cut() {
     }
 }
 
-/// Every hull drives up the mesa's west end, and up the scree.
+/// The ways up onto the mesa (its west end, the scree) climb from the
+/// flat to its top, and nowhere along them is steeper than the heaviest
+/// hull climbs (the Gravis tops out a little over 20 degrees).
 fn check_tanks_climb_onto_the_mesa(seed: u64) {
     let (l, m) = (lay(seed), mine(seed));
-    for hull in HULLS {
-        let start = l.ways_up[0].0 + Vec2::new(6.0, 0.0);
-        let (end, _, high) = drive(&m, hull, start, FRAC_PI_2, 10.0);
+    let g = |p: Vec2| m.ground_height(p.x, p.y);
+    for (name, (a, b)) in [("west end", l.ways_up[0]), ("scree", l.ways_up[1])] {
         assert!(
-            end.x > l.west_ramp.1,
-            "seed {seed}: {hull:?} only got to {end} up the west end"
+            g(a) < 1.5,
+            "seed {seed}: the {name}'s way starts {} up",
+            g(a)
         );
+        let dir = (b - a).normalize();
+        let len = a.distance(b);
+        // (Not where it runs on over a cave's roof: the ground's cut away
+        // under that.)
+        let over_cave = |p: Vec2| l.cave_distance(p) < CAVE_WALL + 1.0;
+        let top = (0..=len as usize)
+            .map(|k| a + dir * k as f32)
+            .filter(|&p| !over_cave(p))
+            .map(g)
+            .fold(f32::MIN, f32::max);
         assert!(
-            high > TOP - 0.5,
-            "seed {seed}: {hull:?} only got {high} m up the west end"
+            top > TOP - 0.5,
+            "seed {seed}: the {name}'s way tops out at {top}"
         );
-        let x = l.ways_up[1].0.x;
-        let (end, _, high) = drive(&m, hull, l.ways_up[1].0, 0.0, 10.0);
-        assert!(
-            end.z > l.face(x) + FACE_RISE,
-            "seed {seed}: {hull:?} only got to {end} up the scree"
-        );
-        assert!(
-            high > TOP - 0.8,
-            "seed {seed}: {hull:?} only got {high} m up the scree"
-        );
+        let mut t = 0.0;
+        while t < len - 2.0 {
+            let (p, q) = (a + dir * t, a + dir * (t + 2.0));
+            if over_cave(p) || over_cave(q) {
+                t += 0.5;
+                continue;
+            }
+            let slope = ((g(q) - g(p)) / 2.0).atan().to_degrees();
+            assert!(
+                slope < 20.0,
+                "seed {seed}: the {name} is {slope:.0} degrees at {p}"
+            );
+            t += 0.5;
+        }
     }
 }
 
