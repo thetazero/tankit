@@ -434,7 +434,7 @@ fn realms_hire_companies() {
                 assert!(k.field <= sys.hulls[k.side as usize] + 1e-3);
                 let r = sys.realms[k.side as usize];
                 assert_eq!(g.realms[r as usize].faction, k.side);
-                assert!(k.lost < k.max_loss + k.field);
+                assert!(k.lost <= k.committed + 1e-3);
             }
         }
     }

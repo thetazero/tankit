@@ -80,7 +80,8 @@ struct SavedContract {
     signed: u64,
     upfront: f32,
     bonus: f32,
-    max_loss: f32,
+    #[serde(alias = "max_loss")]
+    committed: f32,
     field: f32,
     lost: f32,
     #[serde(default)]
@@ -151,7 +152,7 @@ impl Galaxy {
                             signed: k.signed,
                             upfront: k.upfront,
                             bonus: k.bonus,
-                            max_loss: k.max_loss,
+                            committed: k.committed,
                             field: k.field,
                             lost: k.lost,
                             orbit: k.orbit,
@@ -258,7 +259,7 @@ impl Galaxy {
                         signed: k.signed,
                         upfront: k.upfront,
                         bonus: k.bonus,
-                        max_loss: k.max_loss,
+                        committed: k.committed,
                         field: k.field,
                         lost: k.lost,
                         orbit: k.orbit,

@@ -31,7 +31,7 @@
 //!    site. A side alone in a system repairs its downed generators, one step a
 //!    tick, several ticks to bring one back up.
 //!    Mercenary companies' hulls in a fight take their share of their side's
-//!    losses there; contracts done (world taken, loss cap hit, time up) end.
+//!    losses there; contracts done (world taken, hulls spent, time up) end.
 //! 3. *Supply.* A people's systems that hang together (within FTL range of
 //!    each other) fewer than a few dozen are a **pocket**: once an enemy
 //!    borders it, it builds slower, can't repair its generators, and every
@@ -193,9 +193,7 @@ pub struct Rules {
     /// A contract's bonus: this many times the hulls it commits, at what
     /// they cost it, with its margin.
     pub merc_bonus: f32,
-    /// A company pulls out once it's lost this fraction of the hulls it committed,
-    pub merc_loss: f32,
-    /// ... or after this many ticks.
+    /// A contract runs out after this many ticks.
     pub merc_term: u32,
     /// How far a company goes for work, light years.
     pub merc_range: f32,
@@ -254,7 +252,6 @@ impl Default for Rules {
             merc_haggle: 0.01,
             merc_raise: 0.1,
             merc_bonus: 0.5,
-            merc_loss: 0.5,
             merc_term: 30,
             merc_range: 1200.0,
             merc_idle: 30,
@@ -1392,7 +1389,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
     );
     let b = g.books;
     println!(
-        "mercs: {} contracts signed, {} won, {} pulled out at their loss cap, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
+        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
         b.signed,
         b.won,
         b.broken,
