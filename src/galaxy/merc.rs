@@ -499,7 +499,7 @@ impl Galaxy {
             } else {
                 self.books.expired += 1;
             }
-            // Yours: kept for the summary screen (#414).
+            // If this is the player's company, record how the contract ended for the summary card (#414).
             let id = self.companies[c].id;
             if self.crew == Some(id) {
                 let outcome = if won {

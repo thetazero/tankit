@@ -396,10 +396,12 @@ pub struct Transfer {
     pub from: Theater,
     /// Seconds it's played.
     pub age: f32,
-    /// How the contract it leaves ended, if it did: shown first, and the
-    /// move waits until you go on from it (#414).
+    /// The contract that just ended, if any. While set, the summary card is
+    /// shown and the transfer animation doesn't start until you press
+    /// CONTINUE (#414).
     pub summary: Option<Ended>,
-    /// The contract it leaves failed (the caption says so).
+    /// The previous contract failed, so the transfer caption says
+    /// "CONTRACT FAILED" instead of "CONTRACT DONE".
     pub failed: bool,
 }
 
@@ -441,8 +443,8 @@ impl Transfer {
         }
     }
 
-    /// Onto `to` from `from`, with the summary of how `from`'s contract
-    /// ended first, if the galaxy kept it (it's among `to`'s ship's ended).
+    /// A transfer from `from` to `to`. If the galaxy recorded how the
+    /// contract in `from` ended, the summary card is shown first.
     pub fn after(from: Theater, to: &Theater) -> Transfer {
         let summary = from
             .ship
@@ -462,7 +464,7 @@ impl Transfer {
         }
     }
 
-    /// The summary's up: the move waits on it.
+    /// The summary card is showing, so the transfer animation is paused.
     pub fn waiting(&self) -> bool {
         self.summary.is_some()
     }
@@ -803,9 +805,9 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
-/// While `transfer` plays, its caption instead; and before that, while it
-/// waits on the summary of the contract that ended, the summary, its
-/// CONTINUE lit if `go_lit` (#414).
+/// While a `transfer` is playing, draws its caption instead. If the transfer
+/// is paused on the contract summary card, draws the card instead, with
+/// CONTINUE highlighted if `go_lit` (#414).
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     p: &mut Painter,
@@ -1128,8 +1130,8 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
     ship_glyph(p, Vec2::new(ship_x, y), 0.5);
 }
 
-/// What the summary of an ended contract leads with, and the line under it:
-/// done or failed, and how (#414).
+/// The two title lines of the contract summary card: "CONTRACT DONE" or
+/// "CONTRACT FAILED", and a short result like "CARIDIS TAKEN" (#414).
 pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
     let world = from
         .ship
@@ -1144,39 +1146,22 @@ pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
         Outcome::Won if e.defend => format!("{world} HELD"),
         Outcome::Won => format!("{} TAKEN", from.name),
         Outcome::Fell => format!("{world} FELL"),
-        Outcome::Spent => "THE HULLS ARE SPENT".to_string(),
-        Outcome::Gone => "THE EMPLOYER IS GONE".to_string(),
+        Outcome::Spent => "HULLS SPENT".to_string(),
+        Outcome::Gone => "EMPLOYER GONE".to_string(),
         Outcome::Expired => "OUT OF TIME".to_string(),
     };
     (head, how)
 }
 
-/// Why it ended, in a sentence.
-fn reason(from: &Theater, e: &Ended) -> String {
-    let realm = from
-        .ship
-        .as_ref()
-        .map_or(String::new(), |s| s.realm.clone());
-    match e.outcome {
-        Outcome::Won if e.defend => "The attack was beaten off, and the world still held".into(),
-        Outcome::Won => format!("The system fell to {realm}: the bonus is due"),
-        Outcome::Fell => "The world fell to the attack it was hired to beat off".into(),
-        Outcome::Spent => "The hulls committed to it were all but lost".into(),
-        Outcome::Gone => format!("{realm} lost its worlds, and nobody's left to pay"),
-        Outcome::Expired if e.defend => "The term ran out with the attack still on".into(),
-        Outcome::Expired => "The term ran out before the system fell".into(),
-    }
-}
-
-/// The summary's box, in the view's middle: width and height.
-const SUMMARY_W: f32 = 600.0;
-const SUMMARY_H: f32 = 300.0;
+/// Width of the contract summary card. Its height depends on the number of rows.
+const SUMMARY_W: f32 = 420.0;
 const GO_W: f32 = 120.0;
 const GO_H: f32 = 28.0;
 
-/// How contract `e` (the one `from` was on) ended (#414): over the view
-/// between `min` and `max`, ahead of the move onto the next; CONTINUE plays
-/// that.
+/// Draws the contract summary card (#414), centered in the system view
+/// between `min` and `max`. It shows how the contract `e` ended and its
+/// stats. `from` is the system the contract was in. Clicking CONTINUE
+/// dismisses the card and starts the transfer animation.
 fn summary(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
@@ -1186,8 +1171,42 @@ fn summary(
     min: Vec2,
     max: Vec2,
 ) {
+    // Stat rows: label on the left, value on the right.
+    let mut rows: Vec<(&str, String)> = vec![
+        (
+            "BATTLES",
+            e.tick.saturating_sub(e.signed).max(1).to_string(),
+        ),
+        (
+            "COMPANY HULLS LOST",
+            format!("{:.0} / {:.0}", e.lost.round(), e.committed.round()),
+        ),
+    ];
+    if e.own.of > 0 {
+        rows.push((
+            "YOUR HULLS LOST",
+            format!("{} / {}", e.own.of - e.own.left.min(e.own.of), e.own.of),
+        ));
+    }
+    rows.push(("PAID UP FRONT", format!("{:.0} CR", e.upfront)));
+    rows.push((
+        "BONUS",
+        if !e.outcome.won() {
+            "FORFEIT".to_string()
+        } else if e.owed > 0.5 {
+            format!("{:.0} OF {:.0} CR PAID", e.bonus, e.bonus + e.owed)
+        } else {
+            format!("{:.0} CR", e.bonus)
+        },
+    ));
+
+    const PAD: f32 = 24.0;
+    const ROW: f32 = 20.0;
+    let size = Vec2::new(
+        SUMMARY_W,
+        PAD + 50.0 + rows.len() as f32 * ROW + 16.0 + GO_H + PAD,
+    );
     let mid = (min + max) * 0.5;
-    let size = Vec2::new(SUMMARY_W, SUMMARY_H);
     let at = mid - size * 0.5;
     let tone = if e.outcome.won() {
         Faction::Company.ui()
@@ -1197,73 +1216,27 @@ fn summary(
     p.rect(at, size, theme::PANEL);
     p.rect_outline(at, size, 1.0, theme::FAINT);
     p.rect(at, Vec2::new(size.x, 2.0), tone);
-    let (x0, x1) = (at.x + 28.0, at.x + size.x - 28.0);
-    let mut y = at.y + 26.0;
+    let (x0, x1) = (at.x + PAD, at.x + size.x - PAD);
+    let mut y = at.y + PAD;
     let (head, how) = verdict(from, e);
     let mut style = TextStyle::LABEL;
     style.color = tone;
     p.text(Vec2::new(x0, y), head, &style, Align::Left);
     y += 16.0;
     p.text(Vec2::new(x0, y), &how, &TextStyle::value(20.0), Align::Left);
-    y += 32.0;
+    y += 34.0;
+
     let mut dim = TextStyle::LABEL;
     dim.color = theme::DIM;
-    if let Some(ship) = &from.ship {
-        let job = if ship.defend { "HOLD" } else { "TAKE" };
-        p.text(
-            Vec2::new(x0, y),
-            &format!(
-                "THE {} · FOR THE {} OF {} · TO {job} {}",
-                ship.name,
-                Faction::ALL[ship.side].name(),
-                ship.realm,
-                from.name
-            ),
-            &dim,
-            Align::Left,
-        );
-    }
-    y += 16.0;
-    let mut body = TextStyle::value(11.0);
-    body.color = theme::DIM;
-    p.text(Vec2::new(x0, y), &reason(from, e), &body, Align::Left);
-    y += 30.0;
-
-    // The books: label on the left, figure on the right.
-    let battles = e.tick.saturating_sub(e.signed).max(1);
-    let mut rows: Vec<(&str, String)> = vec![
-        ("BATTLES", battles.to_string()),
-        (
-            "COMPANY HULLS LOST",
-            format!("{:.0} OF {:.0}", e.lost.round(), e.committed.round()),
-        ),
-    ];
-    if e.own.of > 0 {
-        rows.push((
-            "YOUR HULLS LOST",
-            format!("{} OF {}", e.own.of - e.own.left.min(e.own.of), e.own.of),
-        ));
-    }
-    rows.push(("PAID UP FRONT", format!("{:.0} CR", e.upfront)));
-    rows.push((
-        "BONUS",
-        if !e.outcome.won() {
-            "FORFEIT".to_string()
-        } else if e.owed > 0.5 {
-            format!("{:.0} CR · {:.0} OWED", e.bonus, e.owed)
-        } else {
-            format!("{:.0} CR", e.bonus)
-        },
-    ));
     let value = TextStyle::value(12.0);
     for (what, figure) in rows {
         p.text(Vec2::new(x0, y + 2.0), what, &dim, Align::Left);
         p.text(Vec2::new(x1, y), &figure, &value, Align::Right);
-        y += 20.0;
+        y += ROW;
     }
 
-    // CONTINUE: the move onto the next contract plays.
-    let go = Vec2::new(mid.x - GO_W * 0.5, at.y + size.y - GO_H - 22.0);
+    // CONTINUE button.
+    let go = Vec2::new(mid.x - GO_W * 0.5, at.y + size.y - GO_H - PAD);
     let gs = Vec2::new(GO_W, GO_H);
     p.rect(go, gs, with_alpha(tone, if lit { 0.3 } else { 0.12 }));
     p.rect_outline(go, gs, 1.0, tone);

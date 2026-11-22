@@ -165,10 +165,10 @@ pub struct Args {
     /// `--time` seconds in: to another system (`Jump`), within the one
     /// it's in (`Move`), or the same contract renewed (`Renew`).
     transfer: Option<TransferKind>,
-    /// --summary, with --transfer: the shot is the summary of the contract
-    /// that ended, before the move plays.
+    /// --summary, with --transfer: screenshot the contract summary card
+    /// instead of the transfer animation.
     summary: bool,
-    /// --failed, with --summary: a contract that failed.
+    /// --failed, with --summary: show a failed contract.
     failed: bool,
     /// --choice, for missions shots: your company splits (false) or joins
     /// another (true), and the screen asks which ship you go with.

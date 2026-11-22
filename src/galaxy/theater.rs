@@ -108,49 +108,49 @@ pub struct Own {
 /// How a contract ended (#414).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
-    /// The world taken; on a defense, the attack beaten off.
+    /// Succeeded: the system was taken, or (on a defense) the attack was repelled.
     Won,
-    /// A defense, and the world fell anyway.
+    /// Failed a defense: the world was lost.
     Fell,
-    /// Its committed hulls all but gone.
+    /// Failed: almost all the hulls committed to it were lost.
     Spent,
-    /// Its employer gone (folded into another, or out of worlds).
+    /// Failed: the employer no longer exists (merged into another realm, or lost all its worlds).
     Gone,
-    /// It ran out of time.
+    /// Failed: time ran out.
     Expired,
 }
 
 impl Outcome {
-    /// The contract was done (else it failed).
+    /// True if the contract succeeded.
     pub fn won(self) -> bool {
         self == Outcome::Won
     }
 }
 
-/// One of your company's contracts, as it ended (#414): what the summary
-/// screen shows before the move onto the next one plays.
+/// A finished contract of the player's company, with the stats shown on the
+/// contract summary card (#414).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Ended {
-    /// The company (`Company::id`) and the contract (`Contract::signed`).
+    /// Which company (`Company::id`) and which contract (`Contract::signed`, the tick it was signed).
     pub ship: u32,
     pub signed: u64,
-    /// The tick it ended.
+    /// The tick the contract ended on.
     pub tick: u64,
     pub outcome: Outcome,
     pub defend: bool,
-    /// Crystals it was paid up front, and the bonus: paid, and still owed.
+    /// Crystals paid up front; bonus crystals actually paid; bonus crystals the employer still owes.
     pub upfront: f32,
     pub bonus: f32,
     pub owed: f32,
-    /// The company's hulls committed, and lost.
+    /// Company hulls committed to the contract, and how many were lost.
     pub committed: f32,
     pub lost: f32,
-    /// Your own hulls on it (#385), as it ended.
+    /// The player's own hulls on the contract (#385) at the end.
     pub own: Own,
 }
 
-/// How many of your company's ended contracts the galaxy keeps: enough to
-/// cover the ones that end while the game is closed.
+/// How many finished contracts of the player's company to keep. More than
+/// one, since several can end while the game is closed.
 pub const ENDED_KEPT: usize = 8;
 
 /// The contract you were last shown on the missions screen (#386): kept in

@@ -101,7 +101,7 @@ pub enum Hit {
     Bind(usize, usize),
     /// The BACK button: what Esc does.
     Back,
-    /// CONTINUE, on the summary of a contract that ended (#414).
+    /// The CONTINUE button on the contract summary card (#414).
     Continue,
 }
 
@@ -289,7 +289,7 @@ pub struct Menu {
     controls: Controls,
     /// The pointer is on the BACK button.
     back_lit: bool,
-    /// The pointer is on CONTINUE, on a contract's summary (#414).
+    /// The mouse is over CONTINUE on the contract summary card (#414).
     go_lit: bool,
 }
 
@@ -511,8 +511,8 @@ impl Menu {
         }
     }
 
-    /// The summary of the contract that ended is up, the move onto the next
-    /// waiting on it (#414).
+    /// The contract summary card, if it's showing. The transfer animation
+    /// waits until it's dismissed (#414).
     pub fn summary(&self) -> Option<&Ended> {
         self.transfer
             .as_ref()
@@ -520,7 +520,7 @@ impl Menu {
             .filter(|_| self.system().is_some())
     }
 
-    /// CONTINUE, from the summary: the move onto the next contract plays.
+    /// Dismiss the contract summary card and start the transfer animation.
     pub fn go_on(&mut self) {
         if let Some(tr) = &mut self.transfer {
             tr.summary = None;
@@ -605,7 +605,7 @@ impl Menu {
         (nav, self.input(nav))
     }
 
-    /// The pointer left the BACK button (or CONTINUE).
+    /// The mouse left the BACK button (or CONTINUE).
     pub fn unhover(&mut self) {
         self.back_lit = false;
         self.go_lit = false;
@@ -2647,8 +2647,8 @@ mod tests {
         // Until it's played, what you've been shown is still the old one:
         // quit now and it plays again.
         assert_eq!(Shown::of(m.shown().unwrap()), Some(shown.clone()));
-        // The same company on a new contract: the old one ended, and its
-        // summary comes first (#414). The move waits on it.
+        // Same company, new contract: the old contract ended, so show its
+        // summary card before the transfer animation (#414).
         let (a, b) = (t.ship.as_ref().unwrap(), next.ship.as_ref().unwrap());
         if a.id == b.id {
             let e = *m.summary().expect("the summary of the contract that ended");
@@ -2676,9 +2676,10 @@ mod tests {
         assert!(m.transfer().is_none());
     }
 
-    /// A contract that ended shows its summary before the move onto the
-    /// next plays (#414): CONTINUE, by key or by click, plays it. Without a
-    /// record of how it ended (another ship's, say), the move plays at once.
+    /// When a contract ends, its summary card shows before the transfer
+    /// animation (#414), and CONTINUE (key or click) starts the animation.
+    /// If there's no record of how the contract ended (e.g. it was another
+    /// ship's), the animation starts right away.
     #[test]
     fn a_summary_comes_before_the_move() {
         use crate::galaxy::theater::{Ended, Outcome, Own};
@@ -2710,7 +2711,7 @@ mod tests {
             m.set_theater(Some(t.clone()));
             m.set_theater(Some(next.clone()));
             assert_eq!(m.summary(), Some(&ended));
-            // Up and down don't wander off it; time doesn't play the move.
+            // Up/Down do nothing, and the animation doesn't start on its own.
             m.input(Nav::Down);
             m.advance(1.0);
             assert_eq!(m.transfer().unwrap().age, 0.0);
@@ -2731,7 +2732,7 @@ mod tests {
             assert!(layer.hits.center_of(Hit::Continue).is_none());
         }
 
-        // No record of it: straight into the move.
+        // No record: the animation starts right away.
         next.ship.as_mut().unwrap().ended.clear();
         let mut m = Menu::new();
         m.input(Nav::Select);
