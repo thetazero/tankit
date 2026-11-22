@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn generators_are_fought_over_on_the_shield_city() {
         let mut g = galaxy();
-        let t = g.await_work(None, None, 1, 400).0.unwrap();
+        let t = g.await_work(None, 1, 400).0.unwrap();
         for s in &t.sites {
             match (s.kind, s.map_kind()) {
                 (SiteKind::Shield { down }, MapKind::ShieldSite(made)) => {
