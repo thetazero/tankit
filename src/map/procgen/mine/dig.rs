@@ -4163,8 +4163,8 @@ impl Dig<'_> {
                     })
             };
             let want = Vec2::new(br.x + 7.0, lay.face(br.x + 7.0) - 6.0);
-            (0..12)
-                .flat_map(|i| (0..8).map(move |j| (i, j)))
+            (0..24)
+                .flat_map(|i| (0..16).map(move |j| (i, j)))
                 .map(|(i, j)| {
                     Vec2::new(
                         br.x + 5.0 + i as f32,

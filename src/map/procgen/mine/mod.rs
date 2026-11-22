@@ -713,12 +713,12 @@ impl Layout {
             })
         };
         let ramp0 = first(self, b - rng.range(24.0, 30.0), -3.0, &|w, t, n| {
-            (w + n * 19.5 + t * 4.0, w, 4.0)
+            (w + n * 20.0, w, 5.0)
         })
         .ok_or(line!())?;
         // Up the north bank slantwise, toward the east landing.
         let ramp1 = first(self, b + rng.range(24.0, 30.0), 3.0, &|w, t, n| {
-            (w - n * 14.5 + t * 13.0, w, 4.0)
+            (w - n * 17.0 + t * 9.0, w, 5.0)
         })
         .ok_or(line!())?;
         // On the east arm: a crossing near the east edge, a ramp short of it
@@ -770,7 +770,7 @@ impl Layout {
             .flat_map(|&side| (0..8).map(move |k| (side, e - start + 3.0 * k as f32)))
             .find_map(|(side, u)| {
                 let (w, _, n) = self.wash_frame(u);
-                let r = (w + n * 20.0 * side, w, 4.0);
+                let r = (w + n * 20.0 * side, w, 5.0);
                 let clear = flat(self, r.0)
                     && r.0.distance(ford) > 16.0
                     && r.0.distance(self.fords[1].1) > 16.0
@@ -1058,7 +1058,8 @@ impl Layout {
 
     /// The Face's foot at `x` (z).
     pub fn face(&self, x: f32) -> f32 {
-        let wobble = 0.8 * (0.5 * x).sin() * (0.13 * x).sin();
+        // (Straight where it fell in: the scree's slope mustn't lean.)
+        let wobble = 0.8 * (0.5 * x).sin() * (0.13 * x).sin() * (1.0 - self.scree(x));
         for w in self.face.windows(2) {
             let ((x0, z0), (x1, z1)) = (w[0], w[1]);
             if x <= x1 {
@@ -1338,7 +1339,9 @@ impl Layout {
             .chain(&self.fords)
             .map(|&(a, b, h)| smoothstep(h + 2.0, h + 8.0, seg(p, a, b).0))
             .fold(1.0, f32::min);
-        let flat = smoothstep(3.0, 9.0, self.track_distance(p)) * shed * graded * (1.0 - m);
+        let (a, b) = self.ways_up[0];
+        let road = smoothstep(4.0, 10.0, seg(p, a, b).0);
+        let flat = smoothstep(3.0, 9.0, self.track_distance(p)) * shed * graded * road * (1.0 - m);
         // The mesa's top rolls a little, away from the mine's roofs and back
         // from the lip.
         let f = self.face(x);

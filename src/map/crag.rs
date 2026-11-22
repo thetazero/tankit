@@ -235,9 +235,9 @@ pub(super) fn sculpt(
                 let q = f.p - f.nrm * BACK;
                 let rim = f.lip + 0.1;
                 let from = f.p + f.nrm * out(f, rim);
-                let y = (1..=8)
+                let y = (1..=16)
                     .map(|k| {
-                        let t = k as f32 / 8.0;
+                        let t = k as f32 / 16.0;
                         rim + (behind(from.lerp(q, t)) + 0.05 - rim) / t
                     })
                     .fold(f.lip - 0.5, f32::max);
