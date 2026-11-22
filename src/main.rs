@@ -956,6 +956,8 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 .map(|c| c.id)
         });
         g.enlist(side);
+        g.claim_own(profile.rank().level);
+        game.set_own_hulls(g.own_left());
         profile.ship = g.crew;
         game.crew = profile.company_name();
     }
@@ -1039,6 +1041,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         if let Some(h) = game.company_hulls.get_mut(me) {
             *h = 0;
         }
+        game.own_hulls = 0;
         game.destroy_player();
         let camera = advance(&mut game, &mut cam, &mut garage, lead);
         if args.screen == Some(Screen::SpentOver) {

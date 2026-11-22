@@ -877,6 +877,12 @@ pub struct Match {
     /// Of those, the mercs': what the Company's tanks come back in. A
     /// Company bot that dies with none left comes back as its side's own.
     pub company_hulls: Vec<u32>,
+    /// Of your company's spare hulls, yours alone (#385): its bots can't
+    /// come back in them. Your deaths spend them first; once they're gone,
+    /// you come back in the company's shared ones like anyone.
+    pub own_hulls: u32,
+    /// Your own hulls lost this round, for the galaxy to take off yours.
+    own_lost: u32,
     /// Each side's Company tanks destroyed (the player's among them).
     company_deaths: Vec<u32>,
     /// Your side, once it's dealt you a seat among its mercs (`set_company`):
@@ -965,6 +971,8 @@ impl Match {
             over_for: 0.0,
             hulls: None,
             company_hulls: Vec::new(),
+            own_hulls: 0,
+            own_lost: 0,
             company_deaths: Vec::new(),
             crew_team: None,
             crew_out: false,
@@ -1142,6 +1150,27 @@ impl Match {
                 .resize(self.factions.len().max(team + 1), 0);
         }
         self.company_hulls[team] = hulls.saturating_sub(seats as u32);
+    }
+
+    /// Set aside up to `n` of your company's spare hulls as yours alone
+    /// (after `set_company`): your own hulls left on its contract, as many
+    /// as this battle brings. None without a seat among your side's mercs.
+    pub fn set_own_hulls(&mut self, n: u32) {
+        let spare = self
+            .crew_team
+            .and_then(|t| self.company_hulls.get(t).copied())
+            .unwrap_or(0);
+        self.own_hulls = n.min(spare);
+    }
+
+    /// The side you hold a seat among the mercs of, if any.
+    pub fn crew_team(&self) -> Option<usize> {
+        self.crew_team
+    }
+
+    /// Your own hulls lost this round.
+    pub fn own_lost(&self) -> u32 {
+        self.own_lost
     }
 
     /// The Company's tanks on side `team`, now (the player's among them, on theirs).
@@ -2139,6 +2168,11 @@ impl Match {
                 self.company_deaths.resize(team + 1, 0);
             }
             self.company_deaths[team] += 1;
+            // Yours: one of your own hulls, while you have any.
+            if victim == 0 && self.crew_team == Some(team) && self.own_hulls > 0 {
+                self.own_hulls -= 1;
+                self.own_lost += 1;
+            }
         }
         v.killed_by = Some(killer);
         if killer != victim {
@@ -2519,7 +2553,7 @@ impl Match {
 
     /// Tank `i` is coming back: take it a hull, if its side has one left.
     /// Under an allocation, a merc comes back in a merc hull while there
-    /// are any; then a bot's seat is the realm's. You come back only in
+    /// are any but yours (`own_hulls`); then a bot's seat is the realm's. You come back only in
     /// your company's: when they're spent, you're out (`crew_out`).
     fn rehull(&mut self, i: usize) -> bool {
         let team = self.fighters[i].team;
@@ -2533,8 +2567,11 @@ impl Match {
             return false;
         }
         if company {
+            // Your own hulls are yours alone: the company's bots leave them.
+            let you = i == 0 && self.crew_team == Some(team);
+            let held = if you { 0 } else { self.own_hulls };
             match self.company_hulls.get_mut(team) {
-                Some(h) if *h > 0 => *h -= 1,
+                Some(h) if *h > held => *h -= 1,
                 _ => self.hand_over(i),
             }
         }
@@ -5503,6 +5540,78 @@ mod tests {
         let mut alone = arena(3);
         alone.set_company(0, 0, 0);
         assert_eq!(alone.company_seats(0), 0);
+    }
+
+    /// Your own hulls (#385) are yours alone: the company's bots come back
+    /// in its shared ones, and once those are spent, in the realm's, never
+    /// in yours.
+    #[test]
+    fn bots_cant_spend_your_hulls() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[10, 10]);
+        // You and tank 2 are the company's, with four merc hulls to spare.
+        m.set_company(0, 2, 6);
+        m.set_own_hulls(2);
+        assert_eq!(m.own_hulls, 2);
+        for _ in 0..2 {
+            destroy(&mut m, 2);
+            respawn(&mut m);
+            assert!(m.world.tanks[2].company, "in a shared hull");
+        }
+        assert_eq!(m.company_hulls[0], 2, "only yours are left");
+        destroy(&mut m, 2);
+        respawn(&mut m);
+        assert!(m.fighters[2].alive);
+        assert!(
+            !m.world.tanks[2].company,
+            "back as the realm's, not in yours"
+        );
+        assert_eq!((m.company_hulls[0], m.own_hulls), (2, 2));
+        assert_eq!(m.own_lost(), 0);
+    }
+
+    /// Your deaths spend your own hulls first; once they're gone you come
+    /// back in the company's shared ones like anyone, and you're out only
+    /// when those are.
+    #[test]
+    fn your_hulls_then_the_shared_pool() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[10, 10]);
+        m.set_company(0, 2, 6);
+        m.set_own_hulls(2);
+        for (own, pool) in [(1, 3), (0, 2), (0, 1), (0, 0)] {
+            destroy(&mut m, 0);
+            respawn(&mut m);
+            assert!(m.fighters[0].alive);
+            assert!(m.world.tanks[0].company);
+            assert_eq!((m.own_hulls, m.company_hulls[0]), (own, pool));
+        }
+        assert_eq!(m.own_lost(), 2, "two of yours, then the company's");
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(!m.fighters[0].alive);
+        assert!(m.crew_out(), "out once the company is");
+    }
+
+    /// A battle holds no more of your own hulls than it brings of the
+    /// company's; without a seat among the mercs, none.
+    #[test]
+    fn your_hulls_fit_the_battle() {
+        let mut m = arena(3);
+        m.set_allocation(&[10, 10]);
+        m.set_company(0, 2, 3);
+        m.set_own_hulls(5);
+        assert_eq!(m.own_hulls, 1);
+        let mut alone = arena(3);
+        alone.set_allocation(&[10, 10]);
+        alone.set_own_hulls(3);
+        assert_eq!(alone.own_hulls, 0);
     }
 
     /// Pilots are pilots (#389): when a merc's seat goes over to the realm,

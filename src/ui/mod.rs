@@ -503,6 +503,41 @@ fn layout<'a>(text: &str, style: &TextStyle) -> Vec<(f32, &'a font::Glyph)> {
     out
 }
 
+/// Pips a row in [`hull_pips`].
+pub const PIPS_A_ROW: u32 = 20;
+
+/// Width of a row of `n` pips of width `w` with `gap` between.
+pub fn pips_width(n: u32, w: f32, gap: f32) -> f32 {
+    let n = n.min(PIPS_A_ROW) as f32;
+    (n * (w + gap) - gap).max(0.0)
+}
+
+/// Hulls as pips, [`PIPS_A_ROW`] a row from `min` (the top left), each
+/// `cell` in size with `gap` between (#385): the first `lit` in `color`,
+/// the rest of `total` dimmed. Returns the height drawn.
+pub fn hull_pips(
+    p: &mut Painter,
+    min: Vec2,
+    total: u32,
+    lit: u32,
+    color: Rgba,
+    cell: Vec2,
+    gap: f32,
+) -> f32 {
+    for i in 0..total {
+        let (row, col) = ((i / PIPS_A_ROW) as f32, (i % PIPS_A_ROW) as f32);
+        let at = min + Vec2::new(col * (cell.x + gap), row * (cell.y + gap));
+        let c = if i < lit {
+            color
+        } else {
+            with_alpha(color, 0.3)
+        };
+        p.rect(at, cell, c);
+    }
+    let rows = total.div_ceil(PIPS_A_ROW) as f32;
+    (rows * (cell.y + gap) - gap).max(0.0)
+}
+
 /// Width of `text` in logical px (no trailing tracking).
 pub fn measure(text: &str, style: &TextStyle) -> f32 {
     let f = font::font();

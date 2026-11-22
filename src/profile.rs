@@ -42,7 +42,7 @@ const TITLES: [&str; 10] = [
     "MARSHAL",
     "WARLORD",
 ];
-const RANKS_PER_TITLE: u32 = 5;
+pub const RANKS_PER_TITLE: u32 = 5;
 
 /// Where your renown sits on the Company's ladder.
 #[derive(Clone, Copy, Debug, PartialEq)]

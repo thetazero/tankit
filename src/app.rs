@@ -506,7 +506,12 @@ impl App {
     /// company's battles (#362).
     fn draw_battle(&mut self, m: &mut Match) -> Option<Battle> {
         let o = self.sortie?;
-        battle::deploy_at(self.war.get(), m, o.system, o.site)
+        let rank = self.profile.rank().level;
+        let g = self.war.get();
+        g.claim_own(rank);
+        let b = battle::deploy_at(g, m, o.system, o.site)?;
+        m.set_own_hulls(g.own_left());
+        Some(b)
     }
 
     /// Deploy into a theater's site: its mission's map and contract, the

@@ -937,14 +937,6 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
         &format!("{job} {}", title(system)),
     );
     y += 22.0;
-    let n = |v: f32| v.round().max(0.0) as u32;
-    field(
-        p,
-        Vec2::new(x, y),
-        "Hulls",
-        &format!("{} fighting · {} spare", n(ship.field), n(ship.aboard)),
-    );
-    y += 22.0;
     let news = match ship.news {
         Some(CrewNews::Joined { from }) => Some(format!(
             "The {} merged into this ship",

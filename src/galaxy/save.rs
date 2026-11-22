@@ -53,6 +53,9 @@ struct Saved {
     /// Your company's id (#350).
     #[serde(default)]
     crew: Option<u32>,
+    /// Your own hulls on its contract (#385).
+    #[serde(default)]
+    own: Option<super::theater::Own>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -166,6 +169,7 @@ impl Galaxy {
                 .collect(),
             destroyed: self.destroyed,
             crew: self.crew,
+            own: self.own,
         }
     }
 
@@ -280,6 +284,7 @@ impl Galaxy {
         }
         g.destroyed = s.destroyed;
         g.crew = s.crew;
+        g.own = s.own;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
         g.update_share();
