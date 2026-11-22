@@ -155,6 +155,21 @@ pub const MISSIONS: &[Mission] = &[
         // Crystals only: every schematic is already some mission's prize.
         prizes: &[None, None],
     },
+    // A theater's shield generators are fought over here (#341): the
+    // generator is the Hold site, its holder's model in the shape the
+    // site's in (see `SiteView::map_kind`); the sides are the theater's.
+    Mission {
+        name: "SHIELD WALL",
+        contract: Contract::Hold,
+        map: "SHIELD CITY",
+        map_kind: MapKind::ShieldSite(crate::Generator::up(Faction::Imperium)),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+        rating: 0,
+        rank: 1,
+        prizes: &[None, None],
+    },
 ];
 
 /// The missions a theater's sites can be fought with at Company rank `rank`
@@ -162,8 +177,20 @@ pub const MISSIONS: &[Mission] = &[
 /// contract standing in for the site's until sites get maps of their own.
 pub fn for_sites(rank: u32) -> Vec<usize> {
     (0..MISSIONS.len())
-        .filter(|&i| MISSIONS[i].sides.len() == 2 && MISSIONS[i].open_at(rank))
+        .filter(|&i| {
+            let m = &MISSIONS[i];
+            m.sides.len() == 2 && m.open_at(rank) && !matches!(m.map_kind, MapKind::ShieldSite(_))
+        })
         .collect()
+}
+
+/// The mission a theater's shield generators are fought with: a Hold on
+/// the shield city.
+pub fn for_shields() -> usize {
+    MISSIONS
+        .iter()
+        .position(|m| matches!(m.map_kind, MapKind::ShieldSite(_)))
+        .expect("a shield generator mission")
 }
 
 impl Mission {

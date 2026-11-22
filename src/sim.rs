@@ -500,6 +500,9 @@ pub struct HullStats {
     /// How fast it stops when you let go (or reverse), rad/s². Quicker than the
     /// spin-up so the turret has weight but still stops where you aim.
     pub turret_brake: f32,
+    /// The tank's mass as a multiple of its bare chassis's (`Chassis::mass`):
+    /// upgraded hulls carry more plate. The body takes it on at the next step.
+    pub heft: f32,
 }
 
 impl HullStats {
@@ -517,6 +520,7 @@ impl HullStats {
         turret_speed: 1.3,
         turret_accel: 2.6,
         turret_brake: 10.0,
+        heft: 1.0,
     };
     /// Fast: Kataphrakt's old pace.
     pub const VIGIL: Self = Self {
@@ -538,6 +542,7 @@ impl HullStats {
         turret_speed: 0.95,
         turret_accel: 1.6,
         turret_brake: 7.0,
+        heft: 1.0,
     };
 
     /// Hover: fast and light, but nothing grips the ground. Thrust and
@@ -558,6 +563,7 @@ impl HullStats {
         turret_speed: 1.6,
         turret_accel: 4.0,
         turret_brake: 12.0,
+        heft: 1.0,
     };
 
     /// Slow and heavy: the slowest hull, slow to turn and to traverse.
@@ -579,6 +585,7 @@ impl HullStats {
         turret_speed: 0.8,
         turret_accel: 1.4,
         turret_brake: 6.0,
+        heft: 1.0,
     };
 
     pub fn of(kind: HullKind) -> HullStats {
@@ -1024,6 +1031,7 @@ impl World {
                     c.set_friction(friction);
                 }
             }
+            fit_mass(t, &mut self.physics);
             drive(t, &cmd, &mut self.physics, &self.ground, crowded[i]);
             turret(t, &cmd, DT);
             t.place_turret_hitbox(&mut self.physics);
@@ -1214,6 +1222,23 @@ impl World {
     }
 }
 
+/// The body's mass properties for `c` carrying `heft` times its bare mass.
+fn tank_mass(c: &Chassis, heft: f32) -> MassProperties {
+    MassProperties::new(c.center_of_mass, c.mass * heft, c.inertia() * heft)
+}
+
+/// Give the tank's body the mass its hull stats call for, if it hasn't it yet
+/// (an upgraded hull is heavier). Takes effect at the next physics step.
+fn fit_mass(t: &Tank, physics: &mut PhysicsWorld) {
+    let Some(c) = physics.colliders.get_mut(t.collider) else {
+        return;
+    };
+    let want = t.chassis.mass * t.hull.heft;
+    if (c.mass() - want).abs() > 1e-3 * want {
+        c.set_mass_properties(tank_mass(t.chassis, t.hull.heft));
+    }
+}
+
 fn insert_tank_body(
     physics: &mut PhysicsWorld,
     c: &Chassis,
@@ -1228,7 +1253,7 @@ fn insert_tank_body(
     // Frictionless and bounceless: all grip comes from the track model.
     let collider = ColliderBuilder::convex_hull(&c.collider_points())
         .expect("tank hull shape")
-        .mass_properties(MassProperties::new(c.center_of_mass, c.mass, c.inertia()))
+        .mass_properties(tank_mass(c, 1.0))
         .friction(0.0)
         .friction_combine_rule(CoefficientCombineRule::Min)
         .restitution(0.0);

@@ -11,14 +11,16 @@
 use glam::Vec2;
 use winit::keyboard::KeyCode;
 
+use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
-use crate::galaxy::theater::{SiteView, Sortie, Theater};
+use crate::galaxy::theater::{CrewNews, Ship, SiteView, Sortie, Theater, ship_name, system_name};
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
+use crate::theater_view::Transfer;
 use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme};
@@ -39,10 +41,8 @@ pub enum Nav {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Screen {
     Main,
-    /// Pick who you work for.
-    Factions,
-    /// The theater you're posted to for that faction: its system, with the
-    /// contested sites to pick from.
+    /// The theater your company's ship is on contract in: its system, with
+    /// the contested sites to pick from.
     Missions,
     /// One contested site: what fighting there means, and deploy if your
     /// side commits to it.
@@ -264,10 +264,12 @@ impl Controls {
 pub struct Menu {
     pub screen: Screen,
     cursor: usize,
-    /// Your employer: index into `Faction::ALL`.
-    faction: usize,
     /// The theater on the missions screen (the app keeps it up to date).
     theater: Option<Theater>,
+    /// The last theater shown aboard a ship, to tell a move onto the next
+    /// contract by; and that move, while it plays over the system view.
+    seen: Option<Theater>,
+    transfer: Option<Transfer>,
     /// Index into the theater's contested sites.
     site: usize,
     setting: usize,
@@ -279,8 +281,9 @@ impl Menu {
         Menu {
             screen: Screen::Main,
             cursor: 0,
-            faction: 0,
             theater: None,
+            seen: None,
+            transfer: None,
             site: 0,
             setting: 0,
             controls: Controls::default(),
@@ -303,28 +306,12 @@ impl Menu {
                 self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav)
             }
             (Screen::Main, Nav::Select) => match self.cursor {
-                0 => self.screen = Screen::Factions,
+                0 => self.screen = Screen::Missions,
                 1 => return Some(Action::Garage),
                 2 => self.screen = Screen::Settings,
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
-            (Screen::Factions, Nav::Up | Nav::Down) => {
-                self.faction = step(self.faction, Faction::ALL.len(), nav)
-            }
-            (Screen::Factions, Nav::Select) => {
-                if self
-                    .theater
-                    .as_ref()
-                    .is_some_and(|t| t.employer != self.faction)
-                {
-                    self.theater = None;
-                }
-                self.site = 0;
-                self.screen = Screen::Missions;
-            }
-            (Screen::Factions, Nav::Back) => self.screen = Screen::Main,
-            (Screen::Factions, Nav::Left | Nav::Right) => {}
             (Screen::Missions | Screen::Site, Nav::Up | Nav::Down) => {
                 let n = self.contested();
                 if n > 0 {
@@ -336,7 +323,7 @@ impl Menu {
                     self.screen = Screen::Site;
                 }
             }
-            (Screen::Missions, Nav::Back) => self.screen = Screen::Factions,
+            (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
             (Screen::Site, Nav::Select) => {
                 return Some(
                     self.theater
@@ -362,19 +349,9 @@ impl Menu {
         None
     }
 
-    /// Who you're picking work from.
-    pub fn employer(&self) -> Faction {
-        Faction::ALL[self.faction]
-    }
-
-    /// Select `faction` on the faction screen.
-    pub fn pick_employer(&mut self, faction: Faction) {
-        self.faction = faction.index();
-    }
-
-    /// Whose theater the screen wants, while it's showing one.
-    pub fn posted_for(&self) -> Option<Faction> {
-        matches!(self.screen, Screen::Missions | Screen::Site).then(|| self.employer())
+    /// The screen is showing the theater: the app keeps it up to date.
+    pub fn wants_theater(&self) -> bool {
+        matches!(self.screen, Screen::Missions | Screen::Site)
     }
 
     pub fn theater(&self) -> Option<&Theater> {
@@ -403,7 +380,31 @@ impl Menu {
         if t.as_ref().is_none_or(|t| t.contested.is_empty()) && self.screen == Screen::Site {
             self.screen = Screen::Missions;
         }
+        // Onto the next contract (another ship's, or in another system):
+        // the move plays over the system view.
+        if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
+            if let Some(old) = self.seen.take().filter(|old| Transfer::between(old, new)) {
+                self.transfer = Some(Transfer::new(old));
+            }
+            self.seen = Some(new.clone());
+        }
         self.theater = t;
+    }
+
+    /// `dt` seconds on: a transfer plays on while the system view shows.
+    pub fn advance(&mut self, dt: f32) {
+        let Some(t) = self.system() else { return };
+        let done = self.transfer.as_ref().is_some_and(|tr| tr.leg(t).is_none());
+        if done {
+            self.transfer = None;
+        } else if let Some(tr) = &mut self.transfer {
+            tr.age += dt;
+        }
+    }
+
+    /// The move onto the next contract, while it plays.
+    pub fn transfer(&self) -> Option<&Transfer> {
+        self.transfer.as_ref()
     }
 
     /// Select contested site `k` (on the missions or site screen).
@@ -434,7 +435,6 @@ impl Menu {
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
-            Screen::Factions => &mut self.faction,
             Screen::Missions => &mut self.site,
             // Its one row, DEPLOY: nothing to select.
             Screen::Site => return false,
@@ -462,12 +462,21 @@ impl Menu {
         (nav, self.input(nav))
     }
 
-    /// The mission whose map the selected site is fought on, and the side
-    /// you'd take in it (always the first: the theater's sides stand in for
-    /// the map's): the menu's backdrop shows it. None off the theater.
-    pub fn backdrop(&self) -> Option<(usize, usize)> {
+    /// The theater whose system the screen shows in 3D instead of a map
+    /// (the missions screen, with sites to pick from).
+    pub fn system(&self) -> Option<&Theater> {
+        self.theater
+            .as_ref()
+            .filter(|t| self.screen == Screen::Missions && !t.contested.is_empty())
+    }
+
+    /// The map the selected site is fought on, and the side you'd take in
+    /// it (always the first: the theater's sides stand in for the map's):
+    /// the menu's backdrop shows it (under the system view on the missions
+    /// screen, loaded ready for the site's). None off the theater.
+    pub fn backdrop(&self) -> Option<(MapKind, usize)> {
         matches!(self.screen, Screen::Missions | Screen::Site)
-            .then(|| self.selected_site().map(|s| (s.mission, 0)))
+            .then(|| self.selected_site().map(|s| (s.map_kind(), 0)))
             .flatten()
     }
 
@@ -481,7 +490,13 @@ impl Menu {
         let w = width / scale;
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
-        garage::backdrop(&mut p, h);
+        match self.system() {
+            Some(t) => {
+                crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
+                garage::backdrop_fading(&mut p, h, 50.0);
+            }
+            None => garage::backdrop(&mut p, h),
+        }
         let x = PANEL_X;
         let mut y = 72.0;
 
@@ -507,47 +522,26 @@ impl Menu {
                     Align::Left,
                 );
                 y += 34.0;
-                company_rank(&mut p, Vec2::new(x, y), profile);
-                "Enter  select"
-            }
-            Screen::Factions => {
-                body(&mut p, Vec2::new(x, y), "Who you work for", theme::DIM);
-                y += 26.0;
-                let names: Vec<Item> = Faction::ALL.iter().map(|f| Item::Opens(f.name())).collect();
-                let drawn = rows(&mut p, &mut hits, Vec2::new(x, y), &names, self.faction);
-                for (i, f) in Faction::ALL.iter().enumerate() {
-                    // Their emblem, in their colour, beside the chevron.
-                    emblem::emblem(
-                        &mut p,
-                        *f,
-                        Vec2::new(x + PANEL_W - 26.0, y + i as f32 * ROW + 7.5),
-                        13.0,
-                        1.2,
-                        f.ui(),
-                    );
-                }
-                y += drawn + 26.0;
-
-                // Your Company rank: what decides which of their work the Company takes.
                 y += company_rank(&mut p, Vec2::new(x, y), profile) + 4.0;
-                wrap(
-                    &mut p,
-                    Vec2::new(x, y),
-                    "The Company posts you to a theater where they're at war",
-                    theme::DIM,
-                );
-                "Enter  choose     Esc  back"
+                your_company(&mut p, Vec2::new(x, y), profile);
+                "Enter  select"
             }
             Screen::Missions => match &self.theater {
                 Some(t) if !t.contested.is_empty() => {
                     self.draw_theater(&mut p, &mut hits, Vec2::new(x, y), t);
-                    let min = Vec2::new(x + PANEL_W + 70.0, 60.0);
-                    let size = Vec2::new((w - 56.0 - min.x).max(200.0), h - 120.0);
-                    crate::theater_view::draw(&mut p, &mut hits, t, self.site, min, size);
+                    crate::theater_view::draw(
+                        &mut p,
+                        &mut hits,
+                        t,
+                        self.transfer.as_ref(),
+                        self.site,
+                        w,
+                        h,
+                    );
                     "Enter  open site     ↑ ↓  site     Esc  back"
                 }
                 _ => {
-                    self.no_posting(&mut p, Vec2::new(x, y));
+                    self.no_posting(&mut p, Vec2::new(x, y), profile);
                     "Esc  back"
                 }
             },
@@ -560,7 +554,7 @@ impl Menu {
                     }
                 }
                 _ => {
-                    self.no_posting(&mut p, Vec2::new(x, y));
+                    self.no_posting(&mut p, Vec2::new(x, y), profile);
                     "Esc  back"
                 }
             },
@@ -598,39 +592,44 @@ impl Menu {
 }
 
 impl Menu {
-    /// Who's hiring, in their colour, over the theater or site.
-    fn employer_line(&self, p: &mut Painter, at: Vec2, text: &str) {
-        let employer = self.employer();
-        let mut style = BODY;
-        style.color = employer.ui();
-        emblem::tagged(p, at, employer, text, &style, Align::Left);
-    }
-
-    /// No theater to show: the galaxy hasn't one for this side (or is still loading).
-    fn no_posting(&self, p: &mut Painter, at: Vec2) {
-        let employer = self.employer();
-        self.employer_line(p, at, &format!("{} posting", title(employer.name())));
-        wrap(
-            p,
-            at + Vec2::new(0.0, 26.0),
-            &format!(
-                "No posting: the {} aren't at war anywhere the Company goes",
-                title(employer.name())
-            ),
-            theme::DIM,
-        );
+    /// No theater to show: your company has no battle for you yet (or
+    /// you're not with one, and none has; or the galaxy is still loading).
+    fn no_posting(&self, p: &mut Painter, at: Vec2, profile: &Profile) {
+        let text = match profile.company_name() {
+            Some(name) => {
+                faction_line(p, at, Faction::Company, &format!("The {}", title(&name)));
+                format!(
+                    "Between contracts: the war goes on while the {} looks for work",
+                    title(&name)
+                )
+            }
+            None => {
+                faction_line(p, at, Faction::Company, "The Company");
+                "No contract: none of the Company's ships has a battle to join".to_string()
+            }
+        };
+        wrap(p, at + Vec2::new(0.0, 26.0), &text, theme::DIM);
     }
 
     /// The theater's panel: whose posting, the system, a summary of the war
     /// there, then its contested sites to pick from.
     fn draw_theater(&self, p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, t: &Theater) {
         let (x, mut y) = (at.x, at.y);
-        let employer = self.employer();
-        self.employer_line(
-            p,
-            Vec2::new(x, y),
-            &format!("{} posting", title(employer.name())),
-        );
+        let employer = Faction::ALL[t.employer];
+        match &t.ship {
+            Some(ship) => faction_line(
+                p,
+                Vec2::new(x, y),
+                Faction::Company,
+                &format!("Your company: the {}", title(&ship.name)),
+            ),
+            None => faction_line(
+                p,
+                Vec2::new(x, y),
+                employer,
+                &format!("{} posting", title(employer.name())),
+            ),
+        };
         y += 28.0;
         p.text(
             Vec2::new(x, y),
@@ -640,16 +639,23 @@ impl Menu {
         );
         y += 34.0;
         let planets = match t.planets {
-            1 => "One world".to_string(),
+            1 => "one world".to_string(),
             n => format!("{n} worlds"),
+        };
+        let lead = match &t.ship {
+            Some(ship) => format!("Parked over {} {}", title(&t.name), numeral(ship.over)),
+            None => "Theater".to_string(),
         };
         body(
             p,
             Vec2::new(x, y),
-            &format!("Theater · {planets} · {} sites", t.sites.len()),
+            &format!("{lead} · {planets} · {} sites", t.sites.len()),
             theme::DIM,
         );
         y += 26.0;
+        if let Some(ship) = &t.ship {
+            y = contract(p, Vec2::new(x, y), t, ship) + 14.0;
+        }
 
         // Who's here: hulls, and sites held.
         for f in t.sides() {
@@ -713,7 +719,13 @@ impl Menu {
             .map(|&i| {
                 let s = &t.sites[i];
                 let kind = s.kind_name().trim_end_matches(" GENERATOR");
-                format!("{} · {kind}", numeral(s.planet))
+                match s.repairs() {
+                    Some((0, _)) => format!("{} · {kind} · WRECK", numeral(s.planet)),
+                    Some((done, of)) => {
+                        format!("{} · {kind} · REPAIR {done}/{of}", numeral(s.planet))
+                    }
+                    None => format!("{} · {kind}", numeral(s.planet)),
+                }
             })
             .collect();
         let items: Vec<Item> = names.iter().map(|n| Item::Acts(n)).collect();
@@ -756,10 +768,19 @@ impl Menu {
         profile: &Profile,
     ) -> bool {
         let (x, mut y) = (at.x, at.y);
-        let employer = self.employer();
+        let employer = Faction::ALL[t.employer];
         let owner = Faction::ALL[site.owner];
         let enemy = Faction::ALL[site.enemy];
-        self.employer_line(p, Vec2::new(x, y), &planet(t, site));
+        if let Some(ship) = &t.ship {
+            faction_line(
+                p,
+                Vec2::new(x, y),
+                Faction::Company,
+                &format!("The {}", title(&ship.name)),
+            );
+            y += 24.0;
+        }
+        faction_line(p, Vec2::new(x, y), employer, &planet(t, site));
         y += 28.0;
         p.text(
             Vec2::new(x, y),
@@ -769,7 +790,11 @@ impl Menu {
         );
         y += 34.0;
         let state = match (site.is_shield(), site.down()) {
-            (true, Some(d)) => format!(" · down, {d} ticks to repair"),
+            (true, Some(_)) => match site.repairs() {
+                Some((0, of)) => format!(" · wrecked, {of} ticks to repair"),
+                Some((done, of)) => format!(" · under repair, {} ticks to go", of - done),
+                None => String::new(),
+            },
             (true, None) => " · up".to_string(),
             _ => String::new(),
         };
@@ -786,6 +811,25 @@ impl Menu {
         );
         body(p, Vec2::new(x + lead + w, y), &state, theme::DIM);
         y += 20.0;
+        // A generator that's down: how far its repairs have got, a step a tick.
+        if let Some((done, of)) = site.repairs() {
+            let lead = body(p, Vec2::new(x, y), "Repairs ", theme::DIM);
+            widgets::segments(
+                p,
+                Vec2::new(x + lead + 4.0, y + 6.0),
+                120.0,
+                of as usize,
+                done as usize,
+                None,
+            );
+            body(
+                p,
+                Vec2::new(x + lead + 134.0, y),
+                &format!("{done} of {of}"),
+                theme::DIM,
+            );
+            y += 20.0;
+        }
         style.color = enemy.ui();
         let lead = body(p, Vec2::new(x, y), "Against ", theme::DIM);
         emblem::tagged(
@@ -854,6 +898,98 @@ impl Menu {
     }
 }
 
+/// `text` after `faction`'s emblem, in its colour: who's hiring, or whose ship.
+fn faction_line(p: &mut Painter, at: Vec2, faction: Faction, text: &str) {
+    let mut style = BODY;
+    style.color = faction.ui();
+    emblem::tagged(p, at, faction, text, &style, Align::Left);
+}
+
+/// Your ship's contract at `at`: who hired it, the pay, its hulls in the
+/// fight and what it can lose, the time left; and, if the Company just
+/// moved you aboard, from where. Returns the y under it.
+fn contract(p: &mut Painter, at: Vec2, t: &Theater, ship: &Ship) -> f32 {
+    let (x, mut y) = (at.x, at.y);
+    let employer = Faction::ALL[ship.side];
+    body(p, Vec2::new(x, y), "Contract", theme::DIM);
+    y += 22.0;
+    let lead = body(p, Vec2::new(x, y), "Hired by ", theme::DIM);
+    let mut style = BODY;
+    style.color = employer.ui();
+    emblem::tagged(
+        p,
+        Vec2::new(x + lead, y),
+        employer,
+        &format!("the {} of {}", title(employer.name()), title(&ship.realm)),
+        &style,
+        Align::Left,
+    );
+    y += 22.0;
+    let n = |v: f32| v.round().max(0.0) as u32;
+    y = wrap(
+        p,
+        Vec2::new(x, y),
+        &format!(
+            "{} crystal paid up front, {} more if {} falls.",
+            n(ship.upfront),
+            n(ship.bonus),
+            title(&t.name)
+        ),
+        theme::DIM,
+    );
+    let ticks = match ship.ticks_left {
+        1 => "1 tick".to_string(),
+        k => format!("{k} ticks"),
+    };
+    y = wrap(
+        p,
+        Vec2::new(x, y),
+        &format!(
+            "Our hulls: {} in the fight, {} lost; we pull out at {}. {ticks} left on it.",
+            n(ship.field),
+            n(ship.lost),
+            n(ship.max_loss).max(1),
+        ),
+        theme::DIM,
+    );
+    y = wrap(
+        p,
+        Vec2::new(x, y),
+        &format!(
+            "Aboard: {}, {} crystal.",
+            match n(ship.aboard) {
+                0 => "no spare hulls".to_string(),
+                1 => "1 spare hull".to_string(),
+                h => format!("{h} spare hulls"),
+            },
+            n(ship.crystals)
+        ),
+        theme::DIM,
+    );
+    let news = match ship.news {
+        Some(CrewNews::Joined { from }) => Some(format!(
+            "The {} joined the {}, and you went with it.",
+            title(&ship_name(from)),
+            title(&ship.name)
+        )),
+        Some(CrewNews::Sailed { from }) => Some(format!(
+            "Out of work too long, we sailed from {} to find some.",
+            title(&system_name(from as usize))
+        )),
+        Some(CrewNews::Gone { from }) => Some(format!(
+            "The {} is gone, so the Company put you with the {}.",
+            title(&ship_name(from)),
+            title(&ship.name)
+        )),
+        None => None,
+    };
+    if let Some(news) = news {
+        y += 4.0;
+        y = wrap(p, Vec2::new(x, y), &news, theme::HOT);
+    }
+    y
+}
+
 /// "Lirset II": the site's world, in title case.
 fn planet(t: &Theater, site: &SiteView) -> String {
     format!("{} {}", title(&t.name), numeral(site.planet))
@@ -899,10 +1035,17 @@ fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
                 "A raid on their camp: a win costs the {enemy} hulls, and no ground changes hands."
             )
         }
-        Contract::Hold if ours => "Hold the deposit longest and the site stays ours.".to_string(),
-        Contract::Hold if site.is_shield() && site.down().is_none() => {
-            "Hold the deposit longest and the generator goes down.".to_string()
+        Contract::Hold if site.is_shield() && ours => {
+            "Hold the generator longest and it stays ours.".to_string()
         }
+        Contract::Hold if site.is_shield() && site.down().is_none() => {
+            "Hold the generator longest and it goes down.".to_string()
+        }
+        Contract::Hold if site.is_shield() => {
+            "Hold the generator longest and the site is ours: we put up our own once it's repaired."
+                .to_string()
+        }
+        Contract::Hold if ours => "Hold the deposit longest and the site stays ours.".to_string(),
         Contract::Hold => "Hold the deposit longest and the site is ours.".to_string(),
         Contract::Raid if site.is_shield() && site.down().is_none() && !ours => {
             "Carry their flag home and the generator goes down.".to_string()
@@ -911,6 +1054,31 @@ fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
             format!("Carry their flag home and one of the {enemy} shield generators goes down.")
         }
     }
+}
+
+/// Your company at `at`, under the rank: its ship's name, or that you're not
+/// with one yet. Returns its height.
+fn your_company(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
+    body(p, at, "Your company", theme::DIM);
+    let at = at + Vec2::new(0.0, 22.0);
+    match profile.company_name() {
+        Some(name) => {
+            let mut style = TextStyle::value(14.0);
+            style.color = Faction::Company.ui();
+            emblem::tagged(
+                p,
+                at,
+                Faction::Company,
+                &format!("THE {name}"),
+                &style,
+                Align::Left,
+            );
+        }
+        None => {
+            body(p, at, "None yet: open Missions to join one", theme::FAINT);
+        }
+    }
+    44.0
 }
 
 /// Your Company rank at `at`: the Company's emblem and name, the rank's number
@@ -1138,6 +1306,19 @@ impl Pause {
         let x = min.x + 24.0;
         let mut y = min.y + 28.0;
         label(&mut p, Vec2::new(x, y), "LINK HELD", Align::Left);
+        // Whose company you're fighting with.
+        if let Some(name) = profile.company_name() {
+            let mut style = TextStyle::LABEL;
+            style.color = Faction::Company.ui();
+            emblem::tagged(
+                &mut p,
+                Vec2::new(x + PANEL_W, y),
+                Faction::Company,
+                &format!("THE {name}"),
+                &style,
+                Align::Right,
+            );
+        }
         y += 18.0;
         let title = match (self.controls, self.settings) {
             (Some(_), _) => "CONTROLS",
@@ -1655,14 +1836,12 @@ mod tests {
         m.input(Nav::Back);
         assert_eq!(m.input(Nav::Down), None);
         assert_eq!(m.input(Nav::Select), Some(Action::Quit));
-        // Wraps round to MISSIONS, which opens the employer list.
+        // Wraps round to MISSIONS, which opens your ship's theater: with
+        // none to show yet, Enter goes nowhere.
         m.input(Nav::Down);
         assert_eq!(m.input(Nav::Select), None);
-        assert_eq!(m.screen, Screen::Factions);
-        // The Imperium's theater: with none to show yet, Enter goes nowhere.
-        assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Missions);
-        assert_eq!(m.posted_for(), Some(Faction::Imperium));
+        assert!(m.wants_theater());
         assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Missions);
         // With one, Enter opens the site your side fights for, and Enter there deploys.
@@ -1685,26 +1864,23 @@ mod tests {
         }
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Missions);
-        // Back to the employers; another one's theater isn't kept.
-        m.input(Nav::Back);
-        assert_eq!(m.screen, Screen::Factions);
-        m.input(Nav::Down);
-        assert_eq!(m.employer(), Faction::Resonant);
-        m.input(Nav::Select);
-        assert!(m.theater().is_none());
-        m.input(Nav::Back);
+        // Back to the main menu.
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
+        assert!(!m.wants_theater());
     }
 
-    /// A small war, some ticks in: `f`'s theater in it.
+    /// A small war, some ticks in: the theater aboard a ship working for
+    /// `f` (or any, if none is), as a new pilot sees it.
     fn theater(f: Faction) -> Option<Theater> {
         use crate::galaxy::{Galaxy, REGION, Rules, SYSTEMS};
         let mut g = Galaxy::with_size(3, SYSTEMS / 4, REGION * 0.5, Rules::default());
         for _ in 0..60 {
             g.step();
         }
-        g.theater(f.index(), None, 1)
+        let (t, _) = g.await_work(Some(f.index()), 1, 400);
+        assert!(t.as_ref().is_some_and(|t| t.ship.is_some()));
+        t
     }
 
     #[test]
@@ -1738,7 +1914,7 @@ mod tests {
 
     #[test]
     fn draws_on_screen_at_any_size() {
-        let profile = Profile::in_memory();
+        let mut profile = Profile::in_memory();
         let mut m = Menu::new();
         let mut settings = Pause::new();
         settings.input(Nav::Down);
@@ -1751,7 +1927,6 @@ mod tests {
         let t = theater(Faction::Imperium);
         for (screen, t) in [
             (Screen::Main, None),
-            (Screen::Factions, None),
             (Screen::Missions, None),
             (Screen::Missions, t.clone()),
             (Screen::Site, t),
@@ -1760,7 +1935,14 @@ mod tests {
         ] {
             m.set_theater(t);
             m.screen = screen;
-            for (w, h) in [(1600.0, 900.0), (1024.0, 768.0), (3840.0, 2160.0)] {
+            // With a company and without.
+            for (w, h, ship) in [
+                (1600.0, 900.0, None),
+                (1600.0, 900.0, Some(7)),
+                (1024.0, 768.0, Some(7)),
+                (3840.0, 2160.0, Some(7)),
+            ] {
+                profile.ship = ship;
                 for v in [
                     m.draw(&profile, w, h, 1.0).verts,
                     Pause::new().draw(&profile, 30, w, h).verts,
@@ -1803,12 +1985,6 @@ mod tests {
             click_drawn(&mut m, &profile, Hit::Row(0)),
             (Nav::Select, None)
         );
-        assert_eq!(m.screen, Screen::Factions);
-        // The Ithessar's theater.
-        assert_eq!(
-            click_drawn(&mut m, &profile, Hit::Row(3)),
-            (Nav::Select, None)
-        );
         assert_eq!(m.screen, Screen::Missions);
         m.set_theater(theater(Faction::Ithessar));
         let t = m.theater().unwrap().clone();
@@ -1830,7 +2006,6 @@ mod tests {
             (Nav::Select, Some(Action::Fight(t.sortie(k).unwrap())))
         );
         // Esc, or a right click, goes back.
-        m.input(Nav::Back);
         m.input(Nav::Back);
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
@@ -2011,5 +2186,61 @@ mod tests {
         let silent = Settings { volume: 0, ..s };
         assert_eq!(apply(silent, Change::Volume(-1)).volume, 0);
         assert_eq!(apply(silent, Change::CycleVolume).volume, 1);
+    }
+
+    /// Moving onto the next contract plays a transfer over the system view
+    /// (#348): to another system it jumps, else it moves; a new tick on the
+    /// same contract plays nothing. It ends on its own.
+    #[test]
+    fn next_contract_plays_a_transfer() {
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        let t = theater(Faction::Imperium).unwrap();
+        m.set_theater(Some(t.clone()));
+        assert!(m.transfer().is_none());
+
+        // The same contract, a tick on: nothing.
+        let mut later = t.clone();
+        later.tick += 1;
+        m.set_theater(Some(later.clone()));
+        assert!(m.transfer().is_none());
+
+        // A new contract in the same system: a move.
+        let mut next = later.clone();
+        next.ship.as_mut().unwrap().signed += 5;
+        m.set_theater(Some(next.clone()));
+        let tr = m.transfer().expect("a transfer");
+        assert!(!tr.jumps(&next));
+        assert!(matches!(
+            tr.leg(&next),
+            Some(crate::theater_view::Leg::Move(_))
+        ));
+        for _ in 0..1000 {
+            m.advance(0.01);
+        }
+        assert!(m.transfer().is_none(), "it ends");
+
+        // Through a spell between contracts, to another system: a jump.
+        m.set_theater(None);
+        let mut far = next.clone();
+        far.system += 1;
+        m.set_theater(Some(far.clone()));
+        let tr = m.transfer().expect("a transfer");
+        assert!(tr.jumps(&far));
+        let legs: Vec<_> = (0..600)
+            .filter_map(|k| {
+                let mut tr = tr.clone();
+                tr.age = k as f32 * 0.01;
+                tr.leg(&far)
+            })
+            .map(|l| std::mem::discriminant(&l))
+            .collect::<Vec<_>>();
+        let mut order = legs.clone();
+        order.dedup();
+        use crate::theater_view::Leg;
+        assert_eq!(
+            order,
+            [Leg::Leave(0.0), Leg::Jump(0.0), Leg::Arrive(0.0)].map(|l| std::mem::discriminant(&l))
+        );
     }
 }

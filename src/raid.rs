@@ -662,7 +662,7 @@ mod tests {
         assert!(r.done());
     }
 
-    /// On the Seam each side's stand is open, drivable ground near its base,
+    /// On the crystal mine each side's stand is open, drivable ground near its base,
     /// and the stands are far apart.
     #[test]
     fn seam_stands_are_open_and_far_apart() {

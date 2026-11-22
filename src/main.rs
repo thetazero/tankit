@@ -46,13 +46,19 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|city|foundry|mine>
+  --map <saltmarket|sanctum|kiln|city|shield-city|shield-site|foundry|mine>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
-                          (a generated Imperium city, all four factions), the Foundry (a wrecked
-                          Uthenn tungsten cube factory), or the mine (a generated Ithessar
+                          (a generated Imperium city, all four factions), the shield city (the same
+                          city, a shield generator in place of its rotunda; shield-site: the same
+                          on two sides, as a theater's generator is fought on), the Foundry (a
+                          wrecked Uthenn tungsten cube factory), or the mine (a generated Ithessar
                           crystal mine: caves, rails and stacked levels)
-  --map-seed <n>          which one a generated map (city, mine) builds (default: the --seed)
+  --map-seed <n>          which one a generated map (city, shield-city, shield-site, mine) builds (default: the --seed)
+  --generator <faction>   (with --map shield-city or shield-site) whose shield generator stands in it:
+                          imperium (the default), resonant, uthenn or ithessar
+  --generator-down <n>    (with --map shield-city or shield-site) the generator's down, n ticks of repair
+                          to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -60,7 +66,8 @@ tankit [OPTIONS]
   --contract <attrition|hold|raid>
                           game mode: a raid on an enemy camp for its hulls (default), hold the site, or raid
                           (one-sided capture the flag, two-sided maps only)
-  --employer <faction>    which of the map's sides hires you (default: its first)
+  --employer <faction>    which of the map's sides hires you (default: its first); with
+                          --screen missions|site, a ship on contract for that side
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
                           and print what each part of the frame cost (sim, scene, HUD, GPU, sound)
@@ -73,6 +80,8 @@ tankit [OPTIONS]
   --front                 (with --arena or --shot) each round is a battle drawn from a galaxy at war
                           (from --seed; never the one you play in): the sides fight on hull
                           allocations, and --arena prints the galaxy's numbers before and after
+  --hired                 (with --front --shot) the battle is where a company is under contract
+                          for your side (the most merc-heavy there is), so your side has mercs
   --hulls <n,n,...>       (with --shot) each side's hull allocation, all told
   --duel <hull,turret,hull,turret,metres,count>
                           one bot against one on open ground, that far apart, count times: the
@@ -94,7 +103,7 @@ tankit [OPTIONS]
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
-  --screen <menu|factions|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
+  --screen <menu|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
   --debug                 (with --shot) debug mode on: FPS counter
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
                           screen and its respawn countdown
@@ -106,6 +115,9 @@ tankit [OPTIONS]
   --mission <name>        (with --screen results) the round was this mission, by name, e.g.
                           'four winds', for its prize
   --site <n>              (with --screen missions|site) select the theater's nth contested site
+  --transfer <jump|move>  (with --screen missions) the war goes on until your company moves onto its
+                          next contract (in another system, or the same one): the shot is --time
+                          seconds into the transfer playing over the system view
                           (from 0; default: the first your side fights for)
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
@@ -135,6 +147,9 @@ pub struct Args {
     mission: Option<usize>,
     /// --site, for theater shots: index into the contested sites.
     site: Option<usize>,
+    /// --transfer, for missions shots: the move onto the next contract,
+    /// `--time` seconds in; true to wait for one to another system.
+    transfer: Option<bool>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -174,6 +189,8 @@ pub struct Args {
     galaxy: Option<u64>,
     /// Rounds are battles drawn from a galaxy (`--front`).
     pub front: bool,
+    /// --hired: the --front battle is one with mercs on your side.
+    pub hired: bool,
     /// Each side's hull allocation, for shots.
     hulls: Option<Vec<u32>>,
 }
@@ -200,6 +217,12 @@ impl Args {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
             (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
+            (true, MapKind::ShieldCity(g)) => {
+                map::procgen::greybox(&shield_spec(self.map_seed, g, false))
+            }
+            (true, MapKind::ShieldSite(g)) => {
+                map::procgen::greybox(&shield_spec(self.map_seed, g, true))
+            }
             _ => make_map(self.map, self.map_seed),
         };
         if self.side > 0 {
@@ -221,6 +244,14 @@ pub enum MapKind {
     /// An Imperium city, half ruined round a domed rotunda: four sides.
     /// Generated: a different city for each map seed.
     City,
+    /// The same city with a shield generator in the middle in place of the
+    /// rotunda, the standard model of the side that holds it: the same
+    /// layout for the same seed.
+    ShieldCity(Generator),
+    /// The shield city as a theater's shield generator site is fought on
+    /// (#341): two sides (the theater's), the generator its holder's, in
+    /// the shape the site's in.
+    ShieldSite(Generator),
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// An Ithessar crystal mine in a desert escarpment, on three levels.
@@ -236,6 +267,8 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City => map::procgen::map(&city_spec(seed)),
+        MapKind::ShieldCity(g) => map::procgen::map(&shield_spec(seed, g, false)),
+        MapKind::ShieldSite(g) => map::procgen::map(&shield_spec(seed, g, true)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::procgen::map(&mine_spec(seed)),
     }
@@ -248,6 +281,44 @@ pub fn city_spec(seed: u64) -> map::procgen::Spec {
         biome: map::procgen::Biome::City,
         look: map::procgen::Look::Imperium,
         sides: faction::Faction::ALL.to_vec(),
+        centerpiece: map::procgen::Centerpiece::Monument,
+    }
+}
+
+/// The imperial city `seed` names, `owner`'s shield generator in its
+/// middle (whoever holds the city now).
+pub fn shield_city_spec(seed: u64, owner: faction::Faction) -> map::procgen::Spec {
+    shield_spec(seed, Generator::up(owner), false)
+}
+
+/// A shield generator for a map: whose model it is, and what shape it's in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Generator {
+    pub owner: faction::Faction,
+    pub condition: map::procgen::shield::Condition,
+}
+
+impl Generator {
+    pub const fn up(owner: faction::Faction) -> Generator {
+        Generator {
+            owner,
+            condition: map::procgen::shield::Condition::Up,
+        }
+    }
+}
+
+/// The imperial city `seed` names with generator `g` in its middle: all
+/// four sides, or for a theater's site, two (the default matchup, which the
+/// theater's sides stand in for).
+pub fn shield_spec(seed: u64, g: Generator, site: bool) -> map::procgen::Spec {
+    let sides = match site {
+        true => map::DEFAULT_SIDES.to_vec(),
+        false => faction::Faction::ALL.to_vec(),
+    };
+    map::procgen::Spec {
+        centerpiece: map::procgen::Centerpiece::ShieldGenerator(g.owner, g.condition),
+        sides,
+        ..city_spec(seed)
     }
 }
 
@@ -259,6 +330,7 @@ pub fn mine_spec(seed: u64) -> map::procgen::Spec {
         biome: map::procgen::Biome::Mine,
         look: map::procgen::Look::Ithessar,
         sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
+        centerpiece: map::procgen::Centerpiece::Monument,
     }
 }
 
@@ -272,7 +344,6 @@ pub struct ShowroomArgs {
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Menu,
-    Factions,
     Missions,
     /// A contested site of the theater.
     Site,
@@ -285,6 +356,9 @@ enum Screen {
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
+    /// Your company's last hull destroyed, you in it: the round's over for
+    /// you (needs `--front --hired`).
+    Spent,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -330,7 +404,6 @@ fn main() -> Result<()> {
                 args.screen,
                 Some(
                     Screen::Menu
-                        | Screen::Factions
                         | Screen::Missions
                         | Screen::Site
                         | Screen::Settings
@@ -380,6 +453,7 @@ fn parse_args() -> Result<Args> {
     let mut arena: Option<u32> = None;
     let mut galaxy: Option<u64> = None;
     let mut front = false;
+    let mut hired = false;
     let mut hulls: Option<Vec<u32>> = None;
     let mut improve: Option<faction::Faction> = None;
     let mut duel: Option<(garage::Loadout, garage::Loadout, f32, u32)> = None;
@@ -393,8 +467,11 @@ fn parse_args() -> Result<Args> {
     let mut team_size: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
+    let mut generator: Option<faction::Faction> = None;
+    let mut generator_down = 0u8;
     let mut mission = None;
     let mut site = None;
+    let mut transfer = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -438,11 +515,17 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => map_kind = MapKind::City,
+                Some("shield-city") => {
+                    map_kind = MapKind::ShieldCity(Generator::up(faction::Faction::Imperium))
+                }
+                Some("shield-site") => {
+                    map_kind = MapKind::ShieldSite(Generator::up(faction::Faction::Imperium))
+                }
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, city, foundry or mine, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, city, shield-city, shield-site, foundry or mine, got {other:?}"
                     )
                 }
             },
@@ -460,6 +543,18 @@ fn parse_args() -> Result<Args> {
                 Some("raid") => contract = mission::Contract::Raid,
                 other => bail!("--contract expects attrition, hold or raid, got {other:?}"),
             },
+            "--generator" => {
+                let name = args.next().unwrap_or_default();
+                generator = Some(faction::Faction::by_name(&name).with_context(|| {
+                    format!("--generator expects a faction name, got {name:?}")
+                })?);
+            }
+            "--generator-down" => {
+                generator_down = args
+                    .next()
+                    .context("--generator-down needs a number of ticks")?
+                    .parse()?;
+            }
             "--employer" => {
                 let name = args.next().unwrap_or_default();
                 employer =
@@ -477,6 +572,13 @@ fn parse_args() -> Result<Args> {
                 );
             }
             "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
+            "--transfer" => {
+                transfer = Some(match args.next().as_deref() {
+                    Some("jump") => true,
+                    Some("move") => false,
+                    other => bail!("--transfer expects jump or move, got {other:?}"),
+                })
+            }
             "--straight" => straight = true,
             "--tilt" => {
                 tilt = args
@@ -514,6 +616,7 @@ fn parse_args() -> Result<Args> {
                 )
             }
             "--front" => front = true,
+            "--hired" => hired = true,
             "--hulls" => {
                 let v = args.next().context("--hulls needs n,n,...")?;
                 hulls = Some(
@@ -583,7 +686,6 @@ fn parse_args() -> Result<Args> {
             "--screen" => {
                 screen = Some(match args.next().as_deref() {
                     Some("menu") => Screen::Menu,
-                    Some("factions") => Screen::Factions,
                     Some("missions") => Screen::Missions,
                     Some("site") => Screen::Site,
                     Some("settings") => Screen::Settings,
@@ -592,10 +694,11 @@ fn parse_args() -> Result<Args> {
                     Some("pause") => Screen::Pause,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
+                    Some("spent") => Screen::Spent,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, factions, missions, site, settings, controls, rebind, pause, results, dead or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent or carry, got {other:?}"
                         )
                     }
                 })
@@ -626,12 +729,17 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
+    if let MapKind::ShieldCity(g) | MapKind::ShieldSite(g) = &mut map_kind {
+        if let Some(owner) = generator {
+            g.owner = owner;
+        }
+        g.condition = map::procgen::shield::Condition::down(generator_down, galaxy::REPAIR_TICKS);
+    }
     let sides = make_map(map_kind, map_seed).factions;
     let menu_shot = matches!(
         screen,
         Some(
             Screen::Menu
-                | Screen::Factions
                 | Screen::Missions
                 | Screen::Site
                 | Screen::Settings
@@ -641,7 +749,8 @@ fn parse_args() -> Result<Args> {
     );
     let side = match employer {
         None => 0,
-        // The menu picks the employer first; any faction will do.
+        // The menu's ship works for whoever hired it (--employer picks one
+        // working for that side, if there is one).
         Some(_) if menu_shot => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
@@ -666,6 +775,7 @@ fn parse_args() -> Result<Args> {
         employer,
         mission,
         site,
+        transfer,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -690,6 +800,7 @@ fn parse_args() -> Result<Args> {
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
         arena: arena.map(|n| (n, improve)),
         front,
+        hired,
         hulls,
         duel,
         galaxy,
@@ -746,7 +857,7 @@ fn frame_path(shot: &ShotArgs, i: u32) -> String {
 fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut game = combat::Match::new(args.map(), args.spawn, args.bots, args.seed);
     game.set_contract(args.contract);
-    let profile = args.profile();
+    let mut profile = args.profile();
     // In the garage: --hull/--turret are previewed; what's owned of them is equipped.
     let equipped = (
         if profile.owns(economy::Part::Hull(args.loadout.0)) {
@@ -769,7 +880,27 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     game.set_player_levels(profile.levels);
     if args.front {
         let mut g = galaxy::Galaxy::warmed(args.seed);
-        galaxy::battle::deploy(&mut g, &mut game);
+        let b = match args.hired {
+            true => galaxy::battle::deploy_hired(&mut g, &mut game),
+            false => None,
+        }
+        .unwrap_or_else(|| galaxy::battle::deploy(&mut g, &mut game));
+        // With the company fighting for you there, if there is one; else the
+        // one a new pilot would join.
+        let side = game.factions.first().map(|f| f.index());
+        g.crew = b.crew.or_else(|| {
+            g.companies
+                .iter()
+                .find(|c| {
+                    c.contract.is_some_and(|k| {
+                        k.target as usize == b.system && Some(k.side as usize) == side
+                    })
+                })
+                .map(|c| c.id)
+        });
+        g.enlist(side);
+        profile.ship = g.crew;
+        game.crew = profile.company_name();
     }
     if let Some(h) = &args.hulls {
         game.set_allocation(h);
@@ -841,7 +972,18 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
     };
-    let mut camera = if args.screen == Some(Screen::Dead) {
+    let mut camera = if args.screen == Some(Screen::Spent) {
+        // Your company's last hull goes, with you in it, a respawn and a
+        // few seconds of results before the shot.
+        let lead = (combat::RESPAWN_TIME + 4.0).min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        let me = game.fighters[0].team;
+        if let Some(h) = game.company_hulls.get_mut(me) {
+            *h = 0;
+        }
+        game.destroy_player();
+        advance(&mut game, &mut cam, &mut garage, lead)
+    } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
         advance(&mut game, &mut cam, &mut garage, shot.time - lead);
@@ -966,24 +1108,59 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
     profile.loadout = args.loadout;
     let mut menu = menu::Menu::new();
+    // A new pilot's galaxy, with the company they join (one working for
+    // --employer, if there is one).
+    let prefer = args.employer.map(|f| f.index());
+    let war = || {
+        let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+        let t = g.await_work(prefer, profile.rank().level, 100).0;
+        (g.crew, t)
+    };
     match args.screen {
-        Some(Screen::Factions | Screen::Missions | Screen::Site) => {
+        None | Some(Screen::Menu) => profile.ship = war().0,
+        Some(Screen::Missions | Screen::Site) => {
             menu.input(menu::Nav::Select);
-            if let Some(f) = args.employer {
-                menu.pick_employer(f);
+            let (crew, t) = war();
+            profile.ship = crew;
+            menu.set_theater(t);
+            if let Some(jump) = args.transfer {
+                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                let rank = profile.rank().level;
+                let mut t = g.await_work(prefer, rank, 100).0;
+                menu.set_theater(t.clone());
+                for _ in 0..2000 {
+                    g.step();
+                    let (next, _) = g.await_work(prefer, rank, 100);
+                    let moved = |a: &Option<galaxy::theater::Theater>| {
+                        a.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| {
+                            theater_view::Transfer::between(a, b) && (a.system != b.system) == jump
+                        })
+                    };
+                    if moved(&t) {
+                        menu.set_theater(next);
+                        break;
+                    }
+                    // Another kind of move: start again from there.
+                    if next.is_some() {
+                        t = next.clone();
+                        menu.set_theater(next);
+                    }
+                }
+                profile.ship = g.crew;
+                let kind = menu
+                    .transfer()
+                    .zip(menu.theater())
+                    .is_some_and(|(tr, t)| tr.jumps(t) == jump);
+                anyhow::ensure!(kind, "no transfer of that kind in 2000 ticks");
+                for _ in 0..(shot.time / 0.01).round() as u32 {
+                    menu.advance(0.01);
+                }
             }
-            if args.screen != Some(Screen::Factions) {
+            if let Some(k) = args.site {
+                menu.pick_site(k);
+            }
+            if args.screen == Some(Screen::Site) {
                 menu.input(menu::Nav::Select);
-                // A new pilot's galaxy, posted for the employer.
-                let g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-                let f = menu.employer().index();
-                menu.set_theater(g.theater(f, None, profile.rank().level));
-                if let Some(k) = args.site {
-                    menu.pick_site(k);
-                }
-                if args.screen == Some(Screen::Site) {
-                    menu.input(menu::Nav::Select);
-                }
             }
         }
         Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {
@@ -1006,8 +1183,10 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         _ => {}
     }
     // The backdrop follows the selected contract, as in the window.
-    let (i, side) = menu.backdrop().unwrap_or((0, 0));
-    let mut game = app::backdrop_match(i, side, profile.loadout);
+    let (kind, side) = menu
+        .backdrop()
+        .unwrap_or((mission::MISSIONS[0].map_kind, 0));
+    let mut game = app::backdrop_match(kind, side, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);
@@ -1018,7 +1197,15 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let angle = vista::sway(garage::front_angle(&game.world.tanks[0]), shot.time);
     let tanks = game.display_tanks(1.0);
     let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
-    let mut frame = scene::build(&game.world, &tanks, &art, camera);
+    let mut frame = match menu.system() {
+        // The missions screen: the system, in 3D.
+        Some(t) => {
+            let mut sys = theater_view::SystemArt::upload(&mut renderer);
+            sys.show(&mut renderer, theater_view::on_screen(t, menu.transfer()));
+            theater_view::scene(&sys, t, menu.transfer(), shot.time, w / h)
+        }
+        None => scene::build(&game.world, &tanks, &art, camera),
+    };
     frame.ui = menu.draw(&profile, w, h, 1.0).verts;
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));

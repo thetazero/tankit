@@ -1,13 +1,15 @@
 //! The galaxy on disk: `galaxy.json` beside the profile. Only what changes is
 //! saved (who owns each site, which generators are down, every side's hulls
-//! in every system and whose realm they are, the realms, the clock and the
-//! dice); the layout of systems and sites is regenerated from the seed.
+//! in every system and whose realm they are, the realms, the mercenary
+//! companies, the clock and the dice); the layout of systems and sites is
+//! regenerated from the seed.
 
 use std::path::{Path, PathBuf};
 
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
+use super::merc::{Company, Contract, Debt};
 use super::realm::{NONE, Realm};
 use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
@@ -37,6 +39,48 @@ struct Saved {
     realms: Vec<SavedRealm>,
     splits: u64,
     merges: u64,
+    /// The mercenary companies (a galaxy saved before them has none, and
+    /// keeps the ones a fresh galaxy starts with).
+    #[serde(default)]
+    companies: Option<Vec<SavedCompany>>,
+    #[serde(default)]
+    next_company: u32,
+    /// Bonuses realms owe companies: (realm, company id, crystals).
+    #[serde(default)]
+    debts: Vec<(u32, u32, f32)>,
+    #[serde(default)]
+    destroyed: f64,
+    /// Your company's id (#350).
+    #[serde(default)]
+    crew: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedCompany {
+    at: u32,
+    crystals: f32,
+    hulls: f32,
+    margin: f32,
+    founded: u64,
+    id: u32,
+    contract: Option<SavedContract>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedContract {
+    realm: u32,
+    side: u8,
+    target: u32,
+    signed: u64,
+    upfront: f32,
+    bonus: f32,
+    max_loss: f32,
+    field: f32,
+    lost: f32,
+    #[serde(default)]
+    orbit: f32,
+    #[serde(default)]
+    defend: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -83,6 +127,40 @@ impl Galaxy {
                 .collect(),
             splits: self.splits,
             merges: self.merges,
+            companies: Some(
+                self.companies
+                    .iter()
+                    .map(|c| SavedCompany {
+                        at: c.at,
+                        crystals: c.crystals,
+                        hulls: c.hulls,
+                        margin: c.margin,
+                        founded: c.founded,
+                        id: c.id,
+                        contract: c.contract.map(|k| SavedContract {
+                            realm: k.realm,
+                            side: k.side,
+                            target: k.target,
+                            signed: k.signed,
+                            upfront: k.upfront,
+                            bonus: k.bonus,
+                            max_loss: k.max_loss,
+                            field: k.field,
+                            lost: k.lost,
+                            orbit: k.orbit,
+                            defend: k.defend,
+                        }),
+                    })
+                    .collect(),
+            ),
+            next_company: self.next_company,
+            debts: self
+                .debts
+                .iter()
+                .map(|d| (d.realm, d.company, d.crystals))
+                .collect(),
+            destroyed: self.destroyed,
+            crew: self.crew,
         }
     }
 
@@ -144,6 +222,58 @@ impl Galaxy {
             })
             .collect();
         g.spans = vec![(0, 0); g.realms.len()];
+        if let Some(companies) = s.companies {
+            let (systems, realms) = (g.systems.len(), g.realms.len());
+            anyhow::ensure!(
+                companies.iter().all(|c| (c.at as usize) < systems
+                    && c.contract
+                        .as_ref()
+                        .is_none_or(|k| (k.realm as usize) < realms
+                            && (k.side as usize) < SIDES
+                            && (k.target as usize) < systems)),
+                "a company nowhere, or working for nobody"
+            );
+            g.companies = companies
+                .into_iter()
+                .map(|c| Company {
+                    at: c.at,
+                    crystals: c.crystals,
+                    hulls: c.hulls,
+                    margin: c.margin,
+                    founded: c.founded,
+                    id: c.id,
+                    contract: c.contract.map(|k| Contract {
+                        realm: k.realm,
+                        side: k.side,
+                        target: k.target,
+                        signed: k.signed,
+                        upfront: k.upfront,
+                        bonus: k.bonus,
+                        max_loss: k.max_loss,
+                        field: k.field,
+                        lost: k.lost,
+                        orbit: k.orbit,
+                        defend: k.defend,
+                    }),
+                })
+                .collect();
+            g.next_company = s.next_company;
+            anyhow::ensure!(
+                s.debts.iter().all(|&(r, _, _)| (r as usize) < realms),
+                "a debt owed by nobody"
+            );
+            g.debts = s
+                .debts
+                .iter()
+                .map(|&(realm, company, crystals)| Debt {
+                    realm,
+                    company,
+                    crystals,
+                })
+                .collect();
+        }
+        g.destroyed = s.destroyed;
+        g.crew = s.crew;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
         g.update_share();
@@ -240,6 +370,21 @@ impl War {
         self.galaxy.get_or_insert_with(Galaxy::fresh)
     }
 
+    /// The galaxy, if it's in (never waits).
+    pub fn try_get(&mut self) -> Option<&mut Galaxy> {
+        if let Some(rx) = &self.job {
+            match rx.try_recv() {
+                Ok(g) => {
+                    self.galaxy = Some(g);
+                    self.job = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.job = None,
+            }
+        }
+        Some(self.galaxy.get_or_insert_with(Galaxy::fresh))
+    }
+
     pub fn save(&mut self) {
         if let Some(path) = self.path.clone() {
             self.get().save(&path);
@@ -259,15 +404,36 @@ mod tests {
         for _ in 0..30 {
             g.step();
         }
+        g.crew = Some(g.companies[0].id);
         let text = serde_json::to_string(&g.saved(REGION * 0.3)).unwrap();
         let mut back = Galaxy::from_json(&text).unwrap();
         assert_eq!(back.tick, g.tick);
+        assert_eq!(back.crew, g.crew);
         for (a, b) in g.systems.iter().zip(&back.systems) {
             assert_eq!(a.held, b.held);
             assert_eq!(a.hulls, b.hulls);
             assert_eq!(a.realms, b.realms);
         }
         assert_eq!(g.living().count(), back.living().count());
+        assert_eq!(g.companies.len(), back.companies.len());
+        assert_eq!(
+            g.debts
+                .iter()
+                .map(|d| (d.realm, d.company, d.crystals))
+                .collect::<Vec<_>>(),
+            back.debts
+                .iter()
+                .map(|d| (d.realm, d.company, d.crystals))
+                .collect::<Vec<_>>()
+        );
+        for (a, b) in g.companies.iter().zip(&back.companies) {
+            assert_eq!((a.at, a.crystals, a.hulls), (b.at, b.crystals, b.hulls));
+            assert_eq!(a.contract.map(|k| k.target), b.contract.map(|k| k.target));
+            assert_eq!(
+                a.contract.map(|k| (k.orbit, k.defend)),
+                b.contract.map(|k| (k.orbit, k.defend))
+            );
+        }
         for _ in 0..10 {
             g.step();
             back.step();

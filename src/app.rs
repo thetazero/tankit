@@ -38,6 +38,7 @@ use crate::render::{Camera, Renderer};
 use crate::scene::{self, ChaseCam};
 use crate::sim::Command;
 use crate::tank::TankArt;
+use crate::theater_view::{self, SystemArt};
 use crate::ui::Hits;
 use crate::{MapKind, ShowroomArgs, make_map, showroom};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -54,6 +55,16 @@ const HITCH_WORK: f32 = 0.05;
 const HITCH_GAP: f32 = 0.1;
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
+/// A galaxy saved before it kept your company (#350) takes the profile's.
+fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
+    if g.crew.is_none() {
+        g.crew = profile;
+    }
+}
+
+/// How long the war may go on without you, on the missions screen, while
+/// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
+const AWAIT_TICKS: u32 = 100;
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
 /// to come back up after it.
 const DIP_OUT: f32 = 0.18;
@@ -119,14 +130,13 @@ struct App {
     in_war: bool,
     /// The theater site this round is fought at (a replay fights it again).
     sortie: Option<Sortie>,
-    /// Where the Company has you posted, for each employer: a system, kept
-    /// until its fight is settled.
-    postings: [Option<usize>; 4],
     mode: Mode,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     art: Option<TankArt>,
     bay: Option<BayArt>,
+    /// The missions screen's system view.
+    system: Option<SystemArt>,
     showroom: Option<ShowroomArgs>,
     /// The team deathmatch, or the menu's backdrop (its world drives the showroom too, with no bots).
     game: Match,
@@ -141,16 +151,16 @@ struct App {
     menu_orbit: f32,
     /// Seconds the menu has been up (drives the camera's sway).
     menu_time: f32,
-    /// The mission (and side) whose map the menu backdrop shows.
-    backdrop: (usize, usize),
+    /// The map (and side) the menu backdrop shows.
+    backdrop: Backdrop,
     /// How long the mission screen has pointed at a different contract than
     /// the backdrop shows: it follows once the selection settles.
     backdrop_wait: f32,
     /// A backdrop being built off the main thread (a big map takes most of a
     /// second), for the mission and side it's of.
-    backdrop_job: Option<((usize, usize), Receiver<(Match, StaticWorld)>)>,
+    backdrop_job: Option<(Backdrop, Receiver<(Match, StaticWorld)>)>,
     /// A built backdrop waiting for the screen to go dark before it's swapped in.
-    backdrop_ready: Option<((usize, usize), Match, StaticWorld)>,
+    backdrop_ready: Option<(Backdrop, Match, StaticWorld)>,
     /// How dark the menu scene is (0..1): it dips to black around a backdrop swap.
     backdrop_dark: f32,
     cam: ChaseCam,
@@ -238,7 +248,6 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         battle: None,
         in_war: false,
         sortie: None,
-        postings: [None; 4],
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
         } else {
@@ -248,6 +257,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         renderer: None,
         art: None,
         bay: None,
+        system: None,
         showroom: launch.showroom,
         game,
         profile,
@@ -257,7 +267,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         pause: Pause::new(),
         menu_orbit,
         menu_time: 0.0,
-        backdrop: (0, 0),
+        backdrop: (MISSIONS[0].map_kind, 0),
         backdrop_wait: 0.0,
         backdrop_job: None,
         backdrop_ready: None,
@@ -334,28 +344,21 @@ fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
     p.finish()
 }
 
+/// A menu backdrop: a map, and the side whose vista it's seen from.
+type Backdrop = (MapKind, usize);
+
 /// The main menu's backdrop: the first mission's map, empty, your tank parked at its vista.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    backdrop_match(0, 0, kit)
+    backdrop_match(MISSIONS[0].map_kind, 0, kit)
 }
 
-/// Mission `MISSIONS[i]`'s map, empty, your tank parked at side `side`'s vista:
-/// the menu's backdrop while that contract is selected.
-pub fn backdrop_match(i: usize, side: usize, kit: garage::Loadout) -> Match {
-    let mission = &MISSIONS[i];
-    let mut m = new_match(
-        mission.seed,
-        mission.map_kind,
-        mission.seed,
-        side,
-        0,
-        0,
-        Contract::Attrition,
-        kit,
-        None,
-    );
+/// Map `kind` (the first of it, for a generated kind), empty, your tank
+/// parked at side `side`'s vista: the menu's backdrop while a site fought
+/// on it is selected.
+pub fn backdrop_match(kind: MapKind, side: usize, kit: garage::Loadout) -> Match {
+    let mut m = new_match(0, kind, 0, side, 0, 0, Contract::Attrition, kit, None);
     m.time_left = f32::INFINITY;
-    let v = crate::vista::of(&m.world.map, mission.map_kind, side);
+    let v = crate::vista::of(&m.world.map, kind, side);
     crate::vista::park(&mut m.world, v);
     // Already parked: no arrival (or its sound) each time the backdrop
     // changes, and no shield to drop with a cue.
@@ -383,6 +386,7 @@ impl ApplicationHandler for App {
                 }
                 self.art = Some(TankArt::upload(&mut r));
                 self.bay = Some(BayArt::upload(&mut r));
+                self.system = Some(SystemArt::upload(&mut r));
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -500,7 +504,15 @@ impl App {
         );
         m.set_rating(self.rating);
         m.prize = self.unstolen_prize();
-        self.battle = self.in_war.then(|| self.draw_battle(&mut m));
+        if self.in_war {
+            self.battle = self.draw_battle(&mut m);
+            if self.battle.is_none() {
+                // Your company's no longer in this fight (its contract's
+                // over, or its hulls are spent): you're not either (#362).
+                self.back_to_menu();
+                return;
+            }
+        }
         self.load(m);
         self.mode = Mode::Playing;
     }
@@ -510,14 +522,12 @@ impl App {
         self.prize.filter(|&p| !self.profile.owns(p))
     }
 
-    /// Draw this round's battle from the galaxy: at the theater's site when
-    /// it's a sortie, else wherever the galaxy picks.
-    fn draw_battle(&mut self, m: &mut Match) -> Battle {
-        let g = self.war.get();
-        match self.sortie {
-            Some(o) => battle::deploy_at(g, m, o.system, o.site),
-            None => battle::deploy(g, m),
-        }
+    /// Draw this round's battle from the galaxy: at the sortie's site, with
+    /// your company. None if it isn't there: you only fight in your
+    /// company's battles (#362).
+    fn draw_battle(&mut self, m: &mut Match) -> Option<Battle> {
+        let o = self.sortie?;
+        battle::deploy_at(self.war.get(), m, o.system, o.site)
     }
 
     /// Deploy into a theater's site: its mission's map and contract, the
@@ -525,12 +535,14 @@ impl App {
     fn start_sortie(&mut self, o: Sortie, prize: Option<Part>) {
         self.leave_battle();
         let m = &MISSIONS[o.mission];
-        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, m.map_kind, 0, m.bots());
+        (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, o.map_kind, 0, m.bots());
         // A generated map is a new one each sortie (the same again on a replay).
         self.map_seed = fresh_seed();
         (self.contract, self.side, self.rating) = (m.contract, 0, m.rating);
         self.prize = prize;
         self.sortie = Some(o);
+        // What happened to your company has been told by now.
+        self.war.get().crew_news = None;
         let mut game = new_match(
             self.seed,
             self.map_kind,
@@ -544,8 +556,15 @@ impl App {
         );
         game.set_rating(self.rating);
         game.prize = self.unstolen_prize();
+        game.crew = self.profile.company_name();
+        let Some(b) = self.draw_battle(&mut game) else {
+            // Your company isn't in this one (#362).
+            self.sortie = None;
+            self.audio.garage(audio::GarageCue::Refused);
+            return;
+        };
         self.in_war = true;
-        self.battle = Some(self.draw_battle(&mut game));
+        self.battle = Some(b);
         self.load(game);
         self.mode = Mode::Playing;
         log::info!(
@@ -560,25 +579,43 @@ impl App {
         );
     }
 
-    /// Put the employer's theater on the missions screen, if it's showing
+    /// Put your company's theater on the missions screen, if it's showing
     /// and isn't already up to date with the galaxy.
     fn sync_theater(&mut self) {
-        let Some(f) = self.menu.posted_for() else {
-            return;
-        };
-        let rank = self.profile.rank().level;
-        let keep = self.postings[f.index()];
-        let g = self.war.get();
-        if self
-            .menu
-            .theater()
-            .is_some_and(|t| t.employer == f.index() && t.tick == g.tick)
-        {
+        if !self.menu.wants_theater() {
             return;
         }
-        let t = g.theater(f.index(), keep, rank);
-        self.postings[f.index()] = t.as_ref().map(|t| t.system);
+        let rank = self.profile.rank().level;
+        let g = self.war.get();
+        adopt_crew(g, self.profile.ship);
+        if self.menu.theater().is_some_and(|t| {
+            t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == g.crew)
+        }) {
+            return;
+        }
+        // No battle for you this tick: the war goes on until there is one.
+        let before = g.crew;
+        let (t, ticked) = g.await_work(None, rank, AWAIT_TICKS);
+        let crew = g.crew;
+        if ticked || crew != before {
+            self.war.save();
+        }
+        self.profile.board(crew);
         self.menu.set_theater(t);
+    }
+
+    /// Keep the profile's company (shown throughout the menus) the galaxy's,
+    /// once it's loaded; a new pilot joins one as soon as there's one at work.
+    fn sync_crew(&mut self) {
+        let Some(g) = self.war.try_get() else { return };
+        adopt_crew(g, self.profile.ship);
+        let before = g.crew;
+        g.enlist(None);
+        let crew = g.crew;
+        if crew != before {
+            self.war.save();
+        }
+        self.profile.board(crew);
     }
 
     /// Puts the menu backdrop on the selected contract's map once the
@@ -621,8 +658,8 @@ impl App {
                         let game = backdrop_match(want.0, want.1, kit);
                         let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
                         log::debug!(
-                            "menu backdrop: {} built in {:.0?}",
-                            MISSIONS[want.0].map,
+                            "menu backdrop: {:?} built in {:.0?}",
+                            want.0,
                             started.elapsed()
                         );
                         // The menu may have moved on: then nobody's listening.
@@ -640,7 +677,13 @@ impl App {
     fn leave_battle(&mut self) {
         if let Some(b) = self.battle.take() {
             let g = self.war.get();
-            let s = g.settle(&b, &self.game.lost(), None, battle::Stake::Hulls);
+            let s = g.settle(
+                &b,
+                &self.game.lost(),
+                &self.game.company_lost(),
+                None,
+                battle::Stake::Hulls,
+            );
             g.step();
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
@@ -652,7 +695,7 @@ impl App {
         self.in_war = false;
         self.sortie = None;
         self.load(menu_match(self.profile.loadout));
-        self.backdrop = (0, 0);
+        self.backdrop = (MISSIONS[0].map_kind, 0);
         self.backdrop_job = None;
         self.backdrop_ready = None;
         self.backdrop_dark = 0.0;
@@ -1135,13 +1178,23 @@ impl App {
         self.player_alive = alive;
         if self.mode == Mode::Menu && !self.garage.is_open() {
             self.menu_time += dt;
+            self.menu.advance(dt);
             self.follow_backdrop(dt);
+            self.sync_crew();
         }
         let queued = self.queued();
         let scores = self.held(Action::Scoreboard);
         if let (Some(r), Some(bay)) = (&mut self.renderer, &mut self.bay) {
             // The planet out of the bay is the world this map is on.
             bay.show_world(r, self.game.world.map.planet);
+        }
+        // The system view, on the missions screen (the bay takes over while
+        // the garage is open over it).
+        let system = (self.mode == Mode::Menu)
+            .then(|| self.menu.system())
+            .flatten();
+        if let (Some(r), Some(art), Some(t)) = (&mut self.renderer, &mut self.system, system) {
+            art.show(r, theater_view::on_screen(t, self.menu.transfer()));
         }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
@@ -1194,6 +1247,8 @@ impl App {
                     self.game.world.time,
                     view,
                 )
+            } else if let (Some(t), Some(sys)) = (system, &self.system) {
+                theater_view::scene(sys, t, self.menu.transfer(), self.menu_time, w / h)
             } else {
                 let mut scene = scene::build(&self.game.world, &tanks, art, camera);
                 self.game.effect_instances(alpha, &mut scene.instances);
@@ -1215,7 +1270,11 @@ impl App {
                                 .draw(&self.profile, w, h, 1.0 - self.garage.presence());
                         let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
                         // The dip around a backdrop swap, under the panel.
-                        let mut ui = backdrop_dip(self.backdrop_dark, w, h);
+                        let mut ui = if system.is_some() {
+                            Vec::new()
+                        } else {
+                            backdrop_dip(self.backdrop_dark, w, h)
+                        };
                         ui.extend(menu.verts);
                         ui.extend(garage.verts);
                         // The garage covers the menu panel while it's open.
@@ -1362,7 +1421,7 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let mut m = backdrop_match(0, 1, kit);
+        let mut m = backdrop_match(MISSIONS[0].map_kind, 1, kit);
         assert_eq!(m.factions[0], MISSIONS[0].sides[1]);
         for _ in 0..(4.0 / crate::game::DT) as usize {
             m.step(crate::sim::Command::default(), false);

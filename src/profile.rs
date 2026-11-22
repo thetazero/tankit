@@ -104,6 +104,8 @@ struct Saved {
     #[serde(skip_serializing)]
     levels: BTreeMap<String, u8>,
     settings: Settings,
+    /// The company ship you're aboard, by its id in the galaxy.
+    ship: Option<u32>,
 }
 
 /// Player options from the settings panel, saved with the profile.
@@ -162,6 +164,9 @@ pub struct Profile {
     stolen: Vec<Part>,
     pub levels: Levels,
     pub settings: Settings,
+    /// Your company (`Company::id`), once you're with one: kept from the
+    /// galaxy's `crew` for the UI (#350).
+    pub ship: Option<u32>,
     /// Where to save; `None` keeps the profile in memory only (headless runs, tests).
     disk: Option<Disk>,
 }
@@ -245,6 +250,7 @@ impl Profile {
             stolen: Vec::new(),
             levels: Levels::default(),
             settings: Settings::default(),
+            ship: None,
             disk: None,
         }
     }
@@ -276,6 +282,7 @@ impl Profile {
         self.renown = s.renown;
         self.crystals = s.crystals;
         self.settings = s.settings;
+        self.ship = s.ship;
         self.stolen = s.owned.iter().filter_map(|n| Part::by_name(n)).collect();
         for (name, &mark) in &s.levels {
             if let Some(part) = Part::by_name(name) {
@@ -366,6 +373,19 @@ impl Profile {
         }
     }
 
+    /// Your company's name ("IRON TITHE"), once you're with one.
+    pub fn company_name(&self) -> Option<String> {
+        self.ship.map(crate::galaxy::theater::ship_name)
+    }
+
+    /// Go aboard company ship `id` (see `ship`) and save.
+    pub fn board(&mut self, id: Option<u32>) {
+        if id != self.ship {
+            self.ship = id;
+            self.save();
+        }
+    }
+
     /// Change the settings and save.
     pub fn set_settings(&mut self, settings: Settings) {
         if settings != self.settings {
@@ -399,6 +419,7 @@ impl Profile {
                 .collect(),
             levels: BTreeMap::new(),
             settings: self.settings,
+            ship: self.ship,
         };
         Ok(serde_json::to_string_pretty(&saved)?)
     }
