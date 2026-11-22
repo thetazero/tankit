@@ -61,6 +61,8 @@ pub(super) struct Foot {
     pub mouth: bool,
     /// How much relief (0: a flat plane, 1: full).
     pub relief: f32,
+    /// Seamed with crystal (a mine's rock); plain sandstone if not.
+    pub veins: bool,
 }
 
 /// Seams of crystal through the rock, each repeating every this far up.
@@ -147,7 +149,7 @@ pub(super) fn out(f: &Foot, y: f32) -> f32 {
         0.0
     };
     // Crystal stands proud of the softer rock round it.
-    let crystal = 0.35 * vein(a, y);
+    let crystal = if f.veins { 0.35 * vein(a, y) } else { 0.0 };
     // Leaning back as it rises; the foot spreading.
     let lean = 1.3 * (1.0 - (up / tall).clamp(0.0, 1.0));
     let flare = 0.5 * smoothstep(1.5, -1.0, up);
@@ -192,7 +194,7 @@ fn shade(f: &Foot, y: f32) -> Vec3 {
         c = c.lerp(band * mottle, smoothstep(f.cut - 0.4, f.cut, y));
     }
     // The crystal showing through.
-    let v = vein(a, y);
+    let v = if f.veins { vein(a, y) } else { 0.0 };
     // Raw crystal glinting in a dark selvage of crystal-stained rock.
     c = c.lerp(c * 0.55, smoothstep(0.0, 0.3, v));
     c = c.lerp(
@@ -391,6 +393,7 @@ mod tests {
                 cut: if k % 2 == 0 { 10.0 } else { -1.0 },
                 mouth: false,
                 relief: 1.0,
+                veins: true,
             };
             for j in 0..60 {
                 let o = out(&f, j as f32 * 0.7 - 1.0);
