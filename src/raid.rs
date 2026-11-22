@@ -1,17 +1,16 @@
 //! Raid contract (one-sided capture the flag, attack and defend), on a
 //! two-sided map. Each side has a stand at its base (`Map::raid_stands`).
-//! A round, one side defends: its flag stands on its stand. The other side
+//! One side defends: its flag stands on its stand. The other side
 //! attacks: one of its tanks drives over the flag to pick it up and carries
 //! it home to its own stand, which is the capture point. A carrier that's
 //! destroyed drops the flag where it went down; an attacker picks it up again
 //! by driving over it, a defender sends it home by touching it, and left
 //! alone it goes home by itself after `RETURN_TIME`.
 //!
-//! The attackers win a round by capturing; the defenders win it by holding
-//! out until the clock runs out. Sides swap between rounds (the player's
-//! side attacks first), every tank back at its base. After `ROUNDS` rounds
-//! the side with more captures wins, and on equal captures the one whose
-//! captures took less time in all.
+//! A match is one round on the standard five-minute clock, and the sides
+//! don't swap: the player's side attacks, the other defends. The attackers
+//! win by capturing, which ends the match there and then; the defenders win
+//! by holding out until the clock runs out.
 //!
 //! The carrier drives at `CARRIER_THROTTLE` of full throttle, can still
 //! fire, and is marked to everyone, through walls, at any range.
@@ -22,12 +21,8 @@ use crate::map::Map;
 use crate::render::mesh::{Instance, MeshId};
 use crate::sim::Tank;
 
-/// Rounds in a match: each side attacks twice.
-pub const ROUNDS: usize = 4;
-/// Each round's clock, s.
-pub const ROUND_TIME: f32 = 150.0;
-/// The pause between rounds, everything frozen, before the sides swap, s.
-pub const BREAK: f32 = 5.0;
+/// The side that attacks: the player's.
+pub const ATTACKERS: usize = 0;
 /// Driving this close to the flag picks it up (or sends it home), m.
 pub const TOUCH: f32 = 3.5;
 /// The capture point's ring: the carrier inside it captures, m.
@@ -73,26 +68,23 @@ pub enum Event {
     HeldOut,
 }
 
-/// How a finished round went.
+/// How the raid ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Round {
-    pub attackers: usize,
-    /// Seconds it took the attackers to capture, if they did.
-    pub captured: Option<f32>,
+pub enum Outcome {
+    /// The attackers captured, this many seconds in.
+    Captured(f32),
+    /// The clock ran out on them.
+    HeldOut,
 }
 
 pub struct Raid {
-    /// Each side's stand, on the ground: its flag's home when it defends,
-    /// its capture point when it attacks.
+    /// Each side's stand, on the ground: the defenders' is their flag's
+    /// home, the attackers' their capture point.
     pub stands: Vec<Vec3>,
-    /// The round being played (0-based), or the last one once it's all over.
-    pub round: usize,
     pub flag: Flag,
-    /// Rounds played so far.
-    pub played: Vec<Round>,
-    /// Seconds left of the pause after a round, frozen; 0 while a round runs.
-    pub break_left: f32,
-    /// Seconds into the current round.
+    /// How it ended; `None` while it's on.
+    pub outcome: Option<Outcome>,
+    /// Seconds into the round.
     pub clock: f32,
     /// Flag events since the match last took them.
     pub events: Vec<Event>,
@@ -136,19 +128,17 @@ impl Raid {
             .collect();
         Raid {
             stands,
-            round: 0,
             flag: Flag::Home,
-            played: Vec::new(),
-            break_left: 0.0,
+            outcome: None,
             clock: 0.0,
             events: Vec::new(),
             dash_y,
         }
     }
 
-    /// The side attacking this round: the player's side first, then turn about.
+    /// The side attacking: the player's, the whole match.
     pub fn attackers(&self) -> usize {
-        self.round % 2
+        ATTACKERS
     }
 
     pub fn defenders(&self) -> usize {
@@ -164,7 +154,7 @@ impl Raid {
         }
     }
 
-    /// The capture point this round: the attackers' own stand.
+    /// The capture point: the attackers' own stand.
     pub fn capture_point(&self) -> Vec3 {
         self.stands[self.attackers()]
     }
@@ -176,48 +166,21 @@ impl Raid {
         }
     }
 
-    /// Between rounds (frozen), or all rounds played.
-    pub fn paused(&self) -> bool {
-        self.break_left > 0.0
-    }
-
-    /// All rounds played.
+    /// The raid is over: captured, or held.
     pub fn done(&self) -> bool {
-        self.played.len() >= ROUNDS
+        self.outcome.is_some()
     }
 
-    /// Rounds side `side` has captured in.
-    pub fn captures(&self, side: usize) -> u32 {
-        self.played
-            .iter()
-            .filter(|r| r.attackers == side && r.captured.is_some())
-            .count() as u32
+    /// The side that won: the attackers if they captured, the defenders if
+    /// they held out; `None` while it's on.
+    pub fn winner(&self) -> Option<usize> {
+        self.outcome.map(|o| match o {
+            Outcome::Captured(_) => self.attackers(),
+            Outcome::HeldOut => self.defenders(),
+        })
     }
 
-    /// Seconds side `side`'s captures took, all told.
-    pub fn capture_time(&self, side: usize) -> f32 {
-        self.played
-            .iter()
-            .filter(|r| r.attackers == side)
-            .filter_map(|r| r.captured)
-            .sum()
-    }
-
-    /// The side winning on captures, then on time; `None` while level.
-    pub fn leader(&self) -> Option<usize> {
-        let (a, b) = (self.captures(0), self.captures(1));
-        if a != b {
-            return Some(if a > b { 0 } else { 1 });
-        }
-        let (ta, tb) = (self.capture_time(0), self.capture_time(1));
-        if a == 0 || (ta - tb).abs() < 0.5 {
-            None
-        } else {
-            Some(if ta < tb { 0 } else { 1 })
-        }
-    }
-
-    /// Advance a running round by `dt`. `side(i)` is tank `i`'s side, or
+    /// Advance the running round by `dt`. `side(i)` is tank `i`'s side, or
     /// `None` if it can't touch the flag (a wreck, a husk). Returns true when
     /// the round has just ended (captured, or the clock ran out at `time_left`).
     pub fn step(
@@ -227,7 +190,7 @@ impl Raid {
         tanks: &[Tank],
         side: impl Fn(usize) -> Option<usize>,
     ) -> bool {
-        if self.paused() || self.done() {
+        if self.done() {
             return false;
         }
         self.clock += dt;
@@ -257,7 +220,7 @@ impl Raid {
                     let p = tanks[i].pos;
                     if flat(p).distance(flat(c)) < CAPTURE_RADIUS && (p.y - c.y).abs() < REACH_Y {
                         self.events.push(Event::Captured { by: i });
-                        self.finish(Some(self.clock));
+                        self.outcome = Some(Outcome::Captured(self.clock));
                         return true;
                     }
                 }
@@ -297,35 +260,10 @@ impl Raid {
         }
         if time_left <= 0.0 {
             self.events.push(Event::HeldOut);
-            self.finish(None);
+            self.outcome = Some(Outcome::HeldOut);
             return true;
         }
         false
-    }
-
-    fn finish(&mut self, captured: Option<f32>) {
-        self.played.push(Round {
-            attackers: self.attackers(),
-            captured,
-        });
-        self.break_left = BREAK;
-    }
-
-    /// Run the pause between rounds down by `dt`. True when it's over and the
-    /// next round should start: sides swapped, the flag home, the clock reset.
-    pub fn wait(&mut self, dt: f32) -> bool {
-        if !self.paused() || self.done() {
-            return false;
-        }
-        self.break_left -= dt;
-        if self.break_left > 0.0 {
-            return false;
-        }
-        self.break_left = 0.0;
-        self.round += 1;
-        self.flag = Flag::Home;
-        self.clock = 0.0;
-        true
     }
 
     /// Both stands, and the flag on its stand, on its carrier (`shown`, the
@@ -535,16 +473,6 @@ mod tests {
     }
 
     #[test]
-    fn the_player_side_attacks_first_and_sides_swap() {
-        let (_, mut r) = setup();
-        assert_eq!((r.attackers(), r.defenders()), (0, 1));
-        r.finish(None);
-        assert!(r.paused());
-        while !r.wait(DT) {}
-        assert_eq!((r.attackers(), r.round, r.flag), (1, 1, Flag::Home));
-    }
-
-    #[test]
     fn an_attacker_takes_the_flag_home_and_captures() {
         let (mut w, mut r) = setup();
         // A defender on the flag does nothing.
@@ -561,9 +489,11 @@ mod tests {
         assert_eq!(r.flag_at(&w.tanks), w.tanks[0].pos);
         put(&mut w, 0, Vec2::new(40.0 + CAPTURE_RADIUS - 1.0, 100.0));
         assert!(step(&w, &mut r));
-        assert_eq!(r.captures(0), 1);
-        assert_eq!(r.leader(), Some(0));
-        assert!(r.paused());
+        assert!(matches!(r.outcome, Some(Outcome::Captured(_))));
+        assert_eq!(r.winner(), Some(0));
+        // That's the raid over: the sides don't swap for another go.
+        assert!(!step(&w, &mut r));
+        assert_eq!((r.attackers(), r.defenders()), (0, 1));
     }
 
     #[test]
@@ -623,43 +553,11 @@ mod tests {
     #[test]
     fn the_clock_running_out_is_a_hold() {
         let (w, mut r) = setup();
+        assert_eq!(r.winner(), None);
         assert!(r.step(DT, 0.0, &w.tanks, sides));
-        assert_eq!(
-            r.played,
-            [Round {
-                attackers: 0,
-                captured: None
-            }]
-        );
+        assert_eq!(r.outcome, Some(Outcome::HeldOut));
         assert_eq!(r.events, [Event::HeldOut]);
-        assert_eq!(r.leader(), None);
-    }
-
-    #[test]
-    fn more_captures_win_then_faster_ones() {
-        let (_, mut r) = setup();
-        r.played = vec![
-            Round {
-                attackers: 0,
-                captured: Some(90.0),
-            },
-            Round {
-                attackers: 1,
-                captured: Some(60.0),
-            },
-        ];
-        assert_eq!(r.leader(), Some(1));
-        r.played.push(Round {
-            attackers: 0,
-            captured: Some(100.0),
-        });
-        assert_eq!(r.leader(), Some(0));
-        r.played.push(Round {
-            attackers: 1,
-            captured: Some(200.0),
-        });
-        assert_eq!(r.leader(), Some(0), "190 s against 260 s");
-        assert!(r.done());
+        assert_eq!(r.winner(), Some(1), "the defenders held out");
     }
 
     /// On the Seam each side's stand is open, drivable ground near its base,
