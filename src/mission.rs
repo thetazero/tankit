@@ -155,6 +155,19 @@ pub const MISSIONS: &[Mission] = &[
         // Crystals only: every schematic is already some mission's prize.
         prizes: &[None, None],
     },
+    Mission {
+        name: "DRY WIND",
+        contract: Contract::Hold,
+        map: "OPEN DESERT",
+        map_kind: MapKind::Desert,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+        rating: 0,
+        rank: 1,
+        // Crystals only: every schematic is already some mission's prize.
+        prizes: &[None, None],
+    },
     // A theater's shield generators are fought over here (#341): the
     // generator is the Hold site, its holder's model in the shape the
     // site's in (see `SiteView::map_kind`); the sides are the theater's.

@@ -735,84 +735,12 @@ impl Dig<'_> {
         debug_assert!(placed > 30, "{placed} crystal clusters on the Crag");
     }
 
-    /// Colliders for a sculpted face: one thin slab per stretch of it,
-    /// from its most forward point at tank height back into the rock.
-    pub(super) fn face_colliders(&mut self, feet: &[crag::Foot], fronts: &[Option<Vec2>]) {
-        for k in (0..feet.len() - 1).step_by(2) {
-            let j = (k + 2).min(feet.len() - 1);
-            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
-                continue;
-            };
-            let along = b - a;
-            let len = along.length();
-            if len < 1e-3 || len > 4.0 {
-                continue;
-            }
-            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
-            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
-            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
-            let depth = 3.0;
-            let dir = along / len;
-            let floor = feet[k].floor.min(feet[j].floor);
-            self.oboxes.push(OBox {
-                center: mid - nrm * depth * 0.5,
-                yaw: (-dir.y).atan2(dir.x),
-                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
-                y0: floor - 3.0,
-                y1: floor + 10.0,
-                hidden: true,
-                ..OBox::default()
-            });
-        }
-    }
-
     /// A butte's sides, sculpted as rock like the Face's (colliders and
     /// all: nothing drives up them), all round but where its ramp comes
     /// down; blocks fallen at its foot.
     pub(super) fn butte(&mut self, b: &Butte, rng: &mut Rng) {
         let lay = self.l;
-        let ramp_at = b.ramp.y.atan2(b.ramp.x);
-        // Round from one side of the ramp to the other.
-        let gap = ((BUTTE_GAP) / b.rim(b.ramp)).min(0.9);
-        let n = (b.radius * TAU / 0.7) as usize;
-        let mut corners = Vec::new();
-        for k in 0..=n {
-            let a = ramp_at + gap + (TAU - 2.0 * gap) * k as f32 / n as f32;
-            let dir = Vec2::new(a.cos(), a.sin());
-            // Clockwise seen from above, so the face looks out.
-            corners.push(b.center + dir * (b.rim(dir) + 1.6));
-        }
-        corners.reverse();
-        let pts = crag::resample(&corners, 0.7, 1.2);
-        let mut feet = Vec::with_capacity(pts.len());
-        let mut along = b.center.x * 3.1;
-        for (i, &(p, dir)) in pts.iter().enumerate() {
-            if i > 0 {
-                along += p.distance(pts[i - 1].0);
-            }
-            let mut nrm = Vec2::new(dir.y, -dir.x);
-            if nrm.dot(p - b.center) < 0.0 {
-                nrm = -nrm;
-            }
-            let base = [1.0, 2.0, 3.0]
-                .iter()
-                .map(|&k| self.ground_height(p.x + nrm.x * k, p.y + nrm.y * k))
-                .fold(f32::NEG_INFINITY, f32::max);
-            feet.push(crag::Foot {
-                p,
-                nrm,
-                along,
-                floor: base,
-                lip: b.height + 0.4 * noise(along / 6.0, 31),
-                cut: -100.0,
-                mouth: false,
-                relief: 0.7,
-            });
-        }
-        let mut mesh = std::mem::take(&mut self.sculpted);
-        let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
-        self.sculpted = mesh;
-        self.face_colliders(&feet, &fronts);
+        self.butte_face(b, true);
         // Rocks on its top to fight from behind, clear of where the ramp
         // comes up.
         let mut on_top: Vec<Vec2> = Vec::new();
@@ -940,6 +868,7 @@ impl Dig<'_> {
                     cut: -100.0,
                     mouth,
                     relief: 0.8 * smoothstep(0.5, 5.0, by_mouth),
+                    veins: true,
                 });
             }
             if feet.len() > 1 {
@@ -4768,6 +4697,7 @@ fn crag_feet(m: &Dig, mine: &Mine) -> Vec<crag::Foot> {
             cut,
             mouth,
             relief: bend * plain * if in_slot { 0.35 } else { 1.0 },
+            veins: true,
         });
     }
     feet
@@ -5107,4 +5037,97 @@ fn paint(lay: &Layout, seam: &[Vec2], x: f32, z: f32, h: f32, slope: f32) -> Vec
         c = STONE_DARK * 0.8 * mottle;
     }
     c
+}
+
+impl Map {
+    /// Colliders for a sculpted face: one thin slab per stretch of it,
+    /// from its most forward point at tank height back into the rock.
+    pub(in crate::map) fn face_colliders(&mut self, feet: &[crag::Foot], fronts: &[Option<Vec2>]) {
+        for k in (0..feet.len() - 1).step_by(2) {
+            let j = (k + 2).min(feet.len() - 1);
+            let (Some(a), Some(b)) = (fronts[k], fronts[j]) else {
+                continue;
+            };
+            let along = b - a;
+            let len = along.length();
+            if len < 1e-3 || len > 4.0 {
+                continue;
+            }
+            let nrm = (feet[k].nrm + feet[j].nrm).normalize_or(feet[k].nrm);
+            let front = (a - feet[k].p).dot(nrm).max((b - feet[j].p).dot(nrm));
+            let mid = (feet[k].p + feet[j].p) * 0.5 + nrm * front;
+            let depth = 3.0;
+            let dir = along / len;
+            let floor = feet[k].floor.min(feet[j].floor);
+            self.oboxes.push(OBox {
+                center: mid - nrm * depth * 0.5,
+                yaw: (-dir.y).atan2(dir.x),
+                half: Vec2::new(len * 0.5 + 0.35, depth * 0.5),
+                y0: floor - 3.0,
+                y1: floor + 10.0,
+                hidden: true,
+                ..OBox::default()
+            });
+        }
+    }
+
+    /// A butte's sides, sculpted as rock (colliders and all: nothing
+    /// drives up them), all round but where its ramp comes down; seamed
+    /// with crystal if `veins`. Any biome's buttes.
+    pub(in crate::map) fn butte_face(&mut self, b: &Butte, veins: bool) {
+        let ramp_at = b.ramp.y.atan2(b.ramp.x);
+        // Round from one side of the ramp to the other.
+        let gap = ((BUTTE_GAP) / b.rim(b.ramp)).min(0.9);
+        let n = (b.radius * TAU / 0.7) as usize;
+        let mut corners = Vec::new();
+        for k in 0..=n {
+            let a = ramp_at + gap + (TAU - 2.0 * gap) * k as f32 / n as f32;
+            let dir = Vec2::new(a.cos(), a.sin());
+            // Clockwise seen from above, so the face looks out.
+            corners.push(b.center + dir * (b.rim(dir) + 1.6));
+        }
+        corners.reverse();
+        self.rock_face(&corners, b.height, veins, b.center.x * 3.1);
+    }
+
+    /// A rock face sculpted along `corners` (the open side on the left
+    /// going along, as round a butte clockwise seen from above), its foot
+    /// on the ground there, its lip about `lip` high, colliders and all;
+    /// seamed with crystal if `veins`. `along` starts its rock's pattern.
+    pub(in crate::map) fn rock_face(
+        &mut self,
+        corners: &[Vec2],
+        lip: f32,
+        veins: bool,
+        along: f32,
+    ) {
+        let pts = crag::resample(corners, 0.7, 1.2);
+        let mut feet = Vec::with_capacity(pts.len());
+        let mut along = along;
+        for (i, &(p, dir)) in pts.iter().enumerate() {
+            if i > 0 {
+                along += p.distance(pts[i - 1].0);
+            }
+            let nrm = Vec2::new(-dir.y, dir.x);
+            let base = [1.0, 2.0, 3.0]
+                .iter()
+                .map(|&k| self.ground_height(p.x + nrm.x * k, p.y + nrm.y * k))
+                .fold(f32::NEG_INFINITY, f32::max);
+            feet.push(crag::Foot {
+                p,
+                nrm,
+                along,
+                floor: base,
+                lip: lip + 0.4 * noise(along / 6.0, 31),
+                cut: -100.0,
+                mouth: false,
+                relief: 0.7,
+                veins,
+            });
+        }
+        let mut mesh = std::mem::take(&mut self.sculpted);
+        let fronts = crag::sculpt(&mut mesh, &feet, &|q| self.ground_height(q.x, q.y));
+        self.sculpted = mesh;
+        self.face_colliders(&feet, &fronts);
+    }
 }
