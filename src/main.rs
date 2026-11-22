@@ -453,6 +453,9 @@ enum Screen {
     Spent,
     /// Likewise, once the fast-forward has played the match out: the results.
     SpentOver,
+    /// Left the battle from the pause box: it plays out without you, under
+    /// a progress bar (#427).
+    Leaving,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -815,10 +818,11 @@ fn parse_args() -> Result<Args> {
                     Some("dead") => Screen::Dead,
                     Some("spent") => Screen::Spent,
                     Some("spent-over") => Screen::SpentOver,
+                    Some("leaving") => Screen::Leaving,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving or carry, got {other:?}"
                         )
                     }
                 })
@@ -855,7 +859,9 @@ fn parse_args() -> Result<Args> {
         if let Some(owner) = generator {
             g.owner = owner;
         }
-        g.condition = map::procgen::shield::Condition::down(generator_down, galaxy::REPAIR_TICKS);
+        // (The galaxy's generators are only working or damaged, #422; a
+        // shot can still show any stage of the art.)
+        g.condition = map::procgen::shield::Condition::down(generator_down, 4);
     }
     let sides = make_map(map_kind, map_seed).factions;
     let menu_shot = matches!(
@@ -1124,6 +1130,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         } else {
             camera
         }
+    } else if args.screen == Some(Screen::Leaving) {
+        // Left at the shot's time; caught some way into the fast-forward.
+        let camera = advance(&mut game, &mut cam, &mut garage, shot.time);
+        game.leave();
+        let to = (game.progress() + 0.4).min(0.9);
+        while game.playing_out() && game.progress() < to {
+            game.fast_forward(60);
+        }
+        camera
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
@@ -1190,7 +1205,11 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 )
                 .verts;
             // Paused, the box is under the garage (opened from it, with --garage), as in the game.
-            let ui = if matches!(args.screen, Some(Screen::Pause | Screen::PauseSettings)) {
+            let ui = if args.screen == Some(Screen::Leaving) {
+                let mut ui = menu::dim(ui);
+                ui.extend(hud::playing_out(&game, w, h));
+                ui
+            } else if matches!(args.screen, Some(Screen::Pause | Screen::PauseSettings)) {
                 let mut ui = menu::dim(ui);
                 let mut pause = menu::Pause::new();
                 if args.screen == Some(Screen::PauseSettings) {
@@ -1406,9 +1425,13 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
-                let stake = galaxy::battle::Stake::of(mission::MISSIONS[o.mission].contract);
-                let s = g.settle(&b, &[0, 0], &[0, 0], Some(0), stake);
-                g.step_played(b.system);
+                let s = g.step_played(&galaxy::battle::Played {
+                    battle: b.clone(),
+                    lost: vec![0, 0],
+                    company: vec![0, 0],
+                    winner: Some(0),
+                    own_lost: 0,
+                });
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 profile.ship = g.crew;
                 menu.set_theater(g.aboard(rank));

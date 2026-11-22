@@ -31,7 +31,7 @@
 //! picked at random, and on a generated kind the one map its seed names
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
-use super::{AT_WAR, Galaxy, REPAIR_TICKS, SIDES, Site, SiteKind};
+use super::{AT_WAR, Galaxy, SIDES, Site, SiteKind};
 use crate::economy::{PARTS, Part};
 use crate::faction::Faction;
 use crate::map::procgen::shield::Condition;
@@ -419,7 +419,7 @@ impl SiteView {
             planet: 0,
             owner: 0,
             kind: if shield {
-                SiteKind::Shield { down: 0 }
+                SiteKind::Shield { damaged: false }
             } else {
                 SiteKind::Production {
                     hulls: 0.1,
@@ -442,27 +442,23 @@ impl SiteView {
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
         match (self.kind, MISSIONS[self.mission].map_kind) {
-            (SiteKind::Shield { down }, MapKind::ShieldSite(_)) => MapKind::ShieldSite(Generator {
-                owner: Faction::ALL[self.owner],
-                condition: Condition::down(down, REPAIR_TICKS),
-            }),
+            (SiteKind::Shield { damaged }, MapKind::ShieldSite(_)) => {
+                MapKind::ShieldSite(Generator {
+                    owner: Faction::ALL[self.owner],
+                    condition: if damaged {
+                        Condition::DAMAGED
+                    } else {
+                        Condition::Up
+                    },
+                })
+            }
             (_, kind) => kind,
         }
     }
 
-    /// A generator that's down: how far its repairs have got, (ticks done,
-    /// ticks it takes).
-    pub fn repairs(&self) -> Option<(u8, u8)> {
-        self.down()
-            .map(|d| (REPAIR_TICKS.saturating_sub(d), REPAIR_TICKS))
-    }
-
-    /// A generator that's down: repair ticks still to go.
-    pub fn down(&self) -> Option<u8> {
-        match self.kind {
-            SiteKind::Shield { down } if down > 0 => Some(down),
-            _ => None,
-        }
+    /// A damaged generator (#422): its shield's down until it's working again.
+    pub fn damaged(&self) -> bool {
+        self.kind == SiteKind::Shield { damaged: true }
     }
 
     /// The schematic a win here steals (see `prize`).
@@ -550,7 +546,7 @@ impl Galaxy {
         let r = self.site_range(s);
         let up = |i: &usize| {
             let site = &self.sites[*i];
-            candidate(site, false) && site.kind == (SiteKind::Shield { down: 0 })
+            candidate(site, false) && site.kind == (SiteKind::Shield { damaged: false })
         };
         r.clone()
             .find(up)
@@ -1315,10 +1311,15 @@ mod tests {
         let t = g.await_work_staying(None, 1, 400).0.unwrap();
         for s in &t.sites {
             match (s.kind, s.map_kind()) {
-                (SiteKind::Shield { down }, MapKind::ShieldSite(made)) => {
+                (SiteKind::Shield { damaged }, MapKind::ShieldSite(made)) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
                     assert_eq!(made.owner, Faction::ALL[s.owner]);
-                    assert_eq!(made.condition, Condition::down(down, REPAIR_TICKS));
+                    let shape = if damaged {
+                        Condition::DAMAGED
+                    } else {
+                        Condition::Up
+                    };
+                    assert_eq!(made.condition, shape);
                 }
                 (SiteKind::Shield { .. }, k) => panic!("a generator fought on {k:?}"),
                 (_, k) => assert!(!matches!(k, MapKind::ShieldSite(_)), "{k:?}"),

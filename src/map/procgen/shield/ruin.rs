@@ -43,6 +43,10 @@ pub enum Condition {
 }
 
 impl Condition {
+    /// A damaged generator, as the galaxy has them (#422): scaffolded, half
+    /// rebuilt.
+    pub const DAMAGED: Condition = Condition::Down { done: 2, of: 4 };
+
     /// A generator down with `left` of `of` ticks of repair still to go
     /// (none left: it's up).
     pub fn down(left: u8, of: u8) -> Condition {
