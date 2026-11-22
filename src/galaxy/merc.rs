@@ -438,12 +438,15 @@ impl Galaxy {
             let (t, f) = (k.target as usize, k.side as usize);
             // Its hulls there are worn and shot at like the rest of its side's.
             let survived = self.survived[t][f];
+            let before = k.field;
             k.field *= 1.0 - wear;
             let lost = k.field * (1.0 - survived);
             k.field -= lost;
-            k.lost += lost;
             self.books.lost += lost as f64;
-            k.field = k.field.min(self.systems[t].hulls[f]);
+            k.field = k.field.min(self.systems[t].hulls[f]).max(0.0);
+            // Worn out or shot down, a hull gone is a hull lost: what it
+            // committed is what it's lost plus what it has left (#429).
+            k.lost += before - k.field;
             let sys = &self.systems[t];
             // A realm that folds into another, or loses the attack's ground
             // to one breaking away, hands the contract on to it.
@@ -462,8 +465,10 @@ impl Galaxy {
                     sys.owner() == f
                 };
             let fell = k.defend && sys.held[f] == 0;
-            // Spent: its committed hulls are all but gone.
-            let broken = k.field < 0.5 * MIN_SEND;
+            // Spent: every hull it committed is gone (#402, #429). Not
+            // most of them: a company that commits x hulls fights with all
+            // x, down to the last.
+            let broken = k.field < 0.5;
             let expired = self.tick >= k.signed + self.rules.merc_term as u64;
             if !(won || broken || expired || gone || fell) {
                 self.companies[c].contract = Some(k);

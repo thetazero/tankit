@@ -63,7 +63,10 @@ fn a_win_takes_a_site_under_shields() {
     let i = g.target(s, other).expect("something to take");
     assert_eq!(g.sites[i].kind, SiteKind::Shield { down: 0 });
     g.advance(s, other, 1);
-    assert_eq!(g.sites[i].owner as usize, other, "taken, not just knocked down");
+    assert_eq!(
+        g.sites[i].owner as usize, other,
+        "taken, not just knocked down"
+    );
     assert_eq!(g.sites[i].kind, SiteKind::Shield { down: REPAIR_TICKS });
     assert_eq!(g.systems[s].held[other], held + 1);
     // Every enemy site is on the front, shielded or not.
@@ -651,6 +654,8 @@ fn your_ended_contracts_are_kept() {
     for e in &g.ended {
         assert!(e.tick >= e.signed);
         assert!(e.lost >= 0.0 && e.lost <= e.committed + 1e-3);
+        // Spent means every hull committed is gone (#429).
+        assert!(e.outcome != Outcome::Spent || e.lost > e.committed - 0.5);
         assert!(e.outcome != Outcome::Fell || e.defend);
     }
     // Ended in order, and not the one your company's still on.
@@ -661,4 +666,33 @@ fn your_ended_contracts_are_kept() {
             .map(|k| (g.companies[c].id, k.signed))
     });
     assert!(g.ended.iter().all(|e| Some((e.ship, e.signed)) != now));
+}
+
+/// A contract commits all its hulls (#402, #429): a company down to its
+/// last few fights on with them, and is spent only once they're all gone.
+#[test]
+fn a_contract_is_spent_only_with_every_hull_gone() {
+    let spent = |field: f32| {
+        let mut g = Galaxy::warmed(7);
+        let c = g
+            .companies
+            .iter()
+            .position(|c| c.contract.is_some())
+            .expect("a company under contract");
+        let tick = g.tick;
+        let k = g.companies[c].contract.as_mut().unwrap();
+        k.field = field;
+        k.signed = tick;
+        let (t, f) = (k.target as usize, k.side as usize);
+        g.systems[t].hulls[f] = g.systems[t].hulls[f].max(field);
+        // No losses this tick: just what it has left.
+        g.survived[t][f] = 1.0;
+        let broken = g.books.broken;
+        g.mercs();
+        g.books.broken > broken
+    };
+    for field in [3.0, 5.0, 9.0, 15.0] {
+        assert!(!spent(field), "spent with {field} hulls left");
+    }
+    assert!(spent(0.0), "not spent with none left");
 }

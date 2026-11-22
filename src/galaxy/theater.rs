@@ -112,7 +112,7 @@ pub enum Outcome {
     Won,
     /// Failed a defense: the world was lost.
     Fell,
-    /// Failed: almost all the hulls committed to it were lost.
+    /// Failed: every hull committed to it was lost.
     Spent,
     /// Failed: the employer no longer exists (merged into another realm, or lost all its worlds).
     Gone,
