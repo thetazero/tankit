@@ -11,6 +11,7 @@
 use glam::Vec2;
 use winit::keyboard::KeyCode;
 
+use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::economy::Part;
 use crate::faction::Faction;
@@ -438,14 +439,13 @@ impl Menu {
             .filter(|t| self.screen == Screen::Missions && !t.contested.is_empty())
     }
 
-    /// The mission whose map the selected site is fought on, and the side
-    /// you'd take in it (always the first: the theater's sides stand in for
-    /// the map's): the menu's backdrop shows it (under the system view on
-    /// the missions screen, loaded ready for the site's). None off the
-    /// theater.
-    pub fn backdrop(&self) -> Option<(usize, usize)> {
+    /// The map the selected site is fought on, and the side you'd take in
+    /// it (always the first: the theater's sides stand in for the map's):
+    /// the menu's backdrop shows it (under the system view on the missions
+    /// screen, loaded ready for the site's). None off the theater.
+    pub fn backdrop(&self) -> Option<(MapKind, usize)> {
         matches!(self.screen, Screen::Missions | Screen::Site)
-            .then(|| self.selected_site().map(|s| (s.mission, 0)))
+            .then(|| self.selected_site().map(|s| (s.map_kind(), 0)))
             .flatten()
     }
 
@@ -677,7 +677,13 @@ impl Menu {
             .map(|&i| {
                 let s = &t.sites[i];
                 let kind = s.kind_name().trim_end_matches(" GENERATOR");
-                format!("{} · {kind}", numeral(s.planet))
+                match s.repairs() {
+                    Some((0, _)) => format!("{} · {kind} · WRECK", numeral(s.planet)),
+                    Some((done, of)) => {
+                        format!("{} · {kind} · REPAIR {done}/{of}", numeral(s.planet))
+                    }
+                    None => format!("{} · {kind}", numeral(s.planet)),
+                }
             })
             .collect();
         let items: Vec<Item> = names.iter().map(|n| Item::Acts(n)).collect();
@@ -742,7 +748,11 @@ impl Menu {
         );
         y += 34.0;
         let state = match (site.is_shield(), site.down()) {
-            (true, Some(d)) => format!(" · down, {d} ticks to repair"),
+            (true, Some(_)) => match site.repairs() {
+                Some((0, of)) => format!(" · wrecked, {of} ticks to repair"),
+                Some((done, of)) => format!(" · under repair, {} ticks to go", of - done),
+                None => String::new(),
+            },
             (true, None) => " · up".to_string(),
             _ => String::new(),
         };
@@ -759,6 +769,25 @@ impl Menu {
         );
         body(p, Vec2::new(x + lead + w, y), &state, theme::DIM);
         y += 20.0;
+        // A generator that's down: how far its repairs have got, a step a tick.
+        if let Some((done, of)) = site.repairs() {
+            let lead = body(p, Vec2::new(x, y), "Repairs ", theme::DIM);
+            widgets::segments(
+                p,
+                Vec2::new(x + lead + 4.0, y + 6.0),
+                120.0,
+                of as usize,
+                done as usize,
+                None,
+            );
+            body(
+                p,
+                Vec2::new(x + lead + 134.0, y),
+                &format!("{done} of {of}"),
+                theme::DIM,
+            );
+            y += 20.0;
+        }
         style.color = enemy.ui();
         let lead = body(p, Vec2::new(x, y), "Against ", theme::DIM);
         emblem::tagged(
@@ -964,10 +993,17 @@ fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
                 "A raid on their camp: a win costs the {enemy} hulls, and no ground changes hands."
             )
         }
-        Contract::Hold if ours => "Hold the deposit longest and the site stays ours.".to_string(),
-        Contract::Hold if site.is_shield() && site.down().is_none() => {
-            "Hold the deposit longest and the generator goes down.".to_string()
+        Contract::Hold if site.is_shield() && ours => {
+            "Hold the generator longest and it stays ours.".to_string()
         }
+        Contract::Hold if site.is_shield() && site.down().is_none() => {
+            "Hold the generator longest and it goes down.".to_string()
+        }
+        Contract::Hold if site.is_shield() => {
+            "Hold the generator longest and the site is ours: we put up our own once it's repaired."
+                .to_string()
+        }
+        Contract::Hold if ours => "Hold the deposit longest and the site stays ours.".to_string(),
         Contract::Hold => "Hold the deposit longest and the site is ours.".to_string(),
         Contract::Raid if site.is_shield() && site.down().is_none() && !ours => {
             "Carry their flag home and the generator goes down.".to_string()

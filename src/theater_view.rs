@@ -8,7 +8,9 @@
 //! shield generators as domes, foundries as squares, crystal mines as
 //! diamonds, in their holder's colour. Contested sites are ringed; the ones
 //! your side fights for this tick are ringed hot and filled. Every
-//! contested site can be clicked (it's a row of the list beside it).
+//! contested site can be clicked (it's a row of the list beside it). A
+//! generator that's down is a ghost of itself, ringed with its repairs: a
+//! step a tick, those done in its holder's colour (#341).
 //!
 //! The scene (`SystemArt`, `scene`) and the marks over it (`draw`) share
 //! one layout and camera, worked out from the theater and the screen's
@@ -641,6 +643,25 @@ fn site_marker(p: &mut Painter, at: Vec2, s: &SiteView, selected: bool) {
         }
     }
     glyph(p, at, s, color);
+    // A generator that's down: its repairs as steps round the marker, those
+    // done in its holder's colour (none yet: a wreck).
+    if let Some((done, of)) = s.repairs() {
+        let n = of.max(1) as usize;
+        let gap = 0.35;
+        for i in 0..n {
+            let a0 = -PI * 0.5 + TAU * i as f32 / n as f32 + gap * 0.5;
+            let a1 = a0 + TAU / n as f32 - gap;
+            let pts: Vec<Vec2> = (0..=8)
+                .map(|k| a0 + (a1 - a0) * k as f32 / 8.0)
+                .map(|a| at + Vec2::new(a.cos(), a.sin()) * 19.5)
+                .collect();
+            if i < done as usize {
+                p.polyline(&pts, 2.5, owner);
+            } else {
+                p.polyline(&pts, 1.0, mix(BG, owner, 0.45));
+            }
+        }
+    }
     if selected {
         widgets::corners(
             p,

@@ -22,14 +22,19 @@
 //! otherwise only ticks with battles. A company idle too long sails to the
 //! nearest war to look for work (`Galaxy::seek_work`).
 //!
-//! **Maps.** Until there are generated maps for sites (#308), each site is
-//! fought on one of the existing missions' maps, picked at random (stable for
-//! the site).
+//! **Maps.** A shield generator is fought over on the shield city (#341), a
+//! Hold for the generator: its holder's model, in the shape the site's in
+//! (up, wrecked, or going back up as it's repaired). Until there are
+//! generated maps for the other sites (#308), each is fought on one of the
+//! existing missions' maps, picked at random (stable for the site).
 
-use super::{AT_WAR, Galaxy, SIDES, Site, SiteKind};
+use super::{AT_WAR, Galaxy, REPAIR_TICKS, SIDES, Site, SiteKind};
 use crate::economy::{PARTS, Part};
 use crate::faction::Faction;
+use crate::map::procgen::shield::Condition;
+use crate::mission::MISSIONS;
 use crate::rng::Rng;
+use crate::{Generator, MapKind};
 
 /// The theater as the missions screen shows it: a snapshot of one system.
 #[derive(Clone, Debug)]
@@ -117,8 +122,10 @@ pub struct Sortie {
     pub system: usize,
     /// Index into `Galaxy::sites`.
     pub site: usize,
-    /// Index into `MISSIONS`: the map and contract.
+    /// Index into `MISSIONS`: the contract, and the map's kind.
     pub mission: usize,
+    /// The map, as the site is (a shield generator's its holder's, in its shape).
+    pub map_kind: MapKind,
     /// The match's teams: you (your employer) first, then the enemy.
     pub factions: [Faction; 2],
 }
@@ -239,6 +246,25 @@ impl SiteView {
         matches!(self.kind, SiteKind::Shield { .. })
     }
 
+    /// The map it's fought on: its mission's, and for a shield generator,
+    /// the holder's model in the shape it's in.
+    pub fn map_kind(&self) -> MapKind {
+        match (self.kind, MISSIONS[self.mission].map_kind) {
+            (SiteKind::Shield { down }, MapKind::ShieldSite(_)) => MapKind::ShieldSite(Generator {
+                owner: Faction::ALL[self.owner],
+                condition: Condition::down(down, REPAIR_TICKS),
+            }),
+            (_, kind) => kind,
+        }
+    }
+
+    /// A generator that's down: how far its repairs have got, (ticks done,
+    /// ticks it takes).
+    pub fn repairs(&self) -> Option<(u8, u8)> {
+        self.down()
+            .map(|d| (REPAIR_TICKS.saturating_sub(d), REPAIR_TICKS))
+    }
+
     /// A generator that's down: repair ticks still to go.
     pub fn down(&self) -> Option<u8> {
         match self.kind {
@@ -266,6 +292,7 @@ impl Theater {
             system: self.system,
             site: s.index,
             mission: s.mission,
+            map_kind: s.map_kind(),
             factions: [Faction::ALL[self.employer], Faction::ALL[s.enemy]],
         })
     }
@@ -530,6 +557,7 @@ impl Galaxy {
             .max_by(|&a, &b| sys.hulls[a].total_cmp(&sys.hulls[b]))
             .unwrap_or((f + 1) % SIDES);
         let pool = crate::mission::for_sites(rank);
+        let shield = crate::mission::for_shields();
         let sites: Vec<SiteView> = self
             .site_range(s)
             .map(|i| {
@@ -551,7 +579,10 @@ impl Galaxy {
                     contested: contested.contains(&i),
                     committed: commits.contains(&i),
                     enemy,
-                    mission: pool[r.index(pool.len())],
+                    mission: match (site.kind, pool[r.index(pool.len())]) {
+                        (SiteKind::Shield { .. }, _) => shield,
+                        (_, m) => m,
+                    },
                 }
             })
             .collect();
@@ -725,6 +756,33 @@ mod tests {
         assert_eq!(system_name(42), system_name(42));
         let names: std::collections::HashSet<String> = (0..200).map(system_name).collect();
         assert!(names.len() > 150, "{} names", names.len());
+    }
+
+    /// A shield generator is fought over on the shield city, a Hold for
+    /// it, its holder's model in the shape it's in (#341); nothing else is.
+    #[test]
+    fn generators_are_fought_over_on_the_shield_city() {
+        let mut g = galaxy();
+        let t = g.await_work(None, 1, 400).0.unwrap();
+        for s in &t.sites {
+            match (s.kind, s.map_kind()) {
+                (SiteKind::Shield { down }, MapKind::ShieldSite(made)) => {
+                    assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
+                    assert_eq!(made.owner, Faction::ALL[s.owner]);
+                    assert_eq!(made.condition, Condition::down(down, REPAIR_TICKS));
+                }
+                (SiteKind::Shield { .. }, k) => panic!("a generator fought on {k:?}"),
+                (_, k) => assert!(!matches!(k, MapKind::ShieldSite(_)), "{k:?}"),
+            }
+        }
+    }
+
+    /// Ticks of repair still to go, as how far the repairs have got.
+    #[test]
+    fn a_downed_generator_is_repaired_a_step_a_tick() {
+        assert_eq!(Condition::down(0, 4), Condition::Up);
+        assert_eq!(Condition::down(4, 4), Condition::Down { done: 0, of: 4 });
+        assert_eq!(Condition::down(1, 4).repaired(), Some(0.75));
     }
 
     /// A site's map is one of the missions open at your rank, on two sides.

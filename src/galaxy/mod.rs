@@ -94,7 +94,7 @@ const NEIGHBORS: usize = 12;
 /// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
 const RESONANT_HULL_COST: f32 = 0.005;
 /// Ticks to bring a downed shield generator back up.
-const REPAIR_TICKS: u8 = 4;
+pub const REPAIR_TICKS: u8 = 4;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: f32 = 2.0;
 /// Most quiet ticks a step skips looking for the next war.

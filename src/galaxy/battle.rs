@@ -518,6 +518,12 @@ impl Galaxy {
                     } else if let Some(i) = at_stake {
                         let old = self.sites[i].owner as usize;
                         self.sites[i].owner = w as u8;
+                        // A taken generator has to be repaired, as in
+                        // the galaxy's own battles: its new holder's
+                        // model, from the wreck.
+                        if let SiteKind::Shield { down } = &mut self.sites[i].kind {
+                            *down = super::REPAIR_TICKS;
+                        }
                         let sys = &mut self.systems[battle.system];
                         sys.held[old] -= 1;
                         sys.held[w] += 1;
