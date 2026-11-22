@@ -105,6 +105,7 @@ tankit [OPTIONS]
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|missions|settings|controls|rebind|pause|results>  (with --shot) render that screen
+  --screen pause-settings (with --shot) the pause box with its settings open
   --screen pause --garage (with --shot) the garage opened from the pause box, the match frozen under it
   --debug                 (with --shot) debug mode on: FPS counter
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
@@ -394,6 +395,8 @@ enum Screen {
     /// The key bindings, waiting for the key to put on FIRE's second slot.
     Rebind,
     Pause,
+    /// The pause box with its settings open.
+    PauseSettings,
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
@@ -746,6 +749,7 @@ fn parse_args() -> Result<Args> {
                     Some("controls") => Screen::Controls,
                     Some("rebind") => Screen::Rebind,
                     Some("pause") => Screen::Pause,
+                    Some("pause-settings") => Screen::PauseSettings,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
                     Some("spent") => Screen::Spent,
@@ -1116,9 +1120,16 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 )
                 .verts;
             // Paused, the box is under the garage (opened from it, with --garage), as in the game.
-            let ui = if args.screen == Some(Screen::Pause) {
+            let ui = if matches!(args.screen, Some(Screen::Pause | Screen::PauseSettings)) {
                 let mut ui = menu::dim(ui);
-                ui.extend(menu::Pause::new().draw(&profile, game.renown, w, h).verts);
+                let mut pause = menu::Pause::new();
+                if args.screen == Some(Screen::PauseSettings) {
+                    // Down to SETTINGS, and open it.
+                    for nav in [menu::Nav::Down, menu::Nav::Down, menu::Nav::Select] {
+                        pause.input(nav);
+                    }
+                }
+                ui.extend(pause.draw(&profile, game.renown, w, h).verts);
                 ui
             } else {
                 ui

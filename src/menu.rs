@@ -94,6 +94,8 @@ pub enum Hit {
     Volume,
     /// On the controls screen: action row `.0`'s key slot `.1`.
     Bind(usize, usize),
+    /// The BACK button: what Esc does.
+    Back,
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -234,7 +236,7 @@ impl Controls {
         let (row, slot) = match hit {
             Hit::Row(i) => (i, self.slot),
             Hit::Bind(i, s) => (i, s),
-            Hit::Volume => return false,
+            Hit::Volume | Hit::Back => return false,
         };
         if self.capturing || (row, slot) == (self.row, self.slot) {
             return false;
@@ -273,6 +275,8 @@ pub struct Menu {
     pick: usize,
     setting: usize,
     controls: Controls,
+    /// The pointer is on the BACK button.
+    back_lit: bool,
 }
 
 impl Menu {
@@ -288,6 +292,7 @@ impl Menu {
             pick: 0,
             setting: 0,
             controls: Controls::default(),
+            back_lit: false,
         }
     }
 
@@ -484,12 +489,17 @@ impl Menu {
 
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
+        if hit == Hit::Back {
+            return !std::mem::replace(&mut self.back_lit, true);
+        }
+        self.back_lit = false;
         if self.screen == Screen::Controls {
             return self.controls.hover(hit);
         }
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
+            Hit::Back => unreachable!(),
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
@@ -504,6 +514,11 @@ impl Menu {
 
     /// A click on `hit`, `at` (0..1) across it.
     pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<Action> {
+        if hit == Hit::Back {
+            self.back_lit = false;
+            self.controls.capturing = false;
+            return (Nav::Back, self.input(Nav::Back));
+        }
         if self.screen == Screen::Controls {
             let (nav, change) = self.controls.click(hit);
             return (nav, change.map(Action::Setting));
@@ -517,8 +532,14 @@ impl Menu {
                 );
             }
             Hit::Row(_) | Hit::Bind(..) => Nav::Select,
+            Hit::Back => unreachable!(),
         };
         (nav, self.input(nav))
+    }
+
+    /// The pointer left the BACK button.
+    pub fn unhover(&mut self) {
+        self.back_lit = false;
     }
 
     /// The theater whose system the screen shows in 3D instead of a map
@@ -635,6 +656,10 @@ impl Menu {
                     &self.controls,
                 );
             }
+        }
+        // Every screen but the main menu goes back to the one it came from.
+        if self.screen != Screen::Main {
+            back(&mut p, &mut hits, Vec2::new(x, h - 72.0), self.back_lit);
         }
         Layer {
             verts: fade(p.finish(), alpha),
@@ -1203,6 +1228,8 @@ pub struct Pause {
     settings: Option<usize>,
     /// The controls screen is open in the box (over the settings).
     controls: Option<Controls>,
+    /// The pointer is on the BACK button.
+    back_lit: bool,
 }
 
 impl Pause {
@@ -1211,6 +1238,7 @@ impl Pause {
             cursor: 0,
             settings: None,
             controls: None,
+            back_lit: false,
         }
     }
 
@@ -1259,12 +1287,17 @@ impl Pause {
 
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
+        if hit == Hit::Back {
+            return !std::mem::replace(&mut self.back_lit, true);
+        }
+        self.back_lit = false;
         if let Some(c) = &mut self.controls {
             return c.hover(hit);
         }
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
+            Hit::Back => unreachable!(),
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
         std::mem::replace(slot, i) != i
@@ -1272,6 +1305,10 @@ impl Pause {
 
     /// A click on `hit`, `at` (0..1) across it.
     pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<PauseAction> {
+        if hit == Hit::Back {
+            self.back_lit = false;
+            return (Nav::Back, self.input(Nav::Back));
+        }
         if let Some(c) = &mut self.controls {
             let (nav, change) = c.click(hit);
             return (nav, change.map(PauseAction::Setting));
@@ -1285,8 +1322,14 @@ impl Pause {
                 );
             }
             Hit::Row(_) | Hit::Bind(..) => Nav::Select,
+            Hit::Back => unreachable!(),
         };
         (nav, self.input(nav))
+    }
+
+    /// The pointer left the BACK button.
+    pub fn unhover(&mut self) {
+        self.back_lit = false;
     }
 
     /// Dims the battle and draws the box. `match_renown` is what this match has
@@ -1304,12 +1347,15 @@ impl Pause {
         let mut hits = Hits::new();
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
         // The controls list is long: the box grows to hold it and its keys line.
-        let tall = 90.0 + CONTROLS_H + 44.0;
+        let tall = 90.0 + CONTROLS_H + 44.0 + PAUSE_BACK_H;
         let size = Vec2::new(
             PANEL_W + 48.0,
             if self.controls.is_some() { tall } else { 380.0 },
         );
         let min = Vec2::new(w, h) * 0.5 - size * 0.5;
+        // Settings and controls open in the box go back a step; the pause
+        // list itself has RESUME.
+        let back_at = Vec2::new(min.x + 24.0, min.y + size.y - 24.0 - widgets::BACK_H);
         p.rect(min, size, theme::PANEL);
         widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
 
@@ -1345,6 +1391,7 @@ impl Pause {
                 &profile.settings.binds,
                 c,
             );
+            back(&mut p, &mut hits, back_at, self.back_lit);
             return Layer {
                 verts: p.finish(),
                 hits,
@@ -1352,6 +1399,7 @@ impl Pause {
         }
         if let Some(i) = self.settings {
             settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
+            back(&mut p, &mut hits, back_at, self.back_lit);
             return Layer {
                 verts: p.finish(),
                 hits,
@@ -1412,6 +1460,20 @@ impl Pause {
             hits,
         }
     }
+}
+
+/// What the BACK button adds to the pause box's height, under the controls.
+const PAUSE_BACK_H: f32 = widgets::BACK_H + 16.0;
+
+/// The BACK button at `at` (its top left), and its click.
+fn back(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, lit: bool) {
+    widgets::back_button(p, at, lit);
+    hits.add(
+        p,
+        at,
+        Vec2::new(widgets::back_width(), widgets::BACK_H),
+        Hit::Back,
+    );
 }
 
 /// The settings toggles: each a row with a checkbox, and under it what it does.
@@ -2029,6 +2091,58 @@ mod tests {
         let (id, at) = hits.at(hits.center_of(hit).unwrap()).unwrap();
         assert_eq!(id, hit);
         m.click(id, at, &profile.settings)
+    }
+
+    #[test]
+    fn back_buttons_go_back() {
+        let profile = Profile::in_memory();
+        let mut m = Menu::new();
+        // Nowhere to go back to from the main menu: QUIT leaves.
+        let hits = m.draw(&profile, 1600.0, 900.0, 1.0).hits;
+        assert_eq!(hits.center_of(Hit::Back), None);
+        m.set_theater(theater(Faction::Ithessar));
+        for (screen, to) in [
+            (Screen::Missions, Screen::Main),
+            (Screen::Site, Screen::Missions),
+            (Screen::Settings, Screen::Main),
+            (Screen::Controls, Screen::Settings),
+        ] {
+            m.screen = screen;
+            assert!(m.hover(Hit::Back));
+            assert!(!m.hover(Hit::Back));
+            assert_eq!(click_drawn(&mut m, &profile, Hit::Back), (Nav::Back, None));
+            assert_eq!(m.screen, to, "back from {screen:?}");
+        }
+        // Waiting for a key to bind: BACK gives up and leaves.
+        m.screen = Screen::Controls;
+        m.input(Nav::Select);
+        assert!(m.capturing());
+        click_drawn(&mut m, &profile, Hit::Back);
+        assert_eq!(m.screen, Screen::Settings);
+        assert!(!m.capturing());
+
+        // The pause box: back out of controls, then settings.
+        let mut p = Pause::new();
+        let click = |p: &mut Pause| {
+            let hits = p.draw(&profile, 0, 1600.0, 900.0).hits;
+            let (id, at) = hits.at(hits.center_of(Hit::Back).unwrap()).unwrap();
+            assert_eq!(id, Hit::Back);
+            p.click(id, at, &profile.settings)
+        };
+        let hits = p.draw(&profile, 0, 1600.0, 900.0).hits;
+        assert_eq!(hits.center_of(Hit::Back), None, "RESUME is the way back");
+        p.input(Nav::Down);
+        p.input(Nav::Down);
+        p.input(Nav::Select);
+        for _ in 0..SETTINGS.len() + 1 {
+            p.input(Nav::Down);
+        }
+        p.input(Nav::Select);
+        assert!(p.controls.is_some());
+        assert_eq!(click(&mut p), (Nav::Back, None));
+        assert!(p.controls.is_none() && p.settings.is_some());
+        assert_eq!(click(&mut p), (Nav::Back, None));
+        assert!(p.settings.is_none());
     }
 
     #[test]

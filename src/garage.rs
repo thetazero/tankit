@@ -752,24 +752,45 @@ impl Garage {
         let part = self.focused();
         let mut by = BUTTONS_TOP;
         let (act, ready) = primary_action(part, queued, profile);
-        self.button(&mut p, &mut hits, Vec2::new(x, by), &act, ready, Input::Act);
+        self.button(
+            &mut p,
+            &mut hits,
+            Vec2::new(x, by),
+            GRID_W,
+            &act,
+            ready,
+            Input::Act,
+        );
         by += BUTTON_H + 8.0;
         if let Some((up, ready)) = upgrade_action(part, profile) {
             self.button(
                 &mut p,
                 &mut hits,
                 Vec2::new(x, by),
+                GRID_W,
                 &up,
                 ready,
                 Input::Upgrade,
             );
         }
 
-        // Deploy with the kit as it stands (Esc or a right click cancels).
+        // Back out, putting the kit back as Esc does; or deploy with the
+        // kit as it stands.
+        let bottom = Vec2::new(x, h - 72.0);
+        widgets::back_button(&mut p, bottom, self.hover == Some(Hit::Key(Input::Revert)));
+        let bw = widgets::back_width();
+        hits.add(
+            &p,
+            bottom,
+            Vec2::new(bw, widgets::BACK_H),
+            Hit::Key(Input::Revert),
+        );
+        let gap = 8.0;
         self.button(
             &mut p,
             &mut hits,
-            Vec2::new(x, h - 72.0),
+            bottom + Vec2::new(bw + gap, 0.0),
+            GRID_W - bw - gap,
             "DEPLOY",
             true,
             Input::Deploy,
@@ -1032,11 +1053,12 @@ impl Garage {
         p: &mut Painter,
         hits: &mut Hits<Hit>,
         min: Vec2,
+        width: f32,
         text: &str,
         ready: bool,
         input: Input,
     ) {
-        let size = Vec2::new(GRID_W, BUTTON_H);
+        let size = Vec2::new(width, BUTTON_H);
         let hovered = ready && self.hover == Some(Hit::Key(input));
         p.set_halo(None);
         if ready {
@@ -1457,6 +1479,11 @@ mod tests {
         assert_eq!(g.section, 1);
         assert_eq!(click(&mut g, pelekys), None);
         assert_eq!(click(&mut g, Hit::Key(Input::Deploy)), None);
+        assert!(!g.is_open());
+        // BACK leaves too, as Esc does.
+        g.toggle(&w, &cam(&w), start);
+        g.update(1.0);
+        assert_eq!(click(&mut g, Hit::Key(Input::Revert)), None);
         assert!(!g.is_open());
     }
 
