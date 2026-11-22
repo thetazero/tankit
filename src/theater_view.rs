@@ -323,8 +323,8 @@ fn system_scene(
             ship_parts(art, pose, &mut instances, &mut particles);
             PointLight {
                 pos: pose.at + Vec3::new(-4.0, 6.0, 14.0),
-                color: Vec3::new(0.8, 0.85, 1.0) * 10.0,
-                radius: 24.0,
+                color: Vec3::new(0.8, 0.85, 1.0) * 12.0,
+                radius: 34.0,
             }
         })
         .into_iter()
@@ -366,11 +366,11 @@ fn ship_parts(
     let amber = Faction::Company.ui();
     let amber = Vec3::new(amber[0], amber[1], amber[2]);
     let back = pose.yaw * -Vec3::X;
-    for dz in [-0.17, 0.17] {
-        let d = pose.at + pose.yaw * (Vec3::new(-0.54, 0.0, dz) * SHIP_LEN);
+    for &(dy, dz, r) in &DRIVES {
+        let d = pose.at + pose.yaw * (Vec3::new(-0.5, dy, dz) * SHIP_LEN);
         particles.push(Particle::glow(
             d,
-            0.9 * pose.drive.sqrt(),
+            r * 26.0 * pose.drive.sqrt(),
             amber,
             1.2 * pose.drive,
             Vec3::ZERO,
@@ -722,46 +722,224 @@ fn stars(eye: Vec3, out: &mut Vec<Particle>) {
     }
 }
 
-/// A Company ship, a unit long along +x (bow forward), centered: a long
-/// grey hull, an amber band, a bridge on top, two drive pods at the stern.
+/// A Company ship, a unit long along +x (bow forward), centered: a long,
+/// low hull with a prow, plated in two greys with the Company's amber in a
+/// band behind the prow and on the drive housing, hangar doors in its flanks,
+/// a bridge tower amidships, radiator fins, and a tall drive housing at
+/// the stern with three bells aglow.
 fn ship_mesh() -> MeshData {
     let mut m = MeshData::default();
     let col = |c: [f32; 3], mat: Material| Vec4::new(c[0], c[1], c[2], mat.id());
-    let hull = col([0.24, 0.25, 0.27], Material::Painted);
-    let dark = col([0.16, 0.16, 0.17], Material::Metal);
+    let hull = col([0.62, 0.63, 0.65], Material::Paint);
+    let sheen = col([0.56, 0.57, 0.59], Material::Paint);
+    let plate = col([0.5, 0.51, 0.53], Material::Paint);
+    let dark = col([0.13, 0.13, 0.14], Material::Metal);
     let a = Faction::Company.ui();
-    let amber = col([a[0], a[1], a[2]], Material::Painted);
+    let amber = col([a[0], a[1], a[2]], Material::Paint);
     let glow = col([a[0], a[1], a[2]], Material::Glow);
-    let bx = |m: &mut MeshData, min: [f32; 3], max: [f32; 3], c: Vec4| {
-        m.add_box(Vec3::from(min), Vec3::from(max), c, c)
-    };
-    // The spine, and the bow tapering off it.
-    bx(&mut m, [-0.42, -0.07, -0.1], [0.28, 0.07, 0.1], hull);
-    bx(&mut m, [0.28, -0.055, -0.075], [0.4, 0.055, 0.075], hull);
-    bx(&mut m, [0.4, -0.035, -0.045], [0.5, 0.035, 0.045], hull);
-    // The band, a keel, the bridge with its lit windows.
-    bx(&mut m, [0.08, -0.075, -0.105], [0.16, 0.075, 0.105], amber);
-    bx(&mut m, [-0.36, -0.1, -0.04], [0.2, -0.07, 0.04], dark);
-    bx(&mut m, [-0.22, 0.07, -0.06], [-0.04, 0.12, 0.06], hull);
-    bx(&mut m, [-0.05, 0.09, -0.04], [-0.035, 0.11, 0.04], glow);
-    // The drive pods, out on a strut, their nozzles aglow.
-    bx(&mut m, [-0.34, -0.02, -0.2], [-0.28, 0.02, 0.2], dark);
-    for (z0, z1) in [(-0.22, -0.12), (0.12, 0.22)] {
-        bx(&mut m, [-0.5, -0.05, z0], [-0.2, 0.05, z1], hull);
-        bx(
-            &mut m,
-            [-0.42, 0.05, z0 + 0.02],
-            [-0.3, 0.052, z1 - 0.02],
-            amber,
-        );
-        bx(
-            &mut m,
-            [-0.52, -0.035, z0 + 0.015],
-            [-0.5, 0.035, z1 - 0.015],
-            glow,
+    let window = col([1.0, 0.86, 0.6], Material::Glow);
+
+    // The hull: sections from the prow back, as (x, half width, height
+    // over the middle, depth under it). It steps up into the drive housing.
+    let hull_at = [
+        (0.5, 0.02, 0.02, 0.03),
+        (0.42, 0.06, 0.035, 0.045),
+        (0.3, 0.1, 0.05, 0.055),
+        (0.2, 0.115, 0.055, 0.058),
+        (0.1, 0.118, 0.057, 0.059),
+        (0.0, 0.12, 0.058, 0.06),
+        (-0.16, 0.12, 0.06, 0.06),
+        (-0.22, 0.14, 0.085, 0.07),
+        (-0.38, 0.145, 0.09, 0.072),
+        (-0.42, 0.135, 0.08, 0.065),
+    ];
+    let rings: Vec<Vec<Vec3>> = hull_at
+        .iter()
+        .map(|&(x, w, top, bot)| section(x, w, top, bot))
+        .collect();
+    loft(&mut m, &rings, |seg, face| {
+        // Faces, mirrored left and right (`f` and `8 - f`): 0 and 8 the
+        // top, 1 and 7 the shoulders, 2 and 6 the flanks, 3, 4 and 5 the
+        // keel.
+        let face = face.min(8 - face);
+        match (seg, face) {
+            (CAP, _) => plate,
+            // The band behind the prow, and the drive housing's shoulders.
+            (2, 0..=2) | (7, 1) => amber,
+            // The hangar doors, down the flanks.
+            (3, 2) => dark,
+            (_, 3..) => dark,
+            // Plating in bands down the top, a shade darker down the sides.
+            (_, 0) if seg % 2 == 0 => hull,
+            (_, 0) => sheen,
+            _ => plate,
+        }
+    });
+
+    // Portholes lit down each flank, midships.
+    for z in [-0.117, 0.117] {
+        for i in 0..6 {
+            let x = 0.085 - 0.04 * i as f32;
+            m.add_box(
+                Vec3::new(x - 0.008, -0.004, z - 0.004),
+                Vec3::new(x + 0.008, 0.004, z + 0.004),
+                window,
+                window,
+            );
+        }
+    }
+
+    // The bridge tower, raked back, its windows lit across its face,
+    // running back into the drive housing.
+    let tower = [
+        (-0.03, 0.045, 0.05),
+        (-0.06, 0.048, 0.1),
+        (-0.075, 0.05, 0.114),
+        (-0.19, 0.054, 0.118),
+        (-0.25, 0.05, 0.07),
+    ];
+    let rings: Vec<Vec<Vec3>> = tower
+        .iter()
+        .map(|&(x, w, top)| block(x, w, 0.03, top))
+        .collect();
+    // Faces: 0 the top's right bevel, 1 the right side, 2 the bottom,
+    // 3 the left side, 4 the left bevel, 5 the top.
+    loft(&mut m, &rings, |seg, face| match (seg, face) {
+        (1, 0 | 4 | 5) => window,
+        _ if face == 5 => hull,
+        _ => plate,
+    });
+    // A row of lit windows down each side of it.
+    for z in [-0.0525, 0.0525] {
+        m.add_box(
+            Vec3::new(-0.18, 0.088, z - 0.003),
+            Vec3::new(-0.085, 0.094, z + 0.003),
+            window,
+            window,
         );
     }
+    // A mast on the tower, and a light at its tip.
+    m.add_box(
+        Vec3::new(-0.155, 0.11, -0.004),
+        Vec3::new(-0.145, 0.16, 0.004),
+        dark,
+        dark,
+    );
+    m.add_box(
+        Vec3::new(-0.156, 0.16, -0.006),
+        Vec3::new(-0.144, 0.168, 0.006),
+        glow,
+        glow,
+    );
+
+    // Radiator fins off the flanks ahead of the housing, swept back.
+    for s in [-1.0f32, 1.0] {
+        let z = |v: f32| v * s;
+        let (root_f, root_b) = (Vec3::new(0.02, 0.0, z(0.11)), Vec3::new(-0.2, 0.0, z(0.11)));
+        let (tip_f, tip_b) = (
+            Vec3::new(-0.1, -0.02, z(0.2)),
+            Vec3::new(-0.2, -0.02, z(0.2)),
+        );
+        let up = Vec3::Y * 0.006;
+        let inside = (root_f + root_b + tip_f + tip_b) * 0.25;
+        for (p, c) in [
+            ([root_f + up, tip_f + up, tip_b + up], plate),
+            ([root_f + up, tip_b + up, root_b + up], plate),
+            ([root_f - up, tip_b - up, tip_f - up], dark),
+            ([root_f - up, root_b - up, tip_b - up], dark),
+            ([tip_f + up, tip_f - up, tip_b - up], amber),
+            ([tip_f + up, tip_b - up, tip_b + up], amber),
+            ([root_f + up, root_f - up, tip_f - up], hull),
+            ([root_f + up, tip_f - up, tip_f + up], hull),
+            ([tip_b + up, tip_b - up, root_b - up], dark),
+            ([tip_b + up, root_b - up, root_b + up], dark),
+        ] {
+            m.facet(p, inside, c);
+        }
+    }
+
+    // The drives: three bells off the stern, each aglow inside.
+    let cyl = MeshData::cylinder(16);
+    let along = Quat::from_rotation_z(-PI * 0.5);
+    for &(y, z, r) in &DRIVES {
+        let bell = |x0: f32, x1: f32, r: f32| {
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(r * 2.0, x1 - x0, r * 2.0),
+                along,
+                Vec3::new((x0 + x1) * 0.5, y, z),
+            )
+        };
+        m.append(&cyl, bell(-0.48, -0.41, r), dark);
+        m.append(&cyl, bell(-0.45, -0.43, r * 1.08), plate);
+        m.append(&cyl, bell(-0.486, -0.475, r * 0.78), glow);
+    }
     m
+}
+
+/// The ship's drives, as (y, z, radius) in its length.
+const DRIVES: [(f32, f32, f32); 3] = [(0.012, 0.0, 0.05), (0.0, -0.09, 0.04), (0.0, 0.09, 0.04)];
+
+/// `loft`'s segment number for its end caps.
+const CAP: usize = usize::MAX;
+
+/// The hull's section at `x`: `w` wide each side, `top` up and `bot` down,
+/// nine points round from the top's middle: ridge, shoulder, chine and keel.
+fn section(x: f32, w: f32, top: f32, bot: f32) -> Vec<Vec3> {
+    let half = [
+        (0.0, top),
+        (0.6 * w, 0.85 * top),
+        (w, 0.15 * top),
+        (0.8 * w, -0.75 * bot),
+        (0.35 * w, -bot),
+    ];
+    let mut pts: Vec<Vec3> = half.iter().map(|&(z, y)| Vec3::new(x, y, z)).collect();
+    pts.extend(half[1..].iter().rev().map(|&(z, y)| Vec3::new(x, y, -z)));
+    pts
+}
+
+/// A block's section at `x`: `w` wide each side, from `lo` up to `hi`,
+/// its top's corners bevelled.
+fn block(x: f32, w: f32, lo: f32, hi: f32) -> Vec<Vec3> {
+    let b = (hi - lo) * 0.2;
+    [
+        (w - b, hi),
+        (w, hi - b),
+        (w, lo),
+        (-w, lo),
+        (-w, hi - b),
+        (-w + b, hi),
+    ]
+    .iter()
+    .map(|&(z, y)| Vec3::new(x, y, z))
+    .collect()
+}
+
+/// Skin `rings` (each a closed loop, all with as many points), flat-shaded,
+/// face `f` between rings `s` and `s + 1` coloured `color(s, f)`, and cap
+/// both ends, coloured `color(CAP, 0)` at the first and `color(CAP, 1)` at
+/// the last.
+fn loft(m: &mut MeshData, rings: &[Vec<Vec3>], color: impl Fn(usize, usize) -> Vec4) {
+    let center = |r: &[Vec3]| r.iter().copied().sum::<Vec3>() / r.len() as f32;
+    for s in 0..rings.len() - 1 {
+        let (a, b) = (&rings[s], &rings[s + 1]);
+        let inside = (center(a) + center(b)) * 0.5;
+        let n = a.len();
+        for f in 0..n {
+            let g = (f + 1) % n;
+            let c = color(s, f);
+            m.facet([a[f], a[g], b[g]], inside, c);
+            m.facet([a[f], b[g], b[f]], inside, c);
+        }
+    }
+    let (first, last) = (&rings[0], &rings[rings.len() - 1]);
+    for (end, ring, inner) in [(0, first, &rings[1]), (1, last, &rings[rings.len() - 2])] {
+        let c = center(ring);
+        let inside = c + (center(inner) - c) * 0.5;
+        let cap = color(CAP, end);
+        for f in 0..ring.len() {
+            m.facet([c, ring[f], ring[(f + 1) % ring.len()]], inside, cap);
+        }
+    }
 }
 
 /// Text on a backing of space's colour.
