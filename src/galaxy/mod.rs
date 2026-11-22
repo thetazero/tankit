@@ -728,9 +728,22 @@ impl Galaxy {
     /// that leaves nowhere at war, on through the quiet until somewhere is
     /// (the player is always posted to a war, so quiet ticks pass unseen).
     pub fn step(&mut self) {
+        self.step_from(None);
+    }
+
+    /// The tick a played battle in system `s` is part of: your battle is
+    /// that system's battle this tick, settled already (`Galaxy::settle`),
+    /// so the galaxy's own battle there is skipped while every other
+    /// system's fights on (#419). One combined tick, not your battle and
+    /// then another round of fighting over the same ground.
+    pub fn step_played(&mut self, s: usize) {
+        self.step_from(Some(s));
+    }
+
+    fn step_from(&mut self, mut played: Option<usize>) {
         (self.sent, self.shields_down, self.taken) = (0, 0, 0);
         for _ in 0..QUIET_SKIP {
-            self.advance_tick();
+            self.advance_tick(played.take());
             if self.systems.iter().any(|s| s.at_war()) {
                 break;
             }
@@ -738,10 +751,11 @@ impl Galaxy {
     }
 
     /// Run the whole galaxy forward one tick.
-    fn advance_tick(&mut self) {
+    /// `played`: a system whose battle this tick was played (see `step_played`).
+    fn advance_tick(&mut self, played: Option<usize>) {
         self.tick += 1;
         self.produce();
-        self.battles();
+        self.battles(played);
         self.mercs();
         self.update_share();
         self.update_supply();
@@ -827,9 +841,13 @@ impl Galaxy {
         f != g
     }
 
-    fn battles(&mut self) {
+    fn battles(&mut self, played: Option<usize>) {
         for s in 0..self.systems.len() {
             self.survived[s] = [1.0; SIDES];
+            if played == Some(s) {
+                // Its battle was played, and settled already.
+                continue;
+            }
             let hulls = self.systems[s].hulls;
             let present = hulls.map(|h| h >= AT_WAR);
             let fighting = |f: usize| (0..SIDES).any(|g| present[g] && f != g);

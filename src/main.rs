@@ -129,7 +129,7 @@ tankit [OPTIONS]
                           another, and you choose which ship to go with
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
-                          the war ticked once after, as back from a battle
+                          the rest of the war ticked with it, as back from a battle
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -1379,7 +1379,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     .context("your company isn't in it")?;
                 let stake = galaxy::battle::Stake::of(mission::MISSIONS[o.mission].contract);
                 let s = g.settle(&b, &[0, 0], &[0, 0], Some(0), stake);
-                g.step();
+                g.step_played(b.system);
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 profile.ship = g.crew;
                 menu.set_theater(g.aboard(rank));

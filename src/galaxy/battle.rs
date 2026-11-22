@@ -11,7 +11,8 @@
 //! **Out.** When the battle's done, each side's hulls lost (its tanks
 //! destroyed) come off the system's storage; survivors stay there. A win at the losers' site takes it,
 //! whatever the contract (#419); a Raid's also knocks down one of their
-//! generators (see [`Stake`]). Then the whole galaxy ticks once.
+//! generators (see [`Stake`]). It's that system's battle for the tick:
+//! the rest of the galaxy ticks once with it (`Galaxy::step_played`).
 //!
 //! **Mercs** (#320). A company under contract for the battle's system (to
 //! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
@@ -208,7 +209,7 @@ pub fn conclude(g: &mut Galaxy, b: &Battle, m: &Match) -> Settled {
         Stake::of(m.contract),
     );
     g.spend_own(m.own_lost());
-    g.step();
+    g.step_played(b.system);
     s
 }
 
@@ -665,6 +666,32 @@ mod tests {
                 s.after.held[b.sides[other]],
                 s.before.held[b.sides[other]] + 1
             );
+        }
+    }
+
+    /// Your battle is its system's battle for the tick (#419): the
+    /// galaxy's tick that goes with it doesn't fight there again, so a site
+    /// you've just won is still yours after it.
+    #[test]
+    fn a_won_site_survives_its_tick() {
+        for seed in 0..20 {
+            let mut g = Galaxy::warmed(seed);
+            let b = g.muster(&PAIR, 6);
+            let Some(site) = b.site else { continue };
+            let holder = g.sites[site].owner as usize;
+            let Some(t) = b.sides.iter().position(|&x| x == holder) else {
+                continue;
+            };
+            let s = g.settle(&b, &[0, 0], &[0, 0], Some(1 - t), Stake::Site);
+            let hulls = g.systems[b.system].hulls;
+            g.step_played(b.system);
+            assert!(s.taken);
+            assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
+            // No second round of fighting there: only wear thins its hulls.
+            let wear = 1.0 - g.rules.wear;
+            for f in 0..SIDES {
+                assert!(g.systems[b.system].hulls[f] >= hulls[f] * wear - 1e-3);
+            }
         }
     }
 

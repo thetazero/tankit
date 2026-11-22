@@ -737,7 +737,7 @@ impl App {
                 None,
                 battle::Stake::Site,
             );
-            g.step();
+            g.step_played(b.system);
             log::info!("left early: {}", battle::describe(&b, &s));
             self.war.save();
         }
