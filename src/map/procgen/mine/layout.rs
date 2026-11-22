@@ -870,7 +870,6 @@ impl Layout {
     /// A railroad out of each mine, south to the edge, bridging each wash
     /// it crosses; the warehouse's branch off the first.
     fn lay_lines(&mut self, rng: &mut Rng) -> Result<(), u32> {
-        let s = self.size;
         let n = self.mines.len();
         for k in 0..n {
             // A few tries for one that fits.
@@ -1170,16 +1169,7 @@ impl Layout {
     /// taking (the mines' mouths, the bridges, the buttes' ramps).
     fn place_sides(&mut self) -> Result<(), u32> {
         let s = self.size;
-        let mut goals: Vec<Vec2> = self
-            .mines
-            .iter()
-            .map(|m| {
-                let x = m.adit.0.x + 6.0;
-                Vec2::new(x, self.face(x) - 6.0)
-            })
-            .collect();
-        goals.extend(self.bridges.iter().map(|b| (b.a + b.b) * 0.5));
-        goals.extend(self.buttes.iter().map(|b| b.way().0));
+        let goals = self.goals();
         // Where columns of `rows` can stand on the flats.
         let fits = |xs: &[f32], rows: usize, z0: f32| {
             xs.iter().all(|&x| {
@@ -1247,6 +1237,22 @@ impl Layout {
         self.yard = Vec2::new(37.0, zw + 14.0);
         self.camp = Vec2::new(s - 38.0, ze + 18.0);
         Ok(())
+    }
+
+    /// What's worth taking, for weighing the sides against each other: each
+    /// mine's mouth, each bridge, each butte's ramp.
+    pub fn goals(&self) -> Vec<Vec2> {
+        let mut goals: Vec<Vec2> = self
+            .mines
+            .iter()
+            .map(|m| {
+                let x = m.adit.0.x + 6.0;
+                Vec2::new(x, self.face(x) - 6.0)
+            })
+            .collect();
+        goals.extend(self.bridges.iter().map(|b| b.b));
+        goals.extend(self.buttes.iter().map(|b| b.way().0));
+        goals
     }
 
     /// The dump and its heap, fins and hoodoos, all on free ground.

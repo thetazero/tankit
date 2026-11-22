@@ -2174,6 +2174,10 @@ impl Dig<'_> {
         for line in &lay.lines {
             self.rails(line, false);
         }
+        // The warehouse's branch, if there's a warehouse.
+        if lay.branch.is_empty() {
+            return;
+        }
         let branch = lay.branch.clone();
         self.rails(&branch, true);
         // The points lever by the junction, on the outside of the curve.
@@ -3399,6 +3403,9 @@ impl Dig<'_> {
     pub(super) fn warehouse(&mut self, rng: &mut Rng) {
         let lay = self.l;
         let st = self.st;
+        if lay.branch.is_empty() {
+            return;
+        }
         let (at, along) = lay.shed;
         let g = self.ground_height(at.x, at.y);
         let yaw = yaw_along(along);

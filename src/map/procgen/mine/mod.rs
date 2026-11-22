@@ -83,7 +83,7 @@ pub const WASH_DEPTH: f32 = 7.0;
 /// The wash's banks, from the floor's edge to the top.
 const WASH_BANK: f32 = 5.0;
 /// How far a crossing's ramp runs, from the top down to the floor.
-const FORD_RUN: f32 = 16.0;
+const FORD_RUN: f32 = 21.0;
 pub const DECK_HALF: f32 = 3.6;
 pub const DECK_TOP: f32 = 0.25;
 const DECK_T: f32 = 1.0;
@@ -234,13 +234,43 @@ pub fn layout(spec: &Spec) -> Layout {
                 continue;
             }
         };
-        match super::check::playable(&dig::greybox(&l, &spec.sides)) {
+        let grey = dig::greybox(&l, &spec.sides);
+        match super::check::playable(&grey).and_then(|()| fair(&l, &grey)) {
             Ok(()) => return l,
             Err(why) => log::debug!("mine seed {} attempt {attempt}: {why}", spec.seed),
         }
         last = Some(l);
     }
     last.expect("no crystal mine laid out in 64 draws")
+}
+
+/// Whether neither side is much further than the other from what's worth
+/// taking, driving there on `map` (the layout's greybox): the spawns were
+/// placed by straight-line distance, and a wash or a mesa between can
+/// make one side's drive much longer.
+fn fair(l: &Layout, map: &Map) -> Result<(), String> {
+    let nav = crate::ai::nav::NavGrid::build(map);
+    let total = |side: usize| {
+        let base = &map.bases[side];
+        let from = base.iter().copied().sum::<Vec2>() / base.len().max(1) as f32;
+        l.goals()
+            .iter()
+            .map(|&g| {
+                let mut at = from;
+                let mut len = 0.0;
+                for p in nav.path(from, g) {
+                    len += at.distance(p);
+                    at = p;
+                }
+                len
+            })
+            .sum::<f32>()
+    };
+    let (a, b) = (total(0), total(1));
+    if (a - b).abs() / a.max(b).max(1.0) > 0.22 {
+        return Err(format!("unfair: {a:.0} m against {b:.0} m"));
+    }
+    Ok(())
 }
 
 /// Builds `spec`'s mine.
