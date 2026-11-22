@@ -429,6 +429,37 @@ impl Menu {
         self.theater = t;
     }
 
+    /// Whether the menu knows which contract it last showed (it doesn't
+    /// after a battle or a launch: the app hands it over with `remember`).
+    pub fn remembers(&self) -> bool {
+        self.seen.is_some() || self.transfer.is_some()
+    }
+
+    /// The last theater you were shown aboard a ship, `t`, from before this
+    /// menu (in the profile): a move on from it plays as the next one shows.
+    pub fn remember(&mut self, t: Theater) {
+        if !self.remembers() {
+            self.seen = Some(t);
+        }
+    }
+
+    /// The contract you've been shown all of: while a transfer plays, the
+    /// one it leaves (so one cut short, by quitting say, plays again).
+    pub fn shown(&self) -> Option<&Theater> {
+        self.transfer
+            .as_ref()
+            .map(|tr| &tr.from)
+            .or(self.seen.as_ref())
+    }
+
+    /// You've seen the theater on screen (deploying into it, say): a
+    /// transfer playing toward it needn't play again.
+    pub fn settle(&mut self) {
+        if self.transfer.take().is_some() {
+            self.seen = self.theater.clone().filter(|t| t.ship.is_some());
+        }
+    }
+
     /// `dt` seconds on: a transfer plays on while the system view shows.
     pub fn advance(&mut self, dt: f32) {
         let Some(t) = self.system() else { return };
@@ -2308,6 +2339,92 @@ mod tests {
         assert_eq!(
             order,
             [Leg::Leave(0.0), Leg::Jump(0.0), Leg::Arrive(0.0)].map(|l| std::mem::discriminant(&l))
+        );
+    }
+    /// The move onto the next contract plays however it happened (#386):
+    /// though the menu you were shown the old one on is gone (back from a
+    /// battle, or a relaunch), the profile's record of it is enough.
+    #[test]
+    fn next_contract_plays_after_a_battle_or_a_relaunch() {
+        use crate::galaxy::theater::Shown;
+        use crate::galaxy::{Galaxy, REGION, Rules, SYSTEMS};
+        let mut g = Galaxy::with_size(3, SYSTEMS / 4, REGION * 0.5, Rules::default());
+        for _ in 0..60 {
+            g.step();
+        }
+        let f = Some(Faction::Imperium.index());
+        let (t, _) = g.await_work_staying(f, 1, 400);
+        let t = t.expect("work");
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        m.set_theater(Some(t.clone()));
+        let shown = Shown::of(m.shown().unwrap()).unwrap();
+        // Saved with the profile, and the menu gone.
+        let shown: Shown = serde_json::from_str(&serde_json::to_string(&shown).unwrap()).unwrap();
+        drop(m);
+
+        // The war goes on (battles, or ticks while the game was closed)
+        // until the company's on its next contract.
+        let mut next = None;
+        for _ in 0..400 {
+            g.step();
+            let (n, _) = g.await_work_staying(f, 1, 400);
+            let n = n.expect("work");
+            if Transfer::between(&t, &n) {
+                next = Some(n);
+                break;
+            }
+        }
+        let next = next.expect("a next contract");
+
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        assert!(!m.remembers());
+        let old = g.shown(&shown, 1).expect("the old theater");
+        assert_eq!(old.system, t.system);
+        assert!(Transfer::between(&old, &next));
+        m.remember(old);
+        m.set_theater(Some(next.clone()));
+        let tr = m.transfer().expect("a transfer");
+        assert_eq!(tr.jumps(&next), t.system != next.system);
+        // Until it's played, what you've been shown is still the old one:
+        // quit now and it plays again.
+        assert_eq!(Shown::of(m.shown().unwrap()), Some(shown.clone()));
+        for _ in 0..1000 {
+            m.advance(0.01);
+        }
+        assert!(m.transfer().is_none());
+        assert_eq!(Shown::of(m.shown().unwrap()), Shown::of(&next));
+
+        // With the new one remembered, it doesn't play again.
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        m.remember(g.shown(&Shown::of(&next).unwrap(), 1).unwrap());
+        m.set_theater(Some(next.clone()));
+        assert!(m.transfer().is_none());
+    }
+
+    /// Deploying while a transfer plays: you've seen the new contract, so
+    /// it doesn't play again after the battle.
+    #[test]
+    fn deploying_settles_a_transfer() {
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        let t = theater(Faction::Imperium).unwrap();
+        m.set_theater(Some(t.clone()));
+        let mut next = t.clone();
+        next.ship.as_mut().unwrap().signed += 5;
+        m.set_theater(Some(next.clone()));
+        assert!(m.transfer().is_some());
+        assert_eq!(
+            m.shown().unwrap().ship.as_ref().unwrap().signed,
+            t.ship.as_ref().unwrap().signed
+        );
+        m.settle();
+        assert!(m.transfer().is_none());
+        assert_eq!(
+            m.shown().unwrap().ship.as_ref().unwrap().signed,
+            next.ship.as_ref().unwrap().signed
         );
     }
 }

@@ -24,7 +24,7 @@ use crate::economy::{Part, Payout};
 use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
 use crate::galaxy::save::War;
-use crate::galaxy::theater::Sortie;
+use crate::galaxy::theater::{Shown, Sortie};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -610,8 +610,23 @@ impl App {
             self.war.save();
         }
         self.profile.board(crew);
+        // The contract you were last shown, from before this menu (a battle
+        // or a launch ago): a move on from it plays now (#386).
+        if !self.menu.remembers() {
+            let g = self.war.get();
+            if let Some(old) = self.profile.shown.as_ref().and_then(|s| g.shown(s, rank)) {
+                self.menu.remember(old);
+            }
+        }
         self.menu.set_choice(choice);
         self.menu.set_theater(t);
+        self.keep_shown();
+    }
+
+    /// Keep the contract the missions screen has shown you in the profile.
+    fn keep_shown(&mut self) {
+        let shown = self.menu.shown().and_then(Shown::of);
+        self.profile.set_shown(shown);
     }
 
     /// Go with ship `id`, of those your company's split or join offered (#364).
@@ -973,6 +988,9 @@ impl App {
         self.sync_theater();
         match action {
             Some(menu::Action::Fight(o)) => {
+                // Into a battle on the contract on screen: you've seen it.
+                self.menu.settle();
+                self.keep_shown();
                 let owns = |p| self.profile.owns(p);
                 let prize = crate::galaxy::theater::prize(o.factions[1], o.site, owns);
                 self.start_sortie(o, prize);
@@ -1211,6 +1229,7 @@ impl App {
         if self.mode == Mode::Menu && !self.garage.is_open() {
             self.menu_time += dt;
             self.menu.advance(dt);
+            self.keep_shown();
             self.follow_backdrop(dt);
             self.sync_crew();
         }
