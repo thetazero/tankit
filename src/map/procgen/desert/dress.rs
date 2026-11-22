@@ -12,11 +12,17 @@ use glam::{Vec2, Vec3};
 
 use super::skeleton::*;
 use crate::ai::nav::NavGrid;
+use crate::faction::Faction;
+use crate::map::procgen::Centerpiece;
 use crate::map::procgen::mine::{line_at, smoothstep};
 use crate::map::valley::noise2;
 use crate::map::{Map, OBox, Terrain, rocks};
 use crate::render::material::Material;
 use crate::rng::Rng;
+
+mod camp;
+#[cfg(test)]
+pub use camp::site;
 
 /// The stone the rock faces are sculpted in (see `crag`), for tinting
 /// them to a desert's own.
@@ -36,8 +42,15 @@ pub enum Claim {
 /// The play ground, painted: crests pale, troughs and the washes darker,
 /// the high ground's top weathered rock with sand lying on it.
 pub fn terrain(sk: &Skeleton) -> Terrain {
+    terrain_of(sk, None)
+}
+
+/// `terrain`, with a generator's camp (`camp`) on it if there's one.
+fn terrain_of(sk: &Skeleton, camp: Option<&camp::Camp>) -> Terrain {
     let n = (sk.size / 2.0).round() as usize + 1;
-    let mut t = Terrain::from_fn(Vec2::ZERO, 2.0, n, n, |x, z| sk.ground(x, z));
+    let mut t = Terrain::from_fn(Vec2::ZERO, 2.0, n, n, |x, z| {
+        sk.ground(x, z) + camp.map_or(0.0, |c| c.heap(Vec2::new(x, z)))
+    });
     t.color = Vec3::ONE;
     t.material = Material::Sand;
     let pal = sk.palette;
@@ -61,6 +74,9 @@ pub fn terrain(sk: &Skeleton) -> Terrain {
         let rock = crate::map::crag::TOP.lerp(pal.stone, 0.6);
         c = c.lerp(rock, top);
         c = c.lerp(pal.stone_dark, smoothstep(0.45, 0.9, slope) * 0.6);
+        if let Some(camp) = camp {
+            c = camp.paint(p, c, &pal);
+        }
         c * mottle
     });
     t
@@ -68,7 +84,12 @@ pub fn terrain(sk: &Skeleton) -> Terrain {
 
 /// Dresses `map` (its ground already laid) to `sk`. Returns what each
 /// placeholder's filler claimed of `map.oboxes`.
-pub fn dress(map: &mut Map, sk: &Skeleton, seed: u64) -> Vec<(Claim, std::ops::Range<usize>)> {
+pub fn dress(
+    map: &mut Map,
+    sk: &Skeleton,
+    seed: u64,
+    piece: Centerpiece,
+) -> Vec<(Claim, std::ops::Range<usize>)> {
     let dice = |k: u64| Rng::new(seed.wrapping_mul(0x2545_F491).wrapping_add(k));
     let mut s = Sand { map, sk };
     let mut claims = Vec::new();
@@ -78,6 +99,13 @@ pub fn dress(map: &mut Map, sk: &Skeleton, seed: u64) -> Vec<(Claim, std::ops::R
         LandmarkKind::Needles => s.needles(&mut dice(2)),
         LandmarkKind::Crater => s.crater(&mut dice(2)),
         LandmarkKind::Arch => s.arch(&mut dice(2)),
+        LandmarkKind::Generator => {
+            let (owner, condition) = match piece {
+                Centerpiece::ShieldGenerator(owner, condition) => (owner, condition),
+                Centerpiece::Monument => (Faction::Imperium, Default::default()),
+            };
+            s.generator(&mut dice(2), seed, owner, condition)
+        }
     }
     claims.push((Claim::Landmark, start..s.map.oboxes.len()));
     let mut rng = dice(3);

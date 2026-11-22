@@ -182,7 +182,17 @@ pub enum LandmarkKind {
     Crater,
     /// A great natural arch spanning the open ground.
     Arch,
+    /// A shield generator (#337): the holder's standard model, its ring
+    /// `GENERATOR_RING` round, on a graded pad out to its precinct.
+    Generator,
 }
+
+/// A generator's ring wall: this far round from its middle (a city's
+/// landmark's is 21 to 26 m; any less and the Imperium's plant inside
+/// crowds its doors shut).
+pub const GENERATOR_RING: f32 = 23.0;
+/// A generator's precinct (where its pylons or obelisks stand): this far.
+pub const GENERATOR_PRECINCT: f32 = GENERATOR_RING + 16.0;
 
 /// The landmark's slot: where it stands, the open ground kept round it,
 /// how far its filler may reach.
@@ -247,7 +257,7 @@ pub struct Skeleton {
     pub lots: Vec<Lot>,
     /// Dry washes on the floor, end to end past the edge.
     pub washes: Vec<Vec<Vec2>>,
-    wind: Vec2,
+    pub wind: Vec2,
     wave: f32,
     pub dune_h: f32,
     phase: f32,
@@ -296,8 +306,9 @@ fn meander(rng: &mut Rng, via: &[Vec2], wiggle: f32) -> Vec<Vec2> {
 
 impl Skeleton {
     /// A desert of form `form` for `sides` sides, laid out from `rng` (all
-    /// but its spawns and lots: see `place_bases` and `place_lots`).
-    pub fn generate(rng: &mut Rng, form: Form) -> Skeleton {
+    /// but its spawns and lots: see `place_bases` and `place_lots`), with a
+    /// shield generator's slot for its landmark if `generator`.
+    pub fn generate(rng: &mut Rng, form: Form, generator: bool) -> Skeleton {
         let size = (rng.range(260.0, 320.0) / 2.0).round() * 2.0;
         let mid = Vec2::splat(size * 0.5);
         let kind = [
@@ -305,12 +316,23 @@ impl Skeleton {
             LandmarkKind::Crater,
             LandmarkKind::Arch,
         ][rng.index(3)];
-        let clear = 14.0;
+        // A generator wants a good deal more room: its ring, its plant
+        // round it, its precinct, the camp round that.
+        let (kind, clear, reach) = match generator {
+            true => (
+                LandmarkKind::Generator,
+                GENERATOR_PRECINCT + 4.0,
+                GENERATOR_PRECINCT + 16.0,
+            ),
+            false => (kind, 14.0, 28.0),
+        };
+        // How much further out than a natural landmark's the land is kept.
+        let extra = reach - 28.0;
         let landmark = Landmark {
             at: mid + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, size * 0.1),
             kind,
             clear,
-            reach: clear + 14.0,
+            reach,
             facing: Vec2::from_angle(rng.range(0.0, TAU)),
         };
         let mut sk = Skeleton {
@@ -370,7 +392,7 @@ impl Skeleton {
                     let k = rng.range(1.0, line.len() as f32 - 2.0) as usize;
                     let from = line[k];
                     let inside = from.min_element() > 30.0 && from.max_element() < size - 30.0;
-                    if from.distance(lm) < 55.0 || !inside {
+                    if from.distance(lm) < 55.0 + extra || !inside {
                         continue;
                     }
                     let along = (line[k + 1] - line[k - 1]).normalize_or(Vec2::X);
@@ -392,7 +414,7 @@ impl Skeleton {
                         sk.channels
                             .iter()
                             .all(|c| line_distance(&c.line, q) > c.half + 30.0)
-                    }) && line_distance(&branch, lm) > 50.0;
+                    }) && line_distance(&branch, lm) > 50.0 + extra;
                     if !apart {
                         continue;
                     }
@@ -433,7 +455,7 @@ impl Skeleton {
             Form::Escarpment => {
                 sk.dune_h = rng.range(1.2, 2.2);
                 let into = Vec2::from_angle(rng.range(0.0, TAU));
-                let at = lm + into * rng.range(55.0, 80.0);
+                let at = lm + into * (rng.range(55.0, 80.0) + extra);
                 sk.slabs.push(Slab::Beyond {
                     at,
                     into,

@@ -10,17 +10,20 @@
 //! wide, a wall of boulders round the edge and the desert going on to the
 //! horizon past it.
 //!
-//! Nothing here is anyone's: a style dressing a desert as someone's (and a
-//! shield generator in the landmark's slot, #337) comes later.
+//! Nothing here is anyone's, but for a shield generator (#337): with
+//! `Centerpiece::ShieldGenerator` the landmark's slot is a generator's, a
+//! graded pad out on the floor with room round it, and the holder's
+//! standard model goes up on it (see `dress::Sand::generator`) with a camp
+//! round it: tracks beaten out to it, sand fences, supply dumps.
 
-mod dress;
+pub mod dress;
 pub mod skeleton;
 
 use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
-use super::Spec;
+use super::{Centerpiece, Spec};
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::{Map, OBox, Terrain};
@@ -102,7 +105,8 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
     for attempt in 0..24u64 {
         let mut rng =
             Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x00DE_5E27);
-        let mut sk = Skeleton::generate(&mut rng, form);
+        let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
+        let mut sk = Skeleton::generate(&mut rng, form, generator);
         let bare = greybox_of(&sk, &spec.sides);
         if !sk.place_bases(&mut rng, spec.sides.len(), &NavGrid::build(&bare)) {
             log::debug!(
@@ -160,6 +164,7 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
         LandmarkKind::Needles => "NEEDLES",
         LandmarkKind::Crater => "CRATER",
         LandmarkKind::Arch => "ARCH",
+        LandmarkKind::Generator => "GENERATOR",
     };
     map
 }
@@ -259,7 +264,11 @@ pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Rang
     m.atmosphere = atmosphere(&mut rng, &sk.palette);
     m.planet = Some((spec.seed, sk.palette.planet));
     m.terrain = Some(dress::terrain(&sk));
-    let claims = dress::dress(&mut m, &sk, spec.seed);
+    let claims = dress::dress(&mut m, &sk, spec.seed, spec.centerpiece);
+    if sk.landmark.kind == LandmarkKind::Generator {
+        // The generator's built flush, piece against piece, as a city is.
+        m.separate_coplanar_faces();
+    }
     (m, claims)
 }
 

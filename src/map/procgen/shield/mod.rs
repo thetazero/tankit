@@ -46,8 +46,18 @@ pub const PLINTH_R: f32 = 6.5;
 
 /// The generator `owner` puts up, in the landmark's place.
 pub(super) fn build(map: &mut Map, sk: &Skeleton, rng: &mut Rng, owner: Faction) -> Vec<Drift> {
-    let lm = &sk.landmark;
-    let base = sk.ground(lm.center);
+    build_at(map, &sk.landmark, sk.ground(sk.landmark.center), rng, owner)
+}
+
+/// The generator `owner` puts up on `lm`, its floor at `base`: in a city's
+/// landmark, or on any biome's slot shaped as one (the desert's).
+pub(super) fn build_at(
+    map: &mut Map,
+    lm: &Landmark,
+    base: f32,
+    rng: &mut Rng,
+    owner: Faction,
+) -> Vec<Drift> {
     match owner {
         // The Company holds no ground; a generator it fights over is
         // someone else's, and the Imperium's is the commonest.
