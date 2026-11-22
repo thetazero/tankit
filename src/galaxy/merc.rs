@@ -42,6 +42,8 @@
 //! only): one ship works one contract at a time, so a company worth more than
 //! `Rules::merc_split` splits in two; one worth less than `Rules::merc_join`
 //! can't change a fight, so it joins the nearest company (paying the FTL).
+//! The pilot's company (`Galaxy::crew`) keeps its id when it splits, and
+//! the pilot goes with it when it joins another.
 
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
 
@@ -190,7 +192,7 @@ impl Galaxy {
     }
 
     /// Crystal to move a ship carrying `hulls` hulls `d` light years.
-    fn voyage(&self, hulls: f32, d: f32) -> f32 {
+    pub(super) fn voyage(&self, hulls: f32, d: f32) -> f32 {
         d / FTL_RANGE * (self.rules.ship_cost + hulls * self.rules.ftl_cost)
     }
 
@@ -580,6 +582,11 @@ impl Galaxy {
             let (from, to) = (co.id, self.companies[o].id);
             for d in self.debts.iter_mut().filter(|d| d.company == from) {
                 d.company = to;
+            }
+            // And you go with it.
+            if self.crew == Some(from) {
+                self.crew = Some(to);
+                self.crew_news = Some(super::theater::CrewNews::Joined { from });
             }
             gone[c] = true;
             self.books.joins += 1;
