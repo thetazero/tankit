@@ -1371,3 +1371,18 @@ fn list_mines() {
         );
     }
 }
+
+/// The ground's colors are all real numbers (a map without a dump once
+/// painted its whole ground NaN, drawn black).
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn ground_paint_is_finite() {
+    for seed in [0u64, 1, 11] {
+        let m = Map::mine(seed);
+        let t = m.terrain.as_ref().unwrap();
+        assert!(t.tint.iter().all(|c| c.is_finite()), "seed {seed}");
+    }
+}

@@ -4656,10 +4656,14 @@ impl Dig<'_> {
         self.scenery_terrain = Some(t);
         for _ in 0..40 {
             let a = rng.range(0.0, TAU);
-            let r = rng.range(190.0, 460.0);
-            let at = lay.center() + Vec2::new(a.cos(), a.sin()) * r;
-            let g = lay.scenery_ground(at.x, at.y) - 2.0;
             let w = rng.range(10.0, 30.0);
+            // Out past the arena's edge whatever its size: from 30 m clear
+            // of the wall to 300 m beyond it.
+            let out = rng.range(30.0 + w, 300.0);
+            let dir = Vec2::new(a.cos(), a.sin());
+            let edge = lay.size * 0.5 / dir.x.abs().max(dir.y.abs());
+            let at = lay.center() + dir * (edge + out);
+            let g = lay.scenery_ground(at.x, at.y) - 2.0;
             let h = rng.range(12.0, 40.0);
             let yaw = rng.range(0.0, TAU);
             let half = Vec2::new(w, w * rng.range(0.5, 0.9));
@@ -5077,7 +5081,9 @@ fn paint(lay: &Layout, seam: &[Vec2], x: f32, z: f32, h: f32, slope: f32) -> Vec
         (1.0 - smoothstep(1.0, 6.0, seam)) * smoothstep(-3.0, -6.0, h),
     );
     // The dump and the heap: pale crushed rock.
-    let waste = (heap(lay.dump, p) / lay.dump.2).max(heap(lay.heap, p) / lay.heap.2);
+    // (Over each one's height; none there if the map has no dump.)
+    let rel = |d: Heap| if d.2 > 0.0 { heap(d, p) / d.2 } else { 0.0 };
+    let waste = rel(lay.dump).max(rel(lay.heap));
     c = c.lerp(TAILINGS * mottle, smoothstep(0.05, 0.4, waste));
     // The ways up, worn into the rock and sand.
     let way = lay
