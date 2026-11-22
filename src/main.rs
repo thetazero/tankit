@@ -47,18 +47,19 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|city|shield-city|shield-site|foundry|mine>
+  --map <saltmarket|sanctum|kiln|city|shield-city|shield-site|foundry|mine|desert|shield-desert>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
                           (a generated Imperium city, all four factions), the shield city (the same
                           city, a shield generator in place of its rotunda; shield-site: the same
                           on two sides, as a theater's generator is fought on), the Foundry (a
                           wrecked Uthenn tungsten cube factory), or the mine (a generated Ithessar
-                          crystal mine: caves, rails and stacked levels)
-  --map-seed <n>          which one a generated map (city, shield-city, shield-site, mine) builds (default: the --seed)
-  --generator <faction>   (with --map shield-city or shield-site) whose shield generator stands in it:
+                          crystal mine: caves, rails and stacked levels), the desert (generated open
+                          desert) or the shield desert (the same, a shield generator in its landmark's slot)
+  --map-seed <n>          which one a generated map (city, shield-city, shield-site, mine, desert, shield-desert) builds (default: the --seed)
+  --generator <faction>   (with --map shield-city, shield-site or shield-desert) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
-  --generator-down <n>    (with --map shield-city or shield-site) the generator's down, n ticks of repair
+  --generator-down <n>    (with --map shield-city, shield-site or shield-desert) the generator's down, n ticks of repair
                           to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
@@ -241,6 +242,9 @@ impl Args {
             (true, MapKind::ShieldSite(g)) => {
                 map::procgen::greybox(&shield_spec(self.map_seed, g, true))
             }
+            (true, MapKind::ShieldDesert(g)) => {
+                map::procgen::greybox(&shield_desert_spec(self.map_seed, g))
+            }
             _ => make_map(self.map, self.map_seed),
         };
         if self.side > 0 {
@@ -278,6 +282,9 @@ pub enum MapKind {
     /// Open desert: dunes, buttes and spires of sandstone round the
     /// Needles in the middle. Generated: a different desert for each seed.
     Desert,
+    /// The desert with a shield generator in its landmark's slot (#337),
+    /// the standard model of the side that holds it, and its camp.
+    ShieldDesert(Generator),
 }
 
 /// The map `kind` names; `seed` picks which one, for a generated kind (the
@@ -293,6 +300,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::procgen::map(&mine_spec(seed)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
+        MapKind::ShieldDesert(g) => map::procgen::map(&shield_desert_spec(seed, g)),
     }
 }
 
@@ -365,6 +373,14 @@ pub fn desert_spec(seed: u64) -> map::procgen::Spec {
         look: map::procgen::Look::Imperium,
         sides: map::DEFAULT_SIDES.to_vec(),
         centerpiece: map::procgen::Centerpiece::Monument,
+    }
+}
+
+/// The desert `seed` names with generator `g` in its landmark's slot.
+pub fn shield_desert_spec(seed: u64, g: Generator) -> map::procgen::Spec {
+    map::procgen::Spec {
+        centerpiece: map::procgen::Centerpiece::ShieldGenerator(g.owner, g.condition),
+        ..desert_spec(seed)
     }
 }
 
@@ -593,9 +609,12 @@ fn parse_args() -> Result<Args> {
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
                 Some("desert") => map_kind = MapKind::Desert,
+                Some("shield-desert") => {
+                    map_kind = MapKind::ShieldDesert(Generator::up(faction::Faction::Imperium))
+                }
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, city, shield-city, shield-site, foundry, mine or desert, got {other:?}"
+                        "--map expects saltmarket, sanctum, kiln, city, shield-city, shield-site, foundry, mine, desert or shield-desert, got {other:?}"
                     )
                 }
             },
@@ -811,7 +830,9 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
-    if let MapKind::ShieldCity(g) | MapKind::ShieldSite(g) = &mut map_kind {
+    if let MapKind::ShieldCity(g) | MapKind::ShieldSite(g) | MapKind::ShieldDesert(g) =
+        &mut map_kind
+    {
         if let Some(owner) = generator {
             g.owner = owner;
         }

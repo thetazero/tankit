@@ -175,3 +175,112 @@ fn the_high_ground_is_reachable() {
         );
     }
 }
+
+/// The shield desert (#337), one seed of each form, each with a different
+/// side's generator: playable, the Hold site the generator, its light high
+/// over the middle, its doors open from the plinth out past the precinct,
+/// its camp kept to the slot.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn the_shield_desert_comes_with_any_sides_generator() {
+    use crate::map::procgen::shield;
+    for (k, owner) in Faction::ALL.into_iter().enumerate() {
+        let seed = SEEDS[k];
+        let spec = crate::shield_desert_spec(seed, crate::Generator::up(owner));
+        let what = format!("{owner:?} seed {seed} ({:?})", form_of(seed));
+        let sk = skeleton(&spec);
+        assert_eq!(sk.landmark.kind, LandmarkKind::Generator, "{what}");
+        let (m, claims) = build_with_claims(&spec);
+        assert_eq!(m.hold_name, "GENERATOR", "{what}");
+        assert_eq!(m.hold_site, Some(sk.landmark.at), "{what}");
+        if let Err(why) = crate::map::procgen::check::playable(&m) {
+            panic!("{what}: {why}");
+        }
+        assert!(
+            m.open_spots.len() > 80,
+            "{what}: {} open",
+            m.open_spots.len()
+        );
+        assert_eq!(m.vistas.len(), 2, "{what}");
+        let site = dress::site(&sk, seed);
+        assert!(site.doors.len() >= 4, "{what}: {} doors", site.doors.len());
+        let g = sk.ground(site.center.x, site.center.y);
+        assert!(
+            m.lights.iter().any(|l| {
+                Vec2::new(l.pos.x, l.pos.z).distance(site.center) < 1.0 && l.pos.y > g + 8.0
+            }),
+            "{what}: nothing lit high over the middle"
+        );
+        for &d in &site.doors {
+            let side = Vec2::new(-d.y, d.x);
+            let mut r = shield::PLINTH_R + 1.5;
+            while r < site.precinct + 4.0 {
+                for across in [-1.0f32, 0.0, 1.0] {
+                    let p = site.center + d * r + side * across;
+                    let ground = m.ground_height(p.x, p.y);
+                    let hit = m.oboxes.iter().find(|o| {
+                        let (y0, _) = o.y_range();
+                        o.solid && y0 < ground + 3.0 && o.distance(p) < 0.5
+                    });
+                    assert!(hit.is_none(), "{what}: door {d} blocked at {r}: {hit:?}");
+                    assert!(
+                        !m.crystals.iter().any(|c| c.solid
+                            && Vec2::new(c.base.x, c.base.z).distance(p) < c.radius + 1.0),
+                        "{what}: a crystal in door {d} at {r}"
+                    );
+                }
+                r += 1.5;
+            }
+        }
+        // The camp keeps to the slot, as any filler does.
+        let (_, range) = claims
+            .iter()
+            .find(|(c, _)| matches!(c, Claim::Landmark))
+            .unwrap();
+        for o in &m.oboxes[range.clone()] {
+            let (y0, _) = o.y_range();
+            if !o.solid || y0 > m.ground_height(o.center.x, o.center.y) + 3.0 {
+                continue;
+            }
+            let out = o.center.distance(sk.landmark.at) - sk.landmark.reach;
+            assert!(out < 1.0, "{what}: {out} m out of the slot: {o:?}");
+        }
+    }
+}
+
+/// Each side's ways in: a track beaten out of the generator's nearest door
+/// toward its spawns, and a door facing every side.
+#[test]
+fn the_generator_faces_every_side() {
+    for seed in SEEDS {
+        let spec = crate::shield_desert_spec(seed, crate::Generator::up(Faction::Uthenn));
+        let sk = skeleton(&spec);
+        let site = dress::site(&sk, seed);
+        for &b in &sk.bases {
+            let to = (b - site.center).normalize();
+            let best = site.doors.iter().map(|d| d.dot(to)).fold(-1.0, f32::max);
+            assert!(best > 0.8, "seed {seed}: no door toward spawns at {b}");
+        }
+        // No gap round the ring over a third of the way.
+        let mut a: Vec<f32> = site
+            .doors
+            .iter()
+            .map(|d| d.y.atan2(d.x).rem_euclid(std::f32::consts::TAU))
+            .collect();
+        a.sort_by(f32::total_cmp);
+        for k in 0..a.len() {
+            let next = if k + 1 < a.len() {
+                a[k + 1]
+            } else {
+                a[0] + std::f32::consts::TAU
+            };
+            assert!(
+                next - a[k] < std::f32::consts::TAU / 3.0 + 0.02,
+                "seed {seed}: {a:?}"
+            );
+        }
+    }
+}
