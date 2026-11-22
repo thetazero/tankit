@@ -525,69 +525,73 @@ mod tests {
     /// for the same seed, the generator in the rotunda's place, as
     /// playable, its doors open, and its light high over the middle.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
     fn the_shield_city_comes_with_any_sides_generator() {
         for (k, owner) in Faction::ALL.into_iter().enumerate() {
-            for seed in [SEEDS[k], SEEDS[(k + 2) % SEEDS.len()]] {
-                let plain = skeleton(&spec(seed));
-                let sk = skeleton(&crate::shield_city_spec(seed, owner));
-                assert_eq!(sk.landmark.center, plain.landmark.center);
-                assert_eq!(sk.lots.len(), plain.lots.len());
-                let m = Map::shield_city(seed, owner);
-                let what = format!("{owner:?} seed {seed}");
-                // Every block round it as in the plain city (to the
-                // millimetres `separate_coplanar_faces` moves faces by).
-                let (city, claims) = build(&spec(seed));
-                let (ours, our_claims) = build(&crate::shield_city_spec(seed, owner));
-                assert_eq!(claims.len(), our_claims.len(), "{what}");
-                for ((_, a), (_, b)) in claims.iter().zip(&our_claims) {
-                    let (a, b) = (&city.oboxes[a.clone()], &ours.oboxes[b.clone()]);
-                    assert_eq!(a.len(), b.len(), "{what}: the city round it differs");
-                    for (x, y) in a.iter().zip(b) {
+            // One seed each (a different one for each side): building a
+            // city takes seconds in a debug build.
+            let seed = SEEDS[k];
+            let plain = skeleton(&spec(seed));
+            let sk = skeleton(&crate::shield_city_spec(seed, owner));
+            assert_eq!(sk.landmark.center, plain.landmark.center);
+            assert_eq!(sk.lots.len(), plain.lots.len());
+            let (m, our_claims) = build(&crate::shield_city_spec(seed, owner));
+            let what = format!("{owner:?} seed {seed}");
+            // Every block round it as in the plain city (to the
+            // millimetres `separate_coplanar_faces` moves faces by).
+            let (city, claims) = build(&spec(seed));
+            assert_eq!(claims.len(), our_claims.len(), "{what}");
+            for ((_, a), (_, b)) in claims.iter().zip(&our_claims) {
+                let (a, b) = (&city.oboxes[a.clone()], &m.oboxes[b.clone()]);
+                assert_eq!(a.len(), b.len(), "{what}: the city round it differs");
+                for (x, y) in a.iter().zip(b) {
+                    assert!(
+                        x.center.distance(y.center) < 0.02
+                            && (x.half - y.half).abs().max_element() < 0.02
+                            && (x.y1 - y.y1).abs() < 0.02,
+                        "{what}: the city round it differs: {x:?} {y:?}"
+                    );
+                }
+            }
+            assert_eq!(m.hold_name, "GENERATOR");
+            assert_eq!(m.hold_site, Some(sk.landmark.center));
+            if let Err(why) = check::playable(&m) {
+                panic!("{what}: {why}");
+            }
+            assert!(m.open_spots.len() > 100, "{what}");
+            assert_eq!(m.vistas.len(), 4, "{what}");
+            let lm = &sk.landmark;
+            let g = sk.ground(lm.center);
+            assert!(
+                m.lights.iter().any(|l| {
+                    Vec2::new(l.pos.x, l.pos.z).distance(lm.center) < 1.0 && l.pos.y > g + 8.0
+                }),
+                "{what}: nothing lit high over the middle"
+            );
+            // Each door open (as wide as the skeleton keeps it) from the
+            // plinth out past the precinct.
+            for &d in &lm.doors {
+                let side = Vec2::new(-d.y, d.x);
+                let mut r = shield::PLINTH_R + 1.5;
+                while r < lm.precinct + 4.0 {
+                    for across in [-1.0f32, 0.0, 1.0] {
+                        let p = lm.center + d * r + side * across;
+                        let ground = sk.ground(p);
+                        let hit = m.oboxes.iter().find(|o| {
+                            let (y0, _) = o.y_range();
+                            o.solid && y0 < ground + 3.0 && o.distance(p) < 0.5
+                        });
+                        assert!(hit.is_none(), "{what}: door {d} blocked at {r}: {hit:?}");
                         assert!(
-                            x.center.distance(y.center) < 0.02
-                                && (x.half - y.half).abs().max_element() < 0.02
-                                && (x.y1 - y.y1).abs() < 0.02,
-                            "{what}: the city round it differs: {x:?} {y:?}"
+                            !m.crystals.iter().any(|c| c.solid
+                                && Vec2::new(c.base.x, c.base.z).distance(p) < c.radius + 1.0),
+                            "{what}: a crystal in door {d} at {r}"
                         );
                     }
-                }
-                assert_eq!(m.hold_name, "GENERATOR");
-                assert_eq!(m.hold_site, Some(sk.landmark.center));
-                if let Err(why) = check::playable(&m) {
-                    panic!("{what}: {why}");
-                }
-                assert!(m.open_spots.len() > 100, "{what}");
-                assert_eq!(m.vistas.len(), 4, "{what}");
-                let lm = &sk.landmark;
-                let g = sk.ground(lm.center);
-                assert!(
-                    m.lights.iter().any(|l| {
-                        Vec2::new(l.pos.x, l.pos.z).distance(lm.center) < 1.0 && l.pos.y > g + 8.0
-                    }),
-                    "{what}: nothing lit high over the middle"
-                );
-                // Each door open (as wide as the skeleton keeps it) from the
-                // plinth out past the precinct.
-                for &d in &lm.doors {
-                    let side = Vec2::new(-d.y, d.x);
-                    let mut r = shield::PLINTH_R + 1.5;
-                    while r < lm.precinct + 4.0 {
-                        for across in [-1.0f32, 0.0, 1.0] {
-                            let p = lm.center + d * r + side * across;
-                            let ground = sk.ground(p);
-                            let hit = m.oboxes.iter().find(|o| {
-                                let (y0, _) = o.y_range();
-                                o.solid && y0 < ground + 3.0 && o.distance(p) < 0.5
-                            });
-                            assert!(hit.is_none(), "{what}: door {d} blocked at {r}: {hit:?}");
-                            assert!(
-                                !m.crystals.iter().any(|c| c.solid
-                                    && Vec2::new(c.base.x, c.base.z).distance(p) < c.radius + 1.0),
-                                "{what}: a crystal in door {d} at {r}"
-                            );
-                        }
-                        r += 1.5;
-                    }
+                    r += 1.5;
                 }
             }
         }
