@@ -1375,7 +1375,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                         let shown = t.as_ref().and_then(galaxy::theater::Shown::of);
                         menu = menu::Menu::new();
                         menu.input(menu::Nav::Select);
-                        if let Some(old) = shown.and_then(|s| g.shown(&s, rank)) {
+                        if let Some(old) = shown.and_then(|s| g.shown(&s)) {
                             menu.remember(old);
                         }
                         menu.set_theater(next.clone());
