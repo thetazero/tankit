@@ -812,7 +812,7 @@ impl Galaxy {
         if self.commits(s, f).is_empty() {
             return None;
         }
-        let mut t = self.theater_at(s, f, rank);
+        let mut t = self.theater_at(s, f);
         // Over the world its side attacks; on a defense, the world under
         // attack (#366). Else whichever it fights over first.
         let commits = self.commits(s, f);
@@ -847,11 +847,11 @@ impl Galaxy {
     /// The theater of contract `shown`, as its system is now: what a move
     /// onto the next contract leaves (#386). None if the galaxy has no such
     /// system (a new war since).
-    pub fn shown(&self, shown: &Shown, rank: u32) -> Option<Theater> {
+    pub fn shown(&self, shown: &Shown) -> Option<Theater> {
         if shown.system >= self.systems.len() || shown.side >= SIDES {
             return None;
         }
-        let mut t = self.theater_at(shown.system, shown.side, rank);
+        let mut t = self.theater_at(shown.system, shown.side);
         t.ship = Some(Ship {
             id: shown.ship,
             name: ship_name(shown.ship),
@@ -869,8 +869,9 @@ impl Galaxy {
         Some(t)
     }
 
-    /// System `s` as side `f` sees it, with maps from the missions open at `rank`.
-    pub fn theater_at(&self, s: usize, f: usize, rank: u32) -> Theater {
+    /// System `s` as side `f` sees it. Each site's mission is its own,
+    /// whatever your rank (#437).
+    pub fn theater_at(&self, s: usize, f: usize) -> Theater {
         let sys = &self.systems[s];
         let present = self.present(s);
         let mut contested: Vec<usize> = Vec::new();
@@ -891,7 +892,7 @@ impl Galaxy {
             .filter(|&g| present[g] && self.hostile(f, g))
             .max_by_key(|&a| sys.hulls[a])
             .unwrap_or((f + 1) % SIDES);
-        let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(rank, c));
+        let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(c));
         let shield = crate::mission::for_shields();
         let sites: Vec<SiteView> = self
             .site_range(s)
@@ -1327,14 +1328,14 @@ mod tests {
         assert_eq!(Condition::down(1, 4).repaired(), Some(0.75));
     }
 
-    /// A site's map is one of the missions open at your rank, on two sides.
+    /// A site's map is a two-sided mission.
     #[test]
-    fn sites_get_open_two_sided_maps() {
+    fn sites_get_two_sided_maps() {
         let mut g = galaxy();
         let t = g.await_work_staying(None, 1, 400).0.unwrap();
         for s in &t.sites {
             let m = &MISSIONS[s.mission];
-            assert!(m.open_at(1) && m.sides.len() == 2, "{}", m.name);
+            assert_eq!(m.sides.len(), 2, "{}", m.name);
         }
     }
 
@@ -1345,7 +1346,7 @@ mod tests {
         let g = galaxy();
         let mut seen = [false; 2];
         for sys in 0..g.systems.len() {
-            for s in &g.theater_at(sys, 0, u32::MAX).sites {
+            for s in &g.theater_at(sys, 0).sites {
                 let class = world(sys, s.planet as usize).0;
                 seen[class as usize] = true;
                 let kind = s.map_kind();
@@ -1364,8 +1365,8 @@ mod tests {
     #[test]
     fn a_site_keeps_its_map() {
         let g = galaxy();
-        let a = g.theater_at(0, 0, 1).sites;
-        let b = g.theater_at(0, 0, 1).sites;
+        let a = g.theater_at(0, 0).sites;
+        let b = g.theater_at(0, 0).sites;
         for (x, y) in a.iter().zip(&b) {
             assert_eq!((x.mission, x.map_seed), (y.mission, y.map_seed));
         }

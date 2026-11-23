@@ -2591,7 +2591,7 @@ mod tests {
         let mut m = Menu::new();
         m.input(Nav::Select);
         assert!(!m.remembers());
-        let old = g.shown(&shown, 1).expect("the old theater");
+        let old = g.shown(&shown).expect("the old theater");
         assert_eq!(old.system, t.system);
         assert!(Transfer::between(&old, &next));
         m.remember(old);
@@ -2625,7 +2625,7 @@ mod tests {
         // With the new one remembered, it doesn't play again.
         let mut m = Menu::new();
         m.input(Nav::Select);
-        m.remember(g.shown(&Shown::of(&next).unwrap(), 1).unwrap());
+        m.remember(g.shown(&Shown::of(&next).unwrap()).unwrap());
         m.set_theater(Some(next.clone()));
         assert!(m.transfer().is_none());
     }

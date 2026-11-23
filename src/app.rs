@@ -616,7 +616,7 @@ impl App {
         // or a launch ago): a move on from it plays now (#386).
         if !self.menu.remembers() {
             let g = self.war.get();
-            if let Some(old) = self.profile.shown.as_ref().and_then(|s| g.shown(s, rank)) {
+            if let Some(old) = self.profile.shown.as_ref().and_then(|s| g.shown(s)) {
                 self.menu.remember(old);
             }
         }
