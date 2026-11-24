@@ -104,6 +104,7 @@ tankit [OPTIONS]
   --garage                (with --shot) open the garage at the start, previewing --hull/--turret
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
+  --learning <0-1>        (with --preview) how far learning that part (or its next tier, if owned) is
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|missions|companies|contract|settings|controls|rebind|pause|results>  (with --shot) render that screen
   --screen pause-settings (with --shot) the pause box with its settings open
@@ -228,6 +229,9 @@ pub struct Args {
     upgrade: u8,
     /// Shots: upgrade steps known (buildable) on every owned part (#451).
     known: Option<u8>,
+    /// Shots: how far learning the --preview part, or its next tier if
+    /// owned, is (0..1, #483).
+    learning: Option<f32>,
     debug: bool,
     straight: bool,
     /// Shots: the chase camera's tilt.
@@ -273,6 +277,13 @@ impl Args {
                     p.known.set(part, k.max(1) as f32);
                 }
             }
+        }
+        if let (Some(part), Some(f)) = (self.preview, self.learning) {
+            let base = match p.owns(part) {
+                true => p.known.of(part).floor().max(p.levels.of(part) as f32),
+                false => 0.0,
+            };
+            p.known.set(part, base + f.clamp(0.0, 0.99));
         }
         p
     }
@@ -635,6 +646,7 @@ fn parse_args() -> Result<Args> {
     let (mut renown, mut crystals, mut earned) = (0, 0, 0);
     let mut upgrade = 0;
     let mut known = None;
+    let mut learning = None;
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -895,6 +907,9 @@ fn parse_args() -> Result<Args> {
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--upgrade" => upgrade = args.next().context("--upgrade needs a number")?.parse()?,
             "--known" => known = Some(args.next().context("--known needs a number")?.parse()?),
+            "--learning" => {
+                learning = Some(args.next().context("--learning needs a number")?.parse()?)
+            }
             "--earned" => earned = args.next().context("--earned needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
@@ -997,6 +1012,7 @@ fn parse_args() -> Result<Args> {
         earned,
         upgrade,
         known,
+        learning,
         debug,
         straight,
         defend,
