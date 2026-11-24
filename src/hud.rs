@@ -572,34 +572,28 @@ impl Hud {
             }
         }
 
-        // Scrap popups (#444), under the kill's renown and drifting with it:
-        // what the wreck taught of each part, and how far that gets you to
-        // its next step. The newest kill's two parts, hull first.
+        // Scrap popups (#444), off to the side (#474): under your renown in
+        // the top-left stats, what the newest kill's wreck taught of each
+        // part, with a bar for how far into its next step you are. They
+        // slide in, sit, and fade, leaving the middle of the screen clear.
         if !board {
             let n = m.scrap_pops.len();
-            for (row, x) in m.scrap_pops[n.saturating_sub(2)..].iter().enumerate() {
+            let top = MARGIN + if m.crew.is_some() { 140.0 } else { 120.0 };
+            let shown = &m.scrap_pops[n.saturating_sub(2)..];
+            // The header fades with the newest kill's popups.
+            if let Some(x) = shown.last() {
                 let fade = ((SCRAP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
-                    * (x.age / 0.08).clamp(0.0, 1.0);
-                let at = Vec2::new(w * 0.5, h * 0.30 + 52.0 - x.age * 14.0 + row as f32 * 38.0);
-                let sc = &x.scrapped;
-                let mut s = TextStyle::value(13.0);
-                s.color = with_alpha(if sc.stepped() { theme::HOT } else { theme::FG }, fade);
-                emblem::tagged(
-                    &mut p,
-                    at,
-                    sc.part.maker(),
-                    &format!("+{}% {}", sc.percent(), sc.part.name()),
-                    &s,
-                    Align::Center,
-                );
+                    * (x.age / 0.12).clamp(0.0, 1.0);
                 let mut l = TextStyle::LABEL;
                 l.color = with_alpha(theme::FG, 0.8 * fade);
-                p.text(
-                    at + Vec2::new(0.0, 20.0),
-                    &scrap_progress(sc, false),
-                    &l,
-                    Align::Center,
-                );
+                p.text(Vec2::new(MARGIN, top), "SCRAP", &l, Align::Left);
+            }
+            for (row, x) in shown.iter().enumerate() {
+                let fade = ((SCRAP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
+                    * (x.age / 0.12).clamp(0.0, 1.0);
+                let slide = (1.0 - ease_out(x.age / 0.25)) * -16.0;
+                let at = Vec2::new(MARGIN + slide, top + 22.0 + row as f32 * SCRAP_POP_ROW);
+                scrap_pop(&mut p, &x.scrapped, at, fade);
             }
         }
 
@@ -615,6 +609,7 @@ impl Hud {
                 m,
                 ledger,
                 Vec2::new(w * 0.5, h * top),
+                h,
             );
             p.set_over_scene(true);
         }
@@ -699,6 +694,7 @@ fn scoreboard(
     m: &Match,
     ledger: Ledger,
     top: Vec2,
+    screen_h: f32,
 ) {
     let holding = m.contract == Contract::Hold;
     let cols = StatColumns::new(holding);
@@ -730,18 +726,25 @@ fn scoreboard(
     let blocks = sides.div_ceil(2) as f32;
     let body = blocks * block + (blocks - 1.0) * block_gap;
     let width = col * 2.0 + gap;
-    let mut y = top.y;
+    let y = top.y;
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = theme::PANEL;
     let learned = Payout::of(m).schematic.filter(|_| m.phase == Phase::Over);
     let scrap = scrap_lines(m);
-    let banner =
-        66.0 + if learned.is_some() { STOLEN_H } else { 0.0 } + scrap.len() as f32 * SCRAP_H;
+    let banner = 66.0 + if learned.is_some() { STOLEN_H } else { 0.0 };
+    // Scrap gets its own row of results under renown and crystals (#474).
+    let scrap_row = if scrap.is_empty() {
+        0.0
+    } else {
+        RESULTS_H + 18.0
+    };
     let height = if m.phase == Phase::Over {
-        24.0 + banner + 18.0 + RESULTS_H + 24.0 + BUTTON_H + 24.0
+        24.0 + banner + 18.0 + RESULTS_H + scrap_row + 24.0 + BUTTON_H + 24.0
     } else {
         28.0
     } + body;
+    // Too tall for where it was asked to start: up, as far as needed to fit.
+    let mut y = y.min(screen_h - 24.0 - height + 24.0).max(48.0);
     p.rect(
         Vec2::new(x0 - 24.0, y - 24.0),
         Vec2::new(width + 48.0, height),
@@ -782,39 +785,6 @@ fn scoreboard(
                 &s,
                 Align::Center,
             );
-        }
-        // What the round's scrap taught, part by part (#444).
-        let mut sy = y + 56.0 + if learned.is_some() { STOLEN_H } else { 0.0 };
-        for line in &scrap {
-            let mut s = TextStyle::value(11.0);
-            s.color = theme::FG;
-            match line {
-                ScrapLine::Part(sc) => {
-                    emblem::tagged(
-                        p,
-                        Vec2::new(top.x, sy),
-                        sc.part.maker(),
-                        &format!(
-                            "SCRAP +{}% {} · {}",
-                            sc.percent(),
-                            sc.part.name(),
-                            scrap_progress(sc, learned == Some(sc.part))
-                        ),
-                        &s,
-                        Align::Center,
-                    );
-                }
-                ScrapLine::More(n) => {
-                    s.color = theme::DIM;
-                    p.text(
-                        Vec2::new(top.x, sy),
-                        &format!("AND {n} MORE"),
-                        &s,
-                        Align::Center,
-                    );
-                }
-            }
-            sy += SCRAP_H;
         }
         y += banner;
     }
@@ -900,7 +870,34 @@ fn scoreboard(
             x1,
             y,
         );
-        round_over_buttons(p, hits, hover, Vec2::new(top.x, y + RESULTS_H + 24.0));
+        // What the round's scrap taught, part by part (#444), each laid out
+        // like renown: one or two under the columns above, more side by side.
+        let sy = y + RESULTS_H + 18.0;
+        let n = scrap.len();
+        for (i, line) in scrap.iter().enumerate() {
+            let (a, b) = if n <= 2 {
+                if i == 0 {
+                    (x0, x0 + col)
+                } else {
+                    (x1 - col, x1)
+                }
+            } else {
+                let gap = 32.0;
+                let cw = (width - gap * (n - 1) as f32) / n as f32;
+                let a = x0 + i as f32 * (cw + gap);
+                (a, a + cw)
+            };
+            match line {
+                ScrapLine::Part(sc) => scrap_gained(p, sc, learned == Some(sc.part), t, a, b, sy),
+                ScrapLine::More(k) => scrap_more(p, *k, a, b, sy),
+            }
+        }
+        round_over_buttons(
+            p,
+            hits,
+            hover,
+            Vec2::new(top.x, y + RESULTS_H + scrap_row + 24.0),
+        );
     }
 }
 
@@ -1146,9 +1143,8 @@ const RESULTS_DELAY: f32 = 0.6;
 const RESULTS_H: f32 = 84.0;
 /// The line under the winner saying which schematic you reverse-engineered.
 const STOLEN_H: f32 = 26.0;
-/// Each line of the round's scrap summary under it (#444), and how many parts
-/// get one before the rest fold into "AND N MORE".
-const SCRAP_H: f32 = 20.0;
+/// How many parts get a block in the round-over scrap row (#444) before the
+/// rest fold into one "+N MORE PARTS".
 const SCRAP_LINES: usize = 4;
 
 /// One line of the round-over scrap summary.
@@ -1192,6 +1188,71 @@ fn scrap_progress(sc: &Scrapped, banner: bool) -> String {
             Some((pct, next)) => format!("{pct}% TO {}", economy::level_label(next)),
             None => "FULLY KNOWN".to_string(),
         }
+    }
+}
+
+/// Each in-battle scrap popup's height, and its width (the speed bar's).
+const SCRAP_POP_ROW: f32 = 50.0;
+const SCRAP_POP_W: f32 = 200.0;
+
+/// One part's scrap popup at `at` (its top left): the part and the gain
+/// over a bar for how far into its next step it is, then where it stands.
+fn scrap_pop(p: &mut Painter, sc: &Scrapped, at: Vec2, fade: f32) {
+    let mut name = TextStyle::value(11.0);
+    name.color = with_alpha(theme::FG, fade);
+    emblem::tagged(p, at, sc.part.maker(), sc.part.name(), &name, Align::Left);
+    let mut gain = TextStyle::value(11.0);
+    gain.color = with_alpha(theme::HOT, fade);
+    p.text(
+        at + Vec2::new(SCRAP_POP_W, 0.0),
+        &format!("+{}%", sc.percent()),
+        &gain,
+        Align::Right,
+    );
+    let (from, to) = scrap_bar(sc);
+    let bar = at + Vec2::new(0.0, 18.0);
+    p.line(
+        bar,
+        bar + Vec2::new(SCRAP_POP_W, 0.0),
+        1.0,
+        with_alpha(theme::DIM, fade),
+    );
+    if from > 0.0 {
+        p.line(
+            bar,
+            bar + Vec2::new(SCRAP_POP_W * from, 0.0),
+            2.0,
+            with_alpha(theme::FG, fade),
+        );
+    }
+    p.line(
+        bar + Vec2::new(SCRAP_POP_W * from, 0.0),
+        bar + Vec2::new(SCRAP_POP_W * to, 0.0),
+        2.0,
+        with_alpha(theme::HOT, fade),
+    );
+    let mut l = TextStyle::LABEL;
+    l.color = with_alpha(if sc.stepped() { theme::HOT } else { theme::DIM }, fade);
+    p.text(
+        at + Vec2::new(SCRAP_POP_W, 24.0),
+        &scrap_progress(sc, false),
+        &l,
+        Align::Right,
+    );
+}
+
+/// A part's bar after scrap, as fractions of its current step: where it
+/// stood before (0 if this gain reached a new step), and where it stands.
+fn scrap_bar(sc: &Scrapped) -> (f32, f32) {
+    if sc.stepped() {
+        return (0.0, 1.0);
+    }
+    match sc.toward() {
+        Some(_) => {
+            let into = sc.known.fract();
+            ((into - sc.gained).max(0.0), into)
+        }
+        None => (1.0, 1.0),
     }
 }
 
@@ -1305,6 +1366,111 @@ fn renown_gained(p: &mut Painter, before: u32, gained: u32, t: f32, a: f32, b: f
         Vec2::new(b, bar_y + bar_h + 10.0),
         &format!("{} / {} TO RANK {}", now.into, now.span, now.level + 1),
         Align::Right,
+    );
+}
+
+/// One part's scrap, laid out like renown: the part, the gain big, how far
+/// into the step it's heading for, and a bar filling from where it stood.
+#[allow(clippy::too_many_arguments)]
+fn scrap_gained(p: &mut Painter, sc: &Scrapped, banner: bool, t: f32, a: f32, b: f32, y: f32) {
+    let k = ease_out(t / REP_FILL);
+    label(p, Vec2::new(a, y), "SCRAP", Align::Left);
+    let mut name = TextStyle::LABEL;
+    name.color = sc.part.maker().ui();
+    emblem::tagged(
+        p,
+        Vec2::new(b, y),
+        sc.part.maker(),
+        sc.part.name(),
+        &name,
+        Align::Right,
+    );
+
+    let mut big = TextStyle::value(22.0);
+    big.color = theme::HOT;
+    let pct = ((sc.percent() as f32 * k).round() as u32).max(1);
+    p.text(
+        Vec2::new(a, y + 18.0),
+        &format!("+{pct}%"),
+        &big,
+        Align::Left,
+    );
+    // The step it reached, or the one it's heading for, if there's room
+    // (the line under the bar says it too).
+    let whole = sc.known.floor() as u8;
+    let reached = sc.stepped() && k >= 1.0;
+    let step = if sc.stepped() {
+        Some(whole)
+    } else {
+        sc.toward().map(|(_, next)| next)
+    };
+    if let Some(step) = step.filter(|_| b - a >= 300.0) {
+        let mut tier = TextStyle::value(14.0);
+        if reached {
+            tier.color = theme::HOT;
+        }
+        let tw = p.text(
+            Vec2::new(b, y + 24.0),
+            &economy::level_label(step),
+            &tier,
+            Align::Right,
+        );
+        label(
+            p,
+            Vec2::new(b - tw - 8.0, y + 27.0),
+            if reached { "REACHED" } else { "NEXT" },
+            Align::Right,
+        );
+    }
+
+    // The bar: where it stood in neutral, this round's scrap lit.
+    let (from, to) = scrap_bar(sc);
+    let to = from + (to - from) * k;
+    let (bar_y, bar_h, width) = (y + 56.0, 6.0, b - a);
+    p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
+    if from > 0.0 {
+        p.rect(
+            Vec2::new(a, bar_y),
+            Vec2::new(width * from, bar_h),
+            theme::DIM,
+        );
+    }
+    if to > from {
+        p.rect(
+            Vec2::new(a + width * from, bar_y),
+            Vec2::new(width * (to - from), bar_h),
+            theme::HOT,
+        );
+    }
+    for q in 0..=4 {
+        let x = a + width * q as f32 / 4.0;
+        p.line(
+            Vec2::new(x, bar_y + bar_h + 2.0),
+            Vec2::new(x, bar_y + bar_h + 6.0),
+            1.0,
+            theme::FAINT,
+        );
+    }
+    label(
+        p,
+        Vec2::new(b, bar_y + bar_h + 10.0),
+        &scrap_progress(sc, banner),
+        Align::Right,
+    );
+}
+
+/// The parts the scrap row has no room for, folded into one block.
+fn scrap_more(p: &mut Painter, n: usize, a: f32, b: f32, y: f32) {
+    label(p, Vec2::new(a, y), "SCRAP", Align::Left);
+    let mut big = TextStyle::value(22.0);
+    big.color = theme::DIM;
+    p.text(Vec2::new(a, y + 18.0), &format!("+{n}"), &big, Align::Left);
+    label(p, Vec2::new(b, y + 27.0), "MORE PARTS", Align::Right);
+    p.line(
+        Vec2::new(a, y + 59.0),
+        Vec2::new(b, y + 59.0),
+        1.0,
+        theme::FAINT,
     );
 }
 

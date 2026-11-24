@@ -122,6 +122,8 @@ tankit [OPTIONS]
                           facing home, and carries it
   --learned <part>        (with --screen results) the round's wrecks make this part's schematic
                           yours, e.g. 'pelekys'
+  --scrap <part>          (with --screen results) the round's kills took apart a T2.5 wreck of this
+                          part (repeatable), e.g. 'kataphrakt'
   --site <n>              (with --screen missions|site) select the theater's nth contested site
   --transfer <jump|move|renew|warp>
                           (with --screen missions) the war goes on until your company moves onto its
@@ -173,6 +175,9 @@ pub struct Args {
     /// --learned, for results shots: a part whose schematic the round's
     /// wrecks make yours (#438).
     learned: Option<economy::Part>,
+    /// --scrap, for results shots: parts whose wrecks the round's kills
+    /// took apart, each a T2.5 wreck (#474).
+    scrap: Vec<economy::Part>,
     /// --site, for theater shots: index into the contested sites.
     site: Option<usize>,
     /// --transfer, for missions shots: the move onto the next contract,
@@ -601,6 +606,7 @@ fn parse_args() -> Result<Args> {
     let mut generator: Option<faction::Faction> = None;
     let mut generator_down = 0u8;
     let mut learned = None;
+    let mut scrap = Vec::new();
     let mut site = None;
     let mut transfer = None;
     let mut summary = false;
@@ -710,6 +716,13 @@ fn parse_args() -> Result<Args> {
                 learned = Some(
                     economy::Part::by_name(&name)
                         .with_context(|| format!("--learned: no part called {name:?}"))?,
+                );
+            }
+            "--scrap" => {
+                let name = args.next().unwrap_or_default();
+                scrap.push(
+                    economy::Part::by_name(&name)
+                        .with_context(|| format!("--scrap: no part called {name:?}"))?,
                 );
             }
             "--site" => site = Some(args.next().context("--site needs a number")?.parse()?),
@@ -944,6 +957,7 @@ fn parse_args() -> Result<Args> {
         side,
         employer,
         learned,
+        scrap,
         site,
         transfer,
         summary,
@@ -1099,6 +1113,12 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             known.set(part, 0.99);
             game.known = Some(known);
             game.fighters[0].scrap.push((part, economy::MAX_LEVEL));
+        }
+        if !args.scrap.is_empty() {
+            game.known.get_or_insert(profile.known);
+            for &part in &args.scrap {
+                game.fighters[0].scrap.push((part, 25));
+            }
         }
     }
     if args.screen == Some(Screen::Carry) {
