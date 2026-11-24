@@ -126,9 +126,9 @@ enum Item<'a> {
     /// right of the row lines up on every row.
     Acts(&'a str),
     /// Acts straight away and takes you out (of the match, or the game): set
-    /// apart under a rule, with what it does spelled out on the right, and
-    /// lit hot when selected.
-    Leaves(&'a str, &'a str),
+    /// apart under a rule, with what it does spelled out on the right when the
+    /// name alone doesn't say it, and lit hot when selected.
+    Leaves(&'a str, Option<&'a str>),
 }
 
 impl<'a> Item<'a> {
@@ -144,7 +144,7 @@ const MAIN_ITEMS: [Item<'static>; 5] = [
     Item::Opens("COMPANIES"),
     Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
-    Item::Leaves("QUIT", "CLOSES THE GAME"),
+    Item::Leaves("QUIT", None),
 ];
 
 /// Picks one toggle out of the settings.
@@ -1702,8 +1702,8 @@ const PAUSE_ITEMS: [Item<'static>; 5] = [
     Item::Opens("RESUME"),
     Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
-    Item::Leaves("EXIT TO MENU", "ENDS WITHOUT YOU"),
-    Item::Leaves("QUIT", "CLOSES THE GAME"),
+    Item::Leaves("EXIT TO MENU", Some("ENDS WITHOUT YOU")),
+    Item::Leaves("QUIT", None),
 ];
 
 pub struct Pause {
@@ -2179,16 +2179,15 @@ fn controls_rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, binds: &Binds,
     let mut s = TextStyle::value(12.0);
     s.color = if on { theme::HOT } else { theme::DIM };
     p.text(Vec2::new(at.x, y + 2.0), "RESET CONTROLS", &s, Align::Left);
-    let mut s = TextStyle::LABEL;
-    if on {
-        s.color = theme::HOT;
+    // Only say when there's nothing to reset: "to default keys" would just
+    // repeat the row's name (#456).
+    if *binds == Binds::default() {
+        let mut s = TextStyle::LABEL;
+        if on {
+            s.color = theme::HOT;
+        }
+        p.text(Vec2::new(at.x + PANEL_W, y + 5.0), "ALL DEFAULT", &s, Align::Right);
     }
-    let what = if *binds == Binds::default() {
-        "ALL DEFAULT"
-    } else {
-        "TO DEFAULT KEYS"
-    };
-    p.text(Vec2::new(at.x + PANEL_W, y + 5.0), what, &s, Align::Right);
 }
 
 /// Body text: sentence case, for everything that isn't a name or a number.
@@ -2301,7 +2300,8 @@ fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selecte
                 );
             }
             Item::Opens(_) | Item::Acts(_) => {}
-            Item::Leaves(_, what) => {
+            Item::Leaves(_, None) => {}
+            Item::Leaves(_, Some(what)) => {
                 let mut s = TextStyle::LABEL;
                 if on {
                     s.color = theme::HOT;
