@@ -1041,10 +1041,10 @@ impl Menu {
             Align::Left,
         );
         y += 34.0;
-        // Where, and (a generator) whether it's working.
+        // Where, and (a generator) the state its shield is in now (#477).
         let state = match (site.is_shield(), site.damaged()) {
-            (true, false) => " · up",
-            (true, true) => " · damaged",
+            (true, false) => " · shield up",
+            (true, true) => " · damaged, shield down",
             _ => "",
         };
         body(
@@ -1587,22 +1587,24 @@ fn numeral(p: u8) -> &'static str {
     ["I", "II", "III", "IV"][(p as usize).min(3)]
 }
 
-/// What a win at `site` does in the war (the same under every contract,
-/// #422), and how the contract it's fought with is won.
+/// How the contract at `site` is won, and what that win does in the war
+/// (the same under every contract, #422). Worded as a result of winning,
+/// never as the site's state now (#477): "it's ours" read as a claim about
+/// a site the enemy holds.
 fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
     let ours = site.owner == employer.index();
     let what = match (ours, site.is_shield()) {
-        (true, true) if site.damaged() => "it stays ours, working again",
+        (true, true) if site.damaged() => "it stays ours and works again",
         (true, _) => "it stays ours",
-        (false, true) => "it's ours, damaged",
-        (false, false) => "it's ours",
+        (false, true) => "it becomes ours, but damaged",
+        (false, false) => "it becomes ours",
     };
     let how = match contract {
         Contract::Attrition => "Win",
         Contract::Hold => "Hold it longest",
         Contract::Raid => "Bring their flag home",
     };
-    format!("{how}: {what}")
+    format!("{how} and {what}")
 }
 
 /// Your company at `at`, under the rank: its ship's name, or that you're not

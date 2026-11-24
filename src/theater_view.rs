@@ -9,7 +9,10 @@
 //! diamonds, in their holder's colour. Contested sites are ringed; the ones
 //! your side fights for this tick are ringed hot and filled. Every
 //! contested site can be clicked (it's a row of the list beside it). A
-//! damaged generator is a ghost of itself (#341, #422).
+//! damaged generator is a ghost of itself (#341, #422). A world whose
+//! shields are up wears a hex shield in their holder's colour, and every
+//! world with a generator says under its name whether its shields are up or
+//! down (#477).
 //!
 //! The scene (`SystemArt`, `scene`) and the marks over it (`draw`) share
 //! one layout and camera, worked out from the theater and the screen's
@@ -1003,6 +1006,12 @@ pub fn draw(
         for (_, s) in &sites {
             held[s.owner] += 1;
         }
+        // Its shields (#477): up while a generator on it works, in that
+        // generator's holder's colour, as a hex shield round it.
+        let shield = shield_state(&sites);
+        if let Shield::Up(f) = shield {
+            hex_shield(p, c, r + 10.0, Faction::ALL[f].ui());
+        }
 
         // Its sites on a ring round it, from the top.
         // (Closer in where the worlds are drawn small, so rings don't meet.)
@@ -1052,6 +1061,17 @@ pub fn draw(
         let mut style = TextStyle::LABEL;
         style.color = theme::DIM;
         label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
+        // Its shields, now.
+        let (text, color) = match shield {
+            Shield::Up(f) => ("SHIELDS UP", Faction::ALL[f].ui()),
+            Shield::Down => ("SHIELDS DOWN", theme::FAINT),
+            Shield::None => ("", theme::FAINT),
+        };
+        if !text.is_empty() {
+            let mut style = TextStyle::LABEL;
+            style.color = color;
+            label(p, Vec2::new(c.x, below + 40.0), text, &style);
+        }
     }
 
     // Which system you're in, and your company's hulls left, over it;
@@ -1463,6 +1483,67 @@ fn ship_glyph(p: &mut Painter, at: Vec2, k: f32) {
     );
 }
 
+/// The state a world's shields are in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shield {
+    /// No generator on it.
+    None,
+    /// Every generator on it is damaged.
+    Down,
+    /// A generator on it works: the side holding the most working ones.
+    Up(usize),
+}
+
+/// The shields of a world with these `sites`.
+fn shield_state(sites: &[(usize, &SiteView)]) -> Shield {
+    let mut up = [0usize; 4];
+    let mut any = false;
+    for (_, s) in sites.iter().filter(|(_, s)| s.is_shield()) {
+        any = true;
+        if !s.damaged() {
+            up[s.owner] += 1;
+        }
+    }
+    match (0..4).max_by_key(|&f| up[f]) {
+        Some(f) if up[f] > 0 => Shield::Up(f),
+        _ if any => Shield::Down,
+        _ => Shield::None,
+    }
+}
+
+/// A hex shield of radius `r` round `c` in `color`: a faint bubble, its
+/// edge, and a honeycomb of hairlines over it.
+fn hex_shield(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
+    p.disc(c, r, with_alpha(color, 0.03), with_alpha(color, 0.16));
+    // Pointy-topped cells, each edge drawn once (shared edges would show
+    // twice as bright), the ones wholly inside the bubble.
+    let size = (r / 4.5).clamp(5.0, 11.0);
+    let corner = |at: Vec2, k: usize| {
+        let a = PI / 6.0 + PI / 3.0 * k as f32;
+        at + Vec2::new(a.cos(), a.sin()) * size
+    };
+    let (dx, dy) = (3f32.sqrt() * size, 1.5 * size);
+    let n = (r / dy).ceil() as i32 + 1;
+    let mut seen = std::collections::HashSet::new();
+    let line = with_alpha(color, 0.55);
+    for row in -n..=n {
+        for col in -n..=n {
+            let at = c + Vec2::new(dx * (col as f32 + 0.5 * (row & 1) as f32), dy * row as f32);
+            for k in 0..6 {
+                let (a, b) = (corner(at, k), corner(at, k + 1));
+                if (a - c).length() > r || (b - c).length() > r {
+                    continue;
+                }
+                let mid = (a + b) * 0.5;
+                if seen.insert(((mid.x * 4.0).round() as i32, (mid.y * 4.0).round() as i32)) {
+                    p.line(a, b, 1.0, line);
+                }
+            }
+        }
+    }
+    ring(p, c, r, 1.6, with_alpha(color, 0.85));
+}
+
 /// What kind of site it is, as a small glyph in `color` at `at`.
 fn glyph(p: &mut Painter, at: Vec2, s: &SiteView, color: Rgba) {
     if s.is_shield() {
@@ -1622,6 +1703,20 @@ mod tests {
     }
 
     /// The parked heading is the one the ship always had: bow toward the star.
+    #[test]
+    fn a_world_is_shielded_while_a_generator_on_it_works() {
+        let site = |owner: usize, damaged: bool| SiteView {
+            owner,
+            kind: crate::galaxy::SiteKind::Shield { damaged },
+            ..SiteView::example(true)
+        };
+        let mine = SiteView::example(false);
+        let (a, b, c) = (site(2, true), site(1, false), site(3, true));
+        assert_eq!(shield_state(&[(0, &mine)]), Shield::None);
+        assert_eq!(shield_state(&[(0, &a), (1, &c), (2, &mine)]), Shield::Down);
+        assert_eq!(shield_state(&[(0, &a), (1, &b), (2, &mine)]), Shield::Up(1));
+    }
+
     #[test]
     fn parked_yaw_is_bow_to_the_star() {
         let want = Quat::from_rotation_y(PI + 0.45);
