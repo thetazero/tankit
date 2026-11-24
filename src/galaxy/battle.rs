@@ -233,7 +233,6 @@ fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
         m.set_companies(team, named);
     }
     kit(g, m, &mut b);
-    m.place = Some(system_name(b.system));
     log::info!(
         "battle in {} (galaxy tick {}): {}",
         system_name(b.system),

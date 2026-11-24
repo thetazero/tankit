@@ -914,9 +914,8 @@ pub struct Match {
     /// You've left the match before its end (#427): a bot has your seat,
     /// and the match plays out without you.
     left: bool,
-    /// Where in the galaxy it's fought, for the HUD.
-    pub place: Option<String>,
-    /// Your company's name ("IRON TITHE"), for the HUD (#350).
+    /// Your company's name ("IRON TITHE"): its mercs' name on the
+    /// scoreboard when there's no galaxy naming them (#350).
     pub crew: Option<String>,
     /// Pilots who've left their seat for good: a merc whose seat went over
     /// to the realm when the company's hulls ran out (#389).
@@ -1047,7 +1046,6 @@ impl Match {
             crew_team: None,
             crew_out: false,
             left: false,
-            place: None,
             crew: None,
             retired: Vec::new(),
             took_seat: Vec::new(),
