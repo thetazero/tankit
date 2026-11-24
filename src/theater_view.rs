@@ -21,6 +21,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
+use crate::galaxy::Moves;
 use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, planet_name};
 use crate::garage::{PANEL_W, PANEL_X};
 use crate::menu::Hit;
@@ -978,7 +979,58 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
             p.text(Vec2::new(at.x + c, y), text, &num, Align::Right);
         }
         y += 22.0;
+        // How its hulls came and went (#445): so a count gone from 5 to
+        // 55 since the battle says why.
+        let mut style = TextStyle::LABEL;
+        style.color = theme::DIM;
+        let width = cols[2] + 40.0 - 22.0;
+        for line in wrap(&moves(&t.moves[f]), |l| measure(l, &style) <= width) {
+            p.text(Vec2::new(at.x + 22.0, y - 4.0), &line, &style, Align::Left);
+            y += 16.0;
+        }
     }
+    if t.moves.iter().any(|m| !m.is_empty()) {
+        p.text(
+            Vec2::new(at.x, y + 2.0),
+            "CHANGES SINCE YOUR LAST BATTLE",
+            &head,
+            Align::Left,
+        );
+    }
+}
+
+/// A side's hulls in and out of the system (#445): what was lost, what
+/// came in (sent by its realm, or a company's hired), what its yards
+/// built, then what wore out or went. None if nothing moved.
+pub fn moves(m: &Moves) -> Vec<String> {
+    [
+        (m.lost, "-", "lost"),
+        (m.arrived, "+", "arrived"),
+        (m.hired, "+", "mercs hired"),
+        (m.built, "+", "built"),
+        (m.worn, "-", "worn out"),
+        (m.left, "-", "sent off"),
+        (m.released, "-", "mercs left"),
+    ]
+    .iter()
+    .filter(|(n, ..)| *n > 0)
+    .map(|(n, sign, what)| format!("{sign}{n} {what}"))
+    .collect()
+}
+
+/// `items` joined with dots, a line as long as `fits` allows (never less
+/// than one item).
+fn wrap(items: &[String], fits: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for item in items {
+        match lines.last_mut() {
+            Some(line) if fits(&format!("{line} · {item}")) => {
+                *line = format!("{line} · {item}");
+            }
+            _ => lines.push(item.clone()),
+        }
+    }
+    lines
 }
 
 /// Your company's hulls left on its contract, right-aligned at `at`: a
@@ -1417,11 +1469,37 @@ mod tests {
             built: [0.0; 4],
             held: [0; 4],
             tiers: [0; 4],
+            moves: Default::default(),
             sites: Vec::new(),
             contested: Vec::new(),
             tick: 0,
             ship: None,
         }
+    }
+
+    /// A side's hulls in and out read as what happened to them, losses
+    /// and arrivals first, wrapped to fit (#445).
+    #[test]
+    fn moves_say_where_hulls_came_from() {
+        let m = Moves {
+            lost: 40,
+            arrived: 50,
+            hired: 12,
+            worn: 1,
+            ..Moves::default()
+        };
+        let items = moves(&m);
+        assert_eq!(
+            items,
+            ["-40 lost", "+50 arrived", "+12 mercs hired", "-1 worn out"]
+        );
+        assert!(moves(&Moves::default()).is_empty());
+        let lines = wrap(&items, |l| l.len() <= 24);
+        assert_eq!(
+            lines,
+            ["-40 lost · +50 arrived", "+12 mercs hired", "-1 worn out"]
+        );
+        assert_eq!(wrap(&items, |_| true).len(), 1);
     }
 
     /// The star and every world, with room for their rings of sites, land

@@ -54,6 +54,9 @@ pub struct Theater {
     pub held: [u8; SIDES],
     /// Each side's gear tier here (#438): its realm's, in upgrade steps.
     pub tiers: [u8; SIDES],
+    /// How each side's hulls here came and went since your last battle
+    /// began (#445; `Galaxy::moves`): reinforcements, mercs, wear.
+    pub moves: [super::Moves; SIDES],
     /// Every site in the system, in the galaxy's order.
     pub sites: Vec<SiteView>,
     /// The contested sites, as indices into `sites`: the rows of the list.
@@ -959,6 +962,7 @@ impl Galaxy {
                 super::realm::NONE => 0,
                 r => self.realms[r as usize].tier,
             }),
+            moves: self.moves[s],
             sites,
             contested,
             tick: self.tick,
