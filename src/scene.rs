@@ -269,20 +269,78 @@ fn worn_box(o: &crate::map::OBox, m: &mut MeshData) {
         m.facet([bot(a), bot(b), top(b, db)], inside, c);
         m.facet([bot(a), top(b, db), top(a, da)], inside, c);
     }
-    // Top: a fan from a center point at the mean height.
-    let mean = ring.iter().map(|p| p.1).sum::<f32>() / n as f32;
-    let center_top = Vec3::new(0.0, hy - mean * if o.broken { 0.8 } else { 1.0 }, 0.0);
+    // Top and bottom: the ring cut into triangles straight across the box,
+    // not fanned from its center: on a long block a fan is a starburst of
+    // slivers, each tipped its own way by the jagged edge (#443).
     let tc = if o.broken { raw } else { top_c };
-    for i in 0..n {
-        let (a, da, _) = ring[i];
-        let (b, db, _) = ring[(i + 1) % n];
+    let footprint: Vec<Vec2> = ring.iter().map(|p| p.0).collect();
+    for [i, j, k] in triangulate(&footprint) {
+        let (a, b, c) = (ring[i], ring[j], ring[k]);
         m.facet(
-            [center_top, top(a, da), top(b, db)],
+            [top(a.0, a.1), top(b.0, b.1), top(c.0, c.1)],
             Vec3::new(0.0, -hy, 0.0),
             tc,
         );
-        m.facet([Vec3::new(0.0, -hy, 0.0), bot(b), bot(a)], Vec3::ZERO, face);
+        m.facet([bot(a.0), bot(b.0), bot(c.0)], Vec3::ZERO, face);
     }
+}
+
+/// A simple polygon cut into triangles (indices into `poly`), every cut as
+/// short as it can be: ears clipped shortest diagonal first. On a long strip
+/// that cuts straight across it, so no triangle runs the length of it.
+fn triangulate(poly: &[Vec2]) -> Vec<[usize; 3]> {
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a - o).perp_dot(b - o);
+    // Counter-clockwise, so a convex corner turns left.
+    let area: f32 = (0..poly.len())
+        .map(|i| poly[i].perp_dot(poly[(i + 1) % poly.len()]))
+        .sum();
+    let turn = if area < 0.0 { -1.0 } else { 1.0 };
+    let mut left: Vec<usize> = (0..poly.len()).collect();
+    let mut tris = Vec::with_capacity(poly.len().saturating_sub(2));
+    // The ear at `left[k]`, as the length of the cut that clips it, if it's one.
+    let ear = |left: &[usize], k: usize| -> Option<f32> {
+        let n = left.len();
+        let (u, v, w) = (
+            poly[left[(k + n - 1) % n]],
+            poly[left[k]],
+            poly[left[(k + 1) % n]],
+        );
+        let size = (u - v).abs().max((w - v).abs()).max_element().max(1e-3);
+        if cross(u, v, w) * turn <= 1e-6 * size * size {
+            return None;
+        }
+        // No other corner in it or on its edges.
+        let eps = -1e-5 * size * size;
+        let blocked = left.iter().any(|&q| {
+            let p = poly[q];
+            p != u
+                && p != v
+                && p != w
+                && cross(u, v, p) * turn >= eps
+                && cross(v, w, p) * turn >= eps
+                && cross(w, u, p) * turn >= eps
+        });
+        (!blocked).then(|| u.distance(w))
+    };
+    while left.len() > 3 {
+        let n = left.len();
+        let best = (0..n)
+            .filter_map(|k| ear(&left, k).map(|d| (k, d)))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        // Numerically stuck (it never should be): fan what's left.
+        let Some((k, _)) = best else {
+            for k in 1..n - 1 {
+                tris.push([left[0], left[k], left[k + 1]]);
+            }
+            return tris;
+        };
+        tris.push([left[(k + n - 1) % n], left[k], left[(k + 1) % n]]);
+        left.remove(k);
+    }
+    if left.len() == 3 {
+        tris.push([left[0], left[1], left[2]]);
+    }
+    tris
 }
 
 /// Drop zones where repair crates come down, glowing in the crate cross's
@@ -815,6 +873,80 @@ mod tests {
                 fights.len(),
                 report.join("\n")
             );
+        }
+    }
+
+    /// A worn or broken box's top, from above: its triangles (xz) and the
+    /// footprint ring they should tile.
+    fn worn_top(o: &crate::map::OBox) -> Vec<[Vec2; 3]> {
+        let mut m = MeshData::default();
+        worn_box(o, &mut m);
+        let hy = (o.y1 - o.y0) * 0.5;
+        m.indices
+            .chunks(3)
+            .map(|t| [0, 1, 2].map(|k| Vec3::from(m.verts[t[k] as usize].pos)))
+            // Every side and bottom triangle has a corner on the base.
+            .filter(|t| t.iter().all(|p| p.y > -hy * 0.99))
+            .map(|t| t.map(|p| Vec2::new(p.x, p.z)))
+            .collect()
+    }
+
+    fn worn_boxes() -> Vec<crate::map::OBox> {
+        let mut out = Vec::new();
+        for k in 0..200 {
+            let f = |s: u32| Hash::of(Vec3::new(k as f32, s as f32, 7.0)).f();
+            out.push(crate::map::OBox {
+                center: Vec2::new(k as f32 * 13.0, f(1) * 50.0),
+                half: Vec2::new(0.2 + f(2) * 6.0, 0.2 + f(3) * 1.5),
+                y0: 0.0,
+                y1: 0.5 + f(4) * 4.0,
+                chip: f(5) * 0.4,
+                broken: f(6) < 0.7,
+                ..Default::default()
+            });
+        }
+        out
+    }
+
+    /// The top tiles the footprint: no triangle flipped, none overlapping,
+    /// nothing left uncovered (#443).
+    #[test]
+    fn worn_tops_tile_their_footprint() {
+        for o in worn_boxes() {
+            let tris = worn_top(&o);
+            let signed = |t: &[Vec2; 3]| (t[1] - t[0]).perp_dot(t[2] - t[0]) * 0.5;
+            let pos: f32 = tris.iter().map(signed).filter(|a| *a > 0.0).sum();
+            let neg: f32 = -tris.iter().map(signed).filter(|a| *a < 0.0).sum::<f32>();
+            // All one way round (the other way would be a fold), and their area
+            // what the box's minus its chips: at most a few chips' worth less.
+            let (one, other) = (pos.max(neg), pos.min(neg));
+            let full = o.half.x * o.half.y * 4.0;
+            assert!(other < 1e-4 * full, "{o:?}: folded, {other} against {one}");
+            assert!(
+                one <= full * 1.0001 && one >= full - 4.0 * o.chip * o.chip * 1.5 - 1e-3,
+                "{o:?}: covers {one} of {full}"
+            );
+        }
+    }
+
+    /// On a long broken block no top triangle runs along it: a fan from the
+    /// middle made a starburst of slivers there (#443).
+    #[test]
+    fn long_broken_tops_have_no_slivers() {
+        for o in worn_boxes() {
+            let (long, short) = (o.half.max_element() * 2.0, o.half.min_element() * 2.0);
+            if !o.broken || long < short * 3.0 {
+                continue;
+            }
+            for t in worn_top(&o) {
+                let edge = (0..3)
+                    .map(|i| t[i].distance(t[(i + 1) % 3]))
+                    .fold(0.0, f32::max);
+                assert!(
+                    edge < short + 1.0,
+                    "{o:?}: a {edge:.2} m edge on a {short:.2} m wide top"
+                );
+            }
         }
     }
 
