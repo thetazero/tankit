@@ -1006,11 +1006,14 @@ pub fn draw(
         for (_, s) in &sites {
             held[s.owner] += 1;
         }
-        // Its shields (#477): up while a generator on it works, in that
-        // generator's holder's colour, as a hex shield round it.
+        // Its shields (#477): up while a generator on it works, a hex
+        // shield round it in each holder's colour of a working one, nested
+        // when more than one side's is up (each keeps the others out).
         let shield = shield_state(&sites);
-        if let Shield::Up(f) = shield {
-            hex_shield(p, c, r + 10.0, Faction::ALL[f].ui());
+        if let Shield::Up(up) = shield {
+            for (k, f) in (0..4).filter(|&f| up[f]).enumerate() {
+                hex_shield(p, c, r + 10.0 - 5.0 * k as f32, Faction::ALL[f].ui());
+            }
         }
 
         // Its sites on a ring round it, from the top.
@@ -1061,16 +1064,34 @@ pub fn draw(
         let mut style = TextStyle::LABEL;
         style.color = theme::DIM;
         label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
-        // Its shields, now.
-        let (text, color) = match shield {
-            Shield::Up(f) => ("SHIELDS UP", Faction::ALL[f].ui()),
-            Shield::Down => ("SHIELDS DOWN", theme::FAINT),
-            Shield::None => ("", theme::FAINT),
+        // Its shields, now: whose are up, a line each when more than one
+        // side's are, so a tie doesn't read as one side's alone.
+        let lines: Vec<(String, Rgba)> = match shield {
+            Shield::Up(up) => {
+                let sides: Vec<usize> = (0..4).filter(|&f| up[f]).collect();
+                sides
+                    .iter()
+                    .map(|&f| {
+                        let text = match sides.len() {
+                            1 => "SHIELDS UP".to_string(),
+                            _ => format!("{} SHIELDS UP", Faction::ALL[f].name()),
+                        };
+                        (text, Faction::ALL[f].ui())
+                    })
+                    .collect()
+            }
+            Shield::Down => vec![("SHIELDS DOWN".to_string(), theme::FAINT)],
+            Shield::None => Vec::new(),
         };
-        if !text.is_empty() {
+        for (k, (text, color)) in lines.iter().enumerate() {
             let mut style = TextStyle::LABEL;
-            style.color = color;
-            label(p, Vec2::new(c.x, below + 40.0), text, &style);
+            style.color = *color;
+            label(
+                p,
+                Vec2::new(c.x, below + 40.0 + 18.0 * k as f32),
+                text,
+                &style,
+            );
         }
     }
 
@@ -1490,8 +1511,8 @@ enum Shield {
     None,
     /// Every generator on it is damaged.
     Down,
-    /// A generator on it works: the side holding the most working ones.
-    Up(usize),
+    /// A generator on it works: which sides hold a working one.
+    Up([bool; 4]),
 }
 
 /// The shields of a world with these `sites`.
@@ -1504,10 +1525,10 @@ fn shield_state(sites: &[(usize, &SiteView)]) -> Shield {
             up[s.owner] += 1;
         }
     }
-    match (0..4).max_by_key(|&f| up[f]) {
-        Some(f) if up[f] > 0 => Shield::Up(f),
-        _ if any => Shield::Down,
-        _ => Shield::None,
+    match up.iter().any(|&n| n > 0) {
+        true => Shield::Up(up.map(|n| n > 0)),
+        false if any => Shield::Down,
+        false => Shield::None,
     }
 }
 
@@ -1714,7 +1735,11 @@ mod tests {
         let (a, b, c) = (site(2, true), site(1, false), site(3, true));
         assert_eq!(shield_state(&[(0, &mine)]), Shield::None);
         assert_eq!(shield_state(&[(0, &a), (1, &c), (2, &mine)]), Shield::Down);
-        assert_eq!(shield_state(&[(0, &a), (1, &b), (2, &mine)]), Shield::Up(1));
+        let up = |sides: &[usize]| Shield::Up(std::array::from_fn(|f| sides.contains(&f)));
+        assert_eq!(shield_state(&[(0, &a), (1, &b), (2, &mine)]), up(&[1]));
+        // Each side holding a working one: both are up, not just one.
+        let d = site(0, false);
+        assert_eq!(shield_state(&[(0, &d), (1, &b), (2, &mine)]), up(&[0, 1]));
     }
 
     #[test]
