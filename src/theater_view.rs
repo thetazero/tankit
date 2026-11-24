@@ -1182,7 +1182,7 @@ fn wrap(items: &[String], fits: impl Fn(&str) -> bool) -> Vec<String> {
 
 /// Your company's hulls left on its contract, right-aligned at `at`: a
 /// pip a hull, yours alone lit first (#385); boxes of 10 and 100 once
-/// there are many (#450).
+/// there are many (#450), styled rather than shaped apart (#473).
 fn hulls(p: &mut Painter, ship: &Ship, at: Vec2) {
     let amber = Faction::Company.ui();
     let total = ship.committed;
@@ -1193,7 +1193,7 @@ fn hulls(p: &mut Painter, ship: &Ship, at: Vec2) {
     mine.color = amber;
     let (left, right) = (format!("YOURS {yours}"), format!("COMPANY {total}"));
     let (cell, gap) = (Vec2::new(9.0, 12.0), 3.0);
-    let w = hull_boxes_size(&hull_boxes(total, yours, cell, gap))
+    let w = hull_boxes_size(&hull_boxes(total, yours, cell, gap), cell)
         .x
         .max(measure(&left, &mine) + 24.0 + measure(&right, &company));
     let x0 = at.x - w;
