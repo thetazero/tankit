@@ -31,17 +31,19 @@
 //!    Stored hulls wear out slowly, so an idle world's garrison levels off.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
-//!    Each side in a fight attacks one site there (`target`), and wins it, a
-//!    chance by its share of the fire; else its holder does. A battle is a
+//!    Each side in a fight attacks every site there it can at once
+//!    (`targets`, #460): every enemy shield generator up, and every enemy
+//!    site on a planet whose generators are down. It wins each, a chance by
+//!    its share of the fire there; else its holder does. A battle is a
 //!    battle, played or not (#422): its winner takes the site from its holder
 //!    (a generator taken is damaged), or, the holder winning, a damaged
 //!    generator is working again (`Galaxy::win`); a draw is the holder's. A
 //!    damaged generator nobody fights over is working again the next tick.
-//!    An attacker going for a planet under an enemy's working shield fights
-//!    a seat short (`Rules::seats`, #426): its fire is cut by one seat in
-//!    that many, the same seat a played battle closes; that's all shields
-//!    do, so it goes for the planet's generators first, to get out from
-//!    under them. Only so many of a side's hulls fire a tick however big it
+//!    An attacker fighting for a site under an enemy's working shield fights
+//!    a seat short there (`Rules::seats`, #426): its fire is cut by one seat
+//!    in that many, the same seat a played battle closes. A planet's other
+//!    sites can't be attacked while its generators are up, so it goes for
+//!    them first, all of them together, to get out from under them. Only so many of a side's hulls fire a tick however big it
 //!    is (`Rules::frontage`), so a world holds out for many ticks.
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
@@ -908,24 +910,36 @@ impl Galaxy {
     }
 
     /// Each side's fire in system `s` this tick: its strength, from no more
-    /// of its hulls than the frontage, and seats short going for a planet
-    /// under an enemy's shield.
+    /// of its hulls than the frontage, and seats short for the share of its
+    /// attacks it makes under an enemy's shield (spread evenly over them).
     fn fire(&self, s: usize) -> [f32; SIDES] {
+        let mut fire = self.open_fire(s);
+        let short = self.shield_cut();
+        for f in 0..SIDES {
+            fire[f] *= 1.0 - (1.0 - short) * self.shielded_share(s, f);
+        }
+        fire
+    }
+
+    /// Each side's fire in system `s` with no shield in its way: its
+    /// strength, from no more of its hulls than the frontage.
+    fn open_fire(&self, s: usize) -> [f32; SIDES] {
         let hulls = self.systems[s].hulls;
         let mut fire = self.strength(s);
-        let seats = self.rules.seats.max(1.0);
-        let short = (seats - SHIELD_SEATS as f32).max(0.0) / seats;
         for f in 0..SIDES {
             if hulls[f] as f32 > self.rules.frontage {
                 fire[f] *= self.rules.frontage / hulls[f] as f32;
-            }
-            if self.shielded(s, f) {
-                fire[f] *= short;
             }
             // Better guns hit harder (#438).
             fire[f] *= crate::economy::damage_factor(self.gear(s, f));
         }
         fire
+    }
+
+    /// What's left of a side's fire under an enemy's shield: a seat short.
+    fn shield_cut(&self) -> f32 {
+        let seats = self.rules.seats.max(1.0);
+        (seats - SHIELD_SEATS as f32).max(0.0) / seats
     }
 
     /// Side `f`'s gear level in system `s` (#438): its realm's tier for the
@@ -958,11 +972,27 @@ impl Galaxy {
         all.round() as u8
     }
 
-    /// Side `f` is attacking under an enemy's shield in system `s`: the
-    /// planet it's going for (`target`) has a generator of an enemy's up.
+    /// Side `f` is attacking under an enemy's shield in system `s`: some
+    /// site it's going for (`targets`) is on a planet with a generator of
+    /// an enemy's up.
+    #[cfg(test)]
     pub fn shielded(&self, s: usize, f: usize) -> bool {
-        self.target(s, f)
-            .is_some_and(|i| self.shields_up(s, f)[self.sites[i].planet as usize] > 0)
+        self.shielded_share(s, f) > 0.0
+    }
+
+    /// Of the sites side `f` goes for in system `s`, the share under an
+    /// enemy's shield.
+    fn shielded_share(&self, s: usize, f: usize) -> f32 {
+        let targets = self.targets(s, f);
+        if targets.is_empty() {
+            return 0.0;
+        }
+        let up = self.shields_up(s, f);
+        let under = targets
+            .iter()
+            .filter(|&&i| up[self.sites[i].planet as usize] > 0)
+            .count();
+        under as f32 / targets.len() as f32
     }
 
     /// Realm `r`'s offensive (if `r` is a realm, on one) takes in `pos`.
@@ -980,10 +1010,12 @@ impl Galaxy {
     }
 
     /// The tick's battles (#422). In every system at war, each side
-    /// fighting attacks the site it goes for (`target`); the holder wins
-    /// unless the attacker does, a chance by its share of the fire. The
-    /// played battle, if any, is its system's battle between its sides:
-    /// their losses and its winner come from the match instead. Every side's
+    /// fighting attacks every site it goes for (`targets`, #460), all at
+    /// once; at each, the holder wins unless the attacker does, a chance by
+    /// its share of the fire there (a seat short under a shield). The
+    /// played battle, if any, is one of its system's battles between its
+    /// sides: their losses and its site's winner come from the match
+    /// instead; their other sites there go as the galaxy's do. Every side's
     /// losses come off its hulls the one way (`lose`), and every battle's
     /// winner gets the one thing a win gets (`win`). A damaged generator
     /// nobody fought over is working again.
@@ -1010,15 +1042,25 @@ impl Galaxy {
             // The played battle's sides fight only it, here, this tick.
             let in_match = |f: usize| here.is_some_and(|p| p.battle.sides.contains(&f));
             // Each side's attack, picked before anything changes hands.
-            let targets: [Option<usize>; SIDES] = std::array::from_fn(|f| {
-                (war && present[f] && fighting(f))
-                    .then(|| self.target(s, f))
-                    .flatten()
+            let targets: [Vec<usize>; SIDES] = std::array::from_fn(|f| {
+                if war && present[f] && fighting(f) {
+                    self.targets(s, f)
+                } else {
+                    Vec::new()
+                }
             });
-            let mut fire = if war { self.fire(s) } else { [0.0; SIDES] };
-            for x in &mut fire {
-                *x *= self.rng.range(0.75, 1.25);
+            let shields: [[u8; 4]; SIDES] = std::array::from_fn(|f| self.shields_up(s, f));
+            // Each side's fire with no shield in its way, then as it fights.
+            let (mut open, mut fire) = match war {
+                true => (self.open_fire(s), self.fire(s)),
+                false => ([0.0; SIDES], [0.0; SIDES]),
+            };
+            for f in 0..SIDES {
+                let luck = self.rng.range(0.75, 1.25);
+                open[f] *= luck;
+                fire[f] *= luck;
             }
+            let cut = self.shield_cut();
             if war {
                 let mut losses = [0.0; SIDES];
                 // Who does the killing: each side's share of each other's losses.
@@ -1054,19 +1096,26 @@ impl Galaxy {
             if let Some(p) = here {
                 settled = Some(self.settle(p));
             }
-            for f in 0..SIDES {
-                let Some(t) = targets[f] else { continue };
-                let holder = self.sites[t].owner as usize;
-                if holder == f || (in_match(f) && in_match(holder)) {
-                    continue;
-                }
-                let against: f32 = (0..SIDES)
+            let played_site = here.and_then(|p| p.battle.site);
+            let against = |f: usize| -> f32 {
+                (0..SIDES)
                     .filter(|&g| present[g] && g != f)
                     .map(|g| fire[g])
-                    .sum();
-                let odds = fire[f] / (fire[f] + against).max(1e-3);
-                let won = self.rng.chance(self.rules.take * odds);
-                self.win(s, t, if won { f } else { holder });
+                    .sum()
+            };
+            for f in 0..SIDES {
+                let against = against(f);
+                for &t in &targets[f] {
+                    let holder = self.sites[t].owner as usize;
+                    if holder == f || (in_match(f) && in_match(holder) && played_site == Some(t)) {
+                        continue;
+                    }
+                    let under = shields[f][self.sites[t].planet as usize] > 0;
+                    let mine = open[f] * if under { cut } else { 1.0 };
+                    let odds = mine / (mine + against).max(1e-3);
+                    let won = self.rng.chance(self.rules.take * odds);
+                    self.win(s, t, if won { f } else { holder });
+                }
             }
         }
         // Nobody fought over them: repaired.
@@ -1249,7 +1298,9 @@ impl Galaxy {
     /// repaired with everyone's nobody fought over.)
     fn hold(&mut self, s: usize, f: usize) {
         for _ in 0..self.rules.blitz {
-            let Some(i) = self.target(s, f) else { return };
+            let Some(&i) = self.targets(s, f).first() else {
+                return;
+            };
             self.win(s, i, f);
         }
     }

@@ -21,10 +21,10 @@ fn a_step_ends_at_war() {
     }
 }
 
-/// An attacker going for a planet under an enemy's shield fights a seat
-/// short (#426): its fire is cut by one seat in `Rules::seats`. The
-/// defender never is, and with the planet's generators down, nor is the
-/// attacker.
+/// An attacker fighting for sites under an enemy's shield fights a seat
+/// short there (#426): its fire is cut by one seat in `Rules::seats`, for
+/// the share of its attacks under the shield (#460). The defender never is,
+/// and with the generators down, nor is the attacker.
 #[test]
 fn shields_cost_the_attacker_a_seat() {
     let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
@@ -38,7 +38,10 @@ fn shields_cost_the_attacker_a_seat() {
     let fire = g.fire(s);
     assert!(g.shielded(s, other) && !g.shielded(s, owner));
     let short = (g.rules.seats - SHIELD_SEATS as f32) / g.rules.seats;
-    assert!((fire[other] - strength[other] * short).abs() < 1e-3);
+    let share = g.shielded_share(s, other);
+    assert!(share > 0.0);
+    let want = strength[other] * (1.0 - (1.0 - short) * share);
+    assert!((fire[other] - want).abs() < 1e-3);
     assert_eq!(fire[owner], strength[owner], "the defender is never short");
     // Every generator down: no shield, no seat lost.
     let (a, b) = g.systems[s].sites;
@@ -52,7 +55,7 @@ fn shields_cost_the_attacker_a_seat() {
 }
 
 /// Shields don't stand in the way (#426): an attacker's win takes a site
-/// at once, the planet's generators up or not, and goes for an up one first.
+/// at once, the planet's generators up or not, and goes for up ones first.
 #[test]
 fn a_win_takes_a_site_under_shields() {
     let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
@@ -60,8 +63,11 @@ fn a_win_takes_a_site_under_shields() {
     let owner = g.systems[s].owner();
     let other = (owner + 1) % SIDES;
     let held = g.systems[s].held[other];
-    let i = g.target(s, other).expect("something to take");
-    assert_eq!(g.sites[i].kind, SiteKind::Shield { damaged: false });
+    let i = *g
+        .targets(s, other)
+        .iter()
+        .find(|&&i| g.sites[i].kind == (SiteKind::Shield { damaged: false }))
+        .expect("a generator to take");
     g.win(s, i, other);
     assert_eq!(
         g.sites[i].owner as usize, other,
@@ -90,7 +96,11 @@ fn every_battle_has_a_winner() {
     let other = (owner + 1) % SIDES;
     g.systems[s].hulls[owner] = 40;
     g.systems[s].hulls[other] = 40;
-    let i = g.target(s, other).expect("something to take");
+    let i = *g
+        .targets(s, other)
+        .iter()
+        .find(|&&i| matches!(g.sites[i].kind, SiteKind::Shield { .. }))
+        .expect("a generator to take");
     g.sites[i].kind = SiteKind::Shield { damaged: true };
     g.battles(None);
     let site = g.sites[i];
@@ -101,6 +111,92 @@ fn every_battle_has_a_winner() {
             (site.owner as usize, site.kind),
             (other, SiteKind::Shield { damaged: true })
         );
+    }
+}
+
+/// An attacker goes for every enemy shield generator up in the system at
+/// once, and every enemy site on a planet with none up (#460); the rest of
+/// a shielded planet waits for its generators.
+#[test]
+fn attackers_go_for_every_shield_then_every_site() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let s = (0..g.systems.len())
+        .find(|&s| {
+            let (a, b) = g.systems[s].sites;
+            let gens = (a..b)
+                .filter(|&i| matches!(g.sites[i as usize].kind, SiteKind::Shield { .. }))
+                .count();
+            gens >= 2 && (b - a) as usize > gens
+        })
+        .expect("a system with generators and more");
+    let owner = g.systems[s].owner();
+    let (a, b) = g.systems[s].sites;
+    let range = a as usize..b as usize;
+    // Everything here the owner's, nothing damaged.
+    for i in range.clone() {
+        let site = &mut g.sites[i];
+        site.owner = owner as u8;
+        if let SiteKind::Shield { damaged } = &mut site.kind {
+            *damaged = false;
+        }
+    }
+    let other = (owner + 1) % SIDES;
+    let shielded = |g: &Galaxy, p: u8| {
+        range.clone().any(|i| {
+            g.sites[i].planet == p && g.sites[i].kind == (SiteKind::Shield { damaged: false })
+        })
+    };
+    let want = |g: &Galaxy| -> Vec<usize> {
+        range
+            .clone()
+            .filter(|&i| {
+                let site = &g.sites[i];
+                site.owner as usize == owner
+                    && (!shielded(g, site.planet)
+                        || site.kind == (SiteKind::Shield { damaged: false }))
+            })
+            .collect()
+    };
+    let generators = range
+        .clone()
+        .filter(|&i| matches!(g.sites[i].kind, SiteKind::Shield { .. }))
+        .count();
+    let targets = g.targets(s, other);
+    assert_eq!(targets, want(&g));
+    assert!(
+        targets
+            .iter()
+            .filter(|&&i| matches!(g.sites[i].kind, SiteKind::Shield { .. }))
+            .count()
+            == generators,
+        "every generator at once"
+    );
+    // One planet's generators down: all its sites at once.
+    let i = targets
+        .iter()
+        .copied()
+        .find(|&i| matches!(g.sites[i].kind, SiteKind::Shield { .. }))
+        .unwrap();
+    let p = g.sites[i].planet;
+    for j in range.clone() {
+        if g.sites[j].planet == p && matches!(g.sites[j].kind, SiteKind::Shield { .. }) {
+            g.sites[j].kind = SiteKind::Shield { damaged: true };
+        }
+    }
+    let targets = g.targets(s, other);
+    assert_eq!(targets, want(&g));
+    for j in range.clone().filter(|&j| g.sites[j].planet == p) {
+        assert!(targets.contains(&j), "site {j} on the open planet");
+    }
+    // A tick at war fights over every one of them, and the theater has
+    // the attacker committed to each.
+    g.systems[s].hulls = [0; SIDES];
+    g.systems[s].hulls[owner] = 40;
+    g.systems[s].hulls[other] = 40;
+    assert_eq!(g.commits(s, other), targets);
+    g.battles(None);
+    for &j in &targets {
+        assert!(g.assaulted[j], "site {j} fought over");
     }
 }
 
