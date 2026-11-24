@@ -224,6 +224,63 @@ impl Known {
     }
 }
 
+/// What wrecks taught of one part (#444): how much, in steps, and what's
+/// known of it after.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scrapped {
+    pub part: Part,
+    pub gained: f32,
+    pub known: f32,
+}
+
+impl Scrapped {
+    /// The gain as a share of a step, in whole percent (at least 1).
+    pub fn percent(&self) -> u32 {
+        ((self.gained * 100.0).round() as u32).max(1)
+    }
+
+    /// How far into the next step what's known now is, in whole percent,
+    /// and that step's level. None once it's known to the top.
+    pub fn toward(&self) -> Option<(u32, u8)> {
+        let whole = self.known.floor();
+        (whole < MAX_LEVEL as f32).then(|| {
+            let into = ((self.known - whole) * 100.0 + 1e-3).floor() as u32;
+            (into.min(99), whole as u8 + 1)
+        })
+    }
+
+    /// Did this gain take it to a new step (a schematic, or a better one)?
+    pub fn stepped(&self) -> bool {
+        (self.known - self.gained).floor() < self.known.floor()
+    }
+}
+
+/// Take apart `wrecks` on top of `before`, totting up what each part
+/// gained, in the order the parts first taught something. Parts that
+/// taught nothing are left out.
+pub fn scrapped(before: Known, wrecks: &[(Part, u8)]) -> Vec<Scrapped> {
+    let mut k = before;
+    let mut out: Vec<Scrapped> = Vec::new();
+    for &(part, level) in wrecks {
+        let gained = k.scrap(part, level);
+        if gained <= 0.0 {
+            continue;
+        }
+        match out.iter_mut().find(|s| s.part == part) {
+            Some(s) => s.gained += gained,
+            None => out.push(Scrapped {
+                part,
+                gained,
+                known: 0.0,
+            }),
+        }
+    }
+    for s in &mut out {
+        s.known = k.of(s.part);
+    }
+    out
+}
+
 /// Upgrade level of every part.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Levels([u8; PARTS.len()]);
@@ -396,6 +453,34 @@ mod tests {
     /// A wreck teaches a hundredth of the gap to what you know, rounded
     /// down to a whole step (#438): a hundred kills of T1.1 gear take a T1
     /// pilot to T1.1, and one no better teaches nothing.
+    /// A round's wrecks add up part by part (#444): what each taught and
+    /// where it stands, the ones that taught nothing left out.
+    #[test]
+    fn scrapped_adds_up_part_by_part() {
+        let (kontos, pelekys) = (
+            Part::Turret(TurretKind::Kontos),
+            Part::Turret(TurretKind::Pelekys),
+        );
+        let mut before = Known::default();
+        before.set(kontos, 10.0);
+        before.set(pelekys, 0.5);
+        let s = scrapped(
+            before,
+            &[(kontos, 15), (pelekys, 30), (kontos, 15), (kontos, 3)],
+        );
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].part, kontos);
+        assert_eq!(s[0].percent(), 10);
+        assert_eq!(s[0].toward(), Some((10, 11)));
+        assert!(!s[0].stepped());
+        assert_eq!(s[1].part, pelekys);
+        assert_eq!(s[1].percent(), 30);
+        assert_eq!(s[1].toward(), Some((80, 1)));
+        let s = scrapped(before, &[(pelekys, 50)]);
+        assert!(s[0].stepped(), "0.5 + 0.5 is the first step");
+        assert_eq!(s[0].toward(), Some((0, 2)));
+    }
+
     #[test]
     fn scrap_teaches_a_hundredth_of_the_gap() {
         let kontos = Part::Turret(TurretKind::Kontos);

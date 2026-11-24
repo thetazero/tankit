@@ -114,6 +114,8 @@ tankit [OPTIONS]
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, renown gained, crystal tally
                           and (with --learned) a schematic reverse-engineered
+  --screen kill           (with --shot) the player kills the nearest enemy, its gear at T2.5, half a
+                          second before the shot: the scrap popups
   --screen carry          (with --shot --contract raid) the player starts on the enemy's flag,
                           facing home, and carries it
   --learned <part>        (with --screen results) the round's wrecks make this part's schematic
@@ -459,6 +461,9 @@ enum Screen {
     /// Left the battle from the pause box: it plays out without you, under
     /// a progress bar (#427).
     Leaving,
+    /// A kill of yours half a second before the shot, its wreck's gear well
+    /// past what you know: the scrap popups (#444).
+    Kill,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -822,10 +827,11 @@ fn parse_args() -> Result<Args> {
                     Some("spent") => Screen::Spent,
                     Some("spent-over") => Screen::SpentOver,
                     Some("leaving") => Screen::Leaving,
+                    Some("kill") => Screen::Kill,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, kill or carry, got {other:?}"
                         )
                     }
                 })
@@ -1145,6 +1151,18 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             game.fast_forward(60);
         }
         camera
+    } else if args.screen == Some(Screen::Kill) {
+        // Your kill half a second before the shot, its wreck built to T2.5.
+        let lead = 0.5f32.min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        game.known = Some(profile.known);
+        let me = game.fighters[0].team;
+        for f in game.fighters.iter_mut().filter(|f| f.team != me) {
+            f.levels = economy::Levels::all(25);
+        }
+        game.kill_nearest_enemy()
+            .context("--screen kill needs an enemy in play")?;
+        advance(&mut game, &mut cam, &mut garage, lead)
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
