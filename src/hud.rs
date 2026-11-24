@@ -719,14 +719,14 @@ fn scoreboard(
     let learned = Payout::of(m).schematic.filter(|_| m.phase == Phase::Over);
     let scrap = scrap_lines(m);
     let banner = 66.0 + if learned.is_some() { STOLEN_H } else { 0.0 };
-    // Scrap gets its own row of results under renown and crystals (#474).
-    let scrap_row = if scrap.is_empty() {
+    // Scrap gets a compact list under renown and crystals (#474, #480).
+    let scrap_h = if scrap.is_empty() {
         0.0
     } else {
-        RESULTS_H + 18.0
+        scrap.len().div_ceil(2) as f32 * SCRAP_ROW_H
     };
     let height = if m.phase == Phase::Over {
-        24.0 + banner + 18.0 + RESULTS_H + scrap_row + 24.0 + BUTTON_H + 24.0
+        24.0 + banner + 18.0 + RESULTS_H + scrap_h + 24.0 + BUTTON_H + 24.0
     } else {
         28.0
     } + body;
@@ -857,33 +857,26 @@ fn scoreboard(
             x1,
             y,
         );
-        // What the round's scrap taught, part by part (#444), each laid out
-        // like renown: one or two under the columns above, more side by side.
+        // What the round's scrap taught (#444): a compact list, two to a
+        // row under the renown and crystal columns (#480).
         let sy = y + RESULTS_H + 18.0;
-        let n = scrap.len();
         for (i, line) in scrap.iter().enumerate() {
-            let (a, b) = if n <= 2 {
-                if i == 0 {
-                    (x0, x0 + col)
-                } else {
-                    (x1 - col, x1)
-                }
+            let (a, b) = if i % 2 == 0 {
+                (x0, x0 + col)
             } else {
-                let gap = 32.0;
-                let cw = (width - gap * (n - 1) as f32) / n as f32;
-                let a = x0 + i as f32 * (cw + gap);
-                (a, a + cw)
+                (x1 - col, x1)
             };
+            let ly = sy + (i / 2) as f32 * SCRAP_ROW_H;
             match line {
-                ScrapLine::Part(sc) => scrap_gained(p, sc, learned == Some(sc.part), t, a, b, sy),
-                ScrapLine::More(k) => scrap_more(p, *k, a, b, sy),
+                ScrapLine::Part(sc) => scrap_row(p, sc, t, a, b, ly),
+                ScrapLine::More(k) => scrap_more(p, *k, a, ly),
             }
         }
         round_over_buttons(
             p,
             hits,
             hover,
-            Vec2::new(top.x, y + RESULTS_H + scrap_row + 24.0),
+            Vec2::new(top.x, y + RESULTS_H + scrap_h + 24.0),
         );
     }
 }
@@ -1130,9 +1123,11 @@ const RESULTS_DELAY: f32 = 0.6;
 const RESULTS_H: f32 = 84.0;
 /// The line under the winner saying which schematic you reverse-engineered.
 const STOLEN_H: f32 = 26.0;
-/// How many parts get a block in the round-over scrap row (#444) before the
-/// rest fold into one "+N MORE PARTS".
-const SCRAP_LINES: usize = 4;
+/// How many parts get a line in the round-over scrap list (#444, #480)
+/// before the rest fold into one "+N MORE PARTS".
+const SCRAP_LINES: usize = 6;
+/// Each line of the round-over scrap list: the part, then its thin bar.
+const SCRAP_ROW_H: f32 = 30.0;
 
 /// One line of the round-over scrap summary.
 enum ScrapLine {
@@ -1160,11 +1155,10 @@ fn scrap_lines(m: &Match) -> Vec<ScrapLine> {
 }
 
 /// Where a part stands after scrap: how far to its next step, or the step
-/// it just reached. `banner`: the schematic has its own line already (the
-/// round-over screen), so a first step just says how far to the next.
-fn scrap_progress(sc: &Scrapped, banner: bool) -> String {
+/// it just reached.
+fn scrap_progress(sc: &Scrapped) -> String {
     let whole = sc.known.floor() as u8;
-    if sc.stepped() && !(banner && whole == 1) {
+    if sc.stepped() {
         if whole == 1 {
             "SCHEMATIC REVERSE-ENGINEERED".to_string()
         } else {
@@ -1222,7 +1216,7 @@ fn scrap_pop(p: &mut Painter, sc: &Scrapped, at: Vec2, fade: f32) {
     l.color = with_alpha(if sc.stepped() { theme::HOT } else { theme::DIM }, fade);
     p.text(
         at + Vec2::new(SCRAP_POP_W, 24.0),
-        &scrap_progress(sc, false),
+        &scrap_progress(sc),
         &l,
         Align::Right,
     );
@@ -1356,64 +1350,29 @@ fn renown_gained(p: &mut Painter, before: u32, gained: u32, t: f32, a: f32, b: f
     );
 }
 
-/// One part's scrap, laid out like renown: the part, the gain big, how far
-/// into the step it's heading for, and a bar filling from where it stood.
-#[allow(clippy::too_many_arguments)]
-fn scrap_gained(p: &mut Painter, sc: &Scrapped, banner: bool, t: f32, a: f32, b: f32, y: f32) {
+/// One part's line in the round-over scrap list (#480): the part and its
+/// maker's emblem, where it stands on the right, and a thin bar under them
+/// filling from where it stood, on renown's timer.
+fn scrap_row(p: &mut Painter, sc: &Scrapped, t: f32, a: f32, b: f32, y: f32) {
     let k = ease_out(t / REP_FILL);
-    label(p, Vec2::new(a, y), "SCRAP", Align::Left);
-    let mut name = TextStyle::LABEL;
+    let mut name = TextStyle::value(12.0);
     name.color = sc.part.maker().ui();
     emblem::tagged(
         p,
-        Vec2::new(b, y),
+        Vec2::new(a, y),
         sc.part.maker(),
         sc.part.name(),
         &name,
-        Align::Right,
-    );
-
-    let mut big = TextStyle::value(22.0);
-    big.color = theme::HOT;
-    let pct = ((sc.percent() as f32 * k).round() as u32).max(1);
-    p.text(
-        Vec2::new(a, y + 18.0),
-        &format!("+{pct}%"),
-        &big,
         Align::Left,
     );
-    // The step it reached, or the one it's heading for, if there's room
-    // (the line under the bar says it too).
-    let whole = sc.known.floor() as u8;
     let reached = sc.stepped() && k >= 1.0;
-    let step = if sc.stepped() {
-        Some(whole)
-    } else {
-        sc.toward().map(|(_, next)| next)
-    };
-    if let Some(step) = step.filter(|_| b - a >= 300.0) {
-        let mut tier = TextStyle::value(14.0);
-        if reached {
-            tier.color = theme::HOT;
-        }
-        let tw = p.text(
-            Vec2::new(b, y + 24.0),
-            &economy::level_label(step),
-            &tier,
-            Align::Right,
-        );
-        label(
-            p,
-            Vec2::new(b - tw - 8.0, y + 27.0),
-            if reached { "REACHED" } else { "NEXT" },
-            Align::Right,
-        );
-    }
+    let mut l = TextStyle::LABEL;
+    l.color = if reached { theme::HOT } else { theme::DIM };
+    p.text(Vec2::new(b, y + 2.0), &scrap_status(sc), &l, Align::Right);
 
-    // The bar: where it stood in neutral, this round's scrap lit.
     let (from, to) = scrap_bar(sc);
     let to = from + (to - from) * k;
-    let (bar_y, bar_h, width) = (y + 56.0, 6.0, b - a);
+    let (bar_y, bar_h, width) = (y + 19.0, 2.0, b - a);
     p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
     if from > 0.0 {
         p.rect(
@@ -1429,35 +1388,26 @@ fn scrap_gained(p: &mut Painter, sc: &Scrapped, banner: bool, t: f32, a: f32, b:
             theme::HOT,
         );
     }
-    for q in 0..=4 {
-        let x = a + width * q as f32 / 4.0;
-        p.line(
-            Vec2::new(x, bar_y + bar_h + 2.0),
-            Vec2::new(x, bar_y + bar_h + 6.0),
-            1.0,
-            theme::FAINT,
-        );
-    }
-    label(
-        p,
-        Vec2::new(b, bar_y + bar_h + 10.0),
-        &scrap_progress(sc, banner),
-        Align::Right,
-    );
 }
 
-/// The parts the scrap row has no room for, folded into one block.
-fn scrap_more(p: &mut Painter, n: usize, a: f32, b: f32, y: f32) {
-    label(p, Vec2::new(a, y), "SCRAP", Align::Left);
-    let mut big = TextStyle::value(22.0);
-    big.color = theme::DIM;
-    p.text(Vec2::new(a, y + 18.0), &format!("+{n}"), &big, Align::Left);
-    label(p, Vec2::new(b, y + 27.0), "MORE PARTS", Align::Right);
-    p.line(
-        Vec2::new(a, y + 59.0),
-        Vec2::new(b, y + 59.0),
-        1.0,
-        theme::FAINT,
+/// Where a part stands, for its round-over line: the step it just reached,
+/// or the one it's heading for. No percentages: the bar shows how far.
+fn scrap_status(sc: &Scrapped) -> String {
+    match sc.toward().filter(|_| !sc.stepped()) {
+        Some((_, next)) => format!("NEXT {}", economy::level_label(next)),
+        None => scrap_progress(sc),
+    }
+}
+
+/// The parts the scrap list has no room for, folded into one line.
+fn scrap_more(p: &mut Painter, n: usize, a: f32, y: f32) {
+    let mut l = TextStyle::LABEL;
+    l.color = theme::DIM;
+    p.text(
+        Vec2::new(a, y + 2.0),
+        &format!("+{n} MORE PARTS"),
+        &l,
+        Align::Left,
     );
 }
 
