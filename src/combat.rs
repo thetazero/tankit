@@ -1318,9 +1318,11 @@ impl Match {
     /// realm's own, then each merc company's by name. A company's share of
     /// the side's merc hulls left is in proportion to what it brought, as
     /// its losses are; the shares add up to the merc hulls left.
+    /// A hull is gone the moment its tank is destroyed (#448), not when the
+    /// tank comes back in the next one: each tank down and waiting to
+    /// respawn counts the hull it will take (`down_hulls`).
     pub fn hull_summary(&self, team: usize) -> Option<(u32, Vec<(String, u32)>)> {
-        let left = self.hulls_left(team)?;
-        let mercs = self.company_hulls.get(team).copied().unwrap_or(0);
+        let (left, mercs) = self.down_hulls(team)?;
         let named = self.companies.get(team).filter(|c| !c.is_empty());
         let companies = match named {
             Some(c) => apportion(mercs, c),
@@ -1337,6 +1339,44 @@ impl Match {
             None => Vec::new(),
         };
         Some((left.saturating_sub(mercs), companies))
+    }
+
+    /// Side `team`'s hulls left and merc hulls left, under an allocation,
+    /// once each of its tanks down (a wreck waiting to respawn, or a Vigil's
+    /// husk) has taken the hull it'll come back in, the way `rehull` will
+    /// hand them out: soonest back first. The pools themselves are only
+    /// drawn on at the respawn.
+    fn down_hulls(&self, team: usize) -> Option<(u32, u32)> {
+        let mut left = self.hulls_left(team)?;
+        let pool = self.merc_hulls(team);
+        let mut mercs = pool.unwrap_or(0);
+        let mut down: Vec<(f32, usize)> = (0..self.fighters.len())
+            .filter(|&i| self.fighters[i].team == team && !self.is_closed(i))
+            .filter_map(|i| {
+                let f = &self.fighters[i];
+                if f.is_husk() {
+                    Some((f.husk + RESPAWN_TIME, i))
+                } else if !f.alive && f.respawn_in > 0.0 {
+                    Some((f.respawn_in, i))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        down.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (_, i) in down {
+            let company = self.world.tanks[i].company && pool.is_some();
+            let you = i == 0 && self.crew_team == Some(team);
+            if (company && you && mercs == 0) || left == 0 {
+                continue;
+            }
+            left -= 1;
+            let held = if you { 0 } else { self.own_hulls };
+            if company && mercs > held {
+                mercs -= 1;
+            }
+        }
+        Some((left, mercs))
     }
 
     /// Set aside up to `n` of your company's hulls as yours alone (after
@@ -5943,6 +5983,38 @@ mod tests {
         m.company_hulls[1] = 2;
         let (_, cos) = m.hull_summary(1).unwrap();
         assert_eq!(cos.iter().map(|c| c.1).sum::<u32>(), 2);
+    }
+
+    /// A merc hull goes off the summary when its tank is destroyed, not
+    /// when it comes back (#448); the realm's the same. Past the last merc
+    /// hull, a downed merc's next one is the realm's.
+    #[test]
+    fn hull_summary_ticks_down_on_death() {
+        let mut m = arena(3);
+        for i in 1..4 {
+            m.idle(i);
+        }
+        m.set_allocation(&[6, 10]);
+        // Tanks 0 (you) and 2 are your side's: mercs, one merc hull to spare.
+        m.set_company(0, 2, 3);
+        m.start();
+        let summary = |m: &Match| {
+            let (realm, cos) = m.hull_summary(0).unwrap();
+            (realm, cos[0].1)
+        };
+        assert_eq!(summary(&m), (3, 1));
+        destroy(&mut m, 2);
+        assert_eq!(summary(&m), (3, 0), "the merc hull goes at the death");
+        respawn(&mut m);
+        assert!(m.fighters[2].alive && m.world.tanks[2].company);
+        assert_eq!(summary(&m), (3, 0), "and not again at the respawn");
+        // No merc hull left: tank 2 comes back in the realm's, gone from
+        // its count at the death too.
+        destroy(&mut m, 2);
+        assert_eq!(summary(&m), (2, 0));
+        respawn(&mut m);
+        assert!(m.fighters[2].alive && !m.world.tanks[2].company);
+        assert_eq!(summary(&m), (2, 0));
     }
 
     /// Mercs without names are the Company's; on your side, your company's.
