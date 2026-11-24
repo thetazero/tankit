@@ -53,6 +53,8 @@ pub enum Screen {
     Controls,
     /// The other companies' ships with a battle for you, to switch to (#365).
     Ships,
+    /// One of those ships' contract, previewed before you sign on (#453).
+    Contract,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,6 +286,11 @@ pub struct Menu {
     /// and the one selected.
     ships: Vec<Berth>,
     ship: usize,
+    /// The ship whose contract is previewed (a `Company::id`), and that
+    /// contract as you'd find it aboard (the app keeps it up to date; None
+    /// once it has no battle for you).
+    previewing: u32,
+    contract: Option<Theater>,
     setting: usize,
     controls: Controls,
     /// The pointer is on the BACK button.
@@ -305,6 +312,8 @@ impl Menu {
             pick: 0,
             ships: Vec::new(),
             ship: 0,
+            previewing: 0,
+            contract: None,
             setting: 0,
             controls: Controls::default(),
             back_lit: false,
@@ -386,10 +395,24 @@ impl Menu {
                 self.ship = step(self.ship, self.ships.len(), nav)
             }
             (Screen::Ships, Nav::Select) => {
-                return self.ships.get(self.ship).map(|b| Action::Switch(b.id));
+                if let Some(b) = self.ships.get(self.ship) {
+                    self.previewing = b.id;
+                    self.contract = None;
+                    self.screen = Screen::Contract;
+                }
             }
             (Screen::Ships, Nav::Back) => self.screen = Screen::Main,
             (Screen::Ships, _) => {}
+            (Screen::Contract, Nav::Select) => {
+                return self
+                    .contract
+                    .as_ref()
+                    .and_then(|t| t.ship.as_ref())
+                    .filter(|s| s.id == self.previewing)
+                    .map(|s| Action::Switch(s.id));
+            }
+            (Screen::Contract, Nav::Back) => self.screen = Screen::Ships,
+            (Screen::Contract, _) => {}
         }
         None
     }
@@ -401,7 +424,19 @@ impl Menu {
 
     /// The screen is showing the ships to switch to: the app keeps them up to date.
     pub fn wants_ships(&self) -> bool {
-        self.screen == Screen::Ships
+        matches!(self.screen, Screen::Ships | Screen::Contract)
+    }
+
+    /// The ship whose contract the screen previews, if it's showing one:
+    /// the app keeps it up to date (`set_contract`).
+    pub fn wants_contract(&self) -> Option<u32> {
+        (self.screen == Screen::Contract).then_some(self.previewing)
+    }
+
+    /// Show `t` as the previewed ship's contract (None: it has no battle
+    /// for you any more).
+    pub fn set_contract(&mut self, t: Option<Theater>) {
+        self.contract = t;
     }
 
     /// Show `ships` on the companies screen; the same one stays selected
@@ -571,8 +606,8 @@ impl Menu {
             Screen::Main => &mut self.cursor,
             Screen::Missions if self.choice.is_some() => &mut self.pick,
             Screen::Missions => &mut self.site,
-            // Its one row, DEPLOY: nothing to select.
-            Screen::Site => return false,
+            // Its one row, DEPLOY or SIGN ON: nothing to select.
+            Screen::Site | Screen::Contract => return false,
             Screen::Settings | Screen::Controls => &mut self.setting,
             Screen::Ships => &mut self.ship,
         };
@@ -722,6 +757,15 @@ impl Menu {
                     &self.ships,
                     self.ship,
                     profile,
+                );
+            }
+            Screen::Contract => {
+                draw_contract(
+                    &mut p,
+                    &mut hits,
+                    Vec2::new(x, y),
+                    self.previewing,
+                    self.contract.as_ref(),
                 );
             }
             Screen::Controls => {
@@ -1140,6 +1184,117 @@ fn draw_ships(
         return;
     }
     berths(p, hits, Vec2::new(x, y), ships, pick);
+}
+
+/// A ship's contract previewed at `at` (#453): who hired it and to do
+/// what, how long it has and with how many hulls (yours among them), and
+/// the battles you'd fight, then SIGN ON. BACK goes back to the list.
+/// `t` is None once the ship (`id`) has no battle for you.
+fn draw_contract(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, id: u32, t: Option<&Theater>) {
+    let (x, mut y) = (at.x, at.y);
+    faction_line(p, Vec2::new(x, y), Faction::Company, "Switch company");
+    y += 28.0;
+    let name = t
+        .and_then(|t| t.ship.as_ref())
+        .map_or_else(|| ship_name(id), |s| s.name.clone());
+    p.text(
+        Vec2::new(x, y),
+        &format!("THE {name}"),
+        &TextStyle::value(22.0),
+        Align::Left,
+    );
+    y += 34.0;
+    let Some((t, ship)) = t.and_then(|t| t.ship.as_ref().map(|s| (t, s))) else {
+        wrap(
+            p,
+            Vec2::new(x, y),
+            &format!("The {} has no battle for you now", title(&name)),
+            theme::FAINT,
+        );
+        return;
+    };
+    body(
+        p,
+        Vec2::new(x, y),
+        &format!(
+            "Over {} {} · {} sites",
+            title(&t.name),
+            numeral(ship.over),
+            t.sites.len()
+        ),
+        theme::DIM,
+    );
+    y += 30.0;
+    y = contract(p, Vec2::new(x, y), ship, &t.name);
+    let battles = match ship.ticks_left {
+        1 => "Up to 1 battle".to_string(),
+        n => format!("Up to {n} battles"),
+    };
+    field(p, Vec2::new(x, y), "Term", &battles);
+    y += 22.0;
+    let yours = ship.own.of.min(ship.committed);
+    field(
+        p,
+        Vec2::new(x, y),
+        "Hulls",
+        &format!("{} committed, {yours} of them yours", ship.committed),
+    );
+    y += 34.0;
+
+    // The battles you'd fight this tick.
+    body(p, Vec2::new(x, y), "Battles to join", theme::DIM);
+    y += 24.0;
+    for site in t.sites.iter().filter(|s| s.committed) {
+        let kind = site.kind_name().trim_end_matches(" GENERATOR");
+        p.text(
+            Vec2::new(x, y),
+            &format!("{} · {kind}", numeral(site.planet)),
+            &TextStyle::value(12.0),
+            Align::Left,
+        );
+        let tier = t.tiers[site.enemy];
+        let pay = format!(
+            "{} · {} CR",
+            crate::economy::level_label(tier),
+            crate::economy::win_pay(tier)
+        );
+        let mut style = BODY;
+        style.color = theme::DIM;
+        p.text(Vec2::new(x + PANEL_W, y + 1.0), &pay, &style, Align::Right);
+        y += 20.0;
+        let enemy = Faction::ALL[site.enemy];
+        let how = if site.owner == t.employer {
+            "Defend from".to_string()
+        } else if site.owner == site.enemy {
+            "Attack".to_string()
+        } else {
+            format!(
+                "Help the {} against",
+                title(Faction::ALL[site.owner].name())
+            )
+        };
+        let mut cx = x + 12.0;
+        cx += body(p, Vec2::new(cx, y), &format!("{how} "), theme::DIM);
+        let mut style = BODY;
+        style.color = enemy.ui();
+        cx += emblem::tagged(
+            p,
+            Vec2::new(cx, y),
+            enemy,
+            &title(enemy.name()),
+            &style,
+            Align::Left,
+        );
+        let m = &MISSIONS[site.mission];
+        body(
+            p,
+            Vec2::new(cx, y),
+            &format!(" · {}", title(m.contract.name())),
+            theme::DIM,
+        );
+        y += 28.0;
+    }
+    rows(p, hits, Vec2::new(x, y + 6.0), &[Item::Acts("SIGN ON")], 0);
 }
 
 /// Ships to go with at `at`, a row each with where it is, what it has and
@@ -2036,7 +2191,8 @@ mod tests {
     }
 
     /// COMPANIES lists the ships to switch to; Enter or a click on one
-    /// switches (#365), and BACK goes back to the main menu.
+    /// previews its contract (#453), where SIGN ON switches (#365) and BACK
+    /// goes back to the list without switching; BACK again, the main menu.
     #[test]
     fn switching_company() {
         use crate::galaxy::theater::Berth;
@@ -2048,30 +2204,67 @@ mod tests {
             crystals: 300.0,
             work: None,
         };
+        // A contract as the app would preview it for ship `id`.
+        let war = theater(Faction::Ithessar).unwrap();
+        let aboard = |id| {
+            let mut t = war.clone();
+            t.ship.as_mut().unwrap().id = id;
+            t
+        };
         let mut m = Menu::new();
         m.input(Nav::Down);
         assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Ships);
         assert!(m.wants_ships() && !m.wants_theater());
+        assert_eq!(m.wants_contract(), None);
         // None to show: Enter does nothing.
         assert_eq!(m.input(Nav::Select), None);
+        assert_eq!(m.screen, Screen::Ships);
         m.set_ships(vec![berth(4), berth(9)]);
         m.input(Nav::Down);
+        // Enter previews the contract; nothing switches.
+        assert_eq!(m.input(Nav::Select), None);
+        assert_eq!(m.screen, Screen::Contract);
+        assert_eq!(m.wants_contract(), Some(9));
+        assert!(m.wants_ships());
+        // Not loaded yet (or no battle any more): nothing to sign.
+        assert_eq!(m.input(Nav::Select), None);
+        let p = Profile::in_memory();
+        m.draw(&p, 1280.0, 720.0, 1.0);
+        m.set_contract(Some(aboard(9)));
+        m.draw(&p, 1280.0, 720.0, 1.0);
         assert_eq!(m.input(Nav::Select), Some(Action::Switch(9)));
+        // BACK: the list, without switching, the same ship selected.
+        m.input(Nav::Back);
+        assert_eq!(m.screen, Screen::Ships);
+        assert_eq!(m.wants_contract(), None);
         // The selection follows its ship as the list changes.
         m.set_ships(vec![berth(2), berth(4), berth(9)]);
-        assert_eq!(m.input(Nav::Select), Some(Action::Switch(9)));
-        // And by click.
-        let p = Profile::in_memory();
+        m.input(Nav::Select);
+        assert_eq!(m.wants_contract(), Some(9));
+        m.input(Nav::Back);
+        // And by click: a ship's row previews, SIGN ON switches.
         let layer = m.draw(&p, 1280.0, 720.0, 1.0);
         assert!(
             layer.hits.at(Vec2::new(PANEL_X + 10.0, 260.0)).is_some(),
             "no ship rows drawn"
         );
+        assert_eq!(m.click(Hit::Row(0), Vec2::ZERO, &p.settings).1, None);
+        assert_eq!(m.wants_contract(), Some(2));
+        m.set_contract(Some(aboard(2)));
+        let layer = m.draw(&p, 1280.0, 720.0, 1.0);
+        let sign = (0..900)
+            .map(|y| Vec2::new(PANEL_X + 10.0, y as f32))
+            .find(|&at| layer.hits.at(at).map(|h| h.0) == Some(Hit::Row(0)));
+        assert!(sign.is_some(), "no SIGN ON drawn");
         assert_eq!(
             m.click(Hit::Row(0), Vec2::ZERO, &p.settings).1,
             Some(Action::Switch(2))
         );
+        // The contract shown is another ship's: it doesn't sign you on.
+        m.set_contract(Some(aboard(4)));
+        assert_eq!(m.input(Nav::Select), None);
+        m.input(Nav::Back);
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
     }

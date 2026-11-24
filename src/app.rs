@@ -637,9 +637,14 @@ impl App {
         if !self.menu.wants_ships() {
             return;
         }
+        let rank = self.profile.rank().level;
         let g = self.war.get();
         adopt_crew(g, self.profile.ship);
         self.menu.set_ships(g.other_ships(SHIPS_SHOWN));
+        // A ship's contract, previewed before you sign on (#453).
+        if let Some(id) = self.menu.wants_contract() {
+            self.menu.set_contract(g.contract_of(id, rank));
+        }
     }
 
     /// Leave your company for ship `id` (#365), then on to its theater.
