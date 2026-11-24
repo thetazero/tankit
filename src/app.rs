@@ -675,6 +675,7 @@ impl App {
             let crew = g.crew;
             self.war.save();
             self.profile.board(crew);
+            self.menu.switched();
             self.menu.screen = menu::Screen::Missions;
         }
         self.sync_ships();

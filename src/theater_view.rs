@@ -389,7 +389,9 @@ fn ship_parts(
 /// Moving onto your company's next contract (#348), played over the system
 /// view: the ship you're aboard leaves the system it was in, jumps, and
 /// arrives over the world of its new one; or, staying in the same system,
-/// flies over to its new contract's world.
+/// flies over to its new contract's world. Switching company (#449) moves
+/// only your hull, not a ship: it warps off the old ship and onto the new
+/// one, and neither ship goes anywhere.
 #[derive(Clone, Debug)]
 pub struct Transfer {
     /// The theater you were in.
@@ -403,6 +405,9 @@ pub struct Transfer {
     /// The previous contract failed, so the transfer caption says
     /// "CONTRACT FAILED" instead of "CONTRACT DONE".
     pub failed: bool,
+    /// You switched company (#449): your hull warps across, rather than
+    /// the ship flying.
+    pub warp: bool,
 }
 
 /// A jump to another system: leaving, under way, arriving (seconds).
@@ -411,6 +416,9 @@ const JUMP_S: f32 = 1.5;
 const ARRIVE_S: f32 = 2.0;
 /// A move to another world of the same system (or a new contract over the same one).
 const MOVE_S: f32 = 2.6;
+/// Switching company: your hull warps off the old ship, then onto the new.
+const WARP_OUT_S: f32 = 1.6;
+const WARP_IN_S: f32 = 1.6;
 /// How the ship sits parked: bow toward the star, a little toward the camera.
 const PARKED_YAW: Quat = Quat::from_xyzw(0.0, -0.974_794_1, 0.0, 0.223_106_4);
 /// How far it banks over toward the camera while parked, so its deck shows.
@@ -431,6 +439,10 @@ pub enum Leg {
     Jump(f32),
     Arrive(f32),
     Move(f32),
+    /// Switching company: your hull gathers light and warps off the old ship,
+    WarpOut(f32),
+    /// then streaks in onto the new one.
+    WarpIn(f32),
 }
 
 impl Transfer {
@@ -440,6 +452,16 @@ impl Transfer {
             age: 0.0,
             summary: None,
             failed: false,
+            warp: false,
+        }
+    }
+
+    /// You switched company from `from` (#449): your hull warps across.
+    /// No summary: the old contract didn't end, you left it.
+    pub fn warp(from: Theater) -> Transfer {
+        Transfer {
+            warp: true,
+            ..Transfer::new(from)
         }
     }
 
@@ -485,7 +507,9 @@ impl Transfer {
 
     /// How long it plays, seconds.
     pub fn length(&self, to: &Theater) -> f32 {
-        if self.jumps(to) {
+        if self.warp {
+            WARP_OUT_S + WARP_IN_S
+        } else if self.jumps(to) {
             LEAVE_S + JUMP_S + ARRIVE_S
         } else {
             MOVE_S
@@ -503,7 +527,13 @@ impl Transfer {
         if a >= self.length(to) {
             return None;
         }
-        Some(if !self.jumps(to) {
+        Some(if self.warp {
+            if a < WARP_OUT_S {
+                Leg::WarpOut(a / WARP_OUT_S)
+            } else {
+                Leg::WarpIn((a - WARP_OUT_S) / WARP_IN_S)
+            }
+        } else if !self.jumps(to) {
             Leg::Move(a / MOVE_S)
         } else if a < LEAVE_S {
             Leg::Leave(a / LEAVE_S)
@@ -519,7 +549,7 @@ impl Transfer {
 /// the ship's still in it, else `t`.
 pub fn on_screen<'a>(t: &'a Theater, transfer: Option<&'a Transfer>) -> &'a Theater {
     match transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
-        Some((tr, Leg::Leave(_))) => &tr.from,
+        Some((tr, Leg::Leave(_) | Leg::WarpOut(_))) => &tr.from,
         _ => t,
     }
 }
@@ -615,7 +645,123 @@ fn transfer_scene(
             pose.wake = 2.0 * speed;
             system_scene(art, t, time, camera(t, aspect), Some(pose))
         }
+        // The old ship stays parked; light gathers on its deck where your
+        // hull stands, and the hull warps off it in a streak.
+        Leg::WarpOut(u) => {
+            let from = &tr.from;
+            let cam = camera(from, aspect);
+            let Some(pose) = parked(&layout(from), time) else {
+                return system_scene(art, from, time, cam, None);
+            };
+            let mut s = system_scene(art, from, time, cam, Some(pose));
+            let deck = pose.at + Vec3::Y * DECK_H;
+            let gather = smooth(u / 0.6);
+            motes(
+                &mut s,
+                deck,
+                1.0 - gather,
+                (1.0 - gather).min(gather * 4.0),
+                time,
+            );
+            warp_glow(&mut s, deck, gather * (1.0 - smooth((u - 0.6) / 0.15)));
+            let go = ((u - 0.6) / 0.4).clamp(0.0, 1.0);
+            if go > 0.0 {
+                let out = warp_way(cam, deck);
+                let head = deck + out * (go * go * DEEP);
+                streak(&mut s, deck.lerp(head, 0.6 * go), head, 1.0);
+            }
+            s
+        }
+        // On the new ship's deck: the streak comes in, a pulse, and the
+        // light scatters off your hull.
+        Leg::WarpIn(u) => {
+            let cam = camera(t, aspect);
+            let Some(pose) = parked(&layout(t), time) else {
+                return system_scene(art, t, time, cam, None);
+            };
+            let mut s = system_scene(art, t, time, cam, Some(pose));
+            let deck = pose.at + Vec3::Y * DECK_H;
+            let come = smooth(u / 0.35);
+            if come < 1.0 {
+                let from = deck + warp_way(cam, deck) * DEEP;
+                let head = from.lerp(deck, come);
+                streak(&mut s, head, from.lerp(head, 0.4 + 0.6 * come), 1.0);
+            }
+            let k = ((u - 0.3) / 0.7).clamp(0.0, 1.0);
+            if k > 0.0 {
+                warp_glow(&mut s, deck, 1.0 - smooth(k / 0.6));
+                motes(&mut s, deck, smooth(k), 1.0 - smooth(k), time);
+            }
+            s
+        }
     }
+}
+
+/// How high over the ship's middle its deck is, where your hull stands.
+const DECK_H: f32 = 4.0;
+/// Warp light: cold, like a jump's.
+const WARP: Vec3 = Vec3::new(0.62, 0.8, 1.0);
+const WARP_HOT: Vec3 = Vec3::new(0.9, 0.96, 1.0);
+
+/// Which way your hull warps off a ship at `at` (and comes in onto one
+/// from): up and away from the camera.
+fn warp_way(cam: Camera, at: Vec3) -> Vec3 {
+    (deep(cam, at, 0.25) + Vec3::Y * 0.8).normalize()
+}
+
+/// Your hull's light at `at`, `k` (0..1) of its brightest.
+fn warp_glow(s: &mut Scene, at: Vec3, k: f32) {
+    if k <= 0.0 {
+        return;
+    }
+    s.particles
+        .push(Particle::glow(at, 1.5 + 5.0 * k, WARP, 2.5 * k, Vec3::ZERO));
+    s.particles.push(Particle::glow(
+        at,
+        0.8 + 1.2 * k,
+        WARP_HOT,
+        4.0 * k,
+        Vec3::ZERO,
+    ));
+}
+
+/// Motes of warp light round `at`, `spread` (0..1) of the way out from it,
+/// at `k` of their brightest, swirling.
+fn motes(s: &mut Scene, at: Vec3, spread: f32, k: f32, time: f32) {
+    if k <= 0.0 {
+        return;
+    }
+    const N: usize = 24;
+    for i in 0..N {
+        let f = i as f32 / N as f32;
+        let r = (6.0 + 22.0 * f.sqrt()) * spread + 0.5;
+        let ang = TAU * f * 7.0 + time * 2.4 + spread * 3.0;
+        let at = at + Vec3::new(ang.cos() * r, (f - 0.5) * 8.0 * spread, ang.sin() * r);
+        let swirl = Vec3::new(-ang.sin(), 0.0, ang.cos()) * 2.0;
+        s.particles
+            .push(Particle::glow(at, 0.45, WARP, (0.8 + f) * k, swirl));
+    }
+}
+
+/// A streak of warp light from `tail` to `head`, `k` of its brightest.
+fn streak(s: &mut Scene, tail: Vec3, head: Vec3, k: f32) {
+    let r = 0.9;
+    let d = head - tail;
+    let half = d.length() * 0.5;
+    let stretch = if half > r {
+        d.normalize() * (half / r - 1.0)
+    } else {
+        Vec3::ZERO
+    };
+    s.particles.push(Particle::glow(
+        tail.lerp(head, 0.5),
+        r,
+        WARP,
+        2.0 * k,
+        stretch,
+    ));
+    s.particles
+        .push(Particle::glow(head, 1.4, WARP_HOT, 4.0 * k, Vec3::ZERO));
 }
 
 /// A jump's flash at `at`, `k` (0..1) of its brightest.
@@ -1081,6 +1227,8 @@ pub fn headline(tr: &Transfer, t: &Theater, leg: Leg) -> &'static str {
         (Leg::Leave(_), true) => "CONTRACT FAILED · LEAVING",
         (Leg::Jump(_), _) => "UNDER WAY",
         (Leg::Arrive(_), _) => "ARRIVING · NEW CONTRACT",
+        (Leg::WarpOut(_), _) => "SWITCHING COMPANY · WARPING OUT",
+        (Leg::WarpIn(_), _) => "WARPING IN · NEW COMPANY",
         (Leg::Move(_), _) if old.signed == new.signed => "ABOARD ANOTHER SHIP",
         (Leg::Move(_), false) if renewed => "CONTRACT DONE · RENEWED",
         (Leg::Move(_), true) if renewed => "CONTRACT FAILED · RENEWED",
@@ -1113,8 +1261,16 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
             format!("{} OF {}", Faction::ALL[s.side].name(), s.realm)
         })
     };
-    // The route's ends: the systems for a jump, else whose contract.
-    let (a, b) = if jumps {
+    let ship_name = |th: &Theater| {
+        th.ship
+            .as_ref()
+            .map_or(String::new(), |s| format!("THE {}", s.name))
+    };
+    // The route's ends: the ships for a warp, the systems for a jump, else
+    // whose contract.
+    let (a, b) = if tr.warp {
+        (ship_name(&tr.from), ship_name(t))
+    } else if jumps {
         (
             format!("{} SYSTEM", tr.from.name),
             format!("{} SYSTEM", t.name),
@@ -1174,7 +1330,14 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
     ring(p, Vec2::new(x1, y), 6.0, 1.5, amber);
     p.text(Vec2::new(x0, y - 24.0), &a, &dim, Align::Left);
     p.text(Vec2::new(x1, y - 24.0), &b, &dim, Align::Right);
-    ship_glyph(p, Vec2::new(ship_x, y), 0.5);
+    if tr.warp {
+        // Just your hull on its way: a mote of warp light.
+        let c = Vec2::new(ship_x, y);
+        dot(p, c, 3.5, [WARP_HOT.x, WARP_HOT.y, WARP_HOT.z, 1.0]);
+        ring(p, c, 7.0, 1.0, [WARP.x, WARP.y, WARP.z, 0.6]);
+    } else {
+        ship_glyph(p, Vec2::new(ship_x, y), 0.5);
+    }
 }
 
 /// The two title lines of the contract summary card: "CONTRACT DONE" or
@@ -1298,6 +1461,8 @@ pub fn veil(p: &mut Painter, t: &Theater, transfer: Option<&Transfer>, w: f32, h
         Leg::Jump(u) => (1.0 - u / 0.12).max((u - 0.88) / 0.12),
         Leg::Arrive(u) => 1.0 - u / 0.12,
         Leg::Move(_) => 0.0,
+        Leg::WarpOut(u) => (u - 0.9) / 0.1,
+        Leg::WarpIn(u) => 1.0 - u / 0.1,
     }
     .clamp(0.0, 1.0);
     if k > 0.0 {

@@ -277,6 +277,9 @@ pub struct Menu {
     /// contract by; and that move, while it plays over the system view.
     seen: Option<Theater>,
     transfer: Option<Transfer>,
+    /// You just switched company (#449): the next move onto another ship
+    /// is your hull warping across, not the ship flying.
+    switched: bool,
     /// Index into the theater's contested sites.
     site: usize,
     /// Your company split or joined another: the ships to choose from,
@@ -314,6 +317,7 @@ impl Menu {
             theater: None,
             seen: None,
             transfer: None,
+            switched: false,
             site: 0,
             choice: None,
             quiet: 0,
@@ -579,11 +583,22 @@ impl Menu {
         // the move plays over the system view.
         if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
             if let Some(old) = self.seen.take().filter(|old| Transfer::between(old, new)) {
-                self.transfer = Some(Transfer::after(old, new));
+                self.transfer = Some(if self.switched {
+                    Transfer::warp(old)
+                } else {
+                    Transfer::after(old, new)
+                });
             }
+            self.switched = false;
             self.seen = Some(new.clone());
         }
         self.theater = t;
+    }
+
+    /// You switched company (#449): the move onto your new ship, as its
+    /// contract next shows, is your hull warping across.
+    pub fn switched(&mut self) {
+        self.switched = true;
     }
 
     /// The war went on `ticks` ticks without you between your last battle
@@ -3058,6 +3073,53 @@ mod tests {
             order,
             [Leg::Leave(0.0), Leg::Jump(0.0), Leg::Arrive(0.0)].map(|l| std::mem::discriminant(&l))
         );
+    }
+
+    /// Switching company moves only your hull (#449): it warps off the old
+    /// ship and onto the new one, in this system or another, and the ship
+    /// transit doesn't play. The next move after it is a transit again.
+    #[test]
+    fn switching_company_warps_your_hull() {
+        use crate::theater_view::Leg;
+        let legs = |m: &Menu, to: &Theater| {
+            let tr = m.transfer().expect("a transfer").clone();
+            let mut order: Vec<_> = (0..1000)
+                .filter_map(|k| {
+                    let mut tr = tr.clone();
+                    tr.age = k as f32 * 0.01;
+                    tr.leg(to)
+                })
+                .map(|l| std::mem::discriminant(&l))
+                .collect();
+            order.dedup();
+            order
+        };
+        let warp = [Leg::WarpOut(0.0), Leg::WarpIn(0.0)].map(|l| std::mem::discriminant(&l));
+        let t = theater(Faction::Imperium).unwrap();
+        for system in [t.system, t.system + 1] {
+            let mut m = Menu::new();
+            m.input(Nav::Select);
+            m.set_theater(Some(t.clone()));
+            m.switched();
+            let mut other = t.clone();
+            other.system = system;
+            other.ship.as_mut().unwrap().id += 1;
+            m.set_theater(Some(other.clone()));
+            let tr = m.transfer().expect("a transfer");
+            assert!(tr.warp && tr.summary.is_none());
+            assert_eq!(legs(&m, &other), warp);
+            for _ in 0..1000 {
+                m.advance(0.01);
+            }
+            assert!(m.transfer().is_none(), "it ends");
+
+            // On to that ship's next contract: the ship flies again.
+            let mut next = other.clone();
+            next.ship.as_mut().unwrap().signed += 5;
+            m.set_theater(Some(next.clone()));
+            assert!(!m.transfer().expect("a transfer").warp);
+            assert_eq!(legs(&m, &next), [std::mem::discriminant(&Leg::Move(0.0))]);
+        }
     }
     /// The move onto the next contract plays however it happened (#386):
     /// though the menu you were shown the old one on is gone (back from a
