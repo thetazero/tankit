@@ -695,7 +695,7 @@ impl Map {
     /// A big mass broken off at the top, drawn as what's left of the next
     /// floor: stubs of wall and column standing on its flat top. (The
     /// renderer's jagged `broken` top is for thin pieces; on a wide top its
-    /// fan of slivers shades into a starburst.)
+    /// cuts run all the way across and shade into long stripes.)
     pub(in crate::map) fn ragged_top(&mut self, rng: &mut Rng, o: &OBox) {
         let (ax, az) = o.axes();
         let stubs = 3 + (o.half.x * o.half.y / 40.0).min(4.0) as usize;
