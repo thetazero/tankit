@@ -506,15 +506,54 @@ fn layout<'a>(text: &str, style: &TextStyle) -> Vec<(f32, &'a font::Glyph)> {
 /// Pips a row in [`hull_pips`].
 pub const PIPS_A_ROW: u32 = 20;
 
-/// Width of a row of `n` pips of width `w` with `gap` between.
-pub fn pips_width(n: u32, w: f32, gap: f32) -> f32 {
-    let n = n.min(PIPS_A_ROW) as f32;
-    (n * (w + gap) - gap).max(0.0)
+/// Hulls as boxes, from the top left (#385, #450): a pip a hull up to
+/// [`PIPS_A_ROW`]; past that, yours and the rest each counted out in
+/// boxes of 100 (a square), 10 (a tall bar) and 1 (a pip), so hundreds
+/// of hulls stay a short row. Each box's offset, size, and whether it's
+/// yours (lit), with rows no wider than [`PIPS_A_ROW`] pips.
+pub fn hull_boxes(total: u32, lit: u32, cell: Vec2, gap: f32) -> Vec<(Vec2, Vec2, bool)> {
+    let lit = lit.min(total);
+    let mut out = Vec::new();
+    if total <= PIPS_A_ROW {
+        for i in 0..total {
+            out.push((Vec2::new(i as f32 * (cell.x + gap), 0.0), cell, i < lit));
+        }
+        return out;
+    }
+    let tall = 2.0 * cell.y + gap;
+    let ten = Vec2::new(cell.x, tall);
+    let hundred = Vec2::new(tall, tall);
+    let max_w = PIPS_A_ROW as f32 * (cell.x + gap) - gap;
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    for (n, mine) in [(lit, true), (total - lit, false)] {
+        let sizes = [(n / 100, hundred), (n / 10 % 10, ten), (n % 10, cell)];
+        for (count, size) in sizes {
+            for _ in 0..count {
+                if x > 0.0 && x + size.x > max_w {
+                    (x, y) = (0.0, y + tall + gap);
+                }
+                // Bottom-aligned, so pips sit on the bars' line.
+                out.push((Vec2::new(x, y + tall - size.y), size, mine));
+                x += size.x + gap;
+            }
+        }
+        // A wider gap between yours and the rest.
+        if n > 0 && x > 0.0 {
+            x += 2.0 * gap;
+        }
+    }
+    out
 }
 
-/// Hulls as pips, [`PIPS_A_ROW`] a row from `min` (the top left), each
-/// `cell` in size with `gap` between (#385): the first `lit` in `color`,
-/// the rest of `total` dimmed. Returns the height drawn.
+/// The width and height the boxes of [`hull_boxes`] take.
+pub fn hull_boxes_size(boxes: &[(Vec2, Vec2, bool)]) -> Vec2 {
+    boxes
+        .iter()
+        .fold(Vec2::ZERO, |m, (at, size, _)| m.max(*at + *size))
+}
+
+/// Hulls as boxes ([`hull_boxes`]) from `min` (the top left): yours in
+/// `color`, the rest of `total` dimmed. Returns the height drawn.
 pub fn hull_pips(
     p: &mut Painter,
     min: Vec2,
@@ -524,18 +563,12 @@ pub fn hull_pips(
     cell: Vec2,
     gap: f32,
 ) -> f32 {
-    for i in 0..total {
-        let (row, col) = ((i / PIPS_A_ROW) as f32, (i % PIPS_A_ROW) as f32);
-        let at = min + Vec2::new(col * (cell.x + gap), row * (cell.y + gap));
-        let c = if i < lit {
-            color
-        } else {
-            with_alpha(color, 0.3)
-        };
-        p.rect(at, cell, c);
+    let boxes = hull_boxes(total, lit, cell, gap);
+    for (at, size, mine) in &boxes {
+        let c = if *mine { color } else { with_alpha(color, 0.3) };
+        p.rect(min + *at, *size, c);
     }
-    let rows = total.div_ceil(PIPS_A_ROW) as f32;
-    (rows * (cell.y + gap) - gap).max(0.0)
+    hull_boxes_size(&boxes).y
 }
 
 /// Width of `text` in logical px (no trailing tracking).
@@ -664,6 +697,40 @@ fn push_line(out: &mut Vec<UiVertex>, a: Vec2, b: Vec2, width: f32, color: Rgba)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hull_boxes_count_in_tens_and_hundreds_when_many() {
+        let (cell, gap) = (Vec2::new(9.0, 12.0), 3.0);
+        // A few: a pip each, yours first.
+        let b = hull_boxes(5, 2, cell, gap);
+        assert_eq!(b.len(), 5);
+        assert_eq!(b.iter().filter(|x| x.2).count(), 2);
+        // Many (#450): 2 of yours, 633 the rest's: 2 + 6 + 3 + 3 boxes.
+        let b = hull_boxes(635, 2, cell, gap);
+        assert_eq!(b.len(), 14);
+        assert_eq!(b.iter().filter(|x| x.2).count(), 2);
+        assert!(b[..2].iter().all(|x| x.2), "yours come first");
+        // What the boxes stand for adds back up.
+        let worth = |s: Vec2| {
+            if s.x > cell.x {
+                100
+            } else if s.y > cell.y {
+                10
+            } else {
+                1
+            }
+        };
+        let sum =
+            |mine: bool| -> u32 { b.iter().filter(|x| x.2 == mine).map(|x| worth(x.1)).sum() };
+        assert_eq!((sum(true), sum(false)), (2, 633));
+        // It stays small: no wider than a row of pips, a couple of rows.
+        let size = hull_boxes_size(&b);
+        assert!(size.x <= PIPS_A_ROW as f32 * (cell.x + gap) - gap);
+        assert!(size.y < 4.0 * (cell.y + gap), "{size}");
+        // Even thousands stay bounded in width.
+        let size = hull_boxes_size(&hull_boxes(5000, 300, cell, gap));
+        assert!(size.x <= PIPS_A_ROW as f32 * (cell.x + gap) - gap);
+    }
 
     #[test]
     fn scene_alpha_lifts_dim_text_and_keeps_order() {
