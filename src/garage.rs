@@ -1085,8 +1085,8 @@ impl Garage {
 }
 
 /// How far along learning a part (or its tier `what`) from wrecks is: the
-/// button's box filling up, "LEARNING" on the left and the percent on the
-/// right (#483). Whose wrecks teach it is on the spec card above.
+/// button's box filling up, the tier (if it's one) on the left and the
+/// percent on the right (#483). Whose wrecks teach it is on the spec card above.
 fn learning_bar(p: &mut Painter, min: Vec2, width: f32, what: Option<&str>, frac: f32) {
     let size = Vec2::new(width, BUTTON_H);
     let frac = frac.clamp(0.0, 1.0);
@@ -1099,11 +1099,9 @@ fn learning_bar(p: &mut Painter, min: Vec2, width: f32, what: Option<&str>, frac
     let ty = min.y + (BUTTON_H - TextStyle::LABEL.size) * 0.5;
     let mut a = TextStyle::LABEL;
     a.color = theme::DIM;
-    let text = match what {
-        Some(tier) => format!("LEARNING {tier}"),
-        None => "LEARNING".to_string(),
-    };
-    p.text(Vec2::new(min.x + 12.0, ty), &text, &a, Align::Left);
+    if let Some(tier) = what {
+        p.text(Vec2::new(min.x + 12.0, ty), tier, &a, Align::Left);
+    }
     a.color = theme::FG;
     p.text(
         Vec2::new(min.x + width - 12.0, ty),
