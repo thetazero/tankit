@@ -12,7 +12,7 @@ use crate::combat::{FEED_TIME, Match, Phase, Pilot, RENOWN_POP_TIME, SCRAP_POP_T
 use crate::economy::{self, Payout, Scrapped};
 use crate::faction::Faction;
 use crate::galaxy::Moves;
-use crate::galaxy::theater::TickSummary;
+use crate::galaxy::theater::{SideChange, TickSummary};
 use crate::hold::{self, Control};
 use crate::mission::Contract;
 use crate::profile::{Profile, Rank};
@@ -1508,25 +1508,23 @@ fn quiet_line(ticks: u64) -> Option<String> {
     }
 }
 
-/// How many hulls, and what moved them.
-pub type Cause = (u32, &'static str);
-
-/// A side's hulls in, then out, of the system (#475): what made each
-/// change, by how many. None of what didn't happen.
-pub fn causes(m: &Moves) -> ([Cause; 3], [Cause; 4]) {
-    (
-        [
-            (m.arrived, "arrived from other systems"),
-            (m.hired, "mercs hired"),
-            (m.built, "built in its yards"),
-        ],
-        [
-            (m.lost, "lost in battle"),
-            (m.worn, "worn out"),
-            (m.left, "sent to other systems"),
-            (m.released, "mercs' contracts ended"),
-        ],
-    )
+/// What moved a side's hulls in the system (#475), signed: what came in,
+/// then what went. None of what didn't happen.
+pub fn causes(m: &Moves) -> Vec<(i64, &'static str)> {
+    let ins = [
+        (m.arrived, "arrived"),
+        (m.hired, "hired"),
+        (m.built, "built"),
+    ];
+    let outs = [
+        (m.lost, "lost"),
+        (m.worn, "worn out"),
+        (m.left, "sent away"),
+        (m.released, "released"),
+    ];
+    let ins = ins.into_iter().map(|(n, w)| (n as i64, w));
+    let outs = outs.into_iter().map(|(n, w)| (-(n as i64), w));
+    ins.chain(outs).filter(|(n, _)| *n != 0).collect()
 }
 
 /// A change in hulls, signed: "+50", "-3", "0".
@@ -1537,9 +1535,6 @@ fn signed(n: i64) -> String {
         n.to_string()
     }
 }
-
-/// Hulls lost or gone, on the tick summary.
-const LOSS: Rgba = [1.0, 0.38, 0.32, 1.0];
 
 /// What the tick summary screen's showing besides the summary (#475).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1554,124 +1549,105 @@ pub struct SummaryState {
 }
 
 /// The tick summary (#475), its own screen between your battle's results
-/// and the contract screen: how each side's hulls in the system you
-/// fought in came and went since the battle began, and why. The contract
-/// screen loads behind it; CONTINUE goes on to it.
+/// and the contract screen: one line a side for the system you fought in,
+/// its hulls there now and what moved them since the battle began. The
+/// contract screen loads behind it; CONTINUE goes on to it.
 pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f32) -> Layer<Hit> {
     let scale = height / REF_HEIGHT;
     let (w, h) = (width / scale, REF_HEIGHT);
     let mut p = Painter::new(scale);
     let mut hits = Hits::new();
     p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.88]);
-    // Rows: a side's line, then its causes, ins beside outs.
-    let rows: f32 = t
+
+    let mut name = TextStyle::value(15.0);
+    let mut num = TextStyle::value(15.0);
+    num.color = theme::FG;
+    let mut count = TextStyle::value(13.0);
+    count.color = theme::FG;
+    let mut what = TextStyle::value(13.0);
+    what.color = theme::DIM;
+    let mut dim = TextStyle::LABEL;
+    dim.color = theme::DIM;
+
+    // Columns: the side, its hulls now right-aligned, then its causes.
+    let names = t
         .sides
         .iter()
         .map(|c| {
-            let (ins, outs) = causes(&c.moves);
-            let n = |v: &[(u32, &str)]| v.iter().filter(|(n, _)| *n > 0).count();
-            SIDE_ROW + n(&ins).max(n(&outs)) as f32 * CAUSE_ROW + SIDE_GAP
+            let (f, n) = who(c);
+            emblem::tagged_width(n, &name)
+                + if f == Faction::Company {
+                    MERC_INDENT
+                } else {
+                    0.0
+                }
         })
-        .sum();
-    let size = Vec2::new(900.0f32.min(w - 32.0), 190.0 + rows);
+        .fold(0.0f32, f32::max);
+    let nums = t
+        .sides
+        .iter()
+        .map(|c| measure(&c.now.to_string(), &num))
+        .fold(measure("000", &num), f32::max);
+    let num_x = names + 24.0 + nums;
+    let causes_x = num_x + 32.0;
+    let cause_w =
+        |(n, w): &(i64, &str)| measure(&signed(*n), &count) + 6.0 + measure(w, &what) + CAUSE_GAP;
+    let widest = t
+        .sides
+        .iter()
+        .map(|c| causes(&c.moves).iter().map(cause_w).sum::<f32>())
+        .fold(0.0f32, f32::max);
+    let quiet = quiet_line(t.quiet());
+    let top = if quiet.is_some() { 104.0 } else { 84.0 };
+    let size = Vec2::new(
+        (causes_x + widest - CAUSE_GAP + 64.0)
+            .max(520.0)
+            .min(w - 32.0),
+        top + t.sides.len() as f32 * SIDE_ROW + 24.0 + BUTTON_H + 24.0,
+    );
     let min = Vec2::new(w * 0.5 - size.x * 0.5, (h * 0.5 - size.y * 0.5).max(16.0));
     p.rect(min, size, theme::PANEL);
     widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
     let x = min.x + 32.0;
     let right = min.x + size.x - 32.0;
-    label(
-        &mut p,
-        Vec2::new(x, min.y + 28.0),
-        "SINCE YOUR BATTLE",
-        Align::Left,
-    );
     p.text(
-        Vec2::new(x, min.y + 46.0),
-        &format!("THE WAR IN {}", t.name),
+        Vec2::new(x, min.y + 32.0),
+        &t.name,
         &TextStyle::value(22.0),
         Align::Left,
     );
-    let mut dim = TextStyle::LABEL;
-    dim.color = theme::DIM;
-    let when = quiet_line(t.quiet()).unwrap_or_else(|| "Your battle's tick".to_string());
-    let mut body = TextStyle::value(13.0);
-    body.color = theme::DIM;
-    p.text(Vec2::new(x, min.y + 80.0), &when, &body, Align::Left);
-    let mut cause = TextStyle::value(12.0);
-    cause.color = theme::DIM;
-
-    let mut head = TextStyle::LABEL;
-    head.color = theme::FAINT;
-    let cols = [right - 200.0, right - 100.0, right];
-    let mut y = min.y + 116.0;
-    for (c, text) in cols.iter().zip(["BEFORE", "NOW", "CHANGE"]) {
-        p.text(Vec2::new(*c, y), text, &head, Align::Right);
+    if let Some(q) = &quiet {
+        p.text(Vec2::new(x, min.y + 66.0), q, &what, Align::Left);
     }
-    y += 20.0;
+
+    let mut y = min.y + top;
     for c in &t.sides {
-        let side = Faction::ALL[c.side];
-        let mut name = TextStyle::value(15.0);
+        let (side, n) = who(c);
         name.color = side.ui();
-        emblem::tagged(
-            &mut p,
-            Vec2::new(x, y),
-            side,
-            side.name(),
-            &name,
-            Align::Left,
-        );
-        let mut num = TextStyle::value(15.0);
-        num.color = theme::FG;
+        let nx = x + if c.merc { MERC_INDENT } else { 0.0 };
+        emblem::tagged(&mut p, Vec2::new(nx, y), side, n, &name, Align::Left);
         p.text(
-            Vec2::new(cols[0], y),
-            &c.before.to_string(),
-            &num,
-            Align::Right,
-        );
-        p.text(
-            Vec2::new(cols[1], y),
+            Vec2::new(x + num_x, y),
             &c.now.to_string(),
             &num,
             Align::Right,
         );
-        let change = c.now as i64 - c.before as i64;
-        num.color = match change {
-            0 => theme::DIM,
-            n if n > 0 => theme::MEND,
-            _ => LOSS,
-        };
-        p.text(Vec2::new(cols[2], y), &signed(change), &num, Align::Right);
-        y += SIDE_ROW;
-        // Why: what came in on the left, what went on the right.
-        let (ins, outs) = causes(&c.moves);
-        let mut lines = 0;
-        for (column, items, sign, color) in [
-            (x + 26.0, &ins[..], "+", theme::MEND),
-            (x + 26.0 + (size.x - 64.0) * 0.48, &outs[..], "-", LOSS),
-        ] {
-            let mut ly = y;
-            let mut n = 0;
-            for (count, what) in items.iter().filter(|(n, _)| *n > 0) {
-                let mut v = TextStyle::value(12.0);
-                v.color = color;
-                p.text(
-                    Vec2::new(column + 50.0, ly),
-                    &format!("{sign}{count}"),
-                    &v,
-                    Align::Right,
-                );
-                p.text(Vec2::new(column + 60.0, ly), what, &cause, Align::Left);
-                ly += CAUSE_ROW;
-                n += 1;
-            }
-            lines = lines.max(n);
+        // Line the smaller causes up with the bigger figures' baseline.
+        let cy = y + (num.size - count.size);
+        let mut cx = x + causes_x;
+        for cause in causes(&c.moves) {
+            let n = signed(cause.0);
+            p.text(Vec2::new(cx, cy), &n, &count, Align::Left);
+            let wx = cx + measure(&n, &count) + 6.0;
+            p.text(Vec2::new(wx, cy), cause.1, &what, Align::Left);
+            cx += cause_w(&cause);
         }
-        y += lines as f32 * CAUSE_ROW + SIDE_GAP;
+        y += SIDE_ROW;
     }
 
-    // The way on, and how the contract screen's coming along behind.
+    // The way on, and a spinner while the contract screen's still loading.
     let by = min.y + size.y - 24.0 - BUTTON_H;
-    let what = if state.going && state.loading {
+    let label_text = if state.going && state.loading {
         "LOADING"
     } else {
         "CONTINUE"
@@ -1692,37 +1668,43 @@ pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f3
             bmin.x + bsize.x * 0.5,
             bmin.y + (BUTTON_H - style.size) * 0.5,
         ),
-        what,
+        label_text,
         &style,
         Align::Center,
     );
     hits.add(&p, bmin, bsize, Hit::Continue);
-    let status = if state.loading {
+    if state.loading {
         spinner_small(&mut p, Vec2::new(x + 8.0, by + BUTTON_H * 0.5), state.time);
-        "CONTRACTS LOADING"
-    } else {
-        "CONTRACTS READY"
-    };
-    p.text(
-        Vec2::new(
-            x + if state.loading { 24.0 } else { 0.0 },
-            by + (BUTTON_H - dim.size) * 0.5,
-        ),
-        status,
-        &dim,
-        Align::Left,
-    );
+        p.text(
+            Vec2::new(x + 24.0, by + (BUTTON_H - dim.size) * 0.5),
+            "CONTRACTS LOADING",
+            &dim,
+            Align::Left,
+        );
+    }
     Layer {
         verts: p.finish(),
         hits,
     }
 }
 
-/// A side's line on the tick summary, a line of its causes, and the space
-/// after a side.
-const SIDE_ROW: f32 = 24.0;
-const CAUSE_ROW: f32 = 17.0;
-const SIDE_GAP: f32 = 10.0;
+/// Whose line it is on the tick summary: the side's, or the company's
+/// under it, working for it.
+fn who(c: &SideChange) -> (Faction, &'static str) {
+    if c.merc {
+        (Faction::Company, "MERCS")
+    } else {
+        let f = Faction::ALL[c.side];
+        (f, f.name())
+    }
+}
+
+/// How far the mercs' line sits in under the side they work for.
+const MERC_INDENT: f32 = 20.0;
+
+/// A side's line on the tick summary, and the space after each cause on it.
+const SIDE_ROW: f32 = 30.0;
+const CAUSE_GAP: f32 = 22.0;
 
 /// `spinner`, small enough to sit beside a label.
 fn spinner_small(p: &mut Painter, c: Vec2, time: f32) {
