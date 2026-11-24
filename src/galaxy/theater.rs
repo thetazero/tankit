@@ -808,7 +808,26 @@ impl Galaxy {
     /// the side that hired it. None if you have no company, or it has no
     /// battle for you this tick.
     pub fn aboard(&self, rank: u32) -> Option<Theater> {
-        let c = self.crew_company()?;
+        self.aboard_company(self.crew_company()?, rank)
+    }
+
+    /// Ship `id`'s contract as you'd find it if you signed on (#453): the
+    /// theater aboard it, with your own hulls as your rank would set them.
+    /// None if it's gone or has no battle for you this tick.
+    pub fn contract_of(&self, id: u32, rank: u32) -> Option<Theater> {
+        let c = self.company(id)?;
+        let mut t = self.aboard_company(c, rank)?;
+        if self.crew != Some(id)
+            && let Some(ship) = &mut t.ship
+        {
+            ship.news = None;
+            ship.ended = Vec::new();
+        }
+        Some(t)
+    }
+
+    /// The theater aboard company `c` (an index into `companies`).
+    fn aboard_company(&self, c: usize, rank: u32) -> Option<Theater> {
         let co = &self.companies[c];
         let k = co.contract?;
         let (s, f) = (k.target as usize, k.side as usize);
@@ -1188,10 +1207,23 @@ mod tests {
         }
         assert_eq!(g.crew, Some(mine));
         let to = ships[0].id;
+        // Its contract, previewed before you sign on (#453): the theater
+        // you'd find aboard, without your company's news; none for a ship
+        // that's gone.
+        let preview = g.contract_of(to, 1).expect("a preview of its contract");
+        let ship = preview.ship.as_ref().unwrap();
+        assert_eq!(ship.id, to);
+        assert!(ship.news.is_none() && ship.ended.is_empty());
+        assert!(preview.sites.iter().any(|s| s.committed));
+        assert!(g.contract_of(u32::MAX, 1).is_none());
+        assert_eq!(g.crew, Some(mine), "previewing doesn't switch");
         assert!(g.switch_crew(to));
         assert_eq!(g.crew, Some(to));
         assert_eq!(g.crew_news, Some(CrewNews::Switched { from: mine }));
         let t = g.aboard(1).expect("a battle aboard the new ship");
+        assert_eq!(t.system, preview.system);
+        assert_eq!(t.employer, preview.employer);
+        assert_eq!(t.ship.as_ref().unwrap().committed, ship.committed);
         assert_eq!(t.ship.unwrap().id, to);
         // It's among the ships you could go back to, and yours isn't.
         assert!(g.other_ships(usize::MAX).iter().all(|b| b.id != to));

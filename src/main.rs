@@ -105,7 +105,7 @@ tankit [OPTIONS]
                           (the parts of it you own are equipped, starters otherwise)
   --preview <part>        (with --garage) highlight this part instead, --hull/--turret equipped
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
-  --screen <menu|missions|companies|settings|controls|rebind|pause|results>  (with --shot) render that screen
+  --screen <menu|missions|companies|contract|settings|controls|rebind|pause|results>  (with --shot) render that screen
   --screen pause-settings (with --shot) the pause box with its settings open
   --screen pause --garage (with --shot) the garage opened from the pause box, the match frozen under it
   --debug                 (with --shot) debug mode on: FPS counter
@@ -114,6 +114,8 @@ tankit [OPTIONS]
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, renown gained, crystal tally
                           and (with --learned) a schematic reverse-engineered
+  --screen kill           (with --shot) the player kills the nearest enemy, its gear at T2.5, half a
+                          second before the shot: the scrap popups
   --screen carry          (with --shot --contract raid) the player starts on the enemy's flag,
                           facing home, and carries it
   --learned <part>        (with --screen results) the round's wrecks make this part's schematic
@@ -441,6 +443,8 @@ enum Screen {
     Controls,
     /// The other companies' ships to switch to (#365).
     Companies,
+    /// One of those ships' contract, previewed before you sign on (#453).
+    Contract,
     /// The key bindings, waiting for the key to put on FIRE's second slot.
     Rebind,
     Pause,
@@ -457,6 +461,9 @@ enum Screen {
     /// Left the battle from the pause box: it plays out without you, under
     /// a progress bar (#427).
     Leaving,
+    /// A kill of yours half a second before the shot, its wreck's gear well
+    /// past what you know: the scrap popups (#444).
+    Kill,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -507,6 +514,7 @@ fn main() -> Result<()> {
                         | Screen::Site
                         | Screen::Settings
                         | Screen::Companies
+                        | Screen::Contract
                         | Screen::Controls
                         | Screen::Rebind
                 )
@@ -810,6 +818,7 @@ fn parse_args() -> Result<Args> {
                     Some("settings") => Screen::Settings,
                     Some("controls") => Screen::Controls,
                     Some("companies") => Screen::Companies,
+                    Some("contract") => Screen::Contract,
                     Some("rebind") => Screen::Rebind,
                     Some("pause") => Screen::Pause,
                     Some("pause-settings") => Screen::PauseSettings,
@@ -818,10 +827,11 @@ fn parse_args() -> Result<Args> {
                     Some("spent") => Screen::Spent,
                     Some("spent-over") => Screen::SpentOver,
                     Some("leaving") => Screen::Leaving,
+                    Some("kill") => Screen::Kill,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, kill or carry, got {other:?}"
                         )
                     }
                 })
@@ -871,6 +881,7 @@ fn parse_args() -> Result<Args> {
                 | Screen::Site
                 | Screen::Settings
                 | Screen::Companies
+                | Screen::Contract
                 | Screen::Controls
                 | Screen::Rebind
         )
@@ -1140,6 +1151,18 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             game.fast_forward(60);
         }
         camera
+    } else if args.screen == Some(Screen::Kill) {
+        // Your kill half a second before the shot, its wreck built to T2.5.
+        let lead = 0.5f32.min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        game.known = Some(profile.known);
+        let me = game.fighters[0].team;
+        for f in game.fighters.iter_mut().filter(|f| f.team != me) {
+            f.levels = economy::Levels::all(25);
+        }
+        game.kill_nearest_enemy()
+            .context("--screen kill needs an enemy in play")?;
+        advance(&mut game, &mut cam, &mut garage, lead)
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
@@ -1445,7 +1468,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 menu.input(menu::Nav::Select);
             }
         }
-        Some(Screen::Companies) => {
+        Some(Screen::Companies | Screen::Contract) => {
             let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
             g.await_work_staying(prefer, profile.rank().level, 100);
             profile.ship = g.crew;
@@ -1453,6 +1476,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             menu.input(menu::Nav::Select);
             menu.set_ships(g.other_ships(5));
             menu.input(menu::Nav::Down);
+            if args.screen == Some(Screen::Contract) {
+                menu.input(menu::Nav::Select);
+                if let Some(id) = menu.wants_contract() {
+                    menu.set_contract(g.contract_of(id, profile.rank().level));
+                }
+            }
         }
         Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {
             for _ in 0..3 {

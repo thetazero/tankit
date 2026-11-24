@@ -71,6 +71,8 @@ pub const HUSK_TOLL: f32 = 1.25;
 pub const KILL_RENOWN: u32 = 10;
 /// How long a renown popup stays on screen, seconds.
 pub const RENOWN_POP_TIME: f32 = 2.0;
+/// How long a scrap popup stays up: a little longer, it has more to read.
+pub const SCRAP_POP_TIME: f32 = 2.6;
 
 /// Weapon numbers per turret.
 #[derive(Clone, Copy)]
@@ -702,6 +704,12 @@ pub struct Kill {
     pub age: f32,
 }
 
+/// What one of your kills taught of a part (#444), for the HUD popup.
+pub struct ScrapPop {
+    pub scrapped: crate::economy::Scrapped,
+    pub age: f32,
+}
+
 /// Renown the player just earned, for the HUD popup.
 pub struct RenownPop {
     pub amount: u32,
@@ -855,6 +863,8 @@ pub struct Match {
     /// Renown the player has earned with the Company this match.
     pub renown: u32,
     pub renown_pops: Vec<RenownPop>,
+    /// What your kills just taught of their wrecks' parts (#444).
+    pub scrap_pops: Vec<ScrapPop>,
     /// Audible events since the app last took them.
     pub sounds: Vec<Sound>,
     pub repairs: Repairs,
@@ -1013,6 +1023,7 @@ impl Match {
             feed: Vec::new(),
             renown: 0,
             renown_pops: Vec::new(),
+            scrap_pops: Vec::new(),
             sounds: Vec::new(),
             repairs,
             factions,
@@ -1115,6 +1126,22 @@ impl Match {
             .unwrap_or(0);
         self.fighters[0].health = 0.0;
         self.kill(killer, 0);
+    }
+
+    /// The player destroys the nearest enemy now (scrap-popup shots:
+    /// `--screen kill`). None if there's no enemy in play.
+    pub fn kill_nearest_enemy(&mut self) -> Option<usize> {
+        let me = self.fighters[0].team;
+        let p = self.world.tanks[0].pos;
+        let victim = (1..self.fighters.len())
+            .filter(|&j| self.fighters[j].team != me && self.fighters[j].alive)
+            .min_by(|&a, &b| {
+                let d = |j: usize| self.world.tanks[j].pos.distance(p);
+                d(a).total_cmp(&d(b))
+            })?;
+        self.fighters[victim].health = 0.0;
+        self.kill(0, victim);
+        Some(victim)
     }
 
     /// Swap side `team`'s bots for the frozen baseline brain (`ai::baseline`).
@@ -1655,6 +1682,10 @@ impl Match {
             x.age += DT;
         }
         self.renown_pops.retain(|x| x.age < RENOWN_POP_TIME);
+        for x in &mut self.scrap_pops {
+            x.age += DT;
+        }
+        self.scrap_pops.retain(|x| x.age < SCRAP_POP_TIME);
     }
 
     /// Aim assist (Tanki-style, but gentle): bend each gun as little as it
@@ -2335,7 +2366,11 @@ impl Match {
                 let hull = Part::Hull(t.hull_kind);
                 let turret = Part::Turret(t.turret_kind);
                 let wreck = [(hull, l.of(hull)), (turret, l.of(turret))];
+                let had = self.fighters[killer].scrap.len();
                 self.fighters[killer].scrap.extend(wreck);
+                if killer == 0 && !self.left {
+                    self.pop_scrap(had);
+                }
             }
             self.fighters[killer].kills += 1;
             if killer == 0 {
@@ -2513,6 +2548,24 @@ impl Match {
             if self.fighters[i].husk <= 0.0 {
                 self.wreck(i);
             }
+        }
+    }
+
+    /// Pop up what the wreck just added to your scrap (from `had` on) taught,
+    /// on top of what the round's earlier ones did (#444). Outside the war
+    /// (nothing known to learn on) there's nothing to show.
+    fn pop_scrap(&mut self, had: usize) {
+        let Some(before) = self.known else { return };
+        let scrap = &self.fighters[0].scrap;
+        let mut k = before;
+        for &(part, level) in &scrap[..had] {
+            k.scrap(part, level);
+        }
+        for s in crate::economy::scrapped(k, &scrap[had..]) {
+            self.scrap_pops.push(ScrapPop {
+                scrapped: s,
+                age: 0.0,
+            });
         }
     }
 
@@ -3772,6 +3825,40 @@ mod tests {
             m.step(Command::default(), false);
         }
         m
+    }
+
+    /// A kill of yours whose wreck teaches something pops up what it taught
+    /// (#444), on top of what the round's earlier kills did; one that
+    /// teaches nothing, or outside the war, pops nothing.
+    #[test]
+    fn kills_pop_up_the_scrap_they_teach() {
+        use crate::economy::{Known, Levels, Part};
+        let kontos = Part::Turret(TurretKind::Kontos);
+        let hull = Part::Hull(HullKind::Kataphrakt);
+        // Outside the war: nothing known to learn on.
+        let mut m = duel(TurretKind::Kontos, 25.0);
+        m.fighters[1].levels = Levels::all(20);
+        assert_eq!(m.kill_nearest_enemy(), Some(1));
+        assert!(m.scrap_pops.is_empty());
+        // In it: the wreck's hull and turret, each a fifth of a step.
+        let mut m = duel(TurretKind::Kontos, 25.0);
+        let mut known = Known::default();
+        known.set(hull, 20.0);
+        m.known = Some(known);
+        m.fighters[1].levels = Levels::all(20);
+        m.fighters[0].scrap.push((kontos, 20));
+        m.kill_nearest_enemy();
+        let pops: Vec<_> = m.scrap_pops.iter().map(|x| x.scrapped).collect();
+        assert_eq!(pops.len(), 1, "the hull's no better than what's known");
+        assert_eq!(pops[0].part, kontos);
+        assert_eq!(pops[0].percent(), 20);
+        // The earlier wreck's 20% is in where it stands: 40% of the first step.
+        assert_eq!(pops[0].toward(), Some((40, 1)));
+        // They fade.
+        for _ in 0..(SCRAP_POP_TIME / DT) as usize + 2 {
+            m.step(Command::default(), false);
+        }
+        assert!(m.scrap_pops.is_empty());
     }
 
     /// Every tank's arrival is heard once, its team's way: all of them at the

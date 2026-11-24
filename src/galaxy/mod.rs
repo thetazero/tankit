@@ -48,8 +48,7 @@
 //!    spent, time up) end.
 //! 3. *Supply.* A people's systems that hang together (within FTL range of
 //!    each other) fewer than a few dozen are a **pocket**: once an enemy
-//!    borders it, it builds slower, and every
-//!    enemy around goes for it. Enclaves don't last. Every few ticks realms
+//!    borders it, every enemy around goes for it. Enclaves don't last. Every few ticks realms
 //!    split and merge.
 //! 4. *Offensives.* A realm banks crystals until it can afford a push, aims
 //!    it at the stretch of its border where it's strongest against the
@@ -148,12 +147,9 @@ pub struct Rules {
     /// ... and this much anywhere off its offensive.
     pub opportunity: f32,
     /// A people's systems hanging together (by FTL range) fewer than this
-    /// are a pocket, cut off from the rest: once an enemy borders it, it
-    /// builds hulls slower, and the
+    /// are a pocket, cut off from the rest: once an enemy borders it, the
     /// enemy goes for it.
     pub pocket: u32,
-    /// How much of its hull production a pocket keeps.
-    pub cut_off: f32,
     /// A realm launches an offensive once it has banked this many ticks of
     /// crystal income...
     pub launch: f32,
@@ -252,7 +248,6 @@ impl Default for Rules {
             gang_odds: 1.15,
             opportunity: 3.0,
             pocket: 20,
-            cut_off: 0.4,
             launch: 60.0,
             spent: 2.0,
             stall: 30,
@@ -616,14 +611,9 @@ impl Galaxy {
     }
 
     /// Hulls each side's yards in system `s` turn out a tick, as `produce`
-    /// adds them: a pocket's holder short by the cut-off.
+    /// adds them. A pocket builds at the full rate (#446).
     pub fn built(&self, s: usize) -> [f32; SIDES] {
-        let mut out = self.production(s);
-        let holder = self.systems[s].owner();
-        if self.cut[s] {
-            out[holder] *= self.rules.cut_off;
-        }
-        out
+        self.production(s)
     }
 
     pub fn neighbors(&self, s: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
@@ -855,13 +845,10 @@ impl Galaxy {
                 self.moves[s][f].worn += worn;
             }
             let sys = &mut self.systems[s];
-            // A pocket's yards run short of what the rest of its space sends them.
-            let holder = sys.owner();
-            let cut = if self.cut[s] { self.rules.cut_off } else { 1.0 };
             for site in &self.sites[a as usize..b as usize] {
                 if let SiteKind::Production { hulls, crystals: c } = site.kind {
                     let f = site.owner as usize;
-                    sys.building[f] += if f == holder { hulls * cut } else { hulls };
+                    sys.building[f] += hulls;
                     let r = sys.realms[f];
                     if r == NONE {
                         continue;

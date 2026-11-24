@@ -840,3 +840,16 @@ fn moves_account_for_every_hull() {
     g.clear_moves();
     assert!(g.moves.iter().flatten().all(Moves::is_empty));
 }
+
+/// A pocket builds hulls as fast as it would anywhere else (#446).
+#[test]
+fn pockets_build_at_full_rate() {
+    let mut g = Galaxy::warmed_by(7, 200);
+    let s = (0..g.systems.len())
+        .find(|&s| g.production(s)[g.systems[s].owner()] > 0.0)
+        .unwrap();
+    let before = g.built(s);
+    g.cut[s] = true;
+    assert_eq!(g.built(s), before);
+    assert_eq!(g.built(s), g.production(s));
+}
