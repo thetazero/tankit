@@ -141,8 +141,9 @@ tankit [OPTIONS]
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
                           the rest of the war ticked with it, as back from a battle
-  --quiet <n>             (with --won) the war goes on n ticks more before the missions screen,
-                          which says how long it went on without you
+  --quiet <n>             (with --won) the war goes on n ticks more before the missions screen
+  --ticks                 (with --won) the tick summary instead, the screen before the missions
+                          screen: what the war did to the system's hulls since the battle, and why
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -199,6 +200,8 @@ pub struct Args {
     /// --quiet, with --won: the galaxy ticks this many more times after the
     /// battle before the missions screen (#447).
     quiet: u32,
+    /// --ticks, with --won: the tick summary screen (#475).
+    ticks: bool,
     /// --defend, for missions shots: your company's on a defense contract.
     defend: bool,
     pub loadout: garage::Loadout,
@@ -615,6 +618,7 @@ fn parse_args() -> Result<Args> {
     let mut won = false;
     let mut tab = 0;
     let mut quiet = 0;
+    let mut ticks = false;
     let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
@@ -747,6 +751,7 @@ fn parse_args() -> Result<Args> {
             "--won" => won = true,
             "--tab" => tab = args.next().context("--tab needs a number")?.parse()?,
             "--quiet" => quiet = args.next().context("--quiet needs a number")?.parse()?,
+            "--ticks" => ticks = true,
             "--defend" => defend = true,
             "--straight" => straight = true,
             "--tilt" => {
@@ -966,6 +971,7 @@ fn parse_args() -> Result<Args> {
         won,
         tab,
         quiet,
+        ticks,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -1408,6 +1414,8 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
     profile.loadout = args.loadout;
     let mut menu = menu::Menu::new();
+    // --ticks: the tick summary, over the missions screen's system.
+    let mut summary = None;
     // A new pilot's galaxy, with the company they join (one working for
     // --employer, if there is one).
     let prefer = args.employer.map(|f| f.index());
@@ -1537,7 +1545,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 }
                 // As the app does: the war goes on until there's work (#447).
                 let (t, _) = g.await_work_staying(prefer, rank, 100);
-                menu.set_quiet(g.tick.saturating_sub(fought_at + 1));
+                if args.ticks {
+                    summary = Some(g.tick_summary(b.system, fought_at));
+                }
                 profile.ship = g.crew;
                 menu.set_theater(t);
             }
@@ -1610,7 +1620,18 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         None => scene::build(&game.world, &tanks, &art, camera),
     };
-    frame.ui = menu.draw(&profile, w, h, 1.0).verts;
+    frame.ui = match &summary {
+        Some(t) => {
+            let state = hud::SummaryState {
+                loading: false,
+                going: false,
+                time: 0.0,
+                hover: None,
+            };
+            hud::tick_summary(t, state, w, h).verts
+        }
+        None => menu.draw(&profile, w, h, 1.0).verts,
+    };
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));
     }

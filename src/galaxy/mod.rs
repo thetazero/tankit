@@ -331,12 +331,12 @@ pub struct Moves {
 
 impl Moves {
     /// Hulls in less hulls out.
-    #[cfg(test)]
     pub fn net(&self) -> i64 {
         (self.built + self.arrived + self.hired) as i64
             - (self.worn + self.lost + self.left + self.released) as i64
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         *self == Moves::default()
     }

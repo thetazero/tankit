@@ -949,3 +949,35 @@ fn pockets_build_at_full_rate() {
     assert_eq!(g.built(s), before);
     assert_eq!(g.built(s), g.production(s));
 }
+
+/// The tick summary (#475) says what a system's sides had when the battle
+/// began and have now, every side there either time, and how many ticks.
+#[test]
+fn tick_summary_counts_from_the_battle() {
+    let mut g = small_war();
+    g.clear_moves();
+    let at = g.tick;
+    let before: Vec<[u32; SIDES]> = g.systems.iter().map(|s| s.hulls).collect();
+    for _ in 0..12 {
+        g.step();
+    }
+    let mut changed = false;
+    for s in 0..g.systems.len() {
+        let t = g.tick_summary(s, at);
+        assert_eq!(t.ticks, 12);
+        assert_eq!(t.quiet(), 11);
+        for f in 0..SIDES {
+            let row = t.sides.iter().find(|c| c.side == f);
+            let (was, now) = (before[s][f], g.systems[s].hulls[f]);
+            match row {
+                Some(c) => {
+                    assert_eq!((c.before, c.now), (was, now), "system {s} side {f}");
+                    changed |= was != now;
+                }
+                None => assert_eq!((was, now), (0, 0), "system {s} side {f} left out"),
+            }
+        }
+        assert!(t.sides.windows(2).all(|w| w[0].now >= w[1].now));
+    }
+    assert!(changed, "nothing changed: the test shows nothing");
+}
