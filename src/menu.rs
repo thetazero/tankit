@@ -1126,8 +1126,8 @@ impl Menu {
         body(p, Vec2::new(x, y), "Their gear", theme::DIM);
         body(p, Vec2::new(col, y), "Win, plus kills", theme::DIM);
         y += 30.0;
-        // What their wrecks would teach you (#438): their parts you don't
-        // have yet, and how far you've got with each.
+        // What wrecking them would teach you (#438, #457): their parts you
+        // don't have yet, and how far you've got with each.
         let unknown: Vec<String> = crate::economy::PARTS
             .into_iter()
             .filter(|&part| part.maker() == enemy && !profile.owns(part))
@@ -1140,7 +1140,7 @@ impl Menu {
             y = wrap(
                 p,
                 Vec2::new(x, y),
-                &format!("Wrecks teach: {}", unknown.join(" · ")),
+                &format!("Wreck them to learn: {}", unknown.join(" · ")),
                 theme::DIM,
             );
             y += 18.0;

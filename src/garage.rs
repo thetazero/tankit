@@ -1,7 +1,8 @@
 //! Garage: from the main menu, or G mid-match to park and swing the camera
 //! round your tank. Pick the hull and turret for your next respawn, and
 //! upgrade parts with crystals. The tank you're driving doesn't change. Parts
-//! you don't have yet say whose wrecks teach them, and how far you've got.
+//! you don't have yet say whose tanks to wreck to learn them, and how far
+//! you've got.
 //!
 //! Hulls and turrets each have a tab: a scrolling grid of cards with rendered
 //! thumbnails, grouped by maker. Browsing only previews: the orbit camera
@@ -1193,17 +1194,21 @@ fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bo
         // Reverse-engineered from the wrecks of its makers' tanks.
         let maker = part.maker().name();
         let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
-        // The longest that fits the button.
-        let text = [
-            format!("WRECK THE {maker} TO LEARN IT · {pct}%"),
-            format!("WRECK THE {maker} · {pct}%"),
-            format!("{maker} WRECKS · {pct}%"),
-        ]
-        .into_iter()
-        .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
-        .unwrap_or_default();
+        let text = longest_fitting([
+            format!("WRECK {maker} TANKS TO LEARN IT · {pct}%"),
+            format!("WRECK {maker} TANKS · {pct}% LEARNED"),
+            format!("WRECK {maker} TANKS · {pct}%"),
+        ]);
         (text, false)
     }
+}
+
+/// The longest of `texts` (longest first) that fits a garage button.
+fn longest_fitting<const N: usize>(texts: [String; N]) -> String {
+    texts
+        .into_iter()
+        .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
+        .unwrap_or_default()
 }
 
 /// What U does for `part`, if it's owned, and whether it can right now.
@@ -1219,7 +1224,14 @@ fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
             // How far along the next step's reverse engineering is (#438).
             let known = profile.known.of(part);
             let pct = ((known - known.floor()) * 100.0) as u32;
-            (format!("{next} UNKNOWN · {pct}% FROM WRECKS"), false)
+            let maker = part.maker().name();
+            let text = longest_fitting([
+                format!("WRECK {maker} TANKS TO LEARN {next} · {pct}%"),
+                format!("WRECK {maker} TANKS · {next} {pct}% LEARNED"),
+                format!("WRECK {maker} TANKS · {next} {pct}%"),
+                format!("LEARNING {next} · {pct}%"),
+            ]);
+            (text, false)
         }
         Err(_) => ("FULLY UPGRADED".to_string(), false),
     })
@@ -1313,6 +1325,34 @@ fn smooth(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn learning_from_wrecks_says_whose_tanks_to_wreck() {
+        // #457: every locked part's buttons say to wreck its maker's tanks,
+        // and how far along you are, in a text that fits the button.
+        let mut p = Profile::in_memory();
+        let queued = (HullKind::Kataphrakt, TurretKind::Kontos);
+        for part in crate::economy::PARTS {
+            if p.owns(part) {
+                continue;
+            }
+            let (text, _) = primary_action(part, queued, &p);
+            eprintln!("{text}");
+            assert!(text.starts_with("WRECK ") && text.contains('%'), "{text}");
+            assert!(text.contains(part.maker().name()), "{text}");
+        }
+        for part in crate::economy::PARTS {
+            // Known to 1.5 and built to 1: the next step is half learned.
+            p.known.set(part, 1.5);
+            p.levels.set(part, 1);
+            p.crystals = 100_000;
+            let (text, can) = upgrade_action(part, &p).unwrap();
+            eprintln!("{text}");
+            assert!(!can);
+            assert!(text.starts_with("WRECK ") && text.contains("50%"), "{text}");
+            assert!(text.contains(part.maker().name()), "{text}");
+        }
+    }
 
     #[test]
     fn upgrade_steps_are_bought_then_available_then_locked() {
@@ -1484,7 +1524,7 @@ mod tests {
         let pelekys = Part::Turret(TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Locked(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
-        // The button says whose wrecks teach it: the side that makes it.
+        // The button says whose tanks to wreck to learn it: the side that makes it.
         let (text, can) = primary_action(pelekys, start, &p);
         assert!(!can);
         assert!(text.contains("IMPERIUM"), "{text}");
