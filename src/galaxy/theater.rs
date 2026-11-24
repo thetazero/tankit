@@ -234,6 +234,9 @@ pub struct Berth {
     pub crystals: f32,
     /// On contract: what for (see `Work`).
     pub work: Option<Work>,
+    /// The sides you'd fight in its battles this tick (indices into
+    /// `Faction::ALL`, in order), to pick ships by (#454).
+    pub enemies: Vec<usize>,
 }
 
 /// A company's contract, as the missions screen names it.
@@ -643,6 +646,16 @@ impl Galaxy {
             system: system_name(co.at as usize),
             hulls: co.hulls + co.contract.map_or(0, |k| k.field),
             crystals: co.crystals,
+            enemies: co.contract.map_or_else(Vec::new, |k| {
+                let (s, f) = (k.target as usize, k.side as usize);
+                let first = self.site_range(s).start;
+                let at = self.site_enemies(s, f);
+                let mut out: Vec<usize> =
+                    self.commits(s, f).iter().map(|&i| at[i - first]).collect();
+                out.sort();
+                out.dedup();
+                out
+            }),
             work: co.contract.map(|k| Work {
                 side: k.side as usize,
                 realm: system_name(self.realms[k.realm as usize].seat as usize),
@@ -652,10 +665,10 @@ impl Galaxy {
         }
     }
 
-    /// The ships you could switch to (#365): up to `n` other companies with
-    /// a battle for you this tick, nearest your ship first (biggest fight
-    /// first while you're with none).
-    pub fn other_ships(&self, n: usize) -> Vec<Berth> {
+    /// The ships you could switch to (#365): every other company with a
+    /// battle for you this tick (#454), nearest your ship first (biggest
+    /// fight first while you're with none).
+    pub fn other_ships(&self) -> Vec<Berth> {
         let mine = self.crew_company();
         let here = mine.map(|c| self.systems[self.companies[c].at as usize].pos);
         let mut ships: Vec<usize> = self.berths().filter(|&c| Some(c) != mine).collect();
@@ -664,7 +677,6 @@ impl Galaxy {
             None => -(self.companies[c].contract.map_or(0, |k| k.field) as f32),
         };
         ships.sort_by(|&a, &b| key(a).total_cmp(&key(b)).then(a.cmp(&b)));
-        ships.truncate(n);
         ships.into_iter().map(|c| self.berth(c)).collect()
     }
 
@@ -888,6 +900,37 @@ impl Galaxy {
         Some(t)
     }
 
+    /// Who side `f` would fight at each site of system `s` (in order): its
+    /// owner if it's an enemy's, else whoever's attacking it (or the
+    /// strongest enemy in the system).
+    fn site_enemies(&self, s: usize, f: usize) -> Vec<usize> {
+        let sys = &self.systems[s];
+        let present = self.present(s);
+        // Who attacks each site this tick.
+        let mut attacker: Vec<Option<usize>> = vec![None; self.site_range(s).len()];
+        for g in (0..SIDES).filter(|&g| self.fighting(s, g)) {
+            if let Some(t) = self.target(s, g) {
+                attacker[t - sys.sites.0 as usize].get_or_insert(g);
+            }
+        }
+        let strongest = (0..SIDES)
+            .filter(|&g| present[g] && self.hostile(f, g))
+            .max_by_key(|&a| sys.hulls[a])
+            .unwrap_or((f + 1) % SIDES);
+        self.site_range(s)
+            .map(|i| {
+                let owner = self.sites[i].owner as usize;
+                if self.hostile(f, owner) {
+                    owner
+                } else {
+                    attacker[i - sys.sites.0 as usize]
+                        .filter(|&g| self.hostile(f, g))
+                        .unwrap_or(strongest)
+                }
+            })
+            .collect()
+    }
+
     /// System `s` as side `f` sees it. Each site's mission is its own,
     /// whatever your rank (#437).
     pub fn theater_at(&self, s: usize, f: usize) -> Theater {
@@ -900,17 +943,7 @@ impl Galaxy {
         contested.sort();
         contested.dedup();
         let commits = self.commits(s, f);
-        // Who attacks each site this tick.
-        let mut attacker: Vec<Option<usize>> = vec![None; self.site_range(s).len()];
-        for g in (0..SIDES).filter(|&g| self.fighting(s, g)) {
-            if let Some(t) = self.target(s, g) {
-                attacker[t - sys.sites.0 as usize].get_or_insert(g);
-            }
-        }
-        let strongest = (0..SIDES)
-            .filter(|&g| present[g] && self.hostile(f, g))
-            .max_by_key(|&a| sys.hulls[a])
-            .unwrap_or((f + 1) % SIDES);
+        let enemies = self.site_enemies(s, f);
         let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(c));
         let shield = crate::mission::for_shields();
         let sites: Vec<SiteView> = self
@@ -918,13 +951,7 @@ impl Galaxy {
             .map(|i| {
                 let site = self.sites[i];
                 let owner = site.owner as usize;
-                let enemy = if self.hostile(f, owner) {
-                    owner
-                } else {
-                    attacker[i - sys.sites.0 as usize]
-                        .filter(|&g| self.hostile(f, g))
-                        .unwrap_or(strongest)
-                };
+                let enemy = enemies[i - sys.sites.0 as usize];
                 let mut r = Rng::new(self.seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
                 let pool = match world(s, site.planet as usize).0 {
                     Class::Desert => &pools[0],
@@ -1172,17 +1199,30 @@ mod tests {
     fn you_can_switch_to_another_company() {
         let mut g = galaxy_with_work();
         for _ in 0..400 {
-            if !g.other_ships(1).is_empty() {
+            if !g.other_ships().is_empty() {
                 break;
             }
             g.step();
             g.await_work_staying(None, 1, 400);
         }
         let mine = g.crew.unwrap();
-        let ships = g.other_ships(5);
+        let ships = g.other_ships();
         assert!(!ships.is_empty(), "no other ship at work");
-        assert!(ships.len() <= 5);
         assert!(ships.iter().all(|b| b.id != mine && b.work.is_some()));
+        // Each with who you'd fight there: its preview's battles' enemies.
+        for b in &ships {
+            let t = g.contract_of(b.id, 1).unwrap();
+            let mut want: Vec<usize> = t
+                .sites
+                .iter()
+                .filter(|s| s.committed)
+                .map(|s| s.enemy)
+                .collect();
+            want.sort();
+            want.dedup();
+            assert!(!b.enemies.is_empty());
+            assert_eq!(b.enemies, want);
+        }
         // Nearest first.
         let here = g.systems[g.companies[g.crew_company().unwrap()].at as usize].pos;
         let d = |b: &Berth| {
@@ -1222,7 +1262,7 @@ mod tests {
         assert_eq!(t.ship.as_ref().unwrap().committed, ship.committed);
         assert_eq!(t.ship.unwrap().id, to);
         // It's among the ships you could go back to, and yours isn't.
-        assert!(g.other_ships(usize::MAX).iter().all(|b| b.id != to));
+        assert!(g.other_ships().iter().all(|b| b.id != to));
     }
 
     /// Switching drops a choice of ship left open.
@@ -1230,7 +1270,7 @@ mod tests {
     fn switching_closes_a_choice_of_ship() {
         let mut g = galaxy_with_work();
         let _ = your_company_splits(&mut g);
-        let to = g.other_ships(1)[0].id;
+        let to = g.other_ships()[0].id;
         assert!(g.switch_crew(to));
         assert!(g.crew_choice().is_none());
         assert_eq!(g.crew, Some(to));
