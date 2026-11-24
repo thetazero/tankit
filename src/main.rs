@@ -1407,7 +1407,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     // As the app does on SIGN ON: switch to the first other
                     // ship with a battle for you, then on to its theater.
                     let id = g
-                        .other_ships(usize::MAX)
+                        .other_ships()
                         .iter()
                         .map(|b| b.id)
                         .find(|&id| g.contract_of(id, rank).is_some())
