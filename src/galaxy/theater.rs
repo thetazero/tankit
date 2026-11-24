@@ -31,7 +31,7 @@
 //! picked at random, and on a generated kind the one map its seed names
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
-use super::{AT_WAR, Galaxy, SIDES, Site, SiteKind};
+use super::{AT_WAR, Galaxy, SIDES, SiteKind};
 use crate::faction::Faction;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
@@ -506,46 +506,21 @@ impl Galaxy {
         a as usize..b as usize
     }
 
-    /// Each planet of system `s`: (enemy generators up, enemy sites), as `f` sees them.
-    fn in_the_way(&self, s: usize, f: usize) -> ([u8; 4], [u8; 4]) {
+    /// The sites side `f` goes for in system `s` this tick, all at once
+    /// (#460): every enemy shield generator still up, on every planet; and
+    /// on each planet with none of an enemy's up, every enemy site there.
+    /// Shields first: a planet's other sites wait for its generators. The
+    /// picks the tick's `battles` makes, in site order.
+    pub fn targets(&self, s: usize, f: usize) -> Vec<usize> {
         let up = self.shields_up(s, f);
-        let mut enemy = [0u8; 4];
-        for site in &self.sites[self.site_range(s)] {
-            if self.hostile(f, site.owner as usize) {
-                enemy[site.planet as usize] += 1;
-            }
-        }
-        (up, enemy)
-    }
-
-    /// The site side `f` would go for in system `s` this tick, if it won the
-    /// tick: the planet with least in its way, and on it an enemy generator
-    /// still up (it costs a seat while it is: `shielded`); else its
-    /// production; its downed generators last. The pick the tick's `advance`
-    /// makes.
-    pub fn target(&self, s: usize, f: usize) -> Option<usize> {
-        let (up, enemy) = self.in_the_way(s, f);
-        let p = (0..self.systems[s].planets as usize)
-            .filter(|&p| enemy[p] > 0)
-            .min_by_key(|&p| (up[p], enemy[p]))?;
-        let candidate = |site: &Site, production: bool| {
-            site.planet as usize == p
-                && self.hostile(f, site.owner as usize)
-                && if production {
-                    matches!(site.kind, SiteKind::Production { .. })
-                } else {
-                    matches!(site.kind, SiteKind::Shield { .. })
-                }
-        };
-        let r = self.site_range(s);
-        let up = |i: &usize| {
-            let site = &self.sites[*i];
-            candidate(site, false) && site.kind == (SiteKind::Shield { damaged: false })
-        };
-        r.clone()
-            .find(up)
-            .or_else(|| r.clone().find(|&i| candidate(&self.sites[i], true)))
-            .or_else(|| r.clone().find(|&i| candidate(&self.sites[i], false)))
+        self.site_range(s)
+            .filter(|&i| {
+                let site = &self.sites[i];
+                self.hostile(f, site.owner as usize)
+                    && (up[site.planet as usize] == 0
+                        || site.kind == (SiteKind::Shield { damaged: false }))
+            })
+            .collect()
     }
 
     /// The sites side `f` is fighting for in system `s`: every enemy site there.
@@ -559,19 +534,18 @@ impl Galaxy {
     }
 
     /// The battles side `f` commits to in system `s` this tick: its own
-    /// attack, and the defense of each of its sites an enemy attacks.
+    /// attacks, and the defense of each of its sites an enemy attacks.
     pub fn commits(&self, s: usize, f: usize) -> Vec<usize> {
         if !self.fighting(s, f) {
             return Vec::new();
         }
         let present = self.present(s);
-        let mut out: Vec<usize> = self.target(s, f).into_iter().collect();
+        let mut out = self.targets(s, f);
         for g in (0..SIDES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
-            if let Some(t) = self.target(s, g)
-                && self.sites[t].owner as usize == f
-                && !out.contains(&t)
-            {
-                out.push(t);
+            for t in self.targets(s, g) {
+                if self.sites[t].owner as usize == f && !out.contains(&t) {
+                    out.push(t);
+                }
             }
         }
         out.sort();
@@ -880,10 +854,11 @@ impl Galaxy {
             .iter()
             .copied()
             .find(|&i| self.sites[i].owner as usize == f);
+        let attack = self.targets(s, f).first().copied();
         let over = if k.defend {
-            attacked.or(self.target(s, f))
+            attacked.or(attack)
         } else {
-            self.target(s, f).or(attacked)
+            attack.or(attacked)
         }
         .or(commits.first().copied())
         .map_or(0, |i| self.sites[i].planet);
@@ -938,7 +913,7 @@ impl Galaxy {
         // Who attacks each site this tick.
         let mut attacker: Vec<Option<usize>> = vec![None; self.site_range(s).len()];
         for g in (0..SIDES).filter(|&g| self.fighting(s, g)) {
-            if let Some(t) = self.target(s, g) {
+            for t in self.targets(s, g) {
                 attacker[t - sys.sites.0 as usize].get_or_insert(g);
             }
         }
@@ -1102,7 +1077,7 @@ mod tests {
                 let committed: Vec<&SiteView> = t.sites.iter().filter(|s| s.committed).collect();
                 let ours: Vec<&&SiteView> =
                     committed.iter().filter(|s| s.owner == t.employer).collect();
-                if g.target(t.system, t.employer).is_none() {
+                if g.targets(t.system, t.employer).is_empty() {
                     assert!(!ours.is_empty(), "nothing to attack, nothing to defend");
                 }
                 if !ours.is_empty() {
