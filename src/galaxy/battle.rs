@@ -243,8 +243,9 @@ fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
     b
 }
 
-/// Every bot's gear (#438): a realm's tanks fly its tier; the Company's
-/// fly their pilots' own, the company's pilots in turn (your company's on
+/// Every bot's gear (#438): a realm's tanks fly its tier, in its own
+/// parts; the Company's drive their pilots' own kit (`Pilot::kit`, #481)
+/// whoever hired them, built to what they know, the company's pilots in turn (your company's on
 /// your side, the biggest hired one's on another). You fly yours. The
 /// contract pays by the gear it's fought against: the enemy realm's tier.
 fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
@@ -274,12 +275,15 @@ fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
                 Some(c) if !c.pilots.is_empty() => {
                     let p = next % c.pilots.len();
                     next += 1;
-                    m.set_gear(i, c.pilots[p].levels());
+                    // Their own kit, whoever hired them (#481).
+                    let (hull, turret) = c.pilots[p].kit();
+                    m.set_kit(i, hull, turret, c.pilots[p].levels());
                     b.pilots.push((i, c.id, p));
                 }
                 _ => m.set_gear(i, crate::economy::Levels::all(tier(f))),
             }
         }
+        m.set_realm_gear(team, crate::economy::Levels::all(tier(f)));
     }
     if let Some(&enemy) = b.sides.get(1) {
         m.rating = tier(enemy);
@@ -1180,17 +1184,26 @@ mod gear_tests {
     use crate::economy::{Known, Levels, PARTS, Part};
     use crate::galaxy::merc::Pilot;
 
+    /// The company under contract (8 hulls or more out) that's the biggest
+    /// share of its side's hulls where it fights: it'll get bots' seats.
+    fn hired_company(g: &Galaxy) -> usize {
+        let share = |c: usize| {
+            let k = g.companies[c].contract.unwrap();
+            k.field as f32 / g.systems[k.target as usize].hulls[k.side as usize].max(1) as f32
+        };
+        (0..g.companies.len())
+            .filter(|&c| g.companies[c].contract.is_some_and(|k| k.field >= 8))
+            .max_by(|&a, &b| share(a).total_cmp(&share(b)))
+            .expect("a company under contract")
+    }
+
     /// A played battle's bots fly the gear of who they are (#438): a
     /// realm's tanks its tier, a company's its pilots' own. The contract
     /// pays by the enemy realm's tier. The pilots learn from their kills.
     #[test]
     fn bots_fly_their_realms_and_pilots_gear() {
         let mut g = Galaxy::warmed_by(7, 200);
-        let c = g
-            .companies
-            .iter()
-            .position(|c| c.contract.is_some_and(|k| k.field >= 8))
-            .expect("a company under contract");
+        let c = hired_company(&g);
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
         g.crew = Some(g.companies[c].id);
@@ -1239,6 +1252,62 @@ mod gear_tests {
         g.settle(&played);
         let co = g.companies.iter().find(|c| c.id == id).unwrap();
         assert!(co.pilots[p].known.of(kontos) > 7.5);
+    }
+
+    /// Mercs drive their own kit, not their employer's (#481): a company
+    /// that knows Imperium parts best fights in them for whoever hired it,
+    /// on its employer's side. A seat that goes over to the realm comes
+    /// back in the realm's own parts and tier.
+    #[test]
+    fn mercs_drive_their_own_kit() {
+        use crate::sim::{HullKind, TurretKind};
+        let mut g = Galaxy::warmed_by(7, 200);
+        let c = hired_company(&g);
+        let k = g.companies[c].contract.unwrap();
+        let (t, f) = (k.target as usize, k.side as usize);
+        g.crew = Some(g.companies[c].id);
+        let enemy = (0..SIDES)
+            .filter(|&e| e != f)
+            .max_by_key(|&a| g.systems[t].hulls[a])
+            .unwrap();
+        // The Salt Promise's pilots: Imperium parts at 5, Resonant at 3.
+        let mut salt = Known::default();
+        for (part, at) in [
+            (Part::Hull(HullKind::Kataphrakt), 5.2),
+            (Part::Hull(HullKind::Kastron), 5.6),
+            (Part::Turret(TurretKind::Kontos), 5.1),
+            (Part::Turret(TurretKind::Pelekys), 5.4),
+            (Part::Hull(HullKind::Vigil), 3.3),
+            (Part::Turret(TurretKind::Hymn), 3.1),
+            (Part::Turret(TurretKind::Knell), 3.0),
+        ] {
+            salt.set(part, at);
+        }
+        g.companies[c].pilots = vec![Pilot { known: salt }; crate::galaxy::merc::PILOTS];
+        let mut map = crate::map::Map::saltmarket();
+        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        let mut m = crate::combat::Match::new(map, 0, 11, 21);
+        let b = g
+            .muster_crew(t, &m.factions, None)
+            .expect("your company's battle");
+        let b = begin(&g, &mut m, b);
+        assert!(!b.pilots.is_empty());
+        let realm_hulls = Faction::ALL[f].hulls();
+        let mut seen = 0;
+        for i in 1..m.fighters.len() {
+            let tank = &m.world.tanks[i];
+            if tank.company {
+                seen += 1;
+                assert_eq!(m.fighters[i].team, 0, "on their employer's side");
+                assert_eq!(tank.hull_kind, HullKind::Kastron, "fighter {i}");
+                assert_eq!(tank.turret_kind, TurretKind::Pelekys, "fighter {i}");
+            } else if m.fighters[i].team == 0 {
+                assert!(realm_hulls.contains(&tank.hull_kind), "the realm's own");
+            }
+        }
+        assert!(seen >= 1, "some of the Company's bots fight");
+        // In the galaxy's math, their gear is the kit they drive: T0.5.
+        assert_eq!(g.companies[c].pilots[0].level(), 5.0);
     }
 
     /// Realms research their way up a tier at a time (#438), and one that

@@ -926,6 +926,9 @@ pub struct Match {
     took_seat: Vec<(u32, u32, f32)>,
     /// Seats closed for the round (`close_seats`): they stay empty.
     closed: Vec<bool>,
+    /// Each side's realm's gear (`set_realm_gear`, #481): what a merc's
+    /// seat comes back in once it's the realm's.
+    realm_gear: Vec<Option<Levels>>,
     /// The round has started: its seats have been fielded (`start`).
     started: bool,
     /// Where you first spawn, on a map without bases: the spawn point you
@@ -1049,6 +1052,7 @@ impl Match {
             retired: Vec::new(),
             took_seat: Vec::new(),
             closed: Vec::new(),
+            realm_gear: Vec::new(),
             started: false,
             you_start,
             nav,
@@ -1500,6 +1504,24 @@ impl Match {
         f.next_levels = None;
         f.health = levels.max_health(self.world.tanks[i].hull_kind);
         self.fit_hull(i);
+    }
+
+    /// Fit bot `i` with a kit of its own, `hull` and `turret`, built to
+    /// `levels`, at full health (before a round starts): a merc drives its
+    /// pilot's own kit, whoever hired them (#481).
+    pub fn set_kit(&mut self, i: usize, hull: HullKind, turret: TurretKind, levels: Levels) {
+        self.world.tanks[i].turret_kind = turret;
+        self.world.set_hull(i, hull);
+        self.set_gear(i, levels);
+    }
+
+    /// Side `team`'s realm kits its own tanks to `levels` (#481): a merc's
+    /// seat that goes over to the realm comes back in its gear.
+    pub fn set_realm_gear(&mut self, team: usize, levels: Levels) {
+        if self.realm_gear.len() <= team {
+            self.realm_gear.resize(team + 1, None);
+        }
+        self.realm_gear[team] = Some(levels);
     }
 
     /// Set the player's upgrade levels now, at full health (before a round starts).
@@ -2869,6 +2891,20 @@ impl Match {
         let f = &self.fighters[i];
         self.took_seat[i] = (f.kills, f.deaths, self.held(i));
         self.world.tanks[i].company = false;
+        // The realm's pilot comes in the realm's own kit, not the merc's
+        // (#481). (You keep yours: you're never handed over.)
+        let team = self.fighters[i].team;
+        if i != 0 {
+            let faction = self.factions[team];
+            let hulls = faction.hulls();
+            let guns = faction.turrets();
+            if !hulls.is_empty() && !guns.is_empty() {
+                self.fighters[i].next_kit = Some((hulls[i % hulls.len()], guns[i % guns.len()]));
+            }
+            if let Some(Some(levels)) = self.realm_gear.get(team).copied() {
+                self.fighters[i].next_levels = Some(levels);
+            }
+        }
     }
 
     /// Whoever's in seat `i` now, with what they've done since taking it.

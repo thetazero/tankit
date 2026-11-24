@@ -51,6 +51,8 @@
 
 use super::theater::{ENDED_KEPT, Ended, Outcome};
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
+use crate::economy::{PARTS, Part};
+use crate::sim::{HullKind, TurretKind};
 
 /// Pilots a company flies its hulls with (#438): as many as a side has
 /// seats. They fly remotely, so a hull lost never costs one.
@@ -69,14 +71,41 @@ impl Pilot {
         self.known.levels()
     }
 
-    /// Their gear's level, averaged over every part.
+    /// The kit they drive (#481): their own, whoever hired them. The hull
+    /// and the turret they can build best: the highest whole step known,
+    /// then the furthest into the next, then the parts' order.
+    /// Knowing nothing yet, that's the Company's starter kit, the one you
+    /// start in: Kataphrakt · Kontos, at T0.
+    pub fn kit(&self) -> (HullKind, TurretKind) {
+        let best = |parts: &mut dyn Iterator<Item = Part>| {
+            parts
+                .enumerate()
+                .max_by(|&(i, a), &(j, b)| {
+                    let k = &self.known;
+                    k.cap(a)
+                        .cmp(&k.cap(b))
+                        .then(k.of(a).total_cmp(&k.of(b)))
+                        .then(j.cmp(&i))
+                })
+                .map(|(_, p)| p)
+        };
+        let hull = match best(&mut PARTS.into_iter().filter(|p| matches!(p, Part::Hull(_)))) {
+            Some(Part::Hull(h)) => h,
+            _ => HullKind::Kataphrakt,
+        };
+        let turret = match best(&mut PARTS.into_iter().filter(|p| matches!(p, Part::Turret(_)))) {
+            Some(Part::Turret(t)) => t,
+            _ => TurretKind::Kontos,
+        };
+        (hull, turret)
+    }
+
+    /// Their gear's level: the kit they drive's (`kit`), hull and turret
+    /// averaged. What they know of parts they don't drive doesn't fight.
     pub fn level(&self) -> f32 {
+        let (hull, turret) = self.kit();
         let l = self.levels();
-        crate::economy::PARTS
-            .iter()
-            .map(|&p| l.of(p) as f32)
-            .sum::<f32>()
-            / crate::economy::PARTS.len() as f32
+        (l.of(Part::Hull(hull)) as f32 + l.of(Part::Turret(turret)) as f32) / 2.0
     }
 }
 
@@ -736,5 +765,33 @@ impl Galaxy {
             went += 1;
         }
         went
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pilot drives the hull and turret they can build best (#481);
+    /// knowing nothing, the Company's starter kit.
+    #[test]
+    fn pilots_drive_what_they_know_best() {
+        use crate::economy::Known;
+        let fresh = Pilot::default();
+        assert_eq!(fresh.kit(), (HullKind::Kataphrakt, TurretKind::Kontos));
+        assert_eq!(fresh.level(), 0.0);
+        // A Vigil known to T0.3 beats the starter hull at T0.
+        let mut known = Known::default();
+        known.set(Part::Hull(HullKind::Vigil), 3.4);
+        known.set(Part::Turret(TurretKind::Hymn), 0.9);
+        let p = Pilot { known };
+        assert_eq!(p.kit(), (HullKind::Vigil, TurretKind::Hymn));
+        assert_eq!(p.level(), 1.5);
+        // On a tie in whole steps, the one known furthest into the next.
+        known.set(Part::Turret(TurretKind::Kontos), 2.0);
+        known.set(Part::Turret(TurretKind::Knell), 2.7);
+        assert_eq!(Pilot { known }.kit().1, TurretKind::Knell);
+        known.set(Part::Hull(HullKind::Gravis), 3.8);
+        assert_eq!(Pilot { known }.kit().0, HullKind::Gravis);
     }
 }
