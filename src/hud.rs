@@ -1396,6 +1396,61 @@ pub fn playing_out(m: &Match, width: f32, height: f32) -> Vec<UiVertex> {
     p.finish()
 }
 
+/// Seconds the loading spinner takes to go round once.
+const SPIN_PERIOD: f32 = 1.2;
+
+/// The loading panel over the dimmed battle on the way back to the menu
+/// (#452), `time` seconds after it went up: a spinner turning, so the
+/// screen never sits frozen while the menu's built (and, for the contract
+/// screen, `missions`, the war goes on until there's work for you).
+pub fn returning(missions: bool, time: f32, width: f32, height: f32) -> Vec<UiVertex> {
+    let scale = height / REF_HEIGHT;
+    let (w, h) = (width / scale, REF_HEIGHT);
+    let mut p = Painter::new(scale);
+    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.55]);
+    let size = Vec2::new(480.0, 120.0);
+    let min = Vec2::new(w, h) * 0.5 - size * 0.5;
+    p.rect(min, size, theme::PANEL);
+    widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
+    let x = min.x + 24.0;
+    label(
+        &mut p,
+        Vec2::new(x, min.y + 28.0),
+        "ROUND OVER",
+        Align::Left,
+    );
+    let title = if missions {
+        "LOADING CONTRACTS"
+    } else {
+        "LOADING MENU"
+    };
+    p.text(
+        Vec2::new(x, min.y + 46.0),
+        title,
+        &TextStyle::value(20.0),
+        Align::Left,
+    );
+    let mut s = TextStyle::LABEL;
+    s.color = theme::DIM;
+    p.text(Vec2::new(x, min.y + 84.0), "STAND BY", &s, Align::Left);
+    spinner(
+        &mut p,
+        Vec2::new(min.x + size.x - 60.0, min.y + size.y * 0.5),
+        time,
+    );
+    p.finish()
+}
+
+/// A loading spinner at `c`, `time` seconds in: a faint ring with a bright
+/// arc going round it.
+fn spinner(p: &mut Painter, c: Vec2, time: f32) {
+    let r = 22.0;
+    let tau = std::f32::consts::TAU;
+    p.arc(c, r, 0.0, tau, 2.0, theme::DIM);
+    let a = (time / SPIN_PERIOD).fract() * tau;
+    p.arc(c, r, a, a + tau * 0.3, 3.0, theme::HOT);
+}
+
 pub fn fps_counter(fps: f32, width: f32, height: f32) -> Vec<UiVertex> {
     let scale = height / REF_HEIGHT;
     let w = width / scale;
@@ -1416,6 +1471,20 @@ mod tests {
     use super::*;
     use crate::render::Camera;
     use glam::Vec3;
+
+    /// The loading panel on the way back to the contract screen (#452)
+    /// animates: its spinner's somewhere else a moment later.
+    #[test]
+    fn the_loading_panel_spins() {
+        let a = returning(true, 0.0, 1600.0, 900.0);
+        let b = returning(true, SPIN_PERIOD * 0.25, 1600.0, 900.0);
+        assert!(!a.is_empty());
+        let pos = |v: &Vec<UiVertex>| v.iter().map(|v| format!("{:?}", v)).collect::<Vec<_>>();
+        assert_ne!(pos(&a), pos(&b), "the spinner didn't move");
+        // A full turn later it's back where it was.
+        let c = returning(true, SPIN_PERIOD, 1600.0, 900.0);
+        assert_eq!(a.len(), c.len());
+    }
 
     #[test]
     fn a_score_of_any_width_clears_its_faction_name() {

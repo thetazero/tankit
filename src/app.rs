@@ -95,6 +95,35 @@ enum Leaving {
     Quit,
 }
 
+/// Going back to the menu after a round (#452): the menu's map is built
+/// on a worker thread and, for the contract screen, the war goes on (while
+/// there's no battle for you) a slice of each frame, so the screen keeps
+/// drawing under a loading panel instead of freezing.
+struct Returning {
+    /// To the contract screen (else the menu's first screen).
+    missions: bool,
+    /// The menu's map, being built.
+    job: Option<Receiver<(Match, StaticWorld)>>,
+    /// The menu's map, built.
+    built: Option<(Match, StaticWorld)>,
+    /// Ticks the war may still go on without you before the screen comes
+    /// up anyway (see `Galaxy::await_work`).
+    ticks: u32,
+    /// Done waiting: there's work for you, a ship to choose, or the war's
+    /// gone on as long as it may.
+    waited: bool,
+    /// Your company before the wait, once the galaxy's in: a change is saved.
+    crew: Option<Option<u32>>,
+    /// The galaxy ticked while waiting: it's saved.
+    ticked: bool,
+    /// Seconds the loading panel has been up (turns its spinner).
+    time: f32,
+}
+
+/// How much of each frame the war may go on in while you're going back to
+/// the contract screen: the rest draws the loading panel.
+const RETURN_BUDGET: std::time::Duration = std::time::Duration::from_millis(12);
+
 /// What the window is showing.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Mode {
@@ -163,6 +192,8 @@ struct App {
     /// You've left the battle (#427): it's playing out without you, and
     /// then you go here.
     leaving: Option<Leaving>,
+    /// On the way back to the menu after a round (#452).
+    returning: Option<Returning>,
     /// A battle you quit in has played out: the game can close.
     quit: bool,
     menu: Menu,
@@ -289,6 +320,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         banked: 0,
         paid: false,
         leaving: None,
+        returning: None,
         quit: false,
         menu: Menu::new(),
         pause: Pause::new(),
@@ -605,6 +637,13 @@ impl App {
     /// Put your company's theater on the missions screen, if it's showing
     /// and isn't already up to date with the galaxy.
     fn sync_theater(&mut self) {
+        self.sync_theater_after(AWAIT_TICKS, false);
+    }
+
+    /// `sync_theater`, with the war going on at most `ticks` ticks for you
+    /// to have work. `changed`: the galaxy's changed already (on the way
+    /// back to this screen), so it's saved.
+    fn sync_theater_after(&mut self, ticks: u32, changed: bool) {
         if !self.menu.wants_theater() {
             return;
         }
@@ -622,14 +661,14 @@ impl App {
         }
         // No battle for you this tick: the war goes on until there is one.
         let before = g.crew;
-        let (t, ticked) = g.await_work(None, rank, AWAIT_TICKS);
+        let (t, ticked) = g.await_work(None, rank, ticks);
         // The battle's own tick, and any after it before this screen.
         if let Some(at) = self.fought_at.take() {
             self.menu.set_quiet(g.tick.saturating_sub(at + 1));
         }
         let crew = g.crew;
         let choice = g.crew_choice();
-        if ticked || crew != before {
+        if changed || ticked || crew != before {
             self.war.save();
         }
         self.profile.board(crew);
@@ -791,7 +830,7 @@ impl App {
     /// were going.
     fn left(&mut self) {
         match self.leaving.take() {
-            Some(Leaving::Menu) => self.back_to_menu(),
+            Some(Leaving::Menu) => self.start_return(false),
             Some(Leaving::Quit) => self.quit = true,
             None => {}
         }
@@ -800,17 +839,98 @@ impl App {
     /// The battle's over: back to the contract screen (the missions screen),
     /// to pick the next fight (#381).
     fn back_to_missions(&mut self) {
-        self.back_to_menu();
-        self.menu.screen = menu::Screen::Missions;
-        self.sync_theater();
+        self.start_return(true);
+    }
+
+    /// Start going back to the menu (the contract screen if `missions`):
+    /// the battle stays up, dimmed under a loading panel, until the menu's
+    /// ready (see `Returning`, `pump_return`).
+    fn start_return(&mut self, missions: bool) {
+        if self.returning.is_some() {
+            return;
+        }
+        let kit = self.profile.loadout;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let game = menu_match(kit);
+            let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
+            log::debug!("menu built in {:.0?}", started.elapsed());
+            let _ = tx.send((game, mesh));
+        });
+        self.returning = Some(Returning {
+            missions,
+            job: Some(rx),
+            built: None,
+            ticks: AWAIT_TICKS,
+            waited: !missions,
+            crew: None,
+            ticked: false,
+            time: 0.0,
+        });
+    }
+
+    /// A frame of going back to the menu: take the menu's map if it's
+    /// built, let the war go on a slice of the frame while there's no
+    /// battle for you, and once both are done, go.
+    fn pump_return(&mut self, dt: f32) {
+        let Some(r) = &mut self.returning else { return };
+        r.time += dt;
+        if let Some(job) = &r.job {
+            match job.try_recv() {
+                Ok(built) => {
+                    r.built = Some(built);
+                    r.job = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => r.job = None,
+            }
+        }
+        if !r.waited
+            && let Some(g) = self.war.try_get()
+        {
+            adopt_crew(g, self.profile.ship);
+            let rank = self.profile.rank().level;
+            r.crew.get_or_insert(g.crew);
+            let (start, before) = (Instant::now(), r.ticks);
+            r.waited = g.await_work_slice(None, rank, &mut r.ticks, || {
+                start.elapsed() >= RETURN_BUDGET
+            });
+            r.ticked |= r.ticks != before;
+        }
+        if !r.waited || r.job.is_some() {
+            return;
+        }
+        let Some(r) = self.returning.take() else {
+            return;
+        };
+        let (game, world) = r.built.unwrap_or_else(|| {
+            let game = menu_match(self.profile.loadout);
+            let world = StaticWorld::new(&scene::map_mesh(&game.world.map));
+            (game, world)
+        });
+        self.back_to_menu_built(game, world);
+        if r.missions {
+            self.menu.screen = menu::Screen::Missions;
+            let changed = r.ticked || r.crew.is_some_and(|c| c != self.war.get().crew);
+            // The war's waited for you already: no more of it here.
+            self.sync_theater_after(0, changed);
+        }
     }
 
     fn back_to_menu(&mut self) {
+        let game = menu_match(self.profile.loadout);
+        let world = StaticWorld::new(&scene::map_mesh(&game.world.map));
+        self.back_to_menu_built(game, world);
+    }
+
+    /// `back_to_menu`, with the menu's map already built.
+    fn back_to_menu_built(&mut self, game: Match, world: StaticWorld) {
         // Settled by now (or never deployed into).
         self.battle = None;
         self.in_war = false;
         self.sortie = None;
-        self.load(menu_match(self.profile.loadout));
+        self.load_built(game, world);
         self.backdrop = (MISSIONS[0].map_kind, 0, 0);
         self.backdrop_job = None;
         self.backdrop_ready = None;
@@ -1323,6 +1443,7 @@ impl App {
         if self.leaving.is_some() && self.paid {
             self.left();
         }
+        self.pump_return(dt);
         laps.lap("sim");
 
         // Respawned (in the new kit) or round over: back to battle.
@@ -1442,6 +1563,18 @@ impl App {
                         };
                         hits.extend(garage.hits.map(UiHit::Garage));
                         (ui, hits)
+                    }
+                    Mode::Playing if self.returning.is_some() => {
+                        let r = self.returning.as_ref().expect("returning");
+                        let ledger =
+                            Ledger::before(&self.profile, &self.game, self.banked, self.paid);
+                        let mut ui = menu::dim(
+                            self.hud
+                                .draw(&self.game, &tanks, &camera, w, h, dt, false, ledger)
+                                .verts,
+                        );
+                        ui.extend(hud::returning(r.missions, r.time, w, h));
+                        (ui, Hits::new())
                     }
                     Mode::Playing if self.leaving.is_some() => {
                         let ledger =

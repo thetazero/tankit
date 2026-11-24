@@ -749,6 +749,32 @@ impl Galaxy {
         (None, ticks > 0)
     }
 
+    /// `await_work` a slice at a time (#452), so a frame needn't hold up
+    /// on all of it: as many of the `left` ticks as go before `enough`
+    /// says stop (at least one, if any are left). True once it's done:
+    /// there's work for you (or a ship to choose), or no ticks are left.
+    pub fn await_work_slice(
+        &mut self,
+        prefer: Option<usize>,
+        rank: u32,
+        left: &mut u32,
+        mut enough: impl FnMut() -> bool,
+    ) -> bool {
+        let mut stepped = false;
+        loop {
+            let (t, _) = self.await_work(prefer, rank, 0);
+            if t.is_some() || self.crew_choice().is_some() || *left == 0 {
+                return true;
+            }
+            if stepped && enough() {
+                return false;
+            }
+            self.step();
+            *left -= 1;
+            stepped = true;
+        }
+    }
+
     /// `await_work`, but any choice of ship on the way is made for you:
     /// you stay with the one you're on (for shots and tests, where there's
     /// nobody to choose).
@@ -1168,6 +1194,38 @@ mod tests {
         assert!(g.systems[to].at_war());
         assert_eq!(g.companies[c].idle_since, g.tick);
         assert_eq!(g.crew_news, Some(CrewNews::Sailed { from: at }));
+    }
+
+    /// Waiting for work a slice at a time (#452, a few ticks a frame) ends
+    /// where waiting for it all at once does, tick for tick.
+    #[test]
+    fn waiting_in_slices_is_waiting_all_at_once() {
+        let idle = || {
+            let mut g = galaxy_with_work();
+            let c = g.crew_company().unwrap();
+            g.companies[c].contract = None;
+            g
+        };
+        let (mut whole, mut sliced) = (idle(), idle());
+        assert_eq!(whole.to_json(), sliced.to_json());
+        let (t, ticked) = whole.await_work(None, 1, 200);
+        assert!(ticked, "work right away: the test shows nothing");
+        let mut left = 200;
+        let mut slices = 0;
+        loop {
+            slices += 1;
+            let mut n = 0;
+            if sliced.await_work_slice(None, 1, &mut left, || {
+                n += 1;
+                n > 3
+            }) {
+                break;
+            }
+        }
+        assert!(slices > 1, "all in one slice: the test shows nothing");
+        assert_eq!(sliced.tick, whole.tick);
+        assert_eq!(sliced.crew, whole.crew);
+        assert_eq!(sliced.aboard(1).is_some(), t.is_some());
     }
 
     /// When your company joins another, you go with it.
