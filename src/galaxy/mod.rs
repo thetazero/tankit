@@ -311,6 +311,40 @@ pub struct Site {
     pub kind: SiteKind,
 }
 
+/// How one side's hulls in a system came and went (#445): every change
+/// to `System::hulls`, by what made it, so the missions screen can show
+/// where a count went from 5 to 55.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Moves {
+    /// Delivered by its yards here.
+    pub built: u32,
+    /// Stored hulls worn out.
+    pub worn: u32,
+    /// Shot down in battles here, played or the galaxy's (mercs' too).
+    pub lost: u32,
+    /// Sent in by its realm from other systems (FTL).
+    pub arrived: u32,
+    /// Sent off to other systems, or sold to a company.
+    pub left: u32,
+    /// A company's, landed on a new contract for the side.
+    pub hired: u32,
+    /// A company's, back aboard as its contract ended.
+    pub released: u32,
+}
+
+impl Moves {
+    /// Hulls in less hulls out.
+    #[cfg(test)]
+    pub fn net(&self) -> i64 {
+        (self.built + self.arrived + self.hired) as i64
+            - (self.worn + self.lost + self.left + self.released) as i64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Moves::default()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct System {
     /// Light years: in `REGION` in the plane, `z` off the midplane.
@@ -390,6 +424,10 @@ pub struct Galaxy {
     pub crew_choice: Option<theater::CrewChoice>,
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
+    /// Each system's hulls in and out, each side's (#445), since the last
+    /// played battle began (`step_played`): that battle's losses and the
+    /// rest of its tick, then any ticks waited through after. Not saved.
+    pub moves: Vec<[Moves; SIDES]>,
     rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
@@ -522,6 +560,7 @@ impl Galaxy {
         let mut g = Galaxy {
             seed,
             spare: vec![[0; SIDES]; systems.len()],
+            moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
             systems,
             sites,
@@ -766,8 +805,14 @@ impl Galaxy {
     /// fights on. One combined tick, not your battle and then another round
     /// of fighting over the same ground. Returns what the battle did.
     pub fn step_played(&mut self, played: &battle::Played) -> battle::Settled {
+        self.clear_moves();
         self.step_from(Some(played))
             .expect("a played battle is settled in its tick")
+    }
+
+    /// Start `moves` over: nothing has come or gone yet.
+    pub fn clear_moves(&mut self) {
+        self.moves.fill([Moves::default(); SIDES]);
     }
 
     fn step_from(&mut self, mut played: Option<&battle::Played>) -> Option<battle::Settled> {
@@ -807,6 +852,7 @@ impl Galaxy {
             for f in 0..SIDES {
                 let worn = self.rng.binomial(self.systems[s].hulls[f], self.rules.wear);
                 self.systems[s].hulls[f] -= worn;
+                self.moves[s][f].worn += worn;
             }
             let sys = &mut self.systems[s];
             // A pocket's yards run short of what the rest of its space sends them.
@@ -828,11 +874,12 @@ impl Galaxy {
             }
         }
         // The yards deliver whole hulls: those done, the rest still building.
-        for sys in &mut self.systems {
+        for (sys, moves) in self.systems.iter_mut().zip(&mut self.moves) {
             for f in 0..SIDES {
                 let done = sys.building[f].floor();
                 sys.hulls[f] += done as u32;
                 sys.building[f] -= done;
+                moves[f].built += done as u32;
             }
         }
         for (realm, c) in self.realms.iter_mut().zip(crystals) {
@@ -1153,6 +1200,7 @@ impl Galaxy {
         let sys = &mut self.systems[s];
         let total = (realm + theirs).min(sys.hulls[f]);
         sys.hulls[f] -= total;
+        self.moves[s][f].lost += total;
         self.destroyed += total as f64;
         (total, theirs.min(total))
     }
@@ -1322,6 +1370,8 @@ impl Galaxy {
             self.spare[s][f] -= m;
             self.systems[s].hulls[f] -= m;
             self.systems[t].hulls[f] += m;
+            self.moves[s][f].left += m;
+            self.moves[t][f].arrived += m;
         }
     }
 
@@ -1424,9 +1474,11 @@ impl Galaxy {
             let m = (mine(self, s) as f32 * frac) as u32;
             self.spare[s][f] -= m;
             self.systems[s].hulls[f] -= m;
+            self.moves[s][f].left += m;
             moved += m;
         }
         self.systems[t].hulls[f] += moved;
+        self.moves[t][f].arrived += moved;
         self.systems[t].realms[f] = r;
     }
 }

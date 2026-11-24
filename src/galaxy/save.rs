@@ -354,6 +354,8 @@ impl Galaxy {
         for _ in 0..ticks {
             g.step();
         }
+        // A pilot joining sees what happens from here on.
+        g.clear_moves();
         g
     }
 

@@ -803,3 +803,40 @@ fn galaxy_kills_teach_merc_pilots() {
         .sum();
     assert!(after > before, "nothing learned: {before} -> {after}");
 }
+
+/// Every hull that comes into or goes out of a system is in its moves
+/// (#445): reinforcements, mercs, yards, wear and losses account for
+/// every change in a side's count, so the missions screen never shows one
+/// it can't explain. A played battle starts them over.
+#[test]
+fn moves_account_for_every_hull() {
+    let mut g = small_war();
+    g.clear_moves();
+    let before: Vec<[u32; SIDES]> = g.systems.iter().map(|s| s.hulls).collect();
+    for _ in 0..40 {
+        g.step();
+    }
+    let mut seen = Moves::default();
+    for (s, sys) in g.systems.iter().enumerate() {
+        for f in 0..SIDES {
+            let m = g.moves[s][f];
+            assert_eq!(
+                sys.hulls[f] as i64 - before[s][f] as i64,
+                m.net(),
+                "system {s} side {f}: {m:?}"
+            );
+            seen.built += m.built;
+            seen.worn += m.worn;
+            seen.lost += m.lost;
+            seen.arrived += m.arrived;
+            seen.hired += m.hired;
+        }
+    }
+    // A war's worth of ticks does all of it somewhere.
+    assert!(
+        seen.built > 0 && seen.worn > 0 && seen.lost > 0 && seen.arrived > 0,
+        "{seen:?}"
+    );
+    g.clear_moves();
+    assert!(g.moves.iter().flatten().all(Moves::is_empty));
+}

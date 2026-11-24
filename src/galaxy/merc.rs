@@ -394,6 +394,7 @@ impl Galaxy {
             let (s, g) = (o.s as usize, o.side as usize);
             self.spare[s][g] -= m;
             self.systems[s].hulls[g] -= m;
+            self.moves[s][g].left += m;
             let paid = m as f32 * o.ask;
             self.realms[o.seller as usize].crystals += paid;
             self.books.sold += paid as f64;
@@ -419,6 +420,7 @@ impl Galaxy {
             defend,
         });
         self.systems[t].hulls[f] += land;
+        self.moves[t][f].hired += land;
         if self.systems[t].realms[f] == super::realm::NONE {
             self.systems[t].realms[f] = r;
         }
@@ -562,6 +564,7 @@ impl Galaxy {
             // Back aboard, what's left.
             let back = k.field.min(self.systems[t].hulls[f]);
             self.systems[t].hulls[f] -= back;
+            self.moves[t][f].released += back;
             let co = &mut self.companies[c];
             co.hulls += back;
             co.contract = None;
