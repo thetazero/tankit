@@ -114,6 +114,45 @@ fn every_battle_has_a_winner() {
     }
 }
 
+/// A damaged enemy generator is fought over even while another of the
+/// enemy's on its world still works, so it stays down instead of being
+/// repaired for nobody fighting over it.
+#[test]
+fn damaged_generators_are_kept_down() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    // A world with two generators.
+    let (s, x, y) = (0..g.systems.len())
+        .find_map(|s| {
+            let (a, b) = g.systems[s].sites;
+            let gens: Vec<usize> = (a as usize..b as usize)
+                .filter(|&i| matches!(g.sites[i].kind, SiteKind::Shield { .. }))
+                .collect();
+            gens.iter().find_map(|&i| {
+                let j = *gens
+                    .iter()
+                    .find(|&&j| j != i && g.sites[j].planet == g.sites[i].planet)?;
+                Some((s, i, j))
+            })
+        })
+        .expect("a world with two generators");
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % SIDES;
+    // The enemy's: one working, one damaged (just retaken).
+    for (i, damaged) in [(x, false), (y, true)] {
+        g.sites[i].owner = owner as u8;
+        g.sites[i].kind = SiteKind::Shield { damaged };
+    }
+    assert!(
+        g.targets(s, other).contains(&y),
+        "the damaged one is a target"
+    );
+    g.systems[s].hulls = [0; SIDES];
+    g.systems[s].hulls[owner] = 40;
+    g.systems[s].hulls[other] = 40;
+    g.battles(None);
+    assert!(g.assaulted[y], "fought over");
+}
+
 /// An attacker goes for every enemy shield generator up in the system at
 /// once, and every enemy site on a planet with none up (#460); the rest of
 /// a shielded planet waits for its generators.
@@ -152,8 +191,7 @@ fn attackers_go_for_every_shield_then_every_site() {
             .filter(|&i| {
                 let site = &g.sites[i];
                 site.owner as usize == owner
-                    && (!shielded(g, site.planet)
-                        || site.kind == (SiteKind::Shield { damaged: false }))
+                    && (!shielded(g, site.planet) || matches!(site.kind, SiteKind::Shield { .. }))
             })
             .collect()
     };
@@ -560,7 +598,27 @@ fn judge_mercs_rules() {
 /// hulls in a fight are always some of their side's there.
 #[test]
 fn realms_hire_companies() {
-    let mut g = small_war();
+    // Two galaxies' companies together: one galaxy's can have a bad run.
+    let (mut start, mut end) = (0.0, 0.0);
+    for seed in [4, 5] {
+        let (s, e) = hire_companies(Galaxy::with_size(
+            seed,
+            SYSTEMS / 4,
+            REGION * 0.5,
+            Rules::default(),
+        ));
+        start += s;
+        end += e;
+    }
+    assert!(
+        end > start,
+        "the companies' capital went from {start} to {end}"
+    );
+}
+
+/// Runs `g` a while checking its contracts; the companies' capital
+/// before and after.
+fn hire_companies(mut g: Galaxy) -> (f32, f32) {
     assert!(!g.companies.is_empty());
     let start: f32 = g
         .companies
@@ -589,10 +647,7 @@ fn realms_hire_companies() {
         .iter()
         .map(|c| c.capital(g.rules.hull_price))
         .sum();
-    assert!(
-        end > start,
-        "the companies' capital went from {start} to {end}"
-    );
+    (start, end)
 }
 
 /// Defenders hire companies too (#340).
