@@ -2186,7 +2186,12 @@ fn controls_rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, binds: &Binds,
         if on {
             s.color = theme::HOT;
         }
-        p.text(Vec2::new(at.x + PANEL_W, y + 5.0), "ALL DEFAULT", &s, Align::Right);
+        p.text(
+            Vec2::new(at.x + PANEL_W, y + 5.0),
+            "ALL DEFAULT",
+            &s,
+            Align::Right,
+        );
     }
 }
 
