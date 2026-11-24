@@ -114,6 +114,8 @@ tankit [OPTIONS]
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
                           --frames): scoreboard, renown gained, crystal tally
                           and (with --learned) a schematic reverse-engineered
+  --screen returning      (with --shot) the results, with CONTRACT pressed: the loading panel over
+                          them while the contract screen's made ready
   --screen kill           (with --shot) the player kills the nearest enemy, its gear at T2.5, half a
                           second before the shot: the scrap popups
   --screen carry          (with --shot --contract raid) the player starts on the enemy's flag,
@@ -473,6 +475,9 @@ enum Screen {
     /// Left the battle from the pause box: it plays out without you, under
     /// a progress bar (#427).
     Leaving,
+    /// The round's over and CONTRACT's been pressed: the loading panel
+    /// over it while the contract screen's made ready (#452).
+    Returning,
     /// A kill of yours half a second before the shot, its wreck's gear well
     /// past what you know: the scrap popups (#444).
     Kill,
@@ -844,11 +849,12 @@ fn parse_args() -> Result<Args> {
                     Some("spent") => Screen::Spent,
                     Some("spent-over") => Screen::SpentOver,
                     Some("leaving") => Screen::Leaving,
+                    Some("returning") => Screen::Returning,
                     Some("kill") => Screen::Kill,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, kill or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, returning, kill or carry, got {other:?}"
                         )
                     }
                 })
@@ -1073,7 +1079,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     }
     // All set up: the round starts, its tanks fielded.
     game.start();
-    if args.screen == Some(Screen::Results) {
+    if matches!(args.screen, Some(Screen::Results | Screen::Returning)) {
         // A still shows the results settled; a clip starts as they begin to count.
         let lead = if shot.frames > 1 { 0.3 } else { 4.0 };
         game.time_left = (shot.time - lead).max(0.1);
@@ -1251,6 +1257,10 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let ui = if args.screen == Some(Screen::Leaving) {
                 let mut ui = menu::dim(ui);
                 ui.extend(hud::playing_out(&game, w, h));
+                ui
+            } else if args.screen == Some(Screen::Returning) {
+                let mut ui = menu::dim(ui);
+                ui.extend(hud::returning(true, 0.4, w, h));
                 ui
             } else if matches!(args.screen, Some(Screen::Pause | Screen::PauseSettings)) {
                 let mut ui = menu::dim(ui);
