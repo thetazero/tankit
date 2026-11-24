@@ -146,6 +146,7 @@ tankit [OPTIONS]
   --renown <n>            (with --shot) Company renown (your rank) for menu, garage and pause shots
   --crystals <n>          (with --shot) pilot crystals for menu, garage and pause shots
   --upgrade <steps>       (with --shot) every part the pilot owns is this many upgrade steps up (10 a mark)
+  --known <steps>         (with --shot) every part the pilot owns is known (buildable) to this many steps
   --earned <n>            (with --screen results) renown earned this match, for the results graphic
   --showroom              every turret on an open yard, orbiting camera
   --orbit <degrees>       showroom: fixed camera angle instead of orbiting
@@ -210,6 +211,8 @@ pub struct Args {
     earned: u32,
     /// Shots: upgrade steps on every owned part.
     upgrade: u8,
+    /// Shots: upgrade steps known (buildable) on every owned part (#451).
+    known: Option<u8>,
     debug: bool,
     straight: bool,
     /// Shots: the chase camera's tilt.
@@ -251,6 +254,9 @@ impl Args {
         for part in economy::PARTS {
             if p.owns(part) {
                 p.levels.set(part, self.upgrade);
+                if let Some(k) = self.known {
+                    p.known.set(part, k.max(1) as f32);
+                }
             }
         }
         p
@@ -607,6 +613,7 @@ fn parse_args() -> Result<Args> {
     let mut screen = None;
     let (mut renown, mut crystals, mut earned) = (0, 0, 0);
     let mut upgrade = 0;
+    let mut known = None;
     let mut debug = false;
     let mut room = ShowroomArgs {
         orbit: None,
@@ -856,6 +863,7 @@ fn parse_args() -> Result<Args> {
             "--renown" => renown = args.next().context("--renown needs a number")?.parse()?,
             "--crystals" => crystals = args.next().context("--crystals needs a number")?.parse()?,
             "--upgrade" => upgrade = args.next().context("--upgrade needs a number")?.parse()?,
+            "--known" => known = Some(args.next().context("--known needs a number")?.parse()?),
             "--earned" => earned = args.next().context("--earned needs a number")?.parse()?,
             "--debug" => debug = true,
             "--showroom" => showroom = true,
@@ -954,6 +962,7 @@ fn parse_args() -> Result<Args> {
         crystals,
         earned,
         upgrade,
+        known,
         debug,
         straight,
         defend,

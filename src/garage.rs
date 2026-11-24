@@ -1028,7 +1028,13 @@ impl Garage {
         );
         y += 36.0;
         if owned {
-            upgrade_track(p, Vec2::new(x, y - 6.0), STATS_W, profile.levels.of(part));
+            upgrade_track(
+                p,
+                Vec2::new(x, y - 6.0),
+                STATS_W,
+                profile.levels.of(part),
+                profile.known.cap(part),
+            );
             y += track_h;
         }
         for stat in stats {
@@ -1079,9 +1085,10 @@ impl Garage {
 /// Height the upgrade track adds to the spec card.
 const UPGRADE_TRACK_H: f32 = 30.0;
 
-/// An owned part's climb to T3: its level, then one notch per upgrade step, filled up
-/// to where it is, with the marks (T1, T2) standing taller.
-fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8) {
+/// An owned part's climb to T3: its level, then one notch per upgrade step,
+/// with the marks (T1, T2) standing taller. Each notch says how far you've got
+/// (#451): bought up to `level`, known and ready to buy up to `cap`, locked past it.
+fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8, cap: u8) {
     use crate::economy::{MAX_LEVEL, STEPS_PER_MARK, level_label};
     let lw = label(p, at, "UPGRADE ", Align::Left);
     p.text(
@@ -1098,8 +1105,31 @@ fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8) {
         let x = at.x + i as f32 * (notch + gap);
         let mark = (i + 1) % STEPS_PER_MARK == 0;
         let h = if mark { 8.0 } else { 5.0 };
-        let color = if i < level { theme::FG } else { theme::FAINT };
+        let color = match step_state(i, level, cap) {
+            Step::Bought => theme::FG,
+            Step::Available => EQUIPPED,
+            Step::Locked => theme::FAINT,
+        };
         p.rect(Vec2::new(x, y + 8.0 - h), Vec2::new(notch, h), color);
+    }
+}
+
+/// Where an upgrade step stands for a part at `level` that can be built to `cap`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    Bought,
+    Available,
+    Locked,
+}
+
+/// Step `i` (0-based: step `i` takes the part to level `i + 1`).
+fn step_state(i: u8, level: u8, cap: u8) -> Step {
+    if i < level {
+        Step::Bought
+    } else if i < cap {
+        Step::Available
+    } else {
+        Step::Locked
     }
 }
 
@@ -1283,6 +1313,21 @@ fn smooth(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrade_steps_are_bought_then_available_then_locked() {
+        // Level 2, known to level 5: two bought, three to buy, the rest locked.
+        let states: Vec<Step> = (0..7).map(|i| step_state(i, 2, 5)).collect();
+        use Step::*;
+        assert_eq!(
+            states,
+            [
+                Bought, Bought, Available, Available, Available, Locked, Locked
+            ]
+        );
+        // Nothing known past what's built: nothing to buy.
+        assert_eq!(step_state(3, 3, 3), Locked);
+    }
 
     fn world() -> World {
         World::new(crate::map::Map::saltmarket(), 0)
