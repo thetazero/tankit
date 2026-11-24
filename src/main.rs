@@ -135,6 +135,8 @@ tankit [OPTIONS]
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
                           the rest of the war ticked with it, as back from a battle
+  --quiet <n>             (with --won) the war goes on n ticks more before the missions screen,
+                          which says how long it went on without you
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -182,6 +184,9 @@ pub struct Args {
     choice: Option<bool>,
     /// --won, for missions shots: your company just won its battle.
     won: bool,
+    /// --quiet, with --won: the galaxy ticks this many more times after the
+    /// battle before the missions screen (#447).
+    quiet: u32,
     /// --defend, for missions shots: your company's on a defense contract.
     defend: bool,
     pub loadout: garage::Loadout,
@@ -584,6 +589,7 @@ fn parse_args() -> Result<Args> {
     let mut failed = false;
     let mut choice = None;
     let mut won = false;
+    let mut quiet = 0;
     let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
@@ -705,6 +711,7 @@ fn parse_args() -> Result<Args> {
                 })
             }
             "--won" => won = true,
+            "--quiet" => quiet = args.next().context("--quiet needs a number")?.parse()?,
             "--defend" => defend = true,
             "--straight" => straight = true,
             "--tilt" => {
@@ -919,6 +926,7 @@ fn parse_args() -> Result<Args> {
         failed,
         choice,
         won,
+        quiet,
         map: map_kind,
         spawn,
         // Every side filled to the team size around you.
@@ -1449,6 +1457,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
+                let fought_at = g.tick;
                 let s = g.step_played(&galaxy::battle::Played {
                     battle: b.clone(),
                     lost: vec![0, 0],
@@ -1458,8 +1467,14 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     scrap: Vec::new(),
                 });
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
+                for _ in 0..args.quiet {
+                    g.step();
+                }
+                // As the app does: the war goes on until there's work (#447).
+                let (t, _) = g.await_work_staying(prefer, rank, 100);
+                menu.set_quiet(g.tick.saturating_sub(fought_at + 1));
                 profile.ship = g.crew;
-                menu.set_theater(g.aboard(rank));
+                menu.set_theater(t);
             }
             if let Some(k) = args.site {
                 menu.pick_site(k);

@@ -142,6 +142,9 @@ struct App {
     battle: Option<Battle>,
     /// Rounds are missions: drawn from the galaxy.
     in_war: bool,
+    /// The galaxy's tick before your last battle was settled, until the
+    /// missions screen shows how long the war went on since (#447).
+    fought_at: Option<u64>,
     /// The theater site this round is fought at (a replay fights it again).
     sortie: Option<Sortie>,
     mode: Mode,
@@ -268,6 +271,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         war: War::load(),
         battle: None,
         in_war: false,
+        fought_at: None,
         sortie: None,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
@@ -606,6 +610,10 @@ impl App {
         // No battle for you this tick: the war goes on until there is one.
         let before = g.crew;
         let (t, ticked) = g.await_work(None, rank, AWAIT_TICKS);
+        // The battle's own tick, and any after it before this screen.
+        if let Some(at) = self.fought_at.take() {
+            self.menu.set_quiet(g.tick.saturating_sub(at + 1));
+        }
         let crew = g.crew;
         let choice = g.crew_choice();
         if ticked || crew != before {
@@ -1291,6 +1299,7 @@ impl App {
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
             if let Some(b) = self.battle.take() {
+                self.fought_at = Some(self.war.get().tick);
                 let settled = battle::conclude(self.war.get(), &b, &self.game);
                 log::info!("{}", battle::describe(&b, &settled));
                 self.war.save();
