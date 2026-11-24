@@ -8,8 +8,8 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::combat::{FEED_TIME, Match, Phase, Pilot, RENOWN_POP_TIME};
-use crate::economy::Payout;
+use crate::combat::{FEED_TIME, Match, Phase, Pilot, RENOWN_POP_TIME, SCRAP_POP_TIME};
+use crate::economy::{self, Payout, Scrapped};
 use crate::faction::Faction;
 use crate::hold::{self, Control};
 use crate::mission::Contract;
@@ -572,6 +572,37 @@ impl Hud {
             }
         }
 
+        // Scrap popups (#444), under the kill's renown and drifting with it:
+        // what the wreck taught of each part, and how far that gets you to
+        // its next step. The newest kill's two parts, hull first.
+        if !board {
+            let n = m.scrap_pops.len();
+            for (row, x) in m.scrap_pops[n.saturating_sub(2)..].iter().enumerate() {
+                let fade = ((SCRAP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
+                    * (x.age / 0.08).clamp(0.0, 1.0);
+                let at = Vec2::new(w * 0.5, h * 0.30 + 52.0 - x.age * 14.0 + row as f32 * 38.0);
+                let sc = &x.scrapped;
+                let mut s = TextStyle::value(13.0);
+                s.color = with_alpha(if sc.stepped() { theme::HOT } else { theme::FG }, fade);
+                emblem::tagged(
+                    &mut p,
+                    at,
+                    sc.part.maker(),
+                    &format!("+{}% {}", sc.percent(), sc.part.name()),
+                    &s,
+                    Align::Center,
+                );
+                let mut l = TextStyle::LABEL;
+                l.color = with_alpha(theme::FG, 0.8 * fade);
+                p.text(
+                    at + Vec2::new(0.0, 20.0),
+                    &scrap_progress(sc, false),
+                    &l,
+                    Align::Center,
+                );
+            }
+        }
+
         if board {
             // Four sides stack two rows of tables: start higher.
             let top = if m.factions.len() > 2 { 0.17 } else { 0.28 };
@@ -703,11 +734,9 @@ fn scoreboard(
     let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
     let backdrop = theme::PANEL;
     let learned = Payout::of(m).schematic.filter(|_| m.phase == Phase::Over);
-    let banner = if learned.is_some() {
-        66.0 + STOLEN_H
-    } else {
-        66.0
-    };
+    let scrap = scrap_lines(m);
+    let banner =
+        66.0 + if learned.is_some() { STOLEN_H } else { 0.0 } + scrap.len() as f32 * SCRAP_H;
     let height = if m.phase == Phase::Over {
         24.0 + banner + 18.0 + RESULTS_H + 24.0 + BUTTON_H + 24.0
     } else {
@@ -753,6 +782,39 @@ fn scoreboard(
                 &s,
                 Align::Center,
             );
+        }
+        // What the round's scrap taught, part by part (#444).
+        let mut sy = y + 56.0 + if learned.is_some() { STOLEN_H } else { 0.0 };
+        for line in &scrap {
+            let mut s = TextStyle::value(11.0);
+            s.color = theme::FG;
+            match line {
+                ScrapLine::Part(sc) => {
+                    emblem::tagged(
+                        p,
+                        Vec2::new(top.x, sy),
+                        sc.part.maker(),
+                        &format!(
+                            "SCRAP +{}% {} · {}",
+                            sc.percent(),
+                            sc.part.name(),
+                            scrap_progress(sc, learned == Some(sc.part))
+                        ),
+                        &s,
+                        Align::Center,
+                    );
+                }
+                ScrapLine::More(n) => {
+                    s.color = theme::DIM;
+                    p.text(
+                        Vec2::new(top.x, sy),
+                        &format!("AND {n} MORE"),
+                        &s,
+                        Align::Center,
+                    );
+                }
+            }
+            sy += SCRAP_H;
         }
         y += banner;
     }
@@ -1084,6 +1146,54 @@ const RESULTS_DELAY: f32 = 0.6;
 const RESULTS_H: f32 = 84.0;
 /// The line under the winner saying which schematic you reverse-engineered.
 const STOLEN_H: f32 = 26.0;
+/// Each line of the round's scrap summary under it (#444), and how many parts
+/// get one before the rest fold into "AND N MORE".
+const SCRAP_H: f32 = 20.0;
+const SCRAP_LINES: usize = 4;
+
+/// One line of the round-over scrap summary.
+enum ScrapLine {
+    Part(Scrapped),
+    More(usize),
+}
+
+/// The round-over scrap summary (#444): what your wrecks taught, part by
+/// part. Empty mid-round, outside the war, or if they taught nothing.
+fn scrap_lines(m: &Match) -> Vec<ScrapLine> {
+    let Some(before) = m.known.filter(|_| m.phase == Phase::Over) else {
+        return Vec::new();
+    };
+    let all = economy::scrapped(before, &m.player().scrap);
+    let shown = if all.len() > SCRAP_LINES {
+        SCRAP_LINES - 1
+    } else {
+        all.len()
+    };
+    let mut out: Vec<ScrapLine> = all[..shown].iter().copied().map(ScrapLine::Part).collect();
+    if all.len() > shown {
+        out.push(ScrapLine::More(all.len() - shown));
+    }
+    out
+}
+
+/// Where a part stands after scrap: how far to its next step, or the step
+/// it just reached. `banner`: the schematic has its own line already (the
+/// round-over screen), so a first step just says how far to the next.
+fn scrap_progress(sc: &Scrapped, banner: bool) -> String {
+    let whole = sc.known.floor() as u8;
+    if sc.stepped() && !(banner && whole == 1) {
+        if whole == 1 {
+            "SCHEMATIC REVERSE-ENGINEERED".to_string()
+        } else {
+            format!("{} REVERSE-ENGINEERED", economy::level_label(whole))
+        }
+    } else {
+        match sc.toward() {
+            Some((pct, next)) => format!("{pct}% TO {}", economy::level_label(next)),
+            None => "FULLY KNOWN".to_string(),
+        }
+    }
+}
 
 /// Renown: the bar fills from where you stood over this long.
 const REP_FILL: f32 = 1.2;
