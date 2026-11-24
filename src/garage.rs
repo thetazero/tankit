@@ -68,6 +68,8 @@ const PANEL_FILL: Rgba = [0.006, 0.007, 0.009, 1.0];
 const CARD_FILL: Rgba = [0.94, 0.91, 0.86, 0.035];
 const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
 const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
+/// The learned part of a learning progress bar (#483).
+const LEARN_FILL: Rgba = [0.94, 0.91, 0.86, 0.22];
 /// What you'll deploy with.
 const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
 /// Parts whose schematic isn't yours yet: the padlock.
@@ -752,27 +754,11 @@ impl Garage {
         // Buttons for the highlighted part: equip / buy, then upgrade.
         let part = self.focused();
         let mut by = BUTTONS_TOP;
-        let (act, ready) = primary_action(part, queued, profile);
-        self.button(
-            &mut p,
-            &mut hits,
-            Vec2::new(x, by),
-            GRID_W,
-            &act,
-            ready,
-            Input::Act,
-        );
+        let act = primary_action(part, queued, profile);
+        self.slot(&mut p, &mut hits, Vec2::new(x, by), &act, Input::Act);
         by += BUTTON_H + 8.0;
-        if let Some((up, ready)) = upgrade_action(part, profile) {
-            self.button(
-                &mut p,
-                &mut hits,
-                Vec2::new(x, by),
-                GRID_W,
-                &up,
-                ready,
-                Input::Upgrade,
-            );
+        if let Some(up) = upgrade_action(part, profile) {
+            self.slot(&mut p, &mut hits, Vec2::new(x, by), &up, Input::Upgrade);
         }
 
         // Back out, putting the kit back as Esc does; or deploy with the
@@ -1053,6 +1039,21 @@ impl Garage {
         }
     }
 
+    /// A full-width button slot: a button, or a learning progress bar.
+    fn slot(
+        &self,
+        p: &mut Painter,
+        hits: &mut Hits<Hit>,
+        min: Vec2,
+        action: &Action,
+        input: Input,
+    ) {
+        match action {
+            Action::Button(text, ready) => self.button(p, hits, min, GRID_W, text, *ready, input),
+            Action::Learning(what, frac) => learning_bar(p, min, GRID_W, what.as_deref(), *frac),
+        }
+    }
+
     /// A full-width button saying what it does. Disabled ones are drawn
     /// faint and still say why (and can't be clicked).
     fn button(
@@ -1081,6 +1082,35 @@ impl Garage {
             hits.add(p, min, size, Hit::Key(input));
         }
     }
+}
+
+/// How far along learning a part (or its tier `what`) from wrecks is: the
+/// button's box filling up, "LEARNING" on the left and the percent on the
+/// right (#483). Whose wrecks teach it is on the spec card above.
+fn learning_bar(p: &mut Painter, min: Vec2, width: f32, what: Option<&str>, frac: f32) {
+    let size = Vec2::new(width, BUTTON_H);
+    let frac = frac.clamp(0.0, 1.0);
+    p.set_halo(None);
+    if frac > 0.0 {
+        p.rect(min, Vec2::new(width * frac, BUTTON_H), LEARN_FILL);
+    }
+    p.set_halo(Some((theme::HALO, theme::HALO_PX)));
+    p.rect_outline(min, size, 1.0, theme::FAINT);
+    let ty = min.y + (BUTTON_H - TextStyle::LABEL.size) * 0.5;
+    let mut a = TextStyle::LABEL;
+    a.color = theme::DIM;
+    let text = match what {
+        Some(tier) => format!("LEARNING {tier}"),
+        None => "LEARNING".to_string(),
+    };
+    p.text(Vec2::new(min.x + 12.0, ty), &text, &a, Align::Left);
+    a.color = theme::FG;
+    p.text(
+        Vec2::new(min.x + width - 12.0, ty),
+        &format!("{}%", (frac * 100.0) as u32),
+        &a,
+        Align::Right,
+    );
 }
 
 /// Height the upgrade track adds to the spec card.
@@ -1181,59 +1211,49 @@ fn padlock(p: &mut Painter, at: Vec2, color: Rgba) {
     p.rect(at + Vec2::new(0.0, 6.0), Vec2::new(10.0, 6.0), color);
 }
 
-/// What E does for `part` (equip it), and whether it can right now; for a part
-/// you don't have, whose wrecks teach it and how far you've got (#438).
-fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> (String, bool) {
+/// What a garage button slot shows: a button, or how far along learning
+/// a part (or its next tier) from wrecks is (#483).
+#[derive(Clone, Debug, PartialEq)]
+enum Action {
+    /// What the button says, and whether it can be pressed right now.
+    Button(String, bool),
+    /// A progress bar: what's being learned (`None`: the part itself), and
+    /// how far along, 0..1.
+    Learning(Option<String>, f32),
+}
+
+/// What E does for `part` (equip it); for a part you don't have, how far
+/// you've got learning it from wrecks (#438).
+fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> Action {
     if profile.owns(part) {
         if with_part(queued, part) == queued {
-            ("EQUIPPED".to_string(), false)
+            Action::Button("EQUIPPED".to_string(), false)
         } else {
-            (format!("EQUIP {}", part.name()), true)
+            Action::Button(format!("EQUIP {}", part.name()), true)
         }
     } else {
         // Reverse-engineered from the wrecks of its makers' tanks.
-        let maker = part.maker().name();
-        let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
-        let text = longest_fitting([
-            format!("WRECK {maker} TANKS TO LEARN IT · {pct}%"),
-            format!("WRECK {maker} TANKS · {pct}% LEARNED"),
-            format!("WRECK {maker} TANKS · {pct}%"),
-        ]);
-        (text, false)
+        Action::Learning(None, profile.known.of(part).clamp(0.0, 0.99))
     }
 }
 
-/// The longest of `texts` (longest first) that fits a garage button.
-fn longest_fitting<const N: usize>(texts: [String; N]) -> String {
-    texts
-        .into_iter()
-        .find(|t| crate::ui::measure(t, &TextStyle::LABEL) <= PANEL_W - 48.0)
-        .unwrap_or_default()
-}
-
-/// What U does for `part`, if it's owned, and whether it can right now.
-fn upgrade_action(part: Part, profile: &Profile) -> Option<(String, bool)> {
+/// What U does for `part`, if it's owned; or how far along its next tier is.
+fn upgrade_action(part: Part, profile: &Profile) -> Option<Action> {
     if !profile.owns(part) {
         return None;
     }
     let next = crate::economy::level_label(profile.levels.of(part) + 1);
     Some(match profile.can_upgrade(part) {
-        Ok(cost) => (format!("UPGRADE TO {next} · {cost} CR"), true),
-        Err(Refusal::Crystals(cost)) => (format!("UPGRADE TO {next} · NEED {cost} CR"), false),
+        Ok(cost) => Action::Button(format!("UPGRADE TO {next} · {cost} CR"), true),
+        Err(Refusal::Crystals(cost)) => {
+            Action::Button(format!("UPGRADE TO {next} · NEED {cost} CR"), false)
+        }
         Err(Refusal::Unknown) => {
             // How far along the next step's reverse engineering is (#438).
             let known = profile.known.of(part);
-            let pct = ((known - known.floor()) * 100.0) as u32;
-            let maker = part.maker().name();
-            let text = longest_fitting([
-                format!("WRECK {maker} TANKS TO LEARN {next} · {pct}%"),
-                format!("WRECK {maker} TANKS · {next} {pct}% LEARNED"),
-                format!("WRECK {maker} TANKS · {next} {pct}%"),
-                format!("LEARNING {next} · {pct}%"),
-            ]);
-            (text, false)
+            Action::Learning(Some(next), known - known.floor())
         }
-        Err(_) => ("FULLY UPGRADED".to_string(), false),
+        Err(_) => Action::Button("FULLY UPGRADED".to_string(), false),
     })
 }
 
@@ -1327,30 +1347,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn learning_from_wrecks_says_whose_tanks_to_wreck() {
-        // #457: every locked part's buttons say to wreck its maker's tanks,
-        // and how far along you are, in a text that fits the button.
+    fn learning_shows_as_a_progress_bar() {
+        // #483: a part you don't have, or its next tier not learned yet,
+        // shows how far along learning it is as a bar, not a sentence.
         let mut p = Profile::in_memory();
         let queued = (HullKind::Kataphrakt, TurretKind::Kontos);
         for part in crate::economy::PARTS {
             if p.owns(part) {
                 continue;
             }
-            let (text, _) = primary_action(part, queued, &p);
-            eprintln!("{text}");
-            assert!(text.starts_with("WRECK ") && text.contains('%'), "{text}");
-            assert!(text.contains(part.maker().name()), "{text}");
+            p.known.set(part, 0.25);
+            assert_eq!(
+                primary_action(part, queued, &p),
+                Action::Learning(None, 0.25)
+            );
         }
         for part in crate::economy::PARTS {
             // Known to 1.5 and built to 1: the next step is half learned.
             p.known.set(part, 1.5);
             p.levels.set(part, 1);
             p.crystals = 100_000;
-            let (text, can) = upgrade_action(part, &p).unwrap();
-            eprintln!("{text}");
-            assert!(!can);
-            assert!(text.starts_with("WRECK ") && text.contains("50%"), "{text}");
-            assert!(text.contains(part.maker().name()), "{text}");
+            let next = crate::economy::level_label(2);
+            assert_eq!(
+                upgrade_action(part, &p),
+                Some(Action::Learning(Some(next), 0.5))
+            );
         }
     }
 
@@ -1524,10 +1545,11 @@ mod tests {
         let pelekys = Part::Turret(TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Locked(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
-        // The button says whose tanks to wreck to learn it: the side that makes it.
-        let (text, can) = primary_action(pelekys, start, &p);
-        assert!(!can);
-        assert!(text.contains("IMPERIUM"), "{text}");
+        // Its slot shows how far along learning it is.
+        assert!(matches!(
+            primary_action(pelekys, start, &p),
+            Action::Learning(None, _)
+        ));
         // Once reverse-engineered, E equips it and U upgrades it.
         p.crystals = 100_000;
         p.known.set(pelekys, 2.0);
