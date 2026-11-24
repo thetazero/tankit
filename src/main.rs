@@ -121,12 +121,13 @@ tankit [OPTIONS]
   --learned <part>        (with --screen results) the round's wrecks make this part's schematic
                           yours, e.g. 'pelekys'
   --site <n>              (with --screen missions|site) select the theater's nth contested site
-  --transfer <jump|move|renew>
+  --transfer <jump|move|renew|warp>
                           (with --screen missions) the war goes on until your company moves onto its
                           next contract (in another system, the same one, or the same contract
                           renewed), as if after a battle (a fresh menu, the old contract from the
                           profile): the shot is --time seconds into the transfer playing over the
-                          system view (past the summary of the contract that ended)
+                          system view (past the summary of the contract that ended); warp: you
+                          switch company to the first other ship with work, and your hull warps
   --summary               (with --transfer) stop at the summary of how the old contract ended, before
                           the transfer plays
   --failed                (with --summary) wait for a contract that failed (else the first to end)
@@ -418,6 +419,8 @@ enum TransferKind {
     Jump,
     Move,
     Renew,
+    /// Switching company (#449): your hull warps to another ship.
+    Warp,
 }
 
 impl TransferKind {
@@ -433,6 +436,7 @@ impl TransferKind {
             TransferKind::Jump => a.system != b.system,
             TransferKind::Move => a.system == b.system && !renewed,
             TransferKind::Renew => renewed,
+            TransferKind::Warp => sa.id != sb.id,
         }
     }
 }
@@ -696,9 +700,10 @@ fn parse_args() -> Result<Args> {
             "--transfer" => {
                 transfer = Some(match args.next().as_deref() {
                     Some("jump") => TransferKind::Jump,
+                    Some("warp") => TransferKind::Warp,
                     Some("move") => TransferKind::Move,
                     Some("renew") => TransferKind::Renew,
-                    other => bail!("--transfer expects jump, move or renew, got {other:?}"),
+                    other => bail!("--transfer expects jump, move, renew or warp, got {other:?}"),
                 })
             }
             "--summary" => summary = true,
@@ -1392,7 +1397,22 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let rank = profile.rank().level;
                 let mut t = g.await_work_staying(prefer, rank, 100).0;
                 menu.set_theater(t.clone());
-                for _ in 0..2000 {
+                if kind == TransferKind::Warp {
+                    // As the app does on SIGN ON: switch to the first other
+                    // ship with a battle for you, then on to its theater.
+                    let id = g
+                        .other_ships(usize::MAX)
+                        .iter()
+                        .map(|b| b.id)
+                        .find(|&id| g.contract_of(id, rank).is_some())
+                        .context("no other ship with work to switch to")?;
+                    anyhow::ensure!(g.switch_crew(id), "couldn't switch to ship {id}");
+                    menu.switched();
+                    menu.set_theater(g.aboard(rank));
+                }
+                // A warp's already set going; else wait for a move of that kind.
+                let ticks = if kind == TransferKind::Warp { 0 } else { 2000 };
+                for _ in 0..ticks {
                     g.step();
                     let (next, _) = g.await_work_staying(prefer, rank, 100);
                     let moved = |a: &Option<galaxy::theater::Theater>| {
