@@ -144,6 +144,8 @@ tankit [OPTIONS]
   --quiet <n>             (with --won) the war goes on n ticks more before the missions screen
   --ticks                 (with --won) the tick summary instead, the screen before the missions
                           screen: what the war did to the system's hulls since the battle, and why
+  --shields-down          (with --screen missions|site) every shield generator on the system's first
+                          world is damaged, so its shields are down
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -202,6 +204,9 @@ pub struct Args {
     quiet: u32,
     /// --ticks, with --won: the tick summary screen (#475).
     ticks: bool,
+    /// --shields-down, for missions shots: the first world's generators
+    /// are all damaged (#477).
+    shields_down: bool,
     /// --defend, for missions shots: your company's on a defense contract.
     defend: bool,
     pub loadout: garage::Loadout,
@@ -616,6 +621,7 @@ fn parse_args() -> Result<Args> {
     let mut failed = false;
     let mut choice = None;
     let mut won = false;
+    let mut shields_down = false;
     let mut tab = 0;
     let mut quiet = 0;
     let mut ticks = false;
@@ -749,6 +755,7 @@ fn parse_args() -> Result<Args> {
                 })
             }
             "--won" => won = true,
+            "--shields-down" => shields_down = true,
             "--tab" => tab = args.next().context("--tab needs a number")?.parse()?,
             "--quiet" => quiet = args.next().context("--quiet needs a number")?.parse()?,
             "--ticks" => ticks = true,
@@ -969,6 +976,7 @@ fn parse_args() -> Result<Args> {
         failed,
         choice,
         won,
+        shields_down,
         tab,
         quiet,
         ticks,
@@ -1550,6 +1558,18 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 }
                 profile.ship = g.crew;
                 menu.set_theater(t);
+            }
+            if args.shields_down
+                && let Some(mut t) = menu.theater().cloned()
+            {
+                for s in t
+                    .sites
+                    .iter_mut()
+                    .filter(|s| s.planet == 0 && s.is_shield())
+                {
+                    s.kind = galaxy::SiteKind::Shield { damaged: true };
+                }
+                menu.set_theater(Some(t));
             }
             if let Some(k) = args.site {
                 menu.pick_site(k);
