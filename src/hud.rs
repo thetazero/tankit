@@ -187,23 +187,6 @@ impl Hud {
             &TextStyle::value(14.0),
             Align::Left,
         );
-        // Where in the war this battle is.
-        if let Some(place) = &m.place {
-            label(&mut p, Vec2::new(MARGIN, MARGIN + 92.0), place, Align::Left);
-        }
-        // Whose company you're fighting with.
-        if let Some(crew) = &m.crew {
-            let mut style = TextStyle::LABEL;
-            style.color = Faction::Company.ui();
-            emblem::tagged(
-                &mut p,
-                Vec2::new(MARGIN, MARGIN + 110.0),
-                Faction::Company,
-                &format!("THE {crew}"),
-                &style,
-                Align::Left,
-            );
-        }
 
         // Top right: kill feed, newest on top, each side in its colour.
         let tr = Vec2::new(w - MARGIN, MARGIN);
@@ -582,7 +565,7 @@ impl Hud {
         // slide in, sit, and fade, leaving the middle of the screen clear.
         if !board {
             let n = m.scrap_pops.len();
-            let top = MARGIN + if m.crew.is_some() { 140.0 } else { 120.0 };
+            let top = MARGIN + 100.0;
             let shown = &m.scrap_pops[n.saturating_sub(2)..];
             // The header fades with the newest kill's popups.
             if let Some(x) = shown.last() {
