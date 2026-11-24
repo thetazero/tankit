@@ -54,9 +54,6 @@ pub struct Theater {
     pub held: [u8; SIDES],
     /// Each side's gear tier here (#438): its realm's, in upgrade steps.
     pub tiers: [u8; SIDES],
-    /// How each side's hulls here came and went since your last battle
-    /// began (#445; `Galaxy::moves`): reinforcements, mercs, wear.
-    pub moves: [super::Moves; SIDES],
     /// Every site in the system, in the galaxy's order.
     pub sites: Vec<SiteView>,
     /// The contested sites, as indices into `sites`: the rows of the list.
@@ -290,6 +287,37 @@ pub struct Sortie {
     pub map_seed: u64,
     /// The match's teams: you (your employer) first, then the enemy.
     pub factions: [Faction; 2],
+}
+
+/// What the war did to a system's hulls since your battle there began
+/// (#475): the tick summary screen between the battle's results and the
+/// contract screen, so a count gone from 5 to 55 says why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TickSummary {
+    pub system: usize,
+    pub name: String,
+    /// Ticks since the battle began: its own, and the ones the war went on
+    /// without you after it.
+    pub ticks: u64,
+    /// Every side with hulls there before or now, the most now first.
+    pub sides: Vec<SideChange>,
+}
+
+/// One side's hulls in a `TickSummary`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SideChange {
+    /// Index into `Faction::ALL`.
+    pub side: usize,
+    pub before: u32,
+    pub now: u32,
+    pub moves: super::Moves,
+}
+
+impl TickSummary {
+    /// Ticks the war went on without you after the battle's own.
+    pub fn quiet(&self) -> u64 {
+        self.ticks.saturating_sub(1)
+    }
 }
 
 /// A system's name: two or three syllables, the same for every pilot (it
@@ -935,6 +963,32 @@ impl Galaxy {
             .collect()
     }
 
+    /// System `s`'s tick summary (#475): its hulls since the battle fought
+    /// there at tick `fought_at` began (`moves` start over then).
+    pub fn tick_summary(&self, s: usize, fought_at: u64) -> TickSummary {
+        let sys = &self.systems[s];
+        let mut sides: Vec<SideChange> = (0..SIDES)
+            .map(|f| {
+                let moves = self.moves[s][f];
+                let now = sys.hulls[f];
+                SideChange {
+                    side: f,
+                    before: (now as i64 - moves.net()).max(0) as u32,
+                    now,
+                    moves,
+                }
+            })
+            .filter(|c| c.before > 0 || c.now > 0)
+            .collect();
+        sides.sort_by_key(|c| std::cmp::Reverse((c.now, c.before)));
+        TickSummary {
+            system: s,
+            name: system_name(s),
+            ticks: self.tick.saturating_sub(fought_at),
+            sides,
+        }
+    }
+
     /// System `s` as side `f` sees it. Each site's mission is its own,
     /// whatever your rank (#437).
     pub fn theater_at(&self, s: usize, f: usize) -> Theater {
@@ -990,7 +1044,6 @@ impl Galaxy {
                 super::realm::NONE => 0,
                 r => self.realms[r as usize].tier,
             }),
-            moves: self.moves[s],
             sites,
             contested,
             tick: self.tick,

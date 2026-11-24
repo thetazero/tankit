@@ -286,9 +286,6 @@ pub struct Menu {
     /// shown on the missions screen before the theater (#364); and the one
     /// selected.
     choice: Option<ChoiceView>,
-    /// Ticks the war went on without you after your last battle, before
-    /// this screen (#447): shown when there were any.
-    quiet: u64,
     pick: usize,
     /// The ships on the companies screen (the app keeps them up to date);
     /// who you'd fight to list them by (#454: None, any side); and the one
@@ -320,7 +317,6 @@ impl Menu {
             switched: false,
             site: 0,
             choice: None,
-            quiet: 0,
             pick: 0,
             ships: Vec::new(),
             fight: None,
@@ -599,12 +595,6 @@ impl Menu {
     /// contract next shows, is your hull warping across.
     pub fn switched(&mut self) {
         self.switched = true;
-    }
-
-    /// The war went on `ticks` ticks without you between your last battle
-    /// and this screen (#447).
-    pub fn set_quiet(&mut self, ticks: u64) {
-        self.quiet = ticks;
     }
 
     /// Whether the menu knows which contract it last showed (it doesn't
@@ -972,10 +962,6 @@ impl Menu {
             theme::DIM,
         );
         y += 30.0;
-        if let Some(text) = quiet_line(self.quiet) {
-            body(p, Vec2::new(x, y), &text, theme::FG);
-            y += 30.0;
-        }
         if let Some(ship) = &t.ship {
             y = contract(p, Vec2::new(x, y), ship, &t.name) + 16.0;
         }
@@ -2210,15 +2196,6 @@ const BODY_LINE: f32 = 17.0;
 /// Height of a list row.
 const ROW: f32 = 30.0;
 
-/// How long the war went on without you since your battle (#447), if at all.
-fn quiet_line(ticks: u64) -> Option<String> {
-    match ticks {
-        0 => None,
-        1 => Some("The war went on 1 tick without you".to_string()),
-        n => Some(format!("The war went on {n} ticks without you")),
-    }
-}
-
 fn body(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
     let mut style = BODY;
     style.color = color;
@@ -3289,21 +3266,6 @@ mod tests {
         assert_eq!(
             m.shown().unwrap().ship.as_ref().unwrap().signed,
             next.ship.as_ref().unwrap().signed
-        );
-    }
-
-    /// The time the war went on without you is said only when there was
-    /// any (#447).
-    #[test]
-    fn quiet_ticks_are_said_when_there_were_any() {
-        assert_eq!(quiet_line(0), None);
-        assert_eq!(
-            quiet_line(1).as_deref(),
-            Some("The war went on 1 tick without you")
-        );
-        assert_eq!(
-            quiet_line(37).as_deref(),
-            Some("The war went on 37 ticks without you")
         );
     }
 }

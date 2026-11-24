@@ -24,7 +24,7 @@ use crate::economy::{Part, Payout};
 use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
 use crate::galaxy::save::War;
-use crate::galaxy::theater::{Shown, Sortie};
+use crate::galaxy::theater::{Shown, Sortie, TickSummary};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -118,6 +118,22 @@ struct Returning {
     ticked: bool,
     /// Seconds the loading panel has been up (turns its spinner).
     time: f32,
+    /// Back from a battle in the war (#475): the tick summary's up while
+    /// the contract screen loads, until you go on.
+    summary: Option<Summary>,
+}
+
+/// The tick summary screen on the way back to the contract screen (#475).
+struct Summary {
+    /// The system your battle was in, and the galaxy's tick before it was
+    /// settled.
+    system: usize,
+    fought_at: u64,
+    /// What it says, kept up as the war goes on behind it (None until the
+    /// galaxy's in).
+    view: Option<TickSummary>,
+    /// CONTINUE's pressed: on to the contract screen once it's loaded.
+    going: bool,
 }
 
 /// How much of each frame the war may go on in while you're going back to
@@ -169,9 +185,10 @@ struct App {
     battle: Option<Battle>,
     /// Rounds are missions: drawn from the galaxy.
     in_war: bool,
-    /// The galaxy's tick before your last battle was settled, until the
-    /// missions screen shows how long the war went on since (#447).
-    fought_at: Option<u64>,
+    /// Where your last battle in the war was (its system), and the galaxy's
+    /// tick before it was settled, until the tick summary shows what the
+    /// war did there since (#447, #475).
+    fought_at: Option<(usize, u64)>,
     /// The theater site this round is fought at (a replay fights it again).
     sortie: Option<Sortie>,
     mode: Mode,
@@ -662,10 +679,6 @@ impl App {
         // No battle for you this tick: the war goes on until there is one.
         let before = g.crew;
         let (t, ticked) = g.await_work(None, rank, ticks);
-        // The battle's own tick, and any after it before this screen.
-        if let Some(at) = self.fought_at.take() {
-            self.menu.set_quiet(g.tick.saturating_sub(at + 1));
-        }
         let crew = g.crew;
         let choice = g.crew_choice();
         if changed || ticked || crew != before {
@@ -867,6 +880,16 @@ impl App {
             crew: None,
             ticked: false,
             time: 0.0,
+            summary: self
+                .fought_at
+                .take()
+                .filter(|_| missions)
+                .map(|(system, fought_at)| Summary {
+                    system,
+                    fought_at,
+                    view: None,
+                    going: false,
+                }),
         });
     }
 
@@ -898,7 +921,14 @@ impl App {
             });
             r.ticked |= r.ticks != before;
         }
-        if !r.waited || r.job.is_some() {
+        if let Some(sum) = &mut r.summary
+            && (sum.view.is_none() || r.ticked)
+            && let Some(g) = self.war.try_get()
+        {
+            sum.view = Some(g.tick_summary(sum.system, sum.fought_at));
+        }
+        let read = r.summary.as_ref().is_none_or(|s| s.going);
+        if !r.waited || r.job.is_some() || !read {
             return;
         }
         let Some(r) = self.returning.take() else {
@@ -1127,6 +1157,20 @@ impl App {
             }
             Mode::Playing => {}
         }
+        // On the way back to the contract screen: Enter or Esc goes on
+        // from the tick summary (#475); nothing else does anything.
+        if let Some(r) = &mut self.returning {
+            if matches!(
+                code,
+                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape
+            ) && let Some(sum) = &mut r.summary
+                && !sum.going
+            {
+                sum.going = true;
+                self.audio.ui(audio::Ui::Select);
+            }
+            return;
+        }
         let action = binds.find(
             code,
             &[
@@ -1298,7 +1342,9 @@ impl App {
                 self.nav_sound(nav);
                 self.pause_action(action, event_loop);
             }
-            UiHit::Hud(hud::Hit::Missions) => self.on_key(KeyCode::Escape, event_loop),
+            UiHit::Hud(hud::Hit::Missions | hud::Hit::Continue) => {
+                self.on_key(KeyCode::Escape, event_loop)
+            }
             UiHit::Garage(h) => {
                 let input = match h {
                     garage::Hit::Key(input) => input,
@@ -1433,7 +1479,7 @@ impl App {
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
             if let Some(b) = self.battle.take() {
-                self.fought_at = Some(self.war.get().tick);
+                self.fought_at = Some((b.system, self.war.get().tick));
                 let settled = battle::conclude(self.war.get(), &b, &self.game);
                 log::info!("{}", battle::describe(&b, &settled));
                 self.war.save();
@@ -1565,7 +1611,6 @@ impl App {
                         (ui, hits)
                     }
                     Mode::Playing if self.returning.is_some() => {
-                        let r = self.returning.as_ref().expect("returning");
                         let ledger =
                             Ledger::before(&self.profile, &self.game, self.banked, self.paid);
                         let mut ui = menu::dim(
@@ -1573,8 +1618,25 @@ impl App {
                                 .draw(&self.game, &tanks, &camera, w, h, dt, false, ledger)
                                 .verts,
                         );
-                        ui.extend(hud::returning(r.missions, r.time, w, h));
-                        (ui, Hits::new())
+                        let r = self.returning.as_ref().expect("returning");
+                        match r.summary.as_ref().and_then(|s| Some((s, s.view.as_ref()?))) {
+                            // The tick summary, the contract screen loading behind it (#475).
+                            Some((sum, view)) => {
+                                let state = hud::SummaryState {
+                                    loading: !r.waited || r.job.is_some(),
+                                    going: sum.going,
+                                    time: r.time,
+                                    hover: self.hud.hover,
+                                };
+                                let layer = hud::tick_summary(view, state, w, h);
+                                ui.extend(layer.verts);
+                                (ui, layer.hits.map(UiHit::Hud))
+                            }
+                            None => {
+                                ui.extend(hud::returning(r.missions, r.time, w, h));
+                                (ui, Hits::new())
+                            }
+                        }
                     }
                     Mode::Playing if self.leaving.is_some() => {
                         let ledger =
