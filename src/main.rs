@@ -133,6 +133,7 @@ tankit [OPTIONS]
   --failed                (with --summary) wait for a contract that failed (else the first to end)
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
+  --tab <n>               (with --screen companies) Right n times: the nth tab of who you'd fight
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
                           the rest of the war ticked with it, as back from a battle
@@ -185,6 +186,8 @@ pub struct Args {
     choice: Option<bool>,
     /// --won, for missions shots: your company just won its battle.
     won: bool,
+    /// --tab, for companies shots: the tab of who you'd fight (#454).
+    tab: usize,
     /// --quiet, with --won: the galaxy ticks this many more times after the
     /// battle before the missions screen (#447).
     quiet: u32,
@@ -593,6 +596,7 @@ fn parse_args() -> Result<Args> {
     let mut failed = false;
     let mut choice = None;
     let mut won = false;
+    let mut tab = 0;
     let mut quiet = 0;
     let mut defend = false;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
@@ -716,6 +720,7 @@ fn parse_args() -> Result<Args> {
                 })
             }
             "--won" => won = true,
+            "--tab" => tab = args.next().context("--tab needs a number")?.parse()?,
             "--quiet" => quiet = args.next().context("--quiet needs a number")?.parse()?,
             "--defend" => defend = true,
             "--straight" => straight = true,
@@ -931,6 +936,7 @@ fn parse_args() -> Result<Args> {
         failed,
         choice,
         won,
+        tab,
         quiet,
         map: map_kind,
         spawn,
@@ -1509,7 +1515,10 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             profile.ship = g.crew;
             menu.input(menu::Nav::Down);
             menu.input(menu::Nav::Select);
-            menu.set_ships(g.other_ships(5));
+            menu.set_ships(g.other_ships());
+            for _ in 0..args.tab {
+                menu.input(menu::Nav::Right);
+            }
             menu.input(menu::Nav::Down);
             if args.screen == Some(Screen::Contract) {
                 menu.input(menu::Nav::Select);

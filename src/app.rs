@@ -74,8 +74,6 @@ fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
 /// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
 const AWAIT_TICKS: u32 = 100;
 
-/// How many ships the companies screen offers to switch to (#365).
-const SHIPS_SHOWN: usize = 5;
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
 /// to come back up after it.
 const DIP_OUT: f32 = 0.18;
@@ -205,6 +203,8 @@ struct App {
     held: HashMap<PhysicalKey, KeyCode>,
     /// Mouse pointer in window pixels, while it's over the window.
     pointer: Option<glam::Vec2>,
+    /// Wheel turned on the menu and not yet scrolled, in notches.
+    wheel: f32,
     /// What can be clicked, as of the last frame drawn.
     hits: Hits<UiHit>,
     last: Instant,
@@ -311,6 +311,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         keys: HashSet::new(),
         held: HashMap::new(),
         pointer: None,
+        wheel: 0.0,
         hits: Hits::new(),
         last: Instant::now(),
         last_work: 0.0,
@@ -471,6 +472,18 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
                 self.garage.scroll(-lines * 60.0);
+            }
+            // The companies screen's list of ships scrolls (#454).
+            WindowEvent::MouseWheel { delta, .. } if self.mode == Mode::Menu => {
+                self.wheel += match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                };
+                let notches = self.wheel.trunc();
+                self.wheel -= notches;
+                if notches != 0.0 && self.menu.scroll(-notches as i32) {
+                    self.nav_sound(menu::Nav::Down);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -648,7 +661,7 @@ impl App {
         let rank = self.profile.rank().level;
         let g = self.war.get();
         adopt_crew(g, self.profile.ship);
-        self.menu.set_ships(g.other_ships(SHIPS_SHOWN));
+        self.menu.set_ships(g.other_ships());
         // A ship's contract, previewed before you sign on (#453).
         if let Some(id) = self.menu.wants_contract() {
             self.menu.set_contract(g.contract_of(id, rank));
