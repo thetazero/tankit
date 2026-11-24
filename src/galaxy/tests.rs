@@ -967,17 +967,37 @@ fn tick_summary_counts_from_the_battle() {
         assert_eq!(t.ticks, 12);
         assert_eq!(t.quiet(), 11);
         for f in 0..SIDES {
-            let row = t.sides.iter().find(|c| c.side == f);
+            let rows: Vec<_> = t.sides.iter().filter(|c| c.side == f).collect();
             let (was, now) = (before[s][f], g.systems[s].hulls[f]);
-            match row {
-                Some(c) => {
-                    assert_eq!((c.before, c.now), (was, now), "system {s} side {f}");
-                    changed |= was != now;
-                }
-                None => assert_eq!((was, now), (0, 0), "system {s} side {f} left out"),
+            if rows.is_empty() {
+                assert_eq!((was, now), (0, 0), "system {s} side {f} left out");
+                continue;
             }
+            // The side's own hulls, then its mercs', if any.
+            assert!(!rows[0].merc && rows[1..].iter().all(|c| c.merc));
+            assert!(rows.len() <= 2);
+            let sum = |n: fn(&&theater::SideChange) -> u32| rows.iter().map(n).sum::<u32>();
+            assert_eq!(sum(|c| c.now), now, "system {s} side {f}");
+            // Wear's split between them by chance; with no mercs it's exact.
+            if g.merc_moves[s][f] == Moves::default() {
+                assert_eq!(sum(|c| c.before), was, "system {s} side {f}");
+            }
+            changed |= was != now;
         }
-        assert!(t.sides.windows(2).all(|w| w[0].now >= w[1].now));
+        let own: Vec<u32> = t
+            .sides
+            .iter()
+            .filter(|c| !c.merc)
+            .map(|c| {
+                c.now
+                    + t.sides
+                        .iter()
+                        .filter(|m| m.merc && m.side == c.side)
+                        .map(|m| m.now)
+                        .sum::<u32>()
+            })
+            .collect();
+        assert!(own.windows(2).all(|w| w[0] >= w[1]));
     }
     assert!(changed, "nothing changed: the test shows nothing");
 }

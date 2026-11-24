@@ -299,7 +299,8 @@ pub struct TickSummary {
     /// Ticks since the battle began: its own, and the ones the war went on
     /// without you after it.
     pub ticks: u64,
-    /// Every side with hulls there before or now, the most now first.
+    /// Every side with hulls there before or now, the most now first, each
+    /// followed by the company on contract for it there, if any.
     pub sides: Vec<SideChange>,
 }
 
@@ -308,6 +309,8 @@ pub struct TickSummary {
 pub struct SideChange {
     /// Index into `Faction::ALL`.
     pub side: usize,
+    /// The company's hulls on contract for `side`, not the side's own.
+    pub merc: bool,
     pub before: u32,
     pub now: u32,
     pub moves: super::Moves,
@@ -967,20 +970,38 @@ impl Galaxy {
     /// there at tick `fought_at` began (`moves` start over then).
     pub fn tick_summary(&self, s: usize, fought_at: u64) -> TickSummary {
         let sys = &self.systems[s];
-        let mut sides: Vec<SideChange> = (0..SIDES)
+        let row = |f, merc, now: u32, moves: super::Moves| SideChange {
+            side: f,
+            merc,
+            before: (now as i64 - moves.net()).max(0) as u32,
+            now,
+            moves,
+        };
+        let shown = |c: &SideChange| c.before > 0 || c.now > 0;
+        // The companies' hulls on contract here, each side's.
+        let mut field = [0u32; SIDES];
+        for k in self.companies.iter().filter_map(|c| c.contract.as_ref()) {
+            if k.target as usize == s {
+                field[k.side as usize] += k.field;
+            }
+        }
+        let mut pairs: Vec<(SideChange, SideChange)> = (0..SIDES)
             .map(|f| {
-                let moves = self.moves[s][f];
-                let now = sys.hulls[f];
-                SideChange {
-                    side: f,
-                    before: (now as i64 - moves.net()).max(0) as u32,
-                    now,
-                    moves,
-                }
+                let mercs = self.merc_moves[s][f];
+                let now = sys.hulls[f].saturating_sub(field[f]);
+                let own = row(f, false, now, self.moves[s][f].less(&mercs));
+                (own, row(f, true, field[f], mercs))
             })
-            .filter(|c| c.before > 0 || c.now > 0)
+            .filter(|(own, mercs)| shown(own) || shown(mercs))
             .collect();
-        sides.sort_by_key(|c| std::cmp::Reverse((c.now, c.before)));
+        pairs.sort_by_key(|(c, m)| std::cmp::Reverse((c.now + m.now, c.before + m.before)));
+        let mut sides = Vec::new();
+        for (own, mercs) in pairs {
+            sides.push(own);
+            if shown(&mercs) {
+                sides.push(mercs);
+            }
+        }
         TickSummary {
             system: s,
             name: system_name(s),

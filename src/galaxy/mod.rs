@@ -336,6 +336,19 @@ impl Moves {
             - (self.worn + self.lost + self.left + self.released) as i64
     }
 
+    /// These without `o`'s (none below zero).
+    pub fn less(&self, o: &Moves) -> Moves {
+        Moves {
+            built: self.built.saturating_sub(o.built),
+            worn: self.worn.saturating_sub(o.worn),
+            lost: self.lost.saturating_sub(o.lost),
+            arrived: self.arrived.saturating_sub(o.arrived),
+            left: self.left.saturating_sub(o.left),
+            hired: self.hired.saturating_sub(o.hired),
+            released: self.released.saturating_sub(o.released),
+        }
+    }
+
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         *self == Moves::default()
@@ -425,6 +438,9 @@ pub struct Galaxy {
     /// played battle began (`step_played`): that battle's losses and the
     /// rest of its tick, then any ticks waited through after. Not saved.
     pub moves: Vec<[Moves; SIDES]>,
+    /// Of `moves`, the companies' hulls on contract for the side: hired,
+    /// released, lost and worn out. Not saved.
+    pub merc_moves: Vec<[Moves; SIDES]>,
     rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
@@ -558,6 +574,7 @@ impl Galaxy {
             seed,
             spare: vec![[0; SIDES]; systems.len()],
             moves: vec![[Moves::default(); SIDES]; systems.len()],
+            merc_moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
             systems,
             sites,
@@ -805,6 +822,7 @@ impl Galaxy {
     /// Start `moves` over: nothing has come or gone yet.
     pub fn clear_moves(&mut self) {
         self.moves.fill([Moves::default(); SIDES]);
+        self.merc_moves.fill([Moves::default(); SIDES]);
     }
 
     fn step_from(&mut self, mut played: Option<&battle::Played>) -> Option<battle::Settled> {
@@ -1237,6 +1255,7 @@ impl Galaxy {
         let total = (realm + theirs).min(sys.hulls[f]);
         sys.hulls[f] -= total;
         self.moves[s][f].lost += total;
+        self.merc_moves[s][f].lost += theirs.min(total);
         self.destroyed += total as f64;
         (total, theirs.min(total))
     }

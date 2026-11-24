@@ -450,6 +450,7 @@ impl Galaxy {
         });
         self.systems[t].hulls[f] += land;
         self.moves[t][f].hired += land;
+        self.merc_moves[t][f].hired += land;
         if self.systems[t].realms[f] == super::realm::NONE {
             self.systems[t].realms[f] = r;
         }
@@ -507,6 +508,7 @@ impl Galaxy {
             // Worn out or shot down, a hull gone is a hull lost: what it
             // committed is what it's lost plus what it has left (#429).
             k.lost += before - k.field;
+            self.merc_moves[t][f].worn += before - k.field;
             let sys = &self.systems[t];
             // A realm that folds into another, or loses the attack's ground
             // to one breaking away, hands the contract on to it.
@@ -594,6 +596,7 @@ impl Galaxy {
             let back = k.field.min(self.systems[t].hulls[f]);
             self.systems[t].hulls[f] -= back;
             self.moves[t][f].released += back;
+            self.merc_moves[t][f].released += back;
             let co = &mut self.companies[c];
             co.hulls += back;
             co.contract = None;
