@@ -711,10 +711,17 @@ mod tests {
         assert_eq!(b.iter().filter(|x| x.2).count(), 2);
         assert!(b[..2].iter().all(|x| x.2), "yours come first");
         // What the boxes stand for adds back up.
-        let worth = |s: Vec2| if s.x > cell.x { 100 } else if s.y > cell.y { 10 } else { 1 };
-        let sum = |mine: bool| -> u32 {
-            b.iter().filter(|x| x.2 == mine).map(|x| worth(x.1)).sum()
+        let worth = |s: Vec2| {
+            if s.x > cell.x {
+                100
+            } else if s.y > cell.y {
+                10
+            } else {
+                1
+            }
         };
+        let sum =
+            |mine: bool| -> u32 { b.iter().filter(|x| x.2 == mine).map(|x| worth(x.1)).sum() };
         assert_eq!((sum(true), sum(false)), (2, 633));
         // It stays small: no wider than a row of pips, a couple of rows.
         let size = hull_boxes_size(&b);

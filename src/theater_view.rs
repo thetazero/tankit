@@ -32,7 +32,8 @@ use crate::scene::project;
 use crate::ship_model;
 use crate::ui::widgets;
 use crate::ui::{
-    Align, Hits, Painter, Rgba, TextStyle, hull_boxes, hull_boxes_size, hull_pips, measure, theme, with_alpha,
+    Align, Hits, Painter, Rgba, TextStyle, hull_boxes, hull_boxes_size, hull_pips, measure, theme,
+    with_alpha,
 };
 
 const STAR: Rgba = [1.0, 0.86, 0.62, 1.0];
