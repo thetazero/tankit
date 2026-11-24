@@ -538,10 +538,11 @@ impl Galaxy {
     }
 
     /// The sites side `f` goes for in system `s` this tick, all at once
-    /// (#460): every enemy shield generator still up, on every planet; and
-    /// on each planet with none of an enemy's up, every enemy site there.
-    /// Shields first: a planet's other sites wait for its generators. The
-    /// picks the tick's `battles` makes, in site order.
+    /// (#460): every enemy shield generator, on every planet, damaged ones
+    /// too (left alone, a damaged one is working again by the next tick);
+    /// and on each planet with none of an enemy's up, every enemy site
+    /// there. Shields first: a planet's other sites wait for its
+    /// generators. The picks the tick's `battles` makes, in site order.
     pub fn targets(&self, s: usize, f: usize) -> Vec<usize> {
         let up = self.shields_up(s, f);
         self.site_range(s)
@@ -549,7 +550,7 @@ impl Galaxy {
                 let site = &self.sites[i];
                 self.hostile(f, site.owner as usize)
                     && (up[site.planet as usize] == 0
-                        || site.kind == (SiteKind::Shield { damaged: false }))
+                        || matches!(site.kind, SiteKind::Shield { .. }))
             })
             .collect()
     }

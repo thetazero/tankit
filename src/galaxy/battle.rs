@@ -510,16 +510,16 @@ impl Galaxy {
             hired.push(theirs);
         }
         // The site at stake: the one asked for, else a production site of
-        // whichever side holds most here.
+        // whichever side holds most here (else any site of theirs).
         let sys = &self.systems[system];
         let holder = sides.iter().copied().max_by_key(|&f| sys.held[f]);
         let (a, b) = sys.sites;
+        let held = |i: &usize| Some(self.sites[*i].owner as usize) == holder;
         let site = site.or_else(|| {
-            (a as usize..b as usize).find(|&i| {
-                let site = &self.sites[i];
-                Some(site.owner as usize) == holder
-                    && matches!(site.kind, SiteKind::Production { .. })
-            })
+            (a as usize..b as usize)
+                .filter(held)
+                .find(|&i| matches!(self.sites[i].kind, SiteKind::Production { .. }))
+                .or_else(|| (a as usize..b as usize).find(held))
         });
         let shielded = sides
             .iter()
