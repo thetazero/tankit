@@ -430,6 +430,8 @@ pub struct Galaxy {
     /// Tests: hires refused as lost even with mercs (realm, system, side,
     /// defend, worth).
     #[cfg(test)]
+    pub(crate) guesses: Vec<(u32, u32, f32, f32)>,
+    #[cfg(test)]
     pub(crate) lost_calls: Vec<(u32, u32, usize, bool, f32)>,
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
@@ -678,6 +680,8 @@ impl Galaxy {
             ban: None,
             #[cfg(test)]
             force: None,
+            #[cfg(test)]
+            guesses: Vec::new(),
             #[cfg(test)]
             lost_calls: Vec::new(),
             next_pilot: 1,

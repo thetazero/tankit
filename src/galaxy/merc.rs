@@ -71,6 +71,8 @@ pub struct Pilot {
     pub idle: u32,
     /// What they've earned a tick lately (fading), aboard their ship.
     pub earning: f32,
+    /// The realm they left (an index into `Galaxy::realms`), if any.
+    pub home: Option<u32>,
 }
 
 /// Buckets of five ticks `Books::won_after` counts wins in.
@@ -140,6 +142,7 @@ impl Pilot {
             wage: 0.0,
             idle: 0,
             earning: 0.0,
+            home: None,
         }
     }
 
@@ -494,6 +497,7 @@ impl Galaxy {
         }
         for p in &mut self.pool {
             p.idle += 1;
+            p.earning *= 1.0 - EARN_FADE;
         }
         self.books.crew_ticks += self.pool.len() as f64;
         // How much of the time mercs are in work, as pilots see it.
@@ -507,8 +511,20 @@ impl Galaxy {
         self.fill_seats(true);
         // Out of work, a pilot goes home: waiting costs them, and ships
         // that need pilots draw them straight from the realms.
-        self.books.quit += self.pool.len() as u64;
-        self.pool.clear();
+        let pay = self.pay;
+        let pool = std::mem::take(&mut self.pool);
+        for p in pool {
+            if p.earning >= pay {
+                self.pool.push(p);
+                continue;
+            }
+            self.books.quit += 1;
+            if let Some(r) = p.home
+                && self.realms[r as usize].systems > 0
+            {
+                self.realms[r as usize].pilots += 1;
+            }
+        }
     }
 
     /// Ships with hulls in a fight and no pilots for them take on pilots:
@@ -552,6 +568,10 @@ impl Galaxy {
                 left.push(p);
                 continue;
             };
+            // New to it, they reckon on work half the time.
+            if p.earning == 0.0 {
+                p.earning = 0.5 * wage;
+            }
             p.wage = wage;
             p.idle = 0;
             want[c].0 -= 1;
@@ -680,6 +700,7 @@ impl Galaxy {
             let maker = crate::faction::Faction::ALL[realm.faction as usize];
             for _ in 0..n {
                 let mut p = self.new_pilot();
+                p.home = Some(r as u32);
                 for part in crate::economy::PARTS
                     .into_iter()
                     .filter(|p| p.maker() == maker)
@@ -1139,6 +1160,8 @@ impl Galaxy {
                 }
             }
         }
+        #[cfg(test)]
+        let alone_guess = alone;
         let Some((q, _, expected, expected_ticks, offers, financed)) = best else {
             if !able {
                 self.books.none_able += 1;
@@ -1221,6 +1244,9 @@ impl Galaxy {
             }
             self.books.financed += financed as f64;
         }
+        #[cfg(test)]
+        self.guesses
+            .push((r, t as u32, alone_guess, expected / worth.max(1e-6)));
         self.books.signed += 1;
         self.books.defenses += defend as u64;
         // It takes on pilots for its hulls before the fight.

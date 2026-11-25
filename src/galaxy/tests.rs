@@ -1386,12 +1386,14 @@ fn judge_contracts() {
     // Signed (attacks, defenses), then refused as lost (likewise): n, site
     // share here gained, its variance, realm worth gained, its variance.
     let mut out = [[0.0f64; 5]; 4];
+    let mut marks = [[0.0f64; 5]; 4];
     let after = 30;
     for seed in [1, 2] {
         let mut g = Galaxy::warmed_by(seed, 300);
         for step in 0..150 {
             let pre = g.clone();
             g.lost_calls.clear();
+            g.guesses.clear();
             g.step();
             let mut jobs: Vec<(usize, u32, u32, usize)> = g
                 .companies
@@ -1428,6 +1430,21 @@ fn judge_contracts() {
                     a.step();
                     b.step();
                 }
+                if let Some(g) = a.guesses.iter().rev().find(|g| g.0 == r && g.1 == t) {
+                    let held = pre.systems[t as usize].held[f] as f64;
+                    let total =
+                        (pre.systems[t as usize].sites.1 - pre.systems[t as usize].sites.0) as f64;
+                    let got = |x: f64| match kind % 2 {
+                        1 => (x * total / held.max(1.0)).min(1.0),
+                        _ => ((x * total - held) / (total - held).max(1.0)).max(0.0),
+                    };
+                    let m = &mut marks[kind];
+                    m[0] += 1.0;
+                    m[1] += g.2 as f64;
+                    m[2] += got(here(&b, t, f));
+                    m[3] += g.3 as f64;
+                    m[4] += got(here(&a, t, f));
+                }
                 let (x, y) = (here(&a, t, f) - here(&b, t, f), worth(&a, r) - worth(&b, r));
                 let o = &mut out[kind];
                 o[0] += 1.0;
@@ -1437,6 +1454,25 @@ fn judge_contracts() {
                 o[4] += y * y;
             }
         }
+    }
+    for (name, m) in [
+        "signed attacks",
+        "signed defenses",
+        "forced attacks",
+        "forced defenses",
+    ]
+    .iter()
+    .zip(marks)
+    {
+        let n = m[0].max(1.0);
+        println!(
+            "CF {name} forecast ({}): alone {:.2} (was {:.2}), with mercs {:.2} (was {:.2})",
+            m[0],
+            m[1] / n,
+            m[2] / n,
+            m[3] / n,
+            m[4] / n
+        );
     }
     for (name, o) in [
         "signed attacks",

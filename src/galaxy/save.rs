@@ -152,6 +152,8 @@ struct SavedPilot {
     idle: u32,
     #[serde(default)]
     earning: f32,
+    #[serde(default)]
+    home: Option<u32>,
 }
 
 impl SavedPilot {
@@ -164,6 +166,7 @@ impl SavedPilot {
             wage: p.wage,
             idle: p.idle,
             earning: p.earning,
+            home: p.home,
         }
     }
 
@@ -176,6 +179,7 @@ impl SavedPilot {
             wage: self.wage,
             idle: self.idle,
             earning: self.earning,
+            home: self.home,
         }
     }
 }
