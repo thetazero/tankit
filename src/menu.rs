@@ -277,6 +277,16 @@ pub struct Menu {
     /// contract by; and that move, while it plays over the system view.
     seen: Option<Theater>,
     transfer: Option<Transfer>,
+    /// The contract that just ended (#414, #501), over the theater it was
+    /// in: its card is up until you go on, before any move or wait.
+    card: Option<(Theater, Ended)>,
+    /// The ended contract whose card you've gone on from (its ship and
+    /// tick signed), so it doesn't come up again.
+    closed: Option<(u32, u64)>,
+    /// Ticks the war has gone on while you wait for work (none showing).
+    waited: u32,
+    /// Seconds the menu's been up (turns the waiting spinner).
+    clock: f32,
     /// You just switched company (#449): the next move onto another ship
     /// is your hull warping across, not the ship flying.
     switched: bool,
@@ -314,6 +324,10 @@ impl Menu {
             theater: None,
             seen: None,
             transfer: None,
+            card: None,
+            closed: None,
+            waited: 0,
+            clock: 0.0,
             switched: false,
             site: 0,
             choice: None,
@@ -578,6 +592,10 @@ impl Menu {
         // Onto the next contract (another ship's, or in another system):
         // the move plays over the system view.
         if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
+            self.waited = 0;
+            if let Some(ship) = &new.ship {
+                self.set_ended(&ship.ended);
+            }
             if let Some(old) = self.seen.take().filter(|old| Transfer::between(old, new)) {
                 self.transfer = Some(if self.switched {
                     Transfer::warp(old)
@@ -614,50 +632,100 @@ impl Menu {
     /// The contract you've been shown all of: while a transfer plays, the
     /// one it leaves (so one cut short, by quitting say, plays again).
     pub fn shown(&self) -> Option<&Theater> {
-        self.transfer
+        self.card
             .as_ref()
-            .map(|tr| &tr.from)
+            .map(|(t, _)| t)
+            .or(self.transfer.as_ref().map(|tr| &tr.from))
             .or(self.seen.as_ref())
     }
 
     /// You've seen the theater on screen (deploying into it, say): a
     /// transfer playing toward it needn't play again.
     pub fn settle(&mut self) {
+        if let Some((_, e)) = self.card.take() {
+            self.closed = Some((e.ship, e.signed));
+        }
         if self.transfer.take().is_some() {
             self.seen = self.theater.clone().filter(|t| t.ship.is_some());
         }
     }
 
-    /// `dt` seconds on: a transfer plays on while the system view shows.
+    /// `dt` seconds on: a transfer plays on while the system view shows
+    /// it (not under a contract's card).
     pub fn advance(&mut self, dt: f32) {
+        self.clock += dt;
+        if self.card.is_some() {
+            return;
+        }
         let Some(t) = self.system() else { return };
         let done = self.transfer.as_ref().is_some_and(|tr| tr.leg(t).is_none());
         if done {
             self.transfer = None;
-        } else if let Some(tr) = self.transfer.as_mut().filter(|tr| !tr.waiting()) {
+        } else if let Some(tr) = self.transfer.as_mut() {
             tr.age += dt;
         }
     }
 
-    /// The contract summary card, if it's showing. The transfer animation
-    /// waits until it's dismissed (#414).
-    pub fn summary(&self) -> Option<&Ended> {
-        self.transfer
-            .as_ref()
-            .and_then(|tr| tr.summary.as_ref())
-            .filter(|_| self.system().is_some())
-    }
-
-    /// Dismiss the contract summary card and start the transfer animation.
-    pub fn go_on(&mut self) {
-        if let Some(tr) = &mut self.transfer {
-            tr.summary = None;
+    /// The galaxy's record of your company's ended contracts (newest
+    /// last): if the one you were last shown is among them, its card comes
+    /// up (#414), whether or not there's a next contract yet (#501).
+    pub fn set_ended(&mut self, ended: &[Ended]) {
+        if self.card.is_some() {
+            return;
+        }
+        let Some(old) = self.seen.as_ref() else {
+            return;
+        };
+        let Some(ship) = &old.ship else { return };
+        let key = (ship.id, ship.signed);
+        if self.closed == Some(key) {
+            return;
+        }
+        if let Some(e) = ended.iter().rev().find(|e| (e.ship, e.signed) == key) {
+            self.card = Some((old.clone(), *e));
         }
     }
 
-    /// The move onto the next contract, while it plays.
+    /// The contract card, if it's showing: how the contract you were on
+    /// ended. A move to the next one waits until it's dismissed (#414).
+    pub fn summary(&self) -> Option<&Ended> {
+        self.card
+            .as_ref()
+            .map(|(_, e)| e)
+            .filter(|_| self.screen == Screen::Missions && self.choice.is_none())
+    }
+
+    /// Dismiss the contract card: on to the move to the next contract, or
+    /// to waiting for one.
+    pub fn go_on(&mut self) {
+        if let Some((_, e)) = self.card.take() {
+            self.closed = Some((e.ship, e.signed));
+        }
+    }
+
+    /// The move onto the next contract, while it plays (not under a card).
     pub fn transfer(&self) -> Option<&Transfer> {
+        self.transfer.as_ref().filter(|_| self.card.is_none())
+    }
+
+    /// The move onto the next contract, set to play once any card's
+    /// dismissed.
+    pub fn next_move(&self) -> Option<&Transfer> {
         self.transfer.as_ref()
+    }
+
+    /// There's no contract to show and no card or choice up: your company's
+    /// between contracts, and the war goes on until it has one (the app
+    /// runs it, a slice a frame, and counts it here with `waited`).
+    pub fn waiting(&self) -> bool {
+        matches!(self.screen, Screen::Missions | Screen::Site)
+            && self.choice.is_none()
+            && self.theater.as_ref().is_none_or(|t| t.contested.is_empty())
+    }
+
+    /// The war went on `ticks` more while you waited.
+    pub fn waited(&mut self, ticks: u32) {
+        self.waited += ticks;
     }
 
     /// Select contested site `k` (on the missions or site screen).
@@ -749,10 +817,20 @@ impl Menu {
 
     /// The theater whose system the screen shows in 3D instead of a map
     /// (the missions screen, with sites to pick from).
+    /// The theater the system view shows: the contract card's, while it's
+    /// up; else the one on screen; else, while you wait for work, the last
+    /// one you were in.
     pub fn system(&self) -> Option<&Theater> {
-        self.theater.as_ref().filter(|t| {
-            self.screen == Screen::Missions && self.choice.is_none() && !t.contested.is_empty()
-        })
+        if self.screen != Screen::Missions || self.choice.is_some() {
+            return None;
+        }
+        if let Some((t, _)) = &self.card {
+            return Some(t);
+        }
+        match self.theater.as_ref().filter(|t| !t.contested.is_empty()) {
+            Some(t) => Some(t),
+            None => self.seen.as_ref(),
+        }
     }
 
     /// The map the selected site is fought on, and the side you'd take in
@@ -814,6 +892,23 @@ impl Menu {
                 let c = self.choice.as_ref().unwrap();
                 draw_choice(&mut p, &mut hits, Vec2::new(x, y), c, self.pick);
             }
+            // The contract that ended, over the theater it was in (#414):
+            // its panel's only to look at, the card's CONTINUE goes on.
+            Screen::Missions if self.card.is_some() => {
+                let (t, e) = self.card.as_ref().unwrap();
+                self.draw_theater(&mut p, &mut Hits::new(), Vec2::new(x, y), t);
+                crate::theater_view::draw(
+                    &mut p,
+                    &mut hits,
+                    t,
+                    None,
+                    Some(e),
+                    self.site,
+                    self.go_lit,
+                    w,
+                    h,
+                );
+            }
             Screen::Missions => match &self.theater {
                 Some(t) if !t.contested.is_empty() => {
                     self.draw_theater(&mut p, &mut hits, Vec2::new(x, y), t);
@@ -822,6 +917,7 @@ impl Menu {
                         &mut hits,
                         t,
                         self.transfer.as_ref(),
+                        None,
                         self.site,
                         self.go_lit,
                         w,
@@ -830,6 +926,7 @@ impl Menu {
                 }
                 _ => {
                     self.no_posting(&mut p, Vec2::new(x, y), profile);
+                    crate::theater_view::waiting(&mut p, self.waited, self.clock, w, h);
                 }
             },
             Screen::Site => match (&self.theater, self.selected_site()) {
@@ -903,20 +1000,16 @@ impl Menu {
     /// No theater to show: your company has no battle for you yet (or
     /// you're not with one, and none has; or the galaxy is still loading).
     fn no_posting(&self, p: &mut Painter, at: Vec2, profile: &Profile) {
-        let text = match profile.company_name() {
-            Some(name) => {
-                faction_line(p, at, Faction::Company, &format!("The {}", title(&name)));
-                format!(
-                    "Between contracts: the war goes on while the {} looks for work",
-                    title(&name)
-                )
-            }
-            None => {
-                faction_line(p, at, Faction::Company, "The Company");
-                "No contract: none of the Company's ships has a battle to join".to_string()
-            }
-        };
-        wrap(p, at + Vec2::new(0.0, 26.0), &text, theme::DIM);
+        let name = profile
+            .company_name()
+            .map_or("The Company".to_string(), |n| format!("The {}", title(&n)));
+        faction_line(p, at, Faction::Company, &name);
+        p.text(
+            at + Vec2::new(0.0, 28.0),
+            "BETWEEN CONTRACTS",
+            &TextStyle::value(22.0),
+            Align::Left,
+        );
     }
 
     /// The theater's panel: your company, the system, your contract, then
@@ -967,6 +1060,9 @@ impl Menu {
         }
 
         // The contested sites.
+        if t.contested.is_empty() {
+            return;
+        }
         body(p, Vec2::new(x, y), "Contested", theme::DIM);
         y += 24.0;
         let names: Vec<String> = t
@@ -1690,7 +1786,7 @@ const PAUSE_ITEMS: [Item<'static>; 5] = [
     Item::Opens("RESUME"),
     Item::Opens("GARAGE"),
     Item::Opens("SETTINGS"),
-    Item::Leaves("EXIT TO MENU", Some("ENDS WITHOUT YOU")),
+    Item::Leaves("LEAVE BATTLE", Some("IT ENDS WITHOUT YOU")),
     Item::Leaves("QUIT", None),
 ];
 
@@ -3090,7 +3186,7 @@ mod tests {
             other.ship.as_mut().unwrap().id += 1;
             m.set_theater(Some(other.clone()));
             let tr = m.transfer().expect("a transfer");
-            assert!(tr.warp && tr.summary.is_none());
+            assert!(tr.warp && m.summary().is_none());
             assert_eq!(legs(&m, &other), warp);
             for _ in 0..1000 {
                 m.advance(0.01);
@@ -3149,7 +3245,7 @@ mod tests {
         assert!(Transfer::between(&old, &next));
         m.remember(old);
         m.set_theater(Some(next.clone()));
-        let tr = m.transfer().expect("a transfer");
+        let tr = m.next_move().expect("a transfer");
         assert_eq!(tr.jumps(&next), t.system != next.system);
         // Until it's played, what you've been shown is still the old one:
         // quit now and it plays again.
@@ -3164,7 +3260,8 @@ mod tests {
             for _ in 0..1000 {
                 m.advance(0.01);
             }
-            assert_eq!(m.transfer().unwrap().age, 0.0, "waits on CONTINUE");
+            assert!(m.transfer().is_none(), "no move under the card");
+            assert_eq!(m.next_move().unwrap().age, 0.0, "waits on CONTINUE");
             assert_eq!(m.input(Nav::Select), None);
             assert!(m.summary().is_none());
             assert_eq!(m.screen, Screen::Missions, "CONTINUE stays on the screen");
@@ -3218,7 +3315,7 @@ mod tests {
             // Up/Down do nothing, and the animation doesn't start on its own.
             m.input(Nav::Down);
             m.advance(1.0);
-            assert_eq!(m.transfer().unwrap().age, 0.0);
+            assert_eq!(m.next_move().unwrap().age, 0.0);
             let layer = m.draw(&profile, 1600.0, 900.0, 1.0);
             assert!(layer.hits.center_of(Hit::Continue).is_some());
             if click {
@@ -3247,6 +3344,53 @@ mod tests {
         assert!(m.transfer().unwrap().age > 0.0);
     }
 
+    /// A contract that ends with no next one yet still gets its card, over
+    /// the theater it was in (#501); once it's dismissed, you're waiting
+    /// for work, and the ticks you wait are counted.
+    #[test]
+    fn a_contract_ends_with_nothing_next() {
+        use crate::galaxy::theater::{Ended, Outcome, Own};
+        let t = theater(Faction::Imperium).unwrap();
+        let old = t.ship.clone().unwrap();
+        let ended = Ended {
+            ship: old.id,
+            signed: old.signed,
+            tick: old.signed + 4,
+            outcome: Outcome::Won,
+            defend: false,
+            committed: 60,
+            lost: 12,
+            own: Own::default(),
+        };
+        let mut m = Menu::new();
+        m.input(Nav::Select);
+        m.set_theater(Some(t.clone()));
+        assert!(!m.waiting());
+        // The war goes on: the contract's over, and nothing's next.
+        m.set_ended(&[ended]);
+        m.set_theater(None);
+        assert_eq!(m.summary(), Some(&ended));
+        assert_eq!(
+            m.system().map(|s| s.system),
+            Some(t.system),
+            "over the old theater"
+        );
+        m.input(Nav::Select);
+        assert!(m.summary().is_none());
+        assert!(m.waiting());
+        m.waited(7);
+        assert_eq!(m.waited, 7);
+        // It doesn't come up again.
+        m.set_ended(&[ended]);
+        assert!(m.summary().is_none());
+        // Work: the move to it plays, and the count starts over.
+        let mut next = t.clone();
+        next.ship.as_mut().unwrap().signed += 5;
+        m.set_theater(Some(next));
+        assert!(!m.waiting());
+        assert!(m.transfer().is_some());
+        assert_eq!(m.waited, 0);
+    }
     /// Deploying while a transfer plays: you've seen the new contract, so
     /// it doesn't play again after the battle.
     #[test]

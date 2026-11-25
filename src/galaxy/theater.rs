@@ -302,6 +302,19 @@ pub struct TickSummary {
     /// Every side with hulls there before or now, the most now first, each
     /// followed by the company on contract for it there, if any.
     pub sides: Vec<SideChange>,
+    /// The system's sites that changed hands since, in order.
+    pub flips: Vec<Flip>,
+}
+
+/// A site that changed hands, in a `TickSummary`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flip {
+    /// Which world of the system it's on (0 for the first), and what it is.
+    pub planet: u8,
+    pub kind: &'static str,
+    /// Who held it, and who does now (indices into `Faction::ALL`).
+    pub from: usize,
+    pub to: usize,
 }
 
 /// One side's hulls in a `TickSummary`.
@@ -425,14 +438,20 @@ pub fn planet_name(name: &str, p: u8) -> String {
     format!("{name} {}", NUMERALS[(p as usize).min(3)])
 }
 
+/// What a site is, in caps: a shield generator, or what a production site
+/// makes most of.
+pub fn kind_name(kind: SiteKind) -> &'static str {
+    match kind {
+        SiteKind::Shield { .. } => "SHIELD GENERATOR",
+        SiteKind::Production { hulls, crystals } if crystals * 5.0 > hulls => "CRYSTAL MINE",
+        SiteKind::Production { .. } => "HULL FOUNDRY",
+    }
+}
+
 impl SiteView {
     /// What it is, in caps: a shield generator, or what a production site makes most of.
     pub fn kind_name(&self) -> &'static str {
-        match self.kind {
-            SiteKind::Shield { .. } => "SHIELD GENERATOR",
-            SiteKind::Production { hulls, crystals } if crystals * 5.0 > hulls => "CRYSTAL MINE",
-            SiteKind::Production { .. } => "HULL FOUNDRY",
-        }
+        kind_name(self.kind)
     }
 
     /// A stand-in site, for keys and legends: a shield generator, or a crystal mine.
@@ -962,8 +981,20 @@ impl Galaxy {
 
     /// System `s`'s tick summary (#475): its hulls since the battle fought
     /// there at tick `fought_at` began (`moves` start over then).
-    pub fn tick_summary(&self, s: usize, fought_at: u64) -> TickSummary {
+    pub fn tick_summary(&self, s: usize, fought_at: u64, owners: &[u8]) -> TickSummary {
         let sys = &self.systems[s];
+        let (a, b) = (sys.sites.0 as usize, sys.sites.1 as usize);
+        let flips = (a..b)
+            .filter_map(|i| {
+                let (site, was) = (&self.sites[i], *owners.get(i)?);
+                (site.owner != was).then(|| Flip {
+                    planet: site.planet,
+                    kind: kind_name(site.kind),
+                    from: was as usize,
+                    to: site.owner as usize,
+                })
+            })
+            .collect();
         let row = |f, merc, now: u32, moves: super::Moves| SideChange {
             side: f,
             merc,
@@ -1001,7 +1032,13 @@ impl Galaxy {
             name: system_name(s),
             ticks: self.tick.saturating_sub(fought_at),
             sides,
+            flips,
         }
+    }
+
+    /// Who holds each site (`Galaxy::sites`), as `tick_summary` compares it.
+    pub fn owners(&self) -> Vec<u8> {
+        self.sites.iter().map(|s| s.owner).collect()
     }
 
     /// System `s` as side `f` sees it. Each site's mission is its own,
