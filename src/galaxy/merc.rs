@@ -1068,6 +1068,10 @@ impl Galaxy {
         defend: bool,
     ) -> bool {
         #[cfg(test)]
+        if self.ask_log {
+            self.asks.push((r, t as u32, f, defend));
+        }
+        #[cfg(test)]
         if self.ban == Some((r, t as u32)) {
             return false;
         }
@@ -1174,7 +1178,11 @@ impl Galaxy {
                 let net = gain * worth - price;
                 #[cfg(test)]
                 let net = if self.force == Some((r, t as u32)) {
-                    1.0 + quote.hulls as f32
+                    if self.small {
+                        1e6 - quote.hulls as f32
+                    } else {
+                        1.0 + quote.hulls as f32
+                    }
                 } else {
                     if with <= 0.01 && share == 1.0 {
                         self.lost_calls.push((r, t as u32, f, defend, worth));

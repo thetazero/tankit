@@ -432,6 +432,13 @@ pub struct Galaxy {
     #[cfg(test)]
     pub(crate) guesses: Vec<(u32, u32, f32, f32)>,
     #[cfg(test)]
+    pub(crate) asks: Vec<(u32, u32, usize, bool)>,
+    /// Tests: force the smallest package through, not the largest.
+    #[cfg(test)]
+    pub(crate) small: bool,
+    #[cfg(test)]
+    pub(crate) ask_log: bool,
+    #[cfg(test)]
     pub(crate) lost_calls: Vec<(u32, u32, usize, bool, f32)>,
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
@@ -682,6 +689,12 @@ impl Galaxy {
             force: None,
             #[cfg(test)]
             guesses: Vec::new(),
+            #[cfg(test)]
+            asks: Vec::new(),
+            #[cfg(test)]
+            small: false,
+            #[cfg(test)]
+            ask_log: false,
             #[cfg(test)]
             lost_calls: Vec::new(),
             next_pilot: 1,

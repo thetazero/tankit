@@ -1495,3 +1495,124 @@ fn judge_contracts() {
         );
     }
 }
+
+/// Could hiring pay? Random asks, forced and forbidden in full copies of
+/// the galaxy under several dice: the hires that look good on half the
+/// dice, scored on the other half.
+#[test]
+#[ignore = "a tuning report, slow: run by hand in release"]
+fn judge_could_pay() {
+    let worth = |g: &Galaxy, r: u32| {
+        let mut x = g.realms[r as usize].crystals as f64;
+        x -= g
+            .debts
+            .iter()
+            .filter(|d| d.realm == r)
+            .map(|d| d.crystals as f64)
+            .sum::<f64>();
+        for s in 0..g.systems.len() {
+            let sys = &g.systems[s];
+            for f in 0..SIDES {
+                if sys.realms[f] == r {
+                    x += ((sys.hulls[f] - g.crewed(s, f).0.min(sys.hulls[f])) as f32
+                        * g.rules.hull_price) as f64;
+                }
+            }
+            for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
+                if sys.realms[site.owner as usize] == r
+                    && let SiteKind::Production { hulls, crystals } = site.kind
+                {
+                    x += ((crystals + hulls * g.rules.hull_price) * g.rules.merc_horizon) as f64;
+                }
+            }
+        }
+        x
+    };
+    const DICE: usize = 6;
+    // [small, large][attack, defense]: asks, mean gain (all); chosen, their
+    // gain on the other dice, and its square.
+    let mut out = [[[0.0f64; 5]; 2]; 2];
+    for seed in [11, 12] {
+        let mut g = Galaxy::warmed_by(seed, 300);
+        for step in 0..22usize {
+            let pre = g.clone();
+            g.asks.clear();
+            g.ask_log = true;
+            g.step();
+            g.ask_log = false;
+            let asks: Vec<_> = g.asks.drain(..).collect();
+            let defends: Vec<_> = asks.iter().copied().filter(|a| a.3).collect();
+            let attacks: Vec<_> = asks.iter().copied().filter(|a| !a.3).collect();
+            let mut pick = Vec::new();
+            for of in [&attacks, &defends] {
+                if !of.is_empty() {
+                    pick.push(of[(step * 7919 + 13) % of.len()]);
+                }
+            }
+            for (r, t, _, d) in pick {
+                for small in [true, false] {
+                    let mut gains = Vec::new();
+                    for dice in 0..DICE {
+                        let (mut a, mut b) = (pre.clone(), pre.clone());
+                        a.force = Some((r, t));
+                        a.small = small;
+                        b.ban = Some((r, t));
+                        a.step();
+                        b.step();
+                        if !a.companies.iter().any(|c| {
+                            c.contract.is_some_and(|k| {
+                                k.realm == r && k.target == t && k.signed == a.tick
+                            })
+                        }) {
+                            break;
+                        }
+                        a.force = None;
+                        a.ban = b.ban;
+                        for x in [&mut a, &mut b] {
+                            x.rng = Rng::from_state(
+                                (seed << 32) ^ (step as u64 * 1009 + dice as u64 * 7 + 1),
+                            );
+                        }
+                        for _ in 0..30 {
+                            a.step();
+                            b.step();
+                        }
+                        gains.push(worth(&a, r) - worth(&b, r));
+                    }
+                    if gains.len() < DICE {
+                        continue;
+                    }
+                    let o = &mut out[small as usize ^ 1][d as usize];
+                    let half = |i: usize| {
+                        (0..DICE / 2).map(|k| gains[2 * k + i]).sum::<f64>() / (DICE / 2) as f64
+                    };
+                    o[0] += 1.0;
+                    o[1] += gains.iter().sum::<f64>() / DICE as f64;
+                    for i in 0..2 {
+                        if half(i) > 0.0 {
+                            let y = half(1 - i);
+                            o[2] += 1.0;
+                            o[3] += y;
+                            o[4] += y * y;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (size, rows) in ["smallest", "largest"].iter().zip(out) {
+        for (kind, o) in ["attacks", "defenses"].iter().zip(rows) {
+            let n = o[2].max(1.0);
+            let se = ((o[4] / n - (o[3] / n).powi(2)).max(0.0) / n).sqrt();
+            println!(
+                "CP {size} {kind}: {} asks, mean realm gain {:+.1}; looked good {} of {} halves, gained {:+.1} (se {:.1}) on the other dice",
+                o[0],
+                o[1] / o[0].max(1.0),
+                o[2],
+                o[0] * 2.0,
+                o[3] / n,
+                se
+            );
+        }
+    }
+}
