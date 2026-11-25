@@ -927,14 +927,16 @@ impl Galaxy {
         out
     }
 
-    /// Each side's fire in system `s` this tick: its strength, from no more
-    /// of its hulls than the frontage, and seats short for the share of its
-    /// attacks it makes under an enemy's shield (spread evenly over them).
-    fn fire(&self, s: usize) -> [f32; SIDES] {
+    /// Each side's fire in the battle for site `t` in system `s`: its
+    /// fire with no shield in its way, a seat short for a side attacking
+    /// under an enemy's shield up on the site's planet (#426).
+    fn fire(&self, s: usize, t: usize) -> [f32; SIDES] {
         let mut fire = self.open_fire(s);
-        let short = self.shield_cut();
+        let planet = self.sites[t].planet as usize;
         for f in 0..SIDES {
-            fire[f] *= 1.0 - (1.0 - short) * self.shielded_share(s, f);
+            if f != self.sites[t].owner as usize && self.shields_up(s, f)[planet] > 0 {
+                fire[f] *= self.shield_cut();
+            }
         }
         fire
     }
@@ -990,29 +992,6 @@ impl Galaxy {
         all.round() as u8
     }
 
-    /// Side `f` is attacking under an enemy's shield in system `s`: some
-    /// site it's going for (`targets`) is on a planet with a generator of
-    /// an enemy's up.
-    #[cfg(test)]
-    pub fn shielded(&self, s: usize, f: usize) -> bool {
-        self.shielded_share(s, f) > 0.0
-    }
-
-    /// Of the sites side `f` goes for in system `s`, the share under an
-    /// enemy's shield.
-    fn shielded_share(&self, s: usize, f: usize) -> f32 {
-        let targets = self.targets(s, f);
-        if targets.is_empty() {
-            return 0.0;
-        }
-        let up = self.shields_up(s, f);
-        let under = targets
-            .iter()
-            .filter(|&&i| up[self.sites[i].planet as usize] > 0)
-            .count();
-        under as f32 / targets.len() as f32
-    }
-
     /// Realm `r`'s offensive (if `r` is a realm, on one) takes in `pos`.
     fn pushing(&self, r: u32, pos: Vec3) -> bool {
         r != NONE
@@ -1027,27 +1006,24 @@ impl Galaxy {
         f != g
     }
 
-    /// The tick's battles (#422). In every system at war, each side
-    /// fighting attacks every site it goes for (`targets`, #460), all at
-    /// once; at each, the holder wins unless the attacker does, a chance by
-    /// its share of the fire there (a seat short under a shield). The
-    /// played battle, if any, is one of its system's battles between its
-    /// sides (#493): its losses and its site's winner come from the match,
-    /// and their other battles there are fought and cost them hulls as the
-    /// galaxy's do (their share of the system's losses, one battle less). Every side's
-    /// losses come off its hulls the one way (`lose`), and every battle's
-    /// winner gets the one thing a win gets (`win`). A damaged generator
-    /// nobody fought over is working again.
+    /// The tick's battles (#422). A battle is a battle (#493): every one,
+    /// played or simmed, ends the same way (`battle::Outcome`: each side's
+    /// hulls lost, each kill some pilot's, a winner) and goes into the
+    /// galaxy the one way (`fight`). In every system at war, each side
+    /// fighting attacks every site it goes for (`targets`, #460), picked
+    /// before anything changes hands. The battles are fought one at a time,
+    /// each with the hulls its sides have left: the played one first, if
+    /// any, its outcome from the match (`settle`); then the battle for each
+    /// other site attacked, in site order, its outcome simmed (`sim`). A
+    /// damaged generator nobody fought over is working again.
     fn battles(&mut self, played: Option<&battle::Played>) -> Option<battle::Settled> {
         self.assaulted.clear();
         self.assaulted.resize(self.sites.len(), false);
         let mut settled = None;
         for s in 0..self.systems.len() {
             let here = played.filter(|p| p.battle.system == s);
-            let hulls = self.systems[s].hulls;
-            let present = hulls.map(|h| h >= AT_WAR);
-            let fighting = |f: usize| (0..SIDES).any(|g| present[g] && f != g);
-            let war = (0..SIDES).any(|f| present[f] && fighting(f));
+            let present = self.present(s);
+            let war = (0..SIDES).any(|f| self.fighting(s, f));
             if !war && here.is_none() {
                 // Nobody here to fight: each side holds what it has, and
                 // walks into any enemy site left unguarded.
@@ -1058,99 +1034,29 @@ impl Galaxy {
                 }
                 continue;
             }
-            // The played battle's sides: it's one of their battles here.
-            let in_match = |f: usize| here.is_some_and(|p| p.battle.sides.contains(&f));
-            // Of a side's losses in the system's fighting, the share that's
-            // its other battles here (#493): a played battle is one battle
-            // (its losses come from the match), not all of them.
-            let elsewhere: [f32; SIDES] = std::array::from_fn(|f| {
-                let Some(p) = here.filter(|_| in_match(f)) else {
-                    return 1.0;
-                };
-                let mut fights = if war { self.commits(s, f) } else { Vec::new() };
-                if let Some(t) = p.battle.site
-                    && !fights.contains(&t)
-                {
-                    fights.push(t);
-                }
-                let n = fights.len().max(1) as f32;
-                (n - 1.0) / n
+            let targets: [Vec<usize>; SIDES] = std::array::from_fn(|f| match war {
+                true if self.fighting(s, f) => self.targets(s, f),
+                _ => Vec::new(),
             });
-            // Each side's attack, picked before anything changes hands.
-            let targets: [Vec<usize>; SIDES] = std::array::from_fn(|f| {
-                if war && present[f] && fighting(f) {
-                    self.targets(s, f)
-                } else {
-                    Vec::new()
-                }
-            });
-            let shields: [[u8; 4]; SIDES] = std::array::from_fn(|f| self.shields_up(s, f));
-            // Each side's fire with no shield in its way, then as it fights.
-            let (mut open, mut fire) = match war {
-                true => (self.open_fire(s), self.fire(s)),
-                false => ([0.0; SIDES], [0.0; SIDES]),
-            };
-            for f in 0..SIDES {
-                let luck = self.rng.range(0.75, 1.25);
-                open[f] *= luck;
-                fire[f] *= luck;
-            }
-            let cut = self.shield_cut();
-            if war {
-                let mut losses = [0.0; SIDES];
-                // Who does the killing: each side's share of each other's losses.
-                let mut by = [[0.0f32; SIDES]; SIDES];
-                // Each side's fire spreads over its enemies here by how many hulls each has.
-                for g in (0..SIDES).filter(|&g| present[g]) {
-                    let enemies = |f: usize| present[f] && f != g;
-                    let targets: f32 = (0..SIDES)
-                        .filter(|&f| enemies(f))
-                        .map(|f| hulls[f] as f32)
-                        .sum();
-                    for f in (0..SIDES).filter(|&f| enemies(f)) {
-                        let x = self.rules.kill * fire[g] * hulls[f] as f32 / targets;
-                        losses[f] += x;
-                        by[f][g] += x;
-                    }
-                }
-                // Better armor takes more stopping (#438).
-                for f in 0..SIDES {
-                    losses[f] *= elsewhere[f] / crate::economy::armor_factor(self.gear(s, f));
-                }
-                // Whole hulls lost: each of a side's hulls here with the
-                // chance its expected losses give it.
-                for f in (0..SIDES).filter(|&f| losses[f] > 0.0) {
-                    let lost = self.rng.binomial(hulls[f], losses[f] / hulls[f] as f32);
-                    // Every wreck is some pilot's kill (#438).
-                    self.credit(s, f, lost, &by[f], &hulls);
-                    let mercs = self.mercs_share(s, f, lost);
-                    let theirs: u32 = mercs.iter().map(|m| m.1).sum();
-                    self.lose(s, f, lost - theirs, &mercs);
-                }
-            }
+            let played_site = here.and_then(|p| p.battle.site);
             if let Some(p) = here {
                 settled = Some(self.settle(p));
             }
-            let played_site = here.and_then(|p| p.battle.site);
-            let against = |f: usize| -> f32 {
-                (0..SIDES)
-                    .filter(|&g| present[g] && g != f)
-                    .map(|g| fire[g])
-                    .sum()
-            };
-            for f in 0..SIDES {
-                let against = against(f);
-                for &t in &targets[f] {
-                    let holder = self.sites[t].owner as usize;
-                    if holder == f || (in_match(f) && in_match(holder) && played_site == Some(t)) {
-                        continue;
-                    }
-                    let under = shields[f][self.sites[t].planet as usize] > 0;
-                    let mine = open[f] * if under { cut } else { 1.0 };
-                    let odds = mine / (mine + against).max(1e-3);
-                    let won = self.rng.chance(self.rules.take * odds);
-                    self.win(s, t, if won { f } else { holder });
+            let mut sites: Vec<usize> = targets.iter().flatten().copied().collect();
+            sites.sort();
+            sites.dedup();
+            for t in sites.into_iter().filter(|&t| Some(t) != played_site) {
+                let holder = self.sites[t].owner as usize;
+                let hulls = self.systems[s].hulls;
+                let mut sides: Vec<usize> = (0..SIDES)
+                    .filter(|&f| f != holder && hulls[f] > 0 && targets[f].contains(&t))
+                    .collect();
+                if sides.is_empty() {
+                    continue;
                 }
+                sides.push(holder);
+                let o = self.sim(s, t, &sides);
+                self.fight(s, &o);
             }
         }
         // Nobody fought over them: repaired.
@@ -1164,16 +1070,86 @@ impl Galaxy {
         settled
     }
 
+    /// Sim the battle for site `t` in system `s` between `sides` (its
+    /// attackers, then its holder), each with every hull it has left here.
+    /// Each side's fire (`fire`, a little luck either way) spreads over its
+    /// enemies in it by their hulls; each of a side's hulls is lost with the
+    /// chance the fire on it gives (better armor takes more stopping, #438),
+    /// each loss some enemy pilot's kill (`credit`), and some of them its
+    /// mercs' (`mercs_share`). The holder keeps the site unless an attacker
+    /// takes it, a chance by its share of the fire.
+    fn sim(&mut self, s: usize, t: usize, sides: &[usize]) -> battle::Outcome {
+        let hulls = self.systems[s].hulls;
+        let base = self.fire(s, t);
+        let mut fire = [0.0; SIDES];
+        for &f in sides {
+            fire[f] = base[f] * self.rng.range(0.75, 1.25);
+        }
+        let mut losses = [0.0f32; SIDES];
+        // Who does the killing: each side's share of each other's losses.
+        let mut by = [[0.0f32; SIDES]; SIDES];
+        for &g in sides {
+            let enemies = || sides.iter().copied().filter(move |&f| f != g);
+            let targets: f32 = enemies().map(|f| hulls[f] as f32).sum();
+            if targets <= 0.0 {
+                continue;
+            }
+            for f in enemies() {
+                let x = self.rules.kill * fire[g] * hulls[f] as f32 / targets;
+                losses[f] += x;
+                by[f][g] += x;
+            }
+        }
+        let mut o = battle::Outcome {
+            site: Some(t),
+            lost: Default::default(),
+            winner: None,
+            scrap: Vec::new(),
+        };
+        for &f in sides {
+            if hulls[f] == 0 || losses[f] <= 0.0 {
+                continue;
+            }
+            let x = losses[f] / crate::economy::armor_factor(self.gear(s, f));
+            let lost = self.rng.binomial(hulls[f], x / hulls[f] as f32);
+            let scrap = self.credit(s, f, lost, &by[f], &hulls);
+            o.scrap.extend(scrap);
+            let mercs = self.mercs_share(s, f, lost);
+            let theirs: u32 = mercs.iter().map(|m| m.1).sum();
+            o.lost[f] = (lost - theirs, mercs);
+        }
+        let (holder, attackers) = sides.split_last().expect("a battle has a holder");
+        let mut winner = *holder;
+        for &f in attackers {
+            let against: f32 = sides.iter().filter(|&&g| g != f).map(|&g| fire[g]).sum();
+            let odds = fire[f] / (fire[f] + against).max(1e-3);
+            if self.rng.chance(self.rules.take * odds) {
+                winner = f;
+                break;
+            }
+        }
+        o.winner = Some(winner);
+        o
+    }
+
     /// Side `f` lost `lost` hulls in system `s` (#438): each is a kill, by a
     /// side with the chance its share of the fire on `f` gives it (`by`),
     /// and on that side, by one of its hulls: a company's (one of its pilots
     /// takes apart the wreck) with the chance its hulls make up of the
     /// side's here, else the realm's (whose pilots fly its researched tier,
-    /// and learn nothing from wrecks).
-    fn credit(&mut self, s: usize, f: usize, lost: u32, by: &[f32; SIDES], hulls: &[u32; SIDES]) {
+    /// and learn nothing from wrecks). Returns the wrecks to take apart.
+    fn credit(
+        &mut self,
+        s: usize,
+        f: usize,
+        lost: u32,
+        by: &[f32; SIDES],
+        hulls: &[u32; SIDES],
+    ) -> Vec<battle::Scrap> {
+        let mut out = Vec::new();
         let total: f32 = by.iter().sum();
         if lost == 0 || total <= 0.0 {
-            return;
+            return out;
         }
         let level = self.gear(s, f);
         let maker = Faction::ALL[f];
@@ -1182,7 +1158,7 @@ impl Galaxy {
             .filter(|p| p.maker() == maker)
             .collect();
         if parts.is_empty() {
-            return;
+            return out;
         }
         // The companies here, each side's: (index, side, its hulls here).
         let here: Vec<(usize, usize, u32)> = (0..self.companies.len())
@@ -1210,8 +1186,9 @@ impl Galaxy {
             };
             let p = self.rng.index(self.companies[c].pilots.len());
             let part = parts[self.rng.index(parts.len())];
-            self.companies[c].pilots[p].known.scrap(part, level);
+            out.push((self.companies[c].id, p, part, level));
         }
+        out
     }
 
     /// Of side `f`'s `lost` hulls in system `s`, each company's there

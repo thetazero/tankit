@@ -522,7 +522,7 @@ impl Theater {
 }
 
 impl Galaxy {
-    fn present(&self, s: usize) -> [bool; SIDES] {
+    pub(crate) fn present(&self, s: usize) -> [bool; SIDES] {
         self.systems[s].hulls.map(|h| h >= AT_WAR)
     }
 

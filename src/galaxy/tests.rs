@@ -21,9 +21,9 @@ fn a_step_ends_at_war() {
     }
 }
 
-/// An attacker fighting for sites under an enemy's shield fights a seat
-/// short there (#426): its fire is cut by one seat in `Rules::seats`, for
-/// the share of its attacks under the shield (#460). The defender never is,
+/// An attacker under an enemy's shield fights a seat short there (#426):
+/// in the battle for a site on a planet with the holder's generator up,
+/// its fire is cut by one seat in `Rules::seats`. The defender never is,
 /// and with the generators down, nor is the attacker.
 #[test]
 fn shields_cost_the_attacker_a_seat() {
@@ -34,24 +34,23 @@ fn shields_cost_the_attacker_a_seat() {
     g.systems[s].hulls = [0; SIDES];
     g.systems[s].hulls[owner] = 40;
     g.systems[s].hulls[other] = 40;
-    let strength = g.strength(s);
-    let fire = g.fire(s);
-    assert!(g.shielded(s, other) && !g.shielded(s, owner));
-    let short = (g.rules.seats - SHIELD_SEATS as f32) / g.rules.seats;
-    let share = g.shielded_share(s, other);
-    assert!(share > 0.0);
-    let want = strength[other] * (1.0 - (1.0 - short) * share);
-    assert!((fire[other] - want).abs() < 1e-3);
-    assert_eq!(fire[owner], strength[owner], "the defender is never short");
-    // Every generator down: no shield, no seat lost.
+    let up = g.shields_up(s, other);
     let (a, b) = g.systems[s].sites;
+    let t = (a as usize..b as usize)
+        .find(|&i| g.sites[i].owner as usize == owner && up[g.sites[i].planet as usize] > 0)
+        .expect("a site under the owner's shield");
+    let open = g.open_fire(s);
+    let fire = g.fire(s, t);
+    let short = (g.rules.seats - SHIELD_SEATS as f32) / g.rules.seats;
+    assert!((fire[other] - open[other] * short).abs() < 1e-3);
+    assert_eq!(fire[owner], open[owner], "the defender is never short");
+    // Every generator down: no shield, no seat lost.
     for site in &mut g.sites[a as usize..b as usize] {
         if matches!(site.kind, SiteKind::Shield { .. }) {
             site.kind = SiteKind::Shield { damaged: true };
         }
     }
-    assert!(!g.shielded(s, other));
-    assert_eq!(g.fire(s)[other], g.strength(s)[other]);
+    assert_eq!(g.fire(s, t)[other], g.open_fire(s)[other]);
 }
 
 /// Shields don't stand in the way (#426): an attacker's win takes a site
