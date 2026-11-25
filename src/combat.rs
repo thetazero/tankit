@@ -2890,14 +2890,19 @@ impl Match {
         self.took_seat[i] = (f.kills, f.deaths, self.held(i));
         self.world.tanks[i].company = false;
         // The realm's pilot comes in the realm's own kit, not the merc's
-        // (#481). (You keep yours: you're never handed over.)
+        // (#481), any of its hulls and guns, dealt at random like the seats
+        // at the start: not by seat number, which on a two-sided field is
+        // even for every seat of a side and gave it one gun only (#492).
+        // (You keep yours: you're never handed over.)
         let team = self.fighters[i].team;
         if i != 0 {
             let faction = self.factions[team];
             let hulls = faction.hulls();
             let guns = faction.turrets();
             if !hulls.is_empty() && !guns.is_empty() {
-                self.fighters[i].next_kit = Some((hulls[i % hulls.len()], guns[i % guns.len()]));
+                let hull = hulls[self.rng.index(hulls.len())];
+                let gun = guns[self.rng.index(guns.len())];
+                self.fighters[i].next_kit = Some((hull, gun));
             }
             if let Some(Some(levels)) = self.realm_gear.get(team).copied() {
                 self.fighters[i].next_levels = Some(levels);
@@ -6222,6 +6227,49 @@ mod tests {
         assert!(!rows.last().unwrap().active);
         assert_eq!(rows.iter().map(|p| p.kills).sum::<u32>(), m.score(0));
         assert_eq!(rows.iter().map(|p| p.deaths).sum::<u32>(), m.lost()[0]);
+    }
+
+    /// A realm's own tanks field all its guns (#492): seats a merc company
+    /// leaves to the Resonant come back as Hymns and Knells both, not all
+    /// one gun because every seat of a side has an even number.
+    #[test]
+    fn seats_handed_to_the_realm_field_all_its_guns() {
+        let mut map = Map::saltmarket();
+        map.factions = vec![Faction::Resonant, Faction::Imperium];
+        let mut m = Match::new(map, 0, 21, 21);
+        let ours: Vec<usize> = (1..m.fighters.len())
+            .filter(|&i| m.fighters[i].team == 0)
+            .collect();
+        for i in 1..m.fighters.len() {
+            m.idle(i);
+        }
+        m.set_allocation(&[100, 100]);
+        // Every seat of the Resonant side is a merc's, with no merc hull
+        // to spare: each goes over to the realm on its first death.
+        m.set_company(0, ours.len() + 1, 0);
+        // The mercs all drive the Imperium's kit.
+        for &i in &ours {
+            m.set_kit(i, HullKind::Kastron, TurretKind::Pelekys, Levels::default());
+        }
+        m.start();
+        for &i in &ours {
+            destroy(&mut m, i);
+        }
+        respawn(&mut m);
+        let mut guns = Vec::new();
+        for &i in &ours {
+            let t = &m.world.tanks[i];
+            assert!(!t.company, "seat {i}: the realm's now");
+            assert_eq!(t.hull_kind, HullKind::Vigil, "seat {i}: the realm's hull");
+            guns.push(t.turret_kind);
+        }
+        for gun in Faction::Resonant.turrets() {
+            assert!(guns.contains(&gun), "no {gun:?} among {guns:?}");
+        }
+        assert!(
+            guns.iter().all(|g| g.maker() == Faction::Resonant),
+            "{guns:?}"
+        );
     }
 
     /// Pilots out of hulls stay listed, inactive (#389): a side's whose
