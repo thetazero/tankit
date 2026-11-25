@@ -27,6 +27,7 @@
 //!
 //! **A tick:**
 //! 1. *Production.* Every production site adds hulls and crystals to its realm.
+//!    Realms pay their pilots and train more.
 //!    Hulls cost nothing to build, except a little crystal for the Resonant.
 //!    Stored hulls wear out slowly, so an idle world's garrison levels off.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
@@ -45,6 +46,8 @@
 //!    sites can't be attacked while its generators are up, so it goes for
 //!    them first, all of them together, to get out from under them. Only so many of a side's hulls fire a tick however big it
 //!    is (`Rules::frontage`), so a world holds out for many ticks.
+//!    Each firing hull needs a pilot (`Galaxy::firing`). Pilots cap fire,
+//!    not losses: a pilot who loses a hull takes the next.
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
 //!    spent, time up) end.
@@ -235,6 +238,14 @@ pub struct Rules {
     /// ... and a step costs this many crystals a system it holds, growing
     /// a step at a time as upgrades do (`economy::upgrade_cost`).
     pub research_price: f32,
+    /// Crystals a realm pays each pilot a tick.
+    pub pilot_upkeep: f32,
+    /// Share of its income a realm spends on pilots.
+    pub pilot_budget: f32,
+    /// Most pilots a realm trains or dismisses a tick.
+    pub train: u32,
+    /// Pilots a new company starts with.
+    pub crew: u32,
 }
 
 impl Default for Rules {
@@ -285,6 +296,10 @@ impl Default for Rules {
             merc_dues: 0.5,
             research: 0.15,
             research_price: 1.2,
+            pilot_upkeep: 0.01,
+            pilot_budget: 0.25,
+            train: 2,
+            crew: 40,
         }
     }
 }
@@ -419,10 +434,9 @@ pub struct Galaxy {
     pub debts: Vec<Debt>,
     /// Companies founded, all told (each one's `id`).
     pub(crate) next_company: u32,
-    /// Pilots named, all told (each one's `Pilot::id`, #505).
+    /// The last pilot id handed out.
     pub(crate) next_pilot: u32,
-    /// You, a pilot like any (#505): what you know is the profile's, kept
-    /// here by the game (`Galaxy::know`).
+    /// You, as a pilot. Your knowledge is copied from the profile.
     pub you: Pilot,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
@@ -450,6 +464,8 @@ pub struct Galaxy {
     rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
+    /// Scratch: each realm's hulls in this tick's fights.
+    war_hulls: Vec<u32>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[u32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
@@ -582,6 +598,7 @@ impl Galaxy {
             moves: vec![[Moves::default(); SIDES]; systems.len()],
             merc_moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
+            war_hulls: Vec::new(),
             systems,
             sites,
             neighbors,
@@ -914,6 +931,7 @@ impl Galaxy {
             let cap = self.rules.hoard * c.max(0.05);
             realm.crystals = (realm.crystals + c).clamp(0.0, cap);
             realm.income = c + study;
+            realm.keep_pilots(&self.rules);
         }
     }
 
@@ -950,18 +968,73 @@ impl Galaxy {
     }
 
     /// Each side's fire in system `s` with no shield in its way: its
-    /// strength, from no more of its hulls than the frontage.
+    /// strength, scaled to the hulls that fire (`firing`).
     fn open_fire(&self, s: usize) -> [f32; SIDES] {
         let hulls = self.systems[s].hulls;
         let mut fire = self.strength(s);
         for f in 0..SIDES {
-            if hulls[f] as f32 > self.rules.frontage {
-                fire[f] *= self.rules.frontage / hulls[f] as f32;
+            if hulls[f] > 0 {
+                fire[f] *= self.firing(s, f) / hulls[f] as f32;
             }
             // Better guns hit harder (#438).
             fire[f] *= crate::economy::damage_factor(self.gear(s, f));
         }
         fire
+    }
+
+    /// How many of side `f`'s hulls in system `s` fire: no more than it has
+    /// pilots for, and no more than the frontage.
+    pub fn firing(&self, s: usize, f: usize) -> f32 {
+        let hulls = self.systems[s].hulls[f];
+        let (mercs, crewed) = self.crewed(s, f);
+        let own = hulls - mercs;
+        let realm = match self.systems[s].realms[f] {
+            NONE => own as f32,
+            r => {
+                let pilots = self.realms[r as usize].pilots as f32;
+                let fights = self
+                    .war_hulls
+                    .get(r as usize)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(own);
+                (own as f32).min(pilots * own as f32 / fights.max(1) as f32)
+            }
+        };
+        (realm + crewed as f32).min(self.rules.frontage)
+    }
+
+    /// Side `f`'s merc hulls in system `s`, and how many of them their
+    /// crews can fly.
+    pub fn crewed(&self, s: usize, f: usize) -> (u32, u32) {
+        let hulls = self.systems[s].hulls[f];
+        let (mut mercs, mut crewed) = (0, 0);
+        for c in &self.companies {
+            if let Some(k) = c.contract
+                && k.target as usize == s
+                && k.side as usize == f
+            {
+                let field = k.field.min(hulls - mercs);
+                mercs += field;
+                crewed += field.min(c.pilots.len() as u32);
+            }
+        }
+        (mercs, crewed)
+    }
+
+    /// Count each realm's hulls at war, so `firing` can split its pilots
+    /// between its fights.
+    fn share_pilots(&mut self) {
+        let mut war = vec![0; self.realms.len()];
+        for s in 0..self.systems.len() {
+            for f in 0..SIDES {
+                let r = self.systems[s].realms[f];
+                if r != NONE && self.fighting(s, f) {
+                    war[r as usize] += self.systems[s].hulls[f] - self.crewed(s, f).0;
+                }
+            }
+        }
+        self.war_hulls = war;
     }
 
     /// What's left of a side's fire under an enemy's shield: a seat short.
@@ -1027,6 +1100,7 @@ impl Galaxy {
     fn battles(&mut self, played: Option<&battle::Played>) -> Option<battle::Settled> {
         self.assaulted.clear();
         self.assaulted.resize(self.sites.len(), false);
+        self.share_pilots();
         let mut settled = None;
         for s in 0..self.systems.len() {
             let here = played.filter(|p| p.battle.system == s);

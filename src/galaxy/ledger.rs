@@ -100,8 +100,7 @@ pub struct Mercs {
     pub pilots: Vec<Pilot>,
 }
 
-/// A merc pilot (`Pilot::id`, #505) and their kit (#481): hull, turret,
-/// and their level in them.
+/// A merc pilot's id and kit: hull, turret, and their level in them.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pilot {
     pub id: u32,

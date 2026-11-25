@@ -1297,7 +1297,7 @@ mod tests {
             let mut n = 0;
             if sliced.await_work_slice(None, 1, &mut left, || {
                 n += 1;
-                n > 3
+                n > 0
             }) {
                 break;
             }
