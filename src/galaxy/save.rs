@@ -52,10 +52,10 @@ struct Saved {
     companies: Option<Vec<SavedCompany>>,
     #[serde(default)]
     next_company: u32,
-    /// Pilots named, all told (#505; none in a save from before).
+    /// The last pilot id handed out.
     #[serde(default)]
     next_pilot: u32,
-    /// Your pilot's id (#505; none in a save from before: a new one).
+    /// Your pilot's id.
     #[serde(default)]
     you: Option<u32>,
     /// Bonuses realms owe companies: (realm, company id, crystals).
@@ -90,8 +90,7 @@ struct SavedCompany {
     /// save from before: a crew of rookies.
     #[serde(default)]
     pilots: Vec<Vec<f32>>,
-    /// Each of those pilots' `Pilot::id` (#505); none in a save from
-    /// before: new ones.
+    /// Those pilots' ids; older saves have none.
     #[serde(default)]
     pilot_ids: Vec<u32>,
 }
@@ -126,6 +125,9 @@ struct SavedRealm {
     tier: u8,
     #[serde(default)]
     research: f32,
+    /// Its pilots; older saves have none.
+    #[serde(default)]
+    pilots: Option<u32>,
 }
 
 impl Galaxy {
@@ -164,6 +166,7 @@ impl Galaxy {
                     offensive: r.offensive.map(|o| (o.at.to_array(), o.gained)),
                     tier: r.tier,
                     research: r.research,
+                    pilots: Some(r.pilots),
                 })
                 .collect(),
             splits: self.splits,
@@ -258,10 +261,18 @@ impl Galaxy {
                 sys.held[site.owner as usize] += 1;
             }
         }
+        let rules = g.rules.clone();
         g.realms = s
             .realms
             .iter()
             .map(|r| Realm {
+                pilots: r.pilots.unwrap_or_else(|| {
+                    Realm {
+                        income: r.income,
+                        ..Realm::new(r.faction, r.seat, r.founded)
+                    }
+                    .pilots_wanted(&rules)
+                }),
                 crystals: r.crystals,
                 income: r.income,
                 offensive: r.offensive.map(|(at, gained)| Offensive {
@@ -274,9 +285,8 @@ impl Galaxy {
             })
             .collect();
         g.spans = vec![(0, 0); g.realms.len()];
-        // Pilot ids go on from the highest saved (a save from before
-        // pilots had ids has none: they're named afresh; one from before
-        // companies keeps a fresh galaxy's, and their pilots).
+        // New ids start past every saved one. Saves without companies keep
+        // the fresh galaxy's pilots, so start past those too.
         let fresh = if s.companies.is_none() {
             g.next_pilot
         } else {
@@ -322,8 +332,11 @@ impl Galaxy {
                             known: crate::economy::Known::from_steps(k),
                         })
                         .collect();
-                    while pilots.len() < super::merc::PILOTS {
-                        pilots.push(g.new_pilot());
+                    // Older saves had crews of six: fill them up.
+                    if c.pilot_ids.is_empty() {
+                        while pilots.len() < g.rules.crew as usize {
+                            pilots.push(g.new_pilot());
+                        }
                     }
                     Company {
                         at: c.at,
@@ -499,8 +512,7 @@ mod tests {
     use super::*;
     use crate::galaxy::SYSTEMS;
 
-    /// Every pilot has their own id (#505), you too: through splits and
-    /// joins, and in a galaxy saved before pilots had them.
+    /// Pilot ids stay unique through splits, joins and old saves.
     #[test]
     fn every_pilot_has_their_own_id() {
         let unique = |g: &Galaxy| {
@@ -530,7 +542,7 @@ mod tests {
         g.split_and_join();
         assert_eq!((g.books.splits, g.books.joins), (1, 1));
         unique(&g);
-        // A save from before pilot ids: everyone named afresh.
+        // An old save without pilot ids.
         let mut v: serde_json::Value = serde_json::to_value(g.saved(REGION * 0.3)).unwrap();
         v.as_object_mut().unwrap().remove("next_pilot");
         v.as_object_mut().unwrap().remove("you");

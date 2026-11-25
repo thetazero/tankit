@@ -38,6 +38,7 @@
 //! only): one ship works one contract at a time, so a company worth more than
 //! `Rules::merc_split` splits in two; one worth less than `Rules::merc_join`
 //! can't change a fight, so it joins the nearest company (paying the FTL).
+//! A split halves the crew; a join adds both crews together.
 //! The pilot's company (`Galaxy::crew`) keeps its id when it splits, and
 //! the pilot goes with it when it joins another; either way, the pilot then
 //! chooses which ship to go with (`Galaxy::crew_choice`, #364): either half
@@ -54,22 +55,16 @@ use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};
 use crate::economy::{PARTS, Part};
 use crate::sim::{HullKind, TurretKind};
 
-/// Pilots a company flies its hulls with (#438): as many as a side has
-/// seats. They fly remotely, so a hull lost never costs one.
-pub const PILOTS: usize = 6;
-
-/// A pilot (#505): who they are, and what they've reverse-engineered of
-/// each part, and so the gear they fly (#438). A company's fly its hulls;
-/// you're one too (`Galaxy::you`), aboard yours (`Galaxy::crew`).
+/// A pilot: an id, and what they've reverse-engineered of each part.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pilot {
-    /// Their own name: never reused (`Galaxy::new_pilot`).
+    /// Never reused.
     pub id: u32,
     pub known: crate::economy::Known,
 }
 
 impl Pilot {
-    /// A pilot who knows nothing yet: they fly the Company's starter kit.
+    /// A pilot who knows nothing yet.
     pub fn rookie(id: u32) -> Pilot {
         Pilot {
             id,
@@ -138,7 +133,8 @@ pub struct Company {
     pub idle_since: u64,
     /// Its own name, for charts: never reused.
     pub id: u32,
-    /// Its pilots (`PILOTS` of them), each with their own gear (#438).
+    /// Its crew. Each pilot flies one hull at a time, so the crew caps how
+    /// many of its hulls fire.
     pub pilots: Vec<Pilot>,
 }
 
@@ -265,18 +261,18 @@ impl Galaxy {
             id: self.next_company,
             pilots: Vec::new(),
         });
-        let pilots = (0..PILOTS).map(|_| self.new_pilot()).collect();
+        let pilots = (0..self.rules.crew).map(|_| self.new_pilot()).collect();
         let c = self.companies.len() - 1;
         self.companies[c].pilots = pilots;
         c
     }
 
-    /// What you know of each part (the profile's), kept on your pilot.
+    /// Set what your pilot knows.
     pub fn know(&mut self, known: crate::economy::Known) {
         self.you.known = known;
     }
 
-    /// A new pilot, a rookie, with an id never used before.
+    /// A new rookie with a fresh id.
     pub(crate) fn new_pilot(&mut self) -> Pilot {
         self.next_pilot += 1;
         Pilot::rookie(self.next_pilot)
@@ -645,17 +641,10 @@ impl Galaxy {
                 self.companies[c].crystals -= crystals;
                 self.companies[c].hulls -= hulls;
                 let new = self.new_company(co.at, crystals, hulls);
-                // Its pilots split between the two, every other one; each
-                // ship hires rookies for the seats left empty.
+                // Its pilots split between the two, every other one.
                 let (mut keep, mut go) = (Vec::new(), Vec::new());
                 for (i, &p) in co.pilots.iter().enumerate() {
                     if i % 2 == 0 { keep.push(p) } else { go.push(p) }
-                }
-                while keep.len() < PILOTS {
-                    keep.push(self.new_pilot());
-                }
-                while go.len() < PILOTS {
-                    go.push(self.new_pilot());
                 }
                 self.companies[c].pilots = keep;
                 self.companies[new].pilots = go;
@@ -702,12 +691,8 @@ impl Galaxy {
             };
             self.companies[o].crystals += crystals;
             self.companies[o].hulls += hulls;
-            // Joined, the ship keeps its best pilots, from either crew.
-            let mut pilots = self.companies[o].pilots.clone();
-            pilots.extend(co.pilots.iter().copied());
-            pilots.sort_by(|a, b| b.level().total_cmp(&a.level()));
-            pilots.truncate(PILOTS);
-            self.companies[o].pilots = pilots;
+            // Joined, the ship has both crews.
+            self.companies[o].pilots.extend(co.pilots.iter().copied());
             // What realms owed it, they owe the company it joined.
             let (from, to) = (co.id, self.companies[o].id);
             for d in self.debts.iter_mut().filter(|d| d.company == from) {

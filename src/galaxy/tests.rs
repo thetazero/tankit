@@ -230,6 +230,7 @@ fn attackers_go_for_every_shield_then_every_site() {
     g.systems[s].hulls = [0; SIDES];
     g.systems[s].hulls[owner] = 40;
     g.systems[s].hulls[other] = 40;
+    crewed(&mut g);
     assert_eq!(g.commits(s, other), targets);
     g.battles(None);
     for &j in &targets {
@@ -887,6 +888,23 @@ fn a_battle_goes_on_to_the_last_hull() {
     assert!(!g.systems[s].at_war());
 }
 
+/// Give every realm plenty of pilots, and every side in system 0 a realm,
+/// so battle tests aren't limited by pilots.
+fn crewed(g: &mut Galaxy) {
+    for f in 0..SIDES {
+        if g.systems[0].realms[f] == super::realm::NONE {
+            let r = g
+                .living()
+                .find(|(_, x)| x.faction as usize == f)
+                .map(|(r, _)| r as u32);
+            g.systems[0].realms[f] = r.unwrap_or_else(|| g.found(f as u8, 0));
+        }
+    }
+    for realm in &mut g.realms {
+        realm.pilots = 10_000;
+    }
+}
+
 /// Battles lose whole hulls, rolled: the same fight comes out differently
 /// from one roll to the next.
 #[test]
@@ -895,6 +913,7 @@ fn losses_are_rolled() {
     let s = 0;
     let owner = g.systems[s].owner();
     let other = (owner + 1) % SIDES;
+    crewed(&mut g);
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..40 {
         g.systems[s].hulls = [0; SIDES];
@@ -1063,4 +1082,48 @@ fn tick_summary_counts_from_the_battle() {
         assert!(own.windows(2).all(|w| w[0] >= w[1]));
     }
     assert!(changed, "nothing changed: the test shows nothing");
+}
+
+/// A side fires with no more hulls than it has pilots for, but loses
+/// hulls as fast as the enemy can kill them.
+#[test]
+fn pilots_cap_fire_not_losses() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let s = 0;
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % SIDES;
+    crewed(&mut g);
+    g.systems[s].hulls = [0; SIDES];
+    g.systems[s].hulls[owner] = 100;
+    g.systems[s].hulls[other] = 100;
+    let r = g.systems[s].realms[owner] as usize;
+    g.realms[r].pilots = 5;
+    g.share_pilots();
+    assert_eq!(g.firing(s, owner), 5.0);
+    assert_eq!(g.firing(s, other), g.rules.frontage);
+    g.battles(None);
+    assert!(
+        100 - g.systems[s].hulls[owner] > 5,
+        "losses capped by pilots"
+    );
+}
+
+/// A realm pays its pilots as far as it can, and trains toward what its
+/// income pays for a few at a time.
+#[test]
+fn realms_pay_and_train_pilots() {
+    let rules = Rules::default();
+    let mut r = super::realm::Realm::new(0, 0, 0);
+    r.income = 4.0;
+    let want = r.pilots_wanted(&rules);
+    assert_eq!(want, 100);
+    r.crystals = 100.0;
+    r.keep_pilots(&rules);
+    assert_eq!(r.pilots, rules.train, "trains a few a tick");
+    // Broke, it keeps only those it can pay.
+    r.pilots = 50;
+    r.crystals = 0.1;
+    r.keep_pilots(&rules);
+    assert!(r.pilots <= 10 + rules.train, "{}", r.pilots);
+    assert!(r.crystals < 0.1);
 }

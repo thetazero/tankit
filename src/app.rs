@@ -63,8 +63,8 @@ const FAST_FORWARD_CHUNK: usize = 30;
 const LEAVING_BUDGET: std::time::Duration = std::time::Duration::from_millis(30);
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
-/// The galaxy's you is the profile's (#505): what you know of each part.
-/// A galaxy saved before it kept your company (#350) takes the profile's.
+/// Copy what the profile knows onto your pilot, and its company onto an
+/// older galaxy save that has none.
 fn adopt(g: &mut crate::galaxy::Galaxy, profile: &crate::profile::Profile) {
     g.know(profile.known);
     if g.crew.is_none() {

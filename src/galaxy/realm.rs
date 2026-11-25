@@ -52,6 +52,8 @@ pub struct Realm {
     pub tier: u8,
     /// Crystal put into researching its next tier so far.
     pub research: f32,
+    /// Its pilots, all alike, shared between all its fights.
+    pub pilots: u32,
 }
 
 impl Realm {
@@ -66,6 +68,26 @@ impl Realm {
             systems: 0,
             tier: 0,
             research: 0.0,
+            pilots: 0,
+        }
+    }
+
+    /// How many pilots its income pays for.
+    pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
+        (rules.pilot_budget * self.income.max(0.0) / rules.pilot_upkeep.max(1e-6)) as u32
+    }
+
+    /// Pay its pilots (those it can't pay leave), then train or dismiss a
+    /// few toward what it can afford.
+    pub fn keep_pilots(&mut self, rules: &super::Rules) {
+        let upkeep = rules.pilot_upkeep.max(1e-6);
+        self.pilots = self.pilots.min((self.crystals / upkeep) as u32);
+        self.crystals = (self.crystals - self.pilots as f32 * upkeep).max(0.0);
+        let want = self.pilots_wanted(rules);
+        if self.pilots < want {
+            self.pilots += rules.train.min(want - self.pilots);
+        } else {
+            self.pilots -= rules.train.min(self.pilots - want);
         }
     }
 
@@ -190,6 +212,8 @@ impl Galaxy {
         for (r, realm) in self.realms.iter_mut().enumerate() {
             realm.income = income[r];
             realm.crystals = income[r] * self.rng.range(0.0, self.rules.launch);
+            // Start with as many pilots as it can afford.
+            realm.pilots = realm.pilots_wanted(&self.rules);
         }
     }
 
@@ -360,7 +384,13 @@ impl Galaxy {
             let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
             let parent = &mut self.realms[old as usize];
             parent.crystals = (parent.crystals - take).max(0.0);
+            // And its share of the pilots.
+            let pilots = (parent.pilots as f32
+                * (members.len() as f32 / size.max(1) as f32).min(1.0))
+                as u32;
+            parent.pilots -= pilots;
             self.realms[new as usize].crystals = take;
+            self.realms[new as usize].pilots = pilots;
             for &s in &members {
                 self.systems[s as usize].realms[f as usize] = new;
             }
@@ -420,6 +450,7 @@ impl Galaxy {
             let take = self.realms[a].crystals;
             self.realms[b].crystals += take;
             self.realms[a].crystals = 0.0;
+            self.realms[b].pilots += std::mem::take(&mut self.realms[a].pilots);
             // Folded together, it keeps the better gear.
             self.realms[b].tier = self.realms[b].tier.max(self.realms[a].tier);
             self.merges += 1;

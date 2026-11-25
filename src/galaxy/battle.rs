@@ -80,7 +80,9 @@ pub struct Battle {
     /// Each team's merc hulls, by company: (`Company::id`, hulls). They're
     /// among its allocation.
     hired: Vec<Vec<(u32, u32)>>,
-    /// Each team's mercs' share of its hulls in the battle's system.
+    /// How many of each company's hulls its crew can fly at once.
+    crews: Vec<Vec<u32>>,
+    /// Each team's mercs' share of its firing hulls in the system.
     share: Vec<f32>,
     /// The site fought over (index into `Galaxy::sites`): a production site
     /// of the system's holder among the sides.
@@ -348,9 +350,9 @@ impl Battle {
     }
 
     /// Team `team`'s merc seats (`merc_seats`), each company's (#493), as
-    /// they're listed in `hired`: by the hulls each brings, never more
-    /// seats than hulls; with your company there (first, on your side), at
-    /// least one: yours.
+    /// they're listed in `hired`: by how many hulls each crew flies, never
+    /// more seats than hulls; with your company there (first, on your
+    /// side), at least one: yours.
     pub fn company_seats(&self, team: usize, seats: usize) -> Vec<usize> {
         let hired = self.hired.get(team).map_or(&[][..], |h| &h[..]);
         let mut n = self.merc_seats(team, seats);
@@ -359,9 +361,11 @@ impl Battle {
             out[0] = 1;
             n -= 1;
         }
-        // Whole seats by hulls, never past a company's hulls.
+        // Whole seats by hulls flown, never past a company's hulls.
+        let crews = self.crews.get(team).map_or(&[][..], |c| &c[..]);
+        let flown = |k: usize| crews.get(k).copied().unwrap_or(hired[k].1);
         while n > 0 {
-            let share = |k: usize| hired[k].1 as f32 / (out[k] + 1) as f32;
+            let share = |k: usize| flown(k) as f32 / (out[k] + 1) as f32;
             let Some(k) = (0..hired.len())
                 .filter(|&k| (out[k] as u32) < hired[k].1)
                 .max_by(|&a, &b| share(a).total_cmp(&share(b)))
@@ -527,6 +531,7 @@ impl Galaxy {
         let mut allocation = Vec::new();
         let mut sources = Vec::new();
         let mut hired = Vec::new();
+        let mut crews = Vec::new();
         let mut share = Vec::new();
         for (team, &f) in sides.iter().enumerate() {
             let (mut companies, mercs) = self.on_contract(system, f);
@@ -540,11 +545,24 @@ impl Galaxy {
             // Every hull it has here, the mercs' among them.
             let want = self.reach(system, f);
             let from = vec![(system, want.saturating_sub(mercs))];
-            share.push(if want > 0 {
-                mercs as f32 / want as f32
+            // Seats go by firing hulls, not hulls.
+            let crew: Vec<u32> = companies
+                .iter()
+                .map(|&(id, h)| {
+                    let pilots = self
+                        .company(id)
+                        .map_or(0, |c| self.companies[c].pilots.len());
+                    h.min(pilots as u32)
+                })
+                .collect();
+            let firing = self.firing(system, f);
+            let crewed: u32 = crew.iter().sum();
+            share.push(if firing > 0.0 {
+                (crewed as f32 / firing).min(1.0)
             } else {
                 0.0
             });
+            crews.push(crew);
             let theirs = companies;
             allocation.push(want);
             sources.push(from);
@@ -572,6 +590,7 @@ impl Galaxy {
             allocation,
             sources,
             hired,
+            crews,
             share,
             site,
             shielded,
