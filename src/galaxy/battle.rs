@@ -28,30 +28,30 @@
 //! battles for the tick, fought first; the others there follow, each with
 //! the hulls left (`Galaxy::step_played`).
 //!
-//! **Mercs** (#320). A company under contract for the battle's system (to
-//! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
-//! drawn from that system is part merc, in proportion: if a third of the
-//! side's hulls here are a company's, a third of what it brings is. (Mercs
-//! on contract elsewhere stay on their own contracts.) The side's **seats** are split by the mercs' share of
-//! its force in the system itself (the attack they were hired to make up),
-//! rounded, but never more seats than merc hulls, and never all of them
-//! while the side brings any hulls of the realm's own: that many of its
-//! tanks are the Company's, in its colors. A Company tank coming back takes a
-//! merc hull while there are any, and after that comes back as the realm's.
-//! Hulls the Company's tanks lose come off their contracts (and count towards
-//! their caps); the rest come off the realm's.
+//! **Mercs** (#320, #493). A company under contract for the battle's
+//! system (to take it, or to hold it: #340) has its hulls there among its
+//! employer's side's, so a side's allocation drawn from that system is part
+//! merc, in proportion: if a third of the side's hulls here are a
+//! company's, a third of what it brings is. (Mercs on contract elsewhere
+//! stay on their own contracts.) The side's **seats** are split by the
+//! mercs' share of its force in the system itself (the attack they were
+//! hired to make up), rounded, but never more seats than merc hulls, and
+//! never all of them while the side brings any hulls of the realm's own;
+//! then between its companies by their hulls (`Battle::company_seats`).
+//! Each company's tanks are in its colors, flown by its pilots, and come
+//! back in its own hulls while it has any, after that as the realm's. Each
+//! company's tanks lost come off its contract (and count towards its cap);
+//! the rest come off the realm's.
 //!
 //! **Your company** (#361, #362, #363). You only fight in battles your
 //! company (`Galaxy::crew`) is in: on its contract, for the side that hired
-//! it (`deploy_at`). On your side, the mercs are your company's alone:
-//! another company hired for the same side keeps its hulls out of your
-//! battle, so they can't keep you in the fight and your losses never come
-//! off them. You're one of your company's seats, in one of its hulls; when
-//! its hulls are spent, so are you, and the match plays out without you
-//! (see `Match::crew_out`, #373): its result is whatever your side's realm
-//! hulls make of it. Some of its hulls are yours alone, set when you start
-//! on its contract, more at higher rank ([`own_hulls`], #385): its bots
-//! can't spend them, only your deaths do.
+//! it (`deploy_at`). It's one of your side's companies like any (#493),
+//! listed first. You're one of its seats, in one of its hulls; when its
+//! hulls are spent, so are you, and the match plays out without you (see
+//! `Match::crew_out`, #373): its result is whatever the rest of your side
+//! makes of it. Some of its hulls are yours alone, set when you start on
+//! its contract, more at higher rank ([`own_hulls`], #385): its bots can't
+//! spend them, only your deaths do.
 
 use super::{AT_WAR, Galaxy, SHIELD_SEATS, SIDES, SiteKind};
 use crate::combat::Match;
