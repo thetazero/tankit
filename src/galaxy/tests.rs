@@ -1389,7 +1389,7 @@ fn judge_contracts() {
     let after = 30;
     for seed in [1, 2] {
         let mut g = Galaxy::warmed_by(seed, 300);
-        for step in 0..60 {
+        for step in 0..150 {
             let pre = g.clone();
             g.lost_calls.clear();
             g.step();
@@ -1401,7 +1401,7 @@ fn judge_contracts() {
                 .map(|k| (k.defend as usize, k.realm, k.target, k.side as usize))
                 .collect();
             let lost = g.lost_calls.clone();
-            for i in 0..2.min(lost.len()) {
+            for i in 0..(step % 2).min(lost.len()) {
                 let (r, t, f, d, _) = lost[(step * 37 + i * 101) % lost.len()];
                 jobs.push((2 + d as usize, r, t, f));
             }
@@ -1421,39 +1421,6 @@ fn judge_contracts() {
                 });
                 if !signed {
                     continue;
-                }
-                if kind == 2 && out[2][0] < 14.0 {
-                    let k = a
-                        .companies
-                        .iter()
-                        .find_map(|c| c.contract.filter(|k| k.realm == r && k.target == t))
-                        .unwrap();
-                    let s = t as usize;
-                    let (mut x, mut y) = (a.clone(), b.clone());
-                    let mut line = format!(
-                        "TR sys {t} f {f} mercs {} pre hulls {:?} held {:?} expected {:.0}/{:.0} rate {:.1} up {:.0} |",
-                        k.committed,
-                        pre.systems[s].hulls,
-                        pre.systems[s].held,
-                        k.expected,
-                        k.worth,
-                        k.rate,
-                        k.upfront
-                    );
-                    for _ in 0..6 {
-                        line += &format!(
-                            " A{:?} fire {:.0} B{:?}",
-                            x.systems[s].hulls,
-                            x.firing(s, f),
-                            y.systems[s].hulls
-                        );
-                        x.step();
-                        y.step();
-                    }
-                    println!(
-                        "{line} end A held {:?} B held {:?}",
-                        x.systems[s].held, y.systems[s].held
-                    );
                 }
                 a.ban = b.ban;
                 a.force = None;

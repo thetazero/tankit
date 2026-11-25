@@ -875,25 +875,29 @@ impl Galaxy {
         } else {
             (1.0, 1.0)
         };
-        // And what they'll bring up from around, as any realm does for a
-        // world under attack (`Galaxy::consider`): enough for its odds
-        // against what comes at it, as far as it has hulls to spare.
+        // And what they'll bring up, as any realm does for a world of its
+        // own (`Galaxy::consider`): its spare hulls in range, enough to
+        // reach its odds against what's there, or none if they can't.
         let spare: u32 = self
             .neighbors(t)
-            .map(|(s, _)| {
+            .map(|(n, _)| {
                 (0..SIDES)
-                    .filter(|&g| g != f)
-                    .map(|g| self.spare[s][g])
+                    .filter(|&g| {
+                        let r = sys.realms[g];
+                        g != f && r != super::realm::NONE && self.systems[n].realms[g] == r
+                    })
+                    .map(|g| self.spare[n][g])
                     .sum::<u32>()
             })
             .sum();
         let mut spare = spare as f32;
         let odds = self.rules.odds;
-        // Each tick, up to what it takes for their odds against what's
-        // still coming at them.
         let reinforce = |he: &mut f32, spare: &mut f32, ours: f32| {
-            let want =
-                (odds * ours.min(self.rules.frontage) * pf * 1.2 + 10.0) / pe.max(1e-3) - *he;
+            let against = odds * ours * pf;
+            if *spare < MIN_SEND as f32 || *he * pe >= against || (*he + *spare) * pe < against {
+                return;
+            }
+            let want = (against * 1.2 + 10.0) / pe.max(1e-3) - *he;
             let more = want.clamp(0.0, *spare);
             *he += more;
             *spare -= more;
