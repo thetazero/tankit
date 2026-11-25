@@ -1032,8 +1032,9 @@ impl Galaxy {
     /// once; at each, the holder wins unless the attacker does, a chance by
     /// its share of the fire there (a seat short under a shield). The
     /// played battle, if any, is one of its system's battles between its
-    /// sides: their losses and its site's winner come from the match
-    /// instead; their other sites there go as the galaxy's do. Every side's
+    /// sides (#493): its losses and its site's winner come from the match,
+    /// and their other battles there are fought and cost them hulls as the
+    /// galaxy's do (their share of the system's losses, one battle less). Every side's
     /// losses come off its hulls the one way (`lose`), and every battle's
     /// winner gets the one thing a win gets (`win`). A damaged generator
     /// nobody fought over is working again.
@@ -1057,8 +1058,24 @@ impl Galaxy {
                 }
                 continue;
             }
-            // The played battle's sides fight only it, here, this tick.
+            // The played battle's sides: it's one of their battles here.
             let in_match = |f: usize| here.is_some_and(|p| p.battle.sides.contains(&f));
+            // Of a side's losses in the system's fighting, the share that's
+            // its other battles here (#493): a played battle is one battle
+            // (its losses come from the match), not all of them.
+            let elsewhere: [f32; SIDES] = std::array::from_fn(|f| {
+                let Some(p) = here.filter(|_| in_match(f)) else {
+                    return 1.0;
+                };
+                let mut fights = if war { self.commits(s, f) } else { Vec::new() };
+                if let Some(t) = p.battle.site
+                    && !fights.contains(&t)
+                {
+                    fights.push(t);
+                }
+                let n = fights.len().max(1) as f32;
+                (n - 1.0) / n
+            });
             // Each side's attack, picked before anything changes hands.
             let targets: [Vec<usize>; SIDES] = std::array::from_fn(|f| {
                 if war && present[f] && fighting(f) {
@@ -1098,11 +1115,11 @@ impl Galaxy {
                 }
                 // Better armor takes more stopping (#438).
                 for f in 0..SIDES {
-                    losses[f] /= crate::economy::armor_factor(self.gear(s, f));
+                    losses[f] *= elsewhere[f] / crate::economy::armor_factor(self.gear(s, f));
                 }
                 // Whole hulls lost: each of a side's hulls here with the
                 // chance its expected losses give it.
-                for f in (0..SIDES).filter(|&f| losses[f] > 0.0 && !in_match(f)) {
+                for f in (0..SIDES).filter(|&f| losses[f] > 0.0) {
                     let lost = self.rng.binomial(hulls[f], losses[f] / hulls[f] as f32);
                     // Every wreck is some pilot's kill (#438).
                     self.credit(s, f, lost, &by[f], &hulls);

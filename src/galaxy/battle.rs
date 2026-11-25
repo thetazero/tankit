@@ -21,8 +21,10 @@
 //! storage (`Galaxy::lose`); survivors stay there. The winner gets what any
 //! battle's winner gets (`Galaxy::win`): the site, from its holder, or, the
 //! holder's win, its generator repaired. A draw goes to the holder, and the
-//! contract doesn't change what a win does. It's that system's battle for
-//! the tick, settled in the tick with the rest (`Galaxy::step_played`).
+//! contract doesn't change what a win does. It's one of that system's
+//! battles for the tick, settled in the tick with the rest
+//! (`Galaxy::step_played`); its sides' other battles there are fought and
+//! cost them hulls as usual (#493).
 //!
 //! **Mercs** (#320). A company under contract for the battle's system (to
 //! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
@@ -784,39 +786,45 @@ mod tests {
                 continue;
             }
             tried += 1;
-            let hulls = sys.hulls;
-            // Companies there whose contracts end this tick sail off with
-            // their hulls: that's leaving, not losing them.
-            let fields = |g: &Galaxy| {
-                let mut on = vec![];
-                for c in &g.companies {
-                    if let Some(k) = c.contract.filter(|k| k.target as usize == b.system) {
-                        on.push((c.id, k.signed, k.side as usize, k.field));
-                    }
-                }
-                on
-            };
-            let before = fields(&g);
             let s = g.step_played(&played(&b, &[0, 0], &[0, 0], Some(1 - t)));
-            let after = fields(&g);
-            let mut gone = [0; SIDES];
-            for &(id, signed, side, field) in &before {
-                if !after.iter().any(|&(i, s, ..)| (i, s) == (id, signed)) {
-                    gone[side] += field;
-                }
-            }
             assert!(s.taken);
             assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
-            // No second round of fighting there: only wear thins its hulls
-            // (each hull's chance of it, so give or take a few).
-            let wear = g.rules.wear;
-            for f in 0..SIDES {
-                let left = hulls[f].saturating_sub(gone[f]) as f32;
-                let floor = left * (1.0 - 3.0 * wear) - 3.0;
-                assert!(g.systems[b.system].hulls[f] as f32 >= floor, "seed {seed}");
-            }
         }
         assert!(tried >= 5, "only {tried} seeds had a held site at stake");
+    }
+
+    /// A played battle is one of its system's battles, not a stand-in for
+    /// all of them (#493): in its tick, its sides' other battles there
+    /// still cost them hulls, on top of what the match cost.
+    #[test]
+    fn the_rest_of_the_system_still_fights() {
+        let (mut tried, mut lost) = (0, 0);
+        for seed in 0..20 {
+            let mut g = seeded(seed);
+            let b = g.muster(&PAIR, 6);
+            let Some(site) = b.site else { continue };
+            // Its sides have other battles there this tick.
+            let others = |f: usize| g.commits(b.system, f).iter().any(|&i| i != site);
+            if !b.sides.iter().all(|&f| others(f)) {
+                continue;
+            }
+            tried += 1;
+            let s = g.step_played(&played(&b, &[0, 0], &[0, 0], None));
+            assert_eq!(s.lost, [0; SIDES], "the match itself lost nothing");
+            lost += b
+                .sides
+                .iter()
+                .map(|&f| g.moves[b.system][f].lost)
+                .sum::<u32>();
+        }
+        assert!(
+            tried >= 3,
+            "only {tried} seeds had other battles in the system"
+        );
+        assert!(
+            lost > 0,
+            "no hull lost in {tried} played ticks' other battles"
+        );
     }
 
     /// A shield generator is its holder's, working or damaged (#422): won
