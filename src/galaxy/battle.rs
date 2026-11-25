@@ -28,30 +28,30 @@
 //! battles for the tick, fought first; the others there follow, each with
 //! the hulls left (`Galaxy::step_played`).
 //!
-//! **Mercs** (#320). A company under contract for the battle's system (to
-//! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
-//! drawn from that system is part merc, in proportion: if a third of the
-//! side's hulls here are a company's, a third of what it brings is. (Mercs
-//! on contract elsewhere stay on their own contracts.) The side's **seats** are split by the mercs' share of
-//! its force in the system itself (the attack they were hired to make up),
-//! rounded, but never more seats than merc hulls, and never all of them
-//! while the side brings any hulls of the realm's own: that many of its
-//! tanks are the Company's, in its colors. A Company tank coming back takes a
-//! merc hull while there are any, and after that comes back as the realm's.
-//! Hulls the Company's tanks lose come off their contracts (and count towards
-//! their caps); the rest come off the realm's.
+//! **Mercs** (#320, #493). A company under contract for the battle's
+//! system (to take it, or to hold it: #340) has its hulls there among its
+//! employer's side's, so a side's allocation drawn from that system is part
+//! merc, in proportion: if a third of the side's hulls here are a
+//! company's, a third of what it brings is. (Mercs on contract elsewhere
+//! stay on their own contracts.) The side's **seats** are split by the
+//! mercs' share of its force in the system itself (the attack they were
+//! hired to make up), rounded, but never more seats than merc hulls, and
+//! never all of them while the side brings any hulls of the realm's own;
+//! then between its companies by their hulls (`Battle::company_seats`).
+//! Each company's tanks are in its colors, flown by its pilots, and come
+//! back in its own hulls while it has any, after that as the realm's. Each
+//! company's tanks lost come off its contract (and count towards its cap);
+//! the rest come off the realm's.
 //!
 //! **Your company** (#361, #362, #363). You only fight in battles your
 //! company (`Galaxy::crew`) is in: on its contract, for the side that hired
-//! it (`deploy_at`). On your side, the mercs are your company's alone:
-//! another company hired for the same side keeps its hulls out of your
-//! battle, so they can't keep you in the fight and your losses never come
-//! off them. You're one of your company's seats, in one of its hulls; when
-//! its hulls are spent, so are you, and the match plays out without you
-//! (see `Match::crew_out`, #373): its result is whatever your side's realm
-//! hulls make of it. Some of its hulls are yours alone, set when you start
-//! on its contract, more at higher rank ([`own_hulls`], #385): its bots
-//! can't spend them, only your deaths do.
+//! it (`deploy_at`). It's one of your side's companies like any (#493),
+//! listed first. You're one of its seats, in one of its hulls; when its
+//! hulls are spent, so are you, and the match plays out without you (see
+//! `Match::crew_out`, #373): its result is whatever the rest of your side
+//! makes of it. Some of its hulls are yours alone, set when you start on
+//! its contract, more at higher rank ([`own_hulls`], #385): its bots can't
+//! spend them, only your deaths do.
 
 use super::{AT_WAR, Galaxy, SHIELD_SEATS, SIDES, SiteKind};
 use crate::combat::Match;
@@ -130,9 +130,10 @@ pub struct Snapshot {
 #[derive(Clone, Debug)]
 pub struct Played {
     pub battle: Battle,
-    /// Hulls each team lost (its tanks destroyed), and of those the Company's tanks.
+    /// Hulls each team lost (its tanks destroyed), and of those each of its
+    /// companies' tanks (as listed in `Battle::hired`).
     pub lost: Vec<u32>,
-    pub company: Vec<u32>,
+    pub company: Vec<Vec<u32>>,
     /// The team that won; none for a draw (the holder's, then).
     pub winner: Option<usize>,
     /// Your own hulls lost (#385).
@@ -243,16 +244,13 @@ fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
     }
     m.set_allocation(&b.allocation);
     for team in 0..b.sides.len() {
-        let seats = m.seats(team);
-        m.set_company(team, b.merc_seats(team, seats), b.mercs(team));
-        // Each company by name, for the scoreboard's hull summary (#423):
-        // those bringing a hull, so none shows up empty-handed.
-        let named = b.hired[team]
+        let seats = b.company_seats(team, m.seats(team));
+        let companies = b.hired[team]
             .iter()
-            .filter(|&&(_, h)| h >= 1)
-            .map(|&(id, h)| (super::theater::ship_name(id), h as f32))
+            .zip(seats)
+            .map(|(&(id, h), n)| (Some(super::theater::ship_name(id)), n, h))
             .collect();
-        m.set_companies(team, named);
+        m.set_mercs(team, companies);
     }
     kit(g, m, &mut b);
     log::info!(
@@ -265,10 +263,10 @@ fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
 }
 
 /// Every bot's gear (#438): a realm's tanks fly its tier, in its own
-/// parts; the Company's drive their pilots' own kit (`Pilot::kit`, #481)
-/// whoever hired them, built to what they know, the company's pilots in turn (your company's on
-/// your side, the biggest hired one's on another). You fly yours. The
-/// contract pays by the gear it's fought against: the enemy realm's tier.
+/// parts; a company's drive its pilots' own kit (`Pilot::kit`, #481)
+/// whoever hired them, built to what they know, its pilots in turn. You
+/// fly yours. The contract pays by the gear it's fought against: the enemy
+/// realm's tier.
 fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
     let s = b.system;
     let tier = |f: usize| match g.systems[s].realms[f] {
@@ -278,24 +276,20 @@ fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
     b.pilots.clear();
     for team in 0..b.sides.len() {
         let f = b.sides[team];
-        let company = if team == 0 && b.crew.is_some() {
-            b.crew
-        } else {
-            b.hired[team]
-                .iter()
-                .max_by_key(|&&(_, h)| h)
-                .map(|&(id, _)| id)
-        }
-        .and_then(|id| g.companies.iter().find(|c| c.id == id));
-        let mut next = 0;
+        let companies: Vec<_> = b.hired[team]
+            .iter()
+            .map(|&(id, _)| g.companies.iter().find(|c| c.id == id))
+            .collect();
+        let mut next = vec![0; companies.len()];
         for i in 1..m.fighters.len() {
             if m.fighters[i].team != team {
                 continue;
             }
-            match company.filter(|_| m.world.tanks[i].company) {
-                Some(c) if !c.pilots.is_empty() => {
-                    let p = next % c.pilots.len();
-                    next += 1;
+            let k = m.seat_company(i);
+            match k.and_then(|k| companies[k].map(|c| (k, c))) {
+                Some((k, c)) if !c.pilots.is_empty() => {
+                    let p = next[k] % c.pilots.len();
+                    next[k] += 1;
                     // Their own kit, whoever hired them (#481).
                     let (hull, turret) = c.pilots[p].kit();
                     m.set_kit(i, hull, turret, c.pilots[p].levels());
@@ -317,7 +311,7 @@ pub fn conclude(g: &mut Galaxy, b: &Battle, m: &Match) -> Settled {
 }
 
 impl Battle {
-    /// Team `team`'s merc hulls, all told (on your side, your company's).
+    /// Team `team`'s merc hulls, all told.
     pub fn mercs(&self, team: usize) -> u32 {
         self.hired
             .get(team)
@@ -343,6 +337,33 @@ impl Battle {
             n = n.max(1);
         }
         n.min(self.mercs(team) as usize)
+    }
+
+    /// Team `team`'s merc seats (`merc_seats`), each company's (#493), as
+    /// they're listed in `hired`: by the hulls each brings, never more
+    /// seats than hulls; with your company there (first, on your side), at
+    /// least one: yours.
+    pub fn company_seats(&self, team: usize, seats: usize) -> Vec<usize> {
+        let hired = self.hired.get(team).map_or(&[][..], |h| &h[..]);
+        let mut n = self.merc_seats(team, seats);
+        let mut out = vec![0; hired.len()];
+        if team == 0 && self.crew.is_some() && n > 0 {
+            out[0] = 1;
+            n -= 1;
+        }
+        // Whole seats by hulls, never past a company's hulls.
+        while n > 0 {
+            let share = |k: usize| hired[k].1 as f32 / (out[k] + 1) as f32;
+            let Some(k) = (0..hired.len())
+                .filter(|&k| (out[k] as u32) < hired[k].1)
+                .max_by(|&a, &b| share(a).total_cmp(&share(b)))
+            else {
+                break;
+            };
+            out[k] += 1;
+            n -= 1;
+        }
+        out
     }
 }
 
@@ -403,12 +424,6 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
 }
 
 impl Galaxy {
-    /// Side `f`'s hulls in system `s`, but for `kept` of them (another
-    /// company's, on your side).
-    fn within_reach(&self, s: usize, f: usize, kept: u32) -> u32 {
-        self.systems[s].hulls[f].saturating_sub(kept)
-    }
-
     /// The companies under contract to take or hold system `t` for side `f`, and
     /// their hulls there: ((`Company::id`, hulls), all told). Never more
     /// than the side has there.
@@ -435,7 +450,7 @@ impl Galaxy {
     }
 
     fn reach(&self, s: usize, f: usize) -> u32 {
-        self.within_reach(s, f, 0)
+        self.systems[s].hulls[f]
     }
 
     /// Where to fight a battle between `factions` (the match's teams, in
@@ -506,20 +521,16 @@ impl Galaxy {
         let mut hired = Vec::new();
         let mut share = Vec::new();
         for (team, &f) in sides.iter().enumerate() {
-            let (mut companies, mut mercs) = self.on_contract(system, f);
-            // On your side, only your company's mercs: the others' hulls
-            // here stay out of it.
-            let mut kept = 0;
+            let (mut companies, mercs) = self.on_contract(system, f);
+            // On your side, your company first among them: you're its.
             if team == 0
                 && let Some(id) = crew
             {
-                companies.iter().find(|c| c.0 == id)?;
-                kept = companies.iter().filter(|c| c.0 != id).map(|c| c.1).sum();
-                companies.retain(|c| c.0 == id);
-                mercs = companies.iter().map(|c| c.1).sum();
+                let k = companies.iter().position(|c| c.0 == id)?;
+                companies[..=k].rotate_right(1);
             }
             // Every hull it has here, the mercs' among them.
-            let want = self.within_reach(system, f, kept);
+            let want = self.reach(system, f);
             let from = vec![(system, want.saturating_sub(mercs))];
             share.push(if want > 0 {
                 mercs as f32 / want as f32
@@ -634,26 +645,36 @@ impl Galaxy {
         };
         for (team, &f) in battle.sides.iter().enumerate() {
             let drawn: u32 = battle.sources[team].iter().map(|&(_, h)| h).sum();
-            let mercs = battle.mercs(team);
             let lost = p.lost.get(team).copied().unwrap_or(0);
-            // The Company's tanks lost are the mercs'; a side that loses more
-            // of either than it brought loses the rest from the other.
-            let theirs = p.company.get(team).copied().unwrap_or(0);
-            let mut m = theirs.min(lost).min(mercs);
-            let r = (lost - m).min(drawn);
-            m = (lost - r).min(mercs);
-            // The mercs' handed round their companies by their hulls here.
-            let (mut left, mut pool) = (m, mercs);
+            // Each company's tanks lost are its; the rest, the realm's.
+            let theirs = p.company.get(team).map_or(&[][..], |c| &c[..]);
             let hired: Vec<(u32, u32)> = battle.hired[team]
                 .iter()
-                .map(|&(id, h)| {
-                    let off = (left * h).div_ceil(pool.max(1)).min(h).min(left);
-                    (left, pool) = (left - off, pool - h);
-                    (id, off)
-                })
+                .zip(theirs)
+                .map(|(&(id, h), &n)| (id, n.min(h)))
                 .filter(|h| h.1 > 0)
                 .collect();
-            o.lost[f] = (r, hired);
+            let mut hired = hired;
+            let mercs: u32 = hired.iter().map(|h| h.1).sum();
+            let realm = lost.saturating_sub(mercs).min(drawn);
+            // More lost than the realm brought: the rest off its companies,
+            // each never more than it brought.
+            let mut over = lost.saturating_sub(mercs + realm);
+            for &(id, h) in &battle.hired[team] {
+                if over == 0 {
+                    break;
+                }
+                let have = hired.iter().find(|x| x.0 == id).map_or(0, |x| x.1);
+                let off = over.min(h - have);
+                if off > 0 {
+                    match hired.iter_mut().find(|x| x.0 == id) {
+                        Some(x) => x.1 += off,
+                        None => hired.push((id, off)),
+                    }
+                    over -= off;
+                }
+            }
+            o.lost[f] = (realm, hired);
         }
         // A draw goes to the site's holder; a bystander's site is nobody's
         // to win here.
@@ -742,7 +763,7 @@ mod tests {
         Played {
             battle: b.clone(),
             lost: lost.to_vec(),
-            company: company.to_vec(),
+            company: company.iter().map(|&c| vec![c]).collect(),
             winner,
             own_lost: 0,
             scrap: Vec::new(),
@@ -1174,11 +1195,11 @@ mod merc_tests {
         assert!(g.muster_crew(t, &sides, None).is_none());
     }
 
-    /// In a battle you play, your side's mercs are your company's alone
-    /// (#363): another company hired for the same side brings none of its
-    /// hulls, and none of your losses come off it.
+    /// In a battle you play, every company on your side is in it, as in
+    /// any battle (#493): yours first (you're its), each with its own hulls
+    /// and seats, and each one's losses off its own contract.
     #[test]
-    fn your_side_has_only_your_companys_mercs() {
+    fn every_company_on_your_side_fights() {
         let (mut g, t, sides) = staged(20, 40);
         let f = sides[0].index();
         let mine = g.companies[0].id;
@@ -1186,17 +1207,16 @@ mod merc_tests {
         let alone = g.muster_crew(t, &sides, None).unwrap();
         let other = second_company(&mut g, 30);
         let b = g.muster_crew(t, &sides, None).unwrap();
-        assert_eq!(b.hired[0].len(), 1);
-        assert_eq!(b.hired[0][0].0, mine);
-        // The other company's hulls don't keep you in the fight: what your
-        // side brings is the same as without it.
-        assert_eq!(b.allocation[0], alone.allocation[0]);
-        assert_eq!(b.mercs(0), alone.mercs(0));
-        assert_eq!(b.merc_seats(0, 6), alone.merc_seats(0, 6));
-        // Pooled (a battle you're not in), they'd have been there.
+        assert_eq!(b.hired[0][0].0, mine, "yours first");
+        assert!(b.hired[0].iter().any(|&(id, _)| id == other));
+        assert!(b.mercs(0) > alone.mercs(0));
+        let seats = b.company_seats(0, 6);
+        assert!(seats[0] >= 1, "you're one of yours");
+        assert_eq!(seats.iter().sum::<usize>(), b.merc_seats(0, 6));
+        // A battle you're not in brings the same.
         let pooled = g.muster_at(t, &sides, None, None).unwrap();
-        assert!(pooled.hired[0].iter().any(|&(id, _)| id == other));
-        // Your losses come off your company's contract, not theirs.
+        assert_eq!(pooled.allocation[0], b.allocation[0]);
+        // Each company's losses come off its own contract.
         let field = |g: &Galaxy, id: u32| {
             g.companies
                 .iter()
@@ -1206,10 +1226,16 @@ mod merc_tests {
                 .unwrap()
                 .field
         };
-        let s = g.settle(&super::tests::played(&b, &[4, 0], &[3, 0], None));
-        assert_eq!(s.merc_lost[f], 3);
-        assert_eq!(field(&g, mine), 17);
-        assert_eq!(field(&g, other), 30, "their hulls are their own");
+        let (had_mine, had_other) = (field(&g, mine), field(&g, other));
+        let mut p = super::tests::played(&b, &[6, 0], &[0, 0], None);
+        let k = b.hired[0].iter().position(|&(id, _)| id == other).unwrap();
+        p.company[0] = vec![0; b.hired[0].len()];
+        p.company[0][0] = 3;
+        p.company[0][k] = 2;
+        let s = g.settle(&p);
+        assert_eq!(s.merc_lost[f], 5);
+        assert_eq!(field(&g, mine), had_mine - 3);
+        assert_eq!(field(&g, other), had_other - 2);
     }
 }
 
