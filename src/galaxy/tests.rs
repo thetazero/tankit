@@ -1019,7 +1019,6 @@ fn tick_summary_counts_from_the_battle() {
     for s in 0..g.systems.len() {
         let t = g.tick_summary(s, at);
         assert_eq!(t.ticks, 12);
-        assert_eq!(t.quiet(), 11);
         for f in 0..SIDES {
             let rows: Vec<_> = t.sides.iter().filter(|c| c.side == f).collect();
             let (was, now) = (before[s][f], g.systems[s].hulls[f]);

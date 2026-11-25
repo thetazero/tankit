@@ -1499,15 +1499,6 @@ pub fn playing_out(m: &Match, width: f32, height: f32) -> Vec<UiVertex> {
     p.finish()
 }
 
-/// How long the war went on without you since your battle (#447), if at all.
-fn quiet_line(ticks: u64) -> Option<String> {
-    match ticks {
-        0 => None,
-        1 => Some("The war went on 1 tick without you".to_string()),
-        n => Some(format!("The war went on {n} ticks without you")),
-    }
-}
-
 /// What moved a side's hulls in the system (#475), signed: what came in,
 /// then what went. None of what didn't happen.
 pub fn causes(m: &Moves) -> Vec<(i64, &'static str)> {
@@ -1597,8 +1588,7 @@ pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f3
         .iter()
         .map(|c| causes(&c.moves).iter().map(cause_w).sum::<f32>())
         .fold(0.0f32, f32::max);
-    let quiet = quiet_line(t.quiet());
-    let top = if quiet.is_some() { 104.0 } else { 84.0 };
+    let top = 84.0;
     let size = Vec2::new(
         (causes_x + widest - CAUSE_GAP + 64.0)
             .max(520.0)
@@ -1616,9 +1606,6 @@ pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f3
         &TextStyle::value(22.0),
         Align::Left,
     );
-    if let Some(q) = &quiet {
-        p.text(Vec2::new(x, min.y + 66.0), q, &what, Align::Left);
-    }
 
     let mut y = min.y + top;
     for c in &t.sides {
@@ -1790,21 +1777,6 @@ mod tests {
     use super::*;
     use crate::render::Camera;
     use glam::Vec3;
-
-    /// The time the war went on without you is said only when there was
-    /// any (#447).
-    #[test]
-    fn quiet_ticks_are_said_when_there_were_any() {
-        assert_eq!(quiet_line(0), None);
-        assert_eq!(
-            quiet_line(1).as_deref(),
-            Some("The war went on 1 tick without you")
-        );
-        assert_eq!(
-            quiet_line(37).as_deref(),
-            Some("The war went on 37 ticks without you")
-        );
-    }
 
     /// The loading panel on the way back to the contract screen (#452)
     /// animates: its spinner's somewhere else a moment later.
