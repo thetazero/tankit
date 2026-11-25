@@ -15,14 +15,18 @@
 //! never short. That's all shields do here, the same as in the galaxy's
 //! battles.
 //!
-//! **Out.** A battle is a battle (#422): a played one does to the galaxy
-//! exactly what one of the galaxy's own does, through the same two doors.
-//! Each side's hulls lost (its tanks destroyed) come off the system's
-//! storage (`Galaxy::lose`); survivors stay there. The winner gets what any
+//! **Out.** A battle is a battle (#422, #493): every one, played or the
+//! galaxy's simmed ones, ends in an [`Outcome`] (each side's hulls lost,
+//! each kill some pilot's, a winner) that goes into the galaxy the one way
+//! (`Galaxy::fight`). Only where the outcome comes from differs: a played
+//! battle's from the match (`Galaxy::settle`), the others' from a sim
+//! (`Galaxy::sim`). Hulls lost come off the system's storage
+//! (`Galaxy::lose`); survivors stay there. The winner gets what any
 //! battle's winner gets (`Galaxy::win`): the site, from its holder, or, the
 //! holder's win, its generator repaired. A draw goes to the holder, and the
-//! contract doesn't change what a win does. It's that system's battle for
-//! the tick, settled in the tick with the rest (`Galaxy::step_played`).
+//! contract doesn't change what a win does. It's one of its system's
+//! battles for the tick, fought first; the others there follow, each with
+//! the hulls left (`Galaxy::step_played`).
 //!
 //! **Mercs** (#320). A company under contract for the battle's system (to
 //! take it, or to hold it: #340) has its hulls there among its employer's side's, so a side's allocation
@@ -94,6 +98,25 @@ pub struct Battle {
     pub pilots: Vec<(usize, u32, usize)>,
 }
 
+/// A wreck a merc pilot takes apart (#438): (`Company::id`, which of its
+/// pilots, part, level).
+pub type Scrap = (u32, usize, crate::economy::Part, u8);
+
+/// How a battle ended (#493), played or simmed: the one thing every battle
+/// gives the galaxy (`Galaxy::fight`).
+#[derive(Clone, Debug, Default)]
+pub struct Outcome {
+    /// The site fought over (index into `Galaxy::sites`).
+    pub site: Option<usize>,
+    /// Each side's hulls lost: the realm's, and each company's
+    /// (`Company::id`, hulls).
+    pub lost: [(u32, Vec<(u32, u32)>); SIDES],
+    /// The side that won the site; none if it's nobody's to win here.
+    pub winner: Option<usize>,
+    /// The wrecks the kills left, each some merc pilot's to take apart.
+    pub scrap: Vec<Scrap>,
+}
+
 /// A system's numbers, for the before and after of a battle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Snapshot {
@@ -114,9 +137,8 @@ pub struct Played {
     pub winner: Option<usize>,
     /// Your own hulls lost (#385).
     pub own_lost: u32,
-    /// The wrecks each merc pilot's kills left, to take apart (#438):
-    /// (`Company::id`, which of its pilots, part, level).
-    pub scrap: Vec<(u32, usize, crate::economy::Part, u8)>,
+    /// The wrecks each merc pilot's kills left, to take apart (#438).
+    pub scrap: Vec<Scrap>,
 }
 
 impl Played {
@@ -569,22 +591,49 @@ impl Galaxy {
         }
     }
 
-    /// Feed a played battle's result back in (#422): each team's hulls lost
-    /// (its tanks destroyed, the Company's tanks' off its mercs), your own
-    /// hulls lost, and the winner wins the site (a draw: its holder). Lost
-    /// hulls and the win go through the same doors as the galaxy's own
-    /// battles' (`lose`, `win`). Doesn't tick the galaxy: it's called in the
-    /// tick (`step_played`).
+    /// Battle `o` in system `s` is over (#493): the one way any battle,
+    /// played or simmed, goes into the galaxy. Each side's hulls lost come
+    /// off it (`lose`), the merc pilots take apart what they wrecked, and
+    /// the winner wins the site (`win`). Returns each side's hulls lost, and
+    /// of those the mercs'.
+    pub(crate) fn fight(&mut self, s: usize, o: &Outcome) -> ([u32; SIDES], [u32; SIDES]) {
+        let (mut total, mut mercs) = ([0; SIDES], [0; SIDES]);
+        for (f, (realm, hired)) in o.lost.iter().enumerate() {
+            if *realm > 0 || !hired.is_empty() {
+                (total[f], mercs[f]) = self.lose(s, f, *realm, hired);
+            }
+        }
+        for &(id, pilot, part, level) in &o.scrap {
+            if let Some(c) = self.companies.iter_mut().find(|c| c.id == id)
+                && let Some(x) = c.pilots.get_mut(pilot)
+            {
+                x.known.scrap(part, level);
+            }
+        }
+        if let (Some(i), Some(w)) = (o.site, o.winner) {
+            self.win(s, i, w);
+        }
+        (total, mercs)
+    }
+
+    /// Feed a played battle's result back in (#422): its outcome is the
+    /// match's. Each team's hulls lost (its tanks destroyed, the Company's
+    /// tanks' off its mercs), and the winner wins the site (a draw: its
+    /// holder), go in the way every battle's do (`fight`); and your own
+    /// hulls lost are spent. Doesn't tick the galaxy: it's called in the
+    /// tick (`step_played`), the first of its system's battles.
     pub fn settle(&mut self, p: &Played) -> Settled {
         let battle = &p.battle;
         let s = battle.system;
         let before = self.snapshot(s);
         let (shields, taken) = (self.shields_down, self.taken);
-        let mut total = [0; SIDES];
-        let mut merc_lost = [0; SIDES];
+        let mut o = Outcome {
+            site: battle.site,
+            scrap: p.scrap.clone(),
+            ..Outcome::default()
+        };
         for (team, &f) in battle.sides.iter().enumerate() {
-            let from = &battle.sources[team];
-            let drawn: u32 = from.iter().map(|&(_, h)| h).sum();
+            let drawn: u32 = battle.sources[team].iter().map(|&(_, h)| h).sum();
             let mercs = battle.mercs(team);
             let lost = p.lost.get(team).copied().unwrap_or(0);
             // The Company's tanks lost are the mercs'; a side that loses more
@@ -593,55 +642,36 @@ impl Galaxy {
             let mut m = theirs.min(lost).min(mercs);
             let r = (lost - m).min(drawn);
             m = (lost - r).min(mercs);
-            // The realm's losses off each of its sources, never more than it gave.
-            let mut left = r;
-            for &(n, h) in from {
-                let off = left.min(h);
-                left -= off;
-                total[f] += self.lose(n, f, off, &[]).0;
-            }
-            if m > 0 {
-                // The mercs' handed round their companies by their hulls here.
-                let (mut left, mut pool) = (m, mercs);
-                let hired: Vec<(u32, u32)> = battle.hired[team]
-                    .iter()
-                    .map(|&(id, h)| {
-                        let off = (left * h).div_ceil(pool.max(1)).min(h).min(left);
-                        (left, pool) = (left - off, pool - h);
-                        (id, off)
-                    })
-                    .collect();
-                let (all, theirs) = self.lose(s, f, 0, &hired);
-                total[f] += all;
-                merc_lost[f] += theirs;
-            }
+            // The mercs' handed round their companies by their hulls here.
+            let (mut left, mut pool) = (m, mercs);
+            let hired: Vec<(u32, u32)> = battle.hired[team]
+                .iter()
+                .map(|&(id, h)| {
+                    let off = (left * h).div_ceil(pool.max(1)).min(h).min(left);
+                    (left, pool) = (left - off, pool - h);
+                    (id, off)
+                })
+                .filter(|h| h.1 > 0)
+                .collect();
+            o.lost[f] = (r, hired);
         }
-        self.spend_own(p.own_lost);
-        // The merc pilots take apart what they wrecked (#438).
-        for &(id, pilot, part, level) in &p.scrap {
-            if let Some(c) = self.companies.iter_mut().find(|c| c.id == id)
-                && let Some(x) = c.pilots.get_mut(pilot)
-            {
-                x.known.scrap(part, level);
-            }
-        }
+        // A draw goes to the site's holder; a bystander's site is nobody's
+        // to win here.
         if let Some(i) = battle.site {
-            // A draw goes to the site's holder; a bystander's site is
-            // nobody's to win here.
             let holder = self.sites[i].owner as usize;
-            let w = p
-                .winner
-                .and_then(|t| battle.sides.get(t).copied())
-                .unwrap_or(holder);
-            if battle.sides.contains(&holder) {
-                self.win(s, i, w);
-                self.update_share();
-            }
+            o.winner = battle.sides.contains(&holder).then(|| {
+                p.winner
+                    .and_then(|t| battle.sides.get(t).copied())
+                    .unwrap_or(holder)
+            });
         }
+        let (lost, merc_lost) = self.fight(s, &o);
+        self.spend_own(p.own_lost);
+        self.update_share();
         Settled {
             before,
             after: self.snapshot(s),
-            lost: total,
+            lost,
             taken: self.taken > taken,
             shield_down: self.shields_down > shields,
             merc_lost,
@@ -784,39 +814,45 @@ mod tests {
                 continue;
             }
             tried += 1;
-            let hulls = sys.hulls;
-            // Companies there whose contracts end this tick sail off with
-            // their hulls: that's leaving, not losing them.
-            let fields = |g: &Galaxy| {
-                let mut on = vec![];
-                for c in &g.companies {
-                    if let Some(k) = c.contract.filter(|k| k.target as usize == b.system) {
-                        on.push((c.id, k.signed, k.side as usize, k.field));
-                    }
-                }
-                on
-            };
-            let before = fields(&g);
             let s = g.step_played(&played(&b, &[0, 0], &[0, 0], Some(1 - t)));
-            let after = fields(&g);
-            let mut gone = [0; SIDES];
-            for &(id, signed, side, field) in &before {
-                if !after.iter().any(|&(i, s, ..)| (i, s) == (id, signed)) {
-                    gone[side] += field;
-                }
-            }
             assert!(s.taken);
             assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
-            // No second round of fighting there: only wear thins its hulls
-            // (each hull's chance of it, so give or take a few).
-            let wear = g.rules.wear;
-            for f in 0..SIDES {
-                let left = hulls[f].saturating_sub(gone[f]) as f32;
-                let floor = left * (1.0 - 3.0 * wear) - 3.0;
-                assert!(g.systems[b.system].hulls[f] as f32 >= floor, "seed {seed}");
-            }
         }
         assert!(tried >= 5, "only {tried} seeds had a held site at stake");
+    }
+
+    /// A played battle is one of its system's battles, not a stand-in for
+    /// all of them (#493): in its tick, its sides' other battles there are
+    /// simmed after it, and cost them hulls on top of what the match cost.
+    #[test]
+    fn the_rest_of_the_system_still_fights() {
+        let (mut tried, mut lost) = (0, 0);
+        for seed in 0..20 {
+            let mut g = seeded(seed);
+            let b = g.muster(&PAIR, 6);
+            let Some(site) = b.site else { continue };
+            // Its sides have other battles there this tick.
+            let others = |f: usize| g.commits(b.system, f).iter().any(|&i| i != site);
+            if !b.sides.iter().all(|&f| others(f)) {
+                continue;
+            }
+            tried += 1;
+            let s = g.step_played(&played(&b, &[0, 0], &[0, 0], None));
+            assert_eq!(s.lost, [0; SIDES], "the match itself lost nothing");
+            lost += b
+                .sides
+                .iter()
+                .map(|&f| g.moves[b.system][f].lost)
+                .sum::<u32>();
+        }
+        assert!(
+            tried >= 3,
+            "only {tried} seeds had other battles in the system"
+        );
+        assert!(
+            lost > 0,
+            "no hull lost in {tried} played ticks' other battles"
+        );
     }
 
     /// A shield generator is its holder's, working or damaged (#422): won
