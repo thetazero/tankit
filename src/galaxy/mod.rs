@@ -1159,21 +1159,25 @@ impl Galaxy {
         if hulls == 0 {
             return realm;
         }
-        let (mut weight, mut merc) = (0.0, 0.0);
+        // By the hulls that fire: a company's flown by its best pilots.
+        let (mut crewed, mut merc) = (0.0, 0.0);
         for c in &self.companies {
             if let Some(k) = c.contract
                 && k.target as usize == s
                 && k.side as usize == f
             {
-                let field = k.field.min(hulls) as f32;
-                let level =
-                    c.pilots.iter().map(|p| p.level()).sum::<f32>() / c.pilots.len().max(1) as f32;
-                weight += field;
-                merc += field * level;
+                let n = (k.field.min(hulls) as usize).min(c.pilots.len());
+                let mut levels: Vec<f32> = c.pilots.iter().map(|p| p.level()).collect();
+                levels.sort_by(|a, b| b.total_cmp(a));
+                crewed += n as f32;
+                merc += levels.iter().take(n).sum::<f32>();
             }
         }
-        let weight = weight.min(hulls as f32);
-        let all = (merc + (hulls as f32 - weight) * realm as f32) / hulls as f32;
+        let own = (self.firing(s, f) - crewed).max(0.0);
+        if own + crewed <= 0.0 {
+            return realm;
+        }
+        let all = (merc + own * realm as f32) / (own + crewed);
         all.round() as u8
     }
 

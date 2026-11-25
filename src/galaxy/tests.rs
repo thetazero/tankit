@@ -1388,7 +1388,7 @@ fn judge_contracts() {
     let mut out = [[0.0f64; 5]; 4];
     let mut marks = [[0.0f64; 5]; 4];
     let after = 30;
-    for seed in [21, 22] {
+    for seed in [51, 52] {
         let mut g = Galaxy::warmed_by(seed, 300);
         for step in 0..150 {
             let pre = g.clone();
