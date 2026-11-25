@@ -598,8 +598,10 @@ impl App {
         let rank = self.profile.rank().level;
         let g = self.war.get();
         g.claim_own(rank);
-        let b = battle::deploy_at(g, m, o.system, o.site)?;
+        let mut b = battle::deploy_at(g, m, o.system, o.site)?;
         m.set_own_hulls(g.own_left());
+        // For the battle log (#494): the galaxy as it's drawn.
+        b.setup = Some(Box::new(crate::galaxy::ledger::Setup::of(g, &b, m)));
         Some(b)
     }
 
@@ -1482,6 +1484,7 @@ impl App {
                 self.fought_at = Some((b.system, self.war.get().tick));
                 let settled = battle::conclude(self.war.get(), &b, &self.game);
                 log::info!("{}", battle::describe(&b, &settled));
+                crate::galaxy::ledger::record(self.war.get(), &b, &self.game, &settled);
                 self.war.save();
             }
         }

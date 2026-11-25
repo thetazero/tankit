@@ -96,6 +96,9 @@ pub struct Battle {
     /// The merc pilots flying the Company's tanks (#438): (fighter, the
     /// company's `Company::id`, which of its pilots). Set when it begins.
     pub pilots: Vec<(usize, u32, usize)>,
+    /// What it started with, for the battle log (#494): set for a battle
+    /// you play (`ledger::Setup::of`), none for the others.
+    pub setup: Option<Box<super::ledger::Setup>>,
 }
 
 /// A wreck a merc pilot takes apart (#438): (`Company::id`, which of its
@@ -236,7 +239,7 @@ fn seats(m: &Match) -> usize {
         .unwrap_or(1)
 }
 
-fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
+pub(super) fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
     for team in 0..b.sides.len() {
         if b.shielded[team] {
             m.close_seats(team, SHIELD_SEATS);
@@ -311,6 +314,11 @@ pub fn conclude(g: &mut Galaxy, b: &Battle, m: &Match) -> Settled {
 }
 
 impl Battle {
+    /// Team `team`'s merc hulls, by company: (`Company::id`, hulls).
+    pub fn hired(&self, team: usize) -> &[(u32, u32)] {
+        self.hired.get(team).map_or(&[], |h| &h[..])
+    }
+
     /// Team `team`'s merc hulls, all told.
     pub fn mercs(&self, team: usize) -> u32 {
         self.hired
@@ -569,6 +577,7 @@ impl Galaxy {
             shielded,
             crew,
             pilots: Vec::new(),
+            setup: None,
         })
     }
 
