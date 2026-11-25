@@ -839,6 +839,24 @@ impl Galaxy {
         }
     }
 
+    /// The spare hulls realm `r` (of side `f`) could bring to system `t` for
+    /// `purse` crystals.
+    fn can_move(&self, t: usize, f: usize, r: u32, purse: f32) -> f32 {
+        let (mut hulls, mut cost) = (0.0, 0.0);
+        for (s, d) in self.neighbors(t) {
+            if self.systems[s].realms[f] == r {
+                let n = self.spare[s][f] as f32;
+                hulls += n;
+                cost += n * d / FTL_RANGE * self.rules.ftl_cost;
+            }
+        }
+        if cost > 0.0 {
+            hulls * (purse / cost).clamp(0.0, 1.0)
+        } else {
+            hulls
+        }
+    }
+
     /// The fight for system `t` played forward by the galaxy's own battle
     /// math, without the dice: side `f` with `own` hulls and `mercs` hired
     /// ones, against everyone else there and what they can spare nearby,
@@ -859,6 +877,7 @@ impl Galaxy {
         own: f32,
         mercs: f32,
         crew: f32,
+        upfront: f32,
         defend: bool,
     ) -> (f32, f32) {
         let sys = &self.systems[t];
@@ -899,23 +918,20 @@ impl Galaxy {
         } else {
             (1.0, 1.0)
         };
-        // And what they'll bring up, as any realm does for a world of its
-        // own (`Galaxy::consider`): its spare hulls in range, enough to
-        // reach its odds against what's there, or none if they can't.
-        let spare: u32 = self
-            .neighbors(t)
-            .map(|(n, _)| {
-                (0..SIDES)
-                    .filter(|&g| {
-                        let r = sys.realms[g];
-                        g != f && r != super::realm::NONE && self.systems[n].realms[g] == r
-                    })
-                    .map(|g| self.spare[n][g])
-                    .sum::<u32>()
-            })
-            .sum();
-        let spare0 = spare as f32;
-        let odds = self.rules.odds;
+        // And what they'll bring up (`Galaxy::consider`): a realm's spare
+        // hulls in range, as many as it can pay to move, enough to reach
+        // its odds against what's there, or none if they can't.
+        let (mut spare0, mut odds) = (0.0f32, self.rules.opportunity);
+        for g in (0..SIDES).filter(|&g| g != f) {
+            let e = sys.realms[g];
+            if e == super::realm::NONE {
+                continue;
+            }
+            spare0 += self.can_move(t, g, e, self.realms[e as usize].crystals);
+            if sys.held[g] > 0 || self.pushing(e, sys.pos) {
+                odds = self.rules.odds;
+            }
+        }
         let reinforce = |he: &mut f32, spare: &mut f32, ours: f32| {
             let against = odds * ours * pf;
             if *spare < MIN_SEND as f32 || *he * pe >= against || (*he + *spare) * pe < against {
@@ -943,6 +959,11 @@ impl Galaxy {
             }
         }
         let cut = self.shield_cut();
+        // Of its own, those here and those it can pay to bring, once it's
+        // paid the company.
+        let here = (hulls[f] as f32).min(own);
+        let own = here
+            + (own - here).min(self.can_move(t, f, r, self.realms[r as usize].crystals - upfront));
         // Its own hulls fire only as far as its pilots go, shared between
         // its fights (`Galaxy::firing`); the mercs come with theirs.
         let realm = &self.realms[r as usize];
@@ -1103,7 +1124,7 @@ impl Galaxy {
         let pay = self.realm_pay();
         // Each company quotes for a few sizes of the job; the realm takes
         // whichever does it the most good for its price, if any does.
-        let alone = self.forecast(t, f, r, own, 0.0, 0.0, defend).0;
+        let alone = self.forecast(t, f, r, own, 0.0, 0.0, 0.0, defend).0;
         for c in near {
             let offers = self.offers(t, f, r, self.companies[c].at as usize);
             sale = sale.max(offers.iter().map(|o| o.hulls).sum());
@@ -1117,8 +1138,16 @@ impl Galaxy {
                 able = true;
                 // The realm's guess: how much more of the world it gets
                 // with the company than without, and for how long it pays.
-                let (with, raw_ticks) =
-                    self.forecast(t, f, r, own, quote.hulls as f32, quote.crew as f32, defend);
+                let (with, raw_ticks) = self.forecast(
+                    t,
+                    f,
+                    r,
+                    own,
+                    quote.hulls as f32,
+                    quote.crew as f32,
+                    quote.upfront.min(purse),
+                    defend,
+                );
                 // Discounted by how forecasts have lately come out: realms
                 // learn from what contracts got them, and how long they ran.
                 let ticks = raw_ticks * self.trust_ticks;
