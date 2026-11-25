@@ -643,10 +643,15 @@ impl Galaxy {
             }
         }
         for &(id, pilot, part, level) in &o.scrap {
-            if let Some(c) = self.companies.iter_mut().find(|c| c.id == id)
-                && let Some(x) = c.pilots.iter_mut().find(|p| p.id == pilot)
+            if let Some(c) = self.company(id)
+                && let Some(p) = self.companies[c].pilots.iter().position(|p| p.id == pilot)
             {
-                x.known.scrap(part, level);
+                self.companies[c].pilots[p].known.scrap(part, level);
+                // And their ship pays them for the kill.
+                let bonus = self.rules.kill_share * self.companies[c].pilots[p].wage;
+                self.bonus(c, p, bonus);
+                self.companies[c].kills += 1;
+                self.books.kill_bonuses += bonus as f64;
             }
         }
         if let (Some(i), Some(w)) = (o.site, o.winner) {
@@ -1075,11 +1080,16 @@ mod merc_tests {
             target: t as u32,
             signed: g.tick,
             upfront: 0.0,
-            bonus: 0.0,
+            rate: 0.0,
+            billed: 0.0,
             committed: mercs,
             field: mercs,
             lost: 0,
             defend: false,
+            expected: 0.0,
+            expected_ticks: 0.0,
+            held: 0,
+            worth: 0.0,
         });
         (g, t, [Faction::ALL[f], Faction::ALL[e]])
     }

@@ -3229,7 +3229,18 @@ mod tests {
         for _ in 0..400 {
             g.step();
             let (n, _) = g.await_work_staying(f, 1, 400);
-            let n = n.expect("work");
+            // A company nobody hires for a while: you switch to one at work,
+            // if there's one; else the war goes on.
+            let n = match n {
+                Some(n) => n,
+                None => match g.other_ships().first().map(|b| b.id) {
+                    Some(id) => {
+                        assert!(g.switch_crew(id));
+                        g.aboard(1).expect("work")
+                    }
+                    None => continue,
+                },
+            };
             if Transfer::between(&t, &n) {
                 next = Some(n);
                 break;

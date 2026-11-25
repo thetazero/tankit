@@ -212,9 +212,6 @@ pub struct Rules {
     pub merc_haggle: f32,
     /// ... and rising by this fraction each contract it wins.
     pub merc_raise: f32,
-    /// A contract's bonus: this many times the hulls it commits, at what
-    /// they cost it, with its margin.
-    pub merc_bonus: f32,
     /// A contract runs out after this many ticks.
     pub merc_term: u32,
     /// How far a company goes for work, light years.
@@ -222,6 +219,9 @@ pub struct Rules {
     /// A company idle this many ticks sails to the nearest war to look for
     /// work (`Galaxy::seek_work`).
     pub merc_idle: u32,
+    /// ... and one idle this many, to the nearest war if it's nowhere
+    /// wanted.
+    pub merc_roam: u32,
     /// A realm pays for a world at most what it turns out over this many
     /// ticks (crystal, and hulls at `hull_price`).
     pub merc_horizon: f32,
@@ -238,7 +238,8 @@ pub struct Rules {
     /// ... and a step costs this many crystals a system it holds, growing
     /// a step at a time as upgrades do (`economy::upgrade_cost`).
     pub research_price: f32,
-    /// Crystals a realm pays each pilot a tick.
+    /// What a realm pays each pilot a tick when it's founded: it moves
+    /// from there, up while it loses pilots and down while it doesn't.
     pub pilot_upkeep: f32,
     /// Share of its income a realm spends on pilots.
     pub pilot_budget: f32,
@@ -246,6 +247,20 @@ pub struct Rules {
     pub train: u32,
     /// Pilots a new company starts with.
     pub crew: u32,
+    /// What a pilot's wage a tick is in CR: your pay for a battle is in
+    /// CR, so CR and crystal trade at the going wage.
+    pub wage_cr: f32,
+    /// A ship pays a pilot this share of their wage for each kill.
+    pub kill_share: f32,
+    /// Share of a realm's pilots a tick who defect, when ships offer them
+    /// more than their realm pays.
+    pub defect: f32,
+    /// A realm losing pilots raises its pay by this share a tick; one
+    /// that isn't lowers it by this.
+    pub pay_raise: f32,
+    pub pay_ease: f32,
+    /// A pilot retires once they've saved this many crystals.
+    pub retire: f32,
 }
 
 impl Default for Rules {
@@ -286,10 +301,10 @@ impl Default for Rules {
             merc_floor: 0.05,
             merc_haggle: 0.01,
             merc_raise: 0.1,
-            merc_bonus: 0.5,
             merc_term: 30,
             merc_range: 1200.0,
             merc_idle: 30,
+            merc_roam: 120,
             merc_horizon: 300.0,
             merc_split: 1000.0,
             merc_join: 40.0,
@@ -300,6 +315,12 @@ impl Default for Rules {
             pilot_budget: 0.25,
             train: 2,
             crew: 40,
+            wage_cr: 50.0,
+            kill_share: 0.3,
+            pay_raise: 0.05,
+            pay_ease: 0.002,
+            defect: 0.01,
+            retire: 5.0,
         }
     }
 }
@@ -438,6 +459,29 @@ pub struct Galaxy {
     pub(crate) next_pilot: u32,
     /// You, as a pilot. Your knowledge is copied from the profile.
     pub you: Pilot,
+    /// Pay companies owe you: (`Company::id`, crystals).
+    pub owed_you: Vec<(u32, f32)>,
+    /// Pilots on no ship, looking for work.
+    pub pool: Vec<Pilot>,
+    /// What pilots have lately been signing for a tick, by gear mark.
+    pub wage_curve: [f32; merc::MARKS],
+    /// The best open bid this tick for a pilot at each mark (0 for none).
+    pub offers: [f32; merc::MARKS],
+    /// What realms pay their pilots a tick, on average, as of the last
+    /// tick: what a new pilot starts on, and the rate CR trade at.
+    pub pay: f32,
+    /// How far realms trust their forecasts of a contract, as contracts
+    /// have lately come out: the worth they got of what they expected, and
+    /// the ticks they paid for of those they expected.
+    pub trust: f32,
+    pub trust_ticks: f32,
+    /// The share of merc pilots in work lately, as pilots see it; and
+    /// this tick's, so far.
+    pub employment: f32,
+    pub(crate) employed: u32,
+    /// Ended contracts waiting for their realms to look back on, once
+    /// their term is up (not saved: a few lessons lost).
+    pub(crate) reviews: Vec<merc::Contract>,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
     pub crew: Option<u32>,
@@ -466,6 +510,9 @@ pub struct Galaxy {
     assaulted: Vec<bool>,
     /// Scratch: each realm's hulls in this tick's fights.
     war_hulls: Vec<u32>,
+    /// Realms lately looking for a company at each system and finding none
+    /// in range (fading): where idle companies go for work.
+    pub(crate) unmet: Vec<f32>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[u32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
@@ -599,6 +646,7 @@ impl Galaxy {
             merc_moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
             war_hulls: Vec::new(),
+            unmet: vec![0.0; systems.len()],
             systems,
             sites,
             neighbors,
@@ -618,6 +666,16 @@ impl Galaxy {
             next_company: 0,
             next_pilot: 1,
             you: Pilot::rookie(1),
+            owed_you: Vec::new(),
+            pool: Vec::new(),
+            wage_curve: [rules.pilot_upkeep; merc::MARKS],
+            offers: [0.0; merc::MARKS],
+            pay: rules.pilot_upkeep,
+            trust: 1.0,
+            trust_ticks: 1.0,
+            employment: 0.5,
+            employed: 0,
+            reviews: Vec::new(),
             crew: None,
             own: None,
             ended: Vec::new(),
@@ -1026,11 +1084,15 @@ impl Galaxy {
     /// between its fights.
     fn share_pilots(&mut self) {
         let mut war = vec![0; self.realms.len()];
+        for realm in &mut self.realms {
+            realm.fronts = 0;
+        }
         for s in 0..self.systems.len() {
             for f in 0..SIDES {
                 let r = self.systems[s].realms[f];
                 if r != NONE && self.fighting(s, f) {
                     war[r as usize] += self.systems[s].hulls[f] - self.crewed(s, f).0;
+                    self.realms[r as usize].fronts += 1;
                 }
             }
         }
@@ -1608,7 +1670,13 @@ impl Galaxy {
         };
         let pool: u32 = self.neighbors(t).map(|(s, _)| mine(self, s)).sum();
         let pool_f = pool as f32;
-        if have + pool_f < odds * defense || pool < MIN_SEND {
+        // With a company hired here, it goes in with it: that's what it
+        // hired it for.
+        let hired = self.companies.iter().any(|c| {
+            c.contract
+                .is_some_and(|k| k.target as usize == t && k.side as usize == f)
+        });
+        if (have + pool_f < odds * defense && !hired) || pool < MIN_SEND {
             // Not a good enough chance alone: an attack it's set on, or a
             // world of its own under attack, can hire a company to make up
             // the difference, then go in with it.
@@ -1619,7 +1687,8 @@ impl Galaxy {
                 pocket || self.pushing(r, sys.pos)
             };
             let need = (want - pool_f).max(0.0).ceil() as u32;
-            if worth_it && self.hire(t, f, r, need, ours) {
+            let own = (sys.hulls[f] + pool) as f32;
+            if worth_it && self.hire(t, f, r, need, own, ours) {
                 self.consider(t, f, r);
             }
             return;
@@ -1843,13 +1912,13 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
     );
     let b = g.books;
     println!(
-        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
+        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} billed ({:.0} owed when due); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
         b.signed,
         b.won,
         b.broken,
         b.expired,
         b.upfront,
-        b.bonus,
+        b.billed,
         b.defaulted,
         b.worth_won,
         b.paid_won,

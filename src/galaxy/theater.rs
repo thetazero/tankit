@@ -1266,6 +1266,19 @@ mod tests {
         assert!(t.is_none() && !ticked);
         let at = g.companies[c].at;
         g.companies[c].idle_since = g.tick - g.rules.merc_idle as u64;
+        // Realms at war nearby are asking for a company, and none's near.
+        let here = g.systems[at as usize].pos;
+        let near = (0..g.systems.len())
+            .filter(|&s| s != at as usize && g.systems[s].at_war())
+            .min_by(|&a, &b| {
+                let d = |s: usize| g.systems[s].pos.distance(here);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap();
+        g.unmet[near] = 5.0;
+        // And contracts pay well enough for the fare.
+        g.books.signed = 1;
+        g.books.upfront = 1000.0;
         assert!(g.seek_work() >= 1);
         assert_eq!(g.crew, Some(id));
         let c = g.crew_company().unwrap();

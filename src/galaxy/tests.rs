@@ -509,9 +509,26 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
             let (mut lo, mut hi) = (1.0f32, 0.0f32);
             let mut track = Vec::new();
             let mut next = 0;
+            // The share of systems held by realms that hire mercs.
+            let hiring = |g: &Galaxy| {
+                let all: u32 = g.living().map(|(_, r)| r.systems).sum();
+                let hire: u32 = g
+                    .living()
+                    .filter(|(_, r)| r.hires)
+                    .map(|(_, r)| r.systems)
+                    .sum();
+                hire as f32 / all.max(1) as f32 * 100.0
+            };
+            let (mut paid, mut pay_n) = (0.0f64, 0u64);
+            let mut half: Option<(super::merc::Books, f32)> = None;
             while g.tick < ticks {
+                if half.is_none() && g.tick >= ticks / 2 {
+                    half = Some((g.books, hiring(&g)));
+                }
                 g.step();
                 taken += g.taken as u64;
+                paid += g.pay as f64;
+                pay_n += 1;
                 let c = g.census();
                 quiet_never &= c.at_war > 0.0;
                 if g.tick > 100 {
@@ -527,8 +544,12 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                 if g.tick >= next {
                     next += ticks / 6;
                     track.push(format!(
-                        "t{} {}co {:.0}cr {}on",
-                        g.tick, c.companies, c.merc_capital, c.contracts
+                        "t{} {}co {:.0}cr {}on hire {:.1}%",
+                        g.tick,
+                        c.companies,
+                        c.merc_capital,
+                        c.contracts,
+                        hiring(&g)
                     ));
                 }
             }
@@ -551,7 +572,7 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                 let margins: f32 = g.companies.iter().map(|c| c.margin).sum::<f32>()
                     / g.companies.len().max(1) as f32;
                 println!(
-                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} bonus {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {} sailed {}  margin {:.2}",
+                    "    {}\n    signed {} (defenses {}) won {} (defenses {}) broken {} expired {}  upfront {:.0} billed {:.0} defaulted {:.0} repaid {:.0} written off {:.0} owed at end {:.0}  refused {}  won worlds worth {:.0} for {:.0}  sold hulls {:.0}cr  merc hulls lost {:.0}  splits {} joins {} sailed {}  margin {:.2}",
                     track.join("  "),
                     b.signed,
                     b.defenses,
@@ -560,7 +581,7 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                     b.broken,
                     b.expired,
                     b.upfront,
-                    b.bonus,
+                    b.billed,
                     b.defaulted,
                     b.repaid,
                     b.written_off,
@@ -574,6 +595,164 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                     b.joins,
                     b.sailed,
                     margins,
+                );
+                let crews: usize = g.companies.iter().map(|c| c.pilots.len()).sum();
+                println!(
+                    "    crews {} pilots in {} companies, {} free  wages {:.0} kill bonuses {:.0} owed {:.0}  left {} defected {} hired {} quit {} retired {}  realm pilots {}  wage curve {}",
+                    crews,
+                    g.companies.len(),
+                    g.pool.len(),
+                    b.wages,
+                    b.kill_bonuses,
+                    b.owed_pilots,
+                    b.left,
+                    b.defected,
+                    b.hired,
+                    b.quit,
+                    b.retired,
+                    g.realms.iter().map(|r| r.pilots).sum::<u32>(),
+                    (0..super::merc::MARKS)
+                        .map(|m| format!(
+                            "T{m} {:.4} ({})",
+                            b.signed_wages[m] / b.signings[m].max(1) as f64,
+                            b.signings[m]
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                let rules: Vec<String> = super::merc::RULES
+                    .iter()
+                    .map(|&rule| {
+                        let of: Vec<&super::merc::Company> = g
+                            .companies
+                            .iter()
+                            .filter(|c| c.pricing.rule == rule)
+                            .collect();
+                        let n = of.len().max(1) as f32;
+                        format!(
+                            "{rule:?} {} co, capital {:.0}, crew {:.0}, k {:.2}",
+                            of.len(),
+                            of.iter()
+                                .map(|c| c.capital(g.rules.hull_price))
+                                .sum::<f32>()
+                                / n,
+                            of.iter().map(|c| c.pilots.len() as f32).sum::<f32>() / n,
+                            of.iter().map(|c| c.pricing.k).sum::<f32>() / n,
+                        )
+                    })
+                    .collect();
+                let pays: Vec<f32> = g.living().map(|(_, r)| r.pay(&g.rules)).collect();
+                // The two arms: realms that hire mercs, and those that don't.
+                let total: u32 = g.living().map(|(_, r)| r.systems).sum();
+                let arms: Vec<String> = [true, false]
+                    .iter()
+                    .map(|&hires| {
+                        let of: Vec<&super::realm::Realm> =
+                            g.living().map(|(_, r)| r).filter(|r| r.hires == hires).collect();
+                        let systems: u32 = of.iter().map(|r| r.systems).sum();
+                        let n = of.len().max(1) as f32;
+                        format!(
+                            "{} {} realms, {:.1}% of systems, {:.1} systems and {:.2} income each, tier {:.1}",
+                            if hires { "hire" } else { "don't" },
+                            of.len(),
+                            systems as f32 / total.max(1) as f32 * 100.0,
+                            systems as f32 / n,
+                            of.iter().map(|r| r.income).sum::<f32>() / n,
+                            of.iter().map(|r| r.tier as f32).sum::<f32>() / n,
+                        )
+                    })
+                    .collect();
+                println!("    arms: {}", arms.join(" | "));
+                println!(
+                    "    forecast: expected {:.0} worth, got {:.0} for {:.0} paid and {:.0} owed; expected {:.1} ticks a contract, took {:.1}; trust {:.2} ticks {:.2}",
+                    b.expected,
+                    b.realized,
+                    b.paid_all,
+                    b.financed,
+                    b.expected_ticks / b.signed.max(1) as f64,
+                    b.realized_ticks / b.signed.max(1) as f64,
+                    g.trust,
+                    g.trust_ticks,
+                );
+                let d = b.dear.max(1) as f64;
+                println!(
+                    "    quotes turned down: {} wouldn't change the outcome ({} win alone, {} lose anyway), {} would but cost more (gain {:.1}, price {:.1}: billed {:.1}, upfront {:.1})",
+                    b.hopeless,
+                    b.won_alone,
+                    b.lost_anyway,
+                    b.dear,
+                    b.dear_gain / d,
+                    b.dear_price / d,
+                    b.dear_wages / d,
+                    b.dear_upfront / d,
+                );
+                println!(
+                    "      of their rate a tick: wages {:.2}, losses {:.2}, for {:.0} hulls; wage curve {:?}, realm pay {:.5}",
+                    b.dear_wage_part / d,
+                    b.dear_loss_part / d,
+                    b.dear_hulls / d,
+                    g.wage_curve.map(|w| (w * 1e5).round() / 1e5),
+                    g.pay,
+                );
+                println!(
+                    "    merc pilots earn {:.5} a tick (wages and kills over {:.0} pilot-ticks, aboard or in the pool) vs realm pay {:.5} over the same ticks ({:.5} on average over the run)",
+                    (b.wages + b.kill_bonuses) / b.crew_ticks.max(1.0),
+                    b.crew_ticks,
+                    b.crew_realm_pay / b.crew_ticks.max(1.0),
+                    paid / pay_n.max(1) as f64,
+                );
+                println!("    merc employment {:.3}", g.employment);
+                for (i, kind) in ["attacks", "defenses"].iter().enumerate() {
+                    let k = b.by_kind[i];
+                    println!(
+                        "    {kind}: {:.0} of them, {:.0} spent; expected {:.1} worth, got {:.1}; expected {:.1} ticks, took {:.1}",
+                        k[4],
+                        k[5],
+                        k[0] / k[4].max(1.0),
+                        k[1] / k[4].max(1.0),
+                        k[2] / k[4].max(1.0),
+                        k[3] / k[4].max(1.0),
+                    );
+                }
+                // The second half alone: the war under way, past the start.
+                if let Some((h, share)) = half {
+                    let pilot = (b.wages + b.kill_bonuses - h.wages - h.kill_bonuses)
+                        / (b.crew_ticks - h.crew_ticks).max(1.0);
+                    let realm = (b.crew_realm_pay - h.crew_realm_pay)
+                        / (b.crew_ticks - h.crew_ticks).max(1.0);
+                    println!(
+                        "    second half: realms got {:.0} for {:.0} paid and {:.0} owed ({} contracts); merc pilots earn {:.5} vs realm pay {:.5}; hiring realms' share {:.1}% -> {:.1}%",
+                        b.realized - h.realized,
+                        b.paid_all - h.paid_all,
+                        b.financed - h.financed,
+                        b.signed - h.signed,
+                        pilot,
+                        realm,
+                        share,
+                        hiring(&g),
+                    );
+                }
+                println!(
+                    "    spent: hulls {:.0} flown {:.0} sailing {:.0} fares {:.0}\n    asked {} none near {} none able {} none affordable {} none worth it {}  (when none able: need {:.0}, best {:.0}, for sale {:.0})\n    won after (5-tick buckets) {:?}  broken {} expired {}\n    by rule: {}\n    realm pay mean {:.4} max {:.4}  open offers {:?}",
+                    b.bought,
+                    b.flown,
+                    b.sailing,
+                    b.fares,
+                    b.asked,
+                    b.none_near,
+                    b.none_able,
+                    b.none_affordable,
+                    b.none_worth,
+                    b.able_need / b.none_able.max(1) as f64,
+                    b.able_best / b.none_able.max(1) as f64,
+                    b.able_for_sale / b.none_able.max(1) as f64,
+                    b.won_after,
+                    b.broken,
+                    b.expired,
+                    rules.join(" | "),
+                    pays.iter().sum::<f32>() / pays.len().max(1) as f32,
+                    pays.iter().copied().fold(0.0, f32::max),
+                    g.offers.map(|o| (o * 1e4).round() / 1e4),
                 );
             }
         }
@@ -625,7 +804,9 @@ fn hire_companies(mut g: Galaxy) -> (f32, f32) {
         .iter()
         .map(|c| c.capital(g.rules.hull_price))
         .sum();
-    for _ in 0..150 {
+    // Realms hire only when the battle math says it's worth it: it takes a
+    // while for enough to be.
+    for _ in 0..400 {
         g.step();
         for c in &g.companies {
             assert!(c.crystals >= 0.0);
@@ -641,7 +822,7 @@ fn hire_companies(mut g: Galaxy) -> (f32, f32) {
     let b = g.books;
     assert!(b.signed > 10, "only {} contracts", b.signed);
     assert!(b.won > 0 && b.broken + b.expired > 0);
-    assert!(b.upfront > 0.0 && b.bonus > 0.0 && b.sold > 0.0);
+    assert!(b.upfront > 0.0 && b.billed > 0.0 && b.sold > 0.0);
     let end: f32 = g
         .companies
         .iter()
@@ -661,10 +842,11 @@ fn defenders_hire() {
     assert!(b.defenses > 0 && b.defended > 0, "{b:?}");
 }
 
-/// A realm that can't pay a bonus owes it: no company signs with it until
-/// it's paid, and it pays it back out of its income (#340).
+/// A realm that can't pay a bill owes it: no company signs with it until
+/// it's paid, and it pays it back out of its income (#340). (What it owes
+/// the company it just signed with is what that company fronted it.)
 #[test]
-fn unpaid_bonuses_are_debts() {
+fn unpaid_bills_are_debts() {
     let mut g = small_war();
     for _ in 0..150 {
         g.step();
@@ -672,7 +854,14 @@ fn unpaid_bonuses_are_debts() {
             if let Some(k) = c.contract
                 && k.signed == g.tick
             {
-                assert!(!g.in_debt(k.realm), "tick {}: hired while in debt", g.tick);
+                assert!(
+                    g.debts
+                        .iter()
+                        .filter(|d| d.realm == k.realm)
+                        .all(|d| d.company == c.id),
+                    "tick {}: hired while in debt",
+                    g.tick
+                );
             }
         }
     }
@@ -751,17 +940,47 @@ pub fn longest_idle(g: &mut Galaxy, ticks: u64) -> (u64, u32) {
     worst
 }
 
-/// No company stays idle forever: idle long enough, it sails to a war and
-/// gets work there (#355).
+/// An idle company sails to where realms have been looking for one, if a
+/// contract's likely to pay its fare there; not where it isn't.
 #[test]
-fn no_company_idles_forever() {
+fn idle_companies_go_where_theyre_wanted() {
     let mut g = small_war();
     for _ in 0..100 {
         g.step();
     }
-    let (idle, id) = longest_idle(&mut g, 800);
-    assert!(g.books.sailed > 0, "nobody went looking for work");
-    assert!(idle < 300, "company {id} idle {idle} ticks");
+    for c in &mut g.companies {
+        c.contract = None;
+        c.idle_since = 0;
+    }
+    g.unmet.fill(0.0);
+    let c = 0;
+    let at = g.companies[c].at as usize;
+    let here = g.systems[at].pos;
+    let near = (0..g.systems.len())
+        .filter(|&s| s != at)
+        .min_by(|&a, &b| {
+            let d = |s: usize| g.systems[s].pos.distance(here);
+            d(a).total_cmp(&d(b))
+        })
+        .unwrap();
+    // Nobody wanted anywhere: nobody goes.
+    assert_eq!(g.seek_work(), 0);
+    // Wanted nearby, and contracts pay: it goes.
+    g.books.signed = 1;
+    g.books.upfront = 1000.0;
+    g.unmet[near] = 5.0;
+    assert!(g.seek_work() >= 1);
+    assert_eq!(g.companies[c].at as usize, near);
+    // Wanted, but a contract wouldn't pay the fare: it stays.
+    let mut h = small_war();
+    h.unmet[near] = 5.0;
+    h.books.signed = 1;
+    h.books.upfront = 0.0;
+    for c in &mut h.companies {
+        c.contract = None;
+        c.idle_since = 0;
+    }
+    assert_eq!(h.seek_work(), 0);
 }
 
 /// Idle stretches on the game's galaxy, with idle companies roaming and
@@ -1108,15 +1327,20 @@ fn pilots_cap_fire_not_losses() {
     );
 }
 
-/// A realm pays its pilots as far as it can, and trains toward what its
-/// income pays for a few at a time.
+/// A realm pays its pilots as far as it can, and trains toward what it
+/// can afford and use (a front's worth for each fight, and one in hand) a
+/// few at a time.
 #[test]
 fn realms_pay_and_train_pilots() {
     let rules = Rules::default();
     let mut r = super::realm::Realm::new(0, 0, 0);
     r.income = 4.0;
-    let want = r.pilots_wanted(&rules);
-    assert_eq!(want, 100);
+    // Affords 100, uses a front's worth.
+    assert_eq!(r.pilots_wanted(&rules), rules.frontage as u32);
+    r.fronts = 1;
+    assert_eq!(r.pilots_wanted(&rules), 100);
+    r.income = 1.0;
+    assert_eq!(r.pilots_wanted(&rules), 25, "what it can afford");
     r.crystals = 100.0;
     r.keep_pilots(&rules);
     assert_eq!(r.pilots, rules.train, "trains a few a tick");
