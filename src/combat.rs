@@ -890,21 +890,22 @@ pub struct Match {
     /// Under a hull allocation: each side's hulls not yet in play (None:
     /// tanks respawn without end).
     pub hulls: Option<Vec<u32>>,
-    /// Of those, the mercs': what the Company's tanks come back in. A
-    /// Company bot that dies with none left comes back as its side's own.
-    pub company_hulls: Vec<u32>,
-    /// Each side's merc companies, by name, with the hulls each brought
-    /// (`set_companies`): how its merc hulls left split between them on
-    /// the scoreboard (#423), as the galaxy splits their losses.
-    companies: Vec<Vec<(String, f32)>>,
+    /// Each side's merc companies (`set_mercs`), each with its own hulls:
+    /// what its tanks come back in (#493). A company's bot that dies with
+    /// none of its company's left comes back as its side's own.
+    mercs: Vec<Vec<Merc>>,
+    /// Each seat's company: an index into its side's `mercs`, or None for
+    /// the realm's.
+    seat_company: Vec<Option<usize>>,
     /// Of your company's spare hulls, yours alone (#385): its bots can't
     /// come back in them. Your deaths spend them first; once they're gone,
     /// you come back in the company's shared ones like anyone.
     pub own_hulls: u32,
     /// Your own hulls lost this round, for the galaxy to take off yours.
     own_lost: u32,
-    /// Each side's Company tanks destroyed (the player's among them).
-    company_deaths: Vec<u32>,
+    /// Each side's company tanks destroyed, each company's (the player's
+    /// among them).
+    company_deaths: Vec<Vec<u32>>,
     /// Your side, once it's dealt you a seat among its mercs (`set_company`):
     /// then you come back only in their hulls.
     crew_team: Option<usize>,
@@ -939,36 +940,12 @@ pub struct Match {
     pub ambience: crate::ambience::Ambience,
 }
 
-/// `n` split between named shares in proportion to their weights, by
-/// largest remainder: whole numbers that add up to `n`.
-fn apportion(n: u32, shares: &[(String, f32)]) -> Vec<(String, u32)> {
-    let total: f32 = shares.iter().map(|s| s.1.max(0.0)).sum();
-    if total <= 0.0 {
-        let mut out: Vec<_> = shares.iter().map(|s| (s.0.clone(), 0)).collect();
-        if let Some(first) = out.first_mut() {
-            first.1 = n;
-        }
-        return out;
-    }
-    let exact: Vec<f32> = shares
-        .iter()
-        .map(|s| n as f32 * s.1.max(0.0) / total)
-        .collect();
-    let mut out: Vec<(String, u32)> = shares
-        .iter()
-        .zip(&exact)
-        .map(|(s, &x)| (s.0.clone(), x.floor() as u32))
-        .collect();
-    let given: u32 = out.iter().map(|o| o.1).sum();
-    let mut order: Vec<usize> = (0..shares.len()).collect();
-    order.sort_by(|&a, &b| {
-        let (ra, rb) = (exact[a] - exact[a].floor(), exact[b] - exact[b].floor());
-        rb.total_cmp(&ra).then(a.cmp(&b))
-    });
-    for &i in order.iter().cycle().take(n.saturating_sub(given) as usize) {
-        out[i].1 += 1;
-    }
-    out
+/// A merc company on a side (#493): its name (None: the Company, or on
+/// your side your company), and its hulls not yet in play.
+#[derive(Clone, Debug, Default)]
+pub struct Merc {
+    pub name: Option<String>,
+    pub hulls: u32,
 }
 
 impl Match {
@@ -1038,8 +1015,8 @@ impl Match {
             phase: Phase::Playing,
             over_for: 0.0,
             hulls: None,
-            company_hulls: Vec::new(),
-            companies: Vec::new(),
+            mercs: Vec::new(),
+            seat_company: Vec::new(),
             own_hulls: 0,
             own_lost: 0,
             company_deaths: Vec::new(),
@@ -1279,79 +1256,87 @@ impl Match {
             .collect()
     }
 
-    /// Side `team` has mercs (before the round starts): `seats` of its tanks
-    /// are the Company's, in its colors, and `hulls` of its allocation are
-    /// theirs, their first tanks among them. The player, on their side, is the
-    /// first of the `seats` (with none, the realm's); the rest are its bots,
-    /// first dealt first.
+    /// Side `team` has one merc company (before the round starts): `seats`
+    /// of its tanks are its, in its colors, and `hulls` of its allocation
+    /// (see `set_mercs`).
+    #[cfg(test)]
     pub fn set_company(&mut self, team: usize, seats: usize, hulls: u32) {
-        let mut left = seats;
+        self.set_mercs(team, vec![(None, seats, hulls)]);
+    }
+
+    /// Side `team`'s merc companies (before the round starts), each
+    /// (name, seats, hulls): that many of its tanks are the company's, in
+    /// its colors, and that many of its allocation are its hulls, its first
+    /// tanks among them (#493). Every company's tanks come back in its own
+    /// hulls, the same way. The player, on their side, is the first
+    /// company's first seat (with no company, the realm's); the rest are
+    /// bots, dealt in order.
+    pub fn set_mercs(&mut self, team: usize, companies: Vec<(Option<String>, usize, u32)>) {
+        let sides = self.factions.len().max(team + 1);
+        if self.mercs.len() < sides {
+            self.mercs.resize(sides, Vec::new());
+        }
+        self.seat_company.resize(self.fighters.len(), None);
+        let mut deal = companies
+            .iter()
+            .enumerate()
+            .flat_map(|(k, c)| std::iter::repeat_n(k, c.1));
         for i in 0..self.fighters.len() {
             if self.fighters[i].team != team {
                 continue;
             }
-            let company = left > 0;
-            if i == 0 && company {
+            let k = deal.next();
+            if i == 0 && k.is_some() {
                 self.crew_team = Some(team);
             }
-            self.world.tanks[i].company = company;
-            if company {
-                left = left.saturating_sub(1);
-            }
+            self.seat_company[i] = k;
+            self.world.tanks[i].company = k.is_some();
         }
-        if self.company_hulls.len() <= team {
-            self.company_hulls
-                .resize(self.factions.len().max(team + 1), 0);
-        }
-        self.company_hulls[team] = hulls;
-    }
-
-    /// Side `team`'s merc companies (with `set_company`): each one's name
-    /// and the hulls it brings, for the scoreboard's hull summary (#423).
-    pub fn set_companies(&mut self, team: usize, companies: Vec<(String, f32)>) {
-        if self.companies.len() <= team {
-            self.companies
-                .resize(self.factions.len().max(team + 1), Vec::new());
-        }
-        self.companies[team] = companies;
+        self.mercs[team] = companies
+            .into_iter()
+            .map(|(name, _, hulls)| Merc { name, hulls })
+            .collect();
     }
 
     /// Side `team`'s hulls left under an allocation, split (#423): the
-    /// realm's own, then each merc company's by name. A company's share of
-    /// the side's merc hulls left is in proportion to what it brought, as
-    /// its losses are; the shares add up to the merc hulls left.
+    /// realm's own, then each merc company's, by name.
     /// A hull is gone the moment its tank is destroyed (#448), not when the
     /// tank comes back in the next one: each tank down and waiting to
     /// respawn counts the hull it will take (`down_hulls`).
     pub fn hull_summary(&self, team: usize) -> Option<(u32, Vec<(String, u32)>)> {
-        let (left, mercs) = self.down_hulls(team)?;
-        let named = self.companies.get(team).filter(|c| !c.is_empty());
-        let companies = match named {
-            Some(c) => apportion(mercs, c),
-            // Mercs without names (no galaxy behind the match): the Company's,
-            // or your company on your side.
-            None if mercs > 0 || self.crew_team == Some(team) => {
-                let name = self
-                    .crew
-                    .clone()
-                    .filter(|_| self.crew_team == Some(team))
-                    .unwrap_or_else(|| "COMPANY".to_string());
-                vec![(name, mercs)]
-            }
-            None => Vec::new(),
-        };
-        Some((left.saturating_sub(mercs), companies))
+        let (left, pools) = self.down_hulls(team)?;
+        let mercs = self.mercs.get(team).map_or(&[][..], |m| &m[..]);
+        let companies = mercs
+            .iter()
+            .zip(&pools)
+            .enumerate()
+            .map(|(k, (c, &n))| {
+                // Unnamed (no galaxy behind the match): the Company's, or
+                // your company on your side.
+                let name = c.name.clone().unwrap_or_else(|| {
+                    self.crew
+                        .clone()
+                        .filter(|_| k == 0 && self.crew_team == Some(team))
+                        .unwrap_or_else(|| "COMPANY".to_string())
+                });
+                (name, n)
+            })
+            .collect();
+        let theirs: u32 = pools.iter().sum();
+        Some((left.saturating_sub(theirs), companies))
     }
 
-    /// Side `team`'s hulls left and merc hulls left, under an allocation,
-    /// once each of its tanks down (a wreck waiting to respawn, or a Vigil's
-    /// husk) has taken the hull it'll come back in, the way `rehull` will
-    /// hand them out: soonest back first. The pools themselves are only
-    /// drawn on at the respawn.
-    fn down_hulls(&self, team: usize) -> Option<(u32, u32)> {
+    /// Side `team`'s hulls left and each of its companies' hulls left,
+    /// under an allocation, once each of its tanks down (a wreck waiting to
+    /// respawn, or a Vigil's husk) has taken the hull it'll come back in,
+    /// the way `rehull` will hand them out: soonest back first. The pools
+    /// themselves are only drawn on at the respawn.
+    fn down_hulls(&self, team: usize) -> Option<(u32, Vec<u32>)> {
         let mut left = self.hulls_left(team)?;
-        let pool = self.merc_hulls(team);
-        let mut mercs = pool.unwrap_or(0);
+        let mut pools: Vec<u32> = self
+            .mercs
+            .get(team)
+            .map_or(Vec::new(), |m| m.iter().map(|c| c.hulls).collect());
         let mut down: Vec<(f32, usize)> = (0..self.fighters.len())
             .filter(|&i| self.fighters[i].team == team && !self.is_closed(i))
             .filter_map(|i| {
@@ -1367,28 +1352,73 @@ impl Match {
             .collect();
         down.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         for (_, i) in down {
-            let company = self.world.tanks[i].company && pool.is_some();
-            let you = i == 0 && self.crew_team == Some(team);
-            if (company && you && mercs == 0) || left == 0 {
+            let k = self.seat_pool(i);
+            let you = self.is_crew(i);
+            if (you && k.is_some_and(|k| pools[k] == 0)) || left == 0 {
                 continue;
             }
             left -= 1;
-            let held = if you { 0 } else { self.own_hulls };
-            if company && mercs > held {
-                mercs -= 1;
+            if let Some(k) = k
+                && pools[k] > self.held_for(i, k)
+            {
+                pools[k] -= 1;
             }
         }
-        Some((left, mercs))
+        Some((left, pools))
+    }
+
+    /// Seat `i`'s company, while it has a pool to come back in: under an
+    /// allocation, once its side's mercs are dealt (`set_mercs`). Till then
+    /// there's no pool, and its tank comes back in its side's hulls like any.
+    fn seat_pool(&self, i: usize) -> Option<usize> {
+        self.hulls.as_ref()?;
+        let k = self.seat_company.get(i).copied().flatten()?;
+        let team = self.fighters[i].team;
+        self.mercs.get(team).and_then(|m| m.get(k)).map(|_| k)
+    }
+
+    /// Seat `i` is you, among your company's.
+    fn is_crew(&self, i: usize) -> bool {
+        i == 0 && self.crew_team == Some(self.fighters[i].team)
+    }
+
+    /// Of company `k`'s hulls, how many seat `i` can't come back in: your
+    /// own (#385), for your company's bots.
+    fn held_for(&self, i: usize, k: usize) -> u32 {
+        let yours = k == 0 && self.crew_team == Some(self.fighters[i].team);
+        if yours && !self.is_crew(i) {
+            self.own_hulls
+        } else {
+            0
+        }
+    }
+
+    /// Company `k` of side `team`'s hulls not yet in play.
+    pub fn company_hulls(&self, team: usize, k: usize) -> u32 {
+        self.mercs
+            .get(team)
+            .and_then(|m| m.get(k))
+            .map_or(0, |c| c.hulls)
+    }
+
+    /// Company `k` of side `team` has `n` hulls not yet in play (shots).
+    pub fn set_company_hulls(&mut self, team: usize, k: usize, n: u32) {
+        if let Some(c) = self.mercs.get_mut(team).and_then(|m| m.get_mut(k)) {
+            c.hulls = n;
+        }
+    }
+
+    /// Seat `i`'s company (an index into its side's companies, as dealt by
+    /// `set_mercs`), or None for the realm's.
+    pub fn seat_company(&self, i: usize) -> Option<usize> {
+        self.seat_company.get(i).copied().flatten()
     }
 
     /// Set aside up to `n` of your company's hulls as yours alone (after
-    /// `set_company`): your own hulls left on its contract, as many as this
+    /// `set_mercs`): your own hulls left on its contract, as many as this
     /// battle brings. None without a seat among your side's mercs.
     pub fn set_own_hulls(&mut self, n: u32) {
-        let brought = self
-            .crew_team
-            .and_then(|t| self.company_hulls.get(t).copied())
-            .unwrap_or(0);
+        let brought = self.crew_team.map_or(0, |t| self.company_hulls(t, 0));
         self.own_hulls = n.min(brought);
     }
 
@@ -1397,7 +1427,7 @@ impl Match {
         self.own_lost
     }
 
-    /// The Company's tanks on side `team`, now (the player's among them, on theirs).
+    /// The company tanks on side `team`, now (the player's among them, on theirs).
     #[cfg(test)]
     pub fn company_seats(&self, team: usize) -> usize {
         (0..self.fighters.len())
@@ -1405,10 +1435,17 @@ impl Match {
             .count()
     }
 
-    /// Hulls each side has lost in the Company's tanks (the player's among them).
-    pub fn company_lost(&self) -> Vec<u32> {
+    /// Hulls each side has lost in each of its companies' tanks (the
+    /// player's among them), by company as dealt (`set_mercs`).
+    pub fn company_lost(&self) -> Vec<Vec<u32>> {
         (0..self.factions.len())
-            .map(|t| self.company_deaths.get(t).copied().unwrap_or(0))
+            .map(|t| {
+                let n = self.mercs.get(t).map_or(0, |m| m.len());
+                let deaths = self.company_deaths.get(t);
+                (0..n)
+                    .map(|k| deaths.and_then(|d| d.get(k)).copied().unwrap_or(0))
+                    .collect()
+            })
             .collect()
     }
 
@@ -2405,12 +2442,16 @@ impl Match {
         let v = &mut self.fighters[victim];
         v.health = 0.0;
         v.deaths += 1;
-        if self.world.tanks[victim].company {
+        if let Some(k) = self.seat_company.get(victim).copied().flatten() {
             let team = v.team;
             if self.company_deaths.len() <= team {
-                self.company_deaths.resize(team + 1, 0);
+                self.company_deaths.resize(team + 1, Vec::new());
             }
-            self.company_deaths[team] += 1;
+            let deaths = &mut self.company_deaths[team];
+            if deaths.len() <= k {
+                deaths.resize(k + 1, 0);
+            }
+            deaths[k] += 1;
             // Yours: one of your own hulls, while you have any.
             if victim == 0 && self.crew_team == Some(team) && self.own_hulls > 0 {
                 self.own_hulls -= 1;
@@ -2841,39 +2882,28 @@ impl Match {
     }
 
     /// Tank `i` is coming back: take it a hull, if its side has one left.
-    /// Under an allocation, a merc comes back in a merc hull while there
-    /// are any but yours (`own_hulls`); then a bot's seat is the realm's. You come back only in
-    /// your company's: when they're spent, you're out (`crew_out`).
+    /// Under an allocation, a company's tank comes back in one of its
+    /// company's hulls while there are any but yours (`own_hulls`); then a
+    /// bot's seat is the realm's. You come back only in your company's:
+    /// when they're spent, you're out (`crew_out`).
     fn rehull(&mut self, i: usize) -> bool {
         let team = self.fighters[i].team;
-        let pool = self.merc_hulls(team);
-        let company = self.world.tanks[i].company && pool.is_some();
-        let mercs = pool.unwrap_or(0);
-        if company && i == 0 && self.crew_team == Some(team) && mercs == 0 {
+        let k = self.seat_pool(i);
+        if self.is_crew(i) && k.is_some_and(|k| self.company_hulls(team, k) == 0) {
             self.crew_out = true;
             return false;
         }
         if !self.take_hull(team) {
             return false;
         }
-        if company {
-            // Your own hulls are yours alone: the company's bots leave them.
-            let you = i == 0 && self.crew_team == Some(team);
-            let held = if you { 0 } else { self.own_hulls };
-            match self.company_hulls.get_mut(team) {
-                Some(h) if *h > held => *h -= 1,
+        if let Some(k) = k {
+            let held = self.held_for(i, k);
+            match &mut self.mercs[team][k].hulls {
+                h if *h > held => *h -= 1,
                 _ => self.hand_over(i),
             }
         }
         true
-    }
-
-    /// Side `team`'s merc hulls not yet in play, under an allocation once
-    /// its mercs are dealt (`set_company`). Till then there's no pool, and
-    /// a Company tank comes back in its side's hulls like any.
-    fn merc_hulls(&self, team: usize) -> Option<u32> {
-        self.hulls.as_ref()?;
-        self.company_hulls.get(team).copied()
     }
 
     /// Seat `i`'s merc is done, the company's hulls spent: the seat is the
@@ -2889,6 +2919,7 @@ impl Match {
         let f = &self.fighters[i];
         self.took_seat[i] = (f.kills, f.deaths, self.held(i));
         self.world.tanks[i].company = false;
+        self.seat_company[i] = None;
         // The realm's pilot comes in the realm's own kit, not the merc's
         // (#481), any of its hulls and guns, dealt at random like the seats
         // at the start: not by seat number, which on a two-sided field is
@@ -2920,7 +2951,9 @@ impl Match {
         // merc's company's are (then the seat goes to the realm).
         let out = !f.alive
             && (self.hulls_left(f.team) == Some(0)
-                || (company && self.merc_hulls(f.team) == Some(0)));
+                || self
+                    .seat_pool(i)
+                    .is_some_and(|k| self.company_hulls(f.team, k) == 0));
         Pilot {
             seat: i,
             team: f.team,
@@ -5986,30 +6019,31 @@ mod tests {
         }
         m.set_allocation(&[5, 10]);
         m.set_company(0, 2, 4);
-        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(5), 4));
+        assert_eq!((m.hulls_left(0), m.company_hulls(0, 0)), (Some(5), 4));
         m.start();
         // Two tanks on our side: two hulls, both mercs'.
-        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(3), 2));
+        assert_eq!((m.hulls_left(0), m.company_hulls(0, 0)), (Some(3), 2));
         destroy(&mut m, 2);
         respawn(&mut m);
-        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(2), 1));
+        assert_eq!((m.hulls_left(0), m.company_hulls(0, 0)), (Some(2), 1));
         destroy(&mut m, 0);
         respawn(&mut m);
-        assert_eq!((m.hulls_left(0), m.company_hulls[0]), (Some(1), 0));
+        assert_eq!((m.hulls_left(0), m.company_hulls(0, 0)), (Some(1), 0));
     }
 
     /// The hull summary (#423): the realm's hulls left, then each merc
-    /// company's, its share of the merc hulls left as it brought them,
-    /// whole hulls adding up to them.
+    /// company's own (#493).
     #[test]
     fn hull_summary_splits_the_realms_and_each_companys() {
         let mut m = arena(3);
         assert_eq!(m.hull_summary(0), None, "no allocation, no summary");
         m.set_allocation(&[12, 10]);
-        m.set_company(1, 1, 5);
-        m.set_companies(
+        m.set_mercs(
             1,
-            vec![("IRON TITHE".into(), 3.2), ("SALT OATH".into(), 1.8)],
+            vec![
+                (Some("IRON TITHE".into()), 1, 3),
+                (Some("SALT OATH".into()), 0, 2),
+            ],
         );
         let (realm, cos) = m.hull_summary(1).unwrap();
         assert_eq!(realm, 5);
@@ -6019,9 +6053,35 @@ mod tests {
             Some((12, vec![])),
             "no mercs: the realm's alone"
         );
-        m.company_hulls[1] = 2;
-        let (_, cos) = m.hull_summary(1).unwrap();
-        assert_eq!(cos.iter().map(|c| c.1).sum::<u32>(), 2);
+    }
+
+    /// Every company on a side comes back in its own hulls (#493): one's
+    /// tanks never spend another's, and once a company's are gone its bots
+    /// are the realm's while the other's fight on in theirs.
+    #[test]
+    fn each_company_spends_its_own_hulls() {
+        let mut m = arena(5);
+        for i in 1..6 {
+            m.idle(i);
+        }
+        m.set_allocation(&[20, 20]);
+        // Your side's seats are 0, 2 and 4: you and 2 are yours, 4 another's.
+        m.set_mercs(0, vec![(None, 2, 3), (Some("SALT OATH".into()), 1, 2)]);
+        m.start();
+        assert_eq!(m.seat_company(2), Some(0));
+        assert_eq!(m.seat_company(4), Some(1));
+        assert_eq!((m.company_hulls(0, 0), m.company_hulls(0, 1)), (1, 1));
+        destroy(&mut m, 4);
+        respawn(&mut m);
+        assert_eq!((m.company_hulls(0, 0), m.company_hulls(0, 1)), (1, 0));
+        destroy(&mut m, 4);
+        respawn(&mut m);
+        assert!(m.fighters[4].alive && !m.world.tanks[4].company);
+        assert_eq!(m.company_hulls(0, 0), 1, "yours untouched");
+        destroy(&mut m, 0);
+        respawn(&mut m);
+        assert!(m.fighters[0].alive && !m.crew_out());
+        assert_eq!(m.company_lost()[0], vec![1, 2]);
     }
 
     /// A merc hull goes off the summary when its tank is destroyed, not
@@ -6110,7 +6170,7 @@ mod tests {
         respawn(&mut m);
         assert!(m.fighters[2].alive);
         assert!(!m.world.tanks[2].company, "no merc hulls left: the realm's");
-        assert_eq!(m.company_lost(), vec![2, 0]);
+        assert_eq!(m.company_lost(), vec![vec![2], vec![]]);
         assert_eq!(m.lost()[0], 2);
         // With no mercs, nobody's the Company's, you included.
         let mut alone = arena(3);
@@ -6138,7 +6198,7 @@ mod tests {
             respawn(&mut m);
             assert!(m.world.tanks[2].company, "in a shared hull");
         }
-        assert_eq!(m.company_hulls[0], 2, "only yours are left");
+        assert_eq!(m.company_hulls(0, 0), 2, "only yours are left");
         destroy(&mut m, 2);
         respawn(&mut m);
         assert!(m.fighters[2].alive);
@@ -6146,7 +6206,7 @@ mod tests {
             !m.world.tanks[2].company,
             "back as the realm's, not in yours"
         );
-        assert_eq!((m.company_hulls[0], m.own_hulls), (2, 2));
+        assert_eq!((m.company_hulls(0, 0), m.own_hulls), (2, 2));
         assert_eq!(m.own_lost(), 0);
     }
 
@@ -6168,7 +6228,7 @@ mod tests {
             respawn(&mut m);
             assert!(m.fighters[0].alive);
             assert!(m.world.tanks[0].company);
-            assert_eq!((m.own_hulls, m.company_hulls[0]), (own, pool));
+            assert_eq!((m.own_hulls, m.company_hulls(0, 0)), (own, pool));
         }
         assert_eq!(m.own_lost(), 2, "two of yours, then the company's");
         destroy(&mut m, 0);
@@ -6383,7 +6443,7 @@ mod tests {
             crate::economy::Payout::of(&m).outcome,
             crate::economy::Outcome::Won
         );
-        assert_eq!(m.company_lost(), vec![2, 0]);
+        assert_eq!(m.company_lost(), vec![vec![2], vec![]]);
     }
 
     /// Without an allocation (a skirmish), you come back without end.

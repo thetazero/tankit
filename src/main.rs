@@ -1223,9 +1223,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         let lead = (combat::RESPAWN_TIME + 1.0).min(shot.time);
         advance(&mut game, &mut cam, &mut garage, shot.time - lead);
         let me = game.fighters[0].team;
-        if let Some(h) = game.company_hulls.get_mut(me) {
-            *h = 0;
-        }
+        game.set_company_hulls(me, 0, 0);
         game.own_hulls = 0;
         game.destroy_player();
         let camera = advance(&mut game, &mut cam, &mut garage, lead);
@@ -1567,7 +1565,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let s = g.step_played(&galaxy::battle::Played {
                     battle: b.clone(),
                     lost: vec![0, 0],
-                    company: vec![0, 0],
+                    company: vec![vec![], vec![]],
                     winner: Some(0),
                     own_lost: 0,
                     scrap: Vec::new(),
