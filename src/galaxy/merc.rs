@@ -85,6 +85,9 @@ const RATE_FADE: f32 = 0.05;
 /// Share of the word of unmet work at a system forgotten each tick.
 const UNMET_FADE: f32 = 0.1;
 
+/// Times a realm plays a fight through to guess how it'll go.
+const ROLLS: usize = 8;
+
 /// How far realms' trust in forecasts moves toward each contract's outcome.
 const LEARN: f32 = 0.02;
 
@@ -911,7 +914,7 @@ impl Galaxy {
                     .sum::<u32>()
             })
             .sum();
-        let mut spare = spare as f32;
+        let spare0 = spare as f32;
         let odds = self.rules.odds;
         let reinforce = |he: &mut f32, spare: &mut f32, ours: f32| {
             let against = odds * ours * pf;
@@ -923,19 +926,18 @@ impl Galaxy {
             *he += more;
             *spare -= more;
         };
-        reinforce(&mut he, &mut spare, own + mercs);
         // Their sites: generators up, what those shield, and the rest. An
         // attacker can only go for the generators and what's in the open
         // while any are up, and fights a seat short against them.
         let (a, b) = sys.sites;
         let planets = self.shields_up(t, f);
-        let (mut gens, mut shielded) = (0.0f32, 0.0f32);
+        let (mut gens0, mut shielded) = (0.0f32, 0.0f32);
         for site in &self.sites[a as usize..b as usize] {
             if site.owner as usize == f {
                 continue;
             }
             match site.kind {
-                SiteKind::Shield { damaged: false } => gens += 1.0,
+                SiteKind::Shield { damaged: false } => gens0 += 1.0,
                 _ if planets[site.planet as usize] > 0 => shielded += 1.0,
                 _ => {}
             }
@@ -946,61 +948,84 @@ impl Galaxy {
         let realm = &self.realms[r as usize];
         let fights = self.war_hulls.get(r as usize).copied().unwrap_or(0) as f32 + own;
         let flown = realm.pilots as f32 * own / fights.max(1.0);
-        let (mut ho, mut hm) = (own, mercs);
-        let (mut mine, mut theirs) = (mine0, theirs0);
         let front = self.rules.frontage;
-        let (k, take) = (self.rules.kill, self.rules.take);
-        let mut ticks = 0.0f32;
-        for _ in 0..self.rules.merc_term {
-            let hf = ho + hm;
-            reinforce(&mut he, &mut spare, hf);
-            // A side left alone walks into what's unguarded.
-            if he < 1.0 && hf >= 1.0 {
-                mine = total;
-                break;
+        let (k, take, blitz) = (self.rules.kill, self.rules.take, self.rules.blitz as f32);
+        // The same dice for every way of fighting it, so they're compared
+        // on the same luck.
+        let seed = (self.tick << 24) ^ ((t as u64) << 8) ^ f as u64;
+        let mut rng = crate::rng::Rng::from_state(seed | 1);
+        let (mut held, mut paid) = (0.0, 0.0);
+        for _ in 0..ROLLS {
+            let (mut ho, mut hm, mut he, mut spare) = (own, mercs, he, spare0);
+            let (mut mine, mut theirs, mut gens) = (mine0, theirs0, gens0);
+            for _ in 0..self.rules.merc_term {
+                let luck = (rng.range(0.75, 1.25), rng.range(0.75, 1.25));
+                let roll = (rng.f32(), rng.f32());
+                let hf = ho + hm;
+                reinforce(&mut he, &mut spare, hf);
+                if hm >= 1.0 {
+                    paid += 1.0;
+                }
+                // A side left alone walks into what's unguarded.
+                if he < 1.0 || hf < 1.0 {
+                    let n = if hf >= 1.0 {
+                        blitz.min(theirs)
+                    } else if he >= 1.0 {
+                        -blitz.min(mine)
+                    } else {
+                        0.0
+                    };
+                    mine += n;
+                    theirs -= n;
+                } else {
+                    let ff = (ho.min(flown) + hm.min(crew)).min(front) * pf * luck.0;
+                    let fe = he.min(front) * pe * luck.1;
+                    let share = ff / (ff + fe).max(1e-3);
+                    // Theirs open to it: while generators are up, those and
+                    // what they don't shield, a seat short.
+                    let (open, at) = if gens >= 1.0 {
+                        (
+                            (theirs - shielded).max(1.0),
+                            ff * cut / (ff * cut + fe).max(1e-3),
+                        )
+                    } else {
+                        (theirs, share)
+                    };
+                    // Whole sites change hands: the expected number, and the
+                    // fraction left over as a chance.
+                    let whole = |x: f32, roll: f32| x.floor() + (roll < x.fract()) as u8 as f32;
+                    let won = whole(take * at * open, roll.0).min(theirs);
+                    let lost = whole(take * (1.0 - share) * mine, roll.1).min(mine);
+                    gens = (gens - won).max(0.0);
+                    let battles = open + mine;
+                    mine += won - lost;
+                    theirs += lost - won;
+                    // Hulls are lost in each site's battle, the mercs' by
+                    // their share of the side's.
+                    let left = 1.0 - (battles * k * fe / af / hf).min(1.0);
+                    ho *= left;
+                    hm *= left;
+                    he = (he - battles * k * ff / ae).max(0.0);
+                }
+                // Done, the mercs go, and it holds on alone.
+                if hm >= 1.0
+                    && if defend {
+                        he < AT_WAR as f32
+                    } else {
+                        mine > theirs
+                    }
+                {
+                    hm = 0.0;
+                }
             }
-            if hf < 1.0 && he >= 1.0 {
-                mine = 0.0;
-                break;
-            }
-            if hf < 1.0 || (!defend && mine > theirs) || (defend && mine <= 0.0) {
-                break;
-            }
-            if hm >= 1.0 {
-                ticks += 1.0;
-            }
-            let ff = (ho.min(flown) + hm.min(crew)).min(front) * pf;
-            let fe = he.min(front) * pe;
-            let share = ff / (ff + fe).max(1e-3);
-            // Sites change hands: theirs open to it (behind generators
-            // still up, a seat short), and its own.
-            let (open, at) = if gens >= 0.5 {
-                (theirs - shielded, ff * cut / (ff * cut + fe).max(1e-3))
+            held += if defend {
+                (mine / mine0.max(1.0)).min(1.0)
             } else {
-                (theirs, share)
+                ((mine - mine0) / theirs0.max(1.0)).max(0.0)
             };
-            let won = take * at * open.max(0.0);
-            if gens >= 0.5 {
-                gens -= take * at * gens;
-            }
-            let lost = take * (1.0 - share) * mine;
-            mine += won - lost;
-            theirs += lost - won;
-            // Hulls are lost, the mercs' by their share of the side's: in
-            // each site's battle, every site being fought over: theirs open
-            // to attack, and its own (everyone else going for them).
-            let battles = (open.max(0.0) + mine).max(1.0);
-            let lf = (battles * k * fe / af).min(hf);
-            ho -= lf * ho / hf;
-            hm -= lf * hm / hf;
-            he = (he - battles * k * ff / ae).max(0.0);
         }
-        let share = if defend {
-            mine / mine0.max(1.0)
-        } else {
-            (mine - mine0).max(0.0) / theirs0.max(1.0)
-        };
-        (share.clamp(0.0, 1.0), ticks.max(1.0))
+        let n = ROLLS as f32;
+        (held / n, (paid / n).max(1.0))
     }
 
     /// Whether realm `r` owes any company a bill.
