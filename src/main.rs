@@ -143,6 +143,8 @@ tankit [OPTIONS]
                           (default the first it fights for), under that site's contract, and
                           the rest of the war ticked with it, as back from a battle
   --quiet <n>             (with --won) the war goes on n ticks more before the missions screen
+  --waiting               (with --screen missions) your company's between contracts: the war
+                          goes on until there's work, over the system you were last in
   --ticks                 (with --won) the tick summary instead, the screen before the missions
                           screen: what the war did to the system's hulls since the battle, and why
   --shields-down          (with --screen missions|site) every shield generator on the system's first
@@ -205,6 +207,8 @@ pub struct Args {
     /// --quiet, with --won: the galaxy ticks this many more times after the
     /// battle before the missions screen (#447).
     quiet: u32,
+    /// --waiting, with --screen missions: between contracts.
+    waiting: bool,
     /// --ticks, with --won: the tick summary screen (#475).
     ticks: bool,
     /// --shields-down, for missions shots: the first world's generators
@@ -633,6 +637,7 @@ fn parse_args() -> Result<Args> {
     let mut site = None;
     let mut transfer = None;
     let mut summary = false;
+    let mut waiting = false;
     let mut failed = false;
     let mut choice = None;
     let mut won = false;
@@ -776,6 +781,7 @@ fn parse_args() -> Result<Args> {
             "--tab" => tab = args.next().context("--tab needs a number")?.parse()?,
             "--quiet" => quiet = args.next().context("--quiet needs a number")?.parse()?,
             "--ticks" => ticks = true,
+            "--waiting" => waiting = true,
             "--defend" => defend = true,
             "--own-hulls" => {
                 own_hulls = Some(args.next().context("--own-hulls needs a number")?.parse()?)
@@ -996,6 +1002,7 @@ fn parse_args() -> Result<Args> {
         site,
         transfer,
         summary,
+        waiting,
         failed,
         choice,
         won,
@@ -1307,6 +1314,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         };
         if args.cam.is_none() {
             let (w, h) = (shot.width as f32, shot.height as f32);
+            // A stand-in for what the battle did to the war: you attacked a
+            // foundry, and took it if you won.
+            if game.phase == combat::Phase::Over && hud.debrief.is_none() {
+                hud.debrief = Some(hud::WarResult {
+                    world: "KESSARA II".to_string(),
+                    site: "HULL FOUNDRY",
+                    verdict: hud::Verdict::of(false, game.leader() == Some(0)),
+                });
+            }
             let ui = hud
                 .draw(
                     &game,
@@ -1326,7 +1342,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 ui
             } else if args.screen == Some(Screen::Returning) {
                 let mut ui = menu::dim(ui);
-                ui.extend(hud::returning(true, 0.4, w, h));
+                ui.extend(hud::loading("ROUND OVER", "LOADING", 0.4, w, h));
                 ui
             } else if matches!(args.screen, Some(Screen::Pause | Screen::PauseSettings)) {
                 let mut ui = menu::dim(ui);
@@ -1467,6 +1483,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let (crew, t) = war();
             profile.ship = crew;
             menu.set_theater(t);
+            if args.waiting {
+                // Your company's between contracts: the war's gone on a while
+                // with nothing for you, over the system you were last in.
+                menu.set_theater(None);
+                menu.waited(37);
+            }
             if let Some(joined) = args.choice {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
                 let rank = profile.rank().level;
@@ -1527,7 +1549,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 }
                 profile.ship = g.crew;
                 let kind = menu
-                    .transfer()
+                    .next_move()
                     .zip(menu.theater())
                     .is_some_and(|(tr, t)| kind.is(&tr.from, t));
                 anyhow::ensure!(kind, "no transfer of that kind in 2000 ticks");
@@ -1561,7 +1583,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
-                let fought_at = g.tick;
+                let (fought_at, owners) = (g.tick, g.owners());
                 let s = g.step_played(&galaxy::battle::Played {
                     battle: b.clone(),
                     lost: vec![0, 0],
@@ -1571,14 +1593,15 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     scrap: Vec::new(),
                 });
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
+                // As the app does: the summary's of the battle's tick alone.
+                if args.ticks {
+                    summary = Some(g.tick_summary(b.system, fought_at, &owners));
+                }
                 for _ in 0..args.quiet {
                     g.step();
                 }
                 // As the app does: the war goes on until there's work (#447).
                 let (t, _) = g.await_work_staying(prefer, rank, 100);
-                if args.ticks {
-                    summary = Some(g.tick_summary(b.system, fought_at));
-                }
                 profile.ship = g.crew;
                 menu.set_theater(t);
             }

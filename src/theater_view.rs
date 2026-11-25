@@ -401,10 +401,6 @@ pub struct Transfer {
     pub from: Theater,
     /// Seconds it's played.
     pub age: f32,
-    /// The contract that just ended, if any. While set, the summary card is
-    /// shown and the transfer animation doesn't start until you press
-    /// CONTINUE (#414).
-    pub summary: Option<Ended>,
     /// The previous contract failed, so the transfer caption says
     /// "CONTRACT FAILED" instead of "CONTRACT DONE".
     pub failed: bool,
@@ -453,7 +449,6 @@ impl Transfer {
         Transfer {
             from,
             age: 0.0,
-            summary: None,
             failed: false,
             warp: false,
         }
@@ -468,10 +463,10 @@ impl Transfer {
         }
     }
 
-    /// A transfer from `from` to `to`. If the galaxy recorded how the
-    /// contract in `from` ended, the summary card is shown first.
+    /// A transfer from `from` to `to`: its caption says whether the
+    /// contract in `from` failed, if the galaxy recorded how it ended.
     pub fn after(from: Theater, to: &Theater) -> Transfer {
-        let summary = from
+        let ended = from
             .ship
             .as_ref()
             .zip(to.ship.as_ref())
@@ -483,15 +478,9 @@ impl Transfer {
                     .copied()
             });
         Transfer {
-            summary,
-            failed: summary.is_some_and(|e| !e.outcome.won()),
+            failed: ended.is_some_and(|e| !e.outcome.won()),
             ..Transfer::new(from)
         }
-    }
-
-    /// The summary card is showing, so the transfer animation is paused.
-    pub fn waiting(&self) -> bool {
-        self.summary.is_some()
     }
 
     /// Going from theater `from` to `to` is a transfer: you're aboard
@@ -951,6 +940,34 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
     ring(p, c, r - 0.5, 1.0, color);
 }
 
+/// The system view while your company's between contracts: its frame,
+/// and in it a spinner and how many ticks the war's gone on without work
+/// for you.
+pub fn waiting(p: &mut Painter, ticks: u32, time: f32, w: f32, h: f32) {
+    let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
+    let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
+    widgets::corners(p, min, max, 14.0, theme::DIM);
+    let at = Vec2::new(min.x + 24.0, min.y + 24.0);
+    crate::hud::spinner_small(p, at + Vec2::new(7.0, 7.0), time);
+    let mut s = TextStyle::LABEL;
+    s.color = theme::FG;
+    p.text(
+        at + Vec2::new(26.0, 2.0),
+        "LOOKING FOR WORK",
+        &s,
+        Align::Left,
+    );
+    let mut v = TextStyle::value(22.0);
+    v.color = theme::FG;
+    let tw = p.text(
+        at + Vec2::new(0.0, 26.0),
+        &format!("+{ticks}"),
+        &v,
+        Align::Left,
+    );
+    widgets::label(p, at + Vec2::new(tw + 8.0, 34.0), "TICKS", Align::Left);
+}
+
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
@@ -963,6 +980,7 @@ pub fn draw(
     hits: &mut Hits<Hit>,
     t: &Theater,
     transfer: Option<&Transfer>,
+    card: Option<&Ended>,
     selected: usize,
     go_lit: bool,
     w: f32,
@@ -972,8 +990,8 @@ pub fn draw(
     let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
     widgets::corners(p, min, max, 14.0, theme::DIM);
     let bottom = max.y - LEGEND_H;
-    if let Some((tr, e)) = transfer.and_then(|tr| tr.summary.as_ref().map(|e| (tr, e))) {
-        summary(p, hits, &tr.from, e, go_lit, min, max);
+    if let Some(e) = card {
+        summary(p, hits, t, e, go_lit, min, max);
         return;
     }
     if let Some((tr, leg)) = transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {

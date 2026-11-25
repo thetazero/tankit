@@ -1011,13 +1011,23 @@ fn tick_summary_counts_from_the_battle() {
     let mut g = small_war();
     g.clear_moves();
     let at = g.tick;
+    let owners = g.owners();
     let before: Vec<[u32; SIDES]> = g.systems.iter().map(|s| s.hulls).collect();
     for _ in 0..12 {
         g.step();
     }
     let mut changed = false;
     for s in 0..g.systems.len() {
-        let t = g.tick_summary(s, at);
+        let t = g.tick_summary(s, at, &owners);
+        let sys = &g.systems[s];
+        let flipped = (sys.sites.0..sys.sites.1)
+            .filter(|&i| g.sites[i as usize].owner != owners[i as usize])
+            .count();
+        assert_eq!(
+            t.flips.len(),
+            flipped,
+            "system {s}: every site that changed hands"
+        );
         assert_eq!(t.ticks, 12);
         for f in 0..SIDES {
             let rows: Vec<_> = t.sides.iter().filter(|c| c.side == f).collect();

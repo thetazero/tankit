@@ -70,10 +70,6 @@ fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
     }
 }
 
-/// How long the war may go on without you, on the missions screen, while
-/// there's no battle for you (see `Galaxy::await_work`): a few hundred ms.
-const AWAIT_TICKS: u32 = 100;
-
 /// Seconds the menu scene takes to dip to black before a backdrop swap, and
 /// to come back up after it.
 const DIP_OUT: f32 = 0.18;
@@ -96,9 +92,8 @@ enum Leaving {
 }
 
 /// Going back to the menu after a round (#452): the menu's map is built
-/// on a worker thread and, for the contract screen, the war goes on (while
-/// there's no battle for you) a slice of each frame, so the screen keeps
-/// drawing under a loading panel instead of freezing.
+/// on a worker thread, so the screen keeps drawing (the tick summary, or a
+/// loading panel) instead of freezing.
 struct Returning {
     /// To the contract screen (else the menu's first screen).
     missions: bool,
@@ -106,39 +101,35 @@ struct Returning {
     job: Option<Receiver<(Match, StaticWorld)>>,
     /// The menu's map, built.
     built: Option<(Match, StaticWorld)>,
-    /// Ticks the war may still go on without you before the screen comes
-    /// up anyway (see `Galaxy::await_work`).
-    ticks: u32,
-    /// Done waiting: there's work for you, a ship to choose, or the war's
-    /// gone on as long as it may.
-    waited: bool,
-    /// Your company before the wait, once the galaxy's in: a change is saved.
-    crew: Option<Option<u32>>,
-    /// The galaxy ticked while waiting: it's saved.
-    ticked: bool,
-    /// Seconds the loading panel has been up (turns its spinner).
+    /// Seconds it's been going (turns the spinner).
     time: f32,
     /// Back from a battle in the war (#475): the tick summary's up while
     /// the contract screen loads, until you go on.
     summary: Option<Summary>,
 }
 
-/// The tick summary screen on the way back to the contract screen (#475).
+/// Going into a battle: its map's built on a worker thread, under a
+/// loading panel over the contract screen.
+struct Deploying {
+    sortie: Sortie,
+    job: Receiver<(Match, StaticWorld)>,
+    /// Seconds it's been going (turns the spinner).
+    time: f32,
+    /// The system it's in, on the panel.
+    title: String,
+}
+
+/// The tick summary screen on the way back to the contract screen (#475):
+/// what your battle's tick did to its system, and no more.
 struct Summary {
-    /// The system your battle was in, and the galaxy's tick before it was
-    /// settled.
-    system: usize,
-    fought_at: u64,
-    /// What it says, kept up as the war goes on behind it (None until the
-    /// galaxy's in).
-    view: Option<TickSummary>,
+    view: TickSummary,
     /// CONTINUE's pressed: on to the contract screen once it's loaded.
     going: bool,
 }
 
-/// How much of each frame the war may go on in while you're going back to
-/// the contract screen: the rest draws the loading panel.
-const RETURN_BUDGET: std::time::Duration = std::time::Duration::from_millis(12);
+/// How much of each frame the war may go on in while you wait for work on
+/// the contract screen: the rest draws it.
+const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(12);
 
 /// What the window is showing.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -185,10 +176,9 @@ struct App {
     battle: Option<Battle>,
     /// Rounds are missions: drawn from the galaxy.
     in_war: bool,
-    /// Where your last battle in the war was (its system), and the galaxy's
-    /// tick before it was settled, until the tick summary shows what the
-    /// war did there since (#447, #475).
-    fought_at: Option<(usize, u64)>,
+    /// What your last battle's tick did to its system, until the tick
+    /// summary shows it (#447, #475).
+    tick_summary: Option<TickSummary>,
     /// The theater site this round is fought at (a replay fights it again).
     sortie: Option<Sortie>,
     mode: Mode,
@@ -211,6 +201,8 @@ struct App {
     leaving: Option<Leaving>,
     /// On the way back to the menu after a round (#452).
     returning: Option<Returning>,
+    /// On the way into a battle.
+    deploying: Option<Deploying>,
     /// A battle you quit in has played out: the game can close.
     quit: bool,
     menu: Menu,
@@ -319,7 +311,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         war: War::load(),
         battle: None,
         in_war: false,
-        fought_at: None,
+        tick_summary: None,
         sortie: None,
         mode: if launch.menu && launch.showroom.is_none() {
             Mode::Menu
@@ -338,6 +330,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         paid: false,
         leaving: None,
         returning: None,
+        deploying: None,
         quit: false,
         menu: Menu::new(),
         pause: Pause::new(),
@@ -565,13 +558,8 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    /// Swap in a new match (or menu backdrop) and reset everything tied to the old one.
-    fn load(&mut self, game: Match) {
-        let world = StaticWorld::new(&scene::map_mesh(&game.world.map));
-        self.load_built(game, world);
-    }
-
-    /// `load`, with the map's mesh already built.
+    /// Swap in a new match (or menu backdrop), its map's mesh built, and
+    /// reset everything tied to the old one.
     fn load_built(&mut self, game: Match, world: StaticWorld) {
         self.game = game;
         self.game.set_player_levels(self.profile.levels);
@@ -608,6 +596,55 @@ impl App {
     /// Deploy into a theater's site: its mission's map and contract, the
     /// theater's sides (you with your employer, as side 0).
     fn start_sortie(&mut self, o: Sortie) {
+        if self.deploying.is_some() {
+            return;
+        }
+        let m = &MISSIONS[o.mission];
+        let (seed, bots, contract, kit) = (m.seed, m.bots(), m.contract, self.profile.loadout);
+        // The map's built on a worker thread, under a loading panel (a big
+        // one takes most of a second); the battle's drawn from the galaxy
+        // once it's in (`pump_deploy`).
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let game = new_match(
+                seed,
+                o.map_kind,
+                o.map_seed,
+                0,
+                0,
+                bots,
+                contract,
+                kit,
+                Some(&o.factions),
+            );
+            let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
+            log::debug!("battle map built in {:.0?}", started.elapsed());
+            let _ = tx.send((game, mesh));
+        });
+        let world = crate::galaxy::theater::system_name(o.system);
+        self.deploying = Some(Deploying {
+            sortie: o,
+            job: rx,
+            time: 0.0,
+            title: world,
+        });
+    }
+
+    /// A frame of deploying: once the battle's map is built, draw the
+    /// battle from the galaxy and go into it.
+    fn pump_deploy(&mut self, dt: f32) {
+        let Some(d) = &mut self.deploying else { return };
+        d.time += dt;
+        let (mut game, world) = match d.job.try_recv() {
+            Ok(built) => built,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.deploying = None;
+                return;
+            }
+        };
+        let o = self.deploying.take().expect("deploying").sortie;
         self.battle = None;
         let m = &MISSIONS[o.mission];
         (self.seed, self.map_kind, self.spawn, self.bots) = (m.seed, o.map_kind, 0, m.bots());
@@ -617,17 +654,10 @@ impl App {
         self.sortie = Some(o);
         // What happened to your company has been told by now.
         self.war.get().crew_news = None;
-        let mut game = new_match(
-            self.seed,
-            self.map_kind,
-            self.map_seed,
-            self.side,
-            self.spawn,
-            self.bots,
-            self.contract,
-            self.profile.loadout,
-            Some(&o.factions),
-        );
+        // The kit you'd picked by now, if it changed while the map was built.
+        let kit = self.profile.loadout;
+        game.set_player_hull(kit.0);
+        game.world.tanks[0].turret_kind = kit.1;
         game.known = Some(self.profile.known);
         game.crew = self.profile.company_name();
         let Some(b) = self.draw_battle(&mut game) else {
@@ -638,7 +668,7 @@ impl App {
         };
         self.in_war = true;
         self.battle = Some(b);
-        self.load(game);
+        self.load_built(game, world);
         self.mode = Mode::Playing;
         log::info!(
             "deployed: {} site {} ({}: {}, {}) for the {} against the {} (their gear {})",
@@ -654,14 +684,39 @@ impl App {
     }
 
     /// Put your company's theater on the missions screen, if it's showing
-    /// and isn't already up to date with the galaxy.
+    /// and isn't already up to date with the galaxy. It doesn't move the
+    /// war on: while there's no work for you, `pump_waiting` does, where
+    /// you can see it.
     fn sync_theater(&mut self) {
-        self.sync_theater_after(AWAIT_TICKS, false);
+        self.sync_theater_after(0, false);
+    }
+
+    /// The war goes on a slice of this frame while your company's between
+    /// contracts on the contract screen, until it has work (or a ship to
+    /// choose); the screen counts the ticks.
+    fn pump_waiting(&mut self) {
+        if self.mode != Mode::Menu || self.garage.is_open() || !self.menu.waiting() {
+            return;
+        }
+        let rank = self.profile.rank().level;
+        let Some(g) = self.war.try_get() else { return };
+        adopt_crew(g, self.profile.ship);
+        let start = Instant::now();
+        let mut left = u32::MAX;
+        let done = g.await_work_slice(None, rank, &mut left, || start.elapsed() >= WAIT_BUDGET);
+        let ticked = u32::MAX - left;
+        self.menu.waited(ticked);
+        if done {
+            self.sync_theater_after(0, ticked > 0);
+        } else if ticked > 0 {
+            // What ended meanwhile (your contract, say) shows now.
+            let ended = g.ended.clone();
+            self.menu.set_ended(&ended);
+        }
     }
 
     /// `sync_theater`, with the war going on at most `ticks` ticks for you
-    /// to have work. `changed`: the galaxy's changed already (on the way
-    /// back to this screen), so it's saved.
+    /// to have work. `changed`: the galaxy's changed already, so it's saved.
     fn sync_theater_after(&mut self, ticks: u32, changed: bool) {
         if !self.menu.wants_theater() {
             return;
@@ -695,6 +750,9 @@ impl App {
                 self.menu.remember(old);
             }
         }
+        // How the contract you were last shown ended, if it has.
+        let ended = self.war.get().ended.clone();
+        self.menu.set_ended(&ended);
         self.menu.set_choice(choice);
         self.menu.set_theater(t);
         self.keep_shown();
@@ -841,13 +899,11 @@ impl App {
         self.mode = Mode::Playing;
     }
 
-    /// A battle you left has played out and been settled: go where you
-    /// were going.
+    /// A battle you left has played out and been settled: on to its
+    /// debrief, like any battle's end, or close the game.
     fn left(&mut self) {
-        match self.leaving.take() {
-            Some(Leaving::Menu) => self.start_return(false),
-            Some(Leaving::Quit) => self.quit = true,
-            None => {}
+        if self.leaving.take() == Some(Leaving::Quit) {
+            self.quit = true;
         }
     }
 
@@ -877,27 +933,17 @@ impl App {
             missions,
             job: Some(rx),
             built: None,
-            ticks: AWAIT_TICKS,
-            waited: !missions,
-            crew: None,
-            ticked: false,
             time: 0.0,
             summary: self
-                .fought_at
+                .tick_summary
                 .take()
                 .filter(|_| missions)
-                .map(|(system, fought_at)| Summary {
-                    system,
-                    fought_at,
-                    view: None,
-                    going: false,
-                }),
+                .map(|view| Summary { view, going: false }),
         });
     }
 
     /// A frame of going back to the menu: take the menu's map if it's
-    /// built, let the war go on a slice of the frame while there's no
-    /// battle for you, and once both are done, go.
+    /// built, and once it is (and the tick summary's been read), go.
     fn pump_return(&mut self, dt: f32) {
         let Some(r) = &mut self.returning else { return };
         r.time += dt;
@@ -911,26 +957,8 @@ impl App {
                 Err(TryRecvError::Disconnected) => r.job = None,
             }
         }
-        if !r.waited
-            && let Some(g) = self.war.try_get()
-        {
-            adopt_crew(g, self.profile.ship);
-            let rank = self.profile.rank().level;
-            r.crew.get_or_insert(g.crew);
-            let (start, before) = (Instant::now(), r.ticks);
-            r.waited = g.await_work_slice(None, rank, &mut r.ticks, || {
-                start.elapsed() >= RETURN_BUDGET
-            });
-            r.ticked |= r.ticks != before;
-        }
-        if let Some(sum) = &mut r.summary
-            && (sum.view.is_none() || r.ticked)
-            && let Some(g) = self.war.try_get()
-        {
-            sum.view = Some(g.tick_summary(sum.system, sum.fought_at));
-        }
         let read = r.summary.as_ref().is_none_or(|s| s.going);
-        if !r.waited || r.job.is_some() || !read {
+        if r.job.is_some() || !read {
             return;
         }
         let Some(r) = self.returning.take() else {
@@ -944,9 +972,7 @@ impl App {
         self.back_to_menu_built(game, world);
         if r.missions {
             self.menu.screen = menu::Screen::Missions;
-            let changed = r.ticked || r.crew.is_some_and(|c| c != self.war.get().crew);
-            // The war's waited for you already: no more of it here.
-            self.sync_theater_after(0, changed);
+            self.sync_theater();
         }
     }
 
@@ -1139,6 +1165,8 @@ impl App {
                 self.pause_action(action, event_loop);
                 return;
             }
+            // Deploying: nothing to do but wait for the map.
+            Mode::Menu if self.deploying.is_some() => return,
             Mode::Menu => {
                 let Some(nav) = Self::nav(code, &binds) else {
                     return;
@@ -1481,8 +1509,20 @@ impl App {
             self.paid = true;
             log::info!("contract paid {} CR ({pay:?})", pay.total());
             if let Some(b) = self.battle.take() {
-                self.fought_at = Some((b.system, self.war.get().tick));
-                let settled = battle::conclude(self.war.get(), &b, &self.game);
+                let g = self.war.get();
+                let (tick, owners) = (g.tick, g.owners());
+                let site = b.site.map(|t| g.sites[t]);
+                let settled = battle::conclude(g, &b, &self.game);
+                self.tick_summary = Some(g.tick_summary(b.system, tick, &owners));
+                // What it did to the site it was for, for the debrief.
+                self.hud.debrief = site.map(|site| hud::WarResult {
+                    world: crate::galaxy::theater::planet_name(
+                        &crate::galaxy::theater::system_name(b.system),
+                        site.planet,
+                    ),
+                    site: crate::galaxy::theater::kind_name(site.kind),
+                    verdict: hud::Verdict::of(site.owner as usize == b.sides[0], settled.taken),
+                });
                 log::info!("{}", battle::describe(&b, &settled));
                 crate::galaxy::ledger::record(self.war.get(), &b, &self.game, &settled);
                 self.war.save();
@@ -1493,6 +1533,7 @@ impl App {
             self.left();
         }
         self.pump_return(dt);
+        self.pump_deploy(dt);
         laps.lap("sim");
 
         // Respawned (in the new kit) or round over: back to battle.
@@ -1509,6 +1550,7 @@ impl App {
             self.keep_shown();
             self.follow_backdrop(dt);
             self.sync_crew();
+            self.pump_waiting();
         }
         let queued = self.queued();
         let scores = self.held(Action::Scoreboard);
@@ -1604,14 +1646,21 @@ impl App {
                         };
                         ui.extend(menu.verts);
                         ui.extend(garage.verts);
-                        // The garage covers the menu panel while it's open.
-                        let mut hits = if self.garage.is_open() {
-                            Hits::new()
+                        // Deploying: the loading panel over it all, and
+                        // nothing to click.
+                        if let Some(d) = &self.deploying {
+                            ui.extend(hud::loading("DEPLOYING", &d.title, d.time, w, h));
+                            (ui, Hits::new())
                         } else {
-                            menu.hits.map(UiHit::Menu)
-                        };
-                        hits.extend(garage.hits.map(UiHit::Garage));
-                        (ui, hits)
+                            // The garage covers the menu panel while it's open.
+                            let mut hits = if self.garage.is_open() {
+                                Hits::new()
+                            } else {
+                                menu.hits.map(UiHit::Menu)
+                            };
+                            hits.extend(garage.hits.map(UiHit::Garage));
+                            (ui, hits)
+                        }
                     }
                     Mode::Playing if self.returning.is_some() => {
                         let ledger =
@@ -1622,11 +1671,12 @@ impl App {
                                 .verts,
                         );
                         let r = self.returning.as_ref().expect("returning");
-                        match r.summary.as_ref().and_then(|s| Some((s, s.view.as_ref()?))) {
+                        match &r.summary {
                             // The tick summary, the contract screen loading behind it (#475).
-                            Some((sum, view)) => {
+                            Some(sum) => {
+                                let view = &sum.view;
                                 let state = hud::SummaryState {
-                                    loading: !r.waited || r.job.is_some(),
+                                    loading: r.job.is_some(),
                                     going: sum.going,
                                     time: r.time,
                                     hover: self.hud.hover,
@@ -1636,7 +1686,7 @@ impl App {
                                 (ui, layer.hits.map(UiHit::Hud))
                             }
                             None => {
-                                ui.extend(hud::returning(r.missions, r.time, w, h));
+                                ui.extend(hud::loading("ROUND OVER", "LOADING", r.time, w, h));
                                 (ui, Hits::new())
                             }
                         }
