@@ -1351,3 +1351,144 @@ fn realms_pay_and_train_pilots() {
     assert!(r.pilots <= 10 + rules.train, "{}", r.pilots);
     assert!(r.crystals < 0.1);
 }
+
+/// What contracts do for the realms that sign them, against copies of the
+/// galaxy where they didn't; and what ones refused as lost would have.
+#[test]
+#[ignore = "a tuning report, slow: run by hand in release"]
+fn judge_contracts() {
+    // A realm's own worth: a site's output over the horizon, its crystal,
+    // less its debts.
+    let worth = |g: &Galaxy, r: u32| {
+        let realm = &g.realms[r as usize];
+        let mut x = realm.crystals as f64;
+        x -= g
+            .debts
+            .iter()
+            .filter(|d| d.realm == r)
+            .map(|d| d.crystals as f64)
+            .sum::<f64>();
+        for sys in &g.systems {
+            for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
+                if sys.realms[site.owner as usize] == r
+                    && let SiteKind::Production { hulls, crystals } = site.kind
+                {
+                    x += ((crystals + hulls * g.rules.hull_price) * g.rules.merc_horizon) as f64;
+                }
+            }
+        }
+        x
+    };
+    let here = |g: &Galaxy, t: u32, f: usize| {
+        let s = &g.systems[t as usize];
+        s.held[f] as f64 / (s.sites.1 - s.sites.0).max(1) as f64
+    };
+    // Signed (attacks, defenses), then refused as lost (likewise): n, site
+    // share here gained, its variance, realm worth gained, its variance.
+    let mut out = [[0.0f64; 5]; 4];
+    let after = 30;
+    for seed in [1, 2] {
+        let mut g = Galaxy::warmed_by(seed, 300);
+        for step in 0..60 {
+            let pre = g.clone();
+            g.lost_calls.clear();
+            g.step();
+            let mut jobs: Vec<(usize, u32, u32, usize)> = g
+                .companies
+                .iter()
+                .filter_map(|c| c.contract.filter(|k| k.signed == g.tick))
+                .take(3)
+                .map(|k| (k.defend as usize, k.realm, k.target, k.side as usize))
+                .collect();
+            let lost = g.lost_calls.clone();
+            for i in 0..2.min(lost.len()) {
+                let (r, t, f, d, _) = lost[(step * 37 + i * 101) % lost.len()];
+                jobs.push((2 + d as usize, r, t, f));
+            }
+            for (kind, r, t, f) in jobs {
+                let (mut a, mut b) = (pre.clone(), pre.clone());
+                if kind < 2 {
+                    b.ban = Some((r, t));
+                } else {
+                    a.force = Some((r, t));
+                    b.ban = Some((r, t));
+                }
+                a.step();
+                b.step();
+                let signed = a.companies.iter().any(|c| {
+                    c.contract
+                        .is_some_and(|k| k.realm == r && k.target == t && k.signed == a.tick)
+                });
+                if !signed {
+                    continue;
+                }
+                if kind == 2 && out[2][0] < 14.0 {
+                    let k = a
+                        .companies
+                        .iter()
+                        .find_map(|c| c.contract.filter(|k| k.realm == r && k.target == t))
+                        .unwrap();
+                    let s = t as usize;
+                    let (mut x, mut y) = (a.clone(), b.clone());
+                    let mut line = format!(
+                        "TR sys {t} f {f} mercs {} pre hulls {:?} held {:?} expected {:.0}/{:.0} rate {:.1} up {:.0} |",
+                        k.committed,
+                        pre.systems[s].hulls,
+                        pre.systems[s].held,
+                        k.expected,
+                        k.worth,
+                        k.rate,
+                        k.upfront
+                    );
+                    for _ in 0..6 {
+                        line += &format!(
+                            " A{:?} fire {:.0} B{:?}",
+                            x.systems[s].hulls,
+                            x.firing(s, f),
+                            y.systems[s].hulls
+                        );
+                        x.step();
+                        y.step();
+                    }
+                    println!(
+                        "{line} end A held {:?} B held {:?}",
+                        x.systems[s].held, y.systems[s].held
+                    );
+                }
+                a.ban = b.ban;
+                a.force = None;
+                for _ in 0..after {
+                    a.step();
+                    b.step();
+                }
+                let (x, y) = (here(&a, t, f) - here(&b, t, f), worth(&a, r) - worth(&b, r));
+                let o = &mut out[kind];
+                o[0] += 1.0;
+                o[1] += x;
+                o[2] += x * x;
+                o[3] += y;
+                o[4] += y * y;
+            }
+        }
+    }
+    for (name, o) in [
+        "signed attacks",
+        "signed defenses",
+        "refused attacks",
+        "refused defenses",
+    ]
+    .iter()
+    .zip(out)
+    {
+        let n = o[0].max(1.0);
+        let se = |s: f64, q: f64| ((q / n - (s / n).powi(2)).max(0.0) / n).sqrt();
+        println!(
+            "CF {name}: {} of them; share of the world {:+.3} (se {:.3}); realm worth {:+.1} (se {:.1})",
+            o[0],
+            o[1] / n,
+            se(o[1], o[2]),
+            o[3] / n,
+            se(o[3], o[4]),
+        );
+    }
+}

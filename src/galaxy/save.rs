@@ -193,6 +193,8 @@ struct SavedContract {
     rate: f32,
     #[serde(default)]
     billed: f32,
+    #[serde(default)]
+    wage: f32,
     #[serde(alias = "max_loss")]
     committed: f32,
     field: f32,
@@ -220,6 +222,7 @@ impl SavedContract {
             upfront: k.upfront,
             rate: k.rate,
             billed: k.billed,
+            wage: k.wage,
             committed: k.committed as f32,
             field: k.field as f32,
             lost: k.lost as f32,
@@ -240,6 +243,7 @@ impl SavedContract {
             upfront: self.upfront,
             rate: self.rate,
             billed: self.billed,
+            wage: self.wage,
             committed: whole(self.committed),
             field: whole(self.field),
             lost: whole(self.lost),

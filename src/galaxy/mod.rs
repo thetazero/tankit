@@ -219,9 +219,6 @@ pub struct Rules {
     /// A company idle this many ticks sails to the nearest war to look for
     /// work (`Galaxy::seek_work`).
     pub merc_idle: u32,
-    /// ... and one idle this many, to the nearest war if it's nowhere
-    /// wanted.
-    pub merc_roam: u32,
     /// A realm pays for a world at most what it turns out over this many
     /// ticks (crystal, and hulls at `hull_price`).
     pub merc_horizon: f32,
@@ -304,7 +301,6 @@ impl Default for Rules {
             merc_term: 30,
             merc_range: 1200.0,
             merc_idle: 30,
-            merc_roam: 120,
             merc_horizon: 300.0,
             merc_split: 1000.0,
             merc_join: 40.0,
@@ -424,7 +420,17 @@ impl System {
 }
 
 /// The whole war.
+#[cfg_attr(test, derive(Clone))]
 pub struct Galaxy {
+    /// Tests: a hire (realm, system) forbidden, or forced through.
+    #[cfg(test)]
+    pub(crate) ban: Option<(u32, u32)>,
+    #[cfg(test)]
+    pub(crate) force: Option<(u32, u32)>,
+    /// Tests: hires refused as lost even with mercs (realm, system, side,
+    /// defend, worth).
+    #[cfg(test)]
+    pub(crate) lost_calls: Vec<(u32, u32, usize, bool, f32)>,
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
     pub systems: Vec<System>,
@@ -482,6 +488,10 @@ pub struct Galaxy {
     /// Ended contracts waiting for their realms to look back on, once
     /// their term is up (not saved: a few lessons lost).
     pub(crate) reviews: Vec<merc::Contract>,
+    /// Scratch: realms' pay, lowest first, and the pilots on no more than
+    /// it, as of `pays_tick`.
+    pub(crate) pays: Vec<(f32, f32)>,
+    pub(crate) pays_tick: u64,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
     pub crew: Option<u32>,
@@ -664,6 +674,12 @@ impl Galaxy {
             books: Books::default(),
             debts: Vec::new(),
             next_company: 0,
+            #[cfg(test)]
+            ban: None,
+            #[cfg(test)]
+            force: None,
+            #[cfg(test)]
+            lost_calls: Vec::new(),
             next_pilot: 1,
             you: Pilot::rookie(1),
             owed_you: Vec::new(),
@@ -676,6 +692,8 @@ impl Galaxy {
             employment: 0.5,
             employed: 0,
             reviews: Vec::new(),
+            pays: Vec::new(),
+            pays_tick: 0,
             crew: None,
             own: None,
             ended: Vec::new(),

@@ -1082,6 +1082,7 @@ mod merc_tests {
             upfront: 0.0,
             rate: 0.0,
             billed: 0.0,
+            wage: 0.0,
             committed: mercs,
             field: mercs,
             lost: 0,
