@@ -500,6 +500,11 @@ pub struct Galaxy {
     /// Scratch: realms' pay, lowest first, and the pilots on no more than
     /// it, as of `pays_tick`.
     pub(crate) pays: Vec<(f32, f32)>,
+    /// What realms have seen of fights alike (`Galaxy::alike`): how many,
+    /// and the shares of the worlds held, all told. And those not yet
+    /// looked back on.
+    pub(crate) memory: Vec<(f32, f32)>,
+    pub(crate) lessons: Vec<merc::Lesson>,
     pub(crate) pays_tick: u64,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
@@ -710,6 +715,8 @@ impl Galaxy {
             employed: 0,
             reviews: Vec::new(),
             pays: Vec::new(),
+            memory: vec![(0.0, 0.0); merc::MEMORY],
+            lessons: Vec::new(),
             pays_tick: 0,
             crew: None,
             own: None,

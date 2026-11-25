@@ -85,6 +85,28 @@ const RATE_FADE: f32 = 0.05;
 /// Share of the word of unmet work at a system forgotten each tick.
 const UNMET_FADE: f32 = 0.1;
 
+/// Fights alike, as realms remember them: attack or defense, by the odds in
+/// hulls and by how many of its own fire.
+pub const ODDS: usize = 9;
+pub const FIRES: usize = 5;
+pub const MEMORY: usize = 2 * ODDS * FIRES;
+
+/// Fights a realm takes the forecast's word as being worth, before it's
+/// seen any like it.
+const PRIOR: f32 = 4.0;
+
+/// A fight a realm looked for help with, to look back on.
+#[derive(Clone, Copy, Debug)]
+pub struct Lesson {
+    pub cell: usize,
+    pub system: u32,
+    pub side: u8,
+    pub realm: u32,
+    pub defend: bool,
+    pub held: u8,
+    pub due: u64,
+}
+
 /// Times a realm plays a fight through to guess how it'll go.
 const ROLLS: usize = 8;
 
@@ -857,6 +879,54 @@ impl Galaxy {
         }
     }
 
+    /// Which fights this one's like (`memory`): side `f` with `ours` hulls
+    /// in system `t`, `firing` of them at once.
+    fn alike(&self, t: usize, f: usize, ours: f32, firing: f32, defend: bool) -> usize {
+        let enemy: f32 = (0..SIDES)
+            .filter(|&g| g != f)
+            .map(|g| self.systems[t].hulls[g] as f32)
+            .sum();
+        let odds = ((ours + 1.0) / (enemy + 1.0)).log2() * 1.5 + ODDS as f32 / 2.0;
+        let odds = (odds.max(0.0) as usize).min(ODDS - 1);
+        let fire = (firing / self.rules.frontage * (FIRES - 1) as f32).round();
+        let fire = (fire.max(0.0) as usize).min(FIRES - 1);
+        (defend as usize * ODDS + odds) * FIRES + fire
+    }
+
+    /// What's come of fights like `cell`: the share of the world held a term
+    /// on, starting from what `forecast` says until there's evidence.
+    fn remembered(&self, cell: usize, forecast: f32) -> f32 {
+        let (n, sum) = self.memory[cell];
+        (sum + PRIOR * forecast) / (n + PRIOR)
+    }
+
+    /// Fights whose term is up, looked back on.
+    fn learn(&mut self) {
+        let tick = self.tick;
+        let (due, wait): (Vec<Lesson>, Vec<Lesson>) = std::mem::take(&mut self.lessons)
+            .into_iter()
+            .partition(|l| tick >= l.due);
+        self.lessons = wait;
+        for l in due {
+            let sys = &self.systems[l.system as usize];
+            let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
+            let (now, then) = (sys.held[l.side as usize] as f32, l.held as f32);
+            let got = if l.defend {
+                now / then.max(1.0)
+            } else {
+                (now - then) / (total - then).max(1.0)
+            };
+            let m = &mut self.memory[l.cell];
+            m.0 += 1.0;
+            m.1 += got.clamp(0.0, 1.0);
+            // Old fights fade.
+            if m.0 > 400.0 {
+                m.0 *= 0.5;
+                m.1 *= 0.5;
+            }
+        }
+    }
+
     /// The fight for system `t` played forward by the galaxy's own battle
     /// math, without the dice: side `f` with `own` hulls and `mercs` hired
     /// ones, against everyone else there and what they can spare nearby,
@@ -1124,15 +1194,35 @@ impl Galaxy {
 
         let (mut able, mut affordable) = (false, false);
         let (mut most, mut sale) = (0, 0u32);
-        let mut best: Option<(Quote, f32, f32, f32, Vec<Offer>, f32)> = None;
+        let mut best: Option<(Quote, f32, f32, f32, Vec<Offer>, f32, usize)> = None;
         let pay = self.realm_pay();
         // Each company quotes for a few sizes of the job; the realm takes
         // whichever does it the most good for its price, if any does.
         let alone = self.forecast(t, f, r, own, 0.0, 0.0, 0.0, defend).0;
+        let front = self.rules.frontage;
+        let flown = {
+            let here = &self.realms[r as usize];
+            let fights = self.war_hulls.get(r as usize).copied().unwrap_or(0) as f32 + own;
+            (here.pilots as f32 * own / fights.max(1.0))
+                .min(own)
+                .min(front)
+        };
+        let alone_cell = self.alike(t, f, own, flown, defend);
+        let alone = self.remembered(alone_cell, alone);
+        let mut lesson = Lesson {
+            cell: alone_cell,
+            system: t as u32,
+            side: f as u8,
+            realm: r,
+            defend,
+            held: self.systems[t].held[f],
+            due: self.tick + self.rules.merc_term as u64,
+        };
+
         for c in near {
             let offers = self.offers(t, f, r, self.companies[c].at as usize);
             sale = sale.max(offers.iter().map(|o| o.hulls).sum());
-            for share in [0.25, 0.5, 0.75, 1.0] {
+            for share in [0.05, 0.1, 0.25, 0.5, 1.0] {
                 let size = ((need as f32 * share).ceil() as u32).max(MIN_SEND);
                 let quote = self.quote(c, size, &offers, pos, pay);
                 most = most.max(quote.hulls);
@@ -1152,10 +1242,19 @@ impl Galaxy {
                     quote.upfront.min(purse),
                     defend,
                 );
+                let cell = self.alike(
+                    t,
+                    f,
+                    own + quote.hulls as f32,
+                    (flown + quote.crew.min(quote.hulls) as f32).min(front),
+                    defend,
+                );
+                let with = self.remembered(cell, with);
+
                 // Discounted by how forecasts have lately come out: realms
                 // learn from what contracts got them, and how long they ran.
                 let ticks = raw_ticks * self.trust_ticks;
-                let gain = (with - alone) * self.trust;
+                let gain = with - alone;
                 // A realm that can't pay up front can have the company front
                 // it, if the company can: paid back by the tick it expects
                 // the work to take, with the company's margin on it again.
@@ -1218,13 +1317,24 @@ impl Galaxy {
                         raw_ticks,
                         offers.clone(),
                         financed,
+                        cell,
                     ));
                 }
             }
         }
         #[cfg(test)]
         let alone_guess = alone;
-        let Some((q, _, expected, expected_ticks, offers, financed)) = best else {
+        if !self
+            .lessons
+            .iter()
+            .any(|l| l.realm == r && l.system == t as u32)
+        {
+            if let Some(b) = &best {
+                lesson.cell = b.6;
+            }
+            self.lessons.push(lesson);
+        }
+        let Some((q, _, expected, expected_ticks, offers, financed, _)) = best else {
             if !able {
                 self.books.none_able += 1;
                 self.books.able_need += need as f64;
@@ -1481,6 +1591,7 @@ impl Galaxy {
     pub(crate) fn mercs(&mut self) {
         let wear = self.rules.wear;
         self.review();
+        self.learn();
         self.collect_debts();
         self.pay_crews();
         self.pilot_market();

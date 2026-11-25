@@ -1388,7 +1388,7 @@ fn judge_contracts() {
     let mut out = [[0.0f64; 5]; 4];
     let mut marks = [[0.0f64; 5]; 4];
     let after = 30;
-    for seed in [1, 2] {
+    for seed in [21, 22] {
         let mut g = Galaxy::warmed_by(seed, 300);
         for step in 0..150 {
             let pre = g.clone();
@@ -1614,5 +1614,52 @@ fn judge_could_pay() {
                 se
             );
         }
+    }
+}
+
+/// The share of systems the realms that hire mercs hold, from start to end,
+/// against the same galaxy with no companies to hire.
+#[test]
+#[ignore = "a tuning report, slow: run by hand in release"]
+fn judge_arms() {
+    let hiring = |g: &Galaxy| {
+        let all: u32 = g.living().map(|(_, r)| r.systems).sum();
+        let hire: u32 = g
+            .living()
+            .filter(|(_, r)| r.hires)
+            .map(|(_, r)| r.systems)
+            .sum();
+        hire as f64 / all.max(1) as f64 * 100.0
+    };
+    let seeds: Vec<u64> = std::env::var("JUDGE_SEEDS")
+        .unwrap_or("31,32,33,34".into())
+        .split(',')
+        .filter_map(|x| x.parse().ok())
+        .collect();
+    for seed in seeds {
+        let mut moved = [0.0; 2];
+        for (i, m) in moved.iter_mut().enumerate() {
+            let rules = Rules {
+                companies: if i == 0 {
+                    Rules::default().companies
+                } else {
+                    0
+                },
+                ..Rules::default()
+            };
+            let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, rules);
+            g.step();
+            let start = hiring(&g);
+            while g.tick < 3000 {
+                g.step();
+            }
+            *m = hiring(&g) - start;
+        }
+        println!(
+            "ARMS seed {seed}: with mercs {:+.2}, without {:+.2}, difference {:+.2}",
+            moved[0],
+            moved[1],
+            moved[0] - moved[1]
+        );
     }
 }
