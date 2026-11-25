@@ -1826,8 +1826,22 @@ impl Match {
                 .collect();
             // Stable: equally near ones keep their order, as before.
             candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let mut best: Option<(f32, Vec3)> = None;
-            for (d, j) in candidates {
+            // A friend anywhere ahead within reach: only then is it worth
+            // flying the shot out to see that it won't land on them.
+            let allies_near = (0..n).any(|j| {
+                if j == i
+                    || !self.fighters[j].alive
+                    || self.fighters[j].team != self.fighters[i].team
+                {
+                    return false;
+                }
+                let to = self.world.tanks[j].pos - eye;
+                let flat = Vec2::new(to.x, to.z);
+                flat.length() <= g.range() + 10.0
+                    && (flat.length() < 8.0 || wrap_angle(yaw_of(flat) - yaw).abs() <= 0.5)
+            });
+            let mut best: Option<(f32, f32)> = None;
+            for (_, j) in candidates {
                 // Only where the gun can see: walls and hills still hide,
                 // and so does a teammate (the shot would only stop on them).
                 let seen = |aim: Vec3| {
@@ -1857,30 +1871,47 @@ impl Match {
                     .into_iter()
                     .flatten()
                     .find(|&p| seen(p));
-                if let Some(aim) = aim {
-                    best = Some((d, aim));
-                    break;
-                }
-            }
-            let t = &mut self.world.tanks[i];
-            let (pitch, side) = best.map_or((0.0, 0.0), |(_, aim)| {
+                let Some(aim) = aim else { continue };
                 let to = aim - eye;
                 // Never zero: the aim point can sit right over or under the
                 // gun (a tank pressed up against it), and the lift would be NaN.
-                let d = Vec2::new(to.x, to.z).length().max(0.5);
+                let flat = Vec2::new(to.x, to.z).length().max(0.5);
                 // Lift for the shot's drop over the flight time.
                 let t_flight = to.length() / g.speed();
-                let lift = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / d).atan();
+                let lift = ((to.y + 0.5 * g.gravity() * t_flight * t_flight) / flat).atan();
                 let hull_pitch = t.turret_dir().y.clamp(-1.0, 1.0).asin();
                 let side = wrap_angle(yaw_of(Vec2::new(to.x, to.z)) - yaw);
-                (
+                let lay = (
                     (lift - hull_pitch).clamp(-0.15, 0.3),
                     side.clamp(-ASSIST_NUDGE, ASSIST_NUDGE),
-                )
-            });
+                );
+                // Laid there, the shot must not land on a friend: the gun
+                // may only bend part way (the nudge is small), or the shot
+                // may graze past the enemy, onto a friend beside or beyond.
+                if allies_near && self.lands_on_ally(i, lay.0, lay.1) {
+                    continue;
+                }
+                best = Some(lay);
+                break;
+            }
+            let (pitch, side) = best.unwrap_or((0.0, 0.0));
+            let t = &mut self.world.tanks[i];
             let k = 1.0 - (-DT * 12.0).exp();
             t.gun_pitch += (pitch - t.gun_pitch) * k;
             t.gun_yaw += (side - t.gun_yaw) * k;
+            // Easing from one lay to the next can sweep the gun across a
+            // friend: then it straightens at once, unless it would be on
+            // them straight too (the turret itself points at them).
+            let (p, s) = (t.gun_pitch, t.gun_yaw);
+            if allies_near
+                && (p != 0.0 || s != 0.0)
+                && self.lands_on_ally(i, p, s)
+                && !self.lands_on_ally(i, 0.0, 0.0)
+            {
+                let t = &mut self.world.tanks[i];
+                t.gun_pitch = 0.0;
+                t.gun_yaw = 0.0;
+            }
         }
     }
 
@@ -3074,6 +3105,14 @@ impl Match {
     /// crosshair marks. `t` is the player's tank (it reaches as far as their
     /// upgrades).
     pub fn aim_landing(&self, t: &Tank) -> Vec3 {
+        self.landing(0, t).0
+    }
+
+    /// Where a shot from tank `i`'s gun, laid as `t` (tank `i` itself, or a
+    /// copy of it with the gun laid another way), would land if it fired
+    /// now, as [`Match::aim_landing`] has it, and the tank it would strike
+    /// there, if any.
+    fn landing(&self, i: usize, t: &Tank) -> (Vec3, Option<usize>) {
         let from = self.clear_muzzle(t);
         let ray = |from: Vec3, dir: Vec3, len: f32| {
             self.world
@@ -3084,18 +3123,18 @@ impl Match {
                     true,
                     QueryFilter::default().exclude_rigid_body(t.body),
                 )
-                .map(|(_, toi)| from + dir * toi)
+                .map(|(c, toi)| (from + dir * toi, self.world.tank_of(c)))
         };
-        let spec = match self.fighters[0].levels.gun(t.turret_kind).action {
+        let spec = match self.fighters[i].levels.gun(t.turret_kind).action {
             Action::Beam { range, .. } => {
-                let dir = self.beam_assist(0, from, t.gun_dir(), range);
-                return ray(from, dir, range).unwrap_or(from + dir * range);
+                let dir = self.beam_assist(i, from, t.gun_dir(), range);
+                return ray(from, dir, range).unwrap_or((from + dir * range, None));
             }
             Action::Shell(spec) => spec,
         };
         if spec.instant {
             let reach = spec.speed * spec.life;
-            return ray(from, t.gun_dir(), reach).unwrap_or(from + t.gun_dir() * reach);
+            return ray(from, t.gun_dir(), reach).unwrap_or((from + t.gun_dir() * reach, None));
         }
         // Fly it as `fly_shells` would, a step at a time.
         let (mut pos, mut vel) = (from, t.gun_dir() * spec.speed);
@@ -3107,18 +3146,31 @@ impl Match {
                 return at;
             }
             pos += step;
-            // A toll strikes whatever it passes close to.
+            // A toll strikes whatever enemy it passes close to.
             if spec.look == Look::Toll
-                && let Some(at) = (1..self.world.tanks.len())
+                && let Some(at) = (0..self.world.tanks.len())
                     .filter(|&j| {
-                        self.fighters[j].alive && self.fighters[j].team != self.fighters[0].team
+                        j != i
+                            && self.fighters[j].alive
+                            && self.fighters[j].team != self.fighters[i].team
                     })
-                    .find_map(|j| self.within(pos, j, TOLL_RADIUS))
+                    .find_map(|j| self.within(pos, j, TOLL_RADIUS).map(|at| (at, Some(j))))
             {
                 return at;
             }
         }
-        pos
+        (pos, None)
+    }
+
+    /// Whether tank `i`'s shot, with its gun bent `pitch` and `side` in its
+    /// mantlet, would land on a teammate first.
+    fn lands_on_ally(&self, i: usize, pitch: f32, side: f32) -> bool {
+        let mut t = self.world.tanks[i].clone();
+        t.gun_pitch = pitch;
+        t.gun_yaw = side;
+        self.landing(i, &t)
+            .1
+            .is_some_and(|k| k != i && self.fighters[k].team == self.fighters[i].team)
     }
 
     /// The tanks to draw this frame: interpolated, with wrecks charred and
@@ -4637,6 +4689,55 @@ mod tests {
                 "{k:?}: the crosshair sits on the enemy through a friend"
             );
         }
+    }
+
+    /// The assist never lays a gun so its shot lands on a friend (#185),
+    /// on any turret: not by bending only part way toward an enemy off to
+    /// the side (the nudge is small) with a friend on that line, not by a
+    /// shot grazing past the enemy into a friend beside or beyond it, and
+    /// not as the gun eases from one lay to the next. Checked every few
+    /// frames over a spread of friends around the enemy, against what the
+    /// gun would hit laid straight down the turret (which may well be the
+    /// friend: then the turret itself points at them).
+    #[test]
+    fn the_assist_never_lays_a_shot_on_a_friend() {
+        let mut bad = Vec::new();
+        for k in TurretKind::ALL {
+            let dist = (gun(k).range() * 0.5).min(40.0);
+            for off in [0.04f32, 0.08, -0.05] {
+                for ahead in [0.6f32, 0.8, 0.9, 1.0, 1.1] {
+                    for aside in -4..=4 {
+                        let mut m = duel(k, dist);
+                        let friend = add_friend(&mut m, dist * ahead, aside as f32);
+                        m.world.tanks[0].turret_rel += off;
+                        for step in 0..45 {
+                            m.step(Command::default(), false);
+                            if step % 5 != 4 {
+                                continue;
+                            }
+                            let laid = m.world.tanks[0].clone();
+                            if m.landing(0, &laid).1 != Some(friend) {
+                                continue;
+                            }
+                            let mut straight = laid.clone();
+                            straight.gun_pitch = 0.0;
+                            straight.gun_yaw = 0.0;
+                            if m.landing(0, &straight).1 != Some(friend) {
+                                bad.push(format!(
+                                    "{k:?} turned {off} off, friend {ahead}x ahead {aside} m aside, frame {step}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "the assist laid the shot on a friend:\n{}",
+            bad.join("\n")
+        );
     }
 
     /// Up and down it still lays the gun on: a tank on a rise above the
