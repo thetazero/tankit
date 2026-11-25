@@ -58,14 +58,25 @@ use crate::sim::{HullKind, TurretKind};
 /// seats. They fly remotely, so a hull lost never costs one.
 pub const PILOTS: usize = 6;
 
-/// One of a company's pilots: what they've reverse-engineered of each
-/// part, and so the gear they fly (#438). You're one, in yours.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// A pilot (#505): who they are, and what they've reverse-engineered of
+/// each part, and so the gear they fly (#438). A company's fly its hulls;
+/// you're one too (`Galaxy::you`), aboard yours (`Galaxy::crew`).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pilot {
+    /// Their own name: never reused (`Galaxy::new_pilot`).
+    pub id: u32,
     pub known: crate::economy::Known,
 }
 
 impl Pilot {
+    /// A pilot who knows nothing yet: they fly the Company's starter kit.
+    pub fn rookie(id: u32) -> Pilot {
+        Pilot {
+            id,
+            known: crate::economy::Known::default(),
+        }
+    }
+
     /// The gear they fly: every part built to what they know of it.
     pub fn levels(&self) -> crate::economy::Levels {
         self.known.levels()
@@ -252,9 +263,23 @@ impl Galaxy {
             founded: self.tick,
             idle_since: self.tick,
             id: self.next_company,
-            pilots: vec![Pilot::default(); PILOTS],
+            pilots: Vec::new(),
         });
-        self.companies.len() - 1
+        let pilots = (0..PILOTS).map(|_| self.new_pilot()).collect();
+        let c = self.companies.len() - 1;
+        self.companies[c].pilots = pilots;
+        c
+    }
+
+    /// What you know of each part (the profile's), kept on your pilot.
+    pub fn know(&mut self, known: crate::economy::Known) {
+        self.you.known = known;
+    }
+
+    /// A new pilot, a rookie, with an id never used before.
+    pub(crate) fn new_pilot(&mut self) -> Pilot {
+        self.next_pilot += 1;
+        Pilot::rookie(self.next_pilot)
     }
 
     /// Crystal to move a ship carrying `hulls` hulls `d` light years.
@@ -626,8 +651,12 @@ impl Galaxy {
                 for (i, &p) in co.pilots.iter().enumerate() {
                     if i % 2 == 0 { keep.push(p) } else { go.push(p) }
                 }
-                keep.resize(PILOTS, Pilot::default());
-                go.resize(PILOTS, Pilot::default());
+                while keep.len() < PILOTS {
+                    keep.push(self.new_pilot());
+                }
+                while go.len() < PILOTS {
+                    go.push(self.new_pilot());
+                }
                 self.companies[c].pilots = keep;
                 self.companies[new].pilots = go;
                 self.companies[new].margin = co.margin;
@@ -780,21 +809,21 @@ mod tests {
     #[test]
     fn pilots_drive_what_they_know_best() {
         use crate::economy::Known;
-        let fresh = Pilot::default();
+        let fresh = Pilot::rookie(1);
         assert_eq!(fresh.kit(), (HullKind::Kataphrakt, TurretKind::Kontos));
         assert_eq!(fresh.level(), 0.0);
         // A Vigil known to T0.3 beats the starter hull at T0.
         let mut known = Known::default();
         known.set(Part::Hull(HullKind::Vigil), 3.4);
         known.set(Part::Turret(TurretKind::Hymn), 0.9);
-        let p = Pilot { known };
+        let p = Pilot { id: 1, known };
         assert_eq!(p.kit(), (HullKind::Vigil, TurretKind::Hymn));
         assert_eq!(p.level(), 1.5);
         // On a tie in whole steps, the one known furthest into the next.
         known.set(Part::Turret(TurretKind::Kontos), 2.0);
         known.set(Part::Turret(TurretKind::Knell), 2.7);
-        assert_eq!(Pilot { known }.kit().1, TurretKind::Knell);
+        assert_eq!(Pilot { id: 1, known }.kit().1, TurretKind::Knell);
         known.set(Part::Hull(HullKind::Gravis), 3.8);
-        assert_eq!(Pilot { known }.kit().0, HullKind::Gravis);
+        assert_eq!(Pilot { id: 1, known }.kit().0, HullKind::Gravis);
     }
 }

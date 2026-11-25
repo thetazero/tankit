@@ -63,10 +63,12 @@ const FAST_FORWARD_CHUNK: usize = 30;
 const LEAVING_BUDGET: std::time::Duration = std::time::Duration::from_millis(30);
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
+/// The galaxy's you is the profile's (#505): what you know of each part.
 /// A galaxy saved before it kept your company (#350) takes the profile's.
-fn adopt_crew(g: &mut crate::galaxy::Galaxy, profile: Option<u32>) {
+fn adopt(g: &mut crate::galaxy::Galaxy, profile: &crate::profile::Profile) {
+    g.know(profile.known);
     if g.crew.is_none() {
-        g.crew = profile;
+        g.crew = profile.ship;
     }
 }
 
@@ -700,7 +702,7 @@ impl App {
         }
         let rank = self.profile.rank().level;
         let Some(g) = self.war.try_get() else { return };
-        adopt_crew(g, self.profile.ship);
+        adopt(g, &self.profile);
         let start = Instant::now();
         let mut left = u32::MAX;
         let done = g.await_work_slice(None, rank, &mut left, || start.elapsed() >= WAIT_BUDGET);
@@ -723,7 +725,7 @@ impl App {
         }
         let rank = self.profile.rank().level;
         let g = self.war.get();
-        adopt_crew(g, self.profile.ship);
+        adopt(g, &self.profile);
         let choice = g.crew_choice();
         let shown = self.menu.choice().map(|c| c.choice) == choice.as_ref().map(|c| c.choice);
         if shown
@@ -772,7 +774,7 @@ impl App {
         }
         let rank = self.profile.rank().level;
         let g = self.war.get();
-        adopt_crew(g, self.profile.ship);
+        adopt(g, &self.profile);
         self.menu.set_ships(g.other_ships());
         // A ship's contract, previewed before you sign on (#453).
         if let Some(id) = self.menu.wants_contract() {
@@ -809,7 +811,7 @@ impl App {
     /// once it's loaded; a new pilot joins one as soon as there's one at work.
     fn sync_crew(&mut self) {
         let Some(g) = self.war.try_get() else { return };
-        adopt_crew(g, self.profile.ship);
+        adopt(g, &self.profile);
         let before = g.crew;
         g.enlist(None);
         let crew = g.crew;

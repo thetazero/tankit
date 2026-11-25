@@ -89,7 +89,7 @@ use glam::{Vec2, Vec3};
 
 use crate::faction::Faction;
 use crate::rng::Rng;
-use merc::{Books, Company, Debt};
+use merc::{Books, Company, Debt, Pilot};
 use realm::{NONE, Realm};
 
 /// The four warring sides (the Company holds no ground).
@@ -419,6 +419,11 @@ pub struct Galaxy {
     pub debts: Vec<Debt>,
     /// Companies founded, all told (each one's `id`).
     pub(crate) next_company: u32,
+    /// Pilots named, all told (each one's `Pilot::id`, #505).
+    pub(crate) next_pilot: u32,
+    /// You, a pilot like any (#505): what you know is the profile's, kept
+    /// here by the game (`Galaxy::know`).
+    pub you: Pilot,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
     pub crew: Option<u32>,
@@ -594,6 +599,8 @@ impl Galaxy {
             books: Books::default(),
             debts: Vec::new(),
             next_company: 0,
+            next_pilot: 1,
+            you: Pilot::rookie(1),
             crew: None,
             own: None,
             ended: Vec::new(),
@@ -1245,7 +1252,8 @@ impl Galaxy {
             };
             let p = self.rng.index(self.companies[c].pilots.len());
             let part = parts[self.rng.index(parts.len())];
-            out.push((self.companies[c].id, p, part, level));
+            let co = &self.companies[c];
+            out.push((co.id, co.pilots[p].id, part, level));
         }
         out
     }

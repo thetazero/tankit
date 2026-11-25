@@ -94,16 +94,16 @@ pub struct Battle {
     /// galaxy's picks, for bots-only rounds).
     pub crew: Option<u32>,
     /// The merc pilots flying the Company's tanks (#438): (fighter, the
-    /// company's `Company::id`, which of its pilots). Set when it begins.
-    pub pilots: Vec<(usize, u32, usize)>,
+    /// company's `Company::id`, the pilot's `Pilot::id`). Set when it begins.
+    pub pilots: Vec<(usize, u32, u32)>,
     /// What it started with, for the battle log (#494): set for a battle
     /// you play (`ledger::Setup::of`), none for the others.
     pub setup: Option<Box<super::ledger::Setup>>,
 }
 
-/// A wreck a merc pilot takes apart (#438): (`Company::id`, which of its
-/// pilots, part, level).
-pub type Scrap = (u32, usize, crate::economy::Part, u8);
+/// A wreck a merc pilot takes apart (#438): (`Company::id`, the pilot's
+/// `Pilot::id`, part, level).
+pub type Scrap = (u32, u32, crate::economy::Part, u8);
 
 /// How a battle ended (#493), played or simmed: the one thing every battle
 /// gives the galaxy (`Galaxy::fight`).
@@ -296,7 +296,7 @@ fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
                     // Their own kit, whoever hired them (#481).
                     let (hull, turret) = c.pilots[p].kit();
                     m.set_kit(i, hull, turret, c.pilots[p].levels());
-                    b.pilots.push((i, c.id, p));
+                    b.pilots.push((i, c.id, c.pilots[p].id));
                 }
                 _ => m.set_gear(i, crate::economy::Levels::all(tier(f))),
             }
@@ -625,7 +625,7 @@ impl Galaxy {
         }
         for &(id, pilot, part, level) in &o.scrap {
             if let Some(c) = self.companies.iter_mut().find(|c| c.id == id)
-                && let Some(x) = c.pilots.get_mut(pilot)
+                && let Some(x) = c.pilots.iter_mut().find(|p| p.id == pilot)
             {
                 x.known.scrap(part, level);
             }
@@ -1252,7 +1252,6 @@ mod merc_tests {
 mod gear_tests {
     use super::*;
     use crate::economy::{Known, Levels, PARTS, Part};
-    use crate::galaxy::merc::Pilot;
 
     /// The company under contract (8 hulls or more out) that's the biggest
     /// share of its side's hulls where it fights: it'll get bots' seats.
@@ -1291,7 +1290,9 @@ mod gear_tests {
         for p in PARTS {
             veteran.set(p, 7.5);
         }
-        g.companies[c].pilots = vec![Pilot { known: veteran }; crate::galaxy::merc::PILOTS];
+        for p in &mut g.companies[c].pilots {
+            p.known = veteran;
+        }
         let mut map = crate::map::Map::saltmarket();
         map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
@@ -1321,7 +1322,8 @@ mod gear_tests {
         let played = Played::of(&b, &m);
         g.settle(&played);
         let co = g.companies.iter().find(|c| c.id == id).unwrap();
-        assert!(co.pilots[p].known.of(kontos) > 7.5);
+        let pilot = co.pilots.iter().find(|x| x.id == p).unwrap();
+        assert!(pilot.known.of(kontos) > 7.5);
     }
 
     /// Mercs drive their own kit, not their employer's (#481): a company
@@ -1353,7 +1355,9 @@ mod gear_tests {
         ] {
             salt.set(part, at);
         }
-        g.companies[c].pilots = vec![Pilot { known: salt }; crate::galaxy::merc::PILOTS];
+        for p in &mut g.companies[c].pilots {
+            p.known = salt;
+        }
         let mut map = crate::map::Map::saltmarket();
         map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);

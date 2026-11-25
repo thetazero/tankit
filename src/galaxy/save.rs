@@ -52,6 +52,12 @@ struct Saved {
     companies: Option<Vec<SavedCompany>>,
     #[serde(default)]
     next_company: u32,
+    /// Pilots named, all told (#505; none in a save from before).
+    #[serde(default)]
+    next_pilot: u32,
+    /// Your pilot's id (#505; none in a save from before: a new one).
+    #[serde(default)]
+    you: Option<u32>,
     /// Bonuses realms owe companies: (realm, company id, crystals).
     #[serde(default)]
     debts: Vec<(u32, u32, f32)>,
@@ -84,6 +90,10 @@ struct SavedCompany {
     /// save from before: a crew of rookies.
     #[serde(default)]
     pilots: Vec<Vec<f32>>,
+    /// Each of those pilots' `Pilot::id` (#505); none in a save from
+    /// before: new ones.
+    #[serde(default)]
+    pilot_ids: Vec<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,10 +192,13 @@ impl Galaxy {
                             defend: k.defend,
                         }),
                         pilots: c.pilots.iter().map(|p| p.known.steps()).collect(),
+                        pilot_ids: c.pilots.iter().map(|p| p.id).collect(),
                     })
                     .collect(),
             ),
             next_company: self.next_company,
+            next_pilot: self.next_pilot,
+            you: Some(self.you.id),
             debts: self
                 .debts
                 .iter()
@@ -261,6 +274,27 @@ impl Galaxy {
             })
             .collect();
         g.spans = vec![(0, 0); g.realms.len()];
+        // Pilot ids go on from the highest saved (a save from before
+        // pilots had ids has none: they're named afresh; one from before
+        // companies keeps a fresh galaxy's, and their pilots).
+        let fresh = if s.companies.is_none() {
+            g.next_pilot
+        } else {
+            0
+        };
+        g.next_pilot = fresh.max(s.next_pilot).max(
+            s.companies
+                .iter()
+                .flatten()
+                .flat_map(|c| c.pilot_ids.iter().copied())
+                .chain(s.you)
+                .max()
+                .unwrap_or(0),
+        );
+        g.you = match s.you {
+            Some(id) => Pilot::rookie(id),
+            None => g.new_pilot(),
+        };
         if let Some(companies) = s.companies {
             let (systems, realms) = (g.systems.len(), g.realms.len());
             anyhow::ensure!(
@@ -274,37 +308,45 @@ impl Galaxy {
             );
             g.companies = companies
                 .into_iter()
-                .map(|c| Company {
-                    at: c.at,
-                    crystals: c.crystals,
-                    hulls: whole(c.hulls),
-                    margin: c.margin,
-                    founded: c.founded,
-                    idle_since: c.idle_since.unwrap_or(s.tick),
-                    id: c.id,
-                    contract: c.contract.map(|k| Contract {
-                        realm: k.realm,
-                        side: k.side,
-                        target: k.target,
-                        signed: k.signed,
-                        upfront: k.upfront,
-                        bonus: k.bonus,
-                        committed: whole(k.committed),
-                        field: whole(k.field),
-                        lost: whole(k.lost),
-                        defend: k.defend,
-                    }),
-                    pilots: {
-                        let mut p: Vec<Pilot> = c
-                            .pilots
-                            .iter()
-                            .map(|k| Pilot {
-                                known: crate::economy::Known::from_steps(k),
-                            })
-                            .collect();
-                        p.resize(super::merc::PILOTS, Pilot::default());
-                        p
-                    },
+                .map(|c| {
+                    let mut pilots: Vec<Pilot> = c
+                        .pilots
+                        .iter()
+                        .enumerate()
+                        .map(|(i, k)| Pilot {
+                            id: c
+                                .pilot_ids
+                                .get(i)
+                                .copied()
+                                .unwrap_or_else(|| g.new_pilot().id),
+                            known: crate::economy::Known::from_steps(k),
+                        })
+                        .collect();
+                    while pilots.len() < super::merc::PILOTS {
+                        pilots.push(g.new_pilot());
+                    }
+                    Company {
+                        at: c.at,
+                        crystals: c.crystals,
+                        hulls: whole(c.hulls),
+                        margin: c.margin,
+                        founded: c.founded,
+                        idle_since: c.idle_since.unwrap_or(s.tick),
+                        id: c.id,
+                        contract: c.contract.map(|k| Contract {
+                            realm: k.realm,
+                            side: k.side,
+                            target: k.target,
+                            signed: k.signed,
+                            upfront: k.upfront,
+                            bonus: k.bonus,
+                            committed: whole(k.committed),
+                            field: whole(k.field),
+                            lost: whole(k.lost),
+                            defend: k.defend,
+                        }),
+                        pilots,
+                    }
                 })
                 .collect();
             g.next_company = s.next_company;
@@ -457,6 +499,52 @@ mod tests {
     use super::*;
     use crate::galaxy::SYSTEMS;
 
+    /// Every pilot has their own id (#505), you too: through splits and
+    /// joins, and in a galaxy saved before pilots had them.
+    #[test]
+    fn every_pilot_has_their_own_id() {
+        let unique = |g: &Galaxy| {
+            let mut ids: Vec<u32> = g
+                .companies
+                .iter()
+                .flat_map(|c| c.pilots.iter().map(|p| p.id))
+                .chain([g.you.id])
+                .collect();
+            let n = ids.len();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), n, "a pilot id used twice");
+            assert!(ids.iter().all(|&id| id <= g.next_pilot));
+        };
+        let mut g = Galaxy::with_size(5, SYSTEMS / 10, REGION * 0.3, Rules::default());
+        for _ in 0..30 {
+            g.step();
+        }
+        // One splits, one joins another.
+        for c in &mut g.companies {
+            c.contract = None;
+            c.crystals = 100.0;
+        }
+        g.companies[0].crystals = g.rules.merc_split * 3.0;
+        g.companies[1].crystals = g.rules.merc_join / 2.0;
+        g.split_and_join();
+        assert_eq!((g.books.splits, g.books.joins), (1, 1));
+        unique(&g);
+        // A save from before pilot ids: everyone named afresh.
+        let mut v: serde_json::Value = serde_json::to_value(g.saved(REGION * 0.3)).unwrap();
+        v.as_object_mut().unwrap().remove("next_pilot");
+        v.as_object_mut().unwrap().remove("you");
+        for c in v["companies"].as_array_mut().unwrap() {
+            c.as_object_mut().unwrap().remove("pilot_ids");
+        }
+        let mut old = Galaxy::from_json(&v.to_string()).unwrap();
+        unique(&old);
+        for _ in 0..100 {
+            old.step();
+        }
+        unique(&old);
+    }
+
     /// A saved galaxy comes back the same, and goes on the same.
     #[test]
     fn a_saved_galaxy_picks_up_where_it_left_off() {
@@ -480,6 +568,11 @@ mod tests {
         assert_eq!(back.tick, g.tick);
         assert_eq!(back.crew, g.crew);
         assert_eq!(back.ended, g.ended);
+        assert_eq!(back.you.id, g.you.id);
+        assert_eq!(back.next_pilot, g.next_pilot);
+        for (a, b) in g.companies.iter().zip(&back.companies) {
+            assert_eq!(a.pilots, b.pilots);
+        }
         for (a, b) in g.systems.iter().zip(&back.systems) {
             assert_eq!(a.held, b.held);
             assert_eq!(a.hulls, b.hulls);
