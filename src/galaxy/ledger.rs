@@ -100,9 +100,11 @@ pub struct Mercs {
     pub pilots: Vec<Pilot>,
 }
 
-/// A merc pilot's kit (#481): hull, turret, and their level in them.
+/// A merc pilot (`Pilot::id`, #505) and their kit (#481): hull, turret,
+/// and their level in them.
 #[derive(Clone, Debug, Serialize)]
 pub struct Pilot {
+    pub id: u32,
     pub hull: String,
     pub turret: String,
     pub level: f32,
@@ -179,6 +181,7 @@ impl Setup {
                                     .map(|p| {
                                         let (h, t) = p.kit();
                                         Pilot {
+                                            id: p.id,
                                             hull: hull_name(h).into(),
                                             turret: turret_name(t).into(),
                                             level: p.level(),
