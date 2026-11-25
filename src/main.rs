@@ -147,6 +147,8 @@ tankit [OPTIONS]
                           screen: what the war did to the system's hulls since the battle, and why
   --shields-down          (with --screen missions|site) every shield generator on the system's first
                           world is damaged, so its shields are down
+  --own-hulls <n>         (with --front --hired) n of your company's hulls are your own: its bots
+                          leave them, so their seats go over to the realm sooner
   --defend                (with --screen missions|site) the war goes on until your company is hired
                           to hold one of its employer's worlds, not to take one; (with --front
                           --hired) the battle is one where a company's hired to hold the world
@@ -210,6 +212,8 @@ pub struct Args {
     shields_down: bool,
     /// --defend, for missions shots: your company's on a defense contract.
     defend: bool,
+    /// --own-hulls, for battle shots: your own hulls out of your company's.
+    own_hulls: Option<u32>,
     pub loadout: garage::Loadout,
     /// --hull or --turret was given.
     kit_given: bool,
@@ -637,6 +641,7 @@ fn parse_args() -> Result<Args> {
     let mut quiet = 0;
     let mut ticks = false;
     let mut defend = false;
+    let mut own_hulls: Option<u32> = None;
     let mut loadout = (sim::HullKind::Kataphrakt, sim::TurretKind::Kontos);
     let mut garage = false;
     let mut own = Vec::new();
@@ -772,6 +777,9 @@ fn parse_args() -> Result<Args> {
             "--quiet" => quiet = args.next().context("--quiet needs a number")?.parse()?,
             "--ticks" => ticks = true,
             "--defend" => defend = true,
+            "--own-hulls" => {
+                own_hulls = Some(args.next().context("--own-hulls needs a number")?.parse()?)
+            }
             "--straight" => straight = true,
             "--tilt" => {
                 tilt = args
@@ -1016,6 +1024,7 @@ fn parse_args() -> Result<Args> {
         debug,
         straight,
         defend,
+        own_hulls,
         tilt,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
@@ -1123,7 +1132,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         });
         g.enlist(side);
         g.claim_own(profile.rank().level);
-        game.set_own_hulls(g.own_left());
+        game.set_own_hulls(args.own_hulls.unwrap_or(g.own_left()));
         profile.ship = g.crew;
         game.crew = profile.company_name();
     }
