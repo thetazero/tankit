@@ -316,13 +316,6 @@ pub struct SideChange {
     pub moves: super::Moves,
 }
 
-impl TickSummary {
-    /// Ticks the war went on without you after the battle's own.
-    pub fn quiet(&self) -> u64 {
-        self.ticks.saturating_sub(1)
-    }
-}
-
 /// A system's name: two or three syllables, the same for every pilot (it
 /// comes from the system's catalogue number).
 pub fn system_name(s: usize) -> String {
