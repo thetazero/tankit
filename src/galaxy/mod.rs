@@ -78,6 +78,7 @@
 
 pub mod battle;
 pub mod chart;
+pub mod ledger;
 pub mod merc;
 pub mod realm;
 pub mod save;
@@ -1085,21 +1086,7 @@ impl Galaxy {
         for &f in sides {
             fire[f] = base[f] * self.rng.range(0.75, 1.25);
         }
-        let mut losses = [0.0f32; SIDES];
-        // Who does the killing: each side's share of each other's losses.
-        let mut by = [[0.0f32; SIDES]; SIDES];
-        for &g in sides {
-            let enemies = || sides.iter().copied().filter(move |&f| f != g);
-            let targets: f32 = enemies().map(|f| hulls[f] as f32).sum();
-            if targets <= 0.0 {
-                continue;
-            }
-            for f in enemies() {
-                let x = self.rules.kill * fire[g] * hulls[f] as f32 / targets;
-                losses[f] += x;
-                by[f][g] += x;
-            }
-        }
+        let (losses, by) = self.losses(&hulls, &fire, sides);
         let mut o = battle::Outcome {
             site: Some(t),
             lost: Default::default(),
@@ -1121,15 +1108,87 @@ impl Galaxy {
         let (holder, attackers) = sides.split_last().expect("a battle has a holder");
         let mut winner = *holder;
         for &f in attackers {
-            let against: f32 = sides.iter().filter(|&&g| g != f).map(|&g| fire[g]).sum();
-            let odds = fire[f] / (fire[f] + against).max(1e-3);
-            if self.rng.chance(self.rules.take * odds) {
+            if self.rng.chance(self.take_chance(&fire, sides, f)) {
                 winner = f;
                 break;
             }
         }
         o.winner = Some(winner);
         o
+    }
+
+    /// The fire each of `sides` (with `hulls`) takes in a battle, before
+    /// armor, at each side's `fire`: each side's fire spreads over its
+    /// enemies by their hulls. Returns it, and who it's from: each side's
+    /// share of each other's.
+    fn losses(
+        &self,
+        hulls: &[u32; SIDES],
+        fire: &[f32; SIDES],
+        sides: &[usize],
+    ) -> ([f32; SIDES], [[f32; SIDES]; SIDES]) {
+        let mut losses = [0.0f32; SIDES];
+        let mut by = [[0.0f32; SIDES]; SIDES];
+        for &g in sides {
+            let enemies = || sides.iter().copied().filter(move |&f| f != g);
+            let targets: f32 = enemies().map(|f| hulls[f] as f32).sum();
+            if targets <= 0.0 {
+                continue;
+            }
+            for f in enemies() {
+                let x = self.rules.kill * fire[g] * hulls[f] as f32 / targets;
+                losses[f] += x;
+                by[f][g] += x;
+            }
+        }
+        (losses, by)
+    }
+
+    /// The chance attacker `f` takes the site, if no attacker before it
+    /// in `sides` has: `take` times its share of the battle's fire.
+    fn take_chance(&self, fire: &[f32; SIDES], sides: &[usize], f: usize) -> f32 {
+        let against: f32 = sides.iter().filter(|&&g| g != f).map(|&g| fire[g]).sum();
+        self.rules.take * fire[f] / (fire[f] + against).max(1e-3)
+    }
+
+    /// What the galaxy's own battle math (`sim`) expects of the battle for
+    /// site `t` in system `s` between `sides` (its attackers, then its
+    /// holder), with no luck either way (#494): each side's hulls, gear,
+    /// fire, hulls lost on average, and chance to win. For setting played
+    /// battles beside, to see how far off it is.
+    pub fn predict(&self, s: usize, t: usize, sides: &[usize]) -> Vec<ledger::Predicted> {
+        let hulls = self.systems[s].hulls;
+        let base = self.fire(s, t);
+        let mut fire = [0.0; SIDES];
+        for &f in sides {
+            fire[f] = base[f];
+        }
+        let (losses, _) = self.losses(&hulls, &fire, sides);
+        let mut win = [0.0f32; SIDES];
+        let mut none_yet = 1.0;
+        if let Some((holder, attackers)) = sides.split_last() {
+            for &f in attackers {
+                let p = self.take_chance(&fire, sides, f);
+                win[f] = none_yet * p;
+                none_yet *= 1.0 - p;
+            }
+            win[*holder] = none_yet;
+        }
+        sides
+            .iter()
+            .map(|&f| {
+                let gear = self.gear(s, f);
+                let lost = losses[f] / crate::economy::armor_factor(gear);
+                ledger::Predicted {
+                    faction: Faction::ALL[f].name().to_string(),
+                    hulls: hulls[f],
+                    gear,
+                    fire: fire[f],
+                    lost: lost.min(hulls[f] as f32),
+                    win: win[f],
+                }
+            })
+            .collect()
     }
 
     /// Side `f` lost `lost` hulls in system `s` (#438): each is a kill, by a
