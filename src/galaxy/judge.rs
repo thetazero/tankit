@@ -143,6 +143,8 @@ fn tweak(rules: &mut Rules) {
             "kill_share" => rules.kill_share = x,
             "merc_term" => rules.merc_term = x as u32,
             "blitz" => rules.blitz = x as u32,
+            "take" => rules.take = x,
+            "kill" => rules.kill = x,
             _ => println!("no rule {name}"),
         }
     }
