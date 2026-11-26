@@ -1115,8 +1115,10 @@ fn realms_pay_and_train_pilots() {
     let rules = Rules::default();
     let mut r = super::realm::Realm::new(0, 0, 0);
     r.income = 4.0;
-    let want = r.pilots_wanted(&rules);
-    assert_eq!(want, 100);
+    // Affords 100; at peace, uses a front's worth.
+    assert_eq!(r.pilots_wanted(&rules), rules.frontage as u32);
+    r.fronts = 1;
+    assert_eq!(r.pilots_wanted(&rules), 100);
     r.crystals = 100.0;
     r.keep_pilots(&rules);
     assert_eq!(r.pilots, rules.train, "trains a few a tick");

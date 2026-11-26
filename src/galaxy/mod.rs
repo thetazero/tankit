@@ -1026,11 +1026,15 @@ impl Galaxy {
     /// between its fights.
     fn share_pilots(&mut self) {
         let mut war = vec![0; self.realms.len()];
+        for realm in &mut self.realms {
+            realm.fronts = 0;
+        }
         for s in 0..self.systems.len() {
             for f in 0..SIDES {
                 let r = self.systems[s].realms[f];
                 if r != NONE && self.fighting(s, f) {
                     war[r as usize] += self.systems[s].hulls[f] - self.crewed(s, f).0;
+                    self.realms[r as usize].fronts += 1;
                 }
             }
         }
