@@ -86,7 +86,7 @@ impl BayArt {
     pub fn show_world(&mut self, r: &mut Renderer, world: Option<(u64, planet::Look)>) {
         let world = world.unwrap_or((PLANET_SEED, planet::DRY));
         if world != self.world {
-            r.replace_mesh(self.planet, &planet::mesh(world.0, &world.1));
+            r.replace_painted(self.planet, &planet::mesh(world.0, &world.1));
             self.world = world;
         }
     }
