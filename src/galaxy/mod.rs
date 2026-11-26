@@ -134,6 +134,8 @@ pub const SHIELD_SEATS: usize = 1;
 pub struct Rules {
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
+    /// Light years a fleet, or a company's ship, flies in a tick.
+    pub ftl_speed: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
     pub kill: f32,
     /// Most of a side's hulls in a system that can fire in a tick. Machines
@@ -229,7 +231,8 @@ pub struct Rules {
 impl Default for Rules {
     fn default() -> Rules {
         Rules {
-            ftl_cost: 0.225,
+            ftl_cost: 0.1,
+            ftl_speed: 40.0,
             kill: 0.35,
             frontage: 85.0,
             seats: 6.0,
@@ -364,6 +367,17 @@ impl System {
     }
 }
 
+/// Hulls in flight: nobody else sees them till they land.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Fleet {
+    pub to: u32,
+    pub side: u8,
+    pub realm: u32,
+    pub hulls: u32,
+    /// The tick it lands.
+    pub arrives: u64,
+}
+
 /// The whole war.
 #[cfg_attr(test, derive(Clone))]
 pub struct Galaxy {
@@ -414,6 +428,11 @@ pub struct Galaxy {
     pub(crate) lose_old: f32,
     /// Savings of retired pilots and dead ships, for new companies.
     pub(crate) savings: f32,
+    /// Hulls in flight.
+    pub fleets: Vec<Fleet>,
+    /// Scratch: what each side has on the way to a system: hulls, and their
+    /// ticks to go all told.
+    incoming: std::collections::HashMap<(u32, u8), (f32, f32)>,
     /// Every planet's vault, and each system's first.
     pub vaults: Vec<Vault>,
     pub(crate) vault_at: Vec<u32>,
@@ -627,6 +646,8 @@ impl Galaxy {
             lose_new: 0.01,
             lose_old: 0.003,
             savings: 0.0,
+            fleets: Vec::new(),
+            incoming: Default::default(),
             vaults: Vec::new(),
             vault_at: Vec::new(),
             profit: 0.0,
@@ -850,6 +871,7 @@ impl Galaxy {
     /// `played`: a battle this tick that was played (see `step_played`).
     fn advance_tick(&mut self, played: Option<&battle::Played>) -> Option<battle::Settled> {
         self.tick += 1;
+        self.land();
         self.produce();
         let settled = self.battles(played);
         self.mercs();
@@ -858,6 +880,65 @@ impl Galaxy {
         self.update_supply();
         self.send();
         settled
+    }
+
+    /// Ticks to fly `d` light years.
+    pub(crate) fn flight(&self, d: f32) -> u64 {
+        (d / self.rules.ftl_speed.max(1.0)).ceil().max(1.0) as u64
+    }
+
+    /// What's in flight and due lands.
+    fn land(&mut self) {
+        let tick = self.tick;
+        let (due, fly): (Vec<Fleet>, Vec<Fleet>) = std::mem::take(&mut self.fleets)
+            .into_iter()
+            .partition(|x| tick >= x.arrives);
+        self.fleets = fly;
+        for x in due {
+            let (t, f) = (x.to as usize, x.side as usize);
+            let sys = &mut self.systems[t];
+            // Its realm gone, it's whoever of its people's is there.
+            if sys.realms[f] == NONE {
+                if x.realm == NONE {
+                    continue;
+                }
+                sys.realms[f] = x.realm;
+            }
+            sys.hulls[f] += x.hulls;
+            self.moves[t][f].arrived += x.hulls;
+        }
+        self.land_mercs();
+    }
+
+    /// What's on the way, for each side to a system it's its own.
+    fn count_incoming(&mut self) {
+        self.incoming.clear();
+        for i in 0..self.fleets.len() {
+            let x = self.fleets[i];
+            self.note_incoming(x.to, x.side, x.hulls, x.arrives);
+        }
+        for c in 0..self.companies.len() {
+            if let Some(k) = self.companies[c].contract
+                && k.inbound > 0
+            {
+                self.note_incoming(k.target, k.side, k.inbound, k.arrives);
+            }
+        }
+    }
+
+    pub(crate) fn note_incoming(&mut self, t: u32, f: u8, hulls: u32, arrives: u64) {
+        let e = self.incoming.entry((t, f)).or_default();
+        e.0 += hulls as f32;
+        e.1 += hulls as f32 * arrives.saturating_sub(self.tick) as f32;
+    }
+
+    /// Side `f`'s hulls on the way to `t`, and the ticks till they're there,
+    /// on average.
+    pub(crate) fn on_the_way(&self, t: usize, f: usize) -> (f32, f32) {
+        match self.incoming.get(&(t as u32, f as u8)) {
+            Some(&(h, wait)) if h > 0.0 => (h, wait / h),
+            _ => (0.0, 0.0),
+        }
     }
 
     fn produce(&mut self) {
@@ -1617,6 +1698,7 @@ impl Galaxy {
     fn send(&mut self) {
         let n = self.systems.len();
         self.count_spare();
+        self.count_incoming();
         // A different people moves first each tick, starting at a different
         // system, so nobody always gets first pick.
         let mut order = [0, 1, 2, 3];
@@ -1699,29 +1781,60 @@ impl Galaxy {
             1.0
         };
         let have = here as f32;
-        let pilots = self.pilots_for(r, have);
-        // (what it'd hold, what it'd cost it) with `x` more of its own.
-        let play = |g: &Galaxy, own: f32, pilots: f32| {
-            let fc = g.forecast(t, f, r, own, 0.0, 0.0, pilots, ours);
+        let (late, late_at) = self.on_the_way(t, f);
+        // Its attack's on the way already.
+        if here == 0 && late > 0.0 && !ours {
+            return;
+        }
+        let pilots = self.pilots_for(r, have + late);
+        // How long what it sends would take: an attack lands all together.
+        let (mut flight, mut slowest) = (0.0f32, 1u64);
+        for (s, d) in self.neighbors(t) {
+            let n = mine(self, s);
+            if n > 0 {
+                flight += n as f32 * self.flight(d) as f32;
+                slowest = slowest.max(self.flight(d));
+            }
+        }
+        let fresh = here == 0 && !ours;
+        let more_at = if fresh {
+            0.0
+        } else {
+            flight / (pool as f32).max(1.0)
+        };
+        let plan = |more: f32, pilots: f32| {
+            let all = late + more;
+            merc::Plan {
+                own: if fresh { have + more } else { have },
+                late: if fresh { 0.0 } else { all },
+                late_at: (late * late_at + more * more_at) / all.max(1e-3),
+                flown: pilots,
+                defend: ours,
+                ..Default::default()
+            }
+        };
+        // (what it'd hold, what it'd cost it) with `more` of its own.
+        let play = |g: &Galaxy, more: f32, pilots: f32| {
+            let fc = g.forecast(t, f, r, &plan(more, pilots));
             (fc.share * worth - fc.lost * realm.hull_worth, fc.length)
         };
-        let (stay, length) = play(self, have, pilots);
+        let (stay, length) = play(self, 0.0, pilots);
         // What more pilots, or hulls, would be worth to it: in a fight it's
         // in, or an attack it could make.
-        let all = have + pool as f32 * afford;
+        let all = pool as f32 * afford;
         if (here > 0 && attacked) || (here == 0 && pool >= MIN_SEND) {
-            let own = if here > 0 { have } else { all };
-            let p = self.pilots_for(r, own);
+            let more = if here > 0 { 0.0 } else { all };
+            let p = self.pilots_for(r, have + late + more);
             let fly = if here > 0 { 0.0 } else { cost_all * afford };
-            let (now, l) = play(self, own, p);
+            let (now, l) = play(self, more, p);
             let now = (now - fly).max(stay);
             let length = if here > 0 { length } else { l };
             // (a hull more than those it could already bring)
-            let reserve = self.pilots_for(r, all);
+            let reserve = self.pilots_for(r, have + late + all);
             let most = play(self, all, reserve).0;
             let (mut pilot, mut hull) = (0.0f32, 0.0f32);
             for n in [10.0, 40.0, 85.0] {
-                pilot = pilot.max((play(self, own, p + n).0 - fly - now) / n / length);
+                pilot = pilot.max((play(self, more, p + n).0 - fly - now) / n / length);
                 hull = hull.max((play(self, all + 4.0 * n, reserve).0 - most) / (4.0 * n));
             }
             let x = &mut self.realms[r as usize];
@@ -1735,7 +1848,7 @@ impl Galaxy {
                 if n < MIN_SEND as f32 {
                     continue;
                 }
-                let gain = play(self, have + n, self.pilots_for(r, have + n)).0
+                let gain = play(self, n, self.pilots_for(r, have + late + n)).0
                     - stay
                     - cost_all * share * afford;
                 if gain > best.0 {
@@ -1744,20 +1857,21 @@ impl Galaxy {
             }
         }
         // Or with a company, going in with all it can pay to move.
-        let own = have + pool as f32 * afford;
         let with = if best.1 > 0.0 {
-            have + pool as f32 * best.1
+            pool as f32 * best.1
         } else {
-            own
+            all
         };
         let base = if best.1 > 0.0 {
             stay + best.0
         } else {
             stay + cost_all * afford
         };
+        let help = plan(with, self.pilots_for(r, have + late + with));
+        let start = if fresh { slowest } else { 0 };
         if realm.hires
             && (attacked || pool >= MIN_SEND)
-            && self.hire(t, f, r, with, base, ours)
+            && self.hire(t, f, r, help, start, base)
             && best.1 == 0.0
         {
             best.1 = afford;
@@ -1768,23 +1882,30 @@ impl Galaxy {
         let cost = (cost_all * best.1).min(self.realms[r as usize].crystals.max(0.0));
         self.realms[r as usize].crystals -= cost;
         self.sent += 1;
-        let mut moved = 0;
         for k in 0..NEIGHBORS {
-            let (s, _) = self.neighbors[t * NEIGHBORS + k];
+            let (s, d) = self.neighbors[t * NEIGHBORS + k];
             if s == u32::MAX {
                 break;
             }
             let s = s as usize;
             // Whole hulls go.
             let m = (mine(self, s) as f32 * best.1) as u32;
+            if m == 0 {
+                continue;
+            }
             self.spare[s][f] -= m;
             self.systems[s].hulls[f] -= m;
             self.moves[s][f].left += m;
-            moved += m;
+            let arrives = self.tick + if fresh { slowest } else { self.flight(d) };
+            self.fleets.push(Fleet {
+                to: t as u32,
+                side: f as u8,
+                realm: r,
+                hulls: m,
+                arrives,
+            });
+            self.note_incoming(t as u32, f as u8, m, arrives);
         }
-        self.systems[t].hulls[f] += moved;
-        self.moves[t][f].arrived += moved;
-        self.systems[t].realms[f] = r;
     }
 
     /// The pilots realm `r` would have for `own` hulls in one fight, sharing

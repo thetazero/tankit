@@ -675,7 +675,7 @@ impl Galaxy {
             id: co.id,
             name: ship_name(co.id),
             system: system_name(co.at as usize),
-            hulls: co.hulls + co.contract.map_or(0, |k| k.field),
+            hulls: co.hulls + co.contract.map_or(0, |k| k.field + k.inbound),
             crystals: co.crystals,
             enemies: co.contract.map_or_else(Vec::new, |k| {
                 let (s, f) = (k.target as usize, k.side as usize);

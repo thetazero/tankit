@@ -86,6 +86,9 @@ struct Saved {
     /// Every planet's vault: its side, its realm, its crystal.
     #[serde(default)]
     vaults: Vec<(u8, u32, f32)>,
+    /// Hulls in flight.
+    #[serde(default)]
+    fleets: Vec<super::Fleet>,
     /// The share of merc pilots in work lately.
     #[serde(default)]
     employment: Option<f32>,
@@ -227,6 +230,10 @@ struct SavedContract {
     lent: bool,
     #[serde(default)]
     seats: u32,
+    #[serde(default)]
+    arrives: u64,
+    #[serde(default)]
+    inbound: u32,
     /// What the realm expected of it, and the ticks it expected to pay.
     #[serde(default)]
     expected: f32,
@@ -255,6 +262,8 @@ impl SavedContract {
             defend: k.defend,
             lent: k.lent,
             seats: k.seats,
+            arrives: k.arrives,
+            inbound: k.inbound,
             expected: k.expected,
             expected_ticks: k.expected_ticks,
             held: k.held,
@@ -278,6 +287,8 @@ impl SavedContract {
             defend: self.defend,
             lent: self.lent,
             seats: self.seats,
+            arrives: self.arrives,
+            inbound: self.inbound,
             expected: self.expected,
             expected_ticks: self.expected_ticks,
             held: self.held,
@@ -396,6 +407,7 @@ impl Galaxy {
             trust_ticks: Some(self.trust_ticks),
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
+            fleets: self.fleets.clone(),
             vaults: self
                 .vaults
                 .iter()
@@ -641,6 +653,11 @@ impl Galaxy {
         g.ended = s.ended;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
+        g.fleets = s.fleets;
+        let (systems, realms) = (g.systems.len() as u32, g.realms.len() as u32);
+        g.fleets.retain(|x| {
+            x.to < systems && (x.side as usize) < SIDES && (x.realm == NONE || x.realm < realms)
+        });
         if s.vaults.len() == g.vaults.len() {
             for (v, x) in g.vaults.iter_mut().zip(&s.vaults) {
                 let realm = if (x.1 as usize) < g.realms.len() {
