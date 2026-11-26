@@ -114,6 +114,21 @@ pub(super) struct Level {
     round: f32,
     blend: f32,
     height: f32,
+    /// How far from its middle it changes anything, squared.
+    reach2: f32,
+}
+
+impl Level {
+    fn new(b: OBox, round: f32, blend: f32, height: f32) -> Level {
+        let reach = b.half.length() + round + blend;
+        Level {
+            b,
+            round,
+            blend,
+            height,
+            reach2: reach * reach,
+        }
+    }
 }
 
 /// A piece of the high ground's shape.
@@ -423,12 +438,7 @@ impl Land {
 
     /// Levels `b`'s ground and `margin` m round it, at `height`.
     pub fn level_at(&mut self, b: OBox, margin: f32, blend: f32, height: f32) {
-        self.levels.push(Level {
-            b,
-            round: margin,
-            blend,
-            height,
-        });
+        self.levels.push(Level::new(b, margin, blend, height));
     }
 
     /// What swells it's made of, for the probes.
@@ -454,8 +464,7 @@ impl Land {
     pub fn base(&self, p: Vec2) -> f32 {
         let mut h = self.swell(p);
         for l in &self.levels {
-            let reach = l.b.half.length() + l.round + l.blend;
-            if l.b.center.distance_squared(p) > reach * reach {
+            if l.b.center.distance_squared(p) > l.reach2 {
                 continue;
             }
             let d = l.b.distance(p) - l.round;
@@ -689,11 +698,6 @@ impl Land {
             return;
         }
         let height = self.base(b.center);
-        self.levels.push(Level {
-            b,
-            round,
-            blend,
-            height,
-        });
+        self.levels.push(Level::new(b, round, blend, height));
     }
 }
