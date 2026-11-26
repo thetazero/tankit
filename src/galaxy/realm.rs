@@ -284,7 +284,7 @@ impl Galaxy {
         let mut out = vec![0.0; self.realms.len()];
         for sys in &self.systems {
             for site in &self.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
-                if let super::SiteKind::Production { crystals, .. } = site.kind {
+                if let super::SiteKind::Mine { crystals } = site.kind {
                     let r = sys.realms[site.owner as usize];
                     if r != NONE {
                         out[r as usize] += crystals;

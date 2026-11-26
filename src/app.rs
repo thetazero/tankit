@@ -715,28 +715,37 @@ impl App {
     /// contracts on the contract screen, until it has work (or you've
     /// work to choose); the screen counts the ticks.
     fn pump_waiting(&mut self) {
-        if self.mode != Mode::Menu || self.garage.is_open() || !self.menu.waiting() {
+        let (battle, offers) = (self.menu.waiting(), self.menu.waiting_for_offers());
+        if self.mode != Mode::Menu || self.garage.is_open() || !(battle || offers) {
             return;
         }
         let rank = self.profile.rank().level;
         let Some(g) = self.war.try_get() else { return };
         adopt(g, &mut self.profile);
+        // No contract: there's no battle to wait for.
+        if battle && g.on_job().is_none() {
+            let ended = g.ended.clone();
+            self.menu.set_ended(&ended);
+            if self.menu.waiting() {
+                self.menu.screen = menu::Screen::Ships;
+                self.sync_ships();
+            }
+            return;
+        }
         let start = Instant::now();
         let mut left = u32::MAX;
         let done = g.await_work_slice(None, rank, &mut left, || start.elapsed() >= WAIT_BUDGET);
         let ticked = u32::MAX - left;
-        self.menu.waited(ticked);
-        let free = done && g.free_to_choose();
-        if done {
-            self.sync_theater_after(0, ticked > 0);
-            // Your contract's over: what's next is yours to pick.
-            if free && self.menu.waiting() {
-                self.menu.screen = menu::Screen::Ships;
-                self.sync_ships();
+        // What ended meanwhile (your contract, say) shows now.
+        let ended = g.ended.clone();
+        if offers {
+            if done && ticked > 0 {
+                self.war.save();
             }
+            self.sync_ships();
+        } else if done {
+            self.sync_theater_after(0, ticked > 0);
         } else if ticked > 0 {
-            // What ended meanwhile (your contract, say) shows now.
-            let ended = g.ended.clone();
             self.menu.set_ended(&ended);
         }
     }
@@ -821,6 +830,20 @@ impl App {
         let before = g.crew;
         g.enlist(None);
         let crew = g.crew;
+        self.menu.set_job(g.on_job().map(|(_, k)| menu::JobAt {
+            system: crate::galaxy::theater::system_name(k.target as usize),
+            flying: g.tick < k.arrives,
+        }));
+        // A contract that's ended since you last looked: how, is there to see.
+        if g.on_job().is_none() {
+            if !self.menu.remembers()
+                && let Some(old) = self.profile.shown.as_ref().and_then(|s| g.shown(s))
+            {
+                self.menu.remember(old);
+            }
+            let ended = g.ended.clone();
+            self.menu.set_ended(&ended);
+        }
         if self.menu.wants_cluster(g.tick, crew) {
             self.menu.set_cluster(crate::cluster_view::Cluster::of(g));
         }

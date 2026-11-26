@@ -996,61 +996,22 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
     ring(p, c, r - 0.5, 1.0, color);
 }
 
-/// The system view while your company's between contracts: its frame,
-/// and in it a spinner and how many ticks the war's gone on without work
-/// for you.
-pub fn waiting(p: &mut Painter, ticks: u32, time: f32) {
-    let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
-    let at = Vec2::new(min.x + 24.0, min.y + 24.0);
-    crate::hud::spinner_small(p, at + Vec2::new(7.0, 7.0), time);
-    let mut s = design::SMALL;
-    s.color = design::TEXT;
-    p.text(
-        at + Vec2::new(26.0, 2.0),
-        "LOOKING FOR WORK",
-        &s,
-        Align::Left,
-    );
-    let mut v = design::HEAD;
-    v.color = design::TEXT;
-    let tw = p.text(
-        at + Vec2::new(0.0, 26.0),
-        &format!("+{ticks}"),
-        &v,
-        Align::Left,
-    );
-    p.text(
-        at + Vec2::new(tw + 8.0, 34.0),
-        "TICKS",
-        &design::SMALL,
-        Align::Left,
-    );
-}
-
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
-/// While a `transfer` is playing, draws its caption instead. If the transfer
-/// is paused on the contract summary card, draws the card instead, with
-/// CONTINUE highlighted if `go_lit` (#414).
+/// While a `transfer` is playing, draws its caption instead.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
     t: &Theater,
     transfer: Option<&Transfer>,
-    card: Option<&Ended>,
     selected: usize,
-    go_lit: bool,
     w: f32,
     h: f32,
 ) {
     let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
     let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
-    if let Some(e) = card {
-        summary(p, hits, t, e, go_lit, min, max);
-        return;
-    }
     if let Some((tr, leg)) = transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
         caption(p, t, tr, leg, min, max);
         return;
@@ -1345,82 +1306,59 @@ pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
     (head, how)
 }
 
-/// Width of the contract summary card. Its height depends on the number of rows.
-const SUMMARY_W: f32 = 420.0;
-const GO_W: f32 = design::UNIT * 20.0;
-const GO_H: f32 = design::BUTTON;
-
-/// Draws the contract summary card (#414), centered in the system view
-/// between `min` and `max`. It shows how the contract `e` ended and its
-/// stats. `from` is the system the contract was in. Clicking CONTINUE
-/// dismisses the card and starts the transfer animation.
-fn summary(
+/// The contract summary (#414), a page over the system the contract was in
+/// (`from`): how it ended (`e`), what it cost, and CONTINUE.
+pub fn summary(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
     from: &Theater,
     e: &Ended,
     lit: bool,
-    min: Vec2,
-    max: Vec2,
+    w: f32,
+    h: f32,
 ) {
-    // Stat rows: label on the left, value on the right.
-    let mut rows: Vec<(&str, String)> = vec![
-        (
-            "BATTLES",
-            e.tick.saturating_sub(e.signed).max(1).to_string(),
-        ),
-        (
-            "COMPANY HULLS LOST",
-            format!("{} / {}", e.lost, e.committed),
-        ),
-    ];
-    if e.own.of > 0 {
-        rows.push((
-            "YOUR HULLS LOST",
-            format!("{} / {}", e.own.of - e.own.left.min(e.own.of), e.own.of),
-        ));
-    }
-
-    const PAD: f32 = 24.0;
-    const ROW: f32 = 20.0;
-    let size = Vec2::new(
-        SUMMARY_W,
-        PAD + 50.0 + rows.len() as f32 * ROW + 16.0 + GO_H + PAD,
-    );
-    let mid = (min + max) * 0.5;
-    let at = mid - size * 0.5;
+    use design::{BODY, HEAD, SMALL, TEXT, TEXT_2, TITLE, UNIT};
+    p.set_halo(None);
+    // The system's still there, knocked back.
+    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.35]);
+    let mid = w * 0.5;
+    let (head, how) = verdict(from, e);
     let tone = if e.outcome.won() {
-        Faction::Company.ui()
+        design::AMBER
     } else {
         theme::HOT
     };
-    p.rect(at, size, design::GROUND);
-    p.rect_outline(at, size, 1.0, theme::FAINT);
-    p.rect(at, Vec2::new(size.x, 2.0), tone);
-    let (x0, x1) = (at.x + PAD, at.x + size.x - PAD);
-    let mut y = at.y + PAD;
-    let (head, how) = verdict(from, e);
-    let mut style = design::SMALL;
-    style.color = tone;
-    p.text(Vec2::new(x0, y), head, &style, Align::Left);
-    y += 16.0;
-    p.text(Vec2::new(x0, y), &how, &design::HEAD, Align::Left);
-    y += 34.0;
-
-    let mut dim = design::SMALL;
-    dim.color = design::TEXT_2;
-    let value = design::BODY;
-    for (what, figure) in rows {
-        p.text(Vec2::new(x0, y + 2.0), what, &dim, Align::Left);
-        p.text(Vec2::new(x1, y), &figure, &value, Align::Right);
-        y += ROW;
+    let mut y = UNIT * 8.0;
+    let style = TITLE.colored(tone);
+    p.text(Vec2::new(mid, y), head, &style, Align::Center);
+    y += UNIT * 5.0;
+    let style = BODY.colored(TEXT_2);
+    p.text(Vec2::new(mid, y), &how, &style, Align::Center);
+    // What it cost, and the way on, under the system.
+    y = h - UNIT * 24.0;
+    let battles = e.tick.saturating_sub(e.signed).max(1).to_string();
+    let mut facts = vec![
+        ("Battles", battles),
+        ("Hulls lost", format!("{} / {}", e.lost, e.committed)),
+    ];
+    if e.own.of > 0 {
+        let gone = e.own.of - e.own.left.min(e.own.of);
+        facts.push(("Yours lost", format!("{gone} / {}", e.own.of)));
     }
-
-    // CONTINUE button.
-    let go = Vec2::new(mid.x - GO_W * 0.5, at.y + size.y - GO_H - PAD);
-    let gs = Vec2::new(GO_W, GO_H);
-    design::button(p, go, gs.x, "Continue", true, lit);
-    hits.add(p, go, gs, Hit::Continue);
+    let pitch = UNIT * 24.0;
+    let n = facts.len() as f32;
+    for (k, (name, value)) in facts.iter().enumerate() {
+        let x = mid + (k as f32 - (n - 1.0) * 0.5) * pitch;
+        let at = Vec2::new(x, y);
+        p.text(at, value, &HEAD.colored(TEXT), Align::Center);
+        let at = at + Vec2::Y * UNIT * 4.0;
+        p.text(at, name, &SMALL.colored(TEXT_2), Align::Center);
+    }
+    y += UNIT * 9.0;
+    let size = Vec2::new(UNIT * 26.0, design::BUTTON);
+    let min = Vec2::new(mid - size.x * 0.5, y);
+    design::button(p, min, size.x, "Continue", true, lit);
+    hits.add(p, min, size, Hit::Continue);
 }
 
 /// A jump's flash over the whole screen (`w` by `h`), at the cuts between
