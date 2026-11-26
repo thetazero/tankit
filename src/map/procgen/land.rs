@@ -153,6 +153,10 @@ pub enum Slab {
         radius: f32,
         phase: f32,
     },
+    /// Behind a cliff along any line, the high side on its left going
+    /// along; straight on past its ends. (The mine's to come.)
+    #[cfg_attr(not(test), allow(dead_code))]
+    Behind { line: Vec<Vec2> },
     /// An island: a mesa or a butte.
     Island {
         center: Vec2,
@@ -164,6 +168,34 @@ pub enum Slab {
 fn lobed(radius: f32, phase: f32, dir: Vec2) -> f32 {
     let a = dir.y.atan2(dir.x);
     radius * (1.0 + 0.14 * (3.0 * a + phase).sin() + 0.07 * (5.0 * a + 2.0 * phase).sin())
+}
+
+/// Signed distance to `line` (run straight on past its ends), negative on
+/// its left.
+fn behind(line: &[Vec2], p: Vec2) -> f32 {
+    let n = line.len();
+    let mut best = (f32::INFINITY, 0.0);
+    for k in 0..n - 1 {
+        let (a, b) = (line[k], line[k + 1]);
+        let d = b - a;
+        let mut t = (p - a).dot(d) / d.length_squared();
+        // (The first and last stretches have no end on the outside.)
+        if k > 0 {
+            t = t.max(0.0);
+        }
+        if k + 2 < n {
+            t = t.min(1.0);
+        }
+        let q = a + d * t;
+        let dist = p.distance(q);
+        // At a corner both stretches are as near: the one it's squarer to
+        // says which side it's on.
+        let side = d.normalize().perp_dot(p - q);
+        if dist < best.0 - 1e-4 || (dist < best.0 + 1e-4 && side.abs() > f32::abs(best.1)) {
+            best = (dist, side);
+        }
+    }
+    -best.0 * best.1.signum()
 }
 
 impl Slab {
@@ -186,6 +218,7 @@ impl Slab {
                     + 4.0 * (noise(along / 23.0 + 500.0, 71) * 2.0 - 1.0);
                 wobble - d
             }
+            Slab::Behind { ref line } => behind(line, p),
             Slab::Outside {
                 center,
                 radius,
@@ -324,6 +357,76 @@ impl Wash {
             u += 1.0;
         }
         (lo.unwrap_or(0.0), hi)
+    }
+}
+
+/// A room of a dig, in the dig's own frame: x along the cliff to the right
+/// looking in, y into the rock from the mouth, its floor and roof over the
+/// dig's floor.
+#[derive(Clone, Copy, Debug)]
+pub struct Hollow {
+    pub min: Vec2,
+    pub max: Vec2,
+    pub floor: f32,
+    pub roof: f32,
+}
+
+/// Rooms dug into the rock, placed anywhere: the mouth at `at` (its floor
+/// `floor` m up), going in along `facing`.
+#[derive(Clone, Debug)]
+pub struct Dig {
+    pub at: Vec2,
+    pub facing: Vec2,
+    pub floor: f32,
+    pub rooms: Vec<Hollow>,
+}
+
+impl Dig {
+    /// A point of its frame on the map.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn to_map(&self, p: Vec2) -> Vec2 {
+        self.at - self.facing.perp() * p.x + self.facing * p.y
+    }
+
+    /// A point of the map in its frame.
+    pub fn to_dig(&self, p: Vec2) -> Vec2 {
+        let d = p - self.at;
+        Vec2::new(-d.dot(self.facing.perp()), d.dot(self.facing))
+    }
+
+    /// Distance to the rooms' walls at `p`, `y` up: negative inside.
+    fn sdf(&self, p: Vec2, y: f32) -> f32 {
+        let q = self.to_dig(p);
+        self.rooms
+            .iter()
+            .map(|r| {
+                let d = ((q - (r.min + r.max) * 0.5).abs() - (r.max - r.min) * 0.5).max_element();
+                let mid = self.floor + (r.floor + r.roof) * 0.5;
+                d.max((y - mid).abs() - (r.roof - r.floor) * 0.5)
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    /// Its rooms' corners, on the map.
+    pub fn corners(&self) -> impl Iterator<Item = Vec2> + '_ {
+        self.rooms.iter().flat_map(|r| {
+            [
+                r.min,
+                r.max,
+                Vec2::new(r.min.x, r.max.y),
+                Vec2::new(r.max.x, r.min.y),
+            ]
+            .map(|p| self.to_map(p))
+        })
+    }
+
+    /// How far `p` is from its rooms, seen from above (negative: over one).
+    pub fn distance(&self, p: Vec2) -> f32 {
+        let q = self.to_dig(p);
+        self.rooms
+            .iter()
+            .map(|r| ((q - (r.min + r.max) * 0.5).abs() - (r.max - r.min) * 0.5).max_element())
+            .fold(f32::INFINITY, f32::min)
     }
 }
 
@@ -599,6 +702,7 @@ impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
         } else {
             (only, only)
         };
+        let digs: Vec<&Dig> = land.digs.iter().filter(|d| d.distance(p) < 4.0).collect();
         for (&y, d) in ys.iter().zip(out) {
             *d = y - only;
             if near {
@@ -606,6 +710,9 @@ impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
                 let bed = 0.7 * noise2(y / 1.3, p.dot(Vec2::ONE) / 40.0, 61)
                     + 0.5 * noise2(p.x / 4.0 + y / 9.0, p.y / 4.0, 62);
                 *d = (s + bed - 0.6).max(y - top).min(y - foot);
+            }
+            for dig in &digs {
+                *d = d.max(-dig.sdf(p, y));
             }
         }
     }
@@ -640,6 +747,7 @@ pub struct Land {
     pub fins: Vec<Fin>,
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
+    pub digs: Vec<Dig>,
 }
 
 impl Land {
@@ -1092,5 +1200,99 @@ impl Land {
         }
         let height = self.base(b.center);
         self.levels.push(Level::new(b, round, blend, height));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tunnel(length: f32) -> Vec<Hollow> {
+        let room = |min: Vec2, max: Vec2| Hollow {
+            min,
+            max,
+            floor: 0.0,
+            roof: 6.0,
+        };
+        // A way in, and a hall off to its right at the end.
+        vec![
+            room(Vec2::new(-5.0, -6.0), Vec2::new(5.0, length)),
+            room(Vec2::new(5.0, length - 16.0), Vec2::new(25.0, length)),
+        ]
+    }
+
+    /// Two digs on a cliff that turns a corner, each square to its own
+    /// stretch, and one in a mesa standing apart: all three have a floor
+    /// to drive in along under a roof, and the rock's top over it.
+    #[test]
+    fn digs_go_anywhere_facing_any_way() {
+        let line = vec![
+            Vec2::new(-40.0, 120.0),
+            Vec2::new(90.0, 100.0),
+            Vec2::new(150.0, -40.0),
+        ];
+        // The high side's on the left, so in is to the left.
+        let into = |k: usize| (line[k + 1] - line[k]).normalize().perp();
+        let dig = |at: Vec2, facing: Vec2| Dig {
+            at,
+            facing,
+            floor: 0.0,
+            rooms: tunnel(34.0),
+        };
+        let mesa = Vec2::new(52.0, 50.0);
+        let face = Vec2::from_angle(2.1);
+        let mut land = Land::default();
+        land.high.height = 12.0;
+        land.high.slabs = vec![
+            Slab::Behind { line: line.clone() },
+            Slab::Island {
+                center: mesa,
+                radius: 34.0,
+                phase: 0.0,
+            },
+        ];
+        land.digs = vec![
+            dig(line[0].lerp(line[1], 0.5), into(0)),
+            dig(line[1].lerp(line[2], 0.5), into(1)),
+            dig(mesa - face * 38.0, face),
+        ];
+        let s = land.surface(180.0, 1.0, |_| 0.0);
+        for (k, d) in land.digs.iter().enumerate() {
+            let at = |x: f32, y: f32| s.floors(d.to_map(Vec2::new(x, y)));
+            // The hall, off to the right of the way in.
+            for (x, y) in [(0.0, 14.0), (0.0, 26.0), (16.0, 26.0)] {
+                let f = at(x, y);
+                assert_eq!(f.len(), 2, "dig {k} at {x}, {y}: {f:?}");
+                assert!((f[0] - 12.0).abs() < 0.5, "dig {k}: top {f:?}");
+                assert!(f[1].abs() < 0.3, "dig {k}: floor {f:?}");
+            }
+            // Nothing to the left of the way in, and a level way to the mouth.
+            assert_eq!(at(-12.0, 22.0).len(), 1, "dig {k}");
+            let mut y = -5.0;
+            while y < 30.0 {
+                let f = at(0.0, y);
+                let p = d.to_map(Vec2::new(0.0, y));
+                assert!(
+                    f.last().is_some_and(|f| f.abs() < 0.3),
+                    "dig {k} at {y} ({p}): {f:?}"
+                );
+                y += 1.0;
+            }
+        }
+    }
+
+    #[test]
+    fn a_cliff_has_its_high_side_on_the_left() {
+        let line = [Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(10.0, -10.0)];
+        for (p, want) in [
+            (Vec2::new(5.0, 3.0), -3.0),
+            (Vec2::new(5.0, -3.0), 3.0),
+            (Vec2::new(14.0, -5.0), -4.0),
+            (Vec2::new(-20.0, 2.0), -2.0),
+            (Vec2::new(12.0, 2.0), -(8.0f32.sqrt())),
+        ] {
+            let d = behind(&line, p);
+            assert!((d - want).abs() < 1e-3, "{p}: {d}, want {want}");
+        }
     }
 }

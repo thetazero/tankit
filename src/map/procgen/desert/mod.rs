@@ -167,6 +167,7 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
         LandmarkKind::Needles => "NEEDLES",
         LandmarkKind::Crater => "CRATER",
         LandmarkKind::Arch => "ARCH",
+        LandmarkKind::Open => "FLATS",
         LandmarkKind::Generator | LandmarkKind::Great(_) => "GENERATOR",
     };
     map

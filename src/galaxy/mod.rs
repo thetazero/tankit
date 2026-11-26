@@ -23,6 +23,8 @@
 //! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
+//! Outposts make nothing: they're sites a world isn't taken without.
+//!
 //! **A tick:**
 //! 1. *Production.* Every mine adds crystal to its planet's vault (`Vault`),
 //!    which changes hands only with the whole planet. A yard builds while a
@@ -279,6 +281,8 @@ pub enum SiteKind {
     /// it's taken, and working again once its holder wins a battle for it,
     /// or a tick goes by without one.
     Shield { damaged: bool },
+    /// Makes nothing and shields nothing, but a world isn't taken without it.
+    Outpost,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -575,6 +579,8 @@ impl Galaxy {
         let mut sites = Vec::new();
         let spots = disk.scatter(count, &mut rng);
         let owners = settle(&spots, &hearts);
+        // (Outposts' own dice: the rest of the galaxy's as it was without them.)
+        let mut posts = Rng::new(seed ^ 0x0007_9057);
         for (pos, owner) in spots.into_iter().zip(owners) {
             let planets = match rng.f32() {
                 x if x < 0.5 => 1,
@@ -604,6 +610,20 @@ impl Galaxy {
                             hulls: rng.range(1.0, 5.0),
                             crystals: rng.range(0.02, 0.1),
                         },
+                    });
+                }
+                // Most planets have an outpost or two.
+                let outposts = match posts.f32() {
+                    x if x < 0.1 => 0,
+                    x if x < 0.5 => 1,
+                    x if x < 0.9 => 2,
+                    _ => 3,
+                };
+                for _ in 0..outposts {
+                    sites.push(Site {
+                        planet,
+                        owner,
+                        kind: SiteKind::Outpost,
                     });
                 }
             }
