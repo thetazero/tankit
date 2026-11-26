@@ -61,6 +61,11 @@ pub struct Realm {
     /// Its best use this tick for one more of each (scratch).
     pub pilot_use: f32,
     pub hull_use: f32,
+    /// The seats its pilots have lately had to fill; and those in its fights
+    /// now, and in the biggest it could start (scratch).
+    pub seats: f32,
+    pub seats_now: f32,
+    pub seats_next: f32,
     /// Free pilots it took on this tick (scratch).
     pub hired: u32,
     /// Whether it hires mercs at all: realms are split at random between
@@ -87,9 +92,12 @@ impl Realm {
             pilots: 0,
             wage: 0.0,
             pilot_worth: 0.1,
-            hull_worth: 0.1,
+            hull_worth: 0.01,
             pilot_use: 0.0,
             hull_use: 0.0,
+            seats: 0.0,
+            seats_now: 0.0,
+            seats_next: 0.0,
             hired: 0,
             hires: true,
             fronts: 0,
@@ -105,12 +113,13 @@ impl Realm {
     /// The pilots a realm starts with: a quarter of its income's worth, or a
     /// front's if that's fewer.
     pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
-        (0.25 * self.income.max(0.0) / self.pay(rules)).min(rules.frontage) as u32
+        (0.25 * self.income.max(0.0) / self.pay(rules)).min(rules.seats * 6.0) as u32
     }
 
-    /// Pay its pilots (those it can't pay leave), then train some if one's
-    /// worth more over a career than its training and pay, or let some go if
-    /// one's worth less than its pay. Returns those who left or were let go.
+    /// Pay its pilots (those it can't pay leave), then train some if there's
+    /// a seat for them and one's worth more over a career than its training
+    /// and pay, or let some go if one's worth less than its pay, or has no
+    /// seat to fill. Returns those who left or were let go.
     pub fn keep_pilots(&mut self, rules: &super::Rules, retired: u32, free: u32) -> u32 {
         // What its fights showed this tick.
         self.pilot_worth += rules.sense * (self.pilot_use - self.pilot_worth);
@@ -124,6 +133,9 @@ impl Realm {
         };
         self.hull_worth += sense * (self.hull_use.min(most) - self.hull_worth);
         (self.pilot_use, self.hull_use) = (0.0, 0.0);
+        let need = self.seats_now + self.seats_next;
+        self.seats += (need - self.seats).max(rules.sense * (need - self.seats));
+        self.seats_next = 0.0;
         self.pilots -= retired.min(self.pilots);
         let upkeep = self.pay(rules);
         let before = self.pilots;
@@ -132,19 +144,23 @@ impl Realm {
         let mut left = before - self.pilots;
         // Over a career, what one earns it over their pay.
         let gain = (self.pilot_worth - upkeep) / rules.career.max(1e-6);
-        if gain > 0.0 && free > 0 {
+        let open = (self.seats.ceil() as u32).saturating_sub(self.pilots);
+        let idle = self.pilots.saturating_sub(self.seats.ceil() as u32);
+        if gain > 0.0 && free > 0 && open > 0 {
             // Pilots out of work need no training.
-            let n = rules.train.min(free);
+            let n = rules.train.min(free).min(open);
             self.pilots += n;
             self.hired = n;
-        } else if gain > rules.train_cost {
+        } else if gain > rules.train_cost && open > 0 {
             let n = rules
                 .train
+                .min(open)
                 .min((self.crystals / rules.train_cost.max(1e-6)) as u32);
             self.pilots += n;
             self.crystals -= n as f32 * rules.train_cost;
-        } else if gain < 0.0 {
-            let n = rules.train.min(self.pilots);
+        } else if gain < 0.0 || idle > 0 {
+            let all = if gain < 0.0 { self.pilots } else { idle };
+            let n = rules.train.min(all);
             self.pilots -= n;
             left += n;
         }

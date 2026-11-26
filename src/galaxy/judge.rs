@@ -30,7 +30,8 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         for f in 0..SIDES {
             if g.fighting(s, f) {
                 sides += 1;
-                seats += (g.systems[s].hulls[f] as f32).min(g.rules.frontage);
+                seats += (g.systems[s].hulls[f] as f32)
+                    .min(g.rules.seats * g.battles_in(s)[f].max(1) as f32);
                 let x = g.firing(s, f);
                 filled += x;
                 merc += (g.crewed(s, f).1 as f32).min(x);
@@ -46,7 +47,7 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         .chain(g.fleets.iter().map(|x| x.hulls as u64))
         .sum();
     println!(
-        "  t{:5} war sides {sides:4} taken/t {:.1} hulls {:.2}M lost/t {:.0} hull worth p50/90 {:.2}/{:.2} rate {:.2} | hold new/old {:.0}/{:.0} | realms {} GDP {:.0} vaults {:.0} (p50 {:.1}) share {:?}",
+        "  t{:5} war sides {sides:4} taken/t {:.1} hulls {:.2}M lost/t {:.0} hull worth p50/90 {:.2}/{:.2} rate {:.2} | hold {:.0} (lose new/old {:.4}/{:.4}) | realms {} GDP {:.0} vaults {:.0} (p50 {:.1}) share {:?}",
         g.tick,
         g.taken,
         hulls as f64 / 1e6,
@@ -54,8 +55,9 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         mid(g.hull_worth.clone(), 0.5),
         mid(g.hull_worth.clone(), 0.9),
         g.hull_rate,
-        g.hold_for(true),
-        g.hold_for(false),
+        g.hold_for(),
+        g.lose_new,
+        g.lose_old,
         live.len(),
         live.iter().map(|r| r.income).sum::<f32>(),
         live.iter().map(|r| r.crystals).sum::<f32>(),
@@ -116,6 +118,53 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
     );
 }
 
+/// Hiring realms beside the others: what each has, for each system held.
+fn arms(g: &Galaxy) {
+    for hires in [true, false] {
+        let (mut n, mut systems, mut vault, mut pilots, mut seats, mut income, mut broke) =
+            (0, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0);
+        let (mut tier, mut fronts) = (0.0f32, 0.0f32);
+        for (_, r) in g.living().filter(|(_, r)| r.hires == hires) {
+            n += 1;
+            systems += r.systems as f32;
+            vault += r.crystals;
+            pilots += r.pilots as f32;
+            seats += r.seats_now;
+            income += r.income;
+            tier += r.tier as f32 * r.systems as f32;
+            fronts += r.fronts as f32;
+            broke += (r.crystals < 2.0 * r.pilots as f32 * r.pay(&g.rules)) as u32;
+        }
+        let (mut hulls, mut owed) = (0.0f32, 0.0f32);
+        for (s, sys) in g.systems.iter().enumerate() {
+            for f in 0..super::PEOPLES {
+                let r = sys.realms[f];
+                if r != super::realm::NONE && g.realms[r as usize].hires == hires {
+                    hulls += (sys.hulls[f] - g.crewed(s, f).0) as f32;
+                }
+            }
+        }
+        for d in &g.debts {
+            if g.realms[d.realm as usize].hires == hires {
+                owed += d.crystals;
+            }
+        }
+        let per = systems.max(1.0);
+        println!(
+            "         {}: realms {n} systems {systems:.0}; a system: vault {:.1} owed {:.1} income {:.2} hulls {:.0} pilots {:.2} seats {:.2} fronts {:.3} tier {:.1}; can't pay 2 ticks {broke}",
+            if hires { "hirers" } else { "others" },
+            vault / per,
+            owed / per,
+            income / per,
+            hulls / per,
+            pilots / per,
+            seats / per,
+            fronts / per,
+            tier / per,
+        );
+    }
+}
+
 /// `RULES=name=value,..` changes a rule for a run.
 fn tweak(rules: &mut Rules) {
     let Ok(all) = std::env::var("RULES") else {
@@ -130,7 +179,6 @@ fn tweak(rules: &mut Rules) {
             "keep" => rules.keep = x,
             "ftl_speed" => rules.ftl_speed = x,
             "research" => rules.research = x,
-            "home_ground" => rules.home_ground = x,
             "ftl_cost" => rules.ftl_cost = x,
             "ship_cost" => rules.ship_cost = x,
             "hull_cost" => rules.hull_cost = x,
@@ -139,11 +187,9 @@ fn tweak(rules: &mut Rules) {
             "ship_upkeep" => rules.ship_upkeep = x,
             "pilot_upkeep" => rules.pilot_upkeep = x,
             "sense" => rules.sense = x,
-            "frontage" => rules.frontage = x,
             "kill_share" => rules.kill_share = x,
             "merc_term" => rules.merc_term = x as u32,
             "blitz" => rules.blitz = x as u32,
-            "take" => rules.take = x,
             "kill" => rules.kill = x,
             _ => println!("no rule {name}"),
         }
@@ -259,7 +305,7 @@ fn realm_worth(g: &Galaxy, r: u32) -> f64 {
         .filter(|d| d.realm == r)
         .map(|d| d.crystals as f64)
         .sum::<f64>();
-    let hold = g.hold_for(false).min(g.hold_for(true) * 2.0) as f64;
+    let hold = g.hold_for() as f64;
     for (s, sys) in g.systems.iter().enumerate() {
         for f in 0..super::PEOPLES {
             if sys.realms[f] != r {
@@ -399,6 +445,7 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                 if g.tick >= at + ticks / 8 {
                     report(&g, &last, was, (g.tick - at) as f64);
                     raids(&g, &last);
+                    self::arms(&g);
                     spans.report(&g);
                     (last, was, at) = (g.books, g.destroyed, g.tick);
                 }

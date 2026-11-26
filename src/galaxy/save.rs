@@ -79,6 +79,8 @@ struct Saved {
     #[serde(default)]
     taken_at: Vec<u64>,
     #[serde(default)]
+    fought_at: Vec<u64>,
+    #[serde(default)]
     rates: Option<[f32; 4]>,
     /// What a contract has lately made a company.
     #[serde(default)]
@@ -128,6 +130,9 @@ struct Saved {
     /// Not an older save.
     #[serde(default)]
     jobs: bool,
+    /// Hulls are ten to what they were (older saves: they aren't).
+    #[serde(default)]
+    tenfold: bool,
     /// Your own hulls on its contract (#385).
     #[serde(default)]
     own: Option<super::theater::Own>,
@@ -347,6 +352,9 @@ struct SavedRealm {
     /// What a pilot, and a hull, have lately been worth to it.
     #[serde(default)]
     senses: Option<[f32; 4]>,
+    /// `Realm::seats`, `seats_next`.
+    #[serde(default)]
+    seats: Option<[f32; 2]>,
 }
 
 impl Saved {
@@ -428,6 +436,7 @@ impl Galaxy {
                     hires: Some(r.hires),
                     fronts: r.fronts,
                     senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
+                    seats: Some([r.seats, r.seats_next]),
                 })
                 .collect(),
             splits: self.splits,
@@ -474,6 +483,7 @@ impl Galaxy {
             lessons: self.lessons.clone(),
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
+            fought_at: self.fought_at.clone(),
             fleets: self.fleets.clone(),
             hull_worth: self.hull_marks(),
             vaults: self
@@ -502,6 +512,7 @@ impl Galaxy {
             crew: self.crew,
             job: self.job,
             jobs: true,
+            tenfold: true,
             own: self.own,
             ended: self.ended.clone(),
         }
@@ -576,6 +587,9 @@ impl Galaxy {
                 hull_worth: r.senses.map_or(0.2, |x| x[1]),
                 pilot_use: r.senses.map_or(0.0, |x| x[2]),
                 hull_use: r.senses.map_or(0.0, |x| x[3]),
+                // (an older save: its pilots all have one)
+                seats: r.seats.map_or(r.pilots.unwrap_or(0) as f32, |x| x[0]),
+                seats_next: r.seats.map_or(0.0, |x| x[1]),
                 crystals: r.crystals,
                 income: r.income,
                 tier: r.tier.min(crate::economy::MAX_LEVEL),
@@ -649,6 +663,9 @@ impl Galaxy {
         }
         if s.taken_at.len() == g.taken_at.len() {
             g.taken_at = s.taken_at;
+        }
+        if s.fought_at.len() == g.fought_at.len() {
+            g.fought_at = s.fought_at;
         }
         if let Some(x) = s.rates {
             [g.lose_new, g.lose_old, g.hull_rate, g.savings] = x;
@@ -782,6 +799,31 @@ impl Galaxy {
                 }
             }
             g.fill_vaults();
+        }
+        if !s.tenfold {
+            // An older save: one of its hulls is ten of today's, and worth
+            // as much.
+            for sys in &mut g.systems {
+                sys.hulls.iter_mut().for_each(|h| *h *= 10);
+            }
+            for f in &mut g.fleets {
+                f.hulls *= 10;
+            }
+            for co in &mut g.companies {
+                co.hulls *= 10;
+                co.lost_before *= 10;
+                if let Some(k) = &mut co.contract {
+                    k.committed *= 10;
+                    k.field *= 10;
+                    k.lost *= 10;
+                    k.inbound *= 10;
+                }
+            }
+            for r in &mut g.realms {
+                r.hull_worth /= 10.0;
+            }
+            g.hull_worth.iter_mut().for_each(|w| *w /= 10.0);
+            g.hull_rate /= 10.0;
         }
         g.update_share();
         g.refresh();
