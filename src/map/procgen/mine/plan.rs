@@ -48,10 +48,14 @@ fn rooms(rng: &mut Rng) -> Vec<Hollow> {
     ]
 }
 
-/// `dig` with pillars left down the middle of its hall, between its ways in.
+/// `dig` with pillars left in its hall, between its ways in: toward the back
+/// wall, so there's a way past in front of them.
 fn pillared(rng: &mut Rng, mut dig: Dig) -> Dig {
     let hall = dig.rooms[2];
-    let mid = (hall.min + hall.max) * 0.5;
+    let mid = Vec2::new(
+        (hall.min.x + hall.max.x) * 0.5,
+        hall.min.y + (hall.max.y - hall.min.y) * 0.68,
+    );
     let r = rng.range(1.7, 2.2);
     for s in [-1.0, 1.0] {
         dig.pillars.push((mid + Vec2::X * s * 6.5, r));
