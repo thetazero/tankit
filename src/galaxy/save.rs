@@ -91,6 +91,9 @@ struct Saved {
     /// Bonuses realms owe companies: (realm, company id, crystals).
     #[serde(default)]
     debts: Vec<(u32, u32, f32)>,
+    /// What's paid back of each a tick.
+    #[serde(default)]
+    dues: Vec<f32>,
     #[serde(default)]
     destroyed: f64,
     /// Your company's id (#350).
@@ -128,6 +131,8 @@ struct SavedCompany {
     /// far over it bids); its earnings and pilot-ticks worked lately.
     #[serde(default)]
     pricing: Option<(u8, f32)>,
+    #[serde(default)]
+    patience: Option<f32>,
     #[serde(default)]
     earned: f32,
     #[serde(default)]
@@ -354,6 +359,7 @@ impl Galaxy {
                             RULES.iter().position(|&r| r == c.pricing.rule).unwrap_or(0) as u8,
                             c.pricing.k,
                         )),
+                        patience: Some(c.patience),
                         earned: c.earned,
                         worked: c.worked,
                         loss_rate: c.loss_rate,
@@ -389,6 +395,7 @@ impl Galaxy {
                 .iter()
                 .map(|d| (d.realm, d.company, d.crystals))
                 .collect(),
+            dues: self.debts.iter().map(|d| d.due).collect(),
             destroyed: self.destroyed,
             crew: self.crew,
             own: self.own,
@@ -572,6 +579,7 @@ impl Galaxy {
                                 k,
                             },
                         ),
+                        patience: c.patience.unwrap_or(100.0),
                         earned: c.earned,
                         worked: c.worked,
                         loss_rate: c.loss_rate,
@@ -589,10 +597,12 @@ impl Galaxy {
             g.debts = s
                 .debts
                 .iter()
-                .map(|&(realm, company, crystals)| Debt {
+                .enumerate()
+                .map(|(i, &(realm, company, crystals))| Debt {
                     realm,
                     company,
                     crystals,
+                    due: s.dues.get(i).copied().unwrap_or(crystals / 100.0),
                 })
                 .collect();
         }

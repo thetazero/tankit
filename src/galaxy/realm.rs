@@ -482,6 +482,10 @@ impl Galaxy {
             into[a] = b as u32;
             grown[b] = true;
             let take = self.realms[a].crystals;
+            // Its debts too.
+            for d in self.debts.iter_mut().filter(|d| d.realm as usize == a) {
+                d.realm = b as u32;
+            }
             self.realms[b].crystals += take;
             self.realms[a].crystals = 0.0;
             self.realms[b].pilots += std::mem::take(&mut self.realms[a].pilots);

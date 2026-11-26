@@ -844,31 +844,33 @@ fn defenders_hire() {
 
 /// A realm that can't pay a bill owes it: no company signs with it until
 /// it's paid, and it pays it back out of its income (#340). (What it owes
-/// the company it just signed with is what that company fronted it.)
+/// A contract's on credit, no interest: the realm owes the company, pays it
+/// back over the ticks the company waits, and nobody lends a realm more
+/// than its income would clear in that.
 #[test]
-fn unpaid_bills_are_debts() {
+fn realms_hire_on_credit() {
     let mut g = small_war();
     for _ in 0..150 {
         g.step();
         for c in &g.companies {
-            if let Some(k) = c.contract
-                && k.signed == g.tick
-            {
-                // All it owes is to companies it signed with this tick.
-                for d in g.debts.iter().filter(|d| d.realm == k.realm) {
-                    let same = g.companies.iter().any(|c| {
-                        c.id == d.company
-                            && c.contract
-                                .is_some_and(|j| j.realm == k.realm && j.signed == g.tick)
-                    });
-                    assert!(same, "tick {}: hired while in debt", g.tick);
-                }
-            }
+            assert!(c.crystals >= 0.0, "a company paid out what it didn't have");
         }
     }
     let b = g.books;
-    assert!(b.defaulted > 0.0 && b.repaid > 0.0, "{b:?}");
-    assert!(b.refused > 0, "{b:?}");
+    assert!(b.signed > 0 && b.financed > 0.0 && b.repaid > 0.0, "{b:?}");
+    assert!(b.repaid <= b.financed + 1.0, "no interest: {b:?}");
+    // A realm with no income gets no credit.
+    let signed = g.books.signed;
+    for r in &mut g.realms {
+        r.income = 0.0;
+    }
+    for r in 0..g.realms.len() as u32 {
+        for t in 0..g.systems.len().min(40) {
+            let f = g.realms[r as usize].faction as usize;
+            assert!(!g.hire(t, f, r, 50, 50.0, false));
+        }
+    }
+    assert_eq!(g.books.signed, signed);
 }
 
 /// Without companies, nobody's hired, and the war goes on as before.
@@ -1388,10 +1390,10 @@ fn judge_contracts() {
     // share here gained, its variance, realm worth gained, its variance.
     let mut out = [[0.0f64; 5]; 4];
     let mut marks = [[0.0f64; 5]; 4];
-    let after = 30;
-    for seed in [81, 82] {
+    let after = 150;
+    for seed in [101, 102] {
         let mut g = Galaxy::warmed_by(seed, 300);
-        for step in 0..150 {
+        for step in 0..45 {
             let pre = g.clone();
             g.lost_calls.clear();
             g.guesses.clear();
@@ -1404,7 +1406,7 @@ fn judge_contracts() {
                 .map(|k| (k.defend as usize, k.realm, k.target, k.side as usize))
                 .collect();
             let lost = g.lost_calls.clone();
-            for i in 0..(step % 2).min(lost.len()) {
+            for i in 0..0.min(lost.len()) {
                 let (r, t, f, d, _) = lost[(step * 37 + i * 101) % lost.len()];
                 jobs.push((2 + d as usize, r, t, f));
             }

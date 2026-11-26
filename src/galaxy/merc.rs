@@ -237,6 +237,9 @@ pub struct Company {
     pub pilots: Vec<Pilot>,
     /// How it prices pilots.
     pub pricing: Pricing,
+    /// Ticks it'll wait to be paid back: it lends a realm what its income
+    /// would clear in as many.
+    pub patience: f32,
     /// Its contract income lately, and pilot-ticks worked lately (both
     /// fading a little each tick).
     pub earned: f32,
@@ -290,6 +293,8 @@ pub struct Debt {
     pub realm: u32,
     pub company: u32,
     pub crystals: f32,
+    /// What it pays back a tick.
+    pub due: f32,
 }
 
 /// The mercenary trade, all told (for charts and tuning).
@@ -466,6 +471,7 @@ impl Galaxy {
                 rule: RULES[self.rng.index(RULES.len())],
                 k: self.rng.range(0.5, 2.0),
             },
+            patience: 10.0 * 100f32.powf(self.rng.f32()),
             earned: 0.0,
             worked: 0.0,
             loss_rate: 0.0,
@@ -557,8 +563,7 @@ impl Galaxy {
     /// is hired out at one price. Every tick, and as soon as a ship signs.
     pub(crate) fn fill_seats(&mut self, ease: bool) {
         // Each ship wants a pilot for each hull that can fire, as far as it
-        // can pay them a tick: out of the bill, and its crystal spread over
-        // the contract.
+        // can pay them a tick: its crystal spread over the contract.
         let front = self.rules.frontage as u32;
         let mut want: Vec<(u32, f32)> = self
             .companies
@@ -572,7 +577,7 @@ impl Galaxy {
                 let ticks = (k.expected_ticks * self.trust_ticks).max(1.0);
                 (
                     n.saturating_sub(co.pilots.len() as u32),
-                    k.rate + co.crystals.max(0.0) / ticks - wages,
+                    co.crystals.max(0.0) / ticks - wages,
                 )
             })
             .collect();
@@ -1133,9 +1138,39 @@ impl Galaxy {
         (held / n, (paid / n).max(1.0))
     }
 
-    /// Whether realm `r` owes any company a bill.
-    pub fn in_debt(&self, r: u32) -> bool {
-        self.debts.iter().any(|d| d.realm == r)
+    /// Realm `r` owes company `c` (an index) `crystals` more: no interest, to
+    /// be paid back over the ticks the company waits.
+    fn lend(&mut self, r: u32, c: usize, crystals: f32) {
+        let (id, patience) = (self.companies[c].id, self.companies[c].patience);
+        let i = match self
+            .debts
+            .iter()
+            .position(|d| d.realm == r && d.company == id)
+        {
+            Some(i) => i,
+            None => {
+                self.debts.push(Debt {
+                    realm: r,
+                    company: id,
+                    crystals: 0.0,
+                    due: 0.0,
+                });
+                self.debts.len() - 1
+            }
+        };
+        let d = &mut self.debts[i];
+        d.crystals += crystals;
+        d.due = d.crystals / patience.max(1.0);
+        self.books.financed += crystals as f64;
+    }
+
+    /// What realm `r` owes, to anyone.
+    fn owes(&self, r: u32) -> f32 {
+        self.debts
+            .iter()
+            .filter(|d| d.realm == r)
+            .map(|d| d.crystals)
+            .sum()
     }
 
     /// Realm `r` (of side `f`) needs `need` more hulls to go into system `t`
@@ -1168,22 +1203,10 @@ impl Galaxy {
         {
             return false;
         }
-        // Nobody works for a realm that hasn't paid its bills.
-        if self.in_debt(r) {
-            self.books.refused += 1;
-            return false;
-        }
+        let (owed, income) = (self.owes(r), self.realms[r as usize].income.max(0.0));
         // What the world is worth: what taking it gains, or what losing it would cost.
         let worth = self.worth(t, f, defend);
-        let realm = &self.realms[r as usize];
-        // Holding a world of its own may spend everything; an attack only
-        // what's above the reserve.
-        let purse = if defend {
-            realm.crystals
-        } else {
-            realm.crystals - self.rules.reserve * realm.income.max(0.0)
-        };
-        if worth <= 0.0 || purse <= 0.0 {
+        if worth <= 0.0 {
             return false;
         }
         let pos = self.systems[t].pos;
@@ -1208,7 +1231,7 @@ impl Galaxy {
 
         let (mut able, mut affordable) = (false, false);
         let (mut most, mut sale) = (0, 0u32);
-        let mut best: Option<(Quote, f32, f32, f32, Vec<Offer>, f32, usize)> = None;
+        let mut best: Option<(Quote, f32, f32, f32, Vec<Offer>, usize)> = None;
         let pay = self.realm_pay();
         // Each company quotes for a few sizes of the job; the realm takes
         // whichever does it the most good for its price, if any does.
@@ -1257,7 +1280,7 @@ impl Galaxy {
                 let forced = self.force.is_some();
                 #[cfg(not(test))]
                 let forced = false;
-                let least = quote.upfront.min(purse.max(0.0)) + quote.rate * self.trust_ticks;
+                let least = quote.upfront + quote.rate * self.trust_ticks;
                 if !forced && (1.0 - alone) * worth <= least {
                     affordable = true;
                     continue;
@@ -1271,7 +1294,7 @@ impl Galaxy {
                     own,
                     quote.hulls as f32,
                     quote.crew as f32,
-                    quote.upfront.min(purse),
+                    0.0,
                     defend,
                 );
                 // The company's pilots fire by their own gear.
@@ -1293,25 +1316,19 @@ impl Galaxy {
                 // learn from what contracts got them, and how long they ran.
                 let ticks = raw_ticks * self.trust_ticks;
                 let gain = with * self.trust[defend as usize] - alone;
-                // A realm that can't pay up front can have the company front
-                // it, if the company can: paid back by the tick it expects
-                // the work to take, with the company's margin on it again.
+                // All of it on credit: the company pays its way out of its
+                // own crystal, and lends only what the realm's income would
+                // clear, with all it owes, in the ticks the company waits.
                 let co = &self.companies[c];
-                let mut quote = quote;
-                // Fronted, it's owed: paid back out of the realm's income
-                // (`collect_debts`), with the company's margin on it again.
-                let mut financed = 0.0;
-                if quote.upfront > purse {
-                    if quote.cost > co.crystals {
-                        continue;
-                    }
-                    financed = quote.upfront * (1.0 + co.margin);
-                    quote.upfront = 0.0;
-                } else if quote.cost > co.crystals + quote.upfront {
+                let price = quote.upfront + quote.rate * ticks;
+                if quote.cost + quote.wages * ticks > co.crystals {
                     continue;
                 }
                 affordable = true;
-                let price = quote.upfront + financed + quote.rate * ticks;
+                if owed + price > income * co.patience {
+                    self.books.refused += 1;
+                    continue;
+                }
                 let net = gain * worth - price;
                 #[cfg(test)]
                 let net = if self.force == Some((r, t as u32)) {
@@ -1348,15 +1365,7 @@ impl Galaxy {
                     continue;
                 }
                 if best.as_ref().is_none_or(|b| net > b.1) {
-                    best = Some((
-                        quote,
-                        net,
-                        with * worth,
-                        raw_ticks,
-                        offers.clone(),
-                        financed,
-                        cell,
-                    ));
+                    best = Some((quote, net, with * worth, raw_ticks, offers.clone(), cell));
                 }
             }
         }
@@ -1368,11 +1377,11 @@ impl Galaxy {
             .any(|l| l.realm == r && l.system == t as u32)
         {
             if let Some(b) = &best {
-                lesson.cell = b.6;
+                lesson.cell = b.5;
             }
             self.lessons.push(lesson);
         }
-        let Some((q, _, expected, expected_ticks, offers, financed, _)) = best else {
+        let Some((q, _, expected, expected_ticks, offers, _)) = best else {
             if !able {
                 self.books.none_able += 1;
                 self.books.able_need += need as f64;
@@ -1385,8 +1394,8 @@ impl Galaxy {
             }
             return false;
         };
-        // Sign: the realm pays up front, the company buys and goes.
-        self.realms[r as usize].crystals -= q.upfront;
+        // Sign: the company buys and goes, and the realm owes it.
+        self.lend(r, q.company, q.upfront);
         let mut short = q.bought;
         for o in &offers {
             if short == 0 {
@@ -1407,8 +1416,7 @@ impl Galaxy {
         self.books.bought += spent as f64;
         self.books.flown += (q.cost - spent) as f64;
         let co = &mut self.companies[q.company];
-        co.crystals += q.upfront - q.cost;
-        co.earned += q.upfront - q.cost;
+        co.crystals -= q.cost;
         // Its own hulls go in first; the rest stay aboard.
         let own = co.hulls.min(q.hulls - q.bought);
         co.hulls -= own;
@@ -1437,22 +1445,6 @@ impl Galaxy {
         self.merc_moves[t][f].hired += land;
         if self.systems[t].realms[f] == super::realm::NONE {
             self.systems[t].realms[f] = r;
-        }
-        if financed > 0.0 {
-            let id = self.companies[q.company].id;
-            match self
-                .debts
-                .iter_mut()
-                .find(|d| d.realm == r && d.company == id)
-            {
-                Some(d) => d.crystals += financed,
-                None => self.debts.push(Debt {
-                    realm: r,
-                    company: id,
-                    crystals: financed,
-                }),
-            }
-            self.books.financed += financed as f64;
         }
         #[cfg(test)]
         self.guesses
@@ -1600,7 +1592,6 @@ impl Galaxy {
 
     /// Each realm in a company's debt pays some of it back, out of its income.
     fn collect_debts(&mut self) {
-        let dues = self.rules.merc_dues;
         let mut debts = std::mem::take(&mut self.debts);
         for d in &mut debts {
             let creditor = self.companies.iter().position(|c| c.id == d.company);
@@ -1610,10 +1601,7 @@ impl Galaxy {
                 d.crystals = 0.0;
                 continue;
             };
-            let pay = d
-                .crystals
-                .min(dues * realm.income.max(0.0))
-                .min(realm.crystals.max(0.0));
+            let pay = d.crystals.min(d.due).min(realm.crystals.max(0.0));
             realm.crystals -= pay;
             d.crystals -= pay;
             self.companies[c].crystals += pay;
@@ -1661,31 +1649,10 @@ impl Galaxy {
             co.loss_rate += RATE_FADE * (lost_now as f32 / fielded - co.loss_rate);
             co.kill_rate += RATE_FADE * (co.kills as f32 / fielded - co.kill_rate);
             co.kills = 0;
-            // The realm pays the tick's bill, owing what it can't.
-            let realm = &mut self.realms[k.realm as usize];
-            let paid = k.rate.min(realm.crystals.max(0.0));
-            realm.crystals -= paid;
+            // The tick's bill, on the realm's account.
             k.billed += k.rate;
-            self.companies[c].crystals += paid;
-            self.companies[c].earned += paid;
-            self.books.billed += paid as f64;
-            let owed = k.rate - paid;
-            if owed > 1e-4 {
-                let id = self.companies[c].id;
-                match self
-                    .debts
-                    .iter_mut()
-                    .find(|d| d.realm == k.realm && d.company == id)
-                {
-                    Some(d) => d.crystals += owed,
-                    None => self.debts.push(Debt {
-                        realm: k.realm,
-                        company: id,
-                        crystals: owed,
-                    }),
-                }
-                self.books.defaulted += owed as f64;
-            }
+            self.books.billed += k.rate as f64;
+            self.lend(k.realm, c, k.rate);
             let sys = &self.systems[t];
             // A realm that folds into another, or loses the attack's ground
             // to one breaking away, hands the contract on to it.
@@ -1819,6 +1786,7 @@ impl Galaxy {
                     k: co.pricing.k * self.rng.range(0.9, 1.1),
                     ..co.pricing
                 };
+                self.companies[new].patience = co.patience * self.rng.range(0.9, 1.1);
                 self.companies[new].earned = co.earned / 2.0;
                 self.companies[new].worked = co.worked / 2.0;
                 self.companies[c].earned -= co.earned / 2.0;

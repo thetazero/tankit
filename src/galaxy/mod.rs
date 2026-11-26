@@ -226,9 +226,6 @@ pub struct Rules {
     /// than this joins another (crystals, its hulls at `hull_price`).
     pub merc_split: f32,
     pub merc_join: f32,
-    /// A realm that owes a company a bonus pays back this share of its
-    /// income each tick (and no company works for it until it has).
-    pub merc_dues: f32,
     /// A realm puts this share of its crystal income into researching its
     /// next gear tier (#438)...
     pub research: f32,
@@ -304,7 +301,6 @@ impl Default for Rules {
             merc_horizon: 300.0,
             merc_split: 1000.0,
             merc_join: 40.0,
-            merc_dues: 0.5,
             research: 0.15,
             research_price: 1.2,
             pilot_upkeep: 0.01,
