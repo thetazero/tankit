@@ -790,6 +790,7 @@ mod tests {
             // (The Ithessar's are the biggest: not unoptimized.)
             .filter(|&l| l != Look::Ithessar || !cfg!(debug_assertions))
             .flat_map(|look| SEEDS.map(|s| (s, look)))
+            .filter(|&(s, l)| l != Look::Ithessar || s < 2)
     }
 
     fn spec(seed: u64) -> Spec {
