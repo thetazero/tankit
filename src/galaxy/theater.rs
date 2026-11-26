@@ -1158,7 +1158,7 @@ impl Galaxy {
         // The companies' hulls on contract here, each side's.
         let mut field = [0u32; SIDES];
         for k in self.companies.iter().filter_map(|c| c.contract.as_ref()) {
-            if k.target as usize == s && !k.lent {
+            if k.target as usize == s {
                 field[k.side as usize] += k.field;
             }
         }
@@ -1258,7 +1258,7 @@ impl Galaxy {
             mercs: {
                 let mut mercs = [0; SIDES];
                 for k in self.companies.iter().filter_map(|c| c.contract) {
-                    if k.target as usize == s && !k.lent {
+                    if k.target as usize == s {
                         mercs[k.side as usize] += k.field;
                     }
                 }

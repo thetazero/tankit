@@ -601,10 +601,7 @@ fn a_contract_is_spent_only_with_every_hull_gone() {
         let c = g
             .companies
             .iter()
-            .position(|c| {
-                c.contract
-                    .is_some_and(|k| !k.lent && k.side as usize != super::RAID)
-            })
+            .position(|c| c.contract.is_some_and(|k| k.side as usize != super::RAID))
             .expect("a company under contract");
         let tick = g.tick;
         let k = g.companies[c].contract.as_mut().unwrap();
