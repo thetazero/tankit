@@ -154,6 +154,17 @@ pub fn for_sites(class: crate::galaxy::theater::Class) -> Vec<usize> {
         .collect()
 }
 
+/// The missions a crystal mine on a `class` world can be fought with: on a
+/// desert world, those in a mine (#523). Placeholder worlds have no mine
+/// maps, so any of theirs.
+pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
+    let mut pool = for_sites(class);
+    if class == crate::galaxy::theater::Class::Desert {
+        pool.retain(|&i| MISSIONS[i].map_kind == MapKind::Mine);
+    }
+    pool
+}
+
 /// The missions a shield generator on a `class` world can be fought with: a
 /// Hold on the shield city, or on a desert world perhaps the shield desert.
 pub fn for_shields(class: crate::galaxy::theater::Class) -> Vec<usize> {
@@ -186,6 +197,7 @@ mod tests {
         use crate::galaxy::theater::Class;
         for class in [Class::Desert, Class::Placeholder] {
             assert!(!for_sites(class).is_empty(), "{class:?}");
+            assert!(!for_mines(class).is_empty(), "{class:?}");
             assert!(!for_shields(class).is_empty(), "{class:?}");
         }
         // Every desert mission is there from the start, not just Dry Wind.
