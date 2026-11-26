@@ -33,7 +33,7 @@ const PAD: u32 = 10;
 const BG: Rgb<u8> = Rgb([12, 13, 16]);
 
 fn color(f: usize) -> [f32; 3] {
-    let c = Faction::ALL[f].ui();
+    let c = Faction::side(f).ui();
     [c[0], c[1], c[2]]
 }
 
@@ -283,7 +283,7 @@ pub fn render(snaps: &[Snapshot], history: &[Census]) -> RgbImage {
             lx,
             ly,
             18.0,
-            Faction::ALL[f].name(),
+            Faction::side(f).name(),
             Rgb([230, 230, 230]),
         ) + 24;
     }

@@ -31,7 +31,7 @@
 //! picked at random, and on a generated kind the one map its seed names
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
-use super::{AT_WAR, Galaxy, SIDES, SiteKind};
+use super::{AT_WAR, Galaxy, PEOPLES, SIDES, SiteKind};
 use crate::faction::Faction;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
@@ -486,7 +486,7 @@ impl SiteView {
         match (self.kind, MISSIONS[self.mission].map_kind) {
             (SiteKind::Shield { damaged }, MapKind::ShieldSite(_)) => {
                 MapKind::ShieldSite(Generator {
-                    owner: Faction::ALL[self.owner],
+                    owner: Faction::side(self.owner),
                     condition: if damaged {
                         Condition::DAMAGED
                     } else {
@@ -519,13 +519,13 @@ impl Theater {
             mission: s.mission,
             map_kind: s.map_kind(),
             map_seed: s.map_seed,
-            factions: [Faction::ALL[self.employer], Faction::ALL[s.enemy]],
+            factions: [Faction::side(self.employer), Faction::side(s.enemy)],
         })
     }
 
     /// The sides in the war here (hulls or sites), most hulls first.
     pub fn sides(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = (0..SIDES)
+        let mut out: Vec<usize> = (0..PEOPLES)
             .filter(|&f| self.hulls[f] >= AT_WAR || self.held[f] > 0)
             .collect();
         out.sort_by_key(|&a| std::cmp::Reverse(self.hulls[a]));
@@ -585,12 +585,18 @@ impl Galaxy {
         }
         let present = self.present(s);
         let mut out = self.targets(s, f);
-        for g in (0..SIDES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
+        for g in (0..PEOPLES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
             for t in self.targets(s, g) {
                 if self.sites[t].owner as usize == f && !out.contains(&t) {
                     out.push(t);
                 }
             }
+        }
+        // Not against a raiding company: there's no such battle to play yet.
+        if present[super::RAID] || self.systems[s].held[super::RAID] > 0 {
+            let first = self.site_range(s).start;
+            let at = self.site_enemies(s, f);
+            out.retain(|&i| at[i - first] != super::RAID);
         }
         out.sort();
         out
@@ -600,9 +606,13 @@ impl Galaxy {
     /// to join this tick (indices into `companies`).
     fn berths(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.companies.len()).filter(|&c| {
-            self.companies[c]
-                .contract
-                .is_some_and(|k| !self.commits(k.target as usize, k.side as usize).is_empty())
+            let co = &self.companies[c];
+            !co.pilots.is_empty()
+                && co.contract.is_some_and(|k| {
+                    k.side as usize != super::RAID
+                        && k.field > 0
+                        && !self.commits(k.target as usize, k.side as usize).is_empty()
+                })
         })
     }
 
@@ -677,12 +687,15 @@ impl Galaxy {
                 out.dedup();
                 out
             }),
-            work: co.contract.map(|k| Work {
-                side: k.side as usize,
-                realm: system_name(self.realms[k.realm as usize].seat as usize),
-                system: system_name(k.target as usize),
-                defend: k.defend,
-            }),
+            work: co
+                .contract
+                .filter(|k| k.side as usize != super::RAID)
+                .map(|k| Work {
+                    side: k.side as usize,
+                    realm: system_name(self.realms[k.realm as usize].seat as usize),
+                    system: system_name(k.target as usize),
+                    defend: k.defend,
+                }),
         }
     }
 
@@ -885,9 +898,9 @@ impl Galaxy {
     /// The theater aboard company `c` (an index into `companies`).
     fn aboard_company(&self, c: usize, rank: u32) -> Option<Theater> {
         let co = &self.companies[c];
-        let k = co.contract?;
+        let k = co.contract.filter(|k| k.side as usize != super::RAID)?;
         let (s, f) = (k.target as usize, k.side as usize);
-        if self.commits(s, f).is_empty() {
+        if k.field == 0 || co.pilots.is_empty() || self.commits(s, f).is_empty() {
             return None;
         }
         let mut t = self.theater_at(s, f);
@@ -961,10 +974,10 @@ impl Galaxy {
                 attacker[t - sys.sites.0 as usize].get_or_insert(g);
             }
         }
-        let strongest = (0..SIDES)
+        let strongest = (0..PEOPLES)
             .filter(|&g| present[g] && self.hostile(f, g))
             .max_by_key(|&a| sys.hulls[a])
-            .unwrap_or((f + 1) % SIDES);
+            .unwrap_or((f + 1) % PEOPLES);
         self.site_range(s)
             .map(|i| {
                 let owner = self.sites[i].owner as usize;
@@ -1193,7 +1206,7 @@ mod tests {
                     );
                 }
                 for s in &committed {
-                    let sides = [Faction::ALL[t.employer], Faction::ALL[s.enemy]];
+                    let sides = [Faction::side(t.employer), Faction::side(s.enemy)];
                     let b = g
                         .muster_crew(t.system, &sides, Some(s.index))
                         .expect("a battle with your company in it");
@@ -1266,6 +1279,20 @@ mod tests {
         assert!(t.is_none() && !ticked);
         let at = g.companies[c].at;
         g.companies[c].idle_since = g.tick - g.rules.merc_idle as u64;
+        // Realms at war nearby are asking for a company, and none's near.
+        let here = g.systems[at as usize].pos;
+        let near = (0..g.systems.len())
+            .filter(|&s| s != at as usize && g.systems[s].at_war())
+            .min_by(|&a, &b| {
+                let d = |s: usize| g.systems[s].pos.distance(here);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap();
+        g.unmet[near] = 5.0;
+        // And contracts pay well enough for the fare.
+        for c in &mut g.companies {
+            c.earned = 1000.0;
+        }
         assert!(g.seek_work() >= 1);
         assert_eq!(g.crew, Some(id));
         let c = g.crew_company().unwrap();
@@ -1280,14 +1307,17 @@ mod tests {
     /// where waiting for it all at once does, tick for tick.
     #[test]
     fn waiting_in_slices_is_waiting_all_at_once() {
-        let idle = || {
-            let mut g = galaxy_with_work();
-            let c = g.crew_company().unwrap();
-            g.companies[c].contract = None;
-            g
-        };
-        let (mut whole, mut sliced) = (idle(), idle());
-        assert_eq!(whole.to_json(), sliced.to_json());
+        // A stretch with a wait of several slices in it.
+        let mut g = galaxy_with_work();
+        let start = (0..200)
+            .find_map(|_| {
+                g.step();
+                let mut x = g.clone();
+                x.await_work(None, 1, 200);
+                (x.tick > g.tick + 8).then(|| g.clone())
+            })
+            .expect("a wait");
+        let (mut whole, mut sliced) = (start.clone(), start);
         let (t, ticked) = whole.await_work(None, 1, 200);
         assert!(ticked, "work right away: the test shows nothing");
         let mut left = 200;
@@ -1297,7 +1327,7 @@ mod tests {
             let mut n = 0;
             if sliced.await_work_slice(None, 1, &mut left, || {
                 n += 1;
-                n > 0
+                n > 3
             }) {
                 break;
             }
@@ -1318,6 +1348,10 @@ mod tests {
         let id = g.companies[c].id;
         g.crew = Some(id);
         (g.companies[c].crystals, g.companies[c].hulls) = (0.0, 0);
+        g.debts.clear();
+        for o in (0..g.companies.len()).filter(|&o| o != c) {
+            g.companies[o].crystals = 100.0;
+        }
         g.split_and_join();
         assert!(g.company(id).is_none(), "it didn't join");
         assert_ne!(g.crew, Some(id));
@@ -1521,7 +1555,7 @@ mod tests {
             match (s.kind, s.map_kind()) {
                 (SiteKind::Shield { damaged }, MapKind::ShieldSite(made)) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
-                    assert_eq!(made.owner, Faction::ALL[s.owner]);
+                    assert_eq!(made.owner, Faction::side(s.owner));
                     let shape = if damaged {
                         Condition::DAMAGED
                     } else {

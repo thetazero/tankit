@@ -6,12 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use glam::{Vec2, Vec3};
+use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
-use super::merc::{Company, Contract, Debt, Pilot};
+use super::merc::{Company, Contract, Debt, Pilot, Pricing, RULES};
 use super::realm::{NONE, Realm};
-use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
+use super::{Galaxy, PEOPLES, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
 
 /// The war every new pilot joins: one seed for everyone.
@@ -58,9 +58,47 @@ struct Saved {
     /// Your pilot's id.
     #[serde(default)]
     you: Option<u32>,
+    /// Your back pay: what companies owe you, and what's reached you.
+    #[serde(default)]
+    owed_you: Vec<(u32, f32)>,
+    #[serde(default)]
+    your_wallet: f32,
+    /// Pilots on no ship, and what pilots have been signing for.
+    #[serde(default)]
+    pool: Vec<SavedPilot>,
+    #[serde(default)]
+    wage_curve: Option<[f32; super::merc::MARKS]>,
+    /// What realms pay their pilots, on average; how far they trust their
+    /// forecasts of contracts.
+    #[serde(default)]
+    pay: Option<f32>,
+    #[serde(default)]
+    trust_ticks: Option<f32>,
+    /// What each system's lately been through, and the market's going rates:
+    /// (when taken), (chance lost new, old), hull rate, savings.
+    #[serde(default)]
+    taken_at: Vec<u64>,
+    #[serde(default)]
+    rates: Option<[f32; 4]>,
+    /// What companies have lately made, each, and were all worth.
+    #[serde(default)]
+    profit: Option<(f32, f32)>,
+    /// Every planet's vault: its side, its realm, its crystal.
+    #[serde(default)]
+    vaults: Vec<(u8, u32, f32)>,
+    /// The share of merc pilots in work lately.
+    #[serde(default)]
+    employment: Option<f32>,
+    /// Where realms have lately looked for a company and found none
+    /// (system, how much); ended contracts not yet looked back on.
+    #[serde(default)]
+    unmet: Vec<(u32, f32)>,
     /// Bonuses realms owe companies: (realm, company id, crystals).
     #[serde(default)]
     debts: Vec<(u32, u32, f32)>,
+    /// What's paid back of each a tick.
+    #[serde(default)]
+    dues: Vec<f32>,
     #[serde(default)]
     destroyed: f64,
     /// Your company's id (#350).
@@ -86,13 +124,82 @@ struct SavedCompany {
     idle_since: Option<u64>,
     id: u32,
     contract: Option<SavedContract>,
-    /// Its pilots, each what they know of every part (#438); none in a
-    /// save from before: a crew of rookies.
+    /// Its crew.
     #[serde(default)]
+    crew: Vec<SavedPilot>,
+    /// Older saves: its pilots' knowledge, and their ids.
+    #[serde(default, skip_serializing)]
     pilots: Vec<Vec<f32>>,
-    /// Those pilots' ids; older saves have none.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pilot_ids: Vec<u32>,
+    /// How it prices pilots (its rule, as an index into `RULES`, and how
+    /// far over it bids); its earnings and pilot-ticks worked lately.
+    #[serde(default)]
+    pricing: Option<(u8, f32)>,
+    #[serde(default)]
+    patience: Option<f32>,
+    #[serde(default)]
+    earned: f32,
+    #[serde(default)]
+    worked: f32,
+    /// Its guesses at a contract's losses and kills a hull a tick, and its
+    /// contract's hulls lost as of last tick.
+    #[serde(default)]
+    loss_rate: f32,
+    #[serde(default)]
+    kill_rate: f32,
+    #[serde(default)]
+    lost_before: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedPilot {
+    id: u32,
+    /// What they know of each part.
+    known: Vec<f32>,
+    #[serde(default)]
+    wallet: f32,
+    #[serde(default)]
+    owed: f32,
+    #[serde(default)]
+    wage: f32,
+    #[serde(default)]
+    idle: u32,
+    #[serde(default)]
+    earning: f32,
+    #[serde(default)]
+    home: Option<u32>,
+}
+
+impl SavedPilot {
+    fn of(p: &Pilot) -> SavedPilot {
+        SavedPilot {
+            id: p.id,
+            known: p.known.steps(),
+            wallet: p.wallet,
+            owed: p.owed,
+            wage: p.wage,
+            idle: p.idle,
+            earning: p.earning,
+            home: p.home,
+        }
+    }
+
+    fn pilot(&self) -> Pilot {
+        let mut p = Pilot {
+            id: self.id,
+            known: crate::economy::Known::from_steps(&self.known),
+            rank: 0.0,
+            wallet: self.wallet,
+            owed: self.owed,
+            wage: self.wage,
+            idle: self.idle,
+            earning: self.earning,
+            home: self.home,
+        };
+        p.learned();
+        p
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -102,13 +209,81 @@ struct SavedContract {
     target: u32,
     signed: u64,
     upfront: f32,
-    bonus: f32,
+    /// What it's billed a tick, and has been so far (older saves had a
+    /// bonus instead: they finish unbilled).
+    #[serde(default)]
+    rate: f32,
+    #[serde(default)]
+    billed: f32,
+    #[serde(default)]
+    wage: f32,
     #[serde(alias = "max_loss")]
     committed: f32,
     field: f32,
     lost: f32,
     #[serde(default)]
     defend: bool,
+    #[serde(default)]
+    lent: bool,
+    #[serde(default)]
+    seats: u32,
+    /// What the realm expected of it, and the ticks it expected to pay.
+    #[serde(default)]
+    expected: f32,
+    #[serde(default)]
+    expected_ticks: f32,
+    #[serde(default)]
+    held: u8,
+    #[serde(default)]
+    worth: f32,
+}
+
+impl SavedContract {
+    fn of(k: &Contract) -> SavedContract {
+        SavedContract {
+            realm: k.realm,
+            side: k.side,
+            target: k.target,
+            signed: k.signed,
+            upfront: k.upfront,
+            rate: k.rate,
+            billed: k.billed,
+            wage: k.wage,
+            committed: k.committed as f32,
+            field: k.field as f32,
+            lost: k.lost as f32,
+            defend: k.defend,
+            lent: k.lent,
+            seats: k.seats,
+            expected: k.expected,
+            expected_ticks: k.expected_ticks,
+            held: k.held,
+            worth: k.worth,
+        }
+    }
+
+    fn contract(&self) -> Contract {
+        Contract {
+            realm: self.realm,
+            side: self.side,
+            target: self.target,
+            signed: self.signed,
+            upfront: self.upfront,
+            rate: self.rate,
+            billed: self.billed,
+            wage: self.wage,
+            committed: whole(self.committed),
+            field: whole(self.field),
+            lost: whole(self.lost),
+            defend: self.defend,
+            lent: self.lent,
+            seats: self.seats,
+            expected: self.expected,
+            expected_ticks: self.expected_ticks,
+            held: self.held,
+            worth: self.worth,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -118,8 +293,6 @@ struct SavedRealm {
     crystals: f32,
     income: f32,
     founded: u64,
-    /// Where its offensive is aimed, and the last tick it took a site.
-    offensive: Option<([f32; 3], u64)>,
     /// Its gear tier and research toward the next (#438).
     #[serde(default)]
     tier: u8,
@@ -128,9 +301,18 @@ struct SavedRealm {
     /// Its pilots; older saves have none.
     #[serde(default)]
     pilots: Option<u32>,
+    /// What it pays each.
+    #[serde(default)]
+    wage: f32,
+    /// Whether it hires mercs (older saves: they all do).
+    #[serde(default)]
+    hires: Option<bool>,
     /// Systems it was fighting in.
     #[serde(default)]
     fronts: u32,
+    /// What a pilot, and a hull, have lately been worth to it.
+    #[serde(default)]
+    senses: Option<[f32; 4]>,
 }
 
 impl Galaxy {
@@ -166,11 +348,13 @@ impl Galaxy {
                     crystals: r.crystals,
                     income: r.income,
                     founded: r.founded,
-                    offensive: r.offensive.map(|o| (o.at.to_array(), o.gained)),
                     tier: r.tier,
                     research: r.research,
                     pilots: Some(r.pilots),
+                    wage: r.wage,
+                    hires: Some(r.hires),
                     fronts: r.fronts,
+                    senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
                 })
                 .collect(),
             splits: self.splits,
@@ -186,31 +370,54 @@ impl Galaxy {
                         founded: c.founded,
                         idle_since: Some(c.idle_since),
                         id: c.id,
-                        contract: c.contract.map(|k| SavedContract {
-                            realm: k.realm,
-                            side: k.side,
-                            target: k.target,
-                            signed: k.signed,
-                            upfront: k.upfront,
-                            bonus: k.bonus,
-                            committed: k.committed as f32,
-                            field: k.field as f32,
-                            lost: k.lost as f32,
-                            defend: k.defend,
-                        }),
-                        pilots: c.pilots.iter().map(|p| p.known.steps()).collect(),
-                        pilot_ids: c.pilots.iter().map(|p| p.id).collect(),
+                        contract: c.contract.as_ref().map(SavedContract::of),
+                        crew: c.pilots.iter().map(SavedPilot::of).collect(),
+                        pricing: Some((
+                            RULES.iter().position(|&r| r == c.pricing.rule).unwrap_or(0) as u8,
+                            c.pricing.k,
+                        )),
+                        patience: Some(c.patience),
+                        earned: c.earned,
+                        worked: c.worked,
+                        loss_rate: c.loss_rate,
+                        kill_rate: c.kill_rate,
+                        lost_before: c.lost_before,
+                        pilots: Vec::new(),
+                        pilot_ids: Vec::new(),
                     })
                     .collect(),
             ),
             next_company: self.next_company,
             next_pilot: self.next_pilot,
             you: Some(self.you.id),
+            pool: self.pool.iter().map(SavedPilot::of).collect(),
+            wage_curve: Some(self.wage_curve),
+            pay: Some(self.pay),
+            trust_ticks: Some(self.trust_ticks),
+            profit: Some((self.profit, self.worth_before)),
+            taken_at: self.taken_at.clone(),
+            vaults: self
+                .vaults
+                .iter()
+                .map(|v| (v.side, v.realm, v.crystals))
+                .collect(),
+            rates: Some([self.lose_new, self.lose_old, self.hull_rate, self.savings]),
+            employment: Some(self.employment),
+            unmet: self
+                .unmet
+                .iter()
+                .enumerate()
+                .filter(|&(_, &u)| u > 1e-3)
+                .map(|(s, &u)| (s as u32, u))
+                .collect(),
+            owed_you: self.owed_you.clone(),
+            your_wallet: self.you.wallet,
             debts: self
                 .debts
                 .iter()
                 .map(|d| (d.realm, d.company, d.crystals))
                 .collect(),
+            dues: self.debts.iter().map(|d| d.due).collect(),
             destroyed: self.destroyed,
             crew: self.crew,
             own: self.own,
@@ -229,8 +436,9 @@ impl Galaxy {
         anyhow::ensure!(
             s.owners.len() == g.sites.len()
                 && s.down.len() == g.sites.len()
-                && s.hulls.len() == g.systems.len() * SIDES
-                && s.tags.len() == g.systems.len() * SIDES,
+                && (s.hulls.len() == g.systems.len() * SIDES
+                    || s.hulls.len() == g.systems.len() * PEOPLES)
+                && s.tags.len() == s.hulls.len(),
             "saved for a different layout"
         );
         for (i, site) in g.sites.iter_mut().enumerate() {
@@ -253,13 +461,14 @@ impl Galaxy {
                 .all(|&t| t == NONE || (t as usize) < s.realms.len()),
             "hulls of no realm"
         );
+        // Older saves have only the peoples' sides.
+        let sides = s.hulls.len() / g.systems.len().max(1);
         for (i, sys) in g.systems.iter_mut().enumerate() {
-            for f in 0..SIDES {
-                sys.hulls[f] = whole(s.hulls[i * SIDES + f]);
-                sys.building[f] = s.building.get(i * SIDES + f).copied().unwrap_or(0.0);
+            for f in 0..sides {
+                sys.hulls[f] = whole(s.hulls[i * sides + f]);
+                sys.building[f] = s.building.get(i * sides + f).copied().unwrap_or(0.0);
             }
-            sys.realms
-                .copy_from_slice(&s.tags[i * SIDES..(i + 1) * SIDES]);
+            sys.realms[..sides].copy_from_slice(&s.tags[i * sides..(i + 1) * sides]);
             sys.held = [0; SIDES];
             for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
                 sys.held[site.owner as usize] += 1;
@@ -270,7 +479,6 @@ impl Galaxy {
             .realms
             .iter()
             .map(|r| Realm {
-                fronts: r.fronts,
                 pilots: r.pilots.unwrap_or_else(|| {
                     Realm {
                         income: r.income,
@@ -278,12 +486,15 @@ impl Galaxy {
                     }
                     .pilots_wanted(&rules)
                 }),
+                wage: r.wage,
+                hires: r.hires.unwrap_or(true),
+                fronts: r.fronts,
+                pilot_worth: r.senses.map_or(0.1, |x| x[0]),
+                hull_worth: r.senses.map_or(0.2, |x| x[1]),
+                pilot_use: r.senses.map_or(0.0, |x| x[2]),
+                hull_use: r.senses.map_or(0.0, |x| x[3]),
                 crystals: r.crystals,
                 income: r.income,
-                offensive: r.offensive.map(|(at, gained)| Offensive {
-                    at: Vec3::from_array(at),
-                    gained,
-                }),
                 tier: r.tier.min(crate::economy::MAX_LEVEL),
                 research: r.research,
                 ..Realm::new(r.faction, r.seat, r.founded)
@@ -301,7 +512,13 @@ impl Galaxy {
             s.companies
                 .iter()
                 .flatten()
-                .flat_map(|c| c.pilot_ids.iter().copied())
+                .flat_map(|c| {
+                    c.pilot_ids
+                        .iter()
+                        .copied()
+                        .chain(c.crew.iter().map(|p| p.id))
+                })
+                .chain(s.pool.iter().map(|p| p.id))
                 .chain(s.you)
                 .max()
                 .unwrap_or(0),
@@ -310,13 +527,43 @@ impl Galaxy {
             Some(id) => Pilot::rookie(id),
             None => g.new_pilot(),
         };
+        g.you.wallet = s.your_wallet;
+        g.owed_you = s.owed_you;
+        g.pool = s.pool.iter().map(SavedPilot::pilot).collect();
+        if let Some(curve) = s.wage_curve {
+            g.wage_curve = curve;
+        }
+        if let Some(pay) = s.pay {
+            g.pay = pay;
+        }
+        if let Some(e) = s.employment {
+            g.employment = e;
+        }
+        for &(sys, u) in &s.unmet {
+            if let Some(x) = g.unmet.get_mut(sys as usize) {
+                *x = u;
+            }
+        }
+        if let Some(ticks) = s.trust_ticks {
+            g.trust_ticks = ticks;
+        }
+        if let Some((profit, worth)) = s.profit {
+            (g.profit, g.worth_before) = (profit, worth);
+        }
+        if s.taken_at.len() == g.taken_at.len() {
+            g.taken_at = s.taken_at;
+        }
+        if let Some(x) = s.rates {
+            [g.lose_new, g.lose_old, g.hull_rate, g.savings] = x;
+        }
         if let Some(companies) = s.companies {
             let (systems, realms) = (g.systems.len(), g.realms.len());
             anyhow::ensure!(
                 companies.iter().all(|c| (c.at as usize) < systems
                     && c.contract
                         .as_ref()
-                        .is_none_or(|k| (k.realm as usize) < realms
+                        .is_none_or(|k| ((k.realm as usize) < realms
+                            || k.side as usize == super::RAID)
                             && (k.side as usize) < SIDES
                             && (k.target as usize) < systems)),
                 "a company nowhere, or working for nobody"
@@ -324,21 +571,18 @@ impl Galaxy {
             g.companies = companies
                 .into_iter()
                 .map(|c| {
-                    let mut pilots: Vec<Pilot> = c
-                        .pilots
-                        .iter()
-                        .enumerate()
-                        .map(|(i, k)| Pilot {
-                            id: c
-                                .pilot_ids
-                                .get(i)
-                                .copied()
-                                .unwrap_or_else(|| g.new_pilot().id),
+                    let mut pilots: Vec<Pilot> = c.crew.iter().map(SavedPilot::pilot).collect();
+                    // Older saves: their pilots, given ids if they had none.
+                    for (i, k) in c.pilots.iter().enumerate() {
+                        let id = c.pilot_ids.get(i).copied();
+                        pilots.push(Pilot {
                             known: crate::economy::Known::from_steps(k),
-                        })
-                        .collect();
-                    // Older saves had crews of six: fill them up.
-                    if c.pilot_ids.is_empty() {
+                            ..id.map_or_else(|| g.new_pilot(), Pilot::rookie)
+                        });
+                    }
+                    // Saves from before pilots had ids had crews of six: fill
+                    // them up.
+                    if s.next_pilot == 0 && c.crew.is_empty() && c.pilot_ids.is_empty() {
                         while pilots.len() < g.rules.crew as usize {
                             pilots.push(g.new_pilot());
                         }
@@ -351,19 +595,26 @@ impl Galaxy {
                         founded: c.founded,
                         idle_since: c.idle_since.unwrap_or(s.tick),
                         id: c.id,
-                        contract: c.contract.map(|k| Contract {
-                            realm: k.realm,
-                            side: k.side,
-                            target: k.target,
-                            signed: k.signed,
-                            upfront: k.upfront,
-                            bonus: k.bonus,
-                            committed: whole(k.committed),
-                            field: whole(k.field),
-                            lost: whole(k.lost),
-                            defend: k.defend,
-                        }),
+                        contract: c.contract.as_ref().map(SavedContract::contract),
                         pilots,
+                        // Older saves: a rule by its id, at par.
+                        pricing: c.pricing.map_or(
+                            Pricing {
+                                rule: RULES[c.id as usize % RULES.len()],
+                                k: 1.0,
+                            },
+                            |(r, k)| Pricing {
+                                rule: RULES[(r as usize).min(RULES.len() - 1)],
+                                k,
+                            },
+                        ),
+                        patience: c.patience.unwrap_or(100.0),
+                        earned: c.earned,
+                        worked: c.worked,
+                        loss_rate: c.loss_rate,
+                        kill_rate: c.kill_rate,
+                        kills: 0,
+                        lost_before: c.lost_before,
                     }
                 })
                 .collect();
@@ -375,10 +626,12 @@ impl Galaxy {
             g.debts = s
                 .debts
                 .iter()
-                .map(|&(realm, company, crystals)| Debt {
+                .enumerate()
+                .map(|(i, &(realm, company, crystals))| Debt {
                     realm,
                     company,
                     crystals,
+                    due: s.dues.get(i).copied().unwrap_or(crystals / 100.0),
                 })
                 .collect();
         }
@@ -388,6 +641,36 @@ impl Galaxy {
         g.ended = s.ended;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
+        if s.vaults.len() == g.vaults.len() {
+            for (v, x) in g.vaults.iter_mut().zip(&s.vaults) {
+                let realm = if (x.1 as usize) < g.realms.len() {
+                    x.1
+                } else {
+                    NONE
+                };
+                *v = super::Vault {
+                    side: x.0.min(SIDES as u8 - 1),
+                    realm,
+                    crystals: x.2,
+                };
+            }
+        } else {
+            // An older save: each planet's vault is whoever holds most of
+            // its sites'.
+            for i in 0..g.systems.len() {
+                let (a, b) = g.systems[i].sites;
+                for planet in 0..g.systems[i].planets {
+                    let mut held = [0; SIDES];
+                    for x in &g.sites[a as usize..b as usize] {
+                        held[x.owner as usize] += (x.planet == planet) as u32;
+                    }
+                    let side = (0..PEOPLES).max_by_key(|&f| held[f]).unwrap_or(0);
+                    let v = &mut g.vaults[g.vault_at[i] as usize + planet as usize];
+                    (v.side, v.realm) = (side as u8, NONE);
+                }
+            }
+            g.fill_vaults();
+        }
         g.update_share();
         g.refresh();
         Ok(g)
@@ -415,6 +698,40 @@ impl Galaxy {
             g.step();
         }
         // A pilot joining sees what happens from here on.
+        g.clear_moves();
+        g
+    }
+
+    /// Tests: a war where a company's at work for a realm, with hulls of its
+    /// own.
+    #[cfg(test)]
+    pub fn warmed_hired(seed: u64) -> Galaxy {
+        let mut g = Galaxy::warmed_by(seed, 100);
+        let hired = |g: &Galaxy| {
+            g.companies.iter().any(|c| {
+                c.pilots.len() >= 4
+                    && c.contract.is_some_and(|k| {
+                        let (s, f) = (k.target as usize, k.side as usize);
+                        !k.lent
+                            && f != super::RAID
+                            && k.field >= 8
+                            && g.fighting(s, f)
+                            && !g.commits(s, f).is_empty()
+                    })
+            })
+        };
+        while !hired(&g) {
+            g.step();
+        }
+        // Only that work, so it's what's found.
+        for c in 0..g.companies.len() {
+            let keep = g.companies[c]
+                .contract
+                .is_some_and(|k| !k.lent && k.side as usize != super::RAID && k.field >= 8);
+            if !keep {
+                g.companies[c].contract = None;
+            }
+        }
         g.clear_moves();
         g
     }
@@ -542,6 +859,7 @@ mod tests {
             c.contract = None;
             c.crystals = 100.0;
         }
+        g.debts.clear();
         g.rules.merc_split = 1000.0;
         g.companies[0].crystals = g.rules.merc_split * 3.0;
         g.companies[1].crystals = g.rules.merc_join / 2.0;
@@ -553,7 +871,15 @@ mod tests {
         v.as_object_mut().unwrap().remove("next_pilot");
         v.as_object_mut().unwrap().remove("you");
         for c in v["companies"].as_array_mut().unwrap() {
-            c.as_object_mut().unwrap().remove("pilot_ids");
+            let c = c.as_object_mut().unwrap();
+            let crew = c.remove("crew").unwrap();
+            let known: Vec<serde_json::Value> = crew
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["known"].clone())
+                .collect();
+            c.insert("pilots".into(), known.into());
         }
         let mut old = Galaxy::from_json(&v.to_string()).unwrap();
         unique(&old);
@@ -561,6 +887,31 @@ mod tests {
             old.step();
         }
         unique(&old);
+    }
+
+    /// A save from before vaults gives each to whoever holds its planet.
+    #[test]
+    fn older_saves_get_vaults() {
+        let region = REGION * 0.3;
+        let mut g = Galaxy::with_size(5, SYSTEMS / 10, region, Rules::default());
+        for _ in 0..60 {
+            g.step();
+        }
+        let mut v = serde_json::to_value(g.saved(region)).unwrap();
+        v.as_object_mut().unwrap().remove("vaults");
+        let old = Galaxy::from_json(&v.to_string()).unwrap();
+        for s in 0..old.systems.len() {
+            let (a, b) = old.systems[s].sites;
+            for (p, vault) in old.vaults_of(s).iter().enumerate() {
+                let held = old.sites[a as usize..b as usize]
+                    .iter()
+                    .any(|x| x.planet as usize == p && x.owner == vault.side);
+                assert!(held, "system {s}: a vault of nobody's here");
+            }
+        }
+        let banks: f32 = old.living().map(|(_, r)| r.crystals).sum();
+        let vaults: f32 = old.vaults.iter().map(|v| v.crystals).sum();
+        assert!((vaults / banks - 1.0).abs() < 0.05, "{vaults} of {banks}");
     }
 
     /// A saved galaxy comes back the same, and goes on the same.

@@ -1642,7 +1642,6 @@ pub fn causes(m: &Moves) -> Vec<(i64, &'static str)> {
     ];
     let outs = [
         (m.lost, "lost"),
-        (m.worn, "worn out"),
         (m.left, "sent away"),
         (m.released, "released"),
     ];

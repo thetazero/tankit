@@ -31,6 +31,12 @@ impl Faction {
         Faction::Ithessar,
     ];
 
+    /// The side at `i`: one of `ALL`, or past them the Company (a company
+    /// fighting for itself).
+    pub fn side(i: usize) -> Faction {
+        Faction::ALL.get(i).copied().unwrap_or(Faction::Company)
+    }
+
     /// Position in `ALL` (the Company, not in it, comes after).
     pub fn index(self) -> usize {
         self as usize

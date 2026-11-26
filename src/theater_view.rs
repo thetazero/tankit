@@ -304,7 +304,7 @@ fn system_scene(
             ),
         ));
         // Its air, lit in its holder's colour, round its outline.
-        let tint = Faction::ALL[holders[i]].ui();
+        let tint = Faction::side(holders[i]).ui();
         let tint = Vec3::new(tint[0], tint[1], tint[2]);
         let view = (w - camera.pos).normalize();
         let u = view.cross(Vec3::Y).normalize();
@@ -1013,7 +1013,7 @@ pub fn draw(
             continue;
         };
         let r = (edge - c).length();
-        let tint = Faction::ALL[holders[pl]].ui();
+        let tint = Faction::side(holders[pl]).ui();
         let sites: Vec<(usize, &SiteView)> = t
             .sites
             .iter()
@@ -1030,7 +1030,7 @@ pub fn draw(
         let shield = shield_state(&sites);
         if let Shield::Up(up) = shield {
             for (k, f) in (0..4).filter(|&f| up[f]).enumerate() {
-                hex_shield(p, c, r + 10.0 - 5.0 * k as f32, Faction::ALL[f].ui());
+                hex_shield(p, c, r + 10.0 - 5.0 * k as f32, Faction::side(f).ui());
             }
         }
 
@@ -1077,7 +1077,7 @@ pub fn draw(
         );
         let parts: Vec<String> = (0..4)
             .filter(|&f| held[f] > 0)
-            .map(|f| format!("{} {}", Faction::ALL[f].name(), held[f]))
+            .map(|f| format!("{} {}", Faction::side(f).name(), held[f]))
             .collect();
         let mut style = TextStyle::LABEL;
         style.color = theme::DIM;
@@ -1092,9 +1092,9 @@ pub fn draw(
                     .map(|&f| {
                         let text = match sides.len() {
                             1 => "SHIELDS UP".to_string(),
-                            _ => format!("{} SHIELDS UP", Faction::ALL[f].name()),
+                            _ => format!("{} SHIELDS UP", Faction::side(f).name()),
                         };
-                        (text, Faction::ALL[f].ui())
+                        (text, Faction::side(f).ui())
                     })
                     .collect()
             }
@@ -1168,7 +1168,7 @@ fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
     }
     let mut y = at.y + 18.0;
     for f in t.sides() {
-        let side = Faction::ALL[f];
+        let side = Faction::side(f);
         let mut name = TextStyle::value(13.0);
         name.color = side.ui();
         crate::ui::emblem::tagged(p, Vec2::new(at.x, y), side, side.name(), &name, Align::Left);
@@ -1268,7 +1268,7 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
     };
     let employer = |th: &Theater| {
         th.ship.as_ref().map_or(String::new(), |s| {
-            format!("{} OF {}", Faction::ALL[s.side].name(), s.realm)
+            format!("{} OF {}", Faction::side(s.side).name(), s.realm)
         })
     };
     let ship_name = |th: &Theater| {
@@ -1304,7 +1304,7 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
     let mut dim = TextStyle::LABEL;
     dim.color = theme::DIM;
     if let Some(ship) = &t.ship {
-        let realm = Faction::ALL[ship.side];
+        let realm = Faction::side(ship.side);
         let aboard = match &tr.from.ship {
             Some(old) if old.id != ship.id => format!("ABOARD THE {} · ", ship.name),
             _ => String::new(),
@@ -1617,7 +1617,7 @@ fn glyph(p: &mut Painter, at: Vec2, s: &SiteView, color: Rgba) {
 }
 
 fn site_marker(p: &mut Painter, at: Vec2, s: &SiteView, selected: bool) {
-    let owner = Faction::ALL[s.owner].ui();
+    let owner = Faction::side(s.owner).ui();
     // A damaged generator is a ghost of itself.
     let color = if s.damaged() {
         mix(BG, owner, 0.4)
@@ -1701,10 +1701,10 @@ mod tests {
             name: "TEST".into(),
             employer: 0,
             planets,
-            hulls: [0; 4],
-            built: [0.0; 4],
-            held: [0; 4],
-            tiers: [0; 4],
+            hulls: [0; 5],
+            built: [0.0; 5],
+            held: [0; 5],
+            tiers: [0; 5],
             sites: Vec::new(),
             contested: Vec::new(),
             tick: 0,

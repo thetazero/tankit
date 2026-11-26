@@ -1017,7 +1017,7 @@ impl Menu {
     /// the system view beside it.)
     fn draw_theater(&self, p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, t: &Theater) {
         let (x, mut y) = (at.x, at.y);
-        let employer = Faction::ALL[t.employer];
+        let employer = Faction::side(t.employer);
         match &t.ship {
             Some(ship) => faction_line(
                 p,
@@ -1093,7 +1093,7 @@ impl Menu {
             let right = x + PANEL_W;
             let tw = p.text(Vec2::new(right, ry), tag, &style, Align::Right);
             // Whose it is.
-            let owner = Faction::ALL[s.owner];
+            let owner = Faction::side(s.owner);
             let size = 12.0;
             emblem::emblem(
                 p,
@@ -1118,9 +1118,9 @@ impl Menu {
         profile: &Profile,
     ) {
         let (x, mut y) = (at.x, at.y);
-        let employer = Faction::ALL[t.employer];
-        let owner = Faction::ALL[site.owner];
-        let enemy = Faction::ALL[site.enemy];
+        let employer = Faction::side(t.employer);
+        let owner = Faction::side(site.owner);
+        let enemy = Faction::side(site.enemy);
         if let Some(ship) = &t.ship {
             faction_line(
                 p,
@@ -1266,7 +1266,7 @@ fn field(p: &mut Painter, at: Vec2, label: &str, value: &str) {
 /// shown: they're its business, not the pilot's.) Returns the y under it.
 fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
     let (x, mut y) = (at.x, at.y);
-    let employer = Faction::ALL[ship.side];
+    let employer = Faction::side(ship.side);
     body(p, Vec2::new(x, y), "Hired by", theme::DIM);
     let mut style = BODY;
     style.color = employer.ui();
@@ -1401,7 +1401,7 @@ fn draw_ships(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, list: &ShipList, 
     }
     y = fight_tabs(p, hits, Vec2::new(x, y), list) + 14.0;
     if list.listed.is_empty() {
-        let side = list.fight.map_or("anyone", |f| Faction::ALL[f].name());
+        let side = list.fight.map_or("anyone", |f| Faction::side(f).name());
         body(
             p,
             Vec2::new(x, y),
@@ -1465,7 +1465,7 @@ fn fight_tabs(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, list: &ShipList) 
         style.color = match (tab, on) {
             (_, false) => theme::DIM,
             (None, true) => theme::FG,
-            (Some(f), true) => Faction::ALL[f].ui(),
+            (Some(f), true) => Faction::side(f).ui(),
         };
         let mut cx = x;
         match tab {
@@ -1473,7 +1473,7 @@ fn fight_tabs(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, list: &ShipList) 
                 p.text(Vec2::new(cx, y), "ALL", &style, Align::Left);
                 cx += measure("ALL ", &style);
             }
-            Some(f) => cx += emblem::mark(p, Vec2::new(cx, y), Faction::ALL[f], &style),
+            Some(f) => cx += emblem::mark(p, Vec2::new(cx, y), Faction::side(f), &style),
         }
         p.text(Vec2::new(cx, y), &count.to_string(), &style, Align::Left);
         if on {
@@ -1492,7 +1492,7 @@ fn fight_tabs(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, list: &ShipList) 
     }
     // The side picked, by name.
     let named = match list.fight {
-        Some(f) => format!("Battles against the {}", title(Faction::ALL[f].name())),
+        Some(f) => format!("Battles against the {}", title(Faction::side(f).name())),
         None => "Battles against anyone".to_string(),
     };
     body(p, Vec2::new(at.x, y + 28.0), &named, theme::FAINT);
@@ -1575,7 +1575,7 @@ fn draw_contract(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, id: u32, t: Op
         style.color = theme::DIM;
         p.text(Vec2::new(x + PANEL_W, y + 1.0), &pay, &style, Align::Right);
         y += 20.0;
-        let enemy = Faction::ALL[site.enemy];
+        let enemy = Faction::side(site.enemy);
         let how = if site.owner == t.employer {
             "Defend from".to_string()
         } else if site.owner == site.enemy {
@@ -1583,7 +1583,7 @@ fn draw_contract(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, id: u32, t: Op
         } else {
             format!(
                 "Help the {} against",
-                title(Faction::ALL[site.owner].name())
+                title(Faction::side(site.owner).name())
             )
         };
         let mut cx = x + 12.0;
@@ -1644,7 +1644,7 @@ fn berths(
         y += ROW + 2.0;
         let work = match &b.work {
             Some(w) => {
-                let f = Faction::ALL[w.side];
+                let f = Faction::side(w.side);
                 format!(
                     "Hired by the {} of {} to {} {}",
                     title(f.name()),
@@ -3229,7 +3229,8 @@ mod tests {
         for _ in 0..400 {
             g.step();
             let (n, _) = g.await_work_staying(f, 1, 400);
-            let n = n.expect("work");
+            // Nobody hires it for a while: the war goes on.
+            let Some(n) = n else { continue };
             if Transfer::between(&t, &n) {
                 next = Some(n);
                 break;
@@ -3253,7 +3254,7 @@ mod tests {
         // Same company, new contract: the old contract ended, so show its
         // summary card before the transfer animation (#414).
         let (a, b) = (t.ship.as_ref().unwrap(), next.ship.as_ref().unwrap());
-        if a.id == b.id {
+        if a.id == b.id || m.summary().is_some() {
             let e = *m.summary().expect("the summary of the contract that ended");
             assert_eq!((e.ship, e.signed), (a.id, a.signed));
             assert!(e.tick >= e.signed && e.lost <= e.committed);

@@ -11,8 +11,7 @@
 //! side and turning out hulls (into that side's storage in the system) and
 //! crystals, and one or two **shield generators** (at least one). Hull
 //! storage is per side per system. Hulls are whole: a yard builds toward its
-//! next one and delivers it done; each stored hull has a small chance a tick
-//! of wearing out; a battle's losses are whole hulls, rolled (each of a
+//! next one and delivers it done; a battle's losses are whole hulls, rolled (each of a
 //! side's hulls there with the chance its expected losses give it), the
 //! mercs' among them by their share. A side with a hull in a system is in
 //! the fight there: a battle goes on to the last hull, mercs' included.
@@ -20,16 +19,16 @@
 //! **Realms, not factions, are the actors** (#315; see `realm`). A faction
 //! is a people; what fights is a realm, a ruler holding a handful of systems
 //! from a seat. Every side's sites and hulls in a system are one realm's
-//! (`System::realms`); each realm banks its own crystal (crystal is light, so
-//! moving it within the realm costs nothing), launches its own offensives,
-//! and keeps what it takes. Realms split at their edges and merge, by
+//! (`System::realms`); each realm has its own crystal, in its planets' vaults, and
+//! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
 //! **A tick:**
-//! 1. *Production.* Every production site adds hulls and crystals to its realm.
-//!    Realms pay their pilots and train more.
-//!    Hulls cost nothing to build, except a little crystal for the Resonant.
-//!    Stored hulls wear out slowly, so an idle world's garrison levels off.
+//! 1. *Production.* Every mine adds crystal to its planet's vault (`Vault`),
+//!    which changes hands only with the whole planet. A yard builds while a
+//!    hull's worth more to its realm than it costs; hulls last until they're
+//!    shot down. Realms pay their pilots, and train more or let some go by
+//!    what their fights show one's worth.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
 //!    Each side in a fight attacks every site there it can at once
@@ -51,25 +50,17 @@
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
 //!    spent, time up) end.
-//! 3. *Supply.* A people's systems that hang together (within FTL range of
-//!    each other) fewer than a few dozen are a **pocket**: once an enemy
-//!    borders it, every enemy around goes for it. Enclaves don't last. Every few ticks realms
-//!    split and merge.
-//! 4. *Offensives.* A realm banks crystals until it can afford a push, aims
-//!    it at the stretch of its border where it's strongest against the
-//!    defense, brings hulls up toward it, and fights there with the
-//!    initiative (a fire bonus). The push rolls on from what it takes, until
-//!    the crystals run low or it stalls. Then quiet, while it banks for the next.
-//! 5. *Sending hulls.* Each realm looks at every system it could reach
-//!    (within FTL range of its systems with hulls to spare) and sends hulls
-//!    where it sees a high chance of capture: to defend anywhere, but to
-//!    attack only within its offensive, or a pocket. Several systems can send
-//!    to one. FTL costs crystals per hull by distance. An attack
-//!    the realm is set on but can't make alone, or a world of its own it
-//!    can't hold alone, can hire a **mercenary company** to make up the
-//!    difference (see `merc`, #318, #340): paid in crystal, up front and a
-//!    bonus if it comes off; the company buys the hulls it lacks from the
-//!    cheapest realm nearby.
+//! 3. *Politics.* Every few ticks realms split and merge.
+//! 4. *Sending hulls.* Each realm looks at every fight it's in, and now and
+//!    then at every world it could reach, and plays each way of fighting for
+//!    it through by the battle maths (`Galaxy::forecast`): alone, with more
+//!    or less of what it could bring, with a company's help (see `merc`). It
+//!    does whatever gains it most, if anything does: what the world turns out
+//!    for as long as worlds have lately been held, and what's in its vaults,
+//!    less what it'd cost. FTL costs crystal per hull by distance.
+//! 5. *Companies* that aren't working for anyone raid rich, weakly held
+//!    worlds for themselves, as a side of their own (`RAID`, one company to a
+//!    system). They take the vaults and go, and give the sites back.
 //!
 //! A step runs ticks until somewhere is at war: the player is posted to a
 //! battle, so quiet ticks pass unseen.
@@ -81,6 +72,7 @@
 
 pub mod battle;
 pub mod chart;
+pub mod judge;
 pub mod ledger;
 pub mod merc;
 pub mod realm;
@@ -95,8 +87,23 @@ use crate::rng::Rng;
 use merc::{Books, Company, Debt, Pilot};
 use realm::{NONE, Realm};
 
-/// The four warring sides (the Company holds no ground).
-pub const SIDES: usize = 4;
+/// The four warring peoples.
+pub const PEOPLES: usize = 4;
+/// Every side there can be in a system: the peoples, and a company fighting
+/// for itself (one to a system).
+pub const SIDES: usize = 5;
+/// That company's side.
+pub const RAID: usize = 4;
+
+/// A planet's vault: the crystal its mines have turned out and its realm
+/// hasn't spent. It changes hands only with the whole planet.
+#[derive(Clone, Copy, Debug)]
+pub struct Vault {
+    /// Whose it is: the side, and its realm (`NONE`: nobody's left to own it).
+    pub side: u8,
+    pub realm: u32,
+    pub crystals: f32,
+}
 
 /// Colonized systems in the war.
 pub const SYSTEMS: usize = 10_000;
@@ -125,9 +132,6 @@ pub const SHIELD_SEATS: usize = 1;
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
 pub struct Rules {
-    /// Each hull has this chance a tick of wearing out (so a garrison levels off at
-    /// production / wear).
-    pub wear: f32,
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
@@ -146,42 +150,15 @@ pub struct Rules {
     /// Chance a tick that a side in a fight wins its objective there (the
     /// next site it goes for), times its share of the fight's fire.
     pub take: f32,
-    /// An attacker needs this many times the defense (its fire) to go in.
-    pub odds: f32,
-    /// ... and only this much when going for a pocket,
-    pub gang_odds: f32,
-    /// ... and this much anywhere off its offensive.
-    pub opportunity: f32,
     /// A people's systems hanging together (by FTL range) fewer than this
     /// are a pocket, cut off from the rest: once an enemy borders it, the
     /// enemy goes for it.
     pub pocket: u32,
-    /// A realm launches an offensive once it has banked this many ticks of
-    /// crystal income...
-    pub launch: f32,
-    /// ... and it runs until the bank is down to this many ticks of income,
-    pub spent: f32,
-    /// ... or until this many ticks pass without taking a site.
-    pub stall: u32,
-    /// Fire bonus for a side fighting where its offensive is: it picked the
-    /// time and place, and massed for it.
-    pub initiative: f32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
     pub blitz: u32,
-    /// How far from where it's aimed an offensive attacks, light years.
-    pub front: f32,
-    /// Share of a quiet system's spare hulls brought up a tick...
-    pub bring_up: f32,
-    /// ... spending at most this many ticks of crystal income a tick on it.
-    pub tempo: f32,
     /// A realm keeps at least this fraction of a quiet system's hulls home.
     pub keep: f32,
-    /// An attack takes at least this share of what could reach the target.
-    pub commit: f32,
-    /// Ticks of crystal income a realm keeps back from attacks, to pay for
-    /// defending what it holds.
-    pub reserve: f32,
     /// How far from its seat a realm can rule, light years: holdings past
     /// this break away.
     pub reach: f32,
@@ -197,21 +174,8 @@ pub struct Rules {
     pub companies: u32,
     /// Crystal each starts with (give or take half).
     pub merc_capital: f32,
-    /// What a realm asks for a spare hull, crystals, where its garrison is
-    /// at the level it settles at (more below it, less above).
-    pub hull_price: f32,
     /// Crystal to move a company's ship the full FTL range (its hulls pay as any do).
     pub ship_cost: f32,
-    /// A company's margin over its costs at the start, and the least it goes down to,
-    pub merc_margin: f32,
-    pub merc_floor: f32,
-    /// ... falling by this fraction each tick it waits for work,
-    pub merc_haggle: f32,
-    /// ... and rising by this fraction each contract it wins.
-    pub merc_raise: f32,
-    /// A contract's bonus: this many times the hulls it commits, at what
-    /// they cost it, with its margin.
-    pub merc_bonus: f32,
     /// A contract runs out after this many ticks.
     pub merc_term: u32,
     /// How far a company goes for work, light years.
@@ -219,84 +183,88 @@ pub struct Rules {
     /// A company idle this many ticks sails to the nearest war to look for
     /// work (`Galaxy::seek_work`).
     pub merc_idle: u32,
-    /// A realm pays for a world at most what it turns out over this many
-    /// ticks (crystal, and hulls at `hull_price`).
-    pub merc_horizon: f32,
     /// An idle company worth more than this splits in two; one worth less
     /// than this joins another (crystals, its hulls at `hull_price`).
     pub merc_split: f32,
     pub merc_join: f32,
-    /// A realm that owes a company a bonus pays back this share of its
-    /// income each tick (and no company works for it until it has).
-    pub merc_dues: f32,
     /// A realm puts this share of its crystal income into researching its
     /// next gear tier (#438)...
     pub research: f32,
     /// ... and a step costs this many crystals a system it holds, growing
     /// a step at a time as upgrades do (`economy::upgrade_cost`).
     pub research_price: f32,
-    /// Crystals a realm pays each pilot a tick.
+    /// What a realm pays each pilot a tick when it's founded: it moves
+    /// from there, up while it loses pilots and down while it doesn't.
     pub pilot_upkeep: f32,
-    /// Share of its income a realm spends on pilots.
-    pub pilot_budget: f32,
+    /// Crystals a ship costs its company a tick.
+    pub ship_upkeep: f32,
+    /// Crystals a hull costs to build.
+    pub hull_cost: f32,
+    /// Crystals it costs to train a pilot.
+    pub train_cost: f32,
+    /// Chance a tick a pilot retires, realm or merc.
+    pub career: f32,
+    /// Ticks out of work before a pilot quits for good.
+    pub patience: u32,
+    /// How fast a realm's pay moves: up by this share a tick it loses
+    /// pilots, down by this otherwise, never below what a pilot lives on.
+    pub pay_step: f32,
+    /// How fast a realm's sense of what a pilot or hull is worth follows
+    /// what its fights show, a tick.
+    pub sense: f32,
     /// Most pilots a realm trains or dismisses a tick.
     pub train: u32,
     /// Pilots a new company starts with.
     pub crew: u32,
+    /// What a pilot's wage a tick is in CR: your pay for a battle is in
+    /// CR, so CR and crystal trade at the going wage.
+    pub wage_cr: f32,
+    /// A ship pays a pilot this share of their wage for each kill.
+    pub kill_share: f32,
+    /// Share of a realm's pilots a tick who defect, when ships offer them
+    /// more than their realm pays.
+    pub defect: f32,
 }
 
 impl Default for Rules {
     fn default() -> Rules {
         Rules {
-            wear: 0.03,
             ftl_cost: 0.225,
             kill: 0.35,
             frontage: 85.0,
             seats: 6.0,
             home_ground: 0.3,
             take: 0.3,
-            odds: 1.5,
-            gang_odds: 1.15,
-            opportunity: 3.0,
             pocket: 20,
-            launch: 60.0,
-            spent: 2.0,
-            stall: 30,
-            initiative: 1.0,
             blitz: 2,
-            front: 500.0,
-            bring_up: 0.5,
-            tempo: 0.5,
             keep: 0.3,
-            commit: 0.6,
-            reserve: 0.0,
             reach: 800.0,
             fold: 12,
             found: 300.0,
             politics: 10,
             companies: 60,
             merc_capital: 150.0,
-            hull_price: 0.03,
             ship_cost: 3.0,
-            merc_margin: 0.3,
-            merc_floor: 0.05,
-            merc_haggle: 0.01,
-            merc_raise: 0.1,
-            merc_bonus: 0.5,
             merc_term: 30,
             merc_range: 1200.0,
             merc_idle: 30,
-            merc_horizon: 300.0,
-            // Off for now.
-            merc_split: f32::INFINITY,
+            merc_split: 300.0,
             merc_join: 40.0,
-            merc_dues: 0.5,
             research: 0.15,
             research_price: 1.2,
             pilot_upkeep: 0.02,
-            pilot_budget: 0.25,
+            ship_upkeep: 0.2,
+            hull_cost: 0.2,
+            train_cost: 3.0,
+            career: 0.002,
+            patience: 60,
+            pay_step: 0.005,
+            sense: 0.01,
             train: 2,
             crew: 40,
+            wage_cr: 50.0,
+            kill_share: 0.3,
+            defect: 0.01,
         }
     }
 }
@@ -328,8 +296,6 @@ pub struct Site {
 pub struct Moves {
     /// Delivered by its yards here.
     pub built: u32,
-    /// Stored hulls worn out.
-    pub worn: u32,
     /// Shot down in battles here, played or the galaxy's (mercs' too).
     pub lost: u32,
     /// Sent in by its realm from other systems (FTL).
@@ -346,14 +312,13 @@ impl Moves {
     /// Hulls in less hulls out.
     pub fn net(&self) -> i64 {
         (self.built + self.arrived + self.hired) as i64
-            - (self.worn + self.lost + self.left + self.released) as i64
+            - (self.lost + self.left + self.released) as i64
     }
 
     /// These without `o`'s (none below zero).
     pub fn less(&self, o: &Moves) -> Moves {
         Moves {
             built: self.built.saturating_sub(o.built),
-            worn: self.worn.saturating_sub(o.worn),
             lost: self.lost.saturating_sub(o.lost),
             arrived: self.arrived.saturating_sub(o.arrived),
             left: self.left.saturating_sub(o.left),
@@ -400,6 +365,7 @@ impl System {
 }
 
 /// The whole war.
+#[cfg_attr(test, derive(Clone))]
 pub struct Galaxy {
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
@@ -435,6 +401,47 @@ pub struct Galaxy {
     pub(crate) next_pilot: u32,
     /// You, as a pilot. Your knowledge is copied from the profile.
     pub you: Pilot,
+    /// Pay companies owe you: (`Company::id`, crystals).
+    pub owed_you: Vec<(u32, f32)>,
+    /// Pilots on no ship, looking for work.
+    pub pool: Vec<Pilot>,
+    /// What pilots have lately been signing for a tick, by gear mark.
+    pub wage_curve: [f32; merc::MARKS],
+    /// When each system last changed hands, and the chance a tick that one
+    /// lately taken, or one on a border, does (fading averages).
+    pub(crate) taken_at: Vec<u64>,
+    pub(crate) lose_new: f32,
+    pub(crate) lose_old: f32,
+    /// Savings of retired pilots and dead ships, for new companies.
+    pub(crate) savings: f32,
+    /// Every planet's vault, and each system's first.
+    pub vaults: Vec<Vault>,
+    pub(crate) vault_at: Vec<u32>,
+    /// What a company has lately made a tick, on average; and what they
+    /// were all worth last tick.
+    pub(crate) profit: f32,
+    pub(crate) worth_before: f32,
+    /// What hulls have lately sold for.
+    pub hull_rate: f32,
+    pub(crate) fell_new: u32,
+    pub(crate) fell_old: u32,
+    /// Systems with an enemy's within reach.
+    pub(crate) border: Vec<bool>,
+    /// The best open bid this tick for a pilot at each mark (0 for none).
+    pub offers: [f32; merc::MARKS],
+    /// What realms pay their pilots a tick, on average, as of the last
+    /// tick: what a new pilot starts on, and the rate CR trade at.
+    pub pay: f32,
+    /// The ticks contracts have lately run, of those forecast.
+    pub trust_ticks: f32,
+    /// The share of merc pilots in work lately, as pilots see it; and
+    /// this tick's, so far.
+    pub employment: f32,
+    pub(crate) employed: u32,
+    /// Scratch: realms' pay, lowest first, and the pilots on no more than
+    /// it, as of `pays_tick`.
+    pub(crate) pays: Vec<(f32, f32)>,
+    pub(crate) pays_tick: u64,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
     pub crew: Option<u32>,
@@ -458,13 +465,16 @@ pub struct Galaxy {
     /// rest of its tick, then any ticks waited through after. Not saved.
     pub moves: Vec<[Moves; SIDES]>,
     /// Of `moves`, the companies' hulls on contract for the side: hired,
-    /// released, lost and worn out. Not saved.
+    /// released and lost. Not saved.
     pub merc_moves: Vec<[Moves; SIDES]>,
     rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
     /// Scratch: each realm's hulls in this tick's fights.
     war_hulls: Vec<u32>,
+    /// Realms lately looking for a company at each system and finding none
+    /// in range (fading): where idle companies go for work.
+    pub(crate) unmet: Vec<f32>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[u32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
@@ -474,15 +484,8 @@ pub struct Galaxy {
     free: Vec<u32>,
 }
 
-/// A realm pushing into one stretch of the front: it attacks only there
-/// (and into enemy pockets), until its crystals run low or the push stalls.
-#[derive(Clone, Copy, Debug)]
-pub struct Offensive {
-    /// Where it's aimed.
-    pub at: Vec3,
-    /// The last tick it took a site.
-    pub gained: u64,
-}
+/// Ticks between a realm's looks for somewhere to push.
+const THINK: u64 = 10;
 
 /// One tick's numbers, for charts and tests.
 #[derive(Clone, Copy, Debug, Default)]
@@ -598,6 +601,7 @@ impl Galaxy {
             merc_moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
             war_hulls: Vec::new(),
+            unmet: vec![0.0; systems.len()],
             systems,
             sites,
             neighbors,
@@ -617,6 +621,28 @@ impl Galaxy {
             next_company: 0,
             next_pilot: 1,
             you: Pilot::rookie(1),
+            owed_you: Vec::new(),
+            pool: Vec::new(),
+            taken_at: vec![0; count],
+            lose_new: 0.01,
+            lose_old: 0.003,
+            savings: 0.0,
+            vaults: Vec::new(),
+            vault_at: Vec::new(),
+            profit: 0.0,
+            worth_before: 0.0,
+            hull_rate: rules.hull_cost,
+            fell_new: 0,
+            fell_old: 0,
+            border: vec![false; count],
+            wage_curve: [rules.pilot_upkeep; merc::MARKS],
+            offers: [0.0; merc::MARKS],
+            pay: rules.pilot_upkeep,
+            trust_ticks: 1.0,
+            employment: 0.5,
+            employed: 0,
+            pays: Vec::new(),
+            pays_tick: 0,
             crew: None,
             own: None,
             ended: Vec::new(),
@@ -629,12 +655,23 @@ impl Galaxy {
             spans: Vec::new(),
             free: Vec::new(),
         };
-        // Start every garrison near where it would level off.
+        // Start every garrison near its usual size.
         for s in 0..g.systems.len() {
             let owner = g.systems[s].owner();
-            g.systems[s].hulls[owner] = (g.production(s)[owner] / rules.wear * 0.8).round() as u32;
+            g.systems[s].hulls[owner] = (g.production(s)[owner] * 27.0).round() as u32;
+        }
+        for s in 0..g.systems.len() {
+            g.vault_at.push(g.vaults.len() as u32);
+            for _ in 0..g.systems[s].planets {
+                g.vaults.push(Vault {
+                    side: g.systems[s].owner() as u8,
+                    realm: NONE,
+                    crystals: 0.0,
+                });
+            }
         }
         g.form_realms();
+        g.fill_vaults();
         (g.splits, g.merges) = (0, 0);
         g.found_companies();
         g.update_share();
@@ -693,7 +730,7 @@ impl Galaxy {
             merc_capital: self
                 .companies
                 .iter()
-                .map(|c| c.capital(self.rules.hull_price))
+                .map(|c| c.capital(self.rules.hull_cost))
                 .sum(),
             contracts: self
                 .companies
@@ -759,71 +796,10 @@ impl Galaxy {
         }
         for s in 0..n {
             let small = size[realm::find(&mut root, s)] < self.rules.pocket;
-            self.cut[s] = small && self.neighbors(s).any(|(t, _)| owner[s] != owner[t]);
+            let border = self.neighbors(s).any(|(t, _)| owner[s] != owner[t]);
+            self.border[s] = border;
+            self.cut[s] = small && self.border[s];
         }
-    }
-
-    /// Each realm starts or ends its offensive.
-    fn plan(&mut self) {
-        for r in 0..self.realms.len() {
-            let realm = self.realms[r];
-            if realm.systems == 0 {
-                continue;
-            }
-            let bank = realm.bank();
-            if let Some(o) = realm.offensive {
-                if bank < self.rules.spent || self.tick > o.gained + self.rules.stall as u64 {
-                    self.realms[r].offensive = None;
-                }
-            } else if bank >= self.rules.launch {
-                self.realms[r].offensive = self.aim(r);
-            }
-        }
-    }
-
-    /// Where realm `r` should push: of a sample of the enemy systems on its
-    /// border, the one where its hulls nearby most outweigh the defense.
-    fn aim(&mut self, r: usize) -> Option<Offensive> {
-        let f = self.realms[r].faction as usize;
-        let (a, b) = self.spans[r];
-        if a == b {
-            return None;
-        }
-        let mut best: Option<(f32, usize)> = None;
-        for _ in 0..40 {
-            let s = self.members[a as usize + self.rng.index((b - a) as usize)] as usize;
-            let k = self.neighbors(s).count();
-            if k == 0 {
-                continue;
-            }
-            let t = self.neighbors[s * NEIGHBORS + self.rng.index(k)].0 as usize;
-            if self.systems[t].owner() == f {
-                continue;
-            }
-            let ours: f32 = self
-                .neighbors(t)
-                .filter(|&(s, _)| self.holder(s) == r as u32)
-                .map(|(s, _)| self.systems[s].hulls[f] as f32)
-                .sum();
-            if ours <= 0.0 {
-                continue;
-            }
-            let defense: f32 = self
-                .strength(t)
-                .iter()
-                .enumerate()
-                .filter(|&(g, _)| g != f)
-                .map(|(_, x)| x)
-                .sum();
-            let score = ours / (defense + 1.0);
-            if best.is_none_or(|b| score > b.0) {
-                best = Some((score, t));
-            }
-        }
-        best.map(|(_, t)| Offensive {
-            at: self.systems[t].pos,
-            gained: self.tick,
-        })
     }
 
     /// Run the whole galaxy forward to its next battle: one tick, or, if
@@ -864,6 +840,12 @@ impl Galaxy {
         settled
     }
 
+    /// One tick, at war or not (`judge`).
+    pub(crate) fn tick_once(&mut self) {
+        self.taken = 0;
+        self.advance_tick(None);
+    }
+
     /// Run the whole galaxy forward one tick.
     /// `played`: a battle this tick that was played (see `step_played`).
     fn advance_tick(&mut self, played: Option<&battle::Played>) -> Option<battle::Settled> {
@@ -871,36 +853,51 @@ impl Galaxy {
         self.produce();
         let settled = self.battles(played);
         self.mercs();
+        self.reckon_holds();
         self.update_share();
         self.update_supply();
-        self.plan();
         self.send();
         settled
     }
 
     fn produce(&mut self) {
+        self.fill_vaults();
+        let mut mined = vec![0.0f32; self.vaults.len()];
         let mut crystals = vec![0.0; self.realms.len()];
         let resonant = Faction::Resonant.index();
-        for s in 0..self.systems.len() {
-            let (a, b) = self.systems[s].sites;
-            // Stored hulls wear out, each with a small chance a tick.
-            for f in 0..SIDES {
-                let worn = self.rng.binomial(self.systems[s].hulls[f], self.rules.wear);
-                self.systems[s].hulls[f] -= worn;
-                self.moves[s][f].worn += worn;
+        let extra = |f: usize| {
+            if f == resonant {
+                RESONANT_HULL_COST
+            } else {
+                0.0
             }
+        };
+        let offset = self.rng.index(self.systems.len());
+        for i in 0..self.systems.len() {
+            // Whoever's first gets the crystal, so a different one each tick.
+            let s = (i + offset) % self.systems.len();
+            let (a, b) = self.systems[s].sites;
             let sys = &mut self.systems[s];
             for site in &self.sites[a as usize..b as usize] {
                 if let SiteKind::Production { hulls, crystals: c } = site.kind {
                     let f = site.owner as usize;
-                    sys.building[f] += hulls;
                     let r = sys.realms[f];
                     if r == NONE {
                         continue;
                     }
-                    crystals[r as usize] += c;
-                    if f == resonant {
-                        crystals[r as usize] -= hulls * RESONANT_HULL_COST;
+                    // A mine pays only its planet's vault's owner.
+                    let v = self.vault_at[s] as usize + site.planet as usize;
+                    if self.vaults[v].side as usize == f {
+                        crystals[r as usize] += c;
+                        mined[v] += c * (1.0 - self.rules.research);
+                    }
+                    // A yard works while a hull's worth more to the realm
+                    // than it costs, and it can pay for it.
+                    let cost = hulls * (self.rules.hull_cost + extra(f));
+                    let realm = &mut self.realms[r as usize];
+                    if realm.hull_worth > self.rules.hull_cost && realm.crystals >= cost {
+                        realm.crystals -= cost;
+                        sys.building[f] += hulls;
                     }
                 }
             }
@@ -914,7 +911,9 @@ impl Galaxy {
                 moves[f].built += done as u32;
             }
         }
-        for (realm, c) in self.realms.iter_mut().zip(crystals) {
+        for (r, c) in crystals.into_iter().enumerate() {
+            let retired = self.rng.binomial(self.realms[r].pilots, self.rules.career);
+            let realm = &mut self.realms[r];
             // Some of it goes to research (#438): a step at a time, at a
             // price by how much there is to refit.
             let study = self.rules.research * c.max(0.0);
@@ -930,7 +929,104 @@ impl Galaxy {
             }
             realm.crystals = (realm.crystals + c).max(0.0);
             realm.income = c + study;
-            realm.keep_pilots(&self.rules);
+            let left = realm.keep_pilots(&self.rules, retired, self.pool.len() as u32);
+            let hired = std::mem::take(&mut self.realms[r].hired);
+            let n = self.pool.len().saturating_sub(hired as usize);
+            for p in self.pool.drain(n..) {
+                self.savings += p.wallet;
+            }
+            self.free_pilots(r, left);
+        }
+        for (v, x) in self.vaults.iter_mut().zip(mined) {
+            v.crystals += x;
+        }
+        self.fill_vaults();
+    }
+
+    /// Each realm's crystal is in its planets' vaults: what it's spent since
+    /// comes out of them all alike, and what it's been paid goes in.
+    pub(crate) fn fill_vaults(&mut self) {
+        let mut sum = vec![0.0f64; self.realms.len()];
+        let mut count = vec![0u32; self.realms.len()];
+        for s in 0..self.systems.len() {
+            let a = self.vault_at[s] as usize;
+            for v in a..a + self.systems[s].planets as usize {
+                let vault = &mut self.vaults[v];
+                let here = self.systems[s].realms[vault.side as usize];
+                if here != NONE {
+                    vault.realm = here;
+                } else if vault.realm != NONE {
+                    let r = &self.realms[vault.realm as usize];
+                    if r.systems == 0 || r.faction != vault.side {
+                        vault.realm = NONE;
+                    }
+                }
+                if vault.realm != NONE {
+                    sum[vault.realm as usize] += vault.crystals as f64;
+                    count[vault.realm as usize] += 1;
+                }
+            }
+        }
+        for v in &mut self.vaults {
+            if v.realm == NONE {
+                continue;
+            }
+            let r = v.realm as usize;
+            let bank = self.realms[r].crystals.max(0.0) as f64;
+            v.crystals = if sum[r] > 1e-3 {
+                (v.crystals as f64 * bank / sum[r]) as f32
+            } else {
+                (bank / count[r] as f64) as f32
+            };
+        }
+    }
+
+    /// System `s`'s vaults.
+    pub fn vaults_of(&self, s: usize) -> &[Vault] {
+        let a = self.vault_at[s] as usize;
+        &self.vaults[a..a + self.systems[s].planets as usize]
+    }
+
+    /// If side `w` holds every site on `planet` of system `s` now, its vault
+    /// is theirs: the realm's, with the planet, or the raiding company's, who
+    /// takes the crystal and leaves the planet its owner's.
+    fn loot(&mut self, s: usize, planet: u8, w: usize) {
+        let (a, b) = self.systems[s].sites;
+        if self.sites[a as usize..b as usize]
+            .iter()
+            .any(|x| x.planet == planet && x.owner as usize != w)
+        {
+            return;
+        }
+        let v = self.vault_at[s] as usize + planet as usize;
+        let vault = self.vaults[v];
+        if vault.side as usize == w {
+            return;
+        }
+        let loot = vault.crystals.max(0.0);
+        if vault.realm != NONE {
+            let r = &mut self.realms[vault.realm as usize];
+            r.crystals = (r.crystals - loot).max(0.0);
+        }
+        self.captured += loot as f64;
+        if w == RAID {
+            self.vaults[v].crystals = 0.0;
+            self.books.raided += loot as f64;
+            if let Some(c) = self.companies.iter_mut().find(|c| {
+                c.contract
+                    .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
+            }) {
+                c.crystals += loot;
+            }
+            return;
+        }
+        let r = self.systems[s].realms[w];
+        self.vaults[v].side = w as u8;
+        self.vaults[v].realm = r;
+        if r != NONE {
+            self.realms[r as usize].crystals += loot;
+        } else {
+            self.vaults[v].crystals = 0.0;
         }
     }
 
@@ -945,9 +1041,6 @@ impl Galaxy {
         for f in 0..SIDES {
             out[f] =
                 sys.hulls[f] as f32 * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
-            if self.pushing(sys.realms[f], sys.pos) {
-                out[f] *= 1.0 + self.rules.initiative;
-            }
         }
         out
     }
@@ -1024,6 +1117,7 @@ impl Galaxy {
     /// Count each realm's hulls at war, so `firing` can split its pilots
     /// between its fights.
     fn share_pilots(&mut self) {
+        self.lend_hulls();
         let mut war = vec![0; self.realms.len()];
         for realm in &mut self.realms {
             realm.fronts = 0;
@@ -1058,30 +1152,26 @@ impl Galaxy {
         if hulls == 0 {
             return realm;
         }
-        let (mut weight, mut merc) = (0.0, 0.0);
+        // By the hulls that fire: a company's flown by its best pilots.
+        let (mut crewed, mut merc) = (0.0, 0.0);
         for c in &self.companies {
             if let Some(k) = c.contract
                 && k.target as usize == s
                 && k.side as usize == f
             {
-                let field = k.field.min(hulls) as f32;
-                let level =
-                    c.pilots.iter().map(|p| p.level()).sum::<f32>() / c.pilots.len().max(1) as f32;
-                weight += field;
-                merc += field * level;
+                let n = (k.field.min(hulls) as usize).min(c.pilots.len());
+                let mut levels: Vec<f32> = c.pilots.iter().map(|p| p.rank).collect();
+                levels.sort_by(|a, b| b.total_cmp(a));
+                crewed += n as f32;
+                merc += levels.iter().take(n).sum::<f32>();
             }
         }
-        let weight = weight.min(hulls as f32);
-        let all = (merc + (hulls as f32 - weight) * realm as f32) / hulls as f32;
+        let own = (self.firing(s, f) - crewed).max(0.0);
+        if own + crewed <= 0.0 {
+            return realm;
+        }
+        let all = (merc + own * realm as f32) / (own + crewed);
         all.round() as u8
-    }
-
-    /// Realm `r`'s offensive (if `r` is a realm, on one) takes in `pos`.
-    fn pushing(&self, r: u32, pos: Vec3) -> bool {
-        r != NONE
-            && self.realms[r as usize]
-                .offensive
-                .is_some_and(|o| o.at.distance(pos) <= self.rules.front)
     }
 
     /// Are `f` and `g` fighting each other? Every people is fighting every
@@ -1264,7 +1354,7 @@ impl Galaxy {
                 let gear = self.gear(s, f);
                 let lost = losses[f] / crate::economy::armor_factor(gear);
                 ledger::Predicted {
-                    faction: Faction::ALL[f].name().to_string(),
+                    faction: Faction::side(f).name().to_string(),
                     hulls: hulls[f],
                     gear,
                     fire: fire[f],
@@ -1295,7 +1385,7 @@ impl Galaxy {
             return out;
         }
         let level = self.gear(s, f);
-        let maker = Faction::ALL[f];
+        let maker = Faction::side(f);
         let parts: Vec<crate::economy::Part> = crate::economy::PARTS
             .into_iter()
             .filter(|p| p.maker() == maker)
@@ -1427,29 +1517,49 @@ impl Galaxy {
         sys.held[w] += 1;
         self.taken += 1;
         self.claim(s, w);
-        if loser != NONE && self.holder(s) != loser {
-            self.capture(loser, self.systems[s].realms[w]);
+        if loser != NONE && w != RAID && self.holder(s) != loser {
+            self.fallen(s);
         }
-        // An offensive rolls on from what it takes.
-        let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
-        if self.pushing(r, pos)
-            && let Some(o) = &mut self.realms[r as usize].offensive
-        {
-            o.gained = self.tick;
-            o.at = pos;
-        }
+        let planet = self.sites[i].planet;
+        self.loot(s, planet, w);
     }
 
-    /// Realm `loser` lost a system to realm `by`, which captures the
-    /// system's share of its bank: all that's left, for its last.
-    fn capture(&mut self, loser: u32, by: u32) {
-        let realm = &mut self.realms[loser as usize];
-        let left = realm.systems.saturating_sub(realm.fell).max(1);
-        let loot = realm.crystals.max(0.0) / left as f32;
-        realm.fell += 1;
-        realm.crystals -= loot;
-        self.realms[by as usize].crystals += loot;
-        self.captured += loot as f64;
+    /// System `s` changed hands: the sooner worlds do, the less one's worth.
+    fn fallen(&mut self, s: usize) {
+        let new = self.tick < self.taken_at[s] + 300 && self.taken_at[s] > 0;
+        if new {
+            self.fell_new += 1;
+        } else {
+            self.fell_old += 1;
+        }
+        self.taken_at[s] = self.tick;
+    }
+
+    /// How long worlds last: the share of those lately taken, and of the
+    /// others within reach of an enemy, that changed hands this tick.
+    fn reckon_holds(&mut self) {
+        let (mut new, mut old) = (0u32, 0u32);
+        for s in 0..self.systems.len() {
+            if self.taken_at[s] > 0 && self.tick < self.taken_at[s] + 300 {
+                new += 1;
+            } else if self.border[s] {
+                old += 1;
+            }
+        }
+        // With few lately taken, there's little to go on but the rest.
+        let seen = if new > 20 {
+            self.fell_new as f32 / new as f32
+        } else {
+            self.lose_old
+        };
+        self.lose_new += 0.02 * (seen - self.lose_new);
+        self.lose_old += 0.02 * (self.fell_old as f32 / old.max(1) as f32 - self.lose_old);
+        (self.fell_new, self.fell_old) = (0, 0);
+    }
+
+    /// Ticks a side can expect to hold a world it takes (`new`), or has.
+    pub(crate) fn hold_for(&self, new: bool) -> f32 {
+        1.0 / if new { self.lose_new } else { self.lose_old }.max(0.001)
     }
 
     /// Up enemy shield generators on each planet of system `s`, as `f` sees them.
@@ -1478,8 +1588,8 @@ impl Galaxy {
         }
     }
 
-    /// Every realm decides where to send its hulls.
-    fn send(&mut self) {
+    /// What each side can spare where: hulls beyond what it keeps home.
+    pub(crate) fn count_spare(&mut self) {
         let n = self.systems.len();
         // What each side can spare where: hulls beyond what it keeps home.
         for s in 0..n {
@@ -1501,17 +1611,32 @@ impl Galaxy {
                 *x = x.saturating_sub(k.field);
             }
         }
+    }
+
+    /// Every realm decides where to send its hulls.
+    fn send(&mut self) {
+        let n = self.systems.len();
+        self.count_spare();
         // A different people moves first each tick, starting at a different
         // system, so nobody always gets first pick.
         let mut order = [0, 1, 2, 3];
-        for i in (1..SIDES).rev() {
+        for i in (1..PEOPLES).rev() {
             order.swap(i, self.rng.index(i + 1));
         }
-        self.stage();
         let offset = self.rng.index(n);
         for f in order {
             for i in 0..n {
                 let t = (i + offset) % n;
+                // Nothing to do deep in anyone's space.
+                let sys = &self.systems[t];
+                if !self.border[t] && sys.held[f] == 0 && sys.hulls[f] == 0 {
+                    continue;
+                }
+                if sys.held[f] > 0
+                    && (0..SIDES).all(|g| g == f || (sys.held[g] == 0 && sys.hulls[g] == 0))
+                {
+                    continue;
+                }
                 // The realms of this people that could send here: each
                 // with hulls to spare in range, and none of them blocked by
                 // another realm of the people already in the system.
@@ -1532,92 +1657,29 @@ impl Galaxy {
                 }
             }
         }
+        // Crews hired to fly their employer's hulls have them.
+        self.lend_hulls();
     }
 
-    /// Each realm on an offensive brings hulls up toward it: every quiet
-    /// system of its own sends some of its spare hulls one jump on, to its
-    /// own system nearest the offensive's aim (paying the FTL).
-    fn stage(&mut self) {
-        let mut moves: Vec<(usize, usize, usize, f32)> = Vec::new();
-        for r in 0..self.realms.len() {
-            let Some(o) = self.realms[r].offensive else {
-                continue;
-            };
-            let f = self.realms[r].faction as usize;
-            let first = moves.len();
-            let mut cost = 0.0;
-            for &s in self.territory(r) {
-                let s = s as usize;
-                let here = self.systems[s].pos.distance(o.at);
-                if self.spare[s][f] < MIN_SEND {
-                    continue;
-                }
-                let next = self
-                    .neighbors(s)
-                    .filter(|&(t, _)| self.holder(t) == r as u32)
-                    .map(|(t, d)| (t, d, self.systems[t].pos.distance(o.at)))
-                    .filter(|&(_, _, there)| there < here)
-                    .min_by(|a, b| a.2.total_cmp(&b.2));
-                if let Some((t, d, _)) = next {
-                    let m = self.spare[s][f] as f32 * self.rules.bring_up;
-                    cost += m * d / FTL_RANGE * self.rules.ftl_cost;
-                    moves.push((f, s, t, m));
-                }
-            }
-            // Bring up only what this tick's budget pays for, from everywhere alike.
-            let realm = &mut self.realms[r];
-            let budget = (self.rules.tempo * realm.income)
-                .min(realm.crystals)
-                .max(0.0);
-            let afford = if cost > budget { budget / cost } else { 1.0 };
-            for mv in &mut moves[first..] {
-                mv.3 *= afford;
-            }
-            realm.crystals -= cost * afford;
-        }
-        for (f, s, t, m) in moves {
-            // Whole hulls go.
-            let m = (m as u32).min(self.spare[s][f]);
-            self.spare[s][f] -= m;
-            self.systems[s].hulls[f] -= m;
-            self.systems[t].hulls[f] += m;
-            self.moves[s][f].left += m;
-            self.moves[t][f].arrived += m;
-        }
-    }
-
-    /// Should realm `r` (of side `f`) send hulls to system `t`, and how many
-    /// from where?
+    /// Should realm `r` (of side `f`) send hulls to system `t`, hire for it,
+    /// or both? Whatever the battle maths says gains it most over doing
+    /// nothing, if anything does.
     fn consider(&mut self, t: usize, f: usize, r: u32) {
         let sys = &self.systems[t];
-        let fire = self.strength(t);
-        // Who's in the way.
-        let (mut defense, mut enemy) = (0.0, false);
-        for g in (0..SIDES).filter(|&g| g != f) {
-            defense += fire[g];
-            enemy |= sys.held[g] > 0 || sys.hulls[g] >= AT_WAR;
-        }
-        if !enemy {
+        let ours = sys.held[f] > 0;
+        let here = sys.hulls[f];
+        let attacked = (0..SIDES).any(|g| g != f && sys.hulls[g] >= AT_WAR);
+        if ours && !attacked && (0..SIDES).all(|g| g == f || sys.held[g] == 0) {
             return;
         }
-        let (have, ours) = (fire[f], sys.held[f] > 0);
-        // Defending is always on. An attack goes in where the realm's
-        // offensive is, or on an enemy pocket (which nobody leaves standing);
-        // anywhere else only at long odds.
-        let pocket = self.cut[t] && !ours;
-        let odds = if pocket {
-            self.rules.gang_odds
-        } else if ours || self.pushing(r, sys.pos) {
-            self.rules.odds
-        } else {
-            self.rules.opportunity
-        };
-        // Already winning there by enough: nothing to add.
-        if have >= odds * defense && defense > 0.0 {
+        // A fight it's in, every tick; somewhere new, now and then.
+        if here == 0 && !(self.tick + t as u64).is_multiple_of(THINK) {
             return;
         }
-        let want = odds * defense * 1.2 + 10.0 - have;
-        // What could reach it: the realm's own spare hulls in range.
+        let worth = self.worth(t, f, ours);
+        if worth <= 0.0 {
+            return;
+        }
         let mine = |g: &Galaxy, s: usize| {
             if g.systems[s].realms[f] == r {
                 g.spare[s][f]
@@ -1626,53 +1688,85 @@ impl Galaxy {
             }
         };
         let pool: u32 = self.neighbors(t).map(|(s, _)| mine(self, s)).sum();
-        let pool_f = pool as f32;
-        if have + pool_f < odds * defense || pool < MIN_SEND {
-            // Not a good enough chance alone: an attack it's set on, or a
-            // world of its own under attack, can hire a company to make up
-            // the difference, then go in with it.
-            let attacked = (0..SIDES).any(|g| g != f && sys.hulls[g] >= AT_WAR);
-            let worth_it = if ours {
-                attacked
-            } else {
-                pocket || self.pushing(r, sys.pos)
-            };
-            let need = (want - pool_f).max(0.0).ceil() as u32;
-            if worth_it && self.hire(t, f, r, need, ours) {
-                self.consider(t, f, r);
-            }
-            return;
-        }
-        // Go in hard: a decisive blow, not a top-up the defender can match
-        // next tick. What's left of it rolls on to the next world.
-        let send = want.max(pool_f * self.rules.commit).min(pool_f);
-        if send < MIN_SEND as f32 {
-            return;
-        }
-        // Pay for it: FTL by distance.
-        let frac = send / pool_f;
-        let cost: f32 = self
+        let cost_all: f32 = self
             .neighbors(t)
-            .map(|(s, d)| mine(self, s) as f32 * frac * d / FTL_RANGE * self.rules.ftl_cost)
+            .map(|(s, d)| mine(self, s) as f32 * d / FTL_RANGE * self.rules.ftl_cost)
             .sum();
-        // Defending a world of ours may spend everything; an attack only
-        // what's above the reserve.
-        let realm = &self.realms[r as usize];
-        let purse = if ours {
-            realm.crystals
-        } else {
-            realm.crystals - self.rules.reserve * realm.income.max(0.0)
-        };
-        let afford = if cost > 0.0 {
-            (purse / cost).clamp(0.0, 1.0)
+        let realm = self.realms[r as usize];
+        let afford = if cost_all > 0.0 {
+            (realm.crystals / cost_all).clamp(0.0, 1.0)
         } else {
             1.0
         };
-        let frac = frac * afford;
-        if frac * pool_f < MIN_SEND as f32 {
+        let have = here as f32;
+        let pilots = self.pilots_for(r, have);
+        // (what it'd hold, what it'd cost it) with `x` more of its own.
+        let play = |g: &Galaxy, own: f32, pilots: f32| {
+            let fc = g.forecast(t, f, r, own, 0.0, 0.0, pilots, ours);
+            (fc.share * worth - fc.lost * realm.hull_worth, fc.length)
+        };
+        let (stay, length) = play(self, have, pilots);
+        // What more pilots, or hulls, would be worth to it: in a fight it's
+        // in, or an attack it could make.
+        let all = have + pool as f32 * afford;
+        if (here > 0 && attacked) || (here == 0 && pool >= MIN_SEND) {
+            let own = if here > 0 { have } else { all };
+            let p = self.pilots_for(r, own);
+            let fly = if here > 0 { 0.0 } else { cost_all * afford };
+            let (now, l) = play(self, own, p);
+            let now = (now - fly).max(stay);
+            let length = if here > 0 { length } else { l };
+            // (a hull more than those it could already bring)
+            let reserve = self.pilots_for(r, all);
+            let most = play(self, all, reserve).0;
+            let (mut pilot, mut hull) = (0.0f32, 0.0f32);
+            for n in [10.0, 40.0, 85.0] {
+                pilot = pilot.max((play(self, own, p + n).0 - fly - now) / n / length);
+                hull = hull.max((play(self, all + 4.0 * n, reserve).0 - most) / (4.0 * n));
+            }
+            let x = &mut self.realms[r as usize];
+            x.pilot_use = x.pilot_use.max(pilot);
+            x.hull_use = x.hull_use.max(hull);
+        }
+        let mut best = (0.0, 0.0f32);
+        if pool >= MIN_SEND {
+            for share in [0.1, 0.25, 0.5, 1.0] {
+                let n = pool as f32 * share * afford;
+                if n < MIN_SEND as f32 {
+                    continue;
+                }
+                let gain = play(self, have + n, self.pilots_for(r, have + n)).0
+                    - stay
+                    - cost_all * share * afford;
+                if gain > best.0 {
+                    best = (gain, share * afford);
+                }
+            }
+        }
+        // Or with a company, going in with all it can pay to move.
+        let own = have + pool as f32 * afford;
+        let with = if best.1 > 0.0 {
+            have + pool as f32 * best.1
+        } else {
+            own
+        };
+        let base = if best.1 > 0.0 {
+            stay + best.0
+        } else {
+            stay + cost_all * afford
+        };
+        if realm.hires
+            && (attacked || pool >= MIN_SEND)
+            && self.hire(t, f, r, with, base, ours)
+            && best.1 == 0.0
+        {
+            best.1 = afford;
+        }
+        if best.1 * (pool as f32) < MIN_SEND as f32 {
             return;
         }
-        self.realms[r as usize].crystals -= cost * afford;
+        let cost = (cost_all * best.1).min(self.realms[r as usize].crystals.max(0.0));
+        self.realms[r as usize].crystals -= cost;
         self.sent += 1;
         let mut moved = 0;
         for k in 0..NEIGHBORS {
@@ -1682,7 +1776,7 @@ impl Galaxy {
             }
             let s = s as usize;
             // Whole hulls go.
-            let m = (mine(self, s) as f32 * frac) as u32;
+            let m = (mine(self, s) as f32 * best.1) as u32;
             self.spare[s][f] -= m;
             self.systems[s].hulls[f] -= m;
             self.moves[s][f].left += m;
@@ -1691,6 +1785,14 @@ impl Galaxy {
         self.systems[t].hulls[f] += moved;
         self.moves[t][f].arrived += moved;
         self.systems[t].realms[f] = r;
+    }
+
+    /// The pilots realm `r` would have for `own` hulls in one fight, sharing
+    /// them with its others (`Galaxy::firing`).
+    pub(crate) fn pilots_for(&self, r: u32, own: f32) -> f32 {
+        let pilots = self.realms[r as usize].pilots as f32;
+        let fights = self.war_hulls.get(r as usize).copied().unwrap_or(0) as f32;
+        pilots * own / fights.max(own).max(1.0)
     }
 }
 
@@ -1715,7 +1817,7 @@ fn settle(spots: &[Vec3], hearts: &[(Vec2, u8)]) -> Vec<u8> {
                 .unwrap_or(0);
             count[*o as usize] += 1;
         }
-        let fair = spots.len() as f32 / SIDES as f32;
+        let fair = spots.len() as f32 / PEOPLES as f32;
         for f in 0..SIDES {
             // A side with too much pulls in its borders, and vice versa.
             reach[f] += 60.0 * (1.0 - count[f] as f32 / fair).clamp(-1.0, 1.0);
@@ -1794,7 +1896,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
         if g.tick / every > printed {
             printed = g.tick / every;
             let names = Faction::ALL.map(|f| f.name());
-            let shares: Vec<String> = (0..SIDES)
+            let shares: Vec<String> = (0..PEOPLES)
                 .map(|f| {
                     format!(
                         "{} {:4.1}% {:3}",
@@ -1805,7 +1907,6 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
                 })
                 .collect();
             let hulls: f32 = c.hulls.iter().sum();
-            let pushing = g.living().filter(|(_, r)| r.offensive.is_some()).count();
             // Realms' gear tiers (#438): lowest, median, highest.
             let mut tiers: Vec<u8> = g.living().map(|(_, r)| r.tier).collect();
             tiers.sort();
@@ -1833,7 +1934,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
             };
             let tiers = format!("{tiers} pilots {}/{}", pilot(0.5), pilot(1.0));
             println!(
-                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  pushing {pushing:3}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
+                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
                 g.tick,
                 shares.join("  "),
                 c.at_war * 100.0,
@@ -1863,13 +1964,13 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
     println!("captured {:.0} crystal with fallen systems", g.captured);
     let b = g.books;
     println!(
-        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
+        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} billed ({:.0} owed when due); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
         b.signed,
         b.won,
         b.broken,
         b.expired,
         b.upfront,
-        b.bonus,
+        b.billed,
         b.defaulted,
         b.worth_won,
         b.paid_won,

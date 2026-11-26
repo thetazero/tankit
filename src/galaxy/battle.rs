@@ -389,11 +389,11 @@ fn describe_allocation(b: &Battle) -> String {
             if mercs > 0 {
                 format!(
                     "{} {a} hulls ({mercs} mercs', {} companies)",
-                    Faction::ALL[f].name(),
+                    Faction::side(f).name(),
                     b.hired[t].len()
                 )
             } else {
-                format!("{} {a} hulls", Faction::ALL[f].name())
+                format!("{} {a} hulls", Faction::side(f).name())
             }
         })
         .collect::<Vec<_>>()
@@ -407,7 +407,7 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
     for &f in &b.sides {
         out += &format!(
             "\n  {:<9} hulls here {:6.1} -> {:6.1} (lost {:4.1} all told)  sites {} -> {}  shields up {} -> {}",
-            Faction::ALL[f].name(),
+            Faction::side(f).name(),
             s.before.hulls[f],
             s.after.hulls[f],
             s.lost[f],
@@ -427,7 +427,7 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
         if s.merc_lost[f] > 0 {
             out += &format!(
                 "\n  the {}' mercs lost {:.0} of those",
-                Faction::ALL[f].name(),
+                Faction::side(f).name(),
                 s.merc_lost[f]
             );
         }
@@ -643,10 +643,16 @@ impl Galaxy {
             }
         }
         for &(id, pilot, part, level) in &o.scrap {
-            if let Some(c) = self.companies.iter_mut().find(|c| c.id == id)
-                && let Some(x) = c.pilots.iter_mut().find(|p| p.id == pilot)
+            if let Some(c) = self.company(id)
+                && let Some(p) = self.companies[c].pilots.iter().position(|p| p.id == pilot)
             {
-                x.known.scrap(part, level);
+                self.companies[c].pilots[p].known.scrap(part, level);
+                self.companies[c].pilots[p].learned();
+                // And their ship pays them for the kill.
+                let bonus = self.rules.kill_share * self.companies[c].pilots[p].wage;
+                self.bonus(c, p, bonus);
+                self.companies[c].kills += 1;
+                self.books.kill_bonuses += bonus as f64;
             }
         }
         if let (Some(i), Some(w)) = (o.site, o.winner) {
@@ -862,9 +868,14 @@ mod tests {
             if (0..SIDES).any(|f| !b.sides.contains(&f) && sys.hulls[f] >= AT_WAR) {
                 continue;
             }
-            tried += 1;
+            let at = g.tick;
             let s = g.step_played(&played(&b, &[0, 0], &[0, 0], Some(1 - t)));
             assert!(s.taken);
+            // (with no war left, a step runs on through later ticks)
+            if g.tick > at + 1 {
+                continue;
+            }
+            tried += 1;
             assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
         }
         assert!(tried >= 5, "only {tried} seeds had a held site at stake");
@@ -981,7 +992,7 @@ mod merc_tests {
     /// A galaxy with you in a company under contract with at least
     /// `hulls` committed.
     fn on_contract(hulls: u32) -> Galaxy {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = g
             .companies
             .iter()
@@ -1034,7 +1045,7 @@ mod merc_tests {
             .max_by_key(|&a| g.systems[t].hulls[a])
             .unwrap();
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 5, 21);
         let b = g
             .muster_crew(t, &m.factions, None)
@@ -1075,13 +1086,15 @@ mod merc_tests {
             target: t as u32,
             signed: g.tick,
             upfront: 0.0,
-            bonus: 0.0,
+            rate: 0.0,
+            billed: 0.0,
+            wage: 0.0,
             committed: mercs,
             field: mercs,
             lost: 0,
-            defend: false,
+            ..Default::default()
         });
-        (g, t, [Faction::ALL[f], Faction::ALL[e]])
+        (g, t, [Faction::side(f), Faction::side(e)])
     }
 
     /// Fighting for a site under its holder's shield, the attacker (mercs
@@ -1290,7 +1303,7 @@ mod gear_tests {
     /// pays by the enemy realm's tier. The pilots learn from their kills.
     #[test]
     fn bots_fly_their_realms_and_pilots_gear() {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = hired_company(&g);
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
@@ -1313,7 +1326,7 @@ mod gear_tests {
             p.known = veteran;
         }
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
         let b = g
             .muster_crew(t, &m.factions, None)
@@ -1352,7 +1365,7 @@ mod gear_tests {
     #[test]
     fn mercs_drive_their_own_kit() {
         use crate::sim::{HullKind, TurretKind};
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = hired_company(&g);
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
@@ -1378,14 +1391,14 @@ mod gear_tests {
             p.known = salt;
         }
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
         let b = g
             .muster_crew(t, &m.factions, None)
             .expect("your company's battle");
         let b = begin(&g, &mut m, b);
         assert!(!b.pilots.is_empty());
-        let realm_hulls = Faction::ALL[f].hulls();
+        let realm_hulls = Faction::side(f).hulls();
         let mut seen = 0;
         for i in 1..m.fighters.len() {
             let tank = &m.world.tanks[i];
@@ -1407,7 +1420,7 @@ mod gear_tests {
     /// breaks away keeps its parent's gear.
     #[test]
     fn realms_research_their_gear() {
-        let mut g = Galaxy::warmed_by(3, 200);
+        let mut g = Galaxy::warmed_hired(3);
         let before: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
         for _ in 0..200 {
             g.step();

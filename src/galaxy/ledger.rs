@@ -199,7 +199,7 @@ impl Setup {
                     })
                     .collect();
                 Side {
-                    faction: Faction::ALL[f].name().into(),
+                    faction: Faction::side(f).name().into(),
                     hulls: b.allocation[team],
                     realm_hulls: b.allocation[team].saturating_sub(b.mercs(team)),
                     realm_tier: tier(f),
@@ -235,7 +235,7 @@ impl Setup {
                 SiteKind::Shield { damaged: false } => "shield".into(),
                 SiteKind::Shield { damaged: true } => "shield (damaged)".into(),
             }),
-            holder: holder.map(|f| Faction::ALL[f].name().into()),
+            holder: holder.map(|f| Faction::side(f).name().into()),
             contract: format!("{:?}", m.contract),
             rating: m.rating,
             sides,
@@ -248,7 +248,7 @@ impl Setup {
 /// one line of JSON. None if it has no setup (it's not one you played).
 pub fn entry(g: &Galaxy, b: &Battle, m: &Match, s: &Settled) -> Option<String> {
     let setup = b.setup.as_ref()?;
-    let name = |t: usize| b.sides.get(t).map(|&f| Faction::ALL[f].name().to_string());
+    let name = |t: usize| b.sides.get(t).map(|&f| Faction::side(f).name().to_string());
     let p = m.player();
     let tank = &m.world.tanks[0];
     let you = You {
@@ -278,7 +278,7 @@ pub fn entry(g: &Galaxy, b: &Battle, m: &Match, s: &Settled) -> Option<String> {
         winner: m.leader().and_then(name),
         site_to: b
             .site
-            .map(|i| Faction::ALL[g.sites[i].owner as usize].name().into()),
+            .map(|i| Faction::side(g.sites[i].owner as usize).name().into()),
         taken: s.taken,
         shield_down: s.shield_down,
     };
@@ -323,7 +323,7 @@ mod tests {
     /// A galaxy with you in a company under contract, and its battle,
     /// drawn as the game draws one you play.
     fn played() -> (Galaxy, Battle, Match) {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = g
             .companies
             .iter()
@@ -337,7 +337,7 @@ mod tests {
             .max_by_key(|&a| g.systems[t].hulls[a])
             .unwrap();
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = Match::new(map, 0, 5, 21);
         let b = g.muster_crew(t, &m.factions, None).expect("your battle");
         let mut b = super::super::battle::begin(&g, &mut m, b);

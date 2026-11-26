@@ -23,7 +23,7 @@
 
 use glam::Vec3;
 
-use super::{Galaxy, NEIGHBORS, Offensive, SIDES};
+use super::{Galaxy, NEIGHBORS, SIDES};
 
 /// No realm.
 pub const NONE: u32 = u32::MAX;
@@ -41,8 +41,6 @@ pub struct Realm {
     pub crystals: f32,
     /// Its crystal income last tick.
     pub income: f32,
-    /// Its offensive, if it's on one.
-    pub offensive: Option<Offensive>,
     /// The tick it was founded (broke away, or the war's start).
     pub founded: u64,
     /// Systems it holds (updated each tick); 0 for a realm that's gone.
@@ -54,6 +52,21 @@ pub struct Realm {
     pub research: f32,
     /// Its pilots, all alike, shared between all its fights.
     pub pilots: u32,
+    /// What it pays each a tick.
+    pub wage: f32,
+    /// What one more pilot, and one more hull, have lately been worth to
+    /// it: crystals a tick, and crystals.
+    pub pilot_worth: f32,
+    pub hull_worth: f32,
+    /// Its best use this tick for one more of each (scratch).
+    pub pilot_use: f32,
+    pub hull_use: f32,
+    /// Free pilots it took on this tick (scratch).
+    pub hired: u32,
+    /// Whether it hires mercs at all: realms are split at random between
+    /// those that do and those that don't, to see which fare better. A
+    /// realm breaking away keeps its parent's way.
+    pub hires: bool,
     /// Systems it's fighting in, as of the last tick's battles.
     pub fronts: u32,
     /// Scratch: systems it's lost since they were last counted.
@@ -67,41 +80,75 @@ impl Realm {
             seat,
             crystals: 0.0,
             income: 0.0,
-            offensive: None,
             founded: tick,
             systems: 0,
             tier: 0,
             research: 0.0,
             pilots: 0,
+            wage: 0.0,
+            pilot_worth: 0.1,
+            hull_worth: 0.1,
+            pilot_use: 0.0,
+            hull_use: 0.0,
+            hired: 0,
+            hires: true,
             fronts: 0,
             fell: 0,
         }
     }
 
-    /// How many pilots it wants: as many as its income pays for, but no
-    /// more than it can use, a front's worth for each fight and one in hand.
-    pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
-        let afford = rules.pilot_budget * self.income.max(0.0) / rules.pilot_upkeep.max(1e-6);
-        afford.min(rules.frontage * (self.fronts + 1) as f32) as u32
+    /// What it pays each pilot a tick: never less than one lives on.
+    pub fn pay(&self, rules: &super::Rules) -> f32 {
+        self.wage.max(rules.pilot_upkeep)
     }
 
-    /// Pay its pilots (those it can't pay leave), then train or dismiss a
-    /// few toward what it can afford.
-    pub fn keep_pilots(&mut self, rules: &super::Rules) {
-        let upkeep = rules.pilot_upkeep.max(1e-6);
+    /// The pilots a realm starts with: a quarter of its income's worth, or a
+    /// front's if that's fewer.
+    pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
+        (0.25 * self.income.max(0.0) / self.pay(rules)).min(rules.frontage) as u32
+    }
+
+    /// Pay its pilots (those it can't pay leave), then train some if one's
+    /// worth more over a career than its training and pay, or let some go if
+    /// one's worth less than its pay. Returns those who left or were let go.
+    pub fn keep_pilots(&mut self, rules: &super::Rules, retired: u32, free: u32) -> u32 {
+        // What its fights showed this tick.
+        self.pilot_worth += rules.sense * (self.pilot_use - self.pilot_worth);
+        // (a hull's worth no more than building another and bringing it)
+        let most = rules.hull_cost + rules.ftl_cost;
+        // (and it keeps till it's wanted, so quiet ticks say little)
+        let sense = if self.hull_use > 0.0 {
+            rules.sense
+        } else {
+            rules.sense / 10.0
+        };
+        self.hull_worth += sense * (self.hull_use.min(most) - self.hull_worth);
+        (self.pilot_use, self.hull_use) = (0.0, 0.0);
+        self.pilots -= retired.min(self.pilots);
+        let upkeep = self.pay(rules);
+        let before = self.pilots;
         self.pilots = self.pilots.min((self.crystals / upkeep) as u32);
         self.crystals = (self.crystals - self.pilots as f32 * upkeep).max(0.0);
-        let want = self.pilots_wanted(rules);
-        if self.pilots < want {
-            self.pilots += rules.train.min(want - self.pilots);
-        } else {
-            self.pilots -= rules.train.min(self.pilots - want);
+        let mut left = before - self.pilots;
+        // Over a career, what one earns it over their pay.
+        let gain = (self.pilot_worth - upkeep) / rules.career.max(1e-6);
+        if gain > 0.0 && free > 0 {
+            // Pilots out of work need no training.
+            let n = rules.train.min(free);
+            self.pilots += n;
+            self.hired = n;
+        } else if gain > rules.train_cost {
+            let n = rules
+                .train
+                .min((self.crystals / rules.train_cost.max(1e-6)) as u32);
+            self.pilots += n;
+            self.crystals -= n as f32 * rules.train_cost;
+        } else if gain < 0.0 {
+            let n = rules.train.min(self.pilots);
+            self.pilots -= n;
+            left += n;
         }
-    }
-
-    /// Its bank, in ticks of its income.
-    pub fn bank(&self) -> f32 {
-        self.crystals / self.income.max(0.05)
+        left
     }
 }
 
@@ -138,7 +185,10 @@ impl Galaxy {
     /// A new realm of `faction` seated at `seat`: in a slot of a realm that's
     /// gone if there is one.
     pub(crate) fn found(&mut self, faction: u8, seat: u32) -> u32 {
-        let realm = Realm::new(faction, seat, self.tick);
+        let realm = Realm {
+            hires: self.rng.chance(0.5),
+            ..Realm::new(faction, seat, self.tick)
+        };
         // A slot is free once nothing is tagged with it (`systems` and `alive`
         // both say so); taking one marks it, so it isn't handed out twice.
         if let Some(r) = self.free.pop() {
@@ -159,7 +209,7 @@ impl Galaxy {
     /// it. The realm whose hulls are there does; if none are, the realm of `f`
     /// holding the nearest system within range; else a new one, seated here.
     pub(crate) fn claim(&mut self, s: usize, f: usize) {
-        if self.systems[s].realms[f] != NONE {
+        if f == super::RAID || self.systems[s].realms[f] != NONE {
             return;
         }
         let near = self
@@ -194,7 +244,11 @@ impl Galaxy {
         for (f, seats) in seats.iter().enumerate() {
             for &seat in seats {
                 of_seat[seat as usize] = self.realms.len() as u32;
-                self.realms.push(Realm::new(f as u8, seat, 0));
+                let hires = self.rng.chance(0.5);
+                self.realms.push(Realm {
+                    hires,
+                    ..Realm::new(f as u8, seat, 0)
+                });
                 self.spans.push((0, 0));
             }
         }
@@ -219,7 +273,7 @@ impl Galaxy {
         let income = self.realm_income();
         for (r, realm) in self.realms.iter_mut().enumerate() {
             realm.income = income[r];
-            realm.crystals = income[r] * self.rng.range(0.0, self.rules.launch);
+            realm.crystals = income[r] * self.rng.range(0.0, 60.0);
             // Start with as many pilots as it can afford.
             realm.pilots = realm.pilots_wanted(&self.rules);
         }
@@ -286,7 +340,6 @@ impl Galaxy {
             self.realms[r].systems = count[r].max(tagged[r] as u32);
             self.realms[r].fell = 0;
             if !tagged[r] {
-                self.realms[r].offensive = None;
                 self.free.push(r as u32);
                 continue;
             }
@@ -386,8 +439,12 @@ impl Galaxy {
                 .unwrap_or(&members[0]);
             let f = self.realms[old as usize].faction;
             let new = self.found(f, seat);
-            // It breaks away with the gear it has: its parent's tier.
+            // It breaks away with the gear it has, and its way with mercs.
             self.realms[new as usize].tier = self.realms[old as usize].tier;
+            self.realms[new as usize].wage = self.realms[old as usize].wage;
+            self.realms[new as usize].pilot_worth = self.realms[old as usize].pilot_worth;
+            self.realms[new as usize].hull_worth = self.realms[old as usize].hull_worth;
+            self.realms[new as usize].hires = self.realms[old as usize].hires;
             // Its share of the vaults, by systems.
             let (vault, size) = vaults[old as usize];
             let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
@@ -457,6 +514,10 @@ impl Galaxy {
             into[a] = b as u32;
             grown[b] = true;
             let take = self.realms[a].crystals;
+            // Its debts too.
+            for d in self.debts.iter_mut().filter(|d| d.realm as usize == a) {
+                d.realm = b as u32;
+            }
             self.realms[b].crystals += take;
             self.realms[a].crystals = 0.0;
             self.realms[b].pilots += std::mem::take(&mut self.realms[a].pilots);

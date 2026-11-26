@@ -64,9 +64,11 @@ const LEAVING_BUDGET: std::time::Duration = std::time::Duration::from_millis(30)
 /// Seconds a contract stays selected before the menu backdrop moves to its map.
 const BACKDROP_SETTLE: f32 = 0.25;
 /// Copy what the profile knows onto your pilot, and its company onto an
-/// older galaxy save that has none.
-fn adopt(g: &mut crate::galaxy::Galaxy, profile: &crate::profile::Profile) {
+/// older galaxy save that has none. Back pay that's reached you goes into
+/// the profile.
+fn adopt(g: &mut crate::galaxy::Galaxy, profile: &mut crate::profile::Profile) {
     g.know(profile.known);
+    profile.add_crystals(g.take_wallet());
     if g.crew.is_none() {
         g.crew = profile.ship;
     }
@@ -702,7 +704,7 @@ impl App {
         }
         let rank = self.profile.rank().level;
         let Some(g) = self.war.try_get() else { return };
-        adopt(g, &self.profile);
+        adopt(g, &mut self.profile);
         let start = Instant::now();
         let mut left = u32::MAX;
         let done = g.await_work_slice(None, rank, &mut left, || start.elapsed() >= WAIT_BUDGET);
@@ -725,7 +727,7 @@ impl App {
         }
         let rank = self.profile.rank().level;
         let g = self.war.get();
-        adopt(g, &self.profile);
+        adopt(g, &mut self.profile);
         let choice = g.crew_choice();
         let shown = self.menu.choice().map(|c| c.choice) == choice.as_ref().map(|c| c.choice);
         if shown
@@ -774,7 +776,7 @@ impl App {
         }
         let rank = self.profile.rank().level;
         let g = self.war.get();
-        adopt(g, &self.profile);
+        adopt(g, &mut self.profile);
         self.menu.set_ships(g.other_ships());
         // A ship's contract, previewed before you sign on (#453).
         if let Some(id) = self.menu.wants_contract() {
@@ -811,7 +813,7 @@ impl App {
     /// once it's loaded; a new pilot joins one as soon as there's one at work.
     fn sync_crew(&mut self) {
         let Some(g) = self.war.try_get() else { return };
-        adopt(g, &self.profile);
+        adopt(g, &mut self.profile);
         let before = g.crew;
         g.enlist(None);
         let crew = g.crew;
@@ -1499,7 +1501,12 @@ impl App {
             && !self.paid
         {
             let pay = Payout::of(&self.game);
-            self.profile.add_crystals(pay.total());
+            // Your company pays you, out of its own vault.
+            let paid = match self.battle {
+                Some(_) => self.war.get().pay_you(pay.total()),
+                None => pay.total(),
+            };
+            self.profile.add_crystals(paid);
             // Take apart what you wrecked (#438): a schematic or two may be yours now.
             let new = self.profile.scrap(&self.game.player().scrap);
             for part in &new {
@@ -1509,7 +1516,7 @@ impl App {
                 self.audio.garage(audio::GarageCue::Bought);
             }
             self.paid = true;
-            log::info!("contract paid {} CR ({pay:?})", pay.total());
+            log::info!("contract paid {paid} of {} CR ({pay:?})", pay.total());
             if let Some(b) = self.battle.take() {
                 let g = self.war.get();
                 let (tick, owners) = (g.tick, g.owners());
