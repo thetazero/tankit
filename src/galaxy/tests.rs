@@ -706,6 +706,7 @@ fn companies_split_and_join() {
         c.hulls = 0;
     }
     let n = g.companies.len();
+    g.rules.merc_split = 1000.0;
     g.companies[0].crystals = g.rules.merc_split * 3.0;
     g.companies[1].crystals = g.rules.merc_join / 2.0;
     let total: f32 = g.companies.iter().map(|c| c.crystals).sum();
