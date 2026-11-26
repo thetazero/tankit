@@ -996,37 +996,6 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
     ring(p, c, r - 0.5, 1.0, color);
 }
 
-/// The system view while your company's between contracts: its frame,
-/// and in it a spinner and how many ticks the war's gone on without work
-/// for you.
-pub fn waiting(p: &mut Painter, ticks: u32, time: f32) {
-    let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
-    let at = Vec2::new(min.x + 24.0, min.y + 24.0);
-    crate::hud::spinner_small(p, at + Vec2::new(7.0, 7.0), time);
-    let mut s = design::SMALL;
-    s.color = design::TEXT;
-    p.text(
-        at + Vec2::new(26.0, 2.0),
-        "LOOKING FOR WORK",
-        &s,
-        Align::Left,
-    );
-    let mut v = design::HEAD;
-    v.color = design::TEXT;
-    let tw = p.text(
-        at + Vec2::new(0.0, 26.0),
-        &format!("+{ticks}"),
-        &v,
-        Align::Left,
-    );
-    p.text(
-        at + Vec2::new(tw + 8.0, 34.0),
-        "TICKS",
-        &design::SMALL,
-        Align::Left,
-    );
-}
-
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.

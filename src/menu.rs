@@ -13,16 +13,13 @@ use winit::keyboard::KeyCode;
 
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::cluster_view::{self, Cluster};
-use crate::faction::Faction;
 use crate::galaxy::theater::{Ended, Offer, SiteView, Sortie, Theater, planet_name};
-use crate::garage::{self, PANEL_W, PANEL_X};
 use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
 use crate::ui::design::UNIT;
-use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
-use crate::ui::{design, emblem};
+use crate::ui::{Align, Hits, Layer, Painter, design, theme, with_alpha};
 use crate::work_view::{self, Board};
 
 const REF_HEIGHT: f32 = 900.0;
@@ -792,40 +789,10 @@ impl Menu {
                 hits,
             };
         }
-        match self.system() {
-            Some(t) => {
-                crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
-                self.draw_system(&mut p, &mut hits, w, h);
-                return Layer {
-                    verts: fade(p.finish(), alpha),
-                    hits,
-                };
-            }
-            None => garage::backdrop(&mut p, h),
+        if let Some(t) = self.system() {
+            crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
         }
-        let x = PANEL_X;
-        let mut y = 72.0;
-
-        // What you have to spend.
-        crystals(&mut p, Vec2::new(x + PANEL_W, y + 10.0), profile.crystals);
-        y += 72.0;
-
-        match self.screen {
-            Screen::Main => unreachable!("drawn above"),
-            Screen::Missions => self.no_posting(&mut p, Vec2::new(x, y), profile),
-            Screen::Settings | Screen::Controls => unreachable!("drawn above"),
-            Screen::Ships | Screen::Contract => unreachable!("drawn above"),
-        }
-        // Every screen but the main menu goes back to the one it came from.
-        if self.screen != Screen::Main {
-            back_button(
-                &mut p,
-                &mut hits,
-                Vec2::new(x, h - 72.0),
-                design::COLUMN,
-                self.back_lit,
-            );
-        }
+        self.draw_system(&mut p, &mut hits, w, h);
         Layer {
             verts: fade(p.finish(), alpha),
             hits,
@@ -853,7 +820,8 @@ impl Menu {
     pub fn cluster(&self) -> Option<(&Cluster, f32)> {
         let c = self.cluster.as_ref()?;
         use Screen::{Main, Ships};
-        matches!(self.screen, Main | Ships).then_some((c, self.clock))
+        let adrift = self.screen == Screen::Missions && self.system().is_none();
+        (adrift || matches!(self.screen, Main | Ships)).then_some((c, self.clock))
     }
 
     /// The main menu: who you are and what you can do, on a panel over the
@@ -922,21 +890,6 @@ impl Menu {
         back_button(p, hits, Vec2::new(at[0].x, back_y(h)), WIDE, self.back_lit);
     }
 
-    /// No theater to show: your company has no battle for you yet (or
-    /// you're not with one, and none has; or the galaxy is still loading).
-    fn no_posting(&self, p: &mut Painter, at: Vec2, profile: &Profile) {
-        let name = profile
-            .company_name()
-            .map_or("The Company".to_string(), |n| format!("The {}", title(&n)));
-        faction_line(p, at, Faction::Company, &name);
-        p.text(
-            at + Vec2::new(0.0, 28.0),
-            "BETWEEN CONTRACTS",
-            &TextStyle::value(22.0),
-            Align::Left,
-        );
-    }
-
     /// The contract page: the system with its marks, and the panel over it.
     fn draw_system(&self, p: &mut Painter, hits: &mut Hits<Hit>, w: f32, h: f32) {
         use crate::theater_view;
@@ -947,8 +900,9 @@ impl Menu {
         } else if let Some(t) = self.theater.as_ref().filter(|t| !t.contested.is_empty()) {
             let moving = self.transfer.as_ref();
             theater_view::draw(p, hits, t, moving, None, self.site, self.go_lit, w, h);
-        } else {
-            theater_view::waiting(p, self.waited, self.clock);
+        } else if self.system().is_none() && self.cluster.is_none() {
+            // The galaxy's still loading.
+            p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 1.0]);
         }
         design::panel(p, h);
         let shown = match &self.card {
@@ -960,8 +914,16 @@ impl Menu {
         match shown {
             Some(t) => self.draw_job(p, hits, t, live, h),
             None => {
+                // Between contracts: the war goes on until there's work.
                 let at = Vec2::splat(design::MARGIN);
-                p.text(at, "No work", &design::HEAD, Align::Left);
+                p.text(at, "Seeking work", &design::BODY, Align::Left);
+                let at = at + Vec2::Y * UNIT * 5.0;
+                let c = at + Vec2::new(8.0, design::SMALL.size * 0.5);
+                crate::hud::spinner_small(p, c, self.clock);
+                let ticks = format!("{} ticks", self.waited);
+                let style = design::SMALL.colored(design::TEXT_2);
+                let at = at + Vec2::X * UNIT * 3.5;
+                p.text(at, &ticks, &style, Align::Left);
             }
         }
         back_at_foot(p, hits, self.back_lit, h);
@@ -1068,13 +1030,6 @@ fn back_button(p: &mut Painter, hits: &mut Hits<Hit>, min: Vec2, width: f32, lit
 /// BACK, at a panel's foot.
 pub fn back_at_foot(p: &mut Painter, hits: &mut Hits<Hit>, lit: bool, h: f32) {
     back_button(p, hits, design::foot(h, 0), design::COLUMN, lit);
-}
-
-/// `text` after `faction`'s emblem, in its colour: who's hiring, or whose ship.
-fn faction_line(p: &mut Painter, at: Vec2, faction: Faction, text: &str) {
-    let mut style = BODY;
-    style.color = faction.ui();
-    emblem::tagged(p, at, faction, text, &style, Align::Left);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1482,38 +1437,6 @@ fn controls_page(
     hits.add(p, min, size, Hit::Row(RESET_ROW));
 }
 
-/// Body text: sentence case, for everything that isn't a name or a number.
-const BODY: TextStyle = TextStyle {
-    size: 10.0,
-    tracking: 0.3,
-    weight: 1.1,
-    color: theme::DIM,
-    lower: true,
-    face: crate::ui::font::Face::Inter,
-};
-
-fn body(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
-    let mut style = BODY;
-    style.color = color;
-    p.text(at, text, &style, Align::Left)
-}
-
-/// Your crystals, right-aligned at `at`.
-fn crystals(p: &mut Painter, at: Vec2, crystals: u32) {
-    let w = body(
-        p,
-        at + Vec2::new(-measure("CR", &BODY), 2.0),
-        "CR",
-        theme::DIM,
-    );
-    p.text(
-        at - Vec2::new(w + 6.0, 0.0),
-        &crystals.to_string(),
-        &TextStyle::value(13.0),
-        Align::Right,
-    );
-}
-
 /// "THE CAPITAL" as "The Capital".
 pub fn title(caps: &str) -> String {
     caps.split(' ')
@@ -1550,6 +1473,7 @@ fn fade(mut v: Vec<UiVertex>, alpha: f32) -> Vec<UiVertex> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::faction::Faction;
     use crate::galaxy::theater::system_name;
 
     #[test]
