@@ -12,7 +12,7 @@ use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::procgen::check;
 use crate::map::procgen::crossing::{Crossing, Kind};
-use crate::map::procgen::desert::skeleton::RAMP_RUN;
+use crate::map::procgen::desert::skeleton::{Form, PAD, RAMP_RUN};
 use crate::map::procgen::land::*;
 use crate::map::procgen::mine::{SHED_HALF, line_at, line_distance, line_len};
 use crate::map::procgen::skeleton::*;
@@ -395,6 +395,31 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
 
     let (spur, loading) = works(rng, &mut land, &tracks, &crossings, size);
 
+    // The dump, out on the floor.
+    for _ in 0..200 {
+        let m = Mound {
+            at: Vec2::new(rng.range(0.15, 0.85), rng.range(0.15, 0.85)) * size,
+            radius: rng.range(12.0, 15.0),
+            height: rng.range(3.6, 4.6),
+            run: 11.0,
+        };
+        let reach = m.radius * 1.4 + m.run;
+        let clear = land.plateau(m.at) > reach + 6.0
+            && land.wash_distance(m.at) > reach + 14.0
+            && tracks.iter().all(|t| line_distance(t, m.at) > reach + 4.0)
+            && spur
+                .as_ref()
+                .is_none_or(|s| s.shed.0.distance(m.at) > reach + 34.0)
+            && land
+                .digs
+                .iter()
+                .all(|d| (d.at - d.facing * 26.0).distance(m.at) > reach + 34.0);
+        if clear {
+            land.mounds.push(m);
+            break;
+        }
+    }
+
     // Ways up, square to the cliff, off the digs.
     let run = land.high.height * RAMP_RUN;
     let mut tries = 0;
@@ -422,6 +447,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
                 let q = ramp.foot.lerp(ramp.top, i as f32 / 8.0);
                 tracks.iter().all(|t| line_distance(t, q) > RAMP_HALF + 6.0)
                     && land.wash_distance(q) > RAMP_HALF + 16.0
+                    && land.mounds.iter().all(|m| m.at.distance(q) > 40.0)
                     && spur
                         .as_ref()
                         .is_none_or(|s| s.shed.0.distance(q) > RAMP_HALF + 30.0)
@@ -470,6 +496,12 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     if !sk.place_bases(rng, sides.len(), &nav) {
         return Err("no fair spawns".into());
     }
+    sk.place_lots(rng, Form::Escarpment);
+    sk.stands = sk
+        .base_spots()
+        .iter()
+        .map(|&b| b + (heart - b).normalize_or(Vec2::X) * (PAD + 8.0))
+        .collect();
     let grey = sk.greybox(sides);
     let nav = NavGrid::build(&grey);
     check::playable_on(&grey, &nav)?;
