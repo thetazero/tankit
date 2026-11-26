@@ -27,6 +27,7 @@ pub mod city;
 mod civic;
 pub mod crossing;
 pub mod desert;
+pub mod foundry;
 mod imperium;
 pub mod land;
 pub mod mine;
@@ -54,6 +55,8 @@ pub enum Biome {
     Mine,
     /// Open desert: dunes, buttes, spires, perhaps a dry wash.
     Desert,
+    /// A hull foundry, on whichever ground.
+    Foundry(foundry::Ground),
 }
 
 /// Whose place it is.
@@ -61,10 +64,22 @@ pub enum Biome {
 pub enum Look {
     Imperium,
     Resonant,
+    Uthenn,
     Ithessar,
 }
 
 impl Look {
+    /// `founder`'s own style, for what every faction has a style of (hull
+    /// foundries).
+    pub fn own(founder: Faction) -> Look {
+        match founder {
+            Faction::Imperium | Faction::Company => Look::Imperium,
+            Faction::Resonant => Look::Resonant,
+            Faction::Uthenn => Look::Uthenn,
+            Faction::Ithessar => Look::Ithessar,
+        }
+    }
+
     /// The style `founder` builds cities in: the Imperium's, for those whose
     /// own isn't made yet.
     pub fn of(founder: Faction) -> Look {
@@ -141,7 +156,7 @@ fn style(look: Look) -> &'static dyn Style {
         Look::Imperium => &imperium::Imperium,
         Look::Resonant => &resonant::Resonant,
         // Nobody else's city yet: any other look is dressed as theirs.
-        Look::Ithessar => &imperium::Imperium,
+        Look::Uthenn | Look::Ithessar => &imperium::Imperium,
     }
 }
 
@@ -196,6 +211,7 @@ fn build_map(spec: &Spec) -> Map {
         Biome::City => build(spec).0,
         Biome::Mine => mine::build(spec),
         Biome::Desert => desert::build(spec),
+        Biome::Foundry(ground) => foundry::build(spec, ground),
     }
 }
 
@@ -328,6 +344,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
         Biome::City => city::PLANET,
         Biome::Mine => mine::PLANET,
         Biome::Desert => desert::PALETTES[0].planet,
+        Biome::Foundry(ground) => ground.planet(),
     }
 }
 
@@ -336,6 +353,7 @@ pub fn greybox(spec: &Spec) -> Map {
     match spec.biome {
         Biome::Mine => return mine::greybox(spec),
         Biome::Desert => return desert::greybox(spec),
+        Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::City => {}
     }
     let sk = skeleton(spec);
@@ -394,6 +412,53 @@ fn vistas(map: &Map, sk: &Skeleton) -> Vec<(Vec2, f32)> {
                 level && !under && !blocked(sun, 300.0) && !blocked(glam::Vec3::Y, 60.0)
             };
             let p = spots.into_iter().find(|&p| good(p)).unwrap_or(b.middle());
+            (p, view(p))
+        })
+        .collect()
+}
+
+/// Where the menus show each side's tank: by its spawns, in the sun,
+/// the camera looking past it toward the middle.
+fn sunlit_views(m: &Map, bases: &[Vec2], middle: Vec2) -> Vec<(Vec2, f32)> {
+    let sun = m.atmosphere.sun_dir.normalize();
+    let lm = middle;
+    let view = |p: Vec2| {
+        let d = lm - p;
+        (-d.x).atan2(-d.y)
+    };
+    bases
+        .iter()
+        .map(|&b| {
+            let want = b.lerp(lm, 0.12);
+            let mut spots = Vec::new();
+            let mut u = -30.0;
+            while u <= 30.0 {
+                let mut v = -30.0;
+                while v <= 30.0 {
+                    spots.push(want + Vec2::new(u, v));
+                    v += 3.0;
+                }
+                u += 3.0;
+            }
+            spots.sort_by(|a, c| a.distance(want).total_cmp(&c.distance(want)));
+            let good = |p: Vec2| {
+                let g = m.ground_height(p.x, p.y);
+                let at = glam::Vec3::new(p.x, g + 1.9, p.y);
+                let blocked =
+                    |dir: glam::Vec3, len: f32| m.oboxes.iter().any(|o| o.ray_hit(at, dir, len));
+                let under = m
+                    .oboxes
+                    .iter()
+                    .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0);
+                let v = view(p);
+                let back = Vec2::new(v.sin(), v.cos());
+                let level = (0..=14).all(|k| {
+                    let q = p + back * k as f32;
+                    (m.ground_height(q.x, q.y) - g).abs() < 0.5
+                });
+                level && !under && !blocked(sun, 300.0) && !blocked(glam::Vec3::Y, 60.0)
+            };
+            let p = spots.into_iter().find(|&p| good(p)).unwrap_or(b);
             (p, view(p))
         })
         .collect()
@@ -631,6 +696,17 @@ impl Map {
             return slot.get_or_init(|| map(&crate::mine_spec(seed))).clone();
         }
         map(&crate::mine_spec(seed))
+    }
+
+    /// The Imperium's hull foundry `seed` names, on desert (see
+    /// `crate::foundry_spec`).
+    #[cfg(test)]
+    pub fn foundry(seed: u64) -> Map {
+        map(&crate::foundry_spec(
+            seed,
+            Look::Imperium,
+            foundry::Ground::Desert,
+        ))
     }
 
     /// The open desert `seed` names (see `crate::desert_spec`).

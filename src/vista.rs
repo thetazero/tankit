@@ -29,8 +29,9 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::Kiln => &[(53.0, 93.0, 4.97), (141.0, 128.5, 6.02)],
         // Generated: each city picks its own (`Map::vistas`).
         MapKind::City(..) | MapKind::ShieldSite(..) => &[],
-        // Chimneys and girders, from either end.
-        MapKind::Foundry => &[(123.0, 18.0, 2.88), (158.0, 83.0, 1.83)],
+        // Generated: each foundry picks its own (by each side's spawns,
+        // looking at the great hall).
+        MapKind::Foundry(..) => &[],
         // Generated: each mine picks its own (the Face, the adit's mouth
         // and the bridge out of it, from either side of the bridge's end).
         MapKind::Mine => &[],
@@ -216,7 +217,20 @@ mod tests {
                 MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
                 2,
             ),
-            (MapKind::Foundry, 0),
+            (
+                MapKind::Foundry(
+                    crate::map::procgen::Look::Uthenn,
+                    crate::map::procgen::foundry::Ground::Tundra,
+                ),
+                0,
+            ),
+            (
+                MapKind::Foundry(
+                    crate::map::procgen::Look::Imperium,
+                    crate::map::procgen::foundry::Ground::Desert,
+                ),
+                1,
+            ),
             (MapKind::Mine, 0),
             (MapKind::Desert, 0),
             (MapKind::Desert, 1),
@@ -288,12 +302,7 @@ mod tests {
     #[test]
     #[ignore]
     fn vista_search() {
-        for kind in [
-            MapKind::Saltmarket,
-            MapKind::Sanctum,
-            MapKind::Kiln,
-            MapKind::Foundry,
-        ] {
+        for kind in [MapKind::Saltmarket, MapKind::Sanctum, MapKind::Kiln] {
             let world = World::new(make_map(kind, 0), 0);
             let s = world.map.size;
             let sun = world.map.atmosphere.sun_dir.normalize();
