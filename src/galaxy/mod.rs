@@ -127,6 +127,9 @@ pub struct Rules {
     /// Ticks of a system's output that make its usual garrison: what a
     /// realm prices its spare hulls against, and (most of it) starts with.
     pub garrison: f32,
+    /// How fast yards build, of what a site's rated at: about what wars
+    /// destroy, since nothing else does.
+    pub yards: f32,
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
@@ -247,7 +250,8 @@ pub struct Rules {
 impl Default for Rules {
     fn default() -> Rules {
         Rules {
-            garrison: 33.0,
+            garrison: 550.0,
+            yards: 0.06,
             ftl_cost: 0.225,
             kill: 0.35,
             frontage: 85.0,
@@ -644,7 +648,7 @@ impl Galaxy {
         let (a, b) = self.systems[s].sites;
         for site in &self.sites[a as usize..b as usize] {
             if let SiteKind::Production { hulls, .. } = site.kind {
-                out[site.owner as usize] += hulls;
+                out[site.owner as usize] += hulls * self.rules.yards;
             }
         }
         out
@@ -883,14 +887,14 @@ impl Galaxy {
             for site in &self.sites[a as usize..b as usize] {
                 if let SiteKind::Production { hulls, crystals: c } = site.kind {
                     let f = site.owner as usize;
-                    sys.building[f] += hulls;
+                    sys.building[f] += hulls * self.rules.yards;
                     let r = sys.realms[f];
                     if r == NONE {
                         continue;
                     }
                     crystals[r as usize] += c;
                     if f == resonant {
-                        crystals[r as usize] -= hulls * RESONANT_HULL_COST;
+                        crystals[r as usize] -= hulls * self.rules.yards * RESONANT_HULL_COST;
                     }
                 }
             }

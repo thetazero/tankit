@@ -293,7 +293,7 @@ impl Galaxy {
             .filter(|s| (s.owner as usize == f) == own)
             .map(|s| match s.kind {
                 SiteKind::Production { hulls, crystals } => {
-                    crystals + hulls * self.rules.hull_price
+                    crystals + hulls * self.rules.yards * self.rules.hull_price
                 }
                 SiteKind::Shield { .. } => 0.0,
             })
