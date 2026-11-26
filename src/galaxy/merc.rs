@@ -183,9 +183,16 @@ impl Pilot {
     /// Their gear's level: the kit they drive's (`kit`), hull and turret
     /// averaged. What they know of parts they don't drive doesn't fight.
     pub fn level(&self) -> f32 {
-        let (hull, turret) = self.kit();
-        let l = self.levels();
-        (l.of(Part::Hull(hull)) as f32 + l.of(Part::Turret(turret)) as f32) / 2.0
+        // (The kit is the best of each, so its levels are the highest.)
+        let (mut hull, mut turret) = (0, 0);
+        for p in PARTS {
+            let cap = self.known.cap(p);
+            match p {
+                Part::Hull(_) => hull = hull.max(cap),
+                Part::Turret(_) => turret = turret.max(cap),
+            }
+        }
+        (hull as f32 + turret as f32) / 2.0
     }
 }
 
@@ -1640,6 +1647,16 @@ impl Galaxy {
             self.pay = self.realm_pay();
         }
         let pay = self.pay;
+        // Worlds by what's in their vaults for their defenders, as far as
+        // one can see.
+        let mut rich: Vec<(f32, usize)> = (0..self.systems.len())
+            .filter_map(|s| {
+                let x: f32 = self.vaults_of(s).iter().map(|v| v.crystals).sum();
+                let h: u32 = self.systems[s].hulls.iter().sum();
+                (x > 5.0).then_some((x / (50.0 + h as f32), s))
+            })
+            .collect();
+        rich.sort_by(|a, b| b.0.total_cmp(&a.0));
         for c in 0..self.companies.len() {
             let co = &self.companies[c];
             if co.contract.is_some()
@@ -1650,26 +1667,21 @@ impl Galaxy {
                 continue;
             }
             let here = self.systems[co.at as usize].pos;
-            // The richest few it knows of in range.
-            let mut seen: Vec<(f32, usize)> = (0..self.systems.len())
-                .filter(|&s| {
+            // The richest few in range.
+            let seen: Vec<(f32, usize)> = rich
+                .iter()
+                .copied()
+                .filter(|&(_, s)| {
                     let sys = &self.systems[s];
-                    sys.pos.distance(here) <= self.rules.merc_range
+                    sys.pos.distance_squared(here) <= self.rules.merc_range.powi(2)
                         && sys.hulls[super::RAID] == 0
                         && sys.held[super::RAID] == 0
                 })
-                .map(|s| (self.vaults_of(s).iter().map(|v| v.crystals).sum::<f32>(), s))
-                .filter(|x| x.0 > 5.0)
-                .map(|(x, s)| {
-                    // ... for their defenders, as far as one can see.
-                    let h: u32 = self.systems[s].hulls.iter().sum();
-                    (x / (50.0 + h as f32), s)
-                })
+                .take(5)
                 .collect();
-            seen.sort_by(|a, b| b.0.total_cmp(&a.0));
             let mut best: Option<(f32, Quote, usize, f32, f32, Vec<Offer>)> = None;
             let mut far = 0;
-            for &(_, t) in seen.iter().take(6) {
+            for &(_, t) in &seen {
                 let loot: f32 = self.vaults_of(t).iter().map(|v| v.crystals).sum();
                 let pos = self.systems[t].pos;
                 let none = super::realm::NONE;
