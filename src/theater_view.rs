@@ -24,7 +24,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
-use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, planet_name};
+use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, TickSummary, planet_name};
 use crate::menu::Hit;
 use crate::planet;
 use crate::render::mesh::{Instance, MeshData, MeshId};
@@ -1028,8 +1028,7 @@ pub fn waiting(p: &mut Painter, ticks: u32, time: f32) {
 /// px, contested site `selected` marked. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
 /// While a `transfer` is playing, draws its caption instead. If the transfer
-/// is paused on the contract summary card, draws the card instead, with
-/// CONTINUE highlighted if `go_lit` (#414).
+/// is paused on the contract summary, draws that instead (#414).
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     p: &mut Painter,
@@ -1038,20 +1037,54 @@ pub fn draw(
     transfer: Option<&Transfer>,
     card: Option<&Ended>,
     selected: usize,
-    go_lit: bool,
     w: f32,
     h: f32,
 ) {
     let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
     let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
     if let Some(e) = card {
-        summary(p, hits, t, e, go_lit, min, max);
+        summary(p, hits, t, e, w, h);
         return;
     }
     if let Some((tr, leg)) = transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
         caption(p, t, tr, leg, min, max);
         return;
     }
+    worlds(p, hits, t, selected, w, h, |_, _, _| {});
+}
+
+/// The system of tick summary `t`, `time` seconds after it came up: the
+/// sites that changed hands ringed, spreading, in their new holder's color.
+pub fn aftermath(p: &mut Painter, t: &TickSummary, time: f32, w: f32, h: f32) {
+    p.set_halo(None);
+    let mut hits = Hits::new();
+    let none = usize::MAX;
+    worlds(p, &mut hits, &t.theater, none, w, h, |p, s, at| {
+        let Some(f) = t.flips.iter().find(|f| f.site == s.index) else {
+            return;
+        };
+        let color = Faction::side(f.to).ui();
+        for k in 0..3 {
+            let u = (time * 0.45 + k as f32 / 3.0).fract();
+            ring(p, at, 15.0 + 24.0 * u, 2.0, with_alpha(color, 1.0 - u));
+        }
+        ring(p, at, 15.0, 3.0, color);
+    });
+}
+
+/// The worlds of `t` with their marks, and the hull bar; `at_site` is called
+/// with each site and where its mark goes, under the mark.
+fn worlds(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    t: &Theater,
+    selected: usize,
+    w: f32,
+    h: f32,
+    at_site: impl Fn(&mut Painter, &SiteView, Vec2),
+) {
+    let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
+    let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
     let l = layout(t);
     let vp = camera(t, w / h).view_proj(w / h);
     let at = |v: Vec3| project(vp, v, w, h).map(|(x, y)| Vec2::new(x, y));
@@ -1099,6 +1132,7 @@ pub fn draw(
                 with_alpha(tint, 0.5),
             );
             let row = t.contested.iter().position(|&x| x == i);
+            at_site(p, s, m);
             site_marker(p, m, s, row == Some(selected));
             if let Some(row) = row.filter(|_| s.committed) {
                 hits.add(p, m - Vec2::splat(18.0), Vec2::splat(36.0), Hit::Row(row));
@@ -1342,91 +1376,66 @@ pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
     (head, how)
 }
 
-/// Width of the contract summary card. Its height depends on the number of rows.
-const SUMMARY_W: f32 = 420.0;
-const GO_W: f32 = 120.0;
-const GO_H: f32 = 28.0;
-
-/// Draws the contract summary card (#414), centered in the system view
-/// between `min` and `max`. It shows how the contract `e` ended and its
-/// stats. `from` is the system the contract was in. Clicking CONTINUE
-/// dismisses the card and starts the transfer animation.
-fn summary(
-    p: &mut Painter,
-    hits: &mut Hits<Hit>,
-    from: &Theater,
-    e: &Ended,
-    lit: bool,
-    min: Vec2,
-    max: Vec2,
-) {
-    // Stat rows: label on the left, value on the right.
-    let mut rows: Vec<(&str, String)> = vec![
-        (
-            "BATTLES",
-            e.tick.saturating_sub(e.signed).max(1).to_string(),
-        ),
-        (
-            "COMPANY HULLS LOST",
-            format!("{} / {}", e.lost, e.committed),
-        ),
-    ];
-    if e.own.of > 0 {
-        rows.push((
-            "YOUR HULLS LOST",
-            format!("{} / {}", e.own.of - e.own.left.min(e.own.of), e.own.of),
-        ));
-    }
-
-    const PAD: f32 = 24.0;
-    const ROW: f32 = 20.0;
-    let size = Vec2::new(
-        SUMMARY_W,
-        PAD + 50.0 + rows.len() as f32 * ROW + 16.0 + GO_H + PAD,
+/// The contract summary (#414), a panel beside the system the contract was
+/// in (`from`): how it ended (`e`) and what it cost. CONTINUE starts the
+/// transfer.
+fn summary(p: &mut Painter, hits: &mut Hits<Hit>, from: &Theater, e: &Ended, w: f32, h: f32) {
+    use design::{BODY, HEAD, MARGIN, TEXT, TEXT_2, TITLE, UNIT};
+    worlds(
+        p,
+        &mut Hits::new(),
+        &quiet(from),
+        usize::MAX,
+        w,
+        h,
+        |_, _, _| {},
     );
-    let mid = (min + max) * 0.5;
-    let at = mid - size * 0.5;
+    design::panel(p, h);
+    let x = MARGIN;
+    let mut y = MARGIN;
+    // A world won or lost says so; anything else is why it failed.
+    let (head, how) = verdict(from, e);
+    let ground = matches!(e.outcome, Outcome::Won | Outcome::Fell);
+    let (what, word) = match how.rsplit_once(' ') {
+        Some((what, word)) if ground => (what, word),
+        _ => (from.name.as_str(), "FAILED"),
+    };
+    let why = if ground { head } else { how.as_str() };
     let tone = if e.outcome.won() {
-        Faction::Company.ui()
+        design::AMBER
     } else {
         theme::HOT
     };
-    p.rect(at, size, design::GROUND);
-    p.rect_outline(at, size, 1.0, theme::FAINT);
-    p.rect(at, Vec2::new(size.x, 2.0), tone);
-    let (x0, x1) = (at.x + PAD, at.x + size.x - PAD);
-    let mut y = at.y + PAD;
-    let (head, how) = verdict(from, e);
-    let mut style = design::SMALL;
-    style.color = tone;
-    p.text(Vec2::new(x0, y), head, &style, Align::Left);
-    y += 16.0;
-    p.text(Vec2::new(x0, y), &how, &design::HEAD, Align::Left);
-    y += 34.0;
-
-    let mut dim = design::SMALL;
-    dim.color = design::TEXT_2;
-    let value = design::BODY;
-    for (what, figure) in rows {
-        p.text(Vec2::new(x0, y + 2.0), what, &dim, Align::Left);
-        p.text(Vec2::new(x1, y), &figure, &value, Align::Right);
-        y += ROW;
+    p.text(Vec2::new(x, y), word, &TITLE.colored(tone), Align::Left);
+    y += UNIT * 6.0;
+    p.text(Vec2::new(x, y), what, &HEAD, Align::Left);
+    y += UNIT * 4.0;
+    p.text(Vec2::new(x, y), why, &BODY.colored(TEXT_2), Align::Left);
+    y += UNIT * 8.0;
+    let battles = e.tick.saturating_sub(e.signed).max(1).to_string();
+    let mut rows = vec![
+        ("Battles", battles),
+        ("Hulls lost", format!("{} / {}", e.lost, e.committed)),
+    ];
+    if e.own.of > 0 {
+        let gone = e.own.of - e.own.left.min(e.own.of);
+        rows.push(("Yours lost", format!("{gone} / {}", e.own.of)));
     }
+    for (name, value) in rows {
+        design::line(p, Vec2::new(x, y), name, &value, TEXT);
+        y += UNIT * 3.0;
+    }
+    let (min, size) = design::action(p, design::on_at(h), "Continue", true);
+    hits.add(p, min, size, Hit::Continue);
+}
 
-    // CONTINUE button.
-    let go = Vec2::new(mid.x - GO_W * 0.5, at.y + size.y - GO_H - PAD);
-    let gs = Vec2::new(GO_W, GO_H);
-    p.rect(go, gs, with_alpha(tone, if lit { 0.3 } else { 0.12 }));
-    p.rect_outline(go, gs, 1.0, tone);
-    let mut a = design::SMALL;
-    a.color = design::TEXT;
-    p.text(
-        Vec2::new(mid.x, go.y + (GO_H - a.size) * 0.5),
-        "CONTINUE",
-        &a,
-        Align::Center,
-    );
-    hits.add(p, go, gs, Hit::Continue);
+/// `t` with no battles to pick.
+fn quiet(t: &Theater) -> Theater {
+    let mut t = t.clone();
+    for s in &mut t.sites {
+        s.committed = false;
+    }
+    t
 }
 
 /// A jump's flash over the whole screen (`w` by `h`), at the cuts between

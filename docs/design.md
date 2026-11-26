@@ -1,8 +1,8 @@
 # Design system, v0
 
 The code is the reference: tokens and components are in `src/ui/design.rs`.
-The main menu, Find work and the contract page are made from it; the other
-screens aren't yet.
+The main menu, Find work, the contract page and the screens after a battle
+are made from it; the other screens aren't yet.
 
 ## Principles
 
@@ -10,8 +10,7 @@ screens aren't yet.
    war, in that order.
 2. **The war is always in view.** Show it happening; don't report it in a
    popup.
-3. **No click without a choice.** If there's nothing to decide, it isn't a
-   screen.
+3. **Every screen earns its place.** No low-value panels.
 
 ## Foundations
 

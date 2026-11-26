@@ -20,9 +20,9 @@ use crate::raid;
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::sim::Tank;
-use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
+use crate::ui::{design, emblem};
 
 /// What the HUD calls fighter `i`: "YOU", or its turret.
 pub fn callsign(m: &Match, i: usize) -> &'static str {
@@ -647,14 +647,14 @@ impl Hud {
         }
 
         if debrief {
-            p.set_over_scene(false);
+            // Over the battlefield alone, the HUD gone.
+            p = Painter::new(scale);
             let view = DebriefView {
                 m,
                 ledger,
                 war: self.debrief.as_ref(),
-                hover: self.hover,
             };
-            draw_debrief(&mut p, &mut hits, &view, w, h);
+            draw_debrief(&mut p, &mut hits, &view, h);
         }
 
         Layer {
@@ -843,36 +843,6 @@ fn hull_summary(
     }
 }
 
-const BUTTON_H: f32 = 26.0;
-const BUTTON_PAD: f32 = 12.0;
-
-/// A button: `what` in a hairline box at `min`, lit while hovered, that
-/// clicks as `id`. Returns its width.
-fn button(
-    p: &mut Painter,
-    hits: &mut Hits<Hit>,
-    hover: Option<Hit>,
-    min: Vec2,
-    what: &str,
-    id: Hit,
-) -> f32 {
-    let style = TextStyle::LABEL;
-    let size = Vec2::new(BUTTON_PAD * 2.0 + measure(what, &style), BUTTON_H);
-    let fill = if hover == Some(id) { 0.16 } else { 0.07 };
-    p.rect(min, size, with_alpha(theme::FG, fill));
-    p.rect_outline(min, size, 1.0, theme::FG);
-    let mut a = style;
-    a.color = theme::FG;
-    p.text(
-        Vec2::new(min.x + size.x * 0.5, min.y + (BUTTON_H - style.size) * 0.5),
-        what,
-        &a,
-        Align::Center,
-    );
-    hits.add(p, min, size, id);
-    size.x
-}
-
 /// What your battle did to the war (its site), for the debrief.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarResult {
@@ -926,178 +896,128 @@ struct DebriefView<'a> {
     m: &'a Match,
     ledger: Ledger,
     war: Option<&'a WarResult>,
-    hover: Option<Hit>,
 }
 
-/// Width of the debrief's panel, and its columns' gap.
-const DEBRIEF_W: f32 = 640.0;
-const DEBRIEF_PAD: f32 = 40.0;
-const DEBRIEF_GAP: f32 = 48.0;
-
-/// The round's debrief, over the dimmed battle: how it went (victory,
-/// defeat, draw), what it did to the site it was for, the score, then what
-/// you earned. One button on; Tab shows the tables instead.
-fn draw_debrief(p: &mut Painter, hits: &mut Hits<Hit>, v: &DebriefView, w: f32, h: f32) {
+/// The round's debrief, a panel beside the battlefield: how it went
+/// (victory, defeat, draw), what it did to the site it was for, the score,
+/// then what you earned. Tab shows the tables instead.
+fn draw_debrief(p: &mut Painter, hits: &mut Hits<Hit>, v: &DebriefView, h: f32) {
+    use design::{AMBER, BLUE, BODY, COLUMN, HEAD, MARGIN, SMALL, TEXT, TEXT_2, TITLE, UNIT};
     let m = v.m;
-    let me = m.player().team;
-    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.6]);
-
-    let learned = Payout::of(m).schematic;
-    let scrap = scrap_lines(m);
-    let scrap_h = scrap.len().div_ceil(2) as f32 * SCRAP_ROW_H;
-    let head_h = 30.0 + 52.0 + 30.0 + if m.factions.len() == 2 { 30.0 } else { 0.0 };
-    let height = DEBRIEF_PAD
-        + head_h
-        + 24.0
-        + RESULTS_H
-        + if learned.is_some() {
-            STOLEN_H + 8.0
-        } else {
-            0.0
-        }
-        + if scrap.is_empty() {
-            0.0
-        } else {
-            scrap_h + 12.0
-        }
-        + 24.0
-        + BUTTON_H
-        + DEBRIEF_PAD * 0.75;
-    let min = Vec2::new(
-        w * 0.5 - DEBRIEF_W * 0.5,
-        (h * 0.5 - height * 0.5).max(24.0),
-    );
-    p.rect(min, Vec2::new(DEBRIEF_W, height), theme::PANEL);
-    widgets::corners(p, min, min + Vec2::new(DEBRIEF_W, height), 14.0, theme::DIM);
-    let cx = w * 0.5;
-    let (x0, x1) = (min.x + DEBRIEF_PAD, min.x + DEBRIEF_W - DEBRIEF_PAD);
-    let mut y = min.y + DEBRIEF_PAD;
-
-    // Where, then how it went.
-    let place = match v.war {
-        Some(r) => format!("{} · {}", r.world, r.site),
-        None => String::new(),
-    };
-    if !place.is_empty() {
-        label(p, Vec2::new(cx, y), &place, Align::Center);
-    }
-    y += 30.0;
-    let (title, color) = match m.leader() {
-        Some(t) if t == me => ("VICTORY", Faction::Company.ui()),
-        Some(_) => ("DEFEAT", theme::HOT),
-        None => ("DRAW", theme::FG),
-    };
-    let mut big = TextStyle::value(40.0);
-    big.color = color;
-    p.text(Vec2::new(cx, y), title, &big, Align::Center);
-    y += 52.0;
-    if let Some(r) = v.war {
-        let mut s = TextStyle::value(14.0);
-        s.color = if r.verdict.good() {
-            theme::FG
-        } else {
-            theme::DIM
-        };
-        p.text(
-            Vec2::new(cx, y),
-            &format!("{} {}", r.site, r.verdict.word()),
-            &s,
-            Align::Center,
-        );
-    }
-    y += 30.0;
-    if m.factions.len() == 2 {
-        final_score(p, m, Vec2::new(cx, y));
-        y += 30.0;
-    }
-    p.line(Vec2::new(x0, y), Vec2::new(x1, y), 1.0, theme::FAINT);
-    y += 24.0;
-
-    // What you earned.
-    let col = (x1 - x0 - DEBRIEF_GAP) * 0.5;
     let t = m.over_for - RESULTS_DELAY;
-    renown_gained(p, v.ledger.renown, m.renown, t, x0, x0 + col, y);
-    crystal_tally(
-        p,
-        v.ledger.crystals,
-        Payout::of(m).total(),
-        t,
-        x1 - col,
-        x1,
-        y,
-    );
-    y += RESULTS_H;
-    if let Some(part) = learned {
-        // A schematic your wrecks made yours (#438).
-        let mut s = TextStyle::value(12.0);
-        s.color = theme::HOT;
-        emblem::tagged(
-            p,
-            Vec2::new(cx, y + 8.0),
-            part.maker(),
-            &format!("{} SCHEMATIC", part.name()),
-            &s,
-            Align::Center,
+    design::panel(p, h);
+    let (x, right) = (MARGIN, MARGIN + COLUMN);
+    let mut y = MARGIN;
+    let (title, color) = match m.leader() {
+        Some(t) if t == m.player().team => ("VICTORY", AMBER),
+        Some(_) => ("DEFEAT", theme::HOT),
+        None => ("DRAW", TEXT),
+    };
+    p.text(Vec2::new(x, y), title, &TITLE.colored(color), Align::Left);
+    y += UNIT * 6.0;
+    if let Some(r) = v.war {
+        let style = SMALL.colored(TEXT_2);
+        p.text(Vec2::new(x, y), &r.world, &style, Align::Left);
+        y += UNIT * 2.5;
+        let text = format!(
+            "{} {}",
+            r.site
+                .trim_end_matches(" GENERATOR")
+                .trim_start_matches("HULL ")
+                .trim_start_matches("CRYSTAL "),
+            r.verdict.word()
         );
-        y += STOLEN_H + 8.0;
+        let color = if r.verdict.good() { TEXT } else { TEXT_2 };
+        p.text(Vec2::new(x, y), &text, &BODY.colored(color), Align::Left);
+        y += UNIT * 5.0;
     }
-    if !scrap.is_empty() {
-        y += 12.0;
-        for (i, line) in scrap.iter().enumerate() {
-            let (a, b) = if i % 2 == 0 {
-                (x0, x0 + col)
-            } else {
-                (x1 - col, x1)
-            };
-            let ly = y + (i / 2) as f32 * SCRAP_ROW_H;
-            match line {
-                ScrapLine::Part(sc) => scrap_row(p, sc, t, a, b, ly),
-                ScrapLine::More(k) => scrap_more(p, *k, a, ly),
-            }
+    if m.factions.len() == 2 {
+        for (team, at, align) in [(0, x, Align::Left), (1, right, Align::Right)] {
+            let f = m.factions[team];
+            let score = m.score(team).to_string();
+            let style = HEAD.colored(f.ui());
+            emblem::tagged(p, Vec2::new(at, y), f, &score, &style, align);
         }
-        y += scrap_h;
+        y += UNIT * 3.5;
+        let (a, b) = (m.score(0) as f32, m.score(1) as f32);
+        let share = if a + b > 0.0 { a / (a + b) } else { 0.5 };
+        let wide = COLUMN * share;
+        p.rect(Vec2::new(x, y), Vec2::new(wide, 4.0), m.factions[0].ui());
+        let rest = Vec2::new(COLUMN - wide, 4.0);
+        p.rect(Vec2::new(x + wide, y), rest, m.factions[1].ui());
+        y += UNIT * 7.0;
     }
 
-    // On, or the tables.
-    y += 24.0;
-    let mut hint = TextStyle::LABEL;
-    hint.color = theme::DIM;
+    // Your rank, filling from where you stood.
+    let shown = renown_shown(m.renown, t);
+    let start = Rank::of(v.ledger.renown);
+    let now = Rank::of(v.ledger.renown + shown);
+    let up = now.level > start.level;
+    let rank = format!("{} {}", now.title(), now.level);
+    let style = BODY.colored(if up { AMBER } else { TEXT });
+    p.text(Vec2::new(x, y), &rank, &style, Align::Left);
+    let style = BODY.colored(AMBER);
     p.text(
-        Vec2::new(x0, y + (BUTTON_H - hint.size) * 0.5),
-        "TAB  SCOREBOARD",
-        &hint,
+        Vec2::new(right, y),
+        &format!("+{shown}"),
+        &style,
+        Align::Right,
+    );
+    y += UNIT * 3.0;
+    gain_bar(
+        p,
+        Vec2::new(x, y),
+        if up { 0.0 } else { start.progress() },
+        now.progress(),
+    );
+    y += UNIT * 4.0;
+
+    // Your crystals, the pay folding in.
+    let cr = tally(v.ledger.crystals, Payout::of(m).total(), t);
+    let style = BODY.colored(BLUE);
+    p.text(
+        Vec2::new(x, y),
+        &format!("{} cr", cr.balance),
+        &style,
         Align::Left,
     );
-    let go = "CONTINUE";
-    let bw = BUTTON_PAD * 2.0 + measure(go, &TextStyle::LABEL);
-    button(p, hits, v.hover, Vec2::new(x1 - bw, y), go, Hit::Missions);
+    if let Some((k, alpha)) = cr.plus {
+        let style = BODY.colored(with_alpha(BLUE, alpha));
+        p.text(Vec2::new(right, y), &format!("+{k}"), &style, Align::Right);
+    }
+    y += UNIT * 6.0;
+
+    // The parts you've got further with.
+    for line in scrap_lines(m) {
+        match line {
+            ScrapLine::Part(sc) => {
+                scrap_row(p, &sc, t, Vec2::new(x, y));
+                y += UNIT * 4.0;
+            }
+            ScrapLine::More(n) => {
+                let style = SMALL.colored(TEXT_2);
+                p.text(Vec2::new(x, y), &format!("+{n}"), &style, Align::Left);
+            }
+        }
+    }
+
+    let (min, size) = design::action(p, design::on_at(h), "Continue", true);
+    hits.add(p, min, size, Hit::Missions);
+    let at = Vec2::new(x, h - MARGIN - SMALL.size);
+    p.text(at, "Tab  Scoreboard", &SMALL.colored(TEXT_2), Align::Left);
 }
 
-/// The round's final score, centred on `at`: each side's name and score,
-/// yours on the left, in its colour.
-fn final_score(p: &mut Painter, m: &Match, at: Vec2) {
-    for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
-        let f = m.factions[team];
-        let mut s = TextStyle::value(16.0);
-        s.color = f.ui();
-        let score = m.score(team).to_string();
-        let sw = p.text(Vec2::new(at.x + dir * 18.0, at.y), &score, &s, align);
-        let mut l = TextStyle::LABEL;
-        l.color = with_alpha(f.ui(), 0.8);
-        emblem::faction_name(
-            p,
-            Vec2::new(at.x + dir * (18.0 + sw + 14.0), at.y + 5.0),
-            f,
-            &l,
-            align,
-        );
+/// A column-wide bar at `at`: what you had, dim, and the gain, lit.
+fn gain_bar(p: &mut Painter, at: Vec2, from: f32, to: f32) {
+    let w = design::COLUMN;
+    let h = 2.0;
+    let rail = with_alpha(design::TEXT_2, 0.4);
+    p.rect(at, Vec2::new(w, h), rail);
+    p.rect(at, Vec2::new(w * from, h), design::TEXT_2);
+    if to > from {
+        let size = Vec2::new(w * (to - from), h);
+        p.rect(at + Vec2::X * w * from, size, design::AMBER);
     }
-    p.line(
-        Vec2::new(at.x, at.y + 2.0),
-        Vec2::new(at.x, at.y + 16.0),
-        1.0,
-        theme::FAINT,
-    );
 }
 
 /// Scoreboard row text size.
@@ -1262,16 +1182,9 @@ fn hold_color(m: &Match, c: Control) -> Rgba {
 
 /// Seconds after the round ends before the results start moving.
 const RESULTS_DELAY: f32 = 0.6;
-/// Height of the renown and crystal blocks under the tables.
-const RESULTS_H: f32 = 84.0;
-/// The line under the winner saying which schematic you reverse-engineered.
-const STOLEN_H: f32 = 26.0;
 /// How many parts get a line in the round-over scrap list (#444, #480)
 /// before the rest fold into one "+N MORE PARTS".
 const SCRAP_LINES: usize = 6;
-/// Each line of the round-over scrap list: the part, then its thin bar.
-const SCRAP_ROW_H: f32 = 30.0;
-
 /// One line of the round-over scrap summary.
 enum ScrapLine {
     Part(Scrapped),
@@ -1418,183 +1331,25 @@ fn tally(before: u32, pay: u32, t: f32) -> Tally {
     Tally { balance, plus }
 }
 
-/// Renown gained with the Company, as a graphic: the rank bar filling from
-/// where you stood, the new part lit, the rank ticking over if it fills.
-#[allow(clippy::too_many_arguments)]
-fn renown_gained(p: &mut Painter, before: u32, gained: u32, t: f32, a: f32, b: f32, y: f32) {
-    let shown = renown_shown(gained, t);
-    let start = Rank::of(before);
-    let now = Rank::of(before + shown);
-    label(p, Vec2::new(a, y), "RENOWN", Align::Left);
-    let mut name = TextStyle::LABEL;
-    name.color = Faction::Company.ui();
-    emblem::faction_name(p, Vec2::new(b, y), Faction::Company, &name, Align::Right);
-
-    let mut big = TextStyle::value(22.0);
-    big.color = theme::HOT;
-    p.text(
-        Vec2::new(a, y + 18.0),
-        &format!("+{shown}"),
-        &big,
-        Align::Left,
-    );
-    let mut tier = TextStyle::value(14.0);
-    let up = now.level > start.level;
-    if up {
-        tier.color = theme::HOT;
-    }
-    let tw = p.text(
-        Vec2::new(b, y + 24.0),
-        &format!("RANK {}", now.level),
-        &tier,
-        Align::Right,
-    );
-    label(
-        p,
-        Vec2::new(b - tw - 8.0, y + 27.0),
-        if up { "RANK UP" } else { now.title() },
-        Align::Right,
-    );
-
-    // The bar: where you stood in neutral, this match lit.
-    let (bar_y, bar_h, width) = (y + 56.0, 6.0, b - a);
-    p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
-    let from = if up { 0.0 } else { start.progress() };
-    let to = now.progress();
-    if from > 0.0 {
-        p.rect(
-            Vec2::new(a, bar_y),
-            Vec2::new(width * from, bar_h),
-            theme::DIM,
-        );
-    }
-    if to > from {
-        p.rect(
-            Vec2::new(a + width * from, bar_y),
-            Vec2::new(width * (to - from), bar_h),
-            theme::HOT,
-        );
-    }
-    // Quarter ticks under the bar, so the fill reads as distance.
-    for q in 0..=4 {
-        let x = a + width * q as f32 / 4.0;
-        p.line(
-            Vec2::new(x, bar_y + bar_h + 2.0),
-            Vec2::new(x, bar_y + bar_h + 6.0),
-            1.0,
-            theme::FAINT,
-        );
-    }
-    label(
-        p,
-        Vec2::new(b, bar_y + bar_h + 10.0),
-        &format!("{} / {} TO RANK {}", now.into, now.span, now.level + 1),
-        Align::Right,
-    );
-}
-
-/// One part's line in the round-over scrap list (#480): the part and its
-/// maker's emblem, where it stands on the right, and a thin bar under them
-/// filling from where it stood, on renown's timer.
-fn scrap_row(p: &mut Painter, sc: &Scrapped, t: f32, a: f32, b: f32, y: f32) {
+/// One part's line in the debrief: the part, the step it's at or heading
+/// for, and a bar filling from where it stood, on renown's timer.
+fn scrap_row(p: &mut Painter, sc: &Scrapped, t: f32, at: Vec2) {
+    use design::{AMBER, SMALL, TEXT_2, UNIT};
     let k = ease_out(t / REP_FILL);
-    let mut name = TextStyle::value(12.0);
-    name.color = sc.part.maker().ui();
-    emblem::tagged(
-        p,
-        Vec2::new(a, y),
-        sc.part.maker(),
-        sc.part.name(),
-        &name,
-        Align::Left,
-    );
+    let maker = sc.part.maker();
+    let style = SMALL.colored(maker.ui());
+    emblem::tagged(p, at, maker, sc.part.name(), &style, Align::Left);
+    let step = match sc.toward().filter(|_| !sc.stepped()) {
+        Some((_, next)) => next,
+        None => sc.known.floor() as u8,
+    };
     let reached = sc.stepped() && k >= 1.0;
-    let mut l = TextStyle::LABEL;
-    l.color = if reached { theme::HOT } else { theme::DIM };
-    p.text(Vec2::new(b, y + 2.0), &scrap_status(sc), &l, Align::Right);
-
+    let style = SMALL.colored(if reached { AMBER } else { TEXT_2 });
+    let right = at + Vec2::X * design::COLUMN;
+    let label = economy::level_label(step);
+    p.text(right, &label, &style, Align::Right);
     let (from, to) = scrap_bar(sc);
-    let to = from + (to - from) * k;
-    let (bar_y, bar_h, width) = (y + 19.0, 2.0, b - a);
-    p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
-    if from > 0.0 {
-        p.rect(
-            Vec2::new(a, bar_y),
-            Vec2::new(width * from, bar_h),
-            theme::DIM,
-        );
-    }
-    if to > from {
-        p.rect(
-            Vec2::new(a + width * from, bar_y),
-            Vec2::new(width * (to - from), bar_h),
-            theme::HOT,
-        );
-    }
-}
-
-/// Where a part stands, for its round-over line: the step it just reached,
-/// or the one it's heading for. No percentages: the bar shows how far.
-fn scrap_status(sc: &Scrapped) -> String {
-    match sc.toward().filter(|_| !sc.stepped()) {
-        Some((_, next)) => format!("NEXT {}", economy::level_label(next)),
-        None => scrap_progress(sc),
-    }
-}
-
-/// The parts the scrap list has no room for, folded into one line.
-fn scrap_more(p: &mut Painter, n: usize, a: f32, y: f32) {
-    let mut l = TextStyle::LABEL;
-    l.color = theme::DIM;
-    p.text(
-        Vec2::new(a, y + 2.0),
-        &format!("+{n} MORE PARTS"),
-        &l,
-        Align::Left,
-    );
-}
-
-/// Contract pay as one clean number: your crystals, then "+0" beside them
-/// ticking up to the pay, which then folds into the balance.
-fn crystal_tally(p: &mut Painter, before: u32, pay: u32, t: f32, a: f32, b: f32, y: f32) {
-    let now = tally(before, pay, t);
-    label(p, Vec2::new(a, y), "CRYSTALS", Align::Left);
-    label(p, Vec2::new(b, y), "CR", Align::Right);
-    let big = TextStyle::value(22.0);
-    let bw = p.text(
-        Vec2::new(a, y + 18.0),
-        &now.balance.to_string(),
-        &big,
-        Align::Left,
-    );
-    if let Some((k, alpha)) = now.plus {
-        let mut s = TextStyle::value(22.0);
-        s.color = with_alpha(theme::HOT, alpha);
-        p.text(
-            Vec2::new(a + bw + 14.0, y + 18.0),
-            &format!("+{k}"),
-            &s,
-            Align::Left,
-        );
-    }
-    p.line(
-        Vec2::new(a, y + 59.0),
-        Vec2::new(b, y + 59.0),
-        1.0,
-        theme::FAINT,
-    );
-    // Once folded in, what the contract paid, small.
-    let done = ((t - CR_FOLD - CR_FOLD_TIME) / 0.3).clamp(0.0, 1.0);
-    if done > 0.0 {
-        let mut l = TextStyle::LABEL;
-        l.color = with_alpha(theme::DIM, done);
-        p.text(
-            Vec2::new(b, y + 66.0),
-            &format!("+{pay} CONTRACT PAY"),
-            &l,
-            Align::Right,
-        );
-    }
+    gain_bar(p, at + Vec2::Y * UNIT * 2.0, from, from + (to - from) * k);
 }
 
 /// The debug overlay's frame rate, small in the top right corner above the HUD brackets.
@@ -1668,226 +1423,72 @@ pub struct SummaryState {
     pub going: bool,
     /// Seconds it's been up (turns the spinner).
     pub time: f32,
-    pub hover: Option<Hit>,
 }
 
 /// The tick summary (#475), its own screen between your battle's debrief
-/// and the contract screen: what your battle's tick did to its system. The
-/// sites that changed hands, then each side's hulls there as a bar, what
-/// it lost (or gained) marked on it, and why, small. The contract screen
-/// loads behind it; CONTINUE goes on to it.
+/// and the contract screen: over the system it was fought in (drawn by
+/// `theater_view`), the sites that changed hands lit on it, and a panel with
+/// each side's hulls there, what they lost or gained, and why. The contract
+/// screen loads behind it; CONTINUE goes on to it.
 pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f32) -> Layer<Hit> {
+    use design::{AMBER, BODY, COLUMN, HEAD, MARGIN, SMALL, TEXT, TEXT_2, UNIT};
     let scale = height / REF_HEIGHT;
     let (w, h) = (width / scale, REF_HEIGHT);
     let mut p = Painter::new(scale);
     let mut hits = Hits::new();
-    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.88]);
-
-    // Like flips (same site kind on the same world, between the same
-    // sides) go on one line, counted.
-    let mut flips: Vec<(&crate::galaxy::theater::Flip, usize)> = Vec::new();
-    for f in &t.flips {
-        match flips.iter_mut().find(|(g, _)| *g == f) {
-            Some((_, n)) => *n += 1,
-            None => flips.push((f, 1)),
-        }
-    }
-    let flips_h = if flips.is_empty() {
-        0.0
-    } else {
-        24.0 + flips.len() as f32 * FLIP_ROW + 16.0
-    };
-    let size = Vec2::new(
-        SUMMARY_W,
-        96.0 + flips_h + 24.0 + t.sides.len() as f32 * SIDE_ROW + 16.0 + BUTTON_H + 32.0,
-    );
-    let min = Vec2::new(w * 0.5 - size.x * 0.5, (h * 0.5 - size.y * 0.5).max(16.0));
-    p.rect(min, size, theme::PANEL);
-    widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
-    let x = min.x + 40.0;
-    let right = min.x + size.x - 40.0;
-
-    label(&mut p, Vec2::new(x, min.y + 36.0), "THIS TICK", Align::Left);
-    p.text(
-        Vec2::new(x, min.y + 52.0),
-        &t.name,
-        &TextStyle::value(26.0),
-        Align::Left,
-    );
-    let mut y = min.y + 96.0;
-
-    // Sites that changed hands: where, then who had it and who has it now.
-    if !flips.is_empty() {
-        label(&mut p, Vec2::new(x, y), "CHANGED HANDS", Align::Left);
-        y += 24.0;
-        for (f, n) in flips {
-            let mut s = TextStyle::value(13.0);
-            s.color = theme::FG;
-            let world = crate::galaxy::theater::planet_name(&t.name, f.planet);
-            let what = match n {
-                1 => format!("{world} · {}", f.kind),
-                n => format!("{world} · {} ×{n}", f.kind),
-            };
-            p.text(Vec2::new(x, y), &what, &s, Align::Left);
-            let (from, to) = (Faction::ALL[f.from], Faction::ALL[f.to]);
-            let mut ms = TextStyle::value(13.0);
-            ms.color = to.ui();
-            let tw = emblem::tagged_width(to.name(), &ms);
-            emblem::tagged(
-                &mut p,
-                Vec2::new(right - tw, y),
-                to,
-                to.name(),
-                &ms,
-                Align::Left,
-            );
-            let ax = right - tw - 22.0;
-            p.polyline(
-                &[
-                    Vec2::new(ax - 4.0, y + 2.0),
-                    Vec2::new(ax + 1.0, y + 6.5),
-                    Vec2::new(ax - 4.0, y + 11.0),
-                ],
-                1.2,
-                theme::DIM,
-            );
-            ms.color = with_alpha(from.ui(), 0.6);
-            emblem::mark(&mut p, Vec2::new(ax - 30.0, y), from, &ms);
-            y += FLIP_ROW;
-        }
-        y += 16.0;
-    }
-
-    // Each side's hulls: a bar to the most any had, before or now.
-    label(&mut p, Vec2::new(x, y), "HULLS", Align::Left);
-    y += 24.0;
-    let most = t
-        .sides
-        .iter()
-        .map(|c| c.before.max(c.now))
-        .max()
-        .unwrap_or(1)
-        .max(1) as f32;
-    let bar_x = x + 150.0;
-    let bar_w = right - 110.0 - bar_x;
+    crate::theater_view::aftermath(&mut p, t, state.time, w, h);
+    design::panel(&mut p, h);
+    let (x, right) = (MARGIN, MARGIN + COLUMN);
+    let mut y = MARGIN;
+    p.text(Vec2::new(x, y), &t.name, &HEAD, Align::Left);
+    y += UNIT * 9.0;
     for c in &t.sides {
-        let (side, n) = who(c);
-        let mut name = TextStyle::value(13.0);
-        name.color = side.ui();
-        let nx = x + if c.merc { MERC_INDENT } else { 0.0 };
-        emblem::tagged(&mut p, Vec2::new(nx, y), side, n, &name, Align::Left);
-        // The bar: now solid, what was lost faint and hot past it, what
-        // came in bright at its end.
-        let by = y + 5.0;
-        let at = |n: u32| bar_x + bar_w * n as f32 / most;
-        p.rect(
-            Vec2::new(bar_x, by),
-            Vec2::new(bar_w, 3.0),
-            with_alpha(theme::FAINT, 0.4),
-        );
+        let (side, name) = who(c);
+        let color = if c.merc { AMBER } else { side.ui() };
+        let at = Vec2::new(x, y);
+        emblem::tagged(&mut p, at, side, name, &BODY.colored(color), Align::Left);
+        p.text(Vec2::new(right, y), &c.now.to_string(), &BODY, Align::Right);
+        y += UNIT * 2.5;
+        // What it has of the most it had: kept, then lost hot or gained lit.
+        let most = c.before.max(c.now).max(1) as f32;
+        let at = |n: u32| COLUMN * n as f32 / most;
         let keep = c.before.min(c.now);
-        p.rect(
-            Vec2::new(bar_x, by),
-            Vec2::new(at(keep) - bar_x, 3.0),
-            with_alpha(side.ui(), 0.9),
-        );
-        if c.now > c.before {
-            p.rect(
-                Vec2::new(at(c.before), by - 1.0),
-                Vec2::new(at(c.now) - at(c.before), 5.0),
-                theme::FG,
-            );
-        } else if c.before > c.now {
-            p.rect(
-                Vec2::new(at(c.now), by),
-                Vec2::new(at(c.before) - at(c.now), 3.0),
-                with_alpha(theme::HOT, 0.45),
-            );
-        }
-        // Now, and the change.
-        let mut num = TextStyle::value(15.0);
-        num.color = theme::FG;
-        p.text(
-            Vec2::new(right - 56.0, y - 1.0),
-            &c.now.to_string(),
-            &num,
-            Align::Right,
-        );
-        let d = c.now as i64 - c.before as i64;
-        let mut ds = TextStyle::value(12.0);
-        ds.color = if d < 0 {
-            theme::HOT
-        } else if d > 0 {
-            theme::FG
+        let h = 4.0;
+        p.rect(Vec2::new(x, y), Vec2::new(at(keep), h), color);
+        let diff = Vec2::new(at(c.before.max(c.now)) - at(keep), h);
+        let lost = c.now < c.before;
+        let lit = if lost {
+            with_alpha(theme::HOT, 0.35)
         } else {
-            theme::DIM
+            TEXT
         };
-        if d != 0 {
-            p.text(Vec2::new(right, y + 1.0), &signed(d), &ds, Align::Right);
+        p.rect(Vec2::new(x + at(keep), y), diff, lit);
+        y += UNIT * 2.0;
+        // Why, a line each.
+        for (n, why) in causes(&c.moves) {
+            let color = if n < 0 { theme::HOT } else { TEXT };
+            let at = Vec2::new(x, y);
+            p.text(at, why, &SMALL.colored(TEXT_2), Align::Left);
+            let style = SMALL.colored(color);
+            p.text(Vec2::new(right, y), &signed(n), &style, Align::Right);
+            y += UNIT * 2.0;
         }
-        // Why, small under the bar.
-        let why: Vec<String> = causes(&c.moves)
-            .iter()
-            .map(|(n, w)| format!("{} {}", n.abs(), w.to_uppercase()))
-            .collect();
-        if !why.is_empty() {
-            let mut l = TextStyle::LABEL;
-            l.color = theme::DIM;
-            p.text(
-                Vec2::new(bar_x, y + 14.0),
-                &why.join(" · "),
-                &l,
-                Align::Left,
-            );
-        }
-        y += SIDE_ROW;
+        y += UNIT * 3.0;
     }
 
-    // The way on, and a spinner while the contract screen's still loading.
-    let by = min.y + size.y - 32.0 - BUTTON_H;
-    let go = if state.going && state.loading {
-        "LOADING"
-    } else {
-        "CONTINUE"
-    };
-    let bw = BUTTON_PAD * 2.0 + measure("CONTINUE", &TextStyle::LABEL);
-    let hover = if state.going {
-        Some(Hit::Continue)
-    } else {
-        state.hover
-    };
-    let style = TextStyle::LABEL;
-    let bmin = Vec2::new(right - bw, by);
-    let fill = if hover == Some(Hit::Continue) {
-        0.16
-    } else {
-        0.07
-    };
-    p.rect(bmin, Vec2::new(bw, BUTTON_H), with_alpha(theme::FG, fill));
-    p.rect_outline(bmin, Vec2::new(bw, BUTTON_H), 1.0, theme::FG);
-    p.text(
-        Vec2::new(bmin.x + bw * 0.5, by + (BUTTON_H - style.size) * 0.5),
-        go,
-        &style,
-        Align::Center,
-    );
-    hits.add(&p, bmin, Vec2::new(bw, BUTTON_H), Hit::Continue);
-    if state.loading && state.going {
-        spinner_small(
-            &mut p,
-            Vec2::new(bmin.x - 18.0, by + BUTTON_H * 0.5),
-            state.time,
-        );
+    let wait = state.going && state.loading;
+    let go = if wait { "Loading" } else { "Continue" };
+    let at = design::on_at(h);
+    let (min, size) = design::action(&mut p, at, go, true);
+    hits.add(&p, min, size, Hit::Continue);
+    if wait {
+        spinner_small(&mut p, at + Vec2::new(COLUMN, 8.0), state.time);
     }
     Layer {
         verts: p.finish(),
         hits,
     }
 }
-
-/// The tick summary's width, and its rows: a site that changed hands, a side.
-const SUMMARY_W: f32 = 640.0;
-const FLIP_ROW: f32 = 26.0;
 
 /// Whose line it is on the tick summary: the side's, or the company's
 /// under it, working for it.
@@ -1899,12 +1500,6 @@ fn who(c: &SideChange) -> (Faction, &'static str) {
         (f, f.name())
     }
 }
-
-/// How far the mercs' line sits in under the side they work for.
-const MERC_INDENT: f32 = 20.0;
-
-/// A side's line on the tick summary: its name and bar, why under it.
-const SIDE_ROW: f32 = 40.0;
 
 /// `spinner`, small enough to sit beside a label.
 pub fn spinner_small(p: &mut Painter, c: Vec2, time: f32) {

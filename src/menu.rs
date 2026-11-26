@@ -564,6 +564,20 @@ impl Menu {
         }
     }
 
+    /// Bring the system of the contract that ended up to date (`now`), on its
+    /// summary and as the ship leaves it.
+    pub fn refresh_ended(&mut self, now: impl Fn(&Theater) -> Theater) {
+        let Some((t, _)) = &mut self.card else { return };
+        *t = now(t);
+        if let Some(tr) = self
+            .transfer
+            .as_mut()
+            .filter(|tr| tr.from.system == t.system)
+        {
+            tr.from = now(&tr.from);
+        }
+    }
+
     /// The galaxy's record of your company's ended contracts (newest
     /// last): if the one you were last shown is among them, its card comes
     /// up (#414), whether or not there's a next contract yet (#501).
@@ -938,20 +952,19 @@ impl Menu {
         // The contract that ended, over the theater it was in (#414): its
         // card's CONTINUE goes on.
         if let Some((t, e)) = &self.card {
-            theater_view::draw(p, hits, t, None, Some(e), self.site, self.go_lit, w, h);
+            theater_view::draw(p, hits, t, None, Some(e), self.site, w, h);
+            self.back(p, hits, h);
+            return;
         } else if let Some(t) = self.theater.as_ref().filter(|t| !t.contested.is_empty()) {
             let moving = self.transfer.as_ref();
-            theater_view::draw(p, hits, t, moving, None, self.site, self.go_lit, w, h);
+            theater_view::draw(p, hits, t, moving, None, self.site, w, h);
         } else {
             theater_view::waiting(p, self.waited, self.clock);
         }
         design::panel(p, h);
-        let shown = match &self.card {
-            Some((t, _)) => Some(t),
-            None => self.theater.as_ref().filter(|t| !t.contested.is_empty()),
-        };
-        // Nothing to pick while a contract ends or you're on the move.
-        let live = self.card.is_none() && self.transfer.is_none();
+        let shown = self.theater.as_ref().filter(|t| !t.contested.is_empty());
+        // Nothing to pick while you're on the move.
+        let live = self.transfer.is_none();
         match shown {
             Some(t) => self.draw_job(p, hits, t, live, h),
             None => {
@@ -959,6 +972,11 @@ impl Menu {
                 p.text(at, "No work", &design::HEAD, Align::Left);
             }
         }
+        self.back(p, hits, h);
+    }
+
+    /// The way back, at the foot of a panel.
+    fn back(&self, p: &mut Painter, hits: &mut Hits<Hit>, h: f32) {
         let at = Vec2::new(design::MARGIN, h - design::MARGIN - design::SMALL.size);
         let (min, size) = design::link(p, at, "Back", self.back_lit);
         hits.add(p, min, size, Hit::Back);

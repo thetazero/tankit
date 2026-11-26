@@ -89,3 +89,15 @@ pub fn link(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
         Vec2::new(measure(name, &SMALL), SMALL.size) + Vec2::splat(UNIT * 2.0),
     )
 }
+
+/// A name on the left and its value on the right of the column at `at`.
+pub fn line(p: &mut Painter, at: Vec2, name: &str, value: &str, color: Rgba) {
+    p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
+    let right = at + Vec2::X * COLUMN;
+    p.text(right, value, &SMALL.colored(color), Align::Right);
+}
+
+/// Where a panel's one way on sits, on a screen `h` tall.
+pub fn on_at(h: f32) -> Vec2 {
+    Vec2::new(MARGIN, h - MARGIN - UNIT * 10.0)
+}

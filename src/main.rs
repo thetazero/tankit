@@ -1564,6 +1564,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                         menu.set_theater(next);
                     }
                 }
+                menu.refresh_ended(|t| g.as_now(t));
                 profile.ship = g.crew;
                 let kind = menu
                     .next_move()
@@ -1600,7 +1601,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
-                let (fought_at, owners) = (g.tick, g.owners());
+                let owners = g.owners();
                 let s = g.step_played(&galaxy::battle::Played {
                     battle: b.clone(),
                     lost: vec![0, 0],
@@ -1612,7 +1613,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 // As the app does: the summary's of the battle's tick alone.
                 if args.ticks {
-                    summary = Some(g.tick_summary(b.system, fought_at, &owners));
+                    summary = Some(g.tick_summary(b.system, b.sides[0], &owners));
                 }
                 for _ in 0..args.quiet {
                     g.step();
@@ -1694,7 +1695,8 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let angle = vista::sway(garage::front_angle(&game.world.tanks[0]), shot.time);
     let tanks = game.display_tanks(1.0);
     let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
-    let mut frame = match menu.system() {
+    let after = summary.as_ref().map(|s| &s.theater);
+    let mut frame = match after.or(menu.system()) {
         // The missions screen: the system, in 3D.
         Some(t) => {
             let mut sys = theater_view::SystemArt::upload(&mut renderer);
@@ -1718,7 +1720,6 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 loading: false,
                 going: false,
                 time: 0.0,
-                hover: None,
             };
             hud::tick_summary(t, state, w, h).verts
         }
