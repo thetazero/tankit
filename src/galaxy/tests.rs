@@ -1132,7 +1132,7 @@ fn realms_pay_and_train_pilots() {
 }
 
 /// Taking a system captures its share of the loser's bank, the last one all
-/// that's left; and a bank over the hoard is kept, not thrown away.
+/// that's left; and however big a bank is, it's kept.
 #[test]
 fn conquest_captures_the_bank() {
     let mut g = Galaxy::with_size(2, SYSTEMS / 10, REGION * 0.3, Rules::default());
@@ -1164,7 +1164,7 @@ fn conquest_captures_the_bank() {
         );
     }
     assert!((total(&g) - before).abs() < 0.1, "none lost");
-    // A bank over its hoard stays.
+    // However big, a bank stays.
     let by = g.living().map(|(r, _)| r).next().unwrap();
     g.realms[by].crystals = 1e6;
     g.produce();
