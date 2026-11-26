@@ -462,6 +462,8 @@ pub(crate) struct Forecast {
     pub share: f32,
     pub ticks: f32,
     pub lost: f32,
+    /// Ticks till there's nobody left to fight.
+    pub length: f32,
 }
 
 /// A contract's terms, but for the company.
@@ -1110,7 +1112,7 @@ impl Galaxy {
         let cut = self.shield_cut();
         let front = self.rules.frontage;
         let (k, take, blitz) = (self.rules.kill, self.rules.take, self.rules.blitz as f32);
-        let mut paid = 0.0;
+        let (mut paid, mut length) = (0.0f32, 0.0f32);
         {
             let (mut ho, mut hm, mut he, mut spare) = (own, mercs, he, spare0);
             let mut on = true;
@@ -1118,6 +1120,9 @@ impl Galaxy {
             for _ in 0..self.rules.merc_term {
                 let hf = ho + hm;
                 reinforce(&mut he, &mut spare, hf);
+                if he >= 1.0 && hf >= 1.0 {
+                    length += 1.0;
+                }
                 if hm >= 1.0 || (mercs == 0.0 && crew > 0.0 && ho >= 1.0 && on) {
                     paid += 1.0;
                 }
@@ -1166,6 +1171,7 @@ impl Galaxy {
                         share: 1.0,
                         ticks: f32::max(paid, 1.0),
                         lost: 0.0,
+                        length: f32::max(length, 1.0),
                     };
                 }
                 // Done, the mercs go, and it holds on alone.
@@ -1191,6 +1197,7 @@ impl Galaxy {
                 share,
                 ticks: f32::max(paid, 1.0),
                 lost: own - ho,
+                length: f32::max(length, 1.0),
             }
         }
     }

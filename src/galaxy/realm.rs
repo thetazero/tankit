@@ -90,7 +90,7 @@ impl Realm {
             pilots: 0,
             wage: 0.0,
             pilot_worth: 0.1,
-            hull_worth: 0.2,
+            hull_worth: 0.1,
             pilot_use: 0.0,
             hull_use: 0.0,
             hired: 0,
@@ -119,7 +119,13 @@ impl Realm {
         self.pilot_worth += rules.sense * (self.pilot_use - self.pilot_worth);
         // (a hull's worth no more than building another and bringing it)
         let most = rules.hull_cost + rules.ftl_cost;
-        self.hull_worth += rules.sense * (self.hull_use.min(most) - self.hull_worth);
+        // (and it keeps till it's wanted, so quiet ticks say little)
+        let sense = if self.hull_use > 0.0 {
+            rules.sense
+        } else {
+            rules.sense / 10.0
+        };
+        self.hull_worth += sense * (self.hull_use.min(most) - self.hull_worth);
         (self.pilot_use, self.hull_use) = (0.0, 0.0);
         self.pilots -= retired.min(self.pilots);
         let upkeep = self.pay(rules);

@@ -1811,22 +1811,26 @@ impl Galaxy {
         // (what it'd hold, what it'd cost it) with `x` more of its own.
         let play = |g: &Galaxy, own: f32, pilots: f32| {
             let fc = g.forecast(t, f, r, own, 0.0, 0.0, pilots, ours);
-            fc.share * worth - fc.lost * realm.hull_worth
+            (fc.share * worth - fc.lost * realm.hull_worth, fc.length)
         };
-        let stay = play(self, have, pilots);
+        let (stay, length) = play(self, have, pilots);
         // What more pilots, or hulls, would be worth to it: in a fight it's
         // in, or an attack it could make.
-        let term = self.rules.merc_term as f32;
         let all = have + pool as f32 * afford;
         if (here > 0 && attacked) || (here == 0 && pool >= MIN_SEND) {
             let own = if here > 0 { have } else { all };
             let p = self.pilots_for(r, own);
             let fly = if here > 0 { 0.0 } else { cost_all * afford };
-            let now = (play(self, own, p) - fly).max(stay);
+            let (now, l) = play(self, own, p);
+            let now = (now - fly).max(stay);
+            let length = if here > 0 { length } else { l };
+            // (a hull more than those it could already bring)
+            let reserve = self.pilots_for(r, all);
+            let most = play(self, all, reserve).0;
             let (mut pilot, mut hull) = (0.0f32, 0.0f32);
             for n in [10.0, 40.0, 85.0] {
-                pilot = pilot.max((play(self, own, p + n) - fly - now) / n / term);
-                hull = hull.max((play(self, own + 4.0 * n, p) - fly - now) / (4.0 * n));
+                pilot = pilot.max((play(self, own, p + n).0 - fly - now) / n / length);
+                hull = hull.max((play(self, all + 4.0 * n, reserve).0 - most) / (4.0 * n));
             }
             let x = &mut self.realms[r as usize];
             x.pilot_use = x.pilot_use.max(pilot);
@@ -1839,7 +1843,7 @@ impl Galaxy {
                 if n < MIN_SEND as f32 {
                     continue;
                 }
-                let gain = play(self, have + n, self.pilots_for(r, have + n))
+                let gain = play(self, have + n, self.pilots_for(r, have + n)).0
                     - stay
                     - cost_all * share * afford;
                 if gain > best.0 {
