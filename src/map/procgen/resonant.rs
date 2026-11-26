@@ -52,6 +52,8 @@ const WALLS: [Vec3; 5] = [
 const HOUSES: ruins::Style = ruins::Style {
     colors: &WALLS,
     wall: Material::Plaster,
+    storeys: (2, 4),
+    light: 0.35,
 };
 
 /// The cathedral's wall: thickness, height; its doorways' height.

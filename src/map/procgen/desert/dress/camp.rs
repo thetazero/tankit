@@ -21,11 +21,11 @@ use glam::{Vec2, Vec3};
 use super::super::skeleton::*;
 use super::Sand;
 use crate::faction::Faction;
+use crate::map::noise::noise2;
 use crate::map::procgen::mine::{line_distance, seg, smoothstep};
 use crate::map::procgen::shield::{self, Condition};
 use crate::map::procgen::skeleton as city;
 use crate::map::ruins::Drift;
-use crate::map::valley::noise2;
 use crate::map::{OBox, rocks};
 use crate::render::material::Material;
 use crate::rng::Rng;
@@ -191,7 +191,7 @@ impl Sand<'_> {
         shield::ruin(self.map, rng, &site, base, &mark, owner, condition);
 
         let camp = self.lay_out_camp(rng, &site, drifts);
-        self.map.terrain = Some(super::terrain_of(sk, self.pal, Some(&camp)));
+        self.map.terrain = Some(super::terrain_of(sk, self.pal, Some(&camp), &[]));
         let fences = camp.fences.clone();
         let upwind = camp.upwind;
         for (a, b) in fences {

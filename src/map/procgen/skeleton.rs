@@ -33,6 +33,8 @@ pub struct Skeleton {
     pub landmarks: Vec<Landmark>,
     /// What the fight is about: the Hold site.
     pub heart: Vec2,
+    /// Round spawns are kept clear and level this far (a desert's).
+    pub pad: f32,
     /// One per side, in side order.
     pub bases: Vec<Base>,
     pub lots: Vec<Lot>,
@@ -165,6 +167,10 @@ pub enum LandmarkKind {
     Arch,
     /// A shield generator out in the open, on a graded pad.
     Generator,
+    /// A breach broken through a dam.
+    Dam,
+    /// A town's well, in its sunken court.
+    Well,
 }
 
 /// The big thing in the middle: round, `radius` across, standing on the

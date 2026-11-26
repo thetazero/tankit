@@ -4,7 +4,7 @@
 //! and its wrecked presses hum, hiss and clank; the Sanctum's altar crystal
 //! is a choir, its crystal clusters ring like rubbed glass and the wind
 //! stirs the bell; the imperial city's banners flap and its broken dome moans;
-//! Saltmarket's cables sing, its stall cloths snap and its wrecks creak.
+//! the reservoir town's cables sing, its stall cloths snap and its boats creak.
 //!
 //! Where each one is comes from the map ([`crate::map::Map::sounds`]). Each
 //! frame [`params`] places them round the listener and keeps only the
@@ -558,7 +558,7 @@ mod tests {
             ("foundry", Map::foundry(), &[Furnace, Machine]),
             ("sanctum", Map::sanctum(), &[Altar, Shrine, Bell]),
             ("city", Map::city(0), &[Banner, Dome]),
-            ("saltmarket", Map::saltmarket(), &[Cable, Cloth, Hull]),
+            ("reservoir", Map::reservoir(0), &[Cable, Cloth, Hull]),
         ] {
             for k in want {
                 assert!(map.sounds.iter().any(|e| e.kind == *k), "{name}: no {k:?}");
@@ -615,7 +615,7 @@ mod tests {
             ("foundry", Map::foundry()),
             ("sanctum", Map::sanctum()),
             ("city", Map::city(0)),
-            ("saltmarket", Map::saltmarket()),
+            ("reservoir", Map::reservoir(0)),
         ] {
             let mut m = Mixer::new(RATE as f32);
             m.set_master(volume * volume);

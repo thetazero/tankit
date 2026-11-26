@@ -463,7 +463,8 @@ pub fn ship_name(id: u32) -> String {
 /// fought on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
-    /// A desert world: its sites are generated (cities, mines, open desert).
+    /// A desert world: its sites are generated (cities, mines,
+    /// reservoir towns, open desert).
     Desert,
     /// Not made yet: its sites are fought on the hand-built maps.
     Placeholder,
@@ -473,10 +474,10 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(..) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
-            MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
-                self == Class::Placeholder
+            MapKind::City(..) | MapKind::Mine | MapKind::Desert | MapKind::Reservoir => {
+                self == Class::Desert
             }
+            MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => self == Class::Placeholder,
             MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
         }
     }

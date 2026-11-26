@@ -382,7 +382,6 @@ impl NavGrid {
     }
 
     /// Open ground right by `p` on its top floor (spawn checks).
-    #[cfg(test)]
     pub fn nearest_open_point(&self, p: Vec2) -> Option<Vec2> {
         self.nearest_open(Vec3::new(p.x, f32::INFINITY, p.y))
             .map(|(i, _)| self.center(i))

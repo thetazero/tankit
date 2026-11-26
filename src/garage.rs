@@ -1163,7 +1163,7 @@ mod tests {
     }
 
     fn world() -> World {
-        World::new(crate::map::Map::saltmarket(), 0)
+        World::new(crate::map::Map::reservoir(0), 0)
     }
 
     fn cam(w: &World) -> Camera {

@@ -11,7 +11,7 @@
 
 use glam::{Vec2, Vec3};
 
-use super::valley::noise2;
+use super::noise::noise2;
 use crate::render::material::Material;
 use crate::render::mesh::{MeshData, Vertex};
 

@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn payout_scales_with_victory_and_contribution() {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 5, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 5, 21);
         m.start();
         m.fighters[0].kills = 3;
         m.fighters[0].damage_dealt = 205.0;
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn hold_pays_for_your_time_on_the_site_and_your_side_holding_longest() {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 3, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 3, 21);
         m.start();
         m.set_contract(crate::mission::Contract::Hold);
         for f in m.fighters.iter_mut().filter(|f| f.team == 1) {
