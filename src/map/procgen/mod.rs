@@ -22,6 +22,7 @@
 //! `land`'s landforms, the rest in shared placeholders. A mine's still built
 //! facing north and then turned (`Skeleton::orient`).
 
+pub mod channel;
 pub mod check;
 pub mod city;
 mod civic;
@@ -88,7 +89,8 @@ impl Look {
     pub fn of(founder: Faction) -> Look {
         match founder {
             Faction::Resonant => Look::Resonant,
-            Faction::Ithessar => Look::Ithessar,
+            // (Not yet: so far theirs is an Imperium city with a river.)
+            Faction::Ithessar => Look::Imperium,
             Faction::Imperium | Faction::Uthenn | Faction::Company => Look::Imperium,
         }
     }
@@ -180,7 +182,15 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
     type Key = (u64, usize, city::Plan);
     static CACHE: LazyLock<Mutex<HashMap<Key, Skeleton>>> = LazyLock::new(Default::default);
     let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
-    let plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
+    let mut plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
+    if spec.look == Look::Ithessar {
+        // Their cities run on a plasma river, and it takes room.
+        plan.river = true;
+        plan.extent = city::Extent::Large;
+        if plan.form == city::Form::Quarters {
+            plan.form = city::Form::Spine;
+        }
+    }
     let key = (spec.seed, spec.sides.len(), plan);
     if let Some(sk) = CACHE.lock().unwrap().get(&key) {
         return sk.clone();
@@ -296,6 +306,10 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     for c in &sk.crossings {
         c.build(&mut map, st.stone(), |p| sk.ground(p));
     }
+    if let Some(c) = &sk.land.channel {
+        c.build(&mut map, sk.size);
+        map.rivers.push(c.river());
+    }
     for (k, b) in sk.bases.iter().enumerate() {
         let mark = skeleton::Mark::of(&map);
         st.base(&mut map, &sk, k, b, &mut rng);
@@ -305,6 +319,14 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         // Heaps and barriers, each on the ground where it lies.
         let start = map.oboxes.len();
         st.edge(&mut map, &sk, e, &mut rng);
+        if let Some(c) = &sk.land.channel {
+            // (None of it in the river.)
+            let heap = map.oboxes.split_off(start);
+            map.oboxes.extend(
+                heap.into_iter()
+                    .filter(|o| !c.wet(o.center, o.half.length())),
+            );
+        }
         for o in &mut map.oboxes[start..] {
             let h = sk.ground(o.center);
             skeleton::lift(std::slice::from_mut(o), h);
@@ -1154,6 +1176,96 @@ mod tests {
             for l in &sk.landmarks {
                 let (c, g) = (l.center, sk.ground(l.center));
                 println!("great {seed} {:?} {:.0} {:.0} {g:.1}", l.kind, c.x, c.y);
+            }
+        }
+    }
+
+    /// Every bridge over a plasma river is clear of it all along, and can
+    /// be driven from one end to the other; and there are enough of them.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn river_bridges_go_over_the_river() {
+        for seed in 0..3 {
+            let spec = crate::city_spec(seed, Look::Ithessar);
+            let sk = skeleton(&spec);
+            let m = build(&spec).0;
+            if let Err(why) = check::playable(&m) {
+                panic!("seed {seed}: {why}");
+            }
+            let c = sk.land.channel.as_ref().unwrap();
+            assert!(c.bridges.len() >= 3, "seed {seed}: {}", c.bridges.len());
+            let nav = crate::ai::nav::NavGrid::build(&m);
+            let mut crossed = 0;
+            for b in &c.bridges {
+                let [a, z] = b.ends;
+                let deck = c.deck(b);
+                for k in 0..=40 {
+                    for e in [-1.0f32, 0.0, 1.0] {
+                        let d = (z - a).normalize();
+                        let p = a.lerp(z, k as f32 / 40.0) + Vec2::new(-d.y, d.x) * e * b.half;
+                        let Some(y) = m.rivers[0].surface(p, 0.0) else {
+                            continue;
+                        };
+                        assert!(
+                            deck - y > 4.0,
+                            "seed {seed}: a deck only {:.1} m over the river",
+                            deck - y
+                        );
+                    }
+                }
+                let path = nav.path(a, z);
+                let len: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+                if path.is_empty() || len >= a.distance(z) * 1.6 {
+                    println!(
+                        "seed {seed} bridge {:.0}: {len:.0} m against {:.0}, ends blocked {} {}, middle {}",
+                        c.point(b.t, 0.0),
+                        a.distance(z),
+                        nav.is_blocked(a),
+                        nav.is_blocked(z),
+                        nav.is_blocked(c.point(b.t, 0.0))
+                    );
+                }
+                crossed += (!path.is_empty() && len < a.distance(z) * 1.6) as usize;
+            }
+            assert!(
+                crossed * 10 >= c.bridges.len() * 8,
+                "seed {seed}: bots cross {crossed} of {} bridges",
+                c.bridges.len()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn where_rivers() {
+        for seed in 0..8 {
+            let spec = crate::city_spec(seed, Look::Ithessar);
+            let sk = skeleton(&spec);
+            let c = sk.land.channel.as_ref().unwrap();
+            let plan = city::Plan::of(seed, 2, false);
+            let room = sk
+                .land
+                .platforms
+                .iter()
+                .map(|p| c.local(p.center).1.abs() - p.half * 1.15 - p.ramp - c.reach())
+                .fold(f32::MAX, f32::min);
+            println!(
+                "river {seed} {:?} size {} half {:.0} room {room:.0}",
+                plan.form, sk.size, c.half
+            );
+            for b in &c.bridges {
+                let p = c.point(b.t, 0.0);
+                println!(
+                    "  bridge {:.0} {:.0} deck {:.1} surface {:.1} half {:.1}",
+                    p.x,
+                    p.y,
+                    c.deck(b),
+                    c.surface_at(b.t),
+                    b.half
+                );
             }
         }
     }

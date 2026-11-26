@@ -611,7 +611,8 @@ impl Skeleton {
             .squares
             .iter()
             .any(|s| s.center.distance(p) < s.radius + 4.0);
-        street || plaza || square
+        let river = self.land.channel.as_ref().is_some_and(|c| c.wet(p, 0.6));
+        street || plaza || square || river
     }
 
     /// A blank map the size of the arena, for `factions`, with the
@@ -782,7 +783,9 @@ impl Skeleton {
         };
         let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
         if !self.land.high.slabs.is_empty() {
-            let mut ground = self.land.surface(self.size, 2.0, |_| 0.0);
+            // (What's dug is too fine for the coarse one to say if it's open.)
+            let cell = if self.land.digs.is_empty() { 2.0 } else { 1.0 };
+            let mut ground = self.land.surface(self.size, cell, |_| 0.0);
             ground.rock = Vec3::new(0.55, 0.45, 0.35);
             map.solid = Some(ground.into());
         }
@@ -840,6 +843,10 @@ impl Skeleton {
             roof: Vec3::splat(0.5),
             land: Vec3::splat(0.3),
         };
+        if let Some(c) = &self.land.channel {
+            c.build(&mut map, self.size);
+            map.rivers.push(c.river());
+        }
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));
         }

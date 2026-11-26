@@ -379,6 +379,8 @@ pub struct Dig {
     pub facing: Vec2,
     pub floor: f32,
     pub rooms: Vec<Hollow>,
+    /// Rock left standing in them: where, in its frame, and how thick.
+    pub pillars: Vec<(Vec2, f32)>,
 }
 
 impl Dig {
@@ -397,14 +399,20 @@ impl Dig {
     /// Distance to the rooms' walls at `p`, `y` up: negative inside.
     fn sdf(&self, p: Vec2, y: f32) -> f32 {
         let q = self.to_dig(p);
-        self.rooms
+        let open = self
+            .rooms
             .iter()
             .map(|r| {
                 let d = ((q - (r.min + r.max) * 0.5).abs() - (r.max - r.min) * 0.5).max_element();
                 let mid = self.floor + (r.floor + r.roof) * 0.5;
                 d.max((y - mid).abs() - (r.roof - r.floor) * 0.5)
             })
-            .fold(f32::INFINITY, f32::min)
+            .fold(f32::INFINITY, f32::min);
+        // (Wider at the foot and the head.)
+        self.pillars
+            .iter()
+            .map(|&(c, r)| r + 0.12 * (y - self.floor - 3.0).abs() - q.distance(c))
+            .fold(open, f32::max)
     }
 
     /// Its rooms' corners, on the map.
@@ -748,6 +756,8 @@ pub struct Land {
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
     pub digs: Vec<Dig>,
+    /// A plasma river's, cut through all of it.
+    pub channel: Option<super::channel::Channel>,
 }
 
 impl Land {
@@ -889,7 +899,8 @@ impl Land {
     /// The ground's height at `p`.
     pub fn height(&self, p: Vec2) -> f32 {
         let s = self.plateau(p);
-        self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s))
+        let h = self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s));
+        self.channel.as_ref().map_or(h, |c| c.shape(p, h))
     }
 
     /// The ground's height at `p` (`s`: the plateau's distance) with `up` of
@@ -1238,6 +1249,7 @@ mod tests {
             facing,
             floor: 0.0,
             rooms: tunnel(34.0),
+            pillars: Vec::new(),
         };
         let mesa = Vec2::new(52.0, 50.0);
         let face = Vec2::from_angle(2.1);
