@@ -19,7 +19,8 @@ pub struct Surface {
     pub tris: Vec<[u32; 3]>,
     /// The color of its rock, where it stands steep.
     pub rock: Vec3,
-    /// Which triangles are over each square of the ground.
+    /// Which floors (triangles near enough level) are over each square of
+    /// the ground.
     lo: Vec2,
     nx: usize,
     nz: usize,
@@ -27,7 +28,7 @@ pub struct Surface {
 }
 
 /// The squares triangles are sorted into, m.
-const SQUARE: f32 = 2.0;
+const SQUARE: f32 = 1.0;
 /// A floor isn't steeper than this (its normal's y).
 const FLOOR: f32 = 0.35;
 
@@ -130,6 +131,11 @@ impl Surface {
         self.nz = ((hi.z - lo.z) / SQUARE).ceil() as usize + 1;
         self.over = vec![Vec::new(); self.nx * self.nz];
         for (i, t) in self.tris.iter().enumerate() {
+            let [a, b, c] = t.map(|k| self.verts[k as usize]);
+            let n = (b - a).cross(c - a);
+            if n.y <= n.length() * FLOOR {
+                continue;
+            }
             let p = t
                 .map(|k| self.verts[k as usize])
                 .map(|v| Vec2::new(v.x, v.z));
@@ -151,44 +157,42 @@ impl Surface {
         )
     }
 
+    /// Every floor over `p`, in no order (one on a shared edge may come
+    /// twice).
+    fn over(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
+        let (x, z) = self.square(p);
+        self.over[z * self.nx + x]
+            .iter()
+            .filter_map(move |&i| self.floor_of(i, p))
+    }
+
     /// Every floor over `p`, the highest first.
     pub fn floors(&self, p: Vec2) -> Vec<f32> {
-        let (x, z) = self.square(p);
-        let mut out: Vec<f32> = self.over[z * self.nx + x]
-            .iter()
-            .filter_map(|&i| self.floor_of(i, p))
-            .collect();
+        let mut out: Vec<f32> = self.over(p).collect();
         out.sort_by(|a, b| b.total_cmp(a));
-        // (A point on a shared edge is over both its triangles.)
         out.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
         out
     }
 
     fn floor_of(&self, i: u32, p: Vec2) -> Option<f32> {
         let [a, b, c] = self.tris[i as usize].map(|k| self.verts[k as usize]);
-        let n = (b - a).cross(c - a);
-        if n.y <= n.length() * FLOOR {
-            return None;
-        }
-        let flat = |v: Vec3| Vec2::new(v.x, v.z);
+        let flat = |v: Vec3| Vec2::new(v.x, v.z) - p;
         let (pa, pb, pc) = (flat(a), flat(b), flat(c));
-        let area = (pb - pa).perp_dot(pc - pa);
-        let u = (pb - p).perp_dot(pc - p) / area;
-        let v = (pc - p).perp_dot(pa - p) / area;
-        let w = 1.0 - u - v;
-        let e = -1e-4;
-        (u >= e && v >= e && w >= e).then(|| a.y * u + b.y * v + c.y * w)
+        // (Every floor winds the same way seen from above.)
+        let (u, v, w) = (pb.perp_dot(pc), pc.perp_dot(pa), pa.perp_dot(pb));
+        let area = u + v + w;
+        let e = 1e-4 * area;
+        (u <= -e && v <= -e && w <= -e).then(|| (a.y * u + b.y * v + c.y * w) / area)
     }
 
     /// The highest floor over `p`.
     pub fn top(&self, p: Vec2) -> Option<f32> {
-        self.floors(p).first().copied()
+        self.over(p).reduce(f32::max)
     }
 
     /// The floor over `p` nearest height `y`.
     pub fn near(&self, p: Vec2, y: f32) -> Option<f32> {
-        self.floors(p)
-            .into_iter()
+        self.over(p)
             .min_by(|a, b| (a - y).abs().total_cmp(&(b - y).abs()))
     }
 }
