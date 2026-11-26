@@ -237,7 +237,7 @@ impl Default for Rules {
         Rules {
             ftl_cost: 0.1,
             ftl_speed: 40.0,
-            kill: 0.35,
+            kill: 0.15,
             frontage: 85.0,
             seats: 6.0,
             home_ground: 0.3,
