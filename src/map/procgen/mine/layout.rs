@@ -43,6 +43,32 @@ fn rail_bridge(from: Vec2, to: Vec2) -> Crossing {
     }
 }
 
+/// A spur off `track`, `junction` m along it, swinging off to the left of
+/// the way out (`side` 1) or the right (-1), with its warehouse.
+pub(super) fn spur(track: &[Vec2], junction: f32, side: f32) -> Spur {
+    let (j, dir) = line_at(track, junction);
+    let back = -dir;
+    let centre = j + back.perp() * BRANCH_R * side;
+    let turn = Vec2::from_angle(BRANCH_TURN * side);
+    let n = 12;
+    let mut line: Vec<Vec2> = (0..=n)
+        .map(|k| {
+            centre + Vec2::from_angle(BRANCH_TURN * side * k as f32 / n as f32).rotate(j - centre)
+        })
+        .collect();
+    let end = centre + turn.rotate(j - centre);
+    let along = turn.rotate(back);
+    let at = end + along * (SHED_LEAD + SHED_HALF.y);
+    line.push(at - along * SHED_HALF.y);
+    line.push(at + along * SHED_BUFFER);
+    Spur {
+        line,
+        junction,
+        side,
+        shed: (at, along),
+    }
+}
+
 /// A mine's wash along `line`.
 fn wash(line: Vec<Vec2>, phase: f32) -> Wash {
     Wash {
@@ -647,28 +673,9 @@ impl Skeleton {
     /// The branch line `junction` m past the first line's fifth point,
     /// swinging off to the left of the way out (`side` 1) or the right (-1).
     fn lay_branch(&mut self, side: f32, junction: f32) {
-        let (j, dir) = self.track_at(self.track_len(4) + junction);
-        let back = -dir;
-        let centre = j + back.perp() * BRANCH_R * side;
-        let turn = Vec2::from_angle(BRANCH_TURN * side);
-        let n = 12;
-        let mut line: Vec<Vec2> = (0..=n)
-            .map(|k| {
-                centre
-                    + Vec2::from_angle(BRANCH_TURN * side * k as f32 / n as f32).rotate(j - centre)
-            })
-            .collect();
-        let end = centre + turn.rotate(j - centre);
-        let along = turn.rotate(back);
-        let at = end + along * (SHED_LEAD + SHED_HALF.y);
-        line.push(at - along * SHED_HALF.y);
-        line.push(at + along * SHED_BUFFER);
-        self.spur = Some(Spur {
-            line,
-            junction,
-            side,
-            shed: (at, along),
-        });
+        let at = self.track_len(4) + junction;
+        self.spur = Some(spur(&self.tracks[0], at, side));
+        self.loading = Some(self.track_len(3) + 6.0);
     }
 
     /// The warehouse stands on the flats, its doors' run-outs too: in from
@@ -1340,7 +1347,7 @@ impl Skeleton {
 
     /// Where the branch leaves the first line, and the line's way there.
     pub fn branch_from(&self) -> (Vec2, Vec2) {
-        self.track_at(self.track_len(4) + self.spur.as_ref().map_or(0.0, |s| s.junction))
+        self.track_at(self.spur.as_ref().map_or(0.0, |s| s.junction))
     }
 
     /// Over a bridge's deck (not its end plates).

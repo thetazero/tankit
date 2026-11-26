@@ -381,6 +381,8 @@ pub struct Dig {
     pub rooms: Vec<Hollow>,
     /// Rock left standing in them: where, in its frame, and how thick.
     pub pillars: Vec<(Vec2, f32)>,
+    /// A borer's beam in it, from and to, in its frame.
+    pub beam: Option<(Vec2, Vec2)>,
 }
 
 impl Dig {
@@ -1250,6 +1252,7 @@ mod tests {
             floor: 0.0,
             rooms: tunnel(34.0),
             pillars: Vec::new(),
+            beam: None,
         };
         let mesa = Vec2::new(52.0, 50.0);
         let face = Vec2::from_angle(2.1);

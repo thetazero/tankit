@@ -496,6 +496,21 @@ impl Skeleton {
                 .ramps
                 .iter()
                 .any(|r| r.distance(p) < RAMP_HALF + 3.0)
+            || self.tracks.iter().any(|t| line_distance(t, p) < 4.5)
+            || self.spur.as_ref().is_some_and(|s| {
+                line_distance(&s.line, p) < 4.5
+                    || self.shed_distance(p) < 6.0
+                    || self.shed_doorways(p)
+            })
+            || self
+                .crossings
+                .iter()
+                .any(|x| x.distance(p) < x.half + 6.0)
+            || self
+                .land
+                .fords
+                .iter()
+                .any(|&(a, b, h)| crate::map::procgen::mine::seg(p, a, b).0 < h + 3.0)
             // Out in front of a dig's ways in.
             || self.land.digs.iter().any(|d| {
                 let q = d.to_dig(p);
@@ -525,6 +540,8 @@ impl Skeleton {
                         .all(|r| r.distance(p) > PAD + 6.0)
                     && self.land.wash_distance(p) > PAD + WASH_FLOOR + WASH_BANK
                     && self.landmarks[0].center.distance(p) > s * 0.3
+                    && self.tracks.iter().all(|t| line_distance(t, p) > PAD + 4.0)
+                    && self.shed_distance(p) > PAD + 10.0
                     && (0..12).all(|k| {
                         let q = p + Vec2::from_angle(k as f32 * TAU / 12.0) * PAD;
                         (self.ground(q) - g).abs() < 2.5

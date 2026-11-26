@@ -673,6 +673,7 @@ mod dig_tests {
                 room(-25.0, 20.0, 25.0, 34.0),
             ],
             pillars: Vec::new(),
+            beam: None,
         }];
         let mut map = Map::empty(180.0);
         map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, |_, _| 0.0));
