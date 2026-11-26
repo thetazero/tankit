@@ -22,9 +22,9 @@ pub const BLUE: Rgba = [0.12, 0.42, 1.0, 1.0];
 // Space: everything's a multiple of one unit.
 
 pub const UNIT: f32 = 8.0;
-pub const MARGIN: f32 = UNIT * 8.0;
+pub const MARGIN: f32 = UNIT * 6.0;
 /// A panel's column of content.
-pub const COLUMN: f32 = UNIT * 40.0;
+pub const COLUMN: f32 = UNIT * 27.0;
 /// From one action to the next.
 pub const ACTION: f32 = UNIT * 7.0;
 
@@ -64,28 +64,15 @@ pub fn bar(p: &mut Painter, at: Vec2, width: f32, frac: f32) {
     p.rect(at, Vec2::new(width * frac.clamp(0.0, 1.0), 2.0), AMBER);
 }
 
-/// A main action, its caps' top at `at`: amber with a mark when selected.
+/// A main action, its caps' top at `at`: amber when selected.
 /// Returns its clickable rect (top left, size).
 pub fn action(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
     let pad = (ACTION - ACTION_TEXT.size) * 0.5;
-    if on {
-        let c = Vec2::new(at.x - UNIT * 2.0, at.y + ACTION_TEXT.size * 0.5);
-        let r = UNIT * 0.5;
-        p.poly(
-            &[
-                c - Vec2::new(0.0, r),
-                c + Vec2::new(r, 0.0),
-                c + Vec2::new(0.0, r),
-                c - Vec2::new(r, 0.0),
-            ],
-            AMBER,
-        );
-    }
     let color = if on { AMBER } else { TEXT };
     p.text(at, name, &ACTION_TEXT.colored(color), Align::Left);
     (
-        at - Vec2::new(UNIT * 3.0, pad),
-        Vec2::new(COLUMN + UNIT * 3.0, ACTION),
+        at - Vec2::new(UNIT * 2.0, pad),
+        Vec2::new(COLUMN + UNIT * 4.0, ACTION),
     )
 }
 

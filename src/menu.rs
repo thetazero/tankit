@@ -1026,7 +1026,7 @@ impl Menu {
     fn draw_main(&self, p: &mut Painter, hits: &mut Hits<Hit>, profile: &Profile, w: f32, h: f32) {
         cluster_view::draw(p, hits, self.cluster.as_ref(), self.star, self.clock, w, h);
         design::panel(p, h);
-        let (x, right) = (design::MARGIN, design::MARGIN + design::COLUMN);
+        let x = design::MARGIN;
 
         // Who you are, and what you have to spend.
         let mut y = design::MARGIN;
@@ -1037,17 +1037,18 @@ impl Menu {
             &design::BODY,
             Align::Left,
         );
+        y += design::UNIT * 3.0;
+        design::bar(p, Vec2::new(x, y), design::COLUMN, r.progress());
+        y += design::UNIT * 3.0;
         p.text(
-            Vec2::new(right, y),
+            Vec2::new(x, y),
             &format!("{} cr", profile.crystals),
             &design::BODY.colored(design::BLUE),
-            Align::Right,
+            Align::Left,
         );
-        y += design::UNIT * 4.0;
-        design::bar(p, Vec2::new(x, y), design::COLUMN, r.progress());
 
         // What you can do.
-        y += design::UNIT * 11.0;
+        y += design::UNIT * 9.0;
         for (i, name) in MAIN_ITEMS.iter().enumerate().take(MAIN_ACTIONS) {
             let (at, size) = design::action(p, Vec2::new(x, y), name, i == self.cursor);
             hits.add(p, at, size, Hit::Row(i));
