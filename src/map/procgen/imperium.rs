@@ -16,6 +16,7 @@
 //!   closing each avenue's vista.
 //! - their shield generator (`shield`; see `procgen::shield`).
 
+mod civics;
 pub(super) mod shield;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -104,6 +105,10 @@ impl Style for Imperium {
             roof: CONCRETE_DARK,
             land: GROUND,
         }
+    }
+
+    fn civic(&self, map: &mut Map, lot: &Lot, kind: CivicKind, rng: &mut Rng) {
+        civics::build(map, rng, lot, kind, self.stone());
     }
 
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
