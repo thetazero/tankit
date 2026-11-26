@@ -914,6 +914,23 @@ mod tests {
         ]);
     }
 
+    /// The same for rail depots.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn depots_hardly_z_fight() {
+        use crate::map::procgen::Look;
+        let depot = |seed, l| crate::make_map(crate::MapKind::Depot(l), seed);
+        hardly_z_fight([
+            ("depot imperium", depot(0, Look::Imperium)),
+            ("depot resonant", depot(1, Look::Resonant)),
+            ("depot uthenn", depot(2, Look::Uthenn)),
+            ("depot ithessar", depot(3, Look::Ithessar)),
+        ]);
+    }
+
     fn hardly_z_fight<const N: usize>(maps: [(&str, Map); N]) {
         for (name, map) in maps {
             let fights = map_fights(name, &map);

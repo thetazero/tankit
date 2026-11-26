@@ -46,6 +46,10 @@ pub enum Part {
     PipeBridge,
     Conveyor,
     Wagons,
+    /// Freight cars of any kind, coupled, on the rails.
+    Cars,
+    /// A travelling crane over tracks: driven under.
+    Gantry,
     // Small.
     Hulls,
     Billets,
@@ -98,7 +102,12 @@ impl Part {
     pub fn over(self) -> bool {
         matches!(
             self,
-            Part::Portal | Part::PipeBridge | Part::Conveyor | Part::Wagons
+            Part::Portal
+                | Part::PipeBridge
+                | Part::Conveyor
+                | Part::Wagons
+                | Part::Cars
+                | Part::Gantry
         )
     }
 
@@ -125,6 +134,8 @@ impl Part {
             Part::Portal | Part::PipeBridge => ((8.0, 8.0), (1.2, 1.2)),
             Part::Conveyor => ((1.3, 1.3), (10.0, 20.0)),
             Part::Wagons => ((1.5, 1.5), (4.5, 9.0)),
+            Part::Cars => ((1.55, 1.55), (5.0, 15.0)),
+            Part::Gantry => ((9.0, 11.0), (3.6, 3.6)),
             Part::Hulls => ((1.9, 2.1), (3.2, 3.6)),
             Part::Billets => ((1.4, 2.0), (2.4, 3.2)),
             Part::Pot => ((1.7, 1.7), (1.7, 1.7)),
@@ -142,10 +153,10 @@ impl Part {
             Part::Assembly => Vec3::new(0.3, 0.55, 0.5),
             Part::Ore => Vec3::new(0.5, 0.4, 0.3),
             Part::Cooling => Vec3::new(0.6, 0.65, 0.7),
-            Part::Conveyor | Part::Portal | Part::PipeBridge | Part::Crane => {
+            Part::Conveyor | Part::Portal | Part::PipeBridge | Part::Crane | Part::Gantry => {
                 Vec3::new(0.75, 0.68, 0.3)
             }
-            Part::Wagons => Vec3::new(0.3, 0.35, 0.5),
+            Part::Wagons | Part::Cars => Vec3::new(0.3, 0.35, 0.5),
             p if Part::SMALL.contains(&p) => Vec3::new(0.35, 0.5, 0.35),
             _ => Vec3::new(0.55, 0.55, 0.58),
         }
@@ -376,7 +387,7 @@ impl Site<'_> {
                 self.role = Role::Wall;
                 self.put(x, z, across(w, 0.55), (7.6, h));
                 self.role = Role::Trim;
-                self.put(x, z, across(w + 0.3, 0.75), (7.0, 7.6));
+                self.put(x, z, across(w + 0.3, 0.83), (7.0, 7.6));
                 if let Some(p) = &self.pal {
                     let molten = p.molten;
                     let side = at.signum() * 0.95;
@@ -1048,6 +1059,46 @@ pub fn build(map: &mut Map, f: &OBox, part: Part, g: f32, st: Option<&dyn Works>
                 }
             }
         }
+        Part::Cars => {
+            let n = (l / 5.0).round().max(1.0) as i32;
+            for k in 0..n {
+                let z = -l + 2.0 * l * (k as f32 + 0.5) / n as f32;
+                let len = l / n as f32 - 0.4;
+                let kind = s.rng.index(4);
+                let hide = s.st.is_some();
+                // A box car, a gondola, a tanker, a flat with a crate on it.
+                let h = [3.9, 2.9, 3.5, 1.25][kind];
+                s.put(0.0, z, (w, len), (-0.4, h)).hidden = hide;
+                let crate_at = s.rng.range(-0.3, 0.3) * len;
+                if kind == 3 {
+                    s.put(0.0, z + crate_at, (w * 0.8, len * 0.4), (h, h + 1.7))
+                        .hidden = hide;
+                }
+                if hide {
+                    match kind {
+                        1 => s.wagon(z, w, len),
+                        k => s.car(k, (z, crate_at), w, len),
+                    }
+                }
+            }
+        }
+        Part::Gantry => {
+            let h = s.rng.range(8.5, 10.0);
+            s.legs((w - 0.7, l - 0.7), 0.5, h);
+            s.role = Role::Trim;
+            s.put(0.0, 0.0, (w + 1.0, l * 0.35), (h, h + 1.6));
+            if let Some(st) = s.st {
+                st.girder(&mut s, (w + 1.0, l * 0.35), (h, h + 1.6));
+                let x = s.dice.range(-0.5, 0.5) * w;
+                let (c, m) = s.look(Role::Dark);
+                for e in [-0.4f32, 0.4] {
+                    s.beam((x + e, h * 0.62, 0.0), (x + e, h, 0.0), 0.05, c, m);
+                }
+                s.deck(x, 0.0, (0.9, 0.9), (h * 0.62 - 0.5, h * 0.62), c, m);
+            }
+            s.role = Role::Steel;
+            s.put(0.0, 0.0, (1.4, l * 0.5), (h + 1.6, h + 3.2));
+        }
         Part::Hulls => {
             let hide = s.st.is_some();
             s.role = Role::Cast;
@@ -1122,6 +1173,78 @@ impl Site<'_> {
             c * 0.85,
             m,
         );
+    }
+
+    /// A car's frame, on its bogies.
+    fn bogies(&mut self, z: f32, w: f32, l: f32, dark: Vec3) {
+        let metal = Material::Metal;
+        self.deck(0.0, z, (0.9, l - 0.1), (0.75, 1.08), dark, metal);
+        self.deck(0.0, z, (w - 0.15, l - 0.2), (1.06, 1.2), dark, metal);
+        for e in [-1.0f32, 1.0] {
+            for t in [0.5f32, 0.78] {
+                let c = self.at(0.0, 0.55, z + e * l * t);
+                let axle = self.dir(1.0, 0.0);
+                let a = Vec3::new(axle.x, 0.0, axle.y) * 0.85;
+                self.map.disc(c, a, 0.42, dark * 0.8, metal);
+            }
+        }
+    }
+
+    /// A freight car `kind` (as `Part::Cars` draws them) at `z`, its crate
+    /// `crate_at` from its middle.
+    fn car(&mut self, kind: usize, (z, crate_at): (f32, f32), w: f32, l: f32) {
+        let Some(p) = &self.pal else { return };
+        let (paint, dark, trim) = (p.wagon * self.dice.range(0.8, 1.2), p.dark, p.trim);
+        let (metal, painted) = (Material::Metal, Material::Painted);
+        self.bogies(z, w, l, dark);
+        match kind {
+            0 => {
+                self.deck(0.0, z, (w - 0.1, l - 0.12), (1.2, 3.7), paint, painted);
+                self.deck(0.0, z, (w - 0.02, l - 0.04), (3.68, 3.9), dark, metal);
+                for e in [-1.0f32, 1.0] {
+                    // Its door, and the ribs either side.
+                    self.deck(e * (w - 0.08), z, (0.07, 1.1), (1.25, 3.5), trim, painted);
+                    for t in [-0.85f32, -0.55, 0.55, 0.85] {
+                        let at = z + t * l;
+                        self.deck(e * (w - 0.07), at, (0.06, 0.08), (1.22, 3.66), dark, metal);
+                    }
+                }
+            }
+            2 => {
+                let (a, b) = ((0.0, 2.25, z - l + 0.5), (0.0, 2.25, z + l - 0.5));
+                self.pipe(a, b, w * 0.72, paint, painted);
+                for e in [-1.0f32, 1.0] {
+                    let c = self.at(0.0, 2.25, z + e * (l - 0.5));
+                    let out = self.dir(0.0, e);
+                    let d = Vec3::new(out.x, 0.0, out.y) * 0.12;
+                    self.map.disc(c, d, w * 0.7, paint * 0.9, painted);
+                    let hoop = z + e * l * 0.45;
+                    self.pipe(
+                        (0.0, 2.25, hoop - 0.12),
+                        (0.0, 2.25, hoop + 0.12),
+                        w * 0.745,
+                        dark,
+                        metal,
+                    );
+                }
+                self.pipe((0.0, 3.1, z), (0.0, 3.5, z), 0.45, dark, metal);
+            }
+            _ => {
+                let at = z + crate_at;
+                self.deck(
+                    0.0,
+                    at,
+                    (w * 0.8, l * 0.4),
+                    (1.2, 2.93),
+                    trim * 0.8,
+                    painted,
+                );
+                for t in [-0.3f32, 0.3] {
+                    let b = at + t * l;
+                    self.deck(0.0, b, (w * 0.8 + 0.04, 0.12), (1.2, 2.97), dark, metal);
+                }
+            }
+        }
     }
 
     /// A wagon on its wheels, its load in it.
