@@ -84,6 +84,16 @@ impl Look {
         }
     }
 
+    /// Whose style it is.
+    pub fn faction(self) -> Faction {
+        match self {
+            Look::Imperium => Faction::Imperium,
+            Look::Resonant => Faction::Resonant,
+            Look::Uthenn => Faction::Uthenn,
+            Look::Ithessar => Faction::Ithessar,
+        }
+    }
+
     /// The style `founder` builds cities in: the Imperium's, for those whose
     /// own isn't made yet.
     pub fn of(founder: Faction) -> Look {
@@ -721,9 +731,11 @@ impl Map {
                 .entry(seed)
                 .or_default()
                 .clone();
-            return slot.get_or_init(|| map(&crate::mine_spec(seed))).clone();
+            return slot
+                .get_or_init(|| map(&crate::mine_spec(seed, Look::Ithessar)))
+                .clone();
         }
-        map(&crate::mine_spec(seed))
+        map(&crate::mine_spec(seed, Look::Ithessar))
     }
 
     /// The Imperium's hull foundry `seed` names, on desert (see

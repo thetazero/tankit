@@ -187,7 +187,7 @@ mod tests {
             MapKind::City(Look::Resonant, Default::default()),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
             MapKind::Depot(Look::Imperium),
-            MapKind::Mine,
+            MapKind::Mine(Look::Ithessar),
             MapKind::Desert,
             MapKind::ShieldDesert(g),
         ] {
