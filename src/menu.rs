@@ -1523,7 +1523,6 @@ fn fade(mut v: Vec<UiVertex>, alpha: f32) -> Vec<UiVertex> {
 mod tests {
     use super::*;
     use crate::faction::Faction;
-    use crate::galaxy::theater::system_name;
 
     #[test]
     fn main_menu_navigation() {

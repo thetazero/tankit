@@ -1329,14 +1329,11 @@ pub fn summary(
         theme::HOT
     };
     let mut y = UNIT * 8.0;
-    p.text(
-        Vec2::new(mid, y),
-        head,
-        &BODY.colored(TEXT_2),
-        Align::Center,
-    );
-    y += UNIT * 4.0;
-    p.text(Vec2::new(mid, y), &how, &TITLE.colored(tone), Align::Center);
+    let style = TITLE.colored(tone);
+    p.text(Vec2::new(mid, y), head, &style, Align::Center);
+    y += UNIT * 5.0;
+    let style = BODY.colored(TEXT_2);
+    p.text(Vec2::new(mid, y), &how, &style, Align::Center);
     // What it cost, and the way on, under the system.
     y = h - UNIT * 24.0;
     let battles = e.tick.saturating_sub(e.signed).max(1).to_string();
