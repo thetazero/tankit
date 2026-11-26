@@ -192,6 +192,9 @@ impl Sand<'_> {
 
         let camp = self.lay_out_camp(rng, &site, drifts);
         self.map.terrain = Some(super::terrain_of(sk, self.pal, Some(&camp)));
+        let mut ground = sk.land.surface(sk.size, 1.0, |p| camp.heap(p));
+        ground.rock = self.pal.stone;
+        self.map.solid = Some(ground.into());
         let fences = camp.fences.clone();
         let upwind = camp.upwind;
         for (a, b) in fences {

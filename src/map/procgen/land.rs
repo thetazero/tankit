@@ -13,11 +13,12 @@
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 
 use super::mine::{line_at, line_distance, line_len, seg};
 use super::skeleton::{Platform, smoothstep};
 use crate::map::OBox;
+use crate::map::solid::{Rock, Surface};
 use crate::map::valley::{noise, noise2};
 use crate::rng::Rng;
 
@@ -579,6 +580,37 @@ impl Mound {
     }
 }
 
+/// A `Land` as a solid, with `heaps` on it.
+struct LandRock<'a, F> {
+    land: &'a Land,
+    heaps: F,
+}
+
+impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
+    fn column(&self, p: Vec2, ys: &[f32], out: &mut [f32]) {
+        let land = self.land;
+        let s = land.plateau(p);
+        let heap = (self.heaps)(p);
+        // (Far from a cliff, there's only the one level.)
+        let near = s.abs() < 8.0;
+        let only = land.level(p, s, if s < 0.0 { 1.0 } else { 0.0 }) + heap;
+        let (top, foot) = if near {
+            (land.level(p, s, 1.0) + heap, land.level(p, s, 0.0) + heap)
+        } else {
+            (only, only)
+        };
+        for (&y, d) in ys.iter().zip(out) {
+            *d = y - only;
+            if near {
+                // Beds of rock, some worn back further than others.
+                let bed = 0.7 * noise2(y / 1.3, p.dot(Vec2::ONE) / 40.0, 61)
+                    + 0.5 * noise2(p.x / 4.0 + y / 9.0, p.y / 4.0, 62);
+                *d = (s + bed - 0.6).max(y - top).min(y - foot);
+            }
+        }
+    }
+}
+
 /// Smooth max and min, blending over `k`.
 fn smax(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (a - b) / k).clamp(0.0, 1.0);
@@ -748,14 +780,19 @@ impl Land {
 
     /// The ground's height at `p`.
     pub fn height(&self, p: Vec2) -> f32 {
+        let s = self.plateau(p);
+        self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s))
+    }
+
+    /// The ground's height at `p` (`s`: the plateau's distance) with `up` of
+    /// the high ground under it (1: its top; 0: the floor below).
+    fn level(&self, p: Vec2, s: f32, up: f32) -> f32 {
         let plaza = self
             .platforms
             .iter()
             .map(|pl| pl.height_at(p))
             .fold(0.0, f32::max);
         let mut h = self.base(p) + plaza;
-        let s = self.plateau(p);
-        let up = 1.0 - smoothstep(0.0, EDGE_FALL, s);
         let high = &self.high;
         h += high
             .ramps
@@ -769,6 +806,20 @@ impl Land {
         let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
         h += (bowls - self.wash_cut(p)) * low + self.butte(p) + self.fin(p) + self.mound(p);
         self.graded(p, h)
+    }
+
+    /// The ground as a solid, `size` across, in cubes `cell` across, with
+    /// `heaps` on it: the high ground's cliffs stand sheer, their beds worn
+    /// back by turns.
+    pub fn surface(&self, size: f32, cell: f32, heaps: impl Fn(Vec2) -> f32) -> Surface {
+        let rock = LandRock { land: self, heaps };
+        let edge = 2.0 * cell;
+        Surface::of(
+            &rock,
+            Vec3::new(-edge, -8.0, -edge),
+            Vec3::new(size + edge, self.high.height + 10.0, size + edge),
+            cell,
+        )
     }
 
     /// How much of the dunes is left at `p` (`s`: the plateau's distance):

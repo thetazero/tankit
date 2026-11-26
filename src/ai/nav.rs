@@ -53,6 +53,7 @@ pub struct NavGrid {
     floor: Vec<[f32; 2]>,
     blocked: Vec<[bool; 2]>,
     terrain: Option<Terrain>,
+    solid: Option<std::sync::Arc<crate::map::solid::Surface>>,
     /// Flat drivable slabs (decks, roofs): floors over the ground.
     slabs: Vec<OBox>,
 }
@@ -74,6 +75,7 @@ impl NavGrid {
             floor: Vec::new(),
             blocked: vec![[false; 2]; n * n],
             terrain: map.terrain.clone(),
+            solid: map.solid.clone(),
             slabs,
         };
         nav.floor = (0..n * n).map(|i| nav.floors_at(nav.center(i))).collect();
@@ -233,7 +235,8 @@ impl NavGrid {
     }
 
     fn ground(&self, p: Vec2) -> f32 {
-        self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y))
+        let solid = self.solid.as_ref().and_then(|s| s.top(p));
+        solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)))
     }
 
     /// The floors at a point: the top one, and the one under it (NaN where
