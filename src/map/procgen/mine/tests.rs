@@ -503,7 +503,7 @@ fn check_every_spawn_reaches_everything_and_the_sides_are_fair(seed: u64) {
     }
     goals.push((
         "the mesa's west".into(),
-        Vec2::new(l.west_ramp.1 - 4.0, s - 30.0),
+        Vec2::new(l.land.scarp.as_ref().unwrap().west.1 - 4.0, s - 30.0),
     ));
     for (k, b) in l.land.buttes.iter().enumerate() {
         goals.push((format!("butte {k}'s top"), b.center));
@@ -700,7 +700,7 @@ fn check_the_crags_stand(seed: u64) {
     let (l, m) = (lay(seed), mine(seed));
     let nav = NavGrid::build(&m);
     for mn in &l.mines {
-        let p = Vec2::new(mn.crag_w + 6.0, mn.hall.0.y - 6.0);
+        let p = Vec2::new(mn.crag.w + 6.0, mn.hall.0.y - 6.0);
         assert!(
             m.ground_height(p.x, p.y) > CRAG_TOP - 1.0,
             "seed {seed}: no Crag at {p}"

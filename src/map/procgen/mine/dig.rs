@@ -791,9 +791,9 @@ impl Dig<'_> {
         let mut spans = Vec::new();
         let mut from = -6.0;
         for m in &lay.mines {
-            spans.push((from, m.crag_west(lay.face(m.crag_w), lay.size) + 1.0));
+            spans.push((from, m.crag.west(lay.face(m.crag.w), lay.size) + 1.0));
             spans.push((
-                m.crag_east(lay.face(m.crag_e), lay.size) - 1.0,
+                m.crag.east(lay.face(m.crag.e), lay.size) - 1.0,
                 m.scree.0 + 4.0,
             ));
             from = m.scree.1 - 4.0;
@@ -1192,7 +1192,7 @@ impl Dig<'_> {
             let c = x + w;
             x += w * 2.0 - 0.5;
             let in_crag = lay.mines.iter().any(|m| {
-                (m.crag_west(lay.face(c), lay.size) + 1.0..m.crag_east(lay.face(c), lay.size) - 1.0)
+                (m.crag.west(lay.face(c), lay.size) + 1.0..m.crag.east(lay.face(c), lay.size) - 1.0)
                     .contains(&c)
             });
             if in_crag || lay.scree(c) > 0.3 {
@@ -2135,7 +2135,7 @@ impl Dig<'_> {
                 let c = x + w * 0.5;
                 x += w;
                 // Inside the Crag the cut's sides are its sculpted face.
-                if c + w * 0.5 < m.crag_east(z, lay.size) - 0.5 {
+                if c + w * 0.5 < m.crag.east(z, lay.size) - 0.5 {
                     continue;
                 }
                 let top = TOP + 0.3;
@@ -3363,7 +3363,9 @@ impl Dig<'_> {
     /// top, spoil.
     pub(super) fn dump_cover(&mut self, rng: &mut Rng) {
         let lay = self.l;
-        let (c, _, h, _) = lay.dump;
+        let Some(c) = lay.land.mounds.first().map(|m| m.at) else {
+            return;
+        };
         for (dx, dz, yaw) in [(-6.0, 4.0, 0.4), (5.0, -3.0, 1.9), (0.0, 9.0, -0.8)] {
             let p = c + Vec2::new(dx, dz);
             self.ore_cart(rng, p, yaw);
@@ -3381,7 +3383,6 @@ impl Dig<'_> {
             let s = rng.range(1.0, 1.9);
             self.boulder(rng, p, s, s > 1.0);
         }
-        let _ = h;
     }
 
     /// The warehouse at the end of the branch: a plain steel shed on a
@@ -4096,7 +4097,7 @@ impl Dig<'_> {
                 || lay
                     .mines
                     .iter()
-                    .any(|m| (m.crag_e..m.scree.1 + 20.0).contains(&q.x))
+                    .any(|m| (m.crag.e..m.scree.1 + 20.0).contains(&q.x))
             {
                 let s = rng.range(1.4, 2.1);
                 self.rock_pile(rng, q, s);
@@ -4621,15 +4622,15 @@ impl Dig<'_> {
 fn crag_feet(m: &Dig, mine: &Mine) -> Vec<crag::Foot> {
     let lay = m.l;
     let mut corners = Vec::new();
-    let zw = lay.face(mine.crag_w);
+    let zw = lay.face(mine.crag.w);
     let mut z = lay.size + 6.0;
     while z > zw + 3.0 {
-        corners.push(Vec2::new(mine.crag_west(z, lay.size), z));
+        corners.push(Vec2::new(mine.crag.west(z, lay.size), z));
         z -= 3.0;
     }
     let (xw, xe) = (
-        mine.crag_west(zw, lay.size),
-        mine.crag_east(lay.face(mine.crag_e), lay.size),
+        mine.crag.west(zw, lay.size),
+        mine.crag.east(lay.face(mine.crag.e), lay.size),
     );
     let mut x = xw;
     while x < xe {
@@ -4640,16 +4641,16 @@ fn crag_feet(m: &Dig, mine: &Mine) -> Vec<crag::Foot> {
     let (s0, s1) = (mine.box_cut.0.y, mine.box_cut.1.y);
     let mut z = ze + 3.0;
     while z < s0 {
-        corners.push(Vec2::new(mine.crag_east(z, lay.size), z));
+        corners.push(Vec2::new(mine.crag.east(z, lay.size), z));
         z += 3.0;
     }
-    corners.push(Vec2::new(mine.crag_east(s0, lay.size), s0));
+    corners.push(Vec2::new(mine.crag.east(s0, lay.size), s0));
     corners.push(Vec2::new(mine.box_cut.0.x, s0));
     corners.push(Vec2::new(mine.box_cut.0.x, s1));
-    corners.push(Vec2::new(mine.crag_east(s1, lay.size), s1));
+    corners.push(Vec2::new(mine.crag.east(s1, lay.size), s1));
     let mut z = s1 + 3.0;
     while z < lay.size + 6.0 {
-        corners.push(Vec2::new(mine.crag_east(z, lay.size), z));
+        corners.push(Vec2::new(mine.crag.east(z, lay.size), z));
         z += 3.0;
     }
     let pts = crag::resample(&corners, 0.7, 1.2);
@@ -4662,7 +4663,7 @@ fn crag_feet(m: &Dig, mine: &Mine) -> Vec<crag::Foot> {
             along += p.distance(pts[i - 1].0);
         }
         let nrm = Vec2::new(dir.y, -dir.x);
-        let in_slot = p.y > s0 - 0.6 && p.y < s1 + 0.6 && p.x < mine.crag_east(p.y, lay.size) - 0.5;
+        let in_slot = p.y > s0 - 0.6 && p.y < s1 + 0.6 && p.x < mine.crag.east(p.y, lay.size) - 0.5;
         let on_front = nrm.y < -0.7 && p.y < mine.front_limit();
         let mouth = (on_front && mine.mouths().iter().any(|(a, b)| p.x > a.x && p.x < b.x))
             || (in_slot && nrm.x > 0.7 && p.y > s0 + 0.2 && p.y < s1 - 0.2);
@@ -5020,8 +5021,12 @@ fn paint(lay: &Layout, seam: &[Vec2], x: f32, z: f32, h: f32, slope: f32) -> Vec
     );
     // The dump and the heap: pale crushed rock.
     // (Over each one's height; none there if the map has no dump.)
-    let rel = |d: Heap| if d.2 > 0.0 { heap(d, p) / d.2 } else { 0.0 };
-    let waste = rel(lay.dump).max(rel(lay.heap));
+    let waste = lay
+        .land
+        .mounds
+        .iter()
+        .map(|m| m.height_at(p) / m.height)
+        .fold(0.0, f32::max);
     c = c.lerp(TAILINGS * mottle, smoothstep(0.05, 0.4, waste));
     // The ways up, worn into the rock and sand.
     let way = lay

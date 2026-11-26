@@ -441,6 +441,129 @@ impl Fin {
     }
 }
 
+/// A great rock standing over an escarpment's top, its front rising behind
+/// the Face: its sides at its front, how far it flares west as it runs back
+/// (from `flare_z`, over 45 m), its wobble's phase.
+#[derive(Clone, Copy, Debug)]
+pub struct Crag {
+    pub w: f32,
+    pub e: f32,
+    pub flare: f32,
+    pub flare_z: f32,
+    pub phase: f32,
+}
+
+impl Crag {
+    /// Its west side (x), at `z` (`top`: the arena's north edge).
+    pub fn west(&self, z: f32, top: f32) -> f32 {
+        let z = z.min(top);
+        self.w - self.flare * smoothstep(self.flare_z, self.flare_z + 45.0, z)
+            + 1.6 * (z * 0.13 + self.phase).sin()
+            + 1.0 * (z * 0.31).sin()
+    }
+
+    /// Its east side (x), at `z`.
+    pub fn east(&self, z: f32, top: f32) -> f32 {
+        let z = z.min(top);
+        self.e + 1.5 * (z * 0.11 + 1.0 + self.phase).sin() + 0.8 * (z * 0.27).sin()
+    }
+}
+
+/// A long cliff (the Face) along the north of an arena `size` across, the
+/// mesa running back behind it, its west end a slope; screes where the Face
+/// has fallen in, Crags standing over it.
+#[derive(Clone, Debug, Default)]
+pub struct Scarp {
+    pub size: f32,
+    /// How far back the Face rises over, and a scree's slope runs out.
+    pub rise: f32,
+    pub scree_run: f32,
+    /// The Face's foot, west to east (x, z), eased between.
+    pub foot: Vec<(f32, f32)>,
+    /// The mesa's west end slopes down to the floor between these (x).
+    pub west: (f32, f32),
+    /// Each from, to (x).
+    pub screes: Vec<(f32, f32)>,
+    pub crags: Vec<Crag>,
+}
+
+impl Scarp {
+    /// The Face's foot at `x` (z).
+    pub fn face(&self, x: f32) -> f32 {
+        // (Straight where it fell in: the scree's slope mustn't lean.)
+        let wobble = 0.8 * (0.5 * x).sin() * (0.13 * x).sin() * (1.0 - self.scree(x));
+        for w in self.foot.windows(2) {
+            let ((x0, z0), (x1, z1)) = (w[0], w[1]);
+            if x <= x1 {
+                let t = smoothstep(x0, x1, x);
+                return z0 + (z1 - z0) * t + wobble;
+            }
+        }
+        self.foot[self.foot.len() - 1].1
+    }
+
+    /// How much scree (0..1) there is at `x`, in place of the cliff.
+    pub fn scree(&self, x: f32) -> f32 {
+        self.screes
+            .iter()
+            .map(|&(a, b)| {
+                smoothstep(a - 4.0, a + 6.0, x) * (1.0 - smoothstep(b - 6.0, b + 4.0, x))
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// How far into a Crag a point is (m; negative: outside). Its front
+    /// rises behind the mesa's own face.
+    pub fn crag_depth(&self, p: Vec2) -> f32 {
+        let front = p.y - self.face(p.x) - self.rise;
+        self.crags
+            .iter()
+            .map(|m| {
+                (p.x - m.west(p.y, self.size))
+                    .min(m.east(p.y, self.size) - p.x)
+                    .min(front)
+            })
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    /// How much of a Crag (0..1) stands over a point.
+    pub fn crag(&self, p: Vec2) -> f32 {
+        smoothstep(0.0, 3.0, self.crag_depth(p))
+    }
+
+    /// How high the mesa stands at a point, before anything is cut out
+    /// of it, 0..1.
+    pub fn mesa(&self, p: Vec2) -> f32 {
+        let f = self.face(p.x);
+        let cliff = smoothstep(f, f + self.rise, p.y);
+        let slope = ((p.y - (f - self.scree_run)) / (self.scree_run + self.rise)).clamp(0.0, 1.0);
+        let s = self.scree(p.x);
+        let across = cliff + (slope - cliff) * s;
+        let (w0, w1) = self.west;
+        let west = ((p.x - w0) / (w1 - w0)).clamp(0.0, 1.0);
+        across * west
+    }
+}
+
+/// A heap: flat-topped, its outline lobed, its sides running out `run` m.
+#[derive(Clone, Copy, Debug)]
+pub struct Mound {
+    pub at: Vec2,
+    pub radius: f32,
+    pub height: f32,
+    pub run: f32,
+}
+
+impl Mound {
+    pub fn height_at(&self, p: Vec2) -> f32 {
+        let d = p - self.at;
+        let a = d.y.atan2(d.x);
+        let r = self.radius;
+        let edge = r + 0.25 * r * (3.0 * a + self.at.x).sin() + 0.12 * r * (5.0 * a + 1.0).sin();
+        self.height * (1.0 - smoothstep(edge, edge + self.run, d.length()))
+    }
+}
+
 /// Smooth max and min, blending over `k`.
 fn smax(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (a - b) / k).clamp(0.0, 1.0);
@@ -465,6 +588,8 @@ pub struct Land {
     /// Crossings of the washes: down one bank and up the other.
     pub fords: Vec<(Vec2, Vec2, f32)>,
     pub buttes: Vec<Butte>,
+    pub scarp: Option<Scarp>,
+    pub mounds: Vec<Mound>,
     pub fins: Vec<Fin>,
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
@@ -633,7 +758,7 @@ impl Land {
             h += d.at(p) * self.drift(d, p, s) * (0.3 + 0.7 * low);
         }
         let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
-        h += (bowls - self.wash_cut(p)) * low + self.butte(p) + self.fin(p);
+        h += (bowls - self.wash_cut(p)) * low + self.butte(p) + self.fin(p) + self.mound(p);
         self.graded(p, h)
     }
 
@@ -723,6 +848,11 @@ impl Land {
     /// How high the fins stand at `p`.
     pub fn fin(&self, p: Vec2) -> f32 {
         self.fins.iter().map(|f| f.height_at(p)).fold(0.0, f32::max)
+    }
+
+    /// How high the heaps stand at `p`.
+    pub fn mound(&self, p: Vec2) -> f32 {
+        self.mounds.iter().map(|m| m.height_at(p)).sum()
     }
 
     /// How high the buttes stand at `p`.

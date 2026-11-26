@@ -25,19 +25,13 @@ use std::f32::consts::{PI, TAU};
 use glam::{Vec2, Vec3};
 
 use super::*;
-use crate::map::procgen::land::{Butte, Fin, Land, Wash};
+use crate::map::procgen::land::{Butte, Crag, Fin, Land, Mound, Scarp, Wash};
 
 /// One mine dug into the escarpment: its Crag and rooms, every edge on the
 /// terrain's 2 m grid so the cut is clean.
 #[derive(Clone, Debug)]
 pub struct Mine {
-    /// The Crag's west and east sides at its front, how far it flares west
-    /// as it runs back (from `flare_z`, over 45 m), and its wobble's phase.
-    pub crag_w: f32,
-    pub crag_e: f32,
-    flare: f32,
-    flare_z: f32,
-    phase: f32,
+    pub crag: Crag,
     pub adit: Rect,
     pub hall: Rect,
     /// From the hall to the adit, where the cut crystal waits for the train.
@@ -88,21 +82,6 @@ impl Mine {
     /// Its mouths in the Crag's face: the rail adit and the new heading.
     pub fn mouths(&self) -> [Rect; 2] {
         [self.adit, self.heading]
-    }
-
-    /// The Crag's west side (x), at `z` (`top`: the north edge).
-    pub fn crag_west(&self, z: f32, top: f32) -> f32 {
-        let z = z.min(top);
-        // Flaring west as it runs back, into the massif beyond the edge.
-        self.crag_w - self.flare * smoothstep(self.flare_z, self.flare_z + 45.0, z)
-            + 1.6 * (z * 0.13 + self.phase).sin()
-            + 1.0 * (z * 0.31).sin()
-    }
-
-    /// The Crag's east side (x), at `z`.
-    pub fn crag_east(&self, z: f32, top: f32) -> f32 {
-        let z = z.min(top);
-        self.crag_e + 1.5 * (z * 0.11 + 1.0 + self.phase).sin() + 0.8 * (z * 0.27).sin()
     }
 
     /// Feet of the Crag's face further back than this (z) run up its sides,
@@ -157,10 +136,6 @@ pub struct Bridge {
 #[derive(Clone, Debug)]
 pub struct Layout {
     pub size: f32,
-    /// The Face's foot, west to east (x, z), eased between.
-    face: Vec<(f32, f32)>,
-    /// The mesa's west end slopes down to the floor between these (x).
-    pub west_ramp: (f32, f32),
     pub mines: Vec<Mine>,
     /// Every mine's rooms.
     pub caves: Vec<Rect>,
@@ -183,8 +158,6 @@ pub struct Layout {
     pub seam: Vec<Vec2>,
     /// The cutting rig working it (where, which way its boom reaches).
     pub wash_rig: Option<(Vec2, f32)>,
-    pub dump: Heap,
-    pub heap: Heap,
     pub hoodoos: Vec<(Vec2, f32)>,
     /// Each side's spawns: their columns (x), the first row (z) and how
     /// many rows, 6 m apart.
@@ -220,8 +193,6 @@ impl Layout {
         let n_buttes = [0, 1, 1, 2][rng.index(4)];
         let mut l = Layout {
             size: 0.0,
-            face: Vec::new(),
-            west_ramp: (0.0, 0.0),
             mines: Vec::new(),
             caves: Vec::new(),
             land: Land::default(),
@@ -233,8 +204,6 @@ impl Layout {
             shed: (Vec2::splat(-1000.0), Vec2::Y),
             seam: Vec::new(),
             wash_rig: None,
-            dump: (Vec2::ZERO, 0.0, 0.0, 0.0),
-            heap: (Vec2::ZERO, 0.0, 0.0, 0.0),
             hoodoos: Vec::new(),
             spawns: [(Vec::new(), -1000.0, 0), (Vec::new(), -1000.0, 0)],
             yard: Vec2::splat(-1000.0),
@@ -327,9 +296,18 @@ impl Layout {
             x += rng.range(12.0, 17.0);
         }
         face.push((x.max(s + 10.0), rng.range(zf - 6.0, zf + 6.0)));
-        self.face = face;
+        *self.scarp_mut() = Scarp {
+            size: s,
+            rise: FACE_RISE,
+            scree_run: SCREE_RUN,
+            foot: face,
+            ..Scarp::default()
+        };
         for (cw, ax, bay_x, bore_x, ce, bx, scree) in plans {
             let m = self.dig_mine(rng, cw, ax, bay_x, bore_x, ce, bx, scree)?;
+            let scarp = self.scarp_mut();
+            scarp.screes.push(m.scree);
+            scarp.crags.push(m.crag);
             self.mines.push(m);
         }
         // The scree: the Face runs straight across where it fell in, so its
@@ -337,13 +315,14 @@ impl Layout {
         // that Face is.
         for k in 0..self.mines.len() {
             let (x0, x1) = self.mines[k].scree;
-            let across: Vec<usize> = (0..self.face.len())
-                .filter(|&i| (x0 - 12.0..x1 + 12.0).contains(&self.face[i].0))
+            let foot = &mut self.scarp_mut().foot;
+            let across: Vec<usize> = (0..foot.len())
+                .filter(|&i| (x0 - 12.0..x1 + 12.0).contains(&foot[i].0))
                 .collect();
             if !across.is_empty() {
-                let z = across.iter().map(|&i| self.face[i].1).sum::<f32>() / across.len() as f32;
+                let z = across.iter().map(|&i| foot[i].1).sum::<f32>() / across.len() as f32;
                 for i in across {
-                    self.face[i].1 = z;
+                    foot[i].1 = z;
                 }
             }
         }
@@ -352,7 +331,7 @@ impl Layout {
             let (lo, _) = self.face_range(bx0, bx1);
             self.mines[k].breach.0.y = even_down(lo - 6.0);
             let m = &self.mines[k];
-            let (_, hi) = self.face_range(m.crag_w, m.crag_e);
+            let (_, hi) = self.face_range(m.crag.w, m.crag.e);
             if hi + FACE_RISE + 4.0 > m.bay.0.y {
                 return Err(line!());
             }
@@ -366,7 +345,7 @@ impl Layout {
         if wr1 - wr0 < 36.0 {
             return Err(line!());
         }
-        self.west_ramp = (wr0, wr1);
+        self.scarp_mut().west = (wr0, wr1);
         let (_, z) = self.face_range(0.0, wr1 + 12.0);
         self.ways_up = vec![
             (Vec2::new(wr0, z + 12.0), Vec2::new(wr1 + 12.0, z + 12.0)),
@@ -456,11 +435,13 @@ impl Layout {
             return Err(line!());
         }
         Ok(Mine {
-            crag_w: cw,
-            crag_e: ce,
-            flare,
-            flare_z: z0 - 8.0,
-            phase: rng.range(0.0, TAU),
+            crag: Crag {
+                w: cw,
+                e: ce,
+                flare,
+                flare_z: z0 - 8.0,
+                phase: rng.range(0.0, TAU),
+            },
             adit,
             hall,
             crosscut,
@@ -557,7 +538,7 @@ impl Layout {
             }
             marks.last().unwrap().1
         };
-        let turn = self.mines.last().unwrap().crag_e + rng.range(-6.0, 8.0);
+        let turn = self.mines.last().unwrap().crag.e + rng.range(-6.0, 8.0);
         let mut x = -14.0;
         while x < turn {
             let z =
@@ -1185,19 +1166,32 @@ impl Layout {
             }
         }
         // (No room for it: no dump.)
-        self.dump = found.unwrap_or((Vec2::splat(-1000.0), 0.0, 0.0, 0.0));
-        let c = self.dump.0;
-        for _ in 0..(if self.dump.1 > 0.0 { 100 } else { 0 }) {
-            let a = rng.range(0.0, TAU);
-            let p = c + Vec2::new(a.cos(), a.sin()) * rng.range(30.0, 42.0);
-            if self.flats_free(p, 8.0) {
-                self.heap = (p, 6.0, 3.0, 8.0);
-                break;
+        if let Some((c, radius, height, run)) = found {
+            self.land.mounds.push(Mound {
+                at: c,
+                radius,
+                height,
+                run,
+            });
+            for _ in 0..100 {
+                let a = rng.range(0.0, TAU);
+                let p = c + Vec2::new(a.cos(), a.sin()) * rng.range(30.0, 42.0);
+                if self.flats_free(p, 8.0) {
+                    self.land.mounds.push(Mound {
+                        at: p,
+                        radius: 6.0,
+                        height: 3.0,
+                        run: 8.0,
+                    });
+                    break;
+                }
             }
         }
         let clear_of_heaps = |l: &Layout, p: Vec2, r: f32| {
-            (l.dump.1 == 0.0 || p.distance(l.dump.0) > l.dump.1 + l.dump.3 + r + 6.0)
-                && (l.heap.1 == 0.0 || p.distance(l.heap.0) > l.heap.1 + l.heap.3 + r + 4.0)
+            l.land
+                .mounds
+                .iter()
+                .all(|m| p.distance(m.at) > m.radius + m.run + r + 6.0)
         };
         let want = rng.int(3, 5) as usize;
         for _ in 0..300 {
@@ -1340,29 +1334,22 @@ impl Layout {
         Vec2::splat(self.size * 0.5)
     }
 
+    fn scarp(&self) -> &Scarp {
+        self.land.scarp.as_ref().expect("a mine's escarpment")
+    }
+
+    fn scarp_mut(&mut self) -> &mut Scarp {
+        self.land.scarp.get_or_insert_default()
+    }
+
     /// The Face's foot at `x` (z).
     pub fn face(&self, x: f32) -> f32 {
-        // (Straight where it fell in: the scree's slope mustn't lean.)
-        let wobble = 0.8 * (0.5 * x).sin() * (0.13 * x).sin() * (1.0 - self.scree(x));
-        for w in self.face.windows(2) {
-            let ((x0, z0), (x1, z1)) = (w[0], w[1]);
-            if x <= x1 {
-                let t = smoothstep(x0, x1, x);
-                return z0 + (z1 - z0) * t + wobble;
-            }
-        }
-        self.face[self.face.len() - 1].1
+        self.scarp().face(x)
     }
 
     /// How much scree (0..1) there is at `x`, in place of the cliff.
     pub fn scree(&self, x: f32) -> f32 {
-        self.mines
-            .iter()
-            .map(|m| {
-                let (a, b) = m.scree;
-                smoothstep(a - 4.0, a + 6.0, x) * (1.0 - smoothstep(b - 6.0, b + 4.0, x))
-            })
-            .fold(0.0, f32::max)
+        self.scarp().scree(x)
     }
 
     /// The mine whose Crag is nearest `x`.
@@ -1370,42 +1357,25 @@ impl Layout {
         self.mines
             .iter()
             .min_by(|a, b| {
-                let d = |m: &Mine| (x - (m.crag_w + m.crag_e) * 0.5).abs();
+                let d = |m: &Mine| (x - (m.crag.w + m.crag.e) * 0.5).abs();
                 d(a).total_cmp(&d(b))
             })
             .unwrap()
     }
 
-    /// How far into a Crag a point is (m; negative: outside). Its front
-    /// rises behind the mesa's own face.
+    /// How far into a Crag a point is (m; negative: outside).
     pub fn crag_depth(&self, p: Vec2) -> f32 {
-        let front = p.y - self.face(p.x) - FACE_RISE;
-        self.mines
-            .iter()
-            .map(|m| {
-                (p.x - m.crag_west(p.y, self.size))
-                    .min(m.crag_east(p.y, self.size) - p.x)
-                    .min(front)
-            })
-            .fold(f32::NEG_INFINITY, f32::max)
+        self.scarp().crag_depth(p)
     }
 
     /// How much of a Crag (0..1) stands over a point.
     pub fn crag(&self, p: Vec2) -> f32 {
-        smoothstep(0.0, 3.0, self.crag_depth(p))
+        self.scarp().crag(p)
     }
 
-    /// How high the mesa stands at a point, before the mines are cut out:
-    /// 0..1 of `TOP`.
+    /// How high the mesa stands at a point, 0..1.
     pub fn mesa(&self, p: Vec2) -> f32 {
-        let f = self.face(p.x);
-        let cliff = smoothstep(f, f + FACE_RISE, p.y);
-        let slope = ((p.y - (f - SCREE_RUN)) / (SCREE_RUN + FACE_RISE)).clamp(0.0, 1.0);
-        let s = self.scree(p.x);
-        let across = cliff + (slope - cliff) * s;
-        let (w0, w1) = self.west_ramp;
-        let west = ((p.x - w0) / (w1 - w0)).clamp(0.0, 1.0);
-        across * west
+        self.scarp().mesa(p)
     }
 
     /// Distance from a point to the nearest cave (0 inside one).
@@ -1602,7 +1572,7 @@ impl Layout {
         let g = dunes * flat
             + rock
             + self.wash(p)
-            + (heap(self.dump, p) + heap(self.heap, p)) * shed
+            + self.land.mound(p) * shed
             + self.land.fin(p)
             + self.land.butte(p);
         self.land.graded(p, g)
