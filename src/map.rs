@@ -8,7 +8,6 @@ use glam::{Vec2, Vec3};
 
 use crate::faction::Faction;
 
-mod crag;
 mod imperial;
 mod kiln;
 mod landmarks;
@@ -24,7 +23,6 @@ pub mod solid;
 mod strata;
 #[cfg(test)]
 mod test_kit;
-mod vault;
 
 /// Blocking collider.
 #[derive(Clone, Copy, Debug)]

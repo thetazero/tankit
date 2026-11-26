@@ -127,7 +127,6 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                 inward,
                 size: court,
                 kind: BaseKind::Court,
-                camp: None,
             });
             band.bulges.push((m, court * 0.75 + 4.0));
         }

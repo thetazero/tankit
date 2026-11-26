@@ -28,9 +28,9 @@ const PALETTE: Palette = Palette {
 /// How far in from a wall its lamps and gear stand, m.
 const WALL: f32 = 0.35;
 
-/// Builds `spec`'s mine, if there's one.
-pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
-    let sk = plan::skeleton(spec.seed, &spec.sides)?;
+/// Builds `spec`'s mine.
+pub fn build(spec: &Spec) -> (Skeleton, Map) {
+    let sk = plan::skeleton(spec.seed, &spec.sides);
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let st = style(spec.look);
     let sky = atmosphere(&mut rng);
@@ -144,7 +144,7 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
     }
     sounds(&mut map, &sk, st);
     settle(&mut map, &sk);
-    Some((sk, map))
+    (sk, map)
 }
 
 /// What sounds: lit crystal, the borers, the train, the wash under a bridge.
@@ -438,15 +438,14 @@ impl Inside<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::procgen::check;
+    use crate::map::procgen::{Look, check};
 
     /// Dressed, a mine's as playable as it was laid out: its sides can get
     /// to each other, and into every hall; its halls are lit.
     #[test]
     fn dressed_mines_are_playable() {
         for seed in 0..2 {
-            let (sk, m) = build(&crate::mine_spec(seed, crate::map::procgen::Look::Ithessar))
-                .expect("a mine");
+            let (sk, m) = build(&crate::mine_spec(seed, Look::Ithessar));
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
                 panic!("seed {seed}: {why}");
@@ -484,6 +483,31 @@ mod tests {
                 });
                 assert!(lit.count() >= 4, "seed {seed}: a dark dig");
             }
+        }
+    }
+
+    /// The same mine dressed as any faction's: laid out the same, playable,
+    /// each its own to look at.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn any_faction_can_have_the_mine() {
+        let (sk, theirs) = build(&crate::mine_spec(0, Look::Ithessar));
+        let line = |m: &Map| m.beams.iter().map(|b| (b.from, b.to)).collect::<Vec<_>>();
+        assert!(!theirs.beams.is_empty());
+        let mut colors = vec![theirs.beams[0].color];
+        for look in [Look::Imperium, Look::Resonant, Look::Uthenn] {
+            let (other, m) = build(&crate::mine_spec(0, look));
+            if let Err(why) = check::playable(&m) {
+                panic!("{look:?}: {why}");
+            }
+            assert_eq!(other.base_spots(), sk.base_spots(), "{look:?}");
+            assert_eq!(line(&m), line(&theirs), "{look:?}");
+            assert!(m.cores.is_empty(), "{look:?}: a plasma core");
+            assert!(!colors.contains(&m.beams[0].color), "{look:?}");
+            colors.push(m.beams[0].color);
         }
     }
 }
