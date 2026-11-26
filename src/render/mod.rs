@@ -98,6 +98,8 @@ pub struct Atmosphere {
     /// (1 on daylit maps). A dusk map keeps its dark sky but turns this up
     /// so walls and tanks in shade still read.
     pub ambient: f32,
+    /// 0..1: how bright the stars are.
+    pub stars: f32,
 }
 
 /// Desert sand, settled: `Atmosphere::settle` on most maps.
@@ -117,6 +119,7 @@ impl Default for Atmosphere {
             dust: Vec3::new(0.52, 0.5, 0.47),
             settle: SAND_SETTLE,
             ambient: 1.0,
+            stars: 0.0,
         }
     }
 }
@@ -1812,7 +1815,11 @@ impl Renderer {
                 .extend(scene.atmosphere.ambient)
                 .to_array(),
             params: [scene.time, scene.atmosphere.fog_density, w, h],
-            settle: scene.atmosphere.settle.extend(0.0).to_array(),
+            settle: scene
+                .atmosphere
+                .settle
+                .extend(scene.atmosphere.stars)
+                .to_array(),
             light_count: [0.0; 4],
             lights: [[0.0; 4]; MAX_LIGHTS * 2],
         };

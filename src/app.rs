@@ -20,6 +20,7 @@ use crate::audio::{self, Audio};
 use crate::bay::{self, BayArt};
 use crate::binds::{Action, Binds};
 use crate::combat::{Match, Phase};
+use crate::conditions::Conditions;
 use crate::economy::{Part, Payout};
 use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
@@ -151,6 +152,7 @@ pub struct Launch {
     /// Which map a generated kind builds.
     pub map_seed: u64,
     pub map_kind: MapKind,
+    pub conditions: Conditions,
     pub spawn: usize,
     pub bots: usize,
     pub contract: Contract,
@@ -290,6 +292,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
             launch.seed,
             launch.map_kind,
             launch.map_seed,
+            launch.conditions,
             launch.side,
             launch.spawn,
             launch.bots,
@@ -340,7 +343,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         pause: Pause::new(),
         menu_orbit,
         menu_time: 0.0,
-        backdrop: (MISSIONS[0].map_kind, 0, 0),
+        backdrop: MENU_BACKDROP,
         backdrop_wait: 0.0,
         backdrop_job: None,
         backdrop_ready: None,
@@ -377,6 +380,7 @@ pub fn new_match(
     seed: u64,
     map_kind: MapKind,
     map_seed: u64,
+    conditions: Conditions,
     side: usize,
     spawn: usize,
     bots: usize,
@@ -385,6 +389,7 @@ pub fn new_match(
     factions: Option<&[Faction]>,
 ) -> Match {
     let mut map = make_map(map_kind, map_seed);
+    conditions.apply(&mut map);
     // A theater's site, fought on a borrowed map: the theater's sides, not the map's.
     if let Some(f) = factions
         && f.len() == map.factions.len()
@@ -413,22 +418,34 @@ fn backdrop_dip(dark: f32, w: f32, h: f32) -> Vec<crate::render::UiVertex> {
 }
 
 /// A menu backdrop: a map (its kind, and which one for a generated kind),
-/// and the side whose vista it's seen from.
-type Backdrop = (MapKind, u64, usize);
+/// its conditions, and the side whose vista it's seen from.
+pub type Backdrop = (MapKind, u64, Conditions, usize);
+
+/// The main menu's: the first mission's map, by day.
+pub const MENU_BACKDROP: Backdrop = (
+    MISSIONS[0].map_kind,
+    0,
+    Conditions {
+        time: crate::conditions::TimeOfDay::Day,
+        weather: crate::conditions::Weather::Clear,
+    },
+    0,
+);
 
 /// The main menu's backdrop: the first mission's map, empty, your tank parked at its vista.
 pub fn menu_match(kit: garage::Loadout) -> Match {
-    backdrop_match(MISSIONS[0].map_kind, 0, 0, kit)
+    backdrop_match(MENU_BACKDROP, kit)
 }
 
 /// Map `kind` (the one `map_seed` names, for a generated kind), empty, your tank
 /// parked at side `side`'s vista: the menu's backdrop while a site fought
 /// on it is selected.
-pub fn backdrop_match(kind: MapKind, map_seed: u64, side: usize, kit: garage::Loadout) -> Match {
+pub fn backdrop_match((kind, map_seed, conditions, side): Backdrop, kit: garage::Loadout) -> Match {
     let mut m = new_match(
         0,
         kind,
         map_seed,
+        conditions,
         side,
         0,
         0,
@@ -615,6 +632,7 @@ impl App {
                 seed,
                 o.map_kind,
                 o.map_seed,
+                o.conditions,
                 0,
                 0,
                 bots,
@@ -859,7 +877,7 @@ impl App {
                     let (tx, rx) = mpsc::channel();
                     std::thread::spawn(move || {
                         let started = Instant::now();
-                        let game = backdrop_match(want.0, want.1, want.2, kit);
+                        let game = backdrop_match(want, kit);
                         let mesh = StaticWorld::new(&scene::map_mesh(&game.world.map));
                         log::debug!(
                             "menu backdrop: {:?} built in {:.0?}",
@@ -992,7 +1010,7 @@ impl App {
         self.in_war = false;
         self.sortie = None;
         self.load_built(game, world);
-        self.backdrop = (MISSIONS[0].map_kind, 0, 0);
+        self.backdrop = MENU_BACKDROP;
         self.backdrop_job = None;
         self.backdrop_ready = None;
         self.backdrop_dark = 0.0;
@@ -1863,7 +1881,7 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let mut m = backdrop_match(MISSIONS[0].map_kind, 0, 1, kit);
+        let mut m = backdrop_match((MISSIONS[0].map_kind, 0, Conditions::default(), 1), kit);
         assert_eq!(m.factions[0], MISSIONS[0].sides[1]);
         for _ in 0..(4.0 / crate::game::DT) as usize {
             m.step(crate::sim::Command::default(), false);
@@ -1926,8 +1944,30 @@ mod tests {
             crate::sim::HullKind::Kataphrakt,
             crate::sim::TurretKind::Kontos,
         );
-        let a = new_match(m.seed, m.map_kind, m.seed, 0, 0, 3, m.contract, kit, None);
-        let b = new_match(m.seed, m.map_kind, m.seed, 1, 0, 3, m.contract, kit, None);
+        let a = new_match(
+            m.seed,
+            m.map_kind,
+            m.seed,
+            Conditions::default(),
+            0,
+            0,
+            3,
+            m.contract,
+            kit,
+            None,
+        );
+        let b = new_match(
+            m.seed,
+            m.map_kind,
+            m.seed,
+            Conditions::default(),
+            1,
+            0,
+            3,
+            m.contract,
+            kit,
+            None,
+        );
         assert_eq!(a.factions, m.sides);
         assert_eq!(b.factions, [m.sides[1], m.sides[0]]);
         assert_eq!(b.world.map.bases[0], a.world.map.bases[1]);
