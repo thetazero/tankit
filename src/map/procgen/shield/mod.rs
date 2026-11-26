@@ -91,7 +91,7 @@ pub(super) fn shelled(lm: &Landmark, a: f32) -> bool {
 
 /// Is angle `a` round the middle in a doorway (the ring stays open there)?
 pub(super) fn in_door(lm: &Landmark, a: f32) -> bool {
-    lm.doors.iter().any(|&d| apart(a, angle(d)) < 0.16)
+    lm.doors.iter().any(|&d| apart(a, angle(d)) < 0.24)
 }
 
 /// The angles halfway between each door and the next round the middle:
