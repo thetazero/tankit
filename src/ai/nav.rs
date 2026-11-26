@@ -165,6 +165,14 @@ impl NavGrid {
                 );
             }
         }
+        // Past the edge of an arena that isn't the whole square.
+        if let Some(b) = &map.band {
+            for i in 0..n * n {
+                if b.out(nav.center(i)) > 4.0 {
+                    nav.blocked[i] = [true; LEVELS];
+                }
+            }
+        }
         // A plasma river's bed (its bridges are floors over it).
         if !map.rivers.is_empty() {
             for i in 0..n * n {

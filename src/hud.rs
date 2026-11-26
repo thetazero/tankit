@@ -901,7 +901,10 @@ fn table(
     if !companies.is_empty() {
         count(Faction::Company, mercs, design::AMBER);
     }
-    count(f, realm, f.ui());
+    // Raiders are all mercs.
+    if f != Faction::Company {
+        count(f, realm, f.ui());
+    }
 }
 
 /// A gain's bar, in the middle of its line at `at`: what you had, and what

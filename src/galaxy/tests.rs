@@ -584,8 +584,13 @@ fn your_ended_contracts_are_kept() {
     for e in &g.ended {
         assert!(e.tick >= e.signed);
         assert!(e.lost <= e.committed);
-        // Spent means every hull committed is gone (#429).
-        assert!(e.outcome != Outcome::Spent || e.lost == e.committed);
+        // Spent means every hull committed is gone (#429); plundering, more
+        // than three quarters (#546).
+        let spent = match e.loot {
+            Some(_) => e.lost * 4 > e.committed * 3,
+            None => e.lost == e.committed,
+        };
+        assert!(e.outcome != Outcome::Spent || spent);
         assert!(e.outcome != Outcome::Fell || e.defend);
     }
     // Ended in order, and not the one your company's still on.
