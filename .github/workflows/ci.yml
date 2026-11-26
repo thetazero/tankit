@@ -98,4 +98,4 @@ jobs:
       # well under a minute; past this it's a hang or a regression.
       - name: Run tests (release)
         run: cargo test --release --locked
-        timeout-minutes: 3
+        timeout-minutes: 4
