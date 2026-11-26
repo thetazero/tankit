@@ -560,6 +560,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            band: None,
             rivers: Default::default(),
             beams: Vec::new(),
             lights: Vec::new(),
