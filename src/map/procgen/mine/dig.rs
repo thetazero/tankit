@@ -3164,7 +3164,8 @@ impl Dig<'_> {
         // The conveyor from beside the rig in the wash, up over the bank,
         // to its head over the heap.
         // (None without a wash under the Face to work.)
-        let Some((rig_at, rig_yaw)) = lay.wash_rig else {
+        // (None to a rig too far off for one.)
+        let Some((rig_at, rig_yaw)) = lay.wash_rig.filter(|r| r.0.distance(at) < 60.0) else {
             return;
         };
         let boom = Vec2::new(rig_yaw.sin(), rig_yaw.cos());

@@ -18,9 +18,8 @@ use crate::rng::Rng;
 pub const SEED: u64 = 1;
 /// Ticks a new galaxy runs before you join it: long enough that it's a
 /// war well under way, its fronts drawn, its realms' research and its merc
-/// pilots' gear grown (#438), and the companies that came through the first
-/// shakeout at work, not one just starting.
-const WARMUP: u64 = 1500;
+/// pilots' gear grown (#438), not one just starting.
+const WARMUP: u64 = 600;
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -84,6 +83,8 @@ struct Saved {
     /// What a contract has lately made a company.
     #[serde(default)]
     job_worth: Option<f32>,
+    #[serde(default)]
+    foundry_use: Option<f32>,
     #[serde(default)]
     hire_rank: f32,
     #[serde(default)]
@@ -397,7 +398,7 @@ impl Galaxy {
                 .iter()
                 .map(|s| match s.kind {
                     SiteKind::Shield { damaged } => damaged as u8,
-                    SiteKind::Production { .. } | SiteKind::Outpost => 0,
+                    SiteKind::Foundry { .. } | SiteKind::Mine { .. } | SiteKind::Outpost => 0,
                 })
                 .collect(),
             hulls: self
@@ -463,6 +464,7 @@ impl Galaxy {
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
             job_worth: Some(self.job_worth),
+            foundry_use: Some(self.foundry_use),
             hire_rank: self.hire_rank,
             hire_trust: Some(self.hire_trust),
             lessons: self.lessons.clone(),
@@ -632,6 +634,9 @@ impl Galaxy {
         let n = g.systems.len();
         g.lessons
             .retain(|l| (l.system as usize) < n && (l.side as usize) < SIDES);
+        if let Some(x) = s.foundry_use {
+            g.foundry_use = x;
+        }
         if let Some(x) = s.job_worth {
             g.job_worth = x;
         }
