@@ -1129,3 +1129,43 @@ fn realms_pay_and_train_pilots() {
     assert!(r.pilots <= 10 + rules.train, "{}", r.pilots);
     assert!(r.crystals < 0.1);
 }
+
+/// Taking a system captures its share of the loser's bank, the last one all
+/// that's left; and a bank over the hoard is kept, not thrown away.
+#[test]
+fn conquest_captures_the_bank() {
+    let mut g = Galaxy::with_size(2, SYSTEMS / 10, REGION * 0.3, Rules::default());
+    let (r, territory) = g
+        .living()
+        .map(|(r, _)| (r, g.territory(r).to_vec()))
+        .find(|(_, t)| t.len() >= 3)
+        .unwrap();
+    let f = g.realms[r].faction as usize;
+    let w = (f + 1) % SIDES;
+    let n = territory.len();
+    g.realms[r].crystals = 100.0;
+    g.realms[r].systems = n as u32;
+    let total = |g: &Galaxy| g.realms.iter().map(|x| x.crystals as f64).sum::<f64>();
+    let before = total(&g);
+    for (k, &s) in territory.iter().enumerate() {
+        let s = s as usize;
+        let sites: Vec<usize> = (g.systems[s].sites.0 as usize..g.systems[s].sites.1 as usize)
+            .filter(|&i| g.sites[i].owner as usize == f)
+            .collect();
+        for i in sites {
+            g.win(s, i, w);
+        }
+        let left = 100.0 * (n - k - 1) as f32 / n as f32;
+        assert!(
+            (g.realms[r].crystals - left).abs() < 0.01,
+            "{} of {left}",
+            g.realms[r].crystals
+        );
+    }
+    assert!((total(&g) - before).abs() < 0.1, "none lost");
+    // A bank over its hoard stays.
+    let by = g.living().map(|(r, _)| r).next().unwrap();
+    g.realms[by].crystals = 1e6;
+    g.produce();
+    assert!(g.realms[by].crystals > 0.99e6);
+}
