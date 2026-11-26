@@ -113,6 +113,7 @@ tankit [OPTIONS]
   --screen pause-settings (with --shot) the pause box with its settings open
   --screen pause --garage (with --shot) the garage opened from the pause box, the match frozen under it
   --debug                 (with --shot) debug mode on: FPS counter
+  --screen tab            (with --shot) Tab held: the board
   --screen dead           (with --shot) the player is destroyed 3.5 s before the shot: the death
                           screen and its respawn countdown
   --screen results        (with --shot) end the round 4 s before the shot (0.3 s before the first of
@@ -475,6 +476,8 @@ impl TransferKind {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
+    /// Tab held: the board.
+    Tab,
     Menu,
     Missions,
     /// A contested site of the theater.
@@ -911,6 +914,7 @@ fn parse_args() -> Result<Args> {
                     Some("rebind") => Screen::Rebind,
                     Some("pause") => Screen::Pause,
                     Some("pause-settings") => Screen::PauseSettings,
+                    Some("tab") => Screen::Tab,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
                     Some("spent") => Screen::Spent,
@@ -1341,7 +1345,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     w,
                     h,
                     game::DT,
-                    false,
+                    args.screen == Some(Screen::Tab),
                     hud::Ledger::before(&profile, &game, 0, false),
                 )
                 .verts;
