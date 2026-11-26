@@ -1049,7 +1049,14 @@ impl World {
                 }
             }
             fit_mass(t, &mut self.physics);
-            drive(t, &cmd, &mut self.physics, &self.ground, crowded[i]);
+            drive(
+                t,
+                &cmd,
+                &mut self.physics,
+                &self.ground,
+                &self.map.rivers,
+                crowded[i],
+            );
             turret(t, &cmd, DT);
             t.place_turret_hitbox(&mut self.physics);
             t.since_fire += DT;
@@ -1573,10 +1580,11 @@ fn drive(
     cmd: &Command,
     physics: &mut PhysicsWorld,
     ground: &[ColliderHandle],
+    rivers: &[crate::map::river::River],
     crowded: bool,
 ) {
     if t.chassis.hover {
-        hover(t, cmd, physics);
+        hover(t, cmd, physics, rivers);
         return;
     }
     let c = t.chassis;
@@ -1930,7 +1938,12 @@ fn drive(
 /// Hover drive: each emitter is a spring of plasma against whatever is below
 /// it. Thrust, braking, sideways grip and turning all push through the
 /// cushion, so they fade as the hull lifts off and stop in the air.
-fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
+fn hover(
+    t: &mut Tank,
+    cmd: &Command,
+    physics: &mut PhysicsWorld,
+    rivers: &[crate::map::river::River],
+) {
     let c = t.chassis;
     let (pose, mass) = {
         let b = &physics.bodies[t.body];
@@ -1951,6 +1964,16 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
             let origin = pose.transform_point(c.mount(i));
             if let Some((_, h)) = qp.cast_ray_and_get_normal(&Ray::new(origin, -up), reach, true) {
                 *hit = Some((origin, h.normal, h.time_of_impact));
+            }
+            // A plasma river's surface is as good as ground to it.
+            let over = Vec2::new(origin.x, origin.z);
+            if up.y > 0.3
+                && let Some(y) = rivers.iter().find_map(|r| r.surface(over, 0.0))
+            {
+                let d = (origin.y - y).max(0.0) / up.y;
+                if d < reach && hit.is_none_or(|(_, _, t)| d < t) {
+                    *hit = Some((origin, Vec3::Y, d));
+                }
             }
         }
     }
@@ -2486,7 +2509,7 @@ mod tests {
     #[test]
     fn open_spots_are_drivable() {
         for (name, m) in [
-            ("saltmarket", Map::saltmarket()),
+            ("reservoir", Map::reservoir(0)),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
         ] {
@@ -2854,69 +2877,6 @@ mod tests {
                 climbs(0.4, Vec2::new(90.0, 100.0), 0.6, hull),
                 "{hull:?} stuck on a diagonal step"
             );
-        }
-    }
-
-    /// Saltmarket's edge is cliffs and stacked containers: a tank driving
-    /// flat out at any of them stops against them and doesn't get up onto
-    /// or past them (tracked or hovering). That it's them, not the hidden
-    /// boundary, that stops it is in valley.rs's tests.
-    #[test]
-    fn saltmarket_edge_stops_tanks() {
-        use std::f32::consts::{FRAC_PI_2, PI};
-        let map = Map::saltmarket();
-        let size = map.size;
-        // The town square's corner in the map's frame.
-        let o = Vec2::splat(40.0);
-        // (start, heading): at the south, east and north cliffs (into bays,
-        // a gully, at headlands) and the west barricade.
-        let runs = [
-            // Clear of the town: from further north a tracked tank wedges on
-            // its edge and never gets going.
-            (Vec2::new(60.0, 2.0), PI),
-            (Vec2::new(170.0, 12.0), PI),
-            (Vec2::new(225.0, 60.0), FRAC_PI_2),
-            (Vec2::new(225.0, 100.0), FRAC_PI_2),
-            (Vec2::new(225.0, 200.0), FRAC_PI_2),
-            (Vec2::new(40.0, 222.0), 0.0),
-            (Vec2::new(160.0, 226.0), 0.0),
-            (Vec2::new(78.0, 225.0), 0.0),
-            (Vec2::new(14.0, 150.0), -FRAC_PI_2),
-            (Vec2::new(14.0, 40.0), -FRAC_PI_2),
-        ];
-        for hull in [HullKind::Kataphrakt, HullKind::Sethuun] {
-            for (start, yaw) in runs {
-                let mut w = World::empty(map.clone());
-                w.spawn_tank(Vec3::ONE, start + o, yaw, hull, TurretKind::Kontos);
-                run(&mut w, Command::default(), 0.5);
-                let p = w.tanks[0].pos;
-                let from = Map::saltmarket_past_edge(Vec2::new(p.x, p.z));
-                let mut worst = f32::MIN;
-                for _ in 0..(10.0 / DT) as usize {
-                    w.step(&[throttle(1.0)]);
-                    let p = w.tanks[0].pos;
-                    let q = Vec2::new(p.x, p.z);
-                    assert!(
-                        q.cmpgt(Vec2::ZERO).all() && q.cmplt(Vec2::splat(size)).all(),
-                        "{hull:?} from {start} left the map at {q}"
-                    );
-                    worst = worst.max(Map::saltmarket_past_edge(q));
-                }
-                // The tank's middle never gets into the rock or behind the
-                // barricade. The face stands up to about 4 m back from the
-                // foot line in its recesses, and the rock (the plateau's rise)
-                // starts 4.5 m past it.
-                assert!(
-                    worst < 4.0,
-                    "{hull:?} from {start} got {worst} m past the edge"
-                );
-                // And it did drive at the edge, rather than sticking where it
-                // started (which would pass the check above without testing it).
-                assert!(
-                    worst - from > 5.0,
-                    "{hull:?} from {start} never got going: {from} m to {worst} m"
-                );
-            }
         }
     }
 

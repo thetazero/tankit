@@ -190,6 +190,7 @@ pub fn scene(
         shadow_radius: 17.0,
         instances,
         particles,
+        rivers: Default::default(),
         lights: lamps,
         ui: Vec::new(),
         world: false,

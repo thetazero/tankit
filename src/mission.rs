@@ -49,8 +49,8 @@ pub const MISSIONS: &[Mission] = &[
     Mission {
         name: "DEAD TOWN",
         contract: Contract::Attrition,
-        map: "SALTMARKET",
-        map_kind: MapKind::Saltmarket,
+        map: "DRY RESERVOIR",
+        map_kind: MapKind::Reservoir,
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -141,6 +141,15 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    Mission {
+        name: "LOW WATER",
+        contract: Contract::Hold,
+        map: "DRY RESERVOIR",
+        map_kind: MapKind::Reservoir,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
     // A theater's shield generators are fought over here (#341): the
     // generator is the Hold site, its holder's model in the shape the
     // site's in (see `SiteView::map_kind`); the sides are the theater's.
@@ -175,6 +184,25 @@ pub const MISSIONS: &[Mission] = &[
             crate::map::procgen::Look::Imperium,
             crate::map::procgen::setting::Setting::Plain,
         ),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
+    // A site's is in its founder's style (see `SiteView::map_kind`).
+    Mission {
+        name: "DEAD LINE",
+        contract: Contract::Attrition,
+        map: "RAIL DEPOT",
+        map_kind: MapKind::Depot(Look::Imperium),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
+    Mission {
+        name: "NIGHT FREIGHT",
+        contract: Contract::Raid,
+        map: "RAIL DEPOT",
+        map_kind: MapKind::Depot(Look::Imperium),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -268,15 +296,17 @@ mod tests {
                 .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
         );
         // Every desert mission is there from the start: the open desert's
-        // Hold and Attrition both.
-        for contract in [Contract::Hold, Contract::Attrition] {
-            assert!(
-                for_sites(Class::Desert).iter().any(|&i| {
-                    let m = &MISSIONS[i];
-                    m.map_kind == MapKind::Desert && m.contract == contract
-                }),
-                "{contract:?}"
-            );
+        // Hold and Attrition both, and the reservoir town's.
+        for kind in [MapKind::Desert, MapKind::Reservoir] {
+            for contract in [Contract::Hold, Contract::Attrition] {
+                assert!(
+                    for_sites(Class::Desert).iter().any(|&i| {
+                        let m = &MISSIONS[i];
+                        m.map_kind == kind && m.contract == contract
+                    }),
+                    "{kind:?} {contract:?}"
+                );
+            }
         }
     }
 
@@ -296,11 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn raid_is_in_the_crystal_mine() {
-        let m = MISSIONS
+    fn raids_are_in_the_crystal_mine_and_the_rail_depot() {
+        let raids: Vec<MapKind> = MISSIONS
             .iter()
-            .find(|m| m.contract == Contract::Raid)
-            .unwrap();
-        assert_eq!(m.map_kind, MapKind::Mine);
+            .filter(|m| m.contract == Contract::Raid)
+            .map(|m| m.map_kind)
+            .collect();
+        assert_eq!(raids, [MapKind::Mine, MapKind::Depot(Look::Imperium)]);
     }
 }

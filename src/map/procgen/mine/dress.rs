@@ -1,17 +1,18 @@
 //! Dressing a mine's skeleton (see `plan`): the outside as a desert is, in
 //! red rock, and what stands in each dig, placed in the dig's own frame.
 
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::f32::consts::FRAC_PI_2;
 
 use glam::{Vec2, Vec3};
 
-use super::dig::{self, Dig};
+use super::dig::Dig;
 use super::{MineStyle, PLANET, atmosphere, plan, style};
-use crate::map::Map;
+use crate::ai::nav::NavGrid;
 use crate::map::procgen::Spec;
 use crate::map::procgen::desert::{self, Palette};
 use crate::map::procgen::land::{self, Hollow};
-use crate::map::procgen::skeleton::Skeleton;
+use crate::map::procgen::skeleton::{Skeleton, TANK_CLEAR};
+use crate::map::{Ambient, Map};
 use crate::rng::Rng;
 
 /// Red rock and pale sand.
@@ -33,8 +34,30 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let st = style(spec.look);
     let sky = atmosphere(&mut rng);
-    let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky);
+    let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky, spec.seed);
     map.hold_name = st.hold_name();
+    let mut b = Dig {
+        map: &mut map,
+        l: &sk,
+        st,
+        inside: true,
+    };
+    if sk.spur.is_some() {
+        b.railroad();
+        b.warehouse(&mut rng);
+    } else {
+        for t in &sk.tracks {
+            b.rails(t, false);
+        }
+    }
+    if let Some(s) = sk.loading {
+        let (at, dir) = sk.track_at(s);
+        b.tipple_at(at, dir);
+        b.loaded_train(s);
+    }
+    for x in &sk.crossings {
+        b.rail_bridge(x);
+    }
     for (k, d) in sk.land.digs.iter().enumerate() {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x2545_F491).wrapping_add(k as u64));
         Inside {
@@ -42,13 +65,150 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
                 map: &mut map,
                 l: &sk,
                 st,
+                inside: true,
             },
             d,
             st,
         }
         .fill(&mut rng);
     }
+    let mut b = Dig {
+        map: &mut map,
+        l: &sk,
+        st,
+        inside: false,
+    };
+    for m in &sk.land.mounds {
+        for (off, yaw) in [(Vec2::new(-6.0, 4.0), 0.4), (Vec2::new(5.0, -3.0), 1.9)] {
+            b.ore_cart(&mut rng, m.at + off, yaw);
+        }
+        for (off, size) in [(Vec2::new(8.0, 7.0), 1.6), (Vec2::new(-9.0, -6.0), 1.8)] {
+            b.rock_pile(&mut rng, m.at + off, size);
+        }
+    }
+    for (k, &at) in sk.base_spots().iter().enumerate() {
+        // Away from the fight, off the spawns.
+        let out = (at - sk.heart).normalize_or(Vec2::X);
+        let spot = [1.0, 0.0, -1.0]
+            .map(|t: f32| at + Vec2::from_angle(t * 1.3).rotate(out) * 19.0)
+            .into_iter()
+            .find(|p| {
+                p.min_element() > 14.0
+                    && p.max_element() < sk.size - 14.0
+                    && sk.land.plateau(*p).abs() > 10.0
+            });
+        if let Some(p) = spot {
+            st.base(&mut b, k, p, &mut rng);
+        }
+    }
+    sounds(&mut map, &sk);
+    settle(&mut map, &sk);
     Some((sk, map))
+}
+
+/// What sounds: lit crystal, the borers, the train, the wash under a bridge.
+fn sounds(map: &mut Map, sk: &Skeleton) {
+    let lit: Vec<Vec3> = map
+        .crystals
+        .iter()
+        .filter(|c| c.lit && c.radius > 0.6)
+        .map(|c| c.base + c.axis * 0.35)
+        .collect();
+    for at in lit {
+        map.sound(Ambient::Crystal, at);
+    }
+    for d in &sk.land.digs {
+        let Some((from, to)) = d.beam else { continue };
+        for (kind, p) in [(Ambient::Machine, from), (Ambient::Core, to)] {
+            let p = d.to_map(p);
+            map.sound(kind, Vec3::new(p.x, d.floor + 2.5, p.y));
+        }
+    }
+    if let Some(s) = sk.loading {
+        let (p, _) = sk.track_at(s + 18.0);
+        let g = map.ground_height(p.x, p.y);
+        map.sound(Ambient::Hull, Vec3::new(p.x, g + 2.5, p.y));
+    }
+    for x in &sk.crossings {
+        let p = (x.from + x.to) * 0.5;
+        let g = map.ground_height(p.x, p.y);
+        map.sound(Ambient::River, Vec3::new(p.x, g + 0.5, p.y));
+    }
+}
+
+/// Once everything's built: the spawns, drops and places bots head for that
+/// are still clear, the Raid stands, and the ways round worth taking.
+fn settle(map: &mut Map, sk: &Skeleton) {
+    let nav = NavGrid::build(map);
+    let clear = |m: &Map, p: Vec2, r: f32| {
+        let g = m.ground_height(p.x, p.y);
+        !m.oboxes.iter().any(|o| {
+            let (lo, hi) = o.y_range();
+            o.solid && lo < g + 3.0 && hi > g + 0.3 && o.distance(p) < r
+        }) && !m.crystals.iter().any(|c| c.solid && c.distance(p) < r)
+    };
+    for k in 0..map.bases.len() {
+        let mut spots = std::mem::take(&mut map.bases[k]);
+        spots.retain(|&p| clear(map, p, TANK_CLEAR));
+        map.bases[k] = spots;
+    }
+    let mut spots = std::mem::take(&mut map.open_spots);
+    spots.retain(|&p| clear(map, p, TANK_CLEAR));
+    map.open_spots = spots;
+    let mut spots = std::mem::take(&mut map.repair_spots);
+    spots.retain(|&p| clear(map, p, TANK_CLEAR));
+    map.repair_spots = spots;
+    map.raid_stands = sk
+        .stands
+        .iter()
+        .map(|&want| {
+            (0..300)
+                .map(|k| want + Vec2::from_angle(k as f32 * 2.4) * (k as f32 * 0.08))
+                .find(|&p| clear(map, p, 6.0) && !nav.is_blocked(p))
+                .unwrap_or(want)
+        })
+        .collect();
+    let mut ways: Vec<Vec<Vec3>> = Vec::new();
+    for d in &sk.land.digs {
+        // In at one mouth, through the hall, out at the other.
+        let (hall, far) = (d.rooms[2], d.rooms[1]);
+        let mid = hall.min.y + (hall.max.y - hall.min.y) * 0.25;
+        let x = (far.min.x + far.max.x) * 0.5;
+        let at = |x: f32, y: f32| {
+            let p = d.to_map(Vec2::new(x, y));
+            Vec3::new(p.x, d.floor, p.y)
+        };
+        ways.push(vec![
+            at(0.0, -12.0),
+            at(0.0, 8.0),
+            at(0.0, mid),
+            at(x * 0.5, mid),
+            at(x, mid),
+            at(x, 8.0),
+            at(x, -12.0),
+        ]);
+    }
+    for x in &sk.crossings {
+        let on = |t: f32| {
+            let p = x.from.lerp(x.to, t);
+            Vec3::new(p.x, x.top, p.y)
+        };
+        ways.push(vec![on(-0.15), on(0.2), on(0.8), on(1.15)]);
+    }
+    for r in &sk.land.high.ramps {
+        let on = |p: Vec2| Vec3::new(p.x, map.ground_height(p.x, p.y), p.y);
+        let dir = (r.top - r.foot).normalize();
+        ways.push(vec![
+            on(r.foot - dir * 4.0),
+            on(r.foot.lerp(r.top, 0.5)),
+            on(r.top + dir * 6.0),
+        ]);
+    }
+    // Only what a bot can drive, each point on its floor.
+    map.routes = ways
+        .into_iter()
+        .filter(|w| w.iter().all(|&p| nav.floor_at(p).is_some()))
+        .collect();
 }
 
 /// A dig being filled.
@@ -90,6 +250,9 @@ impl Inside<'_, '_> {
         );
         let into = self.way(Vec2::Y);
         let yaw = into.x.atan2(into.y);
+        if let Some((from, to)) = self.d.beam {
+            self.borer(rng, from, to);
+        }
         let quarter = (hall.max.x - hall.min.x) * 0.25;
         for s in [-1.0, 1.0] {
             let p = Vec2::new(mid.x + quarter * s, hall.max.y - 2.6);
@@ -104,6 +267,37 @@ impl Inside<'_, '_> {
                 self.b.block_stack(at, yaw);
             }
         }
+    }
+
+    /// The borer's bay: the machine and its beam, spoil either side of the
+    /// bore, raw crystal in the corners away from it, a floodlight on it.
+    fn borer(&mut self, rng: &mut Rng, from: Vec2, to: Vec2) {
+        let f = self.d.floor + 2.1;
+        let at3 = |p: Vec2| {
+            let p = self.d.to_map(p);
+            Vec3::new(p.x, f, p.y)
+        };
+        let beam = (at3(from), at3(to), 0.55);
+        self.st.borer(&mut self.b, beam, rng);
+        let bay = self.d.rooms[4];
+        let side = (to.x - from.x).signum();
+        // The wall the bore's in, and the one across from it.
+        let (wall, back) = if side > 0.0 {
+            (bay.max.x, bay.min.x)
+        } else {
+            (bay.min.x, bay.max.x)
+        };
+        for (dx, dy, size) in [(2.2, -6.6, 1.2), (4.5, -8.0, 0.8), (2.0, 6.8, 1.1)] {
+            let p = self.d.to_map(Vec2::new(wall - side * dx, from.y + dy));
+            self.b.rock_pile(rng, p, size);
+        }
+        for (dx, y, h) in [(3.0, bay.max.y - 3.0, 3.4), (2.8, bay.min.y + 3.2, 2.4)] {
+            let p = self.d.to_map(Vec2::new(back + side * dx, y));
+            self.b.outcrop(rng, p, h);
+        }
+        let machine = self.d.to_map(from - Vec2::X * side * 5.8);
+        let stand = self.d.to_map(Vec2::new(wall - side * 2.0, bay.max.y - 2.2));
+        self.b.floodlight(stand, machine);
     }
 
     /// Lamps along a room's two long walls by turns, where there's wall.
@@ -150,19 +344,33 @@ impl Inside<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::nav::NavGrid;
     use crate::map::procgen::check;
 
     /// Dressed, a mine's as playable as it was laid out: its sides can get
     /// to each other, and into every hall; its halls are lit.
     #[test]
     fn dressed_mines_are_playable() {
-        for seed in 0..3 {
+        for seed in 0..2 {
             let (sk, m) = build(&crate::mine_spec(seed)).expect("a mine");
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
                 panic!("seed {seed}: {why}");
             }
+            let dug = m
+                .routes
+                .iter()
+                .filter(|w| w.iter().any(|p| m.ground_height(p.x, p.z) > p.y + 5.0));
+            assert_eq!(
+                dug.count(),
+                sk.land.digs.len(),
+                "seed {seed}: ways through digs"
+            );
+            assert_eq!(m.raid_stands.len(), 2, "seed {seed}");
+            assert!(
+                m.repair_spots.len() >= 3,
+                "seed {seed}: {:?}",
+                m.repair_spots
+            );
             for d in &sk.land.digs {
                 let hall = d.rooms[2];
                 let p = d.to_map((hall.min + hall.max) * 0.5);

@@ -21,7 +21,7 @@ use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
 /// The open ground kept round a side's spawns.
-const PAD: f32 = 21.0;
+pub(in crate::map::procgen) const PAD: f32 = 21.0;
 
 /// How a people lays its plant out.
 #[derive(Clone, Copy)]
@@ -103,7 +103,7 @@ fn lie(sk: &Skeleton, p: Vec2) -> Option<f32> {
 }
 
 /// Room for `b`, `gap` m clear of what's down, on ground it can be put on.
-fn room(sk: &Skeleton, b: &OBox, gap: f32) -> bool {
+pub(in crate::map::procgen) fn room(sk: &Skeleton, b: &OBox, gap: f32) -> bool {
     let pts: Vec<Vec2> = b.corners().into_iter().chain([b.center]).collect();
     let heights = pts.iter().map(|&p| sk.land.swell(p));
     let (lo, hi) = heights.fold((f32::MAX, f32::MIN), |(l, h), x| (l.min(x), h.max(x)));
@@ -191,7 +191,7 @@ fn plant(sk: &mut Skeleton, rng: &mut Rng, habit: Habit) {
     }
 }
 
-fn lot(footprint: OBox, part: Part) -> Lot {
+pub(in crate::map::procgen) fn lot(footprint: OBox, part: Part) -> Lot {
     Lot {
         footprint,
         front: (1, 1.0),
@@ -247,7 +247,7 @@ fn way(sk: &Skeleton, rng: &mut Rng, (a, b): (Vec2, Vec2), half: f32) -> Option<
             let cut = cuts.iter().any(|c| c.depth(p) > 0.03);
             // A bridge costs what a fair way round does; up a bank, more.
             let slope = if cut { 1.6 } else { sk.land.steep(p) * 9.0 };
-            let bends = crate::map::valley::noise2(p.x / 31.0, p.y / 31.0, salt) * 1.6;
+            let bends = crate::map::noise::noise2(p.x / 31.0, p.y / 31.0, salt) * 1.6;
             (1.0 + slope + bends) * if on { 0.35 } else { 1.0 }
         })
         .collect();
@@ -325,7 +325,7 @@ fn way(sk: &Skeleton, rng: &mut Rng, (a, b): (Vec2, Vec2), half: f32) -> Option<
 }
 
 /// Builds a way from `a` to `b`, the stretches that aren't road already.
-fn lay(
+pub(in crate::map::procgen) fn lay(
     sk: &mut Skeleton,
     rng: &mut Rng,
     ends: (Vec2, Vec2),
@@ -381,7 +381,7 @@ fn eased(pts: &[Vec2]) -> Vec<Vec2> {
 }
 
 /// How far past the edge a line's seen running on.
-const RUN_ON: f32 = 150.0;
+pub(in crate::map::procgen) const RUN_ON: f32 = 150.0;
 
 /// The railway: in over one edge, by the buildings it serves, out over
 /// another; then spurs off it to others.
@@ -496,7 +496,7 @@ fn railway(sk: &mut Skeleton, rng: &mut Rng) {
 }
 
 /// Grades the ground under the rails, off the bridges and tunnels.
-fn bed(sk: &mut Skeleton) {
+pub(in crate::map::procgen) fn bed(sk: &mut Skeleton) {
     for line in sk.tracks.clone() {
         let mut fine = Vec::new();
         for w in line.windows(2) {
@@ -609,7 +609,7 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng) {
 }
 
 /// Off every road by `gap`.
-fn off_roads(sk: &Skeleton, b: &OBox, gap: f32) -> bool {
+pub(in crate::map::procgen) fn off_roads(sk: &Skeleton, b: &OBox, gap: f32) -> bool {
     let (ax, az) = b.axes();
     let pts = (-2..=2).flat_map(|i| {
         (-2..=2).map(move |j| {
@@ -792,7 +792,7 @@ fn yard(sk: &mut Skeleton, rng: &mut Rng) {
 }
 
 /// No road but one of `rank` under `b`.
-fn clear_of(sk: &Skeleton, b: &OBox, rank: Rank) -> bool {
+pub(in crate::map::procgen) fn clear_of(sk: &Skeleton, b: &OBox, rank: Rank) -> bool {
     let az = b.axes().1;
     (-4..=4).all(|k| {
         let p = b.center + az * b.half.y * k as f32 / 4.0;
@@ -810,7 +810,7 @@ fn reach(b: &OBox, d: Vec2) -> f32 {
 }
 
 /// What's left: something to hide behind wherever there's nothing near.
-fn cover(sk: &mut Skeleton, rng: &mut Rng) {
+pub(in crate::map::procgen) fn cover(sk: &mut Skeleton, rng: &mut Rng) {
     for _ in 0..1600 {
         let p = Vec2::new(
             rng.range(10.0, sk.size - 10.0),
@@ -831,7 +831,7 @@ fn cover(sk: &mut Skeleton, rng: &mut Rng) {
 }
 
 /// Repair drops: out by the roads, under open sky, well apart.
-fn repairs(sk: &mut Skeleton, rng: &mut Rng) {
+pub(in crate::map::procgen) fn repairs(sk: &mut Skeleton, rng: &mut Rng) {
     for t in 0..2000 {
         if sk.repair_spots.len() >= 5 {
             break;

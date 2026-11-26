@@ -212,6 +212,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            rivers: Default::default(),
             beams: Vec::new(),
             lights: Vec::new(),
             fall_y: None,

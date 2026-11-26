@@ -92,7 +92,7 @@ impl MeshData {
         ]
     }
 
-    fn vert(&mut self, p: Vec3, n: Vec3, c: Vec4) -> u32 {
+    pub fn vert(&mut self, p: Vec3, n: Vec3, c: Vec4) -> u32 {
         self.verts.push(Vertex {
             pos: p.to_array(),
             normal: n.to_array(),

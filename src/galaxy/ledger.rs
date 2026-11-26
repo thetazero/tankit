@@ -339,7 +339,7 @@ mod tests {
             .filter(|&e| e != f)
             .max_by_key(|&a| g.systems[t].hulls[a])
             .unwrap();
-        let mut map = crate::map::Map::saltmarket();
+        let mut map = crate::map::Map::reservoir(0);
         map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = Match::new(map, 0, 5, 21);
         let b = g.muster_crew(t, &m.factions, None).expect("your battle");

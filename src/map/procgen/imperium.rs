@@ -61,6 +61,8 @@ const CONCRETES: [Vec3; 7] = [
 const CAST: ruins::Style = ruins::Style {
     colors: &CONCRETES,
     wall: Material::Concrete,
+    storeys: (2, 4),
+    light: 0.35,
 };
 
 /// The four directions on the map: east, north, west, south.
@@ -1803,7 +1805,8 @@ impl Map {
                 let t = (p - a.from).dot(a.dir());
                 t > 0.0 && (p - a.from).perp_dot(a.dir()).abs() < a.half + 10.0
             });
-            if !outside || vista {
+            let wet = sk.land.channel.as_ref().is_some_and(|c| c.wet(p, 22.0));
+            if !outside || vista || wet {
                 continue;
             }
             let far = (d.abs().max_element() - mid).max(0.0);

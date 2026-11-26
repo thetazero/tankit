@@ -234,11 +234,6 @@ pub struct Scrapped {
 }
 
 impl Scrapped {
-    /// The gain as a share of a step, in whole percent (at least 1).
-    pub fn percent(&self) -> u32 {
-        ((self.gained * 100.0).round() as u32).max(1)
-    }
-
     /// How far into the next step what's known now is, in whole percent,
     /// and that step's level. None once it's known to the top.
     pub fn toward(&self) -> Option<(u32, u8)> {
@@ -470,11 +465,11 @@ mod tests {
         );
         assert_eq!(s.len(), 2);
         assert_eq!(s[0].part, kontos);
-        assert_eq!(s[0].percent(), 10);
+        assert!((s[0].gained * 100.0 - 10.0).abs() < 0.5);
         assert_eq!(s[0].toward(), Some((10, 11)));
         assert!(!s[0].stepped());
         assert_eq!(s[1].part, pelekys);
-        assert_eq!(s[1].percent(), 30);
+        assert!((s[1].gained * 100.0 - 30.0).abs() < 0.5);
         assert_eq!(s[1].toward(), Some((80, 1)));
         let s = scrapped(before, &[(pelekys, 50)]);
         assert!(s[0].stepped(), "0.5 + 0.5 is the first step");
@@ -729,7 +724,7 @@ mod tests {
 
     #[test]
     fn payout_scales_with_victory_and_contribution() {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 5, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 5, 21);
         m.start();
         m.fighters[0].kills = 3;
         m.fighters[0].damage_dealt = 205.0;
@@ -760,7 +755,7 @@ mod tests {
 
     #[test]
     fn hold_pays_for_your_time_on_the_site_and_your_side_holding_longest() {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 3, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 3, 21);
         m.start();
         m.set_contract(crate::mission::Contract::Hold);
         for f in m.fighters.iter_mut().filter(|f| f.team == 1) {

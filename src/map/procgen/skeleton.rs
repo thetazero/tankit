@@ -33,6 +33,8 @@ pub struct Skeleton {
     pub landmarks: Vec<Landmark>,
     /// What the fight is about: the Hold site.
     pub heart: Vec2,
+    /// Round spawns are kept clear and level this far (a desert's).
+    pub pad: f32,
     /// One per side, in side order.
     pub bases: Vec<Base>,
     pub lots: Vec<Lot>,
@@ -57,6 +59,8 @@ pub struct Skeleton {
     pub spots: Vec<Vec2>,
     /// A railroad's spur to a warehouse.
     pub spur: Option<Spur>,
+    /// Where its trains are loaded: how far along the first track.
+    pub loading: Option<f32>,
     /// A seam of crystal's line, and the rig cutting it (where, which way
     /// its boom reaches).
     pub seam: Vec<Vec2>,
@@ -167,6 +171,10 @@ pub enum LandmarkKind {
     Arch,
     /// A shield generator out in the open, on a graded pad.
     Generator,
+    /// A breach broken through a dam.
+    Dam,
+    /// A town's well, in its sunken court.
+    Well,
     /// Open ground, nothing on it.
     Open,
 }
@@ -205,8 +213,8 @@ pub struct Base {
 }
 
 /// A spur off the first track to a warehouse: it leaves the track
-/// `junction` m past its fifth point, to the left of the way out (`side` 1)
-/// or the right (-1).
+/// `junction` m along it, to the left of the way out (`side` 1) or the right
+/// (-1).
 #[derive(Clone, Debug)]
 pub struct Spur {
     pub line: Vec<Vec2>,
@@ -611,7 +619,8 @@ impl Skeleton {
             .squares
             .iter()
             .any(|s| s.center.distance(p) < s.radius + 4.0);
-        street || plaza || square
+        let river = self.land.channel.as_ref().is_some_and(|c| c.wet(p, 0.6));
+        street || plaza || square || river
     }
 
     /// A blank map the size of the arena, for `factions`, with the
@@ -842,6 +851,10 @@ impl Skeleton {
             roof: Vec3::splat(0.5),
             land: Vec3::splat(0.3),
         };
+        if let Some(c) = &self.land.channel {
+            c.build(&mut map, self.size);
+            map.rivers = std::sync::Arc::new(vec![c.river()]);
+        }
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));
         }
