@@ -866,15 +866,18 @@ impl Galaxy {
 
     /// System `t`'s worth to side `f`: what its production sites turn out a
     /// tick (those `f` holds, or with not `own` those it doesn't) over the
-    /// ticks it can expect to hold them, in crystal. (Its yards build no
-    /// cheaper than any other's, so they add nothing.)
+    /// ticks it can expect to hold them, in crystal: a foundry's hulls at what
+    /// they're worth there, over what they cost.
     pub(crate) fn worth(&self, t: usize, f: usize, own: bool) -> f32 {
         let (a, b) = self.systems[t].sites;
+        // What a hull there's worth over what it costs.
+        let rent = (self.hull_worth[t] - self.rules.hull_cost).max(0.0);
         let income: f32 = self.sites[a as usize..b as usize]
             .iter()
             .filter(|s| (s.owner as usize == f) == own)
             .map(|s| match s.kind {
-                SiteKind::Production { crystals, .. } => crystals,
+                SiteKind::Mine { crystals } => crystals,
+                SiteKind::Foundry { hulls } => hulls * rent,
                 SiteKind::Shield { .. } | SiteKind::Outpost => 0.0,
             })
             .sum();

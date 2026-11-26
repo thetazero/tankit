@@ -397,7 +397,7 @@ impl Galaxy {
                 .iter()
                 .map(|s| match s.kind {
                     SiteKind::Shield { damaged } => damaged as u8,
-                    SiteKind::Production { .. } | SiteKind::Outpost => 0,
+                    SiteKind::Foundry { .. } | SiteKind::Mine { .. } | SiteKind::Outpost => 0,
                 })
                 .collect(),
             hulls: self

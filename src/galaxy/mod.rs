@@ -122,6 +122,9 @@ const NEIGHBORS: usize = 12;
 
 /// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
 const RESONANT_HULL_COST: f32 = 0.0005;
+/// What a site that makes one thing makes of it, against one of a pair that
+/// made both: the galaxy's output of each is the same.
+const BOTH: f32 = 18.0 / 11.0;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: u32 = 20;
 /// Most quiet ticks a step skips looking for the next war.
@@ -274,15 +277,24 @@ impl Default for Rules {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SiteKind {
-    /// Turns out hulls (into its holder's storage in the system) and crystals
-    /// (into its holder's realm's vaults) each tick.
-    Production { hulls: f32, crystals: f32 },
+    /// Can turn out so many hulls a tick, into its holder's storage in the
+    /// system.
+    Foundry { hulls: f32 },
+    /// Turns out so much crystal a tick, into its planet's vault.
+    Mine { crystals: f32 },
     /// A shield generator: working, or damaged (#422). It's damaged when
     /// it's taken, and working again once its holder wins a battle for it,
     /// or a tick goes by without one.
     Shield { damaged: bool },
     /// Makes nothing and shields nothing, but a world isn't taken without it.
     Outpost,
+}
+
+impl SiteKind {
+    /// It makes something.
+    pub fn produces(self) -> bool {
+        matches!(self, SiteKind::Foundry { .. } | SiteKind::Mine { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -606,9 +618,20 @@ impl Galaxy {
                     sites.push(Site {
                         planet,
                         owner,
-                        kind: SiteKind::Production {
-                            hulls: rng.range(1.0, 5.0),
-                            crystals: rng.range(0.02, 0.1),
+                        // A site makes the one of them it'd make more of, for
+                        // what sites make, so about half are mines; and as
+                        // much of it as both kinds together would.
+                        kind: {
+                            let (hulls, crystals) = (rng.range(1.0, 5.0), rng.range(0.02, 0.1));
+                            if crystals * 50.0 > hulls {
+                                SiteKind::Mine {
+                                    crystals: crystals * BOTH,
+                                }
+                            } else {
+                                SiteKind::Foundry {
+                                    hulls: hulls * BOTH,
+                                }
+                            }
                         },
                     });
                 }
@@ -739,7 +762,7 @@ impl Galaxy {
         let mut out = [0.0; SIDES];
         let (a, b) = self.systems[s].sites;
         for site in &self.sites[a as usize..b as usize] {
-            if let SiteKind::Production { hulls, .. } = site.kind {
+            if let SiteKind::Foundry { hulls } = site.kind {
                 out[site.owner as usize] += hulls;
             }
         }
@@ -999,26 +1022,31 @@ impl Galaxy {
             let (a, b) = self.systems[s].sites;
             let sys = &mut self.systems[s];
             for site in &self.sites[a as usize..b as usize] {
-                if let SiteKind::Production { hulls, crystals: c } = site.kind {
-                    let f = site.owner as usize;
-                    let r = sys.realms[f];
-                    if r == NONE {
-                        continue;
-                    }
+                let f = site.owner as usize;
+                let r = sys.realms[f];
+                if r == NONE {
+                    continue;
+                }
+                match site.kind {
                     // A mine pays only its planet's vault's owner.
-                    let v = self.vault_at[s] as usize + site.planet as usize;
-                    if self.vaults[v].side as usize == f {
-                        crystals[r as usize] += c;
-                        mined[v] += c * (1.0 - self.rules.research);
+                    SiteKind::Mine { crystals: c } => {
+                        let v = self.vault_at[s] as usize + site.planet as usize;
+                        if self.vaults[v].side as usize == f {
+                            crystals[r as usize] += c;
+                            mined[v] += c * (1.0 - self.rules.research);
+                        }
                     }
-                    // A yard works while a hull's worth more to the realm
-                    // than it costs, and it can pay for it.
-                    let cost = hulls * (self.rules.hull_cost + extra(f));
-                    let realm = &mut self.realms[r as usize];
-                    if self.hull_worth[s] > self.rules.hull_cost && realm.crystals >= cost {
-                        realm.crystals -= cost;
-                        sys.building[f] += hulls;
+                    // A foundry works while a hull's worth more there than it
+                    // costs, and its realm can pay for it.
+                    SiteKind::Foundry { hulls } => {
+                        let cost = hulls * (self.rules.hull_cost + extra(f));
+                        let realm = &mut self.realms[r as usize];
+                        if self.hull_worth[s] > self.rules.hull_cost && realm.crystals >= cost {
+                            realm.crystals -= cost;
+                            sys.building[f] += hulls;
+                        }
                     }
+                    SiteKind::Shield { .. } | SiteKind::Outpost => {}
                 }
             }
         }
