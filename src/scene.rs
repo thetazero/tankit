@@ -950,6 +950,22 @@ mod tests {
         ]);
     }
 
+    /// The same for the other factions' crystal mines.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn mines_hardly_z_fight() {
+        use crate::map::procgen::Look;
+        let mine = |l| crate::make_map(crate::MapKind::Mine(l), 0);
+        hardly_z_fight([
+            ("mine imperium", mine(Look::Imperium)),
+            ("mine resonant", mine(Look::Resonant)),
+            ("mine uthenn", mine(Look::Uthenn)),
+        ]);
+    }
+
     fn hardly_z_fight<const N: usize>(maps: [(&str, Map); N]) {
         for (name, map) in maps {
             let fights = map_fights(name, &map);

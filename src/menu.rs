@@ -2230,6 +2230,7 @@ mod tests {
             committed: 60,
             lost: 58,
             own: Own::default(),
+            loot: None,
         };
         {
             let s = next.ship.as_mut().unwrap();
@@ -2292,6 +2293,7 @@ mod tests {
             committed: 60,
             lost: 12,
             own: Own::default(),
+            loot: None,
         };
         let mut m = Menu::new();
         m.input(Nav::Select);

@@ -584,8 +584,13 @@ fn your_ended_contracts_are_kept() {
     for e in &g.ended {
         assert!(e.tick >= e.signed);
         assert!(e.lost <= e.committed);
-        // Spent means every hull committed is gone (#429).
-        assert!(e.outcome != Outcome::Spent || e.lost == e.committed);
+        // Spent means every hull committed is gone (#429); plundering, more
+        // than three quarters (#546).
+        let spent = match e.loot {
+            Some(_) => e.lost * 4 > e.committed * 3,
+            None => e.lost == e.committed,
+        };
+        assert!(e.outcome != Outcome::Spent || spent);
         assert!(e.outcome != Outcome::Fell || e.defend);
     }
     // Ended in order, and not the one your company's still on.
@@ -773,12 +778,11 @@ fn moves_account_for_every_hull() {
 }
 
 /// The tick summary (#475) says what a system's sides had when the battle
-/// began and have now, every side there either time, and how many ticks.
+/// began and have now, every side there either time.
 #[test]
 fn tick_summary_counts_from_the_battle() {
     let mut g = small_war();
     g.clear_moves();
-    let at = g.tick;
     let owners = g.owners();
     let before: Vec<[u32; SIDES]> = g.systems.iter().map(|s| s.hulls).collect();
     for _ in 0..12 {
@@ -786,7 +790,7 @@ fn tick_summary_counts_from_the_battle() {
     }
     let mut changed = false;
     for s in 0..g.systems.len() {
-        let t = g.tick_summary(s, at, &owners);
+        let t = g.tick_summary(s, 0, &owners);
         let sys = &g.systems[s];
         let flipped = (sys.sites.0..sys.sites.1)
             .filter(|&i| g.sites[i as usize].owner != owners[i as usize])
@@ -796,7 +800,15 @@ fn tick_summary_counts_from_the_battle() {
             flipped,
             "system {s}: every site that changed hands"
         );
-        assert_eq!(t.ticks, g.tick - at);
+        // The page runs from what each had to what it has.
+        let (first, last) = (t.at(0.0), t.at(60.0));
+        assert_eq!(first.hulls, t.before());
+        assert_eq!(last.hulls, sys.hulls);
+        for f in &t.flips {
+            let owner =
+                |t: &theater::Theater| t.sites.iter().find(|s| s.index == f.site).unwrap().owner;
+            assert_eq!((owner(&first), owner(&last)), (f.from, f.to));
+        }
         for f in 0..SIDES {
             let rows: Vec<_> = t.sides.iter().filter(|c| c.side == f).collect();
             let (was, now) = (before[s][f], g.systems[s].hulls[f]);

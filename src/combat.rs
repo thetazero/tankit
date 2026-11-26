@@ -3735,8 +3735,14 @@ fn beam_glow(b: &crate::map::Beam, time: f32, out: &mut Vec<Particle>) {
         let t = k as f32 / n as f32;
         let p = b.from + d * t;
         let flicker = 1.0 + 0.15 * (time * 41.0 + k as f32 * 1.7).sin();
-        out.push(Particle::glow(p, r * 3.2 * flicker, PLASMA, 0.7, dir * 0.6));
-        out.push(Particle::glow(p, r * 1.3, PLASMA_HOT, 1.4, dir * 0.6));
+        out.push(Particle::glow(
+            p,
+            r * 3.2 * flicker,
+            b.color,
+            0.7,
+            dir * 0.6,
+        ));
+        out.push(Particle::glow(p, r * 1.3, b.hot, 1.4, dir * 0.6));
     }
     // Pulses running down it into the rock.
     for k in 0..4 {
@@ -3744,22 +3750,16 @@ fn beam_glow(b: &crate::map::Beam, time: f32, out: &mut Vec<Particle>) {
         out.push(Particle::glow(
             b.from + d * t,
             r * 4.5,
-            PLASMA_HOT,
+            b.hot,
             1.2,
             dir * 1.2,
         ));
     }
     // The emitter's mouth, and the blaze on the face.
-    out.push(Particle::glow(b.from, r * 4.0, PLASMA_HOT, 1.6, Vec3::ZERO));
+    out.push(Particle::glow(b.from, r * 4.0, b.hot, 1.6, Vec3::ZERO));
     let blaze = 1.0 + 0.12 * (time * 23.0).sin() + 0.08 * (time * 57.0).sin();
-    out.push(Particle::glow(b.to, 5.5 * blaze, PLASMA, 1.2, Vec3::ZERO));
-    out.push(Particle::glow(
-        b.to,
-        2.2 * blaze,
-        PLASMA_HOT,
-        2.2,
-        Vec3::ZERO,
-    ));
+    out.push(Particle::glow(b.to, 5.5 * blaze, b.color, 1.2, Vec3::ZERO));
+    out.push(Particle::glow(b.to, 2.2 * blaze, b.hot, 2.2, Vec3::ZERO));
     // Sparks and drops, back off the face, falling.
     let side = dir.any_orthonormal_vector();
     let up = dir.cross(side);
@@ -3775,7 +3775,7 @@ fn beam_glow(b: &crate::map::Beam, time: f32, out: &mut Vec<Particle>) {
         out.push(Particle::glow(
             p,
             0.16 + 0.1 * (k % 3) as f32,
-            PLASMA_HOT,
+            b.hot,
             2.2 * (1.0 - age),
             vel * 0.03,
         ));
@@ -3799,14 +3799,14 @@ pub fn beam_instances(b: &crate::map::Beam, time: f32, out: &mut Vec<(MeshId, In
         )
     };
     let shiver = 1.0 + 0.08 * (time * 37.0).sin() + 0.05 * (time * 91.0).sin();
-    out.push(rod(b.radius * 0.7, PLASMA_HOT.extend(8.0)));
-    out.push(rod(b.radius * 1.5 * shiver, PLASMA.extend(3.0)));
+    out.push(rod(b.radius * 0.7, b.hot.extend(8.0)));
+    out.push(rod(b.radius * 1.5 * shiver, b.color.extend(3.0)));
     let blaze = 1.0 + 0.1 * (time * 23.0).sin();
     out.push((
         MeshId::SPHERE,
         Instance::new(
             Mat4::from_scale_rotation_translation(Vec3::splat(1.6 * blaze), Quat::IDENTITY, b.to),
-            PLASMA_HOT.extend(7.0),
+            b.hot.extend(7.0),
         ),
     ));
 }

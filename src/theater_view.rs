@@ -24,7 +24,8 @@ use std::f32::consts::{PI, TAU};
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
-use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, planet_name};
+use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, TickSummary, planet_name};
+use crate::galaxy::{RAID, SIDES};
 use crate::menu::Hit;
 use crate::planet;
 use crate::render::mesh::{Instance, MeshData, MeshId};
@@ -138,8 +139,8 @@ pub struct SystemArt {
     worlds: [MeshId; MAX_PLANETS],
     shown: [Option<(u64, planet::Look)>; MAX_PLANETS],
     ship: MeshId,
-    /// Each people's warship.
-    fleet: [MeshId; 4],
+    /// Each people's warship, and a raiding company's ship.
+    fleet: [MeshId; SIDES],
     /// A smooth ball, for the star.
     ball: MeshId,
 }
@@ -238,6 +239,8 @@ fn fleets(art: &SystemArt, t: &Theater, l: &Layout, time: f32, s: &mut Scene) {
             at + Vec3::X * 44.0 * side as f32
         };
         let n = match t.hulls[f] {
+            // A raiding company's a single ship, and yours is there already.
+            _ if f == RAID => !yours as usize,
             0..=9 => 1,
             10..=39 => 2,
             40..=149 => 3,
@@ -935,11 +938,11 @@ fn jump_scene(art: &SystemArt, u: f32, time: f32) -> Scene {
 fn holders(t: &Theater) -> Vec<usize> {
     (0..(t.planets as usize).max(1))
         .map(|pl| {
-            let mut held = [0usize; 4];
+            let mut held = [0usize; SIDES];
             for s in t.sites.iter().filter(|s| s.planet as usize == pl) {
                 held[s.owner] += 1;
             }
-            (0..4).max_by_key(|&f| held[f]).unwrap_or(0)
+            (0..SIDES).max_by_key(|&f| held[f]).unwrap_or(0)
         })
         .collect()
 }
@@ -1016,6 +1019,65 @@ pub fn draw(
         caption(p, t, tr, leg, min, max);
         return;
     }
+    worlds(p, hits, t, selected, w, h, |_, _, _| {});
+    forces(p, t, None, min, max);
+}
+
+/// What a battle did to its system (`s`), `time` seconds into the page: the
+/// sites changing hands, rung in their new holder's color, the hull bar
+/// running from before to now, and on, if it's `ready` to go.
+#[allow(clippy::too_many_arguments)]
+pub fn aftermath(
+    p: &mut Painter,
+    s: &TickSummary,
+    time: f32,
+    ready: bool,
+    lit: bool,
+    w: f32,
+    h: f32,
+) -> (Vec2, Vec2) {
+    use design::{TITLE, UNIT};
+    p.set_halo(None);
+    let t = s.at(time);
+    let none = usize::MAX;
+    worlds(p, &mut Hits::new(), &t, none, w, h, |p, site, at| {
+        let Some(k) = s.flips.iter().position(|f| f.site == site.index) else {
+            return;
+        };
+        let since = time - TickSummary::flips_at(k);
+        if since < 0.0 {
+            return;
+        }
+        let color = Faction::side(s.flips[k].to).ui();
+        // A ring bursting off it, then one that stays.
+        let u = (since / 0.9).min(1.0);
+        ring(p, at, 15.0 + 40.0 * u, 3.0, with_alpha(color, 1.0 - u));
+        p.disc(at, 34.0, with_alpha(color, 0.5), with_alpha(color, 0.0));
+        ring(p, at, 19.0, 2.0, color);
+    });
+    let mid = w * 0.5;
+    p.text(Vec2::new(mid, UNIT * 5.0), &s.name, &TITLE, Align::Center);
+    let top = UNIT * 12.0;
+    let (min, max) = (Vec2::new(VIEW_RIGHT, top), Vec2::new(w - VIEW_RIGHT, h));
+    forces(p, &t, Some(s.before()), min, max);
+    let size = Vec2::new(UNIT * 26.0, design::BUTTON);
+    let at = Vec2::new(mid - size.x * 0.5, h - UNIT * 12.0);
+    let go = if ready { "Continue" } else { "Loading" };
+    design::button(p, at, size.x, go, ready, lit);
+    (at, size)
+}
+
+/// The worlds of `t` with their marks; `under` is called with each site and
+/// where its mark goes, before it's drawn.
+fn worlds(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    t: &Theater,
+    selected: usize,
+    w: f32,
+    h: f32,
+    under: impl Fn(&mut Painter, &SiteView, Vec2),
+) {
     let l = layout(t);
     let vp = camera(t, w / h).view_proj(w / h);
     let at = |v: Vec3| project(vp, v, w, h).map(|(x, y)| Vec2::new(x, y));
@@ -1043,7 +1105,7 @@ pub fn draw(
         // when more than one side's is up (each keeps the others out).
         let shield = shield_state(&sites);
         if let Shield::Up(up) = shield {
-            for (k, f) in (0..4).filter(|&f| up[f]).enumerate() {
+            for (k, f) in (0..SIDES).filter(|&f| up[f]).enumerate() {
                 hex_shield(p, c, r + 10.0 - 5.0 * k as f32, Faction::side(f).ui());
             }
         }
@@ -1063,6 +1125,7 @@ pub fn draw(
                 with_alpha(tint, 0.5),
             );
             let row = t.contested.iter().position(|&x| x == i);
+            under(p, s, m);
             site_marker(p, m, s, row == Some(selected));
             if let Some(row) = row.filter(|_| s.committed) {
                 hits.add(p, m - Vec2::splat(18.0), Vec2::splat(36.0), Hit::Row(row));
@@ -1100,30 +1163,42 @@ pub fn draw(
             Align::Center,
         );
     }
-
-    forces(p, t, min, max);
 }
 
 /// The hull bar, along the top between `min` and `max`: your side's hulls
-/// from the left, its mercs' in amber, then everyone else's.
-fn forces(p: &mut Painter, t: &Theater, min: Vec2, max: Vec2) {
-    let mut sides = t.sides();
-    sides.sort_by_key(|&f| f != t.employer);
-    let total: u32 = sides.iter().map(|&f| t.hulls[f]).sum();
+/// from the left, its mercs' in amber, then everyone else's, up to the right.
+/// Against `before`, what's been lost since is a gap between them, and what
+/// each side's lost or gained is beside its count.
+fn forces(p: &mut Painter, t: &Theater, before: Option<[u32; SIDES]>, min: Vec2, max: Vec2) {
+    let mut sides: Vec<usize> = (0..SIDES)
+        .filter(|&f| t.hulls[f] > 0 || t.held[f] > 0 || before.is_some_and(|b| b[f] > 0))
+        .collect();
+    sides.sort_by_key(|&f| (f != t.employer, std::cmp::Reverse(t.hulls[f])));
+    let now: u32 = sides.iter().map(|&f| t.hulls[f]).sum();
+    let was: u32 = before.map_or(0, |b| sides.iter().map(|&f| b[f]).sum());
+    let total = now.max(was);
     if total == 0 {
         return;
     }
     let w = (max.x - min.x).min(design::UNIT * 80.0);
     let x0 = (min.x + max.x - w) * 0.5;
     let bar = min.y + design::UNIT * 3.0;
+    let wide = |n: u32| w * n as f32 / total as f32;
+    let rail = with_alpha(theme::HOT, 0.25);
+    if total > now {
+        p.rect(Vec2::new(x0, bar), Vec2::new(w, design::UNIT), rail);
+    }
+    let yours = sides.first().map_or(0, |&f| t.hulls[f]);
     let mut x = x0;
     for (k, &f) in sides.iter().enumerate() {
         let side = Faction::side(f);
-        let mercs = t.mercs[f];
+        let mercs = t.mercs[f].min(t.hulls[f]);
         let own = t.hulls[f] - mercs;
         let style = design::BODY.colored(side.ui());
-        let wide = |n: u32| w * n as f32 / total as f32;
-        let start = x;
+        // The others end at the right, however many are left.
+        if k == 1 {
+            x = x0 + w - wide(now - yours);
+        }
         for (n, color) in [(own, side.ui()), (mercs, design::AMBER)] {
             if n > 0 {
                 let width = (wide(n) - 2.0).max(1.0);
@@ -1131,28 +1206,45 @@ fn forces(p: &mut Painter, t: &Theater, min: Vec2, max: Vec2) {
             }
             x += wide(n);
         }
+        let change = before.map(|b| t.hulls[f] as i64 - b[f] as i64);
+        let change = change.filter(|&n| n != 0).map(|n| {
+            let color = if n < 0 { theme::HOT } else { design::TEXT };
+            (format!("{n:+}"), design::BODY.colored(color))
+        });
         // Yours is counted at the left end, theirs at the right.
-        let mut at = Vec2::new(start, min.y);
+        let gap = design::UNIT * 2.0;
         if k == 0 {
-            at.x += crate::ui::emblem::tagged(p, at, side, &own.to_string(), &style, Align::Left);
+            let mut at = Vec2::new(x0, min.y);
+            // Raiders are all mercs.
+            if f != RAID {
+                let n = own.to_string();
+                at.x += crate::ui::emblem::tagged(p, at, side, &n, &style, Align::Left);
+                at.x += gap;
+            }
             if mercs > 0 {
-                at.x += design::UNIT * 2.0;
                 let amber = design::BODY.colored(design::AMBER);
                 let n = mercs.to_string();
-                crate::ui::emblem::tagged(p, at, Faction::Company, &n, &amber, Align::Left);
+                at.x += crate::ui::emblem::tagged(p, at, Faction::Company, &n, &amber, Align::Left);
+                at.x += gap;
+            }
+            if let Some((text, style)) = change {
+                p.text(at, &text, &style, Align::Left);
             }
         } else {
-            at.x = x0 + w;
+            let mut at = Vec2::new(x0 + w, min.y);
             at.y += design::UNIT * 5.5 * (k - 1) as f32;
+            if let Some((text, style)) = change {
+                at.x -= p.text(at, &text, &style, Align::Right) + gap;
+            }
             let n = t.hulls[f].to_string();
             crate::ui::emblem::tagged(p, at, side, &n, &style, Align::Right);
         }
     }
 }
 
-/// What a contract's for, in caps: to hold the system, or to take it.
+/// What a contract's for, in caps.
 fn job(ship: &Ship) -> &'static str {
-    if ship.defend { "HOLD" } else { "TAKE" }
+    crate::galaxy::theater::job(ship.side, ship.defend)
 }
 
 /// What a transfer's caption leads with, `leg` of it toward `t`: the
@@ -1200,8 +1292,9 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
             .map_or(th.name.clone(), |s| planet_name(&th.name, s.over))
     };
     let employer = |th: &Theater| {
-        th.ship.as_ref().map_or(String::new(), |s| {
-            format!("{} OF {}", Faction::side(s.side).name(), s.realm)
+        th.ship.as_ref().map_or(String::new(), |s| match s.side {
+            RAID => format!("THE {}", s.name),
+            f => format!("{} OF {}", Faction::side(f).name(), s.realm),
         })
     };
     let ship_name = |th: &Theater| {
@@ -1245,10 +1338,16 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
         p.text(
             Vec2::new(min.x + 24.0, min.y + 68.0),
             &format!(
-                "{aboard}HIRED BY THE {} OF {} TO {} {} · UP TO {} BATTLES",
-                realm.name(),
-                ship.realm,
-                job(ship),
+                "{aboard}{} {} · UP TO {} BATTLES",
+                match ship.side {
+                    RAID => job(ship).to_string(),
+                    _ => format!(
+                        "HIRED BY THE {} OF {} TO {}",
+                        realm.name(),
+                        ship.realm,
+                        job(ship)
+                    ),
+                },
                 t.name,
                 ship.ticks_left
             ),
@@ -1296,6 +1395,8 @@ pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
         "CONTRACT FAILED"
     };
     let how = match e.outcome {
+        Outcome::Won if e.loot.is_some() => format!("{} PLUNDERED", from.name),
+        Outcome::Spent if e.loot.is_some() => "DRIVEN OFF".to_string(),
         Outcome::Won if e.defend => format!("{world} HELD"),
         Outcome::Won => format!("{} TAKEN", from.name),
         Outcome::Fell => format!("{world} FELL"),
@@ -1344,6 +1445,9 @@ pub fn summary(
     if e.own.of > 0 {
         let gone = e.own.of - e.own.left.min(e.own.of);
         facts.push(("Yours lost", format!("{gone} / {}", e.own.of)));
+    }
+    if let Some(cr) = e.loot {
+        facts.push(("Company took", format!("{cr} cr")));
     }
     let pitch = UNIT * 24.0;
     let n = facts.len() as f32;
@@ -1431,12 +1535,12 @@ enum Shield {
     /// Every generator on it is damaged.
     Down,
     /// A generator on it works: which sides hold a working one.
-    Up([bool; 4]),
+    Up([bool; SIDES]),
 }
 
 /// The shields of a world with these `sites`.
 fn shield_state(sites: &[(usize, &SiteView)]) -> Shield {
-    let mut up = [0usize; 4];
+    let mut up = [0usize; SIDES];
     let mut any = false;
     for (_, s) in sites.iter().filter(|(_, s)| s.is_shield()) {
         any = true;

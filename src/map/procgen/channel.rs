@@ -5,6 +5,7 @@
 //! decks are always clear of it.
 
 use std::f32::consts::TAU;
+use std::sync::Arc;
 
 use glam::{Vec2, Vec3};
 
@@ -23,11 +24,11 @@ pub const WALL: f32 = 6.0;
 /// How far past its walls the quays run, level, and then how far it takes
 /// them to meet the land.
 pub const QUAY: f32 = 13.0;
-const BLEND: f32 = 16.0;
+const BLEND: f32 = 9.0;
 /// A deck's thickness, and how far its top is over the quay.
 const DECK: f32 = 0.8;
 pub const RISE: f32 = 0.9;
-const STEP: f32 = 4.0;
+pub const STEP: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bridge {
@@ -40,50 +41,129 @@ pub struct Bridge {
 
 #[derive(Clone, Debug)]
 pub struct Channel {
-    at: Vec2,
-    dir: Vec2,
-    sway: f32,
-    phase: f32,
+    /// Its middle, every `STEP` m along, from `from` (0's the middle of the
+    /// stretch that's fought over).
+    pts: Arc<Vec<Vec2>>,
+    /// The nearest of `pts` from each cell of a grid over it all.
+    grid: Arc<Grid>,
     pub half: f32,
     /// How far along the samples start.
     from: f32,
+    /// How far along each way is fought over.
+    pub play: f32,
     quay: Vec<f32>,
     surface: Vec<f32>,
     pub bridges: Vec<Bridge>,
 }
 
+#[derive(Debug)]
+struct Grid {
+    origin: Vec2,
+    n: usize,
+    near: Vec<u16>,
+}
+
+const CELL: f32 = 8.0;
+
+impl Grid {
+    fn new(pts: &[Vec2]) -> Grid {
+        let lo = pts.iter().copied().reduce(Vec2::min).unwrap() - 200.0;
+        let hi = pts.iter().copied().reduce(Vec2::max).unwrap() + 200.0;
+        let n = ((hi - lo).max_element() / CELL).ceil() as usize + 1;
+        let near = (0..n * n)
+            .map(|k| {
+                let c = lo + Vec2::new((k % n) as f32 + 0.5, (k / n) as f32 + 0.5) * CELL;
+                (0..pts.len())
+                    .min_by(|&a, &b| {
+                        let d = |i: usize| pts[i].distance_squared(c);
+                        d(a).total_cmp(&d(b))
+                    })
+                    .unwrap() as u16
+            })
+            .collect();
+        Grid {
+            origin: lo,
+            n,
+            near,
+        }
+    }
+
+    fn near(&self, p: Vec2) -> usize {
+        let q = ((p - self.origin) / CELL).clamp(Vec2::ZERO, Vec2::splat(self.n as f32 - 1.0));
+        self.near[q.y as usize * self.n + q.x as usize] as usize
+    }
+}
+
 impl Channel {
-    /// One winding across a place `size` across, as far off `avoid` as it
-    /// can be.
-    pub fn pick(rng: &mut Rng, size: f32, avoid: &[(Vec2, f32)]) -> Channel {
-        let mid = Vec2::splat(size * 0.5);
-        let mut best: Option<(f32, Channel)> = None;
-        for _ in 0..600 {
-            let c = Channel {
-                at: mid + Vec2::from_angle(rng.range(0.0, TAU)) * size * rng.range(0.05, 0.36),
-                dir: Vec2::from_angle(rng.range(0.0, TAU)),
-                sway: rng.range(16.0, 40.0),
-                phase: rng.range(0.0, TAU),
-                half: rng.range(14.0, 18.0),
-                from: 0.0,
+    /// A winding one, `play` m of it each way from the middle doubling back
+    /// on itself, its ends running off straight; its middle at 0.
+    pub fn wind(rng: &mut Rng) -> Channel {
+        let half = rng.range(13.0, 16.0);
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let play = rng.range(370.0, 430.0);
+            let tail = 480.0;
+            let n = ((play + tail) / STEP) as i32;
+            // Its heading swings from side to side: each bend its own.
+            let turn = rng.range(1.25, 1.85) - tries as f32 * 0.003;
+            let (wave, phase) = (rng.range(520.0, 720.0), rng.range(0.0, TAU));
+            let (wild, wild_phase) = (rng.range(0.15, 0.4), rng.range(0.0, TAU));
+            let heading = |s: f32| {
+                let fade = 1.0 - smoothstep(play + 10.0, play + 190.0, s.abs());
+                let a = turn * (s / wave * TAU + phase).sin()
+                    + wild * (s / wave * 2.3 * TAU + wild_phase).sin();
+                Vec2::from_angle(a * fade)
+            };
+            let mut pts = vec![Vec2::ZERO];
+            for k in 0..n {
+                let last = *pts.last().unwrap();
+                pts.push(last + heading((k as f32 + 0.5) * STEP) * STEP);
+            }
+            let mut back = Vec::new();
+            let mut at = Vec2::ZERO;
+            for k in 0..n {
+                at -= heading(-(k as f32 + 0.5) * STEP) * STEP;
+                back.push(at);
+            }
+            back.reverse();
+            back.extend(pts);
+            let pts = back;
+            // Never too near itself: a neck of city between two bends.
+            let gap = ((half + WALL) * 2.0 + 44.0).powi(2);
+            let clear = (0..pts.len()).step_by(3).all(|a| {
+                (a + 45..pts.len())
+                    .step_by(3)
+                    .all(|b| pts[a].distance_squared(pts[b]) > gap)
+            });
+            if !clear && tries < 400 {
+                continue;
+            }
+            return Channel {
+                grid: Arc::new(Grid::new(&pts)),
+                from: -(n as f32) * STEP,
+                pts: Arc::new(pts),
+                half,
+                play,
                 quay: Vec::new(),
                 surface: Vec::new(),
                 bridges: Vec::new(),
             };
-            let room = avoid
-                .iter()
-                .map(|&(p, r)| c.local(p).1.abs() - r - c.reach())
-                .fold(f32::MAX, f32::min);
-            // Through the place, not along its edge.
-            let room = room.min(size * 0.3 - c.local(mid).1.abs());
-            if best.as_ref().is_none_or(|b| room > b.0) {
-                best = Some((room, c));
-            }
-            if room > 3.0 && rng.chance(0.2) {
-                break;
-            }
         }
-        best.unwrap().1
+    }
+
+    /// Moved by `by`.
+    pub fn moved(mut self, by: Vec2) -> Channel {
+        let pts: Vec<Vec2> = self.pts.iter().map(|p| *p + by).collect();
+        self.grid = Arc::new(Grid::new(&pts));
+        self.pts = Arc::new(pts);
+        self
+    }
+
+    /// Where it's fought over.
+    pub fn course(&self) -> Vec<Vec2> {
+        let n = (self.play / STEP) as i32;
+        (-n..=n).map(|k| self.point(k as f32 * STEP, 0.0)).collect()
     }
 
     /// How far off its middle it shapes the land.
@@ -91,32 +171,40 @@ impl Channel {
         self.half + WALL + QUAY + BLEND
     }
 
-    fn wander(&self, t: f32) -> f32 {
-        self.sway * ((t / 62.0 + self.phase).sin() + 0.45 * (t / 27.0 - self.phase).sin())
-    }
-
-    /// Along it, and off its middle.
+    /// Along it, and off its middle (to its left's positive).
     pub fn local(&self, p: Vec2) -> (f32, f32) {
-        let q = p - self.at;
-        let t = q.dot(self.dir);
-        // Square to its course, where it runs aslant.
-        let slope = (self.wander(t + 1.0) - self.wander(t - 1.0)) * 0.5;
-        let off = self.dir.perp_dot(q) - self.wander(t);
-        (t, off / (1.0 + slope * slope).sqrt())
+        let k = self.grid.near(p);
+        let (lo, hi) = (k.saturating_sub(4), (k + 4).min(self.pts.len() - 1));
+        let mut best = (f32::MAX, 0.0, 0.0);
+        for i in lo..hi {
+            let (a, d) = (self.pts[i], self.pts[i + 1] - self.pts[i]);
+            let t = ((p - a).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+            let to = p - (a + d * t);
+            let off = to.length_squared();
+            if off < best.0 {
+                let side = if d.perp_dot(p - a) < 0.0 { -1.0 } else { 1.0 };
+                best = (off, (i as f32 + t) * STEP, side);
+            }
+        }
+        (self.from + best.1, best.0.sqrt() * best.2)
     }
 
     /// The point `off` to the side of its middle, `t` along.
     pub fn point(&self, t: f32, off: f32) -> Vec2 {
-        let side = Vec2::new(-self.dir.y, self.dir.x);
-        let mid = self.at + self.dir * t + side * self.wander(t);
+        let u = ((t - self.from) / STEP).clamp(0.0, self.pts.len() as f32 - 1.001);
+        let k = u as usize;
+        let mid = self.pts[k].lerp(self.pts[k + 1], u - k as f32);
         let h = self.heading(t);
         mid + Vec2::new(-h.y, h.x) * off
     }
 
     pub fn heading(&self, t: f32) -> Vec2 {
-        let slope = (self.wander(t + 1.0) - self.wander(t - 1.0)) * 0.5;
-        let side = Vec2::new(-self.dir.y, self.dir.x);
-        (self.dir + side * slope).normalize()
+        let at = |t: f32| {
+            let u = ((t - self.from) / STEP).clamp(0.0, self.pts.len() as f32 - 1.001);
+            let k = u as usize;
+            self.pts[k].lerp(self.pts[k + 1], u - k as f32)
+        };
+        (at(t + 3.0) - at(t - 3.0)).normalize_or(Vec2::X)
     }
 
     fn sample(&self, v: &[f32], t: f32) -> f32 {
@@ -137,9 +225,8 @@ impl Channel {
     }
 
     /// Its heights, from the `land` it's cut in (which it isn't in yet).
-    pub fn settle(&mut self, rng: &mut Rng, land: &Land, size: f32) {
-        let n = ((size * 1.5 + 700.0) / STEP) as i32;
-        self.from = -(n / 2) as f32 * STEP;
+    pub fn settle(&mut self, rng: &mut Rng, land: &Land) {
+        let n = self.pts.len() as i32;
         let raw: Vec<f32> = (0..n)
             .map(|k| land.height(self.point(self.from + k as f32 * STEP, 0.0)))
             .collect();
@@ -256,22 +343,35 @@ impl Channel {
             let (q, s) = (self.quay_at(t), self.surface_at(t));
             let spanned = self.bridges.iter().any(|b| (b.t - t).abs() < b.half + 2.0);
             for e in [-1.0f32, 1.0] {
-                // A little longer on a bend's outside.
-                let (a, b) = (
-                    self.point(t - STEP * 0.5, e * (self.half + WALL)),
-                    self.point(t + STEP * 0.5, e * (self.half + WALL)),
-                );
-                let long = a.distance(b).max(STEP) * 0.5 + 0.12;
-                let wall = self.point(t, e * (self.half + WALL * 0.5));
-                let i = put(
-                    wall,
-                    yaw,
-                    Vec2::new(WALL * 0.5, long),
-                    (s - BED - 1.0, q + 0.02 + 0.006 * (k % 3) as f32),
-                    glass,
-                    Material::Vhaal,
-                );
-                map_solid(&mut loose, i, true);
+                // In slices, each as long as its own side of a bend.
+                let slice = WALL / 3.0;
+                let chord = |off: f32| {
+                    let (a, b) = (
+                        self.point(t - STEP * 0.5, e * off),
+                        self.point(t + STEP * 0.5, e * off),
+                    );
+                    a.distance(b) * 0.5
+                };
+                for i in 0..3 {
+                    let (near, far) = (
+                        self.half + slice * i as f32,
+                        self.half + slice * (i + 1) as f32,
+                    );
+                    let long = chord(near).max(chord(far)) + 0.1;
+                    let wall = self.point(t, e * (near + far) * 0.5);
+                    put(
+                        wall,
+                        yaw,
+                        Vec2::new(slice * 0.5, long),
+                        (
+                            s - BED - 1.0,
+                            q + 0.02 + 0.006 * (k % 3) as f32 + 0.002 * i as f32,
+                        ),
+                        glass,
+                        Material::Vhaal,
+                    );
+                }
+                let long = chord(self.half) + 0.12;
                 if spanned {
                     continue;
                 }

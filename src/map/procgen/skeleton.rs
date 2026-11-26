@@ -23,6 +23,8 @@ use crate::render::material::Material;
 pub struct Skeleton {
     /// Arena spans [0, size] on x and z.
     pub size: f32,
+    /// The arena, if it isn't all of that.
+    pub band: Option<std::sync::Arc<crate::map::Band>>,
     /// The ground: its landforms, and the height they make.
     pub land: Land,
     pub streets: Vec<Street>,
@@ -284,8 +286,8 @@ impl Base {
 
     /// Inside the court, grown by `margin`.
     pub fn contains(&self, p: Vec2, margin: f32) -> bool {
-        let q = (p - self.corner).abs();
-        q.x < self.size + margin && q.y < self.size + margin
+        let q = (p - self.corner) * self.inward - self.size * 0.5;
+        q.abs().max_element() < self.size * 0.5 + margin
     }
 }
 
@@ -610,6 +612,14 @@ impl Skeleton {
         self.streets.iter().filter(|s| s.rank == Rank::Avenue)
     }
 
+    /// How far past the arena's edge `p` is, m (negative: inside).
+    pub fn out(&self, p: Vec2) -> f32 {
+        match &self.band {
+            Some(b) => b.out(p),
+            None => (-p).max(p - Vec2::splat(self.size)).max_element(),
+        }
+    }
+
     /// Ground kept open for streets and set pieces: no lot may cover it.
     /// (The courts are cleared out of the city once it's laid out.)
     pub fn reserved(&self, p: Vec2) -> bool {
@@ -628,6 +638,7 @@ impl Skeleton {
     /// and open spots come once it's built (`finish`).
     pub fn blank(&self, factions: &[Faction]) -> Map {
         let mut map = Map::empty(self.size);
+        map.band = self.band.clone();
         map.factions = factions.to_vec();
         map.bases = Map::no_bases(factions);
         map.open_spots = Vec::new();
@@ -754,6 +765,7 @@ impl Skeleton {
             for j in 0..n {
                 let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
                 if clear(map, p)
+                    && (self.band.is_none() || self.out(p) < -4.0)
                     && self
                         .landmarks
                         .iter()
@@ -765,7 +777,10 @@ impl Skeleton {
         }
         map.open_spots = open;
         let repairs = std::mem::take(&mut map.repair_spots);
-        map.repair_spots = repairs.into_iter().filter(|&p| clear(map, p)).collect();
+        map.repair_spots = repairs
+            .into_iter()
+            .filter(|&p| clear(map, p) && (self.band.is_none() || self.out(p) < -4.0))
+            .collect();
     }
 
     /// The skeleton drawn as plain boxes: what `check` drives on, and what

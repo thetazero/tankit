@@ -22,6 +22,7 @@
 //! `land`'s landforms, the rest in shared placeholders. A mine's still built
 //! facing north and then turned (`Skeleton::orient`).
 
+mod banks;
 pub mod channel;
 pub mod check;
 pub mod city;
@@ -82,6 +83,16 @@ impl Look {
             Faction::Resonant => Look::Resonant,
             Faction::Uthenn => Look::Uthenn,
             Faction::Ithessar => Look::Ithessar,
+        }
+    }
+
+    /// Whose style it is.
+    pub fn faction(self) -> Faction {
+        match self {
+            Look::Imperium => Faction::Imperium,
+            Look::Resonant => Faction::Resonant,
+            Look::Uthenn => Faction::Uthenn,
+            Look::Ithessar => Faction::Ithessar,
         }
     }
 
@@ -188,9 +199,7 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
         // Their cities run on a plasma river, and it takes room.
         plan.river = true;
         plan.extent = city::Extent::Large;
-        if plan.form == city::Form::Quarters {
-            plan.form = city::Form::Spine;
-        }
+        plan.form = city::Form::Banks;
     }
     let key = (spec.seed, spec.sides.len(), plan);
     KEPT.get(&key, || lay_out(spec, &plan))
@@ -691,7 +700,7 @@ impl Map {
 
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
     pub fn mine(seed: u64) -> Map {
-        map(&crate::mine_spec(seed))
+        map(&crate::mine_spec(seed, Look::Ithessar))
     }
 
     /// The Imperium's hull foundry `seed` names, on desert (see
@@ -1211,35 +1220,70 @@ mod tests {
         }
     }
 
+    /// Draws the layouts of a few river cities, as they're seen from above
+    /// (`DRAW_TO`: where).
     #[test]
     #[ignore = "a probe"]
-    fn where_rivers() {
-        for seed in 0..8 {
-            let spec = crate::city_spec(seed, Look::Ithessar);
-            let sk = skeleton(&spec);
+    fn draw_rivers() {
+        let Ok(dir) = std::env::var("DRAW_TO") else {
+            return;
+        };
+        for seed in 0..6 {
+            let sk = skeleton(&crate::city_spec(seed, Look::Ithessar));
             let c = sk.land.channel.as_ref().unwrap();
-            let plan = city::Plan::of(seed, 2, false);
-            let room = sk
-                .land
-                .platforms
-                .iter()
-                .map(|p| c.local(p.center).1.abs() - p.half * 1.15 - p.ramp - c.reach())
-                .fold(f32::MAX, f32::min);
-            println!(
-                "river {seed} {:?} size {} half {:.0} room {room:.0}",
-                plan.form, sk.size, c.half
-            );
-            for b in &c.bridges {
-                let p = c.point(b.t, 0.0);
-                println!(
-                    "  bridge {:.0} {:.0} deck {:.1} surface {:.1} half {:.1}",
-                    p.x,
-                    p.y,
-                    c.deck(b),
-                    c.surface_at(b.t),
-                    b.half
-                );
+            let n = (sk.size / 2.0) as usize;
+            let mut px = Vec::with_capacity(n * n * 3);
+            for j in 0..n {
+                for i in 0..n {
+                    let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * 2.0;
+                    let lot = sk.lots.iter().find(|l| l.footprint.distance(p) <= 0.0);
+                    let rgb: [u8; 3] = if c.bridges.iter().any(|b| {
+                        let d = b.ends[1] - b.ends[0];
+                        let t = ((p - b.ends[0]).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+                        p.distance(b.ends[0] + d * t) < b.half
+                    }) {
+                        [250, 250, 250]
+                    } else if c.local(p).1.abs() < c.half {
+                        [255, 40, 150]
+                    } else if c.wet(p, 0.0) {
+                        [60, 60, 90]
+                    } else if sk.landmarks.iter().any(|l| l.center.distance(p) < l.radius) {
+                        [240, 200, 60]
+                    } else if sk.bases.iter().any(|b| b.contains(p, 0.0)) {
+                        [60, 160, 255]
+                    } else if sk.edges.iter().any(|e| {
+                        let q = p - e.start;
+                        let t = q.dot(e.along);
+                        t > e.from && t < e.to && q.perp_dot(e.along).abs() < 2.5
+                    }) {
+                        [230, 60, 40]
+                    } else if let Some(l) = lot {
+                        match l.kind {
+                            LotKind::Distant => [45, 45, 45],
+                            LotKind::Civic(_) => [90, 180, 110],
+                            _ => [130, 120, 110],
+                        }
+                    } else if sk.road(p) > 0.5 {
+                        [95, 85, 70]
+                    } else {
+                        [70, 64, 56]
+                    };
+                    let dim = if sk.out(p) > 0.0 { 2 } else { 1 };
+                    px.extend(rgb.map(|v| v / dim));
+                }
             }
+            let mut out = format!("P6 {n} {n} 255\n").into_bytes();
+            out.extend(px);
+            std::fs::write(format!("{dir}/plan{seed}.ppm"), out).unwrap();
+            println!(
+                "river {seed} size {} bridges {} great {} courts {} lots {} {:?}",
+                sk.size,
+                c.bridges.len(),
+                sk.landmarks.len(),
+                sk.bases.len(),
+                sk.lots.len(),
+                check::playable(&sk.greybox(&crate::city_spec(seed, Look::Ithessar).sides))
+            );
         }
     }
 

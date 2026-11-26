@@ -57,8 +57,8 @@ tankit [OPTIONS]
                           (a generated city, see --look), the shield site (the same, a shield
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
-                          (generated: see --look), or the mine (a generated Ithessar
-                          crystal mine: caves, rails and stacked levels), the desert (generated open
+                          (generated: see --look), or the mine (a generated
+                          crystal mine: caves, rails and stacked levels; see --look), the desert (generated open
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
   --map-seed <n>          which one a generated map (reservoir, city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
@@ -67,8 +67,9 @@ tankit [OPTIONS]
   --generator-down <n>    (with --map shield-site or shield-desert) the generator's down, n ticks of repair
                           to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
   --look <imperium|resonant|uthenn|ithessar>
-                          (with --map city, shield-site, foundry or depot) who built it (default imperium;
-                          uthenn and ithessar only have foundries and depots of their own)
+                          (with --map city, shield-site, foundry, depot or mine) who built it (default
+                          imperium, a mine's ithessar; uthenn and ithessar only have foundries,
+                          depots and mines of their own)
   --ground <desert|tundra|grassland>  (with --map foundry) what kind of world it's on (default desert)
   --in-desert             (with --map city or shield-site) the city stands in the desert
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
@@ -78,7 +79,8 @@ tankit [OPTIONS]
   --contract <attrition|hold|raid>
                           game mode: a raid on an enemy camp for its hulls (default), hold the site, or raid
                           (one-sided capture the flag, two-sided maps only)
-  --employer <faction>    which of the map's sides hires you (default: its first); with
+  --employer <faction>    which of the map's sides hires you (default: its first; company: you
+                          raid for your own, in its first's place); with
                           --screen missions|site, a ship on contract for that side
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
@@ -154,7 +156,7 @@ tankit [OPTIONS]
   --quiet <n>             (with --won) the war goes on n ticks more before the missions screen
   --waiting               (with --screen missions) your company's between contracts: the war
                           goes on until there's work, over the system you were last in
-  --ticks                 (with --won) the tick summary instead, the screen before the missions
+  --ticks                 (with --won) the page after a battle instead, before the missions
                           screen: what the war did to the system's hulls since the battle, and why
   --shields-down          (with --screen missions|site) every shield generator on the system's first
                           world is damaged, so its shields are down
@@ -307,7 +309,7 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City(l, _)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
-            (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
+            (true, MapKind::Mine(l)) => map::procgen::greybox(&mine_spec(self.map_seed, l)),
             (true, MapKind::Foundry(l, g)) => {
                 map::procgen::greybox(&foundry_spec(self.map_seed, l, g))
             }
@@ -323,6 +325,9 @@ impl Args {
             _ => make_map(self.map, self.map_seed),
         };
         self.conditions.apply(&mut m);
+        if self.employer == Some(faction::Faction::Company) {
+            m.factions[0] = faction::Faction::Company;
+        }
         if self.side > 0 {
             m.swap_sides(self.side);
         }
@@ -354,9 +359,9 @@ pub enum MapKind {
     /// A rail depot, in someone's style, on desert. Generated: a different
     /// one for each map seed.
     Depot(map::procgen::Look),
-    /// An Ithessar crystal mine in a desert escarpment, on three levels.
-    /// Generated: a different mine for each map seed.
-    Mine,
+    /// A crystal mine in a desert escarpment, in someone's style, on three
+    /// levels. Generated: a different mine for each map seed.
+    Mine(map::procgen::Look),
     /// Open desert: dunes, buttes and spires of sandstone round the
     /// Needles in the middle. Generated: a different desert for each seed.
     Desert,
@@ -377,7 +382,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
         MapKind::ShieldSite(l, s, g) => map::procgen::map(&shield_spec(seed, l, g).set_in(s)),
         MapKind::Foundry(l, g) => map::procgen::map(&foundry_spec(seed, l, g)),
-        MapKind::Mine => map::procgen::map(&mine_spec(seed)),
+        MapKind::Mine(l) => map::procgen::map(&mine_spec(seed, l)),
         MapKind::Depot(l) => map::procgen::map(&depot_spec(seed, l)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
         MapKind::Reservoir => map::procgen::map(&reservoir_spec(seed)),
@@ -428,15 +433,21 @@ pub fn shield_spec(seed: u64, look: map::procgen::Look, g: Generator) -> map::pr
     }
 }
 
-/// The Ithessar crystal mine `seed` names: the Ithessar in the west, the
-/// Resonant in the east.
-pub fn mine_spec(seed: u64) -> map::procgen::Spec {
+/// The crystal mine `seed` names in `look`: its builders in the west, the
+/// Resonant (the Ithessar, at the Resonant's own) in the east.
+pub fn mine_spec(seed: u64, look: map::procgen::Look) -> map::procgen::Spec {
+    use faction::Faction;
+    let owner = look.faction();
+    let enemy = match owner {
+        Faction::Resonant => Faction::Ithessar,
+        _ => Faction::Resonant,
+    };
     map::procgen::Spec {
         seed,
         biome: map::procgen::Biome::Mine,
         setting: Default::default(),
-        look: map::procgen::Look::Ithessar,
-        sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
+        look,
+        sides: vec![owner, enemy],
         centerpiece: map::procgen::Centerpiece::Monument,
     }
 }
@@ -772,7 +783,7 @@ fn parse_args() -> Result<Args> {
                     )
                 }
                 Some("depot") => map_kind = MapKind::Depot(map::procgen::Look::Imperium),
-                Some("mine") => map_kind = MapKind::Mine,
+                Some("mine") => map_kind = MapKind::Mine(map::procgen::Look::Ithessar),
                 Some("desert") => map_kind = MapKind::Desert,
                 Some("shield-desert") => {
                     map_kind = MapKind::ShieldDesert(Generator::up(faction::Faction::Imperium))
@@ -836,10 +847,11 @@ fn parse_args() -> Result<Args> {
             }
             "--employer" => {
                 let name = args.next().unwrap_or_default();
-                employer =
-                    Some(faction::Faction::by_name(&name).with_context(|| {
+                employer = Some(
+                    faction::Faction::by_name_or_company(&name).with_context(|| {
                         format!("--employer expects a faction name, got {name:?}")
-                    })?);
+                    })?,
+                );
             }
             "--learned" => {
                 let name = args.next().unwrap_or_default();
@@ -1065,7 +1077,8 @@ fn parse_args() -> Result<Args> {
         MapKind::City(l, _)
         | MapKind::ShieldSite(l, _, _)
         | MapKind::Foundry(l, _)
-        | MapKind::Depot(l),
+        | MapKind::Depot(l)
+        | MapKind::Mine(l),
         Some(look),
     ) = (&mut map_kind, look)
     {
@@ -1098,6 +1111,7 @@ fn parse_args() -> Result<Args> {
         // The menu's ship works for whoever hired it (--employer picks one
         // working for that side, if there is one).
         Some(_) if menu_shot => 0,
+        Some(faction::Faction::Company) => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
                 "--employer: nobody hires {} here; this map is {}",
@@ -1678,7 +1692,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
-                let (fought_at, owners) = (g.tick, g.owners());
+                let owners = g.owners();
                 let s = g.step_played(&galaxy::battle::Played {
                     battle: b.clone(),
                     lost: vec![0, 0],
@@ -1690,7 +1704,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 // As the app does: the summary's of the battle's tick alone.
                 if args.ticks {
-                    summary = Some(g.tick_summary(b.system, fought_at, &owners));
+                    summary = Some(g.tick_summary(b.system, b.sides[0], &owners));
                 }
                 for _ in 0..args.quiet {
                     g.step();
@@ -1774,7 +1788,8 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let angle = vista::sway(garage::front_angle(&game.world.tanks[0]), shot.time);
     let tanks = game.display_tanks(1.0);
     let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
-    let mut frame = match menu.system() {
+    let after = summary.as_ref().map(|s| s.at(shot.time));
+    let mut frame = match after.as_ref().or(menu.system()) {
         // The missions screen: the system, in 3D.
         Some(t) => {
             let mut sys = theater_view::SystemArt::upload(&mut renderer);
@@ -1797,7 +1812,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let state = hud::SummaryState {
                 loading: false,
                 going: false,
-                time: 0.0,
+                time: shot.time,
                 hover: None,
             };
             hud::tick_summary(t, state, w, h).verts

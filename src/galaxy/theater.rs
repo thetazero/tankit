@@ -79,7 +79,7 @@ pub struct Ship {
     /// tick, or on a defense, the world under attack.
     pub over: u8,
     /// The realm that hired it, by its seat's name, and that realm's people
-    /// (index into `Faction::ALL`).
+    /// (index into `Faction::ALL`). Raiding for itself: none, and `RAID`.
     pub realm: String,
     pub side: usize,
     /// Hired to hold one of the realm's own worlds (#340, #366), not to
@@ -125,11 +125,11 @@ pub struct Job {
 /// How a contract ended (#414).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
-    /// Succeeded: the system was taken, or (on a defense) the attack was repelled.
+    /// Succeeded: the system was taken, or (on a defense) the attack was repelled, or (plundering) its vaults emptied.
     Won,
     /// Failed a defense: the world was lost.
     Fell,
-    /// Failed: every hull committed to it was lost.
+    /// Failed: every hull committed to it was lost (most of them, plundering).
     Spent,
     /// Failed: the employer no longer exists (merged into another realm, or lost all its worlds).
     Gone,
@@ -162,6 +162,9 @@ pub struct Ended {
     pub lost: u32,
     /// The player's own hulls on the contract (#385) at the end.
     pub own: Own,
+    /// Plundering: what the company took, in CR.
+    #[serde(default)]
+    pub loot: Option<u32>,
 }
 
 /// How many finished contracts of the player's company to keep. More than
@@ -211,8 +214,10 @@ pub struct SiteView {
     pub planet: u8,
     /// What kind of world that is.
     pub class: Class,
-    /// Index into `Faction::ALL`.
+    /// Index into `Faction::ALL`, or past it, raiders.
     pub owner: usize,
+    /// Whose the place is: its owner's, or under raiders, the planet's.
+    pub landlord: usize,
     pub kind: SiteKind,
     pub contested: bool,
     /// Your side commits to a battle here this tick: you can enter it.
@@ -256,11 +261,20 @@ pub struct Offer {
     pub lasts: u32,
 }
 
+/// What a contract for side `side` is for, in caps: to hold the system, to
+/// take it, or (a company raiding for itself) to plunder it.
+pub fn job(side: usize, defend: bool) -> &'static str {
+    match (side == super::RAID, defend) {
+        (true, _) => "PLUNDER",
+        (_, true) => "HOLD",
+        _ => "TAKE",
+    }
+}
+
 impl Offer {
     /// "TAKE TORKAR".
     pub fn job(&self) -> String {
-        let job = if self.defend { "HOLD" } else { "TAKE" };
-        format!("{job} {}", self.system)
+        format!("{} {}", job(self.side, self.defend), self.system)
     }
 
     /// Your side's share of the hulls there.
@@ -290,29 +304,74 @@ pub struct Sortie {
 /// What the war did to a system's hulls since your battle there began
 /// (#475): the tick summary screen between the battle's results and the
 /// contract screen, so a count gone from 5 to 55 says why.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TickSummary {
-    pub system: usize,
     pub name: String,
-    /// Ticks since the battle began: its own, and the ones the war went on
-    /// without you after it.
-    pub ticks: u64,
     /// Every side with hulls there before or now, the most now first, each
     /// followed by the company on contract for it there, if any.
     pub sides: Vec<SideChange>,
     /// The system's sites that changed hands since, in order.
     pub flips: Vec<Flip>,
+    /// The system as it is now, from the side you fought for.
+    pub theater: Theater,
 }
 
 /// A site that changed hands, in a `TickSummary`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flip {
-    /// Which world of the system it's on (0 for the first), and what it is.
-    pub planet: u8,
-    pub kind: &'static str,
+    /// Which (an index into `Galaxy::sites`).
+    pub site: usize,
     /// Who held it, and who does now (indices into `Faction::ALL`).
     pub from: usize,
     pub to: usize,
+}
+
+impl TickSummary {
+    /// Seconds before anything moves; how long the hulls take to; and when
+    /// the first site changes hands, and each after it.
+    pub const HOLD: f32 = 0.7;
+    pub const RUN: f32 = 1.6;
+    const FLIP: (f32, f32) = (1.2, 0.45);
+
+    /// When flip `k` happens, seconds in.
+    pub fn flips_at(k: usize) -> f32 {
+        Self::FLIP.0 + Self::FLIP.1 * k as f32
+    }
+
+    /// Each side's hulls when the battle began, its mercs' among them.
+    pub fn before(&self) -> [u32; SIDES] {
+        let mut out = [0; SIDES];
+        for c in &self.sides {
+            out[c.side] += c.before;
+        }
+        out
+    }
+
+    /// The system `time` seconds into the page: from as it was before the
+    /// battle to as it is now.
+    pub fn at(&self, time: f32) -> Theater {
+        let mut t = self.theater.clone();
+        let u = ((time - Self::HOLD) / Self::RUN).clamp(0.0, 1.0);
+        let u = u * u * (3.0 - 2.0 * u);
+        let part = |c: &SideChange| {
+            (c.before as f32 + (c.now as f32 - c.before as f32) * u).round() as u32
+        };
+        (t.hulls, t.mercs) = ([0; SIDES], [0; SIDES]);
+        for c in &self.sides {
+            t.hulls[c.side] += part(c);
+            if c.merc {
+                t.mercs[c.side] += part(c);
+            }
+        }
+        for (k, f) in self.flips.iter().enumerate() {
+            if time < Self::flips_at(k)
+                && let Some(s) = t.sites.iter_mut().find(|s| s.index == f.site)
+            {
+                s.owner = f.from;
+            }
+        }
+        t
+    }
 }
 
 /// One side's hulls in a `TickSummary`.
@@ -431,7 +490,7 @@ impl Class {
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
             MapKind::City(..)
-            | MapKind::Mine
+            | MapKind::Mine(_)
             | MapKind::Desert
             | MapKind::Depot(_)
             | MapKind::Reservoir => self == Class::Desert,
@@ -510,6 +569,7 @@ impl SiteView {
             planet: 0,
             class: Class::Placeholder,
             owner: 0,
+            landlord: 0,
             kind: if shield {
                 SiteKind::Shield { damaged: false }
             } else {
@@ -528,7 +588,7 @@ impl SiteView {
     }
 
     /// The map it's fought on: its mission's, a city in its founder's style,
-    /// a foundry in its founder's own on its world's ground,
+    /// a depot or mine in its founder's own, a foundry too on its world's ground,
     /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
@@ -542,6 +602,7 @@ impl SiteView {
             return match kind {
                 MapKind::City(..) => MapKind::City(look, setting),
                 MapKind::Depot(_) => MapKind::Depot(Look::own(self.founder())),
+                MapKind::Mine(_) => MapKind::Mine(Look::own(self.founder())),
                 MapKind::Foundry(_, ground) => MapKind::Foundry(
                     Look::own(self.founder()),
                     self.class.ground().unwrap_or(ground),
@@ -550,7 +611,7 @@ impl SiteView {
             };
         };
         let made = Generator {
-            owner: Faction::side(self.owner),
+            owner: Faction::side(self.landlord),
             condition: if damaged {
                 Condition::DAMAGED
             } else {
@@ -614,18 +675,9 @@ impl Theater {
         } else {
             holder.filter(|&f| self.held[f] > 0)
         };
-        (0..PEOPLES)
+        (0..SIDES)
             .filter(|&f| self.hulls[f] >= AT_WAR && Some(f) != defender)
             .collect()
-    }
-
-    /// The sides in the war here (hulls or sites), most hulls first.
-    pub fn sides(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = (0..PEOPLES)
-            .filter(|&f| self.hulls[f] >= AT_WAR || self.held[f] > 0)
-            .collect();
-        out.sort_by_key(|&a| std::cmp::Reverse(self.hulls[a]));
-        out
     }
 }
 
@@ -681,18 +733,12 @@ impl Galaxy {
         }
         let present = self.present(s);
         let mut out = self.targets(s, f);
-        for g in (0..PEOPLES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
+        for g in (0..SIDES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
             for t in self.targets(s, g) {
                 if self.sites[t].owner as usize == f && !out.contains(&t) {
                     out.push(t);
                 }
             }
-        }
-        // Not against a raiding company: there's no such battle to play yet.
-        if present[super::RAID] || self.systems[s].held[super::RAID] > 0 {
-            let first = self.site_range(s).start;
-            let at = self.site_enemies(s, f);
-            out.retain(|&i| at[i - first] != super::RAID);
         }
         out.sort();
         out
@@ -705,9 +751,7 @@ impl Galaxy {
             let co = &self.companies[c];
             !co.pilots.is_empty()
                 && co.contract.is_some_and(|k| {
-                    k.side as usize != super::RAID
-                        && k.field > 0
-                        && !self.commits(k.target as usize, k.side as usize).is_empty()
+                    k.field > 0 && !self.commits(k.target as usize, k.side as usize).is_empty()
                 })
         })
     }
@@ -805,6 +849,16 @@ impl Galaxy {
         (cr.round() as u32, kill)
     }
 
+    /// The gear tier side `f` fights in system `s` with: its realm's, or a
+    /// raiding company's pilots'.
+    pub(crate) fn tier_at(&self, s: usize, f: usize) -> u8 {
+        match self.systems[s].realms[f] {
+            _ if f == super::RAID => self.gear(s, f),
+            super::realm::NONE => 0,
+            r => self.realms[r as usize].tier,
+        }
+    }
+
     /// The companies that would take you on: those with a battle for you
     /// this tick, and those on their way to one, that can pay you.
     fn hiring(&self) -> impl Iterator<Item = usize> + '_ {
@@ -817,8 +871,7 @@ impl Galaxy {
                 k.field > 0 && !self.commits(k.target as usize, k.side as usize).is_empty()
             };
             let wage = self.wage_for_you(c);
-            k.side as usize != super::RAID
-                && ready
+            ready
                 && !co.pilots.is_empty()
                 && wage > 0.0
                 && wage <= co.crystals
@@ -829,17 +882,17 @@ impl Galaxy {
     /// Company `c`'s contract as an offer to you (or, yours, as you signed).
     fn offer_of(&self, c: usize, rank: u32) -> Option<Offer> {
         let co = &self.companies[c];
-        let k = co.contract.filter(|k| k.side as usize != super::RAID)?;
+        let k = co.contract?;
         let (s, f) = (k.target as usize, k.side as usize);
         let sys = &self.systems[s];
         let at = self.site_enemies(s, f);
         let first = self.site_range(s).start;
         let commits = self.commits(s, f);
-        let enemy = (0..PEOPLES).filter(|&e| e != f).max_by_key(|&e| {
+        let enemy = (0..SIDES).filter(|&e| e != f).max_by_key(|&e| {
             let fights = commits.iter().filter(|&&i| at[i - first] == e).count();
             (fights, sys.hulls[e], sys.held[e])
         })?;
-        // Nobody there to fight, or only raiders.
+        // Nobody there to fight.
         if sys.hulls[enemy] == 0 {
             return None;
         }
@@ -866,10 +919,7 @@ impl Galaxy {
             hulls: sys.hulls[f] + k.inbound,
             mercs: mercs.min(sys.hulls[f]) + k.inbound,
             foes: sys.hulls[enemy],
-            tier: match sys.realms[enemy] {
-                super::realm::NONE => 0,
-                r => self.realms[r as usize].tier,
-            },
+            tier: self.tier_at(s, enemy),
             own: own.min(k.field + k.inbound),
             wage,
             kill,
@@ -1061,7 +1111,7 @@ impl Galaxy {
     /// The theater aboard company `c` (an index into `companies`).
     fn aboard_company(&self, c: usize, rank: u32) -> Option<Theater> {
         let co = &self.companies[c];
-        let k = co.contract.filter(|k| k.side as usize != super::RAID)?;
+        let k = co.contract?;
         let (s, f) = (k.target as usize, k.side as usize);
         if k.field == 0 || co.pilots.is_empty() || self.commits(s, f).is_empty() {
             return None;
@@ -1086,7 +1136,10 @@ impl Galaxy {
             id: co.id,
             name: ship_name(co.id),
             over,
-            realm: system_name(self.realms[k.realm as usize].seat as usize),
+            realm: self
+                .realms
+                .get(k.realm as usize)
+                .map_or(String::new(), |r| system_name(r.seat as usize)),
             side: f,
             defend: k.defend,
             ticks_left: (k.arrives + self.rules.merc_term as u64).saturating_sub(self.tick),
@@ -1137,7 +1190,7 @@ impl Galaxy {
                 attacker[t - sys.sites.0 as usize].get_or_insert(g);
             }
         }
-        let strongest = (0..PEOPLES)
+        let strongest = (0..SIDES)
             .filter(|&g| present[g] && self.hostile(f, g))
             .max_by_key(|&a| sys.hulls[a])
             .unwrap_or((f + 1) % PEOPLES);
@@ -1156,16 +1209,15 @@ impl Galaxy {
     }
 
     /// System `s`'s tick summary (#475): its hulls since the battle fought
-    /// there at tick `fought_at` began (`moves` start over then).
-    pub fn tick_summary(&self, s: usize, fought_at: u64, owners: &[u8]) -> TickSummary {
+    /// there began (`moves` start over then).
+    pub fn tick_summary(&self, s: usize, employer: usize, owners: &[u8]) -> TickSummary {
         let sys = &self.systems[s];
         let (a, b) = (sys.sites.0 as usize, sys.sites.1 as usize);
         let flips = (a..b)
             .filter_map(|i| {
                 let (site, was) = (&self.sites[i], *owners.get(i)?);
                 (site.owner != was).then(|| Flip {
-                    planet: site.planet,
-                    kind: kind_name(site.kind),
+                    site: i,
                     from: was as usize,
                     to: site.owner as usize,
                 })
@@ -1203,12 +1255,16 @@ impl Galaxy {
                 sides.push(mercs);
             }
         }
+        // No battles to pick on it: what's next is the contract page's.
+        let mut theater = self.theater_at(s, employer);
+        for site in &mut theater.sites {
+            site.committed = false;
+        }
         TickSummary {
-            system: s,
             name: system_name(s),
-            ticks: self.tick.saturating_sub(fought_at),
             sides,
             flips,
+            theater,
         }
     }
 
@@ -1264,6 +1320,13 @@ impl Galaxy {
                     planet: site.planet,
                     class: world_class,
                     owner,
+                    landlord: match owner {
+                        super::RAID => {
+                            let v = self.vault_at[s] as usize + site.planet as usize;
+                            self.vaults[v].side as usize
+                        }
+                        f => f,
+                    },
                     kind: site.kind,
                     contested: contested.contains(&i),
                     committed: commits.contains(&i),
@@ -1290,10 +1353,7 @@ impl Galaxy {
                 std::array::from_fn(|f| mercs[f].min(sys.hulls[f]))
             },
             held: sys.held,
-            tiers: std::array::from_fn(|g| match sys.realms[g] {
-                super::realm::NONE => 0,
-                r => self.realms[r as usize].tier,
-            }),
+            tiers: std::array::from_fn(|g| self.tier_at(s, g)),
             sites,
             contested,
             tick: self.tick,
@@ -1406,6 +1466,116 @@ mod tests {
             }
         }
         panic!("only {seen} defenses with a battle for you in 1500 ticks");
+    }
+
+    /// Your company on a raid (#546): the theater's its own, you fight in its
+    /// hulls for nobody, it pays you, what it takes is counted, and how the
+    /// raid ended is kept.
+    #[test]
+    fn your_company_plunders() {
+        let mut g = galaxy();
+        let (mut raids, mut offered) = (0, 0);
+        // A raid you stay on till it's over.
+        let mut on: Option<(u32, u64)> = None;
+        let mut ended = None;
+        for _ in 0..1500 {
+            g.step();
+            if let Some((id, signed)) = on {
+                let find = |e: &&Ended| e.ship == id && e.signed == signed;
+                if let Some(e) = g.ended.iter().find(find) {
+                    ended = Some(*e);
+                    on = None;
+                }
+            }
+            for c in 0..g.companies.len() {
+                let Some(k) = g.companies[c].contract else {
+                    continue;
+                };
+                let (s, f) = (k.target as usize, k.side as usize);
+                let raid = f == crate::galaxy::RAID;
+                if on.is_some() || !raid {
+                    continue;
+                }
+                let Some(t) = g.aboard_company(c, 1) else {
+                    continue;
+                };
+                assert_eq!(t.employer, f);
+                for site in t.sites.iter().filter(|s| s.committed) {
+                    assert_ne!(site.enemy, f);
+                    assert!(site.landlord < PEOPLES);
+                    let sides = [Faction::side(f), Faction::side(site.enemy)];
+                    let b = g
+                        .muster_at(s, &sides, Some(site.index), Some(g.companies[c].id))
+                        .expect("a battle with the company in it");
+                    assert_eq!(b.mercs(0), b.allocation[0], "all its own");
+                }
+                raids += 1;
+                offered += g.offer_of(c, 1).is_some_and(|o| o.wage > 0) as u32;
+                if ended.is_none() {
+                    g.crew = Some(g.companies[c].id);
+                    g.stay_on();
+                    assert!(g.aboard(1).is_some() && g.pay_rates().is_some());
+                    on = Some((g.companies[c].id, k.signed));
+                }
+            }
+            if raids > 20 && ended.is_some() {
+                assert!(offered > 0);
+                assert!(ended.unwrap().loot.is_some());
+                return;
+            }
+        }
+        panic!("{raids} raids, ended {ended:?}");
+    }
+
+    /// A company hired to hold a world from raiders (#546) has battles for
+    /// you, against them, and is on the board.
+    #[test]
+    fn raided_worlds_hire_you_against_the_raiders() {
+        let raiders = crate::galaxy::RAID;
+        let mut g = galaxy();
+        for _ in 0..1500 {
+            g.step();
+            let raid = (0..g.systems.len()).find_map(|s| {
+                let sys = &g.systems[s];
+                let mut sides = (0..PEOPLES).filter(|&e| sys.hulls[e] >= 5);
+                let e = sides.next()?;
+                (sys.hulls[raiders] >= 5 && sides.next().is_none() && sys.held[e] > 0)
+                    .then_some((s, e))
+            });
+            let idle = (0..g.companies.len()).find(|&c| {
+                let co = &g.companies[c];
+                co.contract.is_none() && co.pilots.iter().any(|p| p.wage > 0.0)
+            });
+            let (Some((s, e)), Some(c)) = (raid, idle) else {
+                continue;
+            };
+            g.systems[s].hulls[e] += 3;
+            g.companies[c].crystals += 1000.0;
+            g.companies[c].contract = Some(crate::galaxy::merc::Contract {
+                realm: g.systems[s].realms[e],
+                side: e as u8,
+                target: s as u32,
+                committed: 3,
+                field: 3,
+                defend: true,
+                ..Default::default()
+            });
+            let t = g.aboard_company(c, 1).expect("a battle");
+            let site = t
+                .sites
+                .iter()
+                .find(|x| x.committed && x.enemy == raiders)
+                .expect("a battle against the raiders");
+            let sides = [Faction::side(e), Faction::side(site.enemy)];
+            let id = Some(g.companies[c].id);
+            let b = g.muster_at(s, &sides, Some(site.index), id).unwrap();
+            assert!(b.mercs(0) >= 1);
+            assert_eq!(b.mercs(1), b.allocation[1], "raiders are all mercs");
+            assert!(g.hiring().any(|h| h == c));
+            assert_eq!(g.offer_of(c, 1).expect("an offer").enemy, raiders);
+            return;
+        }
+        panic!("no raid to fight off");
     }
 
     /// A new pilot joins the company in the biggest fight (or one working
@@ -1736,7 +1906,8 @@ mod tests {
                     }
                     assert_eq!(s.kind_name() == CRYSTAL_MINE, mine);
                     assert_eq!((s.mission, s.map_seed), (other.mission, other.map_seed));
-                    in_mine[(s.map_kind() == MapKind::Mine) as usize] += 1;
+                    in_mine[matches!(s.map_kind(), MapKind::Mine(l) if l == Look::own(s.founder()))
+                        as usize] += 1;
                 }
             }
             assert!(in_mine[mine as usize] > 0, "{in_mine:?}");
