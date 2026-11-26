@@ -19,7 +19,7 @@ use crate::galaxy::theater::{
     Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name,
 };
 use crate::garage::{self, PANEL_W, PANEL_X};
-use crate::mission::{Contract, MISSIONS};
+use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
@@ -44,11 +44,8 @@ pub enum Nav {
 pub enum Screen {
     Main,
     /// The theater your company's ship is on contract in: its system, with
-    /// the contested sites to pick from.
+    /// its fights to pick from and deploy into.
     Missions,
-    /// One contested site: what fighting there means, and deploy if your
-    /// side commits to it.
-    Site,
     Settings,
     /// Settings' key bindings.
     Controls,
@@ -109,6 +106,8 @@ pub enum Hit {
     Fight(usize),
     /// On the main menu: star `i` of the cluster map, to read.
     Star(usize),
+    /// DEPLOY on the contract page.
+    Deploy,
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -247,7 +246,12 @@ impl Controls {
         let (row, slot) = match hit {
             Hit::Row(i) => (i, self.slot),
             Hit::Bind(i, s) => (i, s),
-            Hit::Volume | Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) => return false,
+            Hit::Volume
+            | Hit::Back
+            | Hit::Continue
+            | Hit::Fight(_)
+            | Hit::Star(_)
+            | Hit::Deploy => return false,
         };
         if self.capturing || (row, slot) == (self.row, self.slot) {
             return false;
@@ -387,28 +391,23 @@ impl Menu {
                     .as_ref()
                     .map(|c| Action::Crew(c.ships[self.pick].id));
             }
-            (Screen::Missions | Screen::Site, Nav::Up | Nav::Down) => {
+            (Screen::Missions, Nav::Up | Nav::Down) => {
+                // Only the sites your side fights for: there's no entering the rest.
                 let n = self.contested();
-                if n > 0 {
+                for _ in 0..n {
                     self.site = step(self.site, n, nav);
+                    if self.selected_site().is_some_and(|s| s.committed) {
+                        break;
+                    }
                 }
             }
+            (Screen::Missions, Nav::Select) if self.transfer.is_some() => self.transfer = None,
             (Screen::Missions, Nav::Select) => {
-                if self.contested() > 0 {
-                    self.screen = Screen::Site;
-                }
+                let t = self.theater.as_ref().filter(|t| !t.contested.is_empty())?;
+                return Some(t.sortie(self.site).map_or(Action::Refused, Action::Fight));
             }
             (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
-            (Screen::Site, Nav::Select) => {
-                return Some(
-                    self.theater
-                        .as_ref()
-                        .and_then(|t| t.sortie(self.site))
-                        .map_or(Action::Refused, Action::Fight),
-                );
-            }
-            (Screen::Site, Nav::Back) => self.screen = Screen::Missions,
-            (Screen::Missions | Screen::Site, Nav::Left | Nav::Right) => {}
+            (Screen::Missions, Nav::Left | Nav::Right) => {}
             (Screen::Settings, Nav::Up | Nav::Down) => {
                 self.setting = step(self.setting, SETTING_ROWS, nav)
             }
@@ -464,7 +463,7 @@ impl Menu {
 
     /// The screen is showing the theater: the app keeps it up to date.
     pub fn wants_theater(&self) -> bool {
-        matches!(self.screen, Screen::Missions | Screen::Site)
+        self.screen == Screen::Missions
     }
 
     /// The screen is showing the ships to switch to: the app keeps them up to date.
@@ -561,10 +560,6 @@ impl Menu {
         if c.as_ref().map(|c| c.choice) != self.choice.as_ref().map(|c| c.choice) {
             self.pick = 0;
         }
-        // A choice to make comes before any site.
-        if c.is_some() && self.screen == Screen::Site {
-            self.screen = Screen::Missions;
-        }
         self.choice = c;
     }
 
@@ -574,7 +569,7 @@ impl Menu {
     }
 
     /// Show `t` on the missions screen. The same site stays selected if it's
-    /// still contested; else the first your side fights for.
+    /// still one your side fights for; else the first that is.
     pub fn set_theater(&mut self, t: Option<Theater>) {
         let was = self
             .theater
@@ -584,17 +579,16 @@ impl Menu {
             .as_ref()
             .and_then(|t| {
                 let same = (0..t.contested.len()).find(|&k| {
-                    was == Some((
-                        t.system,
-                        t.contested_site(k).map_or(usize::MAX, |s| s.index),
-                    ))
+                    t.sortie(k).is_some()
+                        && was
+                            == Some((
+                                t.system,
+                                t.contested_site(k).map_or(usize::MAX, |s| s.index),
+                            ))
                 });
                 same.or_else(|| (0..t.contested.len()).find(|&k| t.sortie(k).is_some()))
             })
             .unwrap_or(0);
-        if t.as_ref().is_none_or(|t| t.contested.is_empty()) && self.screen == Screen::Site {
-            self.screen = Screen::Missions;
-        }
         // Onto the next contract (another ship's, or in another system):
         // the move plays over the system view.
         if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
@@ -724,7 +718,7 @@ impl Menu {
     /// between contracts, and the war goes on until it has one (the app
     /// runs it, a slice a frame, and counts it here with `waited`).
     pub fn waiting(&self) -> bool {
-        matches!(self.screen, Screen::Missions | Screen::Site)
+        self.screen == Screen::Missions
             && self.choice.is_none()
             && self.theater.as_ref().is_none_or(|t| t.contested.is_empty())
     }
@@ -734,7 +728,7 @@ impl Menu {
         self.waited += ticks;
     }
 
-    /// Select contested site `k` (on the missions or site screen).
+    /// Select contested site `k` (on the missions screen).
     pub fn pick_site(&mut self, k: usize) {
         if k < self.contested() {
             self.site = k;
@@ -772,15 +766,16 @@ impl Menu {
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Fight(_) | Hit::Star(_) => return false,
+            Hit::Fight(_) | Hit::Star(_) | Hit::Deploy => return false,
             Hit::Back | Hit::Continue => unreachable!(),
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
             Screen::Missions if self.choice.is_some() => &mut self.pick,
-            Screen::Missions => &mut self.site,
-            // Its one row, DEPLOY or SIGN ON: nothing to select.
-            Screen::Site | Screen::Contract => return false,
+            // Picked by a click, so the way to DEPLOY doesn't pick others.
+            Screen::Missions => return false,
+            // Its one row, SIGN ON: nothing to select.
+            Screen::Contract => return false,
             Screen::Settings | Screen::Controls => &mut self.setting,
             Screen::Ships => &mut self.ship,
         };
@@ -817,7 +812,13 @@ impl Menu {
                     Some(Action::Setting(volume_click(settings, at.x))),
                 );
             }
-            Hit::Row(_) | Hit::Bind(..) | Hit::Continue => Nav::Select,
+            Hit::Row(k) if self.screen == Screen::Missions && self.choice.is_none() => {
+                if self.summary().is_none() {
+                    self.pick_site(k);
+                }
+                return (Nav::Down, None);
+            }
+            Hit::Row(_) | Hit::Bind(..) | Hit::Continue | Hit::Deploy => Nav::Select,
             Hit::Back | Hit::Fight(_) | Hit::Star(_) => unreachable!(),
         };
         (nav, self.input(nav))
@@ -851,9 +852,9 @@ impl Menu {
     /// The map the selected site is fought on, and the side you'd take in
     /// it (always the first: the theater's sides stand in for the map's):
     /// the menu's backdrop shows it (under the system view on the missions
-    /// screen, loaded ready for the site's). None off the theater.
+    /// screen, loaded ready to deploy). None off the theater.
     pub fn backdrop(&self) -> Option<(MapKind, u64, usize)> {
-        matches!(self.screen, Screen::Missions | Screen::Site)
+        (self.screen == Screen::Missions)
             .then(|| self.selected_site().map(|s| (s.map_kind(), s.map_seed, 0)))
             .flatten()
     }
@@ -878,7 +879,11 @@ impl Menu {
         match self.system() {
             Some(t) => {
                 crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
-                garage::backdrop_fading(&mut p, h, 50.0);
+                self.draw_system(&mut p, &mut hits, profile, w, h);
+                return Layer {
+                    verts: fade(p.finish(), alpha),
+                    hits,
+                };
             }
             None => garage::backdrop(&mut p, h),
         }
@@ -895,51 +900,7 @@ impl Menu {
                 let c = self.choice.as_ref().unwrap();
                 draw_choice(&mut p, &mut hits, Vec2::new(x, y), c, self.pick);
             }
-            // The contract that ended, over the theater it was in (#414):
-            // its panel's only to look at, the card's CONTINUE goes on.
-            Screen::Missions if self.card.is_some() => {
-                let (t, e) = self.card.as_ref().unwrap();
-                self.draw_theater(&mut p, &mut Hits::new(), Vec2::new(x, y), t);
-                crate::theater_view::draw(
-                    &mut p,
-                    &mut hits,
-                    t,
-                    None,
-                    Some(e),
-                    self.site,
-                    self.go_lit,
-                    w,
-                    h,
-                );
-            }
-            Screen::Missions => match &self.theater {
-                Some(t) if !t.contested.is_empty() => {
-                    self.draw_theater(&mut p, &mut hits, Vec2::new(x, y), t);
-                    crate::theater_view::draw(
-                        &mut p,
-                        &mut hits,
-                        t,
-                        self.transfer.as_ref(),
-                        None,
-                        self.site,
-                        self.go_lit,
-                        w,
-                        h,
-                    );
-                }
-                _ => {
-                    self.no_posting(&mut p, Vec2::new(x, y), profile);
-                    crate::theater_view::waiting(&mut p, self.waited, self.clock, w, h);
-                }
-            },
-            Screen::Site => match (&self.theater, self.selected_site()) {
-                (Some(t), Some(site)) => {
-                    self.draw_site(&mut p, &mut hits, Vec2::new(x, y), t, site, profile);
-                }
-                _ => {
-                    self.no_posting(&mut p, Vec2::new(x, y), profile);
-                }
-            },
+            Screen::Missions => self.no_posting(&mut p, Vec2::new(x, y), profile),
             Screen::Settings => {
                 body(&mut p, Vec2::new(x, y), "Settings", theme::DIM);
                 y += 26.0;
@@ -1080,235 +1041,149 @@ impl Menu {
         );
     }
 
-    /// The theater's panel: your company, the system, your contract, then
-    /// its contested sites to pick from. (How each side's doing there is in
-    /// the system view beside it.)
-    fn draw_theater(&self, p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, t: &Theater) {
-        let (x, mut y) = (at.x, at.y);
-        let employer = Faction::side(t.employer);
-        match &t.ship {
-            Some(ship) => faction_line(
-                p,
-                Vec2::new(x, y),
-                Faction::Company,
-                &format!("The {}", title(&ship.name)),
-            ),
-            None => faction_line(
-                p,
-                Vec2::new(x, y),
-                employer,
-                &format!("{} posting", title(employer.name())),
-            ),
-        };
-        y += 28.0;
-        p.text(
-            Vec2::new(x, y),
-            &t.name,
-            &TextStyle::value(22.0),
-            Align::Left,
-        );
-        y += 34.0;
-        let planets = match t.planets {
-            1 => "1 world".to_string(),
-            n => format!("{n} worlds"),
-        };
-        let over = match &t.ship {
-            Some(ship) => format!("Over {} {} · ", title(&t.name), numeral(ship.over)),
-            None => String::new(),
-        };
-        body(
-            p,
-            Vec2::new(x, y),
-            &format!("{over}{planets} · {} sites", t.sites.len()),
-            theme::DIM,
-        );
-        y += 30.0;
-        if let Some(ship) = &t.ship {
-            y = contract(p, Vec2::new(x, y), ship, &t.name) + 16.0;
-        }
-
-        // The contested sites.
-        if t.contested.is_empty() {
-            return;
-        }
-        body(p, Vec2::new(x, y), "Contested", theme::DIM);
-        y += 24.0;
-        let names: Vec<String> = t
-            .contested
-            .iter()
-            .map(|&i| {
-                let s = &t.sites[i];
-                let kind = s.kind_name().trim_end_matches(" GENERATOR");
-                if s.damaged() {
-                    format!("{} · {kind} · DAMAGED", numeral(s.planet))
-                } else {
-                    format!("{} · {kind}", numeral(s.planet))
-                }
-            })
-            .collect();
-        let items: Vec<Item> = names.iter().map(|n| Item::Acts(n)).collect();
-        rows(p, hits, Vec2::new(x, y), &items, self.site);
-        for (k, &i) in t.contested.iter().enumerate() {
-            let s = &t.sites[i];
-            let (tag, color) = if s.committed {
-                ("Fighting", theme::HOT)
-            } else {
-                ("", theme::DIM)
-            };
-            let mut style = BODY;
-            style.color = color;
-            let ry = y + k as f32 * ROW + 3.0;
-            let right = x + PANEL_W;
-            let tw = p.text(Vec2::new(right, ry), tag, &style, Align::Right);
-            // Whose it is.
-            let owner = Faction::side(s.owner);
-            let size = 12.0;
-            emblem::emblem(
-                p,
-                owner,
-                Vec2::new(right - tw - 14.0 - size * 0.5, ry + 5.0),
-                size,
-                1.1,
-                owner.ui(),
-            );
-        }
-    }
-
-    /// The site screen's panel: what the site is and where, who you'd fight,
-    /// the contract and map it's fought with, what a win does, and the pay.
-    fn draw_site(
+    /// The contract page: the system with its marks, and the panel over it.
+    fn draw_system(
         &self,
         p: &mut Painter,
         hits: &mut Hits<Hit>,
-        at: Vec2,
-        t: &Theater,
-        site: &SiteView,
         profile: &Profile,
+        w: f32,
+        h: f32,
     ) {
-        let (x, mut y) = (at.x, at.y);
-        let employer = Faction::side(t.employer);
-        let owner = Faction::side(site.owner);
-        let enemy = Faction::side(site.enemy);
-        if let Some(ship) = &t.ship {
-            faction_line(
-                p,
-                Vec2::new(x, y),
-                Faction::Company,
-                &format!("The {}", title(&ship.name)),
-            );
-            y += 28.0;
-        }
-        p.text(
-            Vec2::new(x, y),
-            site.kind_name(),
-            &TextStyle::value(22.0),
-            Align::Left,
-        );
-        y += 34.0;
-        // Where, and (a generator) the state its shield is in now (#477).
-        let state = match (site.is_shield(), site.damaged()) {
-            (true, false) => " · shield up",
-            (true, true) => " · damaged, shield down",
-            _ => "",
-        };
-        body(
-            p,
-            Vec2::new(x, y),
-            &format!("{}{state}", planet(t, site)),
-            theme::DIM,
-        );
-        y += 20.0;
-        // Who you fight, and for whom.
-        let tag = |p: &mut Painter, at: Vec2, f: Faction| {
-            let mut style = BODY;
-            style.color = f.ui();
-            emblem::tagged(p, at, f, &title(f.name()), &style, Align::Left)
-        };
-        let mut cx = x;
-        if site.owner == t.employer {
-            cx += body(p, Vec2::new(cx, y), "Defend from ", theme::DIM);
-            tag(p, Vec2::new(cx, y), enemy);
-        } else if site.owner == site.enemy {
-            cx += body(p, Vec2::new(cx, y), "Attack ", theme::DIM);
-            tag(p, Vec2::new(cx, y), enemy);
+        use crate::theater_view;
+        // The contract that ended, over the theater it was in (#414): its
+        // card's CONTINUE goes on.
+        if let Some((t, e)) = &self.card {
+            theater_view::draw(p, hits, t, None, Some(e), self.site, self.go_lit, w, h);
+        } else if let Some(t) = self.theater.as_ref().filter(|t| !t.contested.is_empty()) {
+            let moving = self.transfer.as_ref();
+            theater_view::draw(p, hits, t, moving, None, self.site, self.go_lit, w, h);
         } else {
-            cx += body(p, Vec2::new(cx, y), "Help ", theme::DIM);
-            cx += tag(p, Vec2::new(cx, y), owner);
-            cx += body(p, Vec2::new(cx, y), " against ", theme::DIM);
-            tag(p, Vec2::new(cx, y), enemy);
+            theater_view::waiting(p, self.waited, self.clock);
         }
-        y += 32.0;
+        design::panel(p, h);
+        let shown = match &self.card {
+            Some((t, _)) => Some(t),
+            None => self.theater.as_ref().filter(|t| !t.contested.is_empty()),
+        };
+        // Nothing to pick while a contract ends or you're on the move.
+        let live = self.card.is_none() && self.transfer.is_none();
+        match shown {
+            Some(t) => self.draw_job(p, hits, profile, t, live, h),
+            None => {
+                let at = Vec2::splat(design::MARGIN);
+                p.text(at, "No work", &design::HEAD, Align::Left);
+            }
+        }
+        let at = Vec2::new(design::MARGIN, h - design::MARGIN - design::SMALL.size);
+        let (min, size) = design::link(p, at, "Back", self.back_lit);
+        hits.add(p, min, size, Hit::Back);
+    }
 
-        let m = &MISSIONS[site.mission];
-        body(
-            p,
-            Vec2::new(x, y),
-            &format!("{} · {}", title(m.contract.name()), title(m.map)),
-            theme::FG,
-        );
-        y += 22.0;
-        y = wrap(
-            p,
-            Vec2::new(x, y),
-            &stake(m.contract, site, employer),
-            theme::DIM,
-        );
-        y += 18.0;
-        let big = TextStyle::value(22.0);
-        let col = x + 150.0;
-        // What you'd be up against: the enemy realm's gear (#438); harder
-        // pays better.
-        let tier = t.tiers[site.enemy];
-        p.text(
-            Vec2::new(x, y),
-            &crate::economy::level_label(tier),
-            &big,
-            Align::Left,
-        );
-        let pw = p.text(
-            Vec2::new(col, y),
-            &crate::economy::win_pay(tier).to_string(),
-            &big,
-            Align::Left,
-        );
-        body(p, Vec2::new(col + pw + 6.0, y + 11.0), "CR", theme::DIM);
-        y += 32.0;
-        body(p, Vec2::new(x, y), "Their gear", theme::DIM);
-        body(p, Vec2::new(col, y), "Win, plus kills", theme::DIM);
-        y += 30.0;
-        // What wrecking them would teach you (#438, #457): their parts you
-        // don't have yet, and how far you've got with each.
-        let unknown: Vec<String> = crate::economy::PARTS
+    /// The contract page's panel: the job and who it's for, its fights to
+    /// pick from, and (while there's a pick to make: `live`) the one picked
+    /// and DEPLOY.
+    fn draw_job(
+        &self,
+        p: &mut Painter,
+        hits: &mut Hits<Hit>,
+        profile: &Profile,
+        t: &Theater,
+        live: bool,
+        h: f32,
+    ) {
+        use design::{BLUE, BODY, HEAD, SMALL, TEXT, TEXT_2, UNIT};
+        let x = design::MARGIN;
+        let right = x + design::COLUMN;
+        let mut y = design::MARGIN;
+
+        // The job, who it's for, and what you've got to do it with.
+        let job = match &t.ship {
+            Some(s) if s.defend => "Hold",
+            _ => "Take",
+        };
+        p.text(Vec2::new(x, y), job, &HEAD, Align::Left);
+        y += UNIT * 3.5;
+        p.text(Vec2::new(x, y), &t.name, &HEAD, Align::Left);
+        y += UNIT * 4.0;
+        let employer = Faction::side(t.employer);
+        let style = BODY.colored(employer.ui());
+        let at = Vec2::new(x, y);
+        emblem::tagged(p, at, employer, employer.name(), &style, Align::Left);
+        if let Some(ship) = &t.ship {
+            y += UNIT * 4.0;
+            let yours = ship.own.left.min(ship.committed);
+            let crew = format!("{} hulls", ship.committed);
+            let at = Vec2::new(x, y);
+            p.text(at, &crew, &SMALL.colored(TEXT_2), Align::Left);
+            let mine = format!("{yours} yours");
+            let style = SMALL.colored(design::AMBER);
+            p.text(Vec2::new(right, y), &mine, &style, Align::Right);
+        }
+        if !live {
+            return;
+        }
+
+        // The fights.
+        y += UNIT * 7.0;
+        let fights = (0..t.contested.len()).filter(|&k| t.sites[t.contested[k]].committed);
+        let mut any = false;
+        for k in fights {
+            any = true;
+            let s = &t.sites[t.contested[k]];
+            let on = k == self.site;
+            let style = BODY.colored(if on { design::AMBER } else { TEXT });
+            let name = format!("{} {}", numeral(s.planet), s.short_name());
+            p.text(Vec2::new(x, y), &name, &style, Align::Left);
+            let enemy = Faction::side(s.enemy);
+            let at = Vec2::new(right - 7.0, y + BODY.size * 0.5);
+            emblem::emblem(p, enemy, at, 14.0, 1.2, enemy.ui());
+            let pad = (UNIT * 4.0 - BODY.size) * 0.5;
+            hits.add(
+                p,
+                Vec2::new(x - UNIT * 2.0, y - pad),
+                Vec2::new(design::COLUMN + UNIT * 4.0, UNIT * 4.0),
+                Hit::Row(k),
+            );
+            y += UNIT * 4.0;
+        }
+        let picked = self.selected_site().filter(|s| s.committed);
+        let Some(site) = picked.filter(|_| any) else {
+            let style = BODY.colored(TEXT_2);
+            p.text(Vec2::new(x, y), "No fight yet", &style, Align::Left);
+            return;
+        };
+
+        // The one picked, up from the foot.
+        let deploy = h - design::MARGIN - UNIT * 10.0;
+        let enemy = Faction::side(site.enemy);
+        let unknown: Vec<_> = crate::economy::PARTS
             .into_iter()
             .filter(|&part| part.maker() == enemy && !profile.owns(part))
-            .map(|part| {
-                let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
-                format!("{} {pct}%", title(part.name()))
-            })
             .collect();
-        if !unknown.is_empty() {
-            y = wrap(
-                p,
-                Vec2::new(x, y),
-                &format!("Wreck them to learn: {}", unknown.join(" · ")),
-                theme::DIM,
-            );
-            y += 18.0;
+        let row = UNIT * 3.0;
+        let mut y = deploy - UNIT * 4.0 - row * (3 + unknown.len()) as f32;
+        let mut line = |p: &mut Painter, name: &str, value: &str, color| {
+            let at = Vec2::new(x, y);
+            p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
+            let at = Vec2::new(right, y);
+            p.text(at, value, &SMALL.colored(color), Align::Right);
+            y += row;
+        };
+        let tier = t.tiers[site.enemy];
+        let mode = MISSIONS[site.mission].contract.name();
+        let gear = crate::economy::level_label(tier);
+        let pay = format!("{} cr", crate::economy::win_pay(tier));
+        line(p, mode, enemy.name(), enemy.ui());
+        line(p, "Their gear", &gear, TEXT);
+        line(p, "Win", &pay, BLUE);
+        // What wrecking them would teach you (#438, #457).
+        for part in unknown {
+            let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
+            line(p, part.name(), &format!("{pct}%"), TEXT);
         }
-        y += 4.0;
-        if site.committed {
-            rows(p, hits, Vec2::new(x, y), &[Item::Acts("DEPLOY")], 0);
-        } else {
-            body(
-                p,
-                Vec2::new(x, y),
-                &format!(
-                    "The {} aren't fighting here this tick",
-                    title(employer.name())
-                ),
-                theme::HOT,
-            );
-        }
+        let (min, size) = design::action(p, Vec2::new(x, deploy), "Deploy", true);
+        hits.add(p, min, size, Hit::Deploy);
     }
 }
 
@@ -1737,34 +1612,9 @@ fn berths(
     y
 }
 
-/// "Lirset II": the site's world, in title case.
-fn planet(t: &Theater, site: &SiteView) -> String {
-    format!("{} {}", title(&t.name), numeral(site.planet))
-}
-
 /// "II": planet `p`'s numeral.
 fn numeral(p: u8) -> &'static str {
     ["I", "II", "III", "IV"][(p as usize).min(3)]
-}
-
-/// How the contract at `site` is won, and what that win does in the war
-/// (the same under every contract, #422). Worded as a result of winning,
-/// never as the site's state now (#477): "it's ours" read as a claim about
-/// a site the enemy holds.
-fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
-    let ours = site.owner == employer.index();
-    let what = match (ours, site.is_shield()) {
-        (true, true) if site.damaged() => "it stays ours and works again",
-        (true, _) => "it stays ours",
-        (false, true) => "it becomes ours, but damaged",
-        (false, false) => "it becomes ours",
-    };
-    let how = match contract {
-        Contract::Attrition => "Win",
-        Contract::Hold => "Hold it longest",
-        Contract::Raid => "Bring their flag home",
-    };
-    format!("{how} and {what}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1861,7 +1711,9 @@ impl Pause {
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) => unreachable!(),
+            Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) | Hit::Deploy => {
+                unreachable!()
+            }
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
         std::mem::replace(slot, i) != i
@@ -1886,7 +1738,9 @@ impl Pause {
                 );
             }
             Hit::Row(_) | Hit::Bind(..) => Nav::Select,
-            Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) => unreachable!(),
+            Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) | Hit::Deploy => {
+                unreachable!()
+            }
         };
         (nav, self.input(nav))
     }
@@ -2474,26 +2328,27 @@ mod tests {
         assert!(m.wants_theater());
         assert_eq!(m.input(Nav::Select), None);
         assert_eq!(m.screen, Screen::Missions);
-        // With one, Enter opens the site your side fights for, and Enter there deploys.
+        // With one, Enter deploys to the site your side fights for.
         m.set_theater(theater(Faction::Imperium));
         let t = m.theater().unwrap().clone();
         assert!(
             t.sortie(m.site).is_some(),
             "starts on a site you can fight for"
         );
-        assert_eq!(m.input(Nav::Select), None);
-        assert_eq!(m.screen, Screen::Site);
         assert_eq!(
             m.input(Nav::Select),
             Some(Action::Fight(t.sortie(m.site).unwrap()))
         );
+        // Up and down only stop at sites your side fights for.
+        for nav in [Nav::Down, Nav::Down, Nav::Up] {
+            m.input(nav);
+            assert!(t.sortie(m.site).is_some());
+        }
         // A site your side isn't fighting for: refused.
         if let Some(k) = (0..t.contested.len()).find(|&k| t.sortie(k).is_none()) {
             m.pick_site(k);
             assert_eq!(m.input(Nav::Select), Some(Action::Refused));
         }
-        m.input(Nav::Back);
-        assert_eq!(m.screen, Screen::Missions);
         // Back to the main menu.
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
@@ -2717,9 +2572,7 @@ mod tests {
         // Made: the theater's back.
         m.set_choice(None);
         assert!(m.system().is_some());
-        // A choice takes you off a site's screen.
-        m.input(Nav::Select);
-        assert_eq!(m.screen, Screen::Site);
+        // Another choice comes before any site.
         m.set_choice(Some(c));
         assert_eq!(m.screen, Screen::Missions);
     }
@@ -2772,8 +2625,7 @@ mod tests {
         for (screen, t) in [
             (Screen::Main, None),
             (Screen::Missions, None),
-            (Screen::Missions, t.clone()),
-            (Screen::Site, t),
+            (Screen::Missions, t),
             (Screen::Settings, None),
             (Screen::Controls, None),
         ] {
@@ -2822,7 +2674,6 @@ mod tests {
         m.set_theater(theater(Faction::Ithessar));
         for (screen, to) in [
             (Screen::Missions, Screen::Main),
-            (Screen::Site, Screen::Missions),
             (Screen::Settings, Screen::Main),
             (Screen::Controls, Screen::Settings),
         ] {
@@ -2887,22 +2738,20 @@ mod tests {
         let k = (0..t.contested.len())
             .find(|&k| t.sortie(k).is_some())
             .unwrap();
-        // A site in the picture (drawn after the list, so it's the one
-        // clicked here) is the same row as in the list: clicking it opens it.
+        // Its row in the list, or its mark in the picture: clicking picks it.
         let hits = m.draw(&profile, 1600.0, 900.0, 1.0).hits;
-        assert!(hits.center_of(Hit::Row(k)).unwrap().x > PANEL_X + PANEL_W);
+        assert!(hits.center_of(Hit::Row(k)).is_some());
         assert_eq!(
             click_drawn(&mut m, &profile, Hit::Row(k)),
-            (Nav::Select, None)
+            (Nav::Down, None)
         );
-        assert_eq!(m.screen, Screen::Site);
-        // Its DEPLOY row deploys.
+        assert_eq!(m.site, k);
+        // DEPLOY deploys to it.
         assert_eq!(
-            click_drawn(&mut m, &profile, Hit::Row(0)),
+            click_drawn(&mut m, &profile, Hit::Deploy),
             (Nav::Select, Some(Action::Fight(t.sortie(k).unwrap())))
         );
         // Esc, or a right click, goes back.
-        m.input(Nav::Back);
         m.input(Nav::Back);
         assert_eq!(m.screen, Screen::Main);
 

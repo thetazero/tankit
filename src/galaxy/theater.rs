@@ -49,9 +49,8 @@ pub struct Theater {
     /// Who you're posted for: index into `Faction::ALL`.
     pub employer: usize,
     pub planets: u8,
-    /// Each side's hulls here, hulls its yards here build a tick, and sites held.
+    /// Each side's hulls here, and sites held.
     pub hulls: [u32; SIDES],
-    pub built: [f32; SIDES],
     pub held: [u8; SIDES],
     /// Each side's gear tier here (#438): its realm's, in upgrade steps.
     pub tiers: [u8; SIDES],
@@ -463,7 +462,17 @@ impl SiteView {
         kind_name(self.kind)
     }
 
-    /// A stand-in site, for keys and legends: a shield generator, or a crystal mine.
+    /// What it is, in a word, in caps.
+    pub fn short_name(&self) -> &'static str {
+        match self.kind_name() {
+            "SHIELD GENERATOR" => "SHIELD",
+            "CRYSTAL MINE" => "MINE",
+            _ => "FOUNDRY",
+        }
+    }
+
+    #[cfg(test)]
+    /// A stand-in site, for tests: a shield generator, or a crystal mine.
     pub fn example(shield: bool) -> SiteView {
         SiteView {
             index: 0,
@@ -1125,7 +1134,6 @@ impl Galaxy {
             employer: f,
             planets: sys.planets,
             hulls: sys.hulls,
-            built: self.built(s),
             held: sys.held,
             tiers: std::array::from_fn(|g| match sys.realms[g] {
                 super::realm::NONE => 0,
