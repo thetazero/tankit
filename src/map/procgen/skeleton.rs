@@ -476,6 +476,7 @@ impl Skeleton {
         map.spawn_yaw = None;
         map.hold_site = Some(self.heart);
         map.repair_spots = self.repair_spots.clone();
+        map.skeleton = Some(std::sync::Arc::new(self.clone()));
         map
     }
 

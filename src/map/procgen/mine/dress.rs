@@ -178,7 +178,7 @@ fn sounds(map: &mut Map, sk: &Skeleton, st: &dyn MineStyle) {
 }
 
 /// Once everything's built: the spawns, drops and places bots head for that
-/// are still clear, the Raid stands, and the ways round worth taking.
+/// are still clear, and the Raid stands.
 fn settle(map: &mut Map, sk: &Skeleton) {
     let nav = NavGrid::build(map);
     let clear = |m: &Map, p: Vec2, r: f32| {
@@ -226,47 +226,6 @@ fn settle(map: &mut Map, sk: &Skeleton) {
                 .find(|&p| clear(map, p, 6.0) && !nav.is_blocked(p))
                 .unwrap_or(want)
         })
-        .collect();
-    let mut ways: Vec<Vec<Vec3>> = Vec::new();
-    for d in &sk.land.digs {
-        // In at one mouth, through the hall, out at the other.
-        let (hall, far) = (d.rooms[2], d.rooms[1]);
-        let mid = hall.min.y + (hall.max.y - hall.min.y) * 0.25;
-        let x = (far.min.x + far.max.x) * 0.5;
-        let at = |x: f32, y: f32| {
-            let p = d.to_map(Vec2::new(x, y));
-            Vec3::new(p.x, d.floor, p.y)
-        };
-        ways.push(vec![
-            at(0.0, -12.0),
-            at(0.0, 8.0),
-            at(0.0, mid),
-            at(x * 0.5, mid),
-            at(x, mid),
-            at(x, 8.0),
-            at(x, -12.0),
-        ]);
-    }
-    for x in &sk.crossings {
-        let on = |t: f32| {
-            let p = x.from.lerp(x.to, t);
-            Vec3::new(p.x, x.top, p.y)
-        };
-        ways.push(vec![on(-0.15), on(0.2), on(0.8), on(1.15)]);
-    }
-    for r in &sk.land.high.ramps {
-        let on = |p: Vec2| Vec3::new(p.x, map.ground_height(p.x, p.y), p.y);
-        let dir = (r.top - r.foot).normalize();
-        ways.push(vec![
-            on(r.foot - dir * 4.0),
-            on(r.foot.lerp(r.top, 0.5)),
-            on(r.top + dir * 6.0),
-        ]);
-    }
-    // Only what a bot can drive, each point on its floor.
-    map.routes = ways
-        .into_iter()
-        .filter(|w| w.iter().all(|&p| nav.floor_at(p).is_some()))
         .collect();
 }
 
@@ -445,7 +404,8 @@ mod tests {
     #[test]
     fn dressed_mines_are_playable() {
         for seed in 0..2 {
-            let (sk, m) = build(&crate::mine_spec(seed, Look::Ithessar));
+            let (sk, mut m) = build(&crate::mine_spec(seed, Look::Ithessar));
+            crate::map::procgen::ways::lay(&mut m);
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
                 panic!("seed {seed}: {why}");

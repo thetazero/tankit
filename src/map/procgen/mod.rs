@@ -39,6 +39,7 @@ mod resonant;
 pub mod setting;
 pub mod shield;
 pub mod skeleton;
+pub mod ways;
 
 use glam::Vec2;
 
@@ -223,13 +224,15 @@ fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
 
 /// Builds `spec`'s map.
 fn build_map(spec: &Spec) -> Map {
-    match spec.biome {
+    let mut map = match spec.biome {
         Biome::City => build(spec).0,
         Biome::Mine => mine::build(spec),
         Biome::Desert | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot => depot::build(spec),
-    }
+    };
+    ways::lay(&mut map);
+    map
 }
 
 /// Builds `spec`'s city, and what each filler claimed.

@@ -220,6 +220,8 @@ impl Map {
             hold_name: "DEPOSIT",
             raid_stands: Vec::new(),
             routes: Vec::new(),
+            posts: Vec::new(),
+            skeleton: None,
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,
             sounds: Vec::new(),
