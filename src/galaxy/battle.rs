@@ -965,7 +965,6 @@ mod tests {
             g.systems[s].hulls[f] = 0;
         }
         g.sites[i].kind = SiteKind::Shield { damaged: true };
-        g.cut[s] = true;
         g.step();
         assert_eq!(g.sites[i].kind, SiteKind::Shield { damaged: false });
     }

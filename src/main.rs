@@ -820,7 +820,7 @@ fn parse_args() -> Result<Args> {
                 )
             }
             "--judge" => {
-                // --judge <ticks> <seed,seed..> [arms]
+                // --judge <ticks> <seed,seed..> [arms|replay]
                 let ticks = args.next().context("--judge needs a tick count")?.parse()?;
                 let seeds: Vec<u64> = args
                     .next()
@@ -828,7 +828,10 @@ fn parse_args() -> Result<Args> {
                     .split(',')
                     .map(|x| x.parse())
                     .collect::<Result<_, _>>()?;
-                galaxy::judge::run(ticks, &seeds, args.next().is_some());
+                match args.next().as_deref() {
+                    Some("replay") => galaxy::judge::replay(&seeds),
+                    arms => galaxy::judge::run(ticks, &seeds, arms.is_some()),
+                }
                 std::process::exit(0);
             }
             "--front" => front = true,

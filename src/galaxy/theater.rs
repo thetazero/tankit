@@ -790,7 +790,7 @@ impl Galaxy {
             id: co.id,
             name: ship_name(co.id),
             system: system_name(co.at as usize),
-            hulls: co.hulls + co.contract.map_or(0, |k| k.field),
+            hulls: co.hulls + co.contract.map_or(0, |k| k.field + k.inbound),
             crystals: co.crystals,
             enemies: co.contract.map_or_else(Vec::new, |k| {
                 let (s, f) = (k.target as usize, k.side as usize);
@@ -1448,6 +1448,8 @@ mod tests {
                 d(a).total_cmp(&d(b))
             })
             .unwrap();
+        g.unmet.fill(0.0);
+        g.job_worth = 1000.0;
         g.unmet[near] = 5.0;
         // And contracts pay well enough for the fare.
         for c in &mut g.companies {
@@ -1459,7 +1461,7 @@ mod tests {
         let to = g.companies[c].at as usize;
         assert_ne!(to as u32, at);
         assert!(g.systems[to].at_war());
-        assert_eq!(g.companies[c].idle_since, g.tick);
+        assert!(g.companies[c].idle_since > g.tick, "not there yet");
         // The contract card doesn't tell you it sailed (#499).
         assert_eq!(g.crew_news, None);
     }

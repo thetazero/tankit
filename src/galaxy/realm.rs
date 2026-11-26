@@ -340,6 +340,10 @@ impl Galaxy {
             self.realms[r].systems = count[r].max(tagged[r] as u32);
             self.realms[r].fell = 0;
             if !tagged[r] {
+                // (its fleets have nobody to fly for)
+                for x in self.fleets.iter_mut().filter(|x| x.realm == r as u32) {
+                    x.realm = NONE;
+                }
                 self.free.push(r as u32);
                 continue;
             }
@@ -494,7 +498,8 @@ impl Galaxy {
                         continue;
                     }
                     let realm = &self.realms[b as usize];
-                    if realm.faction != f {
+                    // (and only with its own kind)
+                    if realm.faction != f || realm.hires != self.realms[a].hires {
                         continue;
                     }
                     let d = self.systems[realm.seat as usize].pos.distance(seat);
@@ -528,6 +533,11 @@ impl Galaxy {
         }
         if !merged {
             return;
+        }
+        for x in &mut self.fleets {
+            if x.realm != NONE {
+                x.realm = into[x.realm as usize];
+            }
         }
         for sys in &mut self.systems {
             for r in &mut sys.realms {
