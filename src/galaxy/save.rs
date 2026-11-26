@@ -120,6 +120,13 @@ struct Saved {
     /// Your company's id (#350).
     #[serde(default)]
     crew: Option<u32>,
+    /// The contract you're signed on for (older saves: whatever your company's
+    /// on).
+    #[serde(default)]
+    job: Option<super::theater::Job>,
+    /// Not an older save.
+    #[serde(default)]
+    jobs: bool,
     /// Your own hulls on its contract (#385).
     #[serde(default)]
     own: Option<super::theater::Own>,
@@ -448,6 +455,8 @@ impl Galaxy {
             dues: self.debts.iter().map(|d| d.due).collect(),
             destroyed: self.destroyed,
             crew: self.crew,
+            job: self.job,
+            jobs: true,
             own: self.own,
             ended: self.ended.clone(),
         }
@@ -681,6 +690,11 @@ impl Galaxy {
         g.destroyed = s.destroyed;
         g.crew = s.crew;
         g.own = s.own;
+        g.job = s.job;
+        if !s.jobs {
+            g.stay_on();
+        }
+
         g.ended = s.ended;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
