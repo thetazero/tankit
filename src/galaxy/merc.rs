@@ -321,8 +321,8 @@ impl Galaxy {
             if hulls < MIN_SEND {
                 continue;
             }
-            // Short of the garrison it levels off at, it asks more.
-            let level = self.production(s)[g] / self.rules.wear;
+            // Short of its usual garrison, it asks more.
+            let level = self.production(s)[g] * self.rules.garrison;
             let ask = self.rules.hull_price * (level / sys.hulls[g].max(1) as f32).clamp(0.5, 4.0);
             out.push(Offer {
                 s: s as u32,
@@ -506,30 +506,24 @@ impl Galaxy {
         self.debts = debts;
     }
 
-    /// After the tick's battles: each company's hulls wear, contracts that
+    /// After the tick's battles: contracts that
     /// are done end, idle companies' margins thin, debts are paid down; and every few
     /// ticks companies split and join.
     pub(crate) fn mercs(&mut self) {
-        let wear = self.rules.wear;
         self.collect_debts();
         for c in 0..self.companies.len() {
-            let worn = self.rng.binomial(self.companies[c].hulls, wear);
             let co = &mut self.companies[c];
-            co.hulls -= worn;
             let Some(mut k) = co.contract else {
                 co.margin = (co.margin * (1.0 - self.rules.merc_haggle)).max(self.rules.merc_floor);
                 continue;
             };
             let (t, f) = (k.target as usize, k.side as usize);
-            // Its hulls there wear like the rest of its side's (they took
-            // their share of the battle's losses in it: `Galaxy::lose`).
+            // Never more than its side has there. What it committed is what
+            // it's lost plus what it has left (#429).
             let before = k.field;
-            let worn = self.rng.binomial(k.field, wear);
-            k.field = (k.field - worn).min(self.systems[t].hulls[f]);
-            // Worn out or shot down, a hull gone is a hull lost: what it
-            // committed is what it's lost plus what it has left (#429).
+            k.field = k.field.min(self.systems[t].hulls[f]);
             k.lost += before - k.field;
-            self.merc_moves[t][f].worn += before - k.field;
+            self.merc_moves[t][f].lost += before - k.field;
             let sys = &self.systems[t];
             // A realm that folds into another, or loses the attack's ground
             // to one breaking away, hands the contract on to it.

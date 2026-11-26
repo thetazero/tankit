@@ -974,7 +974,7 @@ fn galaxy_kills_teach_merc_pilots() {
 }
 
 /// Every hull that comes into or goes out of a system is in its moves
-/// (#445): reinforcements, mercs, yards, wear and losses account for
+/// (#445): reinforcements, mercs, yards and losses account for
 /// every change in a side's count, so the missions screen never shows one
 /// it can't explain. A played battle starts them over.
 #[test]
@@ -995,7 +995,6 @@ fn moves_account_for_every_hull() {
                 "system {s} side {f}: {m:?}"
             );
             seen.built += m.built;
-            seen.worn += m.worn;
             seen.lost += m.lost;
             seen.arrived += m.arrived;
             seen.hired += m.hired;
@@ -1003,7 +1002,7 @@ fn moves_account_for_every_hull() {
     }
     // A war's worth of ticks does all of it somewhere.
     assert!(
-        seen.built > 0 && seen.worn > 0 && seen.lost > 0 && seen.arrived > 0,
+        seen.built > 0 && seen.lost > 0 && seen.arrived > 0,
         "{seen:?}"
     );
     g.clear_moves();
@@ -1060,7 +1059,7 @@ fn tick_summary_counts_from_the_battle() {
             assert!(rows.len() <= 2);
             let sum = |n: fn(&&theater::SideChange) -> u32| rows.iter().map(n).sum::<u32>();
             assert_eq!(sum(|c| c.now), now, "system {s} side {f}");
-            // Wear's split between them by chance; with no mercs it's exact.
+            // With no mercs, it's exact.
             if g.merc_moves[s][f] == Moves::default() {
                 assert_eq!(sum(|c| c.before), was, "system {s} side {f}");
             }
