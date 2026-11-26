@@ -32,6 +32,7 @@ pub mod depot;
 pub mod desert;
 pub mod foundry;
 mod imperium;
+mod ithessar;
 pub mod land;
 pub mod mine;
 mod resonant;
@@ -90,8 +91,7 @@ impl Look {
     pub fn of(founder: Faction) -> Look {
         match founder {
             Faction::Resonant => Look::Resonant,
-            // (Not yet: so far theirs is an Imperium city with a river.)
-            Faction::Ithessar => Look::Imperium,
+            Faction::Ithessar => Look::Ithessar,
             Faction::Imperium | Faction::Uthenn | Faction::Company => Look::Imperium,
         }
     }
@@ -162,7 +162,8 @@ fn style(look: Look) -> &'static dyn Style {
         Look::Imperium => &imperium::Imperium,
         Look::Resonant => &resonant::Resonant,
         // Nobody else's city yet: any other look is dressed as theirs.
-        Look::Uthenn | Look::Ithessar => &imperium::Imperium,
+        Look::Ithessar => &ithessar::Ithessar,
+        Look::Uthenn => &imperium::Imperium,
     }
 }
 
@@ -208,8 +209,10 @@ fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
     for attempt in 0..16u64 {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
         let sk = city::skeleton(&mut rng, spec.sides.len(), plan);
+        let whole = sk.bases.len() >= spec.sides.len() && (!plan.river || !sk.landmarks.is_empty());
         match check::playable(&sk.greybox(&spec.sides)) {
-            Ok(()) => return sk,
+            Ok(()) if whole => return sk,
+            Ok(()) => {}
             Err(why) => log::debug!("map seed {} attempt {attempt}: {why}", spec.seed),
         }
         last = Some(sk);
