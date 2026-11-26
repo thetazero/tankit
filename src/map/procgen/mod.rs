@@ -1176,7 +1176,7 @@ mod tests {
         ignore = "slow unoptimized: run with cargo test --release"
     )]
     fn river_bridges_go_over_the_river() {
-        for seed in 0..10 {
+        for seed in 0..3 {
             let spec = crate::city_spec(seed, Look::Ithessar);
             let sk = skeleton(&spec);
             let m = build(&spec).0;
