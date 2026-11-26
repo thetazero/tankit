@@ -1292,7 +1292,7 @@ impl Galaxy {
                 // Discounted by how forecasts have lately come out: realms
                 // learn from what contracts got them, and how long they ran.
                 let ticks = raw_ticks * self.trust_ticks;
-                let gain = with - alone;
+                let gain = with * self.trust[defend as usize] - alone;
                 // A realm that can't pay up front can have the company front
                 // it, if the company can: paid back by the tick it expects
                 // the work to take, with the company's margin on it again.
@@ -1492,7 +1492,8 @@ impl Galaxy {
             self.books.by_kind[i][0] += k.expected as f64;
             self.books.by_kind[i][1] += got as f64;
             if k.expected > 0.0 {
-                self.trust += LEARN * ((got / k.expected).min(2.0) - self.trust);
+                let trust = &mut self.trust[i];
+                *trust += LEARN * ((got / k.expected).min(2.0) - *trust);
             }
         }
     }

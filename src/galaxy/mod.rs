@@ -488,7 +488,7 @@ pub struct Galaxy {
     /// How far realms trust their forecasts of a contract, as contracts
     /// have lately come out: the worth they got of what they expected, and
     /// the ticks they paid for of those they expected.
-    pub trust: f32,
+    pub trust: [f32; 2],
     pub trust_ticks: f32,
     /// The share of merc pilots in work lately, as pilots see it; and
     /// this tick's, so far.
@@ -709,7 +709,7 @@ impl Galaxy {
             wage_curve: [rules.pilot_upkeep; merc::MARKS],
             offers: [0.0; merc::MARKS],
             pay: rules.pilot_upkeep,
-            trust: 1.0,
+            trust: [1.0; 2],
             trust_ticks: 1.0,
             employment: 0.5,
             employed: 0,

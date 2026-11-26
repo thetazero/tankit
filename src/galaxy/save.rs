@@ -73,7 +73,7 @@ struct Saved {
     #[serde(default)]
     pay: Option<f32>,
     #[serde(default)]
-    trust: Option<(f32, f32)>,
+    trust: Option<([f32; 2], f32)>,
     /// The share of merc pilots in work lately.
     #[serde(default)]
     employment: Option<f32>,

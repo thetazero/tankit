@@ -664,7 +664,7 @@ pub fn judge_mercs(label: &str, rules: Rules, seeds: &[u64], ticks: u64) {
                     .collect();
                 println!("    arms: {}", arms.join(" | "));
                 println!(
-                    "    forecast: expected {:.0} worth, got {:.0} for {:.0} paid and {:.0} owed; expected {:.1} ticks a contract, took {:.1}; trust {:.2} ticks {:.2}",
+                    "    forecast: expected {:.0} worth, got {:.0} for {:.0} paid and {:.0} owed; expected {:.1} ticks a contract, took {:.1}; trust {:.2?} ticks {:.2}",
                     b.expected,
                     b.realized,
                     b.paid_all,
@@ -1389,7 +1389,7 @@ fn judge_contracts() {
     let mut out = [[0.0f64; 5]; 4];
     let mut marks = [[0.0f64; 5]; 4];
     let after = 30;
-    for seed in [51, 52] {
+    for seed in [81, 82] {
         let mut g = Galaxy::warmed_by(seed, 300);
         for step in 0..150 {
             let pre = g.clone();
