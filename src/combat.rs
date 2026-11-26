@@ -5692,8 +5692,10 @@ mod tests {
         let out = Vec2::new(along.y, -along.x);
         let at = from + along * 3.0;
         let face = crate::sim::yaw_of(-out);
-        m.world.teleport(0, at + out * 6.0, face);
-        m.world.teleport(1, at - along * 4.0 + out * 6.0, face);
+        let on = |p: Vec2| Vec3::new(p.x, b.from.y, p.y);
+        m.world.teleport_near(0, on(at + out * 6.0), face);
+        m.world
+            .teleport_near(1, on(at - along * 4.0 + out * 6.0), face);
         for _ in 0..(1.0 / DT) as usize {
             m.step(Command::default(), false);
         }
@@ -5715,7 +5717,7 @@ mod tests {
         );
         assert_eq!(m.fighters[0].deaths, 1);
         // A bot, put in it.
-        m.world.teleport(1, at, face);
+        m.world.teleport_near(1, on(at), face);
         m.step(Command::default(), false);
         assert!(!m.fighters[1].alive, "the bot lived in the beam");
     }

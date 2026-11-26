@@ -28,13 +28,3 @@ pub(super) fn noise2(x: f32, y: f32, k: u32) -> f32 {
     let b = hash(ix, iy + 1, k) * (1.0 - fx) + hash(ix + 1, iy + 1, k) * fx;
     a * (1.0 - fy) + b * fy
 }
-
-fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// A bump 1 at 0 falling to 0 at `w` either side.
-pub(super) fn bump(d: f32, w: f32) -> f32 {
-    1.0 - smoothstep(0.0, w, d.abs())
-}
