@@ -7,7 +7,7 @@ use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::economy::{level_label, win_pay};
+use crate::economy::level_label;
 use crate::faction::Faction;
 use crate::galaxy::PEOPLES;
 use crate::galaxy::theater::Offer;
@@ -25,13 +25,13 @@ use crate::ui::{Align, Hits, Painter, Rgba, emblem, with_alpha};
 pub enum Sort {
     Strength,
     Gear,
-    Win,
+    Pay,
 }
 
 const SORTS: [(Sort, &str); 3] = [
     (Sort::Strength, "Strength"),
     (Sort::Gear, "Gear"),
-    (Sort::Win, "Win"),
+    (Sort::Pay, "Pay"),
 ];
 
 /// The filters, in order: who you'd work for, who you'd fight, take or hold.
@@ -90,7 +90,8 @@ impl Board {
         if let Some((by, most)) = self.sort {
             let key = |o: &Offer| match by {
                 Sort::Strength => o.strength(),
-                Sort::Gear | Sort::Win => o.tier as f32,
+                Sort::Gear => o.tier as f32,
+                Sort::Pay => o.wage as f32,
             };
             out.sort_by(|a, b| {
                 let o = key(a).total_cmp(&key(b));
@@ -177,7 +178,7 @@ impl Board {
             let (x, align) = match by {
                 Sort::Strength => (cols.bar.0, Align::Left),
                 Sort::Gear => (cols.gear, Align::Left),
-                Sort::Win => (cols.win, Align::Right),
+                Sort::Pay => (cols.win, Align::Right),
             };
             let tw = p.text(Vec2::new(x, y), name, &style, align);
             let left = if align == Align::Right { x - tw } else { x };
@@ -312,7 +313,7 @@ fn draw_row(p: &mut Painter, c: &Columns, y: f32, o: &Offer, color: Rgba) {
     share(p, o, Vec2::new(c.bar.0, mid), c.bar.1 - c.bar.0);
     let at = Vec2::new(c.gear, top);
     p.text(at, &level_label(o.tier), &BODY, Align::Left);
-    let pay = win_pay(o.tier).to_string();
+    let pay = o.wage.to_string();
     let at = Vec2::new(c.win, top);
     p.text(at, &pay, &BODY.colored(BLUE), Align::Right);
 }
@@ -507,30 +508,39 @@ pub fn draw_deal(
     strength(p, o, Vec2::new(x0, y), wide, UNIT);
 
     // The trade: what you'd gain on the left, what you'd leave on the right.
-    let top = h - MARGIN - UNIT * 13.0;
-    let col = UNIT * 30.0;
+    let top = h - MARGIN - UNIT * 22.0;
+    let col = UNIT * 38.0;
     let line = |p: &mut Painter, x: f32, k: usize, name: &str, value: &str, color| {
         let y = top + UNIT * 3.0 * k as f32;
         p.text(Vec2::new(x, y), name, &SMALL.colored(TEXT_2), Align::Left);
         let at = Vec2::new(x + col, y);
         p.text(at, value, &SMALL.colored(color), Align::Right);
     };
-    let pay = format!("{} cr", win_pay(o.tier));
-    line(p, x0, 0, "Win", &pay, BLUE);
-    line(p, x0, 1, "Your hulls", &o.own.to_string(), AMBER);
-    line(p, x0, 2, "Enemy gear", &level_label(o.tier), TEXT);
+    line(p, x0, 0, "A battle", &format!("{} cr", o.wage), BLUE);
+    line(p, x0, 1, "A kill", &format!("{} cr", o.kill), BLUE);
+    line(p, x0, 2, "Your hulls", &o.own.to_string(), AMBER);
+    line(p, x0, 3, "Enemy gear", &level_label(o.tier), TEXT);
+    let land = match o.flight {
+        0 => "now".to_string(),
+        n => format!("in {n} ticks"),
+    };
+    line(p, x0, 4, "Lands", &land, TEXT);
+    line(
+        p,
+        x0,
+        5,
+        "Lasts about",
+        &match o.lasts {
+            1 => "a battle".to_string(),
+            n => format!("{n} battles"),
+        },
+        TEXT,
+    );
     if let Some(m) = mine {
         let x = x1 - col;
         line(p, x, 0, "You leave", &m.job(), TEXT);
         line(p, x, 1, "Hulls left there", &m.own.to_string(), AMBER);
-        line(
-            p,
-            x,
-            2,
-            "Win there",
-            &format!("{} cr", win_pay(m.tier)),
-            BLUE,
-        );
+        line(p, x, 2, "A battle there", &format!("{} cr", m.wage), BLUE);
     }
     let size = Vec2::new(UNIT * 26.0, design::BUTTON);
     let min = Vec2::new(mid - size.x * 0.5, top + UNIT * 1.5);
@@ -539,7 +549,7 @@ pub fn draw_deal(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     pub fn offer(id: u32, side: usize, enemy: usize) -> Offer {
@@ -554,6 +564,10 @@ mod tests {
             foes: 10 + id,
             tier: id as u8,
             own: 2,
+            wage: 80 + id,
+            kill: 24,
+            flight: 0,
+            lasts: 5,
         }
     }
 

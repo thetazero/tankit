@@ -21,7 +21,10 @@ pub fn map_mesh(map: &Map) -> MeshData {
     }
     match &map.terrain {
         Some(t) => {
-            terrain_mesh(t, &mut m);
+            match &map.solid {
+                Some(s) => surface_mesh(s, t, &mut m),
+                None => terrain_mesh(t, &mut m),
+            }
             let rects = if map.scenery_terrain.is_some() {
                 Vec::new()
             } else {
@@ -423,6 +426,39 @@ fn decal_tri(map: &Map, m: &mut MeshData, p: [Vec2; 3], c: Vec4) {
     );
 }
 
+/// A solid's surface, colored as `t`'s ground is.
+fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
+    let base = m.verts.len() as u32;
+    for (v, n) in s.verts.iter().zip(&s.normals) {
+        m.verts.push(Vertex {
+            pos: v.to_array(),
+            normal: n.to_array(),
+            color: (t.color * t.tint_at(v.x, v.z))
+                .extend(t.material.id())
+                .to_array(),
+        });
+    }
+    // Steep faces are rock, each with corners of its own (a material can't
+    // blend across a face).
+    for t in &s.tris {
+        let v = t.map(|k| s.verts[k as usize]);
+        let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or(Vec3::Y);
+        if n.y > 0.6 {
+            m.indices.extend(t.map(|k| base + k));
+            continue;
+        }
+        let at = m.verts.len() as u32;
+        for k in t {
+            m.verts.push(Vertex {
+                pos: s.verts[*k as usize].to_array(),
+                normal: s.normals[*k as usize].to_array(),
+                color: s.rock.extend(Material::Cliff.id()).to_array(),
+            });
+        }
+        m.indices.extend([at, at + 1, at + 2]);
+    }
+}
+
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
     let h = |ix: i64, iz: i64| {
         t.at(
@@ -813,7 +849,6 @@ mod tests {
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
-            ("foundry", Map::foundry()),
             ("mine", Map::mine(0)),
         ]);
     }
@@ -847,6 +882,35 @@ mod tests {
             (
                 "shield-site ithessar",
                 Map::shield_city(0, Faction::Ithessar),
+            ),
+        ]);
+    }
+
+    /// The same for each faction's hull foundry.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn foundries_hardly_z_fight() {
+        use crate::map::procgen::{Look, foundry::Ground};
+        let foundry = |seed, l, g| crate::make_map(crate::MapKind::Foundry(l, g), seed);
+        hardly_z_fight([
+            (
+                "foundry imperium",
+                foundry(0, Look::Imperium, Ground::Desert),
+            ),
+            (
+                "foundry resonant",
+                foundry(1, Look::Resonant, Ground::Tundra),
+            ),
+            (
+                "foundry uthenn",
+                foundry(2, Look::Uthenn, Ground::Grassland),
+            ),
+            (
+                "foundry ithessar",
+                foundry(3, Look::Ithessar, Ground::Desert),
             ),
         ]);
     }

@@ -6,3 +6,7 @@ The user plays the game on this machine while tabs work. Use a few cores at most
 
 - Build and test with 2 jobs: `cargo build -j 2`, `cargo test -j 2 -- --test-threads=2` (or set `CARGO_BUILD_JOBS=2`).
 - Run headless renders and screenshots one at a time, never several in parallel.
+
+## Don't be CI
+
+CI runs the whole suite on every PR (formatting, unit tests, release-only tests). Don't run the suite locally: push and let CI do it. Locally, run only the specific tests for what you're changing, or one that CI failed.

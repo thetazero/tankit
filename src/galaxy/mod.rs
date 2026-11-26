@@ -23,6 +23,8 @@
 //! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
+//! Outposts make nothing: they're sites a world isn't taken without.
+//!
 //! **A tick:**
 //! 1. *Production.* Every mine adds crystal to its planet's vault (`Vault`),
 //!    which changes hands only with the whole planet. A yard builds while a
@@ -278,6 +280,8 @@ pub enum SiteKind {
     /// it's taken, and working again once its holder wins a battle for it,
     /// or a tick goes by without one.
     Shield { damaged: bool },
+    /// Makes nothing and shields nothing, but a world isn't taken without it.
+    Outpost,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -477,13 +481,8 @@ pub struct Galaxy {
     pub own: Option<theater::Own>,
     /// Your company's last few ended contracts, newest last (#414).
     pub ended: Vec<theater::Ended>,
-    /// What just happened to your company, for the missions screen (not saved).
-    pub crew_news: Option<theater::CrewNews>,
-    /// Your company just split or joined another: which ship you go with,
-    /// for you to choose on the missions screen (#364). You're with the
-    /// first meanwhile, and the war waits on your choice (not saved: a
-    /// choice left open when you quit stays the first).
-    pub crew_choice: Option<theater::CrewChoice>,
+    /// The contract you're signed on for (#557).
+    pub job: Option<theater::Job>,
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
     /// Crystal captured with fallen systems, all told (not saved).
@@ -576,6 +575,8 @@ impl Galaxy {
         let mut sites = Vec::new();
         let spots = disk.scatter(count, &mut rng);
         let owners = settle(&spots, &hearts);
+        // (Outposts' own dice: the rest of the galaxy's as it was without them.)
+        let mut posts = Rng::new(seed ^ 0x0007_9057);
         for (pos, owner) in spots.into_iter().zip(owners) {
             let planets = match rng.f32() {
                 x if x < 0.5 => 1,
@@ -605,6 +606,20 @@ impl Galaxy {
                             hulls: rng.range(1.0, 5.0),
                             crystals: rng.range(0.02, 0.1),
                         },
+                    });
+                }
+                // Most planets have an outpost or two.
+                let outposts = match posts.f32() {
+                    x if x < 0.1 => 0,
+                    x if x < 0.5 => 1,
+                    x if x < 0.9 => 2,
+                    _ => 3,
+                };
+                for _ in 0..outposts {
+                    sites.push(Site {
+                        planet,
+                        owner,
+                        kind: SiteKind::Outpost,
                     });
                 }
             }
@@ -682,8 +697,7 @@ impl Galaxy {
             crew: None,
             own: None,
             ended: Vec::new(),
-            crew_news: None,
-            crew_choice: None,
+            job: None,
             destroyed: 0.0,
             captured: 0.0,
             rng,

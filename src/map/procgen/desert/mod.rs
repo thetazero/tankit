@@ -185,6 +185,7 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
         LandmarkKind::Arch => "ARCH",
         LandmarkKind::Dam => "DAM",
         LandmarkKind::Well => "WELL",
+        LandmarkKind::Open => "FLATS",
         LandmarkKind::Generator | LandmarkKind::Great(_) => "GENERATOR",
     };
     map
@@ -234,6 +235,10 @@ pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Rang
     let pal = palette(spec.seed);
     m.rock_dust = Some(pal.sand);
     m.planet = Some((spec.seed, pal.planet));
+    m.terrain = Some(dress::terrain(&sk, pal));
+    let mut ground = sk.land.surface(sk.size, 1.0, |_| 0.0);
+    ground.rock = pal.stone;
+    m.solid = Some(ground.into());
     let claims = dress::dress(&mut m, &sk, pal, spec.seed, spec.centerpiece);
     if sk.landmarks[0].kind == LandmarkKind::Generator || spec.biome == Biome::Reservoir {
         // Built flush, piece against piece, as a city is.

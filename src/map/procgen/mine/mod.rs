@@ -22,6 +22,8 @@
 mod dig;
 mod ithessar;
 mod layout;
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod plan;
 #[cfg(test)]
 mod tests;
 
@@ -180,7 +182,7 @@ fn style(look: Look) -> &'static dyn MineStyle {
     match look {
         Look::Ithessar => &ithessar::Ithessar,
         // Nobody else's mine yet: any other look is dressed as theirs.
-        Look::Imperium | Look::Resonant => &ithessar::Ithessar,
+        Look::Uthenn | Look::Imperium | Look::Resonant => &ithessar::Ithessar,
     }
 }
 

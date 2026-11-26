@@ -44,20 +44,35 @@ const DROP: f32 = 2.0;
 /// Floors further than this from a height aren't "at" it, m.
 const LEVEL_TOLERANCE: f32 = 2.5;
 
-/// The top floor (always there) and the one under it (NaN where none).
+/// The top floor (always there); the ones under it follow, the highest
+/// first (NaN where none).
 const TOP: usize = 0;
-const UNDER: usize = 1;
+/// The most floors there may be over one another.
+const LEVELS: usize = 4;
 
 pub struct NavGrid {
     n: usize,
-    floor: Vec<[f32; 2]>,
-    blocked: Vec<[bool; 2]>,
+    floor: Vec<[f32; LEVELS]>,
+    blocked: Vec<[bool; LEVELS]>,
     terrain: Option<Terrain>,
+    solid: Option<std::sync::Arc<crate::map::solid::Surface>>,
     /// Flat drivable slabs (decks, roofs): floors over the ground.
     slabs: Vec<OBox>,
 }
 
-/// A floor of a cell: (cell index, TOP or UNDER).
+/// Which of `floors` is nearest height `h` (the higher, if two are), and
+/// its height.
+fn nearest(floors: &[f32; LEVELS], h: f32) -> (usize, f32) {
+    let mut best = (TOP, floors[TOP]);
+    for (l, &f) in floors.iter().enumerate().skip(1) {
+        if !f.is_nan() && (f - h).abs() < (best.1 - h).abs() {
+            best = (l, f);
+        }
+    }
+    best
+}
+
+/// A floor of a cell: (cell index, which floor of it).
 type Spot = (usize, usize);
 
 impl NavGrid {
@@ -72,8 +87,9 @@ impl NavGrid {
         let mut nav = NavGrid {
             n,
             floor: Vec::new(),
-            blocked: vec![[false; 2]; n * n],
+            blocked: vec![[false; LEVELS]; n * n],
             terrain: map.terrain.clone(),
+            solid: map.solid.clone(),
             slabs,
         };
         nav.floor = (0..n * n).map(|i| nav.floors_at(nav.center(i))).collect();
@@ -152,7 +168,7 @@ impl NavGrid {
         // Floors too steep to drive up (cliffs, steep banks, a deck's edge).
         for i in 0..n * n {
             let c = nav.center(i);
-            for l in [TOP, UNDER] {
+            for l in 0..LEVELS {
                 let h = nav.floor[i][l];
                 if h.is_nan() {
                     continue;
@@ -166,10 +182,26 @@ impl NavGrid {
                 }
             }
         }
+        // Back from rock standing up out of a floor: a cliff, a dig's walls.
+        if nav.solid.is_some() {
+            for i in 0..n * n {
+                let c = nav.center(i);
+                for l in 0..LEVELS {
+                    let h = nav.floor[i][l];
+                    if h.is_nan() || nav.blocked[i][l] || (l == TOP && h > nav.ground(c) + 0.1) {
+                        continue;
+                    }
+                    nav.blocked[i][l] = (0..8).any(|k| {
+                        let d = Vec2::from_angle(k as f32 * std::f32::consts::TAU / 8.0);
+                        nav.surface_near(c + d * CLEARANCE, h) > h + CLEARANCE * MAX_SLOPE + 1.0
+                    });
+                }
+            }
+        }
         // Back from drops.
         for i in 0..n * n {
             let c = nav.center(i);
-            for l in [TOP, UNDER] {
+            for l in 0..LEVELS {
                 let h = nav.floor[i][l];
                 if h.is_nan() || nav.blocked[i][l] || (l == TOP && h > nav.ground(c) + 0.1) {
                     continue;
@@ -218,7 +250,7 @@ impl NavGrid {
             for ix in c0.x as usize..c1.x as usize {
                 let i = iz * n + ix;
                 let c = self.center(i);
-                for l in [TOP, UNDER] {
+                for l in 0..LEVELS {
                     let f = self.floor[i][l];
                     if f.is_nan() || self.blocked[i][l] {
                         continue;
@@ -233,35 +265,52 @@ impl NavGrid {
     }
 
     fn ground(&self, p: Vec2) -> f32 {
-        self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y))
+        let solid = self.solid.as_ref().and_then(|s| s.top(p));
+        solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)))
     }
 
-    /// The floors at a point: the top one, and the one under it (NaN where
-    /// nothing stands high enough over the ground to drive under).
-    fn floors_at(&self, p: Vec2) -> [f32; 2] {
+    /// The floors at a point, the highest first (NaN past the last): those
+    /// with room over them to drive.
+    fn floors_at(&self, p: Vec2) -> [f32; LEVELS] {
+        let mut out = [f32::NAN; LEVELS];
+        let mut n = 0;
+        let mut put = |f: f32| {
+            if n < LEVELS {
+                out[n] = f;
+                n += 1;
+            }
+        };
         let g = self.ground(p);
-        let (mut top, mut under) = (g, f32::NAN);
+        // Decks and roofs laid over the ground.
+        let (mut top, mut under) = (g, false);
         for s in &self.slabs {
             let l = s.local_point(p);
             if l.x.abs() > s.half.x || l.y.abs() > s.half.y {
                 continue;
             }
-            if s.y0 >= g + HEADROOM {
-                under = g;
-            }
+            under |= s.y0 >= g + HEADROOM;
             top = top.max(s.y1);
         }
-        [top, under]
+        put(top);
+        if under && top > g {
+            put(g);
+        }
+        // What's dug out under the ground.
+        if let Some(solid) = &self.solid {
+            let mut over = g;
+            for f in solid.floors(p).into_iter().skip(1) {
+                if over - f >= HEADROOM {
+                    put(f);
+                    over = f;
+                }
+            }
+        }
+        out
     }
 
     /// The floor at a point nearest height `h`.
     fn surface_near(&self, p: Vec2, h: f32) -> f32 {
-        let [top, under] = self.floors_at(p);
-        if !under.is_nan() && (under - h).abs() < (top - h).abs() {
-            under
-        } else {
-            top
-        }
+        nearest(&self.floors_at(p), h).1
     }
 
     fn cell(&self, p: Vec2) -> usize {
@@ -283,9 +332,8 @@ impl NavGrid {
     /// The floor of cell `i` nearest height `y` (the top one for an
     /// infinite `y`), open or not.
     fn level(&self, i: usize, y: f32) -> usize {
-        let [top, under] = self.floor[i];
-        if !under.is_nan() && y.is_finite() && (under - y).abs() < (top - y).abs() {
-            UNDER
+        if y.is_finite() {
+            nearest(&self.floor[i], y).0
         } else {
             TOP
         }
@@ -293,8 +341,7 @@ impl NavGrid {
 
     /// The open floor of cell `i` within `step` of height `h`, nearest it.
     fn step_to(&self, i: usize, h: f32, step: f32) -> Option<usize> {
-        [TOP, UNDER]
-            .into_iter()
+        (0..LEVELS)
             .filter(|&l| {
                 let f = self.floor[i][l];
                 !f.is_nan() && !self.blocked[i][l] && (f - h).abs() <= step
@@ -345,7 +392,7 @@ impl NavGrid {
                             continue;
                         }
                         let i = z as usize * self.n + x as usize;
-                        for l in [TOP, UNDER] {
+                        for l in 0..LEVELS {
                             if !fits(i, l, strict) {
                                 continue;
                             }
@@ -374,8 +421,7 @@ impl NavGrid {
     /// generated maps settling their ways round onto it).
     pub fn floor_at(&self, p: Vec3) -> Option<f32> {
         let i = self.cell(Vec2::new(p.x, p.z));
-        [TOP, UNDER]
-            .into_iter()
+        (0..LEVELS)
             .map(|l| (l, self.floor[i][l]))
             .find(|&(l, f)| !f.is_nan() && !self.blocked[i][l] && (f - p.y).abs() < LEVEL_TOLERANCE)
             .map(|(_, f)| f)
@@ -458,15 +504,15 @@ impl NavGrid {
             return Vec::new();
         };
         let n = self.n;
-        let id = |(i, l): Spot| i * 2 + l;
-        let spot = |k: usize| (k / 2, k % 2);
+        let id = |(i, l): Spot| i * LEVELS + l;
+        let spot = |k: usize| (k / LEVELS, k % LEVELS);
         let (gx, gz) = ((goal.0 % n) as f32, (goal.0 / n) as f32);
         let h = |s: Spot| {
             let (dx, dz) = (((s.0 % n) as f32 - gx).abs(), ((s.0 / n) as f32 - gz).abs());
             dx.max(dz) + (std::f32::consts::SQRT_2 - 1.0) * dx.min(dz)
         };
-        let mut g = vec![f32::INFINITY; n * n * 2];
-        let mut came = vec![usize::MAX; n * n * 2];
+        let mut g = vec![f32::INFINITY; n * n * LEVELS];
+        let mut came = vec![usize::MAX; n * n * LEVELS];
         let mut open = BinaryHeap::new();
         g[id(start)] = 0.0;
         open.push(Node {
@@ -578,5 +624,66 @@ impl Ord for Node {
 impl PartialOrd for Node {
     fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
         Some(self.cmp(o))
+    }
+}
+
+#[cfg(test)]
+mod dig_tests {
+    use super::*;
+    use crate::map::procgen::land::{Dig, Hollow, Land, Slab};
+
+    /// A bot drives into a dig, through it and out of its other mouth, and
+    /// another drives over the top of it.
+    #[test]
+    fn bots_drive_through_a_dig_and_over_it() {
+        let line = vec![Vec2::new(20.0, 40.0), Vec2::new(160.0, 90.0)];
+        let into = (line[1] - line[0]).normalize().perp();
+        let room = |x0: f32, y0: f32, x1: f32, y1: f32| Hollow {
+            min: Vec2::new(x0, y0),
+            max: Vec2::new(x1, y1),
+            floor: 0.0,
+            roof: 6.0,
+        };
+        let mut land = Land::default();
+        land.high.height = 12.0;
+        land.high.slabs = vec![Slab::Behind { line: line.clone() }];
+        land.digs = vec![Dig {
+            at: line[0].lerp(line[1], 0.5),
+            facing: into,
+            floor: 0.0,
+            // Two ways in, joined by a hall.
+            rooms: vec![
+                room(-25.0, -6.0, -15.0, 34.0),
+                room(15.0, -6.0, 25.0, 34.0),
+                room(-25.0, 20.0, 25.0, 34.0),
+            ],
+        }];
+        let mut map = Map::empty(180.0);
+        map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, |_, _| 0.0));
+        map.solid = Some(land.surface(180.0, 1.0, |_| 0.0).into());
+        let nav = NavGrid::build(&map);
+        let at = |x: f32, y: f32, h: f32| {
+            let p = land.digs[0].to_map(Vec2::new(x, y));
+            Vec3::new(p.x, h, p.y)
+        };
+        let through = nav.route(at(-20.0, -12.0, 0.0), at(0.0, 27.0, 0.0));
+        assert!(!through.is_empty(), "no way into the hall");
+        assert!(through.iter().all(|p| p.y < 1.0), "{through:?}");
+        let out = nav.route(at(0.0, 27.0, 0.0), at(20.0, -12.0, 0.0));
+        assert!(!out.is_empty() && out.iter().all(|p| p.y < 1.0), "{out:?}");
+        let over = nav.route(at(-20.0, 27.0, 12.0), at(20.0, 27.0, 12.0));
+        assert!(
+            !over.is_empty() && over.iter().all(|p| p.y > 11.0),
+            "{over:?}"
+        );
+        // Not up the cliff, nor through the rock.
+        assert!(
+            nav.route(at(0.0, 27.0, 0.0), at(0.0, 50.0, 12.0))
+                .is_empty()
+        );
+        assert!(!nav.clear_from(
+            at(-20.0, 10.0, 0.0),
+            land.digs[0].to_map(Vec2::new(20.0, 10.0))
+        ));
     }
 }

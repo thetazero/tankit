@@ -1,7 +1,6 @@
-//! Arena geometry: the hand-built maps (the Sanctum, the Kiln, the
-//! Foundry), the generated ones (`procgen`: the imperial city, the
-//! crystal mine, the desert, the reservoir town),
-//! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
+//! Arena geometry: the hand-built maps (the Sanctum, the Kiln),
+//! the generated ones (`procgen`: cities, crystal mines, hull foundries,
+//! open desert, reservoir towns), and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
 use crate::render::material::Material;
@@ -10,7 +9,6 @@ use glam::{Vec2, Vec3};
 use crate::faction::Faction;
 
 mod crag;
-mod foundry;
 mod imperial;
 mod kiln;
 mod landmarks;
@@ -21,6 +19,7 @@ mod props;
 pub mod rocks;
 mod ruins;
 mod sanctum;
+pub mod solid;
 mod strata;
 #[cfg(test)]
 mod test_kit;
@@ -594,6 +593,14 @@ impl Terrain {
         self.heights[iz * self.nx + ix]
     }
 
+    /// The tint at a point (its nearest vertex's).
+    pub fn tint_at(&self, x: f32, z: f32) -> Vec3 {
+        let g = ((Vec2::new(x, z) - self.origin) / self.cell).round();
+        let (ix, iz) = (g.x.max(0.0) as usize, g.y.max(0.0) as usize);
+        let k = iz.min(self.nz - 1) * self.nx + ix.min(self.nx - 1);
+        self.tint.get(k).copied().unwrap_or(Vec3::ONE)
+    }
+
     /// Bilinear height (close to, not exactly, the collider's triangles).
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
         let g = (Vec2::new(x, z) - self.origin) / self.cell;
@@ -617,6 +624,9 @@ pub struct Map {
     /// Rotated solid boxes (blocking and visible).
     pub oboxes: Vec<OBox>,
     pub terrain: Option<Terrain>,
+    /// The play ground as a solid, in place of `terrain`'s surface: drawn
+    /// and driven on. (`terrain` then only says what color the ground is.)
+    pub solid: Option<std::sync::Arc<solid::Surface>>,
     /// Visual-only ground beyond the arena (dunes to the horizon). Drawn
     /// instead of the flat apron; never collides.
     pub scenery_terrain: Option<Terrain>,
@@ -698,9 +708,9 @@ pub enum Ambient {
     Core,
     /// A river of plasma running along the ground.
     River,
-    /// The Foundry's crucible, still hot: a low roar, metal bubbling.
+    /// A foundry's furnace: a low roar, metal bubbling.
     Furnace,
-    /// A wrecked press, still twitching: mains hum, a hiss and a clank.
+    /// Heavy machinery (a crane, a generator): mains hum, a hiss and a clank.
     Machine,
     /// The Sanctum's altar crystal: a Resonant choir.
     Altar,
@@ -1081,6 +1091,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            solid: None,
             scenery_terrain: None,
             open_spots: vec![Vec2::ZERO],
             spawn_yaw: Some(0.0),
@@ -1107,9 +1118,21 @@ impl Map {
         }
     }
 
-    /// Ground height at a point (terrain if present, else flat 0).
+    /// Ground height at a point (terrain if present, else flat 0): the
+    /// highest, where there's more than one floor.
     pub fn ground_height(&self, x: f32, z: f32) -> f32 {
+        if let Some(y) = self.solid.as_ref().and_then(|s| s.top(Vec2::new(x, z))) {
+            return y;
+        }
         self.terrain.as_ref().map_or(0.0, |t| t.height_at(x, z))
+    }
+
+    /// The floor at a point nearest height `y`.
+    pub fn ground_near(&self, x: f32, y: f32, z: f32) -> f32 {
+        self.solid
+            .as_ref()
+            .and_then(|s| s.near(Vec2::new(x, z), y))
+            .unwrap_or_else(|| self.ground_height(x, z))
     }
 
     /// Ground height at a point outside the arena: what's drawn there (the

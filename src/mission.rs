@@ -4,6 +4,7 @@
 
 use crate::MapKind;
 use crate::faction::Faction;
+use crate::map::procgen::{Look, foundry::Ground};
 
 /// What a mission pays you for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -85,13 +86,24 @@ pub const MISSIONS: &[Mission] = &[
         sides: &[Faction::Imperium, Faction::Resonant],
     },
     Mission {
-        name: "SCRAP METAL",
+        name: "COLD IRON",
         contract: Contract::Attrition,
-        map: "THE FOUNDRY",
-        map_kind: MapKind::Foundry,
+        map: "HULL FOUNDRY",
+        // A site's is in its founder's style, on its world's ground (see
+        // `SiteView::map_kind`).
+        map_kind: MapKind::Foundry(Look::Imperium, Ground::Desert),
         seed: 0,
         team_size: 6,
-        sides: &[Faction::Uthenn, Faction::Imperium],
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
+    Mission {
+        name: "HOT METAL",
+        contract: Contract::Hold,
+        map: "HULL FOUNDRY",
+        map_kind: MapKind::Foundry(Look::Imperium, Ground::Desert),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
     },
     Mission {
         name: "DEEP VEIN",
@@ -191,14 +203,33 @@ pub fn for_sites(class: crate::galaxy::theater::Class) -> Vec<usize> {
         .collect()
 }
 
+/// The missions a hull foundry on a `class` world can be fought with: those
+/// in a foundry (#525), if its ground has one, else any of theirs.
+pub fn for_foundries(class: crate::galaxy::theater::Class) -> Vec<usize> {
+    let mut pool = for_sites(class);
+    if class.ground().is_some() {
+        pool.retain(|&i| matches!(MISSIONS[i].map_kind, MapKind::Foundry(..)));
+    }
+    pool
+}
+
 /// The missions a crystal mine on a `class` world can be fought with: on a
-/// desert world, those in a mine (#523). Placeholder worlds have no mine
-/// maps, so any of theirs.
+/// desert world, those in a mine (#523). Other worlds have no mine maps, so
+/// any of theirs but the foundries.
 pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
     let mut pool = for_sites(class);
+    pool.retain(|&i| !matches!(MISSIONS[i].map_kind, MapKind::Foundry(..)));
     if class == crate::galaxy::theater::Class::Desert {
         pool.retain(|&i| MISSIONS[i].map_kind == MapKind::Mine);
     }
+    pool
+}
+
+/// The missions an outpost on a `class` world can be fought with (#547):
+/// those on none of the maps production sites are fought on.
+pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
+    let mut pool = for_sites(class);
+    pool.retain(|&i| !matches!(MISSIONS[i].map_kind, MapKind::Foundry(..) | MapKind::Mine));
     pool
 }
 
@@ -232,9 +263,11 @@ mod tests {
     #[test]
     fn sites_have_maps_from_the_start() {
         use crate::galaxy::theater::Class;
-        for class in [Class::Desert, Class::Placeholder] {
+        for class in Class::ALL {
+            assert!(!for_foundries(class).is_empty(), "{class:?}");
             assert!(!for_sites(class).is_empty(), "{class:?}");
             assert!(!for_mines(class).is_empty(), "{class:?}");
+            assert!(!for_outposts(class).is_empty(), "{class:?}");
             assert!(!for_shields(class).is_empty(), "{class:?}");
         }
         // Cities among them (two-sided, as every site's battle is).

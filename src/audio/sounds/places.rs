@@ -555,7 +555,7 @@ mod tests {
         use Ambient::*;
         for (name, map, want) in [
             ("kiln", Map::kiln(), &[Crystal, Core, River][..]),
-            ("foundry", Map::foundry(), &[Furnace, Machine]),
+            ("foundry", Map::foundry(0), &[Furnace, Machine]),
             ("sanctum", Map::sanctum(), &[Altar, Shrine, Bell]),
             ("city", Map::city(0), &[Banner, Dome]),
             ("reservoir", Map::reservoir(0), &[Cable, Cloth, Hull]),
@@ -612,7 +612,7 @@ mod tests {
         let volume = crate::profile::Settings::default().volume();
         for (name, map) in [
             ("kiln", Map::kiln()),
-            ("foundry", Map::foundry()),
+            ("foundry", Map::foundry(0)),
             ("sanctum", Map::sanctum()),
             ("city", Map::city(0)),
             ("reservoir", Map::reservoir(0)),

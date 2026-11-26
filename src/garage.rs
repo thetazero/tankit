@@ -998,17 +998,6 @@ pub fn front_angle(tank: &Tank) -> f32 {
     f.x.atan2(f.z) + 0.65
 }
 
-/// A list row's clickable area: the whole width of the panel (and the
-/// selection bar), from just above the text to the next row.
-pub fn row_hit<T: Copy>(p: &Painter, hits: &mut Hits<T>, at: Vec2, pitch: f32, id: T) {
-    hits.add(
-        p,
-        Vec2::new(at.x - 20.0, at.y - 6.0),
-        Vec2::new(PANEL_W + 20.0, pitch),
-        id,
-    );
-}
-
 /// Dark backdrop behind the left-hand panel, so the hairlines read over a bright city.
 pub fn backdrop(p: &mut Painter, h: f32) {
     backdrop_fading(p, h, 260.0);

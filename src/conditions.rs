@@ -179,7 +179,10 @@ mod tests {
             MapKind::Reservoir,
             MapKind::Sanctum,
             MapKind::Kiln,
-            MapKind::Foundry,
+            MapKind::Foundry(
+                crate::map::procgen::Look::Imperium,
+                crate::map::procgen::foundry::Ground::Desert,
+            ),
             MapKind::City(Look::Imperium, Default::default()),
             MapKind::City(Look::Resonant, Default::default()),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
