@@ -76,6 +76,7 @@ impl Style for Resonant {
             mat: Material::Plaster,
             trim: GILT,
             roof: SLATE,
+            land: GROUND,
         }
     }
 

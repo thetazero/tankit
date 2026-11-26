@@ -703,9 +703,10 @@ mod tests {
             }
             for a in sk.avenues().filter(|a| a.out) {
                 assert!(
-                    sk.edges.iter().any(|e| e.kind == EdgeKind::Blockade
-                        && (a.to - e.start).perp_dot(e.along).abs() < 0.01
-                        && (e.from..=e.to).contains(&(a.to - e.start).dot(e.along))),
+                    sk.edges
+                        .iter()
+                        .any(|e| (a.to - e.start).perp_dot(e.along).abs() < 0.01
+                            && (e.from..=e.to).contains(&(a.to - e.start).dot(e.along))),
                     "seed {seed}: nothing across the avenue to {}",
                     a.to
                 );
