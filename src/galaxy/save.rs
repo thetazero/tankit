@@ -736,7 +736,7 @@ impl Galaxy {
                         let (s, f) = (k.target as usize, k.side as usize);
                         !k.lent
                             && f != super::RAID
-                            && k.field >= 8
+                            && k.field >= 20
                             && g.fighting(s, f)
                             && !g.commits(s, f).is_empty()
                     })
@@ -749,7 +749,7 @@ impl Galaxy {
         for c in 0..g.companies.len() {
             let keep = g.companies[c]
                 .contract
-                .is_some_and(|k| !k.lent && k.side as usize != super::RAID && k.field >= 8);
+                .is_some_and(|k| !k.lent && k.side as usize != super::RAID && k.field >= 20);
             if !keep {
                 g.companies[c].contract = None;
             }

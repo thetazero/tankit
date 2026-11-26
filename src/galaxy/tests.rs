@@ -969,3 +969,29 @@ fn companies_raid_and_leave() {
     }
     assert!(raided && g.books.raids > 0);
 }
+
+/// Hulls sent take time to fly, are nowhere meanwhile, and land when due.
+#[test]
+fn fleets_take_time_and_land() {
+    let mut g = small_war();
+    g.fleets.clear();
+    while g.fleets.iter().all(|x| x.arrives < g.tick + 2) {
+        g.step();
+    }
+    let x = *g
+        .fleets
+        .iter()
+        .max_by_key(|x| x.arrives)
+        .expect("a fleet in flight");
+    let (t, f) = (x.to as usize, x.side as usize);
+    let due = x.arrives;
+    while g.tick + 1 < due {
+        g.tick_once();
+        assert!(g.fleets.iter().any(|y| y.to == x.to && y.arrives == due));
+    }
+    g.clear_moves();
+    g.tick_once();
+    assert!(g.moves[t][f].arrived >= x.hulls, "not landed");
+    assert!(g.fleets.iter().all(|y| y.arrives > g.tick));
+    assert!(g.flight(1.0) == 1 && g.flight(g.rules.ftl_speed * 2.5) == 3);
+}

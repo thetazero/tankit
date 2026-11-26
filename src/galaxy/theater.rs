@@ -1299,7 +1299,7 @@ mod tests {
         let to = g.companies[c].at as usize;
         assert_ne!(to as u32, at);
         assert!(g.systems[to].at_war());
-        assert_eq!(g.companies[c].idle_since, g.tick);
+        assert!(g.companies[c].idle_since > g.tick, "not there yet");
         assert_eq!(g.crew_news, Some(CrewNews::Sailed { from: at }));
     }
 
