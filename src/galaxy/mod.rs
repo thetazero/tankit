@@ -11,8 +11,7 @@
 //! side and turning out hulls (into that side's storage in the system) and
 //! crystals, and one or two **shield generators** (at least one). Hull
 //! storage is per side per system. Hulls are whole: a yard builds toward its
-//! next one and delivers it done; each stored hull has a small chance a tick
-//! of wearing out; a battle's losses are whole hulls, rolled (each of a
+//! next one and delivers it done; a battle's losses are whole hulls, rolled (each of a
 //! side's hulls there with the chance its expected losses give it), the
 //! mercs' among them by their share. A side with a hull in a system is in
 //! the fight there: a battle goes on to the last hull, mercs' included.
@@ -29,7 +28,7 @@
 //! 1. *Production.* Every production site adds hulls and crystals to its realm.
 //!    Realms pay their pilots and train more.
 //!    Hulls cost nothing to build, except a little crystal for the Resonant.
-//!    Stored hulls wear out slowly, so an idle world's garrison levels off.
+//!    Hulls last until they're shot down.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
 //!    Each side in a fight attacks every site there it can at once
@@ -125,9 +124,12 @@ pub const SHIELD_SEATS: usize = 1;
 /// The numbers the war is tuned by.
 #[derive(Clone, Copy, Debug)]
 pub struct Rules {
-    /// Each hull has this chance a tick of wearing out (so a garrison levels off at
-    /// production / wear).
-    pub wear: f32,
+    /// Ticks of a system's output that make its usual garrison: what a
+    /// realm prices its spare hulls against, and (most of it) starts with.
+    pub garrison: f32,
+    /// How fast yards build, of what a site's rated at: about what wars
+    /// destroy, since nothing else does.
+    pub yards: f32,
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
     /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
@@ -257,7 +259,8 @@ pub struct Rules {
 impl Default for Rules {
     fn default() -> Rules {
         Rules {
-            wear: 0.03,
+            garrison: 550.0,
+            yards: 0.06,
             ftl_cost: 0.225,
             kill: 0.35,
             frontage: 85.0,
@@ -341,8 +344,6 @@ pub struct Site {
 pub struct Moves {
     /// Delivered by its yards here.
     pub built: u32,
-    /// Stored hulls worn out.
-    pub worn: u32,
     /// Shot down in battles here, played or the galaxy's (mercs' too).
     pub lost: u32,
     /// Sent in by its realm from other systems (FTL).
@@ -359,14 +360,13 @@ impl Moves {
     /// Hulls in less hulls out.
     pub fn net(&self) -> i64 {
         (self.built + self.arrived + self.hired) as i64
-            - (self.worn + self.lost + self.left + self.released) as i64
+            - (self.lost + self.left + self.released) as i64
     }
 
     /// These without `o`'s (none below zero).
     pub fn less(&self, o: &Moves) -> Moves {
         Moves {
             built: self.built.saturating_sub(o.built),
-            worn: self.worn.saturating_sub(o.worn),
             lost: self.lost.saturating_sub(o.lost),
             arrived: self.arrived.saturating_sub(o.arrived),
             left: self.left.saturating_sub(o.left),
@@ -524,7 +524,7 @@ pub struct Galaxy {
     /// rest of its tick, then any ticks waited through after. Not saved.
     pub moves: Vec<[Moves; SIDES]>,
     /// Of `moves`, the companies' hulls on contract for the side: hired,
-    /// released, lost and worn out. Not saved.
+    /// released and lost. Not saved.
     pub merc_moves: Vec<[Moves; SIDES]>,
     rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
@@ -732,10 +732,11 @@ impl Galaxy {
             spans: Vec::new(),
             free: Vec::new(),
         };
-        // Start every garrison near where it would level off.
+        // Start every garrison near its usual size.
         for s in 0..g.systems.len() {
             let owner = g.systems[s].owner();
-            g.systems[s].hulls[owner] = (g.production(s)[owner] / rules.wear * 0.8).round() as u32;
+            g.systems[s].hulls[owner] =
+                (g.production(s)[owner] * rules.garrison * 0.8).round() as u32;
         }
         g.form_realms();
         (g.splits, g.merges) = (0, 0);
@@ -751,7 +752,7 @@ impl Galaxy {
         let (a, b) = self.systems[s].sites;
         for site in &self.sites[a as usize..b as usize] {
             if let SiteKind::Production { hulls, .. } = site.kind {
-                out[site.owner as usize] += hulls;
+                out[site.owner as usize] += hulls * self.rules.yards;
             }
         }
         out
@@ -988,24 +989,18 @@ impl Galaxy {
         let resonant = Faction::Resonant.index();
         for s in 0..self.systems.len() {
             let (a, b) = self.systems[s].sites;
-            // Stored hulls wear out, each with a small chance a tick.
-            for f in 0..SIDES {
-                let worn = self.rng.binomial(self.systems[s].hulls[f], self.rules.wear);
-                self.systems[s].hulls[f] -= worn;
-                self.moves[s][f].worn += worn;
-            }
             let sys = &mut self.systems[s];
             for site in &self.sites[a as usize..b as usize] {
                 if let SiteKind::Production { hulls, crystals: c } = site.kind {
                     let f = site.owner as usize;
-                    sys.building[f] += hulls;
+                    sys.building[f] += hulls * self.rules.yards;
                     let r = sys.realms[f];
                     if r == NONE {
                         continue;
                     }
                     crystals[r as usize] += c;
                     if f == resonant {
-                        crystals[r as usize] -= hulls * RESONANT_HULL_COST;
+                        crystals[r as usize] -= hulls * self.rules.yards * RESONANT_HULL_COST;
                     }
                 }
             }

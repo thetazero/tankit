@@ -1197,7 +1197,7 @@ fn galaxy_kills_teach_merc_pilots() {
 }
 
 /// Every hull that comes into or goes out of a system is in its moves
-/// (#445): reinforcements, mercs, yards, wear and losses account for
+/// (#445): reinforcements, mercs, yards and losses account for
 /// every change in a side's count, so the missions screen never shows one
 /// it can't explain. A played battle starts them over.
 #[test]
@@ -1218,7 +1218,6 @@ fn moves_account_for_every_hull() {
                 "system {s} side {f}: {m:?}"
             );
             seen.built += m.built;
-            seen.worn += m.worn;
             seen.lost += m.lost;
             seen.arrived += m.arrived;
             seen.hired += m.hired;
@@ -1226,7 +1225,7 @@ fn moves_account_for_every_hull() {
     }
     // A war's worth of ticks does all of it somewhere.
     assert!(
-        seen.built > 0 && seen.worn > 0 && seen.lost > 0 && seen.arrived > 0,
+        seen.built > 0 && seen.lost > 0 && seen.arrived > 0,
         "{seen:?}"
     );
     g.clear_moves();
@@ -1283,7 +1282,7 @@ fn tick_summary_counts_from_the_battle() {
             assert!(rows.len() <= 2);
             let sum = |n: fn(&&theater::SideChange) -> u32| rows.iter().map(n).sum::<u32>();
             assert_eq!(sum(|c| c.now), now, "system {s} side {f}");
-            // Wear's split between them by chance; with no mercs it's exact.
+            // With no mercs, it's exact.
             if g.merc_moves[s][f] == Moves::default() {
                 assert_eq!(sum(|c| c.before), was, "system {s} side {f}");
             }
@@ -1775,4 +1774,72 @@ fn conquest_captures_the_bank() {
     g.realms[by].crystals = 1e6;
     g.produce();
     assert!(g.realms[by].crystals > 0.99e6);
+}
+
+/// How big wars get: every ten ticks, the systems each realm is fighting in,
+/// and the hulls each fight brings together.
+#[test]
+#[ignore = "a tuning report: run by hand in release"]
+fn judge_wars() {
+    let ticks = std::env::var("JUDGE_TICKS")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(3000u64);
+    let mut g = Galaxy::with_size(1, SYSTEMS, REGION, Rules::default());
+    let q = |v: &mut Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        [0.5, 0.9, 0.99, 1.0].map(|p| {
+            v.get(((v.len().max(1) - 1) as f32 * p) as usize)
+                .copied()
+                .unwrap_or(0.0)
+        })
+    };
+    let (mut fronts, mut fights, mut last, mut taken) = (Vec::new(), Vec::new(), 0.0, 0u64);
+    let mut next = ticks / 4;
+    while g.tick < ticks {
+        g.step();
+        taken += g.taken as u64;
+        if g.tick % 10 == 0 {
+            let mut per = std::collections::HashMap::new();
+            for s in 0..g.systems.len() {
+                for f in 0..SIDES {
+                    if g.fighting(s, f) {
+                        *per.entry(g.systems[s].realms[f]).or_insert(0u32) += 1;
+                    }
+                }
+                if g.systems[s].at_war() {
+                    fights.push(g.systems[s].hulls.iter().sum::<u32>() as f32);
+                }
+            }
+            fronts.extend(per.values().map(|&n| n as f32));
+        }
+        if g.tick >= next {
+            next += ticks / 4;
+            let hulls: u64 = g
+                .systems
+                .iter()
+                .flat_map(|s| s.hulls)
+                .map(|h| h as u64)
+                .sum();
+            let vaults: f32 = g.realms.iter().map(|r| r.crystals).sum();
+            println!(
+                "WARS t{}: hulls {:.2}M, vaults {:.0}k, destroyed a tick {:.0}, taken a tick {:.1}, offensives {}, companies {} signed {} | fights at once {} | a realm's fronts 50/90/99/max {:?} | hulls in a fight {:?} | share {:?}",
+                g.tick,
+                hulls as f64 / 1e6,
+                vaults / 1e3,
+                (g.destroyed - last) / (ticks / 4) as f64,
+                taken as f64 / (ticks / 4) as f64,
+                g.living().filter(|(_, r)| r.offensive.is_some()).count(),
+                g.companies.len(),
+                g.books.signed,
+                g.systems.iter().filter(|s| s.at_war()).count(),
+                q(&mut fronts),
+                q(&mut fights),
+                g.share.map(|s| (s * 100.0).round()),
+            );
+            (last, taken) = (g.destroyed, 0);
+            fronts.clear();
+            fights.clear();
+        }
+    }
 }
