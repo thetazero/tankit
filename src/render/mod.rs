@@ -498,6 +498,23 @@ struct Targets {
     /// Depth for the SSAO pass.
     ao_bg: wgpu::BindGroup,
     post_bg: wgpu::BindGroup,
+    /// Bloom's chain, half the frame's size and smaller, and what reads
+    /// each (the frame first).
+    bloom: Vec<wgpu::TextureView>,
+    bloom_bgs: Vec<wgpu::BindGroup>,
+}
+
+/// How many sizes bloom's blurred at.
+const BLOOM_MIPS: usize = 6;
+
+/// How strong bloom is under sky `a`: full at night, a touch in full sun
+/// (pale ground in daylight isn't a light).
+fn bloom_strength(a: &Atmosphere) -> f32 {
+    let sky = a.sky_horizon.lerp(a.sky_zenith, 0.35);
+    let luma = sky.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+    let t = ((luma - 0.06) / 0.34).clamp(0.0, 1.0);
+    let day = t * t * (3.0 - 2.0 * t);
+    0.2 * (1.0 - day) + 0.012 * day
 }
 
 pub struct Renderer {
@@ -519,6 +536,10 @@ pub struct Renderer {
     particle_cap: usize,
     particle_count: u32,
     post_pipe: wgpu::RenderPipeline,
+    bloom_bright: wgpu::RenderPipeline,
+    bloom_down: wgpu::RenderPipeline,
+    bloom_up: wgpu::RenderPipeline,
+    bloom_bgl: wgpu::BindGroupLayout,
     ui_pipe: wgpu::RenderPipeline,
 
     globals_buf: wgpu::Buffer,
@@ -748,6 +769,37 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let bloom_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bloom"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let ao_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -797,6 +849,7 @@ impl Renderer {
         let scene_layout = layout(&[Some(&globals_bgl), Some(&shadow_bgl)]);
         let globals_layout = layout(&[Some(&globals_bgl)]);
         let post_layout = layout(&[Some(&post_bgl)]);
+        let bloom_layout = layout(&[Some(&bloom_bgl)]);
         let ao_layout = layout(&[Some(&globals_bgl), Some(&ao_bgl)]);
         // Particles also read scene depth, to fade out where they meet geometry.
         let particle_layout = layout(&[Some(&globals_bgl), Some(&shadow_bgl), Some(&ao_bgl)]);
@@ -1028,6 +1081,51 @@ impl Renderer {
             cache: None,
         });
 
+        let bloom_src = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("bloom.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/bloom.wgsl").into()),
+        });
+        let bloom_pipe = |entry: &str, src: wgpu::BlendFactor, dst: wgpu::BlendFactor| {
+            let part = wgpu::BlendComponent {
+                src_factor: src,
+                dst_factor: dst,
+                operation: wgpu::BlendOperation::Add,
+            };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&bloom_layout),
+                vertex: wgpu::VertexState {
+                    module: &bloom_src,
+                    entry_point: Some("vs_bloom"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &bloom_src,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(wgpu::BlendState {
+                            color: part,
+                            alpha: part,
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        use wgpu::BlendFactor as Factor;
+        // (How strong it is comes in as the blend's constant.)
+        let bloom_bright = bloom_pipe("fs_bright", Factor::Constant, Factor::Zero);
+        let bloom_down = bloom_pipe("fs_down", Factor::One, Factor::Zero);
+        let bloom_up = bloom_pipe("fs_up", Factor::One, Factor::One);
+
         let ui_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ui"),
             layout: Some(&ui_layout),
@@ -1169,7 +1267,14 @@ impl Renderer {
             ..Default::default()
         });
 
-        let targets = make_targets(&device, &post_bgl, &ao_bgl, &linear_sampler, width, height);
+        let targets = make_targets(
+            &device,
+            (&post_bgl, &bloom_bgl),
+            &ao_bgl,
+            &linear_sampler,
+            width,
+            height,
+        );
         let thumb_bg = make_thumb_bg(&device, &thumb_bgl, &linear_sampler, format, (1, 1)).1;
         let meshes = MeshData::primitives()
             .iter()
@@ -1213,6 +1318,10 @@ impl Renderer {
             particle_cap,
             particle_count: 0,
             post_pipe,
+            bloom_bright,
+            bloom_down,
+            bloom_up,
+            bloom_bgl,
             ui_pipe,
             globals_buf,
             globals_bg,
@@ -1279,7 +1388,7 @@ impl Renderer {
         {
             let targets = make_targets(
                 &self.device,
-                &self.post_bgl,
+                (&self.post_bgl, &self.bloom_bgl),
                 &self.ao_bgl,
                 &self.linear_sampler,
                 size.0,
@@ -1383,12 +1492,56 @@ impl Renderer {
         }
         self.targets = make_targets(
             &self.device,
-            &self.post_bgl,
+            (&self.post_bgl, &self.bloom_bgl),
             &self.ao_bgl,
             &self.linear_sampler,
             width,
             height,
         );
+    }
+
+    /// Blurs the bright of the frame, for the post pass to add.
+    fn bloom(&self, encoder: &mut wgpu::CommandEncoder, strength: f32) {
+        let t = &self.targets;
+        let mut pass = |from: usize, to: usize, pipe: &wgpu::RenderPipeline, keep: bool| {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.bloom[to],
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if keep {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipe);
+            let s = strength as f64;
+            pass.set_blend_constant(wgpu::Color {
+                r: s,
+                g: s,
+                b: s,
+                a: 1.0,
+            });
+            pass.set_bind_group(0, &t.bloom_bgs[from], &[]);
+            pass.draw(0..3, 0..1);
+        };
+        pass(0, 0, &self.bloom_bright, false);
+        for k in 1..BLOOM_MIPS {
+            pass(k, k, &self.bloom_down, false);
+        }
+        for k in (1..BLOOM_MIPS).rev() {
+            pass(k + 1, k - 1, &self.bloom_up, true);
+        }
     }
 
     /// Render to the window surface.
@@ -2085,6 +2238,8 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
 
+        self.bloom(encoder, bloom_strength(&scene.atmosphere));
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post"),
@@ -2269,7 +2424,7 @@ fn make_thumb_bg(
 
 fn make_targets(
     device: &wgpu::Device,
-    post_bgl: &wgpu::BindGroupLayout,
+    (post_bgl, bloom_bgl): (&wgpu::BindGroupLayout, &wgpu::BindGroupLayout),
     ao_bgl: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     width: u32,
@@ -2317,6 +2472,45 @@ fn make_targets(
             resource: wgpu::BindingResource::TextureView(&depth_view),
         }],
     });
+    let bloom: Vec<wgpu::TextureView> = (0..BLOOM_MIPS)
+        .map(|k| {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bloom"),
+                size: wgpu::Extent3d {
+                    width: (width >> (k + 1)).max(1),
+                    height: (height >> (k + 1)).max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            t.create_view(&Default::default())
+        })
+        .collect();
+    let bloom_bgs = std::iter::once(&hdr_view)
+        .chain(&bloom)
+        .map(|view| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom"),
+                layout: bloom_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
+        })
+        .collect();
     let post_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("post"),
         layout: post_bgl,
@@ -2333,6 +2527,10 @@ fn make_targets(
                 binding: 2,
                 resource: wgpu::BindingResource::TextureView(&ao_view),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&bloom[0]),
+            },
         ],
     });
     Targets {
@@ -2341,6 +2539,8 @@ fn make_targets(
         ao_view,
         ao_bg,
         post_bg,
+        bloom,
+        bloom_bgs,
     }
 }
 
