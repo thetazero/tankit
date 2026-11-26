@@ -56,7 +56,7 @@ impl Ground {
                 slag: Vec3::new(0.16, 0.16, 0.175),
                 ballast: Vec3::new(0.33, 0.33, 0.34),
                 far: Vec3::new(0.76, 0.79, 0.84),
-                far_material: Material::Sand,
+                far_material: Material::Rubble,
                 rock: Vec3::new(0.4, 0.42, 0.45),
             },
             Ground::Grassland => Land {
@@ -67,7 +67,7 @@ impl Ground {
                 slag: Vec3::new(0.15, 0.14, 0.135),
                 ballast: Vec3::new(0.3, 0.29, 0.27),
                 far: Vec3::new(0.2, 0.28, 0.11),
-                far_material: Material::Grass,
+                far_material: Material::Rubble,
                 rock: Vec3::new(0.36, 0.36, 0.33),
             },
         }

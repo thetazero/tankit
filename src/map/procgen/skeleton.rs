@@ -653,7 +653,7 @@ impl Skeleton {
         for lot in &self.lots {
             let f = &lot.footprint;
             if let LotKind::Works(part) = lot.kind {
-                super::foundry::build_part(&mut map, f, part, self.ground(f.center));
+                super::foundry::build_part(&mut map, f, part, self.ground(f.center), None);
                 continue;
             }
             let start = map.oboxes.len();

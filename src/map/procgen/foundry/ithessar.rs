@@ -1,16 +1,14 @@
 //! The Ithessar's foundry: squared dark stone slit with plasma, crystal
-//! standing on it; the furnaces are balls of plasma held between crystals,
-//! and the halls are mostly open to the sky under ribs of their glass.
+//! standing on it; the furnaces are balls of plasma held between crystals.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{FRAC_PI_4, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::skeleton::*;
+use super::parts::{Panel, Site};
 use super::style::*;
-use crate::map::{Ambient, Core, Crystal, GlowPath, Map};
+use crate::map::{Ambient, Core, Crystal};
 use crate::render::material::Material;
-use crate::rng::Rng;
 use crate::tank::ithessar::PLASMA;
 
 const GLASS: Vec3 = Vec3::new(0.02, 0.065, 0.17);
@@ -19,13 +17,15 @@ const BRONZE: Vec3 = Vec3::new(0.28, 0.2, 0.14);
 
 pub struct Ithessar;
 
-/// One of their crystals, from `base` along `axis`. Never solid: the
-/// skeleton's own boxes stop tanks.
-fn crystal(map: &mut Map, base: Vec3, axis: Vec3, radius: f32, lit: bool) {
-    let seed = (base.x * 37.0 + base.z * 91.0 + base.y * 13.0).to_bits();
-    map.crystals.push(Crystal {
+/// One of their crystals, from (x, y, z) along `axis` in the site's frame.
+/// Never solid: the part's own boxes stop tanks.
+fn crystal(s: &mut Site, at: (f32, f32, f32), axis: Vec3, radius: f32, lit: bool) {
+    let d = s.dir(axis.x, axis.z);
+    let base = s.at(at.0, at.1, at.2);
+    let seed = s.dice.next_u64() as u32;
+    s.map.crystals.push(Crystal {
         base,
-        axis,
+        axis: Vec3::new(d.x, axis.y, d.y),
         radius,
         sides: 5 + seed % 3,
         seed,
@@ -54,227 +54,111 @@ impl Works for Ithessar {
         }
     }
 
-    fn panel(&self, map: &mut Map, w: &Panel, k: usize) {
+    fn panel(&self, s: &mut Site, w: &Panel, k: usize) {
+        let (x, z) = w.spot(0.0, 0.0);
         if k.is_multiple_of(2) {
-            on_faces(
-                map,
-                w,
-                0.0,
-                0.16,
-                (1.8, w.top - 1.2),
-                0.06,
-                PLASMA,
-                Material::Glow,
-            );
-        }
-        // Stepped: a higher course on every other one, crystals between.
-        if k % 2 == 1 {
-            slab(
-                map,
-                w.center,
-                w.half - w.along() * 0.4,
-                (w.top + 0.05, w.top + 1.2),
-                STONE * 1.2,
-                Material::Concrete,
-                true,
-            );
-        } else if w.reach() > 1.5 {
-            let up = Vec3::new(w.out.x * 0.25, 1.0, w.out.y * 0.25);
-            crystal(
-                map,
-                at(w.center, w.top - 0.4),
-                up * 3.4,
-                0.5,
-                k.is_multiple_of(4),
-            );
+            let y = (1.8, (w.top - 1.2).max(2.2));
+            s.deck(x, z, w.half(0.16, 0.62), y, PLASMA, Material::Glow);
+            if w.reach > 1.5 {
+                let (ox, oz) = w.out();
+                let up = Vec3::new(ox * 0.25, 1.0, oz * 0.25) * 3.2;
+                crystal(s, (x, w.top - 0.4, z), up, 0.5, k.is_multiple_of(4));
+            }
+        } else {
+            let y = (w.top + 0.1, w.top + 1.2);
+            let half = w.half(w.reach - 0.4, 0.55);
+            s.deck(x, z, half, y, STONE * 1.2, Material::Concrete);
         }
     }
 
-    fn bay(&self, map: &mut Map, hall: &Hall, x0: f32, x1: f32) {
-        // Ribs leaning in from both walls, not quite meeting.
-        let x = (x0 + x1) * 0.5;
-        for s in [-1.0f32, 1.0] {
-            let foot = Vec2::new(x, hall.center.y + s * (hall.half.y - 0.6));
-            let axis = Vec3::new(0.0, 6.0, -s * (hall.half.y - 2.4));
-            crystal(map, at(foot, hall.h - 0.4), axis, 1.0, (x as i32) % 3 == 0);
-        }
-        // Panes of their glass, low along each wall.
-        for s in [-1.0f32, 1.0] {
-            slab(
-                map,
-                Vec2::new(x, hall.center.y + s * (hall.half.y - 3.2)),
-                Vec2::new((x1 - x0) * 0.5 - 0.3, 2.6),
-                (hall.h + 0.1, hall.h + 0.32),
-                self.palette().roof,
-                Material::Metal,
-                true,
-            );
+    fn bay(&self, s: &mut Site, x: f32, z: f32, half: (f32, f32), y: f32) {
+        // Ribs of crystal leaning in from both sides.
+        for e in [-1.0f32, 1.0] {
+            let axis = Vec3::new(-e * (half.0 - 1.6), 5.0, 0.0);
+            let lit = s.dice.chance(0.4);
+            crystal(s, (x + e * (half.0 - 0.5), y - 0.3, z), axis, 0.9, lit);
         }
     }
 
-    fn furnace(&self, map: &mut Map, f: &Round, _rng: &mut Rng) {
-        map.pipe(
-            at(f.at, -0.2),
-            at(f.at, 1.0),
-            f.r,
-            STONE * 1.2,
-            Material::Concrete,
-            false,
-        );
-        map.disc(
-            at(f.at, 0.98),
-            Vec3::Y * 0.05,
-            f.r * 0.97,
-            STONE,
-            Material::Concrete,
-        );
-        let heart = at(f.at, f.h * 0.66);
+    fn furnace(&self, s: &mut Site, x: f32, z: f32, r: f32, h: f32) {
+        let cast = Material::Concrete;
+        s.pipe((x, -0.2, z), (x, 1.0, z), r, STONE * 1.2, cast);
+        s.disc((x, 0.98, z), r * 0.96, STONE, cast);
+        let y = h * 0.66;
         let mut prongs = Vec::new();
         for k in 0..5 {
-            let d = Vec2::from_angle(std::f32::consts::FRAC_PI_2 + k as f32 * TAU / 5.0);
-            let foot = at(f.at + d * (f.r - 0.9), 0.6);
-            let tip = heart + Vec3::new(d.x, 0.35, d.y) * 1.9;
-            crystal(map, foot, tip - foot, 0.95, k % 2 == 0);
-            prongs.push(tip);
+            let d = Vec2::from_angle(std::f32::consts::PI + k as f32 * TAU / 5.0);
+            let foot = (x + d.x * (r - 0.9), 0.6, z + d.y * (r - 0.9));
+            let tip = (x + d.x * 1.9, y + 0.7, z + d.y * 1.9);
+            let axis = Vec3::new(tip.0 - foot.0, tip.1 - foot.1, tip.2 - foot.2);
+            crystal(s, foot, axis, 0.95, k % 2 == 0);
+            prongs.push(s.at(tip.0, tip.1, tip.2));
         }
-        map.cores.push(Core {
-            at: heart,
+        let at = s.at(x, y, z);
+        s.map.cores.push(Core {
+            at,
             radius: 1.5,
             prongs,
         });
-        let n = 24;
-        map.glow_paths.push(GlowPath {
-            points: (0..=n)
-                .map(|k| {
-                    let q = f.at + Vec2::from_angle(k as f32 / n as f32 * TAU) * (f.r + 0.3);
-                    at(q, 0.09)
-                })
-                .collect(),
-            widths: vec![0.25; n + 1],
-            color: PLASMA,
-        });
-        map.sound(Ambient::Core, heart);
+        s.map.sound(Ambient::Core, at);
     }
 
-    fn chimney(&self, map: &mut Map, c: &Round) {
-        // A pylon of stone, a long crystal standing in its top: what comes
-        // up the flue is light.
-        let top = c.h * 0.6;
-        for yaw in [0.0, std::f32::consts::FRAC_PI_4] {
-            map.block(
-                c.at,
-                Vec2::splat(c.r * 0.7),
-                yaw,
-                (-0.3, top),
-                STONE * 1.25,
-                Material::Concrete,
-                false,
-            );
+    fn chimney(&self, s: &mut Site, x: f32, z: f32, r: f32, (a, b): (f32, f32)) {
+        // A pylon of stone, a long crystal standing in its top.
+        let top = a + (b - a) * 0.55;
+        for turn in [0.0, FRAC_PI_4] {
+            let h = r * 0.7;
+            let c = STONE * 1.25;
+            s.deck(x, z, (h, h), (a - 0.2, top), c, Material::Concrete)
+                .yaw += turn;
         }
-        for k in 0..4 {
-            let d = Vec2::from_angle(k as f32 * TAU / 4.0);
-            slab(
-                map,
-                c.at + d * c.r * 0.7,
-                Vec2::splat(0.13),
-                (1.5, top - 1.0),
+        for (dx, dz) in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            let h = r * 0.92;
+            let y = (a + 0.8, top - 0.8);
+            s.deck(
+                x + dx * h,
+                z + dz * h,
+                (0.13, 0.13),
+                y,
                 PLASMA,
                 Material::Glow,
-                false,
             );
         }
-        crystal(
-            map,
-            at(c.at, top - 1.0),
-            Vec3::Y * (c.h - top + 1.0),
-            c.r * 0.75,
-            true,
-        );
+        let axis = Vec3::Y * (b - top + 1.0);
+        crystal(s, (x, top - 1.0, z), axis, r * 0.75, true);
     }
 
-    fn gantry(&self, map: &mut Map, g: &Gantry) {
-        slab(
-            map,
-            g.at,
-            Vec2::new(1.1, g.span + 1.4),
-            (g.h, g.h + 1.6),
-            STONE * 1.3,
-            Material::Concrete,
-            true,
-        );
-        slab(
-            map,
-            g.at,
-            Vec2::new(1.16, g.span + 0.8),
-            (g.h + 0.35, g.h + 0.55),
+    fn girder(&self, s: &mut Site, (w, l): (f32, f32), (a, b): (f32, f32)) {
+        let y = a + 0.35;
+        s.deck(
+            0.0,
+            0.0,
+            (w - 0.6, l + 0.06),
+            (y, y + 0.2),
             PLASMA,
             Material::Glow,
-            false,
         );
-        for s in [-1.0f32, 1.0] {
-            let end = g.at + Vec2::Y * s * g.span;
-            crystal(
-                map,
-                at(end, g.h + 1.0),
-                Vec3::new(0.0, 5.0, s * 1.6),
-                0.8,
-                s > 0.0,
-            );
+        for e in [-1.0f32, 1.0] {
+            let axis = Vec3::new(e * 1.2, 3.6, 0.0);
+            crystal(s, (e * w * 0.9, b - 0.4, 0.0), axis, 0.6, e > 0.0);
         }
-        map.sound(Ambient::Crystal, at(g.at, g.h));
+        let p = s.at(0.0, b, 0.0);
+        s.map.sound(Ambient::Crystal, p);
     }
 
-    fn fence(&self, map: &mut Map, c: Vec2, inward: Vec2, top: f32, k: usize) {
-        if k.is_multiple_of(3) {
-            let half = inward.perp().abs() * 0.15 + inward.abs() * (FENCE_T + 0.06);
-            slab(
-                map,
-                c,
-                half,
-                (top - 3.6, top - 0.6),
-                PLASMA,
-                Material::Glow,
-                false,
-            );
-        }
-        if k % 4 == 1 {
-            crystal(map, at(c, top - 0.3), Vec3::Y * 2.6, 0.55, false);
-        }
-    }
-
-    fn billets(&self, map: &mut Map, s: &Stock, g: f32, rng: &mut Rng) {
+    fn billets(&self, s: &mut Site, w: f32, l: f32) {
         // Crystals cut to length, lying in a rack.
-        slab(
-            map,
-            s.at,
-            s.half,
-            (g - 0.6, g + 1.9),
-            Vec3::ZERO,
-            Material::Plain,
-            true,
-        )
-        .hidden = true;
-        for x in [-1.5f32, 1.5] {
-            for z in [-1.0f32, 1.0] {
-                slab(
-                    map,
-                    s.at + Vec2::new(x, z * (s.half.y - 0.12)),
-                    Vec2::splat(0.12),
-                    (g - 0.6, g + 1.9),
-                    BRONZE,
-                    Material::Metal,
-                    false,
-                );
+        for z in [-0.6f32, 0.6] {
+            for x in [-1.0f32, 1.0] {
+                let y = (-0.6, 1.9);
+                let at = (x * (w - 0.12), z * l);
+                s.deck(at.0, at.1, (0.12, 0.12), y, BRONZE, Material::Metal);
             }
         }
-        for (z, y) in [(-0.6, 0.5), (0.6, 0.5), (-0.5, 1.35), (0.55, 1.4)] {
-            crystal(
-                map,
-                at(s.at + Vec2::new(-s.half.x + 0.1, z), g + y),
-                Vec3::X * (s.half.x * 2.0 - 0.2),
-                0.5,
-                rng.chance(0.3),
-            );
+        for (x, y) in [(-0.5, 0.5), (0.5, 0.5), (-0.4, 1.35), (0.45, 1.4)] {
+            let lit = s.dice.chance(0.3);
+            let axis = Vec3::Z * (l * 2.0 - 0.2);
+            crystal(s, (x * w, y, -l + 0.1), axis, 0.5, lit);
         }
     }
 }
