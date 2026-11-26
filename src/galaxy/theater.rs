@@ -237,8 +237,11 @@ pub struct SiteView {
 pub struct Offer {
     /// The ship's company (`Company::id`).
     pub id: u32,
-    /// The system it's over.
+    /// The system it's over: its index, and its name.
+    pub at: usize,
     pub system: String,
+    /// Who holds most of each of its worlds' sites.
+    pub holders: Vec<usize>,
     /// Who hires, and who you'd fight most there.
     pub side: usize,
     pub enemy: usize,
@@ -912,7 +915,9 @@ impl Galaxy {
         let own = self.own_on(co.id, k, rank).left;
         Some(Offer {
             id: co.id,
+            at: s,
             system: system_name(s),
+            holders: self.holders(s),
             side: f,
             enemy,
             defend: k.defend,
@@ -928,6 +933,19 @@ impl Galaxy {
                 .max(1.0)
                 .round() as u32,
         })
+    }
+
+    /// Who holds most of each of system `s`'s worlds' sites.
+    fn holders(&self, s: usize) -> Vec<usize> {
+        let mut held = vec![[0usize; SIDES]; self.systems[s].planets.max(1) as usize];
+        for site in &self.sites[self.site_range(s)] {
+            if let Some(h) = held.get_mut(site.planet as usize) {
+                h[site.owner as usize] += 1;
+            }
+        }
+        held.iter()
+            .map(|h| (0..SIDES).max_by_key(|&f| h[f]).unwrap_or(0))
+            .collect()
     }
 
     /// Your own contract, as the board shows it.

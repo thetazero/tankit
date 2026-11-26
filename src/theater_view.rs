@@ -68,7 +68,7 @@ const DIST: f32 = 300.0;
 /// How steeply the camera looks down on the orbits (radians).
 const PITCH: f32 = 0.36;
 /// The sphere of black round it all (inside the camera's far plane).
-const SPACE_R: f32 = 520.0;
+pub const SPACE_R: f32 = 520.0;
 const STARS: usize = 1600;
 
 /// Where everything is.
@@ -159,12 +159,79 @@ impl SystemArt {
 
     /// Build the worlds of `t` (only those that changed).
     pub fn show(&mut self, r: &mut Renderer, t: &Theater) {
-        for i in 0..(t.planets as usize).min(MAX_PLANETS) {
-            let want = world_look(t.system, i);
+        self.show_worlds(r, t.system, t.planets as usize);
+    }
+
+    /// Build the `n` worlds of system `system` (only those that changed).
+    pub fn show_worlds(&mut self, r: &mut Renderer, system: usize, n: usize) {
+        for i in 0..n.min(MAX_PLANETS) {
+            let want = world_look(system, i);
             if self.shown[i] != Some(want) {
                 r.replace_painted(self.worlds[i], &planet::mesh(want.0, &want.1));
                 self.shown[i] = Some(want);
             }
+        }
+    }
+
+    /// The star at `at`, `r` in radius: a white-hot ball in its own light,
+    /// and its glow.
+    pub fn star(
+        &self,
+        at: Vec3,
+        r: f32,
+        instances: &mut Vec<(MeshId, Instance)>,
+        particles: &mut Vec<Particle>,
+    ) {
+        let star = Vec3::from_slice(&STAR[..3]);
+        instances.push((
+            self.ball,
+            Instance::new(
+                Mat4::from_scale_rotation_translation(Vec3::splat(r * 2.0), Quat::IDENTITY, at),
+                Vec4::new(1.0, 0.88, 0.66, 6.0),
+            ),
+        ));
+        // Many faint shells, so no one's edge shows.
+        for k in 0..24 {
+            let shell = r * (1.1 + 0.075 * k as f32);
+            let light = star.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
+            particles.push(Particle::glow(at, shell, light, 0.11, Vec3::ZERO));
+        }
+    }
+
+    /// World `i` at `at`, `r` in radius, turning, its air lit in the colour
+    /// of side `holder` round its outline as seen from `eye`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn world(
+        &self,
+        i: usize,
+        at: Vec3,
+        r: f32,
+        holder: usize,
+        eye: Vec3,
+        time: f32,
+        (instances, particles): (&mut Vec<(MeshId, Instance)>, &mut Vec<Particle>),
+    ) {
+        instances.push((
+            self.worlds[i],
+            Instance::new(
+                Mat4::from_scale_rotation_translation(
+                    Vec3::splat(r * 2.0),
+                    Quat::from_rotation_y(time * 0.05 + i as f32 * 2.0)
+                        * Quat::from_rotation_z(0.25),
+                    at,
+                ),
+                Vec4::new(1.0, 1.0, 1.0, 0.0),
+            ),
+        ));
+        let tint = Vec3::from_slice(&Faction::side(holder).ui()[..3]);
+        let view = (at - eye).normalize();
+        let u = view.cross(Vec3::Y).normalize();
+        let v = u.cross(view);
+        let size = 0.7 * r / WORLD_R;
+        for k in 0..480 {
+            let a = TAU * k as f32 / 480.0;
+            let rim = at + (u * a.cos() + v * a.sin()) * r * 1.03;
+            particles.push(Particle::glow(rim, size, tint, 0.06, Vec3::ZERO));
         }
     }
 }
@@ -320,25 +387,7 @@ fn system_scene(
     ));
     stars(camera.pos, &mut particles);
 
-    // The star: a white-hot ball in its own light, and its glow.
-    let star = Vec3::from_slice(&STAR[..3]);
-    instances.push((
-        art.ball,
-        Instance::new(
-            Mat4::from_scale_rotation_translation(
-                Vec3::splat(STAR_R * 2.0),
-                Quat::IDENTITY,
-                l.star,
-            ),
-            Vec4::new(1.0, 0.88, 0.66, 6.0),
-        ),
-    ));
-    // Many faint shells, so no one's edge shows.
-    for k in 0..24 {
-        let r = STAR_R * (1.1 + 0.075 * k as f32);
-        let light = star.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
-        particles.push(Particle::glow(l.star, r, light, 0.11, Vec3::ZERO));
-    }
+    art.star(l.star, STAR_R, &mut instances, &mut particles);
 
     // Orbits: hairline rings of faint light round the star.
     for w in &l.worlds {
@@ -359,29 +408,8 @@ fn system_scene(
 
     let holders = holders(t);
     for (i, &w) in l.worlds.iter().enumerate() {
-        instances.push((
-            art.worlds[i],
-            Instance::new(
-                Mat4::from_scale_rotation_translation(
-                    Vec3::splat(WORLD_R * 2.0),
-                    Quat::from_rotation_y(time * 0.05 + i as f32 * 2.0)
-                        * Quat::from_rotation_z(0.25),
-                    w,
-                ),
-                Vec4::new(1.0, 1.0, 1.0, 0.0),
-            ),
-        ));
-        // Its air, lit in its holder's colour, round its outline.
-        let tint = Faction::side(holders[i]).ui();
-        let tint = Vec3::new(tint[0], tint[1], tint[2]);
-        let view = (w - camera.pos).normalize();
-        let u = view.cross(Vec3::Y).normalize();
-        let v = u.cross(view);
-        for k in 0..480 {
-            let a = TAU * k as f32 / 480.0;
-            let at = w + (u * a.cos() + v * a.sin()) * WORLD_R * 1.03;
-            particles.push(Particle::glow(at, 0.7, tint, 0.06, Vec3::ZERO));
-        }
+        let (eye, out) = (camera.pos, (&mut instances, &mut particles));
+        art.world(i, w, WORLD_R, holders[i], eye, time, out);
     }
 
     // Your ship, drives aglow, and a cool fill light out toward the camera

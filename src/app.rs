@@ -1613,6 +1613,12 @@ impl App {
             (&mut self.renderer, &mut self.system, &after)
         {
             art.show(r, t);
+        } else if let (Some(r), Some(art), Some((o, _))) = (
+            &mut self.renderer,
+            &mut self.system,
+            self.menu.deal().filter(|_| menu_up),
+        ) {
+            art.show_worlds(r, o.at, o.holders.len());
         }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
@@ -1670,8 +1676,10 @@ impl App {
                 crate::cluster_view::scene(c, time, w / h)
             } else if let (Some(t), Some(sys)) = (system, &self.system) {
                 theater_view::scene(sys, t, self.menu.transfer(), self.menu_time, w / h)
-            } else if let Some((o, time)) = self.menu.deal().filter(|_| menu_up) {
-                crate::work_view::scene(art, &driven, queued, o, time, w / h)
+            } else if let (Some((o, time)), Some(sys)) =
+                (self.menu.deal().filter(|_| menu_up), &self.system)
+            {
+                crate::work_view::scene(art, sys, &driven, queued, o, time, w / h)
             } else {
                 let mut scene = scene::build(&self.game.world, &tanks, art, camera);
                 self.game.effect_instances(alpha, &mut scene.instances);
