@@ -1588,6 +1588,9 @@ impl Dig<'_> {
             let h = |q: Vec2| lay.uncut(q).clamp(floor, ROOF.1);
             Vec3::new(h(p - dx) - h(p + dx), 2.0 * cell, h(p - dz) - h(p + dz)).normalize()
         };
+        // The terrain's cells are split along their other diagonal once the
+        // map's mirrored, or turned a quarter or three.
+        let flipped = lay.mirror != (lay.turns % 2 == 1);
         let m = &mut self.sculpted;
         // A convex polygon, its corners in order round it, wound to face
         // along `n`.
@@ -1633,7 +1636,13 @@ impl Dig<'_> {
                 if !lidded(ix, iz) {
                     continue;
                 }
-                let ids = [(ix, iz), (ix + 1, iz), (ix + 1, iz + 1), (ix, iz + 1)];
+                // Its first and third corners on the terrain's diagonal.
+                let mut ids = [(ix, iz), (ix + 1, iz), (ix + 1, iz + 1), (ix, iz + 1)];
+                let mut sides = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+                if flipped {
+                    ids.rotate_left(1);
+                    sides.rotate_left(1);
+                }
                 let q = ids.map(|(i, j)| point(i, j));
                 let n = ids.map(|(i, j)| normal(i, j));
                 let f = ids.map(|(i, j)| over(i, j));
@@ -1689,7 +1698,7 @@ impl Dig<'_> {
                 );
                 // Rock faces where the lid ends (in the terrain, or over a
                 // mouth back from the Face).
-                for (k, (di, dj)) in [(0, -1), (1, 0), (0, 1), (-1, 0)].into_iter().enumerate() {
+                for (k, (di, dj)) in sides.into_iter().enumerate() {
                     let l = (k + 1) % 4;
                     if lidded(ix + di, iz + dj) || (f[k] < 0.0 && f[l] < 0.0) {
                         continue;
