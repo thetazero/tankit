@@ -1,5 +1,5 @@
-//! The UI font: Inter Medium (SIL Open Font License, `assets/fonts/OFL.txt`),
-//! drawn from a signed distance field so it stays smooth at every size and
+//! The UI fonts: Inter Medium and, for the design system (`super::design`),
+//! Chakra Petch Light (both SIL Open Font License, `assets/fonts/`), drawn from a signed distance field so it stays smooth at every size and
 //! scale. Each glyph is rasterized large once, turned into distances to its
 //! outline, and shrunk into a small single-channel atlas; the UI shader turns
 //! a distance back into crisp, anti-aliased coverage, and the same distances
@@ -15,7 +15,19 @@ use std::sync::OnceLock;
 use ab_glyph::{Font as _, FontRef, GlyphId, PxScale, point};
 use glam::Vec2;
 
-const FONT: &[u8] = include_bytes!("../../assets/fonts/Inter-Medium.otf");
+const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Medium.otf");
+const CHAKRA: &[u8] = include_bytes!("../../assets/fonts/ChakraPetch-Light.ttf");
+
+/// A typeface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Face {
+    Inter,
+    Chakra,
+}
+
+impl Face {
+    pub const ALL: [Face; 2] = [Face::Inter, Face::Chakra];
+}
 
 /// Characters in the atlas. Anything else is drawn as a space.
 const CHARSET: &str = concat!(
@@ -45,6 +57,7 @@ pub struct Glyph {
     /// Atlas cell, in 0..1 texture coordinates.
     pub uv_min: Vec2,
     pub uv_max: Vec2,
+    face: Face,
     id: GlyphId,
     /// Atlas cell, in atlas px: (x, y, w, h).
     cell: (usize, usize, usize, usize),
@@ -53,12 +66,13 @@ pub struct Glyph {
 }
 
 pub struct Font {
-    face: FontRef<'static>,
-    glyphs: HashMap<char, Glyph>,
-    /// Height of the capitals, in em.
+    faces: [FontRef<'static>; 2],
+    glyphs: HashMap<(Face, char), Glyph>,
+    /// Height of Inter's capitals, in em.
     pub cap_height: f32,
-    /// A space's advance, in em.
-    pub space: f32,
+    /// Each face's capitals' height, and a space's advance, in em.
+    caps: [f32; 2],
+    spaces: [f32; 2],
     pub atlas_size: (u32, u32),
 }
 
@@ -70,72 +84,89 @@ pub fn font() -> &'static Font {
 
 impl Font {
     fn load() -> Font {
-        let face = FontRef::try_from_slice(FONT).expect("bundled font parses");
-        let upem = face.units_per_em().expect("font has units per em");
-        let em = |units: f32| units / upem;
-        let digits_advance = ('0'..='9')
-            .map(|c| em(face.h_advance_unscaled(face.glyph_id(c))))
-            .fold(0.0, f32::max);
-        let hi = big_scale(&face);
+        let faces =
+            [INTER, CHAKRA].map(|f| FontRef::try_from_slice(f).expect("bundled font parses"));
         let pad = SPREAD as usize;
         let (mut x, mut y, mut row_h) = (0usize, 0usize, 0usize);
         let mut glyphs = HashMap::new();
-        for c in CHARSET.chars() {
-            let id = face.glyph_id(c);
-            assert!(id.0 != 0 || c == ' ', "font lacks {c:?}");
-            let mut advance = em(face.h_advance_unscaled(id));
-            let mut shift = 0.0;
-            if c.is_ascii_digit() {
-                shift = (digits_advance - advance) * 0.5;
-                advance = digits_advance;
-            }
-            let outlined = face.outline_glyph(id.with_scale_and_position(hi, point(0.0, 0.0)));
-            let Some(o) = outlined else {
+        let (mut caps, mut spaces) = ([0.0; 2], [0.0; 2]);
+        for which in Face::ALL {
+            let face = &faces[which as usize];
+            let upem = face.units_per_em().expect("font has units per em");
+            let em = |units: f32| units / upem;
+            let digits_advance = ('0'..='9')
+                .map(|c| em(face.h_advance_unscaled(face.glyph_id(c))))
+                .fold(0.0, f32::max);
+            let hi = big_scale(face);
+            for c in CHARSET.chars() {
+                let id = face.glyph_id(c);
+                if id.0 == 0 && which != Face::Inter {
+                    // Inter's stands in for it (`glyph_in`).
+                    continue;
+                }
+                assert!(id.0 != 0 || c == ' ', "font lacks {c:?}");
+                let mut advance = em(face.h_advance_unscaled(id));
+                let mut shift = 0.0;
+                if c.is_ascii_digit() {
+                    shift = (digits_advance - advance) * 0.5;
+                    advance = digits_advance;
+                }
+                let outlined = face.outline_glyph(id.with_scale_and_position(hi, point(0.0, 0.0)));
+                let Some(o) = outlined else {
+                    glyphs.insert(
+                        (which, c),
+                        Glyph {
+                            advance,
+                            offset: Vec2::ZERO,
+                            size: Vec2::ZERO,
+                            uv_min: Vec2::ZERO,
+                            uv_max: Vec2::ZERO,
+                            face: which,
+                            id,
+                            cell: (0, 0, 0, 0),
+                            origin: Vec2::ZERO,
+                        },
+                    );
+                    continue;
+                };
+                let b = o.px_bounds();
+                // Cell in atlas px: the glyph's box, snapped out to whole atlas px, plus padding.
+                let s = OVERSAMPLE as f32;
+                let (x0, y0) = ((b.min.x / s).floor(), (b.min.y / s).floor());
+                let (x1, y1) = ((b.max.x / s).ceil(), (b.max.y / s).ceil());
+                let w = (x1 - x0) as usize + 2 * pad;
+                let h = (y1 - y0) as usize + 2 * pad;
+                if x + w > ATLAS_W {
+                    x = 0;
+                    y += row_h + 1;
+                    row_h = 0;
+                }
+                let cell = (x, y, w, h);
+                x += w + 1;
+                row_h = row_h.max(h);
+                let corner = Vec2::new(x0 - SPREAD, y0 - SPREAD);
                 glyphs.insert(
-                    c,
+                    (which, c),
                     Glyph {
                         advance,
-                        offset: Vec2::ZERO,
-                        size: Vec2::ZERO,
+                        offset: (corner / EM) + Vec2::new(shift, 0.0),
+                        size: Vec2::new(w as f32, h as f32) / EM,
                         uv_min: Vec2::ZERO,
                         uv_max: Vec2::ZERO,
+                        face: which,
                         id,
-                        cell: (0, 0, 0, 0),
-                        origin: Vec2::ZERO,
+                        cell,
+                        // Glyph origin within the oversampled cell.
+                        origin: -corner * s,
                     },
                 );
-                continue;
-            };
-            let b = o.px_bounds();
-            // Cell in atlas px: the glyph's box, snapped out to whole atlas px, plus padding.
-            let s = OVERSAMPLE as f32;
-            let (x0, y0) = ((b.min.x / s).floor(), (b.min.y / s).floor());
-            let (x1, y1) = ((b.max.x / s).ceil(), (b.max.y / s).ceil());
-            let w = (x1 - x0) as usize + 2 * pad;
-            let h = (y1 - y0) as usize + 2 * pad;
-            if x + w > ATLAS_W {
-                x = 0;
-                y += row_h + 1;
-                row_h = 0;
             }
-            let cell = (x, y, w, h);
-            x += w + 1;
-            row_h = row_h.max(h);
-            let corner = Vec2::new(x0 - SPREAD, y0 - SPREAD);
-            glyphs.insert(
-                c,
-                Glyph {
-                    advance,
-                    offset: (corner / EM) + Vec2::new(shift, 0.0),
-                    size: Vec2::new(w as f32, h as f32) / EM,
-                    uv_min: Vec2::ZERO,
-                    uv_max: Vec2::ZERO,
-                    id,
-                    cell,
-                    // Glyph origin within the oversampled cell.
-                    origin: -corner * s,
-                },
-            );
+            let h = face.glyph_id('H');
+            caps[which as usize] = face
+                .outline_glyph(h.with_scale_and_position(hi, point(0.0, 0.0)))
+                .map(|o| -o.px_bounds().min.y / (EM * OVERSAMPLE as f32))
+                .expect("font has an H");
+            spaces[which as usize] = em(face.h_advance_unscaled(face.glyph_id(' ')));
         }
         let atlas_h = (y + row_h).next_multiple_of(1 << MIPS) as u32;
         let atlas_w = ATLAS_W as u32;
@@ -145,17 +176,12 @@ impl Font {
             g.uv_min = Vec2::new(x as f32, y as f32) / size;
             g.uv_max = Vec2::new((x + w) as f32, (y + h) as f32) / size;
         }
-        let h = face.glyph_id('H');
-        let cap_height = face
-            .outline_glyph(h.with_scale_and_position(hi, point(0.0, 0.0)))
-            .map(|o| -o.px_bounds().min.y / (EM * OVERSAMPLE as f32))
-            .expect("font has an H");
-        let space = em(face.h_advance_unscaled(face.glyph_id(' ')));
         Font {
-            face,
+            faces,
             glyphs,
-            cap_height,
-            space,
+            cap_height: caps[0],
+            caps,
+            spaces,
             atlas_size: (atlas_w, atlas_h),
         }
     }
@@ -168,18 +194,38 @@ impl Font {
 
     /// `c`'s glyph, its own case kept when `lower`.
     pub fn glyph_as(&self, c: char, lower: bool) -> Option<&Glyph> {
+        self.glyph_in(Face::Inter, c, lower)
+    }
+
+    /// `glyph_as` in `face`, or Inter's if that face lacks it.
+    pub fn glyph_in(&self, face: Face, c: char, lower: bool) -> Option<&Glyph> {
         let c = if lower {
             c
         } else {
             c.to_uppercase().next().unwrap_or(c)
         };
-        self.glyphs.get(&c)
+        self.glyphs
+            .get(&(face, c))
+            .or_else(|| self.glyphs.get(&(Face::Inter, c)))
+    }
+
+    /// Height of `face`'s capitals, in em.
+    pub fn cap(&self, face: Face) -> f32 {
+        self.caps[face as usize]
+    }
+
+    /// A space's advance in `face`, in em.
+    pub fn space(&self, face: Face) -> f32 {
+        self.spaces[face as usize]
     }
 
     /// Kerning between two glyphs, in em.
     pub fn kern(&self, a: &Glyph, b: &Glyph) -> f32 {
-        let upem = self.face.units_per_em().unwrap_or(1000.0);
-        self.face.kern_unscaled(a.id, b.id) / upem
+        if a.face != b.face {
+            return 0.0;
+        }
+        let face = &self.faces[a.face as usize];
+        face.kern_unscaled(a.id, b.id) / face.units_per_em().unwrap_or(1000.0)
     }
 
     /// The atlas as one byte per pixel (0.5 = on the outline, higher inside),
@@ -187,9 +233,10 @@ impl Font {
     pub fn atlas_pixels(&self) -> Vec<Vec<u8>> {
         let (aw, ah) = (self.atlas_size.0 as usize, self.atlas_size.1 as usize);
         let mut atlas = vec![0u8; aw * ah];
-        let hi = big_scale(&self.face);
         let s = OVERSAMPLE;
         for g in self.glyphs.values() {
+            let face = &self.faces[g.face as usize];
+            let hi = big_scale(face);
             let (cx, cy, cw, ch) = g.cell;
             if cw == 0 {
                 continue;
@@ -198,7 +245,7 @@ impl Font {
             let mut inside = vec![false; w * h];
             let glyph =
                 g.id.with_scale_and_position(hi, point(g.origin.x, g.origin.y));
-            if let Some(o) = self.face.outline_glyph(glyph) {
+            if let Some(o) = face.outline_glyph(glyph) {
                 let b = o.px_bounds();
                 let (bx, by) = (b.min.x as i64, b.min.y as i64);
                 o.draw(|x, y, cov| {

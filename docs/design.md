@@ -1,0 +1,26 @@
+# Design system, v0
+
+The code is the reference: tokens and components are in `src/ui/design.rs`.
+The main menu is made from it; the other screens aren't yet.
+
+## Principles
+
+1. **You're a mercenary.** Every screen is about the work, the gear or the
+   war, in that order.
+2. **The war is always in view.** Show it happening; don't report it in a
+   popup.
+3. **No click without a choice.** If there's nothing to decide, it isn't a
+   screen.
+
+## Foundations
+
+- **Color:** light grey text on dark grey. Amber is the accent: what's
+  yours, and what's selected. Blue, amber's complement, is crystal. On the
+  map, factions keep their own colors.
+- **Type:** Chakra Petch Light, sentence case, four sizes.
+- **Space:** 8 px units, and plenty of them. No dense blobs of text.
+- **Shape:** a corner cut at 45 degrees.
+
+## Components
+
+Panel, bar, action, link.

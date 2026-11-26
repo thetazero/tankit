@@ -817,6 +817,9 @@ impl App {
         let before = g.crew;
         g.enlist(None);
         let crew = g.crew;
+        if self.menu.wants_cluster(g.tick, crew) {
+            self.menu.set_cluster(crate::cluster_view::Cluster::of(g));
+        }
         if crew != before {
             self.war.save();
         }
