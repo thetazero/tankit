@@ -33,7 +33,6 @@ fn every_form_is_playable_dressed() {
 fn the_forms_are_different_land() {
     for seed in SEEDS {
         let sk = skeleton(&spec(seed));
-        assert_eq!(sk.form, form_of(seed));
         let mut high = 0;
         let mut all = 0;
         let mut z = 5.0;
@@ -41,7 +40,7 @@ fn the_forms_are_different_land() {
             let mut x = 5.0;
             while x < sk.size {
                 all += 1;
-                if sk.on_high(Vec2::new(x, z)) {
+                if sk.land.on_high(Vec2::new(x, z)) {
                     high += 1;
                 }
                 x += 10.0;
@@ -49,17 +48,21 @@ fn the_forms_are_different_land() {
             z += 10.0;
         }
         let f = high as f32 / all as f32;
-        let (lo, hi) = match sk.form {
+        let (lo, hi) = match form_of(seed) {
             Form::Erg => (0.02, 0.25),
             Form::Canyonlands => (0.4, 0.9),
             Form::Basin => (0.15, 0.7),
             Form::Escarpment => (0.1, 0.6),
         };
-        assert!((lo..hi).contains(&f), "{:?}: {f} high ground", sk.form);
         assert!(
-            sk.form == Form::Erg || !sk.ramps.is_empty(),
+            (lo..hi).contains(&f),
+            "{:?}: {f} high ground",
+            form_of(seed)
+        );
+        assert!(
+            form_of(seed) == Form::Erg || !sk.land.high.ramps.is_empty(),
             "{:?}: no ramps",
-            sk.form
+            form_of(seed)
         );
     }
 }
@@ -71,17 +74,18 @@ fn seeds_of_a_form_differ() {
     for form_seed in [1u64, 2] {
         let a = skeleton(&spec(form_seed));
         let b = skeleton(&spec(form_seed + 4));
-        assert_eq!(a.form, b.form);
         assert!(
-            a.size != b.size || a.bases != b.bases || a.ramps != b.ramps,
+            a.size != b.size
+                || a.base_spots() != b.base_spots()
+                || a.land.high.ramps != b.land.high.ramps,
             "two {:?} seeds laid out the same desert",
-            a.form
+            form_of(form_seed)
         );
     }
     let a = skeleton(&spec(3));
     let b = skeleton(&spec(3));
-    assert_eq!(a.bases, b.bases);
-    assert_eq!(a.ramps, b.ramps);
+    assert_eq!(a.base_spots(), b.base_spots());
+    assert_eq!(a.land.high.ramps, b.land.high.ramps);
     assert_eq!(a.lots.len(), b.lots.len());
 }
 
@@ -91,12 +95,12 @@ fn the_landmark_ground_is_open() {
     for seed in SEEDS {
         let m = Map::desert(seed);
         let sk = skeleton(&spec(seed));
-        let lm = sk.landmark;
-        assert_eq!(m.hold_site, Some(lm.at));
-        let g = m.ground_height(lm.at.x, lm.at.y);
+        let lm = &sk.landmarks[0];
+        assert_eq!(m.hold_site, Some(lm.center));
+        let g = m.ground_height(lm.center.x, lm.center.y);
         let hit = m.oboxes.iter().find(|o| {
             let (lo, hi) = o.y_range();
-            o.solid && lo < g + 3.5 && hi > g + 0.5 && o.distance(lm.at) < lm.clear - 2.0
+            o.solid && lo < g + 3.5 && hi > g + 0.5 && o.distance(lm.center) < lm.clear - 2.0
         });
         assert!(
             hit.is_none(),
@@ -117,11 +121,16 @@ fn the_floor_is_drivable() {
             let mut x = 2.0;
             while x < sk.size - 2.0 {
                 let p = Vec2::new(x, z);
-                let s = sk.plateau(p);
-                let by_ramp = sk.ramps.iter().any(|r| r.distance(p) < RAMP_HALF + 4.0);
+                let s = sk.land.plateau(p);
+                let by_ramp = sk
+                    .land
+                    .high
+                    .ramps
+                    .iter()
+                    .any(|r| r.distance(p) < RAMP_HALF + 4.0);
                 if !(-3.0..EDGE_FALL + 3.0).contains(&s) && !by_ramp {
-                    let dx = sk.ground(x + 1.0, z) - sk.ground(x - 1.0, z);
-                    let dz = sk.ground(x, z + 1.0) - sk.ground(x, z - 1.0);
+                    let dx = sk.ground(Vec2::new(x + 1.0, z)) - sk.ground(Vec2::new(x - 1.0, z));
+                    let dz = sk.ground(Vec2::new(x, z + 1.0)) - sk.ground(Vec2::new(x, z - 1.0));
                     let slope = Vec2::new(dx, dz).length() / 2.0;
                     assert!(slope < 0.6, "seed {seed}: {slope} steep at {p}");
                 }
@@ -141,8 +150,8 @@ fn fillers_keep_to_their_envelopes() {
         let (m, claims) = build_with_claims(&spec(seed));
         for (claim, range) in claims {
             let (at, reach) = match claim {
-                Claim::Landmark => (sk.landmark.at, sk.landmark.reach),
-                Claim::Lot(k) => (sk.lots[k].at, sk.lots[k].reach),
+                Claim::Landmark => (sk.landmarks[0].center, sk.landmarks[0].reach),
+                Claim::Lot(k) => (sk.lots[k].at(), sk.lots[k].reach()),
             };
             for o in &m.oboxes[range] {
                 let (y0, _) = o.y_range();
@@ -167,11 +176,11 @@ fn the_high_ground_is_reachable() {
     for seed in [1u64, 2, 3] {
         let m = Map::desert(seed);
         let sk = skeleton(&spec(seed));
-        let up = m.open_spots.iter().filter(|&&p| sk.on_high(p)).count();
+        let up = m.open_spots.iter().filter(|&&p| sk.land.on_high(p)).count();
         assert!(
             up >= 5,
             "seed {seed} ({:?}): {up} open spots up high",
-            sk.form
+            form_of(seed)
         );
     }
 }
@@ -200,10 +209,10 @@ fn the_shield_desert_comes_with_any_sides_generator() {
         let spec = crate::shield_desert_spec(seed, crate::Generator::up(owner));
         let what = format!("{owner:?} seed {seed} ({:?})", form_of(seed));
         let sk = skeleton(&spec);
-        assert_eq!(sk.landmark.kind, LandmarkKind::Generator, "{what}");
+        assert_eq!(sk.landmarks[0].kind, LandmarkKind::Generator, "{what}");
         let (m, claims) = build_with_claims(&spec);
         assert_eq!(m.hold_name, "GENERATOR", "{what}");
-        assert_eq!(m.hold_site, Some(sk.landmark.at), "{what}");
+        assert_eq!(m.hold_site, Some(sk.landmarks[0].center), "{what}");
         if let Err(why) = crate::map::procgen::check::playable(&m) {
             panic!("{what}: {why}");
         }
@@ -215,7 +224,7 @@ fn the_shield_desert_comes_with_any_sides_generator() {
         assert_eq!(m.vistas.len(), 2, "{what}");
         let site = dress::site(&sk, seed);
         assert!(site.doors.len() >= 4, "{what}: {} doors", site.doors.len());
-        let g = sk.ground(site.center.x, site.center.y);
+        let g = sk.ground(site.center);
         assert!(
             m.lights.iter().any(|l| {
                 Vec2::new(l.pos.x, l.pos.z).distance(site.center) < 1.0 && l.pos.y > g + 8.0
@@ -253,7 +262,7 @@ fn the_shield_desert_comes_with_any_sides_generator() {
             if !o.solid || y0 > m.ground_height(o.center.x, o.center.y) + 3.0 {
                 continue;
             }
-            let out = o.center.distance(sk.landmark.at) - sk.landmark.reach;
+            let out = o.center.distance(sk.landmarks[0].center) - sk.landmarks[0].reach;
             assert!(out < 1.0, "{what}: {out} m out of the slot: {o:?}");
         }
     }
@@ -267,7 +276,7 @@ fn the_generator_faces_every_side() {
         let spec = crate::shield_desert_spec(seed, crate::Generator::up(Faction::Uthenn));
         let sk = skeleton(&spec);
         let site = dress::site(&sk, seed);
-        for &b in &sk.bases {
+        for &b in &sk.base_spots() {
             let to = (b - site.center).normalize();
             let best = site.doors.iter().map(|d| d.dot(to)).fold(-1.0, f32::max);
             assert!(best > 0.8, "seed {seed}: no door toward spawns at {b}");

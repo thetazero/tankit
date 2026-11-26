@@ -34,11 +34,11 @@ use crate::rng::Rng;
 /// the models are built to): doors toward each side's spawns and more in
 /// any wide gap between them, perhaps a side shelled.
 pub fn site(sk: &Skeleton, seed: u64) -> city::Landmark {
-    let lm = sk.landmark;
+    let lm = &sk.landmarks[0];
     let mut rng = Rng::new(seed ^ 0xD00B_5EED);
     let mut doors: Vec<f32> = Vec::new();
-    for &b in &sk.bases {
-        let a = shield::angle(b - lm.at);
+    for &b in &sk.base_spots() {
+        let a = shield::angle(b - lm.center);
         if doors.iter().all(|&d| shield::apart(a, d) > 0.6) {
             doors.push(a);
         }
@@ -72,11 +72,12 @@ pub fn site(sk: &Skeleton, seed: u64) -> city::Landmark {
         (doors[k] + doors[(k + 1) % doors.len()]).normalize_or(doors[k])
     });
     city::Landmark {
-        center: lm.at,
+        center: lm.center,
         radius: GENERATOR_RING,
         precinct: GENERATOR_PRECINCT,
         doors,
         fallen,
+        ..lm.clone()
     }
 }
 
@@ -182,15 +183,15 @@ impl Sand<'_> {
         condition: Condition,
     ) {
         let sk = self.sk;
-        let lm = sk.landmark;
+        let lm = &sk.landmarks[0];
         let site = site(sk, seed);
-        let base = sk.ground(lm.at.x, lm.at.y);
+        let base = sk.ground(lm.center);
         let mark = shield::Mark::of(self.map);
         let drifts = shield::build_at(self.map, &site, base, rng, owner);
         shield::ruin(self.map, rng, &site, base, &mark, owner, condition);
 
         let camp = self.lay_out_camp(rng, &site, drifts);
-        self.map.terrain = Some(super::terrain_of(sk, Some(&camp)));
+        self.map.terrain = Some(super::terrain_of(sk, self.pal, Some(&camp)));
         let fences = camp.fences.clone();
         let upwind = camp.upwind;
         for (a, b) in fences {
@@ -202,22 +203,22 @@ impl Sand<'_> {
     /// Where the tracks run and the fences stand.
     fn lay_out_camp(&mut self, rng: &mut Rng, site: &city::Landmark, drifts: Vec<Drift>) -> Camp {
         let sk = self.sk;
-        let lm = sk.landmark;
+        let lm = &sk.landmarks[0];
         // A track out of each door that faces a side's spawns, out to them
         // (as far as the floor goes: none is beaten up a cliff).
         let mut tracks = Vec::new();
-        for &b in &sk.bases {
-            let d = (b - lm.at).normalize_or(Vec2::X);
+        for &b in &sk.base_spots() {
+            let d = (b - lm.center).normalize_or(Vec2::X);
             let door = site
                 .doors
                 .iter()
                 .copied()
                 .max_by(|x, y| x.dot(d).total_cmp(&y.dot(d)))
                 .unwrap_or(d);
-            let from = lm.at + door * (GENERATOR_RING - 3.0);
+            let from = lm.center + door * (GENERATOR_RING - 3.0);
             let len = from.distance(b);
             let bend = door.perp() * rng.range(-12.0, 12.0);
-            let level = sk.on_high(from);
+            let level = sk.land.on_high(from);
             let mut line = Vec::new();
             let n = (len / 6.0).ceil().max(2.0) as usize;
             for k in 0..=n {
@@ -226,7 +227,7 @@ impl Sand<'_> {
                 let straight = from + door * (len * t);
                 let p =
                     straight.lerp(from.lerp(b, t), smoothstep(0.1, 0.6, t)) + bend * (t * PI).sin();
-                if sk.on_high(p) != level
+                if sk.land.on_high(p) != level
                     || p.min_element() < 4.0
                     || p.max_element() > sk.size - 4.0
                 {
@@ -241,7 +242,7 @@ impl Sand<'_> {
 
         // Fences across the windward approach, between the doors, out past
         // the precinct.
-        let upwind = -sk.wind.normalize_or(Vec2::X);
+        let upwind = -sk.dunes().wind.normalize_or(Vec2::X);
         let mut fences = Vec::new();
         let gaps = shield::between_doors(site);
         for a in gaps {
@@ -251,7 +252,7 @@ impl Sand<'_> {
             }
             for row in 0..rng.int(1, 2) {
                 let r = lm.clear + 3.0 + row as f32 * 6.0 + rng.range(0.0, 2.0);
-                let mid = lm.at + out * r;
+                let mid = lm.center + out * r;
                 // Square across the wind, as long as fits between the
                 // doors' ways in.
                 let across = upwind.perp();
@@ -259,15 +260,15 @@ impl Sand<'_> {
                 let (a0, a1) = (mid - across * half, mid + across * half);
                 let clear_of_doors = (0..=8).all(|k| {
                     let q = a0.lerp(a1, k as f32 / 8.0);
-                    let qa = shield::angle(q - lm.at);
+                    let qa = shield::angle(q - lm.center);
                     site.doors
                         .iter()
                         .all(|&d| shield::apart(qa, shield::angle(d)) > 0.35)
                 });
                 let on_floor = (0..=4).all(|k| {
                     let q = a0.lerp(a1, k as f32 / 4.0);
-                    !sk.on_high(q)
-                        && sk.plateau(q) > FOOT + 8.0
+                    !sk.land.on_high(q)
+                        && sk.land.plateau(q) > FOOT + 8.0
                         && q.min_element() > 6.0
                         && q.max_element() < sk.size - 6.0
                         && tracks.iter().all(|t| line_distance(t, q) > TRACK + 3.0)
@@ -278,7 +279,7 @@ impl Sand<'_> {
             }
         }
         Camp {
-            at: lm.at,
+            at: lm.center,
             tracks,
             fences,
             upwind,
@@ -355,7 +356,7 @@ impl Sand<'_> {
     /// A dump of supplies by a door or two: crates on pallets in the
     /// holder's colours, a drum stand, a tarp over a stack.
     fn supply_dumps(&mut self, rng: &mut Rng, site: &city::Landmark, owner: Faction) {
-        let lm = self.sk.landmark;
+        let lm = &self.sk.landmarks[0];
         let (crate_c, band, drum) = colours(owner);
         let mut made = 0;
         let mut doors = site.doors.clone();
@@ -368,7 +369,7 @@ impl Sand<'_> {
             }
             let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
             let a = shield::angle(d) + side * rng.range(0.32, 0.45);
-            let at = lm.at + shield::dir(a) * rng.range(lm.clear + 3.5, lm.clear + 5.0);
+            let at = lm.center + shield::dir(a) * rng.range(lm.clear + 3.5, lm.clear + 5.0);
             if !self.dump_room(at, 5.5) {
                 continue;
             }
@@ -386,7 +387,7 @@ impl Sand<'_> {
         let g = self.g(p);
         let flat = (0..8).all(|k| {
             let q = p + Vec2::from_angle(k as f32 * TAU / 8.0) * r;
-            !sk.on_high(q) && sk.plateau(q) > FOOT + 8.0 && (self.g(q) - g).abs() < 0.8
+            !sk.land.on_high(q) && sk.land.plateau(q) > FOOT + 8.0 && (self.g(q) - g).abs() < 0.8
         });
         flat && !self.map.oboxes.iter().any(|o| {
             let (lo, hi) = o.y_range();
@@ -502,7 +503,7 @@ impl Sand<'_> {
             let q = p + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(4.5, 6.5);
             let gq = self.g(q);
             let s = rng.range(0.25, 0.45);
-            let color = self.sk.palette.stone * rng.range(0.9, 1.05);
+            let color = self.pal.stone * rng.range(0.9, 1.05);
             self.map.oboxes.push(OBox {
                 solid: false,
                 ..rocks::boulder(

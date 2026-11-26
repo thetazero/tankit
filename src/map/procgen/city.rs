@@ -16,6 +16,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use glam::{Vec2, Vec3};
 
 use super::crossing;
+use super::land::Land;
 use super::skeleton::*;
 use crate::map::OBox;
 use crate::rng::Rng;
@@ -351,6 +352,10 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             precinct: (radius + 20.0).min(half - 8.0),
             doors,
             fallen,
+            kind: LandmarkKind::Great,
+            clear: 0.0,
+            reach: (radius + 20.0).min(half - 8.0),
+            facing: Vec2::X,
         });
     }
 
@@ -364,6 +369,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             corner: corner + inward * Vec2::new(rng.range(3.0, 16.0), rng.range(3.0, 16.0)),
             inward,
             size: court,
+            kind: BaseKind::Court,
         }));
     }
     let mut tries = 0;
@@ -406,13 +412,18 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                 corner: m - inward * court * 0.5,
                 inward,
                 size: court,
+                kind: BaseKind::Court,
             });
         }
     }
 
+    let land = Land {
+        platforms,
+        ..Land::default()
+    };
     let mut sk = Skeleton {
         size,
-        platforms,
+        land,
         streets: Vec::new(),
         squares: Vec::new(),
         landmarks,
@@ -423,18 +434,21 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         edges: Vec::new(),
         decos: Vec::new(),
         repair_spots: Vec::new(),
-        relief: Default::default(),
         crossings: Vec::new(),
     };
     // The land, its great shapes kept off the great buildings and courts.
     let avoid: Vec<(Vec2, f32)> = sk
+        .land
         .platforms
         .iter()
         .map(|p| (p.center, p.half * 1.15 + p.ramp))
         .chain(sk.bases.iter().map(|b| (b.middle(), b.size * 0.75)))
         .chain([(heart, 30.0)])
         .collect();
-    sk.relief = super::relief::Relief::new(rng, size, &avoid);
+    sk.land = Land {
+        platforms: std::mem::take(&mut sk.land.platforms),
+        ..Land::rolling(rng, size, &avoid)
+    };
 
     if plan.form == Form::OldTown {
         // The square the fight's about, open in the middle.
@@ -503,15 +517,15 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
 /// Levels the ground under everything that stands on it, the biggest last:
 /// a plaza's level wins over a house's plot by it.
 fn level(sk: &mut Skeleton) {
-    let mut relief = std::mem::take(&mut sk.relief);
+    let mut land = sk.land.clone();
     for l in &sk.lots {
-        relief.level_box(&l.footprint, 0.6, 3.0);
+        land.level_box(&l.footprint, 0.6, 3.0);
     }
     for d in &sk.decos {
-        relief.level_round(d.at, d.kind.reach() * 0.8, 4.0);
+        land.level_round(d.at, d.kind.reach() * 0.8, 4.0);
     }
     for s in &sk.spans {
-        relief.level_round(s.at, s.opening + 7.0, 10.0);
+        land.level_round(s.at, s.opening + 7.0, 10.0);
     }
     for b in &sk.bases {
         let court = OBox {
@@ -519,13 +533,13 @@ fn level(sk: &mut Skeleton) {
             half: Vec2::splat(b.size * 0.5),
             ..OBox::default()
         };
-        relief.level_box(&court, 3.0, 18.0);
+        land.level_box(&court, 3.0, 18.0);
     }
-    for pl in &sk.platforms {
-        relief.level_round(pl.center, pl.half * 1.2 + pl.ramp, 24.0);
+    for pl in &sk.land.platforms {
+        land.level_round(pl.center, pl.half * 1.2 + pl.ramp, 24.0);
     }
-    if sk.platforms.is_empty() {
-        relief.level_round(sk.heart, 24.0, 16.0);
+    if sk.land.platforms.is_empty() {
+        land.level_round(sk.heart, 24.0, 16.0);
     }
     // Ready for the crossings: both ends level with a bridge's deck; a
     // tunnel's way dug down, the crest over it level with its roof.
@@ -539,19 +553,19 @@ fn level(sk: &mut Skeleton) {
         };
         match x.kind {
             crossing::Kind::Bridge => {
-                relief.level_at(strip(-9.0, 0.5, x.half + 1.0), 0.0, 7.0, x.top);
+                land.level_at(strip(-9.0, 0.5, x.half + 1.0), 0.0, 7.0, x.top);
                 let len = x.len();
-                relief.level_at(strip(len - 0.5, len + 9.0, x.half + 1.0), 0.0, 7.0, x.top);
+                land.level_at(strip(len - 0.5, len + 9.0, x.half + 1.0), 0.0, 7.0, x.top);
             }
             crossing::Kind::Tunnel => {
                 let (a, b) = x.roofed;
-                relief.level_at(strip(a, b, x.half + 11.0), 0.0, 5.0, x.top);
+                land.level_at(strip(a, b, x.half + 11.0), 0.0, 5.0, x.top);
                 // (Flat right across, and up again inside the walls.)
-                relief.level_at(strip(-5.0, x.len() + 5.0, x.half + 3.2), 0.0, 1.4, x.floor);
+                land.level_at(strip(-5.0, x.len() + 5.0, x.half + 3.2), 0.0, 1.4, x.floor);
             }
         }
     }
-    sk.relief = relief;
+    sk.land = land;
 }
 
 /// Where the avenues meet each edge (counter-clockwise from the south), as
@@ -801,7 +815,7 @@ fn gates_and_lines(sk: &mut Skeleton, rng: &mut Rng) {
 /// low cover scattered on the open ground round its foot.
 fn plaza_dressing(sk: &mut Skeleton, rng: &mut Rng) {
     let mut fonts = Vec::new();
-    for (lm, plaza) in sk.landmarks.iter().zip(&sk.platforms) {
+    for (lm, plaza) in sk.landmarks.iter().zip(&sk.land.platforms) {
         for b in bisectors(lm) {
             // On the top, well in from its edge, outside the precinct.
             let mut d = lm.precinct + 8.0;
@@ -816,7 +830,7 @@ fn plaza_dressing(sk: &mut Skeleton, rng: &mut Rng) {
         }
     }
     sk.decos.extend(fonts);
-    if sk.platforms.is_empty() {
+    if sk.land.platforms.is_empty() {
         return;
     }
     let c = sk.heart;
@@ -876,7 +890,7 @@ fn civics(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
             ..OBox::default()
         };
         let r = half.length();
-        let clear = sk.relief.cuts().iter().all(|c| {
+        let clear = sk.land.cuts().iter().all(|c| {
             let (t, off) = c.local(p);
             !(c.floor - r..c.floor + c.bank(t) + r * 0.7).contains(&off.abs())
                 && off.abs() > c.floor
@@ -910,6 +924,7 @@ fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
             sk.bases.iter().any(|b| b.contains(p, half + 3.0))
                 || sk.lots.iter().any(|l| l.footprint.distance(p) < half + 1.0)
                 || sk
+                    .land
                     .platforms
                     .iter()
                     .any(|pl| !own.contains(&pl.center) && pl.sdf(p) < pl.ramp * 0.5 + half)
@@ -979,7 +994,8 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
             plan.density.avenue() * rng.range(0.85, 1.1)
         };
         let reach = |p: Vec2| {
-            sk.platforms
+            sk.land
+                .platforms
                 .iter()
                 .find(|pl| pl.center == p)
                 .map_or(4.0, |pl| pl.half * 1.15 + pl.ramp)
@@ -1047,7 +1063,7 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
                 let t = ((p - s.from).dot(d) / d.length_squared()).clamp(0.0, 1.0);
                 s.from + d * t
             })
-            .filter(|q| sk.off_plazas(*q) > -4.0 || sk.platforms.is_empty())
+            .filter(|q| sk.off_plazas(*q) > -4.0 || sk.land.platforms.is_empty())
             .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
     };
     let mut doors: Vec<Vec2> = Vec::new();
@@ -1165,7 +1181,7 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
 fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let size = sk.size;
     let inside = |p: Vec2| p.min_element() > 0.0 && p.max_element() < size;
-    for c in sk.relief.cuts() {
+    for c in sk.land.cuts() {
         if rng.chance(0.2) {
             continue;
         }
@@ -1196,7 +1212,7 @@ fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
 /// Bridges where the plan's roads cross a valley, tunnels where they go
 /// through a ridge: straight from rim to rim, or foot to foot.
 fn crossings(sk: &mut Skeleton) {
-    let cuts = sk.relief.cuts();
+    let cuts = sk.land.cuts();
     let old = std::mem::take(&mut sk.streets);
     // Roads whole, then cut where they cross.
     let mut roads: Vec<(Street, Vec<Vec2>)> = Vec::new();
@@ -1299,7 +1315,7 @@ fn crossings(sk: &mut Skeleton) {
 /// The crossing of `c` from `a` to `b` by a road `half` wide, if one fits.
 fn crossing_at(
     sk: &Skeleton,
-    c: &super::relief::Cut,
+    c: &super::land::Cut,
     a: Vec2,
     b: Vec2,
     half: f32,
@@ -1312,9 +1328,9 @@ fn crossing_at(
     if !inside(a) || !inside(b) || sk.off_plazas(a) < 6.0 || sk.off_plazas(b) < 6.0 {
         return None;
     }
-    let r = &sk.relief;
-    let (ha, hb) = (r.land(a), r.land(b));
-    let mid = r.land((a + b) * 0.5);
+    let r = &sk.land;
+    let (ha, hb) = (r.swell(a), r.swell(b));
+    let mid = r.swell((a + b) * 0.5);
     let half = half.min(8.5);
     let end = (ha + hb) * 0.5;
     if (ha - hb).abs() > 4.0 {
@@ -1333,14 +1349,14 @@ fn crossing_at(
         })
     } else {
         // Roofed where the crest's high enough to be.
-        let high = |t: f32| r.land(a + (b - a) * t) > end + 5.6;
+        let high = |t: f32| r.swell(a + (b - a) * t) > end + 5.6;
         let ts: Vec<f32> = (0..=40)
             .map(|k| k as f32 / 40.0)
             .filter(|&t| high(t))
             .collect();
         let (t0, t1) = (*ts.first()?, *ts.last()?);
         let top = (0..=8)
-            .map(|k| r.land(a + (b - a) * (t0 + (t1 - t0) * k as f32 / 8.0)))
+            .map(|k| r.swell(a + (b - a) * (t0 + (t1 - t0) * k as f32 / 8.0)))
             .fold(f32::MAX, f32::min)
             .min(end + 9.0);
         ((t1 - t0) * len > 10.0).then_some(crossing::Crossing {
@@ -1467,7 +1483,7 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
                         ok = fits(sk, &lot, margin);
                     }
                     // Few on the banks: steep ground's mostly left open.
-                    if !ok || (sk.relief.steep(lot.center) > 0.3 && rng.chance(0.65)) {
+                    if !ok || (sk.land.steep(lot.center) > 0.3 && rng.chance(0.65)) {
                         continue;
                     }
                     let to = lot.local_point(mid);
@@ -1536,7 +1552,7 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
         } else {
             close
         };
-        if !fits(sk, &lot, margin) || (sk.relief.steep(p) > 0.3 && rng.chance(0.75)) {
+        if !fits(sk, &lot, margin) || (sk.land.steep(p) > 0.3 && rng.chance(0.75)) {
             continue;
         }
         let kind = match kind_at(rng, p) {
