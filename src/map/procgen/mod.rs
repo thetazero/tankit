@@ -26,6 +26,7 @@
 pub mod check;
 pub mod city;
 mod civic;
+pub mod crossing;
 pub mod desert;
 mod imperium;
 pub mod mine;
@@ -232,6 +233,9 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         let start = map.oboxes.len();
         st.deco(&mut map, &sk, d, &mut rng);
         claims.push((Claim::Deco(k), start..map.oboxes.len()));
+    }
+    for c in &sk.crossings {
+        c.build(&mut map, st.stone(), |p| sk.ground(p));
     }
     for (k, b) in sk.bases.iter().enumerate() {
         let mark = skeleton::Mark::of(&map);
@@ -969,6 +973,45 @@ mod tests {
             }
         }
         on as f32 / all as f32
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn how_hilly() {
+        for seed in 0..16 {
+            let sk = skeleton(&spec(seed));
+            let n = (sk.size / 4.0) as i32;
+            let (mut lo, mut hi, mut steep) = (f32::MAX, f32::MIN, 0.0f32);
+            let (mut gl, mut gh) = (f32::MAX, f32::MIN);
+            for i in 0..n {
+                for j in 0..n {
+                    let p = Vec2::new(i as f32, j as f32) * 4.0;
+                    let h = sk.relief.land(p);
+                    (lo, hi) = (lo.min(h), hi.max(h));
+                    let g = sk.relief.height(p);
+                    (gl, gh) = (gl.min(g), gh.max(g));
+                    steep = steep.max((sk.relief.land(p + Vec2::X * 4.0) - h).abs() / 4.0);
+                }
+            }
+            println!(
+                "hilly {seed} size {} land {lo:.1}..{hi:.1} ground {gl:.1}..{gh:.1} steepest {steep:.2} {}",
+                sk.size,
+                sk.relief.describe()
+                    + &sk
+                        .crossings
+                        .iter()
+                        .map(|c| format!(
+                            " | {:?} {:.0} m, {:.0} to {:.0}, floor {:.1} top {:.1}",
+                            c.kind,
+                            c.len(),
+                            c.from,
+                            c.to,
+                            c.floor,
+                            c.top
+                        ))
+                        .collect::<String>()
+            );
+        }
     }
 
     #[test]

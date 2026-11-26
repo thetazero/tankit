@@ -595,7 +595,7 @@ pub(super) fn building_in(
         // A touch taller than the walls it sits in, so their tops never coincide.
         let h = cut(c).min(top_y + 0.9) + 0.07;
         let (lo, hi) = (
-            Vec3::new(c.x - 0.4, 0.0, c.y - 0.4),
+            Vec3::new(c.x - 0.4, -0.15, c.y - 0.4),
             Vec3::new(c.x + 0.4, h, c.y + 0.4),
         );
         if cut(c) < top_y + 0.85 {

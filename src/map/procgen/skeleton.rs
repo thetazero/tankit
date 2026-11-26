@@ -44,6 +44,8 @@ pub struct Skeleton {
     pub repair_spots: Vec<Vec2>,
     /// The lie of the land under it all.
     pub relief: super::relief::Relief,
+    /// Where roads cross valleys and ridges.
+    pub crossings: Vec<super::crossing::Crossing>,
 }
 
 /// Raised ground: a rounded square, flat on top, sloping down over `ramp`
@@ -82,6 +84,8 @@ pub enum Rank {
     Avenue,
     /// An ordinary street between buildings.
     Lane,
+    /// A road's run over a bridge or through a tunnel (see `crossing`).
+    Crossing,
     /// A road's run beyond the arena's edge, only seen.
     Beyond,
 }
@@ -343,6 +347,7 @@ impl Skeleton {
     pub fn road(&self, p: Vec2) -> f32 {
         self.streets
             .iter()
+            .filter(|s| s.rank != Rank::Crossing)
             .map(|s| 1.0 - smoothstep(s.half - 0.8, s.half + 1.2, s.distance(p)))
             .fold(0.0, f32::max)
             .max(
@@ -473,6 +478,15 @@ impl Skeleton {
                 (g, g + 8.0),
                 Vec3::new(0.7, 0.6, 0.3),
             );
+        }
+        let stone = super::civic::Stone {
+            wall: Vec3::splat(0.6),
+            mat: Material::Concrete,
+            trim: Vec3::splat(0.5),
+            roof: Vec3::splat(0.5),
+        };
+        for c in &self.crossings {
+            c.build(&mut map, stone, |p| self.ground(p));
         }
         for lot in &self.lots {
             let f = &lot.footprint;
