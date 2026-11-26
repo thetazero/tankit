@@ -6,12 +6,17 @@
 //!
 //! Nothing here is anyone's: whose mine it is (their lamps, their machine
 //! in the bay, their freight, their marker by their spawns) is the style's
-//! (`MineStyle`; `ithessar` is the Ithessar's).
+//! (`MineStyle`: `imperium`, `resonant`, `uthenn`, `ithessar`; `kit` is what
+//! they share).
 
 mod dig;
 pub mod dress;
+mod imperium;
 mod ithessar;
+mod kit;
 pub mod plan;
+mod resonant;
+mod uthenn;
 mod works;
 
 use std::f32::consts::PI;
@@ -103,6 +108,8 @@ pub(in crate::map) trait MineStyle {
     /// The machine cutting the bore in a borer's bay, along `beam` (from
     /// its emitter to the bore's face, and how thick).
     fn borer(&self, d: &mut Dig, beam: (Vec3, Vec3, f32), rng: &mut Rng);
+    /// What its beam sounds like where it strikes the rock.
+    fn strike_sound(&self) -> crate::map::Ambient;
     /// A rail car centered at `at`, its length along `yaw`, rolled `roll`
     /// onto its side: a freight car, or the locomotive (`loco`).
     fn rail_car(&self, d: &mut Dig, at: Vec2, yaw: f32, roll: f32, loco: bool);
@@ -115,8 +122,9 @@ pub(in crate::map) trait MineStyle {
 fn style(look: Look) -> &'static dyn MineStyle {
     match look {
         Look::Ithessar => &ithessar::Ithessar,
-        // Nobody else's mine yet: any other look is dressed as theirs.
-        Look::Uthenn | Look::Imperium | Look::Resonant => &ithessar::Ithessar,
+        Look::Imperium => &imperium::Imperium,
+        Look::Resonant => &resonant::Resonant,
+        Look::Uthenn => &uthenn::Uthenn,
     }
 }
 

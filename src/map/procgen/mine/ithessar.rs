@@ -9,10 +9,11 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use glam::{Quat, Vec2, Vec3, Vec4};
 
-use super::dig::{Dig, MESA_TOP, ORE, RAW, STEEL, heap_height, ore_heap, ore_lump, own_rng};
+use super::dig::{Dig, ORE, STEEL};
+use super::kit::{Freight, LAMP_BRIGHT, LAMP_REACH};
 use super::*;
 use crate::map::landmarks::Rig;
-use crate::map::{Core, Crystal, OBox};
+use crate::map::{Ambient, Core, Crystal, OBox};
 use crate::render::material::Material;
 use crate::render::mesh::MeshData;
 use crate::rng::Rng;
@@ -21,9 +22,6 @@ use crate::tank::model::{self, Skin};
 
 /// Ithessar worked crystal: their piers, cars, rigs and lamps.
 const GLASS: Vec3 = Vec3::new(0.03, 0.07, 0.16);
-/// How bright a plasma lamp's light is, and how far it reaches (m).
-const LAMP_BRIGHT: f32 = 4.5;
-const LAMP_REACH: f32 = 10.0;
 
 /// The Ithessar.
 pub struct Ithessar;
@@ -43,6 +41,10 @@ impl MineStyle for Ithessar {
 
     fn borer(&self, d: &mut Dig, beam: (Vec3, Vec3, f32), rng: &mut Rng) {
         d.plasma_borer(beam, rng);
+    }
+
+    fn strike_sound(&self) -> Ambient {
+        Ambient::Core
     }
 
     fn rail_car(&self, d: &mut Dig, at: Vec2, yaw: f32, roll: f32, loco: bool) {
@@ -66,13 +68,9 @@ impl Dig<'_> {
     /// The plasma borer, braced on the bay's floor, its beam held on into
     /// the bore it's cutting; the power it draws held in a core behind it.
     fn plasma_borer(&mut self, beam: (Vec3, Vec3, f32), rng: &mut Rng) {
-        let (from, to, radius) = beam;
-        self.beams.push(crate::map::Beam { from, to, radius });
+        let (from, to, _) = beam;
         let dir = (to - from).normalize();
-        let rig = Rig {
-            pos: Vec3::new(from.x - 5.8 * dir.x, 0.0, from.z - 5.8 * dir.z),
-            rot: Quat::from_rotation_y(yaw_along(Vec2::new(dir.x, dir.z))),
-        };
+        let rig = self.borer_stand(beam, PLASMA, PLASMA_HOT);
         let axis_y = from.y;
         // Hover pads under it, glowing on the floor.
         for (x, z) in [
@@ -104,17 +102,6 @@ impl Dig<'_> {
                 0.0,
             );
         }
-        // What a tank hits: one block from the floor up, nothing to climb.
-        let c = rig.point(Vec3::new(0.0, 0.0, -0.6));
-        self.oboxes.push(OBox {
-            center: Vec2::new(c.x, c.z),
-            yaw: rig.rot.to_euler(glam::EulerRot::YXZ).0,
-            half: Vec2::new(2.9, 4.6),
-            y0: -0.2,
-            y1: 3.6,
-            hidden: true,
-            ..OBox::default()
-        });
         // The body: worked crystal, a plasma seam round it.
         rig.part(
             self,
@@ -251,14 +238,6 @@ impl Dig<'_> {
             });
             prongs.push(rig.point(Vec3::new(x * 0.8, 5.5, -6.2)));
         }
-        // The beam lights the bay: the blaze on the face, and along it.
-        for (at, k) in [(to - dir * 1.2, 2.2), ((from + to) * 0.5, 1.2)] {
-            self.lights.push(crate::render::PointLight {
-                pos: at,
-                color: PLASMA.lerp(PLASMA_HOT, 0.5) * LAMP_BRIGHT * k,
-                radius: LAMP_REACH * k,
-            });
-        }
         self.cores.push(Core {
             at: rig.point(Vec3::new(0.0, 4.4, -6.2)),
             radius: 0.85,
@@ -273,45 +252,13 @@ impl Dig<'_> {
         }
     }
 
-    /// One rail car centered at `at`, its length along `yaw`, rolled `roll`
-    /// onto its side (a derailed car): an ore car, or the locomotive (`loco`),
-    /// its prow toward local +z. Ithessar freight runs on rails, but it's
-    /// built like the rest of their machines: knapped crystal over dark
+    /// One rail car (see `Dig::car`). Ithessar freight runs on rails, but
+    /// it's built like the rest of their machines: knapped crystal over dark
     /// alloy running gear, each body held a hand's width off its bogies by
-    /// the field, plasma showing through its seams. The hulls are drawn
-    /// sculpted; a plain box round each is what tanks hit and hide behind.
+    /// the field, plasma showing through its seams.
     fn ithessar_car(&mut self, at: Vec2, yaw: f32, roll: f32, loco: bool) {
-        // Its detail comes from its own stream.
-        let rng = &mut own_rng(at);
-        let upright = roll.abs() < 0.3;
-        let g = self.ground_height(at.x, at.y);
-        let half_w = 1.75;
-        let pivot = Vec3::new(-half_w * roll.signum(), 0.0, 0.0);
-        let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(roll);
-        let base = Vec3::new(at.x, g + 0.2, at.y);
-        let rig = Rig {
-            pos: base + Quat::from_rotation_y(yaw) * pivot - rot * pivot,
-            rot,
-        };
-        let mut m = MeshData::default();
-        let bogies: [f32; 2] = if loco { [-4.0, 3.0] } else { [-2.5, 2.5] };
-        for z in bogies {
-            bogie(&mut m, z);
-        }
-        // The collider: the body, from the bogies' frames to the rim.
-        let (cz, hz, top) = if loco {
-            (-0.3, 6.2, 3.95)
-        } else {
-            (0.0, 4.3, 3.8)
-        };
-        self.hidden_part(
-            &rig,
-            Vec3::new(0.0, (0.45 + top) * 0.5, cz),
-            Vec3::new(half_w, (top - 0.45) * 0.5, hz),
-        );
+        let rig = self.car(at, yaw, roll, loco, &FREIGHT);
         if loco {
-            locomotive(&mut m);
-            self.hidden_part(&rig, Vec3::new(0.0, 4.4, -2.4), Vec3::new(1.0, 0.5, 2.2));
             // Its drive: a knot of plasma held between two crystal horns
             // behind the canopy.
             let core = rig.point(Vec3::new(0.0, 5.25, -5.4));
@@ -323,114 +270,7 @@ impl Dig<'_> {
                 radius: 0.32,
                 prongs,
             });
-        } else {
-            ore_tub(&mut m, upright);
         }
-        self.sculpt(&rig, &m);
-        if !loco {
-            if upright {
-                self.ore_load(rng, &rig);
-            } else {
-                self.spilled_load(rng, &rig);
-            }
-        }
-    }
-
-    /// An ore car's load: crystal-rich rock from the Crag heaped up over
-    /// the rim, raw crystal breaking out of it.
-    fn ore_load(&mut self, rng: &mut Rng, rig: &Rig) {
-        // The heap, highest down the middle, filling the tub's lens to
-        // just inside the rim (see `ore_tub`), a few lumps of raw crystal
-        // in it.
-        let half_w = |z: f32| 1.55 * ((4.0 - z.abs()) / 1.1).clamp(0.05, 1.0);
-        self.heaped_ore(
-            rng,
-            rig,
-            half_w,
-            4.0,
-            3.3,
-            1.0,
-            (12, 28),
-            40,
-            (0.16, 0.36),
-            4,
-        );
-    }
-
-    /// A car on its side has lost its load: the ore poured out of its
-    /// mouth into a slumped fan on the ground, highest just outside the
-    /// lip (a little still lying in the tub), thinning out away from it,
-    /// lumps rolled out past its toe and raw crystal among them.
-    fn spilled_load(&mut self, rng: &mut Rng, rig: &Rig) {
-        // Out of the mouth, across the ground; the fan's frame has its
-        // local +z that way, +x along the car, y up.
-        let mouth = rig.rot * Vec3::Y;
-        let out = Vec2::new(mouth.x, mouth.z).normalize_or(Vec2::X);
-        let lip = rig.point(Vec3::new(0.0, 3.45, 0.0));
-        let (half_l, rise, back) = (4.5f32, 1.5f32, 2.0f32);
-        let center = Vec2::new(lip.x, lip.z) + out * (half_l - back);
-        let fan = Rig {
-            pos: Vec3::new(center.x, 0.0, center.y),
-            rot: Quat::from_rotation_y(out.x.atan2(out.y)),
-        };
-        // Wide as the tub's mouth at the lip, spreading as it runs out.
-        let half_w = move |z: f32| 3.6 + 1.6 * ((z + half_l) / (2.0 * half_l));
-        // How high the pile stands at (u, v) over the ground: the mound
-        // `ore_heap` makes, leaned so its crest is at the lip.
-        let lean = move |v: f32| 1.6 - 0.65 * (v + 1.0);
-        let sink = 0.12;
-        let place = |m: &Map, local: Vec3| {
-            let w = fan.point(Vec3::new(local.x, 0.0, local.z));
-            Vec3::new(w.x, m.ground_height(w.x, w.z) - sink + local.y, w.z)
-        };
-        let mut m = MeshData::default();
-        ore_heap(&mut m, rng, half_w, half_l, 0.0, rise, 12, 16);
-        for v in &mut m.verts {
-            let p = Vec3::from(v.pos);
-            let y = p.y * lean(p.z / half_l);
-            v.pos = place(self, Vec3::new(p.x, y, p.z)).to_array();
-        }
-        // Laid over the ground, each facet faces a new way.
-        for t in m.verts.chunks_mut(3) {
-            let p = t.iter().map(|v| Vec3::from(v.pos)).collect::<Vec<_>>();
-            let mut n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or(Vec3::Y);
-            if n.y < 0.0 {
-                n = -n;
-            }
-            for v in t {
-                v.normal = n.to_array();
-            }
-        }
-        // Loose stones on the pile, raw crystal among them, and more
-        // rolled out past its toe onto the ground.
-        let shades = [ORE * 0.8, ORE * 0.6, ORE * 0.95, MESA_TOP * 0.6];
-        for k in 0..34 {
-            let loose = k >= 24;
-            let (u, v) = if loose {
-                (rng.range(-1.1, 1.1), rng.range(0.9, 1.5))
-            } else {
-                (rng.range(-0.8, 0.8), rng.range(-0.5, 0.85))
-            };
-            let z = v * half_l;
-            let y = if loose {
-                0.0
-            } else {
-                heap_height(0.0, rise, u, v) * lean(v)
-            };
-            let at = place(self, Vec3::new(u * half_w(z), y + sink, z));
-            let (color, mat, s) = if k % 8 == 7 {
-                (RAW * 1.15, Material::Ore, rng.range(0.15, 0.3))
-            } else {
-                let c = shades[rng.index(shades.len())];
-                (c, Material::Rubble, rng.range(0.18, 0.45))
-            };
-            ore_lump(&mut m, rng, at, s, color, mat);
-        }
-        let world = Rig {
-            pos: Vec3::ZERO,
-            rot: Quat::IDENTITY,
-        };
-        self.sculpt(&world, &m);
     }
 
     /// A plasma lamp hanging `drop` m on a rod from `at`: the Ithessar's
@@ -517,34 +357,10 @@ impl Dig<'_> {
         );
     }
 
-    /// A plasma lamp on a wall, `size` times the usual: a steel bracket out from `at` (on the
-    /// wall's face) along `out`, the lamp hanging off its end.
+    /// A plasma lamp on a wall, `size` times the usual.
     fn plasma_wall_lamp(&mut self, at: Vec3, out: Vec2, size: f32) {
-        let o = Vec3::new(out.x, 0.0, out.y).normalize() * 0.45 * size;
-        let end = at + o;
-        // The arm, a strut under it back to the wall, a plate on the wall.
-        self.segment(at, end, 0.04, STEEL, Material::Metal, false);
-        self.segment(
-            at - Vec3::Y * 0.4,
-            at + o * 0.65,
-            0.025,
-            STEEL,
-            Material::Metal,
-            false,
-        );
-        self.oboxes.push(OBox {
-            center: Vec2::new(at.x, at.z),
-            yaw: out.x.atan2(out.y),
-            half: Vec2::new(0.12, 0.03),
-            y0: at.y - 0.5,
-            y1: at.y + 0.1,
-            color: STEEL,
-            side_mat: Material::Metal,
-            top_mat: Material::Metal,
-            solid: false,
-            ..OBox::default()
-        });
-        self.plasma_lamp(end - Vec3::Y * 0.04, 0.0, size);
+        let end = self.bracket(at, out, size);
+        self.plasma_lamp(end, 0.0, size);
     }
 
     /// The Ithessar emblem on a wall, in `rig`'s frame at `at`, facing its
@@ -608,6 +424,14 @@ impl Dig<'_> {
         });
     }
 }
+
+const FREIGHT: Freight = Freight {
+    bogie,
+    tub: ore_tub,
+    loco: locomotive,
+    // Filling the tub's lens to just inside the rim.
+    load: |z| 1.55 * ((4.0 - z.abs()) / 1.1).clamp(0.05, 1.0),
+};
 
 /// Ithessar freight: worked crystal over dark alloy.
 const HULL: Skin = Skin::new(
