@@ -1233,7 +1233,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
 
     // Simulate `seconds` more, keeping the camera in step; returns the latest camera.
     // The autopilot holds the trigger so shots show combat.
-    let aspect = shot.width as f32 / shot.height as f32;
     let advance = |m: &mut combat::Match,
                    cam: &mut scene::ChaseCam,
                    garage: &mut garage::Garage,
@@ -1253,7 +1252,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             camera = cam.update(&m.world, &m.world.tanks[0], game::DT);
             garage.update(game::DT);
         }
-        garage.camera(camera, &m.world, &m.world.tanks[0], aspect)
+        garage.camera(camera, &m.world, &m.world.tanks[0])
     };
     let mut camera = if matches!(args.screen, Some(Screen::Spent | Screen::SpentOver)) {
         // Your company's last hull goes, with you in it, and a respawn's
@@ -1314,7 +1313,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             &art,
             &game.world,
             &driven,
-            equipped,
             shot.height as f32,
             usize::MAX,
         );

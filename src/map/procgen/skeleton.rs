@@ -55,6 +55,18 @@ pub struct Skeleton {
     pub stands: Vec<Vec2>,
     /// Places bots head for.
     pub spots: Vec<Vec2>,
+    /// A railroad's spur to a warehouse.
+    pub spur: Option<Spur>,
+    /// A seam of crystal's line, and the rig cutting it (where, which way
+    /// its boom reaches).
+    pub seam: Vec<Vec2>,
+    pub wash_rig: Option<(Vec2, f32)>,
+    /// Pillars of rock standing alone, and how tall.
+    pub hoodoos: Vec<(Vec2, f32)>,
+    /// Built the other way round, east to west (`Map::mirror_x`), then
+    /// turned this many quarter turns (`Map::turn`).
+    pub mirror: bool,
+    pub turns: u8,
 }
 
 /// Raised ground: a rounded square, flat on top, sloping down over `ramp`
@@ -184,6 +196,20 @@ pub struct Base {
     pub inward: Vec2,
     pub size: f32,
     pub kind: BaseKind,
+    /// What stands by its spawns, if anything.
+    pub camp: Option<Vec2>,
+}
+
+/// A spur off the first track to a warehouse: it leaves the track
+/// `junction` m past its fifth point, to the left of the way out (`side` 1)
+/// or the right (-1).
+#[derive(Clone, Debug)]
+pub struct Spur {
+    pub line: Vec<Vec2>,
+    pub junction: f32,
+    pub side: f32,
+    /// The warehouse's middle, and its way along (from the rail door in).
+    pub shed: (Vec2, Vec2),
 }
 
 /// What a base is.
@@ -193,6 +219,9 @@ pub enum BaseKind {
     Court,
     /// Open ground, the circle in the square.
     Pad,
+    /// Columns of spawns along an edge, 7 m apart, rows 6 m apart, from the
+    /// corner.
+    Rows { cols: u8, rows: u8 },
 }
 
 impl Base {
@@ -203,6 +232,7 @@ impl Base {
             inward: Vec2::ONE,
             size: radius * 2.0,
             kind: BaseKind::Pad,
+            camp: None,
         }
     }
 
@@ -213,6 +243,12 @@ impl Base {
 
     /// Where its side's tanks may start: a grid over it.
     pub fn spawn_points(&self) -> Vec<Vec2> {
+        if let BaseKind::Rows { cols, rows } = self.kind {
+            return (0..cols)
+                .flat_map(|c| (0..rows).map(move |r| (c, r)))
+                .map(|(c, r)| self.at(c as f32 * 7.0, r as f32 * 6.0))
+                .collect();
+        }
         if self.kind == BaseKind::Court {
             return (0..25)
                 .map(|k| self.at(9.0 + (k / 5) as f32 * 7.0, 9.0 + (k % 5) as f32 * 7.0))
@@ -228,6 +264,9 @@ impl Base {
 
     /// The middle of it.
     pub fn middle(&self) -> Vec2 {
+        if let BaseKind::Rows { cols, rows } = self.kind {
+            return self.at((cols as f32 - 1.0) * 3.5, (rows as f32 - 1.0) * 3.0);
+        }
         self.at(self.size * 0.5, self.size * 0.5)
     }
 
@@ -525,6 +564,9 @@ impl Skeleton {
 
     /// Ground height before anything's heaped on it.
     pub fn ground(&self, p: Vec2) -> f32 {
+        if self.land.scarp.is_some() {
+            return self.mined_ground(p);
+        }
         self.land.height(p)
     }
 
@@ -824,7 +866,7 @@ impl Skeleton {
             lift(&mut map.oboxes[start..], self.ground(c));
         }
         for (k, b) in self.bases.iter().enumerate() {
-            if b.kind == BaseKind::Pad {
+            if b.kind != BaseKind::Court {
                 continue;
             }
             let start = map.oboxes.len();

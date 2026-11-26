@@ -5676,7 +5676,9 @@ mod tests {
     /// long it took, and whether it had come down (on the ground out there,
     /// or on a rock) when it died.
     fn throw_out(m: &mut Match, i: usize, secs: f32) -> Option<(f32, bool)> {
-        let at = Vec2::new(-6.0, m.world.map.size * 0.5);
+        // (Past the line it's out at: a city's buildings stand by the edge,
+        // and one might stop it short of that.)
+        let at = Vec2::new(-13.0, m.world.map.size * 0.5);
         m.world.teleport(i, at, 0.0);
         let y = m.world.map.ground_beyond(at.x, at.y) + 12.0;
         let b = &mut m.world.physics.bodies[m.world.tanks[i].body];

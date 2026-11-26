@@ -27,7 +27,7 @@ use glam::{Vec2, Vec3};
 use super::*;
 use crate::map::procgen::crossing::{self, Crossing};
 use crate::map::procgen::land::{Butte, Crag, Fin, Mound, Scarp, Wash};
-use crate::map::procgen::skeleton::{Mine, Role, Room, Skeleton};
+use crate::map::procgen::skeleton::{Base, BaseKind, Mine, Role, Room, Skeleton, Spur};
 
 /// A railroad's bridge over a wash.
 fn rail_bridge(from: Vec2, to: Vec2) -> Crossing {
@@ -55,59 +55,35 @@ fn wash(line: Vec<Vec2>, phase: f32) -> Wash {
     }
 }
 
-/// A crystal mine, laid out: everything the ground and the build need.
-#[derive(Clone, Debug)]
-pub struct Layout {
-    /// All of it that any biome has.
-    pub sk: Skeleton,
-    /// The warehouse's branch off the first line, from the junction to the
-    /// buffer stop: it leaves the line `junction` m past its fifth point, to
-    /// the left of the way out (`branch_side` 1) or the right (-1).
-    pub branch: Vec<Vec2>,
-    pub junction: f32,
-    pub branch_side: f32,
-    /// The warehouse's middle, and its way along (from the rail door in).
-    pub shed: (Vec2, Vec2),
-    /// The seam's line along the first bridge's wash floor (if there's a
-    /// wash under the Face).
-    pub seam: Vec<Vec2>,
-    /// The cutting rig working it (where, which way its boom reaches).
-    pub wash_rig: Option<(Vec2, f32)>,
-    pub hoodoos: Vec<(Vec2, f32)>,
-    /// Each side's spawns: their columns (x), the first row (z) and how
-    /// many rows, 6 m apart.
-    pub spawns: [(Vec<f32>, f32, usize); 2],
-    /// The west side's yard by its spawns, and the east side's camp.
-    pub yard: Vec2,
-    pub camp: Vec2,
-    /// Built the other way round, east to west (`Map::mirror_x`), then
-    /// turned this many quarter turns (`Map::turn`): the layout itself is
-    /// always laid out with the escarpment along the north.
-    pub mirror: bool,
-    pub turns: u8,
+/// The ground a side's spawns are on.
+fn spawn_rect(b: &Base) -> Rect {
+    let pts = b.spawn_points();
+    (
+        pts.iter().copied().fold(Vec2::INFINITY, Vec2::min),
+        pts.iter().copied().fold(Vec2::NEG_INFINITY, Vec2::max),
+    )
 }
 
-impl std::ops::Deref for Layout {
-    type Target = Skeleton;
-    fn deref(&self) -> &Skeleton {
-        &self.sk
+impl Skeleton {
+    /// The warehouse's middle and its way along (far off, if there's none).
+    pub fn shed(&self) -> (Vec2, Vec2) {
+        self.spur
+            .as_ref()
+            .map_or((Vec2::splat(-1000.0), Vec2::Y), |s| s.shed)
     }
-}
 
-impl std::ops::DerefMut for Layout {
-    fn deref_mut(&mut self) -> &mut Skeleton {
-        &mut self.sk
+    /// Which side of the first track the spur's on.
+    pub fn branch_side(&self) -> f32 {
+        self.spur.as_ref().map_or(1.0, |s| s.side)
     }
-}
 
-impl Layout {
     /// Which wash `x` bridges, and how far along it.
     pub fn bridged(&self, x: &Crossing) -> (usize, f32) {
         let n = (x.len() / 0.25) as usize;
         (0..=n)
             .flat_map(|i| {
                 let p = x.from + x.dir() * (i as f32 * 0.25);
-                (self.sk.land.washes.iter().enumerate()).map(move |(k, w)| {
+                (self.land.washes.iter().enumerate()).map(move |(k, w)| {
                     let (d, s) = w.near(p);
                     (d, k, s)
                 })
@@ -118,25 +94,11 @@ impl Layout {
 
     /// A mine from `rng`, if this draw holds together (the caller draws
     /// again if not; the error is the line it failed at).
-    pub fn generate(rng: &mut Rng) -> Result<Layout, u32> {
+    pub fn mine(rng: &mut Rng) -> Result<Skeleton, u32> {
         let n_mines = if rng.chance(0.4) { 2 } else { 1 };
         let n_washes = [0, 1, 1, 1, 2, 2][rng.index(6)];
         let n_buttes = [0, 1, 1, 2][rng.index(4)];
-        let mut l = Layout {
-            sk: Skeleton::default(),
-            branch: Vec::new(),
-            junction: 0.0,
-            branch_side: 1.0,
-            shed: (Vec2::splat(-1000.0), Vec2::Y),
-            seam: Vec::new(),
-            wash_rig: None,
-            hoodoos: Vec::new(),
-            spawns: [(Vec::new(), -1000.0, 0), (Vec::new(), -1000.0, 0)],
-            yard: Vec2::splat(-1000.0),
-            camp: Vec2::splat(-1000.0),
-            mirror: false,
-            turns: 0,
-        };
+        let mut l = Skeleton::default();
         let phase = rng.range(0.0, TAU);
         l.raise_escarpment(
             rng,
@@ -678,17 +640,14 @@ impl Layout {
             }
         }
         // No room for it: no warehouse.
-        self.branch.clear();
-        self.shed = (Vec2::splat(-1000.0), Vec2::Y);
+        self.spur = None;
         Ok(())
     }
 
     /// The branch line `junction` m past the first line's fifth point,
     /// swinging off to the left of the way out (`side` 1) or the right (-1).
     fn lay_branch(&mut self, side: f32, junction: f32) {
-        self.junction = junction;
-        self.branch_side = side;
-        let (j, dir) = self.branch_from();
+        let (j, dir) = self.track_at(self.track_len(4) + junction);
         let back = -dir;
         let centre = j + back.perp() * BRANCH_R * side;
         let turn = Vec2::from_angle(BRANCH_TURN * side);
@@ -704,15 +663,19 @@ impl Layout {
         let at = end + along * (SHED_LEAD + SHED_HALF.y);
         line.push(at - along * SHED_HALF.y);
         line.push(at + along * SHED_BUFFER);
-        self.branch = line;
-        self.shed = (at, along);
+        self.spur = Some(Spur {
+            line,
+            junction,
+            side,
+            shed: (at, along),
+        });
     }
 
     /// The warehouse stands on the flats, its doors' run-outs too: in from
     /// the edge, clear of the washes and the other lines.
     fn shed_fits(&self) -> bool {
         let s = self.size;
-        let (at, along) = self.shed;
+        let (at, along) = self.shed();
         let across = along.perp();
         (0..=8).all(|i| {
             (0..=8).all(|k| {
@@ -734,7 +697,7 @@ impl Layout {
         let s = self.size;
         // A ramp's top is out on the flat, in from the edge (not up the
         // scree, not under the Face).
-        let flat = |l: &Layout, p: Vec2| {
+        let flat = |l: &Skeleton, p: Vec2| {
             p.min_element() > 8.0
                 && p.max_element() < s - 8.0
                 && l.mesa(p) < 0.02
@@ -842,14 +805,14 @@ impl Layout {
             // No wash: the Hold site out on the flats in front of the
             // first mine's mouth, by its line.
             let (p, dir) = line_at(&self.tracks[0], line_len(&self.tracks[0], 2));
-            self.heart = p - dir.perp() * 12.0 * self.branch_side;
+            self.heart = p - dir.perp() * 12.0 * self.branch_side();
         }
         // The worn way up each scree, wherever across it is furthest from
         // the ramps and crossings (they're on the landing too), starting on
         // the flat short of its foot, out of the wash.
         for k in 0..self.mines.len() {
             let (x0, x1) = self.mines[k].scree;
-            let way = |l: &Layout, x: f32| {
+            let way = |l: &Skeleton, x: f32| {
                 let f = l.face(x);
                 (
                     Vec2::new(x, f - SCREE_RUN - 6.0),
@@ -896,35 +859,29 @@ impl Layout {
     fn flats_free(&self, p: Vec2, r: f32) -> bool {
         let s = self.size;
         let spawn = |k: usize| {
-            let (xs, z, rows) = &self.spawns[k];
-            if xs.is_empty() {
-                return f32::INFINITY;
-            }
-            let (x0, x1) = (
-                xs.iter().copied().fold(f32::INFINITY, f32::min),
-                xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-            );
-            rect_distance(
-                (
-                    Vec2::new(x0, *z),
-                    Vec2::new(x1, z + (*rows as f32 - 1.0) * 6.0),
-                ),
-                p,
-            )
+            self.bases
+                .get(k)
+                .map_or(f32::INFINITY, |b| rect_distance(spawn_rect(b), p))
         };
-        let (at, along) = self.shed;
+        let (at, along) = self.shed();
         let l = Vec2::new((p - at).dot(along.perp()), (p - at).dot(along)).abs() - SHED_HALF;
         p.min_element() > r + 8.0
             && p.max_element() < s - r - 8.0
             && self.land.washes.iter().all(|w| w.near(p).0 > r + 14.0)
             && p.y < self.face(p.x) - r - 24.0
             && self.tracks.iter().all(|t| line_distance(t, p) > r + 8.0)
-            && (self.branch.is_empty() || line_distance(&self.branch, p) > r + 8.0)
+            && self
+                .spur
+                .iter()
+                .all(|s| line_distance(&s.line, p) > r + 8.0)
             && l.max(Vec2::ZERO).length() > r + 12.0
             && spawn(0) > r + 10.0
             && spawn(1) > r + 10.0
-            && p.distance(self.yard) > r + 10.0
-            && p.distance(self.camp) > r + 12.0
+            && self
+                .bases
+                .iter()
+                .filter_map(|b| b.camp)
+                .all(|c| p.distance(c) > r + 12.0)
             && self
                 .land
                 .hauls
@@ -943,7 +900,7 @@ impl Layout {
             let c = Vec2::new(rng.range(30.0, s - 30.0), rng.range(30.0, s * 0.6));
             let radius = rng.range(12.0, 18.0);
             let height = rng.range(6.0, 8.0);
-            let to_mid = (self.center() - c).normalize_or(Vec2::Y);
+            let to_mid = (self.middle() - c).normalize_or(Vec2::Y);
             let ramp = Vec2::from_angle(rng.range(-0.6, 0.6)).rotate(to_mid);
             let b = Butte {
                 center: c,
@@ -1051,9 +1008,20 @@ impl Layout {
             .ok_or(line!())?;
         let (w, e) = (w.clone(), e.clone());
         let (zw, ze) = (w.1, e.1);
-        self.spawns = [w, e];
-        self.yard = Vec2::new(37.0, zw + 14.0);
-        self.camp = Vec2::new(s - 38.0, ze + 18.0);
+        let base = |(xs, z, rows): (Vec<f32>, f32, usize), camp: Vec2| Base {
+            corner: Vec2::new(xs[0], z),
+            inward: Vec2::new(if xs[0] < s * 0.5 { 1.0 } else { -1.0 }, 1.0),
+            size: (rows as f32 - 1.0) * 6.0,
+            kind: BaseKind::Rows {
+                cols: xs.len() as u8,
+                rows: rows as u8,
+            },
+            camp: Some(camp),
+        };
+        self.bases = vec![
+            base(w, Vec2::new(37.0, zw + 14.0)),
+            base(e, Vec2::new(s - 38.0, ze + 18.0)),
+        ];
         Ok(())
     }
 
@@ -1109,7 +1077,7 @@ impl Layout {
                 }
             }
         }
-        let clear_of_heaps = |l: &Layout, p: Vec2, r: f32| {
+        let clear_of_heaps = |l: &Skeleton, p: Vec2, r: f32| {
             l.land
                 .mounds
                 .iter()
@@ -1160,9 +1128,8 @@ impl Layout {
     fn place_gameplay(&mut self, rng: &mut Rng) {
         let s = self.size;
         let mid = |k: usize| {
-            let (xs, z, rows) = &self.spawns[k];
-            let x = xs.iter().sum::<f32>() / xs.len() as f32;
-            Vec2::new(x, z + (*rows as f32 - 1.0) * 3.0)
+            let (a, b) = spawn_rect(&self.bases[k]);
+            (a + b) * 0.5
         };
         self.stands = vec![
             mid(0) + Vec2::new(26.0, 6.0),
@@ -1233,7 +1200,7 @@ impl Layout {
             }
         }
         let mid = |r: Rect| (r.0 + r.1) * 0.5;
-        spots.push(self.shed.0);
+        spots.extend(self.spur.iter().map(|s| s.shed.0));
         for m in &self.mines {
             spots.push(Vec2::new(mid(m.adit()).x, m.bay().0.y + 10.0));
             spots.push(Vec2::new(mid(m.adit()).x, m.drift().0.y - 4.0));
@@ -1252,7 +1219,7 @@ impl Layout {
         spots
     }
 
-    pub fn center(&self) -> Vec2 {
+    pub fn middle(&self) -> Vec2 {
         Vec2::splat(self.size * 0.5)
     }
 
@@ -1347,12 +1314,10 @@ impl Layout {
 
     /// How near a track, any line or the branch.
     pub fn track_distance(&self, p: Vec2) -> f32 {
-        let b = if self.branch.is_empty() {
-            f32::INFINITY
-        } else {
-            line_distance(&self.branch, p)
-        };
-        self.main_line_distance(p).min(b)
+        self.spur
+            .iter()
+            .map(|s| line_distance(&s.line, p))
+            .fold(self.main_line_distance(p), f32::min)
     }
 
     /// How near any main line.
@@ -1375,7 +1340,7 @@ impl Layout {
 
     /// Where the branch leaves the first line, and the line's way there.
     pub fn branch_from(&self) -> (Vec2, Vec2) {
-        self.track_at(self.track_len(4) + self.junction)
+        self.track_at(self.track_len(4) + self.spur.as_ref().map_or(0.0, |s| s.junction))
     }
 
     /// Over a bridge's deck (not its end plates).
@@ -1389,7 +1354,7 @@ impl Layout {
     /// A point in the warehouse's own frame: (across, along) from its
     /// middle, +across to the left of the way in.
     pub fn shed_local(&self, p: Vec2) -> Vec2 {
-        let (at, along) = self.shed;
+        let (at, along) = self.shed();
         let d = p - at;
         Vec2::new(d.dot(Vec2::new(along.y, -along.x)), d.dot(along))
     }
@@ -1406,30 +1371,24 @@ impl Layout {
         (l.y < 7.0 && l.x < SHED_HALF.x + 16.0) || (l.x < 7.0 && l.y < SHED_HALF.y + 16.0)
     }
 
-    /// Each side's spawns, as laid out.
-    pub fn spawn_points(&self, side: usize) -> Vec<Vec2> {
-        let (xs, z0, rows) = &self.spawns[side];
-        xs.iter()
-            .flat_map(|&x| (0..*rows).map(move |k| Vec2::new(x, z0 + k as f32 * 6.0)))
-            .collect()
-    }
-
     /// Ground kept clear round each side's spawns.
     pub fn by_spawns(&self, p: Vec2) -> bool {
-        let rows = |side: usize| {
-            let (_, z0, rows) = &self.spawns[side];
-            *z0..z0 + (*rows as f32 - 1.0) * 6.0
-        };
-        let (w, e) = (rows(0), rows(1));
-        (p.x < 31.0 && (w.start - 6.0..w.end + 8.0).contains(&p.y))
-            || p.distance(self.yard) < 9.0
-            || (p.x > self.size - 31.0 && (e.start - 6.0..e.end + 8.0).contains(&p.y))
-            || p.distance(self.camp) < 12.0
+        self.bases.iter().any(|b| {
+            // (All the way out to the edge they're along.)
+            let (lo, hi) = spawn_rect(b);
+            let out = if lo.x < self.size * 0.5 {
+                p.x < 31.0
+            } else {
+                p.x > self.size - 31.0
+            };
+            out && (lo.y - 6.0..hi.y + 8.0).contains(&p.y)
+                || b.camp.is_some_and(|c| p.distance(c) < 12.0)
+        })
     }
 
-    /// Play ground.
-    pub fn ground(&self, x: f32, z: f32) -> f32 {
-        self.surface(x, z, true)
+    /// A mine's ground: what's dug out of it too.
+    pub fn mined_ground(&self, p: Vec2) -> f32 {
+        self.surface(p.x, p.y, true)
     }
 
     /// The rock the mines were cut from: the ground as if there were no
@@ -1506,17 +1465,17 @@ impl Layout {
 
     /// Desert out past the edge: the mesa runs on north, the floor rises
     /// into broken hills.
-    pub fn scenery_ground(&self, x: f32, z: f32) -> f32 {
-        self.scenery_ground_with(x, z, &|e: Vec2| self.ground(e.x, e.y))
+    pub fn mine_scenery(&self, x: f32, z: f32) -> f32 {
+        self.mine_scenery_with(x, z, &|e: Vec2| self.ground(e))
     }
 
     /// `scenery_ground`, with the play ground at the arena's edge given
     /// (`edge`, at a point on it): looked up, it's much quicker than the
     /// ground worked out afresh for every point out there.
-    pub fn scenery_ground_with(&self, x: f32, z: f32, edge_ground: &dyn Fn(Vec2) -> f32) -> f32 {
+    pub fn mine_scenery_with(&self, x: f32, z: f32, edge_ground: &dyn Fn(Vec2) -> f32) -> f32 {
         let size = self.size;
         let p = Vec2::new(x, z);
-        let q = (p - self.center()).abs() - Vec2::splat(size * 0.5);
+        let q = (p - self.middle()).abs() - Vec2::splat(size * 0.5);
         let d = q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0);
         if d < -0.01 {
             return -10.0;

@@ -1617,11 +1617,11 @@ impl App {
             };
             self.chase = Some(camera);
             self.garage.update(dt);
-            camera = self.garage.camera(camera, &self.game.world, &anchor, w / h);
+            camera = self.garage.camera(camera, &self.game.world, &anchor);
             let driven = tanks[0].clone();
             // A couple of card thumbnails a frame, so opening doesn't hitch.
             self.garage
-                .render_thumbs(r, art, &self.game.world, &driven, queued, h, 2);
+                .render_thumbs(r, art, &self.game.world, &driven, h, 2);
             self.garage.preview(&mut tanks[0]);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
