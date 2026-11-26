@@ -305,6 +305,11 @@ roofs hung with crimson; the Resonant's ivory halls under slate, a crystal
 burning in each furnace; the Uthenn's stacks of cubes; the Ithessar's dark
 stone, plasma held between crystals.
 
+**The rail depots:** outposts on desert worlds, where freight waits for a
+train: sidings side by side under gantries, water towers at their ends, a
+main line off into the sand. Each people builds its own, out of what it builds
+its foundries of.
+
 ## Modes are contracts
 
 - **Attrition** (a raid on an enemy camp): no ground changes hands; the job

@@ -27,6 +27,7 @@ pub mod check;
 pub mod city;
 mod civic;
 pub mod crossing;
+pub mod depot;
 pub mod desert;
 pub mod foundry;
 mod imperium;
@@ -58,6 +59,8 @@ pub enum Biome {
     Desert,
     /// A hull foundry, on whichever ground.
     Foundry(foundry::Ground),
+    /// A rail depot on desert.
+    Depot,
 }
 
 /// Whose place it is.
@@ -222,6 +225,7 @@ fn build_map(spec: &Spec) -> Map {
         Biome::Mine => mine::build(spec),
         Biome::Desert => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
+        Biome::Depot => depot::build(spec),
     }
 }
 
@@ -367,6 +371,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
         Biome::Mine => mine::PLANET,
         Biome::Desert => desert::PALETTES[0].planet,
         Biome::Foundry(ground) => ground.planet(),
+        Biome::Depot => foundry::Ground::Desert.planet(),
     }
 }
 
@@ -376,6 +381,7 @@ pub fn greybox(spec: &Spec) -> Map {
         Biome::Mine => return mine::greybox(spec),
         Biome::Desert => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
+        Biome::Depot => return depot::greybox(spec),
         Biome::City => {}
     }
     let sk = skeleton(spec);
@@ -729,6 +735,12 @@ impl Map {
             Look::Imperium,
             foundry::Ground::Desert,
         ))
+    }
+
+    /// The Imperium's rail depot `seed` names (see `crate::depot_spec`).
+    #[cfg(test)]
+    pub fn depot(seed: u64) -> Map {
+        map(&crate::depot_spec(seed, Look::Imperium))
     }
 
     /// The open desert `seed` names (see `crate::desert_spec`).
