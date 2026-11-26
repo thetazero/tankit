@@ -869,12 +869,11 @@ impl Galaxy {
             if realm.systems == 0 {
                 continue;
             }
-            let bank = realm.bank();
             if let Some(o) = realm.offensive {
-                if bank < self.rules.spent || self.tick > o.gained + self.rules.stall as u64 {
+                if self.tick > o.gained + self.rules.stall as u64 {
                     self.realms[r].offensive = None;
                 }
-            } else if bank >= self.rules.launch {
+            } else {
                 self.realms[r].offensive = self.aim(r);
             }
         }
