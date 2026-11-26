@@ -16,6 +16,7 @@
 //!   avenue's vista.
 
 mod civics;
+mod great;
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
@@ -86,16 +87,24 @@ impl Style for Resonant {
         civics::build(map, rng, lot, kind, self.stone());
     }
 
-    fn hold_name(&self, piece: Centerpiece) -> &'static str {
+    fn hold_name(&self, piece: Centerpiece, kind: LandmarkKind) -> &'static str {
         match piece {
-            Centerpiece::Monument => "CATHEDRAL",
+            Centerpiece::Monument => match kind {
+                LandmarkKind::Great(1) => "ABBEY",
+                LandmarkKind::Great(2) => "CARILLON",
+                _ => "CATHEDRAL",
+            },
             Centerpiece::ShieldGenerator(..) => "GENERATOR",
         }
     }
 
     fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift> {
         let base = sk.ground(lm.center);
-        cathedral(map, rng, lm, base);
+        match lm.kind {
+            LandmarkKind::Great(1) => great::abbey(map, rng, lm, base),
+            LandmarkKind::Great(2) => great::carillon(map, rng, lm, base),
+            _ => cathedral(map, rng, lm, base),
+        }
         for a in between_doors(lm) {
             if !shelled(lm, a) {
                 map.bell_frame(lm, a, base);

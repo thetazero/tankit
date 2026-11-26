@@ -157,7 +157,8 @@ pub struct Square {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LandmarkKind {
     /// A great building (a style's own, or a shield generator).
-    Great,
+    /// (Which of a style's great buildings, 0 to 2.)
+    Great(u8),
     /// A ring of sandstone spires.
     Needles,
     /// An old impact crater: a bowl, its rim heaped with blocks.
@@ -791,7 +792,7 @@ impl Skeleton {
         // anything else, a low slab on its reach.
         for lm in &self.landmarks {
             let g = self.ground(lm.center);
-            if lm.kind != LandmarkKind::Great {
+            if !matches!(lm.kind, LandmarkKind::Great(_)) {
                 put(
                     &mut map,
                     lm.center,

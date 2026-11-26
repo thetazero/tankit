@@ -17,6 +17,7 @@
 //! - their shield generator (`shield`; see `procgen::shield`).
 
 mod civics;
+mod great;
 pub(super) mod shield;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -111,14 +112,25 @@ impl Style for Imperium {
         civics::build(map, rng, lot, kind, self.stone());
     }
 
-    fn hold_name(&self, piece: Centerpiece) -> &'static str {
+    fn hold_name(&self, piece: Centerpiece, kind: LandmarkKind) -> &'static str {
         match piece {
-            Centerpiece::Monument => "ROTUNDA",
+            Centerpiece::Monument => match kind {
+                LandmarkKind::Great(1) => "AMPHITHEATRE",
+                LandmarkKind::Great(2) => "FORUM",
+                _ => "ROTUNDA",
+            },
             Centerpiece::ShieldGenerator(..) => "GENERATOR",
         }
     }
 
     fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift> {
+        match lm.kind {
+            LandmarkKind::Great(1) => {
+                return great::amphitheatre(map, rng, lm, sk.ground(lm.center));
+            }
+            LandmarkKind::Great(2) => return great::forum(map, rng, lm, sk.ground(lm.center)),
+            _ => {}
+        }
         let drifts = map.rotunda(rng, lm, sk.ground(lm.center));
         map.colonnade(rng, lm, sk.ground(lm.center));
         drifts
