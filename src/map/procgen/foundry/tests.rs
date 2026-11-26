@@ -54,9 +54,13 @@ fn every_seed_is_playable_dressed() {
     ignore = "slow unoptimized: run with cargo test --release"
 )]
 fn many_seeds_are_playable_across_the_styles() {
-    // (Each seed in one style, by turns: the layout's the same in any.)
+    // (The first few in every style, the rest in one each, by turns.)
     for seed in 0..40 {
-        check_dressed(seed, LOOKS[seed as usize % LOOKS.len()]);
+        for (k, look) in LOOKS.into_iter().enumerate() {
+            if seed < 8 || k == seed as usize % 4 {
+                check_dressed(seed, look);
+            }
+        }
     }
 }
 
