@@ -221,6 +221,8 @@ pub struct Scene {
     pub particles: Vec<Particle>,
     /// Lamps lighting the scene (any number: the nearest are used).
     pub lights: Vec<PointLight>,
+    /// Plasma rivers lighting it (the nearest's used).
+    pub rivers: std::sync::Arc<Vec<crate::map::river::River>>,
     pub ui: Vec<UiVertex>,
     /// Draw the map's static geometry (off for studio shots like thumbnails).
     pub world: bool,
@@ -245,7 +247,17 @@ struct Globals {
     light_count: [f32; 4],
     /// Point lights, two vec4s each: position and radius, color.
     lights: [[f32; 4]; MAX_LIGHTS * 2],
+    /// A plasma river near: how many of `river` are in use, half its width,
+    /// how strong its light is.
+    river_info: [f32; 4],
+    /// Its course: each point, and how far down it that is.
+    river: [[f32; 4]; RIVER_POINTS],
 }
+
+/// How much of a river lights a frame: this many points, `RIVER_STEP` apart
+/// along its own.
+pub const RIVER_POINTS: usize = 40;
+const RIVER_STEP: usize = 3;
 
 struct GpuMesh {
     vb: wgpu::Buffer,
@@ -507,13 +519,18 @@ struct Targets {
 /// How many sizes bloom's blurred at.
 const BLOOM_MIPS: usize = 6;
 
-/// How strong bloom is under sky `a`: full at night, a touch in full sun
-/// (pale ground in daylight isn't a light).
-fn bloom_strength(a: &Atmosphere) -> f32 {
+/// How light sky `a` is: 0 at night, 1 in full day.
+fn daylight(a: &Atmosphere) -> f32 {
     let sky = a.sky_horizon.lerp(a.sky_zenith, 0.35);
     let luma = sky.dot(Vec3::new(0.2126, 0.7152, 0.0722));
     let t = ((luma - 0.06) / 0.34).clamp(0.0, 1.0);
-    let day = t * t * (3.0 - 2.0 * t);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How strong bloom is under sky `a`: full at night, a touch in full sun
+/// (pale ground in daylight isn't a light).
+fn bloom_strength(a: &Atmosphere) -> f32 {
+    let day = daylight(a);
     0.6 * (1.0 - day) + 0.012 * day
 }
 
@@ -1975,7 +1992,17 @@ impl Renderer {
                 .to_array(),
             light_count: [0.0; 4],
             lights: [[0.0; 4]; MAX_LIGHTS * 2],
+            river_info: [0.0; 4],
+            river: [[0.0; 4]; RIVER_POINTS],
         };
+        if let Some(r) = scene.rivers.first() {
+            let near = r.stretch(scene.camera.pos, RIVER_POINTS, RIVER_STEP);
+            let night = 1.0 - daylight(&scene.atmosphere);
+            globals.river_info = [near.len() as f32, r.half, 0.3 + 0.7 * night, night];
+            for (g, p) in globals.river.iter_mut().zip(&near) {
+                *g = p.to_array();
+            }
+        }
         let near = nearest_lights(&scene.lights, scene.camera.pos, &frustum(view_proj));
         globals.light_count[0] = near.len() as f32;
         for (k, l) in near.iter().enumerate() {
