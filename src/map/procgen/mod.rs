@@ -26,9 +26,11 @@
 pub mod check;
 pub mod city;
 mod civic;
+pub mod crossing;
 pub mod desert;
 mod imperium;
 pub mod mine;
+mod relief;
 mod resonant;
 pub mod shield;
 pub mod skeleton;
@@ -201,10 +203,12 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     for (k, lot) in sk.lots.iter().enumerate() {
         let start = map.oboxes.len();
+        let mark = skeleton::Mark::of(&map);
         match lot.kind {
             LotKind::Civic(kind) => civic::build(&mut map, &mut rng, lot, kind, st.stone()),
             _ => drifts.extend(st.lot(&mut map, &sk, lot, &mut rng)),
         }
+        mark.raise(&mut map, sk.ground(lot.footprint.center));
         claims.push((Claim::Lot(k), start..map.oboxes.len()));
     }
     let mut terrain = sk.terrain(|p| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max));
@@ -213,7 +217,9 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     sk.paint(&mut terrain, st.road());
     map.terrain = Some(terrain);
     for p in &sk.platforms {
+        let mark = skeleton::Mark::of(&map);
         st.platform(&mut map, &sk, p, &mut rng);
+        mark.raise(&mut map, sk.relief.height(p.center));
     }
     for s in &sk.streets {
         st.street(&mut map, &sk, s, &mut rng);
@@ -228,11 +234,22 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         st.deco(&mut map, &sk, d, &mut rng);
         claims.push((Claim::Deco(k), start..map.oboxes.len()));
     }
+    for c in &sk.crossings {
+        c.build(&mut map, st.stone(), |p| sk.ground(p));
+    }
     for (k, b) in sk.bases.iter().enumerate() {
+        let mark = skeleton::Mark::of(&map);
         st.base(&mut map, &sk, k, b, &mut rng);
+        mark.raise(&mut map, sk.ground(b.middle()));
     }
     for e in &sk.edges {
+        // Heaps and barriers, each on the ground where it lies.
+        let start = map.oboxes.len();
         st.edge(&mut map, &sk, e, &mut rng);
+        for o in &mut map.oboxes[start..] {
+            let h = sk.ground(o.center);
+            skeleton::lift(std::slice::from_mut(o), h);
+        }
     }
     st.beyond(&mut map, &sk, &mut rng);
     if let Some(t) = &mut map.scenery_terrain {
@@ -960,6 +977,45 @@ mod tests {
 
     #[test]
     #[ignore = "a probe"]
+    fn how_hilly() {
+        for seed in 0..16 {
+            let sk = skeleton(&spec(seed));
+            let n = (sk.size / 4.0) as i32;
+            let (mut lo, mut hi, mut steep) = (f32::MAX, f32::MIN, 0.0f32);
+            let (mut gl, mut gh) = (f32::MAX, f32::MIN);
+            for i in 0..n {
+                for j in 0..n {
+                    let p = Vec2::new(i as f32, j as f32) * 4.0;
+                    let h = sk.relief.land(p);
+                    (lo, hi) = (lo.min(h), hi.max(h));
+                    let g = sk.relief.height(p);
+                    (gl, gh) = (gl.min(g), gh.max(g));
+                    steep = steep.max((sk.relief.land(p + Vec2::X * 4.0) - h).abs() / 4.0);
+                }
+            }
+            println!(
+                "hilly {seed} size {} land {lo:.1}..{hi:.1} ground {gl:.1}..{gh:.1} steepest {steep:.2} {}",
+                sk.size,
+                sk.relief.describe()
+                    + &sk
+                        .crossings
+                        .iter()
+                        .map(|c| format!(
+                            " | {:?} {:.0} m, {:.0} to {:.0}, floor {:.1} top {:.1}",
+                            c.kind,
+                            c.len(),
+                            c.from,
+                            c.to,
+                            c.floor,
+                            c.top
+                        ))
+                        .collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
     fn how_built_up() {
         for seed in 0..24 {
             let sk = skeleton(&spec(seed));
@@ -1044,9 +1100,9 @@ mod tests {
                 for k in 0..16 {
                     let a = k as f32 / 16.0 * std::f32::consts::TAU;
                     let dir = Vec2::new(a.cos(), a.sin());
-                    let mut prev = sk.ground(pl.center);
+                    let mut prev = pl.height_at(pl.center);
                     for r in 1..(pl.half as i32 * 2) {
-                        let h = sk.ground(pl.center + dir * r as f32);
+                        let h = pl.height_at(pl.center + dir * r as f32);
                         assert!((prev - h).abs() < 0.25, "seed {seed}: plaza edge too steep");
                         prev = h;
                     }

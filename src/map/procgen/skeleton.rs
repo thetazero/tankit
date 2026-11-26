@@ -42,6 +42,10 @@ pub struct Skeleton {
     /// Smaller things standing on the ground.
     pub decos: Vec<Deco>,
     pub repair_spots: Vec<Vec2>,
+    /// The lie of the land under it all.
+    pub relief: super::relief::Relief,
+    /// Where roads cross valleys and ridges.
+    pub crossings: Vec<super::crossing::Crossing>,
 }
 
 /// Raised ground: a rounded square, flat on top, sloping down over `ramp`
@@ -80,6 +84,8 @@ pub enum Rank {
     Avenue,
     /// An ordinary street between buildings.
     Lane,
+    /// A road's run over a bridge or through a tunnel (see `crossing`).
+    Crossing,
     /// A road's run beyond the arena's edge, only seen.
     Beyond,
 }
@@ -278,10 +284,12 @@ impl Skeleton {
 
     /// Ground height before anything's heaped on it.
     pub fn ground(&self, p: Vec2) -> f32 {
-        self.platforms
-            .iter()
-            .map(|pl| pl.height_at(p))
-            .fold(0.0, f32::max)
+        self.relief.height(p)
+            + self
+                .platforms
+                .iter()
+                .map(|pl| pl.height_at(p))
+                .fold(0.0, f32::max)
     }
 
     /// How far `p` is off every plaza's slope (negative: on one).
@@ -339,6 +347,7 @@ impl Skeleton {
     pub fn road(&self, p: Vec2) -> f32 {
         self.streets
             .iter()
+            .filter(|s| s.rank != Rank::Crossing)
             .map(|s| 1.0 - smoothstep(s.half - 0.8, s.half + 1.2, s.distance(p)))
             .fold(0.0, f32::max)
             .max(
@@ -470,8 +479,18 @@ impl Skeleton {
                 Vec3::new(0.7, 0.6, 0.3),
             );
         }
+        let stone = super::civic::Stone {
+            wall: Vec3::splat(0.6),
+            mat: Material::Concrete,
+            trim: Vec3::splat(0.5),
+            roof: Vec3::splat(0.5),
+        };
+        for c in &self.crossings {
+            c.build(&mut map, stone, |p| self.ground(p));
+        }
         for lot in &self.lots {
             let f = &lot.footprint;
+            let start = map.oboxes.len();
             let (h, c) = match lot.kind {
                 LotKind::Big => (16.0, Vec3::new(0.45, 0.45, 0.5)),
                 LotKind::Small => (6.0, Vec3::new(0.55, 0.55, 0.6)),
@@ -505,8 +524,10 @@ impl Skeleton {
                 }
                 _ => put(&mut map, f.center, f.yaw, f.half, (0.0, h), c),
             }
+            lift(&mut map.oboxes[start..], self.ground(f.center));
         }
         for s in &self.spans {
+            let start = map.oboxes.len();
             let side = Vec2::new(-s.along.y, s.along.x);
             for k in [-1.0f32, 1.0] {
                 let p = s.at + side * k * (s.opening + 3.0);
@@ -520,9 +541,11 @@ impl Skeleton {
                     Vec3::new(0.8, 0.5, 0.3),
                 );
             }
+            lift(&mut map.oboxes[start..], self.ground(s.at));
         }
         for e in &self.edges {
             let len = e.to - e.from;
+            let start = map.oboxes.len();
             let c = e.start + e.along * (e.from + len * 0.5) - e.inward * 6.0;
             let half = (e.along * len * 0.5 + e.inward * 6.5).abs();
             let (h, col) = match e.kind {
@@ -530,8 +553,10 @@ impl Skeleton {
                 EdgeKind::Blockade => (5.0, Vec3::new(0.5, 0.42, 0.35)),
             };
             put(&mut map, c, 0.0, half, (-0.5, h), col);
+            lift(&mut map.oboxes[start..], self.ground(c));
         }
         for (k, b) in self.bases.iter().enumerate() {
+            let start = map.oboxes.len();
             let col = factions.get(k).map_or(Vec3::ONE, |f| f.paint());
             let s = b.size;
             // Walls on the two edge sides, barriers with a gap on the others.
@@ -553,6 +578,7 @@ impl Skeleton {
                     col,
                 );
             }
+            lift(&mut map.oboxes[start..], self.ground(b.middle()));
         }
         for d in &self.decos {
             let g = self.ground(d.at);
@@ -579,3 +605,53 @@ impl Skeleton {
 /// Clearance a spawn needs from anything solid: the biggest hull's (the
 /// Gravis's) corner radius, so it can face any way without touching.
 pub const TANK_CLEAR: f32 = 4.6;
+
+/// Raises `boxes` by `h`.
+pub fn lift(boxes: &mut [OBox], h: f32) {
+    for o in boxes {
+        o.y0 += h;
+        o.y1 += h;
+    }
+}
+
+/// How much of a map there was, to raise what's built on it after.
+pub struct Mark {
+    boxes: usize,
+    crystals: usize,
+    paths: usize,
+    lights: usize,
+    sounds: usize,
+}
+
+impl Mark {
+    pub fn of(map: &Map) -> Mark {
+        Mark {
+            boxes: map.oboxes.len(),
+            crystals: map.crystals.len(),
+            paths: map.glow_paths.len(),
+            lights: map.lights.len(),
+            sounds: map.sounds.len(),
+        }
+    }
+
+    /// Raises everything built since by `h`: a piece made as if its ground
+    /// were at 0, onto the ground it's on.
+    pub fn raise(&self, map: &mut Map, h: f32) {
+        if h == 0.0 {
+            return;
+        }
+        lift(&mut map.oboxes[self.boxes..], h);
+        for c in &mut map.crystals[self.crystals..] {
+            c.base.y += h;
+        }
+        for g in &mut map.glow_paths[self.paths..] {
+            g.points.iter_mut().for_each(|p| p.y += h);
+        }
+        for l in &mut map.lights[self.lights..] {
+            l.pos.y += h;
+        }
+        for s in &mut map.sounds[self.sounds..] {
+            s.at.y += h;
+        }
+    }
+}
