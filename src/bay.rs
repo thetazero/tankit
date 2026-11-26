@@ -112,9 +112,13 @@ pub fn atmosphere() -> Atmosphere {
     }
 }
 
-/// The fixed view of the deck, framed right of the garage panel like the
+/// How far under the tank the garage's cameras aim, as a share of their
+/// distance to it, so it sits in the space over the dock.
+pub const AIM_UNDER: f32 = 0.13;
+
+/// The fixed view of the deck, the tank over the garage's dock like the
 /// garage's orbit. `pull` > 1 backs it off (arriving, it eases in from 1.25).
-pub fn camera(aspect: f32, pull: f32) -> Camera {
+pub fn camera(pull: f32) -> Camera {
     let focus = Vec3::Y * (DECK + 1.0);
     let dist = CAM_DIST * pull;
     let pos = focus
@@ -123,11 +127,9 @@ pub fn camera(aspect: f32, pull: f32) -> Camera {
             CAM_HEIGHT * pull,
             CAM_YAW.cos() * dist,
         );
-    let right = (focus - pos).cross(Vec3::Y).normalize_or_zero();
-    let shift = (focus - pos).length() * 0.36 * (aspect / (16.0 / 9.0)).clamp(0.6, 1.2);
     Camera {
         pos,
-        target: focus - right * shift,
+        target: focus - Vec3::Y * dist * AIM_UNDER,
         fov_y: 50f32.to_radians(),
     }
 }
@@ -286,7 +288,7 @@ fn lights(time: f32, out: &mut Vec<Particle>) {
 fn stars(out: &mut Vec<Particle>) {
     // The planet's thin air, lit at its limb: a ring of faint glow round
     // its outline as seen from the bay.
-    let view = (PLANET - camera(16.0 / 9.0, 1.0).pos).normalize();
+    let view = (PLANET - camera(1.0).pos).normalize();
     let u = view.cross(Vec3::Y).normalize();
     let v = u.cross(view);
     for k in 0..120 {
@@ -1017,7 +1019,7 @@ mod tests {
     #[test]
     fn camera_is_inside_the_room() {
         for pull in [1.0, 1.25] {
-            let c = camera(16.0 / 9.0, pull);
+            let c = camera(pull);
             assert!(c.pos.x > ROOM_MIN.x && c.pos.x < ROOM_MAX.x);
             assert!(c.pos.z > ROOM_MIN.y && c.pos.z < ROOM_MAX.y);
             assert!(c.pos.y > DECK && c.pos.y < ROOF - 1.0);
@@ -1038,7 +1040,7 @@ mod tests {
     /// in front of the black backdrop, and the stars are out past it.
     #[test]
     fn planet_shows_through_the_viewport() {
-        let cam = camera(16.0 / 9.0, 1.0).pos;
+        let cam = camera(1.0).pos;
         // The top of the planet's outline, as the camera sees it.
         let view = (PLANET - cam).normalize();
         let up = view.cross(Vec3::Y).cross(view).normalize();

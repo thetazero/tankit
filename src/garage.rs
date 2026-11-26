@@ -4,15 +4,14 @@
 //! you don't have yet say whose tanks to wreck to learn them, and how far
 //! you've got.
 //!
-//! Hulls and turrets each have a tab: a scrolling grid of cards with rendered
-//! thumbnails, grouped by maker. Browsing only previews: the orbit camera
-//! shows the highlighted kit (parts you don't own too), and nothing is
-//! equipped until you press E (equip) on a part. U upgrades the
-//! highlighted part. Deploying keeps what you equipped, cancelling puts back
-//! what was equipped when you came in.
+//! Every part is a picture in a strip along the bottom: hulls, then turrets.
+//! Browsing only previews: the tank wears the highlighted kit (parts you don't
+//! own too), and nothing is equipped until you press E (equip) on a part. U
+//! upgrades the highlighted part. Deploying keeps what you equipped,
+//! cancelling puts back what was equipped when you came in.
 //!
-//! Drawn as a solid panel on the left, the highlighted part's stats in a card
-//! top right, the tank framed in the space between.
+//! Drawn as a dock along the bottom: the stats the highlighted part would
+//! change, what you can do with it, and the strip. The tank has the rest.
 //!
 //! It opens in the ship's bay (`bay`): the camera swings round the tank where
 //! it stands, the screen dips to black, and comes up on the tank turning on
@@ -21,59 +20,28 @@
 use glam::{Vec2, Vec3};
 
 use crate::economy::{Levels, Part};
-use crate::faction::Faction;
 use crate::profile::{Profile, Refusal};
 use crate::render::{Camera, UiVertex};
 use crate::sim::{Chassis, HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::thumbs::Thumbs;
-use crate::ui::emblem;
-use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, theme, with_alpha};
+use crate::ui::{Align, Hits, Layer, Painter, design, measure, theme, with_alpha};
 
 const REF_HEIGHT: f32 = 900.0;
 pub const PANEL_X: f32 = 64.0;
 pub const PANEL_W: f32 = 340.0;
-/// The solid panel's margin around the content, and its gap from the screen edges.
-const PANEL_PAD: f32 = 28.0;
-const PANEL_TOP: f32 = 32.0;
-/// The garage panel's content width (wider than the menu's, for the card grid).
-const GRID_W: f32 = 420.0;
-const TABS_TOP: f32 = 140.0;
-const TAB_H: f32 = 28.0;
-/// The card grid's viewport: where it starts and how tall it is.
-const GRID_TOP: f32 = 182.0;
-const GRID_VIEW: f32 = 552.0;
-/// Two across: no maker has more than two parts of a kind, so a third
-/// column only ever stood empty.
-const GRID_COLS: usize = 2;
-const CARD_GAP: f32 = 10.0;
-const CARD_W: f32 = (GRID_W - CARD_GAP * (GRID_COLS as f32 - 1.0)) / GRID_COLS as f32;
-const THUMB_H: f32 = 68.0;
-/// Under the thumbnail: the part's name, and under it whether it's
-/// equipped or owned (a locked part has only its padlock).
-const STRIP_H: f32 = 38.0;
-const CARD_H: f32 = THUMB_H + STRIP_H;
-/// The card's text inset from its edges.
-const CARD_INSET: f32 = 8.0;
-const NAME_SIZE: f32 = 11.0;
-const CARD_PITCH: f32 = CARD_H + 8.0;
-/// A maker's header above its group of cards.
-const HEAD_H: f32 = 22.0;
-const BUTTONS_TOP: f32 = 746.0;
-const BUTTON_H: f32 = 30.0;
-/// The stats card's content width.
-const STATS_W: f32 = 300.0;
-/// Opaque so the text reads over any map (see `theme::PANEL` for why not nearly).
-const PANEL_FILL: Rgba = [0.006, 0.007, 0.009, 1.0];
-const CARD_FILL: Rgba = [0.94, 0.91, 0.86, 0.035];
-const SELECT_FILL: Rgba = [0.94, 0.91, 0.86, 0.16];
-const HOVER_FILL: Rgba = [0.94, 0.91, 0.86, 0.07];
-/// The learned part of a learning progress bar (#483).
-const LEARN_FILL: Rgba = [0.94, 0.91, 0.86, 0.22];
-/// What you'll deploy with.
-const EQUIPPED: Rgba = [0.52, 0.86, 0.66, 1.0];
-/// Parts whose schematic isn't yours yet: the padlock.
-const LOCKED: Rgba = [0.86, 0.47, 0.38, 0.85];
+/// The dock along the bottom: its height, and its rows' tops under its own.
+const DOCK_H: f32 = design::UNIT * 34.0;
+const STATS_TOP: f32 = design::UNIT * 4.0;
+const STRIP_TOP: f32 = design::UNIT * 13.0;
+const FOOT_TOP: f32 = design::UNIT * 30.0;
+/// The strip's cards: their gap, the one between hulls and turrets, and how
+/// tall a card's picture and the whole of it are.
+const CARD_GAP: f32 = design::UNIT;
+const KIND_GAP: f32 = design::UNIT * 5.0;
+const THUMB_H: f32 = design::UNIT * 9.0;
+const CARD_H: f32 = THUMB_H + design::UNIT * 5.0;
+/// What the actions, right of the stats, take of the dock's width.
+const ACTIONS_W: f32 = design::UNIT * 44.0;
 /// Open/close transition speed (1 / seconds).
 const BLEND_RATE: f32 = 2.5;
 /// Orbit camera: distance, height and slow drift around the tank (rad/s).
@@ -121,10 +89,9 @@ pub fn turret_name(k: TurretKind) -> &'static str {
     }
 }
 
-/// One stat row: label, value, unit. Bars are scaled to the best in the kit.
+/// One of a part's stats.
 struct Stat {
     name: &'static str,
-    unit: &'static str,
     decimals: usize,
     /// The stat for a part at the given upgrade levels.
     get: fn(Part, &Levels) -> f32,
@@ -147,44 +114,37 @@ fn turret_of(p: Part) -> TurretKind {
 const HULL_STATS: [Stat; 7] = [
     Stat {
         name: "ARMOR",
-        unit: "HP",
         decimals: 0,
         get: |p, l| l.max_health(hull_of(p)),
     },
     Stat {
         name: "TOP SPEED",
-        unit: "KM/H",
         decimals: 0,
         get: |p, l| l.hull(hull_of(p)).max_speed * 3.6,
     },
     Stat {
         name: "ACCEL",
-        unit: "M/S2",
         decimals: 1,
         get: |p, l| l.hull(hull_of(p)).accel,
     },
     Stat {
         name: "TURN",
-        unit: "°/S",
         decimals: 0,
         get: |p, l| l.hull(hull_of(p)).turn_rate.to_degrees(),
     },
     Stat {
         name: "TRAVERSE",
-        unit: "°/S",
         decimals: 0,
         get: |p, _| HullStats::of(hull_of(p)).turret_speed.to_degrees(),
     },
     Stat {
         name: "MASS",
-        unit: "T",
         decimals: 1,
         get: |p, l| crate::sim::Chassis::of(hull_of(p)).mass * l.hull(hull_of(p)).heft / 1000.0,
     },
     Stat {
         // Seconds of beam fire it adds before overheating.
         name: "THERMAL",
-        unit: "S",
         decimals: 1,
         get: |p, _| crate::combat::thermal_mass(hull_of(p)),
     },
@@ -193,20 +153,17 @@ const HULL_STATS: [Stat; 7] = [
 const TURRET_STATS: [Stat; 3] = [
     Stat {
         name: "DPS",
-        unit: "HP/S",
         decimals: 0,
         get: |p, l| l.gun(turret_of(p)).dps(),
     },
     Stat {
         name: "PER HIT",
-        unit: "HP",
         decimals: 0,
         // A beam has no single hit: show what one second of contact does.
         get: |p, l| l.gun(turret_of(p)).damage,
     },
     Stat {
         name: "RANGE",
-        unit: "M",
         decimals: 0,
         get: |p, l| l.gun(turret_of(p)).range(),
     },
@@ -215,12 +172,12 @@ const TURRET_STATS: [Stat; 3] = [
 /// Navigation input, mapped from keys by the app.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Input {
-    /// Move through the card grid.
+    /// Left and right along the strip; up and down between hulls and turrets.
     Up,
     Down,
     Left,
     Right,
-    /// Switch between the hull and turret tabs.
+    /// Between hulls and turrets.
     Switch,
     /// Equip the highlighted part (if owned).
     Act,
@@ -247,8 +204,6 @@ pub enum Event {
 pub enum Hit {
     /// Highlight (preview) this part.
     Part(Part),
-    /// Show this tab: 0 = hulls, 1 = turrets.
-    Tab(usize),
     /// A button: clicking it presses its key.
     Key(Input),
 }
@@ -257,7 +212,7 @@ pub struct Garage {
     open: bool,
     /// 0 = closed .. 1 = fully open; eased toward `open`.
     blend: f32,
-    /// The tab shown: 0 = hull, 1 = turret.
+    /// Which kind's highlighted: 0 = hull, 1 = turret.
     section: usize,
     /// The highlighted parts, previewed on the tank. Only E equips them.
     view: Loadout,
@@ -271,29 +226,7 @@ pub struct Garage {
     spin: f32,
     /// What the pointer is over, for hover feedback.
     hover: Option<Hit>,
-    /// Each tab's grid scroll in logical px, and where it's easing to.
-    scroll: [f32; 2],
-    scroll_goal: [f32; 2],
     thumbs: Thumbs,
-}
-
-/// A card's place in a tab's grid, from the grid's top left before scrolling.
-#[derive(Clone, Copy, Debug)]
-struct Card {
-    part: Part,
-    row: usize,
-    col: usize,
-    pos: Vec2,
-    /// It's the first of its faction (the group header sits just above it).
-    first: bool,
-}
-
-/// A tab's cards grouped by maker, each group under a header.
-struct Grid {
-    cards: Vec<Card>,
-    /// Each group's maker and header y.
-    heads: Vec<(Faction, f32)>,
-    height: f32,
 }
 
 fn tab_parts(section: usize) -> Vec<Part> {
@@ -304,55 +237,38 @@ fn tab_parts(section: usize) -> Vec<Part> {
     }
 }
 
-/// A card's status, right of its name: EQUIPPED or OWNED and the part's
-/// tier; nothing for a part that isn't yours yet (its padlock says so).
-fn card_tag(part: Part, equipped: bool, profile: &Profile) -> Option<(String, Rgba)> {
-    let level = crate::economy::level_label(profile.levels.of(part));
-    if equipped {
-        Some((format!("EQUIPPED · {level}"), EQUIPPED))
-    } else if profile.owns(part) {
-        Some((format!("OWNED · {level}"), theme::DIM))
-    } else {
-        None
-    }
+/// Every part, in the strip's order: hulls, then turrets.
+fn strip_parts() -> Vec<Part> {
+    (0..2).flat_map(tab_parts).collect()
 }
 
-fn grid(section: usize) -> Grid {
-    let parts = tab_parts(section);
-    let (mut cards, mut heads) = (Vec::new(), Vec::new());
-    let (mut y, mut row) = (0.0, 0);
-    for faction in Faction::ALL {
-        let group: Vec<Part> = parts
-            .iter()
-            .copied()
-            .filter(|p| p.maker() == faction)
-            .collect();
-        if group.is_empty() {
-            continue;
+/// The strip on a screen `w` wide: each part's card, from the strip's top
+/// left, and how wide they are.
+fn strip(w: f32) -> (Vec<(Part, f32)>, f32) {
+    let parts = strip_parts();
+    let gaps = CARD_GAP * (parts.len() - 2) as f32 + KIND_GAP;
+    let card = ((w - design::MARGIN * 2.0 - gaps) / parts.len() as f32).floor();
+    let mut x = design::MARGIN;
+    let mut out = Vec::new();
+    for (i, &part) in parts.iter().enumerate() {
+        if i == HULLS.len() {
+            x += KIND_GAP - CARD_GAP;
         }
-        heads.push((faction, y));
-        y += HEAD_H;
-        for (i, &part) in group.iter().enumerate() {
-            let col = i % GRID_COLS;
-            if i > 0 && col == 0 {
-                y += CARD_PITCH;
-                row += 1;
-            }
-            cards.push(Card {
-                part,
-                row,
-                col,
-                pos: Vec2::new(col as f32 * (CARD_W + CARD_GAP), y),
-                first: i == 0,
-            });
-        }
-        y += CARD_PITCH;
-        row += 1;
+        out.push((part, x));
+        x += card + CARD_GAP;
     }
-    Grid {
-        cards,
-        heads,
-        height: (y - CARD_GAP).max(0.0),
+    (out, card)
+}
+
+/// How far along `part` is to its next step, 0..1: full once that can be
+/// bought (or there's none left).
+fn progress(part: Part, profile: &Profile) -> f32 {
+    let known = profile.known.of(part);
+    let cap = profile.known.cap(part);
+    if cap > profile.levels.of(part) || cap >= crate::economy::MAX_LEVEL {
+        1.0
+    } else {
+        known - known.floor()
     }
 }
 
@@ -369,8 +285,6 @@ impl Garage {
             orbit_goal: 0.0,
             spin: 0.0,
             hover: None,
-            scroll: [0.0; 2],
-            scroll_goal: [0.0; 2],
             thumbs: Thumbs::new(),
         }
     }
@@ -396,12 +310,12 @@ impl Garage {
 
     /// The bay camera: easing in from a little further out as the garage
     /// opens, and standing back for a hull too long to fit the usual frame.
-    pub fn bay_camera(&self, aspect: f32) -> crate::render::Camera {
+    pub fn bay_camera(&self) -> crate::render::Camera {
         let k = smooth(((self.blend - BAY_AT) / (1.0 - BAY_AT)).clamp(0.0, 1.0));
         let c = Chassis::of(self.view.0);
         let length = (c.front.0 + c.front.2) - (c.rear.0 - c.rear.2);
         let fit = (length / BAY_FRAMED_LENGTH).max(1.0);
-        crate::bay::camera(aspect, fit * (1.0 + 0.2 * (1.0 - k)))
+        crate::bay::camera(fit * (1.0 + 0.2 * (1.0 - k)))
     }
 
     /// How dark the screen is for the cut between battlefield and bay:
@@ -418,26 +332,26 @@ impl Garage {
     /// Highlight `kit` (e.g. for a screenshot of a part being previewed).
     pub fn browse(&mut self, kit: Loadout) {
         self.view = kit;
-        // Show the tab of whatever differs from what's equipped.
+        // On whatever differs from what's equipped.
         self.section = usize::from(kit.0 == self.entry.0 && kit.1 != self.entry.1);
-        for s in 0..2 {
-            self.reveal(s);
-            self.scroll[s] = self.scroll_goal[s];
+    }
+
+    /// The wheel: along the strip, down to the right.
+    pub fn scroll(&mut self, delta: f32) {
+        if delta != 0.0 {
+            self.move_by(delta.signum() as isize);
         }
     }
 
-    /// Show the hull (0) or turret (1) tab.
-    pub fn show_tab(&mut self, section: usize) {
-        self.section = section.min(1);
+    /// Move the highlight `n` along the strip, stopping at its ends.
+    fn move_by(&mut self, n: isize) {
+        let parts = strip_parts();
+        let at = parts.iter().position(|&p| p == self.focused()).unwrap_or(0);
+        let to = (at as isize + n).clamp(0, parts.len() as isize - 1);
+        self.highlight(parts[to as usize]);
     }
 
-    /// Scroll the grid by `delta` logical px (mouse wheel; positive is down).
-    pub fn scroll(&mut self, delta: f32) {
-        let s = self.section;
-        self.scroll_goal[s] = (self.scroll_goal[s] + delta).clamp(0.0, max_scroll(s));
-    }
-
-    /// The highlighted part in the tab shown.
+    /// The highlighted part.
     fn focused(&self) -> Part {
         if self.section == 0 {
             Part::Hull(self.view.0)
@@ -446,31 +360,12 @@ impl Garage {
         }
     }
 
-    /// Highlight `part` (switching to its tab) and scroll it into view.
+    /// Highlight `part`.
     fn highlight(&mut self, part: Part) {
         match part {
             Part::Hull(k) => (self.section, self.view.0) = (0, k),
             Part::Turret(k) => (self.section, self.view.1) = (1, k),
         }
-        self.reveal(self.section);
-    }
-
-    /// Scroll tab `s` so its highlighted card (and its group's header, if
-    /// it's the first of the group) is in view.
-    fn reveal(&mut self, s: usize) {
-        let part = if s == 0 {
-            Part::Hull(self.view.0)
-        } else {
-            Part::Turret(self.view.1)
-        };
-        let g = grid(s);
-        let Some(c) = g.cards.iter().find(|c| c.part == part) else {
-            return;
-        };
-        let top = c.pos.y - if c.first { HEAD_H } else { 4.0 };
-        let bottom = c.pos.y + CARD_H + 4.0;
-        let goal = self.scroll_goal[s].min(top).max(bottom - GRID_VIEW);
-        self.scroll_goal[s] = goal.clamp(0.0, max_scroll(s));
     }
 
     /// Open on the player's tank (index 0) with `queued` as the pick, or close.
@@ -483,9 +378,6 @@ impl Garage {
         self.open = true;
         self.entry = queued;
         self.view = queued;
-        for s in 0..2 {
-            self.reveal(s);
-        }
         // Start the orbit where the chase camera is (unless we're mid-transition) and swing round to the front.
         if self.blend <= 0.0 {
             let off = camera.pos - t.pos;
@@ -508,35 +400,15 @@ impl Garage {
         }
         let part = self.focused();
         match input {
-            Input::Up | Input::Down | Input::Left | Input::Right => {
-                let g = grid(self.section);
-                let cur = g.cards.iter().position(|c| c.part == part).unwrap_or(0);
-                let c = g.cards[cur];
-                let next = match input {
-                    Input::Left => cur.saturating_sub(1),
-                    Input::Right => (cur + 1).min(g.cards.len() - 1),
-                    // The nearest card in the row above or below.
-                    _ => {
-                        let row = if input == Input::Up {
-                            c.row.checked_sub(1)
-                        } else {
-                            Some(c.row + 1)
-                        };
-                        row.and_then(|r| {
-                            g.cards
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, k)| k.row == r)
-                                .min_by_key(|(_, k)| k.col.abs_diff(c.col))
-                                .map(|(i, _)| i)
-                        })
-                        .unwrap_or(cur)
-                    }
-                };
-                self.highlight(g.cards[next].part);
+            Input::Left => {
+                self.move_by(-1);
                 None
             }
-            Input::Switch => {
+            Input::Right => {
+                self.move_by(1);
+                None
+            }
+            Input::Switch | Input::Up | Input::Down => {
                 self.section = 1 - self.section;
                 None
             }
@@ -557,7 +429,7 @@ impl Garage {
         }
     }
 
-    /// A click on `hit`: a card highlights it, a tab shows it, a button presses its key.
+    /// A click on `hit`: a card highlights it, an action presses its key.
     pub fn click(&mut self, hit: Hit, queued: Loadout, profile: &Profile) -> Option<Event> {
         match hit {
             Hit::Key(input) => self.input(input, queued, profile),
@@ -565,11 +437,7 @@ impl Garage {
                 self.highlight(part);
                 None
             }
-            Hit::Tab(s) if self.open => {
-                self.show_tab(s);
-                None
-            }
-            Hit::Part(_) | Hit::Tab(_) => None,
+            Hit::Part(_) => None,
         }
     }
 
@@ -588,14 +456,10 @@ impl Garage {
             self.spin += SPIN_RATE * dt;
         }
         self.orbit += (self.orbit_goal - self.orbit) * (1.0 - (-dt * 2.5).exp());
-        let k = 1.0 - (-dt * 14.0).exp();
-        for s in 0..2 {
-            self.scroll[s] += (self.scroll_goal[s] - self.scroll[s]) * k;
-        }
     }
 
     /// Draw up to `budget` of the cards' thumbnails while the garage shows,
-    /// for a screen `height` px tall with `queued` equipped.
+    /// for a screen `width` by `height` px with `queued` equipped.
     #[allow(clippy::too_many_arguments)]
     pub fn render_thumbs(
         &mut self,
@@ -604,6 +468,7 @@ impl Garage {
         world: &World,
         tank: &Tank,
         queued: Loadout,
+        width: f32,
         height: f32,
         budget: usize,
     ) {
@@ -612,7 +477,7 @@ impl Garage {
         }
         let scale = height / REF_HEIGHT;
         let cell = (
-            (CARD_W * scale).ceil() as u32,
+            (strip(width / scale).1 * scale).ceil() as u32,
             (THUMB_H * scale).ceil() as u32,
         );
         self.thumbs
@@ -620,7 +485,7 @@ impl Garage {
     }
 
     /// Blend the chase camera into a slow orbit around `tank`, framed right of the panel.
-    pub fn camera(&self, chase: Camera, world: &World, tank: &Tank, aspect: f32) -> Camera {
+    pub fn camera(&self, chase: Camera, world: &World, tank: &Tank) -> Camera {
         let e = smooth(self.blend);
         if e <= 0.0 {
             return chase;
@@ -638,11 +503,8 @@ impl Garage {
         let len = dir.length();
         let hit = world.raycast(focus, dir / len, len);
         let pos = focus + dir / len * (hit - 0.6).max(3.0).min(len);
-        // Aim left of the tank so it sits in the open space right of the panel
-        // (more so on wide screens, where the panel takes less of the width).
-        let right = (focus - pos).cross(Vec3::Y).normalize_or_zero();
-        let shift = (focus - pos).length() * 0.36 * (aspect / (16.0 / 9.0)).clamp(0.6, 1.2);
-        let target = focus - right * shift;
+        // Aim under the tank, so it sits in the space over the dock.
+        let target = focus - Vec3::Y * (focus - pos).length() * crate::bay::AIM_UNDER;
         Camera {
             pos,
             target: chase.target.lerp(target, e),
@@ -693,6 +555,7 @@ impl Garage {
         width: f32,
         height: f32,
     ) -> Layer<Hit> {
+        use design::{AMBER, BLUE, GROUND, HEAD, MARGIN, SMALL, TEXT, TEXT_2};
         let e = smooth(self.blend);
         if e <= 0.0 {
             return Layer::empty();
@@ -703,93 +566,56 @@ impl Garage {
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
 
-        backdrop(&mut p, h);
-        let x = PANEL_X - (1.0 - e) * 30.0;
+        // Mid-battle, when you'll get what you've changed; and what you have
+        // to spend.
+        if queued != (tank.hull_kind, tank.turret_kind) {
+            let at = Vec2::splat(MARGIN);
+            p.text(at, "On your next respawn", &design::BODY, Align::Left);
+        }
+        let at = Vec2::new(w - MARGIN, MARGIN);
+        let cr = format!("{} cr", profile.crystals);
+        p.text(at, &cr, &HEAD.colored(BLUE), Align::Right);
+
+        // The dock, sliding up.
+        p.set_halo(None);
+        let top = h - DOCK_H + (1.0 - e) * 30.0;
         p.rect(
-            Vec2::new(x - PANEL_PAD, PANEL_TOP),
-            Vec2::new(GRID_W + 2.0 * PANEL_PAD, h - 2.0 * PANEL_TOP),
-            PANEL_FILL,
+            Vec2::new(0.0, top),
+            Vec2::new(w, DOCK_H.min(h - top)),
+            GROUND,
         );
-
-        let mut y = 64.0;
-        label(&mut p, Vec2::new(x, y), "GARAGE", Align::Left);
-        let cw = label(&mut p, Vec2::new(x + GRID_W, y), "CR", Align::Right);
-        p.text(
-            Vec2::new(x + GRID_W - cw - 8.0, y - 2.0),
-            &profile.crystals.to_string(),
-            &TextStyle::value(11.0),
-            Align::Right,
-        );
-        y += 18.0;
-        // The title is what you'll deploy in; the status says what the tank is showing.
-        let title = format!("{} · {}", hull_name(queued.0), turret_name(queued.1));
-        // Shrunk to fit the panel when the names are long.
-        let mut ts = TextStyle::value(20.0);
-        while ts.size > 12.0 && crate::ui::measure(&title, &ts) > GRID_W {
-            ts = TextStyle::value(ts.size - 1.0);
-        }
-        p.text(Vec2::new(x, y + 20.0 - ts.size), &title, &ts, Align::Left);
-        y += 30.0;
-        let previewing: Vec<&str> = [
-            (self.view.0 != queued.0).then(|| hull_name(self.view.0)),
-            (self.view.1 != queued.1).then(|| turret_name(self.view.1)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let (status, color) = if !previewing.is_empty() {
-            (format!("PREVIEWING {}", previewing.join(" · ")), theme::DIM)
-        } else if queued != (tank.hull_kind, tank.turret_kind) {
-            ("EQUIPPED · FITTED ON NEXT RESPAWN".to_string(), EQUIPPED)
-        } else {
-            ("EQUIPPED".to_string(), EQUIPPED)
-        };
-        let mut s = TextStyle::LABEL;
-        s.color = color;
-        p.text(Vec2::new(x, y), &status, &s, Align::Left);
-
-        self.draw_tabs(&mut p, &mut hits, x);
-        self.draw_grid(&mut p, &mut hits, x, queued, profile);
-
-        // Buttons for the highlighted part: equip / buy, then upgrade.
-        let part = self.focused();
-        let mut by = BUTTONS_TOP;
-        let act = primary_action(part, queued, profile);
-        self.slot(&mut p, &mut hits, Vec2::new(x, by), &act, Input::Act);
-        by += BUTTON_H + 8.0;
-        if let Some(up) = upgrade_action(part, profile) {
-            self.slot(&mut p, &mut hits, Vec2::new(x, by), &up, Input::Upgrade);
-        }
-
-        // Back out, putting the kit back as Esc does; or deploy with the
-        // kit as it stands.
-        let bottom = Vec2::new(x, h - 72.0);
-        widgets::back_button(&mut p, bottom, self.hover == Some(Hit::Key(Input::Revert)));
-        let bw = widgets::back_width();
-        hits.add(
-            &p,
-            bottom,
-            Vec2::new(bw, widgets::BACK_H),
-            Hit::Key(Input::Revert),
-        );
-        let gap = 8.0;
-        self.button(
+        self.draw_stats(
             &mut p,
-            &mut hits,
-            bottom + Vec2::new(bw + gap, 0.0),
-            GRID_W - bw - gap,
-            "DEPLOY",
-            true,
-            Input::Deploy,
+            Vec2::new(MARGIN, top + STATS_TOP),
+            w,
+            queued,
+            profile,
         );
+        let at = Vec2::new(w - MARGIN, top + STATS_TOP);
+        self.draw_actions(&mut p, &mut hits, at, queued, profile);
+        self.draw_strip(&mut p, &mut hits, top + STRIP_TOP, w, queued, profile);
 
-        self.draw_stats(&mut p, w, queued, profile);
+        // Back out, putting the kit back as Esc does; or keep it as it stands.
+        let foot = top + FOOT_TOP;
+        for (name, input, x, align, color) in [
+            ("Back", Input::Revert, MARGIN, Align::Left, TEXT_2),
+            ("Done", Input::Deploy, w - MARGIN, Align::Right, AMBER),
+        ] {
+            let on = self.hover == Some(Hit::Key(input));
+            let style = SMALL.colored(if on { TEXT } else { color });
+            let tw = p.text(Vec2::new(x, foot), name, &style, align);
+            let left = if align == Align::Right { x - tw } else { x };
+            let pad = Vec2::splat(design::UNIT * 1.5);
+            let min = Vec2::new(left, foot) - pad;
+            let size = Vec2::new(tw, SMALL.size) + pad * 2.0;
+            hits.add(&p, min, size, Hit::Key(input));
+        }
 
         let mut v = p.finish();
         for vert in &mut v {
             vert.color[3] *= e;
         }
-        // The dip to black for the cut to and from the bay, under the panel.
+        // The dip to black for the cut to and from the bay, under the dock.
         let dip = self.dip();
         if dip > 0.0 {
             let mut d = Painter::new(scale);
@@ -805,366 +631,132 @@ impl Garage {
         Layer { verts: v, hits }
     }
 
-    /// HULL and TURRET tabs, each with how many parts it holds.
-    fn draw_tabs(&self, p: &mut Painter, hits: &mut Hits<Hit>, x: f32) {
-        let tw = GRID_W * 0.5;
-        for (s, name) in ["HULL", "TURRET"].into_iter().enumerate() {
-            let min = Vec2::new(x + s as f32 * tw, TABS_TOP);
-            let size = Vec2::new(tw - 4.0, TAB_H);
-            let active = s == self.section;
-            hits.add(p, min, size, Hit::Tab(s));
-            p.set_halo(None);
-            if active {
-                p.rect(min, size, SELECT_FILL);
-                p.rect(
-                    min + Vec2::new(0.0, size.y - 2.0),
-                    Vec2::new(size.x, 2.0),
-                    theme::FG,
-                );
-            } else if self.hover == Some(Hit::Tab(s)) {
-                p.rect(min, size, HOVER_FILL);
-            }
-            p.set_halo(Some((theme::HALO, theme::HALO_PX)));
-            let mut t = TextStyle::LABEL;
-            t.color = if active { theme::FG } else { theme::DIM };
-            let ty = min.y + (TAB_H - t.size) * 0.5 - 1.0;
-            p.text(Vec2::new(min.x + 12.0, ty), name, &t, Align::Left);
-            let count = tab_parts(s).len().to_string();
-            p.text(
-                Vec2::new(min.x + size.x - 12.0, ty),
-                &count,
-                &t,
-                Align::Right,
-            );
-        }
-        p.line(
-            Vec2::new(x, TABS_TOP + TAB_H),
-            Vec2::new(x + GRID_W, TABS_TOP + TAB_H),
-            1.0,
-            theme::FAINT,
-        );
-    }
-
-    /// The tab's cards, grouped under their makers, scrolled and clipped to
-    /// the grid's viewport, with a scroll bar when they don't all fit.
-    fn draw_grid(
+    /// Every part's card along the strip, `y` its top: its picture (dark if
+    /// it isn't yours), its name, and how far along it is.
+    fn draw_strip(
         &self,
         p: &mut Painter,
         hits: &mut Hits<Hit>,
-        x: f32,
+        y: f32,
+        w: f32,
         queued: Loadout,
         profile: &Profile,
     ) {
-        let s = self.section;
-        let g = grid(s);
-        let origin = Vec2::new(x, GRID_TOP - self.scroll[s]);
-        let view = (
-            Vec2::new(x - PANEL_PAD, GRID_TOP),
-            Vec2::new(x + GRID_W + PANEL_PAD, GRID_TOP + GRID_VIEW),
-        );
-        p.set_clip(Some(view));
-        for &(faction, hy) in &g.heads {
-            let at = origin + Vec2::new(0.0, hy + 4.0);
-            let mut style = TextStyle::LABEL;
-            style.color = with_alpha(faction.ui(), 0.85);
-            let lw = emblem::faction_name(p, at, faction, &style, Align::Left);
-            p.line(
-                at + Vec2::new(12.0 + lw, 4.0),
-                at + Vec2::new(GRID_W, 4.0),
-                1.0,
-                theme::FAINT,
-            );
-        }
-        for c in &g.cards {
-            let min = origin + c.pos;
-            let selected = c.part == self.focused();
-            let is_equipped = with_part(queued, c.part) == queued;
-            self.draw_card(p, min, c.part, selected, is_equipped, profile);
-            // Only the part of a card inside the viewport can be clicked.
-            let (a, b) = (
-                min.max(view.0),
-                (min + Vec2::new(CARD_W, CARD_H)).min(view.1),
-            );
-            if b.x > a.x && b.y > a.y {
-                hits.add(p, a, b - a, Hit::Part(c.part));
+        use design::{AMBER, SMALL, TEXT, TEXT_2, UNIT};
+        let (cards, card) = strip(w);
+        for (part, x) in cards {
+            let min = Vec2::new(x, y);
+            let size = Vec2::new(card, CARD_H);
+            let owned = profile.owns(part);
+            let equipped = with_part(queued, part) == queued;
+            let picked = part == self.focused();
+            let thumb = Vec2::new(card, THUMB_H);
+            match self.thumbs.uv(part) {
+                Some((u0, u1)) => {
+                    let k = if owned { 1.0 } else { 0.25 };
+                    p.image(min, thumb, u0, u1, [k, k, k, 1.0]);
+                }
+                None => p.rect(min, thumb, with_alpha(TEXT, 0.02)),
             }
-        }
-        p.set_clip(None);
-
-        // Scroll bar beside the grid.
-        let over = g.height - GRID_VIEW;
-        if over > 0.5 {
-            let bx = x + GRID_W + 14.0;
-            p.line(
-                Vec2::new(bx, GRID_TOP),
-                Vec2::new(bx, GRID_TOP + GRID_VIEW),
-                1.0,
-                theme::FAINT,
-            );
-            let len = GRID_VIEW * GRID_VIEW / g.height;
-            let top = GRID_TOP + (GRID_VIEW - len) * (self.scroll[s] / over).clamp(0.0, 1.0);
-            p.line(
-                Vec2::new(bx, top),
-                Vec2::new(bx, top + len),
-                2.0,
-                theme::DIM,
-            );
+            if picked {
+                p.rect_outline(min, thumb, 2.0, TEXT);
+            } else if self.hover == Some(Hit::Part(part)) {
+                p.rect_outline(min, thumb, 1.0, TEXT_2);
+            }
+            // Shrunk to fit a narrow screen's cards.
+            let name = part.name();
+            let mut style = SMALL.colored(match (equipped, owned) {
+                (true, _) => AMBER,
+                (_, true) => TEXT,
+                _ => TEXT_2,
+            });
+            let fit = card / measure(name, &style);
+            style.size *= fit.min(1.0);
+            style.tracking *= fit.min(1.0);
+            let at = min + Vec2::Y * (THUMB_H + UNIT);
+            p.text(at, name, &style, Align::Left);
+            let bar = min + Vec2::Y * (THUMB_H + UNIT * 3.0);
+            p.rect(bar, Vec2::new(card, 2.0), with_alpha(TEXT_2, 0.3));
+            let k = progress(part, profile);
+            let color = if k >= 1.0 { AMBER } else { TEXT };
+            p.rect(bar, Vec2::new(card * k, 2.0), color);
+            hits.add(p, min, size, Hit::Part(part));
         }
     }
 
-    /// One card: the part's thumbnail (dark and padlocked if it isn't yours),
-    /// its name, and whether it's EQUIPPED or OWNED, at what tier. Who makes
-    /// it is the header above it, so the card doesn't say it again (#387).
-    fn draw_card(
+    /// The highlighted part's stats from `at`: against what's equipped, or on
+    /// what's equipped, against its next step, if that's known.
+    fn draw_stats(&self, p: &mut Painter, at: Vec2, w: f32, queued: Loadout, profile: &Profile) {
+        use design::{BODY, SMALL, TEXT, TEXT_2, UNIT};
+        let part = self.focused();
+        let (stats, equipped) = match part {
+            Part::Hull(_) => (&HULL_STATS[..], Part::Hull(queued.0)),
+            Part::Turret(_) => (&TURRET_STATS[..], Part::Turret(queued.1)),
+        };
+        let level = profile.levels.of(part);
+        let mut next = profile.levels;
+        if part == equipped && profile.known.cap(part) > level {
+            next.set(part, level + 1);
+        }
+        let room = w - design::MARGIN * 2.0 - ACTIONS_W;
+        let col = (room / stats.len() as f32).min(UNIT * 20.0);
+        for (i, stat) in stats.iter().enumerate() {
+            let at = at + Vec2::X * col * i as f32;
+            p.text(at, stat.name, &SMALL.colored(TEXT_2), Align::Left);
+            let show = |v: f32| format!("{v:.prec$}", prec = stat.decimals);
+            let was = show((stat.get)(equipped, &profile.levels));
+            let now = show((stat.get)(part, &next));
+            let (from, to) = if was == now {
+                (String::new(), now)
+            } else {
+                (format!("{was} → "), now)
+            };
+            let mut style = BODY;
+            let fit = (col - UNIT) / measure(&format!("{from}{to}"), &style);
+            style.size *= fit.min(1.0);
+            style.tracking *= fit.min(1.0);
+            let y = at + Vec2::Y * UNIT * 2.5;
+            let x = p.text(y, &from, &style.colored(TEXT_2), Align::Left);
+            p.text(y + Vec2::X * x, &to, &style.colored(TEXT), Align::Left);
+        }
+    }
+
+    /// What you can do with the highlighted part, right-aligned at `at`: its
+    /// name and tier, then each thing in words.
+    fn draw_actions(
         &self,
         p: &mut Painter,
-        min: Vec2,
-        part: Part,
-        selected: bool,
-        equipped: bool,
+        hits: &mut Hits<Hit>,
+        at: Vec2,
+        queued: Loadout,
         profile: &Profile,
     ) {
-        let size = Vec2::new(CARD_W, CARD_H);
-        let owned = profile.owns(part);
-        let locked = !owned;
-
-        p.set_halo(None);
-        p.rect(min, size, if selected { SELECT_FILL } else { CARD_FILL });
-        let thumb = Vec2::new(CARD_W, THUMB_H);
-        match self.thumbs.uv(part) {
-            Some((u0, u1)) => {
-                let k = if owned { 1.0 } else { 0.3 };
-                p.image(min, thumb, u0, u1, [k, k, k, 1.0]);
-            }
-            None => p.rect(min, thumb, HOVER_FILL),
-        }
-        if locked {
-            p.rect(min + Vec2::new(6.0, 6.0), Vec2::new(20.0, 20.0), PANEL_FILL);
-        }
-        p.set_halo(Some((theme::HALO, theme::HALO_PX)));
-        if locked {
-            padlock(p, min + Vec2::new(11.0, 10.0), LOCKED);
-        }
-
-        let outline = if selected {
-            Some((2.0, theme::FG))
-        } else if self.hover == Some(Hit::Part(part)) {
-            Some((1.0, theme::DIM))
-        } else if equipped {
-            Some((1.0, with_alpha(EQUIPPED, 0.6)))
-        } else {
-            None
-        };
-        if let Some((wd, c)) = outline {
-            p.rect_outline(min, size, wd, c);
-        }
-
-        let mut s = TextStyle::value(NAME_SIZE);
-        s.color = if owned { theme::FG } else { theme::DIM };
-        let y = min.y + THUMB_H + 8.0;
-        p.text(
-            Vec2::new(min.x + CARD_INSET, y),
-            part.name(),
-            &s,
-            Align::Left,
-        );
-
-        if let Some((tag, color)) = card_tag(part, equipped, profile) {
-            let mut t = TextStyle::LABEL;
-            t.color = color;
-            let at = Vec2::new(min.x + CARD_INSET, y + NAME_SIZE + 6.0);
-            p.text(at, &tag, &t, Align::Left);
-        }
-    }
-
-    /// The highlighted part's spec card, top right over the scene.
-    fn draw_stats(&self, p: &mut Painter, w: f32, queued: Loadout, profile: &Profile) {
+        use design::{AMBER, BODY, TEXT, TEXT_2, UNIT};
         let part = self.focused();
-        let (items, stats, equipped) = if self.section == 0 {
-            (tab_parts(0), &HULL_STATS[..], Part::Hull(queued.0))
-        } else {
-            (tab_parts(1), &TURRET_STATS[..], Part::Turret(queued.1))
-        };
-        let card_w = STATS_W + 2.0 * PANEL_PAD;
-        let x = w - PANEL_TOP - card_w;
-        let owned = profile.owns(part);
-        let track_h = if owned { UPGRADE_TRACK_H } else { 0.0 };
-        let card_h = 78.0 + track_h + stats.len() as f32 * 20.0 + 16.0;
-        p.rect(
-            Vec2::new(x, PANEL_TOP),
-            Vec2::new(card_w, card_h),
-            PANEL_FILL,
-        );
-        let x = x + PANEL_PAD;
-        let mut y = PANEL_TOP + 26.0;
-        let kind = if self.section == 0 { "HULL" } else { "TURRET" };
-        let kw = label(p, Vec2::new(x, y), &format!("{kind} · "), Align::Left);
-        emblem::faction_name(
-            p,
-            Vec2::new(x + kw + TextStyle::LABEL.tracking, y),
-            part.maker(),
-            &TextStyle::LABEL,
-            Align::Left,
-        );
-        y += 16.0;
-        p.text(
-            Vec2::new(x, y),
-            part.name(),
-            &TextStyle::value(16.0),
-            Align::Left,
-        );
-        y += 36.0;
-        if owned {
-            upgrade_track(
-                p,
-                Vec2::new(x, y - 6.0),
-                STATS_W,
-                profile.levels.of(part),
-                profile.known.cap(part),
-            );
-            y += track_h;
+        let mut title = part.name().to_string();
+        if profile.owns(part) {
+            let tier = crate::economy::level_label(profile.levels.of(part));
+            title = format!("{title} {tier}");
         }
-        for stat in stats {
-            draw_stat(
-                p,
-                Vec2::new(x, y),
-                STATS_W,
-                stat,
-                part,
-                equipped,
-                &items,
-                &profile.levels,
-            );
-            y += 20.0;
+        p.text(at, &title, &BODY.colored(TEXT), Align::Right);
+        let mut x = at.x;
+        let y = at.y + UNIT * 3.5;
+        for (text, input) in actions(part, queued, profile) {
+            let style = BODY.colored(match input {
+                None => TEXT_2,
+                Some(i) if self.hover == Some(Hit::Key(i)) => TEXT,
+                Some(_) => AMBER,
+            });
+            let tw = p.text(Vec2::new(x, y), &text, &style, Align::Right);
+            if let Some(input) = input {
+                let pad = Vec2::splat(UNIT);
+                let min = Vec2::new(x - tw, y) - pad;
+                let size = Vec2::new(tw, style.size) + pad * 2.0;
+                hits.add(p, min, size, Hit::Key(input));
+            }
+            x -= tw + UNIT * 4.0;
         }
     }
-
-    /// A full-width button slot: a button, or a learning progress bar.
-    fn slot(
-        &self,
-        p: &mut Painter,
-        hits: &mut Hits<Hit>,
-        min: Vec2,
-        action: &Action,
-        input: Input,
-    ) {
-        match action {
-            Action::Button(text, ready) => self.button(p, hits, min, GRID_W, text, *ready, input),
-            Action::Learning(what, frac) => learning_bar(p, min, GRID_W, what.as_deref(), *frac),
-        }
-    }
-
-    /// A full-width button saying what it does. Disabled ones are drawn
-    /// faint and still say why (and can't be clicked).
-    fn button(
-        &self,
-        p: &mut Painter,
-        hits: &mut Hits<Hit>,
-        min: Vec2,
-        width: f32,
-        text: &str,
-        ready: bool,
-        input: Input,
-    ) {
-        let size = Vec2::new(width, BUTTON_H);
-        let hovered = ready && self.hover == Some(Hit::Key(input));
-        p.set_halo(None);
-        if ready {
-            p.rect(min, size, if hovered { SELECT_FILL } else { HOVER_FILL });
-        }
-        p.set_halo(Some((theme::HALO, theme::HALO_PX)));
-        p.rect_outline(min, size, 1.0, if ready { theme::FG } else { theme::FAINT });
-        let ty = min.y + (BUTTON_H - TextStyle::LABEL.size) * 0.5;
-        let mut a = TextStyle::LABEL;
-        a.color = if ready { theme::FG } else { theme::DIM };
-        p.text(Vec2::new(min.x + 12.0, ty), text, &a, Align::Left);
-        if ready {
-            hits.add(p, min, size, Hit::Key(input));
-        }
-    }
-}
-
-/// How far along learning a part (or its tier `what`) from wrecks is: the
-/// button's box filling up, the tier (if it's one) on the left and the
-/// percent on the right (#483). Whose wrecks teach it is on the spec card above.
-fn learning_bar(p: &mut Painter, min: Vec2, width: f32, what: Option<&str>, frac: f32) {
-    let size = Vec2::new(width, BUTTON_H);
-    let frac = frac.clamp(0.0, 1.0);
-    p.set_halo(None);
-    if frac > 0.0 {
-        p.rect(min, Vec2::new(width * frac, BUTTON_H), LEARN_FILL);
-    }
-    p.set_halo(Some((theme::HALO, theme::HALO_PX)));
-    p.rect_outline(min, size, 1.0, theme::FAINT);
-    let ty = min.y + (BUTTON_H - TextStyle::LABEL.size) * 0.5;
-    let mut a = TextStyle::LABEL;
-    a.color = theme::DIM;
-    if let Some(tier) = what {
-        p.text(Vec2::new(min.x + 12.0, ty), tier, &a, Align::Left);
-    }
-    a.color = theme::FG;
-    p.text(
-        Vec2::new(min.x + width - 12.0, ty),
-        &format!("{}%", (frac * 100.0) as u32),
-        &a,
-        Align::Right,
-    );
-}
-
-/// Height the upgrade track adds to the spec card.
-const UPGRADE_TRACK_H: f32 = 30.0;
-
-/// An owned part's climb to T3: its level, then one notch per upgrade step,
-/// with the marks (T1, T2) standing taller. Each notch says how far you've got
-/// (#451): bought up to `level`, known and ready to buy up to `cap`, locked past it.
-fn upgrade_track(p: &mut Painter, at: Vec2, w: f32, level: u8, cap: u8) {
-    use crate::economy::{MAX_LEVEL, STEPS_PER_MARK, level_label};
-    let lw = label(p, at, "UPGRADE ", Align::Left);
-    p.text(
-        at + Vec2::new(lw + TextStyle::LABEL.tracking, 0.0),
-        &level_label(level),
-        &TextStyle::LABEL,
-        Align::Left,
-    );
-    let y = at.y + 16.0;
-    let gap = 2.0;
-    let n = MAX_LEVEL as f32;
-    let notch = (w - gap * (n - 1.0)) / n;
-    for i in 0..MAX_LEVEL {
-        let x = at.x + i as f32 * (notch + gap);
-        let mark = (i + 1) % STEPS_PER_MARK == 0;
-        let h = if mark { 8.0 } else { 5.0 };
-        let color = match step_state(i, level, cap) {
-            Step::Bought => theme::FG,
-            Step::Available => EQUIPPED,
-            Step::Locked => theme::FAINT,
-        };
-        p.rect(Vec2::new(x, y + 8.0 - h), Vec2::new(notch, h), color);
-    }
-}
-
-/// Where an upgrade step stands for a part at `level` that can be built to `cap`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Step {
-    Bought,
-    Available,
-    Locked,
-}
-
-/// Step `i` (0-based: step `i` takes the part to level `i + 1`).
-fn step_state(i: u8, level: u8, cap: u8) -> Step {
-    if i < level {
-        Step::Bought
-    } else if i < cap {
-        Step::Available
-    } else {
-        Step::Locked
-    }
-}
-
-/// How far tab `s`'s grid can scroll.
-fn max_scroll(s: usize) -> f32 {
-    (grid(s).height - GRID_VIEW).max(0.0)
 }
 
 /// `tank` wearing `kit`: its hull, turret and the hull's running gear.
@@ -1184,75 +776,24 @@ pub fn with_part(kit: Loadout, part: Part) -> Loadout {
     }
 }
 
-/// A small padlock, `at` its top left (about 10 × 11 px).
-fn padlock(p: &mut Painter, at: Vec2, color: Rgba) {
-    p.arc(
-        at + Vec2::new(5.0, 5.0),
-        3.0,
-        std::f32::consts::PI,
-        std::f32::consts::TAU,
-        1.2,
-        color,
-    );
-    p.line(
-        at + Vec2::new(2.0, 5.0),
-        at + Vec2::new(2.0, 6.0),
-        1.2,
-        color,
-    );
-    p.line(
-        at + Vec2::new(8.0, 5.0),
-        at + Vec2::new(8.0, 6.0),
-        1.2,
-        color,
-    );
-    p.rect(at + Vec2::new(0.0, 6.0), Vec2::new(10.0, 6.0), color);
-}
-
-/// What a garage button slot shows: a button, or how far along learning
-/// a part (or its next tier) from wrecks is (#483).
-#[derive(Clone, Debug, PartialEq)]
-enum Action {
-    /// What the button says, and whether it can be pressed right now.
-    Button(String, bool),
-    /// A progress bar: what's being learned (`None`: the part itself), and
-    /// how far along, 0..1.
-    Learning(Option<String>, f32),
-}
-
-/// What E does for `part` (equip it); for a part you don't have, how far
-/// you've got learning it from wrecks (#438).
-fn primary_action(part: Part, queued: Loadout, profile: &Profile) -> Action {
-    if profile.owns(part) {
-        if with_part(queued, part) == queued {
-            Action::Button("EQUIPPED".to_string(), false)
-        } else {
-            Action::Button(format!("EQUIP {}", part.name()), true)
-        }
-    } else {
-        // Reverse-engineered from the wrecks of its makers' tanks.
-        Action::Learning(None, profile.known.of(part).clamp(0.0, 0.99))
-    }
-}
-
-/// What U does for `part`, if it's owned; or how far along its next tier is.
-fn upgrade_action(part: Part, profile: &Profile) -> Option<Action> {
+/// What you can do with `part`, or what's stopping you, in words: each with
+/// the key that does it, if it can be done.
+fn actions(part: Part, queued: Loadout, profile: &Profile) -> Vec<(String, Option<Input>)> {
     if !profile.owns(part) {
-        return None;
+        return vec![("Not learned yet".to_string(), None)];
+    }
+    let mut out = Vec::new();
+    if with_part(queued, part) != queued {
+        out.push(("Equip".to_string(), Some(Input::Act)));
     }
     let next = crate::economy::level_label(profile.levels.of(part) + 1);
-    Some(match profile.can_upgrade(part) {
-        Ok(cost) => Action::Button(format!("UPGRADE TO {next} · {cost} CR"), true),
-        Err(Refusal::Crystals(cost)) => {
-            Action::Button(format!("UPGRADE TO {next} · NEED {cost} CR"), false)
-        }
-        Err(Refusal::Unknown) => {
-            // How far along the next step's reverse engineering is (#438).
-            let known = profile.known.of(part);
-            Action::Learning(Some(next), known - known.floor())
-        }
-        Err(_) => Action::Button("FULLY UPGRADED".to_string(), false),
-    })
+    out.push(match profile.can_upgrade(part) {
+        Ok(cost) => (format!("Upgrade {cost} cr"), Some(Input::Upgrade)),
+        Err(Refusal::Crystals(cost)) => (format!("{next} costs {cost} cr"), None),
+        Err(Refusal::Unknown) => (format!("{next} not learned yet"), None),
+        Err(_) => ("Fully upgraded".to_string(), None),
+    });
+    out
 }
 
 /// The front three-quarter view angle for `tank`, where the garage swings to.
@@ -1291,50 +832,6 @@ pub fn backdrop_fading(p: &mut Painter, h: f32, fade: f32) {
     );
 }
 
-/// Label, bar scaled to the kit's best, value; a faint tick where the part in use sits.
-#[allow(clippy::too_many_arguments)]
-fn draw_stat(
-    p: &mut Painter,
-    pos: Vec2,
-    width: f32,
-    stat: &Stat,
-    current: Part,
-    in_use: Part,
-    kit: &[Part],
-    levels: &Levels,
-) {
-    let get = |part: Part| (stat.get)(part, levels);
-    let best = kit.iter().map(|&k| get(k)).fold(0.0f32, f32::max).max(1e-3);
-    let frac = |part: Part| get(part) / (best * 1.2);
-    label(p, pos + Vec2::new(0.0, 1.0), stat.name, Align::Left);
-    let bar = pos + Vec2::new(110.0, 5.0);
-    let bar_w = width - 110.0 - 98.0;
-    widgets::hairbar(p, bar, bar_w, frac(current), theme::FG);
-    if in_use != current {
-        let tx = bar.x + bar_w * frac(in_use).clamp(0.0, 1.0);
-        p.line(
-            Vec2::new(tx, bar.y - 5.0),
-            Vec2::new(tx, bar.y + 5.0),
-            1.0,
-            theme::DIM,
-        );
-    }
-    let v = get(current);
-    let text = format!("{v:.prec$}", prec = stat.decimals);
-    let right = pos + Vec2::new(width, 0.0);
-    let uw = if stat.unit.is_empty() {
-        0.0
-    } else {
-        label(p, right, stat.unit, Align::Right) + 8.0
-    };
-    p.text(
-        right - Vec2::new(uw, 0.0),
-        &text,
-        &TextStyle::value(12.0),
-        Align::Right,
-    );
-}
-
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -1344,48 +841,66 @@ fn smooth(t: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// A part says what can be done with it, or what's stopping you.
     #[test]
-    fn learning_shows_as_a_progress_bar() {
-        // #483: a part you don't have, or its next tier not learned yet,
-        // shows how far along learning it is as a bar, not a sentence.
+    fn actions_say_what_and_why_not() {
         let mut p = Profile::in_memory();
         let queued = (HullKind::Kataphrakt, TurretKind::Kontos);
-        for part in crate::economy::PARTS {
-            if p.owns(part) {
-                continue;
-            }
-            p.known.set(part, 0.25);
-            assert_eq!(
-                primary_action(part, queued, &p),
-                Action::Learning(None, 0.25)
-            );
-        }
-        for part in crate::economy::PARTS {
-            // Known to 1.5 and built to 1: the next step is half learned.
-            p.known.set(part, 1.5);
-            p.levels.set(part, 1);
-            p.crystals = 100_000;
-            let next = crate::economy::level_label(2);
-            assert_eq!(
-                upgrade_action(part, &p),
-                Some(Action::Learning(Some(next), 0.5))
-            );
-        }
-    }
-
-    #[test]
-    fn upgrade_steps_are_bought_then_available_then_locked() {
-        // Level 2, known to level 5: two bought, three to buy, the rest locked.
-        let states: Vec<Step> = (0..7).map(|i| step_state(i, 2, 5)).collect();
-        use Step::*;
+        let words = |p: &Profile, part| -> Vec<(String, bool)> {
+            actions(part, queued, p)
+                .into_iter()
+                .map(|(text, key)| (text, key.is_some()))
+                .collect()
+        };
+        let kastron = Part::Hull(HullKind::Kastron);
+        p.known.set(kastron, 0.25);
+        assert_eq!(words(&p, kastron), [("Not learned yet".into(), false)]);
+        assert_eq!(progress(kastron, &p), 0.25);
+        // Known to 1.5 and built to 1: the next step is half learned.
+        p.known.set(kastron, 1.5);
+        p.levels.set(kastron, 1);
+        let next = crate::economy::level_label(2);
         assert_eq!(
-            states,
+            words(&p, kastron),
             [
-                Bought, Bought, Available, Available, Available, Locked, Locked
+                ("Equip".into(), true),
+                (format!("{next} not learned yet"), false)
             ]
         );
-        // Nothing known past what's built: nothing to buy.
-        assert_eq!(step_state(3, 3, 3), Locked);
+        assert_eq!(progress(kastron, &p), 0.5);
+        // Known further: the bar's full, and crystals decide.
+        p.known.set(kastron, 2.5);
+        p.crystals = 0;
+        assert_eq!(progress(kastron, &p), 1.0);
+        assert!(words(&p, kastron)[1].0.contains("costs"));
+        p.crystals = 100_000;
+        assert!(words(&p, kastron)[1].1);
+    }
+
+    /// Every part is on the strip, on screen, at any shape; the keys run
+    /// along it and stop at its ends.
+    #[test]
+    fn the_strip_holds_every_part() {
+        for w in [1125.0, 1200.0, 1600.0, 3200.0] {
+            let (cards, card) = strip(w);
+            assert_eq!(cards.len(), HULLS.len() + TURRETS.len());
+            assert!(card > 60.0);
+            assert!(cards.windows(2).all(|c| c[1].1 - c[0].1 >= card));
+            assert!(cards.last().unwrap().1 + card <= w - design::MARGIN + 1.0);
+        }
+        let w = world();
+        let p = rich();
+        let mut g = Garage::new();
+        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
+        g.toggle(&w, &cam(&w), start);
+        g.input(Input::Left, start, &p);
+        assert_eq!(g.view, start);
+        for _ in 0..20 {
+            g.input(Input::Right, start, &p);
+        }
+        assert_eq!(g.focused(), *strip_parts().last().unwrap());
+        g.scroll(-1.0);
+        assert_eq!(g.focused(), strip_parts()[10]);
     }
 
     fn world() -> World {
@@ -1428,11 +943,11 @@ mod tests {
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Queue(l)));
         // E on the equipped part does nothing.
         assert_eq!(g.input(Input::Act, l, &p), None);
-        // Tab shows the turrets; down a row from Kontos is the next maker's first.
+        // Tab goes to the turrets; right of Kontos is the next.
         g.input(Input::Switch, l, &p);
         assert_eq!(g.section, 1);
-        g.input(Input::Down, l, &p);
-        let next = grid(1).cards.iter().find(|c| c.row == 1).unwrap().part;
+        g.input(Input::Right, l, &p);
+        let next = Part::Turret(TURRETS[1]);
         assert_eq!(Part::Turret(g.view.1), next);
         let l2 = with_part(l, next);
         assert_eq!(g.input(Input::Act, l, &p), Some(Event::Queue(l2)));
@@ -1445,88 +960,6 @@ mod tests {
         assert_eq!(g.section, 0);
         assert_eq!(g.input(Input::Deploy, start, &p), None);
         assert!(!g.is_open());
-    }
-
-    #[test]
-    fn grid_groups_by_maker_and_moves_by_rows() {
-        for s in 0..2 {
-            let g = grid(s);
-            assert_eq!(g.cards.len(), tab_parts(s).len(), "every part has a card");
-            // Each maker's cards are together, under one header.
-            for (f, _) in &g.heads {
-                let rows: Vec<usize> = g
-                    .cards
-                    .iter()
-                    .filter(|c| c.part.maker() == *f)
-                    .map(|c| c.row)
-                    .collect();
-                assert!(rows.windows(2).all(|r| r[1] - r[0] <= 1));
-            }
-            // No two cards overlap.
-            for (i, a) in g.cards.iter().enumerate() {
-                for b in &g.cards[i + 1..] {
-                    assert!(a.pos.distance(b.pos) >= CARD_W.min(CARD_H) - 1.0);
-                }
-            }
-        }
-        // Up and down stop at the ends; left and right don't wrap.
-        let w = world();
-        let p = rich();
-        let mut g = Garage::new();
-        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
-        g.toggle(&w, &cam(&w), start);
-        g.input(Input::Up, start, &p);
-        g.input(Input::Left, start, &p);
-        assert_eq!(g.view, start);
-        for _ in 0..20 {
-            g.input(Input::Down, start, &p);
-        }
-        assert_eq!(Part::Hull(g.view.0), grid(0).cards.last().unwrap().part);
-    }
-
-    #[test]
-    fn scrolling_keeps_the_highlight_in_view() {
-        let w = world();
-        let p = rich();
-        let mut g = Garage::new();
-        let start = (HullKind::Kataphrakt, TurretKind::Kontos);
-        g.toggle(&w, &cam(&w), start);
-        for _ in 0..20 {
-            g.input(Input::Down, start, &p);
-            g.update(1.0);
-            let gr = grid(0);
-            let c = gr.cards.iter().find(|c| c.part == g.focused()).unwrap();
-            let y = c.pos.y - g.scroll[0];
-            assert!(y >= -0.5 && y + CARD_H <= GRID_VIEW + 0.5, "card at {y}");
-        }
-        // The wheel can't scroll past either end.
-        g.scroll(-10_000.0);
-        assert_eq!(g.scroll_goal[0], 0.0);
-        g.scroll(10_000.0);
-        assert_eq!(g.scroll_goal[0], max_scroll(0));
-    }
-
-    #[test]
-    fn card_text_fits_its_card() {
-        // At the longest tier label, every part's name and tag fit across
-        // its card; locked cards have no tag.
-        let mut p = rich();
-        for part in crate::economy::PARTS {
-            p.levels.set(part, crate::economy::MAX_LEVEL - 1);
-        }
-        let room = CARD_W - 2.0 * CARD_INSET;
-        for part in crate::economy::PARTS {
-            let name = crate::ui::measure(part.name(), &TextStyle::value(NAME_SIZE));
-            for equipped in [true, false] {
-                let (tag, _) = card_tag(part, equipped, &p).unwrap();
-                let tag = crate::ui::measure(&tag, &TextStyle::LABEL);
-                assert!(name.max(tag) <= room, "{} doesn't fit", part.name());
-            }
-            let fresh = Profile::in_memory();
-            if !fresh.owns(part) {
-                assert!(card_tag(part, false, &fresh).is_none());
-            }
-        }
     }
 
     #[test]
@@ -1543,11 +976,6 @@ mod tests {
         let pelekys = Part::Turret(TurretKind::Pelekys);
         assert_eq!(g.input(Input::Act, start, &p), Some(Event::Locked(pelekys)));
         assert_eq!(g.input(Input::Upgrade, start, &p), None);
-        // Its slot shows how far along learning it is.
-        assert!(matches!(
-            primary_action(pelekys, start, &p),
-            Action::Learning(None, _)
-        ));
         // Once reverse-engineered, E equips it and U upgrades it.
         p.crystals = 100_000;
         p.known.set(pelekys, 2.0);
@@ -1560,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_cards_tabs_and_buttons() {
+    fn clicking_cards_and_actions() {
         let w = world();
         let p = rich();
         let mut g = Garage::new();
@@ -1583,12 +1011,7 @@ mod tests {
             click(&mut g, Hit::Key(Input::Act)),
             Some(Event::Queue((HullKind::Kastron, TurretKind::Kontos)))
         );
-        // Turret cards aren't drawn (or clickable) until their tab is shown.
         let pelekys = Hit::Part(Part::Turret(TurretKind::Pelekys));
-        let hits = g.draw(&w.tanks[0], start, &p, 1600.0, 900.0).hits;
-        assert!(hits.center_of(pelekys).is_none());
-        assert_eq!(click(&mut g, Hit::Tab(1)), None);
-        assert_eq!(g.section, 1);
         assert_eq!(click(&mut g, pelekys), None);
         assert_eq!(click(&mut g, Hit::Key(Input::Deploy)), None);
         assert!(!g.is_open());
@@ -1600,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_buttons_cant_be_clicked() {
+    fn actions_that_cant_be_done_cant_be_clicked() {
         let w = world();
         let p = Profile::in_memory();
         let mut g = Garage::new();
@@ -1642,13 +1065,13 @@ mod tests {
         let mut g = Garage::new();
         let c = cam(&w);
         let t = &w.tanks[0];
-        assert_eq!(g.camera(c, &w, t, 16.0 / 9.0).pos, c.pos);
+        assert_eq!(g.camera(c, &w, t).pos, c.pos);
         g.toggle(&w, &c, (HullKind::Kataphrakt, TurretKind::Kontos));
         for _ in 0..120 {
             g.update(1.0 / 60.0);
         }
         assert_eq!(g.presence(), 1.0);
-        let o = g.camera(c, &w, t, 16.0 / 9.0);
+        let o = g.camera(c, &w, t);
         let d = o.pos.distance(t.pos + Vec3::Y);
         assert!(d > 2.9 && d < ORBIT_DIST + 1.0, "orbit distance {d}");
     }
