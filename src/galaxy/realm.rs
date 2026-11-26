@@ -54,6 +54,12 @@ pub struct Realm {
     pub research: f32,
     /// Its pilots, all alike, shared between all its fights.
     pub pilots: u32,
+    /// What it pays each a tick.
+    pub wage: f32,
+    /// Whether it hires mercs at all: realms are split at random between
+    /// those that do and those that don't, to see which fare better. A
+    /// realm breaking away keeps its parent's way.
+    pub hires: bool,
     /// Systems it's fighting in, as of the last tick's battles.
     pub fronts: u32,
     /// Scratch: systems it's lost since they were last counted.
@@ -73,22 +79,37 @@ impl Realm {
             tier: 0,
             research: 0.0,
             pilots: 0,
+            wage: 0.0,
+            hires: true,
             fronts: 0,
             fell: 0,
         }
     }
 
-    /// How many pilots it wants: as many as its income pays for, but no
-    /// more than it can use, a front's worth for each fight and one in hand.
+    /// What it pays each pilot a tick (a realm that's never set its
+    /// wage pays what realms start on).
+    pub fn pay(&self, rules: &super::Rules) -> f32 {
+        if self.wage > 0.0 {
+            self.wage
+        } else {
+            rules.pilot_upkeep
+        }
+        .max(1e-6)
+    }
+
+    /// How many pilots it wants.
     pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
-        let afford = rules.pilot_budget * self.income.max(0.0) / rules.pilot_upkeep.max(1e-6);
-        afford.min(rules.frontage * (self.fronts + 1) as f32) as u32
+        // As many as it can afford, but no more than it can use: a front's
+        // worth for each fight it's in, and one in hand.
+        let afford = (rules.pilot_budget * self.income.max(0.0) / self.pay(rules)) as u32;
+        let use_ = (rules.frontage * (self.fronts + 1) as f32) as u32;
+        afford.min(use_)
     }
 
     /// Pay its pilots (those it can't pay leave), then train or dismiss a
     /// few toward what it can afford.
     pub fn keep_pilots(&mut self, rules: &super::Rules) {
-        let upkeep = rules.pilot_upkeep.max(1e-6);
+        let upkeep = self.pay(rules);
         self.pilots = self.pilots.min((self.crystals / upkeep) as u32);
         self.crystals = (self.crystals - self.pilots as f32 * upkeep).max(0.0);
         let want = self.pilots_wanted(rules);
@@ -138,7 +159,10 @@ impl Galaxy {
     /// A new realm of `faction` seated at `seat`: in a slot of a realm that's
     /// gone if there is one.
     pub(crate) fn found(&mut self, faction: u8, seat: u32) -> u32 {
-        let realm = Realm::new(faction, seat, self.tick);
+        let realm = Realm {
+            hires: self.rng.chance(0.5),
+            ..Realm::new(faction, seat, self.tick)
+        };
         // A slot is free once nothing is tagged with it (`systems` and `alive`
         // both say so); taking one marks it, so it isn't handed out twice.
         if let Some(r) = self.free.pop() {
@@ -194,7 +218,11 @@ impl Galaxy {
         for (f, seats) in seats.iter().enumerate() {
             for &seat in seats {
                 of_seat[seat as usize] = self.realms.len() as u32;
-                self.realms.push(Realm::new(f as u8, seat, 0));
+                let hires = self.rng.chance(0.5);
+                self.realms.push(Realm {
+                    hires,
+                    ..Realm::new(f as u8, seat, 0)
+                });
                 self.spans.push((0, 0));
             }
         }
@@ -386,8 +414,9 @@ impl Galaxy {
                 .unwrap_or(&members[0]);
             let f = self.realms[old as usize].faction;
             let new = self.found(f, seat);
-            // It breaks away with the gear it has: its parent's tier.
+            // It breaks away with the gear it has, and its way with mercs.
             self.realms[new as usize].tier = self.realms[old as usize].tier;
+            self.realms[new as usize].hires = self.realms[old as usize].hires;
             // Its share of the vaults, by systems.
             let (vault, size) = vaults[old as usize];
             let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
@@ -457,6 +486,10 @@ impl Galaxy {
             into[a] = b as u32;
             grown[b] = true;
             let take = self.realms[a].crystals;
+            // Its debts too.
+            for d in self.debts.iter_mut().filter(|d| d.realm as usize == a) {
+                d.realm = b as u32;
+            }
             self.realms[b].crystals += take;
             self.realms[a].crystals = 0.0;
             self.realms[b].pilots += std::mem::take(&mut self.realms[a].pilots);

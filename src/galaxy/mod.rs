@@ -209,9 +209,6 @@ pub struct Rules {
     pub merc_haggle: f32,
     /// ... and rising by this fraction each contract it wins.
     pub merc_raise: f32,
-    /// A contract's bonus: this many times the hulls it commits, at what
-    /// they cost it, with its margin.
-    pub merc_bonus: f32,
     /// A contract runs out after this many ticks.
     pub merc_term: u32,
     /// How far a company goes for work, light years.
@@ -226,16 +223,14 @@ pub struct Rules {
     /// than this joins another (crystals, its hulls at `hull_price`).
     pub merc_split: f32,
     pub merc_join: f32,
-    /// A realm that owes a company a bonus pays back this share of its
-    /// income each tick (and no company works for it until it has).
-    pub merc_dues: f32,
     /// A realm puts this share of its crystal income into researching its
     /// next gear tier (#438)...
     pub research: f32,
     /// ... and a step costs this many crystals a system it holds, growing
     /// a step at a time as upgrades do (`economy::upgrade_cost`).
     pub research_price: f32,
-    /// Crystals a realm pays each pilot a tick.
+    /// What a realm pays each pilot a tick when it's founded: it moves
+    /// from there, up while it loses pilots and down while it doesn't.
     pub pilot_upkeep: f32,
     /// Share of its income a realm spends on pilots.
     pub pilot_budget: f32,
@@ -243,6 +238,20 @@ pub struct Rules {
     pub train: u32,
     /// Pilots a new company starts with.
     pub crew: u32,
+    /// What a pilot's wage a tick is in CR: your pay for a battle is in
+    /// CR, so CR and crystal trade at the going wage.
+    pub wage_cr: f32,
+    /// A ship pays a pilot this share of their wage for each kill.
+    pub kill_share: f32,
+    /// Share of a realm's pilots a tick who defect, when ships offer them
+    /// more than their realm pays.
+    pub defect: f32,
+    /// A realm losing pilots raises its pay by this share a tick; one
+    /// that isn't lowers it by this.
+    pub pay_raise: f32,
+    pub pay_ease: f32,
+    /// A pilot retires once they've saved this many crystals.
+    pub retire: f32,
 }
 
 impl Default for Rules {
@@ -282,7 +291,6 @@ impl Default for Rules {
             merc_floor: 0.05,
             merc_haggle: 0.01,
             merc_raise: 0.1,
-            merc_bonus: 0.5,
             merc_term: 30,
             merc_range: 1200.0,
             merc_idle: 30,
@@ -290,13 +298,18 @@ impl Default for Rules {
             // Off for now.
             merc_split: f32::INFINITY,
             merc_join: 40.0,
-            merc_dues: 0.5,
             research: 0.15,
             research_price: 1.2,
             pilot_upkeep: 0.02,
             pilot_budget: 0.25,
             train: 2,
             crew: 40,
+            wage_cr: 50.0,
+            kill_share: 0.3,
+            pay_raise: 0.05,
+            pay_ease: 0.002,
+            defect: 0.01,
+            retire: 5.0,
         }
     }
 }
@@ -400,7 +413,26 @@ impl System {
 }
 
 /// The whole war.
+#[cfg_attr(test, derive(Clone))]
 pub struct Galaxy {
+    /// Tests: a hire (realm, system) forbidden, or forced through.
+    #[cfg(test)]
+    pub(crate) ban: Option<(u32, u32)>,
+    #[cfg(test)]
+    pub(crate) force: Option<(u32, u32)>,
+    /// Tests: hires refused as lost even with mercs (realm, system, side,
+    /// defend, worth).
+    #[cfg(test)]
+    pub(crate) guesses: Vec<(u32, u32, f32, f32)>,
+    #[cfg(test)]
+    pub(crate) asks: Vec<(u32, u32, usize, bool)>,
+    /// Tests: force the smallest package through, not the largest.
+    #[cfg(test)]
+    pub(crate) small: bool,
+    #[cfg(test)]
+    pub(crate) ask_log: bool,
+    #[cfg(test)]
+    pub(crate) lost_calls: Vec<(u32, u32, usize, bool, f32)>,
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
     pub systems: Vec<System>,
@@ -435,6 +467,40 @@ pub struct Galaxy {
     pub(crate) next_pilot: u32,
     /// You, as a pilot. Your knowledge is copied from the profile.
     pub you: Pilot,
+    /// Pay companies owe you: (`Company::id`, crystals).
+    pub owed_you: Vec<(u32, f32)>,
+    /// Pilots on no ship, looking for work.
+    pub pool: Vec<Pilot>,
+    /// What pilots have lately been signing for a tick, by gear mark.
+    pub wage_curve: [f32; merc::MARKS],
+    /// The best open bid this tick for a pilot at each mark (0 for none).
+    pub offers: [f32; merc::MARKS],
+    /// What realms pay their pilots a tick, on average, as of the last
+    /// tick: what a new pilot starts on, and the rate CR trade at.
+    pub pay: f32,
+    /// How far realms trust their forecasts of a contract, as contracts
+    /// have lately come out: the worth they got of what they expected, and
+    /// the ticks they paid for of those they expected.
+    pub trust: [f32; 2],
+    pub trust_ticks: f32,
+    /// The share of merc pilots in work lately, as pilots see it; and
+    /// this tick's, so far.
+    pub employment: f32,
+    pub(crate) employed: u32,
+    /// Ended contracts waiting for their realms to look back on, once
+    /// their term is up (not saved: a few lessons lost).
+    pub(crate) reviews: Vec<merc::Contract>,
+    /// Scratch: realms' pay, lowest first, and the pilots on no more than
+    /// it, as of `pays_tick`.
+    pub(crate) pays: Vec<(f32, f32)>,
+    /// What realms have seen of fights alike (`Galaxy::alike`): how many,
+    /// and the shares of the worlds held, all told. And those not yet
+    /// looked back on.
+    pub(crate) memory: Vec<(f32, f32)>,
+    pub(crate) lessons: Vec<merc::Lesson>,
+    /// The (realm, system) of each of those.
+    pub(crate) learning: std::collections::HashSet<(u32, u32)>,
+    pub(crate) pays_tick: u64,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
     pub crew: Option<u32>,
@@ -465,6 +531,9 @@ pub struct Galaxy {
     assaulted: Vec<bool>,
     /// Scratch: each realm's hulls in this tick's fights.
     war_hulls: Vec<u32>,
+    /// Realms lately looking for a company at each system and finding none
+    /// in range (fading): where idle companies go for work.
+    pub(crate) unmet: Vec<f32>,
     /// Scratch for sending: hulls each side can still send from each system this tick.
     spare: Vec<[u32; SIDES]>,
     /// Each realm's territory: `members[spans[r]]` (see `Galaxy::territory`).
@@ -474,12 +543,16 @@ pub struct Galaxy {
     free: Vec<u32>,
 }
 
+/// Ticks between a realm's looks for somewhere to push.
+const THINK: u64 = 10;
+
 /// A realm pushing into one stretch of the front: it attacks only there
 /// (and into enemy pockets), until its crystals run low or the push stalls.
 #[derive(Clone, Copy, Debug)]
 pub struct Offensive {
-    /// Where it's aimed.
+    /// Where it's aimed, and (as it's launched; not saved) at what system.
     pub at: Vec3,
+    pub target: usize,
     /// The last tick it took a site.
     pub gained: u64,
 }
@@ -598,6 +671,7 @@ impl Galaxy {
             merc_moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
             war_hulls: Vec::new(),
+            unmet: vec![0.0; systems.len()],
             systems,
             sites,
             neighbors,
@@ -615,8 +689,37 @@ impl Galaxy {
             books: Books::default(),
             debts: Vec::new(),
             next_company: 0,
+            #[cfg(test)]
+            ban: None,
+            #[cfg(test)]
+            force: None,
+            #[cfg(test)]
+            guesses: Vec::new(),
+            #[cfg(test)]
+            asks: Vec::new(),
+            #[cfg(test)]
+            small: false,
+            #[cfg(test)]
+            ask_log: false,
+            #[cfg(test)]
+            lost_calls: Vec::new(),
             next_pilot: 1,
             you: Pilot::rookie(1),
+            owed_you: Vec::new(),
+            pool: Vec::new(),
+            wage_curve: [rules.pilot_upkeep; merc::MARKS],
+            offers: [0.0; merc::MARKS],
+            pay: rules.pilot_upkeep,
+            trust: [1.0; 2],
+            trust_ticks: 1.0,
+            employment: 0.5,
+            employed: 0,
+            reviews: Vec::new(),
+            pays: Vec::new(),
+            memory: vec![(0.0, 0.0); merc::MEMORY],
+            lessons: Vec::new(),
+            learning: Default::default(),
+            pays_tick: 0,
             crew: None,
             own: None,
             ended: Vec::new(),
@@ -770,13 +873,14 @@ impl Galaxy {
             if realm.systems == 0 {
                 continue;
             }
-            let bank = realm.bank();
             if let Some(o) = realm.offensive {
-                if bank < self.rules.spent || self.tick > o.gained + self.rules.stall as u64 {
+                if self.tick > o.gained + self.rules.stall as u64 {
                     self.realms[r].offensive = None;
                 }
-            } else if bank >= self.rules.launch {
-                self.realms[r].offensive = self.aim(r);
+            } else if (self.tick + r as u64) % THINK == 0 {
+                // Now and then it looks for a world it thinks it can win,
+                // with what it can borrow.
+                self.realms[r].offensive = self.aim(r).filter(|o| self.promising(r, o.target));
             }
         }
     }
@@ -821,6 +925,7 @@ impl Galaxy {
             }
         }
         best.map(|(_, t)| Offensive {
+            target: t,
             at: self.systems[t].pos,
             gained: self.tick,
         })
@@ -1058,21 +1163,25 @@ impl Galaxy {
         if hulls == 0 {
             return realm;
         }
-        let (mut weight, mut merc) = (0.0, 0.0);
+        // By the hulls that fire: a company's flown by its best pilots.
+        let (mut crewed, mut merc) = (0.0, 0.0);
         for c in &self.companies {
             if let Some(k) = c.contract
                 && k.target as usize == s
                 && k.side as usize == f
             {
-                let field = k.field.min(hulls) as f32;
-                let level =
-                    c.pilots.iter().map(|p| p.level()).sum::<f32>() / c.pilots.len().max(1) as f32;
-                weight += field;
-                merc += field * level;
+                let n = (k.field.min(hulls) as usize).min(c.pilots.len());
+                let mut levels: Vec<f32> = c.pilots.iter().map(|p| p.level()).collect();
+                levels.sort_by(|a, b| b.total_cmp(a));
+                crewed += n as f32;
+                merc += levels.iter().take(n).sum::<f32>();
             }
         }
-        let weight = weight.min(hulls as f32);
-        let all = (merc + (hulls as f32 - weight) * realm as f32) / hulls as f32;
+        let own = (self.firing(s, f) - crewed).max(0.0);
+        if own + crewed <= 0.0 {
+            return realm;
+        }
+        let all = (merc + own * realm as f32) / (own + crewed);
         all.round() as u8
     }
 
@@ -1627,7 +1736,13 @@ impl Galaxy {
         };
         let pool: u32 = self.neighbors(t).map(|(s, _)| mine(self, s)).sum();
         let pool_f = pool as f32;
-        if have + pool_f < odds * defense || pool < MIN_SEND {
+        // With a company hired here, it goes in with it: that's what it
+        // hired it for.
+        let hired = self.companies.iter().any(|c| {
+            c.contract
+                .is_some_and(|k| k.target as usize == t && k.side as usize == f)
+        });
+        if (have + pool_f < odds * defense && !hired) || pool < MIN_SEND {
             // Not a good enough chance alone: an attack it's set on, or a
             // world of its own under attack, can hire a company to make up
             // the difference, then go in with it.
@@ -1638,7 +1753,8 @@ impl Galaxy {
                 pocket || self.pushing(r, sys.pos)
             };
             let need = (want - pool_f).max(0.0).ceil() as u32;
-            if worth_it && self.hire(t, f, r, need, ours) {
+            let own = (sys.hulls[f] + pool) as f32;
+            if worth_it && self.hire(t, f, r, need, own, ours) {
                 self.consider(t, f, r);
             }
             return;
@@ -1863,13 +1979,13 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
     println!("captured {:.0} crystal with fallen systems", g.captured);
     let b = g.books;
     println!(
-        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
+        "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} billed ({:.0} owed when due); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
         b.signed,
         b.won,
         b.broken,
         b.expired,
         b.upfront,
-        b.bonus,
+        b.billed,
         b.defaulted,
         b.worth_won,
         b.paid_won,

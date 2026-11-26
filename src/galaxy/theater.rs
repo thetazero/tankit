@@ -1266,6 +1266,19 @@ mod tests {
         assert!(t.is_none() && !ticked);
         let at = g.companies[c].at;
         g.companies[c].idle_since = g.tick - g.rules.merc_idle as u64;
+        // Realms at war nearby are asking for a company, and none's near.
+        let here = g.systems[at as usize].pos;
+        let near = (0..g.systems.len())
+            .filter(|&s| s != at as usize && g.systems[s].at_war())
+            .min_by(|&a, &b| {
+                let d = |s: usize| g.systems[s].pos.distance(here);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap();
+        g.unmet[near] = 5.0;
+        // And contracts pay well enough for the fare.
+        g.books.signed = 1;
+        g.books.upfront = 1000.0;
         assert!(g.seek_work() >= 1);
         assert_eq!(g.crew, Some(id));
         let c = g.crew_company().unwrap();
@@ -1280,14 +1293,17 @@ mod tests {
     /// where waiting for it all at once does, tick for tick.
     #[test]
     fn waiting_in_slices_is_waiting_all_at_once() {
-        let idle = || {
-            let mut g = galaxy_with_work();
-            let c = g.crew_company().unwrap();
-            g.companies[c].contract = None;
-            g
-        };
-        let (mut whole, mut sliced) = (idle(), idle());
-        assert_eq!(whole.to_json(), sliced.to_json());
+        // A stretch with a wait of several slices in it.
+        let mut g = galaxy_with_work();
+        let start = (0..200)
+            .find_map(|_| {
+                g.step();
+                let mut x = g.clone();
+                x.await_work(None, 1, 200);
+                (x.tick > g.tick + 8).then(|| g.clone())
+            })
+            .expect("a wait");
+        let (mut whole, mut sliced) = (start.clone(), start);
         let (t, ticked) = whole.await_work(None, 1, 200);
         assert!(ticked, "work right away: the test shows nothing");
         let mut left = 200;
@@ -1297,7 +1313,7 @@ mod tests {
             let mut n = 0;
             if sliced.await_work_slice(None, 1, &mut left, || {
                 n += 1;
-                n > 0
+                n > 3
             }) {
                 break;
             }

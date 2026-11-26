@@ -3229,7 +3229,8 @@ mod tests {
         for _ in 0..400 {
             g.step();
             let (n, _) = g.await_work_staying(f, 1, 400);
-            let n = n.expect("work");
+            // Nobody hires it for a while: the war goes on.
+            let Some(n) = n else { continue };
             if Transfer::between(&t, &n) {
                 next = Some(n);
                 break;
@@ -3253,7 +3254,7 @@ mod tests {
         // Same company, new contract: the old contract ended, so show its
         // summary card before the transfer animation (#414).
         let (a, b) = (t.ship.as_ref().unwrap(), next.ship.as_ref().unwrap());
-        if a.id == b.id {
+        if a.id == b.id || m.summary().is_some() {
             let e = *m.summary().expect("the summary of the contract that ended");
             assert_eq!((e.ship, e.signed), (a.id, a.signed));
             assert!(e.tick >= e.signed && e.lost <= e.committed);
