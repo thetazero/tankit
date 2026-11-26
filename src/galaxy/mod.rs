@@ -1143,11 +1143,36 @@ impl Galaxy {
         out
     }
 
+    /// How many battles each side's in, in system `s` this tick: one for each
+    /// site it attacks, and each of its own that's attacked.
+    pub(crate) fn battles_in(&self, s: usize) -> [u32; SIDES] {
+        let mut n = [0; SIDES];
+        let mut attacked: Vec<usize> = Vec::new();
+        for f in (0..SIDES).filter(|&f| self.fighting(s, f)) {
+            for t in self.targets(s, f) {
+                n[f] += 1;
+                if !attacked.contains(&t) {
+                    attacked.push(t);
+                }
+            }
+        }
+        for t in attacked {
+            n[self.sites[t].owner as usize] += 1;
+        }
+        n
+    }
+
     /// Each side's fire in the battle for site `t` in system `s`: its
     /// fire with no shield in its way, a seat short for a side attacking
     /// under an enemy's shield up on the site's planet (#426).
     fn fire(&self, s: usize, t: usize) -> [f32; SIDES] {
         let mut fire = self.open_fire(s);
+        // A pilot fights one battle a tick: each side's are split between
+        // all it's in.
+        let in_battles = self.battles_in(s);
+        for f in 0..SIDES {
+            fire[f] /= in_battles[f].max(1) as f32;
+        }
         let planet = self.sites[t].planet as usize;
         for f in 0..SIDES {
             if f != self.sites[t].owner as usize && self.shields_up(s, f)[planet] > 0 {
