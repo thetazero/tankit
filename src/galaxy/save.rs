@@ -468,6 +468,7 @@ impl Galaxy {
                 crystals: r.crystals,
                 income: r.income,
                 offensive: r.offensive.map(|(at, gained)| Offensive {
+                    target: r.seat as usize,
                     at: Vec3::from_array(at),
                     gained,
                 }),

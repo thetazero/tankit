@@ -543,12 +543,16 @@ pub struct Galaxy {
     free: Vec<u32>,
 }
 
+/// Ticks between a realm's looks for somewhere to push.
+const THINK: u64 = 10;
+
 /// A realm pushing into one stretch of the front: it attacks only there
 /// (and into enemy pockets), until its crystals run low or the push stalls.
 #[derive(Clone, Copy, Debug)]
 pub struct Offensive {
-    /// Where it's aimed.
+    /// Where it's aimed, and (as it's launched; not saved) at what system.
     pub at: Vec3,
+    pub target: usize,
     /// The last tick it took a site.
     pub gained: u64,
 }
@@ -873,8 +877,10 @@ impl Galaxy {
                 if self.tick > o.gained + self.rules.stall as u64 {
                     self.realms[r].offensive = None;
                 }
-            } else {
-                self.realms[r].offensive = self.aim(r);
+            } else if (self.tick + r as u64) % THINK == 0 {
+                // Now and then it looks for a world it thinks it can win,
+                // with what it can borrow.
+                self.realms[r].offensive = self.aim(r).filter(|o| self.promising(r, o.target));
             }
         }
     }
@@ -919,6 +925,7 @@ impl Galaxy {
             }
         }
         best.map(|(_, t)| Offensive {
+            target: t,
             at: self.systems[t].pos,
             gained: self.tick,
         })
