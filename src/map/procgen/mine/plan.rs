@@ -48,6 +48,17 @@ fn rooms(rng: &mut Rng) -> Vec<Hollow> {
     ]
 }
 
+/// `dig` with pillars left down the middle of its hall, between its ways in.
+fn pillared(rng: &mut Rng, mut dig: Dig) -> Dig {
+    let hall = dig.rooms[2];
+    let mid = (hall.min + hall.max) * 0.5;
+    let r = rng.range(1.7, 2.2);
+    for s in [-1.0, 1.0] {
+        dig.pillars.push((mid + Vec2::X * s * 6.5, r));
+    }
+    dig
+}
+
 /// Whether `dig` fits in `land`: rock all round its rooms but at its
 /// mouths, inside an arena `size` across, off the other digs.
 fn fits(land: &Land, dig: &Dig, size: f32) -> bool {
@@ -118,7 +129,9 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             facing: (b - a).normalize().perp(),
             floor: 0.0,
             rooms: rooms(rng),
+            pillars: Vec::new(),
         };
+        let dig = pillared(rng, dig);
         if fits(&land, &dig, size) {
             land.digs.push(dig);
         }

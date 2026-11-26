@@ -496,6 +496,12 @@ impl Skeleton {
                 .ramps
                 .iter()
                 .any(|r| r.distance(p) < RAMP_HALF + 3.0)
+            // Out in front of a dig's ways in.
+            || self.land.digs.iter().any(|d| {
+                let q = d.to_dig(p);
+                let way = |r: &Hollow| q.x > r.min.x - 2.0 && q.x < r.max.x + 2.0;
+                q.y > -20.0 && q.y < 4.0 && d.rooms.iter().any(|r| r.min.y < 0.0 && way(r))
+            })
     }
 
     /// Where side spawns could go: level ground all on one level, off the
