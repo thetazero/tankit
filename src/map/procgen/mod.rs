@@ -937,6 +937,43 @@ mod tests {
         }
     }
 
+    /// How much of a city's ground (off its plazas and courts) is built on.
+    fn built(sk: &Skeleton) -> f32 {
+        let (mut all, mut on) = (0, 0);
+        let n = (sk.size / 3.0) as i32;
+        for i in 0..n {
+            for j in 0..n {
+                let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * 3.0;
+                if sk.off_plazas(p) < 4.0 || sk.bases.iter().any(|b| b.contains(p, 4.0)) {
+                    continue;
+                }
+                all += 1;
+                on += sk
+                    .lots
+                    .iter()
+                    .any(|l| l.kind != LotKind::Rubble && l.footprint.distance(p) <= 0.0)
+                    as i32;
+            }
+        }
+        on as f32 / all as f32
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn how_built_up() {
+        for seed in 0..24 {
+            let sk = skeleton(&spec(seed));
+            let plan = super::city::Plan::of(seed, 2, false);
+            println!(
+                "built {seed} {:?} {:?} {:?} {:.3}",
+                plan.density,
+                plan.form,
+                plan.extent,
+                built(&sk)
+            );
+        }
+    }
+
     #[test]
     #[ignore = "a probe"]
     fn sweep_cities() {
@@ -972,6 +1009,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A cramped city's more built up than a middling one, and that than an
+    /// open one.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn density_shows() {
+        use super::city::{Density, Plan};
+        let mean = |density: Density| {
+            let of: Vec<f32> = (0..24)
+                .filter(|&s| Plan::of(s, 2, false).density == density)
+                .map(|s| built(&skeleton(&spec(s))))
+                .collect();
+            of.iter().sum::<f32>() / of.len() as f32
+        };
+        let (c, m, o) = (
+            mean(Density::Cramped),
+            mean(Density::Middling),
+            mean(Density::Open),
+        );
+        assert!(c > m * 1.25 && m > o * 1.15, "{c:.2} {m:.2} {o:.2}");
     }
 
     /// The plaza's slope is gentle enough to drive up anywhere.
