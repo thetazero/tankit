@@ -73,13 +73,13 @@ pub const MISSIONS: &[Mission] = &[
         sides: &[Faction::Ithessar, Faction::Imperium],
     },
     Mission {
-        name: "FOUR WINDS",
+        name: "BROKEN STREETS",
         contract: Contract::Attrition,
-        map: "IMPERIAL CITY",
+        map: "CITY",
         map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
         seed: 0,
-        team_size: 4,
-        sides: &Faction::ALL,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
     },
     Mission {
         name: "SCRAP METAL",
@@ -142,6 +142,15 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    Mission {
+        name: "HIGH SEAT",
+        contract: Contract::Hold,
+        map: "CITY",
+        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
 ];
 
 /// The missions a site on a `class` world can be fought with (#311): every
@@ -155,6 +164,17 @@ pub fn for_sites(class: crate::galaxy::theater::Class) -> Vec<usize> {
             m.sides.len() == 2 && class.fights_on(m.map_kind)
         })
         .collect()
+}
+
+/// The missions a crystal mine on a `class` world can be fought with: on a
+/// desert world, those in a mine (#523). Placeholder worlds have no mine
+/// maps, so any of theirs.
+pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
+    let mut pool = for_sites(class);
+    if class == crate::galaxy::theater::Class::Desert {
+        pool.retain(|&i| MISSIONS[i].map_kind == MapKind::Mine);
+    }
+    pool
 }
 
 /// The missions a shield generator on a `class` world can be fought with: a
@@ -189,8 +209,15 @@ mod tests {
         use crate::galaxy::theater::Class;
         for class in [Class::Desert, Class::Placeholder] {
             assert!(!for_sites(class).is_empty(), "{class:?}");
+            assert!(!for_mines(class).is_empty(), "{class:?}");
             assert!(!for_shields(class).is_empty(), "{class:?}");
         }
+        // Cities among them (two-sided, as every site's battle is).
+        assert!(
+            for_sites(Class::Desert)
+                .iter()
+                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(_)))
+        );
         // Every desert mission is there from the start, not just Dry Wind.
         assert!(for_sites(Class::Desert).len() > 1);
     }

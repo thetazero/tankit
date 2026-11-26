@@ -1452,7 +1452,7 @@ fn glyph(p: &mut Painter, at: Vec2, s: &SiteView, color: Rgba) {
             1.6,
             color,
         );
-    } else if s.kind_name() == "CRYSTAL MINE" {
+    } else if s.kind_name() == crate::galaxy::theater::CRYSTAL_MINE {
         p.polyline(
             &[
                 at + Vec2::new(0.0, -7.0),
