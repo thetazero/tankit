@@ -862,7 +862,8 @@ mod tests {
     )]
     fn maps_hardly_z_fight() {
         hardly_z_fight([
-            ("saltmarket", Map::saltmarket()),
+            ("dam town", Map::reservoir(0)),
+            ("well town", Map::reservoir(1)),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),

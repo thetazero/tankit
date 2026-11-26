@@ -112,7 +112,7 @@ mod tests {
     }
 
     fn game() -> Match {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 5, 7);
         m.start();
         m
     }

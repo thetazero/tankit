@@ -567,6 +567,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             facing: along,
         }],
         heart,
+        pad: PAD,
         tracks,
         crossings,
         spur,

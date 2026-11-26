@@ -363,7 +363,7 @@ mod tests {
     /// every frame it burns) and letting go; locking out hot has its own hiss.
     #[test]
     fn a_beam_lights_strikes_and_lets_go() {
-        let mut game = Match::new(crate::map::Map::saltmarket(), 0, 3, 7);
+        let mut game = Match::new(crate::map::Map::reservoir(0), 0, 3, 7);
         game.start();
         let mut beams = Moments::default();
         let mut noise = Noise::new(1);
@@ -472,7 +472,7 @@ mod tests {
     /// someone else's, and the strike as loud as a shell's hit.
     #[test]
     fn a_beam_on_your_hull_is_loud() {
-        let mut game = Match::new(crate::map::Map::saltmarket(), 0, 3, 7);
+        let mut game = Match::new(crate::map::Map::reservoir(0), 0, 3, 7);
         game.start();
         let e = ears();
         let end = Vec3::new(0.0, 0.0, -10.0);

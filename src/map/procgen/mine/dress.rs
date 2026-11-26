@@ -34,7 +34,7 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let st = style(spec.look);
     let sky = atmosphere(&mut rng);
-    let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky);
+    let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky, spec.seed);
     map.hold_name = st.hold_name();
     let mut b = Dig {
         map: &mut map,
