@@ -218,7 +218,12 @@ impl Slab {
                     + 4.0 * (noise(along / 23.0 + 500.0, 71) * 2.0 - 1.0);
                 wobble - d
             }
-            Slab::Behind { ref line } => behind(line, p),
+            Slab::Behind { ref line } => {
+                // Bays and buttresses, big ones and small.
+                let wide = noise2(p.x / 34.0, p.y / 34.0, 72) * 2.0 - 1.0;
+                let small = noise2(p.x / 12.0, p.y / 12.0, 73) * 2.0 - 1.0;
+                behind(line, p) + 4.5 * wide + 1.8 * small
+            }
             Slab::Outside {
                 center,
                 radius,
@@ -267,11 +272,32 @@ impl Ramp {
             return 0.0;
         }
         let across = (p - self.foot).perp_dot(dir).abs();
-        high * t * (1.0 - smoothstep(RAMP_HALF, RAMP_HALF + 2.5, across))
+        // Its sides slump, more in some places than others.
+        let slump = 4.0 + 6.0 * noise2(p.x / 11.0, p.y / 11.0, 77);
+        high * t * (1.0 - smoothstep(RAMP_HALF, RAMP_HALF + slump, across))
     }
 
     pub fn distance(&self, p: Vec2) -> f32 {
         seg(p, self.foot, self.top).0
+    }
+}
+
+/// A great rock standing sheer on the high ground.
+#[derive(Clone, Copy, Debug)]
+pub struct Tower {
+    pub center: Vec2,
+    pub radius: f32,
+    /// How far it stands up over what it's on.
+    pub height: f32,
+    pub phase: f32,
+}
+
+impl Tower {
+    /// Signed distance (about) to its sides, negative inside.
+    pub fn sdf(&self, p: Vec2) -> f32 {
+        let d = p - self.center;
+        let r = d.length().max(1e-3);
+        r - lobed(self.radius, self.phase, d / r)
     }
 }
 
@@ -285,6 +311,10 @@ pub struct High {
     /// Open ground cut out of it.
     pub parks: Vec<(Vec2, f32)>,
     pub ramps: Vec<Ramp>,
+    /// How far its top rolls up and down, m.
+    pub relief: f32,
+    /// How high fallen rock lies against its cliffs' feet, m.
+    pub talus: f32,
 }
 
 /// A dry wash cut into the floor along `line`, its floor `floor` m either
@@ -297,6 +327,8 @@ pub struct Wash {
     pub depth: f32,
     pub sway: f32,
     pub phase: f32,
+    /// Its banks: sheer in some places, easy to drive in others.
+    pub ragged: bool,
 }
 
 impl Wash {
@@ -313,6 +345,17 @@ impl Wash {
     pub fn cut(&self, p: Vec2) -> f32 {
         let (d, s) = self.near(p);
         let half = self.half(s);
+        if self.ragged {
+            // (Each bank on its own.)
+            let k = (
+                s / 26.0 + self.phase * 3.0,
+                p.perp_dot(self.frame(s).1).signum(),
+            );
+            let easy = smoothstep(0.35, 0.8, noise2(k.0, k.1 * 7.0, 78));
+            let wander = 2.5 * (noise2(p.x / 9.0, p.y / 9.0, 79) - 0.5);
+            let bank = self.bank * (1.0 + 2.6 * easy);
+            return self.depth * (1.0 - smoothstep(half, half + bank, d + wander));
+        }
         self.depth * (1.0 - smoothstep(half, half + self.bank, d))
     }
 
@@ -401,13 +444,21 @@ impl Dig {
     /// Distance to the rooms' walls at `p`, `y` up: negative inside.
     fn sdf(&self, p: Vec2, y: f32) -> f32 {
         let q = self.to_dig(p);
+        let u = p.x + p.y;
+        let rough =
+            0.15 + 0.6 * noise2(u / 4.5, y / 3.2, 11) + 0.25 * noise2(p.x / 1.6, y / 1.1, 12);
         let open = self
             .rooms
             .iter()
             .map(|r| {
-                let d = ((q - (r.min + r.max) * 0.5).abs() - (r.max - r.min) * 0.5).max_element();
-                let mid = self.floor + (r.floor + r.roof) * 0.5;
-                d.max((y - mid).abs() - (r.roof - r.floor) * 0.5)
+                // Walls that wander out and in, their corners rounded, arching
+                // over into the roof.
+                let half = (r.max - r.min) * 0.5 - 1.5;
+                let off = (q - (r.min + r.max) * 0.5).abs() - half;
+                let wall = off.max(Vec2::ZERO).length() + off.x.max(off.y).min(0.0) - 1.5;
+                let sag = 0.5 * noise2(p.x / 3.1, p.y / 3.1, 13);
+                let over = y - (self.floor + r.roof - sag);
+                smax(wall - rough, over, 2.4).max(self.floor + r.floor - y)
             })
             .fold(f32::INFINITY, f32::min);
         // (Wider at the foot and the head.)
@@ -706,7 +757,10 @@ impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
         let heap = (self.heaps)(p);
         // (Far from a cliff, there's only the one level.)
         let near = s.abs() < 8.0;
-        let level = |up: f32| land.level(p, s, up) + heap;
+        let level = |up: f32| {
+            let h = land.level(p, s, up);
+            land.channel.as_ref().map_or(h, |c| c.shape(p, h)) + heap
+        };
         let only = level(if s < 0.0 { 1.0 } else { 0.0 });
         let (top, foot) = match (near, s < 0.0) {
             (false, _) => (only, only),
@@ -714,13 +768,32 @@ impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
             (true, false) => (level(1.0), only),
         };
         let digs: Vec<&Dig> = land.digs.iter().filter(|d| d.distance(p) < 4.0).collect();
+        // Beds of rock, some worn back further than others.
+        let bed = |y: f32| {
+            0.7 * noise2(y / 1.3, p.dot(Vec2::ONE) / 40.0, 61)
+                + 0.5 * noise2(p.x / 4.0 + y / 9.0, p.y / 4.0, 62)
+        };
+        let towers: Vec<(f32, f32)> = land
+            .towers
+            .iter()
+            .map(|t| (t.sdf(p), t.height))
+            .filter(|t| t.0 < 5.0)
+            .collect();
         for (&y, d) in ys.iter().zip(out) {
             *d = y - only;
             if near {
-                // Beds of rock, some worn back further than others.
-                let bed = 0.7 * noise2(y / 1.3, p.dot(Vec2::ONE) / 40.0, 61)
-                    + 0.5 * noise2(p.x / 4.0 + y / 9.0, p.y / 4.0, 62);
-                *d = (s + bed - 0.6).max(y - top).min(y - foot);
+                *d = (s + bed(y) - 0.6).max(y - top).min(y - foot);
+            }
+            for &(side, height) in &towers {
+                // Buttresses down its sides, its top broken up.
+                let rough = 5.0 * (noise2(p.x / 9.0, p.y / 9.0, 63) - 0.5) + 1.6 * bed(y);
+                // Leaning in as they rise, in a step or two; a broken top,
+                // higher at one side.
+                let up = ((y - only) / height).clamp(0.0, 1.0);
+                let lean = 3.0 * up + 3.5 * smoothstep(0.45, 0.6, up);
+                let broken = noise2(p.x / 13.0, p.y / 13.0, 64);
+                let cap = only + height * (0.45 + 0.6 * broken);
+                *d = d.min((side + rough + lean - 1.2).max(y - cap));
             }
             for dig in &digs {
                 *d = d.max(-dig.sdf(p, y));
@@ -759,6 +832,7 @@ pub struct Land {
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
     pub digs: Vec<Dig>,
+    pub towers: Vec<Tower>,
     /// A plasma river's, cut through all of it.
     pub channel: Option<super::channel::Channel>,
 }
@@ -902,8 +976,22 @@ impl Land {
     /// The ground's height at `p`.
     pub fn height(&self, p: Vec2) -> f32 {
         let s = self.plateau(p);
-        let h = self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s));
+        let tower = self
+            .towers
+            .iter()
+            .filter(|t| t.sdf(p) < -2.0)
+            .map(|t| t.height * (0.45 + 0.6 * noise2(p.x / 13.0, p.y / 13.0, 64)))
+            .fold(0.0, f32::max);
+        let h = self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s)) + tower;
         self.channel.as_ref().map_or(h, |c| c.shape(p, h))
+    }
+
+    /// How far `p` is from any tower (negative inside one).
+    pub fn tower_distance(&self, p: Vec2) -> f32 {
+        self.towers
+            .iter()
+            .map(|t| t.sdf(p))
+            .fold(f32::INFINITY, f32::min)
     }
 
     /// The ground's height at `p` (`s`: the plateau's distance) with `up` of
@@ -916,11 +1004,33 @@ impl Land {
             .fold(0.0, f32::max);
         let mut h = self.base(p) + plaza;
         let high = &self.high;
+        let mut top = high.height;
+        let off_ramps = if high.relief > 0.0 || high.talus > 0.0 {
+            smoothstep(RAMP_HALF + 4.0, RAMP_HALF + 22.0, self.ramp_distance(p))
+        } else {
+            0.0
+        };
+        if high.relief > 0.0 {
+            let roll =
+                0.7 * noise2(p.x / 46.0, p.y / 46.0, 74) + 0.3 * noise2(p.x / 17.0, p.y / 17.0, 75);
+            top += high.relief * roll * off_ramps;
+        }
         h += high
             .ramps
             .iter()
             .map(|r| r.height(p, high.height))
-            .fold(high.height * up, f32::max);
+            .fold(top * up, f32::max);
+        if high.talus > 0.0 && s > -4.0 {
+            // Heaped in places, none at a dig's mouth.
+            let heap = smoothstep(0.35, 0.75, noise2(p.x / 15.0, p.y / 15.0, 76));
+            let mouths = self
+                .digs
+                .iter()
+                .map(|d| smoothstep(5.0, 16.0, d.distance(p)))
+                .fold(off_ramps, f32::min);
+            let lie = 1.0 - smoothstep(0.0, 10.0, s.max(0.0));
+            h += high.talus * heap * mouths * lie * (1.0 - up);
+        }
         let low = 1.0 - up;
         if let Some(d) = &self.dunes {
             h += d.at(p) * self.drift(d, p, s) * (0.3 + 0.7 * low);
@@ -939,7 +1049,11 @@ impl Land {
         Surface::of(
             &rock,
             Vec3::new(-edge, -8.0, -edge),
-            Vec3::new(size + edge, self.high.height + 10.0, size + edge),
+            Vec3::new(
+                size + edge,
+                self.high.height + self.towers.iter().map(|t| t.height).fold(0.0, f32::max) + 10.0,
+                size + edge,
+            ),
             cell,
         )
     }

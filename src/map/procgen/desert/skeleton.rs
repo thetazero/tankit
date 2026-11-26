@@ -367,6 +367,7 @@ impl Skeleton {
                     depth: WASH_DEPTH,
                     sway: 0.0,
                     phase: 0.0,
+                    ragged: false,
                 });
                 return;
             }
@@ -532,6 +533,7 @@ impl Skeleton {
                 let p = Vec2::new(x, z);
                 let g = self.ground(p);
                 let ok = self.land.plateau(p).abs() > PAD + 3.0
+                    && self.land.tower_distance(p) > PAD + 8.0
                     && self
                         .land
                         .high
@@ -654,6 +656,7 @@ impl Skeleton {
                 );
                 let lm = &self.landmarks[0];
                 let ok = self.land.plateau(at).abs() > reach + 4.0
+                    && self.land.tower_distance(at).abs() > reach + 5.0
                     && lm.center.distance(at) > lm.reach + reach + 6.0
                     && self
                         .base_spots()

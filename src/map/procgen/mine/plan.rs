@@ -115,6 +115,15 @@ fn fits(land: &Land, dig: &Dig, size: f32) -> bool {
         })
 }
 
+/// A point `t` (0..1) of the way along a cliff, and the way into it there,
+/// taken over `r` m either side.
+fn place(line: &[Vec2], t: f32, r: f32) -> (Vec2, Vec2) {
+    let total = line_len(line, line.len() - 1);
+    let s = (total * t).clamp(r, total - r);
+    let (a, b) = (line_at(line, s - r).0, line_at(line, s + r).0);
+    (line_at(line, s).0, (b - a).normalize().perp())
+}
+
 /// `pts` with their corners cut.
 fn eased(pts: &[Vec2]) -> Vec<Vec2> {
     let mut out = pts.to_vec();
@@ -130,22 +139,52 @@ fn eased(pts: &[Vec2]) -> Vec<Vec2> {
     out
 }
 
+/// The track that goes over `x` laid straight across it.
+fn straighten(tracks: &mut [Vec<Vec2>], x: &Crossing) {
+    let mid = (x.from + x.to) * 0.5;
+    let Some(t) = tracks
+        .iter_mut()
+        .min_by(|a, b| line_distance(a, mid).total_cmp(&line_distance(b, mid)))
+    else {
+        return;
+    };
+    let dir = x.dir();
+    let (a, b) = (x.from - dir * 4.0, x.to + dir * 4.0);
+    let along = |p: Vec2| (p - a).dot(dir);
+    let len = a.distance(b);
+    // (Its points before the bridge, the bridge, those past it: the first
+    // two are the dig's.)
+    let before: Vec<Vec2> = t
+        .iter()
+        .enumerate()
+        .filter(|(k, p)| *k < 2 || along(**p) < -2.0)
+        .map(|(_, p)| *p)
+        .collect();
+    let after: Vec<Vec2> = t[2..]
+        .iter()
+        .copied()
+        .filter(|&p| along(p) > len + 2.0)
+        .collect();
+    *t = [before, vec![a, b], after].concat();
+}
+
 /// Crosses `wash`: a bridge for each track over it, and fords between. None
 /// if it doesn't work out: it comes too near something, or a track meets it
 /// aslant.
 fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Option<Vec<Crossing>> {
-    let edge = wash.floor + wash.bank;
+    // (At its widest.)
+    let edge = wash.floor + wash.sway + wash.bank * 1.6;
     if land.digs.iter().any(|d| wash.distance(d.at) < edge + 24.0) {
         return None;
     }
     let mut over = Vec::new();
     let mut at = Vec::new();
     for t in tracks {
-        let (a, b) = (t[1], t[2]);
-        let n = (a.distance(b) / 0.5) as usize;
-        let near = (0..=n)
-            .map(|k| a.lerp(b, k as f32 / n as f32))
-            .min_by(|p, q| wash.distance(*p).total_cmp(&wash.distance(*q)))?;
+        let (first, total) = (line_len(t, 1), line_len(t, t.len() - 1));
+        let n = ((total - first) / 0.5) as usize;
+        let (near, dir) = (0..n)
+            .map(|k| line_at(t, first + k as f32 * 0.5))
+            .min_by(|p, q| wash.distance(p.0).total_cmp(&wash.distance(q.0)))?;
         if wash.distance(near) > 1.0 {
             if wash.distance(near) < edge + 8.0 {
                 return None;
@@ -154,7 +193,6 @@ fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Optio
         }
         let (_, s) = wash.near(near);
         let (_, way, _) = wash.frame(s);
-        let dir = (b - a).normalize();
         if way.dot(dir).abs() > 0.55 {
             return None;
         }
@@ -173,15 +211,18 @@ fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Optio
     }
     let (lo, hi) = wash.inside(size);
     let mut fords = Vec::new();
-    for f in [0.1, 0.3, 0.5, 0.7, 0.9] {
+    // Only a couple cut on purpose: most of the ways over are where a bank's
+    // easy.
+    for f in [0.2, 0.75] {
         let s = lo + (hi - lo) * f;
-        if hi - lo < 60.0 || at.iter().any(|&b| (b - s).abs() < 24.0) {
+        if hi - lo < 60.0 || at.iter().any(|&b| (b - s).abs() < 30.0) {
             continue;
         }
-        let (p, _, n) = wash.frame(s);
-        fords.push((p + n * 27.0, p - n * 27.0, 7.0));
+        let (p, t, n) = wash.frame(s);
+        let slant = t * if f < 0.5 { 9.0 } else { -9.0 };
+        fords.push((p + n * 31.0 + slant, p - n * 31.0 - slant, 4.5));
     }
-    if fords.len() < 2 {
+    if fords.is_empty() {
         return None;
     }
     land.fords.extend(fords);
@@ -201,7 +242,7 @@ fn works(
         return (None, None);
     };
     let out = track[0].distance(track[1]);
-    let total = line_len(track, 2);
+    let total = line_len(track, track.len() - 1);
     let off_bridges = |s: f32, r: f32| {
         let (p, _) = line_at(track, s);
         crossings.iter().all(|x| x.distance(p) > r)
@@ -271,30 +312,34 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         dunes: Some(Dunes {
             wind: Vec2::from_angle(rng.range(0.0, TAU)),
             wave: rng.range(38.0, 60.0),
-            height: rng.range(0.6, 1.2),
+            height: rng.range(1.4, 2.4),
             phase: rng.range(0.0, 1.0),
             calm: Vec::new(),
         }),
         ..Land::default()
     };
     land.high.height = rng.range(11.5, 13.0);
+    land.high.relief = rng.range(4.0, 7.0);
+    land.high.talus = rng.range(2.5, 4.0);
 
     // The cliff: right across, past the edges, bending on the way.
     let along = Vec2::from_angle(rng.range(0.0, TAU));
     let off = along.perp() * rng.range(0.0, size * 0.12);
-    let n = rng.int(3, 5);
+    let n = rng.int(7, 10);
     let reach = size * 0.75;
-    let line: Vec<Vec2> = (0..=n)
+    // Two long swings and whatever it does on the way.
+    let (a0, a1) = (rng.range(0.0, TAU), rng.range(0.0, TAU));
+    let (w0, w1) = (rng.range(0.07, 0.13) * size, rng.range(0.03, 0.06) * size);
+    let pts: Vec<Vec2> = (0..=n)
         .map(|k| {
-            let t = (k as f32 / n as f32 * 2.0 - 1.0) * reach;
-            let sway = if k == 0 || k == n {
-                0.0
-            } else {
-                rng.range(-0.11, 0.11) * size
-            };
-            mid + off + along * t + along.perp() * sway
+            let t = k as f32 / n as f32 * 2.0 - 1.0;
+            let sway = w0 * (t * 2.6 + a0).sin()
+                + w1 * (t * 6.5 + a1).sin()
+                + rng.range(-0.035, 0.035) * size;
+            mid + off + along * t * reach + along.perp() * sway
         })
         .collect();
+    let line = eased(&pts);
     land.high.slabs.push(Slab::Behind { line: line.clone() });
 
     // Digs along it.
@@ -303,11 +348,10 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         if land.digs.len() >= want {
             break;
         }
-        let k = rng.index(line.len() - 1);
-        let (a, b) = (line[k], line[k + 1]);
+        let (at, facing) = place(&line, rng.range(0.1, 0.9), 14.0);
         let dig = Dig {
-            at: a.lerp(b, rng.range(0.1, 0.9)),
-            facing: (b - a).normalize().perp(),
+            at,
+            facing,
             floor: 0.0,
             rooms: rooms(rng),
             pillars: Vec::new(),
@@ -342,29 +386,40 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     let mut tracks: Vec<Vec<Vec2>> = Vec::new();
     for d in &land.digs {
         let from = d.to_map(Vec2::new(0.0, d.rooms[2].max.y - 3.0));
-        let dir = -d.facing;
-        let mut end = d.at;
-        while end.min_element() > -6.0 && end.max_element() < size + 6.0 {
-            end += dir;
+        // Straight out of the mouth, then bending as it goes.
+        let mut dir = -d.facing;
+        let mut end = d.at + dir * 34.0;
+        let mut t = vec![from, d.at, end];
+        let bend = rng.range(-0.1, 0.1);
+        while end.min_element() > -6.0 && end.max_element() < size + 6.0 && t.len() < 40 {
+            dir = Vec2::from_angle(bend + rng.range(-0.06, 0.06)).rotate(dir);
+            end += dir * 14.0;
+            t.push(end);
         }
-        let clear = land.digs.iter().all(|o| {
-            o.at == d.at || (0..=40).all(|k| o.distance(d.at.lerp(end, k as f32 / 40.0)) > 8.0)
-        }) && tracks
-            .iter()
-            .all(|t| (0..=40).all(|k| line_distance(t, d.at.lerp(end, k as f32 / 40.0)) > 16.0));
+        let total = line_len(&t, t.len() - 1);
+        let first = line_len(&t, 1);
+        let all: Vec<Vec2> = (0..=60)
+            .map(|k| line_at(&t, first + (total - first) * k as f32 / 60.0 * 0.999).0)
+            .collect();
+        let clear = all.iter().all(|&p| {
+            land.digs
+                .iter()
+                .all(|o| o.at == d.at || o.distance(p) > 8.0)
+                && tracks.iter().all(|o| line_distance(o, p) > 16.0)
+        });
         // (Not out along the cliff and back into it.)
-        let out = (2..=40).all(|k| land.plateau(d.at.lerp(end, k as f32 / 40.0)) > 4.0);
+        let out = all[6..].iter().all(|&p| land.plateau(p) > 5.0);
         if clear && out {
-            tracks.push(vec![from, d.at, end]);
+            tracks.push(t);
         }
     }
     let dunes = land.dunes.as_mut().unwrap();
     for t in &tracks {
-        let n = (t[1].distance(t[2]) / 8.0) as usize;
+        let (first, total) = (line_len(t, 1), line_len(t, t.len() - 1));
+        let n = ((total - first) / 8.0) as usize;
         for k in 0..=n {
-            dunes
-                .calm
-                .push((t[1].lerp(t[2], k as f32 / n as f32), 6.0, 16.0));
+            let p = line_at(t, first + (total - first) * k as f32 / n as f32 * 0.999).0;
+            dunes.calm.push((p, 6.0, 18.0));
         }
     }
 
@@ -373,23 +428,52 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     if rng.chance(0.65) {
         for _ in 0..12 {
             let out = rng.range(62.0, 85.0);
-            let pts: Vec<Vec2> = line
+            let bend = (rng.range(0.0, TAU), rng.range(8.0, 18.0));
+            let pts: Vec<Vec2> = pts
                 .iter()
-                .map(|&p| p - along.perp() * (out + rng.range(-9.0, 9.0)))
+                .enumerate()
+                .map(|(k, &p)| {
+                    let sway = bend.1 * (k as f32 * 0.9 + bend.0).sin();
+                    p - along.perp() * (out + sway + rng.range(-7.0, 7.0))
+                })
                 .collect();
             let wash = Wash {
                 line: eased(&pts),
                 floor: 6.5,
-                bank: 5.0,
-                depth: 6.0,
-                sway: 1.2,
+                bank: 4.5,
+                depth: rng.range(5.4, 6.4),
+                sway: 2.2,
                 phase: rng.range(0.0, TAU),
+                ragged: true,
             };
             if let Some(x) = cross(&mut land, &wash, &tracks, size) {
+                for x in &x {
+                    straighten(&mut tracks, x);
+                }
                 crossings = x;
                 land.washes.push(wash);
                 break;
             }
+        }
+    }
+
+    // A great rock over some of the digs, back from the cliff.
+    for k in 0..land.digs.len() {
+        let d = &land.digs[k];
+        let hall = d.rooms[2];
+        let t = Tower {
+            center: d.to_map(Vec2::new(
+                (hall.min.x + hall.max.x) * 0.5,
+                hall.max.y + rng.range(10.0, 16.0),
+            )),
+            radius: rng.range(17.0, 24.0),
+            height: rng.range(16.0, 24.0),
+            phase: rng.range(0.0, TAU),
+        };
+        let r = t.radius * 1.25;
+        let inside = t.center.min_element() > r + 8.0 && t.center.max_element() < size - r - 8.0;
+        if inside && land.plateau(t.center) < -(r + 5.0) && rng.chance(0.8) {
+            land.towers.push(t);
         }
     }
 
@@ -425,10 +509,9 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     let mut tries = 0;
     while land.high.ramps.len() < 2 && tries < 200 {
         tries += 1;
-        let k = rng.index(line.len() - 1);
-        let (a, b) = (line[k], line[k + 1]);
-        let p = a.lerp(b, rng.range(0.15, 0.85));
-        let into = (b - a).normalize().perp();
+        let (p, into) = place(&line, rng.range(0.1, 0.9), 10.0);
+        // (Slantwise up it, as like as not.)
+        let into = Vec2::from_angle(rng.range(-0.5, 0.5)).rotate(into);
         let ramp = Ramp {
             foot: p - into * run,
             top: p + into * 5.0,
@@ -448,6 +531,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
                 tracks.iter().all(|t| line_distance(t, q) > RAMP_HALF + 6.0)
                     && land.wash_distance(q) > RAMP_HALF + 16.0
                     && land.mounds.iter().all(|m| m.at.distance(q) > 40.0)
+                    && land.tower_distance(q) > RAMP_HALF + 8.0
                     && spur
                         .as_ref()
                         .is_none_or(|s| s.shed.0.distance(q) > RAMP_HALF + 30.0)
@@ -497,6 +581,33 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         return Err("no fair spawns".into());
     }
     sk.place_lots(rng, Form::Escarpment);
+    // The seam along a wash's floor, a rig cutting it, off the bridges and
+    // the fords.
+    if let Some(w) = sk.land.washes.first() {
+        let (lo, hi) = w.inside(size);
+        let mut s = lo + 30.0;
+        while s < hi - 30.0 {
+            let (p, way, n) = w.frame(s);
+            let clear = sk.crossings.iter().all(|x| x.distance(p) > 14.0)
+                && sk
+                    .land
+                    .fords
+                    .iter()
+                    .all(|&(a, b, h)| crate::map::procgen::mine::seg(p, a, b).0 > h + 9.0);
+            if clear {
+                sk.seam = (0..=20)
+                    .map(|k| {
+                        let u = s - 30.0 + 3.0 * k as f32;
+                        let (p, _, n) = w.frame(u);
+                        p + n * (1.6 * (u * 0.21).sin() - 1.0)
+                    })
+                    .collect();
+                sk.wash_rig = Some((p - n * 3.5, way.x.atan2(way.y)));
+                break;
+            }
+            s += 4.0;
+        }
+    }
     sk.stands = sk
         .base_spots()
         .iter()
