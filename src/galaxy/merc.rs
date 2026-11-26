@@ -472,6 +472,28 @@ pub(crate) struct Plan {
     pub defend: bool,
 }
 
+/// How things stand in a system for a side that might fight there
+/// (`Galaxy::scene`): sites its and others', its fire and armor, its enemies'
+/// hulls, fire, armor and pilots, what they could bring and how soon, and
+/// their generators and what those shield.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Scene {
+    mine0: f32,
+    theirs0: f32,
+    raid: bool,
+    tier: u8,
+    pf: f32,
+    af: f32,
+    he: f32,
+    pe: f32,
+    ae: f32,
+    spare0: f32,
+    rescue: f32,
+    crew_e: f32,
+    gens0: f32,
+    shielded: f32,
+}
+
 /// How a fight's expected to go (`Galaxy::forecast`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Forecast {
@@ -1026,7 +1048,7 @@ impl Galaxy {
     /// set out to take, or to keep), the ticks the mercs fight, and its own
     /// hulls lost. Without mercs' hulls, `crew` flies `f`'s own, beside its
     /// `flown` pilots.
-    pub(crate) fn forecast(&self, t: usize, f: usize, r: u32, plan: &Plan) -> Forecast {
+    pub(crate) fn forecast(&self, scene: &Scene, plan: &Plan) -> Forecast {
         let &Plan {
             own,
             late,
@@ -1038,70 +1060,25 @@ impl Galaxy {
             flown,
             defend,
         } = plan;
-        let sys = &self.systems[t];
-        let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
-        let mine0 = sys.held[f] as f32;
-        let theirs0 = total - mine0;
-        let hulls = sys.hulls;
-        let strength = self.strength(t);
-        let per = |g: usize| {
-            if hulls[g] > 0 {
-                strength[g] / hulls[g] as f32
-            } else {
-                1.0
-            }
-        };
-        let gear = |g: usize| self.gear(t, g);
-        // Its own side: the realm's gear (the mercs' is their own, but the
-        // realm reckons by what it knows), the ground it holds here, here.
-        let raid = r == super::realm::NONE;
-        let tier = if raid {
-            0
-        } else {
-            self.realms[r as usize].tier
-        };
+        let &Scene {
+            mine0,
+            theirs0,
+            raid,
+            tier,
+            pf,
+            af,
+            he,
+            pe,
+            ae,
+            spare0,
+            rescue,
+            crew_e,
+            gens0,
+            shielded,
+        } = scene;
         // (for the crew, theirs)
         let kit =
             crate::economy::damage_factor(rank.round() as u8) / crate::economy::damage_factor(tier);
-        let mut pf = 1.0 + self.rules.home_ground * mine0 / total;
-        pf *= crate::economy::damage_factor(tier);
-        let af = crate::economy::armor_factor(tier);
-        // Everyone else, as one: their hulls, and their fire and armor
-        // averaged over them.
-        let (mut he, mut fire_e, mut armor_e) = (0.0, 0.0, 0.0);
-        for g in (0..SIDES).filter(|&g| g != f && hulls[g] > 0) {
-            let h = hulls[g] as f32;
-            he += h;
-            fire_e += h * per(g) * crate::economy::damage_factor(gear(g));
-            armor_e += h * crate::economy::armor_factor(gear(g));
-        }
-        let (pe, ae) = if he > 0.0 {
-            (fire_e / he, armor_e / he)
-        } else {
-            (1.0, 1.0)
-        };
-        // And what they'll bring up (`Galaxy::consider`): a realm's spare
-        // hulls in range, as many as it can pay to move, enough to reach
-        // its odds against what's there, or none if they can't.
-        let mut spare0 = 0.0f32;
-        let mut rescue = f32::INFINITY;
-        // The pilots they'd fly with: their realms', and their mercs'.
-        let mut crew_e = 0.0f32;
-        for g in (0..SIDES).filter(|&g| g != f) {
-            let e = sys.realms[g];
-            if e == super::realm::NONE {
-                crew_e += self.crewed(t, g).1 as f32;
-                continue;
-            }
-            let (m, crewed) = self.crewed(t, g);
-            let theirs = (hulls[g] - m.min(hulls[g])) as f32;
-            let more = self.can_move(t, g, e, self.realms[e as usize].crystals);
-            crew_e += crewed as f32 + self.pilots_for(e, theirs + more);
-            spare0 += more;
-            // (they see the attack, and then they fly)
-            let wait = self.rescue(t, g, e) as f32;
-            rescue = rescue.min(wait);
-        }
         let reinforce = |he: &mut f32, spare: &mut f32, ours: f32| {
             // Attacked, they rush in all they can, unless they've plenty.
             let against = ours * pf * 3.0;
@@ -1113,22 +1090,6 @@ impl Galaxy {
             *he += more;
             *spare -= more;
         };
-        // Their sites: generators up, what those shield, and the rest. An
-        // attacker can only go for the generators and what's in the open
-        // while any are up, and fights a seat short against them.
-        let (a, b) = sys.sites;
-        let planets = self.shields_up(t, f);
-        let (mut gens0, mut shielded) = (0.0f32, 0.0f32);
-        for site in &self.sites[a as usize..b as usize] {
-            if site.owner as usize == f {
-                continue;
-            }
-            match site.kind {
-                SiteKind::Shield { damaged: false } => gens0 += 1.0,
-                _ if planets[site.planet as usize] > 0 => shielded += 1.0,
-                _ => {}
-            }
-        }
         let cut = self.shield_cut();
         let front = self.rules.frontage;
         let (k, take, blitz) = (self.rules.kill, self.rules.take, self.rules.blitz as f32);
@@ -1243,6 +1204,103 @@ impl Galaxy {
                 lost: (own + plan.late - late - ho).max(0.0),
                 length: f32::max(length, 1.0),
             }
+        }
+    }
+
+    /// How things stand for side `f` (realm `r`'s) fighting for system `t`.
+    pub(crate) fn scene(&self, t: usize, f: usize, r: u32) -> Scene {
+        let sys = &self.systems[t];
+        let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
+        let mine0 = sys.held[f] as f32;
+        let theirs0 = total - mine0;
+        let hulls = sys.hulls;
+        let strength = self.strength(t);
+        let per = |g: usize| {
+            if hulls[g] > 0 {
+                strength[g] / hulls[g] as f32
+            } else {
+                1.0
+            }
+        };
+        let gear = |g: usize| self.gear(t, g);
+        // Its own side: the realm's gear (the mercs' is their own, but the
+        // realm reckons by what it knows), the ground it holds here, here.
+        let raid = r == super::realm::NONE;
+        let tier = if raid {
+            0
+        } else {
+            self.realms[r as usize].tier
+        };
+        let mut pf = 1.0 + self.rules.home_ground * mine0 / total;
+        pf *= crate::economy::damage_factor(tier);
+        let af = crate::economy::armor_factor(tier);
+        // Everyone else, as one: their hulls, and their fire and armor
+        // averaged over them.
+        let (mut he, mut fire_e, mut armor_e) = (0.0, 0.0, 0.0);
+        for g in (0..SIDES).filter(|&g| g != f && hulls[g] > 0) {
+            let h = hulls[g] as f32;
+            he += h;
+            fire_e += h * per(g) * crate::economy::damage_factor(gear(g));
+            armor_e += h * crate::economy::armor_factor(gear(g));
+        }
+        let (pe, ae) = if he > 0.0 {
+            (fire_e / he, armor_e / he)
+        } else {
+            (1.0, 1.0)
+        };
+        // And what they'll bring up (`Galaxy::consider`): a realm's spare
+        // hulls in range, as many as it can pay to move, enough to reach
+        // its odds against what's there, or none if they can't.
+        let mut spare0 = 0.0f32;
+        let mut rescue = f32::INFINITY;
+        // The pilots they'd fly with: their realms', and their mercs'.
+        let mut crew_e = 0.0f32;
+        for g in (0..SIDES).filter(|&g| g != f) {
+            let e = sys.realms[g];
+            if e == super::realm::NONE {
+                crew_e += self.crewed(t, g).1 as f32;
+                continue;
+            }
+            let (m, crewed) = self.crewed(t, g);
+            let theirs = (hulls[g] - m.min(hulls[g])) as f32;
+            let more = self.can_move(t, g, e, self.realms[e as usize].crystals);
+            crew_e += crewed as f32 + self.pilots_for(e, theirs + more);
+            spare0 += more;
+            // (they see the attack, and then they fly)
+            let wait = self.rescue(t, g, e) as f32;
+            rescue = rescue.min(wait);
+        }
+        // Their sites: generators up, what those shield, and the rest. An
+        // attacker can only go for the generators and what's in the open
+        // while any are up, and fights a seat short against them.
+        let (a, b) = sys.sites;
+        let planets = self.shields_up(t, f);
+        let (mut gens0, mut shielded) = (0.0f32, 0.0f32);
+        for site in &self.sites[a as usize..b as usize] {
+            if site.owner as usize == f {
+                continue;
+            }
+            match site.kind {
+                SiteKind::Shield { damaged: false } => gens0 += 1.0,
+                _ if planets[site.planet as usize] > 0 => shielded += 1.0,
+                _ => {}
+            }
+        }
+        Scene {
+            mine0,
+            theirs0,
+            raid,
+            tier,
+            pf,
+            af,
+            he,
+            pe,
+            ae,
+            spare0,
+            rescue,
+            crew_e,
+            gens0,
+            shielded,
         }
     }
 
@@ -1385,6 +1443,7 @@ impl Galaxy {
         let (owed, income) = (self.owes(r), realm.income.max(0.0));
         let mut best: Option<(Quote, f32, f32, f32, Vec<Offer>)> = None;
         let mut affordable = false;
+        let scene = self.scene(t, f, r);
         for c in near {
             let offers = self.offers(t, f, r, self.companies[c].at as usize);
             for (lent, size, train) in [
@@ -1414,7 +1473,7 @@ impl Galaxy {
                     rank: self.crew_rank(c, &q),
                     ..plan
                 };
-                let fc = self.forecast(t, f, r, &with);
+                let fc = self.forecast(&scene, &with);
                 let ticks = fc.ticks * self.trust_ticks;
                 let price = q.upfront + q.rate * ticks;
                 let co = &self.companies[c];
@@ -1839,6 +1898,7 @@ impl Galaxy {
                 let pos = self.systems[t].pos;
                 let none = super::realm::NONE;
                 let offers = self.offers(t, super::RAID, none, self.companies[c].at as usize);
+                let scene = self.scene(t, super::RAID, none);
                 for (size, train) in [
                     (30, false),
                     (80, false),
@@ -1863,7 +1923,7 @@ impl Galaxy {
                         rank: self.crew_rank(c, &q),
                         ..Default::default()
                     };
-                    let fc = self.forecast(t, super::RAID, none, &with);
+                    let fc = self.forecast(&scene, &with);
                     let ticks = fc.ticks * self.trust_ticks;
                     // What it brings back is still worth something.
                     let cost = q.cost + q.wages * (ticks + q.fly as f32);

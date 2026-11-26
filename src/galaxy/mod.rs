@@ -154,10 +154,6 @@ pub struct Rules {
     /// Chance a tick that a side in a fight wins its objective there (the
     /// next site it goes for), times its share of the fight's fire.
     pub take: f32,
-    /// A people's systems hanging together (by FTL range) fewer than this
-    /// are a pocket, cut off from the rest: once an enemy borders it, the
-    /// enemy goes for it.
-    pub pocket: u32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
     pub blitz: u32,
@@ -240,7 +236,6 @@ impl Default for Rules {
             seats: 6.0,
             home_ground: 0.3,
             take: 0.3,
-            pocket: 20,
             blitz: 2,
             keep: 0.3,
             reach: 800.0,
@@ -396,8 +391,6 @@ pub struct Galaxy {
     /// Each side's share of all sites (updated each tick).
     pub share: [f32; SIDES],
     pub rules: Rules,
-    /// Systems whose holder is cut off from the rest of its people's space (a pocket).
-    pub cut: Vec<bool>,
     pub tick: u64,
     /// This tick: hull sendings, shield generators destroyed, sites taken.
     pub sent: u32,
@@ -636,7 +629,6 @@ impl Galaxy {
             neighbors,
             realms: Vec::new(),
             share: [0.0; SIDES],
-            cut: vec![false; count],
             rules,
             tick: 0,
             sent: 0,
@@ -788,52 +780,28 @@ impl Galaxy {
     }
 
     /// Keeps the realms' books (reshaping them every few ticks), and finds
-    /// the pockets: systems whose people's space there (systems its realms
-    /// hold, linked by FTL range) is small and bordered by an enemy.
+    /// the borders.
     pub(crate) fn update_supply(&mut self) {
         self.keep_books();
         if self.tick > 0 && self.tick.is_multiple_of(self.rules.politics.max(1) as u64) {
             self.reshape();
         }
-        self.find_pockets();
+        self.find_borders();
     }
 
-    /// The books and the pockets brought up to date as things stand (for a
+    /// The books and the borders brought up to date as things stand (for a
     /// galaxy just loaded: its realms already reshaped this tick).
     pub(crate) fn refresh(&mut self) {
         self.keep_books();
-        self.find_pockets();
+        self.find_borders();
     }
 
-    fn find_pockets(&mut self) {
-        let n = self.systems.len();
+    /// Which systems have an enemy's within reach.
+    fn find_borders(&mut self) {
         let owner: Vec<usize> = self.systems.iter().map(|s| s.owner()).collect();
-        let mut root: Vec<u32> = (0..n as u32).collect();
-        for s in 0..n {
-            for k in 0..NEIGHBORS {
-                let t = self.neighbors[s * NEIGHBORS + k].0;
-                if t == u32::MAX {
-                    break;
-                }
-                if owner[t as usize] == owner[s] {
-                    let (a, b) = (
-                        realm::find(&mut root, s),
-                        realm::find(&mut root, t as usize),
-                    );
-                    root[a] = b as u32;
-                }
-            }
-        }
-        let mut size = vec![0u32; n];
-        for s in 0..n {
-            let r = realm::find(&mut root, s);
-            size[r] += 1;
-        }
-        for s in 0..n {
-            let small = size[realm::find(&mut root, s)] < self.rules.pocket;
+        for s in 0..self.systems.len() {
             let border = self.neighbors(s).any(|(t, _)| owner[s] != owner[t]);
             self.border[s] = border;
-            self.cut[s] = small && self.border[s];
         }
     }
 
@@ -1861,9 +1829,10 @@ impl Galaxy {
                 ..Default::default()
             }
         };
+        let scene = self.scene(t, f, r);
         // (what it'd hold, what it'd cost it) with `more` of its own.
         let play = |g: &Galaxy, more: f32, pilots: f32| {
-            let fc = g.forecast(t, f, r, &plan(more, pilots));
+            let fc = g.forecast(&scene, &plan(more, pilots));
             (fc.share * worth - fc.lost * realm.hull_worth, fc.length)
         };
         let (stay, length) = play(self, 0.0, pilots);
@@ -2112,7 +2081,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
             };
             let tiers = format!("{tiers} pilots {}/{}", pilot(0.5), pilot(1.0));
             println!(
-                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
+                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  splits {} merges {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
                 g.tick,
                 shares.join("  "),
                 c.at_war * 100.0,
@@ -2122,7 +2091,6 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
                 hulls,
                 g.splits,
                 g.merges,
-                g.cut.iter().filter(|&&c| c).count(),
                 c.vaults,
                 c.companies,
                 c.contracts,
