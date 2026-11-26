@@ -39,6 +39,7 @@ mod theater_view;
 mod thumbs;
 mod ui;
 mod vista;
+mod work_view;
 
 use anyhow::{Context, Result, bail};
 use glam::Vec3;
@@ -140,7 +141,7 @@ tankit [OPTIONS]
   --failed                (with --summary) wait for a contract that failed (else the first to end)
   --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
                           another, and you choose which ship to go with
-  --tab <n>               (with --screen companies) Right n times: the nth tab of who you'd fight
+  --tab <n>               (with --screen companies|contract) the nth filter on: 1-4 work for, 5-8 fight, 9 take, 10 hold
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
                           the rest of the war ticked with it, as back from a battle
@@ -1646,16 +1647,16 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             profile.ship = g.crew;
             menu.input(menu::Nav::Down);
             menu.input(menu::Nav::Select);
-            menu.set_ships(g.other_ships());
-            for _ in 0..args.tab {
-                menu.input(menu::Nav::Right);
+            menu.set_cluster(cluster_view::Cluster::of(&g));
+            let rank = profile.rank().level;
+            let mine = g.aboard(rank).and_then(|t| galaxy::theater::Offer::of(&t));
+            menu.board.set(g.open_work(rank), mine);
+            if args.tab > 0 {
+                menu.board.toggle(args.tab - 1);
             }
-            menu.input(menu::Nav::Down);
+            menu.advance(shot.time);
             if args.screen == Some(Screen::Contract) {
                 menu.input(menu::Nav::Select);
-                if let Some(id) = menu.wants_contract() {
-                    menu.set_contract(g.contract_of(id, profile.rank().level));
-                }
             }
         }
         Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {
@@ -1702,7 +1703,13 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         None => match menu.cluster() {
             Some((c, time)) => cluster_view::scene(c, time, w / h),
-            None => scene::build(&game.world, &tanks, &art, camera),
+            None => match menu.deal() {
+                Some((o, time)) => {
+                    let kit = profile.loadout;
+                    work_view::scene(&art, &tanks[0], kit, o, time, w / h)
+                }
+                None => scene::build(&game.world, &tanks, &art, camera),
+            },
         },
     };
     frame.ui = match &summary {

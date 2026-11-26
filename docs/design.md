@@ -1,8 +1,8 @@
 # Design system, v0
 
 The code is the reference: tokens and components are in `src/ui/design.rs`.
-The main menu and the contract page are made from it; the other screens
-aren't yet.
+The main menu, Find work and the contract page are made from it; the other
+screens aren't yet.
 
 ## Principles
 
@@ -18,7 +18,7 @@ aren't yet.
 - **Color:** light grey text on dark grey. Amber is the accent: what's
   yours, and what's selected. Blue, amber's complement, is crystal. On the
   map, factions keep their own colors.
-- **Type:** Michroma, capitals, three sizes.
+- **Type:** Michroma, capitals, four sizes.
 - **Space:** 8 px units, and plenty of them. No dense blobs of text.
 
 ## Components
