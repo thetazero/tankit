@@ -706,11 +706,12 @@ impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
         let heap = (self.heaps)(p);
         // (Far from a cliff, there's only the one level.)
         let near = s.abs() < 8.0;
-        let only = land.level(p, s, if s < 0.0 { 1.0 } else { 0.0 }) + heap;
-        let (top, foot) = if near {
-            (land.level(p, s, 1.0) + heap, land.level(p, s, 0.0) + heap)
-        } else {
-            (only, only)
+        let level = |up: f32| land.level(p, s, up) + heap;
+        let only = level(if s < 0.0 { 1.0 } else { 0.0 });
+        let (top, foot) = match (near, s < 0.0) {
+            (false, _) => (only, only),
+            (true, true) => (only, level(0.0)),
+            (true, false) => (level(1.0), only),
         };
         let digs: Vec<&Dig> = land.digs.iter().filter(|d| d.distance(p) < 4.0).collect();
         for (&y, d) in ys.iter().zip(out) {
