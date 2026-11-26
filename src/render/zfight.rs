@@ -174,10 +174,11 @@ impl Soup {
     /// Every pair of parts with coplanar faces overlapping where it shows,
     /// largest overlap first.
     pub fn fights(&self) -> Vec<Fight> {
-        // Every triangle in each spatial cube its bounds touch (for the
-        // probe rays), and in each plane bucket of those cubes it's near: by
-        // normal (either way round) and by the cube center's distance from
-        // its plane. Two coplanar triangles share the bucket of either one.
+        // Every triangle in each spatial cube its bounds touch, also for the
+        // probe rays. Then, a cube at a time, in each plane bucket of that
+        // cube it's near: by normal (either way round) and by the cube
+        // center's distance from its plane. Two coplanar triangles share
+        // the bucket of either one.
         const N_CELL: f32 = 0.05;
         const N_TOL: f32 = 0.01;
         const D_CELL: f32 = 0.25;
@@ -191,11 +192,30 @@ impl Soup {
         // they need only be kept the ways round that do (or might, within
         // the tolerance).
         let lean = Vec3::new(1.0, 0.37, 0.11);
+        // A bucket as one number.
+        let key = |x: i32, y: i32, z: i32, k: i32| {
+            [x, y, z, k]
+                .into_iter()
+                .fold(0u64, |h, v| (h << 16) | (v as u16) as u64)
+        };
+        // Faces that don't fight, wherever they are.
+        let harmless = |a: &Tri, b: &Tri| {
+            let facing = a.shade.dot(b.shade);
+            facing < 0.0 || (facing > 0.995 && (a.color - b.color).abs().max_element() < 0.01)
+        };
         let mut space: FastMap<IVec3, Vec<usize>> = FastMap::default();
-        let mut planes: FastMap<(IVec3, [i32; 4]), Vec<usize>> = FastMap::default();
         for (i, t) in self.tris.iter().enumerate() {
             for c in cubes(&t.p, PLANE_TOL, self.space) {
                 space.entry(c).or_default().push(i);
+            }
+        }
+        // Pairs that may fight, each found in every cube both are in.
+        let mut pairs: Vec<(u32, u32)> = Vec::new();
+        let mut planes: Vec<(u64, u32)> = Vec::new();
+        for (&c, here) in &space {
+            planes.clear();
+            for &i in here {
+                let t = &self.tris[i];
                 for (n, d) in [(t.n, t.d), (-t.n, -t.d)] {
                     if n.dot(lean) < -2.0 * N_TOL {
                         continue;
@@ -205,70 +225,66 @@ impl Soup {
                         for y in span(n.y, N_TOL, N_CELL) {
                             for z in span(n.z, N_TOL, N_CELL) {
                                 for k in span(dist, d_tol, D_CELL) {
-                                    planes.entry((c, [x, y, z, k])).or_default().push(i);
+                                    planes.push((key(x, y, z, k), i as u32));
                                 }
                             }
                         }
                     }
                 }
             }
-        }
-        let mut found: FastMap<(usize, usize, IVec3), Fight> = FastMap::default();
-        let mut near = Vec::new();
-        for (i, a) in self.tris.iter().enumerate() {
-            near.clear();
-            let (n, d) = if a.n.dot(lean) < 0.0 {
-                (-a.n, -a.d)
-            } else {
-                (a.n, a.d)
-            };
-            for c in cubes(&a.p, PLANE_TOL, self.space) {
-                let dist = n.dot(center(c)) - d;
-                let key = [
+            planes.sort_unstable();
+            for &i in here {
+                let a = &self.tris[i];
+                let (n, d) = if a.n.dot(lean) < 0.0 {
+                    (-a.n, -a.d)
+                } else {
+                    (a.n, a.d)
+                };
+                let k = key(
                     bucket(n.x, N_CELL),
                     bucket(n.y, N_CELL),
                     bucket(n.z, N_CELL),
-                    bucket(dist, D_CELL),
-                ];
-                if let Some(v) = planes.get(&(c, key)) {
-                    near.extend(v.iter().copied().filter(|&j| j > i));
+                    bucket(n.dot(center(c)) - d, D_CELL),
+                );
+                // (The other of each pair is later in the list.)
+                let from = planes.partition_point(|&e| e <= (k, i as u32));
+                for &(_, j) in planes[from..].iter().take_while(|e| e.0 == k) {
+                    let b = &self.tris[j as usize];
+                    if !harmless(a, b) && may_overlap(a, b) {
+                        pairs.push((i as u32, j));
+                    }
                 }
             }
-            near.sort_unstable();
-            near.dedup();
-            for &j in &near {
-                let b = &self.tris[j];
-                let facing = a.shade.dot(b.shade);
-                if facing < 0.0
-                    || (facing > 0.995 && (a.color - b.color).abs().max_element() < 0.01)
-                {
-                    continue;
-                }
-                let Some((area, mid)) = overlap(a, b) else {
-                    continue;
-                };
-                if area < 1e-7 || !self.seen(mid, (a.shade + b.shade).normalize_or_zero(), &space) {
-                    continue;
-                }
-                let (pa, pb) = if a.part <= b.part {
-                    (a.part, b.part)
-                } else {
-                    (b.part, a.part)
-                };
-                let cell = if self.cell > 0.0 {
-                    (mid / self.cell).floor().as_ivec3()
-                } else {
-                    IVec3::ZERO
-                };
-                let f = found.entry((pa, pb, cell)).or_insert_with(|| Fight {
-                    a: self.parts[pa].clone(),
-                    b: self.parts[pb].clone(),
-                    area: 0.0,
-                    at: mid,
-                    faces: [(a.color, a.shade), (b.color, b.shade)],
-                });
-                f.area += area;
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        let mut found: FastMap<(usize, usize, IVec3), Fight> = FastMap::default();
+        for (i, j) in pairs {
+            let (a, b) = (&self.tris[i as usize], &self.tris[j as usize]);
+            let Some((area, mid)) = overlap(a, b) else {
+                continue;
+            };
+            if area < 1e-7 || !self.seen(mid, (a.shade + b.shade).normalize_or_zero(), &space) {
+                continue;
             }
+            let (pa, pb) = if a.part <= b.part {
+                (a.part, b.part)
+            } else {
+                (b.part, a.part)
+            };
+            let cell = if self.cell > 0.0 {
+                (mid / self.cell).floor().as_ivec3()
+            } else {
+                IVec3::ZERO
+            };
+            let f = found.entry((pa, pb, cell)).or_insert_with(|| Fight {
+                a: self.parts[pa].clone(),
+                b: self.parts[pb].clone(),
+                area: 0.0,
+                at: mid,
+                faces: [(a.color, a.shade), (b.color, b.shade)],
+            });
+            f.area += area;
         }
         let mut out: Vec<Fight> = found.into_values().filter(|f| f.area >= MIN_AREA).collect();
         out.sort_by(|x, y| y.area.total_cmp(&x.area));
@@ -361,19 +377,24 @@ fn ray_tri(o: Vec3, dir: Vec3, p: &[Vec3; 3]) -> Option<f32> {
     (t > 0.0 && t < OPEN).then_some(t)
 }
 
-/// Area where `a` and `b` overlap and the middle of it, if they lie in one
-/// plane.
-fn overlap(a: &Tri, b: &Tri) -> Option<(f32, Vec3)> {
+/// Whether `a` and `b` lie in one plane, their bounds touching.
+fn may_overlap(a: &Tri, b: &Tri) -> bool {
     if a.n.dot(b.n).abs() < 0.99996 {
-        return None;
+        return false;
     }
     let off = |t: &Tri, p: Vec3| (t.n.dot(p) - t.d).abs();
     if b.p.iter().any(|&p| off(a, p) > PLANE_TOL) || a.p.iter().any(|&p| off(b, p) > PLANE_TOL) {
-        return None;
+        return false;
     }
     let (amin, amax) = bounds(&a.p);
     let (bmin, bmax) = bounds(&b.p);
-    if amin.cmpgt(bmax + PLANE_TOL).any() || bmin.cmpgt(amax + PLANE_TOL).any() {
+    !(amin.cmpgt(bmax + PLANE_TOL).any() || bmin.cmpgt(amax + PLANE_TOL).any())
+}
+
+/// Area where `a` and `b` overlap and the middle of it, if they lie in one
+/// plane.
+fn overlap(a: &Tri, b: &Tri) -> Option<(f32, Vec3)> {
+    if !may_overlap(a, b) {
         return None;
     }
     // Into the plane's 2D frame, both wound counter-clockwise, and clip.
