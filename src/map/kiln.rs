@@ -207,6 +207,7 @@ impl Map {
             factions: [Faction::Ithessar, Faction::Imperium].to_vec(),
             repair_spots: Vec::new(),
             hold_site: Some(CENTER),
+            hold_more: Vec::new(),
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
