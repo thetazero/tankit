@@ -13,7 +13,7 @@ use glam::Vec3;
 use rapier3d::parry::bounding_volume::{Aabb, BoundingVolume};
 use rapier3d::parry::math::Pose;
 use rapier3d::parry::query::{ShapeCastOptions, cast_shapes};
-use rapier3d::parry::shape::{Ball, Compound, Cuboid, HeightField};
+use rapier3d::parry::shape::{Ball, Compound, Cuboid, HeightField, TriMesh};
 
 /// A first touch: how far the ball travelled, and the surface's outward
 /// normal there, pointing at the ball.
@@ -55,6 +55,29 @@ pub fn ball_heightfield(
             ball_triangle(c, d, r, limit, tri.a, tri.b, tri.c),
         );
     });
+    best.map(|(t, n)| (t, pose.rotation * n))
+}
+
+/// Like [`ball_heightfield`], against a mesh of triangles.
+pub fn ball_trimesh(
+    mesh: &TriMesh,
+    pose: &Pose,
+    center: Vec3,
+    dir: Vec3,
+    r: f32,
+    max: f32,
+) -> Option<Hit> {
+    let c = pose.inverse_transform_point(center);
+    let d = pose.rotation.inverse() * dir;
+    let mut best: Option<Hit> = None;
+    for i in mesh.bvh().intersect_aabb(&swept_aabb(c, d, r, max)) {
+        let tri = mesh.triangle(i);
+        let limit = best.map_or(max, |b| b.0);
+        earliest(
+            &mut best,
+            ball_triangle(c, d, r, limit, tri.a, tri.b, tri.c),
+        );
+    }
     best.map(|(t, n)| (t, pose.rotation * n))
 }
 
