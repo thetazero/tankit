@@ -363,7 +363,9 @@ impl Site<'_> {
                 };
                 self.role = Role::Wall;
                 let (x, z) = spot(m);
-                self.put(x, z, across(l, 0.55), (-1.2, top)).broken = broken;
+                // (Each a hair thicker or thinner than the next.)
+                let thick = 0.53 + 0.02 * (count % 3) as f32;
+                self.put(x, z, across(l, thick), (-1.2, top)).broken = broken;
                 if self.st.is_some() {
                     self.panel(along_z, at, m, l, top, broken, count);
                 }
@@ -405,7 +407,7 @@ impl Site<'_> {
         let cast = Material::Concrete;
         let (x, z) = spot(m);
         if top > 1.6 {
-            self.deck(x, z, across(l - 0.02, 0.63), (-1.1, 1.0), dark, cast);
+            self.deck(x, z, across(l - 0.07, 0.63), (-1.1, 1.0), dark, cast);
         }
         let (px, pz) = spot(m - l + 0.35);
         self.deck(
@@ -417,7 +419,14 @@ impl Site<'_> {
             cast,
         );
         if !broken {
-            self.deck(x, z, across(l, 0.78), (top - 0.45, top + 0.14), dark, cast);
+            self.deck(
+                x,
+                z,
+                across(l - 0.05, 0.78),
+                (top - 0.45, top + 0.14),
+                dark,
+                cast,
+            );
             if let Some(st) = self.st {
                 let w = Panel {
                     along_z,
@@ -528,12 +537,14 @@ impl Site<'_> {
                     } else {
                         (dark, Material::Metal)
                     };
-                    let (px, pz, h) = if along_z {
-                        (x, z + t, (out + 0.05, 0.6))
-                    } else {
-                        (x + t, z, (0.6, out + 0.05))
-                    };
-                    self.deck(px, pz, h, (y, y + 1.3), c, m);
+                    for e in [-1.0f32, 1.0] {
+                        let (px, pz, h) = if along_z {
+                            (x + e * out, z + t, (0.06, 0.6))
+                        } else {
+                            (x + t, z + e * out, (0.6, 0.06))
+                        };
+                        self.deck(px, pz, h, (y, y + 1.3), c, m);
+                    }
                 }
             }
         }

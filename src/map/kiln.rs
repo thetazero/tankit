@@ -201,6 +201,7 @@ impl Map {
                 dust: Vec3::new(0.4, 0.4, 0.46),
                 settle: crate::render::SAND_SETTLE,
                 ambient: 3.2,
+                stars: 0.0,
             },
             bases: Map::no_bases(&[Faction::Ithessar, Faction::Imperium]),
             factions: [Faction::Ithessar, Faction::Imperium].to_vec(),

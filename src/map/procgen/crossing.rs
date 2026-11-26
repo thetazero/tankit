@@ -29,6 +29,9 @@ pub struct Crossing {
     pub floor: f32,
     /// The roofed stretch of a tunnel, along it.
     pub roofed: (f32, f32),
+    /// The stretch of a tunnel with walls: its approaches' stop short of
+    /// any other road.
+    pub walled: (f32, f32),
 }
 
 /// How thick a tunnel's walls are: the ground it's cut down into slopes
@@ -82,6 +85,7 @@ impl Crossing {
             map.oboxes.len() - 1
         };
         let mut floors = Vec::new();
+        let mut sloped: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
         match self.kind {
             Kind::Bridge => {
                 let len = self.len();
@@ -156,24 +160,57 @@ impl Crossing {
                     s.wall * 0.86,
                     true,
                 ));
-                // Its walls, stepping down outside with the land; a portal
-                // at each mouth.
-                let len = self.len();
-                let n = (len / 4.0).ceil() as i32;
-                for k in 0..n {
-                    let t = (len * k as f32 / n as f32, len * (k + 1) as f32 / n as f32);
-                    let mid = (t.0 + t.1) * 0.5;
-                    let roofed = mid > a && mid < b;
-                    for e in [-1.0f32, 1.0] {
-                        let off = e * (self.half + 0.3 + WALL * 0.5);
-                        let land = ground(self.from + d * mid + side * e * (self.half + 7.5));
-                        let top = if roofed {
-                            self.top - DECK + 0.04
-                        } else {
-                            (land + 0.5).min(self.top)
+                // Its walls under the roof; out from each mouth, walls whose
+                // tops slope down with the land.
+                for e in [-1.0f32, 1.0] {
+                    let off = e * (self.half + 0.3 + WALL * 0.5);
+                    put(
+                        (a, b),
+                        off,
+                        WALL * 0.5,
+                        (self.floor - 0.6, self.top - DECK + 0.04),
+                        s.wall,
+                        true,
+                    );
+                    for (t0, t1) in [(self.walled.0, a), (b, self.walled.1)] {
+                        if t1 - t0 < 0.5 {
+                            continue;
+                        }
+                        let n = ((t1 - t0) / 4.0).ceil().max(1.0) as i32;
+                        let at = |k: i32| t0 + (t1 - t0) * k as f32 / n as f32;
+                        let height = |t: f32| {
+                            let p = self.from + d * t + side * e * (self.half + 7.5);
+                            (ground(p) + 0.35).min(self.top - 0.05)
                         };
-                        if top > self.floor + 0.6 {
-                            put(t, off, WALL * 0.5, (self.floor - 0.6, top), s.wall, true);
+                        for k in 0..n {
+                            let (u, v) = (at(k), at(k + 1));
+                            let (h, g) = (height(u), height(v));
+                            if h.max(g) < self.floor + 0.5 {
+                                continue;
+                            }
+                            let low = h.min(g) - 0.1;
+                            if low > self.floor + 0.3 {
+                                let w = WALL * 0.5 - 0.06;
+                                put((u, v), off, w, (self.floor - 0.6, low), s.wall, true);
+                            }
+                            // Its top, from one height to the other.
+                            let lean = (h - g).atan2(v - u);
+                            let deep = ((h - g).abs() * 0.5 + 0.45) * lean.cos();
+                            let m = put(
+                                (u, v),
+                                off,
+                                WALL * 0.5,
+                                (0.0, deep * 2.0),
+                                s.wall * 0.96,
+                                true,
+                            );
+                            sloped.push((
+                                m,
+                                lean,
+                                (v - u) * 0.5 / lean.cos() + 0.05,
+                                (h + g) * 0.5 - deep * lean.cos(),
+                                deep,
+                            ));
                         }
                     }
                 }
@@ -199,8 +236,20 @@ impl Crossing {
                 }
             }
         }
-        for k in floors {
-            map.oboxes[k].ramp = true;
+        for &k in &floors {
+            let o = &mut map.oboxes[k];
+            o.ramp = true;
+            // Over a tunnel, the ground carries on across its roof.
+            if self.kind == Kind::Tunnel {
+                o.color = s.land;
+                o.top_mat = Material::Concrete;
+            }
+        }
+        for (k, lean, long, mid, deep) in sloped {
+            let o = &mut map.oboxes[k];
+            o.tilt = lean;
+            o.half.y = long;
+            (o.y0, o.y1) = (mid - deep, mid + deep);
         }
     }
 }

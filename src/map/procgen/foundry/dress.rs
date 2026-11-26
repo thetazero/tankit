@@ -29,6 +29,7 @@ pub fn dress(map: &mut Map, sk: &Skeleton, st: &dyn Works, ground: Ground, rng: 
         mat: pal.wall_mat,
         trim: pal.dark,
         roof: pal.roof,
+        land: land.open,
     };
     for c in &sk.crossings {
         c.build(map, stone, |p| sk.ground(p));
@@ -315,7 +316,9 @@ fn beyond(
             .map(|w| crate::map::procgen::mine::seg(p, w[0], w[1]).0)
             .fold(f32::MAX, f32::min);
         let level = smoothstep(8.0, 40.0, track).max(smoothstep(120.0, 200.0, d));
-        sk.ground(p) + tall * hills * smoothstep(20.0, 120.0, d) * level
+        // (A little under the arena's own ground where they meet.)
+        sk.ground(p) - 0.15 * (1.0 - smoothstep(0.0, 8.0, d))
+            + tall * hills * smoothstep(20.0, 120.0, d) * level
     };
     let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, height);
     t.color = land.far;

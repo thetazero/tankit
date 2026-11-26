@@ -9,6 +9,7 @@ mod bench;
 mod binds;
 mod cluster_view;
 mod combat;
+mod conditions;
 mod economy;
 mod faction;
 mod fleet_model;
@@ -48,7 +49,7 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map-seed --map --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
+  any of --seed --map-seed --map --time-of-day --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
   --map <saltmarket|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-desert>
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
@@ -59,6 +60,7 @@ tankit [OPTIONS]
                           crystal mine: caves, rails and stacked levels), the desert (generated open
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
   --map-seed <n>          which one a generated map (city, shield-site, foundry, mine, desert, shield-desert) builds (default: the --seed)
+  --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --generator <faction>   (with --map shield-site or shield-desert) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-site or shield-desert) the generator's down, n ticks of repair
@@ -180,6 +182,8 @@ pub struct Args {
     /// --greybox: a generated map's skeleton, undressed.
     pub greybox: bool,
     pub map: MapKind,
+    /// --time-of-day.
+    pub conditions: conditions::Conditions,
     pub spawn: usize,
     pub bots: usize,
     pub contract: mission::Contract,
@@ -319,6 +323,7 @@ impl Args {
             }
             _ => make_map(self.map, self.map_seed),
         };
+        self.conditions.apply(&mut m);
         if self.side > 0 {
             m.swap_sides(self.side);
         }
@@ -597,6 +602,7 @@ fn main() -> Result<()> {
             seed: args.seed,
             map_seed: args.map_seed,
             map_kind: args.map,
+            conditions: args.conditions,
             spawn: args.spawn,
             bots: args.bots,
             contract: args.contract,
@@ -646,6 +652,7 @@ fn parse_args() -> Result<Args> {
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
     let mut generator: Option<faction::Faction> = None;
+    let mut conditions = conditions::Conditions::default();
     let mut look: Option<map::procgen::Look> = None;
     let mut ground: Option<map::procgen::foundry::Ground> = None;
     let mut generator_down = 0u8;
@@ -685,6 +692,7 @@ fn parse_args() -> Result<Args> {
             a.as_str(),
             "--seed"
                 | "--map-seed"
+                | "--time-of-day"
                 | "--map"
                 | "--spawn"
                 | "--team-size"
@@ -701,6 +709,12 @@ fn parse_args() -> Result<Args> {
             "--seed" => seed = args.next().context("--seed needs a number")?.parse()?,
             "--map-seed" => {
                 map_seed = Some(args.next().context("--map-seed needs a number")?.parse()?)
+            }
+            "--time-of-day" => {
+                let name = args.next().unwrap_or_default();
+                conditions.time = conditions::TimeOfDay::by_name(&name).with_context(|| {
+                    format!("--time-of-day expects day, dusk or night, got {name:?}")
+                })?;
             }
             "--greybox" => greybox = true,
             "--no-lod" => render::lod::disable(),
@@ -1079,6 +1093,7 @@ fn parse_args() -> Result<Args> {
         quiet,
         ticks,
         map: map_kind,
+        conditions,
         spawn,
         // Every side filled to the team size around you.
         bots: sides.len() * team_size.unwrap_or(6) - 1,
@@ -1738,10 +1753,8 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         _ => {}
     }
     // The backdrop follows the selected contract, as in the window.
-    let (kind, map_seed, side) = menu
-        .backdrop()
-        .unwrap_or((mission::MISSIONS[0].map_kind, 0, 0));
-    let mut game = app::backdrop_match(kind, map_seed, side, profile.loadout);
+    let backdrop = menu.backdrop().unwrap_or(app::MENU_BACKDROP);
+    let mut game = app::backdrop_match(backdrop, profile.loadout);
     let mut renderer = render::Renderer::new_headless(shot.width, shot.height)?;
     renderer.set_static_mesh(&scene::map_mesh(&game.world.map));
     let art = tank::TankArt::upload(&mut renderer);

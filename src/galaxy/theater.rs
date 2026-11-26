@@ -33,6 +33,7 @@
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
 use super::{AT_WAR, Galaxy, PEOPLES, SIDES, SiteKind};
+use crate::conditions::Conditions;
 use crate::faction::Faction;
 use crate::map::procgen::Look;
 use crate::map::procgen::foundry::Ground;
@@ -347,6 +348,8 @@ pub struct Sortie {
     pub map_kind: MapKind,
     /// Which map a generated kind builds: the site's (`SiteView::map_seed`).
     pub map_seed: u64,
+    /// The site's (`SiteView::conditions`).
+    pub conditions: Conditions,
     /// The match's teams: you (your employer) first, then the enemy.
     pub factions: [Faction; 2],
 }
@@ -621,6 +624,12 @@ impl SiteView {
         }
     }
 
+    /// The time of day and weather it's fought in: the site's own, the same
+    /// each time it's fought over, like its map.
+    pub fn conditions(&self) -> Conditions {
+        Conditions::of_site(self.map_seed)
+    }
+
     /// Who built the place, whoever holds it now: a city's in their style.
     pub fn founder(&self) -> Faction {
         let mut r = Rng::new(self.map_seed ^ 0xF0_07DE);
@@ -648,6 +657,7 @@ impl Theater {
             mission: s.mission,
             map_kind: s.map_kind(),
             map_seed: s.map_seed,
+            conditions: s.conditions(),
             factions: [Faction::side(self.employer), Faction::side(s.enemy)],
         })
     }
@@ -1189,7 +1199,7 @@ impl Galaxy {
         // The companies' hulls on contract here, each side's.
         let mut field = [0u32; SIDES];
         for k in self.companies.iter().filter_map(|c| c.contract.as_ref()) {
-            if k.target as usize == s && !k.lent {
+            if k.target as usize == s {
                 field[k.side as usize] += k.field;
             }
         }
@@ -1288,7 +1298,7 @@ impl Galaxy {
             mercs: {
                 let mut mercs = [0; SIDES];
                 for k in self.companies.iter().filter_map(|c| c.contract) {
-                    if k.target as usize == s && !k.lent {
+                    if k.target as usize == s {
                         mercs[k.side as usize] += k.field;
                     }
                 }
@@ -1890,6 +1900,7 @@ mod tests {
         let b = g.theater_at(0, 0).sites;
         for (x, y) in a.iter().zip(&b) {
             assert_eq!((x.mission, x.map_seed), (y.mission, y.map_seed));
+            assert_eq!(x.conditions(), y.conditions());
         }
         // Whoever takes it, the city's its founder's.
         let shield = a.iter().find(|s| s.is_shield()).unwrap();
@@ -1898,6 +1909,7 @@ mod tests {
             ..*shield
         };
         assert_eq!(shield.founder(), taken.founder());
+        assert_eq!(shield.conditions(), taken.conditions());
         let seeds: std::collections::HashSet<u64> = a.iter().map(|s| s.map_seed).collect();
         assert_eq!(seeds.len(), a.len());
     }

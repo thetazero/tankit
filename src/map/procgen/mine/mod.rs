@@ -33,8 +33,9 @@ use super::{Look, Spec};
 use crate::map::Map;
 use crate::rng::Rng;
 
+pub use super::land::Butte;
 pub(in crate::map) use dig::Dig;
-pub use layout::{Bridge, Butte, Layout, Mine};
+pub use layout::{Bridge, Layout, Mine};
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
@@ -63,8 +64,6 @@ pub const CAVE_WALL: f32 = 2.4;
 pub const WASH_DEPTH: f32 = 7.0;
 /// The wash's banks, from the floor's edge to the top.
 const WASH_BANK: f32 = 5.0;
-/// How far a crossing's ramp runs, from the top down to the floor.
-const FORD_RUN: f32 = 21.0;
 pub const DECK_HALF: f32 = 3.6;
 pub const DECK_TOP: f32 = 0.25;
 const DECK_T: f32 = 1.0;
@@ -90,9 +89,6 @@ pub type Rect = (Vec2, Vec2);
 /// A ramp or crossing: from its top to its floor (or the far top), and
 /// its half-width.
 pub type Ramp = (Vec2, Vec2, f32);
-/// A heap: its middle, rough radius, the height of its flat top, and how
-/// far its sides run out.
-pub type Heap = (Vec2, f32, f32, f32);
 
 pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -153,17 +149,6 @@ fn even(x: f32) -> f32 {
 }
 fn even_down(x: f32) -> f32 {
     (x / 2.0).floor() * 2.0
-}
-
-/// A heap (the dump): flat-topped, its outline lobed.
-pub fn heap((c, r, h, run): Heap, p: Vec2) -> f32 {
-    if r <= 0.0 {
-        return 0.0;
-    }
-    let d = p - c;
-    let a = d.y.atan2(d.x);
-    let edge = r + 0.25 * r * (3.0 * a + c.x).sin() + 0.12 * r * (5.0 * a + 1.0).sin();
-    h * (1.0 - smoothstep(edge, edge + run, d.length()))
 }
 
 /// What a mine's owner puts in it: their lamps, the machine in the borer's
@@ -292,6 +277,7 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
         dust: Vec3::new(0.72, 0.55, 0.38),
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 

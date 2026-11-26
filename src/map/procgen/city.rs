@@ -39,6 +39,7 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
         dust: Vec3::new(0.62, 0.6, 0.57),
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 
@@ -715,7 +716,13 @@ pub(super) fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
             t += 1.0;
         }
         for &(m0, m1) in &mouths[k] {
-            sk.edges.push(edge(m0, m1, EdgeKind::Blockade, 0.0));
+            // Heaped at the sides, low barriers between: the road's seen
+            // to carry on.
+            let w = (m1 - m0) * 0.27;
+            sk.edges.push(edge(m0, m0 + w, EdgeKind::Blockade, 0.0));
+            sk.edges
+                .push(edge(m0 + w, m1 - w, EdgeKind::Barricade, 0.0));
+            sk.edges.push(edge(m1 - w, m1, EdgeKind::Blockade, 0.0));
         }
         for (from, to) in open {
             if to - from < 3.0 {
@@ -1119,8 +1126,14 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
             if p.min_element() < -30.0 || p.max_element() > size + 30.0 {
                 continue;
             }
+            // Not by where others meet: their paving would run together.
+            let crowded = sk.streets.iter().any(|o| {
+                o.rank != Rank::Beyond
+                    && o.dir().dot(d).abs() < 0.9
+                    && o.distance(p) < o.half + s.half + 7.0
+            });
             for e in [-1.0f32, 1.0] {
-                if rng.chance(0.3) {
+                if crowded || rng.chance(0.3) {
                     continue;
                 }
                 let mut out =
@@ -1315,6 +1328,33 @@ pub(super) fn crossings(sk: &mut Skeleton) {
             lay(sk, from, fine.len() - 1, true);
         }
     }
+    // A tunnel's approaches' walls, back from its mouths as far as they
+    // keep out of the other roads.
+    let streets = &sk.streets;
+    for x in &mut sk.crossings {
+        let (d, side) = (x.dir(), Vec2::new(-x.dir().y, x.dir().x));
+        let fouls = |t: f32| {
+            [0.3, crossing::WALL * 0.5, crossing::WALL + 0.3]
+                .iter()
+                .any(|w| {
+                    [-1.0f32, 1.0].iter().any(|e| {
+                        let p = x.from + d * t + side * e * (x.half + w);
+                        streets
+                            .iter()
+                            .any(|s| s.rank != Rank::Crossing && s.distance(p) < s.clear + 1.0)
+                    })
+                })
+        };
+        let (a, b) = x.roofed;
+        let (mut t0, mut t1) = (a, b);
+        while t0 > 0.0 && !fouls(t0 - 1.0) {
+            t0 = (t0 - 1.0).max(0.0);
+        }
+        while t1 < x.len() && !fouls(t1 + 1.0) {
+            t1 = (t1 + 1.0).min(x.len());
+        }
+        x.walled = (t0, t1);
+    }
 }
 
 /// The crossing of `c` from `a` to `b` by a road `half` wide, if one fits.
@@ -1351,6 +1391,7 @@ fn crossing_at(
             top: end,
             floor: 0.0,
             roofed: (0.0, 0.0),
+            walled: (0.0, len),
         })
     } else {
         // Roofed where the crest's high enough to be.
@@ -1372,6 +1413,7 @@ fn crossing_at(
             top,
             floor: end,
             roofed: (t0 * len, t1 * len),
+            walled: (0.0, len),
         })
     }
 }

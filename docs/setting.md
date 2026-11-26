@@ -77,9 +77,9 @@ company's ship, in orbit over the world it's contracted to fight for.
 
 **Why realms hire it.** A realm that could use more force for a while, to take
 a neighbor's world or hold its own, hires a company when the company's price
-is less than what the help is worth. A company brings its own machines, or
-only a crew to drive its employer's. It quotes some crystal up front and so
-much a battle, and a realm short of crystal owes the rest.
+is less than what the help is worth. A company brings its own machines
+and pilots. It quotes some crystal up front and so much a battle, and a realm
+short of crystal owes the rest.
 
 **Raids.** Companies are amoral. One with no work looks for a rich world too
 weakly held, takes it planet by planet, empties the vaults, and leaves; the
@@ -298,9 +298,9 @@ own way into the rock from the east to take it back. (The first of them,
 the Seam, was the one hand-built mine; the generated ones are its kind.)
 
 **The hull foundries:** where machines are made, on the ground they'll be
-fought over. Furnace halls in a row, a rail yard and gantries on one side, slag
-heaps on the other, on desert, tundra or grassland (generated: no two the
-same). Each people builds its own: the Imperium's raw concrete and sawtooth
+fought over. Furnace halls, mills, casting sheds and a power house on rolling ground, roads
+and a railway between them over bridges and through tunnels, on desert, tundra
+or grassland (generated: no two the same). Each people builds its own: the Imperium's raw concrete and sawtooth
 roofs hung with crimson; the Resonant's ivory halls under slate, a crystal
 burning in each furnace; the Uthenn's stacks of cubes; the Ithessar's dark
 stone, plasma held between crystals.

@@ -104,6 +104,7 @@ impl Ground {
             dust: Vec3::new(0.4, 0.34, 0.28),
             settle: Vec3::new(0.34, 0.29, 0.24),
             ambient: 1.0,
+            stars: 0.0,
         };
         match self {
             Ground::Desert => sky,

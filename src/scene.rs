@@ -807,33 +807,55 @@ mod tests {
         ignore = "slow unoptimized: run with cargo test --release"
     )]
     fn maps_hardly_z_fight() {
-        use crate::map::procgen::{Look, foundry::Ground};
-        let foundry = |seed, l, g| crate::make_map(crate::MapKind::Foundry(l, g), seed);
-        for (name, map) in [
+        hardly_z_fight([
             ("saltmarket", Map::saltmarket()),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
+            ("mine", Map::mine(0)),
+        ]);
+    }
+
+    /// The same for other sides' cities, and each side's generator in one
+    /// (a test of their own: the suite runs the two side by side).
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn cities_hardly_z_fight() {
+        use crate::faction::Faction;
+        hardly_z_fight([
             (
                 "resonant city",
                 crate::make_map(crate::MapKind::City(crate::map::procgen::Look::Resonant), 0),
             ),
             (
                 "shield-site imperium",
-                Map::shield_city(0, crate::faction::Faction::Imperium),
+                Map::shield_city(0, Faction::Imperium),
             ),
             (
                 "shield-site resonant",
-                Map::shield_city(0, crate::faction::Faction::Resonant),
+                Map::shield_city(0, Faction::Resonant),
             ),
-            (
-                "shield-site uthenn",
-                Map::shield_city(0, crate::faction::Faction::Uthenn),
-            ),
+            ("shield-site uthenn", Map::shield_city(0, Faction::Uthenn)),
             (
                 "shield-site ithessar",
-                Map::shield_city(0, crate::faction::Faction::Ithessar),
+                Map::shield_city(0, Faction::Ithessar),
             ),
+        ]);
+    }
+
+    /// The same for each faction's hull foundry.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn foundries_hardly_z_fight() {
+        use crate::map::procgen::{Look, foundry::Ground};
+        let foundry = |seed, l, g| crate::make_map(crate::MapKind::Foundry(l, g), seed);
+        hardly_z_fight([
             (
                 "foundry imperium",
                 foundry(0, Look::Imperium, Ground::Desert),
@@ -850,8 +872,11 @@ mod tests {
                 "foundry ithessar",
                 foundry(3, Look::Ithessar, Ground::Desert),
             ),
-            ("mine", Map::mine(0)),
-        ] {
+        ]);
+    }
+
+    fn hardly_z_fight<const N: usize>(maps: [(&str, Map); N]) {
+        for (name, map) in maps {
             let fights = map_fights(name, &map);
             let area: f32 = fights.iter().map(|f| f.area).sum();
             let report: Vec<String> = fights

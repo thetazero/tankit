@@ -90,7 +90,7 @@ fn draws_mostly_hold_together() {
         match Layout::generate(&mut rng) {
             Ok(l) => {
                 ok += 1;
-                kinds.insert((l.mines.len(), l.washes.len(), l.buttes.len()));
+                kinds.insert((l.mines.len(), l.land.washes.len(), l.land.buttes.len()));
             }
             Err(line) => *why.entry(line).or_insert(0) += 1,
         }
@@ -118,12 +118,12 @@ fn different_seeds_make_different_mines() {
     let ls: Vec<Layout> = (0..6).map(lay).collect();
     for (i, a) in ls.iter().enumerate() {
         for b in &ls[i + 1..] {
-            let same = a.caves == b.caves && a.lines == b.lines;
+            let same = a.caves().eq(b.caves()) && a.lines == b.lines;
             assert!(!same, "two seeds laid out the same mine");
         }
     }
     let again = lay(1);
-    assert_eq!(again.caves, ls[1].caves);
+    assert!(again.caves().eq(ls[1].caves()));
     assert_eq!(again.lines, ls[1].lines);
 }
 
@@ -234,9 +234,9 @@ fn check_roofs_are_ground_not_slabs(seed: u64) {
     // Over the hall's west end, the west adit and the breach: the roof's
     // top is drawn just where the ground runs on round it.
     for mn in &l.mines {
-        let (wa, br) = (mid(mn.west_adit), mid(mn.breach));
+        let (wa, br) = (mid(mn.west_adit()), mid(mn.breach()));
         for p in [
-            Vec2::new(mn.hall.0.x + 4.0, mid(mn.hall).y),
+            Vec2::new(mn.hall().0.x + 4.0, mid(mn.hall()).y),
             Vec2::new(wa.x, l.face(wa.x) + 10.0),
             Vec2::new(br.x, l.face(br.x) + 14.0),
         ] {
@@ -427,7 +427,7 @@ fn check_levels_stack(seed: u64) {
     for br in &l.bridges {
         let (a, b) = (br.a, br.b);
         let dir = (b - a).normalize();
-        let c = line_at(&l.washes[br.wash].line, br.s).0;
+        let c = line_at(&l.land.washes[br.wash].line, br.s).0;
         let p = a + dir * (c - a).dot(dir);
         assert!(
             (land_on(&w, p, 30.0) - DECK_TOP).abs() < 0.1,
@@ -442,9 +442,9 @@ fn check_levels_stack(seed: u64) {
     let off = Vec2::splat(0.3);
     for mn in &l.mines {
         for p in [
-            Vec2::new(mid(mn.adit).x, mn.bay.0.y + 15.0),
-            Vec2::new(mn.hall.0.x + 2.0, mn.hall.0.y + 11.0),
-            mid(mn.drift),
+            Vec2::new(mid(mn.adit()).x, mn.bay().0.y + 15.0),
+            Vec2::new(mn.hall().0.x + 2.0, mn.hall().0.y + 11.0),
+            mid(mn.drift()),
         ]
         .map(|p| p + off)
         {
@@ -459,7 +459,7 @@ fn check_levels_stack(seed: u64) {
             );
         }
         assert!(
-            land_on(&w, mid(mn.bay), 60.0) > CRAG_TOP - 1.0,
+            land_on(&w, mid(mn.bay()), 60.0) > CRAG_TOP - 1.0,
             "seed {seed}: no Crag"
         );
     }
@@ -486,26 +486,26 @@ fn check_every_spawn_reaches_everything_and_the_sides_are_fair(seed: u64) {
         goals.push((format!("bridge {k}'s far end"), br.b + dir * 6.0));
         goals.push((
             format!("the wash under bridge {k}"),
-            line_at(&l.washes[br.wash].line, br.s - 9.0).0,
+            line_at(&l.land.washes[br.wash].line, br.s - 9.0).0,
         ));
     }
     for (k, mn) in l.mines.iter().enumerate() {
-        let x = mid(mn.adit).x - 10.0;
+        let x = mid(mn.adit()).x - 10.0;
         goals.push((format!("mine {k}'s landing"), Vec2::new(x, l.face(x) - 6.0)));
         goals.push((
             format!("mine {k}'s hall"),
-            Vec2::new(mn.hall.0.x + 2.0, mn.hall.0.y + 14.0),
+            Vec2::new(mn.hall().0.x + 2.0, mn.hall().0.y + 14.0),
         ));
         goals.push((
             format!("the mesa east of mine {k}"),
-            Vec2::new(mn.box_cut.1.x + 26.0, s - 24.0),
+            Vec2::new(mn.box_cut().1.x + 26.0, s - 24.0),
         ));
     }
     goals.push((
         "the mesa's west".into(),
-        Vec2::new(l.west_ramp.1 - 4.0, s - 30.0),
+        Vec2::new(l.land.scarp.as_ref().unwrap().west.1 - 4.0, s - 30.0),
     ));
-    for (k, b) in l.buttes.iter().enumerate() {
+    for (k, b) in l.land.buttes.iter().enumerate() {
         goals.push((format!("butte {k}'s top"), b.center));
     }
     let goals: Vec<(String, Vec2)> = goals.into_iter().map(|(n, p)| (n, open(&nav, p))).collect();
@@ -573,18 +573,18 @@ fn check_ways_are_climbable(seed: u64) {
     for (k, &(a, b)) in l.ways_up.iter().enumerate() {
         ways.push((format!("way up {k}"), a, b));
     }
-    for (k, &(a, b, _)) in l.ramps.iter().enumerate() {
+    for (k, &(a, b, _)) in l.land.hauls.iter().enumerate() {
         ways.push((format!("ramp {k}"), a, b));
     }
-    for (k, &(a, b, _)) in l.fords.iter().enumerate() {
+    for (k, &(a, b, _)) in l.land.fords.iter().enumerate() {
         ways.push((format!("crossing {k}"), a, b));
     }
     for (k, mn) in l.mines.iter().enumerate() {
-        let z = mid(mn.box_cut).y;
+        let z = mid(mn.box_cut()).y;
         ways.push((
             format!("box cut {k}"),
-            Vec2::new(mn.box_cut.0.x - 4.0, z),
-            Vec2::new(mn.box_cut.1.x + 6.0, z),
+            Vec2::new(mn.box_cut().0.x - 4.0, z),
+            Vec2::new(mn.box_cut().1.x + 6.0, z),
         ));
     }
     for (name, a, b) in ways {
@@ -631,21 +631,21 @@ fn check_routes_keep_to_their_level(seed: u64) {
         };
         cases.push((deck(0.15), deck(0.85), DECK_TOP));
         let floor = |u: f32| {
-            let p = line_at(&l.washes[br.wash].line, u).0;
+            let p = line_at(&l.land.washes[br.wash].line, u).0;
             Vec3::new(p.x, m.ground_height(p.x, p.y), p.y)
         };
         cases.push((floor(br.s - 12.0), floor(br.s + 12.0), -WASH_DEPTH));
     }
     for mn in &l.mines {
-        let wa = mid(mn.west_adit);
+        let wa = mid(mn.west_adit());
         cases.push((
-            Vec3::new(wa.x, 0.0, mn.hall.0.y - 10.0),
-            Vec3::new(mn.drift.1.x - 8.0, 0.0, mid(mn.drift).y),
+            Vec3::new(wa.x, 0.0, mn.hall().0.y - 10.0),
+            Vec3::new(mn.drift().1.x - 8.0, 0.0, mid(mn.drift()).y),
             0.0,
         ));
         cases.push((
-            Vec3::new(mn.hall.0.x + 2.0, TOP, mn.hall.0.y + 6.0),
-            Vec3::new(mn.hall.0.x + 2.0, TOP, mn.hall.1.y - 2.0),
+            Vec3::new(mn.hall().0.x + 2.0, TOP, mn.hall().0.y + 6.0),
+            Vec3::new(mn.hall().0.x + 2.0, TOP, mn.hall().1.y - 2.0),
             TOP,
         ));
     }
@@ -700,12 +700,12 @@ fn check_the_crags_stand(seed: u64) {
     let (l, m) = (lay(seed), mine(seed));
     let nav = NavGrid::build(&m);
     for mn in &l.mines {
-        let p = Vec2::new(mn.crag_w + 6.0, mn.hall.0.y - 6.0);
+        let p = Vec2::new(mn.crag.w + 6.0, mn.hall().0.y - 6.0);
         assert!(
             m.ground_height(p.x, p.y) > CRAG_TOP - 1.0,
             "seed {seed}: no Crag at {p}"
         );
-        let top = open(&nav, mid(mn.bay));
+        let top = open(&nav, mid(mn.bay()));
         assert!(
             nav.path(m.bases[0][0], top).is_empty() || l.crag_depth(top) < 0.0,
             "seed {seed}: a way up onto the Crag at {top}"
@@ -1080,7 +1080,7 @@ mod play {
             let has = [
                 !l.bridges.is_empty(),
                 !l.bridges.is_empty(),
-                !l.washes.is_empty(),
+                !l.land.washes.is_empty(),
                 true,
                 true,
                 true,
@@ -1332,10 +1332,11 @@ fn reach_map() {
     let mn = &l.mines[0];
     eprintln!(
         "face at the adit {} adit {:?} west adit {:?} wash at adit {:?}",
-        l.face(mn.adit.0.x),
-        mn.adit,
-        mn.west_adit,
-        l.wash_near(Vec2::new(mn.adit.0.x, l.face(mn.adit.0.x) - 20.0))
+        l.face(mn.adit().0.x),
+        mn.adit(),
+        mn.west_adit(),
+        l.land
+            .wash_near(Vec2::new(mn.adit().0.x, l.face(mn.adit().0.x) - 20.0))
     );
     for j in (0..60).rev() {
         let row: String = (0..60)
@@ -1365,8 +1366,8 @@ fn list_mines() {
             "seed {seed}: {} m, {} mines, {} washes, {} buttes, {} bridges, mirrored {}, turned {}",
             l.size,
             l.mines.len(),
-            l.washes.len(),
-            l.buttes.len(),
+            l.land.washes.len(),
+            l.land.buttes.len(),
             l.bridges.len(),
             l.mirror,
             l.turns

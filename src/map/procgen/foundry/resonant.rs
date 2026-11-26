@@ -85,7 +85,7 @@ impl Works for Resonant {
             s.deck(
                 x,
                 z,
-                (half.0 * (1.0 - u) + 0.2, half.1),
+                (half.0 * (1.0 - u) + 0.2, half.1 - 0.02 * (k % 3) as f32),
                 (y + rise * u, y + rise * (u + 1.0 / n as f32)),
                 p.roof * shade,
                 p.roof_mat,
@@ -215,7 +215,19 @@ impl Works for Resonant {
             for i in 0..3 - row {
                 let x = (i as f32 - (2 - row) as f32 * 0.5) * r * 2.0;
                 let y = r + row as f32 * r * 1.73;
-                s.pipe((x, y, -l), (x, y, l), r, BRONZE, Material::Metal);
+                // (Cast octagonal: two bars, an eighth turned.)
+                let h = r * 0.9;
+                s.beam((x, y, -l), (x, y, l), h * 0.92, BRONZE, Material::Metal);
+                s.beam(
+                    (x, y, -l + 0.06),
+                    (x, y, l - 0.06),
+                    h,
+                    BRONZE,
+                    Material::Metal,
+                );
+                if let Some(o) = s.map.oboxes.last_mut() {
+                    o.roll = std::f32::consts::FRAC_PI_4;
+                }
             }
         }
     }

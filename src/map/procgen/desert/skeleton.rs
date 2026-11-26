@@ -365,6 +365,8 @@ impl Skeleton {
                     floor: WASH_FLOOR,
                     bank: WASH_BANK,
                     depth: WASH_DEPTH,
+                    sway: 0.0,
+                    phase: 0.0,
                 });
                 return;
             }
