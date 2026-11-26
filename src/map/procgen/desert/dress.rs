@@ -27,6 +27,9 @@ mod town;
 #[cfg(test)]
 pub use camp::site;
 
+/// Weathered rock, on the high ground's top.
+const WEATHERED: Vec3 = Vec3::new(0.46, 0.27, 0.18);
+
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
 /// The most ways round a desert lays out for the bots (see `Sand::routes`).
@@ -76,7 +79,7 @@ fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>, drifts: &[
         // The high ground: rock showing through the sand.
         let top =
             smoothstep(high * 0.6, high * 0.95, h) * (0.45 + 0.4 * noise2(x / 9.0, z / 9.0, 92));
-        let rock = crate::map::crag::TOP.lerp(pal.stone, 0.6);
+        let rock = WEATHERED.lerp(pal.stone, 0.6);
         c = c.lerp(rock, top);
         c = c.lerp(pal.stone_dark, smoothstep(0.45, 0.9, slope) * 0.6);
         c = town::paint(sk, p, c, &pal);

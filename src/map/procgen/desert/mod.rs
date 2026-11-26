@@ -27,6 +27,7 @@ use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
+use super::memo::Memo;
 use super::{Biome, Centerpiece, Spec};
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
@@ -106,8 +107,14 @@ pub fn form_of(seed: u64) -> Form {
 }
 
 /// The skeleton `spec` lays out: the first, from its seed on, that has a
-/// fair place for every side's spawns and whose greybox is playable.
+/// fair place for every side's spawns and whose greybox is playable. Worked
+/// out only the first time it's asked for (the last few are kept).
 pub fn skeleton(spec: &Spec) -> Skeleton {
+    static KEPT: Memo<Spec, Skeleton, 8> = Memo::new();
+    KEPT.get(spec, || lay_out(spec))
+}
+
+fn lay_out(spec: &Spec) -> Skeleton {
     let form = form_of(spec.seed);
     let town = spec.biome == Biome::Reservoir;
     let mut last = None;

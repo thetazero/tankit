@@ -10,8 +10,7 @@ use glam::{Vec2, Vec3};
 use crate::combat::{FEED_TIME, Match, Phase, Pilot, RENOWN_POP_TIME, SCRAP_POP_TIME};
 use crate::economy::{self, Payout, Scrapped};
 use crate::faction::Faction;
-use crate::galaxy::Moves;
-use crate::galaxy::theater::{SideChange, TickSummary};
+use crate::galaxy::theater::TickSummary;
 use crate::hold::{self, Control};
 use crate::mission::Contract;
 use crate::profile::{Profile, Rank};
@@ -19,7 +18,7 @@ use crate::raid;
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::sim::Tank;
-use crate::ui::widgets::{self, label};
+use crate::ui::widgets;
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
 use crate::ui::{design, emblem};
 
@@ -963,8 +962,6 @@ fn part_gain(p: &mut Painter, sc: &Scrapped, t: f32, at: Vec2, col: f32) {
     p.text(at + Vec2::X * col, &text, &style, Align::Right);
 }
 
-const BUTTON_H: f32 = design::BUTTON;
-
 /// What your battle did to the war (its site), for the debrief.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarResult {
@@ -1322,33 +1319,6 @@ fn notice(what: &str, title: &str, width: f32, height: f32) -> (Painter, Vec2) {
     (p, at)
 }
 
-/// What moved a side's hulls in the system (#475), signed: what came in,
-/// then what went. None of what didn't happen.
-pub fn causes(m: &Moves) -> Vec<(i64, &'static str)> {
-    let ins = [
-        (m.arrived, "arrived"),
-        (m.hired, "hired"),
-        (m.built, "built"),
-    ];
-    let outs = [
-        (m.lost, "lost"),
-        (m.left, "sent away"),
-        (m.released, "released"),
-    ];
-    let ins = ins.into_iter().map(|(n, w)| (n as i64, w));
-    let outs = outs.into_iter().map(|(n, w)| (-(n as i64), w));
-    ins.chain(outs).filter(|(n, _)| *n != 0).collect()
-}
-
-/// A change in hulls, signed: "+50", "-3", "0".
-fn signed(n: i64) -> String {
-    if n > 0 {
-        format!("+{n}")
-    } else {
-        n.to_string()
-    }
-}
-
 /// What the tick summary screen's showing besides the summary (#475).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SummaryState {
@@ -1361,220 +1331,27 @@ pub struct SummaryState {
     pub hover: Option<Hit>,
 }
 
-/// The tick summary (#475), its own screen between your battle's debrief
-/// and the contract screen: what your battle's tick did to its system. The
-/// sites that changed hands, then each side's hulls there as a bar, what
-/// it lost (or gained) marked on it, and why, small. The contract screen
-/// loads behind it; CONTINUE goes on to it.
+/// What your battle did to its system (#475), a page between its results and
+/// the contract screen, over the system (drawn by `theater_view::scene`). The
+/// contract screen loads behind it; CONTINUE goes on to it.
 pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f32) -> Layer<Hit> {
     let scale = height / REF_HEIGHT;
     let (w, h) = (width / scale, REF_HEIGHT);
     let mut p = Painter::new(scale);
     let mut hits = Hits::new();
-    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.88]);
-
-    // Like flips (same site kind on the same world, between the same
-    // sides) go on one line, counted.
-    let mut flips: Vec<(&crate::galaxy::theater::Flip, usize)> = Vec::new();
-    for f in &t.flips {
-        match flips.iter_mut().find(|(g, _)| *g == f) {
-            Some((_, n)) => *n += 1,
-            None => flips.push((f, 1)),
-        }
-    }
-    let flips_h = if flips.is_empty() {
-        0.0
-    } else {
-        24.0 + flips.len() as f32 * FLIP_ROW + 16.0
-    };
-    let size = Vec2::new(
-        SUMMARY_W,
-        96.0 + flips_h + 24.0 + t.sides.len() as f32 * SIDE_ROW + 16.0 + BUTTON_H + 32.0,
-    );
-    let min = Vec2::new(w * 0.5 - size.x * 0.5, (h * 0.5 - size.y * 0.5).max(16.0));
-    p.rect(min, size, theme::PANEL);
-    widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
-    let x = min.x + 40.0;
-    let right = min.x + size.x - 40.0;
-
-    label(&mut p, Vec2::new(x, min.y + 36.0), "THIS TICK", Align::Left);
-    p.text(
-        Vec2::new(x, min.y + 52.0),
-        &t.name,
-        &TextStyle::value(26.0),
-        Align::Left,
-    );
-    let mut y = min.y + 96.0;
-
-    // Sites that changed hands: where, then who had it and who has it now.
-    if !flips.is_empty() {
-        label(&mut p, Vec2::new(x, y), "CHANGED HANDS", Align::Left);
-        y += 24.0;
-        for (f, n) in flips {
-            let mut s = TextStyle::value(13.0);
-            s.color = theme::FG;
-            let world = crate::galaxy::theater::planet_name(&t.name, f.planet);
-            let what = match n {
-                1 => format!("{world} · {}", f.kind),
-                n => format!("{world} · {} ×{n}", f.kind),
-            };
-            p.text(Vec2::new(x, y), &what, &s, Align::Left);
-            let (from, to) = (Faction::side(f.from), Faction::side(f.to));
-            let mut ms = TextStyle::value(13.0);
-            ms.color = to.ui();
-            let tw = emblem::tagged_width(to.name(), &ms);
-            emblem::tagged(
-                &mut p,
-                Vec2::new(right - tw, y),
-                to,
-                to.name(),
-                &ms,
-                Align::Left,
-            );
-            let ax = right - tw - 22.0;
-            p.polyline(
-                &[
-                    Vec2::new(ax - 4.0, y + 2.0),
-                    Vec2::new(ax + 1.0, y + 6.5),
-                    Vec2::new(ax - 4.0, y + 11.0),
-                ],
-                1.2,
-                theme::DIM,
-            );
-            ms.color = with_alpha(from.ui(), 0.6);
-            emblem::mark(&mut p, Vec2::new(ax - 30.0, y), from, &ms);
-            y += FLIP_ROW;
-        }
-        y += 16.0;
-    }
-
-    // Each side's hulls: a bar to the most any had, before or now.
-    label(&mut p, Vec2::new(x, y), "HULLS", Align::Left);
-    y += 24.0;
-    let most = t
-        .sides
-        .iter()
-        .map(|c| c.before.max(c.now))
-        .max()
-        .unwrap_or(1)
-        .max(1) as f32;
-    let bar_x = x + 150.0;
-    let bar_w = right - 110.0 - bar_x;
-    for c in &t.sides {
-        let (side, n) = who(c);
-        let mut name = TextStyle::value(13.0);
-        name.color = side.ui();
-        let nx = x + if c.merc { MERC_INDENT } else { 0.0 };
-        emblem::tagged(&mut p, Vec2::new(nx, y), side, n, &name, Align::Left);
-        // The bar: now solid, what was lost faint and hot past it, what
-        // came in bright at its end.
-        let by = y + 5.0;
-        let at = |n: u32| bar_x + bar_w * n as f32 / most;
-        p.rect(
-            Vec2::new(bar_x, by),
-            Vec2::new(bar_w, 3.0),
-            with_alpha(theme::FAINT, 0.4),
-        );
-        let keep = c.before.min(c.now);
-        p.rect(
-            Vec2::new(bar_x, by),
-            Vec2::new(at(keep) - bar_x, 3.0),
-            with_alpha(side.ui(), 0.9),
-        );
-        if c.now > c.before {
-            p.rect(
-                Vec2::new(at(c.before), by - 1.0),
-                Vec2::new(at(c.now) - at(c.before), 5.0),
-                theme::FG,
-            );
-        } else if c.before > c.now {
-            p.rect(
-                Vec2::new(at(c.now), by),
-                Vec2::new(at(c.before) - at(c.now), 3.0),
-                with_alpha(theme::HOT, 0.45),
-            );
-        }
-        // Now, and the change.
-        let mut num = TextStyle::value(15.0);
-        num.color = theme::FG;
-        p.text(
-            Vec2::new(right - 56.0, y - 1.0),
-            &c.now.to_string(),
-            &num,
-            Align::Right,
-        );
-        let d = c.now as i64 - c.before as i64;
-        let mut ds = TextStyle::value(12.0);
-        ds.color = if d < 0 {
-            theme::HOT
-        } else if d > 0 {
-            theme::FG
-        } else {
-            theme::DIM
-        };
-        if d != 0 {
-            p.text(Vec2::new(right, y + 1.0), &signed(d), &ds, Align::Right);
-        }
-        // Why, small under the bar.
-        let why: Vec<String> = causes(&c.moves)
-            .iter()
-            .map(|(n, w)| format!("{} {}", n.abs(), w.to_uppercase()))
-            .collect();
-        if !why.is_empty() {
-            let mut l = TextStyle::LABEL;
-            l.color = theme::DIM;
-            p.text(
-                Vec2::new(bar_x, y + 14.0),
-                &why.join(" · "),
-                &l,
-                Align::Left,
-            );
-        }
-        y += SIDE_ROW;
-    }
-
-    // The way on, and a spinner while the contract screen's still loading.
-    let by = min.y + size.y - 32.0 - BUTTON_H;
-    let wait = state.going && state.loading;
-    let go = if wait { "Loading" } else { "Continue" };
-    let size = Vec2::new(design::UNIT * 20.0, BUTTON_H);
-    let bmin = Vec2::new(right - size.x, by);
-    let hover = state.hover == Some(Hit::Continue);
-    design::button(&mut p, bmin, size.x, go, !wait, hover);
-    hits.add(&p, bmin, size, Hit::Continue);
-    if state.loading && state.going {
-        spinner_small(
-            &mut p,
-            Vec2::new(bmin.x - 18.0, by + BUTTON_H * 0.5),
-            state.time,
-        );
+    let ready = !(state.going && state.loading);
+    let lit = state.hover == Some(Hit::Continue);
+    let (min, size) = crate::theater_view::aftermath(&mut p, t, state.time, ready, lit, w, h);
+    hits.add(&p, min, size, Hit::Continue);
+    if !ready {
+        let c = min + Vec2::new(size.x + design::UNIT * 3.0, size.y * 0.5);
+        spinner_small(&mut p, c, state.time);
     }
     Layer {
         verts: p.finish(),
         hits,
     }
 }
-
-/// The tick summary's width, and its rows: a site that changed hands, a side.
-const SUMMARY_W: f32 = 640.0;
-const FLIP_ROW: f32 = 26.0;
-
-/// Whose line it is on the tick summary: the side's, or the company's
-/// under it, working for it.
-fn who(c: &SideChange) -> (Faction, &'static str) {
-    if c.merc {
-        (Faction::Company, "MERCS")
-    } else {
-        let f = Faction::side(c.side);
-        (f, f.name())
-    }
-}
-
-/// How far the mercs' line sits in under the side they work for.
-const MERC_INDENT: f32 = 20.0;
-
-/// A side's line on the tick summary: its name and bar, why under it.
-const SIDE_ROW: f32 = 40.0;
 
 /// `spinner`, small enough to sit beside a label.
 pub fn spinner_small(p: &mut Painter, c: Vec2, time: f32) {

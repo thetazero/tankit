@@ -988,11 +988,22 @@ impl World {
 
     /// Put tank `i` down at `at` facing `yaw`, at rest, turret forward (respawns).
     pub fn teleport(&mut self, i: usize, at: Vec2, yaw: f32) {
-        let y = self.map.ground_height(at.x, at.y) + 0.15;
+        let y = self.map.ground_height(at.x, at.y);
+        self.put(i, Vec3::new(at.x, y, at.y), yaw);
+    }
+
+    /// `teleport`, onto the floor nearest `at`'s height (in a dig).
+    #[cfg(test)]
+    pub fn teleport_near(&mut self, i: usize, at: Vec3, yaw: f32) {
+        let y = self.map.ground_near(at.x, at.y, at.z);
+        self.put(i, Vec3::new(at.x, y, at.z), yaw);
+    }
+
+    fn put(&mut self, i: usize, at: Vec3, yaw: f32) {
         let t = &mut self.tanks[i];
         let b = &mut self.physics.bodies[t.body];
         b.set_position(
-            Pose::from_parts(Vec3::new(at.x, y, at.y), Quat::from_rotation_y(yaw)),
+            Pose::from_parts(at + Vec3::Y * 0.15, Quat::from_rotation_y(yaw)),
             true,
         );
         b.set_linvel(Vec3::ZERO, true);
