@@ -42,15 +42,21 @@ fn shields_cost_the_attacker_a_seat() {
     let open = g.open_fire(s);
     let fire = g.fire(s, t);
     let short = (g.rules.seats - SHIELD_SEATS as f32) / g.rules.seats;
-    assert!((fire[other] - open[other] * short).abs() < 1e-3);
-    assert_eq!(fire[owner], open[owner], "the defender is never short");
+    // (split between the battles each is in)
+    let split = |g: &Galaxy, f: usize| g.open_fire(s)[f] / g.battles_in(s)[f] as f32;
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+    assert!(open[other] > 0.0 && near(fire[other], split(&g, other) * short));
+    assert!(
+        near(fire[owner], split(&g, owner)),
+        "the defender is never short"
+    );
     // Every generator down: no shield, no seat lost.
     for site in &mut g.sites[a as usize..b as usize] {
         if matches!(site.kind, SiteKind::Shield { .. }) {
             site.kind = SiteKind::Shield { damaged: true };
         }
     }
-    assert_eq!(g.fire(s, t)[other], g.open_fire(s)[other]);
+    assert!(near(g.fire(s, t)[other], split(&g, other)));
 }
 
 /// Shields don't stand in the way (#426): an attacker's win takes a site
@@ -978,4 +984,40 @@ fn fleets_take_time_and_land() {
     assert!(g.moves[t][f].arrived >= x.hulls, "not landed");
     assert!(g.fleets.iter().all(|y| y.arrives > g.tick));
     assert!(g.flight(1.0) == 1 && g.flight(g.rules.ftl_speed * 2.5) == 3);
+}
+
+/// A pilot fights one battle a tick: a side's fire's split between the
+/// battles it's in, so all of them together are no more than its one.
+#[test]
+fn a_pilot_fights_one_battle_a_tick() {
+    let mut g = small_war();
+    for _ in 0..40 {
+        g.step();
+    }
+    g.share_pilots();
+    let mut many = 0;
+    for s in 0..g.systems.len() {
+        let n = g.battles_in(s);
+        let open = g.open_fire(s);
+        for f in 0..SIDES {
+            many += (n[f] > 1) as u32;
+            let targets = g.targets(s, f);
+            let whole: f32 = (g.systems[s].sites.0 as usize..g.systems[s].sites.1 as usize)
+                .filter(|&t| {
+                    let attacked =
+                        (0..SIDES).any(|e| g.fighting(s, e) && g.targets(s, e).contains(&t));
+                    attacked
+                        && (g.sites[t].owner as usize == f
+                            || (g.fighting(s, f) && targets.contains(&t)))
+                })
+                .map(|t| g.fire(s, t)[f])
+                .sum();
+            assert!(
+                whole <= open[f] * 1.001 + 1e-3,
+                "system {s} side {f}: {whole} of {}",
+                open[f]
+            );
+        }
+    }
+    assert!(many > 0, "nobody in more than one battle");
 }

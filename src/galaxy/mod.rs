@@ -45,7 +45,8 @@
 //!    sites can't be attacked while its generators are up, so it goes for
 //!    them first, all of them together, to get out from under them. Only so many of a side's hulls fire a tick however big it
 //!    is (`Rules::frontage`), so a world holds out for many ticks.
-//!    Each firing hull needs a pilot (`Galaxy::firing`). Pilots cap fire,
+//!    Each firing hull needs a pilot (`Galaxy::firing`), and a pilot fights
+//!    one battle a tick: a side's are split between all it's in. Pilots cap fire,
 //!    not losses: a pilot who loses a hull takes the next.
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
@@ -427,6 +428,9 @@ pub struct Galaxy {
     pub(crate) savings: f32,
     /// Hulls in flight.
     pub fleets: Vec<Fleet>,
+    /// Scratch: the system whose battles are being fought, and how many each
+    /// side was in as the tick's began.
+    engaged: Option<(usize, [u32; SIDES])>,
     /// What one more hull in each system has lately been worth to its holder,
     /// and its best use this tick (scratch).
     pub(crate) hull_worth: Vec<f32>,
@@ -650,6 +654,7 @@ impl Galaxy {
             lose_old: 0.003,
             savings: 0.0,
             fleets: Vec::new(),
+            engaged: None,
             hull_worth: vec![rules.hull_cost; count],
             hull_use: vec![0.0; count],
             incoming: Default::default(),
@@ -1169,7 +1174,10 @@ impl Galaxy {
         let mut fire = self.open_fire(s);
         // A pilot fights one battle a tick: each side's are split between
         // all it's in.
-        let in_battles = self.battles_in(s);
+        let in_battles = match self.engaged {
+            Some((at, n)) if at == s => n,
+            _ => self.battles_in(s),
+        };
         for f in 0..SIDES {
             fire[f] /= in_battles[f].max(1) as f32;
         }
@@ -1331,6 +1339,7 @@ impl Galaxy {
                 }
                 continue;
             }
+            self.engaged = Some((s, self.battles_in(s)));
             let targets: [Vec<usize>; SIDES] = std::array::from_fn(|f| match war {
                 true if self.fighting(s, f) => self.targets(s, f),
                 _ => Vec::new(),
@@ -1356,6 +1365,7 @@ impl Galaxy {
                 self.fight(s, &o);
             }
         }
+        self.engaged = None;
         // Nobody fought over them: repaired.
         for (site, &fought) in self.sites.iter_mut().zip(&self.assaulted) {
             if let SiteKind::Shield { damaged } = &mut site.kind
