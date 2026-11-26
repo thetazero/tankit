@@ -12,6 +12,7 @@ use crate::economy::{self, Payout, Scrapped};
 use crate::faction::Faction;
 use crate::galaxy::theater::TickSummary;
 use crate::hold::{self, Control};
+use crate::minimap;
 use crate::mission::Contract;
 use crate::profile::{Profile, Rank};
 use crate::raid;
@@ -76,6 +77,8 @@ impl Ledger {
 
 /// Eased values so readouts glide instead of snapping.
 pub struct Hud {
+    /// The map's minimap, if it was generated.
+    chart: Option<minimap::Chart>,
     speed: f32,
     initialized: bool,
     /// The button under the pointer, lit.
@@ -88,6 +91,7 @@ pub struct Hud {
 impl Hud {
     pub fn new() -> Hud {
         Hud {
+            chart: None,
             speed: 0.0,
             initialized: false,
             hover: None,
@@ -147,8 +151,15 @@ impl Hud {
             Align::Left,
         );
 
-        // Top right: kill feed, newest on top, each side in its colour.
-        let tr = Vec2::new(w - MARGIN, MARGIN);
+        // Top right: the minimap, then the kill feed, newest on top, each
+        // side in its colour.
+        let mut tr = Vec2::new(w - MARGIN, MARGIN);
+        minimap::keep(&mut self.chart, &m.world.map);
+        if let Some(c) = self.chart.as_ref().filter(|_| !board) {
+            // (Its edge with the other readouts' plates.)
+            minimap::draw(&mut p, c, m, tanks, tr + Vec2::new(10.0, -10.0));
+            tr.y += minimap::SIZE + 24.0;
+        }
         for (row, k) in m.feed.iter().rev().take(5).enumerate() {
             let fade = ((FEED_TIME - k.age) / 0.8).clamp(0.0, 1.0);
             let y = tr.y + row as f32 * 26.0;

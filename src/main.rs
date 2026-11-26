@@ -23,6 +23,7 @@ mod hud;
 mod keys;
 mod map;
 mod menu;
+mod minimap;
 mod mission;
 mod planet;
 mod profile;
