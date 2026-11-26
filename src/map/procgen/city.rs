@@ -74,6 +74,8 @@ pub enum Form {
     Twin,
     /// One great building toward an edge, at the end of a long avenue.
     Spine,
+    /// Three great buildings, each with its quarter, avenues between them.
+    Quarters,
 }
 
 /// How built up it is.
@@ -104,9 +106,15 @@ impl Plan {
     /// The plan of the city `seed` names, for `sides` sides; one with a
     /// great building, if it's to hold a shield `generator`.
     pub fn of(seed: u64, sides: usize, generator: bool) -> Plan {
-        // Each form in turn, so any four seeds in a row are four forms.
-        let forms = [Form::Radial, Form::Twin, Form::OldTown, Form::Spine];
-        let form = forms[(seed % 4) as usize];
+        // Each form in turn, so any five seeds in a row are five forms.
+        let forms = [
+            Form::Radial,
+            Form::Twin,
+            Form::OldTown,
+            Form::Spine,
+            Form::Quarters,
+        ];
+        let form = forms[(seed % 5) as usize];
         // More than two sides only fit round a middle.
         let form = match form {
             _ if sides > 2 => Form::Radial,
@@ -127,6 +135,8 @@ impl Plan {
         // Two great buildings don't fit in a small city, nor four courts;
         // an old town's never open.
         let extent = match extent {
+            // Three need all the room there is.
+            _ if form == Form::Quarters => Extent::Large,
             Extent::Small if form == Form::Twin || sides > 2 => Extent::Middling,
             e => e,
         };
@@ -255,6 +265,15 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             let d = rng.range(0.17, 0.2);
             vec![turned(-d, d), turned(d, -d)]
         }
+        Form::Quarters => {
+            let a0 = rng.range(0.0, TAU);
+            (0..3)
+                .map(|k| {
+                    let a = a0 + (k as f32 + rng.range(-0.1, 0.1)) * TAU / 3.0;
+                    mid + Vec2::from_angle(a) * size * rng.range(0.22, 0.26)
+                })
+                .collect()
+        }
         Form::Spine => vec![turned(0.0, rng.range(-0.22, -0.17))],
     };
     let heart = at.first().copied().unwrap_or(mid);
@@ -293,6 +312,14 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                     let e = Vec2::from_angle(rng.range(-0.4, 0.4)).rotate(e);
                     ways.push((p, edge_at(p, e), true));
                 }
+            }
+        }
+        Form::Quarters => {
+            for k in 0..3 {
+                ways.push((at[k], at[(k + 1) % 3], false));
+                let d = (at[k] - mid).normalize();
+                let d = Vec2::from_angle(rng.range(-0.3, 0.3)).rotate(d);
+                ways.push((at[k], edge_at(at[k], d), true));
             }
         }
         Form::Spine => {

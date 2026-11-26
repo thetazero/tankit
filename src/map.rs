@@ -633,6 +633,8 @@ pub struct Map {
     pub repair_spots: Vec<Vec2>,
     /// The Hold contract's site; `None` picks the open spot nearest the middle (see `hold`).
     pub hold_site: Option<Vec2>,
+    /// More Hold sites, on at once with it, and what each is called.
+    pub hold_more: Vec<(Vec2, &'static str)>,
     /// Ithessar cores: plasma held in the air between crystal monoliths.
     /// Drawn (and animated) with the effects.
     pub cores: Vec<Core>,
@@ -1042,6 +1044,7 @@ impl Map {
             .chain(self.repair_spots.iter_mut())
             .chain(self.bases.iter_mut().flatten())
             .chain(self.hold_site.iter_mut())
+            .chain(self.hold_more.iter_mut().map(|h| &mut h.0))
             .chain(self.raid_stands.iter_mut())
         {
             *p += by;
@@ -1094,6 +1097,7 @@ impl Map {
             factions: DEFAULT_SIDES.to_vec(),
             repair_spots: Vec::new(),
             hold_site: None,
+            hold_more: Vec::new(),
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),

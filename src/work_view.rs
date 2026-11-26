@@ -12,7 +12,7 @@ use crate::faction::Faction;
 use crate::galaxy::PEOPLES;
 use crate::galaxy::theater::Offer;
 use crate::garage::{self, Loadout};
-use crate::menu::{Hit, Nav};
+use crate::menu::{Hit, Nav, back_at_foot};
 use crate::render::mesh::{Instance, MeshId};
 use crate::render::{Atmosphere, Camera, PointLight, Scene};
 use crate::sim::Tank;
@@ -166,9 +166,7 @@ impl Board {
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.95]);
         design::panel(p, h);
         self.draw_filters(p, hits);
-        let at = Vec2::new(MARGIN, h - MARGIN - SMALL.size);
-        let (min, size) = design::link(p, at, "Back", back_lit);
-        hits.add(p, min, size, Hit::Back);
+        back_at_foot(p, hits, back_lit, h);
 
         let x0 = MARGIN * 3.0 + design::COLUMN;
         let cols = Columns::new(x0, w - MARGIN);
@@ -204,7 +202,12 @@ impl Board {
         let listed = self.listed();
         if listed.is_empty() {
             let at = Vec2::new(x0, y + UNIT * 3.0);
-            p.text(at, "No work like that", &BODY.colored(TEXT_2), Align::Left);
+            let none = if self.offers.is_empty() {
+                "No work"
+            } else {
+                "No work like that"
+            };
+            p.text(at, none, &BODY.colored(TEXT_2), Align::Left);
             return;
         }
         // As many rows as fit, the picked one among them.
@@ -460,14 +463,12 @@ pub fn draw_deal(
     hits: &mut Hits<Hit>,
     o: Option<&Offer>,
     mine: Option<&Offer>,
-    back_lit: bool,
+    (back_lit, sign_lit): (bool, bool),
     w: f32,
     h: f32,
 ) {
     p.set_halo(None);
-    let at = Vec2::new(MARGIN, h - MARGIN - SMALL.size);
-    let (min, size) = design::link(p, at, "Back", back_lit);
-    hits.add(p, min, size, Hit::Back);
+    back_at_foot(p, hits, back_lit, h);
     let mid = w * 0.5;
     let Some(o) = o else {
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 1.0]);
@@ -531,12 +532,10 @@ pub fn draw_deal(
             BLUE,
         );
     }
-    let sign = "Sign on";
-    let at = Vec2::new(mid, top + UNIT * 1.5);
-    let tw = p.text(at, sign, &HEAD.colored(AMBER), Align::Center);
-    let pad = Vec2::splat(UNIT * 3.0);
-    let min = Vec2::new(mid - tw * 0.5, at.y) - pad;
-    hits.add(p, min, Vec2::new(tw, HEAD.size) + pad * 2.0, Hit::Deploy);
+    let size = Vec2::new(UNIT * 26.0, design::BUTTON);
+    let min = Vec2::new(mid - size.x * 0.5, top + UNIT * 1.5);
+    design::button(p, min, size.x, "Sign on", true, sign_lit);
+    hits.add(p, min, size, Hit::Deploy);
 }
 
 #[cfg(test)]
@@ -620,7 +619,7 @@ mod tests {
                 assert!(hits.center_of(Hit::Row(29)).is_some(), "the pick's in view");
                 let o = offer(1, 0, side);
                 let mine = b.mine.as_ref();
-                draw_deal(&mut q, &mut hits, Some(&o), mine, false, w, h);
+                draw_deal(&mut q, &mut hits, Some(&o), mine, (false, false), w, h);
                 assert!(hits.center_of(Hit::Deploy).is_some());
                 assert!(p.finish().iter().chain(&q.finish()).all(|v| {
                     let [x, y] = v.pos;
