@@ -100,6 +100,8 @@ pub struct Plan {
     pub form: Form,
     pub density: Density,
     pub extent: Extent,
+    /// A plasma river runs through it.
+    pub river: bool,
 }
 
 impl Plan {
@@ -148,6 +150,7 @@ impl Plan {
             form,
             density,
             extent,
+            river: false,
         }
     }
 }
@@ -482,6 +485,9 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         platforms: std::mem::take(&mut sk.land.platforms),
         ..Land::rolling(rng, size, &avoid)
     };
+    if plan.river {
+        sk.land.cut_river(rng, size, &avoid);
+    }
 
     if plan.form == Form::OldTown {
         // The square the fight's about, open in the middle.
@@ -542,6 +548,15 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             repairs.push(p);
         }
     }
+    // Nothing stands in a river.
+    let cuts = sk.land.cuts();
+    let wet = |p: Vec2, r: f32| {
+        cuts.iter()
+            .any(|c| c.river && c.local(p).1.abs() < c.floor + c.bank(0.0) + r)
+    };
+    sk.decos.retain(|d| !wet(d.at, d.kind.reach()));
+    sk.spans.retain(|s| !wet(s.at, 8.0));
+    let repairs = repairs.into_iter().filter(|&p| !wet(p, 3.0)).collect();
     sk.repair_spots = repairs;
     level(&mut sk);
     sk
@@ -960,7 +975,14 @@ fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
         let n = (w[0].distance(w[1]) / 2.0).ceil().max(1.0) as i32;
         (0..=n).any(|k| {
             let p = w[0].lerp(w[1], k as f32 / n as f32);
-            sk.bases.iter().any(|b| b.contains(p, half + 3.0))
+            // (Only the plan's roads and the crossings go over a river.)
+            own.is_empty()
+                && sk
+                    .land
+                    .cuts()
+                    .iter()
+                    .any(|c| c.river && c.local(p).1.abs() < c.floor + c.bank(0.0) + half + 1.0)
+                || sk.bases.iter().any(|b| b.contains(p, half + 3.0))
                 || sk.lots.iter().any(|l| l.footprint.distance(p) < half + 1.0)
                 || sk
                     .land
@@ -1227,6 +1249,36 @@ fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let size = sk.size;
     let inside = |p: Vec2| p.min_element() > 0.0 && p.max_element() < size;
     for c in sk.land.cuts() {
+        if c.river {
+            // Plenty of ways over: a short road across, every so often.
+            let mut t = -size;
+            while t < size {
+                t += rng.range(48.0, 78.0);
+                let p = c.point(t);
+                if p.min_element() < 34.0 || p.max_element() > size - 34.0 {
+                    continue;
+                }
+                let d = (c.point(t + 4.0) - c.point(t - 4.0)).normalize_or(Vec2::X);
+                let side = Vec2::from_angle(rng.range(-0.2, 0.2)).rotate(Vec2::new(-d.y, d.x));
+                let reach = c.floor + c.bank(0.0) + 15.0;
+                let half = plan.density.lane().1 + 0.5;
+                let ends = [p - side * reach, p + side * reach];
+                let clear = ends.iter().all(|&q| {
+                    sk.off_plazas(q) > 2.0 && sk.bases.iter().all(|b| !b.contains(q, half + 4.0))
+                });
+                if clear {
+                    sk.streets.push(Street {
+                        from: ends[0],
+                        to: ends[1],
+                        half,
+                        clear: 2.0,
+                        rank: Rank::Lane,
+                        out: false,
+                    });
+                }
+            }
+            continue;
+        }
         if rng.chance(0.2) {
             continue;
         }
@@ -1393,7 +1445,8 @@ fn crossing_at(
     half: f32,
 ) -> Option<crossing::Crossing> {
     let len = a.distance(b);
-    if !(26.0..120.0).contains(&len) || c.local(a).1 * c.local(b).1 > 0.0 {
+    let least = if c.river { 12.0 } else { 26.0 };
+    if !(least..120.0).contains(&len) || c.local(a).1 * c.local(b).1 > 0.0 {
         return None;
     }
     let inside = |p: Vec2| p.min_element() > 14.0 && p.max_element() < sk.size - 14.0;
@@ -1410,7 +1463,7 @@ fn crossing_at(
     }
     if c.height < 0.0 {
         // Room to drive under it.
-        (end - mid > 5.0).then_some(crossing::Crossing {
+        (c.river || end - mid > 5.0).then_some(crossing::Crossing {
             kind: crossing::Kind::Bridge,
             from: a,
             to: b,

@@ -1049,7 +1049,14 @@ impl World {
                 }
             }
             fit_mass(t, &mut self.physics);
-            drive(t, &cmd, &mut self.physics, &self.ground, crowded[i]);
+            drive(
+                t,
+                &cmd,
+                &mut self.physics,
+                &self.ground,
+                &self.map.rivers,
+                crowded[i],
+            );
             turret(t, &cmd, DT);
             t.place_turret_hitbox(&mut self.physics);
             t.since_fire += DT;
@@ -1562,10 +1569,11 @@ fn drive(
     cmd: &Command,
     physics: &mut PhysicsWorld,
     ground: &[ColliderHandle],
+    rivers: &[crate::map::river::River],
     crowded: bool,
 ) {
     if t.chassis.hover {
-        hover(t, cmd, physics);
+        hover(t, cmd, physics, rivers);
         return;
     }
     let c = t.chassis;
@@ -1917,7 +1925,12 @@ fn drive(
 /// Hover drive: each emitter is a spring of plasma against whatever is below
 /// it. Thrust, braking, sideways grip and turning all push through the
 /// cushion, so they fade as the hull lifts off and stop in the air.
-fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
+fn hover(
+    t: &mut Tank,
+    cmd: &Command,
+    physics: &mut PhysicsWorld,
+    rivers: &[crate::map::river::River],
+) {
     let c = t.chassis;
     let (pose, mass) = {
         let b = &physics.bodies[t.body];
@@ -1938,6 +1951,16 @@ fn hover(t: &mut Tank, cmd: &Command, physics: &mut PhysicsWorld) {
             let origin = pose.transform_point(c.mount(i));
             if let Some((_, h)) = qp.cast_ray_and_get_normal(&Ray::new(origin, -up), reach, true) {
                 *hit = Some((origin, h.normal, h.time_of_impact));
+            }
+            // A plasma river's surface is as good as ground to it.
+            let over = Vec2::new(origin.x, origin.z);
+            if up.y > 0.3
+                && let Some(y) = rivers.iter().find_map(|r| r.surface(over, 0.0))
+            {
+                let d = (origin.y - y).max(0.0) / up.y;
+                if d < reach && hit.is_none_or(|(_, _, t)| d < t) {
+                    *hit = Some((origin, Vec3::Y, d));
+                }
             }
         }
     }

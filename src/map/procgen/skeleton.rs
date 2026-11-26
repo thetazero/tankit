@@ -605,7 +605,12 @@ impl Skeleton {
             .squares
             .iter()
             .any(|s| s.center.distance(p) < s.radius + 4.0);
-        street || plaza || square
+        let river = self
+            .land
+            .cuts()
+            .iter()
+            .any(|c| c.river && c.local(p).1.abs() < c.floor + c.bank(0.0) + 1.2);
+        street || plaza || square || river
     }
 
     /// A blank map the size of the arena, for `factions`, with the
@@ -788,6 +793,7 @@ impl Skeleton {
             roof: Vec3::splat(0.5),
             land: Vec3::splat(0.3),
         };
+        map.rivers = self.land.rivers(self.size);
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));
         }

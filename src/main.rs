@@ -754,7 +754,10 @@ fn parse_args() -> Result<Args> {
                 look = Some(match args.next().as_deref() {
                     Some("imperium") => map::procgen::Look::Imperium,
                     Some("resonant") => map::procgen::Look::Resonant,
-                    other => bail!("--look expects imperium or resonant, got {other:?}"),
+                    Some("ithessar") => map::procgen::Look::Ithessar,
+                    other => {
+                        bail!("--look expects imperium, resonant or ithessar, got {other:?}")
+                    }
                 })
             }
             "--generator-down" => {

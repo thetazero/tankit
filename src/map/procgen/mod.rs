@@ -70,7 +70,8 @@ impl Look {
     pub fn of(founder: Faction) -> Look {
         match founder {
             Faction::Resonant => Look::Resonant,
-            Faction::Ithessar => Look::Ithessar,
+            // (Theirs are coming: rivers so far, see `Look::Ithessar`.)
+            Faction::Ithessar => Look::Imperium,
             Faction::Imperium | Faction::Uthenn | Faction::Company => Look::Imperium,
         }
     }
@@ -162,7 +163,9 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
     type Key = (u64, usize, city::Plan);
     static CACHE: LazyLock<Mutex<HashMap<Key, Skeleton>>> = LazyLock::new(Default::default);
     let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
-    let plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
+    let mut plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
+    // Their cities run on one.
+    plan.river = spec.look == Look::Ithessar;
     let key = (spec.seed, spec.sides.len(), plan);
     if let Some(sk) = CACHE.lock().unwrap().get(&key) {
         return sk.clone();
@@ -275,6 +278,32 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     for c in &sk.crossings {
         c.build(&mut map, st.stone(), |p| sk.ground(p));
+    }
+    map.rivers = sk.land.rivers(sk.size);
+    for r in &map.rivers {
+        let boxes = r.lining(
+            |p| sk.ground(p),
+            |p| {
+                sk.streets
+                    .iter()
+                    .any(|s| s.rank != skeleton::Rank::Beyond && s.distance(p) < s.half + 0.8)
+            },
+        );
+        map.oboxes.extend(boxes);
+        // Lit from below, and heard.
+        for w in r.points.iter().step_by(6) {
+            if w.x > -20.0 && w.z > -20.0 && w.x < sk.size + 20.0 && w.z < sk.size + 20.0 {
+                map.lights.push(crate::render::PointLight {
+                    pos: *w + glam::Vec3::Y * 4.0,
+                    color: glam::Vec3::new(1.0, 0.16, 0.52) * 26.0,
+                    radius: 34.0,
+                });
+                map.sounds.push(super::Emitter {
+                    kind: super::Ambient::River,
+                    at: *w,
+                });
+            }
+        }
     }
     for (k, b) in sk.bases.iter().enumerate() {
         let mark = skeleton::Mark::of(&map);
@@ -1066,6 +1095,38 @@ mod tests {
             for l in &sk.landmarks {
                 let (c, g) = (l.center, sk.ground(l.center));
                 println!("great {seed} {:?} {:.0} {:.0} {g:.1}", l.kind, c.x, c.y);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn where_rivers() {
+        for seed in 0..10 {
+            let spec = crate::city_spec(seed, Look::Ithessar);
+            let sk = skeleton(&spec);
+            let m = build(&spec).0;
+            let r = &m.rivers[0];
+            let mid = r
+                .points
+                .iter()
+                .min_by(|a, b| {
+                    let d = |p: &glam::Vec3| Vec2::new(p.x, p.z).distance(sk.heart);
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap();
+            let bridges = sk.crossings.len();
+            println!(
+                "river {seed} size {} nearest {:.0} {:.1} {:.0} half {:.1} bridges {bridges} {:?}",
+                sk.size,
+                mid.x,
+                mid.y,
+                mid.z,
+                r.half,
+                check::playable(&m)
+            );
+            for c in &sk.crossings {
+                println!("  bridge {:.0} to {:.0}", c.from, c.to);
             }
         }
     }

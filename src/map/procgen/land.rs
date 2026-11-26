@@ -60,7 +60,13 @@ pub struct Cut {
     bank: f32,
     sway: f32,
     phase: f32,
+    /// A plasma river's channel: its banks the same all along.
+    pub river: bool,
 }
+
+/// How deep a river's channel is, and its surface below its rim.
+const CHANNEL: f32 = 3.8;
+const SURFACE: f32 = 1.5;
 
 impl Cut {
     /// How far its line is off its straight course, `t` along it.
@@ -83,6 +89,9 @@ impl Cut {
 
     /// How wide the bank is there: steep here, easy there.
     pub fn bank(&self, t: f32) -> f32 {
+        if self.river {
+            return self.bank;
+        }
         let u = 0.5 + 0.5 * (t / 47.0 + self.phase * 2.3).sin();
         self.bank * (1.0 + 1.7 * u * u)
     }
@@ -611,6 +620,59 @@ pub struct Land {
 }
 
 impl Land {
+    /// A plasma river's channel cut across it, winding, kept off `avoid`.
+    pub fn cut_river(&mut self, rng: &mut Rng, size: f32, avoid: &[(Vec2, f32)]) {
+        let mid = Vec2::splat(size * 0.5);
+        let mut best: Option<(f32, Cut)> = None;
+        for _ in 0..200 {
+            let c = Cut {
+                at: mid + Vec2::from_angle(rng.range(0.0, TAU)) * size * rng.range(0.0, 0.25),
+                dir: Vec2::from_angle(rng.range(0.0, TAU)),
+                height: -CHANNEL,
+                floor: rng.range(8.0, 11.0),
+                bank: 4.5,
+                sway: rng.range(22.0, 38.0),
+                phase: rng.range(0.0, TAU),
+                river: true,
+            };
+            let room = avoid
+                .iter()
+                .map(|&(p, r)| c.local(p).1.abs() - r - c.floor - c.bank)
+                .fold(f32::MAX, f32::min);
+            if best.as_ref().is_none_or(|b| room > b.0) {
+                best = Some((room, c));
+            }
+            if room > 4.0 {
+                break;
+            }
+        }
+        if let Some((_, c)) = best {
+            self.swells.push(Swell::Cut(c));
+        }
+    }
+
+    /// The plasma rivers in it, across a place `size` across and on out.
+    pub fn rivers(&self, size: f32) -> Vec<crate::map::river::River> {
+        self.cuts()
+            .into_iter()
+            .filter(|c| c.river)
+            .map(|c| {
+                let reach = (size * 0.5 + 260.0) / 4.0;
+                let points = (-reach as i32..=reach as i32)
+                    .map(|k| {
+                        let p = c.point(k as f32 * 4.0);
+                        let y = self.base(p) - c.height - SURFACE;
+                        glam::Vec3::new(p.x, y, p.y)
+                    })
+                    .collect();
+                crate::map::river::River {
+                    points,
+                    half: c.floor + c.bank * 0.45,
+                }
+            })
+            .collect()
+    }
+
     /// The lie of a city `size` across: up to two valleys or ridges right
     /// across it, kept off `avoid` (places, and how far round them), and
     /// hills and a tilt, low where those are.
@@ -640,6 +702,7 @@ impl Land {
                 bank: h * rng.range(1.1, 1.7),
                 sway: rng.range(4.0, 16.0),
                 phase: rng.range(0.0, TAU),
+                river: false,
             };
             let reach = c.floor + c.bank * 1.4;
             let ease = tries as f32 / 300.0 * 14.0;
