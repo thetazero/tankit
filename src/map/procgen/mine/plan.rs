@@ -14,7 +14,7 @@ use crate::map::procgen::check;
 use crate::map::procgen::crossing::{Crossing, Kind};
 use crate::map::procgen::desert::skeleton::RAMP_RUN;
 use crate::map::procgen::land::*;
-use crate::map::procgen::mine::line_distance;
+use crate::map::procgen::mine::{SHED_HALF, line_at, line_distance, line_len};
 use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
@@ -161,6 +161,81 @@ fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Optio
     Some(over)
 }
 
+/// A warehouse on a spur off the first track, and where along the track its
+/// trains load, wherever there's room for each.
+fn works(
+    rng: &mut Rng,
+    land: &mut Land,
+    tracks: &[Vec<Vec2>],
+    crossings: &[Crossing],
+    size: f32,
+) -> (Option<Spur>, Option<f32>) {
+    let Some(track) = tracks.first() else {
+        return (None, None);
+    };
+    let out = track[0].distance(track[1]);
+    let total = line_len(track, 2);
+    let off_bridges = |s: f32, r: f32| {
+        let (p, _) = line_at(track, s);
+        crossings.iter().all(|x| x.distance(p) > r)
+    };
+    let fits = |s: &Spur| {
+        let (at, along) = s.shed;
+        let across = along.perp();
+        let n = 6;
+        (0..=n).all(|i| {
+            (0..=n).all(|k| {
+                let u = (i as f32 * 2.0 / n as f32 - 1.0) * (SHED_HALF.x + 12.0);
+                let v = (k as f32 * 2.0 / n as f32 - 1.0) * (SHED_HALF.y + 12.0);
+                let p = at + across * u + along * v;
+                p.min_element() > 6.0
+                    && p.max_element() < size - 6.0
+                    && land.plateau(p) > 12.0
+                    && land.wash_distance(p) > 18.0
+                    && tracks[1..].iter().all(|t| line_distance(t, p) > 8.0)
+            })
+        })
+    };
+    let mut spots = Vec::new();
+    let mut s = out + 45.0;
+    while s < total - 30.0 {
+        for side in [-1.0, 1.0] {
+            if off_bridges(s, 12.0) {
+                spots.push((s, side));
+            }
+        }
+        s += 5.0;
+    }
+    let mut spur = None;
+    while spur.is_none() && !spots.is_empty() {
+        let (s, side) = spots.swap_remove(rng.index(spots.len()));
+        spur = Some(super::layout::spur(track, s, side)).filter(|s| fits(s));
+    }
+    if let Some(s) = &spur {
+        let dunes = land.dunes.as_mut().unwrap();
+        dunes.calm.push((s.shed.0, 30.0, 44.0));
+        for p in &s.line {
+            dunes.calm.push((*p, 7.0, 16.0));
+        }
+    }
+    // The tipple: clear of the junction and the bridges, its train too.
+    let mut loading = None;
+    let mut s = out + 20.0;
+    while loading.is_none() && s < total - 50.0 {
+        let clear = [0.0, 10.0, 22.0, 28.0]
+            .iter()
+            .all(|d| off_bridges(s + d, 10.0))
+            && spur
+                .as_ref()
+                .is_none_or(|j| !(s - 24.0..s + 50.0).contains(&j.junction));
+        if clear {
+            loading = Some(s);
+        }
+        s += 4.0;
+    }
+    (spur, loading)
+}
+
 /// A mine for `sides` sides, if this draw holds together.
 fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     let size = 2.0 * rng.int(125, 160) as f32;
@@ -283,6 +358,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         }
     }
 
+    let (spur, loading) = works(rng, &mut land, &tracks, &crossings, size);
+
     // Ways up, square to the cliff, off the digs.
     let run = land.high.height * RAMP_RUN;
     let mut tries = 0;
@@ -310,6 +387,9 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
                 let q = ramp.foot.lerp(ramp.top, i as f32 / 8.0);
                 tracks.iter().all(|t| line_distance(t, q) > RAMP_HALF + 6.0)
                     && land.wash_distance(q) > RAMP_HALF + 16.0
+                    && spur
+                        .as_ref()
+                        .is_none_or(|s| s.shed.0.distance(q) > RAMP_HALF + 30.0)
             });
         if inside && clear {
             land.high.ramps.push(ramp);
@@ -344,8 +424,13 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         heart,
         tracks,
         crossings,
+        spur,
+        loading,
         ..Skeleton::default()
     };
+    if sk.shed_distance(heart) < 16.0 {
+        return Err("the Hold site's by the warehouse".into());
+    }
     let nav = NavGrid::build(&sk.greybox(sides));
     if !sk.place_bases(rng, sides.len(), &nav) {
         return Err("no fair spawns".into());

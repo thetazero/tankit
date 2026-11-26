@@ -40,8 +40,18 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
         l: &sk,
         st,
     };
-    for t in &sk.tracks {
-        b.rails(t, false);
+    if sk.spur.is_some() {
+        b.railroad();
+        b.warehouse(&mut rng);
+    } else {
+        for t in &sk.tracks {
+            b.rails(t, false);
+        }
+    }
+    if let Some(s) = sk.loading {
+        let (at, dir) = sk.track_at(s);
+        b.tipple_at(at, dir);
+        b.loaded_train(s);
     }
     for x in &sk.crossings {
         b.rail_bridge(x);

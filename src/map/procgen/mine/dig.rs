@@ -2267,6 +2267,8 @@ impl Dig<'_> {
         // Rails, in runs of up to 6 m following the ground, broken at the
         // line's bends.
         let mut s = if branch { 1.0 } else { 0.0 };
+        // (Solid ground has finer bumps than a terrain.)
+        let run = if self.solid.is_some() { 2.0 } else { 6.0 };
         let bends: Vec<f32> = (1..line.len()).map(|k| line_len(line, k)).collect();
         while s < total - 0.01 {
             let next_bend = bends
@@ -2274,7 +2276,7 @@ impl Dig<'_> {
                 .copied()
                 .find(|&b| b > s + 0.01)
                 .unwrap_or(total);
-            let e = (s + 6.0).min(next_bend);
+            let e = (s + run).min(next_bend);
             let (pa, dir) = line_at(line, s + 0.001);
             let (pb, _) = line_at(line, e - 0.001);
             let (ya, yb) = (y_at(self, s) + 0.16, y_at(self, e - 0.001) + 0.16);
@@ -2827,14 +2829,18 @@ impl Dig<'_> {
     /// The ore train, stopped on the flats headed out: the locomotive, two
     /// ore cars behind it under the tipple. Far down the line, two cars off
     /// the rails, one on its side, its load spilled out of it.
-    pub(super) fn ore_train(&mut self, rng: &mut Rng) {
-        let lay = self.l;
-        let s0 = lay.track_len(3) + 6.0;
-        // Ore cars under and past the tipple, then the loco ahead (south).
+    /// Ore cars under and past the tipple `s0` m along the first track, then
+    /// the loco ahead.
+    pub(super) fn loaded_train(&mut self, s0: f32) {
         for (s, loco) in [(s0, false), (s0 + 10.0, false), (s0 + 22.0, true)] {
-            let (p, dir) = lay.track_at(s);
+            let (p, dir) = self.l.track_at(s);
             self.rail_car(p, yaw_along(dir), 0.0, loco);
         }
+    }
+
+    pub(super) fn ore_train(&mut self, rng: &mut Rng) {
+        let lay = self.l;
+        self.loaded_train(lay.track_len(3) + 6.0);
         // The wreck, far down the line, off the side away from the branch.
         let away = -lay.branch_side();
         let (p, dir) = lay.track_at(lay.track_len(5) - 10.0);
@@ -2869,6 +2875,12 @@ impl Dig<'_> {
     pub(super) fn tipple(&mut self) {
         let lay = self.l;
         let (at, dir) = lay.track_at(lay.track_len(3) + 6.0);
+        self.tipple_at(at, dir);
+    }
+
+    /// A tipple over the track at `at`, which runs along `dir`.
+    pub(super) fn tipple_at(&mut self, at: Vec2, dir: Vec2) {
+        let lay = self.l;
         let g = self.ground_height(at.x, at.y);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
