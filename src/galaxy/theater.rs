@@ -34,6 +34,7 @@
 
 use super::{AT_WAR, Galaxy, PEOPLES, SIDES, SiteKind};
 use crate::faction::Faction;
+use crate::map::procgen::Look;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
 use crate::rng::Rng;
@@ -406,11 +407,11 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City | MapKind::Mine | MapKind::Desert => self == Class::Desert,
+            MapKind::City(_) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
             MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
                 self == Class::Placeholder
             }
-            MapKind::ShieldCity(_) | MapKind::ShieldSite(_) | MapKind::ShieldDesert(_) => false,
+            MapKind::ShieldCity(_) | MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
         }
     }
 
@@ -418,7 +419,7 @@ impl Class {
     /// fought over on.
     pub fn shields_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::ShieldSite(_) => true,
+            MapKind::ShieldSite(..) => true,
             MapKind::ShieldDesert(_) => self == Class::Desert,
             _ => false,
         }
@@ -514,10 +515,16 @@ impl SiteView {
             },
         };
         match kind {
-            MapKind::ShieldSite(_) => MapKind::ShieldSite(made),
+            MapKind::ShieldSite(..) => MapKind::ShieldSite(Look::of(self.founder()), made),
             MapKind::ShieldDesert(_) => MapKind::ShieldDesert(made),
             kind => kind,
         }
+    }
+
+    /// Who built the place, whoever holds it now: a city's in their style.
+    pub fn founder(&self) -> Faction {
+        let mut r = Rng::new(self.map_seed ^ 0xF0_07DE);
+        Faction::ALL[r.index(Faction::ALL.len())]
     }
 
     /// A damaged generator (#422): its shield's down until it's working again.
@@ -1585,7 +1592,7 @@ mod tests {
             match (s.kind, s.map_kind()) {
                 (
                     SiteKind::Shield { damaged },
-                    MapKind::ShieldSite(made) | MapKind::ShieldDesert(made),
+                    MapKind::ShieldSite(_, made) | MapKind::ShieldDesert(made),
                 ) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
                     assert_eq!(made.owner, Faction::side(s.owner));
@@ -1598,7 +1605,7 @@ mod tests {
                 }
                 (SiteKind::Shield { .. }, k) => panic!("a generator fought on {k:?}"),
                 (_, k) => assert!(
-                    !matches!(k, MapKind::ShieldSite(_) | MapKind::ShieldDesert(_)),
+                    !matches!(k, MapKind::ShieldSite(..) | MapKind::ShieldDesert(_)),
                     "{k:?}"
                 ),
             }
@@ -1661,6 +1668,13 @@ mod tests {
         for (x, y) in a.iter().zip(&b) {
             assert_eq!((x.mission, x.map_seed), (y.mission, y.map_seed));
         }
+        // Whoever takes it, the city's its founder's.
+        let shield = a.iter().find(|s| s.is_shield()).unwrap();
+        let taken = SiteView {
+            owner: (shield.owner + 1) % SIDES,
+            ..*shield
+        };
+        assert_eq!(shield.founder(), taken.founder());
         let seeds: std::collections::HashSet<u64> = a.iter().map(|s| s.map_seed).collect();
         assert_eq!(seeds.len(), a.len());
     }
