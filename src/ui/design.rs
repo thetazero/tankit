@@ -1,5 +1,5 @@
 //! The design system, v0 (`docs/design.md`): the tokens and components every
-//! screen is to be made from. Only the main menu and the contract page are so far; the rest still
+//! screen is to be made from. Settings, the garage and the HUD still
 //! use `theme` and `widgets`.
 
 use glam::Vec2;
@@ -28,8 +28,10 @@ pub const COLUMN: f32 = UNIT * 27.0;
 /// From one action to the next.
 pub const ACTION: f32 = UNIT * 7.0;
 
-// Type: one light, wide face in capitals, three sizes.
+// Type: one light, wide face in capitals, four sizes.
 
+/// The one thing a page is about.
+pub const TITLE: TextStyle = style(26.0);
 /// What the screen's about.
 pub const HEAD: TextStyle = style(17.0);
 const ACTION_TEXT: TextStyle = HEAD;

@@ -24,7 +24,7 @@ use crate::economy::{Part, Payout};
 use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
 use crate::galaxy::save::War;
-use crate::galaxy::theater::{Shown, Sortie, TickSummary};
+use crate::galaxy::theater::{Offer, Shown, Sortie, TickSummary};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -519,7 +519,7 @@ impl ApplicationHandler for App {
                 };
                 self.garage.scroll(-lines * 60.0);
             }
-            // The companies screen's list of ships scrolls (#454).
+            // The board of work scrolls (#454).
             WindowEvent::MouseWheel { delta, .. } if self.mode == Mode::Menu => {
                 self.wheel += match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
@@ -768,8 +768,7 @@ impl App {
         self.profile.set_shown(shown);
     }
 
-    /// Keep the companies screen's ships to switch to the galaxy's, while
-    /// it's showing (#365).
+    /// Keep the board of work the galaxy's, while it's showing (#365).
     fn sync_ships(&mut self) {
         if !self.menu.wants_ships() {
             return;
@@ -777,11 +776,8 @@ impl App {
         let rank = self.profile.rank().level;
         let g = self.war.get();
         adopt(g, &mut self.profile);
-        self.menu.set_ships(g.other_ships());
-        // A ship's contract, previewed before you sign on (#453).
-        if let Some(id) = self.menu.wants_contract() {
-            self.menu.set_contract(g.contract_of(id, rank));
-        }
+        let mine = g.aboard(rank).and_then(|t| Offer::of(&t));
+        self.menu.board.set(g.open_work(rank), mine);
     }
 
     /// Leave your company for ship `id` (#365), then on to its theater.
@@ -1633,6 +1629,8 @@ impl App {
                 crate::cluster_view::scene(c, time, w / h)
             } else if let (Some(t), Some(sys)) = (system, &self.system) {
                 theater_view::scene(sys, t, self.menu.transfer(), self.menu_time, w / h)
+            } else if let Some((o, time)) = self.menu.deal().filter(|_| menu_up) {
+                crate::work_view::scene(art, &driven, queued, o, time, w / h)
             } else {
                 let mut scene = scene::build(&self.game.world, &tanks, art, camera);
                 self.game.effect_instances(alpha, &mut scene.instances);
@@ -1654,7 +1652,10 @@ impl App {
                                 .draw(&self.profile, w, h, 1.0 - self.garage.presence());
                         let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
                         // The dip around a backdrop swap, under the panel.
-                        let mut ui = if system.is_some() || self.menu.cluster().is_some() {
+                        let mut ui = if system.is_some()
+                            || self.menu.cluster().is_some()
+                            || self.menu.deal().is_some()
+                        {
                             Vec::new()
                         } else {
                             backdrop_dip(self.backdrop_dark, w, h)
