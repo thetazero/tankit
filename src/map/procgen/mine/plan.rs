@@ -304,6 +304,82 @@ fn works(
     (spur, loading)
 }
 
+/// Each side's spawns, as far from each other's as the ground allows (near
+/// enough): nobody starts in sight of anybody. Not a word about how far
+/// each is from the fight. False if there's no such choice.
+fn spawns(sk: &mut Skeleton, rng: &mut Rng, sides: usize, nav: &NavGrid) -> bool {
+    let size = sk.size;
+    let land = &sk.land;
+    let mut sites: Vec<Vec2> = Vec::new();
+    for _ in 0..1500 {
+        let m = PAD + 6.0;
+        let p = Vec2::new(rng.range(m, size - m), rng.range(m, size - m));
+        let ok = land.plateau(p).abs() > PAD + 4.0
+            && land.tower_distance(p) > PAD + 5.0
+            && land.ramp_distance(p) > PAD + 10.0
+            && land.wash_distance(p) > PAD + 18.0
+            && land
+                .digs
+                .iter()
+                .all(|d| d.distance(p) > 10.0 && (d.at - d.facing * 12.0).distance(p) > PAD + 14.0)
+            && land.mounds.iter().all(|m| m.at.distance(p) > PAD + 34.0)
+            && sk.tracks.iter().all(|t| line_distance(t, p) > PAD + 4.0)
+            && sk.shed_distance(p) > PAD + 10.0
+            && sk.heart.distance(p) > size * 0.25;
+        if ok && !nav.path(p, sk.heart).is_empty() {
+            sites.push(p);
+        }
+        if sites.len() >= 60 {
+            break;
+        }
+    }
+    // Start from each, adding whichever's farthest from all so far.
+    let mut best: Option<(f32, Vec<Vec2>)> = None;
+    for &first in &sites {
+        let mut pick = vec![first];
+        while pick.len() < sides {
+            let gap = |p: &Vec2| {
+                pick.iter()
+                    .map(|q| q.distance(*p))
+                    .fold(f32::INFINITY, f32::min)
+            };
+            let Some(next) = sites
+                .iter()
+                .copied()
+                .max_by(|a, b| gap(a).total_cmp(&gap(b)))
+            else {
+                return false;
+            };
+            pick.push(next);
+        }
+        let spread = (0..sides)
+            .flat_map(|i| (0..i).map(move |j| (i, j)))
+            .map(|(i, j)| pick[i].distance(pick[j]))
+            .fold(f32::INFINITY, f32::min);
+        // (Any of the farther ones will do, not always the corners.)
+        let score = spread * rng.range(0.88, 1.0);
+        if best.as_ref().is_none_or(|b| score > b.0) {
+            best = Some((score, pick));
+        }
+    }
+    let Some((_, pick)) = best else { return false };
+    let apart = if sides <= 2 { 0.68 } else { 0.4 };
+    let far = (0..sides)
+        .flat_map(|i| (0..i).map(move |j| (i, j)))
+        .all(|(i, j)| pick[i].distance(pick[j]) > size * apart);
+    if !far {
+        return false;
+    }
+    for &at in &pick {
+        sk.land.high.level.push((at, PAD, PAD + 22.0));
+        if let Some(d) = &mut sk.land.dunes {
+            d.calm.push((at, PAD - 4.0, PAD + 14.0));
+        }
+    }
+    sk.bases = pick.into_iter().map(|at| Base::pad(at, PAD)).collect();
+    true
+}
+
 /// A mine for `sides` sides, if this draw holds together.
 fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     let size = 2.0 * rng.int(125, 160) as f32;
@@ -319,12 +395,13 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         ..Land::default()
     };
     land.high.height = rng.range(11.5, 13.0);
-    land.high.relief = rng.range(4.0, 7.0);
+    land.high.relief = rng.range(11.0, 16.0);
     land.high.talus = rng.range(2.5, 4.0);
 
     // The cliff: right across, past the edges, bending on the way.
     let along = Vec2::from_angle(rng.range(0.0, TAU));
-    let off = along.perp() * rng.range(0.0, size * 0.12);
+    // (Less of it high than low.)
+    let off = along.perp() * rng.range(0.04, 0.16) * size;
     let n = rng.int(7, 10);
     let reach = size * 0.75;
     // Two long swings and whatever it does on the way.
@@ -341,6 +418,49 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         .collect();
     let line = eased(&pts);
     land.high.slabs.push(Slab::Behind { line: line.clone() });
+
+    // Canyons cut back into it, on through it or blind.
+    for _ in 0..rng.int(1, 2) {
+        let (from, into) = place(&line, rng.range(0.2, 0.8), 14.0);
+        let mut at = from - into * 14.0;
+        let mut dir = Vec2::from_angle(rng.range(-0.4, 0.4)).rotate(into);
+        let mut way = vec![at];
+        let bend = rng.range(-0.12, 0.12);
+        let long = rng.range(60.0, 170.0);
+        let mut gone = 0.0;
+        while gone < long {
+            dir = Vec2::from_angle(bend + rng.range(-0.25, 0.25)).rotate(dir);
+            at += dir * 12.0;
+            gone += 12.0;
+            way.push(at);
+        }
+        land.high.channels.push(Channel {
+            line: eased(&way),
+            half: rng.range(8.0, 12.0),
+        });
+    }
+    // Mesas out on the floor.
+    let mut tries = 0;
+    let mut mesas = Vec::new();
+    let want = rng.int(1, 3) as usize;
+    while mesas.len() < want && tries < 120 {
+        tries += 1;
+        let radius = rng.range(9.0, 18.0);
+        let c = Vec2::new(rng.range(0.1, 0.9), rng.range(0.1, 0.9)) * size;
+        let apart = mesas
+            .iter()
+            .all(|&(q, r): &(Vec2, f32)| q.distance(c) > r + radius + 35.0);
+        if land.plateau(c) > radius * 1.25 + 36.0 && apart {
+            mesas.push((c, radius));
+        }
+    }
+    for (center, radius) in mesas {
+        land.high.slabs.push(Slab::Island {
+            center,
+            radius,
+            phase: rng.range(0.0, TAU),
+        });
+    }
 
     // Digs along it.
     let want = rng.int(1, 3) as usize;
@@ -477,6 +597,25 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         }
     }
 
+    // Lesser rocks standing about on the top.
+    let mut tries = 0;
+    let want = land.towers.len() + rng.int(3, 6) as usize;
+    while land.towers.len() < want && tries < 200 {
+        tries += 1;
+        let t = Tower {
+            center: Vec2::new(rng.range(0.06, 0.94), rng.range(0.06, 0.94)) * size,
+            radius: rng.range(5.0, 11.0),
+            height: rng.range(7.0, 15.0),
+            phase: rng.range(0.0, TAU),
+        };
+        let r = t.radius * 1.25;
+        let inside = t.center.min_element() > r + 8.0 && t.center.max_element() < size - r - 8.0;
+        if inside && land.plateau(t.center) < -(r + 6.0) && land.tower_distance(t.center) > r + 22.0
+        {
+            land.towers.push(t);
+        }
+    }
+
     let (spur, loading) = works(rng, &mut land, &tracks, &crossings, size);
 
     // The dump, out on the floor.
@@ -578,8 +717,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         return Err("the Hold site's by the warehouse".into());
     }
     let nav = NavGrid::build(&sk.greybox(sides));
-    if !sk.place_bases(rng, sides.len(), &nav) {
-        return Err("no fair spawns".into());
+    if !spawns(&mut sk, rng, sides.len(), &nav) {
+        return Err("no room to spawn apart".into());
     }
     sk.place_lots(rng, Form::Escarpment);
     // The seam along a wash's floor, a rig cutting it, off the bridges and
@@ -667,5 +806,14 @@ mod tests {
             all.iter().any(|sk| sk.land.digs.len() > 1),
             "never two digs"
         );
+        for sk in &all {
+            let h = sk.heart;
+            assert!(
+                h.min_element() > 40.0 && h.max_element() < sk.size - 40.0,
+                "{h}"
+            );
+            let b = sk.base_spots();
+            assert!(b[0].distance(b[1]) > sk.size * 0.68, "{b:?}");
+        }
     }
 }

@@ -317,6 +317,8 @@ pub struct High {
     pub ramps: Vec<Ramp>,
     /// How far its top rolls up and down, m.
     pub relief: f32,
+    /// Where its top is kept level: (middle, level inside, rolling outside).
+    pub level: Vec<(Vec2, f32, f32)>,
     /// How high fallen rock lies against its cliffs' feet, m.
     pub talus: f32,
 }
@@ -1078,9 +1080,18 @@ impl Land {
             0.0
         };
         if high.relief > 0.0 {
-            let roll =
-                0.7 * noise2(p.x / 46.0, p.y / 46.0, 74) + 0.3 * noise2(p.x / 17.0, p.y / 17.0, 75);
-            top += high.relief * roll * off_ramps;
+            let hills = noise2(p.x / 58.0, p.y / 58.0, 74);
+            let ridge = 1.0 - (2.0 * noise2(p.x / 40.0, p.y / 40.0, 80) - 1.0).abs();
+            let small = noise2(p.x / 15.0, p.y / 15.0, 75);
+            let roll = 0.5 * hills + 0.38 * ridge * ridge + 0.12 * small;
+            let level = high
+                .level
+                .iter()
+                .map(|&(c, r0, r1)| smoothstep(r0, r1, c.distance(p)))
+                .fold(off_ramps, f32::min);
+            // (Low again along the lip.)
+            let lip = smoothstep(0.0, 16.0, -s);
+            top += high.relief * roll * level * (0.35 + 0.65 * lip);
         }
         h += high
             .ramps
