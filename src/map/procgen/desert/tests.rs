@@ -189,6 +189,14 @@ fn the_shield_desert_comes_with_any_sides_generator() {
     use crate::map::procgen::shield;
     for (k, owner) in Faction::ALL.into_iter().enumerate() {
         let seed = SEEDS[k];
+        let damaged = crate::Generator {
+            owner,
+            condition: shield::Condition::DAMAGED,
+        };
+        let m = build(&crate::shield_desert_spec(seed, damaged));
+        if let Err(why) = crate::map::procgen::check::playable(&m) {
+            panic!("damaged {owner:?} seed {seed}: {why}");
+        }
         let spec = crate::shield_desert_spec(seed, crate::Generator::up(owner));
         let what = format!("{owner:?} seed {seed} ({:?})", form_of(seed));
         let sk = skeleton(&spec);

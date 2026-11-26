@@ -2295,15 +2295,11 @@ impl Galaxy {
             };
             let fare = self.voyage(co.hulls, d(to)).min(co.crystals.max(0.0));
             let fly = self.flight(d(to));
-            let from = co.at;
             self.books.sailing += fare as f64;
             let co = &mut self.companies[c];
             co.crystals -= fare;
             co.at = to as u32;
             co.idle_since = self.tick + fly;
-            if self.crew == Some(co.id) {
-                self.crew_news = Some(super::theater::CrewNews::Sailed { from });
-            }
             self.books.sailed += 1;
             went += 1;
         }

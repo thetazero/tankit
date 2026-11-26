@@ -24,8 +24,9 @@
 //! the nearest war to look for work when it's idle too long
 //! (`Galaxy::seek_work`, #355).
 //!
-//! **Maps.** A shield generator is fought over on the shield city (#341), a
-//! Hold for the generator: its holder's model, in the shape the site's in
+//! **Maps.** A shield generator is fought over on the shield city (#341), or
+//! on a desert world perhaps the shield desert (#337), a Hold for the
+//! generator: its holder's model, in the shape the site's in
 //! (up, wrecked, or going back up as it's repaired). Every other site is
 //! fought on one of the missions' maps for its planet's class (`Class`),
 //! picked at random, and on a generated kind the one map its seed names
@@ -192,8 +193,6 @@ impl Shown {
 pub enum CrewNews {
     /// It joined another (yours now): `from` was its id.
     Joined { from: u32 },
-    /// It had no work for long, and sailed from system `from` for some.
-    Sailed { from: u32 },
     /// It's gone, and the Company put you with another: `from` was its id.
     Gone { from: u32 },
     /// It split in two, and you went with this half: `other` is the other's id.
@@ -415,6 +414,16 @@ impl Class {
             MapKind::ShieldCity(_) | MapKind::ShieldSite(_) | MapKind::ShieldDesert(_) => false,
         }
     }
+
+    /// Whether a mission's map is one this class's shield generators are
+    /// fought over on.
+    pub fn shields_on(self, kind: MapKind) -> bool {
+        match kind {
+            MapKind::ShieldSite(_) => true,
+            MapKind::ShieldDesert(_) => self == Class::Desert,
+            _ => false,
+        }
+    }
 }
 
 /// Planet `planet` of system `system`, the same for every pilot: its
@@ -483,18 +492,22 @@ impl SiteView {
     /// The map it's fought on: its mission's, and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
-        match (self.kind, MISSIONS[self.mission].map_kind) {
-            (SiteKind::Shield { damaged }, MapKind::ShieldSite(_)) => {
-                MapKind::ShieldSite(Generator {
-                    owner: Faction::side(self.owner),
-                    condition: if damaged {
-                        Condition::DAMAGED
-                    } else {
-                        Condition::Up
-                    },
-                })
-            }
-            (_, kind) => kind,
+        let kind = MISSIONS[self.mission].map_kind;
+        let SiteKind::Shield { damaged } = self.kind else {
+            return kind;
+        };
+        let made = Generator {
+            owner: Faction::side(self.owner),
+            condition: if damaged {
+                Condition::DAMAGED
+            } else {
+                Condition::Up
+            },
+        };
+        match kind {
+            MapKind::ShieldSite(_) => MapKind::ShieldSite(made),
+            MapKind::ShieldDesert(_) => MapKind::ShieldDesert(made),
+            kind => kind,
         }
     }
 
@@ -1068,7 +1081,7 @@ impl Galaxy {
         let commits = self.commits(s, f);
         let enemies = self.site_enemies(s, f);
         let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(c));
-        let shield = crate::mission::for_shields();
+        let shields = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_shields(c));
         let sites: Vec<SiteView> = self
             .site_range(s)
             .map(|i| {
@@ -1076,9 +1089,21 @@ impl Galaxy {
                 let owner = site.owner as usize;
                 let enemy = enemies[i - sys.sites.0 as usize];
                 let mut r = Rng::new(self.seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-                let pool = match world(s, site.planet as usize).0 {
-                    Class::Desert => &pools[0],
-                    Class::Placeholder => &pools[1],
+                let class = match world(s, site.planet as usize).0 {
+                    Class::Desert => 0,
+                    Class::Placeholder => 1,
+                };
+                // A generator's mission is drawn after its map's seed.
+                let (mission, map_seed) = match site.kind {
+                    SiteKind::Shield { .. } => {
+                        let map_seed = r.next_u64();
+                        let pool = &shields[class];
+                        (pool[r.index(pool.len())], map_seed)
+                    }
+                    _ => {
+                        let pool = &pools[class];
+                        (pool[r.index(pool.len())], r.next_u64())
+                    }
                 };
                 SiteView {
                     index: i,
@@ -1088,11 +1113,8 @@ impl Galaxy {
                     contested: contested.contains(&i),
                     committed: commits.contains(&i),
                     enemy,
-                    mission: match site.kind {
-                        SiteKind::Shield { .. } => shield,
-                        _ => pool[r.index(pool.len())],
-                    },
-                    map_seed: r.next_u64(),
+                    mission,
+                    map_seed,
                 }
             })
             .collect();
@@ -1302,7 +1324,8 @@ mod tests {
         assert_ne!(to as u32, at);
         assert!(g.systems[to].at_war());
         assert!(g.companies[c].idle_since > g.tick, "not there yet");
-        assert_eq!(g.crew_news, Some(CrewNews::Sailed { from: at }));
+        // The contract card doesn't tell you it sailed (#499).
+        assert_eq!(g.crew_news, None);
     }
 
     /// Waiting for work a slice at a time (#452, a few ticks a frame) ends
@@ -1547,15 +1570,17 @@ mod tests {
         assert!(names.len() > 150, "{} names", names.len());
     }
 
-    /// A shield generator is fought over on the shield city, a Hold for
-    /// it, its holder's model in the shape it's in (#341); nothing else is.
+    /// A shield generator is fought over on a shield map, a Hold for it,
+    /// its holder's model in the shape it's in (#341); nothing else is.
     #[test]
-    fn generators_are_fought_over_on_the_shield_city() {
-        let mut g = galaxy();
-        let t = g.await_work_staying(None, 1, 400).0.unwrap();
-        for s in &t.sites {
+    fn generators_are_fought_over_on_shield_maps() {
+        let g = galaxy();
+        for s in (0..g.systems.len()).flat_map(|sys| g.theater_at(sys, 0).sites) {
             match (s.kind, s.map_kind()) {
-                (SiteKind::Shield { damaged }, MapKind::ShieldSite(made)) => {
+                (
+                    SiteKind::Shield { damaged },
+                    MapKind::ShieldSite(made) | MapKind::ShieldDesert(made),
+                ) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
                     assert_eq!(made.owner, Faction::side(s.owner));
                     let shape = if damaged {
@@ -1566,7 +1591,10 @@ mod tests {
                     assert_eq!(made.condition, shape);
                 }
                 (SiteKind::Shield { .. }, k) => panic!("a generator fought on {k:?}"),
-                (_, k) => assert!(!matches!(k, MapKind::ShieldSite(_)), "{k:?}"),
+                (_, k) => assert!(
+                    !matches!(k, MapKind::ShieldSite(_) | MapKind::ShieldDesert(_)),
+                    "{k:?}"
+                ),
             }
         }
     }
@@ -1591,24 +1619,30 @@ mod tests {
     }
 
     /// A desert world's sites are generated, a placeholder's hand-built;
-    /// a shield generator is the shield city on either.
+    /// a shield generator is the shield city on either, or on a desert
+    /// world the shield desert.
     #[test]
     fn a_sites_map_is_its_worlds_class() {
         let g = galaxy();
         let mut seen = [false; 2];
+        let mut shields = [0; 2];
         for sys in 0..g.systems.len() {
             for s in &g.theater_at(sys, 0).sites {
                 let class = world(sys, s.planet as usize).0;
                 seen[class as usize] = true;
                 let kind = s.map_kind();
                 if s.is_shield() {
-                    assert!(matches!(kind, MapKind::ShieldSite(_)), "{kind:?}");
+                    assert!(class.shields_on(kind), "{class:?} on {kind:?}");
+                    if class == Class::Desert {
+                        shields[matches!(kind, MapKind::ShieldDesert(_)) as usize] += 1;
+                    }
                 } else {
                     assert!(class.fights_on(kind), "{class:?} on {kind:?}");
                 }
             }
         }
         assert_eq!(seen, [true; 2], "both classes of world have sites");
+        assert!(shields.iter().all(|&n| n > 0), "{shields:?}");
     }
 
     /// A site is one place: the same map each time it's looked at, and
