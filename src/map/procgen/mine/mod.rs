@@ -33,8 +33,9 @@ use super::{Look, Spec};
 use crate::map::Map;
 use crate::rng::Rng;
 
+pub use super::land::Butte;
 pub(in crate::map) use dig::Dig;
-pub use layout::{Bridge, Butte, Layout, Mine};
+pub use layout::{Bridge, Layout, Mine};
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
@@ -63,8 +64,6 @@ pub const CAVE_WALL: f32 = 2.4;
 pub const WASH_DEPTH: f32 = 7.0;
 /// The wash's banks, from the floor's edge to the top.
 const WASH_BANK: f32 = 5.0;
-/// How far a crossing's ramp runs, from the top down to the floor.
-const FORD_RUN: f32 = 21.0;
 pub const DECK_HALF: f32 = 3.6;
 pub const DECK_TOP: f32 = 0.25;
 const DECK_T: f32 = 1.0;

@@ -15,7 +15,7 @@ use std::f32::consts::TAU;
 
 use glam::Vec2;
 
-use super::mine::{line_distance, seg};
+use super::mine::{line_at, line_distance, line_len, seg};
 use super::skeleton::{Platform, smoothstep};
 use crate::map::OBox;
 use crate::map::valley::{noise, noise2};
@@ -24,6 +24,8 @@ use crate::rng::Rng;
 /// The high ground falls to the floor over this far out from its edge
 /// (under the cliff face, which stands over it).
 pub const EDGE_FALL: f32 = 2.2;
+/// How far a crossing's ramp runs, from the top down to the floor.
+const FORD_RUN: f32 = 21.0;
 /// The cliff's foot line: this far out from the high ground's edge.
 pub const FOOT: f32 = 1.6;
 /// A ramp's half-width, its sides falling away past it.
@@ -236,13 +238,16 @@ pub struct High {
     pub ramps: Vec<Ramp>,
 }
 
-/// A dry wash cut into the floor along `line`.
+/// A dry wash cut into the floor along `line`, its floor `floor` m either
+/// side of it, narrowing and widening by `sway` as it winds.
 #[derive(Clone, Debug)]
 pub struct Wash {
     pub line: Vec<Vec2>,
     pub floor: f32,
     pub bank: f32,
     pub depth: f32,
+    pub sway: f32,
+    pub phase: f32,
 }
 
 impl Wash {
@@ -250,10 +255,59 @@ impl Wash {
         line_distance(&self.line, p)
     }
 
+    /// Half the floor's width, `s` m along it.
+    pub fn half(&self, s: f32) -> f32 {
+        self.floor + self.sway * (0.08 * s + self.phase).sin()
+    }
+
     /// How deep it's cut at `p`.
     pub fn cut(&self, p: Vec2) -> f32 {
-        let d = self.distance(p);
-        self.depth * (1.0 - smoothstep(self.floor, self.floor + self.bank, d))
+        let (d, s) = self.near(p);
+        let half = self.half(s);
+        self.depth * (1.0 - smoothstep(half, half + self.bank, d))
+    }
+
+    /// Distance from its line, and how far along it the nearest point is.
+    pub fn near(&self, p: Vec2) -> (f32, f32) {
+        let (mut best, mut at, mut acc) = (f32::INFINITY, 0.0, 0.0);
+        for w in self.line.windows(2) {
+            let len = w[0].distance(w[1]);
+            let (d, t) = seg(p, w[0], w[1]);
+            if d < best {
+                best = d;
+                at = acc + t * len;
+            }
+            acc += len;
+        }
+        (best, at)
+    }
+
+    /// Its line `s` m along it, its way along, and the normal to the right
+    /// of that.
+    pub fn frame(&self, s: f32) -> (Vec2, Vec2, Vec2) {
+        let (p, t) = line_at(&self.line, s);
+        (p, t, Vec2::new(t.y, -t.x))
+    }
+
+    pub fn len(&self) -> f32 {
+        line_len(&self.line, self.line.len() - 1)
+    }
+
+    /// The stretch of it inside an arena `size` across (from, to, along it).
+    pub fn inside(&self, size: f32) -> (f32, f32) {
+        let total = self.len();
+        let mut lo = None;
+        let mut hi = 0.0;
+        let mut u = 0.0;
+        while u < total {
+            let (p, _) = line_at(&self.line, u);
+            if p.min_element() > 4.0 && p.max_element() < size - 4.0 {
+                lo.get_or_insert(u);
+                hi = u;
+            }
+            u += 1.0;
+        }
+        (lo.unwrap_or(0.0), hi)
     }
 }
 
@@ -300,6 +354,93 @@ impl Dunes {
     }
 }
 
+/// A flat-topped rock standing on the flats, steep all round but for the
+/// ramp up one side.
+#[derive(Clone, Copy, Debug)]
+pub struct Butte {
+    pub center: Vec2,
+    pub radius: f32,
+    pub height: f32,
+    /// The way up: out from the middle this way.
+    pub ramp: Vec2,
+    pub phase: f32,
+}
+
+/// How far a butte's ramp runs out from its rim (m per m of height): 15
+/// degrees.
+const BUTTE_RUN: f32 = 3.7;
+/// Its ramp's half-width.
+const BUTTE_RAMP: f32 = 4.5;
+
+impl Butte {
+    /// Its rim's distance from the middle, this way out.
+    pub fn rim(&self, dir: Vec2) -> f32 {
+        let a = dir.y.atan2(dir.x);
+        self.radius * (1.0 + 0.16 * (3.0 * a + self.phase).sin() + 0.07 * (5.0 * a).sin())
+    }
+
+    /// Its ground's height at `p`.
+    pub fn height_at(&self, p: Vec2) -> f32 {
+        let d = p - self.center;
+        let r = d.length();
+        if r < 1e-3 {
+            return self.height;
+        }
+        let rim = self.rim(d / r);
+        let body = self.height * (1.0 - smoothstep(rim, rim + 2.2, r));
+        // The ramp: down from the rim along `ramp`, its sides falling away.
+        let along = d.dot(self.ramp);
+        let across = d.perp_dot(self.ramp).abs();
+        let rr = self.rim(self.ramp);
+        let run = self.height * BUTTE_RUN;
+        let ramp = if along > 0.0 {
+            self.height
+                * (1.0 - ((along - rr) / run).clamp(0.0, 1.0))
+                * (1.0 - smoothstep(BUTTE_RAMP, BUTTE_RAMP + 2.5, across))
+        } else {
+            0.0
+        };
+        body.max(ramp)
+    }
+
+    /// Its way up: from the ramp's foot to the top.
+    pub fn way(&self) -> (Vec2, Vec2) {
+        let rr = self.rim(self.ramp);
+        (
+            self.center + self.ramp * (rr + self.height * BUTTE_RUN + 3.0),
+            self.center + self.ramp * (rr * 0.3),
+        )
+    }
+
+    /// Its outline's distance from `p` (negative inside), ramp and all.
+    pub fn distance(&self, p: Vec2) -> f32 {
+        let d = p - self.center;
+        let r = d.length().max(1e-3);
+        let body = r - self.rim(d / r) - 2.2;
+        let (a, b) = self.way();
+        body.min(seg(p, a, b).0 - BUTTE_RAMP - 2.5)
+    }
+}
+
+/// A fin of rock standing out of the ground, `height` m, from `a` to `b`.
+#[derive(Clone, Copy, Debug)]
+pub struct Fin {
+    pub a: Vec2,
+    pub b: Vec2,
+    pub height: f32,
+}
+
+impl Fin {
+    fn height_at(&self, p: Vec2) -> f32 {
+        let (d, t) = seg(p, self.a, self.b);
+        // Ragged along the top, tapering at the ends.
+        let h = self.height
+            * (0.75 + 0.25 * (t * 19.0 + self.a.x).sin())
+            * smoothstep(0.0, 0.15, t.min(1.0 - t) + 0.05);
+        h * (1.0 - smoothstep(1.2, 3.6, d))
+    }
+}
+
 /// Smooth max and min, blending over `k`.
 fn smax(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (a - b) / k).clamp(0.0, 1.0);
@@ -318,6 +459,13 @@ pub struct Land {
     pub platforms: Vec<Platform>,
     pub high: High,
     pub washes: Vec<Wash>,
+    /// Haul ramps down into the washes: from the top to the floor, and half
+    /// their width.
+    pub hauls: Vec<(Vec2, Vec2, f32)>,
+    /// Crossings of the washes: down one bank and up the other.
+    pub fords: Vec<(Vec2, Vec2, f32)>,
+    pub buttes: Vec<Butte>,
+    pub fins: Vec<Fin>,
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
 }
@@ -485,7 +633,8 @@ impl Land {
             h += d.at(p) * self.drift(d, p, s) * (0.3 + 0.7 * low);
         }
         let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
-        h + (bowls - self.wash_cut(p)) * low
+        h += (bowls - self.wash_cut(p)) * low + self.butte(p) + self.fin(p);
+        self.graded(p, h)
     }
 
     /// How much of the dunes is left at `p` (`s`: the plateau's distance):
@@ -532,6 +681,69 @@ impl Land {
     /// On the high ground (well in from its edge).
     pub fn on_high(&self, p: Vec2) -> bool {
         self.plateau(p) < -2.0
+    }
+
+    /// The ground with the haul ramps and the crossings cut into the washes.
+    pub fn graded(&self, p: Vec2, g: f32) -> f32 {
+        let mut g = g;
+        for &(s, e, half) in &self.hauls {
+            let len = s.distance(e);
+            let u = (e - s) / len;
+            let rel = p - s;
+            let (a, c) = (rel.dot(u), rel.perp_dot(u).abs());
+            if a < -2.0 || a > len + 6.0 || c > half + 3.0 {
+                continue;
+            }
+            let floor = -self.wash_cut(e);
+            let h = floor * (a / len).clamp(0.0, 1.0);
+            let k = (1.0 - smoothstep(half, half + 2.5, c))
+                * (1.0 - smoothstep(len + 2.0, len + 6.0, a));
+            g += (h - g) * k;
+        }
+        for &(s, e, half) in &self.fords {
+            let len = s.distance(e);
+            let u = (e - s) / len;
+            let rel = p - s;
+            let (a, c) = (rel.dot(u), rel.perp_dot(u).abs());
+            if a < -3.0 || a > len + 3.0 || c > half + 6.0 {
+                continue;
+            }
+            // Down from either top to the floor, flat across the floor; its
+            // sides laid back, not cut sheer.
+            let floor = -self.wash_cut(s.lerp(e, 0.5));
+            let h = floor * (a.min(len - a) / FORD_RUN).clamp(0.0, 1.0);
+            let k = (1.0 - smoothstep(half, half + 6.0, c))
+                * smoothstep(-3.0, 0.0, a)
+                * smoothstep(-3.0, 0.0, len - a);
+            g += (h - g) * k;
+        }
+        g
+    }
+
+    /// How high the fins stand at `p`.
+    pub fn fin(&self, p: Vec2) -> f32 {
+        self.fins.iter().map(|f| f.height_at(p)).fold(0.0, f32::max)
+    }
+
+    /// How high the buttes stand at `p`.
+    pub fn butte(&self, p: Vec2) -> f32 {
+        self.buttes
+            .iter()
+            .map(|b| b.height_at(p))
+            .fold(0.0, f32::max)
+    }
+
+    /// The nearest wash to `p`: how far its line is, and half its floor's
+    /// width there.
+    pub fn wash_near(&self, p: Vec2) -> (f32, f32) {
+        self.washes
+            .iter()
+            .map(|w| {
+                let (d, s) = w.near(p);
+                (d, w.half(s))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap_or((f32::INFINITY, 0.0))
     }
 
     /// How deep the washes are cut at `p`.

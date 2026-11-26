@@ -90,7 +90,7 @@ fn draws_mostly_hold_together() {
         match Layout::generate(&mut rng) {
             Ok(l) => {
                 ok += 1;
-                kinds.insert((l.mines.len(), l.washes.len(), l.buttes.len()));
+                kinds.insert((l.mines.len(), l.land.washes.len(), l.land.buttes.len()));
             }
             Err(line) => *why.entry(line).or_insert(0) += 1,
         }
@@ -427,7 +427,7 @@ fn check_levels_stack(seed: u64) {
     for br in &l.bridges {
         let (a, b) = (br.a, br.b);
         let dir = (b - a).normalize();
-        let c = line_at(&l.washes[br.wash].line, br.s).0;
+        let c = line_at(&l.land.washes[br.wash].line, br.s).0;
         let p = a + dir * (c - a).dot(dir);
         assert!(
             (land_on(&w, p, 30.0) - DECK_TOP).abs() < 0.1,
@@ -486,7 +486,7 @@ fn check_every_spawn_reaches_everything_and_the_sides_are_fair(seed: u64) {
         goals.push((format!("bridge {k}'s far end"), br.b + dir * 6.0));
         goals.push((
             format!("the wash under bridge {k}"),
-            line_at(&l.washes[br.wash].line, br.s - 9.0).0,
+            line_at(&l.land.washes[br.wash].line, br.s - 9.0).0,
         ));
     }
     for (k, mn) in l.mines.iter().enumerate() {
@@ -505,7 +505,7 @@ fn check_every_spawn_reaches_everything_and_the_sides_are_fair(seed: u64) {
         "the mesa's west".into(),
         Vec2::new(l.west_ramp.1 - 4.0, s - 30.0),
     ));
-    for (k, b) in l.buttes.iter().enumerate() {
+    for (k, b) in l.land.buttes.iter().enumerate() {
         goals.push((format!("butte {k}'s top"), b.center));
     }
     let goals: Vec<(String, Vec2)> = goals.into_iter().map(|(n, p)| (n, open(&nav, p))).collect();
@@ -573,10 +573,10 @@ fn check_ways_are_climbable(seed: u64) {
     for (k, &(a, b)) in l.ways_up.iter().enumerate() {
         ways.push((format!("way up {k}"), a, b));
     }
-    for (k, &(a, b, _)) in l.ramps.iter().enumerate() {
+    for (k, &(a, b, _)) in l.land.hauls.iter().enumerate() {
         ways.push((format!("ramp {k}"), a, b));
     }
-    for (k, &(a, b, _)) in l.fords.iter().enumerate() {
+    for (k, &(a, b, _)) in l.land.fords.iter().enumerate() {
         ways.push((format!("crossing {k}"), a, b));
     }
     for (k, mn) in l.mines.iter().enumerate() {
@@ -631,7 +631,7 @@ fn check_routes_keep_to_their_level(seed: u64) {
         };
         cases.push((deck(0.15), deck(0.85), DECK_TOP));
         let floor = |u: f32| {
-            let p = line_at(&l.washes[br.wash].line, u).0;
+            let p = line_at(&l.land.washes[br.wash].line, u).0;
             Vec3::new(p.x, m.ground_height(p.x, p.y), p.y)
         };
         cases.push((floor(br.s - 12.0), floor(br.s + 12.0), -WASH_DEPTH));
@@ -1080,7 +1080,7 @@ mod play {
             let has = [
                 !l.bridges.is_empty(),
                 !l.bridges.is_empty(),
-                !l.washes.is_empty(),
+                !l.land.washes.is_empty(),
                 true,
                 true,
                 true,
@@ -1335,7 +1335,8 @@ fn reach_map() {
         l.face(mn.adit.0.x),
         mn.adit,
         mn.west_adit,
-        l.wash_near(Vec2::new(mn.adit.0.x, l.face(mn.adit.0.x) - 20.0))
+        l.land
+            .wash_near(Vec2::new(mn.adit.0.x, l.face(mn.adit.0.x) - 20.0))
     );
     for j in (0..60).rev() {
         let row: String = (0..60)
@@ -1365,8 +1366,8 @@ fn list_mines() {
             "seed {seed}: {} m, {} mines, {} washes, {} buttes, {} bridges, mirrored {}, turned {}",
             l.size,
             l.mines.len(),
-            l.washes.len(),
-            l.buttes.len(),
+            l.land.washes.len(),
+            l.land.buttes.len(),
             l.bridges.len(),
             l.mirror,
             l.turns

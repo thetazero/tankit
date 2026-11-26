@@ -226,7 +226,7 @@ impl Dig<'_> {
         self.dump_cover(&mut rng);
         self.warehouse(&mut rng);
         self.fins_and_hoodoos(&mut rng);
-        for b in &lay.buttes {
+        for b in &lay.land.buttes {
             self.butte(b, &mut rng);
         }
         self.flats_cover(&mut rng);
@@ -269,7 +269,7 @@ impl Dig<'_> {
         let g = self.ground_height(at.x, at.y);
         found.push((Ambient::Hull, Vec3::new(at.x, g + 2.5, at.y)));
         for b in &lay.bridges {
-            let (p, _) = line_at(&lay.washes[b.wash].line, b.s);
+            let (p, _) = line_at(&lay.land.washes[b.wash].line, b.s);
             found.push((Ambient::River, Vec3::new(p.x, -6.5, p.y)));
         }
         for (kind, at) in found {
@@ -376,7 +376,7 @@ impl Dig<'_> {
             });
             level
                 && !under
-                && lay.wash_near(p).0 > 13.0
+                && lay.land.wash_near(p).0 > 13.0
                 && !blocked(sun, 300.0)
                 && !blocked(Vec3::Y, 60.0)
         };
@@ -657,7 +657,8 @@ impl Dig<'_> {
                 .any(|b| seg(p, b.a, b.b).0 < DECK_HALF + 2.0)
                 || !self.room(p, 2.0)
                 || lay
-                    .ramps
+                    .land
+                    .hauls
                     .iter()
                     .any(|&(s, e, hw)| seg(p, s, e + (e - s).normalize() * 4.0).0 < hw + 4.0)
             {
@@ -670,7 +671,7 @@ impl Dig<'_> {
         for (u, side) in [(6.0, 1.0), (66.0, -1.0f32)] {
             let (p, t) = line_at(&line, u);
             // Toward the bank, off the way down the floor's middle.
-            let (_, half) = lay.wash_profile(lay.wash_near(p).1);
+            let (_, half) = lay.land.wash_near(p);
             let p = p + t.perp() * side * (half - 1.8);
             if !self.room(p, 1.0) {
                 continue;
@@ -2355,7 +2356,7 @@ impl Dig<'_> {
         // Ten meters apart: room to drive between them, and either side of
         // where the wash's middle runs under the deck (the way along its
         // floor).
-        let cross = (line_at(&lay.washes[br.wash].line, br.s).0 - a).dot(dir);
+        let cross = (line_at(&lay.land.washes[br.wash].line, br.s).0 - a).dot(dir);
         let mut t = cross - 5.0;
         while t - 10.0 >= 4.0 {
             t -= 10.0;
@@ -2413,18 +2414,17 @@ impl Dig<'_> {
     pub(super) fn wash_rocks(&mut self, rng: &mut Rng, seam: &[(Vec2, f32)]) {
         let lay = self.l;
         let mut placed = 0;
-        if lay.washes.is_empty() {
+        if lay.land.washes.is_empty() {
             return;
         }
         for _ in 0..600 {
-            if placed >= 13 * lay.washes.len() {
+            if placed >= 13 * lay.land.washes.len() {
                 break;
             }
-            let w = &lay.washes[rng.index(lay.washes.len())].line;
+            let w = &lay.land.washes[rng.index(lay.land.washes.len())].line;
             let k = rng.index(w.len() - 1);
             let p = w[k].lerp(w[k + 1], rng.f32());
-            let (_, along) = lay.wash_near(p);
-            let (_, half) = lay.wash_profile(along);
+            let (_, half) = lay.land.wash_near(p);
             let dir = (w[k + 1] - w[k]).normalize().perp();
             // Toward one side, so the middle of the floor stays a way through.
             let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
@@ -2436,9 +2436,10 @@ impl Dig<'_> {
                     .iter()
                     .any(|b| seg(q, b.a, b.b).0 < DECK_HALF + 3.0)
                 || lay
-                    .ramps
+                    .land
+                    .hauls
                     .iter()
-                    .chain(&lay.fords)
+                    .chain(&lay.land.fords)
                     .any(|&(s, e, h)| seg(q, s, e).0 < h + 3.0)
                 || self.on_way(q)
                 || self
@@ -3158,7 +3159,11 @@ impl Dig<'_> {
             let q = Vec2::new(p.x, p.z);
             if f != over_end
                 && (lay.track_distance(q) < DECK_HALF + 4.0
-                    || lay.ramps.iter().any(|&(s, e, h)| seg(q, s, e).0 < h + 3.0)
+                    || lay
+                        .land
+                        .hauls
+                        .iter()
+                        .any(|&(s, e, h)| seg(q, s, e).0 < h + 3.0)
                     || self.on_way(q))
             {
                 continue;
@@ -3818,7 +3823,7 @@ impl Dig<'_> {
             self.oboxes.extend([base, waist, cap]);
         }
         // The fins' rock, standing out of the sand drifted against them.
-        for &(a, b, _) in &lay.fins {
+        for &crate::map::procgen::land::Fin { a, b, .. } in &lay.land.fins {
             let len = a.distance(b);
             let dir = (b - a) / len;
             let mut t = 0.8;
@@ -3826,7 +3831,7 @@ impl Dig<'_> {
                 let piece = rng.range(2.2, 3.6).min(len - 0.8 - t);
                 let p = a + dir * (t + piece * 0.5) + dir.perp() * rng.range(-0.3, 0.3);
                 let g = self.ground_height(p.x, p.y);
-                let rise = lay.fins(p);
+                let rise = lay.land.fin(p);
                 self.stone(
                     p,
                     yaw_along(dir) + rng.range(-0.1, 0.1),
@@ -3842,7 +3847,7 @@ impl Dig<'_> {
             }
         }
         // Blocks fallen off the fins.
-        for &(a, b, _) in &lay.fins {
+        for &crate::map::procgen::land::Fin { a, b, .. } in &lay.land.fins {
             for _ in 0..2 {
                 let t = rng.range(0.2, 0.8);
                 let side = (b - a).normalize().perp() * if rng.chance(0.5) { 1.0 } else { -1.0 };
@@ -3965,9 +3970,10 @@ impl Dig<'_> {
                 && lay.shed_distance(q) > 14.0
                 && !(q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0)
                 && !lay
-                    .ramps
+                    .land
+                    .hauls
                     .iter()
-                    .chain(&lay.fords)
+                    .chain(&lay.land.fords)
                     .any(|&(s, e, h)| seg(q, s, e).0 < h + 4.0)
                 && !lay.ways_up.iter().any(|&(a, b)| seg(q, a, b).0 < 6.0)
         })
@@ -3986,9 +3992,10 @@ impl Dig<'_> {
                     .windows(2)
                     .any(|w| seg(p, flat(&w[0]), flat(&w[1])).0 < r + 3.0)
         }) || lay
-            .ramps
+            .land
+            .hauls
             .iter()
-            .chain(&lay.fords)
+            .chain(&lay.land.fords)
             .any(|&(a, b, h)| seg(p, a, b).0 < r + h + 1.5)
             || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < r + 4.0)
             || (0..9).any(|k| {
@@ -4258,7 +4265,7 @@ impl Dig<'_> {
         // On wash `w`'s floor `u` m along it: down its middle, or across to
         // the far side from the cutting rig where it's working.
         let wash = |w: usize, u: f32| {
-            let (p, t) = line_at(&lay.washes[w].line, u);
+            let (p, t) = line_at(&lay.land.washes[w].line, u);
             let by_rig = lay.wash_rig.is_some_and(|(r, _)| p.distance(r) < 12.0);
             at(if by_rig {
                 p + Vec2::new(t.y, -t.x) * 4.5
@@ -4299,8 +4306,8 @@ impl Dig<'_> {
             ways.push(over);
             // Under it on the wash's floor: down one ramp, between the
             // piers, up the other.
-            let (r0, r1) = (lay.ramps[2 * bi], lay.ramps[2 * bi + 1]);
-            let w = &lay.washes[br.wash];
+            let (r0, r1) = (lay.land.hauls[2 * bi], lay.land.hauls[2 * bi + 1]);
+            let w = &lay.land.washes[br.wash];
             let (s0, s1) = (w.near(r0.1).1, w.near(r1.1).1);
             let mut under = vec![at(r0.0), at(r0.1)];
             under.extend(along(br.wash, s0.min(br.s - 15.0), s1.max(br.s + 10.0)));
@@ -4309,8 +4316,9 @@ impl Dig<'_> {
         }
         // Each wash end to end, on its floor: down one crossing, along, up
         // the other.
-        for (wi, w) in lay.washes.iter().enumerate() {
+        for (wi, w) in lay.land.washes.iter().enumerate() {
             let fords: Vec<&Ramp> = lay
+                .land
                 .fords
                 .iter()
                 .filter(|f| w.near(f.0.lerp(f.1, 0.5)).0 < 3.0)
@@ -4410,7 +4418,7 @@ impl Dig<'_> {
             ]);
         }
         // Up each butte.
-        for b in &lay.buttes {
+        for b in &lay.land.buttes {
             let (foot, up) = b.way();
             ways.push(vec![
                 at(foot + (foot - b.center).normalize() * 4.0),
@@ -4708,11 +4716,10 @@ fn crag_feet(m: &Dig, mine: &Mine) -> Vec<crag::Foot> {
 /// corridors, the box cut and the run out of its top, the scree's way up, the top of the Face.
 pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
     let spawns = lay.by_spawns(p);
-    let (d, along) = lay.wash_near(p);
-    let (depth, half) = lay.wash_profile(along);
+    let (d, half) = lay.land.wash_near(p);
     let bank = d > half - 1.5 && d < half + WASH_BANK + 2.5;
     // The way along the wash's floor, down its middle.
-    let floor_way = depth > 1.0 && d < 4.0;
+    let floor_way = d < 4.0;
     let f = lay.face(p.x);
     spawns
         || bank
@@ -4725,16 +4732,17 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
             .iter()
             .any(|b| seg(p, b.a, b.b).0 < DECK_HALF + 5.0)
         || lay
-            .ramps
+            .land
+            .hauls
             .iter()
-            .chain(&lay.fords)
+            .chain(&lay.land.fords)
             .any(|&(s, e, h)| seg(p, s, e).0 < h + 4.0)
         || lay.cave_distance(p) < 4.0 && lay.mesa(p) > 0.3 && !lay.roofed(p)
         || lay
             .mines
             .iter()
             .any(|m| within((m.box_cut.0, m.box_cut.1 + Vec2::new(14.0, 0.0)), p, 4.0))
-        || lay.buttes.iter().any(|b| {
+        || lay.land.buttes.iter().any(|b| {
             // Round a butte's foot, and its ramp.
             let (a, w) = b.way();
             seg(p, a, w).0 < 12.0 || (b.distance(p) > -3.0 && b.distance(p) < 3.0)
