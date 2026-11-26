@@ -105,6 +105,21 @@ pub struct Atmosphere {
 /// Desert sand, settled: `Atmosphere::settle` on most maps.
 pub const SAND_SETTLE: Vec3 = Vec3::new(0.74, 0.6, 0.42);
 
+/// Haze this thick (the share of what's behind it still showing) hides a tank.
+pub const HIDDEN: f32 = 0.04;
+
+impl Atmosphere {
+    /// How far off a tank can be made out through the haze, m (bots see,
+    /// guns assist and health bars show no further than this either).
+    pub fn sight(&self) -> f32 {
+        if self.fog_density > 0.0 {
+            -HIDDEN.ln() / self.fog_density
+        } else {
+            f32::INFINITY
+        }
+    }
+}
+
 impl Default for Atmosphere {
     fn default() -> Atmosphere {
         Atmosphere {

@@ -61,6 +61,8 @@ const EARSHOT: f32 = 400.0;
 const PAN_WIDTH: f32 = 0.8;
 /// Wind level under everything.
 const WIND: f32 = 0.05;
+/// And in a sandstorm.
+const STORM_WIND: f32 = 0.14;
 /// The garage's cues: a little over the menu clicks (0.8), they're events.
 pub(crate) const GARAGE_GAIN: f32 = 0.9;
 /// A blow to your own hull, as against someone else's: you're inside it.
@@ -256,9 +258,14 @@ impl Audio {
         let params = tank::params(game, &ears, &self.flames, self.time, live);
         let burns = beam::burns(game, &ears);
         let places = places::params(&game.world.map, &ears);
+        // A storm roars over the rest.
+        let wind = match crate::conditions::storming(&game.world.map.atmosphere) {
+            true => STORM_WIND,
+            false => WIND,
+        };
         self.with(|m| {
             m.set_world(if live { 1.0 } else { 0.0 });
-            m.set_wind(WIND);
+            m.set_wind(wind);
             m.set_tanks(params);
             m.set_burns(burns);
             m.set_places(places);

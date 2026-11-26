@@ -628,7 +628,7 @@ impl SiteView {
     /// The time of day and weather it's fought in: the site's own, the same
     /// each time it's fought over, like its map.
     pub fn conditions(&self) -> Conditions {
-        Conditions::of_site(self.map_seed)
+        Conditions::of_site(self.map_seed, self.map_kind().sandy())
     }
 
     /// Who built the place, whoever holds it now: a city's in their style.
