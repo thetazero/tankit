@@ -484,6 +484,7 @@ impl Skeleton {
             mat: Material::Concrete,
             trim: Vec3::splat(0.5),
             roof: Vec3::splat(0.5),
+            land: Vec3::splat(0.3),
         };
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));

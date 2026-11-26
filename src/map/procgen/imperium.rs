@@ -102,6 +102,7 @@ impl Style for Imperium {
             mat: Material::Concrete,
             trim: STONE * 0.9,
             roof: CONCRETE_DARK,
+            land: GROUND,
         }
     }
 

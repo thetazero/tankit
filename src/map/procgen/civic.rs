@@ -19,6 +19,8 @@ pub struct Stone {
     pub mat: Material,
     pub trim: Vec3,
     pub roof: Vec3,
+    /// The ground it's built on.
+    pub land: Vec3,
 }
 
 /// Wall and roof heights; a terrace's floor and its slopes' pitch.
