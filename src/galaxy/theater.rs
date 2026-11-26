@@ -408,7 +408,7 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City | MapKind::Mine | MapKind::Desert => self == Class::Desert,
+            MapKind::City(_) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
             MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
                 self == Class::Placeholder
             }

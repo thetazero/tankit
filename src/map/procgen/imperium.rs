@@ -32,7 +32,7 @@ use crate::map::{Ambient, Map, OBox, Terrain};
 use crate::render::material::Material;
 use crate::rng::Rng;
 
-pub(super) const GROUND: Vec3 = Vec3::new(0.32, 0.32, 0.33);
+const GROUND: Vec3 = Vec3::new(0.32, 0.32, 0.33);
 const CONCRETE: Vec3 = Vec3::new(0.54, 0.53, 0.51);
 const CONCRETE_DARK: Vec3 = Vec3::new(0.3, 0.3, 0.3);
 const STONE: Vec3 = Vec3::new(0.86, 0.83, 0.76);
@@ -70,7 +70,7 @@ const AXES: [Vec2; 4] = [
 ];
 
 /// A rotation whose local x, y, z axes are `x`, `y` and their cross.
-fn frame(x: Vec3, y: Vec3) -> Quat {
+pub(super) fn frame(x: Vec3, y: Vec3) -> Quat {
     let z = x.cross(y);
     Quat::from_mat3(&Mat3::from_cols(x, y, z))
 }
@@ -88,6 +88,10 @@ fn apart(a: f32, b: f32) -> f32 {
 pub(super) struct Imperium;
 
 impl Style for Imperium {
+    fn ground(&self) -> Vec3 {
+        GROUND
+    }
+
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "ROTUNDA",
@@ -102,11 +106,11 @@ impl Style for Imperium {
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
-        map.paving(p, &sk.landmark);
+        map.paving(p, &sk.landmark, STONE);
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
-        map.processional_way(sk, s);
+        map.processional_way(sk, s, STONE);
     }
 
     fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, rng: &mut Rng) {
@@ -123,7 +127,7 @@ impl Style for Imperium {
                 Vec::new()
             }
             LotKind::Rubble => {
-                map.rubble_lot(rng, &lot.footprint);
+                map.rubble_lot(rng, &lot.footprint, CONCRETE);
                 Vec::new()
             }
             LotKind::Distant => {
@@ -134,13 +138,15 @@ impl Style for Imperium {
     }
 
     fn base(&self, map: &mut Map, sk: &Skeleton, side: usize, b: &Base, rng: &mut Rng) {
-        map.staging_court(rng, side, b, sk.center());
+        map.staging_court(rng, side, b, sk.center(), CONCRETE);
     }
 
     fn edge(&self, map: &mut Map, _sk: &Skeleton, e: &Edge, rng: &mut Rng) {
         match e.kind {
-            EdgeKind::Barricade => map.street_barricade(rng, e),
-            EdgeKind::Blockade => map.rubble_bank(rng, e.start, e.along, e.inward, (e.from, e.to)),
+            EdgeKind::Barricade => map.street_barricade(rng, e, CONCRETE),
+            EdgeKind::Blockade => {
+                map.rubble_bank(rng, e.start, e.along, e.inward, (e.from, e.to), CONCRETE)
+            }
         }
     }
 
@@ -229,7 +235,15 @@ impl Map {
 
     /// A banner in `color`; `emblem` puts the Imperium's disc on it (only
     /// theirs carry it).
-    fn side_banner(&mut self, top: Vec3, out: Vec2, w: f32, len: f32, color: Vec3, emblem: bool) {
+    pub(super) fn side_banner(
+        &mut self,
+        top: Vec3,
+        out: Vec2,
+        w: f32,
+        len: f32,
+        color: Vec3,
+        emblem: bool,
+    ) {
         self.sound(Ambient::Banner, top - Vec3::Y * len * 0.4);
         let n = Vec3::new(out.x, 0.0, out.y).normalize();
         let right = Vec3::Y.cross(n).normalize();
@@ -268,7 +282,7 @@ impl Map {
     // The middle
 
     /// Large paving slabs over the plaza top (visual; the terrain carries you).
-    fn paving(&mut self, p: &Platform, lm: &Landmark) {
+    pub(super) fn paving(&mut self, p: &Platform, lm: &Landmark, stone: Vec3) {
         let step = 8.0;
         let n = (p.half * 2.0 / step) as i32;
         for i in 0..n {
@@ -284,7 +298,7 @@ impl Map {
                     Vec3::new(c.x - step * 0.48, p.height - 0.1, c.y - step * 0.48),
                     Vec3::new(c.x + step * 0.48, p.height + 0.06, c.y + step * 0.48),
                     0.0,
-                    STONE * shade,
+                    stone * shade,
                     Material::Concrete,
                     false,
                 );
@@ -678,7 +692,7 @@ impl Map {
     /// halfway through its plates: flush with either (the end plane or the
     /// plates' outer faces) they'd z-fight wherever the map's millimetre
     /// separation happened to land two faces together.
-    fn drum(&mut self, a: Vec3, b: Vec3, r: f32, color: Vec3) {
+    pub(super) fn drum(&mut self, a: Vec3, b: Vec3, r: f32, color: Vec3) {
         self.pipe(a, b, r, color, Material::Concrete, true);
         let axis = (b - a).normalize_or(Vec3::Y);
         let d = axis * 0.03;
@@ -823,7 +837,7 @@ impl Map {
 
     /// The processional way down an avenue: big worn stone slabs down the
     /// middle, from the plaza's foot out to the edge.
-    fn processional_way(&mut self, sk: &Skeleton, s: &Street) {
+    pub(super) fn processional_way(&mut self, sk: &Skeleton, s: &Street, stone: Vec3) {
         let dir = s.dir();
         let side = Vec2::new(-dir.y, dir.x);
         let plaza = sk.plaza();
@@ -847,7 +861,7 @@ impl Map {
                     half: Vec2::new(len * 0.48, width / across as f32 * 0.48),
                     y0: -0.1,
                     y1: 0.05,
-                    color: STONE * shade,
+                    color: stone * shade,
                     side_mat: Material::Concrete,
                     top_mat: Material::Concrete,
                     solid: false,
@@ -1310,7 +1324,7 @@ impl Map {
     }
 
     /// An empty lot: a cracked slab and heaps of broken concrete.
-    fn rubble_lot(&mut self, rng: &mut Rng, lot: &OBox) {
+    pub(super) fn rubble_lot(&mut self, rng: &mut Rng, lot: &OBox, stone: Vec3) {
         for _ in 0..rng.int(5, 10) {
             let q = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)) * lot.half * 0.8;
             let (ax, az) = lot.axes();
@@ -1320,7 +1334,7 @@ impl Map {
             let half = Vec2::new(s, s * rng.range(0.4, 1.0));
             let top = s * rng.range(0.4, 0.9);
             let (tilt, roll) = (rng.range(-0.3, 0.3), rng.range(-0.3, 0.3));
-            let color = CONCRETE * rng.range(0.8, 1.0);
+            let color = stone * rng.range(0.8, 1.0);
             self.oboxes.push(OBox {
                 tilt,
                 roll,
@@ -1376,12 +1390,12 @@ impl Map {
 
     /// Barriers across a side street where it crosses the edge: concrete
     /// blocks and barriers set down in a ragged line, a gap here and there.
-    fn street_barricade(&mut self, rng: &mut Rng, e: &Edge) {
+    pub(super) fn street_barricade(&mut self, rng: &mut Rng, e: &Edge, stone: Vec3) {
         let mut t = e.from + rng.range(0.0, 1.5);
         while t < e.to {
             let at = e.start + e.along * t - e.inward * rng.range(-1.5, 1.5);
             let across = angle(e.along) + rng.range(-0.35, 0.35);
-            let color = CONCRETE * rng.range(0.8, 1.0);
+            let color = stone * rng.range(0.8, 1.0);
             let half = if rng.chance(0.6) {
                 // A road barrier.
                 Vec2::new(rng.range(1.6, 2.2), 0.35)
@@ -1409,19 +1423,21 @@ impl Map {
     /// Rubble banked across an avenue's end (`span` along the edge): big
     /// lumps of concrete heaped along the edge, smaller ones spilled out in
     /// front.
-    fn rubble_bank(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn rubble_bank(
         &mut self,
         rng: &mut Rng,
         start: Vec2,
         along: Vec2,
         inward: Vec2,
         span: (f32, f32),
+        stone: Vec3,
     ) {
         let lump = |rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| {
             let yaw = rng.range(0.0, TAU);
             let half = Vec2::new(s, s * rng.range(0.7, 1.0));
             let (tilt, roll) = (rng.range(-0.2, 0.2), rng.range(-0.2, 0.2));
-            let color = CONCRETE * rng.range(0.75, 1.0);
+            let color = stone * rng.range(0.75, 1.0);
             OBox {
                 tilt,
                 roll,
@@ -1472,7 +1488,7 @@ impl Map {
                 y0: y,
                 y1: y + 0.5,
                 roll: lean,
-                color: CONCRETE * rng.range(0.85, 1.0),
+                color: stone * rng.range(0.85, 1.0),
                 side_mat: Material::Concrete,
                 top_mat: Material::Concrete,
                 solid: false,
@@ -1487,7 +1503,14 @@ impl Map {
 
     /// Each corner: a staging court behind low barriers, open toward the
     /// middle, with two masts flying its side's color.
-    fn staging_court(&mut self, rng: &mut Rng, k: usize, b: &Base, middle: Vec2) {
+    pub(super) fn staging_court(
+        &mut self,
+        rng: &mut Rng,
+        k: usize,
+        b: &Base,
+        middle: Vec2,
+        stone: Vec3,
+    ) {
         let (corner, inward, court) = (b.corner, b.inward, b.size);
         let at = |u: f32, v: f32| corner + Vec2::new(inward.x * u, inward.y * v);
         let box_uv = |map: &mut Map,
@@ -1529,7 +1552,7 @@ impl Map {
                     // Flush with the ground, barely proud: a parked
                     // tank stands on it, not on a step.
                     0.02,
-                    CONCRETE * shade,
+                    stone * shade,
                     Material::Concrete,
                     false,
                 );
@@ -1544,7 +1567,7 @@ impl Map {
             court + 1.4,
             1.8,
             6.5,
-            CONCRETE * 0.8,
+            stone * 0.8,
             Material::Concrete,
             true,
         );
@@ -1555,7 +1578,7 @@ impl Map {
             1.8,
             court + 1.4,
             6.5,
-            CONCRETE * 0.8,
+            stone * 0.8,
             Material::Concrete,
             true,
         );
@@ -1593,7 +1616,7 @@ impl Map {
                 u1,
                 v1,
                 1.7,
-                CONCRETE * 0.85,
+                stone * 0.85,
                 Material::Concrete,
                 true,
             );
@@ -1641,70 +1664,11 @@ impl Map {
     /// avenues' vistas stay open, each closed far off by a great tower
     /// hung with crimson. Visual only.
     fn skyline(&mut self, rng: &mut Rng, sk: &Skeleton) {
-        let size = sk.size;
-        let mid = size * 0.5;
         let avenues: Vec<Street> = sk.avenues().copied().collect();
-        // Flat ground from the edge out past the far plane, matching the
-        // play ground at the edge (grid lines on 0 and size); under the
-        // arena it sinks out of sight.
-        let (cell, reach) = (4.0f32, 560.0f32);
-        let n = ((size + 2.0 * reach) / cell) as usize + 1;
-        // (A shallow step at the edge, then down: its normals at the edge stay
-        // flat, so it shades like the play ground there and no seam shows.)
-        let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
-            let inside = |m: f32| x > m && z > m && x < size - m && z < size - m;
-            if inside(cell + 0.01) {
-                -8.0
-            } else if inside(0.01) {
-                -0.25
-            } else {
-                0.0
-            }
+        self.skyline_ground(sk.size, GROUND);
+        self.skyline_lots(rng, sk, |map, rng, lot, h, broken, (shade, toward)| {
+            map.skyline_tower(rng, lot.center, lot.half, h, broken, shade, toward);
         });
-        t.color = GROUND;
-        t.material = Material::Concrete;
-        self.scenery_terrain = Some(t);
-
-        let mut placed: Vec<OBox> = Vec::new();
-        for _ in 0..1600 {
-            let p = Vec2::new(
-                rng.range(-380.0, size + 380.0),
-                rng.range(-380.0, size + 380.0),
-            );
-            // Past where the city's own streets are laid out.
-            let edge = super::city::SPRAWL - 6.0;
-            let outside = p.x < -edge || p.y < -edge || p.x > size + edge || p.y > size + edge;
-            let d = p - Vec2::splat(mid);
-            // Kept open down each avenue, out past its end.
-            let vista = avenues.iter().any(|a| {
-                let t = (p - a.from).dot(a.dir());
-                t > 0.0 && (p - a.from).perp_dot(a.dir()).abs() < a.half + 10.0
-            });
-            if !outside || vista {
-                continue;
-            }
-            let far = (d.abs().max_element() - mid).max(0.0);
-            // Thinner out in the haze.
-            if rng.f32() < far / 400.0 {
-                continue;
-            }
-            let half = Vec2::new(rng.range(7.0, 18.0), rng.range(7.0, 18.0));
-            let lot = OBox {
-                center: p,
-                half,
-                ..OBox::default()
-            };
-            if placed.iter().any(|o| o.overlaps(&lot, 5.0)) {
-                continue;
-            }
-            let h = rng.range(10.0, 26.0) + far * rng.range(0.1, 0.3);
-            // A little darker than the city inside: they sit back in the haze.
-            let broken = rng.f32() < 0.3;
-            let toward = Vec2::new(-d.x.signum(), -d.y.signum());
-            let shade = rng.range(0.8, 0.95);
-            self.skyline_tower(rng, p, half, h, broken, shade, toward);
-            placed.push(lot);
-        }
 
         // At the end of each vista, far out: a great tower, crimson down
         // its face.
@@ -1779,6 +1743,85 @@ impl Map {
                 CRIMSON,
                 true,
             );
+        }
+    }
+
+    /// The flat ground beyond the edge, `color`.
+    pub(super) fn skyline_ground(&mut self, size: f32, color: Vec3) {
+        // Flat ground from the edge out past the far plane, matching the
+        // play ground at the edge (grid lines on 0 and size); under the
+        // arena it sinks out of sight.
+        let (cell, reach) = (4.0f32, 560.0f32);
+        let n = ((size + 2.0 * reach) / cell) as usize + 1;
+        // (A shallow step at the edge, then down: its normals at the edge stay
+        // flat, so it shades like the play ground there and no seam shows.)
+        let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
+            let inside = |m: f32| x > m && z > m && x < size - m && z < size - m;
+            if inside(cell + 0.01) {
+                -8.0
+            } else if inside(0.01) {
+                -0.25
+            } else {
+                0.0
+            }
+        });
+        t.color = color;
+        t.material = Material::Concrete;
+        self.scenery_terrain = Some(t);
+    }
+
+    /// Lots for the skyline, past where the city's own streets are laid out
+    /// and off the avenues' vistas: `tower` builds on each, given its lot,
+    /// its height, whether it's broken, and how dark it is and which way
+    /// the city lies.
+    pub(super) fn skyline_lots(
+        &mut self,
+        rng: &mut Rng,
+        sk: &Skeleton,
+        tower: impl Fn(&mut Map, &mut Rng, &OBox, f32, bool, (f32, Vec2)),
+    ) {
+        let size = sk.size;
+        let mid = size * 0.5;
+        let avenues: Vec<Street> = sk.avenues().copied().collect();
+        let mut placed: Vec<OBox> = Vec::new();
+        for _ in 0..1600 {
+            let p = Vec2::new(
+                rng.range(-380.0, size + 380.0),
+                rng.range(-380.0, size + 380.0),
+            );
+            // Past where the city's own streets are laid out.
+            let edge = super::city::SPRAWL - 6.0;
+            let outside = p.x < -edge || p.y < -edge || p.x > size + edge || p.y > size + edge;
+            let d = p - Vec2::splat(mid);
+            // Kept open down each avenue, out past its end.
+            let vista = avenues.iter().any(|a| {
+                let t = (p - a.from).dot(a.dir());
+                t > 0.0 && (p - a.from).perp_dot(a.dir()).abs() < a.half + 10.0
+            });
+            if !outside || vista {
+                continue;
+            }
+            let far = (d.abs().max_element() - mid).max(0.0);
+            // Thinner out in the haze.
+            if rng.f32() < far / 400.0 {
+                continue;
+            }
+            let half = Vec2::new(rng.range(7.0, 18.0), rng.range(7.0, 18.0));
+            let lot = OBox {
+                center: p,
+                half,
+                ..OBox::default()
+            };
+            if placed.iter().any(|o| o.overlaps(&lot, 5.0)) {
+                continue;
+            }
+            let h = rng.range(10.0, 26.0) + far * rng.range(0.1, 0.3);
+            // A little darker than the city inside: they sit back in the haze.
+            let broken = rng.f32() < 0.3;
+            let toward = Vec2::new(-d.x.signum(), -d.y.signum());
+            let shade = rng.range(0.8, 0.95);
+            tower(self, rng, &lot, h, broken, (shade, toward));
+            placed.push(lot);
         }
     }
 }

@@ -76,7 +76,7 @@ pub const MISSIONS: &[Mission] = &[
         name: "FOUR WINDS",
         contract: Contract::Attrition,
         map: "IMPERIAL CITY",
-        map_kind: MapKind::City,
+        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
         seed: 0,
         team_size: 4,
         sides: &Faction::ALL,

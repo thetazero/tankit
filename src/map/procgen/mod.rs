@@ -28,6 +28,7 @@ pub mod city;
 pub mod desert;
 mod imperium;
 pub mod mine;
+mod resonant;
 pub mod shield;
 pub mod skeleton;
 
@@ -56,6 +57,7 @@ pub enum Biome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Look {
     Imperium,
+    Resonant,
     Ithessar,
 }
 
@@ -85,6 +87,8 @@ pub struct Spec {
 /// map and keeps its solid parts to the placeholder's envelope (see
 /// `skeleton`); heaps it banks up come back as drifts for the terrain.
 pub(in crate::map) trait Style {
+    /// The ground between its buildings.
+    fn ground(&self) -> glam::Vec3;
     /// The Hold site's name on the HUD, with `piece` in the middle.
     fn hold_name(&self, piece: Centerpiece) -> &'static str;
     fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift>;
@@ -105,6 +109,7 @@ pub(in crate::map) trait Style {
 fn style(look: Look) -> &'static dyn Style {
     match look {
         Look::Imperium => &imperium::Imperium,
+        Look::Resonant => &resonant::Resonant,
         // Nobody else's city yet: any other look is dressed as theirs.
         Look::Ithessar => &imperium::Imperium,
     }
@@ -183,7 +188,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         claims.push((Claim::Lot(k), start..map.oboxes.len()));
     }
     let mut terrain = sk.terrain(|p| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max));
-    terrain.color = imperium::GROUND;
+    terrain.color = st.ground();
     terrain.material = crate::render::material::Material::Concrete;
     map.terrain = Some(terrain);
     for p in &sk.platforms {
@@ -508,7 +513,7 @@ impl Map {
 
     /// The imperial city `seed` names (see `crate::city_spec`).
     pub fn city(seed: u64) -> Map {
-        map(&crate::city_spec(seed))
+        map(&crate::city_spec(seed, Look::Imperium))
     }
 
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
@@ -564,14 +569,21 @@ mod tests {
     /// sometimes goes wrong, few enough to build in a debug test run.
     const SEEDS: [u64; 4] = [0, 1, 2, 3];
 
+    /// Every seed in every style of city there is.
+    fn cities() -> impl Iterator<Item = (u64, Look)> {
+        [Look::Imperium, Look::Resonant]
+            .into_iter()
+            .flat_map(|look| SEEDS.map(|s| (s, look)))
+    }
+
     fn spec(seed: u64) -> Spec {
-        crate::city_spec(seed)
+        crate::city_spec(seed, Look::Imperium)
     }
 
     #[test]
     fn every_seed_is_playable_dressed() {
-        for seed in SEEDS {
-            let m = Map::city(seed);
+        for (seed, look) in cities() {
+            let m = map(&crate::city_spec(seed, look));
             assert_eq!(m.factions, Faction::ALL.to_vec());
             assert_eq!(m.bases.len(), 4);
             if let Err(why) = check::playable(&m) {
@@ -705,9 +717,9 @@ mod tests {
     /// street. What drove on the greybox drives on the dressed map.
     #[test]
     fn fillers_keep_to_their_envelopes() {
-        for seed in SEEDS {
+        for (seed, look) in cities() {
             let sk = skeleton(&spec(seed));
-            let (m, claims) = build(&spec(seed));
+            let (m, claims) = build(&crate::city_spec(seed, look));
             for (claim, range) in claims {
                 for o in &m.oboxes[range] {
                     let (y0, _) = o.y_range();
@@ -762,9 +774,9 @@ mod tests {
     /// edge, nothing solid stands at tank height.
     #[test]
     fn the_avenues_are_open_to_the_middle() {
-        for seed in SEEDS {
+        for (seed, look) in cities() {
             let sk = skeleton(&spec(seed));
-            let m = Map::city(seed);
+            let m = map(&crate::city_spec(seed, look));
             for a in sk.avenues() {
                 let (dir, side) = (a.dir(), Vec2::new(-a.dir().y, a.dir().x));
                 let mut r = sk.landmark.precinct + 4.0;

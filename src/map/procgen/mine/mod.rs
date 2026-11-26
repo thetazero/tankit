@@ -195,7 +195,7 @@ fn style(look: Look) -> &'static dyn MineStyle {
     match look {
         Look::Ithessar => &ithessar::Ithessar,
         // Nobody else's mine yet: any other look is dressed as theirs.
-        Look::Imperium => &ithessar::Ithessar,
+        Look::Imperium | Look::Resonant => &ithessar::Ithessar,
     }
 }
 

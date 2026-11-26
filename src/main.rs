@@ -61,6 +61,7 @@ tankit [OPTIONS]
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-city, shield-site or shield-desert) the generator's down, n ticks of repair
                           to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
+  --look <imperium|resonant>  (with --map city) whose city it is (default imperium)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -298,7 +299,7 @@ impl Args {
 
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
-            (true, MapKind::City) => map::procgen::greybox(&city_spec(self.map_seed)),
+            (true, MapKind::City(l)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
             (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
             (true, MapKind::ShieldCity(g)) => {
@@ -328,9 +329,9 @@ pub enum MapKind {
     Sanctum,
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
-    /// An Imperium city, half ruined round a domed rotunda: four sides.
-    /// Generated: a different city for each map seed.
-    City,
+    /// A city in someone's style, half ruined round its great building:
+    /// four sides. Generated: a different city for each map seed.
+    City(map::procgen::Look),
     /// The same city with a shield generator in the middle in place of the
     /// rotunda, the standard model of the side that holds it: the same
     /// layout for the same seed.
@@ -359,7 +360,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
-        MapKind::City => map::procgen::map(&city_spec(seed)),
+        MapKind::City(l) => map::procgen::map(&city_spec(seed, l)),
         MapKind::ShieldCity(g) => map::procgen::map(&shield_spec(seed, g, false)),
         MapKind::ShieldSite(g) => map::procgen::map(&shield_spec(seed, g, true)),
         MapKind::Foundry => map::Map::foundry(),
@@ -369,12 +370,12 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
     }
 }
 
-/// The imperial city `seed` names: four sides, one corner each.
-pub fn city_spec(seed: u64) -> map::procgen::Spec {
+/// The city `seed` names in `look`: four sides, one corner each.
+pub fn city_spec(seed: u64, look: map::procgen::Look) -> map::procgen::Spec {
     map::procgen::Spec {
         seed,
         biome: map::procgen::Biome::City,
-        look: map::procgen::Look::Imperium,
+        look,
         sides: faction::Faction::ALL.to_vec(),
         centerpiece: map::procgen::Centerpiece::Monument,
     }
@@ -413,7 +414,7 @@ pub fn shield_spec(seed: u64, g: Generator, site: bool) -> map::procgen::Spec {
     map::procgen::Spec {
         centerpiece: map::procgen::Centerpiece::ShieldGenerator(g.owner, g.condition),
         sides,
-        ..city_spec(seed)
+        ..city_spec(seed, map::procgen::Look::Imperium)
     }
 }
 
@@ -631,6 +632,7 @@ fn parse_args() -> Result<Args> {
     let mut contract = mission::Contract::Attrition;
     let mut employer: Option<faction::Faction> = None;
     let mut generator: Option<faction::Faction> = None;
+    let mut look: Option<map::procgen::Look> = None;
     let mut generator_down = 0u8;
     let mut learned = None;
     let mut scrap = Vec::new();
@@ -691,7 +693,7 @@ fn parse_args() -> Result<Args> {
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
-                Some("city") => map_kind = MapKind::City,
+                Some("city") => map_kind = MapKind::City(map::procgen::Look::Imperium),
                 Some("shield-city") => {
                     map_kind = MapKind::ShieldCity(Generator::up(faction::Faction::Imperium))
                 }
@@ -729,6 +731,13 @@ fn parse_args() -> Result<Args> {
                 generator = Some(faction::Faction::by_name(&name).with_context(|| {
                     format!("--generator expects a faction name, got {name:?}")
                 })?);
+            }
+            "--look" => {
+                look = Some(match args.next().as_deref() {
+                    Some("imperium") => map::procgen::Look::Imperium,
+                    Some("resonant") => map::procgen::Look::Resonant,
+                    other => bail!("--look expects imperium or resonant, got {other:?}"),
+                })
             }
             "--generator-down" => {
                 generator_down = args
@@ -959,6 +968,9 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
+    if let (MapKind::City(l), Some(look)) = (&mut map_kind, look) {
+        *l = look;
+    }
     if let MapKind::ShieldCity(g) | MapKind::ShieldSite(g) | MapKind::ShieldDesert(g) =
         &mut map_kind
     {
