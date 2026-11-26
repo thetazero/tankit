@@ -448,12 +448,16 @@ pub fn planet_name(name: &str, p: u8) -> String {
     format!("{name} {}", NUMERALS[(p as usize).min(3)])
 }
 
+/// The `kind_name` of a production site that makes mostly crystals.
+pub const CRYSTAL_MINE: &str = "CRYSTAL MINE";
+
 /// What a site is, in caps: a shield generator, or what a production site
-/// makes most of.
+/// makes most of, for what sites make (1 to 5 hulls, 0.02 to 0.1 crystals):
+/// about half are mines.
 pub fn kind_name(kind: SiteKind) -> &'static str {
     match kind {
         SiteKind::Shield { .. } => "SHIELD GENERATOR",
-        SiteKind::Production { hulls, crystals } if crystals * 5.0 > hulls => "CRYSTAL MINE",
+        SiteKind::Production { hulls, crystals } if crystals * 50.0 > hulls => CRYSTAL_MINE,
         SiteKind::Production { .. } => "HULL FOUNDRY",
     }
 }
@@ -1088,6 +1092,7 @@ impl Galaxy {
         let commits = self.commits(s, f);
         let enemies = self.site_enemies(s, f);
         let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(c));
+        let mines = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_mines(c));
         let shields = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_shields(c));
         let sites: Vec<SiteView> = self
             .site_range(s)
@@ -1108,7 +1113,10 @@ impl Galaxy {
                         (pool[r.index(pool.len())], map_seed)
                     }
                     _ => {
-                        let pool = &pools[class];
+                        let pool = match kind_name(site.kind) {
+                            CRYSTAL_MINE => &mines[class],
+                            _ => &pools[class],
+                        };
                         (pool[r.index(pool.len())], r.next_u64())
                     }
                 };
@@ -1648,6 +1656,50 @@ mod tests {
         }
         assert_eq!(seen, [true; 2], "both classes of world have sites");
         assert!(shields.iter().all(|&n| n > 0), "{shields:?}");
+    }
+
+    /// About half the production sites are crystal mines, half foundries.
+    #[test]
+    fn production_sites_are_mines_and_foundries() {
+        let g = galaxy();
+        let made: Vec<&str> = g
+            .sites
+            .iter()
+            .filter(|s| matches!(s.kind, SiteKind::Production { .. }))
+            .map(|s| kind_name(s.kind))
+            .collect();
+        let mines = made.iter().filter(|&&k| k == CRYSTAL_MINE).count();
+        let share = mines as f32 / made.len() as f32;
+        assert!((0.35..0.65).contains(&share), "{share}");
+    }
+
+    /// A desert world's crystal mines are fought in mines (#523); its hull
+    /// foundries, with no map of their own yet (#525), on any of its maps.
+    /// Either keeps its mission whoever's looking.
+    #[test]
+    fn desert_crystal_mines_are_fought_in_mines() {
+        for mine in [true, false] {
+            let mut g = galaxy();
+            for site in &mut g.sites {
+                if let SiteKind::Production { hulls, crystals } = &mut site.kind {
+                    (*hulls, *crystals) = if mine { (0.0, 0.1) } else { (5.0, 0.0) };
+                }
+            }
+            let mut in_mine = [0; 2];
+            for sys in 0..g.systems.len() {
+                let sites = g.theater_at(sys, 0).sites;
+                for (s, other) in sites.iter().zip(&g.theater_at(sys, 1).sites) {
+                    if world(sys, s.planet as usize).0 != Class::Desert || s.is_shield() {
+                        continue;
+                    }
+                    assert_eq!(s.kind_name() == CRYSTAL_MINE, mine);
+                    assert_eq!((s.mission, s.map_seed), (other.mission, other.map_seed));
+                    in_mine[(s.map_kind() == MapKind::Mine) as usize] += 1;
+                }
+            }
+            assert!(in_mine[1] > 0, "{in_mine:?}");
+            assert_eq!(in_mine[0] == 0, mine, "{in_mine:?}");
+        }
     }
 
     /// A site is one place: the same map each time it's looked at, and
