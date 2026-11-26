@@ -5713,7 +5713,7 @@ mod tests {
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
-            ("foundry", Map::foundry()),
+            ("foundry", Map::foundry(0)),
         ];
         // (The mine is slow to build unoptimized: `cargo test --release`.)
         if !cfg!(debug_assertions) {

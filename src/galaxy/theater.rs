@@ -36,6 +36,8 @@ use super::{AT_WAR, Galaxy, PEOPLES, SIDES, SiteKind};
 use crate::conditions::Conditions;
 use crate::faction::Faction;
 use crate::map::procgen::Look;
+use crate::map::procgen::foundry::Ground;
+use crate::map::procgen::setting::Setting;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
 use crate::rng::Rng;
@@ -258,6 +260,8 @@ pub struct SiteView {
     /// Index into `Galaxy::sites`.
     pub index: usize,
     pub planet: u8,
+    /// What kind of world that is.
+    pub class: Class,
     /// Index into `Faction::ALL`.
     pub owner: usize,
     pub kind: SiteKind,
@@ -462,18 +466,40 @@ pub fn ship_name(id: u32) -> String {
 pub enum Class {
     /// A desert world: its sites are generated (cities, mines, open desert).
     Desert,
+    /// A frozen world: its foundries are generated, its other sites fought
+    /// on the hand-built maps.
+    Tundra,
+    /// A green world, likewise.
+    Grassland,
     /// Not made yet: its sites are fought on the hand-built maps.
     Placeholder,
 }
 
 impl Class {
+    /// Every class, in the order of their discriminants.
+    pub const ALL: [Class; 4] = [
+        Class::Desert,
+        Class::Tundra,
+        Class::Grassland,
+        Class::Placeholder,
+    ];
+
+    /// The ground its hull foundries stand on, if it has them.
+    pub fn ground(self) -> Option<Ground> {
+        match self {
+            Class::Desert => Some(Ground::Desert),
+            Class::Tundra => Some(Ground::Tundra),
+            Class::Grassland => Some(Ground::Grassland),
+            Class::Placeholder => None,
+        }
+    }
+
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(_) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
-            MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
-                self == Class::Placeholder
-            }
+            MapKind::City(..) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
+            MapKind::Foundry(..) => self.ground().is_some(),
+            MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln => self != Class::Desert,
             MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
         }
     }
@@ -491,13 +517,13 @@ impl Class {
 
 /// Planet `planet` of system `system`, the same for every pilot: its
 /// class, and how it looks from orbit (the seed and look its globe is made
-/// from). A desert world is dry; a placeholder one any of the others.
+/// from). A desert world is dry, a tundra one icy, a grassland one green.
 pub fn world(system: usize, planet: usize) -> (Class, u64, crate::planet::Look) {
     let seed = (system as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((planet as u64 + 1) * 0x5851);
     let worlds = [
         (Class::Desert, crate::planet::DRY),
-        (Class::Placeholder, crate::map::procgen::city::PLANET),
-        (Class::Placeholder, crate::planet::ICE),
+        (Class::Grassland, crate::planet::GREEN),
+        (Class::Tundra, crate::planet::ICE),
         (Class::Placeholder, crate::planet::DRY),
     ];
     let (class, look) = worlds[(seed >> 7) as usize % worlds.len()];
@@ -545,6 +571,7 @@ impl SiteView {
         SiteView {
             index: 0,
             planet: 0,
+            class: Class::Placeholder,
             owner: 0,
             kind: if shield {
                 SiteKind::Shield { damaged: false }
@@ -567,14 +594,23 @@ impl SiteView {
     }
 
     /// The map it's fought on: its mission's, a city in its founder's style,
+    /// a foundry in its founder's own on its world's ground,
     /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
         let kind = MISSIONS[self.mission].map_kind;
         let look = Look::of(self.founder());
+        let setting = match self.class {
+            Class::Desert => Setting::Desert,
+            Class::Tundra | Class::Grassland | Class::Placeholder => Setting::Plain,
+        };
         let SiteKind::Shield { damaged } = self.kind else {
             return match kind {
-                MapKind::City(_) => MapKind::City(look),
+                MapKind::City(..) => MapKind::City(look, setting),
+                MapKind::Foundry(_, ground) => MapKind::Foundry(
+                    Look::own(self.founder()),
+                    self.class.ground().unwrap_or(ground),
+                ),
                 kind => kind,
             };
         };
@@ -587,7 +623,7 @@ impl SiteView {
             },
         };
         match kind {
-            MapKind::ShieldSite(..) => MapKind::ShieldSite(look, made),
+            MapKind::ShieldSite(..) => MapKind::ShieldSite(look, setting, made),
             MapKind::ShieldDesert(_) => MapKind::ShieldDesert(made),
             kind => kind,
         }
@@ -1216,9 +1252,9 @@ impl Galaxy {
         contested.dedup();
         let commits = self.commits(s, f);
         let enemies = self.site_enemies(s, f);
-        let pools = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_sites(c));
-        let mines = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_mines(c));
-        let shields = [Class::Desert, Class::Placeholder].map(|c| crate::mission::for_shields(c));
+        let foundries = Class::ALL.map(crate::mission::for_foundries);
+        let mines = Class::ALL.map(crate::mission::for_mines);
+        let shields = Class::ALL.map(crate::mission::for_shields);
         let sites: Vec<SiteView> = self
             .site_range(s)
             .map(|i| {
@@ -1226,10 +1262,8 @@ impl Galaxy {
                 let owner = site.owner as usize;
                 let enemy = enemies[i - sys.sites.0 as usize];
                 let mut r = Rng::new(self.seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-                let class = match world(s, site.planet as usize).0 {
-                    Class::Desert => 0,
-                    Class::Placeholder => 1,
-                };
+                let world_class = world(s, site.planet as usize).0;
+                let class = world_class as usize;
                 // A generator's mission is drawn after its map's seed.
                 let (mission, map_seed) = match site.kind {
                     SiteKind::Shield { .. } => {
@@ -1240,7 +1274,7 @@ impl Galaxy {
                     _ => {
                         let pool = match kind_name(site.kind) {
                             CRYSTAL_MINE => &mines[class],
-                            _ => &pools[class],
+                            _ => &foundries[class],
                         };
                         (pool[r.index(pool.len())], r.next_u64())
                     }
@@ -1248,6 +1282,7 @@ impl Galaxy {
                 SiteView {
                     index: i,
                     planet: site.planet,
+                    class: world_class,
                     owner,
                     kind: site.kind,
                     contested: contested.contains(&i),
@@ -1727,7 +1762,7 @@ mod tests {
             match (s.kind, s.map_kind()) {
                 (
                     SiteKind::Shield { damaged },
-                    MapKind::ShieldSite(_, made) | MapKind::ShieldDesert(made),
+                    MapKind::ShieldSite(_, _, made) | MapKind::ShieldDesert(made),
                 ) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
                     assert_eq!(made.owner, Faction::side(s.owner));
@@ -1772,7 +1807,7 @@ mod tests {
     #[test]
     fn a_sites_map_is_its_worlds_class() {
         let g = galaxy();
-        let mut seen = [false; 2];
+        let mut seen = [false; 4];
         let mut shields = [0; 2];
         for sys in 0..g.systems.len() {
             for s in &g.theater_at(sys, 0).sites {
@@ -1789,7 +1824,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen, [true; 2], "both classes of world have sites");
+        assert_eq!(seen, [true; 4], "every class of world has sites");
         assert!(shields.iter().all(|&n| n > 0), "{shields:?}");
     }
 
@@ -1808,9 +1843,8 @@ mod tests {
         assert!((0.35..0.65).contains(&share), "{share}");
     }
 
-    /// A desert world's crystal mines are fought in mines (#523); its hull
-    /// foundries, with no map of their own yet (#525), on any of its maps.
-    /// Either keeps its mission whoever's looking.
+    /// A desert world's crystal mines are fought in mines (#523) and its hull
+    /// foundries in foundries (#525). Either keeps its mission whoever's looking.
     #[test]
     fn desert_crystal_mines_are_fought_in_mines() {
         for mine in [true, false] {
@@ -1832,9 +1866,34 @@ mod tests {
                     in_mine[(s.map_kind() == MapKind::Mine) as usize] += 1;
                 }
             }
-            assert!(in_mine[1] > 0, "{in_mine:?}");
-            assert_eq!(in_mine[0] == 0, mine, "{in_mine:?}");
+            assert!(in_mine[mine as usize] > 0, "{in_mine:?}");
+            assert_eq!(in_mine[!mine as usize], 0, "{in_mine:?}");
         }
+    }
+
+    /// Hull foundries are fought in foundries on every class of world with
+    /// a ground of its own, in their founder's style on that ground (#525),
+    /// and nothing else is.
+    #[test]
+    fn foundries_stand_on_their_worlds_ground() {
+        let g = galaxy();
+        let mut seen = std::collections::HashSet::new();
+        for sys in 0..g.systems.len() {
+            for s in &g.theater_at(sys, 0).sites {
+                let class = world(sys, s.planet as usize).0;
+                let foundry = s.kind_name() == "HULL FOUNDRY";
+                match (foundry.then(|| class.ground()).flatten(), s.map_kind()) {
+                    (Some(ground), kind) => {
+                        assert_eq!(kind, MapKind::Foundry(Look::own(s.founder()), ground));
+                        seen.insert((ground, s.founder()));
+                    }
+                    (None, kind) => {
+                        assert!(!matches!(kind, MapKind::Foundry(..)), "{class:?}: {kind:?}")
+                    }
+                }
+            }
+        }
+        assert_eq!(seen.len(), 12, "{seen:?}");
     }
 
     /// A site is one place: the same map each time it's looked at, and

@@ -1,7 +1,6 @@
-//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln,
-//! the Foundry), the generated ones (`procgen`: the imperial city, the
-//! crystal mine),
-//! and the shapes they're made of: boxes, wedges (ramps), turned boxes,
+//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln),
+//! the generated ones (`procgen`: cities, crystal mines, hull foundries,
+//! open desert), and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
 use crate::render::material::Material;
@@ -10,7 +9,6 @@ use glam::{Vec2, Vec3};
 use crate::faction::Faction;
 
 mod crag;
-mod foundry;
 mod imperial;
 mod kiln;
 mod landmarks;
@@ -710,9 +708,9 @@ pub enum Ambient {
     Core,
     /// A river of plasma running along the ground.
     River,
-    /// The Foundry's crucible, still hot: a low roar, metal bubbling.
+    /// A foundry's furnace: a low roar, metal bubbling.
     Furnace,
-    /// A wrecked press, still twitching: mains hum, a hiss and a clank.
+    /// Heavy machinery (a crane, a generator): mains hum, a hiss and a clank.
     Machine,
     /// The Sanctum's altar crystal: a Resonant choir.
     Altar,

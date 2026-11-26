@@ -27,6 +27,8 @@ pub use camp::site;
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
+/// The most ways round a desert lays out for the bots (see `Sand::routes`).
+const MAX_ROUTES: usize = 6;
 
 /// What a filler built for.
 #[derive(Clone, Copy, Debug)]
@@ -122,7 +124,8 @@ pub fn dress(
     s.edge_rocks(&mut dice(8));
     s.spawns();
     s.horizon(&mut dice(9));
-    s.map.vistas = s.vistas();
+    s.map.vistas =
+        crate::map::procgen::sunlit_views(s.map, &sk.base_spots(), sk.landmarks[0].center);
     claims
 }
 
@@ -692,6 +695,7 @@ impl Sand<'_> {
             .into_iter()
             .filter(|&q| !nav.path(from, q).is_empty())
             .collect();
+        self.routes(&nav);
         // Repair drops: either side of the landmark, and partway out to
         // each side's spawns.
         let lm = sk.landmarks[0].center;
@@ -732,6 +736,96 @@ impl Sand<'_> {
             .collect();
     }
 
+    /// Ways between the two sides' spawns for the bots to spread out over
+    /// (see `Map::routes`): drives by way of somewhere off the straight
+    /// line, some on the high ground where there is any and some below,
+    /// each a good part of its length well away from the others.
+    fn routes(&mut self, nav: &NavGrid) {
+        let sk = self.sk;
+        let &[a, b] = sk.base_spots().as_slice() else {
+            return;
+        };
+        let top = |p: Vec2| Vec3::new(p.x, f32::INFINITY, p.y);
+        let flat = |p: Vec3| Vec2::new(p.x, p.z);
+        let direct = a.distance(b);
+        // The whole line, a point every 12 m or so on its floor.
+        let walk = |legs: &[Vec3]| -> Vec<Vec3> {
+            let mut out: Vec<Vec3> = Vec::new();
+            for w in legs.windows(2) {
+                let n = (w[0].distance(w[1]) / 12.0).ceil().max(1.0) as usize;
+                for k in 0..n {
+                    let p = flat(w[0].lerp(w[1], k as f32 / n as f32));
+                    if !nav.is_blocked(p) {
+                        out.push(Vec3::new(p.x, self.g(p), p.y));
+                    }
+                }
+            }
+            out
+        };
+        let mut found: Vec<(f32, f32, Vec<Vec3>)> = Vec::new();
+        for &via in self.map.open_spots.iter().step_by(2) {
+            // Not by either side's spawns.
+            if via.distance(a).min(via.distance(b)) < direct * 0.25 {
+                continue;
+            }
+            let (out, back) = (nav.route(top(a), top(via)), nav.route(top(via), top(b)));
+            if out.is_empty() || back.is_empty() {
+                continue;
+            }
+            let mut legs = vec![Vec3::new(a.x, self.g(a), a.y)];
+            legs.extend(out);
+            legs.extend(back);
+            let len: f32 = legs
+                .windows(2)
+                .map(|w| flat(w[0]).distance(flat(w[1])))
+                .sum();
+            let pts = walk(&legs);
+            // No longer than a bot will take (see `ai::ways_toward`), and
+            // not out to the spot and back the way it came.
+            let doubles = pts.iter().enumerate().any(|(i, p)| {
+                pts[(i + 5).min(pts.len())..]
+                    .iter()
+                    .any(|q| p.distance(*q) < 10.0)
+            });
+            if len > direct * 1.5 + 30.0 || doubles || pts.len() < 4 {
+                continue;
+            }
+            // Not through the spawns themselves: every way shares those.
+            let pts: Vec<Vec3> = pts
+                .into_iter()
+                .filter(|p| flat(*p).distance(a).min(flat(*p).distance(b)) > PAD + 10.0)
+                .collect();
+            if pts.len() < 2 {
+                continue;
+            }
+            let high = pts.iter().filter(|p| sk.land.on_high(flat(**p))).count();
+            found.push((high as f32 / pts.len() as f32, len / direct, pts));
+        }
+        // By turns the highest way left and the lowest (shorter first), so
+        // both levels get used.
+        found.sort_by(|x, y| (y.0 - 0.5 * y.1).total_cmp(&(x.0 - 0.5 * x.1)));
+        let mut low: Vec<usize> = (0..found.len()).collect();
+        low.sort_by(|&x, &y| {
+            let cost = |k: usize| found[k].0 + 0.5 * found[k].1;
+            cost(x).total_cmp(&cost(y))
+        });
+        let mut ways: Vec<Vec<Vec3>> = Vec::new();
+        let distinct = |ways: &[Vec<Vec3>], pts: &[Vec3]| {
+            // How much of it is its own ground.
+            ways.iter().all(|w| {
+                let off = |p: &&Vec3| w.iter().all(|q| p.distance(*q) > 22.0);
+                pts.iter().filter(off).count() as f32 / pts.len() as f32 > 0.3
+            })
+        };
+        let mut turns = [(0..found.len()).collect::<Vec<_>>(), low].map(Vec::into_iter);
+        for side in (0..MAX_ROUTES).map(|k| k % 2) {
+            if let Some(k) = turns[side].find(|&k| distinct(&ways, &found[k].2)) {
+                ways.push(found[k].2.clone());
+            }
+        }
+        self.map.routes = ways;
+    }
+
     /// Beyond the edge: the desert going on into hills and big dunes,
     /// buttes standing out of it.
     fn horizon(&mut self, rng: &mut Rng) {
@@ -762,54 +856,5 @@ impl Sand<'_> {
                 ..rocks::boulder(at, yaw, half, g, g + h, color)
             });
         }
-    }
-
-    /// Where the menus show each side's tank: by its spawns, in the sun,
-    /// the camera looking past it toward the landmark.
-    fn vistas(&self) -> Vec<(Vec2, f32)> {
-        let sk = self.sk;
-        let m = &*self.map;
-        let sun = m.atmosphere.sun_dir.normalize();
-        let lm = sk.landmarks[0].center;
-        let view = |p: Vec2| {
-            let d = lm - p;
-            (-d.x).atan2(-d.y)
-        };
-        sk.base_spots()
-            .iter()
-            .map(|&b| {
-                let want = b.lerp(lm, 0.12);
-                let mut spots = Vec::new();
-                let mut u = -30.0;
-                while u <= 30.0 {
-                    let mut v = -30.0;
-                    while v <= 30.0 {
-                        spots.push(want + Vec2::new(u, v));
-                        v += 3.0;
-                    }
-                    u += 3.0;
-                }
-                spots.sort_by(|a, c| a.distance(want).total_cmp(&c.distance(want)));
-                let good = |p: Vec2| {
-                    let g = m.ground_height(p.x, p.y);
-                    let at = Vec3::new(p.x, g + 1.9, p.y);
-                    let blocked =
-                        |dir: Vec3, len: f32| m.oboxes.iter().any(|o| o.ray_hit(at, dir, len));
-                    let under = m
-                        .oboxes
-                        .iter()
-                        .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0);
-                    let v = view(p);
-                    let back = Vec2::new(v.sin(), v.cos());
-                    let level = (0..=14).all(|k| {
-                        let q = p + back * k as f32;
-                        (m.ground_height(q.x, q.y) - g).abs() < 0.5
-                    });
-                    level && !under && !blocked(sun, 300.0) && !blocked(Vec3::Y, 60.0)
-                };
-                let p = spots.into_iter().find(|&p| good(p)).unwrap_or(b);
-                (p, view(p))
-            })
-            .collect()
     }
 }
