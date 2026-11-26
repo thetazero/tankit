@@ -104,6 +104,8 @@ pub enum Hit {
     Star(usize),
     /// DEPLOY on the contract page.
     Deploy,
+    /// On the settings page: setting `i` (its keys are `Row`s and `Bind`s).
+    Setting(usize),
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -130,6 +132,8 @@ pub const SETTINGS: [(&str, &str, Flag); 1] = [("DEBUG MODE", "FPS COUNTER", |s|
 const SETTING_ROWS: usize = SETTINGS.len() + 2;
 const VOLUME_ROW: usize = SETTINGS.len();
 const CONTROLS_ROW: usize = SETTINGS.len() + 1;
+/// Those on the menu's settings page, which has the controls on it.
+const PAGE_SETTINGS: usize = CONTROLS_ROW;
 
 /// Rows on the controls screen: one per action, then RESET.
 const CONTROL_ROWS: usize = ACTIONS.len() + 1;
@@ -223,7 +227,8 @@ impl Controls {
             | Hit::Filter(_)
             | Hit::Sort(_)
             | Hit::Star(_)
-            | Hit::Deploy => return false,
+            | Hit::Deploy
+            | Hit::Setting(_) => return false,
         };
         if self.capturing || (row, slot) == (self.row, self.slot) {
             return false;
@@ -328,7 +333,10 @@ impl Menu {
                 0 => self.screen = Screen::Missions,
                 1 => self.screen = Screen::Ships,
                 2 => return Some(Action::Garage),
-                3 => self.screen = Screen::Settings,
+                3 => {
+                    self.setting = 0;
+                    self.screen = Screen::Settings;
+                }
                 _ => return Some(Action::Quit),
             },
             (Screen::Main, Nav::Back | Nav::Left | Nav::Right) => {}
@@ -351,16 +359,30 @@ impl Menu {
             }
             (Screen::Missions, Nav::Back) => self.screen = Screen::Main,
             (Screen::Missions, Nav::Left | Nav::Right) => {}
-            (Screen::Settings, Nav::Up | Nav::Down) => {
-                self.setting = step(self.setting, SETTING_ROWS, nav)
+            // One page, one list: the settings, then the keys, round and round.
+            (Screen::Settings, Nav::Up) if self.setting == 0 => {
+                self.controls = Controls::default();
+                self.controls.row = RESET_ROW;
+                self.screen = Screen::Controls;
             }
-            (Screen::Settings, Nav::Back) => self.screen = Screen::Main,
-            (Screen::Settings, Nav::Select) if self.setting == CONTROLS_ROW => {
+            (Screen::Settings, Nav::Down) if self.setting + 1 >= PAGE_SETTINGS => {
                 self.controls = Controls::default();
                 self.screen = Screen::Controls;
             }
+            (Screen::Settings, Nav::Up | Nav::Down) => {
+                self.setting = step(self.setting, PAGE_SETTINGS, nav)
+            }
+            (Screen::Controls, Nav::Up) if self.controls.row == 0 => {
+                self.setting = PAGE_SETTINGS - 1;
+                self.screen = Screen::Settings;
+            }
+            (Screen::Controls, Nav::Down) if self.controls.row == RESET_ROW => {
+                self.setting = 0;
+                self.screen = Screen::Settings;
+            }
+            (Screen::Settings, Nav::Back) => self.screen = Screen::Main,
             (Screen::Settings, _) => return setting_input(self.setting, nav).map(Action::Setting),
-            (Screen::Controls, Nav::Back) => self.screen = Screen::Settings,
+            (Screen::Controls, Nav::Back) => self.screen = Screen::Main,
             (Screen::Controls, _) => return self.controls.input(nav).map(Action::Setting),
             (Screen::Ships, Nav::Back) => self.screen = Screen::Main,
             (Screen::Ships, _) => {
@@ -597,13 +619,13 @@ impl Menu {
             Hit::Star(i) => Some(i),
             _ => None,
         };
-        if self.screen == Screen::Controls {
-            return self.controls.hover(hit);
+        if matches!(self.screen, Screen::Settings | Screen::Controls) {
+            return self.hover_settings(hit);
         }
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Filter(_) | Hit::Sort(_) | Hit::Star(_) => return false,
+            Hit::Filter(_) | Hit::Sort(_) | Hit::Star(_) | Hit::Setting(_) => return false,
             Hit::Back | Hit::Continue | Hit::Deploy => unreachable!(),
         };
         let slot = match self.screen {
@@ -612,10 +634,35 @@ impl Menu {
             Screen::Missions => return false,
             // Its one row, SIGN ON: nothing to select.
             Screen::Contract => return false,
-            Screen::Settings | Screen::Controls => &mut self.setting,
+            Screen::Settings | Screen::Controls => unreachable!("above"),
             Screen::Ships => return self.board.pick_row(i),
         };
         std::mem::replace(slot, i) != i
+    }
+
+    /// The pointer moved onto `hit` on the settings page: a setting, or a key.
+    fn hover_settings(&mut self, hit: Hit) -> bool {
+        // Waiting for a key, it stays put.
+        if self.capturing() {
+            return false;
+        }
+        let setting = match hit {
+            Hit::Setting(i) => Some(i),
+            Hit::Volume => Some(VOLUME_ROW),
+            _ => None,
+        };
+        let was = self.screen;
+        match setting {
+            Some(i) => {
+                self.screen = Screen::Settings;
+                let moved = std::mem::replace(&mut self.setting, i) != i;
+                moved || was != self.screen
+            }
+            None => {
+                self.screen = Screen::Controls;
+                self.controls.hover(hit) || was != self.screen
+            }
+        }
     }
 
     /// A click on `hit`, `at` (0..1) across it.
@@ -624,6 +671,9 @@ impl Menu {
             self.back_lit = false;
             self.controls.capturing = false;
             return (Nav::Back, self.input(Nav::Back));
+        }
+        if matches!(self.screen, Screen::Settings | Screen::Controls) {
+            self.hover_settings(hit);
         }
         if self.screen == Screen::Controls {
             let (nav, change) = self.controls.click(hit);
@@ -658,7 +708,9 @@ impl Menu {
                 }
                 return (Nav::Down, None);
             }
-            Hit::Row(_) | Hit::Bind(..) | Hit::Continue | Hit::Deploy => Nav::Select,
+            Hit::Row(_) | Hit::Bind(..) | Hit::Setting(_) | Hit::Continue | Hit::Deploy => {
+                Nav::Select
+            }
             Hit::Back | Hit::Filter(_) | Hit::Sort(_) | Hit::Star(_) => unreachable!(),
         };
         (nav, self.input(nav))
@@ -800,8 +852,8 @@ impl Menu {
     /// The stars behind the main menu, the board and settings, while they're up.
     pub fn cluster(&self) -> Option<(&Cluster, f32)> {
         let c = self.cluster.as_ref()?;
-        use Screen::{Controls, Main, Settings, Ships};
-        matches!(self.screen, Main | Ships | Settings | Controls).then_some((c, self.clock))
+        use Screen::{Main, Ships};
+        matches!(self.screen, Main | Ships).then_some((c, self.clock))
     }
 
     /// The main menu: who you are and what you can do, on a panel over the
@@ -848,7 +900,7 @@ impl Menu {
         }
     }
 
-    /// Settings, or its controls: a panel over the stars.
+    /// The settings page: the settings, then the keys in their columns.
     fn draw_settings(
         &self,
         p: &mut Painter,
@@ -857,25 +909,17 @@ impl Menu {
         w: f32,
         h: f32,
     ) {
-        p.set_halo(None);
-        if self.cluster.is_none() {
-            p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 1.0]);
+        let on_keys = self.screen == Screen::Controls;
+        let at = page(p, "Settings", 3, w, h);
+        let setting = if on_keys { usize::MAX } else { self.setting };
+        let set = &profile.settings;
+        settings_rows(p, hits, at[0], set, setting, PAGE_SETTINGS, Hit::Setting);
+        let mut keys = self.controls;
+        if !on_keys {
+            keys.row = usize::MAX;
         }
-        let size = Vec2::new(design::MARGIN * 2.0 + WIDE, h);
-        p.rect(Vec2::ZERO, size, design::GROUND);
-        let at = Vec2::splat(design::MARGIN);
-        let list = at + Vec2::Y * TITLE_H;
-        let foot = design::foot(h, 0);
-        let title = if self.screen == Screen::Controls {
-            let binds = &profile.settings.binds;
-            controls_rows(p, hits, list, foot, binds, &self.controls);
-            "Controls"
-        } else {
-            settings_rows(p, hits, list, &profile.settings, self.setting);
-            "Settings"
-        };
-        p.text(at, title, &design::HEAD, Align::Left);
-        back_button(p, hits, foot, WIDE, self.back_lit);
+        controls_page(p, hits, [at[1], at[2]], &set.binds, &keys);
+        back_button(p, hits, Vec2::new(at[0].x, back_y(h)), WIDE, self.back_lit);
     }
 
     /// No theater to show: your company has no battle for you yet (or
@@ -1128,7 +1172,8 @@ impl Pause {
             | Hit::Filter(_)
             | Hit::Sort(_)
             | Hit::Star(_)
-            | Hit::Deploy => {
+            | Hit::Deploy
+            | Hit::Setting(_) => {
                 unreachable!()
             }
         };
@@ -1160,7 +1205,8 @@ impl Pause {
             | Hit::Filter(_)
             | Hit::Sort(_)
             | Hit::Star(_)
-            | Hit::Deploy => {
+            | Hit::Deploy
+            | Hit::Setting(_) => {
                 unreachable!()
             }
         };
@@ -1179,12 +1225,25 @@ impl Pause {
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
-        let inner = match (self.controls, self.settings) {
-            (Some(_), _) => TITLE_H + CONTROLS_H + FOOT_GAP + design::BUTTON * 2.0 + UNIT,
-            (None, Some(_)) => {
-                TITLE_H + SETTING_ROW * SETTING_ROWS as f32 + FOOT_GAP + design::BUTTON
-            }
-            (None, None) => {
+        if let Some(c) = &self.controls {
+            let at = page(&mut p, "Controls", 2, w, h);
+            controls_page(
+                &mut p,
+                &mut hits,
+                [at[0], at[1]],
+                &profile.settings.binds,
+                c,
+            );
+            let foot = Vec2::new(at[0].x, back_y(h));
+            back_button(&mut p, &mut hits, foot, WIDE, self.back_lit);
+            return Layer {
+                verts: p.finish(),
+                hits,
+            };
+        }
+        let inner = match self.settings {
+            Some(_) => TITLE_H + SETTING_ROW * SETTING_ROWS as f32 + FOOT_GAP + design::BUTTON,
+            None => {
                 TITLE_H
                     + design::ACTION * (PAUSE_ITEMS.len() as f32 - 1.0)
                     + LEAVE_GAP
@@ -1200,17 +1259,13 @@ impl Pause {
         // Settings and controls go back a step; the pause list has RESUME.
         let foot = Vec2::new(at.x, min.y + size.y - pad.y - design::BUTTON);
         let list = at + Vec2::Y * TITLE_H;
-        let title = match (&self.controls, self.settings) {
-            (Some(c), _) => {
-                let binds = &profile.settings.binds;
-                controls_rows(&mut p, &mut hits, list, foot, binds, c);
-                "Controls"
-            }
-            (None, Some(i)) => {
-                settings_rows(&mut p, &mut hits, list, &profile.settings, i);
+        let title = match self.settings {
+            Some(i) => {
+                let set = &profile.settings;
+                settings_rows(&mut p, &mut hits, list, set, i, SETTING_ROWS, Hit::Row);
                 "Settings"
             }
-            (None, None) => {
+            None => {
                 let mut y = list.y;
                 for (i, name) in PAUSE_ITEMS.iter().enumerate() {
                     if i == PAUSE_STAYS {
@@ -1246,7 +1301,7 @@ impl Pause {
     }
 }
 
-/// How wide settings, controls and the pause box's content are, and how tall
+/// How wide a settings page's columns and the pause box's content are, and how tall
 /// their title and the gap over the buttons at their foot.
 const WIDE: f32 = UNIT * 42.0;
 const TITLE_H: f32 = UNIT * 7.0;
@@ -1262,13 +1317,16 @@ fn row_name(p: &mut Painter, at: Vec2, name: &str, on: bool) {
     p.text(at, name, &design::BODY.colored(color), Align::Left);
 }
 
-/// The settings: a row each with its value on the right, and what it does.
+/// The first `n` settings: a row each with its value on the right, and what
+/// it does; clicked as `hit`.
 fn settings_rows(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
     at: Vec2,
     settings: &Settings,
     selected: usize,
+    n: usize,
+    hit: fn(usize) -> Hit,
 ) {
     use design::{AMBER, BODY, SMALL, TEXT, TEXT_2};
     let right = at.x + WIDE;
@@ -1276,11 +1334,11 @@ fn settings_rows(
         let at = Vec2::new(at.x, y + UNIT * 2.5);
         p.text(at, text, &SMALL.colored(TEXT_2), Align::Left);
     };
-    for i in 0..SETTING_ROWS {
+    for i in 0..n {
         let y = at.y + SETTING_ROW * i as f32;
         let min = Vec2::new(at.x - UNIT * 2.0, y - UNIT * 1.5);
         let size = Vec2::new(WIDE + UNIT * 4.0, SETTING_ROW);
-        hits.add(p, min, size, Hit::Row(i));
+        hits.add(p, min, size, hit(i));
         let at = Vec2::new(at.x, y);
         let on = i == selected;
         match i {
@@ -1328,58 +1386,63 @@ fn settings_rows(
     }
 }
 
-/// Pitch of a row on the controls screen.
-const CONTROL_ROW: f32 = UNIT * 3.25;
-/// A section's label there (IN BATTLE, IN THE GARAGE), and the gap over the second.
-const CONTROL_LABEL: f32 = UNIT * 3.5;
-const CONTROL_GAP: f32 = UNIT * 2.0;
+/// Between a page's columns, and from its top to its title.
+const PAGE_GAP: f32 = UNIT * 5.0;
+const PAGE_TOP: f32 = UNIT * 9.0;
+
+/// A whole page titled `title`, with `n` columns in the middle of it: where
+/// each starts.
+fn page(p: &mut Painter, title: &str, n: usize, w: f32, h: f32) -> Vec<Vec2> {
+    p.set_halo(None);
+    p.rect(Vec2::ZERO, Vec2::new(w, h), design::GROUND);
+    // Further apart where there's room.
+    let spare = w - design::MARGIN * 2.0 - WIDE * n as f32;
+    let gap = (spare / n as f32).clamp(PAGE_GAP, PAGE_GAP * 2.5);
+    let pitch = WIDE + gap;
+    let x = (w - pitch * n as f32 + gap) * 0.5;
+    p.text(Vec2::new(x, PAGE_TOP), title, &design::TITLE, Align::Left);
+    (0..n)
+        .map(|k| Vec2::new(x + pitch * k as f32, PAGE_TOP + UNIT * 12.0))
+        .collect()
+}
+
+/// Where a page's BACK goes.
+fn back_y(h: f32) -> f32 {
+    h - PAGE_TOP - design::BUTTON
+}
+
+/// Pitch of a key's row, and of the label over each column of them.
+const CONTROL_ROW: f32 = UNIT * 4.5;
+const CONTROL_LABEL: f32 = UNIT * 4.5;
 /// A key slot, and the gap between two.
-const SLOT: Vec2 = Vec2::new(UNIT * 9.0, UNIT * 2.75);
+const SLOT: Vec2 = Vec2::new(UNIT * 9.0, UNIT * 3.5);
 const SLOT_GAP: f32 = UNIT;
 
-/// Height the controls' rows take.
-const CONTROLS_H: f32 = CONTROL_LABEL * 2.0 + ACTIONS.len() as f32 * CONTROL_ROW + CONTROL_GAP;
-
-/// The controls: each action with its two key slots, the battle's then the
-/// garage's; and the reset, over the way back at `foot`.
-fn controls_rows(
+/// The keys: each action with its two slots, the battle's in the column at
+/// `at[0]`, the garage's at `at[1]` with the reset under them.
+fn controls_page(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
-    at: Vec2,
-    foot: Vec2,
+    at: [Vec2; 2],
     binds: &Binds,
     c: &Controls,
 ) {
     use design::{AMBER, SMALL, TEXT, TEXT_2};
-    let mut y = at.y;
-    let mut section = None;
+    for (at, name) in at.into_iter().zip(["In battle", "In the garage"]) {
+        p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
+    }
+    let mut y = [at[0].y + CONTROL_LABEL, at[1].y + CONTROL_LABEL];
     for (i, &action) in ACTIONS.iter().enumerate() {
-        let garage_only = action.context() == Context::Garage;
-        if section != Some(garage_only) {
-            if section.is_some() {
-                y += CONTROL_GAP;
-            }
-            section = Some(garage_only);
-            let name = if garage_only {
-                "In the garage"
-            } else {
-                "In battle"
-            };
-            p.text(
-                Vec2::new(at.x, y),
-                name,
-                &SMALL.colored(TEXT_2),
-                Align::Left,
-            );
-            y += CONTROL_LABEL;
-        }
+        let k = usize::from(action.context() == Context::Garage);
+        let at = Vec2::new(at[k].x, y[k]);
+        y[k] += CONTROL_ROW;
         let on = i == c.row;
-        let mid = y + SLOT.y * 0.5;
-        let min = Vec2::new(at.x - UNIT * 2.0, mid - CONTROL_ROW * 0.5);
+        let mid = at.y + SLOT.y * 0.5;
+        let min = Vec2::new(at.x - UNIT, mid - CONTROL_ROW * 0.5);
         hits.add(
             p,
             min,
-            Vec2::new(WIDE + UNIT * 4.0, CONTROL_ROW),
+            Vec2::new(WIDE + UNIT * 2.0, CONTROL_ROW),
             Hit::Row(i),
         );
         let name = Vec2::new(at.x, mid - SMALL.size * 0.5);
@@ -1387,7 +1450,7 @@ fn controls_rows(
         p.text(name, action.name(), &style, Align::Left);
         for (slot, key) in binds.keys(action).into_iter().enumerate() {
             let left = (SLOTS - slot) as f32 * (SLOT.x + SLOT_GAP) - SLOT_GAP;
-            let min = Vec2::new(at.x + WIDE - left, y);
+            let min = Vec2::new(at.x + WIDE - left, at.y);
             hits.add(p, min, SLOT, Hit::Bind(i, slot));
             let picked = on && slot == c.slot;
             let waiting = picked && c.capturing;
@@ -1404,11 +1467,10 @@ fn controls_rows(
             let at = Vec2::new(min.x + SLOT.x * 0.5, mid - SMALL.size * 0.5);
             p.text(at, text, &SMALL.colored(color), Align::Center);
         }
-        y += CONTROL_ROW;
     }
 
     // Back to the defaults, if they've been changed.
-    let min = foot - Vec2::Y * (design::BUTTON + UNIT);
+    let min = Vec2::new(at[1].x, y[1] + UNIT * 3.0);
     let changed = *binds != Binds::default();
     let on = c.row == RESET_ROW;
     let text = if changed { "Reset" } else { "All default" };
@@ -1709,7 +1771,7 @@ mod tests {
         for (screen, to) in [
             (Screen::Missions, Screen::Main),
             (Screen::Settings, Screen::Main),
-            (Screen::Controls, Screen::Settings),
+            (Screen::Controls, Screen::Main),
         ] {
             m.screen = screen;
             assert!(m.hover(Hit::Back));
@@ -1722,7 +1784,7 @@ mod tests {
         m.input(Nav::Select);
         assert!(m.capturing());
         click_drawn(&mut m, &profile, Hit::Back);
-        assert_eq!(m.screen, Screen::Settings);
+        assert_eq!(m.screen, Screen::Main);
         assert!(!m.capturing());
 
         // The pause box: back out of controls, then settings.
@@ -1791,7 +1853,7 @@ mod tests {
 
         m.screen = Screen::Settings;
         assert_eq!(
-            click_drawn(&mut m, &profile, Hit::Row(0)).1,
+            click_drawn(&mut m, &profile, Hit::Setting(0)).1,
             Some(Action::Setting(Change::Toggle(0)))
         );
         // The volume bar sets the level under the click: its middle is half volume.
@@ -1801,6 +1863,10 @@ mod tests {
             Some(Action::Setting(Change::Volume(half)))
         );
         assert_eq!(m.setting, VOLUME_ROW);
+        // The keys are on the same page.
+        let hit = Hit::Bind(0, 1);
+        assert_eq!(click_drawn(&mut m, &profile, hit), (Nav::Select, None));
+        assert!(m.screen == Screen::Controls && m.capturing());
     }
 
     #[test]
@@ -1835,9 +1901,13 @@ mod tests {
     fn rebinding_from_the_menu() {
         let mut m = Menu::new();
         m.screen = Screen::Settings;
-        m.setting = CONTROLS_ROW;
-        assert_eq!(m.input(Nav::Select), None);
+        // Down off the last setting is the first key, and up again goes back.
+        m.setting = VOLUME_ROW;
+        m.input(Nav::Down);
         assert_eq!(m.screen, Screen::Controls);
+        m.input(Nav::Up);
+        assert_eq!((m.screen, m.setting), (Screen::Settings, VOLUME_ROW));
+        m.input(Nav::Down);
         assert!(!m.capturing());
         // FIRE, second slot.
         for _ in 0..binds::Action::Fire.index() {
@@ -1867,16 +1937,19 @@ mod tests {
             m.capture(KeyCode::Backspace),
             Some(Action::Setting(Change::Unbind(binds::Action::Fire, 1)))
         );
-        // RESET, at the bottom (Up wraps there from the top).
-        for _ in 0..=binds::Action::Fire.index() {
-            m.input(Nav::Up);
-        }
+        // RESET, at the bottom (Up from the first setting wraps there).
+        m.screen = Screen::Settings;
+        m.setting = 0;
+        m.input(Nav::Up);
         assert_eq!(
             m.input(Nav::Select),
             Some(Action::Setting(Change::ResetBinds))
         );
+        // Down off it is the first setting.
+        m.input(Nav::Down);
+        assert_eq!((m.screen, m.setting), (Screen::Settings, 0));
         m.input(Nav::Back);
-        assert_eq!(m.screen, Screen::Settings);
+        assert_eq!(m.screen, Screen::Main);
     }
 
     #[test]
@@ -1903,6 +1976,15 @@ mod tests {
         assert_eq!(p.controls, None);
         assert_eq!(p.input(Nav::Back), None);
         assert_eq!(p.input(Nav::Back), Some(PauseAction::Resume));
+    }
+
+    #[test]
+    fn key_names_clear_their_slots() {
+        let room = WIDE - (SLOT.x + SLOT_GAP) * SLOTS as f32;
+        for action in ACTIONS {
+            let wide = crate::ui::measure(action.name(), &design::SMALL);
+            assert!(wide < room, "{} is {wide} of {room}", action.name());
+        }
     }
 
     #[test]

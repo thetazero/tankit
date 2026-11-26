@@ -1705,16 +1705,14 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             }
         }
         Some(Screen::Settings | Screen::Controls | Screen::Rebind) => {
-            let g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-            menu.set_cluster(cluster_view::Cluster::of(&g));
             for _ in 0..3 {
                 menu.input(menu::Nav::Down);
             }
             menu.input(menu::Nav::Select);
             if args.screen != Some(Screen::Settings) {
-                // Up wraps round to CONTROLS.
-                menu.input(menu::Nav::Up);
-                menu.input(menu::Nav::Select);
+                // Down past the settings, to the keys.
+                menu.input(menu::Nav::Down);
+                menu.input(menu::Nav::Down);
             }
             if args.screen == Some(Screen::Rebind) {
                 for _ in 0..binds::Action::Fire.index() {
