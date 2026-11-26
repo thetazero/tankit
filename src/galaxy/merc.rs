@@ -875,7 +875,7 @@ impl Galaxy {
             .filter(|s| (s.owner as usize == f) == own)
             .map(|s| match s.kind {
                 SiteKind::Production { crystals, .. } => crystals,
-                SiteKind::Shield { .. } => 0.0,
+                SiteKind::Shield { .. } | SiteKind::Outpost => 0.0,
             })
             .sum();
         // And what's in the vaults, won or lost with the planets.

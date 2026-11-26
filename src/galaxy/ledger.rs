@@ -234,6 +234,7 @@ impl Setup {
                 SiteKind::Production { .. } => "production".into(),
                 SiteKind::Shield { damaged: false } => "shield".into(),
                 SiteKind::Shield { damaged: true } => "shield (damaged)".into(),
+                SiteKind::Outpost => "outpost".into(),
             }),
             holder: holder.map(|f| Faction::side(f).name().into()),
             contract: format!("{:?}", m.contract),
