@@ -2,8 +2,6 @@
 //! keeps no state; anything that animates (eased values, rolling digits)
 //! gets its value from the caller.
 
-use std::f32::consts::{FRAC_PI_2, TAU};
-
 use glam::Vec2;
 
 use super::{Align, Painter, Rgba, TextStyle, theme, with_alpha};
@@ -228,31 +226,6 @@ pub fn crosshair(p: &mut Painter, c: Vec2, kick: f32, color: Rgba) {
     p.rect(c - 1.0, Vec2::splat(2.0), color);
 }
 
-/// Top-down hull outline with the turret and barrel at `turret_rel` radians
-/// (0 = straight ahead, positive = turned left), hull nose pointing up.
-pub fn turret_gauge(p: &mut Painter, c: Vec2, turret_rel: f32) {
-    let (hw, hh) = (13.0, 22.0);
-    p.polyline(
-        &[
-            c + Vec2::new(-hw, -hh + 4.0),
-            c + Vec2::new(-hw + 4.0, -hh),
-            c + Vec2::new(hw - 4.0, -hh),
-            c + Vec2::new(hw, -hh + 4.0),
-            c + Vec2::new(hw, hh),
-            c + Vec2::new(-hw, hh),
-            c + Vec2::new(-hw, -hh + 4.0),
-        ],
-        1.0,
-        theme::DIM,
-    );
-    let tc = c + Vec2::new(0.0, 2.0);
-    p.arc(tc, 8.0, 0.0, TAU, 1.2, super::design::TEXT);
-    // Screen angle: up is -y; turning left (positive) rotates counter-clockwise on screen.
-    let a = -FRAC_PI_2 - turret_rel;
-    let dir = Vec2::new(a.cos(), a.sin());
-    p.line(tc + dir * 8.0, tc + dir * 34.0, 1.6, super::design::TEXT);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,7 +273,6 @@ mod tests {
     #[test]
     fn widgets_emit_geometry() {
         let mut p = Painter::new(1.0);
-        turret_gauge(&mut p, Vec2::new(100.0, 100.0), 0.5);
         odometer(
             &mut p,
             Vec2::ZERO,

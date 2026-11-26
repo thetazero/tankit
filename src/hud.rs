@@ -1,6 +1,6 @@
 //! Driving HUD: readouts round the edges, the middle left to the city and the crosshair.
 //!
-//! Team deathmatch readouts: round clock and kills top left, team scores
+//! Team deathmatch readouts: round clock top left, team scores
 //! top centre, kill feed top right, hull and reload bottom centre,
 //! team-coloured health bars over tanks, a death screen, and the scoreboard
 //! (Tab, or when the round ends). Tanks have no names: "YOU", or their turret.
@@ -128,12 +128,12 @@ impl Hud {
 
         let outline = Some((theme::HALO, theme::HALO_PX));
         p.set_halo(None);
-        // Top left: round clock, kills / deaths, renown.
+        // Top left: round clock.
         let secs = m.time_left.ceil() as u32;
         plate(
             &mut p,
             Vec2::new(MARGIN, MARGIN),
-            Vec2::new(254.0, 78.0),
+            Vec2::new(84.0, 32.0),
             1.0,
         );
         small(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
@@ -145,42 +145,6 @@ impl Hud {
             Vec2::new(MARGIN, MARGIN + 14.0),
             &format!("{}:{:02}", secs / 60, secs % 60),
             &clock,
-            Align::Left,
-        );
-        small(
-            &mut p,
-            Vec2::new(MARGIN, MARGIN + 50.0),
-            "KILLS",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN, MARGIN + 64.0),
-            &me.kills.to_string(),
-            &hud_text(12.0),
-            Align::Left,
-        );
-        small(
-            &mut p,
-            Vec2::new(MARGIN + 70.0, MARGIN + 50.0),
-            "DEATHS",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN + 70.0, MARGIN + 64.0),
-            &me.deaths.to_string(),
-            &hud_text(12.0),
-            Align::Left,
-        );
-        small(
-            &mut p,
-            Vec2::new(MARGIN + 168.0, MARGIN + 50.0),
-            "RENOWN",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN + 168.0, MARGIN + 64.0),
-            &format!("+{}", m.renown),
-            &hud_text(12.0),
             Align::Left,
         );
 
@@ -273,10 +237,10 @@ impl Hud {
         p.set_halo(None);
         let sides = m.factions.len();
         if sides == 2 {
-            let meter = if m.hold.is_some() || m.raid.is_some() {
-                44.0
-            } else {
-                0.0
+            let meter = match (&m.hold, &m.raid) {
+                (Some(_), _) => 44.0,
+                (_, Some(_)) => 26.0,
+                _ => 0.0,
             };
             // Several sites' names take more.
             let sites = m.hold.as_ref().map_or(0, |h| h.sites.len());
@@ -582,13 +546,13 @@ impl Hud {
         }
 
         p.set_halo(None);
-        // Scrap popups (#444), off to the side (#474): under your renown in
-        // the top-left stats, what the newest kill's wreck taught of each
+        // Scrap popups (#444), off to the side (#474): under the
+        // clock, what the newest kill's wreck taught of each
         // part, with a bar for how far into its next step you are. They
         // slide in, sit, and fade, leaving the middle of the screen clear.
         if !board {
             let n = m.scrap_pops.len();
-            let top = MARGIN + 116.0;
+            let top = MARGIN + 70.0;
             let shown = &m.scrap_pops[n.saturating_sub(2)..];
             for (row, x) in shown.iter().enumerate() {
                 let fade = ((SCRAP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
@@ -630,11 +594,6 @@ impl Hud {
             self.speed / max_speed,
             design::TEXT,
         );
-
-        // Bottom right: turret angle relative to the hull.
-        let br = Vec2::new(w - MARGIN, h - MARGIN);
-        plate(&mut p, br - Vec2::splat(60.0), Vec2::splat(60.0), 1.0);
-        widgets::turret_gauge(&mut p, br + Vec2::new(-30.0, -30.0), tank.turret_rel);
 
         // Bottom centre: the kit queued for the next respawn, if any.
         let at = Vec2::new(w * 0.5, h - MARGIN - 8.0);
@@ -1195,38 +1154,30 @@ fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     }
 }
 
-/// The Raid under the scores: whether your side attacks or defends, then
-/// where the flag is.
+/// The Raid under the scores: while the flag's home, whether your side
+/// attacks or defends; once it's not, who has it, or how long it lies.
 fn raid_meter(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
     let mine = m.player().team;
-    let attacking = r.attackers() == mine;
-    let mut l = LABEL;
-    l.color = m.factions[mine].ui();
-    p.text(
-        at,
-        if attacking { "ATTACK" } else { "DEFEND" },
-        &l,
-        Align::Center,
-    );
     let (text, color) = match r.flag {
-        raid::Flag::Home if attacking => ("TAKE THEIR FLAG".to_string(), theme::DIM),
-        raid::Flag::Home => ("YOUR FLAG IS HOME".to_string(), theme::DIM),
-        raid::Flag::Carried(0) => ("YOU HAVE THE FLAG: TAKE IT HOME".to_string(), theme::HOT),
-        raid::Flag::Carried(i) => (
-            format!("{} HAS THE FLAG", m.factions[m.fighters[i].team].name()),
-            m.factions[m.fighters[i].team].ui(),
-        ),
-        raid::Flag::Dropped { for_, .. } => (
-            format!(
-                "FLAG DROPPED  ·  HOME IN {:.0}",
-                (raid::RETURN_TIME - for_).ceil()
-            ),
-            theme::HOT,
-        ),
+        raid::Flag::Home => {
+            let job = if r.attackers() == mine {
+                "ATTACK"
+            } else {
+                "DEFEND"
+            };
+            (job.to_string(), m.factions[mine].ui())
+        }
+        raid::Flag::Carried(0) => ("YOU HAVE THE FLAG".to_string(), design::AMBER),
+        raid::Flag::Carried(i) => {
+            let f = m.factions[m.fighters[i].team];
+            (format!("{} HAS THE FLAG", f.name()), f.ui())
+        }
+        raid::Flag::Dropped { for_, .. } => {
+            let left = (raid::RETURN_TIME - for_).ceil();
+            (format!("FLAG DROPPED  {left:.0}"), theme::HOT)
+        }
     };
-    let mut s = LABEL;
-    s.color = color;
-    p.text(at + Vec2::new(0.0, 18.0), &text, &s, Align::Center);
+    p.text(at, &text, &LABEL.colored(color), Align::Center);
 }
 
 fn hold_color(m: &Match, c: Control) -> Rgba {
