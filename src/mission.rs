@@ -76,7 +76,10 @@ pub const MISSIONS: &[Mission] = &[
         name: "BROKEN STREETS",
         contract: Contract::Attrition,
         map: "CITY",
-        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
+        map_kind: MapKind::City(
+            crate::map::procgen::Look::Imperium,
+            crate::map::procgen::setting::Setting::Plain,
+        ),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -126,6 +129,7 @@ pub const MISSIONS: &[Mission] = &[
         map: "SHIELD CITY",
         map_kind: MapKind::ShieldSite(
             crate::map::procgen::Look::Imperium,
+            crate::map::procgen::setting::Setting::Plain,
             crate::Generator::up(Faction::Imperium),
         ),
         seed: 0,
@@ -146,7 +150,10 @@ pub const MISSIONS: &[Mission] = &[
         name: "HIGH SEAT",
         contract: Contract::Hold,
         map: "CITY",
-        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
+        map_kind: MapKind::City(
+            crate::map::procgen::Look::Imperium,
+            crate::map::procgen::setting::Setting::Plain,
+        ),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -216,7 +223,7 @@ mod tests {
         assert!(
             for_sites(Class::Desert)
                 .iter()
-                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(_)))
+                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
         );
         // Every desert mission is there from the start, not just Dry Wind.
         assert!(for_sites(Class::Desert).len() > 1);
