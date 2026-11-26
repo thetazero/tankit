@@ -29,6 +29,9 @@ pub struct Crossing {
     pub floor: f32,
     /// The roofed stretch of a tunnel, along it.
     pub roofed: (f32, f32),
+    /// The stretch of a tunnel with walls: its approaches' stop short of
+    /// any other road.
+    pub walled: (f32, f32),
 }
 
 /// How thick a tunnel's walls are: the ground it's cut down into slopes
@@ -169,7 +172,10 @@ impl Crossing {
                         s.wall,
                         true,
                     );
-                    for (t0, t1) in [(0.0, a), (b, self.len())] {
+                    for (t0, t1) in [(self.walled.0, a), (b, self.walled.1)] {
+                        if t1 - t0 < 0.5 {
+                            continue;
+                        }
                         let n = ((t1 - t0) / 4.0).ceil().max(1.0) as i32;
                         let at = |k: i32| t0 + (t1 - t0) * k as f32 / n as f32;
                         let height = |t: f32| {
