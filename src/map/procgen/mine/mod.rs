@@ -34,9 +34,8 @@ use crate::map::Map;
 use crate::rng::Rng;
 
 pub use super::land::Butte;
-pub use super::skeleton::Mine;
+pub use super::skeleton::{Mine, Skeleton};
 pub(in crate::map) use dig::Dig;
-pub use layout::Layout;
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
@@ -70,7 +69,7 @@ pub const DECK_TOP: f32 = 0.25;
 const DECK_T: f32 = 1.0;
 /// Track gauge (rail to rail, m): broad, for big ore cars.
 const GAUGE: f32 = 2.2;
-/// The warehouse's branch line: it leaves the main line `Layout::junction`
+/// The warehouse's branch line: it leaves the main line `Skeleton::junction`
 /// m past the track's fifth point, back the way the trains came, swings
 /// off on a curve of this radius through this angle, and runs straight in
 /// at the warehouse's rail door this far on.
@@ -187,11 +186,11 @@ fn style(look: Look) -> &'static dyn MineStyle {
 
 /// The layout `spec` makes: the first, from its seed on, that holds
 /// together and whose greybox is playable.
-pub fn layout(spec: &Spec) -> Layout {
+pub fn layout(spec: &Spec) -> Skeleton {
     let mut last = None;
     for attempt in 0..64u64 {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
-        let l = match Layout::generate(&mut rng) {
+        let l = match Skeleton::mine(&mut rng) {
             Ok(l) => l,
             Err(line) => {
                 log::trace!(
@@ -216,7 +215,7 @@ pub fn layout(spec: &Spec) -> Layout {
 /// taking, driving there on `map` (the layout's greybox): the spawns were
 /// placed by straight-line distance, and a wash or a mesa between can
 /// make one side's drive much longer.
-fn fair(l: &Layout, map: &Map, nav: &crate::ai::nav::NavGrid) -> Result<(), String> {
+fn fair(l: &Skeleton, map: &Map, nav: &crate::ai::nav::NavGrid) -> Result<(), String> {
     let total = |side: usize| {
         let base = &map.bases[side];
         let from = base.iter().copied().sum::<Vec2>() / base.len().max(1) as f32;
@@ -292,7 +291,7 @@ pub const PLANET: crate::planet::Look = crate::planet::Look {
     cloudiness: 0.35,
 };
 
-impl Layout {
+impl Skeleton {
     /// Turns the map built from this layout the way round it's meant to
     /// be: mirrored, then turned.
     pub fn orient(&self, m: &mut Map) {

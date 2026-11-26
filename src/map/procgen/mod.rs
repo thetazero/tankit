@@ -18,12 +18,9 @@
 //! monument gets the style's monument, so pieces are shared across every
 //! map built in that style.
 //!
-//! Cities and deserts are laid out by their own grammars into the one
-//! `Skeleton`: the ground in `land`'s landforms, the rest in shared
-//! placeholders, with one greybox. A crystal mine still has its own layout
-//! (`mine::Layout`): an escarpment, a mine under it, a wash and a railroad,
-//! and its styles (`mine::MineStyle`) fill in the lamps, machines and
-//! freight.
+//! Every biome's grammar lays out the one `Skeleton`: the ground in
+//! `land`'s landforms, the rest in shared placeholders. A mine's still built
+//! facing north and then turned (`Skeleton::orient`).
 
 pub mod check;
 pub mod city;

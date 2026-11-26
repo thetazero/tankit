@@ -373,6 +373,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             inward,
             size: court,
             kind: BaseKind::Court,
+            camp: None,
         }));
     }
     let mut tries = 0;
@@ -416,6 +417,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                 inward,
                 size: court,
                 kind: BaseKind::Court,
+                camp: None,
             });
         }
     }
