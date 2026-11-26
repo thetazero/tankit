@@ -22,8 +22,8 @@ use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
-use crate::ui::widgets::{self, label};
-use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme};
+use crate::ui::design::UNIT;
+use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
 use crate::ui::{design, emblem};
 use crate::work_view::{self, Board};
 
@@ -120,28 +120,6 @@ fn volume_click(settings: &Settings, frac: f32) -> Change {
     Change::Volume(to - settings.volume as i32)
 }
 
-/// A row on a menu list.
-#[derive(Clone, Copy)]
-enum Item<'a> {
-    /// Leads to another screen: a chevron when selected.
-    Opens(&'a str),
-    /// Acts straight away (deploys): no chevron, so whatever sits on the
-    /// right of the row lines up on every row.
-    Acts(&'a str),
-    /// Acts straight away and takes you out (of the match, or the game): set
-    /// apart under a rule, with what it does spelled out on the right when the
-    /// name alone doesn't say it, and lit hot when selected.
-    Leaves(&'a str, Option<&'a str>),
-}
-
-impl<'a> Item<'a> {
-    fn name(self) -> &'a str {
-        match self {
-            Item::Opens(n) | Item::Acts(n) | Item::Leaves(n, _) => n,
-        }
-    }
-}
-
 /// The main menu's actions, what a merc's here for first; then, set apart
 /// at the foot of the panel, the rest.
 const MAIN_ITEMS: [&str; 5] = ["Contract", "Find work", "Garage", "Settings", "Quit"];
@@ -151,10 +129,7 @@ const MAIN_ACTIONS: usize = 3;
 type Flag = fn(&mut Settings) -> &mut bool;
 
 /// The settings panel's toggles: name, a line on what it does, and where it lives.
-pub const SETTINGS: [(&str, &str, Flag); 1] =
-    [("DEBUG MODE", "FPS COUNTER IN THE TOP RIGHT CORNER", |s| {
-        &mut s.debug
-    })];
+pub const SETTINGS: [(&str, &str, Flag); 1] = [("DEBUG MODE", "FPS COUNTER", |s| &mut s.debug)];
 
 /// Rows on the settings panel: the toggles, the volume, then the way into the controls.
 const SETTING_ROWS: usize = SETTINGS.len() + 2;
@@ -794,6 +769,13 @@ impl Menu {
                 hits,
             };
         }
+        if matches!(self.screen, Screen::Settings | Screen::Controls) {
+            self.draw_settings(&mut p, &mut hits, profile, w, h);
+            return Layer {
+                verts: fade(p.finish(), alpha),
+                hits,
+            };
+        }
         match self.system() {
             Some(t) => {
                 crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
@@ -819,33 +801,18 @@ impl Menu {
                 draw_choice(&mut p, &mut hits, Vec2::new(x, y), c, self.pick);
             }
             Screen::Missions => self.no_posting(&mut p, Vec2::new(x, y), profile),
-            Screen::Settings => {
-                body(&mut p, Vec2::new(x, y), "Settings", theme::DIM);
-                y += 26.0;
-                settings_rows(
-                    &mut p,
-                    &mut hits,
-                    Vec2::new(x, y),
-                    &profile.settings,
-                    self.setting,
-                );
-            }
+            Screen::Settings | Screen::Controls => unreachable!("drawn above"),
             Screen::Ships | Screen::Contract => unreachable!("drawn above"),
-            Screen::Controls => {
-                body(&mut p, Vec2::new(x, y), "Settings · Controls", theme::DIM);
-                y += 26.0;
-                controls_rows(
-                    &mut p,
-                    &mut hits,
-                    Vec2::new(x, y),
-                    &profile.settings.binds,
-                    &self.controls,
-                );
-            }
         }
         // Every screen but the main menu goes back to the one it came from.
         if self.screen != Screen::Main {
-            back(&mut p, &mut hits, Vec2::new(x, h - 72.0), self.back_lit);
+            back_button(
+                &mut p,
+                &mut hits,
+                Vec2::new(x, h - 72.0),
+                design::COLUMN,
+                self.back_lit,
+            );
         }
         Layer {
             verts: fade(p.finish(), alpha),
@@ -870,10 +837,11 @@ impl Menu {
                 .is_none_or(|c| (c.tick, c.crew) != (tick, crew))
     }
 
-    /// The stars behind the main menu and the board, while they're up.
+    /// The stars behind the main menu, the board and settings, while they're up.
     pub fn cluster(&self) -> Option<(&Cluster, f32)> {
         let c = self.cluster.as_ref()?;
-        matches!(self.screen, Screen::Main | Screen::Ships).then_some((c, self.clock))
+        use Screen::{Controls, Main, Settings, Ships};
+        matches!(self.screen, Main | Ships | Settings | Controls).then_some((c, self.clock))
     }
 
     /// The main menu: who you are and what you can do, on a panel over the
@@ -918,6 +886,36 @@ impl Menu {
             hits.add(p, min, size, Hit::Row(i));
             fx += size.x + design::UNIT * 2.0;
         }
+    }
+
+    /// Settings, or its controls: a panel over the stars.
+    fn draw_settings(
+        &self,
+        p: &mut Painter,
+        hits: &mut Hits<Hit>,
+        profile: &Profile,
+        w: f32,
+        h: f32,
+    ) {
+        p.set_halo(None);
+        if self.cluster.is_none() {
+            p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 1.0]);
+        }
+        let size = Vec2::new(design::MARGIN * 2.0 + WIDE, h);
+        p.rect(Vec2::ZERO, size, design::GROUND);
+        let at = Vec2::splat(design::MARGIN);
+        let list = at + Vec2::Y * TITLE_H;
+        let foot = design::foot(h, 0);
+        let title = if self.screen == Screen::Controls {
+            let binds = &profile.settings.binds;
+            controls_rows(p, hits, list, foot, binds, &self.controls);
+            "Controls"
+        } else {
+            settings_rows(p, hits, list, &profile.settings, self.setting);
+            "Settings"
+        };
+        p.text(at, title, &design::HEAD, Align::Left);
+        back_button(p, hits, foot, WIDE, self.back_lit);
     }
 
     /// No theater to show: your company has no battle for you yet (or
@@ -1057,11 +1055,15 @@ impl Menu {
     }
 }
 
-/// BACK, at the left of a panel's foot.
+/// The way back, as a button.
+fn back_button(p: &mut Painter, hits: &mut Hits<Hit>, min: Vec2, width: f32, lit: bool) {
+    design::button(p, min, width, "Back", true, lit);
+    hits.add(p, min, Vec2::new(width, design::BUTTON), Hit::Back);
+}
+
+/// BACK, at a panel's foot.
 pub fn back_at_foot(p: &mut Painter, hits: &mut Hits<Hit>, lit: bool, h: f32) {
-    let min = design::foot(h, 0);
-    design::button(p, min, design::COLUMN, "Back", true, lit);
-    hits.add(p, min, Vec2::new(design::COLUMN, design::BUTTON), Hit::Back);
+    back_button(p, hits, design::foot(h, 0), design::COLUMN, lit);
 }
 
 /// `text` after `faction`'s emblem, in its colour: who's hiring, or whose ship.
@@ -1115,22 +1117,13 @@ fn berths(
     first: usize,
 ) -> f32 {
     let (x, mut y) = (at.x, at.y);
-    let names: Vec<String> = ships.iter().map(|b| format!("THE {}", b.name)).collect();
-    let items: Vec<Item> = names.iter().map(|n| Item::Acts(n)).collect();
     // Each ship's row, then its details under it: lay the rows out one at a time.
     let n = |v: f32| v.round().max(0.0) as u32;
-    for (k, (item, b)) in items.iter().zip(ships).enumerate() {
+    for (k, b) in ships.iter().enumerate() {
         // The whole block, details and all, is the row to click.
         let k = first + k;
         garage::row_hit(p, hits, Vec2::new(x, y), BERTH, Hit::Row(k));
-        let mut scratch = Hits::new();
-        rows(
-            p,
-            &mut scratch,
-            Vec2::new(x, y),
-            std::slice::from_ref(item),
-            usize::from(pick != k),
-        );
+        ship_row(p, Vec2::new(x, y), &format!("THE {}", b.name), pick == k);
         y += ROW + 2.0;
         let work = match &b.work {
             Some(w) => {
@@ -1174,13 +1167,9 @@ pub enum PauseAction {
     Quit,
 }
 
-const PAUSE_ITEMS: [Item<'static>; 5] = [
-    Item::Opens("RESUME"),
-    Item::Opens("GARAGE"),
-    Item::Opens("SETTINGS"),
-    Item::Leaves("LEAVE BATTLE", Some("IT ENDS WITHOUT YOU")),
-    Item::Leaves("QUIT", None),
-];
+const PAUSE_ITEMS: [&str; 5] = ["Resume", "Garage", "Settings", "Leave battle", "Quit"];
+/// Of those, the ones that keep you in the battle; the rest are set apart.
+const PAUSE_STAYS: usize = 3;
 
 pub struct Pause {
     cursor: usize,
@@ -1306,129 +1295,73 @@ impl Pause {
         self.back_lit = false;
     }
 
-    /// Dims the battle and draws the box. `match_renown` is what this match has
-    /// earned you with the Company so far.
-    pub fn draw(
-        &self,
-        profile: &Profile,
-        match_renown: u32,
-        width: f32,
-        height: f32,
-    ) -> Layer<Hit> {
+    /// Dims the battle and draws the box.
+    pub fn draw(&self, profile: &Profile, width: f32, height: f32) -> Layer<Hit> {
         let scale = height / REF_HEIGHT;
         let (w, h) = (width / scale, REF_HEIGHT);
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.45]);
-        // The controls list is long: the box grows to hold it and its keys line.
-        let tall = 90.0 + CONTROLS_H + 44.0 + PAUSE_BACK_H;
-        let size = Vec2::new(
-            PANEL_W + 48.0,
-            if self.controls.is_some() { tall } else { 380.0 },
-        );
-        let min = Vec2::new(w, h) * 0.5 - size * 0.5;
-        // Settings and controls open in the box go back a step; the pause
-        // list itself has RESUME.
-        let back_at = Vec2::new(min.x + 24.0, min.y + size.y - 24.0 - widgets::BACK_H);
-        p.rect(min, size, theme::PANEL);
-        widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
-
-        let x = min.x + 24.0;
-        let mut y = min.y + 28.0;
-        label(&mut p, Vec2::new(x, y), "LINK HELD", Align::Left);
-        // Whose company you're fighting with.
-        if let Some(name) = profile.company_name() {
-            let mut style = TextStyle::LABEL;
-            style.color = Faction::Company.ui();
-            emblem::tagged(
-                &mut p,
-                Vec2::new(x + PANEL_W, y),
-                Faction::Company,
-                &format!("THE {name}"),
-                &style,
-                Align::Right,
-            );
-        }
-        y += 18.0;
-        let title = match (self.controls, self.settings) {
-            (Some(_), _) => "CONTROLS",
-            (None, Some(_)) => "SETTINGS",
-            (None, None) => "PAUSED",
+        let inner = match (self.controls, self.settings) {
+            (Some(_), _) => TITLE_H + CONTROLS_H + FOOT_GAP + design::BUTTON * 2.0 + UNIT,
+            (None, Some(_)) => {
+                TITLE_H + SETTING_ROW * SETTING_ROWS as f32 + FOOT_GAP + design::BUTTON
+            }
+            (None, None) => {
+                TITLE_H
+                    + design::ACTION * (PAUSE_ITEMS.len() as f32 - 1.0)
+                    + LEAVE_GAP
+                    + design::HEAD.size
+            }
         };
-        p.text(Vec2::new(x, y), title, &TextStyle::value(20.0), Align::Left);
-        y += 44.0;
-        if let Some(c) = &self.controls {
-            controls_rows(
-                &mut p,
-                &mut hits,
-                Vec2::new(x, y),
-                &profile.settings.binds,
-                c,
-            );
-            back(&mut p, &mut hits, back_at, self.back_lit);
-            return Layer {
-                verts: p.finish(),
-                hits,
-            };
+        let pad = Vec2::splat(UNIT * 5.0);
+        let size = Vec2::new(WIDE, inner) + pad * 2.0;
+        let min = (Vec2::new(w, h) - size) * 0.5;
+        p.rect(min, size, design::GROUND);
+        p.set_halo(None);
+        let at = min + pad;
+        // Settings and controls go back a step; the pause list has RESUME.
+        let foot = Vec2::new(at.x, min.y + size.y - pad.y - design::BUTTON);
+        let list = at + Vec2::Y * TITLE_H;
+        let title = match (&self.controls, self.settings) {
+            (Some(c), _) => {
+                let binds = &profile.settings.binds;
+                controls_rows(&mut p, &mut hits, list, foot, binds, c);
+                "Controls"
+            }
+            (None, Some(i)) => {
+                settings_rows(&mut p, &mut hits, list, &profile.settings, i);
+                "Settings"
+            }
+            (None, None) => {
+                let mut y = list.y;
+                for (i, name) in PAUSE_ITEMS.iter().enumerate() {
+                    if i == PAUSE_STAYS {
+                        y += LEAVE_GAP;
+                    }
+                    let on = i == self.cursor;
+                    let (hit, size) = design::action(&mut p, Vec2::new(at.x, y), name, on);
+                    hits.add(&p, hit, size, Hit::Row(i));
+                    if i == PAUSE_STAYS {
+                        let at = Vec2::new(at.x, y + UNIT * 3.25);
+                        let style = design::SMALL.colored(design::TEXT_2);
+                        p.text(at, "It plays out without you", &style, Align::Left);
+                    }
+                    y += design::ACTION;
+                }
+                "Paused"
+            }
+        };
+        let listing = self.settings.is_none();
+        let color = if listing {
+            design::TEXT_2
+        } else {
+            design::TEXT
+        };
+        p.text(at, title, &design::HEAD.colored(color), Align::Left);
+        if !listing {
+            back_button(&mut p, &mut hits, foot, WIDE, self.back_lit);
         }
-        if let Some(i) = self.settings {
-            settings_rows(&mut p, &mut hits, Vec2::new(x, y), &profile.settings, i);
-            back(&mut p, &mut hits, back_at, self.back_lit);
-            return Layer {
-                verts: p.finish(),
-                hits,
-            };
-        }
-        y += rows(
-            &mut p,
-            &mut hits,
-            Vec2::new(x, y),
-            &PAUSE_ITEMS,
-            self.cursor,
-        ) + 8.0;
-        p.line(
-            Vec2::new(x, y),
-            Vec2::new(x + PANEL_W, y),
-            1.0,
-            theme::FAINT,
-        );
-        y += 16.0;
-        label(&mut p, Vec2::new(x, y + 1.0), "THIS MATCH", Align::Left);
-        p.text(
-            Vec2::new(x + PANEL_W, y),
-            &format!("+{match_renown} RENOWN"),
-            &TextStyle::value(11.0),
-            Align::Right,
-        );
-        y += 20.0;
-        let r = profile.rank();
-        // The bar starts past the name, however long it runs.
-        let mut style = TextStyle::LABEL;
-        style.color = Faction::Company.ui();
-        let bar_x = 132.0_f32.max(
-            emblem::tagged(
-                &mut p,
-                Vec2::new(x, y + 1.0),
-                Faction::Company,
-                &r.label(),
-                &style,
-                Align::Left,
-            ) + 12.0,
-        );
-        widgets::hairbar(
-            &mut p,
-            Vec2::new(x + bar_x, y + 5.0),
-            PANEL_W - bar_x,
-            r.progress(),
-            theme::FG,
-        );
-        y += 22.0;
-        label(
-            &mut p,
-            Vec2::new(x, y),
-            "LEAVING PLAYS IT OUT WITHOUT YOU",
-            Align::Left,
-        );
         Layer {
             verts: p.finish(),
             hits,
@@ -1436,21 +1369,23 @@ impl Pause {
     }
 }
 
-/// What the BACK button adds to the pause box's height, under the controls.
-const PAUSE_BACK_H: f32 = widgets::BACK_H + 16.0;
+/// How wide settings, controls and the pause box's content are, and how tall
+/// their title and the gap over the buttons at their foot.
+const WIDE: f32 = UNIT * 42.0;
+const TITLE_H: f32 = UNIT * 7.0;
+const FOOT_GAP: f32 = UNIT * 3.0;
+/// Over the pause rows that leave the battle.
+const LEAVE_GAP: f32 = UNIT * 2.0;
+/// A setting's row.
+const SETTING_ROW: f32 = UNIT * 7.0;
 
-/// The BACK button at `at` (its top left), and its click.
-fn back(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, lit: bool) {
-    widgets::back_button(p, at, lit);
-    hits.add(
-        p,
-        at,
-        Vec2::new(widgets::back_width(), widgets::BACK_H),
-        Hit::Back,
-    );
+/// A row's name, amber if it's selected.
+fn row_name(p: &mut Painter, at: Vec2, name: &str, on: bool) {
+    let color = if on { design::AMBER } else { design::TEXT };
+    p.text(at, name, &design::BODY.colored(color), Align::Left);
 }
 
-/// The settings toggles: each a row with a checkbox, and under it what it does.
+/// The settings: a row each with its value on the right, and what it does.
 fn settings_rows(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
@@ -1458,231 +1393,154 @@ fn settings_rows(
     settings: &Settings,
     selected: usize,
 ) {
-    for (i, (name, what, flag)) in SETTINGS.iter().enumerate() {
-        let y = at.y + i as f32 * 44.0;
-        garage::row_hit(p, hits, Vec2::new(at.x, y), 44.0, Hit::Row(i));
+    use design::{AMBER, BODY, SMALL, TEXT, TEXT_2};
+    let right = at.x + WIDE;
+    let note = |p: &mut Painter, y: f32, text: &str| {
+        let at = Vec2::new(at.x, y + UNIT * 2.5);
+        p.text(at, text, &SMALL.colored(TEXT_2), Align::Left);
+    };
+    for i in 0..SETTING_ROWS {
+        let y = at.y + SETTING_ROW * i as f32;
+        let min = Vec2::new(at.x - UNIT * 2.0, y - UNIT * 1.5);
+        let size = Vec2::new(WIDE + UNIT * 4.0, SETTING_ROW);
+        hits.add(p, min, size, Hit::Row(i));
+        let at = Vec2::new(at.x, y);
         let on = i == selected;
-        if on {
-            p.line(
-                Vec2::new(at.x - 14.0, y - 3.0),
-                Vec2::new(at.x - 14.0, y + 18.0),
-                2.0,
-                theme::FG,
-            );
+        match i {
+            VOLUME_ROW => {
+                row_name(p, at, "Sound volume", on);
+                let pct = (settings.volume() * 100.0).round() as u32;
+                let value = match pct {
+                    0 => "Off".to_string(),
+                    pct => format!("{pct}%"),
+                };
+                p.text(
+                    Vec2::new(right, y),
+                    &value,
+                    &BODY.colored(TEXT),
+                    Align::Right,
+                );
+                let bar = Vec2::new(at.x, y + UNIT * 3.0);
+                design::bar(p, bar, WIDE, settings.volume());
+                // Exactly as wide as the bar, so a click sets the level under it.
+                let min = bar - Vec2::Y * UNIT;
+                hits.add(p, min, Vec2::new(WIDE, UNIT * 2.0), Hit::Volume);
+            }
+            CONTROLS_ROW => {
+                row_name(p, at, "Controls", on);
+                let changed = settings.binds != Binds::default();
+                note(p, y, if changed { "Changed" } else { "Default" });
+            }
+            _ => {
+                let (name, what, flag) = &SETTINGS[i];
+                row_name(p, at, name, on);
+                note(p, y, what);
+                let mut copy = *settings;
+                let (text, color) = match *flag(&mut copy) {
+                    true => ("On", AMBER),
+                    false => ("Off", TEXT_2),
+                };
+                p.text(
+                    Vec2::new(right, y),
+                    text,
+                    &BODY.colored(color),
+                    Align::Right,
+                );
+            }
         }
-        let mut s = TextStyle::value(15.0);
-        s.color = if on { theme::FG } else { theme::DIM };
-        p.text(Vec2::new(at.x, y), name, &s, Align::Left);
-        let mut copy = *settings;
-        widgets::checkbox(
-            p,
-            Vec2::new(at.x + PANEL_W - 14.0, y + 1.0),
-            14.0,
-            *flag(&mut copy),
-        );
-        label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
     }
-    let y = at.y + VOLUME_ROW as f32 * 44.0;
-    garage::row_hit(p, hits, Vec2::new(at.x, y), 44.0, Hit::Row(VOLUME_ROW));
-    // The bar itself, exactly as wide as drawn so the click lands on the level under it.
-    hits.add(
-        p,
-        Vec2::new(at.x, y + 18.0),
-        Vec2::new(PANEL_W, 16.0),
-        Hit::Volume,
-    );
-    let on = selected == VOLUME_ROW;
-    if on {
-        p.line(
-            Vec2::new(at.x - 14.0, y - 3.0),
-            Vec2::new(at.x - 14.0, y + 18.0),
-            2.0,
-            theme::FG,
-        );
-    }
-    let mut s = TextStyle::value(15.0);
-    s.color = if on { theme::FG } else { theme::DIM };
-    p.text(Vec2::new(at.x, y), "SOUND VOLUME", &s, Align::Left);
-    let pct = (settings.volume() * 100.0).round() as u32;
-    let value = if pct == 0 {
-        "OFF".to_string()
-    } else {
-        format!("{pct}%")
-    };
-    p.text(
-        Vec2::new(at.x + PANEL_W, y + 2.0),
-        &value,
-        &TextStyle::value(11.0),
-        Align::Right,
-    );
-    widgets::hairbar(
-        p,
-        Vec2::new(at.x, y + 26.0),
-        PANEL_W,
-        settings.volume(),
-        theme::FG,
-    );
-
-    // The way into the key bindings.
-    let y = at.y + CONTROLS_ROW as f32 * 44.0;
-    garage::row_hit(p, hits, Vec2::new(at.x, y), 44.0, Hit::Row(CONTROLS_ROW));
-    let on = selected == CONTROLS_ROW;
-    if on {
-        selection_bar(p, Vec2::new(at.x, y), theme::FG);
-        chevron(p, Vec2::new(at.x + PANEL_W, y));
-    }
-    let mut s = TextStyle::value(15.0);
-    s.color = if on { theme::FG } else { theme::DIM };
-    p.text(Vec2::new(at.x, y), "CONTROLS", &s, Align::Left);
-    let changed = settings.binds != Binds::default();
-    let what = if changed {
-        "KEY BINDINGS · CHANGED"
-    } else {
-        "KEY BINDINGS · DEFAULT"
-    };
-    label(p, Vec2::new(at.x, y + 22.0), what, Align::Left);
 }
 
 /// Pitch of a row on the controls screen.
-const CONTROL_ROW: f32 = 24.0;
-/// Height of a section label (BATTLE, GARAGE) on the controls screen.
-const CONTROL_LABEL: f32 = 22.0;
-/// Width of a key slot.
-const SLOT_W: f32 = 76.0;
+const CONTROL_ROW: f32 = UNIT * 3.25;
+/// A section's label there (IN BATTLE, IN THE GARAGE), and the gap over the second.
+const CONTROL_LABEL: f32 = UNIT * 3.5;
+const CONTROL_GAP: f32 = UNIT * 2.0;
+/// A key slot, and the gap between two.
+const SLOT: Vec2 = Vec2::new(UNIT * 9.0, UNIT * 2.75);
+const SLOT_GAP: f32 = UNIT;
 
-/// Height the controls screen draws.
-const CONTROLS_H: f32 = CONTROL_LABEL * 2.0
-    + ACTIONS.len() as f32 * CONTROL_ROW
-    + 10.0
-    + LEAVE_GAP
-    + 10.0
-    + CONTROL_ROW;
+/// Height the controls' rows take.
+const CONTROLS_H: f32 = CONTROL_LABEL * 2.0 + ACTIONS.len() as f32 * CONTROL_ROW + CONTROL_GAP;
 
-/// The marker beside a selected row.
-fn selection_bar(p: &mut Painter, at: Vec2, color: Rgba) {
-    p.line(
-        Vec2::new(at.x - 14.0, at.y - 3.0),
-        Vec2::new(at.x - 14.0, at.y + 18.0),
-        2.0,
-        color,
-    );
-}
-
-/// The chevron on a selected row that opens a screen; `right` is the row's right edge.
-fn chevron(p: &mut Painter, right: Vec2) {
-    let (cx, y) = (right.x, right.y);
-    p.polyline(
-        &[
-            Vec2::new(cx - 8.0, y + 2.0),
-            Vec2::new(cx - 3.0, y + 7.5),
-            Vec2::new(cx - 8.0, y + 13.0),
-        ],
-        1.2,
-        theme::FG,
-    );
-}
-
-/// The controls screen: each action with its two key slots, battle controls
-/// then the garage's, then RESET under a rule.
-fn controls_rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, binds: &Binds, c: &Controls) {
+/// The controls: each action with its two key slots, the battle's then the
+/// garage's; and the reset, over the way back at `foot`.
+fn controls_rows(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    at: Vec2,
+    foot: Vec2,
+    binds: &Binds,
+    c: &Controls,
+) {
+    use design::{AMBER, SMALL, TEXT, TEXT_2};
     let mut y = at.y;
     let mut section = None;
     for (i, &action) in ACTIONS.iter().enumerate() {
         let garage_only = action.context() == Context::Garage;
         if section != Some(garage_only) {
             if section.is_some() {
-                y += 10.0;
+                y += CONTROL_GAP;
             }
             section = Some(garage_only);
             let name = if garage_only {
-                "IN THE GARAGE"
+                "In the garage"
             } else {
-                "IN BATTLE"
+                "In battle"
             };
-            label(p, Vec2::new(at.x, y), name, Align::Left);
+            p.text(
+                Vec2::new(at.x, y),
+                name,
+                &SMALL.colored(TEXT_2),
+                Align::Left,
+            );
             y += CONTROL_LABEL;
         }
-        garage::row_hit(p, hits, Vec2::new(at.x, y + 3.0), CONTROL_ROW, Hit::Row(i));
         let on = i == c.row;
-        if on {
-            selection_bar(
-                p,
-                Vec2::new(at.x, y),
-                if c.capturing { theme::HOT } else { theme::FG },
-            );
-        }
-        let mut s = TextStyle::value(12.0);
-        s.color = if on { theme::FG } else { theme::DIM };
-        p.text(Vec2::new(at.x, y + 2.0), action.name(), &s, Align::Left);
+        let mid = y + SLOT.y * 0.5;
+        let min = Vec2::new(at.x - UNIT * 2.0, mid - CONTROL_ROW * 0.5);
+        hits.add(
+            p,
+            min,
+            Vec2::new(WIDE + UNIT * 4.0, CONTROL_ROW),
+            Hit::Row(i),
+        );
+        let name = Vec2::new(at.x, mid - SMALL.size * 0.5);
+        let style = SMALL.colored(if on { AMBER } else { TEXT });
+        p.text(name, action.name(), &style, Align::Left);
         for (slot, key) in binds.keys(action).into_iter().enumerate() {
-            let min = Vec2::new(
-                at.x + PANEL_W - (SLOTS - slot) as f32 * SLOT_W + 6.0,
-                y - 1.0,
-            );
-            let size = Vec2::new(SLOT_W - 6.0, 18.0);
-            hits.add(p, min, size, Hit::Bind(i, slot));
+            let left = (SLOTS - slot) as f32 * (SLOT.x + SLOT_GAP) - SLOT_GAP;
+            let min = Vec2::new(at.x + WIDE - left, y);
+            hits.add(p, min, SLOT, Hit::Bind(i, slot));
             let picked = on && slot == c.slot;
             let waiting = picked && c.capturing;
-            let edge = match (picked, waiting) {
-                (_, true) => theme::HOT,
-                (true, false) => theme::FG,
-                (false, false) => theme::FAINT,
-            };
-            p.rect_outline(min, size, 1.0, edge);
+            p.rect(min, SLOT, with_alpha(TEXT, 0.015));
+            if picked {
+                let edge = if waiting { theme::HOT } else { AMBER };
+                p.rect_outline(min, SLOT, 1.0, edge);
+            }
             let (text, color) = match key.and_then(binds::key_name) {
-                _ if waiting => ("PRESS", theme::HOT),
-                Some(name) => (name, if on { theme::FG } else { theme::DIM }),
-                None => ("—", theme::FAINT),
+                _ if waiting => ("Press", theme::HOT),
+                Some(name) => (name, if picked { AMBER } else { TEXT }),
+                None => continue,
             };
-            let mut s = TextStyle::LABEL;
-            s.color = color;
-            p.text(
-                Vec2::new(min.x + size.x * 0.5, min.y + (size.y - s.size) * 0.5),
-                text,
-                &s,
-                Align::Center,
-            );
+            let at = Vec2::new(min.x + SLOT.x * 0.5, mid - SMALL.size * 0.5);
+            p.text(at, text, &SMALL.colored(color), Align::Center);
         }
         y += CONTROL_ROW;
     }
 
-    // Back to the defaults, set apart like the menus' leaving rows.
-    let ry = y + LEAVE_GAP * 0.5;
-    p.line(
-        Vec2::new(at.x, ry),
-        Vec2::new(at.x + PANEL_W, ry),
-        1.0,
-        theme::FAINT,
-    );
-    y += LEAVE_GAP + 10.0;
-    garage::row_hit(
-        p,
-        hits,
-        Vec2::new(at.x, y + 3.0),
-        CONTROL_ROW,
-        Hit::Row(RESET_ROW),
-    );
+    // Back to the defaults, if they've been changed.
+    let min = foot - Vec2::Y * (design::BUTTON + UNIT);
+    let changed = *binds != Binds::default();
     let on = c.row == RESET_ROW;
-    if on {
-        selection_bar(p, Vec2::new(at.x, y), theme::HOT);
+    let text = if changed { "Reset" } else { "All default" };
+    design::button(p, min, WIDE, text, changed, on);
+    let size = Vec2::new(WIDE, design::BUTTON);
+    if on && !changed {
+        p.rect_outline(min, size, 1.0, TEXT_2);
     }
-    let mut s = TextStyle::value(12.0);
-    s.color = if on { theme::HOT } else { theme::DIM };
-    p.text(Vec2::new(at.x, y + 2.0), "RESET CONTROLS", &s, Align::Left);
-    // Only say when there's nothing to reset: "to default keys" would just
-    // repeat the row's name (#456).
-    if *binds == Binds::default() {
-        let mut s = TextStyle::LABEL;
-        if on {
-            s.color = theme::HOT;
-        }
-        p.text(
-            Vec2::new(at.x + PANEL_W, y + 5.0),
-            "ALL DEFAULT",
-            &s,
-            Align::Right,
-        );
-    }
+    hits.add(p, min, size, Hit::Row(RESET_ROW));
 }
 
 /// Body text: sentence case, for everything that isn't a name or a number.
@@ -1736,72 +1594,15 @@ pub fn title(caps: &str) -> String {
         .join(" ")
 }
 
-/// Gap above the rule that sets the leaving rows apart.
-const LEAVE_GAP: f32 = 14.0;
-
-/// A selectable list, with the garage's bar-and-chevron marker on the selected
-/// row. Rows that leave sit under a rule, say what they do, and have no
-/// chevron. Returns the height drawn.
-fn rows(p: &mut Painter, hits: &mut Hits<Hit>, at: Vec2, items: &[Item], selected: usize) -> f32 {
-    let mut y = at.y;
-    let mut ruled = false;
-    for (i, &item) in items.iter().enumerate() {
-        let leaves = matches!(item, Item::Leaves(..));
-        if leaves && !ruled && i > 0 {
-            ruled = true;
-            let ry = y + LEAVE_GAP * 0.5 - 8.0;
-            p.line(
-                Vec2::new(at.x, ry),
-                Vec2::new(at.x + PANEL_W, ry),
-                1.0,
-                theme::FAINT,
-            );
-            y += LEAVE_GAP;
-        }
-        garage::row_hit(p, hits, Vec2::new(at.x, y), ROW, Hit::Row(i));
-        let on = i == selected;
-        let lit = match (on, leaves) {
-            (true, true) => theme::HOT,
-            (true, false) => theme::FG,
-            (false, _) => theme::DIM,
-        };
-        if on {
-            p.line(
-                Vec2::new(at.x - 14.0, y - 3.0),
-                Vec2::new(at.x - 14.0, y + 18.0),
-                2.0,
-                lit,
-            );
-        }
-        match item {
-            Item::Opens(_) if on => {
-                let cx = at.x + PANEL_W;
-                p.polyline(
-                    &[
-                        Vec2::new(cx - 8.0, y + 2.0),
-                        Vec2::new(cx - 3.0, y + 7.5),
-                        Vec2::new(cx - 8.0, y + 13.0),
-                    ],
-                    1.2,
-                    theme::FG,
-                );
-            }
-            Item::Opens(_) | Item::Acts(_) => {}
-            Item::Leaves(_, None) => {}
-            Item::Leaves(_, Some(what)) => {
-                let mut s = TextStyle::LABEL;
-                if on {
-                    s.color = theme::HOT;
-                }
-                p.text(Vec2::new(at.x + PANEL_W, y + 4.0), what, &s, Align::Right);
-            }
-        }
-        let mut s = TextStyle::value(15.0);
-        s.color = lit;
-        p.text(Vec2::new(at.x, y), item.name(), &s, Align::Left);
-        y += ROW;
+/// A ship's name as a row, with a bar beside it if it's the one picked.
+fn ship_row(p: &mut Painter, at: Vec2, name: &str, on: bool) {
+    let mut s = TextStyle::value(15.0);
+    s.color = if on { theme::FG } else { theme::DIM };
+    if on {
+        let bar = at - Vec2::new(14.0, 3.0);
+        p.line(bar, bar + Vec2::Y * 21.0, 2.0, s.color);
     }
-    y - at.y
+    p.text(at, name, &s, Align::Left);
 }
 
 /// Body text wrapped to the panel's width. Returns where the line after it goes.
@@ -2091,9 +1892,9 @@ mod tests {
                 profile.ship = ship;
                 for v in [
                     m.draw(&profile, w, h, 1.0).verts,
-                    Pause::new().draw(&profile, 30, w, h).verts,
-                    settings.draw(&profile, 30, w, h).verts,
-                    controls.draw(&profile, 30, w, h).verts,
+                    Pause::new().draw(&profile, w, h).verts,
+                    settings.draw(&profile, w, h).verts,
+                    controls.draw(&profile, w, h).verts,
                 ] {
                     assert!(!v.is_empty());
                     assert!(v.iter().all(|v| v.pos[0] > -4.0
@@ -2144,12 +1945,12 @@ mod tests {
         // The pause box: back out of controls, then settings.
         let mut p = Pause::new();
         let click = |p: &mut Pause| {
-            let hits = p.draw(&profile, 0, 1600.0, 900.0).hits;
+            let hits = p.draw(&profile, 1600.0, 900.0).hits;
             let (id, at) = hits.at(hits.center_of(Hit::Back).unwrap()).unwrap();
             assert_eq!(id, Hit::Back);
             p.click(id, at, &profile.settings)
         };
-        let hits = p.draw(&profile, 0, 1600.0, 900.0).hits;
+        let hits = p.draw(&profile, 1600.0, 900.0).hits;
         assert_eq!(hits.center_of(Hit::Back), None, "RESUME is the way back");
         p.input(Nav::Down);
         p.input(Nav::Down);
@@ -2224,7 +2025,7 @@ mod tests {
         let profile = Profile::in_memory();
         let mut p = Pause::new();
         let click = |p: &mut Pause, hit: Hit| {
-            let hits = p.draw(&profile, 0, 1600.0, 900.0).hits;
+            let hits = p.draw(&profile, 1600.0, 900.0).hits;
             let (id, at) = hits.at(hits.center_of(hit).unwrap()).unwrap();
             p.click(id, at, &profile.settings)
         };
