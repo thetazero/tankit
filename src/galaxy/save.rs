@@ -239,10 +239,10 @@ struct SavedContract {
     lost: f32,
     #[serde(default)]
     defend: bool,
-    #[serde(default)]
+    /// Older saves: a crew flying its employer's hulls. There's no such job
+    /// any more, so it's over.
+    #[serde(default, skip_serializing)]
     lent: bool,
-    #[serde(default)]
-    seats: u32,
     #[serde(default)]
     arrives: u64,
     #[serde(default)]
@@ -273,8 +273,7 @@ impl SavedContract {
             field: k.field as f32,
             lost: k.lost as f32,
             defend: k.defend,
-            lent: k.lent,
-            seats: k.seats,
+            lent: false,
             arrives: k.arrives,
             inbound: k.inbound,
             expected: k.expected,
@@ -298,8 +297,6 @@ impl SavedContract {
             field: whole(self.field),
             lost: whole(self.lost),
             defend: self.defend,
-            lent: self.lent,
-            seats: self.seats,
             arrives: self.arrives,
             inbound: self.inbound,
             expected: self.expected,
@@ -637,7 +634,11 @@ impl Galaxy {
                         founded: c.founded,
                         idle_since: c.idle_since.unwrap_or(s.tick),
                         id: c.id,
-                        contract: c.contract.as_ref().map(SavedContract::contract),
+                        contract: c
+                            .contract
+                            .as_ref()
+                            .filter(|k| !k.lent)
+                            .map(SavedContract::contract),
                         pilots,
                         // Older saves: a rule by its id, at par.
                         pricing: c.pricing.map_or(
@@ -760,8 +761,7 @@ impl Galaxy {
                 c.pilots.len() >= 4
                     && c.contract.is_some_and(|k| {
                         let (s, f) = (k.target as usize, k.side as usize);
-                        !k.lent
-                            && f != super::RAID
+                        f != super::RAID
                             && k.field >= 20
                             && g.fighting(s, f)
                             && !g.commits(s, f).is_empty()
@@ -778,8 +778,7 @@ impl Galaxy {
                 one.pilots.len() >= 4
                     && one.contract.is_some_and(|k| {
                         let (s, f) = (k.target as usize, k.side as usize);
-                        !k.lent
-                            && f != super::RAID
+                        f != super::RAID
                             && k.field >= 20
                             && g.fighting(s, f)
                             && !g.commits(s, f).is_empty()

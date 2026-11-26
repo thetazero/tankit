@@ -1221,7 +1221,6 @@ impl Galaxy {
     /// Count each realm's hulls at war, so `firing` can split its pilots
     /// between its fights.
     fn share_pilots(&mut self) {
-        self.lend_hulls();
         let mut war = vec![0; self.realms.len()];
         for realm in &mut self.realms {
             realm.fronts = 0;
@@ -1767,8 +1766,6 @@ impl Galaxy {
                 }
             }
         }
-        // Crews hired to fly their employer's hulls have them.
-        self.lend_hulls();
     }
 
     /// Should realm `r` (of side `f`) send hulls to system `t`, hire for it,
