@@ -9,8 +9,8 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::economy::level_label;
 use crate::faction::Faction;
-use crate::galaxy::PEOPLES;
 use crate::galaxy::theater::Offer;
+use crate::galaxy::{RAID, SIDES};
 use crate::garage::{self, Loadout};
 use crate::menu::{Hit, Nav, back_at_foot};
 use crate::render::mesh::{Instance, MeshId};
@@ -34,9 +34,18 @@ const SORTS: [(Sort, &str); 3] = [
     (Sort::Pay, "Pay"),
 ];
 
-/// The filters, in order: who you'd work for, who you'd fight, take or hold.
+/// The filters, in order: who you'd work for, who you'd fight, the job.
 /// A group with none on takes any.
-const FILTERS: usize = 2 * PEOPLES + 2;
+const FILTERS: usize = 2 * SIDES + JOBS.len();
+const JOBS: [&str; 3] = ["Take", "Hold", "Plunder"];
+
+/// Which of `JOBS` an offer is.
+fn kind(o: &Offer) -> usize {
+    match o.side {
+        RAID => 2,
+        _ => o.defend as usize,
+    }
+}
 
 /// The contracts on offer, and how they're filtered, sorted and picked.
 #[derive(Clone, Debug, Default)]
@@ -87,12 +96,12 @@ impl Board {
     /// The offers the filters let through, sorted.
     pub fn listed(&self) -> Vec<&Offer> {
         let any = |group: &[bool], i: usize| group[i] || group.iter().all(|f| !f);
-        let (work, rest) = self.filters.split_at(PEOPLES);
-        let (fight, job) = rest.split_at(PEOPLES);
+        let (work, rest) = self.filters.split_at(SIDES);
+        let (fight, job) = rest.split_at(SIDES);
         let mut out: Vec<&Offer> = self
             .offers
             .iter()
-            .filter(|o| any(work, o.side) && any(fight, o.enemy) && any(job, o.defend as usize))
+            .filter(|o| any(work, o.side) && any(fight, o.enemy) && any(job, kind(o)))
             .collect();
         if let Some((by, most)) = self.sort {
             let key = |o: &Offer| match by {
@@ -257,19 +266,27 @@ impl Board {
         p.text(Vec2::new(x, y), "Find work", &HEAD, Align::Left);
         y += UNIT * 9.0;
         for (name, from, n) in [
-            ("Work for", 0, PEOPLES),
-            ("Fight", PEOPLES, PEOPLES),
-            ("Job", 2 * PEOPLES, 2),
+            ("Work for", 0, SIDES),
+            ("Fight", SIDES, SIDES),
+            ("Job", 2 * SIDES, JOBS.len()),
         ] {
             let at = Vec2::new(x, y);
             p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
             y += UNIT * 3.0;
             let any = self.filters[from..from + n].iter().all(|f| !f);
-            let pitch = design::COLUMN / n as f32;
+            // Words get a line each.
+            let words = from == 2 * SIDES;
+            let pitch = match words {
+                true => design::COLUMN,
+                false => design::COLUMN / n as f32,
+            };
             let size = Vec2::new(pitch - UNIT, UNIT * 5.0);
             for i in 0..n {
                 let k = from + i;
-                let min = Vec2::new(x + pitch * i as f32, y);
+                let min = match words {
+                    true => Vec2::new(x, y + size.y * i as f32),
+                    false => Vec2::new(x + pitch * i as f32, y),
+                };
                 let on = self.filters[k];
                 let lit = if on || any { 1.0 } else { 0.25 };
                 if on {
@@ -279,13 +296,14 @@ impl Board {
                     p.rect_outline(min, size, 1.0, AMBER);
                 }
                 let c = min + size * 0.5;
-                if from < 2 * PEOPLES {
+                if from < 2 * SIDES {
                     let f = Faction::side(i);
                     emblem::emblem(p, f, c, 22.0, 1.5, with_alpha(f.ui(), lit));
                 } else {
-                    let name = ["Take", "Hold"][i];
+                    let name = JOBS[i];
                     let style = BODY.colored(with_alpha(TEXT, lit));
-                    p.text(c - Vec2::Y * BODY.size * 0.5, name, &style, Align::Center);
+                    let at = Vec2::new(x + UNIT * 1.5, c.y - BODY.size * 0.5);
+                    p.text(at, name, &style, Align::Left);
                 }
                 hits.add(p, min, size, Hit::Filter(k));
             }
@@ -423,9 +441,11 @@ pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, asp
     };
     let left = FRAC_PI_2 - TURNED;
     put(kit, YOURS, left, true);
-    put((side.hulls()[0], side.turrets()[0]), THEIRS, left, false);
+    let company = |f| f == Faction::Company;
+    let theirs = (side.hulls()[0], side.turrets()[0]);
+    put(theirs, THEIRS, left, company(side));
     for (kit, at) in stands(enemy) {
-        put(kit, at, -left, false);
+        put(kit, at, -left, company(enemy));
     }
     let dark = Vec4::new(0.0015, 0.0018, 0.0025, 1.0);
     let camera = camera(time, aspect);
@@ -517,7 +537,10 @@ pub fn draw_deal(
             Align::Left,
         );
     };
-    count(p, o.hulls - o.mercs, side.ui());
+    let own = o.hulls - o.mercs;
+    if own > 0 || o.mercs == 0 {
+        count(p, own, side.ui());
+    }
     if o.mercs > 0 {
         count(p, o.mercs, AMBER);
     }
@@ -604,13 +627,13 @@ pub mod tests {
         b.toggle(3);
         assert_eq!(ids(&b), [2, 3]);
         assert_eq!(b.picked().unwrap().id, 2, "the pick stays listed");
-        b.toggle(PEOPLES + 2);
+        b.toggle(SIDES + 2);
         assert_eq!(ids(&b), [3]);
         // Nobody's holding anything.
-        b.toggle(2 * PEOPLES + 1);
+        b.toggle(2 * SIDES + 1);
         assert!(ids(&b).is_empty() && b.picked().is_none());
         assert_eq!(b.input(Nav::Select), None);
-        for k in [2, 3, PEOPLES + 2, 2 * PEOPLES + 1] {
+        for k in [2, 3, SIDES + 2, 2 * SIDES + 1] {
             b.toggle(k);
         }
         b.sort_by(1);
