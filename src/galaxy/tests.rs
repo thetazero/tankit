@@ -228,8 +228,8 @@ fn attackers_go_for_every_shield_then_every_site() {
     // A tick at war fights over every one of them, and the theater has
     // the attacker committed to each.
     g.systems[s].hulls = [0; SIDES];
-    g.systems[s].hulls[owner] = 40;
-    g.systems[s].hulls[other] = 40;
+    g.systems[s].hulls[owner] = 400;
+    g.systems[s].hulls[other] = 400;
     crewed(&mut g);
     assert_eq!(g.commits(s, other), targets);
     g.battles(None);
