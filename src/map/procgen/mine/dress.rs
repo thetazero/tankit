@@ -5,7 +5,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
-use super::dig::{self, Dig};
+use super::dig::Dig;
 use super::{MineStyle, PLANET, atmosphere, plan, style};
 use crate::ai::nav::NavGrid;
 use crate::map::procgen::Spec;
