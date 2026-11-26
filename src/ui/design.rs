@@ -89,3 +89,24 @@ pub fn link(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
         Vec2::new(measure(name, &SMALL), SMALL.size) + Vec2::splat(UNIT * 2.0),
     )
 }
+
+/// How tall a button is.
+pub const BUTTON: f32 = UNIT * 5.0;
+
+/// A button `width` wide, its top left at `min`: amber in a box if it can be
+/// pressed (`on`), flat and grey, saying why, if it can't.
+pub fn button(p: &mut Painter, min: Vec2, width: f32, text: &str, on: bool, hover: bool) {
+    let size = Vec2::new(width, BUTTON);
+    let fill = match (on, hover) {
+        (true, true) => 0.06,
+        (true, false) => 0.015,
+        (false, _) => 0.008,
+    };
+    p.rect(min, size, with_alpha(TEXT, fill));
+    if on {
+        p.rect_outline(min, size, 1.0, TEXT_2);
+    }
+    let style = BODY.colored(if on { AMBER } else { TEXT_2 });
+    let at = Vec2::new(min.x + width * 0.5, min.y + (BUTTON - style.size) * 0.5);
+    p.text(at, text, &style, Align::Center);
+}
