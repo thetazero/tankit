@@ -677,12 +677,15 @@ impl Galaxy {
                 out.dedup();
                 out
             }),
-            work: co.contract.filter(|k| k.side as usize != super::RAID).map(|k| Work {
-                side: k.side as usize,
-                realm: system_name(self.realms[k.realm as usize].seat as usize),
-                system: system_name(k.target as usize),
-                defend: k.defend,
-            }),
+            work: co
+                .contract
+                .filter(|k| k.side as usize != super::RAID)
+                .map(|k| Work {
+                    side: k.side as usize,
+                    realm: system_name(self.realms[k.realm as usize].seat as usize),
+                    system: system_name(k.target as usize),
+                    defend: k.defend,
+                }),
         }
     }
 

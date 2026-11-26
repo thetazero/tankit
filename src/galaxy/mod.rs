@@ -725,8 +725,7 @@ impl Galaxy {
         // Start every garrison near its usual size.
         for s in 0..g.systems.len() {
             let owner = g.systems[s].owner();
-            g.systems[s].hulls[owner] =
-                (g.production(s)[owner] * 27.0).round() as u32;
+            g.systems[s].hulls[owner] = (g.production(s)[owner] * 27.0).round() as u32;
         }
         for s in 0..g.systems.len() {
             g.vault_at.push(g.vaults.len() as u32);
@@ -880,7 +879,6 @@ impl Galaxy {
         }
     }
 
-
     /// Run the whole galaxy forward to its next battle: one tick, or, if
     /// that leaves nowhere at war, on through the quiet until somewhere is
     /// (the player is always posted to a war, so quiet ticks pass unseen).
@@ -945,7 +943,13 @@ impl Galaxy {
         let mut mined = vec![0.0f32; self.vaults.len()];
         let mut crystals = vec![0.0; self.realms.len()];
         let resonant = Faction::Resonant.index();
-        let extra = |f: usize| if f == resonant { RESONANT_HULL_COST } else { 0.0 };
+        let extra = |f: usize| {
+            if f == resonant {
+                RESONANT_HULL_COST
+            } else {
+                0.0
+            }
+        };
         let offset = self.rng.index(self.systems.len());
         for i in 0..self.systems.len() {
             // Whoever's first gets the crystal, so a different one each tick.
@@ -1874,8 +1878,14 @@ impl Galaxy {
         } else {
             own
         };
-        let base = if best.1 > 0.0 { stay + best.0 } else { stay + cost_all * afford };
-        if realm.hires && (attacked || pool >= MIN_SEND) && self.hire(t, f, r, with, base, ours)
+        let base = if best.1 > 0.0 {
+            stay + best.0
+        } else {
+            stay + cost_all * afford
+        };
+        if realm.hires
+            && (attacked || pool >= MIN_SEND)
+            && self.hire(t, f, r, with, base, ours)
             && best.1 == 0.0
         {
             best.1 = afford;

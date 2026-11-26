@@ -147,7 +147,6 @@ impl Realm {
         }
         left
     }
-
 }
 
 /// A union-find's root of `i`.

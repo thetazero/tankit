@@ -558,7 +558,8 @@ impl Galaxy {
                 companies.iter().all(|c| (c.at as usize) < systems
                     && c.contract
                         .as_ref()
-                        .is_none_or(|k| ((k.realm as usize) < realms || k.side as usize == super::RAID)
+                        .is_none_or(|k| ((k.realm as usize) < realms
+                            || k.side as usize == super::RAID)
                             && (k.side as usize) < SIDES
                             && (k.target as usize) < systems)),
                 "a company nowhere, or working for nobody"
@@ -638,7 +639,11 @@ impl Galaxy {
         g.rng = Rng::from_state(s.rng);
         if s.vaults.len() == g.vaults.len() {
             for (v, x) in g.vaults.iter_mut().zip(&s.vaults) {
-                let realm = if (x.1 as usize) < g.realms.len() { x.1 } else { NONE };
+                let realm = if (x.1 as usize) < g.realms.len() {
+                    x.1
+                } else {
+                    NONE
+                };
                 *v = super::Vault {
                     side: x.0.min(SIDES as u8 - 1),
                     realm,

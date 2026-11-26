@@ -38,12 +38,7 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         }
     }
     let per = |x: f64, y: f64| (x - y) / dt;
-    let hulls: u64 = g
-        .systems
-        .iter()
-        .flat_map(|s| s.hulls)
-        .map(u64::from)
-        .sum();
+    let hulls: u64 = g.systems.iter().flat_map(|s| s.hulls).map(u64::from).sum();
     println!(
         "  t{:5} war sides {sides:4} taken/t {:.1} hulls {:.2}M lost/t {:.0} hull worth p50/90 {:.2}/{:.2} rate {:.2} | hold new/old {:.0}/{:.0} | realms {} GDP {:.0} vaults {:.0} (p50 {:.1}) share {:?}",
         g.tick,
@@ -124,7 +119,11 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             }
             let rules = Rules::default();
             let rules = Rules {
-                companies: if i == 0 && std::env::var("NONE").is_err() { rules.companies } else { 0 },
+                companies: if i == 0 && std::env::var("NONE").is_err() {
+                    rules.companies
+                } else {
+                    0
+                },
                 ..rules
             };
             println!("seed {seed} {}", ["companies", "none"][i]);
