@@ -16,7 +16,11 @@ pub trait Rock {
 pub struct Surface {
     pub verts: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    /// As it's drawn.
     pub tris: Vec<[u32; 3]>,
+    /// As it's driven on: the same surface to within `SLACK`, in far fewer
+    /// triangles.
+    pub driven: (Vec<Vec3>, Vec<[u32; 3]>),
     /// The color of its rock, where it stands steep.
     pub rock: Vec3,
     /// Which floors (triangles near enough level) are over each square of
@@ -27,6 +31,8 @@ pub struct Surface {
     over: Vec<Vec<u32>>,
 }
 
+/// How far what's driven on may be from what's drawn, m.
+const SLACK: f32 = 0.02;
 /// The squares triangles are sorted into, m.
 const SQUARE: f32 = 1.0;
 /// A floor isn't steeper than this (its normal's y).
@@ -126,19 +132,18 @@ impl Surface {
         for n in &mut self.normals {
             *n = n.normalize_or(Vec3::Y);
         }
+        self.driven = self.thinned();
         self.lo = Vec2::new(lo.x, lo.z);
         self.nx = ((hi.x - lo.x) / SQUARE).ceil() as usize + 1;
         self.nz = ((hi.z - lo.z) / SQUARE).ceil() as usize + 1;
         self.over = vec![Vec::new(); self.nx * self.nz];
-        for (i, t) in self.tris.iter().enumerate() {
-            let [a, b, c] = t.map(|k| self.verts[k as usize]);
+        for i in 0..self.driven.1.len() {
+            let [a, b, c] = self.driven_at(i as u32);
             let n = (b - a).cross(c - a);
             if n.y <= n.length() * FLOOR {
                 continue;
             }
-            let p = t
-                .map(|k| self.verts[k as usize])
-                .map(|v| Vec2::new(v.x, v.z));
+            let p = [a, b, c].map(|v| Vec2::new(v.x, v.z));
             let a = self.square(p[0].min(p[1]).min(p[2]));
             let b = self.square(p[0].max(p[1]).max(p[2]));
             for z in a.1..=b.1 {
@@ -147,6 +152,42 @@ impl Surface {
                 }
             }
         }
+    }
+
+    fn driven_at(&self, i: u32) -> [Vec3; 3] {
+        self.driven.1[i as usize].map(|k| self.driven.0[k as usize])
+    }
+
+    /// The surface in as few triangles as keep to it within `SLACK`.
+    fn thinned(&self) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let positions: Vec<[f32; 3]> = self.verts.iter().map(|v| v.to_array()).collect();
+        let bytes = bytemuck::cast_slice(&positions);
+        let adapter = meshopt::VertexDataAdapter::new(bytes, 12, 0).expect("positions");
+        let thin = meshopt::simplify(
+            self.tris.as_flattened(),
+            &adapter,
+            0,
+            SLACK,
+            meshopt::SimplifyOptions::ErrorAbsolute | meshopt::SimplifyOptions::LockBorder,
+            None,
+        );
+        let mut at = vec![u32::MAX; self.verts.len()];
+        let mut verts = Vec::new();
+        let ids: Vec<u32> = thin
+            .into_iter()
+            .map(|k| {
+                let slot = &mut at[k as usize];
+                if *slot == u32::MAX {
+                    *slot = verts.len() as u32;
+                    verts.push(self.verts[k as usize]);
+                }
+                *slot
+            })
+            .collect();
+        (
+            verts,
+            ids.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
+        )
     }
 
     fn square(&self, p: Vec2) -> (usize, usize) {
@@ -175,7 +216,7 @@ impl Surface {
     }
 
     fn floor_of(&self, i: u32, p: Vec2) -> Option<f32> {
-        let [a, b, c] = self.tris[i as usize].map(|k| self.verts[k as usize]);
+        let [a, b, c] = self.driven_at(i);
         let flat = |v: Vec3| Vec2::new(v.x, v.z) - p;
         let (pa, pb, pc) = (flat(a), flat(b), flat(c));
         // (Every floor winds the same way seen from above.)

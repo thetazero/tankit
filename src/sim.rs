@@ -1474,8 +1474,8 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
 /// A solid's surface as a collider.
 fn surface_collider(s: &crate::map::solid::Surface) -> ColliderBuilder {
     ColliderBuilder::trimesh_with_flags(
-        s.verts.clone(),
-        s.tris.clone(),
+        s.driven.0.clone(),
+        s.driven.1.clone(),
         TriMeshFlags::FIX_INTERNAL_EDGES,
     )
     .expect("a solid's surface has triangles")
