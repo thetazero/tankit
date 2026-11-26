@@ -979,3 +979,33 @@ fn fleets_take_time_and_land() {
     assert!(g.fleets.iter().all(|y| y.arrives > g.tick));
     assert!(g.flight(1.0) == 1 && g.flight(g.rules.ftl_speed * 2.5) == 3);
 }
+
+/// Planets have 0 to 3 outposts, one or two mostly, which make nothing (#547).
+#[test]
+fn planets_have_outposts() {
+    let g = Galaxy::new(1);
+    let mut counts = [0u32; 4];
+    for s in 0..g.systems.len() {
+        for p in 0..g.systems[s].planets {
+            let n = g
+                .site_range(s)
+                .filter(|&i| g.sites[i].planet == p && g.sites[i].kind == SiteKind::Outpost)
+                .count();
+            counts[n] += 1;
+        }
+    }
+    let all: u32 = counts.iter().sum();
+    let share = counts.map(|n| n as f32 / all as f32);
+    for (k, want) in [0.1, 0.4, 0.4, 0.1].into_iter().enumerate() {
+        assert!((share[k] - want).abs() < 0.03, "{share:?}");
+    }
+    // Worth nothing, and no hulls out of them.
+    let mut bare = g.clone();
+    for site in &mut bare.sites {
+        if matches!(site.kind, SiteKind::Production { .. }) {
+            site.kind = SiteKind::Outpost;
+        }
+    }
+    assert!((0..bare.systems.len()).all(|s| bare.built(s) == [0.0; SIDES]));
+    assert!(bare.realm_income().iter().all(|&x| x == 0.0));
+}

@@ -471,7 +471,7 @@ pub fn planet_name(name: &str, p: u8) -> String {
 /// The `kind_name` of a production site that makes mostly crystals.
 pub const CRYSTAL_MINE: &str = "CRYSTAL MINE";
 
-/// What a site is, in caps: a shield generator, or what a production site
+/// What a site is, in caps: a shield generator, an outpost, or what a production site
 /// makes most of, for what sites make (1 to 5 hulls, 0.02 to 0.1 crystals):
 /// about half are mines.
 pub fn kind_name(kind: SiteKind) -> &'static str {
@@ -479,11 +479,12 @@ pub fn kind_name(kind: SiteKind) -> &'static str {
         SiteKind::Shield { .. } => "SHIELD GENERATOR",
         SiteKind::Production { hulls, crystals } if crystals * 50.0 > hulls => CRYSTAL_MINE,
         SiteKind::Production { .. } => "HULL FOUNDRY",
+        SiteKind::Outpost => "OUTPOST",
     }
 }
 
 impl SiteView {
-    /// What it is, in caps: a shield generator, or what a production site makes most of.
+    /// What it is, in caps (see the free `kind_name`).
     pub fn kind_name(&self) -> &'static str {
         kind_name(self.kind)
     }
@@ -493,6 +494,7 @@ impl SiteView {
         match self.kind_name() {
             "SHIELD GENERATOR" => "SHIELD",
             "CRYSTAL MINE" => "MINE",
+            "OUTPOST" => "OUTPOST",
             _ => "FOUNDRY",
         }
     }
@@ -1230,6 +1232,7 @@ impl Galaxy {
         let foundries = Class::ALL.map(crate::mission::for_foundries);
         let mines = Class::ALL.map(crate::mission::for_mines);
         let shields = Class::ALL.map(crate::mission::for_shields);
+        let outposts = Class::ALL.map(crate::mission::for_outposts);
         let sites: Vec<SiteView> = self
             .site_range(s)
             .map(|i| {
@@ -1248,6 +1251,7 @@ impl Galaxy {
                     }
                     _ => {
                         let pool = match kind_name(site.kind) {
+                            _ if site.kind == SiteKind::Outpost => &outposts[class],
                             CRYSTAL_MINE => &mines[class],
                             _ => &foundries[class],
                         };
@@ -1723,7 +1727,9 @@ mod tests {
             for sys in 0..g.systems.len() {
                 let sites = g.theater_at(sys, 0).sites;
                 for (s, other) in sites.iter().zip(&g.theater_at(sys, 1).sites) {
-                    if world(sys, s.planet as usize).0 != Class::Desert || s.is_shield() {
+                    if world(sys, s.planet as usize).0 != Class::Desert
+                        || !matches!(s.kind, SiteKind::Production { .. })
+                    {
                         continue;
                     }
                     assert_eq!(s.kind_name() == CRYSTAL_MINE, mine);
@@ -1759,6 +1765,43 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 12, "{seen:?}");
+    }
+
+    /// Outposts are fought on no production site's map (#547): on desert
+    /// worlds the city and the open desert, elsewhere the hand-built maps.
+    #[test]
+    fn outposts_have_maps_of_their_own() {
+        let g = galaxy();
+        let mut seen = std::collections::HashSet::new();
+        for sys in 0..g.systems.len() {
+            for s in &g.theater_at(sys, 0).sites {
+                if s.kind != SiteKind::Outpost {
+                    continue;
+                }
+                assert_eq!((s.kind_name(), s.short_name()), ("OUTPOST", "OUTPOST"));
+                let desert = s.class == Class::Desert;
+                match s.map_kind() {
+                    MapKind::City(..) | MapKind::Desert => assert!(desert),
+                    MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln => assert!(!desert),
+                    k => panic!("an outpost fought on {k:?}"),
+                }
+                seen.insert(s.mission);
+            }
+        }
+        for name in [
+            "BROKEN STREETS",
+            "HIGH SEAT",
+            "DRY WIND",
+            "LONG SHADOWS",
+            "DEAD TOWN",
+            "HOLY GROUND",
+            "KEPT FIRE",
+        ] {
+            assert!(
+                seen.iter().any(|&i| MISSIONS[i].name == name),
+                "no outpost has {name}"
+            );
+        }
     }
 
     /// A site is one place: the same map each time it's looked at, and
