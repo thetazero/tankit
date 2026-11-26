@@ -263,6 +263,8 @@ struct SavedContract {
     held: u8,
     #[serde(default)]
     worth: f32,
+    #[serde(default)]
+    loot: f32,
 }
 
 impl SavedContract {
@@ -287,6 +289,7 @@ impl SavedContract {
             expected_ticks: k.expected_ticks,
             held: k.held,
             worth: k.worth,
+            loot: k.loot,
         }
     }
 
@@ -311,6 +314,7 @@ impl SavedContract {
             expected_ticks: self.expected_ticks,
             held: self.held,
             worth: self.worth,
+            loot: self.loot,
         }
     }
 }
@@ -1097,6 +1101,7 @@ mod tests {
             committed: 30,
             lost: 21,
             own: Default::default(),
+            loot: None,
         }];
         let text = serde_json::to_string(&g.saved(REGION * 0.3)).unwrap();
         let mut back = Galaxy::from_json(&text).unwrap();

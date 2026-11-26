@@ -228,7 +228,8 @@ pub struct Company {
     pub lost_before: u32,
 }
 
-/// A company's work for a realm: help take one system.
+/// A company's work for a realm: help take one system. Or its raid, for
+/// itself (side `RAID`, and no realm).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Contract {
     /// Who hired it (an index into `Galaxy::realms`), and as which people it fights.
@@ -264,6 +265,8 @@ pub struct Contract {
     /// was worth to it.
     pub held: u8,
     pub worth: f32,
+    /// Crystal its raid has taken.
+    pub loot: f32,
 }
 
 /// A bill a realm didn't pay: it owes `crystals` to company `company` (a `Company::id`).
@@ -1657,6 +1660,7 @@ impl Galaxy {
             expected_ticks,
             held: self.systems[t].held[f],
             worth,
+            loot: 0.0,
         });
         self.note_incoming(t as u32, f as u8, land, self.tick + q.fly);
         if r == super::realm::NONE {
@@ -1774,6 +1778,33 @@ impl Galaxy {
         cr as u32
     }
 
+    /// Company `c`'s contract `k` is over: if it's yours, for its summary.
+    fn note_ended(&mut self, c: usize, k: Contract, outcome: Outcome) {
+        let id = self.companies[c].id;
+        if self.crew != Some(id) {
+            return;
+        }
+        let own = self
+            .own
+            .filter(|o| o.ship == id && o.signed == k.signed)
+            .unwrap_or_default();
+        let raid = k.side as usize == super::RAID;
+        let loot = raid.then(|| (k.loot * self.cr_per_crystal()).round() as u32);
+        self.ended.push(Ended {
+            ship: id,
+            signed: k.signed,
+            tick: self.tick,
+            outcome,
+            defend: k.defend,
+            committed: k.committed,
+            lost: k.lost,
+            own,
+            loot,
+        });
+        let extra = self.ended.len().saturating_sub(ENDED_KEPT);
+        self.ended.drain(..extra);
+    }
+
     /// Company `c` breaks off its raid `k`: what it held goes back to whoever
     /// held the planet before it came, and what's left of its hulls aboard.
     fn leave(&mut self, c: usize, k: Contract) {
@@ -1808,7 +1839,7 @@ impl Galaxy {
 
     /// Idle companies look for a rich world too weakly held, and raid it if
     /// the battle maths says what's in its vaults beats what it'd cost: the
-    /// flight, the hulls, the crew. Yours doesn't (yet).
+    /// flight, the hulls, the crew. Yours too.
     fn raid(&mut self) {
         self.count_spare();
         self.count_incoming();
@@ -1831,7 +1862,6 @@ impl Galaxy {
             let co = &self.companies[c];
             if co.contract.is_some()
                 || co.idle_since > self.tick
-                || Some(co.id) == self.crew
                 || co.crystals <= 0.0
                 || !(self.tick + co.id as u64).is_multiple_of(super::THINK)
             {
@@ -2014,6 +2044,14 @@ impl Galaxy {
                     }
                     self.books.raid_lost += k.lost as f64;
                     self.books.raid_ticks += (self.tick - k.arrives) as f64;
+                    let outcome = if got {
+                        Outcome::Won
+                    } else if spent {
+                        Outcome::Spent
+                    } else {
+                        Outcome::Expired
+                    };
+                    self.note_ended(c, k, outcome);
                     self.leave(c, k);
                 } else {
                     self.companies[c].contract = Some(k);
@@ -2089,36 +2127,18 @@ impl Galaxy {
                 self.books.expired += 1;
             }
             // If this is the player's company, record how the contract ended for the summary card (#414).
-            let id = self.companies[c].id;
-            if self.crew == Some(id) {
-                let outcome = if won {
-                    Outcome::Won
-                } else if fell {
-                    Outcome::Fell
-                } else if broken {
-                    Outcome::Spent
-                } else if gone {
-                    Outcome::Gone
-                } else {
-                    Outcome::Expired
-                };
-                let own = self
-                    .own
-                    .filter(|o| o.ship == id && o.signed == k.signed)
-                    .unwrap_or_default();
-                self.ended.push(Ended {
-                    ship: id,
-                    signed: k.signed,
-                    tick: self.tick,
-                    outcome,
-                    defend: k.defend,
-                    committed: k.committed,
-                    lost: k.lost,
-                    own,
-                });
-                let extra = self.ended.len().saturating_sub(ENDED_KEPT);
-                self.ended.drain(..extra);
-            }
+            let outcome = if won {
+                Outcome::Won
+            } else if fell {
+                Outcome::Fell
+            } else if broken {
+                Outcome::Spent
+            } else if gone {
+                Outcome::Gone
+            } else {
+                Outcome::Expired
+            };
+            self.note_ended(c, k, outcome);
             // Back aboard, what's left.
             let back = k.field.min(self.systems[t].hulls[f]);
             self.systems[t].hulls[f] -= back;

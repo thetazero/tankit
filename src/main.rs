@@ -78,7 +78,8 @@ tankit [OPTIONS]
   --contract <attrition|hold|raid>
                           game mode: a raid on an enemy camp for its hulls (default), hold the site, or raid
                           (one-sided capture the flag, two-sided maps only)
-  --employer <faction>    which of the map's sides hires you (default: its first); with
+  --employer <faction>    which of the map's sides hires you (default: its first; company: you
+                          raid for your own, in its first's place); with
                           --screen missions|site, a ship on contract for that side
                           (with --screen factions|missions: whose missions the menu shows)
   --bench <seconds>       play a round headless at 60 fps (after --time s of warmup, default 3)
@@ -323,6 +324,9 @@ impl Args {
             _ => make_map(self.map, self.map_seed),
         };
         self.conditions.apply(&mut m);
+        if self.employer == Some(faction::Faction::Company) {
+            m.factions[0] = faction::Faction::Company;
+        }
         if self.side > 0 {
             m.swap_sides(self.side);
         }
@@ -836,10 +840,11 @@ fn parse_args() -> Result<Args> {
             }
             "--employer" => {
                 let name = args.next().unwrap_or_default();
-                employer =
-                    Some(faction::Faction::by_name(&name).with_context(|| {
+                employer = Some(
+                    faction::Faction::by_name_or_company(&name).with_context(|| {
                         format!("--employer expects a faction name, got {name:?}")
-                    })?);
+                    })?,
+                );
             }
             "--learned" => {
                 let name = args.next().unwrap_or_default();
@@ -1098,6 +1103,7 @@ fn parse_args() -> Result<Args> {
         // The menu's ship works for whoever hired it (--employer picks one
         // working for that side, if there is one).
         Some(_) if menu_shot => 0,
+        Some(faction::Faction::Company) => 0,
         Some(f) => sides.iter().position(|&s| s == f).with_context(|| {
             format!(
                 "--employer: nobody hires {} here; this map is {}",

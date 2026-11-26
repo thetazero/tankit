@@ -18,7 +18,8 @@ pub fn mesh(f: Faction) -> MeshData {
         Faction::Imperium => imperium(),
         Faction::Resonant => resonant(),
         Faction::Uthenn => uthenn(),
-        Faction::Ithessar | Faction::Company => ithessar(),
+        Faction::Ithessar => ithessar(),
+        Faction::Company => crate::ship_model::mesh(),
     }
 }
 

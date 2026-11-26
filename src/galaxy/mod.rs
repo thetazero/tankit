@@ -1140,6 +1140,9 @@ impl Galaxy {
                     .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
             }) {
                 c.crystals += loot;
+                if let Some(k) = &mut c.contract {
+                    k.loot += loot;
+                }
             }
             return;
         }

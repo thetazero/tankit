@@ -902,7 +902,10 @@ fn table(
     if !companies.is_empty() {
         count(Faction::Company, mercs, design::AMBER);
     }
-    count(f, realm, f.ui());
+    // Raiders are all mercs.
+    if f != Faction::Company {
+        count(f, realm, f.ui());
+    }
 }
 
 /// A gain's bar, in the middle of its line at `at`: what you had, and what
@@ -1418,7 +1421,7 @@ pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f3
                 n => format!("{world} · {} ×{n}", f.kind),
             };
             p.text(Vec2::new(x, y), &what, &s, Align::Left);
-            let (from, to) = (Faction::ALL[f.from], Faction::ALL[f.to]);
+            let (from, to) = (Faction::side(f.from), Faction::side(f.to));
             let mut ms = TextStyle::value(13.0);
             ms.color = to.ui();
             let tw = emblem::tagged_width(to.name(), &ms);
@@ -1564,7 +1567,7 @@ fn who(c: &SideChange) -> (Faction, &'static str) {
     if c.merc {
         (Faction::Company, "MERCS")
     } else {
-        let f = Faction::ALL[c.side];
+        let f = Faction::side(c.side);
         (f, f.name())
     }
 }
