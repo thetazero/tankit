@@ -1293,35 +1293,33 @@ fn renown_shown(gained: u32, t: f32) -> u32 {
 /// Over a battle you've left (#427), dimmed under it: the match playing
 /// out without you, fast, with a bar for how far through it is.
 pub fn playing_out(m: &Match, width: f32, height: f32) -> Vec<UiVertex> {
+    let (mut p, at) = notice("Left the battle", "Playing out", width, height);
+    let bar = at + Vec2::Y * design::UNIT * 9.0;
+    design::bar(&mut p, bar, NOTICE_W, m.progress());
+    p.finish()
+}
+
+/// How wide a notice's content is.
+const NOTICE_W: f32 = design::UNIT * 50.0;
+
+/// A box over the dimmed screen: `title`, under what it's about, small.
+/// Returns where its content starts, with room under the title.
+fn notice(what: &str, title: &str, width: f32, height: f32) -> (Painter, Vec2) {
     let scale = height / REF_HEIGHT;
     let (w, h) = (width / scale, REF_HEIGHT);
     let mut p = Painter::new(scale);
-    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.55]);
-    let size = Vec2::new(480.0, 112.0);
-    let min = Vec2::new(w, h) * 0.5 - size * 0.5;
-    p.rect(min, size, theme::PANEL);
-    widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
-    let x = min.x + 32.0;
-    label(
-        &mut p,
-        Vec2::new(x, min.y + 30.0),
-        "LEFT THE BATTLE",
-        Align::Left,
-    );
-    p.text(
-        Vec2::new(x, min.y + 48.0),
-        "PLAYING OUT",
-        &TextStyle::value(20.0),
-        Align::Left,
-    );
-    widgets::hairbar(
-        &mut p,
-        Vec2::new(x, min.y + 86.0),
-        size.x - 64.0,
-        m.progress(),
-        theme::HOT,
-    );
-    p.finish()
+    p.set_halo(None);
+    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.6]);
+    let pad = Vec2::splat(design::UNIT * 5.0);
+    let size = Vec2::new(NOTICE_W, design::UNIT * 9.0) + pad * 2.0;
+    let min = (Vec2::new(w, h) - size) * 0.5;
+    p.rect(min, size, design::GROUND);
+    let at = min + pad;
+    let style = design::SMALL.colored(design::TEXT_2);
+    p.text(at, what, &style, Align::Left);
+    let line = at + Vec2::Y * design::UNIT * 3.0;
+    p.text(line, title, &design::TITLE, Align::Left);
+    (p, at)
 }
 
 /// What moved a side's hulls in the system (#475), signed: what came in,
@@ -1582,9 +1580,9 @@ const SIDE_ROW: f32 = 40.0;
 pub fn spinner_small(p: &mut Painter, c: Vec2, time: f32) {
     let r = 7.0;
     let tau = std::f32::consts::TAU;
-    p.arc(c, r, 0.0, tau, 1.5, theme::DIM);
+    p.arc(c, r, 0.0, tau, 1.5, with_alpha(design::TEXT_2, 0.4));
     let a = (time / SPIN_PERIOD).fract() * tau;
-    p.arc(c, r, a, a + tau * 0.3, 2.0, theme::HOT);
+    p.arc(c, r, a, a + tau * 0.3, 2.0, design::AMBER);
 }
 
 /// Seconds the loading spinner takes to go round once.
@@ -1594,27 +1592,9 @@ const SPIN_PERIOD: f32 = 1.2;
 /// what's loading, small over it what for, and a spinner turning, so the
 /// screen never sits frozen while a map's built.
 pub fn loading(what: &str, title: &str, time: f32, width: f32, height: f32) -> Vec<UiVertex> {
-    let scale = height / REF_HEIGHT;
-    let (w, h) = (width / scale, REF_HEIGHT);
-    let mut p = Painter::new(scale);
-    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.55]);
-    let size = Vec2::new(480.0, 100.0);
-    let min = Vec2::new(w, h) * 0.5 - size * 0.5;
-    p.rect(min, size, theme::PANEL);
-    widgets::corners(&mut p, min, min + size, 14.0, theme::DIM);
-    let x = min.x + 32.0;
-    label(&mut p, Vec2::new(x, min.y + 30.0), what, Align::Left);
-    p.text(
-        Vec2::new(x, min.y + 48.0),
-        title,
-        &TextStyle::value(20.0),
-        Align::Left,
-    );
-    spinner(
-        &mut p,
-        Vec2::new(min.x + size.x - 56.0, min.y + size.y * 0.5),
-        time,
-    );
+    let (mut p, at) = notice(what, title, width, height);
+    let c = at + Vec2::new(NOTICE_W - 22.0, design::UNIT * 4.5);
+    spinner(&mut p, c, time);
     p.finish()
 }
 
@@ -1623,9 +1603,9 @@ pub fn loading(what: &str, title: &str, time: f32, width: f32, height: f32) -> V
 fn spinner(p: &mut Painter, c: Vec2, time: f32) {
     let r = 22.0;
     let tau = std::f32::consts::TAU;
-    p.arc(c, r, 0.0, tau, 2.0, theme::DIM);
+    p.arc(c, r, 0.0, tau, 2.0, with_alpha(design::TEXT_2, 0.4));
     let a = (time / SPIN_PERIOD).fract() * tau;
-    p.arc(c, r, a, a + tau * 0.3, 3.0, theme::HOT);
+    p.arc(c, r, a, a + tau * 0.3, 3.0, design::AMBER);
 }
 
 pub fn fps_counter(fps: f32, width: f32, height: f32) -> Vec<UiVertex> {

@@ -13,16 +13,13 @@ use winit::keyboard::KeyCode;
 
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::cluster_view::{self, Cluster};
-use crate::faction::Faction;
 use crate::galaxy::theater::{Ended, Offer, SiteView, Sortie, Theater, planet_name};
-use crate::garage::{self, PANEL_W, PANEL_X};
 use crate::mission::MISSIONS;
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
 use crate::ui::design::UNIT;
-use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
-use crate::ui::{design, emblem};
+use crate::ui::{Align, Hits, Layer, Painter, design, theme, with_alpha};
 use crate::work_view::{self, Board};
 
 const REF_HEIGHT: f32 = 900.0;
@@ -249,6 +246,14 @@ impl Controls {
     }
 }
 
+/// The contract you're signed on for: where, and whether you're still on the
+/// way there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobAt {
+    pub system: String,
+    pub flying: bool,
+}
+
 pub struct Menu {
     pub screen: Screen,
     cursor: usize,
@@ -264,8 +269,9 @@ pub struct Menu {
     /// The ended contract whose card you've gone on from (its ship and
     /// tick signed), so it doesn't come up again.
     closed: Option<(u32, u64)>,
-    /// Ticks the war has gone on while you wait for work (none showing).
-    waited: u32,
+    /// The contract you're signed on for, once the galaxy's in (the app keeps
+    /// it up to date): None inside if you've none.
+    job: Option<Option<JobAt>>,
     /// Seconds the menu's been up (turns the waiting spinner).
     clock: f32,
     /// You just switched company (#449): the next move onto another ship
@@ -299,7 +305,7 @@ impl Menu {
             transfer: None,
             card: None,
             closed: None,
-            waited: 0,
+            job: None,
             clock: 0.0,
             switched: false,
             site: 0,
@@ -327,7 +333,10 @@ impl Menu {
     pub fn input(&mut self, nav: Nav) -> Option<Action> {
         match (self.screen, nav) {
             (Screen::Main, Nav::Up | Nav::Down) => {
-                self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav)
+                self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav);
+                if !self.opens(self.cursor) {
+                    self.cursor = step(self.cursor, MAIN_ITEMS.len(), nav);
+                }
             }
             (Screen::Main, Nav::Select) => match self.cursor {
                 0 => self.screen = Screen::Missions,
@@ -452,7 +461,6 @@ impl Menu {
         // Onto the next contract (another ship's, or in another system):
         // the move plays over the system view.
         if let Some(new) = t.as_ref().filter(|t| t.ship.is_some()) {
-            self.waited = 0;
             if let Some(ship) = &new.ship {
                 self.set_ended(&ship.ended);
             }
@@ -492,11 +500,16 @@ impl Menu {
     /// The contract you've been shown all of: while a transfer plays, the
     /// one it leaves (so one cut short, by quitting say, plays again).
     pub fn shown(&self) -> Option<&Theater> {
+        // Not a contract whose summary you've closed: it's done with.
+        let closed = |t: &&Theater| {
+            let ship = t.ship.as_ref();
+            ship.is_some_and(|s| self.closed == Some((s.id, s.signed)))
+        };
         self.card
             .as_ref()
             .map(|(t, _)| t)
             .or(self.transfer.as_ref().map(|tr| &tr.from))
-            .or(self.seen.as_ref())
+            .or(self.seen.as_ref().filter(|t| !closed(t)))
     }
 
     /// You've seen the theater on screen (deploying into it, say): a
@@ -561,6 +574,12 @@ impl Menu {
         if let Some((_, e)) = self.card.take() {
             self.closed = Some((e.ship, e.signed));
         }
+        // Nothing signed next: what is, is yours to pick.
+        if self.theater.as_ref().is_none_or(|t| t.contested.is_empty())
+            && !matches!(self.job, Some(Some(_)))
+        {
+            self.screen = Screen::Ships;
+        }
     }
 
     /// The move onto the next contract, while it plays (not under a card).
@@ -574,17 +593,33 @@ impl Menu {
         self.transfer.as_ref()
     }
 
-    /// There's no contract to show and no card up: your company's
-    /// between contracts, and the war goes on until it has one (the app
-    /// runs it, a slice a frame, and counts it here with `waited`).
+    /// On the contract page with no battle to show: the war goes on (the app
+    /// runs it, a slice a frame) until there is one. Not under the summary.
     pub fn waiting(&self) -> bool {
         self.screen == Screen::Missions
+            && self.card.is_none()
             && self.theater.as_ref().is_none_or(|t| t.contested.is_empty())
     }
 
-    /// The war went on `ticks` more while you waited.
-    pub fn waited(&mut self, ticks: u32) {
-        self.waited += ticks;
+    /// On the board with no contract, and none on offer: the war goes on
+    /// until there's one.
+    pub fn waiting_for_offers(&self) -> bool {
+        self.screen == Screen::Ships && self.job == Some(None) && self.board.empty()
+    }
+
+    /// The contract you're signed on for, if any.
+    pub fn set_job(&mut self, job: Option<JobAt>) {
+        self.job = Some(job);
+        self.board.waiting = self.waiting_for_offers();
+        if !self.opens(self.cursor) {
+            self.cursor += 1;
+        }
+    }
+
+    /// Whether main menu row `i` can be opened: Contract takes one, or one
+    /// that's ended and you haven't seen how.
+    fn opens(&self, i: usize) -> bool {
+        i != 0 || self.card.is_some() || self.job != Some(None)
     }
 
     /// Select contested site `k` (on the missions screen).
@@ -737,6 +772,8 @@ impl Menu {
         }
         match self.theater.as_ref().filter(|t| !t.contested.is_empty()) {
             Some(t) => Some(t),
+            // On the way to another: between systems.
+            None if matches!(&self.job, Some(Some(j)) if j.flying) => None,
             None => self.seen.as_ref(),
         }
     }
@@ -773,7 +810,8 @@ impl Menu {
         }
         if matches!(self.screen, Screen::Ships | Screen::Contract) {
             if self.screen == Screen::Ships {
-                self.board.draw(&mut p, &mut hits, self.back_lit, w, h);
+                self.board
+                    .draw(&mut p, &mut hits, self.back_lit, self.clock, w, h);
             } else {
                 let o = self.board.offer(self.previewing);
                 let mine = self.board.mine.as_ref();
@@ -792,40 +830,10 @@ impl Menu {
                 hits,
             };
         }
-        match self.system() {
-            Some(t) => {
-                crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
-                self.draw_system(&mut p, &mut hits, w, h);
-                return Layer {
-                    verts: fade(p.finish(), alpha),
-                    hits,
-                };
-            }
-            None => garage::backdrop(&mut p, h),
+        if let Some(t) = self.system() {
+            crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
         }
-        let x = PANEL_X;
-        let mut y = 72.0;
-
-        // What you have to spend.
-        crystals(&mut p, Vec2::new(x + PANEL_W, y + 10.0), profile.crystals);
-        y += 72.0;
-
-        match self.screen {
-            Screen::Main => unreachable!("drawn above"),
-            Screen::Missions => self.no_posting(&mut p, Vec2::new(x, y), profile),
-            Screen::Settings | Screen::Controls => unreachable!("drawn above"),
-            Screen::Ships | Screen::Contract => unreachable!("drawn above"),
-        }
-        // Every screen but the main menu goes back to the one it came from.
-        if self.screen != Screen::Main {
-            back_button(
-                &mut p,
-                &mut hits,
-                Vec2::new(x, h - 72.0),
-                design::COLUMN,
-                self.back_lit,
-            );
-        }
+        self.draw_system(&mut p, &mut hits, w, h);
         Layer {
             verts: fade(p.finish(), alpha),
             hits,
@@ -853,7 +861,8 @@ impl Menu {
     pub fn cluster(&self) -> Option<(&Cluster, f32)> {
         let c = self.cluster.as_ref()?;
         use Screen::{Main, Ships};
-        matches!(self.screen, Main | Ships).then_some((c, self.clock))
+        let adrift = self.screen == Screen::Missions && self.system().is_none();
+        (adrift || matches!(self.screen, Main | Ships)).then_some((c, self.clock))
     }
 
     /// The main menu: who you are and what you can do, on a panel over the
@@ -885,9 +894,14 @@ impl Menu {
         // What you can do.
         y += design::UNIT * 9.0;
         for (i, name) in MAIN_ITEMS.iter().enumerate().take(MAIN_ACTIONS) {
-            let (at, size) = design::action(p, Vec2::new(x, y), name, i == self.cursor);
-            hits.add(p, at, size, Hit::Row(i));
+            let at = Vec2::new(x, y);
             y += design::ACTION;
+            if !self.opens(i) {
+                design::action_off(p, at, name);
+                continue;
+            }
+            let (min, size) = design::action(p, at, name, i == self.cursor);
+            hits.add(p, min, size, Hit::Row(i));
         }
 
         // And, at the foot, the rest.
@@ -922,47 +936,44 @@ impl Menu {
         back_button(p, hits, Vec2::new(at[0].x, back_y(h)), WIDE, self.back_lit);
     }
 
-    /// No theater to show: your company has no battle for you yet (or
-    /// you're not with one, and none has; or the galaxy is still loading).
-    fn no_posting(&self, p: &mut Painter, at: Vec2, profile: &Profile) {
-        let name = profile
-            .company_name()
-            .map_or("The Company".to_string(), |n| format!("The {}", title(&n)));
-        faction_line(p, at, Faction::Company, &name);
-        p.text(
-            at + Vec2::new(0.0, 28.0),
-            "BETWEEN CONTRACTS",
-            &TextStyle::value(22.0),
-            Align::Left,
-        );
-    }
-
     /// The contract page: the system with its marks, and the panel over it.
     fn draw_system(&self, p: &mut Painter, hits: &mut Hits<Hit>, w: f32, h: f32) {
         use crate::theater_view;
-        // The contract that ended, over the theater it was in (#414): its
-        // card's CONTINUE goes on.
+        // The contract that ended, over the theater it was in (#414).
         if let Some((t, e)) = &self.card {
-            theater_view::draw(p, hits, t, None, Some(e), self.site, self.go_lit, w, h);
-        } else if let Some(t) = self.theater.as_ref().filter(|t| !t.contested.is_empty()) {
+            theater_view::summary(p, hits, t, e, self.go_lit, w, h);
+            return;
+        }
+        let theater = self.theater.as_ref().filter(|t| !t.contested.is_empty());
+        if let Some(t) = theater {
             let moving = self.transfer.as_ref();
-            theater_view::draw(p, hits, t, moving, None, self.site, self.go_lit, w, h);
-        } else {
-            theater_view::waiting(p, self.waited, self.clock);
+            theater_view::draw(p, hits, t, moving, self.site, w, h);
+        } else if self.system().is_none() && self.cluster.is_none() {
+            // The galaxy's still loading.
+            p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 1.0]);
         }
         design::panel(p, h);
-        let shown = match &self.card {
-            Some((t, _)) => Some(t),
-            None => self.theater.as_ref().filter(|t| !t.contested.is_empty()),
-        };
-        // Nothing to pick while a contract ends or you're on the move.
-        let live = self.card.is_none() && self.transfer.is_none();
-        match shown {
-            Some(t) => self.draw_job(p, hits, t, live, h),
-            None => {
+        // Nothing to pick while you're on the move.
+        let live = self.transfer.is_none();
+        match (theater, &self.job) {
+            (Some(t), _) => self.draw_job(p, hits, t, live, h),
+            // Signed on, and no battle yet: the war goes on until there is.
+            (None, Some(Some(job))) => {
                 let at = Vec2::splat(design::MARGIN);
-                p.text(at, "No work", &design::HEAD, Align::Left);
+                p.text(at, &job.system, &design::HEAD, Align::Left);
+                let at = at + Vec2::Y * UNIT * 5.0;
+                let c = at + Vec2::new(8.0, design::SMALL.size * 0.5);
+                crate::hud::spinner_small(p, c, self.clock);
+                let text = if job.flying {
+                    "On the way"
+                } else {
+                    "No battle yet"
+                };
+                let style = design::SMALL.colored(design::TEXT_2);
+                let at = at + Vec2::X * UNIT * 3.5;
+                p.text(at, text, &style, Align::Left);
             }
+            (None, _) => {}
         }
         back_at_foot(p, hits, self.back_lit, h);
     }
@@ -1068,13 +1079,6 @@ fn back_button(p: &mut Painter, hits: &mut Hits<Hit>, min: Vec2, width: f32, lit
 /// BACK, at a panel's foot.
 pub fn back_at_foot(p: &mut Painter, hits: &mut Hits<Hit>, lit: bool, h: f32) {
     back_button(p, hits, design::foot(h, 0), design::COLUMN, lit);
-}
-
-/// `text` after `faction`'s emblem, in its colour: who's hiring, or whose ship.
-fn faction_line(p: &mut Painter, at: Vec2, faction: Faction, text: &str) {
-    let mut style = BODY;
-    style.color = faction.ui();
-    emblem::tagged(p, at, faction, text, &style, Align::Left);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1482,38 +1486,6 @@ fn controls_page(
     hits.add(p, min, size, Hit::Row(RESET_ROW));
 }
 
-/// Body text: sentence case, for everything that isn't a name or a number.
-const BODY: TextStyle = TextStyle {
-    size: 10.0,
-    tracking: 0.3,
-    weight: 1.1,
-    color: theme::DIM,
-    lower: true,
-    face: crate::ui::font::Face::Inter,
-};
-
-fn body(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
-    let mut style = BODY;
-    style.color = color;
-    p.text(at, text, &style, Align::Left)
-}
-
-/// Your crystals, right-aligned at `at`.
-fn crystals(p: &mut Painter, at: Vec2, crystals: u32) {
-    let w = body(
-        p,
-        at + Vec2::new(-measure("CR", &BODY), 2.0),
-        "CR",
-        theme::DIM,
-    );
-    p.text(
-        at - Vec2::new(w + 6.0, 0.0),
-        &crystals.to_string(),
-        &TextStyle::value(13.0),
-        Align::Right,
-    );
-}
-
 /// "THE CAPITAL" as "The Capital".
 pub fn title(caps: &str) -> String {
     caps.split(' ')
@@ -1550,7 +1522,7 @@ fn fade(mut v: Vec<UiVertex>, alpha: f32) -> Vec<UiVertex> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::galaxy::theater::system_name;
+    use crate::faction::Faction;
 
     #[test]
     fn main_menu_navigation() {
@@ -2336,11 +2308,29 @@ mod tests {
             Some(t.system),
             "over the old theater"
         );
+        assert!(!m.waiting(), "not under the summary");
+        // No contract: what's next is yours to pick, off the board.
+        m.set_job(None);
         m.input(Nav::Select);
         assert!(m.summary().is_none());
+        assert_eq!(m.screen, Screen::Ships);
+        assert!(m.waiting_for_offers());
+        // The main menu's Contract can't be opened, by key or click.
+        m.input(Nav::Back);
+        for _ in 0..10 {
+            m.input(Nav::Down);
+            assert_ne!(m.cursor, 0);
+        }
+        let hits = m.draw(&Profile::in_memory(), 1600.0, 900.0, 1.0).hits;
+        assert_eq!(hits.center_of(Hit::Row(0)), None);
+        // Signed on: it can, and it's where the war's waited out.
+        m.set_job(Some(JobAt {
+            system: "TORKAR".into(),
+            flying: true,
+        }));
+        assert!(m.opens(0));
+        m.screen = Screen::Missions;
         assert!(m.waiting());
-        m.waited(7);
-        assert_eq!(m.waited, 7);
         // It doesn't come up again.
         m.set_ended(&[ended]);
         assert!(m.summary().is_none());
@@ -2350,7 +2340,6 @@ mod tests {
         m.set_theater(Some(next));
         assert!(!m.waiting());
         assert!(m.transfer().is_some());
-        assert_eq!(m.waited, 0);
     }
     /// Deploying while a transfer plays: you've seen the new contract, so
     /// it doesn't play again after the battle.
