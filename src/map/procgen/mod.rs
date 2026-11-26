@@ -32,6 +32,7 @@ mod imperium;
 pub mod land;
 pub mod mine;
 mod resonant;
+pub mod setting;
 pub mod shield;
 pub mod skeleton;
 
@@ -108,8 +109,17 @@ pub struct Spec {
     pub seed: u64,
     pub biome: Biome,
     pub look: Look,
+    /// (Of a city.)
+    pub setting: setting::Setting,
     pub sides: Vec<Faction>,
     pub centerpiece: Centerpiece,
+}
+
+impl Spec {
+    /// The same, set in `setting`.
+    pub fn set_in(self, setting: setting::Setting) -> Spec {
+        Spec { setting, ..self }
+    }
 }
 
 /// A style: fills in each kind of placeholder. Each filler builds onto the
@@ -301,6 +311,9 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         sk.paint(t, st.road());
     }
     st.finish(&mut map);
+    if spec.setting == setting::Setting::Desert {
+        setting::desert(&mut map, &sk, spec.seed, st.road());
+    }
     map.drop_tiny_hitboxes();
     map.separate_coplanar_faces();
     sk.finish(&mut map);

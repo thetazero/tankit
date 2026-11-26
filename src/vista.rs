@@ -28,7 +28,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         // Crystal spires over the kiln; crystals and the plasma river.
         MapKind::Kiln => &[(53.0, 93.0, 4.97), (141.0, 128.5, 6.02)],
         // Generated: each city picks its own (`Map::vistas`).
-        MapKind::City(_) | MapKind::ShieldSite(..) => &[],
+        MapKind::City(..) | MapKind::ShieldSite(..) => &[],
         // Generated: each foundry picks its own (by each side's spawns,
         // looking at the great hall).
         MapKind::Foundry(..) => &[],
@@ -205,9 +205,18 @@ mod tests {
             (MapKind::Saltmarket, 0),
             (MapKind::Sanctum, 0),
             (MapKind::Kiln, 0),
-            (MapKind::City(crate::map::procgen::Look::Imperium), 0),
-            (MapKind::City(crate::map::procgen::Look::Imperium), 1),
-            (MapKind::City(crate::map::procgen::Look::Imperium), 2),
+            (
+                MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
+                0,
+            ),
+            (
+                MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
+                1,
+            ),
+            (
+                MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
+                2,
+            ),
             (
                 MapKind::Foundry(
                     crate::map::procgen::Look::Uthenn,

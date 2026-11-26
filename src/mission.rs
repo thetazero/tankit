@@ -77,7 +77,10 @@ pub const MISSIONS: &[Mission] = &[
         name: "BROKEN STREETS",
         contract: Contract::Attrition,
         map: "CITY",
-        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
+        map_kind: MapKind::City(
+            crate::map::procgen::Look::Imperium,
+            crate::map::procgen::setting::Setting::Plain,
+        ),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -129,6 +132,15 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    Mission {
+        name: "LONG SHADOWS",
+        contract: Contract::Attrition,
+        map: "OPEN DESERT",
+        map_kind: MapKind::Desert,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
     // A theater's shield generators are fought over here (#341): the
     // generator is the Hold site, its holder's model in the shape the
     // site's in (see `SiteView::map_kind`); the sides are the theater's.
@@ -138,6 +150,7 @@ pub const MISSIONS: &[Mission] = &[
         map: "SHIELD CITY",
         map_kind: MapKind::ShieldSite(
             crate::map::procgen::Look::Imperium,
+            crate::map::procgen::setting::Setting::Plain,
             crate::Generator::up(Faction::Imperium),
         ),
         seed: 0,
@@ -158,7 +171,10 @@ pub const MISSIONS: &[Mission] = &[
         name: "HIGH SEAT",
         contract: Contract::Hold,
         map: "CITY",
-        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
+        map_kind: MapKind::City(
+            crate::map::procgen::Look::Imperium,
+            crate::map::procgen::setting::Setting::Plain,
+        ),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -240,10 +256,19 @@ mod tests {
         assert!(
             for_sites(Class::Desert)
                 .iter()
-                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(_)))
+                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
         );
-        // Every desert mission is there from the start, not just Dry Wind.
-        assert!(for_sites(Class::Desert).len() > 1);
+        // Every desert mission is there from the start: the open desert's
+        // Hold and Attrition both.
+        for contract in [Contract::Hold, Contract::Attrition] {
+            assert!(
+                for_sites(Class::Desert).iter().any(|&i| {
+                    let m = &MISSIONS[i];
+                    m.map_kind == MapKind::Desert && m.contract == contract
+                }),
+                "{contract:?}"
+            );
+        }
     }
 
     /// A map can carry more than one contract, but never the same one twice.
