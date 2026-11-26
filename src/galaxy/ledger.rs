@@ -331,6 +331,7 @@ mod tests {
             .expect("a company under contract");
         let (id, k) = (c.id, c.contract.unwrap());
         g.crew = Some(id);
+        g.stay_on();
         let (t, f) = (k.target as usize, k.side as usize);
         let enemy = (0..SIDES)
             .filter(|&e| e != f)

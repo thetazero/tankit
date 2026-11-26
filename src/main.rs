@@ -146,8 +146,6 @@ tankit [OPTIONS]
   --summary               (with --transfer) stop at the summary of how the old contract ended, before
                           the transfer plays
   --failed                (with --summary) wait for a contract that failed (else the first to end)
-  --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
-                          another, and you choose which ship to go with
   --tab <n>               (with --screen companies|contract) the nth filter on: 1-4 work for, 5-8 fight, 9 take, 10 hold
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
@@ -209,9 +207,6 @@ pub struct Args {
     summary: bool,
     /// --failed, with --summary: show a failed contract.
     failed: bool,
-    /// --choice, for missions shots: your company splits (false) or joins
-    /// another (true), and the screen asks which ship you go with.
-    choice: Option<bool>,
     /// --won, for missions shots: your company just won its battle.
     won: bool,
     /// --tab, for companies shots: the tab of who you'd fight (#454).
@@ -672,7 +667,6 @@ fn parse_args() -> Result<Args> {
     let mut summary = false;
     let mut waiting = false;
     let mut failed = false;
-    let mut choice = None;
     let mut won = false;
     let mut shields_down = false;
     let mut tab = 0;
@@ -842,13 +836,6 @@ fn parse_args() -> Result<Args> {
             }
             "--summary" => summary = true,
             "--failed" => failed = true,
-            "--choice" => {
-                choice = Some(match args.next().as_deref() {
-                    Some("split") => false,
-                    Some("merge") => true,
-                    other => bail!("--choice expects split or merge, got {other:?}"),
-                })
-            }
             "--won" => won = true,
             "--shields-down" => shields_down = true,
             "--tab" => tab = args.next().context("--tab needs a number")?.parse()?,
@@ -1104,7 +1091,6 @@ fn parse_args() -> Result<Args> {
         summary,
         waiting,
         failed,
-        choice,
         won,
         shields_down,
         tab,
@@ -1517,45 +1503,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     Ok(())
 }
 
-/// Your company splits (or, `joined`, merges into another), leaving you the
-/// choice of ship; after a split, the war goes on a little, while that
-/// choice stays open, until one of the two halves is at work (so they differ).
-fn force_choice(g: &mut galaxy::Galaxy, joined: bool) -> Result<()> {
-    let c = (0..g.companies.len())
-        .find(|&c| g.companies[c].contract.is_none())
-        .context("no idle company")?;
-    g.crew = Some(g.companies[c].id);
-    g.rules.merc_split = 1000.0;
-    let co = &mut g.companies[c];
-    if joined {
-        (co.crystals, co.hulls) = (10.0, 0);
-    } else {
-        co.crystals = 1600.0;
-    }
-    g.split_and_join();
-    anyhow::ensure!(g.crew_choice().is_some(), "no choice of ship");
-    if joined {
-        // The ships it could go with are at work or not already: and a
-        // small one of them might join another of its own if we waited.
-        return Ok(());
-    }
-    for _ in 0..300 {
-        let Some(v) = g.crew_choice() else { break };
-        if v.ships.iter().any(|b| b.work.is_some()) {
-            return Ok(());
-        }
-        let keep = (v.choice, g.crew);
-        g.step();
-        // A split or join of its own on the way: keep the one we're showing.
-        if g.crew_choice.is_none_or(|c| c != keep.0) {
-            g.crew_choice = Some(keep.0);
-            g.crew = keep.1;
-        }
-    }
-    anyhow::ensure!(g.crew_choice().is_some(), "the choice closed");
-    Ok(())
-}
-
 /// The main menu or mission select over the menu backdrop, headless.
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
@@ -1595,15 +1542,6 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 menu.set_theater(None);
                 menu.waited(37);
             }
-            if let Some(joined) = args.choice {
-                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-                let rank = profile.rank().level;
-                g.await_work_staying(prefer, rank, 100);
-                force_choice(&mut g, joined)?;
-                profile.ship = g.crew;
-                menu.set_choice(g.crew_choice());
-                menu.set_theater(g.aboard(rank));
-            }
             if let Some(kind) = args.transfer {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
                 let rank = profile.rank().level;
@@ -1613,12 +1551,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     // As the app does on SIGN ON: switch to the first other
                     // ship with a battle for you, then on to its theater.
                     let id = g
-                        .other_ships()
+                        .open_work(rank)
                         .iter()
-                        .map(|b| b.id)
-                        .find(|&id| g.contract_of(id, rank).is_some())
-                        .context("no other ship with work to switch to")?;
-                    anyhow::ensure!(g.switch_crew(id), "couldn't switch to ship {id}");
+                        .find(|o| o.flight == 0 && Some(o.id) != g.crew)
+                        .map(|o| o.id)
+                        .context("no other ship with work to sign on with")?;
+                    anyhow::ensure!(g.sign_on(id), "couldn't sign on with ship {id}");
                     menu.switched();
                     menu.set_theater(g.aboard(rank));
                 }
@@ -1732,31 +1670,17 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         Some(Screen::Companies | Screen::Contract) => {
             let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+            // (on till there's a board worth the name)
+            while g.open_work(1).len() < 8 {
+                g.step();
+            }
             g.await_work_staying(prefer, profile.rank().level, 100);
             profile.ship = g.crew;
             menu.input(menu::Nav::Down);
             menu.input(menu::Nav::Select);
             menu.set_cluster(cluster_view::Cluster::of(&g));
             let rank = profile.rank().level;
-            // The war goes on until there's work on offer.
-            for _ in 0..500 {
-                if !g.open_work(rank).is_empty() {
-                    break;
-                }
-                g.step();
-                g.await_work_staying(prefer, rank, 100);
-            }
-            profile.ship = g.crew;
-            // The war goes on until there's work on offer.
-            for _ in 0..500 {
-                if !g.open_work(rank).is_empty() {
-                    break;
-                }
-                g.step();
-                g.await_work_staying(prefer, rank, 100);
-            }
-            profile.ship = g.crew;
-            let mine = g.aboard(rank).and_then(|t| galaxy::theater::Offer::of(&t));
+            let mine = g.my_work(rank);
             menu.board.set(g.open_work(rank), mine);
             if args.tab > 0 {
                 menu.board.toggle(args.tab - 1);

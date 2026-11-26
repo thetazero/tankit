@@ -877,6 +877,9 @@ pub struct Match {
     /// The enemy's gear tier, in upgrade steps (#438): what the contract
     /// pays more for (`economy::pay_factor`). 0 outside the galaxy's war.
     pub rating: u8,
+    /// What your company pays you, CR: the battle, and a kill (#557). None
+    /// outside a job.
+    pub wage: Option<(u32, u32)>,
     /// What you'd reverse-engineered of every part when the round started
     /// (#438): for the results screen to say which schematics your wrecks
     /// make yours. None outside the war.
@@ -1009,6 +1012,7 @@ impl Match {
             time_left: ROUND_TIME,
             contract: Contract::Attrition,
             rating: 0,
+            wage: None,
             known: None,
             hold: None,
             raid: None,
