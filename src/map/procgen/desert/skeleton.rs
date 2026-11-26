@@ -552,6 +552,11 @@ impl Skeleton {
                     && self.landmarks[0].center.distance(p) > s * 0.3
                     && self.tracks.iter().all(|t| line_distance(t, p) > self.pad + 4.0)
                     && self.shed_distance(p) > self.pad + 10.0
+                    && self
+                        .land
+                        .mounds
+                        .iter()
+                        .all(|m| m.at.distance(p) > self.pad + 34.0)
                     && (0..12).all(|k| {
                         let q = p + Vec2::from_angle(k as f32 * TAU / 12.0) * self.pad;
                         (self.ground(q) - g).abs() < 2.5
@@ -680,6 +685,18 @@ impl Skeleton {
                         .iter()
                         .all(|r| r.distance(at) > reach + RAMP_HALF + 4.0)
                     && self.land.wash_distance(at) > reach + WASH_FLOOR
+                    && self
+                        .tracks
+                        .iter()
+                        .all(|t| line_distance(t, at) > reach + 5.0)
+                    && self.shed_distance(at) > reach + 10.0
+                    && self
+                        .land
+                        .mounds
+                        .iter()
+                        .all(|m| m.at.distance(at) > m.radius * 1.4 + m.run + reach)
+                    && !self.keep_clear(at)
+                    && self.land.digs.iter().all(|d| d.distance(at) > reach + 6.0)
                     && self
                         .lots
                         .iter()
