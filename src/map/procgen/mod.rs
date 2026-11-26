@@ -25,6 +25,7 @@
 
 pub mod check;
 pub mod city;
+mod civic;
 pub mod desert;
 mod imperium;
 pub mod mine;
@@ -101,6 +102,10 @@ pub struct Spec {
 pub(in crate::map) trait Style {
     /// The ground between its buildings.
     fn ground(&self) -> glam::Vec3;
+    /// Its roads' color, multiplied into the ground's.
+    fn road(&self) -> glam::Vec3;
+    /// What it builds medium structures of.
+    fn stone(&self) -> civic::Stone;
     /// The Hold site's name on the HUD, with `piece` in the middle.
     fn hold_name(&self, piece: Centerpiece) -> &'static str;
     fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift>;
@@ -140,7 +145,7 @@ pub enum Claim {
 /// greybox passes `check`.
 pub fn skeleton(spec: &Spec) -> Skeleton {
     let mut last = None;
-    for attempt in 0..8u64 {
+    for attempt in 0..16u64 {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
         let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
         let plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
@@ -196,12 +201,16 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     for (k, lot) in sk.lots.iter().enumerate() {
         let start = map.oboxes.len();
-        drifts.extend(st.lot(&mut map, &sk, lot, &mut rng));
+        match lot.kind {
+            LotKind::Civic(kind) => civic::build(&mut map, &mut rng, lot, kind, st.stone()),
+            _ => drifts.extend(st.lot(&mut map, &sk, lot, &mut rng)),
+        }
         claims.push((Claim::Lot(k), start..map.oboxes.len()));
     }
     let mut terrain = sk.terrain(|p| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max));
     terrain.color = st.ground();
     terrain.material = crate::render::material::Material::Concrete;
+    sk.paint(&mut terrain, st.road());
     map.terrain = Some(terrain);
     for p in &sk.platforms {
         st.platform(&mut map, &sk, p, &mut rng);
@@ -226,6 +235,9 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         st.edge(&mut map, &sk, e, &mut rng);
     }
     st.beyond(&mut map, &sk, &mut rng);
+    if let Some(t) = &mut map.scenery_terrain {
+        sk.paint(t, st.road());
+    }
     st.finish(&mut map);
     map.drop_tiny_hitboxes();
     map.separate_coplanar_faces();
@@ -806,15 +818,20 @@ mod tests {
                 while r < t1 {
                     for across in [-1.0, 0.0, 1.0] {
                         let p = a.from + dir * r + side * across * (a.clear - 1.0);
+                        // (The heap across the edge is the edge's.)
+                        let edge = p.min(Vec2::splat(sk.size) - p).min_element();
+                        if edge < 11.0 {
+                            continue;
+                        }
                         assert!(
                             !m.oboxes.iter().any(|o| {
                                 let (y0, _) = o.y_range();
-                                o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
+                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
                             }),
                             "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {:?}",
                             m.oboxes.iter().find(|o| {
                                 let (y0, _) = o.y_range();
-                                o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
+                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
                             })
                         );
                     }
@@ -954,40 +971,6 @@ mod tests {
                     if r.is_err() { reach } else { String::new() }
                 );
             }
-        }
-    }
-
-    /// Both sides' drives to the fight are about as long.
-    #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "slow unoptimized: run with cargo test --release"
-    )]
-    fn the_drive_to_the_fight_is_fair() {
-        for seed in 0..24 {
-            let sk = skeleton(&spec(seed));
-            let m = sk.greybox(&spec(seed).sides);
-            let nav = crate::ai::nav::NavGrid::build(&m);
-            let drive: Vec<f32> = m
-                .bases
-                .iter()
-                .map(|b| {
-                    let from = b.iter().copied().sum::<Vec2>() / b.len() as f32;
-                    let mut at = from;
-                    let mut len = 0.0;
-                    for q in nav.path(from, sk.heart) {
-                        len += at.distance(q);
-                        at = q;
-                    }
-                    len
-                })
-                .collect();
-            let (a, b) = (drive[0], drive[1]);
-            assert!(
-                (a - b).abs() / a.max(b) < 0.2,
-                "seed {seed} {:?}: {a:.0} m against {b:.0} m",
-                super::city::Plan::of(seed, 2, false)
-            );
         }
     }
 

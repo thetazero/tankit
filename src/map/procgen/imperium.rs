@@ -92,6 +92,19 @@ impl Style for Imperium {
         GROUND
     }
 
+    fn road(&self) -> Vec3 {
+        Vec3::new(0.27, 0.27, 0.29)
+    }
+
+    fn stone(&self) -> super::civic::Stone {
+        super::civic::Stone {
+            wall: CONCRETE,
+            mat: Material::Concrete,
+            trim: STONE * 0.9,
+            roof: CONCRETE_DARK,
+        }
+    }
+
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "ROTUNDA",
@@ -110,7 +123,7 @@ impl Style for Imperium {
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
-        map.processional_way(sk, s, STONE);
+        let _ = (map, sk, s);
     }
 
     fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, rng: &mut Rng) {
@@ -130,6 +143,7 @@ impl Style for Imperium {
                 map.rubble_lot(rng, &lot.footprint, CONCRETE);
                 Vec::new()
             }
+            LotKind::Civic(_) => Vec::new(),
             LotKind::Distant => {
                 map.distant_block(rng, &lot.footprint, sk);
                 Vec::new()
@@ -837,41 +851,6 @@ impl Map {
 
     // -----------------------------------------------------------------------
     // The avenues
-
-    /// The processional way down an avenue: big worn stone slabs down the
-    /// middle, from the plaza's foot out to the edge.
-    pub(super) fn processional_way(&mut self, sk: &Skeleton, s: &Street, stone: Vec3) {
-        let dir = s.dir();
-        let side = Vec2::new(-dir.y, dir.x);
-        let (start, end) = sk.off_plaza_span(s, 2.0);
-        let end = if s.out { end - 4.0 } else { end };
-        let (len, across) = (6.0, 4);
-        let width = (s.half - 3.0) * 2.0;
-        let yaw = -angle(dir);
-        let mut d = start;
-        let mut row = 0;
-        while d < end {
-            for j in 0..across {
-                let off = -width * 0.5 + (j as f32 + 0.5) * width / across as f32;
-                let c = s.from + dir * (d + len * 0.5) + side * off;
-                let shade = 0.74 + 0.06 * (((row * 5 + j * 3) % 4) as f32 / 3.0);
-                self.oboxes.push(OBox {
-                    center: c,
-                    yaw,
-                    half: Vec2::new(len * 0.48, width / across as f32 * 0.48),
-                    y0: -0.1,
-                    y1: 0.05,
-                    color: stone * shade,
-                    side_mat: Material::Concrete,
-                    top_mat: Material::Concrete,
-                    solid: false,
-                    ..OBox::default()
-                });
-            }
-            d += len;
-            row += 1;
-        }
-    }
 
     /// A statue on a plinth facing `face`: a robed figure in blocks. Some
     /// stand, some have lost their heads, some lie toppled beside the plinth.

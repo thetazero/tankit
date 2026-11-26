@@ -66,6 +66,19 @@ impl Style for Resonant {
         GROUND
     }
 
+    fn road(&self) -> Vec3 {
+        Vec3::new(0.3, 0.32, 0.38)
+    }
+
+    fn stone(&self) -> super::civic::Stone {
+        super::civic::Stone {
+            wall: IVORY,
+            mat: Material::Plaster,
+            trim: GILT,
+            roof: SLATE,
+        }
+    }
+
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "CATHEDRAL",
@@ -92,8 +105,9 @@ impl Style for Resonant {
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
-        map.processional_way(sk, s, IVORY);
-        veins(map, sk, s);
+        if s.rank == Rank::Avenue {
+            veins(map, sk, s);
+        }
     }
 
     fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, _rng: &mut Rng) {
@@ -122,6 +136,7 @@ impl Style for Resonant {
                     toppled_spire(map, rng, f);
                 }
             }
+            LotKind::Civic(_) => {}
             LotKind::Distant => {
                 let out = (-f.center)
                     .max(f.center - Vec2::splat(sk.size))
@@ -1059,18 +1074,22 @@ fn veins(map: &mut Map, sk: &Skeleton, s: &Street) {
     let d = s.dir();
     let side = Vec2::new(-d.y, d.x);
     let (start, end) = sk.off_plaza_span(s, 2.0);
-    let end = if s.out { end - 6.0 } else { end };
+    // A little short of each bend, where the next stretch's begin.
+    let start = start + 2.0;
+    let end = if s.out { end - 6.0 } else { end - 2.0 };
     if end - start < 8.0 {
         return;
     }
+    // Stretches that cross lie one over the other.
+    let lift = ((s.from.x * 3.7 + s.from.y * 5.3) as i32).rem_euclid(9) as f32 * 0.012;
     for k in [-1.0f32, 1.0] {
         let n = ((end - start) / 4.0).max(1.0) as usize;
         let points: Vec<Vec3> = (0..=n)
             .map(|i| {
                 let t = start + (end - start) * i as f32 / n as f32;
                 let wobble = (i as f32 * 1.7 + k).sin() * 0.35;
-                let p = s.from + d * t + side * (k * (s.half - 4.6) + wobble);
-                Vec3::new(p.x, 0.1, p.y)
+                let p = s.from + d * t + side * (k * (s.half - 2.6) + wobble);
+                Vec3::new(p.x, 0.1 + lift, p.y)
             })
             .collect();
         map.glow_paths.push(GlowPath {
