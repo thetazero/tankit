@@ -191,7 +191,7 @@ impl Skeleton {
                 let want = rng.int(3, 5) as usize;
                 sk.islands(rng, want, (12.0, 26.0));
                 if rng.chance(0.5) {
-                    sk.wash(rng);
+                    sk.cut_desert_wash(rng);
                 }
             }
             Form::Canyonlands => {
@@ -279,7 +279,7 @@ impl Skeleton {
                 let want = rng.int(0, 2) as usize;
                 sk.islands(rng, want, (10.0, 16.0));
                 if rng.chance(0.4) {
-                    sk.wash(rng);
+                    sk.cut_desert_wash(rng);
                 }
             }
             Form::Escarpment => {
@@ -311,7 +311,7 @@ impl Skeleton {
                 let want = rng.int(1, 3) as usize;
                 sk.islands(rng, want, (10.0, 18.0));
                 if rng.chance(0.4) {
-                    sk.wash(rng);
+                    sk.cut_desert_wash(rng);
                 }
             }
         }
@@ -348,7 +348,7 @@ impl Skeleton {
     }
 
     /// A dry wash winding across the floor, clear of the landmark.
-    fn wash(&mut self, rng: &mut Rng) {
+    fn cut_desert_wash(&mut self, rng: &mut Rng) {
         let s = self.size;
         let lm = self.landmarks[0].clone();
         for _ in 0..12 {
