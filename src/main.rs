@@ -1554,7 +1554,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 // Your company's between contracts: the war's gone on a while
                 // with nothing for you, over the system you were last in.
                 menu.set_theater(None);
-                menu.waited(37);
+                let g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+                menu.set_cluster(cluster_view::Cluster::of(&g));
+                menu.set_job(Some(menu::JobAt {
+                    system: galaxy::theater::system_name(7),
+                    flying: true,
+                }));
             }
             if let Some(kind) = args.transfer {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
