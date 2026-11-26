@@ -153,6 +153,7 @@ pub fn scene(c: &Cluster, time: f32, aspect: f32) -> Scene {
         shadow_radius: 1.0,
         instances: vec![(MeshId::SPHERE, space)],
         particles,
+        rivers: Default::default(),
         lights: Vec::new(),
         ui: Vec::new(),
         world: false,

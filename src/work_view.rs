@@ -446,6 +446,7 @@ pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, asp
         shadow_radius: 22.0,
         instances,
         particles,
+        rivers: Default::default(),
         lights: vec![
             lamp(side, Vec3::new(-9.5, 4.5, -5.0)),
             lamp(Faction::Company, Vec3::new(-3.0, 4.0, -4.5)),
