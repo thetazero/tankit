@@ -1298,8 +1298,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             &art,
             &game.world,
             &driven,
-            equipped,
-            shot.width as f32,
             shot.height as f32,
             usize::MAX,
         );
@@ -1313,7 +1311,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             None => camera,
         };
         let mut frame = if garage.in_bay() && args.cam.is_none() {
-            let view = garage.bay_camera();
+            let view = garage.bay_camera(shot.width as f32 / shot.height as f32);
             bay::scene(
                 &art,
                 &bay_art,

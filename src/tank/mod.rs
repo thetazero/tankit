@@ -238,10 +238,12 @@ impl TankArt {
     /// Append every instance needed to draw `t` this frame, and its plasma
     /// light (charging orbs, muzzle flashes) to `glow`.
     pub fn instances(&self, t: &Tank, out: &mut Vec<(MeshId, Instance)>, glow: &mut Vec<Particle>) {
-        let turret = &self.turrets[TurretKind::ALL
-            .iter()
-            .position(|&k| k == t.turret_kind)
-            .unwrap_or(0)];
+        self.hull_instances(t, out);
+        self.turret_instances(t, out, glow);
+    }
+
+    /// The hull alone.
+    pub fn hull_instances(&self, t: &Tank, out: &mut Vec<(MeshId, Instance)>) {
         // The whole kit hangs off the physics body (body frame = art frame, ground at y=0).
         let base = Mat4::from_rotation_translation(t.rot, t.pos);
         match t.hull_kind {
@@ -254,6 +256,19 @@ impl TankArt {
                 self.vigil(t, base, out);
             }
         }
+    }
+
+    /// The turret alone, where it sits on `t`'s hull.
+    pub fn turret_instances(
+        &self,
+        t: &Tank,
+        out: &mut Vec<(MeshId, Instance)>,
+        glow: &mut Vec<Particle>,
+    ) {
+        let turret = &self.turrets[TurretKind::ALL
+            .iter()
+            .position(|&k| k == t.turret_kind)
+            .unwrap_or(0)];
         // The turret hangs where the sim says the gun is, so shots and the
         // beam leave the muzzle that's drawn.
         self.turret(turret, t, out, glow);

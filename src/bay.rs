@@ -112,12 +112,8 @@ pub fn atmosphere() -> Atmosphere {
     }
 }
 
-/// How far under the tank the garage's cameras aim, as a share of their
-/// distance to it, so it sits in the space over the dock.
-pub const AIM_UNDER: f32 = 0.13;
-
-/// The fixed view of the deck, the tank over the garage's dock like the
-/// garage's orbit. `pull` > 1 backs it off (arriving, it eases in from 1.25).
+/// The fixed view of the deck, the tank in the middle. `pull` > 1 backs it
+/// off (arriving, it eases in from 1.25).
 pub fn camera(pull: f32) -> Camera {
     let focus = Vec3::Y * (DECK + 1.0);
     let dist = CAM_DIST * pull;
@@ -129,7 +125,7 @@ pub fn camera(pull: f32) -> Camera {
         );
     Camera {
         pos,
-        target: focus - Vec3::Y * dist * AIM_UNDER,
+        target: focus,
         fov_y: 50f32.to_radians(),
     }
 }

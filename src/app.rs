@@ -1381,7 +1381,7 @@ impl App {
             UiHit::Garage(h) => {
                 let input = match h {
                     garage::Hit::Key(input) => input,
-                    garage::Hit::Part(_) => garage::Input::Right,
+                    garage::Hit::Part(_) | garage::Hit::Tab(_) => garage::Input::Down,
                 };
                 let event = self.garage.click(h, self.queued(), &self.profile);
                 self.garage_acted(input, event);
@@ -1603,7 +1603,7 @@ impl App {
             let driven = tanks[0].clone();
             // A couple of card thumbnails a frame, so opening doesn't hitch.
             self.garage
-                .render_thumbs(r, art, &self.game.world, &driven, queued, w, h, 2);
+                .render_thumbs(r, art, &self.game.world, &driven, h, 2);
             self.garage.preview(&mut tanks[0]);
             if let Some(room) = self.showroom {
                 // Slow auto-orbit; PageUp/PageDown zoom.
@@ -1616,7 +1616,7 @@ impl App {
                 );
             }
             let mut scene = if self.garage.in_bay() {
-                let view = self.garage.bay_camera();
+                let view = self.garage.bay_camera(w / h);
                 bay::scene(
                     art,
                     bay,

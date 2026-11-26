@@ -22,4 +22,4 @@ opens into at a round's end) are made from it; the other screens aren't yet.
 
 ## Components
 
-Panel, bar, action, link.
+Panel, bar, action, link, button.
