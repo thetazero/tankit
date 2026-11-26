@@ -129,6 +129,16 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    // The same out in the open, on desert worlds only.
+    Mission {
+        name: "BARE SKY",
+        contract: Contract::Hold,
+        map: "SHIELD DESERT",
+        map_kind: MapKind::ShieldDesert(crate::Generator::up(Faction::Imperium)),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
 ];
 
 /// The missions a site on a `class` world can be fought with (#311): every
@@ -144,13 +154,12 @@ pub fn for_sites(class: crate::galaxy::theater::Class) -> Vec<usize> {
         .collect()
 }
 
-/// The mission a theater's shield generators are fought with: a Hold on
-/// the shield city.
-pub fn for_shields() -> usize {
-    MISSIONS
-        .iter()
-        .position(|m| matches!(m.map_kind, MapKind::ShieldSite(_)))
-        .expect("a shield generator mission")
+/// The missions a shield generator on a `class` world can be fought with: a
+/// Hold on the shield city, or on a desert world perhaps the shield desert.
+pub fn for_shields(class: crate::galaxy::theater::Class) -> Vec<usize> {
+    (0..MISSIONS.len())
+        .filter(|&i| class.shields_on(MISSIONS[i].map_kind))
+        .collect()
 }
 
 impl Mission {
@@ -177,6 +186,7 @@ mod tests {
         use crate::galaxy::theater::Class;
         for class in [Class::Desert, Class::Placeholder] {
             assert!(!for_sites(class).is_empty(), "{class:?}");
+            assert!(!for_shields(class).is_empty(), "{class:?}");
         }
         // Every desert mission is there from the start, not just Dry Wind.
         assert!(for_sites(Class::Desert).len() > 1);
