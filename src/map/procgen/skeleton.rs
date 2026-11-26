@@ -724,14 +724,10 @@ impl Skeleton {
             });
         };
         let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
-        // The cliffs, as the boxes that stop tanks.
-        for line in self.land.cliffs(self.size) {
-            map.rock_face(&line, self.land.high.height, false, 0.0);
-        }
-        map.sculpted = Default::default();
-        for o in &mut map.oboxes {
-            o.hidden = false;
-            o.color = Vec3::new(0.55, 0.45, 0.35);
+        if !self.land.high.slabs.is_empty() {
+            let mut ground = self.land.surface(self.size, 2.0, |_| 0.0);
+            ground.rock = Vec3::new(0.55, 0.45, 0.35);
+            map.solid = Some(ground.into());
         }
         // The landmark: a ring wall, open at its doors and where it fell;
         // anything else, a low slab on its reach.

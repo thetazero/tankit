@@ -2,8 +2,6 @@
 //! into one surface that's drawn, driven on and asked for its floors. Unlike
 //! a `Terrain` it can stand sheer, overhang and be dug into, at any angle.
 
-use std::sync::Arc;
-
 use glam::{IVec3, Vec2, Vec3};
 
 /// What's rock: negative in it, positive in the air, about the distance (m)
@@ -19,6 +17,8 @@ pub struct Surface {
     pub verts: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub tris: Vec<[u32; 3]>,
+    /// The color of its rock, where it stands steep.
+    pub rock: Vec3,
     /// Which triangles are over each square of the ground.
     lo: Vec2,
     nx: usize,
@@ -33,7 +33,7 @@ const FLOOR: f32 = 0.35;
 
 impl Surface {
     /// Meshes `rock` from `lo` to `hi` in cubes `cell` across.
-    pub fn of(rock: &dyn Rock, lo: Vec3, hi: Vec3, cell: f32) -> Arc<Surface> {
+    pub fn of(rock: &dyn Rock, lo: Vec3, hi: Vec3, cell: f32) -> Surface {
         let n = ((hi - lo) / cell).ceil().as_ivec3() + 1;
         let ys: Vec<f32> = (0..n.y).map(|y| lo.y + y as f32 * cell).collect();
         let id = |c: IVec3| ((c.z * n.x + c.x) * n.y + c.y) as usize;
@@ -109,7 +109,7 @@ impl Surface {
             }
         }
         s.finish(lo, hi);
-        Arc::new(s)
+        s
     }
 
     /// Its normals, and which triangles are over each square.
@@ -224,7 +224,7 @@ mod tests {
         }
     }
 
-    fn dug() -> Arc<Surface> {
+    fn dug() -> Surface {
         Surface::of(
             &Dug,
             Vec3::new(-30.0, -3.0, -30.0),

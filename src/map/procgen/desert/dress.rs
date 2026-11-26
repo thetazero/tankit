@@ -25,10 +25,6 @@ mod camp;
 #[cfg(test)]
 pub use camp::site;
 
-/// The stone the rock faces are sculpted in (see `crag`), for tinting
-/// them to a desert's own.
-const RED_SANDSTONE: Vec3 = Vec3::new(0.58, 0.34, 0.22);
-
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
 
@@ -207,18 +203,6 @@ impl Sand<'_> {
     fn cliffs(&mut self, rng: &mut Rng) {
         let sk = self.sk;
         let lines = sk.land.cliffs(sk.size);
-        let from = self.map.sculpted.verts.len();
-        for (k, line) in lines.iter().enumerate() {
-            self.map
-                .rock_face(line, sk.land.high.height, false, k as f32 * 977.0);
-        }
-        // The rock faces are sculpted in red sandstone: turned to this
-        // desert's stone.
-        let tint = self.pal.stone / RED_SANDSTONE;
-        for v in &mut self.map.sculpted.verts[from..] {
-            let c = Vec3::from_slice(&v.color[..3]) * tint;
-            v.color[..3].copy_from_slice(&c.to_array());
-        }
         for line in &lines {
             let mut walked = 0.0;
             for w in line.windows(2) {

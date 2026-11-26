@@ -217,6 +217,9 @@ pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Rang
     m.rock_dust = Some(pal.sand);
     m.planet = Some((spec.seed, pal.planet));
     m.terrain = Some(dress::terrain(&sk, pal));
+    let mut ground = sk.land.surface(sk.size, 1.0, |_| 0.0);
+    ground.rock = pal.stone;
+    m.solid = Some(ground.into());
     let claims = dress::dress(&mut m, &sk, pal, spec.seed, spec.centerpiece);
     if sk.landmarks[0].kind == LandmarkKind::Generator {
         // The generator's built flush, piece against piece, as a city is.

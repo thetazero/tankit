@@ -438,7 +438,25 @@ fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
                 .to_array(),
         });
     }
-    m.indices.extend(s.tris.iter().flatten().map(|k| base + k));
+    // Steep faces are rock, each with corners of its own (a material can't
+    // blend across a face).
+    for t in &s.tris {
+        let v = t.map(|k| s.verts[k as usize]);
+        let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or(Vec3::Y);
+        if n.y > 0.6 {
+            m.indices.extend(t.map(|k| base + k));
+            continue;
+        }
+        let at = m.verts.len() as u32;
+        for k in t {
+            m.verts.push(Vertex {
+                pos: s.verts[*k as usize].to_array(),
+                normal: s.normals[*k as usize].to_array(),
+                color: s.rock.extend(Material::Cliff.id()).to_array(),
+            });
+        }
+        m.indices.extend([at, at + 1, at + 2]);
+    }
 }
 
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {
