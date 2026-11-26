@@ -770,14 +770,23 @@ impl Galaxy {
         while !hired(&g) {
             g.step();
         }
-        // Only that work, so it's what's found.
-        for c in 0..g.companies.len() {
-            let keep = g.companies[c]
-                .contract
-                .is_some_and(|k| !k.lent && k.side as usize != super::RAID && k.field >= 20);
-            if !keep {
-                g.companies[c].contract = None;
-            }
+        // Only that work, so it's what's found, and nobody's hired against it.
+        let best = (0..g.companies.len())
+            .filter(|&c| {
+                let one = &g.companies[c];
+                one.pilots.len() >= 4
+                    && one.contract.is_some_and(|k| {
+                        let (s, f) = (k.target as usize, k.side as usize);
+                        !k.lent
+                            && f != super::RAID
+                            && k.field >= 20
+                            && g.fighting(s, f)
+                            && !g.commits(s, f).is_empty()
+                    })
+            })
+            .max_by_key(|&c| g.companies[c].contract.map_or(0, |k| k.field));
+        for c in (0..g.companies.len()).filter(|&c| Some(c) != best) {
+            g.companies[c].contract = None;
         }
         g.clear_moves();
         g
