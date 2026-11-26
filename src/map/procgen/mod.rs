@@ -32,17 +32,16 @@ pub mod desert;
 pub mod foundry;
 mod imperium;
 pub mod land;
+mod memo;
 pub mod mine;
 mod resonant;
 pub mod setting;
 pub mod shield;
 pub mod skeleton;
 
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-
 use glam::Vec2;
 
+use self::memo::Memo;
 use self::skeleton::*;
 use super::Map;
 use super::ruins::Drift;
@@ -192,7 +191,7 @@ pub enum Claim {
 /// it don't change it.
 pub fn skeleton(spec: &Spec) -> Skeleton {
     type Key = (u64, usize, city::Plan);
-    static CACHE: LazyLock<Mutex<HashMap<Key, Skeleton>>> = LazyLock::new(Default::default);
+    static KEPT: Memo<Key, Skeleton, 8> = Memo::new();
     let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
     let mut plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
     if spec.look == Look::Ithessar {
@@ -202,16 +201,7 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
         plan.form = city::Form::Banks;
     }
     let key = (spec.seed, spec.sides.len(), plan);
-    if let Some(sk) = CACHE.lock().unwrap().get(&key) {
-        return sk.clone();
-    }
-    let sk = lay_out(spec, &plan);
-    let mut cache = CACHE.lock().unwrap();
-    if cache.len() >= 8 {
-        cache.clear();
-    }
-    cache.insert(key, sk.clone());
-    sk
+    KEPT.get(&key, || lay_out(spec, &plan))
 }
 
 fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
@@ -361,17 +351,10 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
 /// last few are kept: the tests and the menus ask for the same ones over
 /// and over).
 pub fn map(spec: &Spec) -> Map {
-    static CACHE: LazyLock<Mutex<HashMap<Spec, Map>>> = LazyLock::new(Default::default);
-    if let Some(m) = CACHE.lock().unwrap().get(spec) {
-        return m.clone();
-    }
-    let m = build_map(spec);
-    let mut cache = CACHE.lock().unwrap();
-    if cache.len() >= 6 {
-        cache.clear();
-    }
-    cache.insert(spec.clone(), m.clone());
-    m
+    // (The whole suite runs in one process, on a few dozen maps.)
+    const KEEP: usize = if cfg!(test) { 24 } else { 6 };
+    static KEPT: Memo<Spec, Map, KEEP> = Memo::new();
+    KEPT.get(spec, || build_map(spec))
 }
 
 /// How a world of `biome` looks from orbit.
@@ -520,25 +503,6 @@ impl Map {
 
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
     pub fn mine(seed: u64) -> Map {
-        // Tests build the same few mines over and over: each once (the
-        // first few seeds only, so a sweep over many doesn't keep them all).
-        #[cfg(test)]
-        if seed < 12 {
-            use std::collections::HashMap;
-            use std::sync::{Arc, Mutex, OnceLock};
-            type Built = Arc<OnceLock<Map>>;
-            static MINES: OnceLock<Mutex<HashMap<u64, Built>>> = OnceLock::new();
-            let slot = MINES
-                .get_or_init(Default::default)
-                .lock()
-                .unwrap()
-                .entry(seed)
-                .or_default()
-                .clone();
-            return slot
-                .get_or_init(|| map(&crate::mine_spec(seed, Look::Ithessar)))
-                .clone();
-        }
         map(&crate::mine_spec(seed, Look::Ithessar))
     }
 

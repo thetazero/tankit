@@ -57,10 +57,20 @@ impl Surface {
         // of where it crosses the cube's edges.
         let mut ids = vec![u32::MAX; d.len()];
         let corner = |k: i32| IVec3::new(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        // Steps to a cube's corners in `d`, and whether it's all rock or all
+        // air (most are).
+        let steps: [usize; 8] = std::array::from_fn(|k| id(corner(k as i32)));
+        let whole = |at: usize| {
+            let rock = d[at] < 0.0;
+            steps[1..].iter().all(|s| (d[at + s] < 0.0) == rock)
+        };
         for z in 0..n.z - 1 {
             for x in 0..n.x - 1 {
                 for y in 0..n.y - 1 {
                     let c = IVec3::new(x, y, z);
+                    if whole(id(c)) {
+                        continue;
+                    }
                     let (mut sum, mut hits) = (Vec3::ZERO, 0.0);
                     for k in 0..8 {
                         for bit in [1, 2, 4] {
@@ -88,6 +98,9 @@ impl Surface {
             for x in 0..n.x - 1 {
                 for y in 0..n.y - 1 {
                     let c = IVec3::new(x, y, z);
+                    if whole(id(c)) {
+                        continue;
+                    }
                     for (axis, u, v) in [
                         (IVec3::X, IVec3::Y, IVec3::Z),
                         (IVec3::Y, IVec3::Z, IVec3::X),

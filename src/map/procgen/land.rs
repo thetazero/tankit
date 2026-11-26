@@ -947,8 +947,11 @@ impl Land {
             .iter()
             .map(|&(at, r0, r1)| smoothstep(r0, r1, at.distance(p)))
             .fold(1.0, f32::min);
-        let ramps = smoothstep(RAMP_HALF + 2.0, RAMP_HALF + 12.0, self.ramp_distance(p));
         let cliff = smoothstep(2.0, 10.0, s.abs());
+        if calm.min(cliff) <= 0.0 {
+            return 0.0;
+        }
+        let ramps = smoothstep(RAMP_HALF + 2.0, RAMP_HALF + 12.0, self.ramp_distance(p));
         let wash = self
             .washes
             .iter()
