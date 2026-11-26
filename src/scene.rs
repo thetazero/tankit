@@ -115,6 +115,9 @@ pub fn map_mesh(map: &Map) -> MeshData {
     for g in &map.glow_paths {
         g.mesh(&mut m);
     }
+    for r in &map.rivers {
+        r.mesh(&mut m);
+    }
 
     repair_pads(map, &mut m);
     m

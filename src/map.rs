@@ -16,6 +16,7 @@ mod noise;
 mod pieces;
 pub mod procgen;
 mod props;
+pub mod river;
 pub mod rocks;
 mod ruins;
 mod sanctum;
@@ -654,6 +655,8 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// Plasma rivers.
+    pub rivers: Vec<river::River>,
     /// Beams of plasma held on for good (a borer cutting rock): drawn with
     /// the effects, and death to any tank that drives into one.
     pub beams: Vec<Beam>,
@@ -1104,6 +1107,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            rivers: Vec::new(),
             beams: Vec::new(),
             lights: Vec::new(),
             fall_y: None,

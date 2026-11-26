@@ -819,6 +819,8 @@ pub struct Land {
     pub lake: Option<Lake>,
     pub dam: Option<Dam>,
     pub digs: Vec<Dig>,
+    /// A plasma river's, cut through all of it.
+    pub channel: Option<super::channel::Channel>,
 }
 
 impl Land {
@@ -960,7 +962,8 @@ impl Land {
     /// The ground's height at `p`.
     pub fn height(&self, p: Vec2) -> f32 {
         let s = self.plateau(p);
-        self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s))
+        let h = self.level(p, s, 1.0 - smoothstep(0.0, EDGE_FALL, s));
+        self.channel.as_ref().map_or(h, |c| c.shape(p, h))
     }
 
     /// The ground's height at `p` (`s`: the plateau's distance) with `up` of

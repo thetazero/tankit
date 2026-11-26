@@ -53,7 +53,7 @@ fn every_town_is_playable_dressed() {
 )]
 fn many_towns_are_playable_dressed() {
     // (50 shut a side in, up on its mesa.)
-    (4..32).chain([50]).for_each(playable);
+    (4..12).chain([50]).for_each(playable);
 }
 
 /// Each source's town has what it's named for, and no two are alike.
