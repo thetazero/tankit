@@ -813,6 +813,10 @@ mod tests {
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
             (
+                "resonant city",
+                crate::make_map(crate::MapKind::City(crate::map::procgen::Look::Resonant), 0),
+            ),
+            (
                 "shield-city imperium",
                 Map::shield_city(0, crate::faction::Faction::Imperium),
             ),

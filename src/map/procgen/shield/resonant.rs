@@ -294,7 +294,7 @@ impl Map {
     }
 
     /// Outside the wall at angle `a`: a bronze bell hung in a gilt frame.
-    fn bell_frame(&mut self, lm: &Landmark, a: f32, base: f32) {
+    pub(in crate::map::procgen) fn bell_frame(&mut self, lm: &Landmark, a: f32, base: f32) {
         let d = dir(a);
         let side = Vec2::new(-d.y, d.x);
         let p = lm.center + d * (lm.radius + 8.5);
@@ -361,7 +361,13 @@ impl Map {
 
     /// A shrine on the precinct at angle `a`: cut crystals in a cluster, a
     /// tall ivory post over them hung with a blue banner.
-    fn shrine(&mut self, rng: &mut Rng, lm: &Landmark, a: f32, base: f32) {
+    pub(in crate::map::procgen) fn shrine(
+        &mut self,
+        rng: &mut Rng,
+        lm: &Landmark,
+        a: f32,
+        base: f32,
+    ) {
         let d = dir(a);
         let p = lm.center + d * lm.precinct;
         for k in 0..3 {
@@ -375,7 +381,7 @@ impl Map {
                 sides: 6,
                 seed: rng.next_u64() as u32,
                 color: CRYSTAL_LIGHT,
-                lit: k == 0,
+                lit: false,
                 solid: true,
                 raw: false,
             });
