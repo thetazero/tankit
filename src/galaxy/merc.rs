@@ -873,10 +873,6 @@ impl Galaxy {
         // What a hull there's worth over what it costs, for as much as
         // foundries are at work.
         let rent = (self.hull_worth[t] - self.rules.hull_cost).max(0.0) * self.foundry_use;
-            0.0
-        } else {
-            rent
-        };
         let income: f32 = self.sites[a as usize..b as usize]
             .iter()
             .filter(|s| (s.owner as usize == f) == own)
