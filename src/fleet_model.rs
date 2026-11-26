@@ -1,9 +1,11 @@
 //! Each people's warship, as the system view shows their fleets: simple
 //! shapes that read as theirs at a glance. Bow along +x, up +y.
 
-use std::f32::consts::{FRAC_PI_4, TAU};
+mod imperium;
 
-use glam::{Mat4, Quat, Vec3};
+use std::f32::consts::TAU;
+
+use glam::{Quat, Vec3};
 
 use crate::faction::Faction;
 use crate::render::material::Material;
@@ -15,63 +17,12 @@ pub const SCALE: f32 = 0.75;
 
 pub fn mesh(f: Faction) -> MeshData {
     match f {
-        Faction::Imperium => imperium(),
+        Faction::Imperium => imperium::mesh(),
         Faction::Resonant => resonant(),
         Faction::Uthenn => uthenn(),
         Faction::Ithessar => ithessar(),
         Faction::Company => crate::ship_model::mesh(),
     }
-}
-
-/// A crimson basilica: a long nave, a gold dome, a halo over the stern.
-fn imperium() -> MeshData {
-    let mut m = MeshData::default();
-    let red = col([0.42, 0.06, 0.07], Material::Paint);
-    let dark = col([0.2, 0.04, 0.05], Material::Paint);
-    let gold = col([0.85, 0.6, 0.2], Material::Metal);
-    let glow = col([1.0, 0.75, 0.35], Material::Glow);
-    let no = Quat::IDENTITY;
-    block(&mut m, Vec3::ZERO, Vec3::new(20.0, 4.0, 5.0), no, red);
-    block(
-        &mut m,
-        Vec3::new(-1.0, -2.4, 0.0),
-        Vec3::new(16.0, 1.4, 3.4),
-        no,
-        dark,
-    );
-    for z in [-1.0, 1.0] {
-        block(
-            &mut m,
-            Vec3::new(-3.5, -0.4, z * 3.6),
-            Vec3::new(10.0, 2.4, 2.4),
-            no,
-            red,
-        );
-        block(
-            &mut m,
-            Vec3::new(1.0, 1.2, z * 2.55),
-            Vec3::new(15.0, 0.5, 0.2),
-            no,
-            glow,
-        );
-    }
-    let prow = [(6.0, 0.0), (3.0, 1.4), (0.0, 2.6)];
-    lathe(&mut m, Vec3::new(10.0, 0.0, 0.0), &prow, 4, gold);
-    // The dome, stood upright.
-    let mut dome = MeshData::default();
-    let rings: Vec<(f32, f32)> = (0..=8)
-        .map(|i| FRAC_PI_4 * 2.0 * i as f32 / 8.0)
-        .map(|a| (a.cos() * 3.2, a.sin() * 3.0))
-        .collect();
-    lathe(&mut dome, Vec3::ZERO, &rings, 24, gold);
-    let up = Quat::from_rotation_z(FRAC_PI_4 * 2.0);
-    m.append(
-        &dome,
-        Mat4::from_rotation_translation(up, Vec3::new(-2.0, 2.0, 0.0)),
-        gold,
-    );
-    ring(&mut m, Vec3::new(-9.0, 2.0, 0.0), 6.0, 0.6, gold);
-    m
 }
 
 /// A pale reliquary: a thin keel, a pointed arch, plates standing off it
@@ -152,23 +103,6 @@ fn ithessar() -> MeshData {
         .collect();
     lathe(&mut m, Vec3::ZERO, &orb, 24, pink);
     m
-}
-
-/// An upright hoop across the ship at `c`.
-fn ring(m: &mut MeshData, c: Vec3, r: f32, thick: f32, color: glam::Vec4) {
-    let n = 32;
-    for k in 0..n {
-        let a = TAU * k as f32 / n as f32;
-        let at = c + Vec3::new(0.0, a.sin(), a.cos()) * r;
-        let size = Vec3::new(thick, thick, TAU * r / n as f32 * 1.1);
-        block(
-            m,
-            at,
-            size,
-            Quat::from_rotation_x(-a + FRAC_PI_4 * 2.0),
-            color,
-        );
-    }
 }
 
 #[cfg(test)]

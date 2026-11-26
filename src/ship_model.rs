@@ -82,17 +82,17 @@ impl Paints {
 /// A hull section: half width and half height, how high its middle sits,
 /// and how boxy it is (2 an ellipse, higher squarer).
 #[derive(Clone, Copy)]
-struct Section {
-    w: f32,
-    h: f32,
-    y: f32,
-    n: f32,
+pub(crate) struct Section {
+    pub w: f32,
+    pub h: f32,
+    pub y: f32,
+    pub n: f32,
 }
 
 impl Section {
     /// The point `t` of the way round (0 the starboard side, a quarter the
     /// top).
-    fn at(self, x: f32, t: f32) -> Vec3 {
+    pub fn at(self, x: f32, t: f32) -> Vec3 {
         let (s, c) = (TAU * t).sin_cos();
         let e = 2.0 / self.n;
         Vec3::new(
@@ -106,7 +106,7 @@ impl Section {
 /// A smooth-shaded skin through `stations` (x, its section), `around`
 /// quads round, each coloured by `paint(middle, t round, station)`; both
 /// ends capped.
-fn loft(
+pub(crate) fn loft(
     m: &mut MeshData,
     stations: &[(f32, Section)],
     around: usize,
@@ -196,7 +196,7 @@ pub(crate) fn lathe(m: &mut MeshData, c: Vec3, rings: &[(f32, f32)], segs: usize
 }
 
 /// A flat disc facing `dir` (along x, ±1) at `c`, radius `r`.
-fn disc(m: &mut MeshData, c: Vec3, r: f32, dir: f32, segs: usize, color: Vec4) {
+pub(crate) fn disc(m: &mut MeshData, c: Vec3, r: f32, dir: f32, segs: usize, color: Vec4) {
     let inside = c - Vec3::X * dir;
     for k in 0..segs {
         let a0 = TAU * k as f32 / segs as f32;
@@ -216,22 +216,22 @@ pub(crate) fn block(m: &mut MeshData, c: Vec3, size: Vec3, rot: Quat, color: Vec
 }
 
 /// A tiny deterministic random source, so the ship is the same every time.
-struct Rng(u32);
+pub(crate) struct Rng(pub u32);
 
 impl Rng {
-    fn f(&mut self) -> f32 {
+    pub fn f(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 17;
         self.0 ^= self.0 << 5;
         (self.0 >> 8) as f32 / 16_777_216.0
     }
-    fn range(&mut self, lo: f32, hi: f32) -> f32 {
+    pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo) * self.f()
     }
 }
 
 /// `x` eased from 0 at `a` to 1 at `b`.
-fn ease(a: f32, b: f32, x: f32) -> f32 {
+pub(crate) fn ease(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -269,7 +269,7 @@ fn on_hull(x: f32, t: f32) -> (Vec3, Vec3) {
 }
 
 /// A frame standing on the surface at normal `n`, its long side along x.
-fn standing(n: Vec3) -> Quat {
+pub(crate) fn standing(n: Vec3) -> Quat {
     let fwd = (Vec3::X - n * n.dot(Vec3::X)).normalize_or(Vec3::X);
     let side = fwd.cross(n);
     Quat::from_mat3(&Mat3::from_cols(fwd, n, side))
