@@ -431,12 +431,13 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
     cordon(&mut sk, rng, &mouths);
 
     // Repair drops: down each avenue, twice; between the avenues on each
-    // plaza; and, where there are few of those, out among the streets.
+    // plaza; and out among the streets, where nothing's built over them.
     let mut repairs: Vec<Vec2> = sk
         .avenues()
         .flat_map(|a| {
             let (t0, t1) = sk.off_plaza_span(a, 6.0);
-            [0.3, 0.75].map(|f| a.from + a.dir() * (t0 + (t1 - t0) * f))
+            let at = [0.3, 0.75].map(|f| a.from + a.dir() * (t0 + (t1 - t0) * f));
+            at.into_iter().filter(move |_| t1 - t0 > 40.0)
         })
         .collect();
     for lm in &sk.landmarks {
@@ -445,12 +446,18 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         }
     }
     let mut tries = 0;
-    while repairs.len() < 12 && tries < 400 {
+    let want = repairs.len() + 6;
+    while repairs.len() < want && tries < 2000 {
         tries += 1;
         let p = Vec2::new(rng.range(0.1, 0.9), rng.range(0.1, 0.9)) * size;
         let clear = sk.lots.iter().all(|l| l.footprint.distance(p) > 5.5)
             && sk.bases.iter().all(|b| !b.contains(p, 10.0))
-            && repairs.iter().all(|q| q.distance(p) > 40.0);
+            && sk
+                .decos
+                .iter()
+                .all(|d| d.at.distance(p) > d.kind.reach() + 5.0)
+            && sk.off_plazas(p) > 2.0
+            && repairs.iter().all(|q| q.distance(p) > 36.0);
         if clear {
             repairs.push(p);
         }

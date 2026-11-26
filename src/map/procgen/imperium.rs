@@ -587,7 +587,8 @@ impl Map {
             self.oboxes.push(OBox {
                 tilt,
                 roll,
-                solid: s > 1.6,
+                // None that blocks lies in the middle, round the dais.
+                solid: s > 1.6 && d > 17.0,
                 ..rocks::rubble(p, yaw, half, base - 0.3, top, color)
             });
         }
