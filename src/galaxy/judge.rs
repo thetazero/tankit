@@ -109,6 +109,40 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
     );
 }
 
+/// What raids come to.
+fn raids(g: &Galaxy, last: &super::merc::Books) {
+    let b = &g.books;
+    let looks: Vec<u64> = (0..5)
+        .map(|i| b.raid_looks[i] - last.raid_looks[i])
+        .collect();
+    let n = (b.raids - last.raids).max(1) as f64;
+    let mut rich: Vec<f32> = (0..g.systems.len())
+        .map(|s| g.vaults_of(s).iter().map(|v| v.crystals).sum())
+        .collect();
+    rich.sort_by(f32::total_cmp);
+    let at = |q: f32| rich[((rich.len() - 1) as f32 * q) as usize];
+    println!(
+        "         raids: looks nowhere/no crew/can't pay/not worth/went {looks:?}; spent {} late {}; each: there {:.0} expected {:.0} took {:.0} hulls {:.0} lost {:.0} ticks {:.1}; crew quoted {:.0} had {:.0}, foes {:.0} then {:.0}, firing {:.0} then {:.0} | system vaults p50/90/99 {:.0}/{:.0}/{:.0}",
+        b.raid_spent - last.raid_spent,
+        b.raid_late - last.raid_late,
+        (b.raid_there - last.raid_there) / n,
+        (b.raid_expected - last.raid_expected) / n,
+        (b.raided - last.raided) / n,
+        (b.raid_hulls - last.raid_hulls) / n,
+        (b.raid_lost - last.raid_lost) / n,
+        (b.raid_ticks - last.raid_ticks) / n,
+        (b.raid_crew[0] - last.raid_crew[0]) / n,
+        (b.raid_crew[1] - last.raid_crew[1]) / n,
+        (b.raid_foes[0] - last.raid_foes[0]) / n,
+        (b.raid_foes[1] - last.raid_foes[1]) / n,
+        (b.raid_fire[0] - last.raid_fire[0]) / n,
+        (b.raid_fire[1] - last.raid_fire[1]) / n,
+        at(0.5),
+        at(0.9),
+        at(0.99),
+    );
+}
+
 pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
     let mut diffs = Vec::new();
     for &seed in seeds {
@@ -142,6 +176,7 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                 g.tick_once();
                 if g.tick >= at + ticks / 8 {
                     report(&g, &last, was, (g.tick - at) as f64);
+                    raids(&g, &last);
                     (last, was, at) = (g.books, g.destroyed, g.tick);
                 }
             }

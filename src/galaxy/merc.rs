@@ -281,6 +281,23 @@ pub struct Debt {
 pub struct Books {
     /// Raids companies set out on for themselves, those that got all there
     /// was, and what they took.
+    /// Looks for a raid, by what came of them: nowhere rich in range, no
+    /// hulls or crew, can't pay, not worth it; and raids that ended with
+    /// hulls spent or out of time. And what raids expected to take, the
+    /// share of it they thought they'd get, hulls sent and lost, and ticks.
+    pub raid_looks: [u64; 5],
+    /// Crew quoted and had; defenders' hulls when it set out, and as it left,
+    /// and their pilots forecast and firing (first tick).
+    pub raid_crew: [f64; 2],
+    pub raid_foes: [f64; 2],
+    pub raid_fire: [f64; 2],
+    pub raid_spent: u64,
+    pub raid_late: u64,
+    pub raid_there: f64,
+    pub raid_expected: f64,
+    pub raid_hulls: f64,
+    pub raid_lost: f64,
+    pub raid_ticks: f64,
     pub raids: u64,
     pub raids_won: u64,
     pub raided: f64,
@@ -1040,12 +1057,12 @@ impl Galaxy {
             spare0 += more;
         }
         let reinforce = |he: &mut f32, spare: &mut f32, ours: f32| {
-            // Enough to outmatch it, if they can.
-            let against = ours * pf * 1.5;
+            // Attacked, they rush in all they can, unless they've plenty.
+            let against = ours * pf * 3.0;
             if *spare < MIN_SEND as f32 || *he * pe >= against {
                 return;
             }
-            let want = against / pe.max(1e-3) - *he;
+            let want = *spare;
             let more = want.clamp(0.0, *spare);
             *he += more;
             *spare -= more;
@@ -1589,6 +1606,7 @@ impl Galaxy {
     /// the battle maths says what's in its vaults beats what it'd cost: the
     /// flight, the hulls, the crew. Yours doesn't (yet).
     fn raid(&mut self) {
+        self.count_spare();
         if self.pays_tick != self.tick {
             self.pays_tick = self.tick;
             self.tally_pays();
@@ -1623,6 +1641,7 @@ impl Galaxy {
                 .collect();
             seen.sort_by(|a, b| b.0.total_cmp(&a.0));
             let mut best: Option<(f32, Quote, usize, f32, f32, Vec<Offer>)> = None;
+            let mut far = 0;
             for &(_, t) in seen.iter().take(6) {
                 let loot: f32 = self.vaults_of(t).iter().map(|v| v.crystals).sum();
                 let pos = self.systems[t].pos;
@@ -1631,6 +1650,11 @@ impl Galaxy {
                 for size in [30, 80, 200, 400] {
                     let q = self.quote(c, size, &offers, pos, pay, false);
                     if q.hulls < MIN_SEND || q.crew == 0 || q.cost + q.wages >= loot {
+                        far = far.max(if q.hulls < MIN_SEND || q.crew == 0 {
+                            1
+                        } else {
+                            3
+                        });
                         continue;
                     }
                     let (hulls, crew) = (q.hulls as f32, q.crew as f32);
@@ -1639,15 +1663,22 @@ impl Galaxy {
                     // What it brings back is still worth something.
                     let cost = q.cost + q.wages * ticks;
                     if cost > self.companies[c].crystals {
+                        far = far.max(2);
                         continue;
                     }
                     let net = loot * fc.share.powi(2) - cost;
+                    far = far.max(3);
                     if net > 0.0 && best.as_ref().is_none_or(|b| net > b.0) {
                         best = Some((net, q, t, loot * fc.share, fc.ticks, offers.clone()));
                     }
                 }
             }
+            self.books.raid_looks[if best.is_some() { 4 } else { far }] += 1;
             if let Some((_, q, t, expected, expected_ticks, offers)) = best {
+                self.books.raid_there +=
+                    self.vaults_of(t).iter().map(|v| v.crystals).sum::<f32>() as f64;
+                self.books.raid_expected += expected as f64;
+                self.books.raid_hulls += q.hulls as f64;
                 let terms = Terms {
                     t,
                     f: super::RAID,
@@ -1657,7 +1688,17 @@ impl Galaxy {
                     expected,
                     expected_ticks,
                 };
+                let foes: u32 = (0..super::PEOPLES).map(|g| self.systems[t].hulls[g]).sum();
+                let fire: f32 = (0..super::PEOPLES)
+                    .filter(|&g| self.systems[t].hulls[g] > 0)
+                    .map(|g| self.firing(t, g))
+                    .sum();
                 self.sign(q, &offers, &terms);
+                let b = &mut self.books;
+                b.raid_crew[0] += q.crew as f64;
+                b.raid_crew[1] += self.companies[q.company].pilots.len() as f64;
+                b.raid_foes[0] += foes as f64;
+                b.raid_fire[0] += fire as f64;
             }
         }
     }
@@ -1719,6 +1760,16 @@ impl Galaxy {
                 let spent = k.field * 4 < k.committed;
                 if got || spent || self.tick >= k.signed + self.rules.merc_term as u64 {
                     self.books.raids_won += got as u64;
+                    self.books.raid_spent += (!got && spent) as u64;
+                    self.books.raid_late += (!got && !spent) as u64;
+                    for g in 0..super::PEOPLES {
+                        if self.systems[t].hulls[g] > 0 {
+                            self.books.raid_foes[1] += self.systems[t].hulls[g] as f64;
+                            self.books.raid_fire[1] += self.firing(t, g) as f64;
+                        }
+                    }
+                    self.books.raid_lost += k.lost as f64;
+                    self.books.raid_ticks += (self.tick - k.signed) as f64;
                     self.leave(c, k);
                 } else {
                     self.companies[c].contract = Some(k);

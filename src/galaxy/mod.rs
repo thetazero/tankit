@@ -1685,8 +1685,8 @@ impl Galaxy {
         }
     }
 
-    /// Every realm decides where to send its hulls.
-    fn send(&mut self) {
+    /// What each side can spare where: hulls beyond what it keeps home.
+    pub(crate) fn count_spare(&mut self) {
         let n = self.systems.len();
         // What each side can spare where: hulls beyond what it keeps home.
         for s in 0..n {
@@ -1708,6 +1708,12 @@ impl Galaxy {
                 *x = x.saturating_sub(k.field);
             }
         }
+    }
+
+    /// Every realm decides where to send its hulls.
+    fn send(&mut self) {
+        let n = self.systems.len();
+        self.count_spare();
         // A different people moves first each tick, starting at a different
         // system, so nobody always gets first pick.
         let mut order = [0, 1, 2, 3];
