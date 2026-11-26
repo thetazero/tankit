@@ -228,7 +228,7 @@ pub fn deploy_hired(g: &mut Galaxy, m: &mut Match, defend: bool) -> Option<Battl
             let k = c.contract?;
             g.muster_at(k.target as usize, &m.factions, None, Some(c.id))
         })
-        .filter(|b| b.mercs(0) >= 1)
+        .filter(|b| b.mercs(0) >= 1 && b.allocation.iter().all(|&h| h >= 1))
         .max_by_key(|b| b.merc_seats(0, seats))?;
     g.crew = b.crew;
     Some(begin(g, m, b))
@@ -274,10 +274,7 @@ pub(super) fn begin(g: &Galaxy, m: &mut Match, mut b: Battle) -> Battle {
 /// realm's tier.
 fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
     let s = b.system;
-    let tier = |f: usize| match g.systems[s].realms[f] {
-        super::realm::NONE => 0,
-        r => g.realms[r as usize].tier,
-    };
+    let tier = |f: usize| g.tier_at(s, f);
     b.pilots.clear();
     for team in 0..b.sides.len() {
         let f = b.sides[team];
@@ -968,6 +965,46 @@ mod tests {
         g.sites[i].kind = SiteKind::Shield { damaged: true };
         g.step();
         assert_eq!(g.sites[i].kind, SiteKind::Shield { damaged: false });
+    }
+
+    /// A raid's battles play (#546), whichever side you're on: the raiders'
+    /// tanks are all the company's.
+    #[test]
+    fn a_raid_can_be_played() {
+        let mut g = galaxy();
+        let (s, e) = loop {
+            g.step();
+            let raid = (0..g.companies.len()).find_map(|c| {
+                let k = g.companies[c].contract?;
+                let s = k.target as usize;
+                let e = (0..SIDES).find(|&e| e != super::super::RAID && g.systems[s].hulls[e] > 5);
+                (k.side as usize == super::super::RAID && k.field > 5)
+                    .then_some((s, e?))
+                    .filter(|_| !g.companies[c].pilots.is_empty())
+            });
+            if let Some(x) = raid {
+                break x;
+            }
+            assert!(g.tick < 5000, "no raid");
+        };
+        for raider in [0, 1] {
+            let mut map = crate::map::Map::kiln();
+            map.factions = vec![Faction::side(e); 2];
+            map.factions[raider] = Faction::Company;
+            let mut m = Match::new(map, 0, 7, 1);
+            let b = g.muster_at(s, &m.factions, None, None).unwrap();
+            let b = begin(&g, &mut m, b);
+            m.start();
+            assert_eq!(b.allocation[raider], b.mercs(raider));
+            for i in (0..m.fighters.len()).filter(|&i| m.fighters[i].team == raider) {
+                assert!(m.world.tanks[i].company || m.world.tanks[i].empty);
+            }
+            for _ in 0..120 {
+                m.step(crate::sim::Command::default(), false);
+            }
+            m.time_left = 0.0;
+            g.settle(&Played::of(&b, &m));
+        }
     }
 }
 

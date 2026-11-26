@@ -25,6 +25,7 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
 use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, planet_name};
+use crate::galaxy::{RAID, SIDES};
 use crate::menu::Hit;
 use crate::planet;
 use crate::render::mesh::{Instance, MeshData, MeshId};
@@ -138,8 +139,8 @@ pub struct SystemArt {
     worlds: [MeshId; MAX_PLANETS],
     shown: [Option<(u64, planet::Look)>; MAX_PLANETS],
     ship: MeshId,
-    /// Each people's warship.
-    fleet: [MeshId; 4],
+    /// Each people's warship, and a raiding company's ship.
+    fleet: [MeshId; SIDES],
     /// A smooth ball, for the star.
     ball: MeshId,
 }
@@ -238,6 +239,8 @@ fn fleets(art: &SystemArt, t: &Theater, l: &Layout, time: f32, s: &mut Scene) {
             at + Vec3::X * 44.0 * side as f32
         };
         let n = match t.hulls[f] {
+            // A raiding company's a single ship, and yours is there already.
+            _ if f == RAID => !yours as usize,
             0..=9 => 1,
             10..=39 => 2,
             40..=149 => 3,
@@ -935,11 +938,11 @@ fn jump_scene(art: &SystemArt, u: f32, time: f32) -> Scene {
 fn holders(t: &Theater) -> Vec<usize> {
     (0..(t.planets as usize).max(1))
         .map(|pl| {
-            let mut held = [0usize; 4];
+            let mut held = [0usize; SIDES];
             for s in t.sites.iter().filter(|s| s.planet as usize == pl) {
                 held[s.owner] += 1;
             }
-            (0..4).max_by_key(|&f| held[f]).unwrap_or(0)
+            (0..SIDES).max_by_key(|&f| held[f]).unwrap_or(0)
         })
         .collect()
 }
@@ -1043,7 +1046,7 @@ pub fn draw(
         // when more than one side's is up (each keeps the others out).
         let shield = shield_state(&sites);
         if let Shield::Up(up) = shield {
-            for (k, f) in (0..4).filter(|&f| up[f]).enumerate() {
+            for (k, f) in (0..SIDES).filter(|&f| up[f]).enumerate() {
                 hex_shield(p, c, r + 10.0 - 5.0 * k as f32, Faction::side(f).ui());
             }
         }
@@ -1134,9 +1137,13 @@ fn forces(p: &mut Painter, t: &Theater, min: Vec2, max: Vec2) {
         // Yours is counted at the left end, theirs at the right.
         let mut at = Vec2::new(start, min.y);
         if k == 0 {
-            at.x += crate::ui::emblem::tagged(p, at, side, &own.to_string(), &style, Align::Left);
-            if mercs > 0 {
+            // Raiders are all mercs.
+            if f != RAID {
+                let n = own.to_string();
+                at.x += crate::ui::emblem::tagged(p, at, side, &n, &style, Align::Left);
                 at.x += design::UNIT * 2.0;
+            }
+            if mercs > 0 {
                 let amber = design::BODY.colored(design::AMBER);
                 let n = mercs.to_string();
                 crate::ui::emblem::tagged(p, at, Faction::Company, &n, &amber, Align::Left);
@@ -1150,9 +1157,9 @@ fn forces(p: &mut Painter, t: &Theater, min: Vec2, max: Vec2) {
     }
 }
 
-/// What a contract's for, in caps: to hold the system, or to take it.
+/// What a contract's for, in caps.
 fn job(ship: &Ship) -> &'static str {
-    if ship.defend { "HOLD" } else { "TAKE" }
+    crate::galaxy::theater::job(ship.side, ship.defend)
 }
 
 /// What a transfer's caption leads with, `leg` of it toward `t`: the
@@ -1200,8 +1207,9 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
             .map_or(th.name.clone(), |s| planet_name(&th.name, s.over))
     };
     let employer = |th: &Theater| {
-        th.ship.as_ref().map_or(String::new(), |s| {
-            format!("{} OF {}", Faction::side(s.side).name(), s.realm)
+        th.ship.as_ref().map_or(String::new(), |s| match s.side {
+            RAID => format!("THE {}", s.name),
+            f => format!("{} OF {}", Faction::side(f).name(), s.realm),
         })
     };
     let ship_name = |th: &Theater| {
@@ -1245,10 +1253,16 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
         p.text(
             Vec2::new(min.x + 24.0, min.y + 68.0),
             &format!(
-                "{aboard}HIRED BY THE {} OF {} TO {} {} · UP TO {} BATTLES",
-                realm.name(),
-                ship.realm,
-                job(ship),
+                "{aboard}{} {} · UP TO {} BATTLES",
+                match ship.side {
+                    RAID => job(ship).to_string(),
+                    _ => format!(
+                        "HIRED BY THE {} OF {} TO {}",
+                        realm.name(),
+                        ship.realm,
+                        job(ship)
+                    ),
+                },
                 t.name,
                 ship.ticks_left
             ),
@@ -1296,6 +1310,8 @@ pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
         "CONTRACT FAILED"
     };
     let how = match e.outcome {
+        Outcome::Won if e.loot.is_some() => format!("{} PLUNDERED", from.name),
+        Outcome::Spent if e.loot.is_some() => "DRIVEN OFF".to_string(),
         Outcome::Won if e.defend => format!("{world} HELD"),
         Outcome::Won => format!("{} TAKEN", from.name),
         Outcome::Fell => format!("{world} FELL"),
@@ -1344,6 +1360,9 @@ pub fn summary(
     if e.own.of > 0 {
         let gone = e.own.of - e.own.left.min(e.own.of);
         facts.push(("Yours lost", format!("{gone} / {}", e.own.of)));
+    }
+    if let Some(cr) = e.loot {
+        facts.push(("Company took", format!("{cr} cr")));
     }
     let pitch = UNIT * 24.0;
     let n = facts.len() as f32;
@@ -1431,12 +1450,12 @@ enum Shield {
     /// Every generator on it is damaged.
     Down,
     /// A generator on it works: which sides hold a working one.
-    Up([bool; 4]),
+    Up([bool; SIDES]),
 }
 
 /// The shields of a world with these `sites`.
 fn shield_state(sites: &[(usize, &SiteView)]) -> Shield {
-    let mut up = [0usize; 4];
+    let mut up = [0usize; SIDES];
     let mut any = false;
     for (_, s) in sites.iter().filter(|(_, s)| s.is_shield()) {
         any = true;

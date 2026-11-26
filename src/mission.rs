@@ -109,7 +109,7 @@ pub const MISSIONS: &[Mission] = &[
         name: "DEEP VEIN",
         contract: Contract::Attrition,
         map: "CRYSTAL MINE",
-        map_kind: MapKind::Mine,
+        map_kind: MapKind::Mine(Look::Ithessar),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Resonant],
@@ -118,7 +118,7 @@ pub const MISSIONS: &[Mission] = &[
         name: "STOLEN FLAG",
         contract: Contract::Raid,
         map: "CRYSTAL MINE",
-        map_kind: MapKind::Mine,
+        map_kind: MapKind::Mine(Look::Ithessar),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Ithessar, Faction::Resonant],
@@ -239,7 +239,7 @@ pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
     let mut pool = for_sites(class);
     pool.retain(|&i| !matches!(MISSIONS[i].map_kind, MapKind::Foundry(..)));
     if class == crate::galaxy::theater::Class::Desert {
-        pool.retain(|&i| MISSIONS[i].map_kind == MapKind::Mine);
+        pool.retain(|&i| matches!(MISSIONS[i].map_kind, MapKind::Mine(_)));
     }
     pool
 }
@@ -248,7 +248,12 @@ pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
 /// those on none of the maps production sites are fought on.
 pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
     let mut pool = for_sites(class);
-    pool.retain(|&i| !matches!(MISSIONS[i].map_kind, MapKind::Foundry(..) | MapKind::Mine));
+    pool.retain(|&i| {
+        !matches!(
+            MISSIONS[i].map_kind,
+            MapKind::Foundry(..) | MapKind::Mine(_)
+        )
+    });
     pool
 }
 
@@ -332,6 +337,12 @@ mod tests {
             .filter(|m| m.contract == Contract::Raid)
             .map(|m| m.map_kind)
             .collect();
-        assert_eq!(raids, [MapKind::Mine, MapKind::Depot(Look::Imperium)]);
+        assert_eq!(
+            raids,
+            [
+                MapKind::Mine(Look::Ithessar),
+                MapKind::Depot(Look::Imperium)
+            ]
+        );
     }
 }

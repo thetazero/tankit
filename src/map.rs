@@ -750,7 +750,7 @@ impl Map {
     }
 }
 
-/// A beam of plasma held on from `from` to `to` (where it strikes), `radius`
+/// A borer's beam (plasma, fire or light) held on from `from` to `to` (where it strikes), `radius`
 /// thick: drawn and animated with the effects; a tank that touches it is
 /// destroyed (see `combat`), and bots keep clear of it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -758,6 +758,9 @@ pub struct Beam {
     pub from: Vec3,
     pub to: Vec3,
     pub radius: f32,
+    /// Its light, and its hottest.
+    pub color: Vec3,
+    pub hot: Vec3,
 }
 
 impl Beam {

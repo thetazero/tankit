@@ -32,7 +32,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::Foundry(..) | MapKind::Depot(_) => &[],
         // Generated: each mine picks its own (the Face, the adit's mouth
         // and the bridge out of it, from either side of the bridge's end).
-        MapKind::Mine => &[],
+        MapKind::Mine(_) => &[],
         // Generated: each desert picks its own (by each side's spawns,
         // looking at the Needles).
         MapKind::Desert | MapKind::Reservoir | MapKind::ShieldDesert(_) => &[],
@@ -232,13 +232,13 @@ mod tests {
             ),
             (MapKind::Depot(crate::map::procgen::Look::Imperium), 0),
             (MapKind::Depot(crate::map::procgen::Look::Ithessar), 1),
-            (MapKind::Mine, 0),
+            (MapKind::Mine(crate::map::procgen::Look::Ithessar), 0),
             (MapKind::Desert, 0),
             (MapKind::Desert, 1),
         ]
         .into_iter()
         // (The mine is slow to build unoptimized: `cargo test --release`.)
-        .filter(|&(kind, _)| !cfg!(debug_assertions) || kind != MapKind::Mine)
+        .filter(|&(kind, _)| !cfg!(debug_assertions) || !matches!(kind, MapKind::Mine(_)))
         {
             let world = World::new(make_map(kind, seed), 0);
             let sun = world.map.atmosphere.sun_dir.normalize();

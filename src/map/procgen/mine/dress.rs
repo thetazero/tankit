@@ -142,13 +142,13 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
             st.base(&mut b, k, p, &mut rng);
         }
     }
-    sounds(&mut map, &sk);
+    sounds(&mut map, &sk, st);
     settle(&mut map, &sk);
     Some((sk, map))
 }
 
 /// What sounds: lit crystal, the borers, the train, the wash under a bridge.
-fn sounds(map: &mut Map, sk: &Skeleton) {
+fn sounds(map: &mut Map, sk: &Skeleton, st: &dyn MineStyle) {
     let lit: Vec<Vec3> = map
         .crystals
         .iter()
@@ -160,7 +160,7 @@ fn sounds(map: &mut Map, sk: &Skeleton) {
     }
     for d in &sk.land.digs {
         let Some((from, to)) = d.beam else { continue };
-        for (kind, p) in [(Ambient::Machine, from), (Ambient::Core, to)] {
+        for (kind, p) in [(Ambient::Machine, from), (st.strike_sound(), to)] {
             let p = d.to_map(p);
             map.sound(kind, Vec3::new(p.x, d.floor + 2.5, p.y));
         }
@@ -445,7 +445,8 @@ mod tests {
     #[test]
     fn dressed_mines_are_playable() {
         for seed in 0..2 {
-            let (sk, m) = build(&crate::mine_spec(seed)).expect("a mine");
+            let (sk, m) = build(&crate::mine_spec(seed, crate::map::procgen::Look::Ithessar))
+                .expect("a mine");
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
                 panic!("seed {seed}: {why}");

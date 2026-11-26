@@ -84,8 +84,9 @@ short of crystal owes the rest.
 **Raids.** Companies are amoral. One with no work looks for a rich world too
 weakly held, takes it planet by planet, empties the vaults, and leaves; the
 world goes back to whoever held it. A planet's vault falls only with the whole
-planet. So a realm that piles up crystal has to keep an army to guard it, or
-spend it.
+planet. The board lists a raid as a job to **plunder** the world; it pays its
+pilots like any other, and the loot is the company's. So a realm that piles up
+crystal has to keep an army to guard it, or spend it.
 
 **Pilots** go where the pay is. Realms train them and pay them; companies bid
 them away.
@@ -296,6 +297,13 @@ out of the adit's mouth over the wash: their combat machines float, but their
 ore still goes by rail. The Resonant call the seam holy, and have dug their
 own way into the rock from the east to take it back. (The first of them,
 the Seam, was the one hand-built mine; the generated ones are its kind.)
+
+The others' mines are the same ground, worked their own way: a site's mine is
+in its founder's style. The Imperium cuts with a thermal lance on a crawler,
+by caged amber lamps, and hauls behind a crimson diesel. The Resonant bring a
+reliquary whose choir of pipes sings the rock apart in crystal light, and haul
+in chapels on wheels. The Uthenn hold a Lumen's beam on it out of a stack of
+cubes. Whoever's it is, driving into the beam destroys you.
 
 **The hull foundries:** where machines are made, on the ground they'll be
 fought over. Furnace halls, mills, casting sheds and a power house on rolling ground, roads

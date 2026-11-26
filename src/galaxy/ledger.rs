@@ -157,10 +157,7 @@ impl Setup {
     pub fn of(g: &Galaxy, b: &Battle, m: &Match) -> Setup {
         let s = b.system;
         let holder = b.site.map(|i| g.sites[i].owner as usize);
-        let tier = |f: usize| match g.systems[s].realms[f] {
-            super::realm::NONE => 0,
-            r => g.realms[r as usize].tier,
-        };
+        let tier = |f: usize| g.tier_at(s, f);
         let sides = (0..b.sides.len())
             .map(|team| {
                 let f = b.sides[team];
