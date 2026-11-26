@@ -165,6 +165,20 @@ impl NavGrid {
                 );
             }
         }
+        // A plasma river's bed (its bridges are floors over it).
+        if !map.rivers.is_empty() {
+            for i in 0..n * n {
+                let c = nav.center(i);
+                let Some(y) = map.rivers.iter().find_map(|r| r.surface(c, 2.5)) else {
+                    continue;
+                };
+                for l in 0..LEVELS {
+                    if nav.floor[i][l] < y + 1.0 {
+                        nav.blocked[i][l] = true;
+                    }
+                }
+            }
+        }
         // Floors too steep to drive up (cliffs, steep banks, a deck's edge).
         for i in 0..n * n {
             let c = nav.center(i);
