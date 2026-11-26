@@ -1340,9 +1340,10 @@ impl Renderer {
         MeshId(self.meshes.len() as u32 - 1)
     }
 
-    /// Replace a registered mesh's geometry.
-    pub fn replace_mesh(&mut self, id: MeshId, mesh: &MeshData) {
-        self.meshes[id.0 as usize] = GpuMesh::new(&self.device, mesh, "mesh");
+    /// Replace a registered mesh with one whose detail is in its vertex
+    /// colors: drawn in full however far off (coarser copies would smear the paint).
+    pub fn replace_painted(&mut self, id: MeshId, mesh: &MeshData) {
+        self.meshes[id.0 as usize] = GpuMesh::plain(&self.device, mesh, "painted");
     }
 
     /// Upload world geometry that never moves (drawn with an identity transform).

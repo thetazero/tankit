@@ -11,6 +11,7 @@ mod cluster_view;
 mod combat;
 mod economy;
 mod faction;
+mod fleet_model;
 mod fx;
 mod galaxy;
 mod game;

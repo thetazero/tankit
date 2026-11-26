@@ -16,7 +16,7 @@ use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::cluster_view::{self, Cluster};
 use crate::faction::Faction;
 use crate::galaxy::theater::{
-    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name,
+    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, planet_name, ship_name,
 };
 use crate::garage::{self, PANEL_W, PANEL_X};
 use crate::mission::MISSIONS;
@@ -879,7 +879,7 @@ impl Menu {
         match self.system() {
             Some(t) => {
                 crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
-                self.draw_system(&mut p, &mut hits, profile, w, h);
+                self.draw_system(&mut p, &mut hits, w, h);
                 return Layer {
                     verts: fade(p.finish(), alpha),
                     hits,
@@ -1042,14 +1042,7 @@ impl Menu {
     }
 
     /// The contract page: the system with its marks, and the panel over it.
-    fn draw_system(
-        &self,
-        p: &mut Painter,
-        hits: &mut Hits<Hit>,
-        profile: &Profile,
-        w: f32,
-        h: f32,
-    ) {
+    fn draw_system(&self, p: &mut Painter, hits: &mut Hits<Hit>, w: f32, h: f32) {
         use crate::theater_view;
         // The contract that ended, over the theater it was in (#414): its
         // card's CONTINUE goes on.
@@ -1069,7 +1062,7 @@ impl Menu {
         // Nothing to pick while a contract ends or you're on the move.
         let live = self.card.is_none() && self.transfer.is_none();
         match shown {
-            Some(t) => self.draw_job(p, hits, profile, t, live, h),
+            Some(t) => self.draw_job(p, hits, t, live, h),
             None => {
                 let at = Vec2::splat(design::MARGIN);
                 p.text(at, "No work", &design::HEAD, Align::Left);
@@ -1080,72 +1073,66 @@ impl Menu {
         hits.add(p, min, size, Hit::Back);
     }
 
-    /// The contract page's panel: the job and who it's for, its fights to
-    /// pick from, and (while there's a pick to make: `live`) the one picked
-    /// and DEPLOY.
-    fn draw_job(
-        &self,
-        p: &mut Painter,
-        hits: &mut Hits<Hit>,
-        profile: &Profile,
-        t: &Theater,
-        live: bool,
-        h: f32,
-    ) {
+    /// The contract page's panel: the system, and (while there's a pick to
+    /// make: `live`) its fights to pick from, the stakes and DEPLOY. Whose
+    /// side you're on is in the picture: whose fleet you fly with, or whose
+    /// world you're on.
+    fn draw_job(&self, p: &mut Painter, hits: &mut Hits<Hit>, t: &Theater, live: bool, h: f32) {
         use design::{BLUE, BODY, HEAD, SMALL, TEXT, TEXT_2, UNIT};
         let x = design::MARGIN;
         let right = x + design::COLUMN;
         let mut y = design::MARGIN;
 
-        // The job, who it's for, and what you've got to do it with.
-        let job = match &t.ship {
-            Some(s) if s.defend => "Hold",
-            _ => "Take",
-        };
-        p.text(Vec2::new(x, y), job, &HEAD, Align::Left);
-        y += UNIT * 3.5;
         p.text(Vec2::new(x, y), &t.name, &HEAD, Align::Left);
-        y += UNIT * 4.0;
-        let employer = Faction::side(t.employer);
-        let style = BODY.colored(employer.ui());
-        let at = Vec2::new(x, y);
-        emblem::tagged(p, at, employer, employer.name(), &style, Align::Left);
-        if let Some(ship) = &t.ship {
-            y += UNIT * 4.0;
-            let yours = ship.own.left.min(ship.committed);
-            let crew = format!("{} hulls", ship.committed);
-            let at = Vec2::new(x, y);
-            p.text(at, &crew, &SMALL.colored(TEXT_2), Align::Left);
-            let mine = format!("{yours} yours");
-            let style = SMALL.colored(design::AMBER);
-            p.text(Vec2::new(right, y), &mine, &style, Align::Right);
-        }
         if !live {
             return;
         }
 
-        // The fights.
+        // The fights, world by world.
         y += UNIT * 7.0;
-        let fights = (0..t.contested.len()).filter(|&k| t.sites[t.contested[k]].committed);
-        let mut any = false;
-        for k in fights {
-            any = true;
-            let s = &t.sites[t.contested[k]];
+        let fights: Vec<usize> = (0..t.contested.len())
+            .filter(|&k| t.sites[t.contested[k]].committed)
+            .collect();
+        let any = !fights.is_empty();
+        let site = |k: usize| &t.sites[t.contested[k]];
+        let mut world = None;
+        for &k in &fights {
+            let s = site(k);
+            if world != Some(s.planet) {
+                if world.is_some() {
+                    y += UNIT * 1.5;
+                }
+                world = Some(s.planet);
+                let name = planet_name(&t.name, s.planet);
+                p.text(Vec2::new(x, y), &name, &SMALL.colored(TEXT_2), Align::Left);
+                y += UNIT * 3.0;
+            }
+            // Lettered, where a world has several of a kind.
+            let alike: Vec<usize> = fights
+                .iter()
+                .copied()
+                .filter(|&j| site(j).planet == s.planet && site(j).short_name() == s.short_name())
+                .collect();
+            let name = match alike.iter().position(|&j| j == k) {
+                Some(n) if alike.len() > 1 => {
+                    format!("{} {}", s.short_name(), (b'A' + n as u8) as char)
+                }
+                _ => s.short_name().to_string(),
+            };
             let on = k == self.site;
             let style = BODY.colored(if on { design::AMBER } else { TEXT });
-            let name = format!("{} {}", numeral(s.planet), s.short_name());
             p.text(Vec2::new(x, y), &name, &style, Align::Left);
-            let enemy = Faction::side(s.enemy);
-            let at = Vec2::new(right - 7.0, y + BODY.size * 0.5);
-            emblem::emblem(p, enemy, at, 14.0, 1.2, enemy.ui());
-            let pad = (UNIT * 4.0 - BODY.size) * 0.5;
+            let mode = MISSIONS[s.mission].contract.name();
+            let at = Vec2::new(right, y + (BODY.size - SMALL.size) * 0.5);
+            p.text(at, mode, &SMALL.colored(TEXT_2), Align::Right);
+            let pad = (UNIT * 3.5 - BODY.size) * 0.5;
             hits.add(
                 p,
                 Vec2::new(x - UNIT * 2.0, y - pad),
-                Vec2::new(design::COLUMN + UNIT * 4.0, UNIT * 4.0),
+                Vec2::new(design::COLUMN + UNIT * 4.0, UNIT * 3.5),
                 Hit::Row(k),
             );
-            y += UNIT * 4.0;
+            y += UNIT * 3.5;
         }
         let picked = self.selected_site().filter(|s| s.committed);
         let Some(site) = picked.filter(|_| any) else {
@@ -1154,15 +1141,10 @@ impl Menu {
             return;
         };
 
-        // The one picked, up from the foot.
+        // What you're up against, what a win pays, and what you've got left.
         let deploy = h - design::MARGIN - UNIT * 10.0;
-        let enemy = Faction::side(site.enemy);
-        let unknown: Vec<_> = crate::economy::PARTS
-            .into_iter()
-            .filter(|&part| part.maker() == enemy && !profile.owns(part))
-            .collect();
         let row = UNIT * 3.0;
-        let mut y = deploy - UNIT * 4.0 - row * (3 + unknown.len()) as f32;
+        let mut y = deploy - UNIT * 2.0 - row * 3.0;
         let mut line = |p: &mut Painter, name: &str, value: &str, color| {
             let at = Vec2::new(x, y);
             p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
@@ -1171,17 +1153,12 @@ impl Menu {
             y += row;
         };
         let tier = t.tiers[site.enemy];
-        let mode = MISSIONS[site.mission].contract.name();
         let gear = crate::economy::level_label(tier);
         let pay = format!("{} cr", crate::economy::win_pay(tier));
-        line(p, mode, enemy.name(), enemy.ui());
-        line(p, "Their gear", &gear, TEXT);
+        let own = t.ship.as_ref().map_or(0, |s| s.own.left.min(s.committed));
+        line(p, "Enemy gear", &gear, TEXT);
         line(p, "Win", &pay, BLUE);
-        // What wrecking them would teach you (#438, #457).
-        for part in unknown {
-            let pct = (profile.known.of(part) * 100.0).min(99.0) as u32;
-            line(p, part.name(), &format!("{pct}%"), TEXT);
-        }
+        line(p, "Your hulls", &own.to_string(), design::AMBER);
         let (min, size) = design::action(p, Vec2::new(x, deploy), "Deploy", true);
         hits.add(p, min, size, Hit::Deploy);
     }
