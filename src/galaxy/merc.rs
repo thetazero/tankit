@@ -1646,14 +1646,13 @@ impl Galaxy {
         let pay = self.pay;
         // Worlds by what's in their vaults for their defenders, as far as
         // one can see.
-        let mut rich: Vec<(f32, usize)> = (0..self.systems.len())
+        let rich: Vec<(f32, usize)> = (0..self.systems.len())
             .filter_map(|s| {
                 let x: f32 = self.vaults_of(s).iter().map(|v| v.crystals).sum();
                 let h: u32 = self.systems[s].hulls.iter().sum();
-                (x > 5.0).then_some((x / (50.0 + h as f32), s))
+                (x > 5.0).then_some((x * 200.0 / (200.0 + h as f32), s))
             })
             .collect();
-        rich.sort_by(|a, b| b.0.total_cmp(&a.0));
         for c in 0..self.companies.len() {
             let co = &self.companies[c];
             if co.contract.is_some()
@@ -1664,18 +1663,28 @@ impl Galaxy {
                 continue;
             }
             let here = self.systems[co.at as usize].pos;
-            // The richest few in range.
-            let seen: Vec<(f32, usize)> = rich
+            // The best few in range, for what's there less the flight.
+            let load = self.voyage(200, FTL_RANGE) / FTL_RANGE;
+            let mut seen: Vec<(f32, usize)> = rich
                 .iter()
-                .copied()
-                .filter(|&(_, s)| {
+                .filter(|&&(_, s)| {
                     let sys = &self.systems[s];
-                    sys.pos.distance_squared(here) <= self.rules.merc_range.powi(2)
-                        && sys.hulls[super::RAID] == 0
-                        && sys.held[super::RAID] == 0
+                    sys.hulls[super::RAID] == 0 && sys.held[super::RAID] == 0
                 })
-                .take(5)
+                .filter_map(|&(x, s)| {
+                    let d = self.systems[s].pos.distance_squared(here);
+                    if d > self.rules.merc_range.powi(2) {
+                        return None;
+                    }
+                    let net = x - load * d.sqrt();
+                    (net > 0.0).then_some((net, s))
+                })
                 .collect();
+            let n = seen.len().min(6);
+            if n < seen.len() {
+                seen.select_nth_unstable_by(n, |a, b| b.0.total_cmp(&a.0));
+                seen.truncate(n);
+            }
             let mut best: Option<(f32, Quote, usize, f32, f32, Vec<Offer>)> = None;
             let mut far = 0;
             for &(_, t) in &seen {
