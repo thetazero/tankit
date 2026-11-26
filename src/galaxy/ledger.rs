@@ -231,7 +231,8 @@ impl Setup {
             system_name: super::battle::system_name(s),
             site: b.site,
             site_kind: b.site.map(|i| match g.sites[i].kind {
-                SiteKind::Production { .. } => "production".into(),
+                SiteKind::Foundry { .. } => "foundry".into(),
+                SiteKind::Mine { .. } => "mine".into(),
                 SiteKind::Shield { damaged: false } => "shield".into(),
                 SiteKind::Shield { damaged: true } => "shield (damaged)".into(),
                 SiteKind::Outpost => "outpost".into(),

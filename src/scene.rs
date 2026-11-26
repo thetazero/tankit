@@ -429,6 +429,13 @@ fn decal_tri(map: &Map, m: &mut MeshData, p: [Vec2; 3], c: Vec4) {
     );
 }
 
+/// How dark a bed of rock is at a point of it: beds a few meters thick,
+/// warped a little as they run.
+fn strata(v: Vec3) -> f32 {
+    let y = v.y + 0.8 * (v.x * 0.05).sin() + 0.8 * (v.z * 0.043).cos();
+    [1.0, 1.12, 0.84, 1.06, 0.92][(y / 2.6).floor().rem_euclid(5.0) as usize]
+}
+
 /// A solid's surface, colored as `t`'s ground is.
 fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
     let base = m.verts.len() as u32;
@@ -460,7 +467,7 @@ fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
             m.verts.push(Vertex {
                 pos: s.verts[*k as usize].to_array(),
                 normal: s.normals[*k as usize].to_array(),
-                color: (s.rock * if under { 0.7 } else { 1.0 })
+                color: (s.rock * if under { 0.7 } else { 1.0 } * strata(s.verts[*k as usize]))
                     .extend(Material::Cliff.id())
                     .to_array(),
             });

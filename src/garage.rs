@@ -28,11 +28,9 @@ use crate::render::{Camera, UiVertex};
 use crate::sim::{Chassis, HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::thumbs::Thumbs;
 use crate::ui::emblem;
-use crate::ui::{Align, Hits, Layer, Painter, TextStyle, design, measure, theme, with_alpha};
+use crate::ui::{Align, Hits, Layer, Painter, TextStyle, design, measure, with_alpha};
 
 const REF_HEIGHT: f32 = 900.0;
-pub const PANEL_X: f32 = 64.0;
-pub const PANEL_W: f32 = 340.0;
 /// The tabs, and the list's viewport under them.
 const TABS_TOP: f32 = design::UNIT * 11.0;
 const TAB_H: f32 = design::UNIT * 4.0;
@@ -996,25 +994,6 @@ fn actions(part: Part, queued: Loadout, profile: &Profile) -> Vec<(String, Optio
 pub fn front_angle(tank: &Tank) -> f32 {
     let f = tank.forward();
     f.x.atan2(f.z) + 0.65
-}
-
-/// Dark backdrop behind the left-hand panel, so the hairlines read over a bright city.
-pub fn backdrop(p: &mut Painter, h: f32) {
-    backdrop_fading(p, h, 260.0);
-}
-
-/// `backdrop`, fading out over `fade` logical px: short over dark space,
-/// where there's no bright scene to read the panel against.
-pub fn backdrop_fading(p: &mut Painter, h: f32, fade: f32) {
-    let shade = theme::PANEL;
-    let solid = PANEL_X + PANEL_W + 40.0;
-    p.gradient_h(Vec2::ZERO, Vec2::new(solid, h), shade, shade);
-    p.gradient_h(
-        Vec2::new(solid, 0.0),
-        Vec2::new(fade, h),
-        shade,
-        [0.0, 0.0, 0.0, 0.0],
-    );
 }
 
 /// The room a stat's unit takes.

@@ -1,7 +1,7 @@
 //! Dressing a mine's skeleton (see `plan`): the outside as a desert is, in
 //! red rock, and what stands in each dig, placed in the dig's own frame.
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
@@ -78,6 +78,47 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
         st,
         inside: false,
     };
+    let rocks = b.seam(&mut rng);
+    for (p, h) in rocks {
+        b.rock_at(p, h);
+    }
+    if let Some((p, yaw)) = sk.wash_rig {
+        let g = b.ground_height(p.x, p.y);
+        b.cutting_rig(p, yaw, g);
+    }
+    for d in &sk.land.digs {
+        // A headframe over the hall, on the top.
+        let hall = d.rooms[2];
+        let p = d.to_map(Vec2::new(
+            hall.min.x + (hall.max.x - hall.min.x) * 0.75,
+            hall.min.y + 2.0,
+        ));
+        if sk.land.tower_distance(p) > 8.0 && !sk.keep_clear(p) {
+            b.headframe(p);
+        }
+        // Raw crystal at the cliff's foot between its ways in.
+        for x in [0.3, 0.62] {
+            let far = (d.rooms[1].min.x + d.rooms[1].max.x) * 0.5;
+            let p = d.to_map(Vec2::new(far * x, -4.0));
+            if !sk.keep_clear(p) {
+                b.outcrop(&mut rng, p, rng_height(x));
+            }
+        }
+    }
+    for t in &sk.land.towers {
+        for k in 0..7 {
+            let a = t.phase + k as f32 * TAU / 7.0;
+            let out = Vec2::from_angle(a);
+            let mut r = t.radius * 0.7;
+            while t.sdf(t.center + out * r) < 0.5 {
+                r += 0.5;
+            }
+            let p = t.center + out * (r + 1.5);
+            if sk.land.plateau(p) < -6.0 && !sk.keep_clear(p) {
+                b.outcrop(&mut rng, p, 2.6 + (k % 3) as f32);
+            }
+        }
+    }
     for m in &sk.land.mounds {
         for (off, yaw) in [(Vec2::new(-6.0, 4.0), 0.4), (Vec2::new(5.0, -3.0), 1.9)] {
             b.ore_cart(&mut rng, m.at + off, yaw);
@@ -157,6 +198,24 @@ fn settle(map: &mut Map, sk: &Skeleton) {
     map.open_spots = spots;
     let mut spots = std::mem::take(&mut map.repair_spots);
     spots.retain(|&p| clear(map, p, TANK_CLEAR));
+    // (Rolling ground leaves few level places: more of them, apart.)
+    for &p in &map.open_spots {
+        if spots.len() >= 4 {
+            break;
+        }
+        let g = map.ground_height(p.x, p.y);
+        let level = (0..8).all(|k| {
+            let q = p + Vec2::from_angle(k as f32 * TAU / 8.0) * 4.0;
+            (map.ground_height(q.x, q.y) - g).abs() < 0.8
+        });
+        let up = Vec3::new(p.x, g + 0.5, p.y);
+        let sky = !map.oboxes.iter().any(|o| o.ray_hit(up, Vec3::Y, 80.0));
+        let apart = spots.iter().all(|q| q.distance(p) > 55.0)
+            && map.bases.iter().flatten().all(|q| q.distance(p) > 40.0);
+        if level && sky && apart {
+            spots.push(p);
+        }
+    }
     map.repair_spots = spots;
     map.raid_stands = sk
         .stands
@@ -209,6 +268,11 @@ fn settle(map: &mut Map, sk: &Skeleton) {
         .into_iter()
         .filter(|w| w.iter().all(|&p| nav.floor_at(p).is_some()))
         .collect();
+}
+
+/// How tall the crystal `x` of the way along a dig's foot stands.
+fn rng_height(x: f32) -> f32 {
+    2.4 + 2.0 * x
 }
 
 /// A dig being filled.
@@ -290,6 +354,36 @@ impl Inside<'_, '_> {
         for (dx, dy, size) in [(2.2, -6.6, 1.2), (4.5, -8.0, 0.8), (2.0, 6.8, 1.1)] {
             let p = self.d.to_map(Vec2::new(wall - side * dx, from.y + dy));
             self.b.rock_pile(rng, p, size);
+        }
+        // Clusters growing out of the walls.
+        for k in 0..6 {
+            let t = (k as f32 + 0.5) / 6.0;
+            let (p, out) = if k % 2 == 0 {
+                (
+                    Vec2::new(back, bay.min.y + (bay.max.y - bay.min.y) * t),
+                    Vec2::X * side,
+                )
+            } else {
+                (
+                    Vec2::new(bay.min.x + (bay.max.x - bay.min.x) * t, bay.max.y),
+                    -Vec2::Y,
+                )
+            };
+            let at = self.d.to_map(p - out * 0.4);
+            let way = self.way(out);
+            for _ in 0..4 {
+                let y = self.d.floor + rng.range(1.2, 5.5);
+                self.b.shard(
+                    rng.next_u64(),
+                    Vec3::new(at.x, y, at.y),
+                    rng.range(0.7, 1.6),
+                    0.28,
+                    way + way.perp() * rng.range(-0.5, 0.5),
+                    rng.range(0.6, 1.0),
+                    rng.chance(0.6),
+                    false,
+                );
+            }
         }
         for (dx, y, h) in [(3.0, bay.max.y - 3.0, 3.4), (2.8, bay.min.y + 3.2, 2.4)] {
             let p = self.d.to_map(Vec2::new(back + side * dx, y));

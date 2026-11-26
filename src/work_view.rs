@@ -51,6 +51,8 @@ pub struct Board {
     pick: Option<u32>,
     /// The filter the keys are on, when they're on the filters.
     focus: Option<usize>,
+    /// None on offer, and the war's going on until there's one.
+    pub waiting: bool,
 }
 
 impl Board {
@@ -67,6 +69,11 @@ impl Board {
         if !listed.iter().any(|o| Some(o.id) == self.pick) {
             self.pick = listed.first().map(|o| o.id);
         }
+    }
+
+    /// Nothing's on offer.
+    pub fn empty(&self) -> bool {
+        self.offers.is_empty()
     }
 
     pub fn offer(&self, id: u32) -> Option<&Offer> {
@@ -162,7 +169,15 @@ impl Board {
     }
 
     /// The board over a `w` by `h` screen.
-    pub fn draw(&self, p: &mut Painter, hits: &mut Hits<Hit>, back_lit: bool, w: f32, h: f32) {
+    pub fn draw(
+        &self,
+        p: &mut Painter,
+        hits: &mut Hits<Hit>,
+        back_lit: bool,
+        time: f32,
+        w: f32,
+        h: f32,
+    ) {
         p.set_halo(None);
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.95]);
         design::panel(p, h);
@@ -202,11 +217,16 @@ impl Board {
         }
         let listed = self.listed();
         if listed.is_empty() {
-            let at = Vec2::new(x0, y + UNIT * 3.0);
-            let none = if self.offers.is_empty() {
-                "No work"
+            let mut at = Vec2::new(x0, y + UNIT * 3.0);
+            let none = if self.waiting {
+                let c = at + Vec2::new(8.0, BODY.size * 0.5);
+                crate::hud::spinner_small(p, c, time);
+                at.x += UNIT * 4.0;
+                "Waiting for contracts"
+            } else if self.offers.is_empty() {
+                "No contracts on offer"
             } else {
-                "No work like that"
+                "None match your filters"
             };
             p.text(at, none, &BODY.colored(TEXT_2), Align::Left);
             return;
@@ -630,7 +650,7 @@ pub mod tests {
             for side in 0..4 {
                 let (mut p, mut q) = (Painter::new(1.0), Painter::new(1.0));
                 let mut hits = Hits::new();
-                b.draw(&mut p, &mut hits, false, w, h);
+                b.draw(&mut p, &mut hits, false, 1.0, w, h);
                 assert!(hits.center_of(Hit::Row(29)).is_some(), "the pick's in view");
                 let o = offer(1, 0, side);
                 let mine = b.mine.as_ref();
