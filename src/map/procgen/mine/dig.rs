@@ -583,7 +583,8 @@ impl Dig<'_> {
     /// An outcrop of seam crystal at ground level: one big shard for cover
     /// and small ones round it.
     pub(super) fn outcrop(&mut self, rng: &mut Rng, p: Vec2, h: f32) {
-        if self.in_the_way(p, 1.5) {
+        // (A dig's own layout keeps things out of the way.)
+        if self.l.land.scarp.is_some() && self.in_the_way(p, 1.5) {
             return;
         }
         let g = self.ground_height(p.x, p.y);
@@ -1017,10 +1018,15 @@ impl Dig<'_> {
         self.steel_set_to(a, b, h);
     }
 
+    /// The ground at a point: a dig's floor, in one.
+    pub(super) fn ground_height(&self, x: f32, z: f32) -> f32 {
+        self.stand(Vec2::new(x, z))
+    }
+
     /// What something at `p` stands on: a dig's floor, in one.
     pub(super) fn stand(&self, p: Vec2) -> f32 {
         let dig = self.l.land.digs.iter().find(|d| d.distance(p) < 0.0);
-        dig.map_or_else(|| self.ground_height(p.x, p.y), |d| d.floor)
+        dig.map_or_else(|| self.map.ground_height(p.x, p.y), |d| d.floor)
     }
 
     /// A steel set from `a` to `b`, its cap `h` up.
@@ -4012,11 +4018,14 @@ impl Dig<'_> {
                 let a = k as f32 / 8.0 * TAU;
                 at + Vec2::new(a.cos(), a.sin()) * r
             };
-            let f = lay.face(q.x);
+            let by_face = lay.land.scarp.as_ref().is_some_and(|s| {
+                let f = s.face(q.x);
+                q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0
+            });
             !self.on_way(q)
                 && lay.track_distance(q) > 6.0
                 && lay.shed_distance(q) > 14.0
-                && !(q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0)
+                && !by_face
                 && !lay
                     .land
                     .hauls

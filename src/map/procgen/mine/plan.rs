@@ -65,6 +65,33 @@ fn pillared(rng: &mut Rng, mut dig: Dig) -> Dig {
     dig
 }
 
+/// `dig` with a bay at the end of its heading, and a borer in it cutting a
+/// bore out to one side.
+fn bored(rng: &mut Rng, dig: &Dig) -> Dig {
+    let mut dig = dig.clone();
+    let heading = dig.rooms[3];
+    let x = (heading.min.x + heading.max.x) * 0.5;
+    let y0 = heading.max.y - 1.0;
+    let (half, deep) = (rng.range(10.0, 12.0), rng.range(20.0, 24.0));
+    let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let mid = y0 + deep * 0.5;
+    dig.rooms.push(Hollow {
+        min: Vec2::new(x - half, y0),
+        max: Vec2::new(x + half, y0 + deep),
+        floor: 0.0,
+        roof: 9.0,
+    });
+    let (near, far) = (x + side * (half - 1.0), x + side * (half + 4.0));
+    dig.rooms.push(Hollow {
+        min: Vec2::new(near.min(far), mid - 3.5),
+        max: Vec2::new(near.max(far), mid + 3.5),
+        floor: 0.0,
+        roof: 6.0,
+    });
+    dig.beam = Some((Vec2::new(x + side * (half - 5.4), mid), Vec2::new(far, mid)));
+    dig
+}
+
 /// Whether `dig` fits in `land`: rock all round its rooms but at its
 /// mouths, inside an arena `size` across, off the other digs.
 fn fits(land: &Land, dig: &Dig, size: f32) -> bool {
@@ -284,8 +311,16 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             floor: 0.0,
             rooms: rooms(rng),
             pillars: Vec::new(),
+            beam: None,
         };
         let dig = pillared(rng, dig);
+        // A borer at work in it, if there's the rock.
+        let bored = bored(rng, &dig);
+        let dig = if fits(&land, &bored, size) {
+            bored
+        } else {
+            dig
+        };
         if fits(&land, &dig, size) {
             land.digs.push(dig);
         }
