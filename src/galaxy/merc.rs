@@ -364,6 +364,8 @@ pub struct Books {
     pub splits: u64,
     pub joins: u64,
     pub founded: u64,
+    /// What companies have made, all told.
+    pub profit: f64,
     /// Voyages idle companies made to look for work.
     pub sailed: u64,
     /// Crystal companies paid their pilots: wages, and bonuses for kills;
@@ -1661,9 +1663,25 @@ impl Galaxy {
             co.idle_since = self.tick;
         }
         self.seek_work();
+        self.reckon_profit();
         if self.tick.is_multiple_of(self.rules.politics.max(1) as u64) {
             self.split_and_join();
         }
+    }
+
+    /// What companies made this tick, all told: their capital and what
+    /// they're owed, against last tick's.
+    fn reckon_profit(&mut self) {
+        let price = self.rules.hull_cost;
+        let worth = self.companies.iter().map(|c| c.capital(price)).sum::<f32>()
+            + self.debts.iter().map(|d| d.crystals).sum::<f32>();
+        if self.worth_before > 0.0 {
+            let made = worth - self.worth_before;
+            self.books.profit += made as f64;
+            let each = made / self.companies.len().max(1) as f32;
+            self.profit += 0.01 * (each - self.profit);
+        }
+        self.worth_before = worth;
     }
 
     /// Idle companies too rich split in two; those too small join the
@@ -1711,7 +1729,9 @@ impl Galaxy {
         }
         // Pooled savings found new ships, where there's war, with ways of
         // their own.
-        while self.savings > self.rules.merc_capital {
+        // Nobody founds one while those there are lose money, or have enough
+        // idle to take what work there is.
+        while self.savings > self.rules.merc_capital && self.profit > 0.0 {
             let wars: Vec<usize> = (0..self.systems.len())
                 .filter(|&s| self.systems[s].at_war())
                 .collect();
@@ -1722,6 +1742,9 @@ impl Galaxy {
             let at = wars[self.rng.index(wars.len())] as u32;
             self.new_company(at, self.rules.merc_capital, 0);
             self.books.founded += 1;
+            self.worth_before += self.rules.merc_capital;
+            // One at a time: the next waits to see how this one does.
+            break;
         }
         let mut gone = vec![false; self.companies.len()];
         for c in 0..self.companies.len() {

@@ -441,6 +441,10 @@ pub struct Galaxy {
     pub(crate) lose_old: f32,
     /// Savings of retired pilots and dead ships, for new companies.
     pub(crate) savings: f32,
+    /// What a company has lately made a tick, on average; and what they
+    /// were all worth last tick.
+    pub(crate) profit: f32,
+    pub(crate) worth_before: f32,
     /// What hulls have lately sold for.
     pub hull_rate: f32,
     pub(crate) fell_new: u32,
@@ -672,6 +676,8 @@ impl Galaxy {
             lose_new: 0.01,
             lose_old: 0.003,
             savings: 0.0,
+            profit: 0.0,
+            worth_before: 0.0,
             hull_rate: rules.hull_cost,
             fell_new: 0,
             fell_old: 0,

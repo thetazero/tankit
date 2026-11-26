@@ -84,7 +84,7 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         .sum::<f32>()
         + owed;
     println!(
-        "         companies {} on {} capital {cap:.0} margin p10/50/90 {:.2}/{:.2}/{:.2} | per t: asked {:.0} signed {:.2} (crews {:.2}) refused {:.0} dear {:.0}; per contract: price {:.1} surplus {:.1} wages {:.1} hulls {:.1} flight {:.1}; won {:.0}% | sailing/t {:.1} split {} join {} founded {} | merc/realm pay {:.3}/{:.3}",
+        "         companies {} on {} capital {cap:.0} margin p10/50/90 {:.2}/{:.2}/{:.2} | per t: asked {:.0} signed {:.2} (crews {:.2}) refused {:.0} dear {:.0}; per contract: price {:.1} surplus {:.1} wages {:.1} hulls {:.1} flight {:.1}; won {:.0}% | sailing/t {:.1} split {} join {} founded {} profit/t {:.1} | merc/realm pay {:.3}/{:.3}",
         g.companies.len(),
         g.companies.iter().filter(|c| c.contract.is_some()).count(),
         mid(g.companies.iter().map(|c| c.margin).collect(), 0.1),
@@ -105,6 +105,7 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         b.splits,
         b.joins,
         b.founded,
+        per(b.profit, last.profit),
         (b.wages + b.kill_bonuses - last.wages - last.kill_bonuses) / ct,
         (b.crew_realm_pay - last.crew_realm_pay) / ct,
     );
@@ -120,11 +121,17 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             }
             let rules = Rules::default();
             let rules = Rules {
-                companies: if i == 0 { rules.companies } else { 0 },
+                companies: if i == 0 && std::env::var("NONE").is_err() { rules.companies } else { 0 },
                 ..rules
             };
             println!("seed {seed} {}", ["companies", "none"][i]);
             let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, rules);
+            // A control for the control: the tags the other way round.
+            if std::env::var("FLIP").is_ok() {
+                for r in &mut g.realms {
+                    r.hires = !r.hires;
+                }
+            }
             let t0 = std::time::Instant::now();
             let (mut last, mut was, mut at) = (g.books, 0.0, 0);
             g.step();
