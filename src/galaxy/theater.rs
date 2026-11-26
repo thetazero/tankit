@@ -1425,6 +1425,7 @@ mod tests {
             .expect("an idle company");
         let id = g.companies[c].id;
         g.crew = Some(id);
+        g.rules.merc_split = 1000.0;
         g.companies[c].crystals = g.rules.merc_split * 1.6;
         g.split_and_join();
         let v = g.crew_choice().expect("a choice");

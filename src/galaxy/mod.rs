@@ -291,7 +291,8 @@ impl Default for Rules {
             merc_range: 1200.0,
             merc_idle: 30,
             merc_horizon: 300.0,
-            merc_split: 1000.0,
+            // Off for now.
+            merc_split: f32::INFINITY,
             merc_join: 40.0,
             merc_dues: 0.5,
             research: 0.15,

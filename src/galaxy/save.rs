@@ -542,6 +542,7 @@ mod tests {
             c.contract = None;
             c.crystals = 100.0;
         }
+        g.rules.merc_split = 1000.0;
         g.companies[0].crystals = g.rules.merc_split * 3.0;
         g.companies[1].crystals = g.rules.merc_join / 2.0;
         g.split_and_join();
