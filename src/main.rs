@@ -1426,11 +1426,12 @@ fn force_choice(g: &mut galaxy::Galaxy, joined: bool) -> Result<()> {
         .find(|&c| g.companies[c].contract.is_none())
         .context("no idle company")?;
     g.crew = Some(g.companies[c].id);
+    g.rules.merc_split = 1000.0;
     let co = &mut g.companies[c];
     if joined {
         (co.crystals, co.hulls) = (10.0, 0);
     } else {
-        co.crystals = g.rules.merc_split * 1.6;
+        co.crystals = 1600.0;
     }
     g.split_and_join();
     anyhow::ensure!(g.crew_choice().is_some(), "no choice of ship");
