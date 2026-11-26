@@ -1165,6 +1165,15 @@ impl Galaxy {
         self.books.financed += crystals as f64;
     }
 
+    /// What realms owe company `id`: part of what it's worth.
+    pub fn lent(&self, id: u32) -> f32 {
+        self.debts
+            .iter()
+            .filter(|d| d.company == id)
+            .map(|d| d.crystals)
+            .sum()
+    }
+
     /// What realm `r` owes, to anyone.
     fn owes(&self, r: u32) -> f32 {
         self.debts
@@ -1766,7 +1775,9 @@ impl Galaxy {
         let n = self.companies.len();
         for c in 0..n {
             let co = self.companies[c].clone();
-            if co.contract.is_none() && co.capital(price) > self.rules.merc_split {
+            if co.contract.is_none()
+                && (co.capital(price) + self.lent(co.id)) > self.rules.merc_split
+            {
                 let (crystals, hulls) = (co.crystals / 2.0, co.hulls / 2);
                 self.companies[c].crystals -= crystals;
                 self.companies[c].hulls -= hulls;
@@ -1803,7 +1814,10 @@ impl Galaxy {
         let mut gone = vec![false; self.companies.len()];
         for c in 0..self.companies.len() {
             let co = self.companies[c].clone();
-            if gone[c] || co.contract.is_some() || co.capital(price) >= self.rules.merc_join {
+            if gone[c]
+                || co.contract.is_some()
+                || (co.capital(price) + self.lent(co.id)) >= self.rules.merc_join
+            {
                 continue;
             }
             let here = self.systems[co.at as usize].pos;
