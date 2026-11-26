@@ -654,6 +654,22 @@ impl Galaxy {
                     crystals: x.2,
                 };
             }
+        } else {
+            // An older save: each planet's vault is whoever holds most of
+            // its sites'.
+            for i in 0..g.systems.len() {
+                let (a, b) = g.systems[i].sites;
+                for planet in 0..g.systems[i].planets {
+                    let mut held = [0; SIDES];
+                    for x in &g.sites[a as usize..b as usize] {
+                        held[x.owner as usize] += (x.planet == planet) as u32;
+                    }
+                    let side = (0..PEOPLES).max_by_key(|&f| held[f]).unwrap_or(0);
+                    let v = &mut g.vaults[g.vault_at[i] as usize + planet as usize];
+                    (v.side, v.realm) = (side as u8, NONE);
+                }
+            }
+            g.fill_vaults();
         }
         g.update_share();
         g.refresh();
@@ -871,6 +887,31 @@ mod tests {
             old.step();
         }
         unique(&old);
+    }
+
+    /// A save from before vaults gives each to whoever holds its planet.
+    #[test]
+    fn older_saves_get_vaults() {
+        let region = REGION * 0.3;
+        let mut g = Galaxy::with_size(5, SYSTEMS / 10, region, Rules::default());
+        for _ in 0..60 {
+            g.step();
+        }
+        let mut v = serde_json::to_value(g.saved(region)).unwrap();
+        v.as_object_mut().unwrap().remove("vaults");
+        let old = Galaxy::from_json(&v.to_string()).unwrap();
+        for s in 0..old.systems.len() {
+            let (a, b) = old.systems[s].sites;
+            for (p, vault) in old.vaults_of(s).iter().enumerate() {
+                let held = old.sites[a as usize..b as usize]
+                    .iter()
+                    .any(|x| x.planet as usize == p && x.owner == vault.side);
+                assert!(held, "system {s}: a vault of nobody's here");
+            }
+        }
+        let banks: f32 = old.living().map(|(_, r)| r.crystals).sum();
+        let vaults: f32 = old.vaults.iter().map(|v| v.crystals).sum();
+        assert!((vaults / banks - 1.0).abs() < 0.05, "{vaults} of {banks}");
     }
 
     /// A saved galaxy comes back the same, and goes on the same.
