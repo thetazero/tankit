@@ -647,6 +647,7 @@ impl Galaxy {
                 && let Some(p) = self.companies[c].pilots.iter().position(|p| p.id == pilot)
             {
                 self.companies[c].pilots[p].known.scrap(part, level);
+                self.companies[c].pilots[p].learned();
                 // And their ship pays them for the kill.
                 let bonus = self.rules.kill_share * self.companies[c].pilots[p].wage;
                 self.bonus(c, p, bonus);

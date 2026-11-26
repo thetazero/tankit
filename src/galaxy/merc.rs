@@ -61,6 +61,9 @@ pub struct Pilot {
     /// Never reused.
     pub id: u32,
     pub known: crate::economy::Known,
+    /// Their gear's level as of when it last changed (`Pilot::learned`): so
+    /// the market needn't work it out each time.
+    pub rank: f32,
     /// Crystals earned so far.
     pub wallet: f32,
     /// Bonuses their ship couldn't pay yet.
@@ -137,6 +140,7 @@ impl Pilot {
         Pilot {
             id,
             known: crate::economy::Known::default(),
+            rank: 0.0,
             wallet: 0.0,
             owed: 0.0,
             wage: 0.0,
@@ -144,6 +148,11 @@ impl Pilot {
             earning: 0.0,
             home: None,
         }
+    }
+
+    /// What they know has changed.
+    pub fn learned(&mut self) {
+        self.rank = self.level();
     }
 
     /// The gear they fly: every part built to what they know of it.
@@ -620,6 +629,7 @@ impl Galaxy {
             {
                 p.known.set(part, half);
             }
+            p.learned();
             self.pool.push(p);
         }
     }
@@ -663,10 +673,10 @@ impl Galaxy {
         // them, at its bid: a ship pays what it offers, so one that bids
         // too high pays for it.
         let mut pool = std::mem::take(&mut self.pool);
-        pool.sort_by_cached_key(|p| -((p.level() * 2.0) as i32));
+        pool.sort_by_cached_key(|p| -((p.rank * 2.0) as i32));
         let mut left = Vec::new();
         for mut p in pool {
-            let Some((c, wage)) = self.clearing(&want, p.level(), reserve) else {
+            let Some((c, wage)) = self.clearing(&want, p.rank, reserve) else {
                 left.push(p);
                 continue;
             };
@@ -678,7 +688,7 @@ impl Galaxy {
             p.idle = 0;
             want[c].0 -= 1;
             want[c].1 -= wage;
-            let m = mark(p.level());
+            let m = mark(p.rank);
             self.companies[c].pilots.push(p);
             self.books.hired += 1;
             self.books.signed_wages[m] += wage as f64;
@@ -1033,8 +1043,7 @@ impl Galaxy {
         };
         let gear = |g: usize| self.gear(t, g);
         // Its own side: the realm's gear (the mercs' is their own, but the
-        // realm reckons by what it knows), the ground it holds here, and
-        // its offensive's initiative.
+        // realm reckons by what it knows), the ground it holds here, here.
         let raid = r == super::realm::NONE;
         let tier = if raid {
             0
@@ -1042,12 +1051,6 @@ impl Galaxy {
             self.realms[r as usize].tier
         };
         let mut pf = 1.0 + self.rules.home_ground * mine0 / total;
-        // (an attack it launches is its offensive, if it's on none)
-        if self.pushing(r, sys.pos)
-            || (!raid && !defend && self.realms[r as usize].offensive.is_none())
-        {
-            pf *= 1.0 + self.rules.initiative;
-        }
         pf *= crate::economy::damage_factor(tier);
         let af = crate::economy::armor_factor(tier);
         // Everyone else, as one: their hulls, and their fire and armor
@@ -1538,8 +1541,7 @@ impl Galaxy {
             // Only those flying its hulls on a contract are working, and
             // paid: its best. Those it can't pay leave for the pool.
             let Some(k) = co.contract else { continue };
-            co.pilots
-                .sort_by_cached_key(|p| -((p.level() * 2.0) as i32));
+            co.pilots.sort_by_cached_key(|p| -((p.rank * 2.0) as i32));
             let flying = (k.field.min(self.rules.frontage as u32) as usize).min(co.pilots.len());
             let mut paid = 0;
             while paid < flying && co.pilots[paid].wage <= co.crystals.max(0.0) {

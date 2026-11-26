@@ -164,14 +164,9 @@ pub struct Rules {
     pub pocket: u32,
     /// ... or until this many ticks pass without taking a site.
     pub stall: u32,
-    /// Fire bonus for a side fighting where its offensive is: it picked the
-    /// time and place, and massed for it.
-    pub initiative: f32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
     pub blitz: u32,
-    /// How far from where it's aimed an offensive attacks, light years.
-    pub front: f32,
     /// Share of a quiet system's spare hulls brought up a tick...
     pub bring_up: f32,
     /// ... spending at most this many ticks of crystal income a tick on it.
@@ -256,9 +251,7 @@ impl Default for Rules {
             take: 0.3,
             pocket: 20,
             stall: 30,
-            initiative: 1.0,
             blitz: 2,
-            front: 500.0,
             bring_up: 0.5,
             tempo: 0.5,
             keep: 0.3,
@@ -278,7 +271,7 @@ impl Default for Rules {
             research_price: 1.2,
             pilot_upkeep: 0.02,
             ship_upkeep: 0.2,
-            hull_cost: 0.1,
+            hull_cost: 0.2,
             train_cost: 3.0,
             career: 0.002,
             patience: 60,
@@ -1087,9 +1080,6 @@ impl Galaxy {
         for f in 0..SIDES {
             out[f] =
                 sys.hulls[f] as f32 * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
-            if self.pushing(sys.realms[f], sys.pos) {
-                out[f] *= 1.0 + self.rules.initiative;
-            }
         }
         out
     }
@@ -1209,7 +1199,7 @@ impl Galaxy {
                 && k.side as usize == f
             {
                 let n = (k.field.min(hulls) as usize).min(c.pilots.len());
-                let mut levels: Vec<f32> = c.pilots.iter().map(|p| p.level()).collect();
+                let mut levels: Vec<f32> = c.pilots.iter().map(|p| p.rank).collect();
                 levels.sort_by(|a, b| b.total_cmp(a));
                 crewed += n as f32;
                 merc += levels.iter().take(n).sum::<f32>();
@@ -1221,14 +1211,6 @@ impl Galaxy {
         }
         let all = (merc + own * realm as f32) / (own + crewed);
         all.round() as u8
-    }
-
-    /// Realm `r`'s offensive (if `r` is a realm, on one) takes in `pos`.
-    fn pushing(&self, r: u32, pos: Vec3) -> bool {
-        r != NONE
-            && self.realms[r as usize]
-                .offensive
-                .is_some_and(|o| o.at.distance(pos) <= self.rules.front)
     }
 
     /// Are `f` and `g` fighting each other? Every people is fighting every
@@ -1581,7 +1563,7 @@ impl Galaxy {
         self.loot(s, planet, w);
         // An offensive rolls on from what it takes.
         let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
-        if self.pushing(r, pos)
+        if r != NONE
             && let Some(o) = &mut self.realms[r as usize].offensive
         {
             o.gained = self.tick;
@@ -1693,6 +1675,16 @@ impl Galaxy {
         for f in order {
             for i in 0..n {
                 let t = (i + offset) % n;
+                // Nothing to do deep in anyone's space.
+                let sys = &self.systems[t];
+                if !self.border[t] && sys.held[f] == 0 && sys.hulls[f] == 0 {
+                    continue;
+                }
+                if sys.held[f] > 0
+                    && (0..SIDES).all(|g| g == f || (sys.held[g] == 0 && sys.hulls[g] == 0))
+                {
+                    continue;
+                }
                 // The realms of this people that could send here: each
                 // with hulls to spare in range, and none of them blocked by
                 // another realm of the people already in the system.

@@ -186,16 +186,19 @@ impl SavedPilot {
     }
 
     fn pilot(&self) -> Pilot {
-        Pilot {
+        let mut p = Pilot {
             id: self.id,
             known: crate::economy::Known::from_steps(&self.known),
+            rank: 0.0,
             wallet: self.wallet,
             owed: self.owed,
             wage: self.wage,
             idle: self.idle,
             earning: self.earning,
             home: self.home,
-        }
+        };
+        p.learned();
+        p
     }
 }
 

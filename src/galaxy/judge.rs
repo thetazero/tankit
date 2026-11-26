@@ -122,12 +122,10 @@ fn tweak(rules: &mut Rules) {
         };
         let x: f32 = x.parse().unwrap_or(0.0);
         match name {
-            "initiative" => rules.initiative = x,
             "keep" => rules.keep = x,
             "tempo" => rules.tempo = x,
             "bring_up" => rules.bring_up = x,
             "stall" => rules.stall = x as u32,
-            "front" => rules.front = x,
             "research" => rules.research = x,
             "home_ground" => rules.home_ground = x,
             "ftl_cost" => rules.ftl_cost = x,
