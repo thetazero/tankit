@@ -604,6 +604,70 @@ fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>)
     return d * gv * gl * f / (4.0 * nv * max(nl, 0.001)) * 3.14159;
 }
 
+// Noise for the plasma's surface: smooth and unlit, it shows any mismatch
+// between one cell and the next, so its hash is of whole numbers.
+fn phash(i: vec2<i32>) -> f32 {
+    var h = u32(i.x) * 374761393u + u32(i.y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h = h ^ (h >> 16u);
+    return f32(h & 0xffffu) / 65535.0;
+}
+
+fn pnoise(p: vec2<f32>) -> f32 {
+    let fl = floor(p);
+    let i = vec2<i32>(fl);
+    let f = p - fl;
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let a = mix(phash(i), phash(i + vec2<i32>(1, 0)), u.x);
+    let b = mix(phash(i + vec2<i32>(0, 1)), phash(i + vec2<i32>(1, 1)), u.x);
+    return mix(a, b, u.y);
+}
+
+// A plasma river: currents running down it (`q.x` along, `q.y` across, 0 to
+// 1, `q.z` its half-width over ten), white-hot down the middle and where
+// they cross, a dark skin cooling on it toward the banks and cracking.
+fn plasma_surface(q: vec3<f32>, view: vec3<f32>) -> Surface {
+    var s: Surface;
+    let t = g.params.x;
+    let along = q.x * 100.0;
+    let u = q.y * 2.0 - 1.0;
+    let off = u * q.z * 10.0;
+    let edge = abs(u);
+    let run = t * 3.6;
+    let warp = pnoise(vec2<f32>(along * 0.06 - run * 0.06, off * 0.18)) - 0.5;
+    let a = pnoise(vec2<f32>(along * 0.11 - run * 0.11, off * 0.42 + warp * 3.0));
+    let b = pnoise(vec2<f32>(along * 0.27 - run * 0.2 + 7.0, off * 0.95 - warp * 4.0 + t * 0.15));
+    let c = pnoise(vec2<f32>(along * 0.8 - run * 0.62, off * 2.3 + warp * 5.0));
+    let flow = a * 0.55 + b * 0.3 + c * 0.15;
+    // Threads of current, bright where the flow folds.
+    let fold = 1.0 - abs(flow - 0.5) * 2.0;
+    let thread = pow(clamp(fold, 0.0, 1.0), 7.0);
+    // The skin, in plates that drift and crack.
+    let plate = pnoise(vec2<f32>(along * 0.16 - run * 0.1, off * 0.3 + 20.0));
+    let skin = smoothstep(0.28, 0.6, plate * 0.75 + edge * edge * 0.62 - 0.12);
+    // (Turned and bent, so its cells' squares don't show.)
+    let cq = vec2<f32>(along * 0.34 - run * 0.2 + off * 0.2, off * 0.36 - along * 0.15 + run * 0.09);
+    let bend = vec2<f32>(pnoise(cq * 1.7 + 11.0), pnoise(cq * 1.7 + 47.0)) - 0.5;
+    let cn = pnoise(cq + bend * 1.5) * 0.7 + pnoise(cq * 2.3 + bend * 2.0 + 31.0) * 0.3;
+    let crack = pow(1.0 - min(abs(cn - 0.5) * 2.4, 1.0), 9.0);
+    let deep = vec3<f32>(0.13, 0.004, 0.07);
+    let body = vec3<f32>(0.72, 0.05, 0.3);
+    let hot = vec3<f32>(1.0, 0.72, 0.88);
+    var glow = mix(deep, body, smoothstep(0.3, 0.85, flow));
+    glow += hot * thread * 0.6;
+    glow += body * exp(-u * u * 7.0) * 0.4;
+    let cooled = deep * 0.16 + (body + hot * 0.25) * crack * 1.2;
+    glow = mix(glow, cooled, skin * 0.93);
+    // A hot line where it meets the lining.
+    glow += body * smoothstep(0.93, 0.99, edge) * (0.8 + 0.4 * sin(along * 0.9 - t * 4.0));
+    s.emissive = glow * (1.15 + 0.15 * sin(t * 1.3 + along * 0.05));
+    s.albedo = vec3<f32>(0.02, 0.005, 0.012);
+    s.rough = mix(0.22, 0.7, skin);
+    s.ao = 1.0;
+    s.metal = 0.0;
+    return s;
+}
+
 @fragment
 fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var n = normalize(v.normal);
@@ -626,6 +690,8 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     var s: Surface;
     if (is_tank) {
         s = tank_surface(m, base, v.lpos, normalize(v.lnormal), v.wpos, duv);
+    } else if (m == MAT_PLASMA) {
+        s = plasma_surface(v.color.rgb, n);
     } else if (m == MAT_CLIFF) {
         let c = cliff_surface(base, v.wpos, n, px);
         n = c.n;

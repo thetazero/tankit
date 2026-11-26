@@ -1646,6 +1646,7 @@ impl Match {
         self.falls();
         self.outs();
         self.beams();
+        self.rivers();
         self.husks();
         self.aim_assist();
 
@@ -2616,6 +2617,44 @@ impl Match {
             }
             if self.fighters[i].alive {
                 self.wreck(i);
+            }
+        }
+    }
+
+    /// Any tank that's sunk in a plasma river (not riding on it) burns;
+    /// whoever knocked it in gets the kill.
+    fn rivers(&mut self) {
+        if self.world.map.rivers.is_empty() {
+            return;
+        }
+        let map = &self.world.map;
+        let tanks = &self.world.tanks;
+        let burning: Vec<usize> = (0..self.fighters.len())
+            .filter(|&i| {
+                let f = &self.fighters[i];
+                let t = &tanks[i];
+                f.alive
+                    && !f.is_husk()
+                    && f.shield <= 0.0
+                    && !t.chassis.hover
+                    && map.rivers.iter().any(|r| {
+                        r.surface(Vec2::new(t.pos.x, t.pos.z), 0.0)
+                            .is_some_and(|y| t.pos.y < y + 0.5)
+                    })
+            })
+            .collect();
+        for i in burning {
+            let f = &self.fighters[i];
+            let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
+            // (Its own damage, so a shove's credit runs out as it would.)
+            let burn = max_health(self.world.tanks[i].hull_kind) / crate::map::river::BURN * DT;
+            let f = &mut self.fighters[i];
+            f.health -= burn;
+            if f.health <= 0.0 {
+                self.kill(killer, i);
+                if self.fighters[i].alive {
+                    self.wreck(i);
+                }
             }
         }
     }
@@ -3860,6 +3899,60 @@ mod tests {
     /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
         Match::new(Map::saltmarket(), 0, bots, 21)
+    }
+
+    /// A match on flat ground with a river over it, its surface 2 m up, and
+    /// tank 1 (a `hull`) put down in it.
+    fn in_the_river(hull: HullKind) -> Match {
+        let mut map = Map::yard(200.0);
+        map.rivers.push(crate::map::river::River {
+            points: vec![Vec3::new(20.0, 2.0, 100.0), Vec3::new(180.0, 2.0, 100.0)],
+            half: 12.0,
+        });
+        let mut m = Match::new(map, 0, 1, 3);
+        m.start();
+        for f in &mut m.fighters {
+            f.shield = 0.0;
+        }
+        m.world.set_hull(1, hull);
+        m.world.teleport(0, Vec2::new(100.0, 170.0), 0.0);
+        m.world.teleport(1, Vec2::new(100.0, 100.0), 0.0);
+        m
+    }
+
+    #[test]
+    fn a_tracked_tank_burns_in_a_plasma_river() {
+        let mut m = in_the_river(HullKind::Kataphrakt);
+        let was = m.fighters[1].health;
+        for _ in 0..(1.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.fighters[1].alive, "it doesn't die at once");
+        assert!(m.fighters[1].health < was * 0.8);
+        // Whoever knocked it in gets the kill.
+        m.fighters[1].hit_by = Some(0);
+        m.fighters[1].since_hit = 0.0;
+        let kills = m.fighters[0].kills;
+        for _ in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), false);
+            if m.fighters[0].kills > kills {
+                return;
+            }
+        }
+        panic!("never burned out");
+    }
+
+    #[test]
+    fn a_hover_tank_rides_on_a_plasma_river() {
+        let mut m = in_the_river(HullKind::Sethuun);
+        let b = &mut m.world.physics.bodies[m.world.tanks[1].body];
+        b.set_translation(Vec3::new(100.0, 3.5, 100.0), true);
+        let was = m.fighters[1].health;
+        for _ in 0..(2.0 / DT) as usize {
+            m.step(Command::default(), false);
+        }
+        assert!(m.world.tanks[1].pos.y > 2.0, "{}", m.world.tanks[1].pos);
+        assert_eq!(m.fighters[1].health, was);
     }
 
     /// A free-for-all: all four factions, in an imperial city.
