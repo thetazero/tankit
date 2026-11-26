@@ -73,7 +73,13 @@ struct Saved {
     #[serde(default)]
     pay: Option<f32>,
     #[serde(default)]
-    trust: Option<([f32; 2], f32)>,
+    trust_ticks: Option<f32>,
+    /// What each system's lately been through, and the market's going rates:
+    /// (when taken), (chance lost new, old), hull rate, savings.
+    #[serde(default)]
+    taken_at: Vec<u64>,
+    #[serde(default)]
+    rates: Option<[f32; 4]>,
     /// The share of merc pilots in work lately.
     #[serde(default)]
     employment: Option<f32>,
@@ -81,13 +87,6 @@ struct Saved {
     /// (system, how much); ended contracts not yet looked back on.
     #[serde(default)]
     unmet: Vec<(u32, f32)>,
-    #[serde(default)]
-    reviews: Vec<SavedContract>,
-    /// What realms have seen of fights, and those yet to look back on.
-    #[serde(default)]
-    memory: Vec<(f32, f32)>,
-    #[serde(default)]
-    lessons: Vec<super::merc::Lesson>,
     /// Bonuses realms owe companies: (realm, company id, crystals).
     #[serde(default)]
     debts: Vec<(u32, u32, f32)>,
@@ -215,6 +214,10 @@ struct SavedContract {
     lost: f32,
     #[serde(default)]
     defend: bool,
+    #[serde(default)]
+    lent: bool,
+    #[serde(default)]
+    seats: u32,
     /// What the realm expected of it, and the ticks it expected to pay.
     #[serde(default)]
     expected: f32,
@@ -241,6 +244,8 @@ impl SavedContract {
             field: k.field as f32,
             lost: k.lost as f32,
             defend: k.defend,
+            lent: k.lent,
+            seats: k.seats,
             expected: k.expected,
             expected_ticks: k.expected_ticks,
             held: k.held,
@@ -262,6 +267,8 @@ impl SavedContract {
             field: whole(self.field),
             lost: whole(self.lost),
             defend: self.defend,
+            lent: self.lent,
+            seats: self.seats,
             expected: self.expected,
             expected_ticks: self.expected_ticks,
             held: self.held,
@@ -296,6 +303,9 @@ struct SavedRealm {
     /// Systems it was fighting in.
     #[serde(default)]
     fronts: u32,
+    /// What a pilot, and a hull, have lately been worth to it.
+    #[serde(default)]
+    senses: Option<(f32, f32)>,
 }
 
 impl Galaxy {
@@ -338,6 +348,7 @@ impl Galaxy {
                     wage: r.wage,
                     hires: Some(r.hires),
                     fronts: r.fronts,
+                    senses: Some((r.pilot_worth, r.hull_worth)),
                 })
                 .collect(),
             splits: self.splits,
@@ -376,7 +387,9 @@ impl Galaxy {
             pool: self.pool.iter().map(SavedPilot::of).collect(),
             wage_curve: Some(self.wage_curve),
             pay: Some(self.pay),
-            trust: Some((self.trust, self.trust_ticks)),
+            trust_ticks: Some(self.trust_ticks),
+            taken_at: self.taken_at.clone(),
+            rates: Some([self.lose_new, self.lose_old, self.hull_rate, self.savings]),
             employment: Some(self.employment),
             unmet: self
                 .unmet
@@ -385,9 +398,6 @@ impl Galaxy {
                 .filter(|&(_, &u)| u > 1e-3)
                 .map(|(s, &u)| (s as u32, u))
                 .collect(),
-            reviews: self.reviews.iter().map(SavedContract::of).collect(),
-            memory: self.memory.clone(),
-            lessons: self.lessons.clone(),
             owed_you: self.owed_you.clone(),
             your_wallet: self.you.wallet,
             debts: self
@@ -465,6 +475,8 @@ impl Galaxy {
                 wage: r.wage,
                 hires: r.hires.unwrap_or(true),
                 fronts: r.fronts,
+                pilot_worth: r.senses.map_or(0.1, |x| x.0),
+                hull_worth: r.senses.map_or(0.2, |x| x.1),
                 crystals: r.crystals,
                 income: r.income,
                 offensive: r.offensive.map(|(at, gained)| Offensive {
@@ -521,14 +533,14 @@ impl Galaxy {
                 *x = u;
             }
         }
-        if s.memory.len() == g.memory.len() {
-            g.memory = s.memory;
-            g.lessons = s.lessons;
-            g.learning = g.lessons.iter().map(|l| (l.realm, l.system)).collect();
+        if let Some(ticks) = s.trust_ticks {
+            g.trust_ticks = ticks;
         }
-        g.reviews = s.reviews.iter().map(SavedContract::contract).collect();
-        if let Some((trust, ticks)) = s.trust {
-            (g.trust, g.trust_ticks) = (trust, ticks);
+        if s.taken_at.len() == g.taken_at.len() {
+            g.taken_at = s.taken_at;
+        }
+        if let Some(x) = s.rates {
+            [g.lose_new, g.lose_old, g.hull_rate, g.savings] = x;
         }
         if let Some(companies) = s.companies {
             let (systems, realms) = (g.systems.len(), g.realms.len());

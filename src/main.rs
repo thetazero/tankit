@@ -822,6 +822,18 @@ fn parse_args() -> Result<Args> {
                         .parse()?,
                 )
             }
+            "--judge" => {
+                // --judge <ticks> <seed,seed..> [arms]
+                let ticks = args.next().context("--judge needs a tick count")?.parse()?;
+                let seeds: Vec<u64> = args
+                    .next()
+                    .context("--judge needs seeds")?
+                    .split(',')
+                    .map(|x| x.parse())
+                    .collect::<Result<_, _>>()?;
+                galaxy::judge::run(ticks, &seeds, args.next().is_some());
+                std::process::exit(0);
+            }
             "--front" => front = true,
             "--hired" => hired = true,
             "--hulls" => {
