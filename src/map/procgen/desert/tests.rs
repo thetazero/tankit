@@ -328,3 +328,20 @@ fn the_generator_faces_every_side() {
         }
     }
 }
+
+/// The Imperium's generator lets tanks in whatever angles its doors are at
+/// (these two seeds' were shut).
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn the_imperiums_generator_lets_tanks_in() {
+    for seed in [1u64, 10] {
+        let g = crate::Generator::up(Faction::Imperium);
+        let m = build(&crate::shield_desert_spec(seed, g));
+        if let Err(why) = crate::map::procgen::check::playable(&m) {
+            panic!("seed {seed}: {why}");
+        }
+    }
+}
