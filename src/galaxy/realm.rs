@@ -54,6 +54,8 @@ pub struct Realm {
     pub research: f32,
     /// Its pilots, all alike, shared between all its fights.
     pub pilots: u32,
+    /// Systems it's fighting in, as of the last tick's battles.
+    pub fronts: u32,
 }
 
 impl Realm {
@@ -69,12 +71,15 @@ impl Realm {
             tier: 0,
             research: 0.0,
             pilots: 0,
+            fronts: 0,
         }
     }
 
-    /// How many pilots its income pays for.
+    /// How many pilots it wants: as many as its income pays for, but no
+    /// more than it can use, a front's worth for each fight and one in hand.
     pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
-        (rules.pilot_budget * self.income.max(0.0) / rules.pilot_upkeep.max(1e-6)) as u32
+        let afford = rules.pilot_budget * self.income.max(0.0) / rules.pilot_upkeep.max(1e-6);
+        afford.min(rules.frontage * (self.fronts + 1) as f32) as u32
     }
 
     /// Pay its pilots (those it can't pay leave), then train or dismiss a

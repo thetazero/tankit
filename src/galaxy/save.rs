@@ -128,6 +128,9 @@ struct SavedRealm {
     /// Its pilots; older saves have none.
     #[serde(default)]
     pilots: Option<u32>,
+    /// Systems it was fighting in.
+    #[serde(default)]
+    fronts: u32,
 }
 
 impl Galaxy {
@@ -167,6 +170,7 @@ impl Galaxy {
                     tier: r.tier,
                     research: r.research,
                     pilots: Some(r.pilots),
+                    fronts: r.fronts,
                 })
                 .collect(),
             splits: self.splits,
@@ -266,6 +270,7 @@ impl Galaxy {
             .realms
             .iter()
             .map(|r| Realm {
+                fronts: r.fronts,
                 pilots: r.pilots.unwrap_or_else(|| {
                     Realm {
                         income: r.income,
