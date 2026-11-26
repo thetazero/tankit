@@ -80,6 +80,12 @@ pub fn action(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
     )
 }
 
+/// A main action that can't be taken now: where `action` would put it, grey.
+pub fn action_off(p: &mut Painter, at: Vec2, name: &str) {
+    let grey = with_alpha(TEXT_2, 0.5);
+    p.text(at, name, &ACTION_TEXT.colored(grey), Align::Left);
+}
+
 /// A small action, off to the side. Returns its clickable rect.
 pub fn link(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
     let color = if on { AMBER } else { TEXT_2 };
