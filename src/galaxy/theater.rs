@@ -50,9 +50,9 @@ pub struct Theater {
     /// Who you're posted for: index into `Faction::ALL`.
     pub employer: usize,
     pub planets: u8,
-    /// Each side's hulls here, hulls its yards here build a tick, and sites held.
+    /// Each side's hulls here (and how many of them mercs fly), and sites held.
     pub hulls: [u32; SIDES],
-    pub built: [f32; SIDES],
+    pub mercs: [u32; SIDES],
     pub held: [u8; SIDES],
     /// Each side's gear tier here (#438): its realm's, in upgrade steps.
     pub tiers: [u8; SIDES],
@@ -468,7 +468,17 @@ impl SiteView {
         kind_name(self.kind)
     }
 
-    /// A stand-in site, for keys and legends: a shield generator, or a crystal mine.
+    /// What it is, in a word, in caps.
+    pub fn short_name(&self) -> &'static str {
+        match self.kind_name() {
+            "SHIELD GENERATOR" => "SHIELD",
+            "CRYSTAL MINE" => "MINE",
+            _ => "FOUNDRY",
+        }
+    }
+
+    #[cfg(test)]
+    /// A stand-in site, for tests: a shield generator, or a crystal mine.
     pub fn example(shield: bool) -> SiteView {
         SiteView {
             index: 0,
@@ -550,6 +560,23 @@ impl Theater {
             map_seed: s.map_seed,
             factions: [Faction::side(self.employer), Faction::side(s.enemy)],
         })
+    }
+
+    /// The sides here from off it, whose fleets are in orbit: everyone with
+    /// hulls but the defender, whose are all on the ground.
+    pub fn attackers(&self) -> Vec<usize> {
+        let defend = self.ship.as_ref().is_some_and(|s| s.defend);
+        let holder = (0..PEOPLES)
+            .filter(|&f| defend || f != self.employer)
+            .max_by_key(|&f| self.held[f]);
+        let defender = if defend {
+            Some(self.employer)
+        } else {
+            holder.filter(|&f| self.held[f] > 0)
+        };
+        (0..PEOPLES)
+            .filter(|&f| self.hulls[f] >= AT_WAR && Some(f) != defender)
+            .collect()
     }
 
     /// The sides in the war here (hulls or sites), most hulls first.
@@ -1145,7 +1172,15 @@ impl Galaxy {
             employer: f,
             planets: sys.planets,
             hulls: sys.hulls,
-            built: self.built(s),
+            mercs: {
+                let mut mercs = [0; SIDES];
+                for k in self.companies.iter().filter_map(|c| c.contract) {
+                    if k.target as usize == s {
+                        mercs[k.side as usize] += k.field;
+                    }
+                }
+                std::array::from_fn(|f| mercs[f].min(sys.hulls[f]))
+            },
             held: sys.held,
             tiers: std::array::from_fn(|g| match sys.realms[g] {
                 super::realm::NONE => 0,

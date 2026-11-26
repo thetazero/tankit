@@ -4,15 +4,15 @@
 //! colour, and your company's ship (#327) parked over the world it's
 //! fighting for.
 //!
-//! Over it, in the UI's hairlines, each world's sites on a ring round it:
-//! shield generators as domes, foundries as squares, crystal mines as
-//! diamonds, in their holder's colour. Contested sites are ringed; the ones
-//! your side fights for this tick are ringed hot and filled. Every
-//! contested site can be clicked (it's a row of the list beside it). A
-//! damaged generator is a ghost of itself (#341, #422). A world whose
-//! shields are up wears a hex shield in their holder's colour, and every
-//! world with a generator says under its name whether its shields are up or
-//! down (#477).
+//! Over it, each world's sites on a ring round it: shield generators as
+//! domes, foundries as squares, crystal mines as diamonds, in their holder's
+//! colour. The ones your side fights for this tick are ringed and can be
+//! clicked (each is a row of the list beside it); the one picked is amber. A damaged generator is a ghost of itself (#341, #422). A world
+//! whose shields are up wears a hex shield in their holder's colour (#477).
+//!
+//! The attackers' fleets (`fleets`) are in orbit, your ship among them when
+//! you're one; defending, it's down on the world and its name's under it. The
+//! hull bar over it all (`forces`) has your side on the left.
 //!
 //! The scene (`SystemArt`, `scene`) and the marks over it (`draw`) share
 //! one layout and camera, worked out from the theater and the screen's
@@ -25,18 +25,13 @@ use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::faction::Faction;
 use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, planet_name};
-use crate::garage::{PANEL_W, PANEL_X};
 use crate::menu::Hit;
 use crate::planet;
 use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::scene::project;
 use crate::ship_model;
-use crate::ui::widgets;
-use crate::ui::{
-    Align, Hits, Painter, Rgba, TextStyle, hull_boxes, hull_boxes_size, hull_pips, measure, theme,
-    with_alpha,
-};
+use crate::ui::{Align, Hits, Painter, Rgba, design, theme, with_alpha};
 
 const STAR: Rgba = [1.0, 0.86, 0.62, 1.0];
 /// The fill behind the marks and labels: the black of space.
@@ -46,7 +41,7 @@ const LEGEND_H: f32 = 46.0;
 /// The UI's reference height (logical px), as the menu's.
 const REF_HEIGHT: f32 = 900.0;
 /// The view's left edge and right margin, logical px: right of the panel.
-pub const VIEW_LEFT: f32 = PANEL_X + PANEL_W + 70.0;
+pub const VIEW_LEFT: f32 = design::MARGIN * 3.0 + design::COLUMN;
 const VIEW_RIGHT: f32 = 56.0;
 /// Its top and bottom margins.
 const VIEW_TOP: f32 = 60.0;
@@ -56,7 +51,7 @@ const VIEW_BOTTOM: f32 = 60.0;
 pub const MAX_PLANETS: usize = 3;
 /// The star's radius, and each world's.
 const STAR_R: f32 = 11.0;
-const WORLD_R: f32 = 9.0;
+const WORLD_R: f32 = 12.0;
 /// The first world's orbit, and how much wider each next one's is.
 const ORBIT0: f32 = 64.0;
 const ORBIT_STEP: f32 = 50.0;
@@ -66,14 +61,14 @@ const PHASE: [f32; MAX_PLANETS] = [0.2, -0.12, 0.06];
 /// How high over its world your ship is parked, and how big it's drawn
 /// (`ship_model` builds it `ship_model::LEN` long).
 const SHIP_UP: f32 = 29.0;
-const SHIP_SCALE: f32 = 1.35;
+const SHIP_SCALE: f32 = 0.75;
 /// How far off the camera is.
 const DIST: f32 = 300.0;
 /// How steeply the camera looks down on the orbits (radians).
 const PITCH: f32 = 0.36;
 /// The sphere of black round it all (inside the camera's far plane).
 const SPACE_R: f32 = 520.0;
-const STARS: usize = 600;
+const STARS: usize = 1600;
 
 /// Where everything is.
 pub struct Layout {
@@ -143,6 +138,10 @@ pub struct SystemArt {
     worlds: [MeshId; MAX_PLANETS],
     shown: [Option<(u64, planet::Look)>; MAX_PLANETS],
     ship: MeshId,
+    /// Each people's warship.
+    fleet: [MeshId; 4],
+    /// A smooth ball, for the star.
+    ball: MeshId,
 }
 
 impl SystemArt {
@@ -152,6 +151,8 @@ impl SystemArt {
             worlds: std::array::from_fn(|_| r.add_mesh(&blank)),
             shown: [None; MAX_PLANETS],
             ship: r.add_mesh(&ship_model::mesh()),
+            fleet: std::array::from_fn(|f| r.add_mesh(&crate::fleet_model::mesh(Faction::side(f)))),
+            ball: r.add_mesh(&MeshData::sphere(64, 32)),
         }
     }
 
@@ -160,7 +161,7 @@ impl SystemArt {
         for i in 0..(t.planets as usize).min(MAX_PLANETS) {
             let want = world_look(t.system, i);
             if self.shown[i] != Some(want) {
-                r.replace_mesh(self.worlds[i], &planet::mesh(want.0, &want.1));
+                r.replace_painted(self.worlds[i], &planet::mesh(want.0, &want.1));
                 self.shown[i] = Some(want);
             }
         }
@@ -197,8 +198,74 @@ pub fn scene(
     aspect: f32,
 ) -> Scene {
     match transfer.and_then(|tr| tr.leg(t).map(|leg| (tr, leg))) {
-        None => system_scene(art, t, time, camera(t, aspect), parked(&layout(t), time)),
+        None => {
+            // Defending, your ship's down on the planet with the rest.
+            let l = layout(t);
+            let up = t.ship.as_ref().is_some_and(|s| !s.defend);
+            let ship = parked(&l, time).filter(|_| up);
+            let mut s = system_scene(art, t, time, camera(t, aspect), ship);
+            fleets(art, t, &l, time, &mut s);
+            s
+        }
         Some((tr, leg)) => transfer_scene(art, t, tr, leg, time, aspect),
+    }
+}
+
+/// Where a fleet's ships sit round its middle.
+const FORMATION: [Vec3; 5] = [
+    Vec3::new(21.0, 11.0, -16.0),
+    Vec3::new(-25.0, 11.0, -20.0),
+    Vec3::new(36.0, -1.0, -2.0),
+    Vec3::new(-2.0, 22.0, -34.0),
+    Vec3::new(-37.0, -1.0, 2.0),
+];
+
+/// The attackers' fleets over the world your company's fighting for, more
+/// ships the more hulls they have. Your employer's is round your ship.
+fn fleets(art: &SystemArt, t: &Theater, l: &Layout, time: f32, s: &mut Scene) {
+    let Some((at, _)) = l.ship else { return };
+    let mut others = 0;
+    for f in t.attackers() {
+        let yours = f == t.employer;
+        // Anyone else's holds off to the side of it.
+        let mid = if yours {
+            at
+        } else {
+            let first = !t.attackers().contains(&t.employer);
+            let side = if first { others } else { others + 1 };
+            others += 1;
+            at + Vec3::X * 44.0 * side as f32
+        };
+        let n = match t.hulls[f] {
+            0..=9 => 1,
+            10..=39 => 2,
+            40..=149 => 3,
+            150..=499 => 4,
+            _ => 5,
+        };
+        let tint = Faction::side(f).ui();
+        let tint = Vec3::new(tint[0], tint[1], tint[2]);
+        // With no ship of yours in the middle, theirs leads.
+        let lead = (!yours).then_some(&Vec3::ZERO);
+        let spots = lead.into_iter().chain(&FORMATION);
+        for (k, &off) in spots.take(n).enumerate() {
+            let bob = (time * 0.7 + k as f32 * 1.9 + f as f32).sin() * 0.3;
+            let pos = mid + off + Vec3::Y * bob;
+            s.instances.push((
+                art.fleet[f],
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(
+                        Vec3::splat(crate::fleet_model::SCALE),
+                        parked_turn(),
+                        pos,
+                    ),
+                    Vec4::new(1.0, 1.0, 1.0, 0.0),
+                ),
+            ));
+            let back = pos - parked_turn() * Vec3::X * 7.0;
+            s.particles
+                .push(Particle::glow(back, 2.2, tint, 0.9, Vec3::ZERO));
+        }
     }
 }
 
@@ -252,7 +319,7 @@ fn system_scene(
     // The star: a white-hot ball in its own light, and its glow.
     let star = Vec3::from_slice(&STAR[..3]);
     instances.push((
-        MeshId::SPHERE,
+        art.ball,
         Instance::new(
             Mat4::from_scale_rotation_translation(
                 Vec3::splat(STAR_R * 2.0),
@@ -262,15 +329,12 @@ fn system_scene(
             Vec4::new(1.0, 0.88, 0.66, 6.0),
         ),
     ));
-    particles.push(Particle::glow(
-        l.star,
-        STAR_R * 1.1,
-        Vec3::new(1.0, 0.95, 0.8),
-        2.5,
-        Vec3::ZERO,
-    ));
-    particles.push(Particle::glow(l.star, STAR_R * 1.7, star, 1.2, Vec3::ZERO));
-    particles.push(Particle::glow(l.star, STAR_R * 3.2, star, 0.3, Vec3::ZERO));
+    // Many faint shells, so no one's edge shows.
+    for k in 0..24 {
+        let r = STAR_R * (1.1 + 0.075 * k as f32);
+        let light = star.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
+        particles.push(Particle::glow(l.star, r, light, 0.11, Vec3::ZERO));
+    }
 
     // Orbits: hairline rings of faint light round the star.
     for w in &l.worlds {
@@ -309,10 +373,10 @@ fn system_scene(
         let view = (w - camera.pos).normalize();
         let u = view.cross(Vec3::Y).normalize();
         let v = u.cross(view);
-        for k in 0..160 {
-            let a = TAU * k as f32 / 160.0;
+        for k in 0..480 {
+            let a = TAU * k as f32 / 480.0;
             let at = w + (u * a.cos() + v * a.sin()) * WORLD_R * 1.03;
-            particles.push(Particle::glow(at, 0.7, tint, 0.22, Vec3::ZERO));
+            particles.push(Particle::glow(at, 0.7, tint, 0.06, Vec3::ZERO));
         }
     }
 
@@ -903,17 +967,6 @@ pub fn stars(eye: Vec3, out: &mut Vec<Particle>) {
     }
 }
 
-/// Text on a backing of space's colour.
-fn label(p: &mut Painter, at: Vec2, text: &str, style: &TextStyle) {
-    let w = measure(text, style);
-    p.rect(
-        Vec2::new(at.x - w * 0.5 - 6.0, at.y - 3.0),
-        Vec2::new(w + 12.0, style.size + 6.0),
-        with_alpha(BG, 0.7),
-    );
-    p.text(at, text, style, Align::Center);
-}
-
 /// `a` over `b`, `k` of the way.
 fn mix(b: Rgba, a: Rgba, k: f32) -> Rgba {
     [
@@ -943,29 +996,32 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
 /// The system view while your company's between contracts: its frame,
 /// and in it a spinner and how many ticks the war's gone on without work
 /// for you.
-pub fn waiting(p: &mut Painter, ticks: u32, time: f32, w: f32, h: f32) {
+pub fn waiting(p: &mut Painter, ticks: u32, time: f32) {
     let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
-    let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
-    widgets::corners(p, min, max, 14.0, theme::DIM);
     let at = Vec2::new(min.x + 24.0, min.y + 24.0);
     crate::hud::spinner_small(p, at + Vec2::new(7.0, 7.0), time);
-    let mut s = TextStyle::LABEL;
-    s.color = theme::FG;
+    let mut s = design::SMALL;
+    s.color = design::TEXT;
     p.text(
         at + Vec2::new(26.0, 2.0),
         "LOOKING FOR WORK",
         &s,
         Align::Left,
     );
-    let mut v = TextStyle::value(22.0);
-    v.color = theme::FG;
+    let mut v = design::HEAD;
+    v.color = design::TEXT;
     let tw = p.text(
         at + Vec2::new(0.0, 26.0),
         &format!("+{ticks}"),
         &v,
         Align::Left,
     );
-    widgets::label(p, at + Vec2::new(tw + 8.0, 34.0), "TICKS", Align::Left);
+    p.text(
+        at + Vec2::new(tw + 8.0, 34.0),
+        "TICKS",
+        &design::SMALL,
+        Align::Left,
+    );
 }
 
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
@@ -988,8 +1044,6 @@ pub fn draw(
 ) {
     let min = Vec2::new(VIEW_LEFT, VIEW_TOP);
     let max = Vec2::new(w - VIEW_RIGHT, h - VIEW_BOTTOM);
-    widgets::corners(p, min, max, 14.0, theme::DIM);
-    let bottom = max.y - LEGEND_H;
     if let Some(e) = card {
         summary(p, hits, t, e, go_lit, min, max);
         return;
@@ -1020,10 +1074,6 @@ pub fn draw(
             .enumerate()
             .filter(|(_, s)| s.planet as usize == pl)
             .collect();
-        let mut held = [0usize; 4];
-        for (_, s) in &sites {
-            held[s.owner] += 1;
-        }
         // Its shields (#477): up while a generator on it works, a hex
         // shield round it in each holder's colour of a working one, nested
         // when more than one side's is up (each keeps the others out).
@@ -1050,171 +1100,90 @@ pub fn draw(
             );
             let row = t.contested.iter().position(|&x| x == i);
             site_marker(p, m, s, row == Some(selected));
-            if let Some(row) = row {
+            if let Some(row) = row.filter(|_| s.committed) {
                 hits.add(p, m - Vec2::splat(18.0), Vec2::splat(36.0), Hit::Row(row));
             }
         }
 
         // Your ship's name over it.
         if let Some((ship, _)) = l.ship.filter(|&(_, i)| i == pl)
+            && t.ship.as_ref().is_some_and(|s| !s.defend)
             && let (Some(s), Some(name)) = (
                 at(ship + Vec3::Y * SHIP_SCALE * 4.5),
                 t.ship.as_ref().map(|s| &s.name),
             )
         {
-            let mut style = TextStyle::LABEL;
-            style.color = Faction::Company.ui();
-            label(p, s - Vec2::new(0.0, 22.0), name, &style);
+            let style = design::BODY.colored(design::AMBER);
+            p.text(s - Vec2::new(0.0, 22.0), name, &style, Align::Center);
         }
 
-        // Its name, and who holds what.
-        let below = c.y + ring_r + 30.0;
-        label(
-            p,
-            Vec2::new(c.x, below),
+        // Defending, you're down there.
+        if let (Some(ship), Some((_, over))) = (&t.ship, l.ship)
+            && ship.defend
+            && over == pl
+        {
+            let style = design::BODY.colored(design::AMBER);
+            let at = Vec2::new(c.x, c.y + ring_r + 52.0);
+            p.text(at, &ship.name, &style, Align::Center);
+        }
+
+        // Its name.
+        let below = Vec2::new(c.x, c.y + ring_r + 30.0);
+        p.text(
+            below,
             &planet_name(&t.name, pl as u8),
-            &TextStyle::value(13.0),
+            &design::BODY,
+            Align::Center,
         );
-        let parts: Vec<String> = (0..4)
-            .filter(|&f| held[f] > 0)
-            .map(|f| format!("{} {}", Faction::side(f).name(), held[f]))
-            .collect();
-        let mut style = TextStyle::LABEL;
-        style.color = theme::DIM;
-        label(p, Vec2::new(c.x, below + 22.0), &parts.join(" · "), &style);
-        // Its shields, now: whose are up, a line each when more than one
-        // side's are, so a tie doesn't read as one side's alone.
-        let lines: Vec<(String, Rgba)> = match shield {
-            Shield::Up(up) => {
-                let sides: Vec<usize> = (0..4).filter(|&f| up[f]).collect();
-                sides
-                    .iter()
-                    .map(|&f| {
-                        let text = match sides.len() {
-                            1 => "SHIELDS UP".to_string(),
-                            _ => format!("{} SHIELDS UP", Faction::side(f).name()),
-                        };
-                        (text, Faction::side(f).ui())
-                    })
-                    .collect()
-            }
-            Shield::Down => vec![("SHIELDS DOWN".to_string(), theme::FAINT)],
-            Shield::None => Vec::new(),
-        };
-        for (k, (text, color)) in lines.iter().enumerate() {
-            let mut style = TextStyle::LABEL;
-            style.color = *color;
-            label(
-                p,
-                Vec2::new(c.x, below + 40.0 + 18.0 * k as f32),
-                text,
-                &style,
-            );
-        }
     }
 
-    // Which system you're in, and your company's hulls left, over it;
-    // what the marks mean under it.
-    here(p, t, min);
-    forces(p, t, Vec2::new(min.x + 24.0, min.y + 100.0));
-    if let Some(ship) = &t.ship {
-        hulls(p, ship, Vec2::new(max.x - 24.0, min.y + 22.0));
-    }
-    p.line(
-        Vec2::new(min.x + 16.0, bottom),
-        Vec2::new(max.x - 16.0, bottom),
-        1.0,
-        mix(BG, theme::FG, 0.12),
-    );
-    legend(
-        p,
-        Vec2::new(min.x + 24.0, bottom + 17.0),
-        max.x - min.x - 48.0,
-    );
+    forces(p, t, min, max);
 }
 
-/// Which system you're in, at the view's top left.
-fn here(p: &mut Painter, t: &Theater, min: Vec2) {
-    let mut style = TextStyle::LABEL;
-    style.color = theme::DIM;
-    p.text(
-        Vec2::new(min.x + 24.0, min.y + 22.0),
-        "YOU ARE IN",
-        &style,
-        Align::Left,
-    );
-    p.text(
-        Vec2::new(min.x + 24.0, min.y + 38.0),
-        &format!("{} SYSTEM", t.name),
-        &TextStyle::value(20.0),
-        Align::Left,
-    );
-    p.text(
-        Vec2::new(min.x + 24.0, min.y + 68.0),
-        &format!("CATALOGUE {:04} · TICK {}", t.system, t.tick),
-        &style,
-        Align::Left,
-    );
-}
-
-/// How the theater's going, at `at`: a line per side here, with its
-/// hulls, the hulls its yards build a tick, and the sites it holds.
-fn forces(p: &mut Painter, t: &Theater, at: Vec2) {
-    let mut head = TextStyle::LABEL;
-    head.color = theme::FAINT;
-    let cols = [230.0, 320.0, 384.0];
-    for (c, text) in cols.iter().zip(["HULLS", "PER TICK", "SITES"]) {
-        p.text(at + Vec2::new(*c, 0.0), text, &head, Align::Right);
+/// The hull bar, along the top between `min` and `max`: your side's hulls
+/// from the left, its mercs' in amber, then everyone else's.
+fn forces(p: &mut Painter, t: &Theater, min: Vec2, max: Vec2) {
+    let mut sides = t.sides();
+    sides.sort_by_key(|&f| f != t.employer);
+    let total: u32 = sides.iter().map(|&f| t.hulls[f]).sum();
+    if total == 0 {
+        return;
     }
-    let mut y = at.y + 18.0;
-    for f in t.sides() {
+    let w = (max.x - min.x).min(design::UNIT * 80.0);
+    let x0 = (min.x + max.x - w) * 0.5;
+    let bar = min.y + design::UNIT * 3.0;
+    let mut x = x0;
+    for (k, &f) in sides.iter().enumerate() {
         let side = Faction::side(f);
-        let mut name = TextStyle::value(13.0);
-        name.color = side.ui();
-        crate::ui::emblem::tagged(p, Vec2::new(at.x, y), side, side.name(), &name, Align::Left);
-        let mut num = TextStyle::value(13.0);
-        num.color = theme::FG;
-        let built = match t.built[f] {
-            b if b < 0.05 => "0".to_string(),
-            b if b < 9.95 => format!("+{b:.1}"),
-            b => format!("+{b:.0}"),
-        };
-        let cells = [format!("{}", t.hulls[f]), built, t.held[f].to_string()];
-        for (c, text) in cols.iter().zip(&cells) {
-            p.text(Vec2::new(at.x + c, y), text, &num, Align::Right);
+        let mercs = t.mercs[f];
+        let own = t.hulls[f] - mercs;
+        let style = design::BODY.colored(side.ui());
+        let wide = |n: u32| w * n as f32 / total as f32;
+        let start = x;
+        for (n, color) in [(own, side.ui()), (mercs, design::AMBER)] {
+            if n > 0 {
+                let width = (wide(n) - 2.0).max(1.0);
+                p.rect(Vec2::new(x, bar), Vec2::new(width, design::UNIT), color);
+            }
+            x += wide(n);
         }
-        y += 22.0;
+        // Yours is counted at the left end, theirs at the right.
+        let mut at = Vec2::new(start, min.y);
+        if k == 0 {
+            at.x += crate::ui::emblem::tagged(p, at, side, &own.to_string(), &style, Align::Left);
+            if mercs > 0 {
+                at.x += design::UNIT * 2.0;
+                let amber = design::BODY.colored(design::AMBER);
+                let n = mercs.to_string();
+                crate::ui::emblem::tagged(p, at, Faction::Company, &n, &amber, Align::Left);
+            }
+        } else {
+            at.x = x0 + w;
+            at.y += design::UNIT * 5.5 * (k - 1) as f32;
+            let n = t.hulls[f].to_string();
+            crate::ui::emblem::tagged(p, at, side, &n, &style, Align::Right);
+        }
     }
-}
-
-/// Your company's hulls left on its contract, right-aligned at `at`: a
-/// pip a hull, yours alone lit first (#385); boxes of 10 and 100 once
-/// there are many (#450), styled rather than shaped apart (#473).
-fn hulls(p: &mut Painter, ship: &Ship, at: Vec2) {
-    let amber = Faction::Company.ui();
-    let total = ship.committed;
-    let yours = ship.own.left.min(total);
-    let mut company = TextStyle::LABEL;
-    company.color = theme::DIM;
-    let mut mine = TextStyle::LABEL;
-    mine.color = amber;
-    let (left, right) = (format!("YOURS {yours}"), format!("COMPANY {total}"));
-    let (cell, gap) = (Vec2::new(9.0, 12.0), 3.0);
-    let w = hull_boxes_size(&hull_boxes(total, yours, cell, gap), cell)
-        .x
-        .max(measure(&left, &mine) + 24.0 + measure(&right, &company));
-    let x0 = at.x - w;
-    p.text(Vec2::new(x0, at.y), &left, &mine, Align::Left);
-    p.text(at, &right, &company, Align::Right);
-    hull_pips(
-        p,
-        Vec2::new(x0, at.y + 16.0),
-        total,
-        yours,
-        amber,
-        cell,
-        gap,
-    );
 }
 
 /// What a contract's for, in caps: to hold the system, or to take it.
@@ -1251,7 +1220,7 @@ pub fn headline(tr: &Transfer, t: &Theater, leg: Leg) -> &'static str {
 /// the ship along it, and the contract it's going to.
 fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max: Vec2) {
     let amber = Faction::Company.ui();
-    let mut style = TextStyle::LABEL;
+    let mut style = design::SMALL;
     style.color = amber;
     let what = headline(tr, t, leg);
     p.text(
@@ -1298,11 +1267,11 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
     p.text(
         Vec2::new(min.x + 24.0, min.y + 38.0),
         &head,
-        &TextStyle::value(20.0),
+        &design::HEAD,
         Align::Left,
     );
-    let mut dim = TextStyle::LABEL;
-    dim.color = theme::DIM;
+    let mut dim = design::SMALL;
+    dim.color = design::TEXT_2;
     if let Some(ship) = &t.ship {
         let realm = Faction::side(ship.side);
         let aboard = match &tr.from.ship {
@@ -1336,7 +1305,7 @@ fn caption(p: &mut Painter, t: &Theater, tr: &Transfer, leg: Leg, min: Vec2, max
         with_alpha(amber, 0.8),
     );
     p.line(Vec2::new(ship_x, y), Vec2::new(x1, y), 1.0, theme::FAINT);
-    dot(p, Vec2::new(x0, y), 4.0, theme::DIM);
+    dot(p, Vec2::new(x0, y), 4.0, design::TEXT_2);
     ring(p, Vec2::new(x1, y), 6.0, 1.5, amber);
     p.text(Vec2::new(x0, y - 24.0), &a, &dim, Align::Left);
     p.text(Vec2::new(x1, y - 24.0), &b, &dim, Align::Right);
@@ -1422,22 +1391,22 @@ fn summary(
     } else {
         theme::HOT
     };
-    p.rect(at, size, theme::PANEL);
+    p.rect(at, size, design::GROUND);
     p.rect_outline(at, size, 1.0, theme::FAINT);
     p.rect(at, Vec2::new(size.x, 2.0), tone);
     let (x0, x1) = (at.x + PAD, at.x + size.x - PAD);
     let mut y = at.y + PAD;
     let (head, how) = verdict(from, e);
-    let mut style = TextStyle::LABEL;
+    let mut style = design::SMALL;
     style.color = tone;
     p.text(Vec2::new(x0, y), head, &style, Align::Left);
     y += 16.0;
-    p.text(Vec2::new(x0, y), &how, &TextStyle::value(20.0), Align::Left);
+    p.text(Vec2::new(x0, y), &how, &design::HEAD, Align::Left);
     y += 34.0;
 
-    let mut dim = TextStyle::LABEL;
-    dim.color = theme::DIM;
-    let value = TextStyle::value(12.0);
+    let mut dim = design::SMALL;
+    dim.color = design::TEXT_2;
+    let value = design::BODY;
     for (what, figure) in rows {
         p.text(Vec2::new(x0, y + 2.0), what, &dim, Align::Left);
         p.text(Vec2::new(x1, y), &figure, &value, Align::Right);
@@ -1449,8 +1418,8 @@ fn summary(
     let gs = Vec2::new(GO_W, GO_H);
     p.rect(go, gs, with_alpha(tone, if lit { 0.3 } else { 0.12 }));
     p.rect_outline(go, gs, 1.0, tone);
-    let mut a = TextStyle::LABEL;
-    a.color = theme::FG;
+    let mut a = design::SMALL;
+    a.color = design::TEXT;
     p.text(
         Vec2::new(mid.x, go.y + (GO_H - a.size) * 0.5),
         "CONTINUE",
@@ -1553,7 +1522,7 @@ fn shield_state(sites: &[(usize, &SiteView)]) -> Shield {
 /// A hex shield of radius `r` round `c` in `color`: a faint bubble, its
 /// edge, and a honeycomb of hairlines over it.
 fn hex_shield(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
-    p.disc(c, r, with_alpha(color, 0.03), with_alpha(color, 0.16));
+    p.disc(c, r, with_alpha(color, 0.0), with_alpha(color, 0.07));
     // Pointy-topped cells, each edge drawn once (shared edges would show
     // twice as bright), the ones wholly inside the bubble.
     let size = (r / 4.5).clamp(5.0, 11.0);
@@ -1564,7 +1533,7 @@ fn hex_shield(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
     let (dx, dy) = (3f32.sqrt() * size, 1.5 * size);
     let n = (r / dy).ceil() as i32 + 1;
     let mut seen = std::collections::HashSet::new();
-    let line = with_alpha(color, 0.55);
+    let line = with_alpha(color, 0.08);
     for row in -n..=n {
         for col in -n..=n {
             let at = c + Vec2::new(dx * (col as f32 + 0.5 * (row & 1) as f32), dy * row as f32);
@@ -1580,7 +1549,7 @@ fn hex_shield(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
             }
         }
     }
-    ring(p, c, r, 1.6, with_alpha(color, 0.85));
+    ring(p, c, r, 1.2, with_alpha(color, 0.6));
 }
 
 /// What kind of site it is, as a small glyph in `color` at `at`.
@@ -1624,71 +1593,13 @@ fn site_marker(p: &mut Painter, at: Vec2, s: &SiteView, selected: bool) {
     } else {
         owner
     };
+    // Yours to fight: ringed, in amber once it's picked.
+    dot(p, at, 15.0, BG);
     if s.committed {
-        dot(p, at, 15.0, mix(BG, theme::HOT, 0.3));
-        ring(p, at, 15.0, 2.0, theme::HOT);
-    } else {
-        dot(p, at, 15.0, BG);
-        if s.contested {
-            ring(p, at, 15.0, 1.3, mix(BG, theme::HOT, 0.75));
-        }
+        let c = if selected { design::AMBER } else { theme::HOT };
+        ring(p, at, 15.0, if selected { 3.0 } else { 1.5 }, c);
     }
     glyph(p, at, s, color);
-    if selected {
-        widgets::corners(
-            p,
-            at - Vec2::splat(22.0),
-            at + Vec2::splat(22.0),
-            7.0,
-            theme::FG,
-        );
-    }
-}
-
-/// The key to the marks, in a row along the bottom.
-fn legend(p: &mut Painter, at: Vec2, width: f32) {
-    let mut style = TextStyle::LABEL;
-    style.color = theme::DIM;
-    let shield = SiteView::example(true);
-    let mine = SiteView::example(false);
-    let entries: [(&str, Box<dyn Fn(&mut Painter, Vec2)>); 6] = [
-        ("SHIELD", Box::new(|p, c| glyph(p, c, &shield, theme::DIM))),
-        (
-            "FOUNDRY",
-            Box::new(|p, c| {
-                p.rect_outline(c - Vec2::splat(5.5), Vec2::splat(11.0), 1.5, theme::DIM)
-            }),
-        ),
-        (
-            "CRYSTAL MINE",
-            Box::new(|p, c| glyph(p, c, &mine, theme::DIM)),
-        ),
-        (
-            "CONTESTED",
-            Box::new(|p, c| ring(p, c, 8.0, 1.2, mix(BG, theme::HOT, 0.75))),
-        ),
-        (
-            "YOUR SIDE FIGHTS HERE",
-            Box::new(|p, c| {
-                dot(p, c, 8.0, mix(BG, theme::HOT, 0.3));
-                ring(p, c, 8.0, 2.0, theme::HOT);
-            }),
-        ),
-        (
-            "YOUR COMPANY",
-            Box::new(|p, c| ship_glyph(p, c + Vec2::new(-1.0, 0.0), 0.36)),
-        ),
-    ];
-    let mut x = at.x;
-    for (name, mark) in entries {
-        let w = crate::ui::measure(name, &style);
-        if x + 25.0 + w > at.x + width {
-            break;
-        }
-        mark(p, Vec2::new(x + 9.0, at.y + 5.0));
-        p.text(Vec2::new(x + 25.0, at.y), name, &style, Align::Left);
-        x += 25.0 + w + 26.0;
-    }
 }
 
 #[cfg(test)]
@@ -1701,8 +1612,8 @@ mod tests {
             name: "TEST".into(),
             employer: 0,
             planets,
+            mercs: [0; 5],
             hulls: [0; 5],
-            built: [0.0; 5],
             held: [0; 5],
             tiers: [0; 5],
             sites: Vec::new(),

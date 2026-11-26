@@ -1,7 +1,8 @@
 # Design system, v0
 
 The code is the reference: tokens and components are in `src/ui/design.rs`.
-The main menu is made from it; the other screens aren't yet.
+The main menu and the contract page are made from it; the other screens
+aren't yet.
 
 ## Principles
 

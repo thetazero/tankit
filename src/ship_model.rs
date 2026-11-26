@@ -39,7 +39,7 @@ pub const DRIVES: [(Vec3, f32); 7] = [
 /// How far out the engine pods ride.
 const POD_Z: f32 = 4.3;
 
-fn col(c: [f32; 3], m: Material) -> Vec4 {
+pub(crate) fn col(c: [f32; 3], m: Material) -> Vec4 {
     Vec4::new(c[0], c[1], c[2], m.id())
 }
 
@@ -162,7 +162,7 @@ fn loft(
 
 /// A body of revolution round the x axis through `c`: rings (x offset,
 /// radius) from front to back, `segs` round, smooth, one colour.
-fn lathe(m: &mut MeshData, c: Vec3, rings: &[(f32, f32)], segs: usize, color: Vec4) {
+pub(crate) fn lathe(m: &mut MeshData, c: Vec3, rings: &[(f32, f32)], segs: usize, color: Vec4) {
     let n = rings.len();
     let at = |i: usize, k: usize| {
         let a = TAU * k as f32 / segs as f32;
@@ -207,7 +207,7 @@ fn disc(m: &mut MeshData, c: Vec3, r: f32, dir: f32, segs: usize, color: Vec4) {
 }
 
 /// A box `size` big at `c`, turned by `rot`.
-fn block(m: &mut MeshData, c: Vec3, size: Vec3, rot: Quat, color: Vec4) {
+pub(crate) fn block(m: &mut MeshData, c: Vec3, size: Vec3, rot: Quat, color: Vec4) {
     m.append(
         &MeshData::cube(),
         Mat4::from_scale_rotation_translation(size, rot, c),
