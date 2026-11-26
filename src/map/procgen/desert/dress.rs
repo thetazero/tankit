@@ -14,14 +14,16 @@ use super::Palette;
 use super::skeleton::*;
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
+use crate::map::noise::noise2;
 use crate::map::procgen::Centerpiece;
 use crate::map::procgen::mine::{line_at, smoothstep};
-use crate::map::valley::noise2;
+use crate::map::ruins::Drift;
 use crate::map::{Map, OBox, Terrain, rocks};
 use crate::render::material::Material;
 use crate::rng::Rng;
 
 mod camp;
+mod town;
 #[cfg(test)]
 pub use camp::site;
 
@@ -41,14 +43,19 @@ pub enum Claim {
 /// The play ground, painted: crests pale, troughs and the washes darker,
 /// the high ground's top weathered rock with sand lying on it.
 pub fn terrain(sk: &Skeleton, pal: Palette) -> Terrain {
-    terrain_of(sk, pal, None)
+    terrain_of(sk, pal, None, &[])
 }
 
 /// `terrain`, with a generator's camp (`camp`) on it if there's one.
-fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>) -> Terrain {
+fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>, drifts: &[Drift]) -> Terrain {
     let n = (sk.size / 2.0).round() as usize + 1;
     let mut t = Terrain::from_fn(Vec2::ZERO, 2.0, n, n, |x, z| {
-        sk.ground(Vec2::new(x, z)) + camp.map_or(0.0, |c| c.heap(Vec2::new(x, z)))
+        sk.ground(Vec2::new(x, z))
+            + camp.map_or(0.0, |c| c.heap(Vec2::new(x, z)))
+            + drifts
+                .iter()
+                .map(|d| d.height_at(Vec2::new(x, z)))
+                .fold(0.0, f32::max)
     });
     t.color = Vec3::ONE;
     t.material = Material::Sand;
@@ -72,6 +79,7 @@ fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>) -> Terrain
         let rock = crate::map::crag::TOP.lerp(pal.stone, 0.6);
         c = c.lerp(rock, top);
         c = c.lerp(pal.stone_dark, smoothstep(0.45, 0.9, slope) * 0.6);
+        c = town::paint(sk, p, c, &pal);
         if let Some(camp) = camp {
             c = camp.paint(p, c, &pal);
         }
@@ -92,12 +100,23 @@ pub fn dress(
     let dice = |k: u64| Rng::new(seed.wrapping_mul(0x2545_F491).wrapping_add(k));
     let mut s = Sand { map, sk, pal };
     let mut claims = Vec::new();
+    if sk.houses().next().is_some() {
+        let drifts = s.houses(&mut dice(4));
+        s.map.terrain = Some(terrain_of(sk, pal, None, &drifts));
+        let heap = |p: Vec2| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max);
+        let mut ground = sk.land.surface(sk.size, 1.0, heap);
+        ground.rock = pal.stone;
+        s.map.solid = Some(ground.into());
+        s.map.settle();
+    }
     s.cliffs(&mut dice(1));
     let start = s.map.oboxes.len();
     match sk.landmarks[0].kind {
         LandmarkKind::Needles => s.needles(&mut dice(2)),
         LandmarkKind::Crater => s.crater(&mut dice(2)),
         LandmarkKind::Arch => s.arch(&mut dice(2)),
+        LandmarkKind::Dam => s.dam(&mut dice(2)),
+        LandmarkKind::Well => s.well(&mut dice(2)),
         LandmarkKind::Open => {}
         LandmarkKind::Generator | LandmarkKind::Great(_) => {
             let (owner, condition) = match piece {
@@ -115,10 +134,12 @@ pub fn dress(
             LotKind::Spires => s.spires(&mut rng, lot),
             LotKind::Fins => s.fins(&mut rng, lot),
             LotKind::Boulders => s.boulder_field(&mut rng, lot),
+            // (Houses are up already.)
             _ => {}
         }
         claims.push((Claim::Lot(k), start..s.map.oboxes.len()));
     }
+    s.town(&mut dice(10));
     s.wash_stones(&mut dice(5));
     s.scatter(&mut dice(6));
     s.fill_cover(&mut dice(7));
@@ -694,7 +715,11 @@ impl Sand<'_> {
         let from = sk.base_spots()[0];
         self.map.open_spots = spots
             .into_iter()
-            .filter(|&q| !nav.path(from, q).is_empty())
+            .filter(|&q| {
+                nav.nearest_open_point(q)
+                    .is_some_and(|c| c.distance(q) < 2.5)
+                    && !nav.path(from, q).is_empty()
+            })
             .collect();
         self.routes(&nav);
         // Repair drops: either side of the landmark, and partway out to
@@ -794,7 +819,7 @@ impl Sand<'_> {
             // Not through the spawns themselves: every way shares those.
             let pts: Vec<Vec3> = pts
                 .into_iter()
-                .filter(|p| flat(*p).distance(a).min(flat(*p).distance(b)) > PAD + 10.0)
+                .filter(|p| flat(*p).distance(a).min(flat(*p).distance(b)) > sk.pad + 10.0)
                 .collect();
             if pts.len() < 2 {
                 continue;
