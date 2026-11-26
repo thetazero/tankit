@@ -37,7 +37,7 @@ pub const PANEL_W: f32 = 340.0;
 const TABS_TOP: f32 = design::UNIT * 11.0;
 const TAB_H: f32 = design::UNIT * 4.0;
 const GRID_TOP: f32 = design::UNIT * 17.0;
-const GRID_VIEW: f32 = design::UNIT * 78.0;
+const GRID_VIEW: f32 = design::UNIT * 74.0;
 const GRID_W: f32 = design::COLUMN;
 /// A part's row, its picture, and the pitch; and its maker's head above.
 const THUMB: Vec2 = Vec2::new(design::UNIT * 9.0, design::UNIT * 5.0);
@@ -659,7 +659,7 @@ impl Garage {
         width: f32,
         height: f32,
     ) -> Layer<Hit> {
-        use design::{BLUE, BODY, BUTTON, MARGIN, SMALL, TEXT_2, UNIT};
+        use design::{BLUE, BODY, MARGIN, SMALL, TEXT_2, UNIT};
         let e = smooth(self.blend);
         if e <= 0.0 {
             return Layer::empty();
@@ -679,19 +679,18 @@ impl Garage {
         self.draw_grid(&mut p, &mut hits, x, queued, profile);
 
         // Back out, putting the kit back as Esc does; or keep it as it stands.
-        let foot = h - MARGIN - BUTTON;
+        let foot = design::foot(h, 1).y;
         if queued != (tank.hull_kind, tank.turret_kind) {
             let at = Vec2::new(x, foot - UNIT * 3.0);
             let style = SMALL.colored(TEXT_2);
             p.text(at, "On your next respawn", &style, Align::Left);
         }
-        let bw = (GRID_W - UNIT) * 0.5;
         for (k, (name, input)) in [("Back", Input::Revert), ("Done", Input::Deploy)]
             .into_iter()
             .enumerate()
         {
-            let min = Vec2::new(x + (bw + UNIT) * k as f32, foot);
-            self.button(&mut p, &mut hits, min, bw, name, Some(input));
+            let min = design::foot(h, k);
+            self.button(&mut p, &mut hits, min, GRID_W, name, Some(input));
         }
 
         self.draw_stats(&mut p, &mut hits, w, queued, profile);

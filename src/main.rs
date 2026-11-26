@@ -1669,6 +1669,24 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             menu.input(menu::Nav::Select);
             menu.set_cluster(cluster_view::Cluster::of(&g));
             let rank = profile.rank().level;
+            // The war goes on until there's work on offer.
+            for _ in 0..500 {
+                if !g.open_work(rank).is_empty() {
+                    break;
+                }
+                g.step();
+                g.await_work_staying(prefer, rank, 100);
+            }
+            profile.ship = g.crew;
+            // The war goes on until there's work on offer.
+            for _ in 0..500 {
+                if !g.open_work(rank).is_empty() {
+                    break;
+                }
+                g.step();
+                g.await_work_staying(prefer, rank, 100);
+            }
+            profile.ship = g.crew;
             let mine = g.aboard(rank).and_then(|t| galaxy::theater::Offer::of(&t));
             menu.board.set(g.open_work(rank), mine);
             if args.tab > 0 {

@@ -643,6 +643,7 @@ impl Hud {
             let end = (m.phase == Phase::Over).then_some(Debrief {
                 ledger,
                 war: self.debrief.as_ref(),
+                lit: self.hover == Some(Hit::Missions),
             });
             draw_board(&mut p, &mut hits, m, end, w, h);
         }
@@ -678,7 +679,7 @@ const BOARD_PAD: f32 = design::UNIT * 4.0;
 const BOARD_OVER: f32 = design::UNIT * 12.0;
 /// A line of what you got, and the way on under them.
 const GAIN_ROW: f32 = design::UNIT * 4.0;
-const BOARD_ON: f32 = design::UNIT * 5.0;
+const BOARD_ON: f32 = design::UNIT * 7.0;
 /// How long the board takes to open.
 const BOARD_OPENS: f32 = 0.35;
 
@@ -686,6 +687,8 @@ const BOARD_OPENS: f32 = 0.35;
 struct Debrief<'a> {
     ledger: Ledger,
     war: Option<&'a WarResult>,
+    /// The pointer's on CONTINUE.
+    lit: bool,
 }
 
 /// How wide a table is: the longest name in the match beside its columns.
@@ -797,12 +800,10 @@ fn draw_board(
         }
     }
 
-    let style = design::HEAD.colored(design::AMBER);
-    let at = Vec2::new(mid, y + GAIN_ROW * lines as f32 + design::UNIT * 2.0);
-    let tw = p.text(at, "Continue", &style, Align::Center);
-    let pad = Vec2::splat(design::UNIT * 2.0);
-    let min = Vec2::new(mid - tw * 0.5, at.y) - pad;
-    let size = Vec2::new(tw, style.size) + pad * 2.0;
+    let size = Vec2::new(design::UNIT * 26.0, design::BUTTON);
+    let down = GAIN_ROW * lines as f32 + design::UNIT * 2.0;
+    let min = Vec2::new(mid - size.x * 0.5, y + down);
+    design::button(p, min, size.x, "Continue", true, end.lit);
     hits.add(p, min, size, Hit::Missions);
 }
 
@@ -948,8 +949,7 @@ fn part_gain(p: &mut Painter, sc: &Scrapped, t: f32, at: Vec2, col: f32) {
     p.text(at + Vec2::X * col, &text, &style, Align::Right);
 }
 
-const BUTTON_H: f32 = 26.0;
-const BUTTON_PAD: f32 = 12.0;
+const BUTTON_H: f32 = design::BUTTON;
 
 /// What your battle did to the war (its site), for the debrief.
 #[derive(Clone, Debug, PartialEq)]
@@ -1537,33 +1537,13 @@ pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f3
 
     // The way on, and a spinner while the contract screen's still loading.
     let by = min.y + size.y - 32.0 - BUTTON_H;
-    let go = if state.going && state.loading {
-        "LOADING"
-    } else {
-        "CONTINUE"
-    };
-    let bw = BUTTON_PAD * 2.0 + measure("CONTINUE", &TextStyle::LABEL);
-    let hover = if state.going {
-        Some(Hit::Continue)
-    } else {
-        state.hover
-    };
-    let style = TextStyle::LABEL;
-    let bmin = Vec2::new(right - bw, by);
-    let fill = if hover == Some(Hit::Continue) {
-        0.16
-    } else {
-        0.07
-    };
-    p.rect(bmin, Vec2::new(bw, BUTTON_H), with_alpha(theme::FG, fill));
-    p.rect_outline(bmin, Vec2::new(bw, BUTTON_H), 1.0, theme::FG);
-    p.text(
-        Vec2::new(bmin.x + bw * 0.5, by + (BUTTON_H - style.size) * 0.5),
-        go,
-        &style,
-        Align::Center,
-    );
-    hits.add(&p, bmin, Vec2::new(bw, BUTTON_H), Hit::Continue);
+    let wait = state.going && state.loading;
+    let go = if wait { "Loading" } else { "Continue" };
+    let size = Vec2::new(design::UNIT * 20.0, BUTTON_H);
+    let bmin = Vec2::new(right - size.x, by);
+    let hover = state.hover == Some(Hit::Continue);
+    design::button(&mut p, bmin, size.x, go, !wait, hover);
+    hits.add(&p, bmin, size, Hit::Continue);
     if state.loading && state.going {
         spinner_small(
             &mut p,
