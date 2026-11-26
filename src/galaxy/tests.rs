@@ -987,8 +987,8 @@ fn planets_have_outposts() {
     let mut counts = [0u32; 4];
     for s in 0..g.systems.len() {
         for p in 0..g.systems[s].planets {
-            let n = g
-                .site_range(s)
+            let (a, b) = g.systems[s].sites;
+            let n = (a as usize..b as usize)
                 .filter(|&i| g.sites[i].planet == p && g.sites[i].kind == SiteKind::Outpost)
                 .count();
             counts[n] += 1;

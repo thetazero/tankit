@@ -23,6 +23,8 @@
 //! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
+//! Outposts make nothing: they're sites a world isn't taken without.
+//!
 //! **A tick:**
 //! 1. *Production.* Every mine adds crystal to its planet's vault (`Vault`),
 //!    which changes hands only with the whole planet. A yard builds while a
