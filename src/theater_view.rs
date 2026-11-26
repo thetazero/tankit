@@ -878,7 +878,7 @@ fn holders(t: &Theater) -> Vec<usize> {
 }
 
 /// Stars all round, far out (fixed, so they don't swim as the view changes).
-fn stars(eye: Vec3, out: &mut Vec<Particle>) {
+pub fn stars(eye: Vec3, out: &mut Vec<Particle>) {
     let mut h = 0x2545_f491u32;
     let mut rnd = || {
         h ^= h << 13;

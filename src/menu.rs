@@ -1,8 +1,8 @@
 //! Main menu, mission select, settings and the pause menu, in the hairline style.
 //!
-//! The main menu and mission select sit in the same left-hand panel as the
-//! garage, over a mission's map with your tank parked in it: the first
-//! mission's, then whichever contract the mission list points at. The pause
+//! The main menu is the design system's (`ui::design`), over the
+//! galaxy around you. Mission select still sits in the garage's left-hand panel, over
+//! the map of whichever contract it points at. The pause
 //! menu is a small centred box over the frozen battle.
 //!
 //! Names and numbers are set in display caps; everything else is sentence-case
@@ -13,18 +13,19 @@ use winit::keyboard::KeyCode;
 
 use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
+use crate::cluster_view::{self, Cluster};
 use crate::faction::Faction;
 use crate::galaxy::theater::{
-    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name, system_name,
+    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name,
 };
-use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
+use crate::garage::{self, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
 use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
-use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme};
+use crate::ui::{design, emblem};
 
 const REF_HEIGHT: f32 = 900.0;
 
@@ -106,6 +107,8 @@ pub enum Hit {
     Continue,
     /// On the companies screen: tab `i` of who you'd fight (#454).
     Fight(usize),
+    /// On the main menu: star `i` of the cluster map, to read.
+    Star(usize),
 }
 
 /// A click: the key it stands in for (for the sound), and what it did.
@@ -139,13 +142,10 @@ impl<'a> Item<'a> {
     }
 }
 
-const MAIN_ITEMS: [Item<'static>; 5] = [
-    Item::Opens("CONTRACT"),
-    Item::Opens("COMPANIES"),
-    Item::Opens("GARAGE"),
-    Item::Opens("SETTINGS"),
-    Item::Leaves("QUIT", None),
-];
+/// The main menu's actions, what a merc's here for first; then, set apart
+/// at the foot of the panel, the rest.
+const MAIN_ITEMS: [&str; 5] = ["Contract", "Find work", "Garage", "Settings", "Quit"];
+const MAIN_ACTIONS: usize = 3;
 
 /// Picks one toggle out of the settings.
 type Flag = fn(&mut Settings) -> &mut bool;
@@ -247,7 +247,7 @@ impl Controls {
         let (row, slot) = match hit {
             Hit::Row(i) => (i, self.slot),
             Hit::Bind(i, s) => (i, s),
-            Hit::Volume | Hit::Back | Hit::Continue | Hit::Fight(_) => return false,
+            Hit::Volume | Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) => return false,
         };
         if self.capturing || (row, slot) == (self.row, self.slot) {
             return false;
@@ -314,6 +314,10 @@ pub struct Menu {
     back_lit: bool,
     /// The mouse is over CONTINUE on the contract summary card (#414).
     go_lit: bool,
+    /// Your stretch of the war, behind the main menu (the app keeps it up
+    /// to date), and the star the pointer's on.
+    cluster: Option<Cluster>,
+    star: Option<usize>,
 }
 
 impl Menu {
@@ -341,6 +345,8 @@ impl Menu {
             controls: Controls::default(),
             back_lit: false,
             go_lit: false,
+            cluster: None,
+            star: None,
         }
     }
 
@@ -756,13 +762,17 @@ impl Menu {
             return !std::mem::replace(&mut self.go_lit, true);
         }
         self.go_lit = false;
+        self.star = match hit {
+            Hit::Star(i) => Some(i),
+            _ => None,
+        };
         if self.screen == Screen::Controls {
             return self.controls.hover(hit);
         }
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Fight(_) => return false,
+            Hit::Fight(_) | Hit::Star(_) => return false,
             Hit::Back | Hit::Continue => unreachable!(),
         };
         let slot = match self.screen {
@@ -788,6 +798,10 @@ impl Menu {
             let (nav, change) = self.controls.click(hit);
             return (nav, change.map(Action::Setting));
         }
+        // A star's only to read.
+        if let Hit::Star(_) = hit {
+            return (Nav::Right, None);
+        }
         if let Hit::Fight(k) = hit {
             let tab = self.fights().get(k).copied();
             if let Some(tab) = tab {
@@ -804,7 +818,7 @@ impl Menu {
                 );
             }
             Hit::Row(_) | Hit::Bind(..) | Hit::Continue => Nav::Select,
-            Hit::Back | Hit::Fight(_) => unreachable!(),
+            Hit::Back | Hit::Fight(_) | Hit::Star(_) => unreachable!(),
         };
         (nav, self.input(nav))
     }
@@ -813,6 +827,7 @@ impl Menu {
     pub fn unhover(&mut self) {
         self.back_lit = false;
         self.go_lit = false;
+        self.star = None;
     }
 
     /// The theater whose system the screen shows in 3D instead of a map
@@ -853,6 +868,13 @@ impl Menu {
         let w = width / scale;
         let mut p = Painter::new(scale);
         let mut hits = Hits::new();
+        if self.screen == Screen::Main {
+            self.draw_main(&mut p, &mut hits, profile, w, h);
+            return Layer {
+                verts: fade(p.finish(), alpha),
+                hits,
+            };
+        }
         match self.system() {
             Some(t) => {
                 crate::theater_view::veil(&mut p, t, self.transfer.as_ref(), w, h);
@@ -863,31 +885,12 @@ impl Menu {
         let x = PANEL_X;
         let mut y = 72.0;
 
-        // The game, and what you have to spend.
-        p.text(
-            Vec2::new(x, y),
-            "TANKIT",
-            &TextStyle::value(28.0),
-            Align::Left,
-        );
+        // What you have to spend.
         crystals(&mut p, Vec2::new(x + PANEL_W, y + 10.0), profile.crystals);
         y += 72.0;
 
         match self.screen {
-            Screen::Main => {
-                y += rows(&mut p, &mut hits, Vec2::new(x, y), &MAIN_ITEMS, self.cursor) + 24.0;
-                body(&mut p, Vec2::new(x, y), "Deploying in", theme::DIM);
-                y += 20.0;
-                p.text(
-                    Vec2::new(x, y),
-                    &kit_name(profile.loadout),
-                    &TextStyle::value(12.0),
-                    Align::Left,
-                );
-                y += 34.0;
-                y += company_rank(&mut p, Vec2::new(x, y), profile) + 4.0;
-                your_company(&mut p, Vec2::new(x, y), profile);
-            }
+            Screen::Main => unreachable!("drawn above"),
             Screen::Missions if self.choice.is_some() => {
                 let c = self.choice.as_ref().unwrap();
                 draw_choice(&mut p, &mut hits, Vec2::new(x, y), c, self.pick);
@@ -997,6 +1000,70 @@ impl Menu {
 }
 
 impl Menu {
+    /// The cluster the main menu shows.
+    pub fn set_cluster(&mut self, c: Cluster) {
+        self.cluster = Some(c);
+        self.star = None;
+    }
+
+    /// Whether the main menu's showing a cluster other than as of `tick`, aboard `crew`.
+    pub fn wants_cluster(&self, tick: u64, crew: Option<u32>) -> bool {
+        self.screen == Screen::Main
+            && self
+                .cluster
+                .as_ref()
+                .is_none_or(|c| (c.tick, c.crew) != (tick, crew))
+    }
+
+    /// The stars behind the main menu, while it's up.
+    pub fn cluster(&self) -> Option<(&Cluster, f32)> {
+        let c = self.cluster.as_ref()?;
+        (self.screen == Screen::Main).then_some((c, self.clock))
+    }
+
+    /// The main menu: who you are and what you can do, on a panel over the
+    /// stars.
+    fn draw_main(&self, p: &mut Painter, hits: &mut Hits<Hit>, profile: &Profile, w: f32, h: f32) {
+        cluster_view::draw(p, hits, self.cluster.as_ref(), self.star, self.clock, w, h);
+        design::panel(p, h);
+        let (x, right) = (design::MARGIN, design::MARGIN + design::COLUMN);
+
+        // Who you are, and what you have to spend.
+        let mut y = design::MARGIN;
+        let r = profile.rank();
+        p.text(
+            Vec2::new(x, y),
+            &format!("{} {}", title(r.title()), r.level),
+            &design::BODY,
+            Align::Left,
+        );
+        p.text(
+            Vec2::new(right, y),
+            &format!("{} cr", profile.crystals),
+            &design::BODY.colored(design::BLUE),
+            Align::Right,
+        );
+        y += design::UNIT * 4.0;
+        design::bar(p, Vec2::new(x, y), design::COLUMN, r.progress());
+
+        // What you can do.
+        y += design::UNIT * 11.0;
+        for (i, name) in MAIN_ITEMS.iter().enumerate().take(MAIN_ACTIONS) {
+            let (at, size) = design::action(p, Vec2::new(x, y), name, i == self.cursor);
+            hits.add(p, at, size, Hit::Row(i));
+            y += design::ACTION;
+        }
+
+        // And, at the foot, the rest.
+        let mut fx = x;
+        for (i, name) in MAIN_ITEMS.iter().enumerate().skip(MAIN_ACTIONS) {
+            let at = Vec2::new(fx, h - design::MARGIN - design::SMALL.size);
+            let (min, size) = design::link(p, at, name, i == self.cursor);
+            hits.add(p, min, size, Hit::Row(i));
+            fx += size.x + design::UNIT * 2.0;
+        }
+    }
+
     /// No theater to show: your company has no battle for you yet (or
     /// you're not with one, and none has; or the galaxy is still loading).
     fn no_posting(&self, p: &mut Painter, at: Vec2, profile: &Profile) {
@@ -1292,10 +1359,6 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
         Some(CrewNews::Joined { from }) => Some(format!(
             "The {} merged into this ship",
             title(&ship_name(from))
-        )),
-        Some(CrewNews::Sailed { from }) => Some(format!(
-            "Sailed here from {} for work",
-            title(&system_name(from as usize))
         )),
         Some(CrewNews::Gone { from }) => Some(format!(
             "Moved here: the {} is gone",
@@ -1703,74 +1766,6 @@ fn stake(contract: Contract, site: &SiteView, employer: Faction) -> String {
     format!("{how} and {what}")
 }
 
-/// Your company at `at`, under the rank: its ship's name, or that you're not
-/// with one yet. Returns its height.
-fn your_company(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
-    body(p, at, "Your company", theme::DIM);
-    let at = at + Vec2::new(0.0, 22.0);
-    match profile.company_name() {
-        Some(name) => {
-            let mut style = TextStyle::value(14.0);
-            style.color = Faction::Company.ui();
-            emblem::tagged(
-                p,
-                at,
-                Faction::Company,
-                &format!("THE {name}"),
-                &style,
-                Align::Left,
-            );
-        }
-        None => {
-            body(p, at, "None yet: open Contract to join one", theme::FAINT);
-        }
-    }
-    44.0
-}
-
-/// Your Company rank at `at`: the Company's emblem and name, the rank's number
-/// and title, and the bar to the next. Returns its height.
-fn company_rank(p: &mut Painter, at: Vec2, profile: &Profile) -> f32 {
-    let (x, mut y) = (at.x, at.y);
-    let r = profile.rank();
-    let mut style = BODY;
-    style.color = Faction::Company.ui();
-    emblem::tagged(
-        p,
-        Vec2::new(x, y),
-        Faction::Company,
-        "The Company",
-        &style,
-        Align::Left,
-    );
-    y += 24.0;
-    p.text(
-        Vec2::new(x, y),
-        &format!("Rank {}", r.level),
-        &TextStyle::value(22.0),
-        Align::Left,
-    );
-    p.text(
-        Vec2::new(x + PANEL_W, y + 11.0),
-        &title(r.title()),
-        &BODY,
-        Align::Right,
-    );
-    y += 34.0;
-    widgets::hairbar(p, Vec2::new(x, y), PANEL_W, r.progress(), theme::FG);
-    y += 10.0;
-    let mut faint = BODY;
-    faint.color = theme::FAINT;
-    p.text(
-        Vec2::new(x + PANEL_W, y),
-        &format!("{} / {} renown to Rank {}", r.into, r.span, r.level + 1),
-        &faint,
-        Align::Right,
-    );
-    y += 26.0;
-    y - at.y
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PauseAction {
     Resume,
@@ -1865,7 +1860,7 @@ impl Pause {
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Back | Hit::Continue | Hit::Fight(_) => unreachable!(),
+            Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) => unreachable!(),
         };
         let slot = self.settings.as_mut().unwrap_or(&mut self.cursor);
         std::mem::replace(slot, i) != i
@@ -1890,7 +1885,7 @@ impl Pause {
                 );
             }
             Hit::Row(_) | Hit::Bind(..) => Nav::Select,
-            Hit::Back | Hit::Continue | Hit::Fight(_) => unreachable!(),
+            Hit::Back | Hit::Continue | Hit::Fight(_) | Hit::Star(_) => unreachable!(),
         };
         (nav, self.input(nav))
     }
@@ -2286,6 +2281,7 @@ const BODY: TextStyle = TextStyle {
     weight: 1.1,
     color: theme::DIM,
     lower: true,
+    face: crate::ui::font::Face::Inter,
 };
 
 /// Line height of wrapped body text.
@@ -2317,7 +2313,7 @@ fn crystals(p: &mut Painter, at: Vec2, crystals: u32) {
 }
 
 /// "THE CAPITAL" as "The Capital".
-fn title(caps: &str) -> String {
+pub fn title(caps: &str) -> String {
     caps.split(' ')
         .map(|w| {
             let mut c = w.chars();
@@ -2419,14 +2415,6 @@ fn wrap(p: &mut Painter, at: Vec2, text: &str, color: Rgba) -> f32 {
     y + BODY_LINE
 }
 
-pub fn kit_name(kit: Loadout) -> String {
-    format!(
-        "{} · {}",
-        garage::hull_name(kit.0),
-        garage::turret_name(kit.1)
-    )
-}
-
 fn step(i: usize, n: usize, nav: Nav) -> usize {
     if nav == Nav::Down {
         (i + 1) % n
@@ -2450,6 +2438,7 @@ fn fade(mut v: Vec<UiVertex>, alpha: f32) -> Vec<UiVertex> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::galaxy::theater::system_name;
 
     #[test]
     fn main_menu_navigation() {

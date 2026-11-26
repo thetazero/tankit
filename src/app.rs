@@ -817,6 +817,9 @@ impl App {
         let before = g.crew;
         g.enlist(None);
         let crew = g.crew;
+        if self.menu.wants_cluster(g.tick, crew) {
+            self.menu.set_cluster(crate::cluster_view::Cluster::of(g));
+        }
         if crew != before {
             self.war.save();
         }
@@ -1567,6 +1570,7 @@ impl App {
             // The planet out of the bay is the world this map is on.
             bay.show_world(r, self.game.world.map.planet);
         }
+        let menu_up = self.mode == Mode::Menu;
         // The system view, on the missions screen (the bay takes over while
         // the garage is open over it).
         let system = (self.mode == Mode::Menu)
@@ -1625,6 +1629,8 @@ impl App {
                     self.game.world.time,
                     view,
                 )
+            } else if let Some((c, time)) = self.menu.cluster().filter(|_| menu_up) {
+                crate::cluster_view::scene(c, time, w / h)
             } else if let (Some(t), Some(sys)) = (system, &self.system) {
                 theater_view::scene(sys, t, self.menu.transfer(), self.menu_time, w / h)
             } else {
@@ -1648,7 +1654,7 @@ impl App {
                                 .draw(&self.profile, w, h, 1.0 - self.garage.presence());
                         let garage = self.garage.draw(&driven, queued, &self.profile, w, h);
                         // The dip around a backdrop swap, under the panel.
-                        let mut ui = if system.is_some() {
+                        let mut ui = if system.is_some() || self.menu.cluster().is_some() {
                             Vec::new()
                         } else {
                             backdrop_dip(self.backdrop_dark, w, h)
