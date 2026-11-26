@@ -66,6 +66,19 @@ impl Style for Resonant {
         GROUND
     }
 
+    fn road(&self) -> Vec3 {
+        Vec3::new(0.3, 0.32, 0.38)
+    }
+
+    fn stone(&self) -> super::civic::Stone {
+        super::civic::Stone {
+            wall: IVORY,
+            mat: Material::Plaster,
+            trim: GILT,
+            roof: SLATE,
+        }
+    }
+
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "CATHEDRAL",
@@ -73,8 +86,8 @@ impl Style for Resonant {
         }
     }
 
-    fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
-        let (lm, base) = (&sk.landmark, sk.ground(sk.landmark.center));
+    fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift> {
+        let base = sk.ground(lm.center);
         cathedral(map, rng, lm, base);
         for a in between_doors(lm) {
             if !shelled(lm, a) {
@@ -88,12 +101,13 @@ impl Style for Resonant {
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
-        map.paving(p, &sk.landmark, IVORY * 0.9);
+        map.paving(p, &sk.landmarks, IVORY * 0.9);
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
-        map.processional_way(sk, s, IVORY);
-        veins(map, sk, s);
+        if s.rank == Rank::Avenue {
+            veins(map, sk, s);
+        }
     }
 
     fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, _rng: &mut Rng) {
@@ -122,6 +136,7 @@ impl Style for Resonant {
                     toppled_spire(map, rng, f);
                 }
             }
+            LotKind::Civic(_) => {}
             LotKind::Distant => {
                 let out = (-f.center)
                     .max(f.center - Vec2::splat(sk.size))
@@ -166,7 +181,7 @@ impl Style for Resonant {
         map.skyline_lots(rng, sk, |map, rng, lot, h, _, _| {
             far_house(map, rng, lot, 8.0 + h * 0.3)
         });
-        for a in sk.avenues() {
+        for a in sk.avenues().filter(|a| a.out) {
             let (d, p) = (a.dir(), a.to + a.dir() * 220.0);
             bell_tower(map, p, -angle(d));
         }
@@ -1058,19 +1073,23 @@ fn cone(
 fn veins(map: &mut Map, sk: &Skeleton, s: &Street) {
     let d = s.dir();
     let side = Vec2::new(-d.y, d.x);
-    let plaza = sk.plaza();
-    let mut start = 0.0;
-    while plaza.sdf(s.from + d * start) < plaza.ramp + 2.0 {
-        start += 1.0;
+    let (start, end) = sk.off_plaza_span(s, 2.0);
+    // A little short of each bend, where the next stretch's begin.
+    let start = start + 2.0;
+    let end = if s.out { end - 6.0 } else { end - 2.0 };
+    if end - start < 8.0 {
+        return;
     }
+    // Stretches that cross lie one over the other.
+    let lift = ((s.from.x * 3.7 + s.from.y * 5.3) as i32).rem_euclid(9) as f32 * 0.012;
     for k in [-1.0f32, 1.0] {
-        let n = ((s.len() - 6.0 - start) / 4.0).max(1.0) as usize;
+        let n = ((end - start) / 4.0).max(1.0) as usize;
         let points: Vec<Vec3> = (0..=n)
             .map(|i| {
-                let t = start + (s.len() - 6.0 - start) * i as f32 / n as f32;
+                let t = start + (end - start) * i as f32 / n as f32;
                 let wobble = (i as f32 * 1.7 + k).sin() * 0.35;
-                let p = s.from + d * t + side * (k * (s.half - 4.6) + wobble);
-                Vec3::new(p.x, 0.1, p.y)
+                let p = s.from + d * t + side * (k * (s.half - 2.6) + wobble);
+                Vec3::new(p.x, 0.1 + lift, p.y)
             })
             .collect();
         map.glow_paths.push(GlowPath {

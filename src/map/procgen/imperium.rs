@@ -92,6 +92,19 @@ impl Style for Imperium {
         GROUND
     }
 
+    fn road(&self) -> Vec3 {
+        Vec3::new(0.27, 0.27, 0.29)
+    }
+
+    fn stone(&self) -> super::civic::Stone {
+        super::civic::Stone {
+            wall: CONCRETE,
+            mat: Material::Concrete,
+            trim: STONE * 0.9,
+            roof: CONCRETE_DARK,
+        }
+    }
+
     fn hold_name(&self, piece: Centerpiece) -> &'static str {
         match piece {
             Centerpiece::Monument => "ROTUNDA",
@@ -99,18 +112,18 @@ impl Style for Imperium {
         }
     }
 
-    fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
-        let drifts = map.rotunda(rng, &sk.landmark, sk.ground(sk.landmark.center));
-        map.colonnade(rng, &sk.landmark, sk.ground(sk.landmark.center));
+    fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift> {
+        let drifts = map.rotunda(rng, lm, sk.ground(lm.center));
+        map.colonnade(rng, lm, sk.ground(lm.center));
         drifts
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
-        map.paving(p, &sk.landmark, STONE);
+        map.paving(p, &sk.landmarks, STONE);
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
-        map.processional_way(sk, s, STONE);
+        let _ = (map, sk, s);
     }
 
     fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, rng: &mut Rng) {
@@ -130,6 +143,7 @@ impl Style for Imperium {
                 map.rubble_lot(rng, &lot.footprint, CONCRETE);
                 Vec::new()
             }
+            LotKind::Civic(_) => Vec::new(),
             LotKind::Distant => {
                 map.distant_block(rng, &lot.footprint, sk);
                 Vec::new()
@@ -282,7 +296,7 @@ impl Map {
     // The middle
 
     /// Large paving slabs over the plaza top (visual; the terrain carries you).
-    pub(super) fn paving(&mut self, p: &Platform, lm: &Landmark, stone: Vec3) {
+    pub(super) fn paving(&mut self, p: &Platform, lms: &[Landmark], stone: Vec3) {
         let step = 8.0;
         let n = (p.half * 2.0 / step) as i32;
         for i in 0..n {
@@ -290,7 +304,9 @@ impl Map {
                 let c = p.center - Vec2::splat(p.half)
                     + Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
                 // Only where the top is flat, and not under the rotunda.
-                if p.sdf(c) > -step * 0.75 || c.distance(lm.center) < lm.radius + 2.0 {
+                if p.sdf(c) > -step * 0.75
+                    || lms.iter().any(|l| c.distance(l.center) < l.radius + 2.0)
+                {
                     continue;
                 }
                 let shade = 0.94 + 0.06 * (((i * 7 + j * 13) % 5) as f32 / 4.0);
@@ -323,7 +339,7 @@ impl Map {
         );
         let segs = 40;
         let collapsed = |a: f32| from_fall(a) < 0.75;
-        let door = |a: f32| door_a.iter().any(|&d| apart(a, d) < 0.16);
+        let door = |a: f32| door_a.iter().any(|&d| apart(a, d) < 0.24);
         let r_mid = radius - DRUM_T * 0.5;
         // Wide enough that the outer faces meet: no slits between piers.
         let seg_half = radius * PI / segs as f32 * 1.02;
@@ -585,7 +601,8 @@ impl Map {
             self.oboxes.push(OBox {
                 tilt,
                 roll,
-                solid: s > 1.6,
+                // None that blocks lies in the middle, round the dais.
+                solid: s > 1.6 && d > 17.0,
                 ..rocks::rubble(p, yaw, half, base - 0.3, top, color)
             });
         }
@@ -834,44 +851,6 @@ impl Map {
 
     // -----------------------------------------------------------------------
     // The avenues
-
-    /// The processional way down an avenue: big worn stone slabs down the
-    /// middle, from the plaza's foot out to the edge.
-    pub(super) fn processional_way(&mut self, sk: &Skeleton, s: &Street, stone: Vec3) {
-        let dir = s.dir();
-        let side = Vec2::new(-dir.y, dir.x);
-        let plaza = sk.plaza();
-        let mut start = 0.0;
-        while plaza.sdf(s.from + dir * start) < plaza.ramp + 2.0 {
-            start += 1.0;
-        }
-        let (len, across) = (6.0, 4);
-        let width = (s.half - 3.0) * 2.0;
-        let yaw = -angle(dir);
-        let mut d = start;
-        let mut row = 0;
-        while d < s.len() - 4.0 {
-            for j in 0..across {
-                let off = -width * 0.5 + (j as f32 + 0.5) * width / across as f32;
-                let c = s.from + dir * (d + len * 0.5) + side * off;
-                let shade = 0.74 + 0.06 * (((row * 5 + j * 3) % 4) as f32 / 3.0);
-                self.oboxes.push(OBox {
-                    center: c,
-                    yaw,
-                    half: Vec2::new(len * 0.48, width / across as f32 * 0.48),
-                    y0: -0.1,
-                    y1: 0.05,
-                    color: stone * shade,
-                    side_mat: Material::Concrete,
-                    top_mat: Material::Concrete,
-                    solid: false,
-                    ..OBox::default()
-                });
-            }
-            d += len;
-            row += 1;
-        }
-    }
 
     /// A statue on a plinth facing `face`: a robed figure in blocks. Some
     /// stand, some have lost their heads, some lie toppled beside the plinth.
@@ -1664,7 +1643,7 @@ impl Map {
     /// avenues' vistas stay open, each closed far off by a great tower
     /// hung with crimson. Visual only.
     fn skyline(&mut self, rng: &mut Rng, sk: &Skeleton) {
-        let avenues: Vec<Street> = sk.avenues().copied().collect();
+        let avenues: Vec<Street> = sk.avenues().filter(|a| a.out).copied().collect();
         self.skyline_ground(sk.size, GROUND);
         self.skyline_lots(rng, sk, |map, rng, lot, h, broken, (shade, toward)| {
             map.skyline_tower(rng, lot.center, lot.half, h, broken, shade, toward);
@@ -1782,7 +1761,7 @@ impl Map {
     ) {
         let size = sk.size;
         let mid = size * 0.5;
-        let avenues: Vec<Street> = sk.avenues().copied().collect();
+        let avenues: Vec<Street> = sk.avenues().filter(|a| a.out).copied().collect();
         let mut placed: Vec<OBox> = Vec::new();
         for _ in 0..1600 {
             let p = Vec2::new(
