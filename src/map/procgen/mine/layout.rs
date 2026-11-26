@@ -78,6 +78,7 @@ fn wash(line: Vec<Vec2>, phase: f32) -> Wash {
         depth: WASH_DEPTH,
         sway: 1.5,
         phase,
+        ragged: false,
     }
 }
 

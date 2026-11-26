@@ -575,7 +575,7 @@ impl Galaxy {
         let site = site.or_else(|| {
             (a as usize..b as usize)
                 .filter(held)
-                .find(|&i| matches!(self.sites[i].kind, SiteKind::Production { .. }))
+                .find(|&i| self.sites[i].kind.produces())
                 .or_else(|| (a as usize..b as usize).find(held))
         });
         let shielded = sides

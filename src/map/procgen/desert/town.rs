@@ -148,6 +148,7 @@ impl Skeleton {
         // What broke through ran off this way.
         let from = at + down * 24.0;
         self.land.washes.push(Wash {
+            ragged: false,
             line: meander(rng, &[from, from + down * self.size], 0.3),
             floor: 3.0,
             bank: 7.0,
@@ -222,6 +223,7 @@ impl Skeleton {
             let via = at + off * rng.range(84.0, 94.0);
             let run = off.perp() * self.size;
             self.land.washes.push(Wash {
+                ragged: false,
                 line: meander(rng, &[via - run, via, via + run], 0.3),
                 floor: WASH_FLOOR,
                 bank: WASH_BANK,

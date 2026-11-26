@@ -368,6 +368,7 @@ impl Skeleton {
                     depth: WASH_DEPTH,
                     sway: 0.0,
                     phase: 0.0,
+                    ragged: false,
                 });
                 return;
             }
@@ -536,6 +537,7 @@ impl Skeleton {
                 let ok = self.land.plateau(p).abs() > self.pad + 3.0
                     // (A town's are on the floor: its mesa's a strip along the edge.)
                     && (self.streets.is_empty() || self.land.plateau(p) > 0.0)
+                    && self.land.tower_distance(p) > self.pad + 8.0
                     && self
                         .land
                         .high
@@ -673,6 +675,7 @@ impl Skeleton {
                 );
                 let lm = &self.landmarks[0];
                 let ok = self.land.plateau(at).abs() > reach + 4.0
+                    && self.land.tower_distance(at).abs() > reach + 5.0
                     && lm.center.distance(at) > lm.reach + reach + 6.0
                     && self
                         .base_spots()
