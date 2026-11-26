@@ -1288,6 +1288,8 @@ mod tests {
                 d(a).total_cmp(&d(b))
             })
             .unwrap();
+        g.unmet.fill(0.0);
+        g.job_worth = 1000.0;
         g.unmet[near] = 5.0;
         // And contracts pay well enough for the fare.
         for c in &mut g.companies {

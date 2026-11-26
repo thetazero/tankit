@@ -57,7 +57,9 @@
 //!    or less of what it could bring, with a company's help (see `merc`). It
 //!    does whatever gains it most, if anything does: what the world turns out
 //!    for as long as worlds have lately been held, and what's in its vaults,
-//!    less what it'd cost. FTL costs crystal per hull by distance.
+//!    less what it'd cost. FTL costs crystal per hull
+//!    by distance, and takes time (`Fleet`): what's in flight, its enemies
+//!    don't see till it lands.
 //! 5. *Companies* that aren't working for anyone raid rich, weakly held
 //!    worlds for themselves, as a side of their own (`RAID`, one company to a
 //!    system). They take the vaults and go, and give the sites back.
