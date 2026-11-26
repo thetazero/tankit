@@ -1086,11 +1086,7 @@ mod merc_tests {
             committed: mercs,
             field: mercs,
             lost: 0,
-            defend: false,
-            expected: 0.0,
-            expected_ticks: 0.0,
-            held: 0,
-            worth: 0.0,
+            ..Default::default()
         });
         (g, t, [Faction::side(f), Faction::side(e)])
     }

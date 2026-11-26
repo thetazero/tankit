@@ -111,6 +111,42 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
     );
 }
 
+/// `RULES=name=value,..` changes a rule for a run.
+fn tweak(rules: &mut Rules) {
+    let Ok(all) = std::env::var("RULES") else {
+        return;
+    };
+    for one in all.split(',') {
+        let Some((name, x)) = one.split_once('=') else {
+            continue;
+        };
+        let x: f32 = x.parse().unwrap_or(0.0);
+        match name {
+            "initiative" => rules.initiative = x,
+            "keep" => rules.keep = x,
+            "tempo" => rules.tempo = x,
+            "bring_up" => rules.bring_up = x,
+            "stall" => rules.stall = x as u32,
+            "front" => rules.front = x,
+            "research" => rules.research = x,
+            "home_ground" => rules.home_ground = x,
+            "ftl_cost" => rules.ftl_cost = x,
+            "ship_cost" => rules.ship_cost = x,
+            "hull_cost" => rules.hull_cost = x,
+            "train_cost" => rules.train_cost = x,
+            "career" => rules.career = x,
+            "ship_upkeep" => rules.ship_upkeep = x,
+            "pilot_upkeep" => rules.pilot_upkeep = x,
+            "sense" => rules.sense = x,
+            "frontage" => rules.frontage = x,
+            "kill_share" => rules.kill_share = x,
+            "merc_term" => rules.merc_term = x as u32,
+            "blitz" => rules.blitz = x as u32,
+            _ => println!("no rule {name}"),
+        }
+    }
+}
+
 /// What raids come to.
 fn raids(g: &Galaxy, last: &super::merc::Books) {
     let b = &g.books;
@@ -153,7 +189,8 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             if i == 1 && !arms {
                 break;
             }
-            let rules = Rules::default();
+            let mut rules = Rules::default();
+            tweak(&mut rules);
             let rules = Rules {
                 companies: if i == 0 && std::env::var("NONE").is_err() {
                     rules.companies

@@ -80,6 +80,9 @@ struct Saved {
     taken_at: Vec<u64>,
     #[serde(default)]
     rates: Option<[f32; 4]>,
+    /// What companies have lately made, each, and were all worth.
+    #[serde(default)]
+    profit: Option<(f32, f32)>,
     /// Every planet's vault: its side, its realm, its crystal.
     #[serde(default)]
     vaults: Vec<(u8, u32, f32)>,
@@ -308,7 +311,7 @@ struct SavedRealm {
     fronts: u32,
     /// What a pilot, and a hull, have lately been worth to it.
     #[serde(default)]
-    senses: Option<(f32, f32)>,
+    senses: Option<[f32; 4]>,
 }
 
 impl Galaxy {
@@ -351,7 +354,7 @@ impl Galaxy {
                     wage: r.wage,
                     hires: Some(r.hires),
                     fronts: r.fronts,
-                    senses: Some((r.pilot_worth, r.hull_worth)),
+                    senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
                 })
                 .collect(),
             splits: self.splits,
@@ -391,6 +394,7 @@ impl Galaxy {
             wage_curve: Some(self.wage_curve),
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
+            profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
             vaults: self
                 .vaults
@@ -485,8 +489,10 @@ impl Galaxy {
                 wage: r.wage,
                 hires: r.hires.unwrap_or(true),
                 fronts: r.fronts,
-                pilot_worth: r.senses.map_or(0.1, |x| x.0),
-                hull_worth: r.senses.map_or(0.2, |x| x.1),
+                pilot_worth: r.senses.map_or(0.1, |x| x[0]),
+                hull_worth: r.senses.map_or(0.2, |x| x[1]),
+                pilot_use: r.senses.map_or(0.0, |x| x[2]),
+                hull_use: r.senses.map_or(0.0, |x| x[3]),
                 crystals: r.crystals,
                 income: r.income,
                 offensive: r.offensive.map(|(at, gained)| Offensive {
@@ -545,6 +551,9 @@ impl Galaxy {
         }
         if let Some(ticks) = s.trust_ticks {
             g.trust_ticks = ticks;
+        }
+        if let Some((profit, worth)) = s.profit {
+            (g.profit, g.worth_before) = (profit, worth);
         }
         if s.taken_at.len() == g.taken_at.len() {
             g.taken_at = s.taken_at;
@@ -805,6 +814,7 @@ mod tests {
             c.contract = None;
             c.crystals = 100.0;
         }
+        g.debts.clear();
         g.rules.merc_split = 1000.0;
         g.companies[0].crystals = g.rules.merc_split * 3.0;
         g.companies[1].crystals = g.rules.merc_join / 2.0;

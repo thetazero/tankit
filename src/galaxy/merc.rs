@@ -237,7 +237,7 @@ pub struct Company {
 }
 
 /// A company's work for a realm: help take one system.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Contract {
     /// Who hired it (an index into `Galaxy::realms`), and as which people it fights.
     pub realm: u32,
@@ -1261,10 +1261,6 @@ impl Galaxy {
         base: f32,
         defend: bool,
     ) -> bool {
-        #[cfg(test)]
-        if self.ban == Some((r, t as u32)) {
-            return false;
-        }
         let worth = self.worth(t, f, defend);
         let realm = self.realms[r as usize];
         // Nothing left to gain by it.
@@ -1334,7 +1330,8 @@ impl Galaxy {
                 let co = &self.companies[c];
                 // It pays its way out of its own crystal, and lends what the
                 // realm can't pay now, if its income would clear it in time.
-                if q.cost + q.wages * ticks > co.crystals + q.upfront {
+                let now = q.upfront.min(realm.crystals.max(0.0));
+                if q.cost + q.wages * ticks > co.crystals + now || q.cost > co.crystals + now {
                     continue;
                 }
                 affordable = true;
@@ -1512,7 +1509,7 @@ impl Galaxy {
                 co.crystals -= x;
             }
             // The ship costs something to keep, working or not.
-            co.crystals -= ship_upkeep;
+            co.crystals = (co.crystals - ship_upkeep).max(0.0);
             co.earned *= 1.0 - FADE;
             co.worked *= 1.0 - FADE;
             self.books.crew_ticks += co.pilots.len() as f64;

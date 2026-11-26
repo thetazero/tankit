@@ -391,24 +391,6 @@ impl System {
 /// The whole war.
 #[cfg_attr(test, derive(Clone))]
 pub struct Galaxy {
-    /// Tests: a hire (realm, system) forbidden, or forced through.
-    #[cfg(test)]
-    pub(crate) ban: Option<(u32, u32)>,
-    #[cfg(test)]
-    pub(crate) force: Option<(u32, u32)>,
-    /// Tests: hires refused as lost even with mercs (realm, system, side,
-    /// defend, worth).
-    #[cfg(test)]
-    pub(crate) guesses: Vec<(u32, u32, f32, f32)>,
-    #[cfg(test)]
-    pub(crate) asks: Vec<(u32, u32, usize, bool)>,
-    /// Tests: force the smallest package through, not the largest.
-    #[cfg(test)]
-    pub(crate) small: bool,
-    #[cfg(test)]
-    pub(crate) ask_log: bool,
-    #[cfg(test)]
-    pub(crate) lost_calls: Vec<(u32, u32, usize, bool, f32)>,
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
     pub systems: Vec<System>,
@@ -672,20 +654,6 @@ impl Galaxy {
             books: Books::default(),
             debts: Vec::new(),
             next_company: 0,
-            #[cfg(test)]
-            ban: None,
-            #[cfg(test)]
-            force: None,
-            #[cfg(test)]
-            guesses: Vec::new(),
-            #[cfg(test)]
-            asks: Vec::new(),
-            #[cfg(test)]
-            small: false,
-            #[cfg(test)]
-            ask_log: false,
-            #[cfg(test)]
-            lost_calls: Vec::new(),
             next_pilot: 1,
             you: Pilot::rookie(1),
             owed_you: Vec::new(),
@@ -1745,6 +1713,8 @@ impl Galaxy {
                 }
             }
         }
+        // Crews hired to fly their employer's hulls have them.
+        self.lend_hulls();
     }
 
     /// Each realm on an offensive brings hulls up toward it: every quiet

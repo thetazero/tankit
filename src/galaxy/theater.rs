@@ -592,6 +592,12 @@ impl Galaxy {
                 }
             }
         }
+        // Not against a raiding company: there's no such battle to play yet.
+        if present[super::RAID] || self.systems[s].held[super::RAID] > 0 {
+            let first = self.site_range(s).start;
+            let at = self.site_enemies(s, f);
+            out.retain(|&i| at[i - first] != super::RAID);
+        }
         out.sort();
         out
     }
@@ -600,9 +606,13 @@ impl Galaxy {
     /// to join this tick (indices into `companies`).
     fn berths(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.companies.len()).filter(|&c| {
-            self.companies[c]
-                .contract
-                .is_some_and(|k| !self.commits(k.target as usize, k.side as usize).is_empty())
+            let co = &self.companies[c];
+            !co.pilots.is_empty()
+                && co.contract.is_some_and(|k| {
+                    k.side as usize != super::RAID
+                        && k.field > 0
+                        && !self.commits(k.target as usize, k.side as usize).is_empty()
+                })
         })
     }
 
@@ -890,7 +900,7 @@ impl Galaxy {
         let co = &self.companies[c];
         let k = co.contract.filter(|k| k.side as usize != super::RAID)?;
         let (s, f) = (k.target as usize, k.side as usize);
-        if self.commits(s, f).is_empty() {
+        if k.field == 0 || co.pilots.is_empty() || self.commits(s, f).is_empty() {
             return None;
         }
         let mut t = self.theater_at(s, f);
@@ -1337,6 +1347,10 @@ mod tests {
         let id = g.companies[c].id;
         g.crew = Some(id);
         (g.companies[c].crystals, g.companies[c].hulls) = (0.0, 0);
+        g.debts.clear();
+        for o in (0..g.companies.len()).filter(|&o| o != c) {
+            g.companies[o].crystals = 100.0;
+        }
         g.split_and_join();
         assert!(g.company(id).is_none(), "it didn't join");
         assert_ne!(g.crew, Some(id));
