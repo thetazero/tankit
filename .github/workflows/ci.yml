@@ -58,7 +58,7 @@ jobs:
         run: cargo test --locked --no-run
         timeout-minutes: 6
 
-      # Our crate is built at opt-level 1 for tests (Cargo.toml); the suite
+      # Our crate is built at opt-level 2 for tests (Cargo.toml); the suite
       # then takes about two minutes (#613; unoptimized it takes far longer,
       # #377). Past this limit is a hang or a regression; a test that
       # runs over 60s is flagged in the log ("has been running for over").

@@ -41,8 +41,9 @@ opt-level = 2
 [profile.dev.package.meshopt]
 opt-level = 2
 
-# The tests build our own crate optimized a little: unoptimized, the suite took
-# over two minutes on CI (#377). `cargo build` and the debug game are untouched,
+# The tests build our own crate optimized too: unoptimized, the suite took over
+# two minutes on CI (#377), at opt-level 1 nearly four on its slower runners
+# (#613). `cargo build` and the debug game are untouched,
 # and debug assertions and overflow checks stay on in tests.
 [profile.test.package.tankit]
-opt-level = 1
+opt-level = 2
