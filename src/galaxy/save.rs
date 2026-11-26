@@ -18,8 +18,9 @@ use crate::rng::Rng;
 pub const SEED: u64 = 1;
 /// Ticks a new galaxy runs before you join it: long enough that it's a
 /// war well under way, its fronts drawn, its realms' research and its merc
-/// pilots' gear grown (#438), not one just starting.
-const WARMUP: u64 = 600;
+/// pilots' gear grown (#438), and the companies that came through the first
+/// shakeout at work, not one just starting.
+const WARMUP: u64 = 1500;
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
