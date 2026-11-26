@@ -291,7 +291,8 @@ impl Default for Rules {
             merc_range: 1200.0,
             merc_idle: 30,
             merc_horizon: 300.0,
-            merc_split: 1000.0,
+            // Off for now.
+            merc_split: f32::INFINITY,
             merc_join: 40.0,
             merc_dues: 0.5,
             research: 0.15,
@@ -454,6 +455,8 @@ pub struct Galaxy {
     pub crew_choice: Option<theater::CrewChoice>,
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
+    /// Crystal captured with fallen systems, all told (not saved).
+    pub captured: f64,
     /// Each system's hulls in and out, each side's (#445), since the last
     /// played battle began (`step_played`): that battle's losses and the
     /// rest of its tick, then any ticks waited through after. Not saved.
@@ -624,6 +627,7 @@ impl Galaxy {
             crew_news: None,
             crew_choice: None,
             destroyed: 0.0,
+            captured: 0.0,
             rng,
             members: Vec::new(),
             spans: Vec::new(),
@@ -929,7 +933,9 @@ impl Galaxy {
                 }
             }
             let cap = self.rules.hoard * c.max(0.05);
-            realm.crystals = (realm.crystals + c).clamp(0.0, cap);
+            // Over it, it banks no more; what it's captured, it keeps.
+            let most = cap.max(realm.crystals);
+            realm.crystals = (realm.crystals + c).clamp(0.0, most);
             realm.income = c + study;
             realm.keep_pilots(&self.rules);
         }
@@ -1422,11 +1428,15 @@ impl Galaxy {
             }
             *damaged = true;
         }
+        let loser = self.holder(s);
         let sys = &mut self.systems[s];
         sys.held[old] -= 1;
         sys.held[w] += 1;
         self.taken += 1;
         self.claim(s, w);
+        if loser != NONE && self.holder(s) != loser {
+            self.capture(loser, self.systems[s].realms[w]);
+        }
         // An offensive rolls on from what it takes.
         let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
         if self.pushing(r, pos)
@@ -1435,6 +1445,18 @@ impl Galaxy {
             o.gained = self.tick;
             o.at = pos;
         }
+    }
+
+    /// Realm `loser` lost a system to realm `by`, which captures the
+    /// system's share of its bank: all that's left, for its last.
+    fn capture(&mut self, loser: u32, by: u32) {
+        let realm = &mut self.realms[loser as usize];
+        let left = realm.systems.saturating_sub(realm.fell).max(1);
+        let loot = realm.crystals.max(0.0) / left as f32;
+        realm.fell += 1;
+        realm.crystals -= loot;
+        self.realms[by as usize].crystals += loot;
+        self.captured += loot as f64;
     }
 
     /// Up enemy shield generators on each planet of system `s`, as `f` sees them.
@@ -1845,6 +1867,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
         total / g.tick.max(1) as u32,
         worst
     );
+    println!("captured {:.0} crystal with fallen systems", g.captured);
     let b = g.books;
     println!(
         "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} in bonuses ({:.0} owed and never paid); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
