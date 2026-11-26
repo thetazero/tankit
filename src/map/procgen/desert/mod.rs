@@ -181,6 +181,7 @@ fn fair(sk: &Skeleton, nav: &NavGrid) -> Result<(), String> {
 /// A blank map for the skeleton: the arena, no spawns yet.
 fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
     let mut map = Map::empty(sk.size);
+    map.skeleton = Some(std::sync::Arc::new(sk.clone()));
     map.factions = sides.to_vec();
     map.bases = Map::no_bases(sides);
     map.open_spots = Vec::new();

@@ -188,7 +188,7 @@ pub struct Bot {
     /// Angle off the straight line to the target it approaches along, so
     /// bots hunting one enemy come at it from different sides.
     flank: f32,
-    roam: Option<Vec2>,
+    roam: Option<Vec3>,
     /// What's left of one of the map's ways round it's taking to the
     /// fight, and when to think about taking one again.
     way: Vec<Vec3>,
@@ -504,11 +504,19 @@ impl Bot {
             }
             (None, None, _) if !self.way.is_empty() => self.way[0],
             (None, None, Some(o)) => at_level(approach(flat(o.pos))),
-            (None, None, None) => up(*self.roam.get_or_insert_with(|| {
-                world.map.open_spots[self.rng.index(world.map.open_spots.len())]
-            })),
+            // Roaming: somewhere worth being, more often than not.
+            (None, None, None) => *self.roam.get_or_insert_with(|| {
+                let m = &world.map;
+                if !m.posts.is_empty() && self.rng.chance(0.65) {
+                    m.posts[self.rng.index(m.posts.len())]
+                } else {
+                    up(m.open_spots[self.rng.index(m.open_spots.len())])
+                }
+            }),
         };
-        if self.roam.is_some_and(|r| r.distance(my2) < 8.0) {
+        if self.roam.is_some_and(|r| {
+            flat(r).distance(my2) < 8.0 && (!r.y.is_finite() || (r.y - t.pos.y).abs() < 3.0)
+        }) {
             self.roam = None;
         }
 

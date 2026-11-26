@@ -677,6 +677,11 @@ pub struct Map {
     /// spread over all of it instead of all meeting on the straight line
     /// between the sides. Empty on most maps.
     pub routes: Vec<Vec<Vec3>>,
+    /// Places worth being, each on its floor: where a bot with nobody to
+    /// fight goes. Empty: any open spot.
+    pub posts: Vec<Vec3>,
+    /// What it was laid out as, if it was generated (`None`: by hand).
+    pub skeleton: Option<std::sync::Arc<procgen::skeleton::Skeleton>>,
     /// Hand-shaped surfaces (a mesa's cliff faces), already in world space:
     /// drawn as they are, never collide.
     pub sculpted: crate::render::mesh::MeshData,
@@ -1145,6 +1150,8 @@ impl Map {
             hold_name: "DEPOSIT",
             raid_stands: Vec::new(),
             routes: Vec::new(),
+            posts: Vec::new(),
+            skeleton: None,
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,
             sounds: Vec::new(),

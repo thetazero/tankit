@@ -267,6 +267,8 @@ impl Map {
             hold_name: "ALTAR",
             raid_stands: Vec::new(),
             routes: Vec::new(),
+            posts: Vec::new(),
+            skeleton: None,
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: Some(SAND),
             sounds: Vec::new(),
