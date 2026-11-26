@@ -50,7 +50,7 @@ pub struct Theater {
     /// Who you're posted for: index into `Faction::ALL`.
     pub employer: usize,
     pub planets: u8,
-    /// Each side's hulls here (and how many of them mercs fly), and sites held.
+    /// Each side's hulls here (and how many of them are mercs' own), and sites held.
     pub hulls: [u32; SIDES],
     pub mercs: [u32; SIDES],
     pub held: [u8; SIDES],
@@ -271,6 +271,65 @@ pub struct SiteView {
     /// Which map a generated kind builds here: the site's own, the same
     /// each time it's fought over.
     pub map_seed: u64,
+}
+
+/// A contract on offer (another company's ship's), as the board compares them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Offer {
+    /// The ship's company (`Company::id`).
+    pub id: u32,
+    /// The system it's over.
+    pub system: String,
+    /// Who hires, and who you'd fight most there.
+    pub side: usize,
+    pub enemy: usize,
+    /// To hold it, not take it.
+    pub defend: bool,
+    /// Your side's hulls there, of them mercs' own, and the enemy's.
+    pub hulls: u32,
+    pub mercs: u32,
+    pub foes: u32,
+    /// The enemy's gear tier.
+    pub tier: u8,
+    /// How many hulls you'd have of your own.
+    pub own: u32,
+}
+
+impl Offer {
+    /// "TAKE TORKAR".
+    pub fn job(&self) -> String {
+        let job = if self.defend { "HOLD" } else { "TAKE" };
+        format!("{job} {}", self.system)
+    }
+
+    /// Your side's share of the hulls there.
+    pub fn strength(&self) -> f32 {
+        self.hulls as f32 / (self.hulls + self.foes).max(1) as f32
+    }
+
+    /// The offer of the contract `t` is fought under.
+    pub fn of(t: &Theater) -> Option<Offer> {
+        let ship = t.ship.as_ref()?;
+        let fights = |f: usize| {
+            let at = t.sites.iter().filter(|s| s.committed && s.enemy == f);
+            (at.count(), t.hulls[f])
+        };
+        let enemy = (0..PEOPLES)
+            .filter(|&f| f != t.employer)
+            .max_by_key(|&f| fights(f))?;
+        Some(Offer {
+            id: ship.id,
+            system: t.name.clone(),
+            side: t.employer,
+            enemy,
+            defend: ship.defend,
+            hulls: t.hulls[t.employer],
+            mercs: t.mercs[t.employer],
+            foes: t.hulls[enemy],
+            tier: t.tiers[enemy],
+            own: ship.own.left.min(ship.committed),
+        })
+    }
 }
 
 /// A battle at a site, to deploy into.
@@ -770,6 +829,30 @@ impl Galaxy {
         ships.into_iter().map(|c| self.berth(c)).collect()
     }
 
+    /// The contracts you could sign on to, nearest first: one for each side
+    /// hiring in a system (the first of the ships on it with the most hulls
+    /// for you), and not the one you're on.
+    pub fn open_work(&self, rank: u32) -> Vec<Offer> {
+        let mine = self.aboard(rank).and_then(|t| Offer::of(&t));
+        let same = |a: &Offer, b: &Offer| a.system == b.system && a.side == b.side;
+        let mut out: Vec<Offer> = Vec::new();
+        for b in self.other_ships() {
+            let Some(o) = self
+                .contract_of(b.id, rank)
+                .and_then(|t| Offer::of(&t))
+                .filter(|o| !mine.as_ref().is_some_and(|m| same(m, o)))
+            else {
+                continue;
+            };
+            match out.iter_mut().find(|x| same(x, &o)) {
+                Some(x) if x.own < o.own => *x = o,
+                Some(_) => {}
+                None => out.push(o),
+            }
+        }
+        out
+    }
+
     /// Leave your company for ship `id` (#365): another company with a
     /// battle for you this tick. Any choice of ship open is dropped, and
     /// your own hulls stay with the contract you leave. False (and nothing
@@ -1075,7 +1158,7 @@ impl Galaxy {
         // The companies' hulls on contract here, each side's.
         let mut field = [0u32; SIDES];
         for k in self.companies.iter().filter_map(|c| c.contract.as_ref()) {
-            if k.target as usize == s {
+            if k.target as usize == s && !k.lent {
                 field[k.side as usize] += k.field;
             }
         }
@@ -1175,7 +1258,7 @@ impl Galaxy {
             mercs: {
                 let mut mercs = [0; SIDES];
                 for k in self.companies.iter().filter_map(|c| c.contract) {
-                    if k.target as usize == s {
+                    if k.target as usize == s && !k.lent {
                         mercs[k.side as usize] += k.field;
                     }
                 }
