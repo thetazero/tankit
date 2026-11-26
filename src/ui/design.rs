@@ -26,23 +26,22 @@ pub const MARGIN: f32 = UNIT * 8.0;
 /// A panel's column of content.
 pub const COLUMN: f32 = UNIT * 40.0;
 /// From one action to the next.
-pub const ACTION: f32 = UNIT * 6.0;
+pub const ACTION: f32 = UNIT * 7.0;
 
-// Type: one light face, four sizes.
+// Type: one light, wide face in capitals, three sizes.
 
-pub const HEAD: TextStyle = style(30.0);
-pub const BODY: TextStyle = style(13.0);
-pub const SMALL: TextStyle = style(11.0);
-const ACTION_TEXT: TextStyle = style(18.0);
+const ACTION_TEXT: TextStyle = style(17.0);
+pub const BODY: TextStyle = style(11.0);
+pub const SMALL: TextStyle = style(8.5);
 
 const fn style(size: f32) -> TextStyle {
     TextStyle {
         size,
-        tracking: size * 0.05,
+        tracking: size * 0.1,
         weight: 1.0,
         color: TEXT,
-        lower: true,
-        face: Face::Chakra,
+        lower: false,
+        face: Face::Michroma,
     }
 }
 

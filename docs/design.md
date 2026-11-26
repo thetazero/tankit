@@ -17,7 +17,7 @@ The main menu is made from it; the other screens aren't yet.
 - **Color:** light grey text on dark grey. Amber is the accent: what's
   yours, and what's selected. Blue, amber's complement, is crystal. On the
   map, factions keep their own colors.
-- **Type:** Chakra Petch Light, sentence case, four sizes.
+- **Type:** Michroma, capitals, three sizes.
 - **Space:** 8 px units, and plenty of them. No dense blobs of text.
 - **Shape:** a corner cut at 45 degrees.
 

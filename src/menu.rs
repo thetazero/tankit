@@ -1,7 +1,7 @@
 //! Main menu, mission select, settings and the pause menu, in the hairline style.
 //!
-//! The main menu is the design system's (`ui::design`), over your local
-//! cluster. Mission select still sits in the garage's left-hand panel, over
+//! The main menu is the design system's (`ui::design`), over the
+//! galaxy around you. Mission select still sits in the garage's left-hand panel, over
 //! the map of whichever contract it points at. The pause
 //! menu is a small centred box over the frozen battle.
 //!
@@ -1015,8 +1015,14 @@ impl Menu {
                 .is_none_or(|c| (c.tick, c.crew) != (tick, crew))
     }
 
-    /// The main menu: your stretch of the war, and on a panel over it who
-    /// you are, your job, and what you can do.
+    /// The stars behind the main menu, while it's up.
+    pub fn cluster(&self) -> Option<(&Cluster, f32)> {
+        let c = self.cluster.as_ref()?;
+        (self.screen == Screen::Main).then_some((c, self.clock))
+    }
+
+    /// The main menu: who you are and what you can do, on a panel over the
+    /// stars.
     fn draw_main(&self, p: &mut Painter, hits: &mut Hits<Hit>, profile: &Profile, w: f32, h: f32) {
         cluster_view::draw(p, hits, self.cluster.as_ref(), self.star, self.clock, w, h);
         design::panel(p, h);
@@ -1040,32 +1046,8 @@ impl Menu {
         y += design::UNIT * 4.0;
         design::bar(p, Vec2::new(x, y), design::COLUMN, r.progress());
 
-        // Your job.
-        y = design::UNIT * 23.0;
-        let job = self.cluster.as_ref().and_then(|c| c.job.as_ref());
-        let (head, line) = match job {
-            Some(j) => (
-                j.system.clone(),
-                format!(
-                    "{} it for the {}",
-                    if j.defend { "Hold" } else { "Take" },
-                    title(Faction::side(j.side).name())
-                ),
-            ),
-            None => ("No contract".to_string(), "Between jobs".to_string()),
-        };
-        p.text(Vec2::new(x, y), &title(&head), &design::HEAD, Align::Left);
-        y += design::UNIT * 6.0;
-        let color = job.map_or(design::TEXT_2, |j| Faction::side(j.side).ui());
-        p.text(
-            Vec2::new(x, y),
-            &line,
-            &design::BODY.colored(color),
-            Align::Left,
-        );
-
         // What you can do.
-        y += design::UNIT * 10.0;
+        y += design::UNIT * 11.0;
         for (i, name) in MAIN_ITEMS.iter().enumerate().take(MAIN_ACTIONS) {
             let (at, size) = design::action(p, Vec2::new(x, y), name, i == self.cursor);
             hits.add(p, at, size, Hit::Row(i));

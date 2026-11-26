@@ -1,5 +1,5 @@
 //! The UI fonts: Inter Medium and, for the design system (`super::design`),
-//! Chakra Petch Light (both SIL Open Font License, `assets/fonts/`), drawn from a signed distance field so it stays smooth at every size and
+//! Michroma (both SIL Open Font License, `assets/fonts/`), drawn from a signed distance field so it stays smooth at every size and
 //! scale. Each glyph is rasterized large once, turned into distances to its
 //! outline, and shrunk into a small single-channel atlas; the UI shader turns
 //! a distance back into crisp, anti-aliased coverage, and the same distances
@@ -16,17 +16,17 @@ use ab_glyph::{Font as _, FontRef, GlyphId, PxScale, point};
 use glam::Vec2;
 
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Medium.otf");
-const CHAKRA: &[u8] = include_bytes!("../../assets/fonts/ChakraPetch-Light.ttf");
+const MICHROMA: &[u8] = include_bytes!("../../assets/fonts/Michroma-Regular.ttf");
 
 /// A typeface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Face {
     Inter,
-    Chakra,
+    Michroma,
 }
 
 impl Face {
-    pub const ALL: [Face; 2] = [Face::Inter, Face::Chakra];
+    pub const ALL: [Face; 2] = [Face::Inter, Face::Michroma];
 }
 
 /// Characters in the atlas. Anything else is drawn as a space.
@@ -85,7 +85,7 @@ pub fn font() -> &'static Font {
 impl Font {
     fn load() -> Font {
         let faces =
-            [INTER, CHAKRA].map(|f| FontRef::try_from_slice(f).expect("bundled font parses"));
+            [INTER, MICHROMA].map(|f| FontRef::try_from_slice(f).expect("bundled font parses"));
         let pad = SPREAD as usize;
         let (mut x, mut y, mut row_h) = (0usize, 0usize, 0usize);
         let mut glyphs = HashMap::new();
