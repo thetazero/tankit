@@ -77,5 +77,6 @@ fn fs_up(v: Out) -> @location(0) vec4<f32> {
             c += tap(v.uv + vec2<f32>(f32(x), f32(y)) * px) * w;
         }
     }
-    return vec4<f32>(c, 1.0);
+    // (Less of the wider blurs.)
+    return vec4<f32>(c * 0.82, 1.0);
 }

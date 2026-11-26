@@ -514,7 +514,7 @@ fn bloom_strength(a: &Atmosphere) -> f32 {
     let luma = sky.dot(Vec3::new(0.2126, 0.7152, 0.0722));
     let t = ((luma - 0.06) / 0.34).clamp(0.0, 1.0);
     let day = t * t * (3.0 - 2.0 * t);
-    0.2 * (1.0 - day) + 0.012 * day
+    0.6 * (1.0 - day) + 0.012 * day
 }
 
 pub struct Renderer {
