@@ -136,7 +136,11 @@ impl Style for Resonant {
                     toppled_spire(map, rng, f);
                 }
             }
-            LotKind::Civic(_) => {}
+            LotKind::Civic(_)
+            | LotKind::Works(_)
+            | LotKind::Spires
+            | LotKind::Fins
+            | LotKind::Boulders => {}
             LotKind::Distant => {
                 let out = (-f.center)
                     .max(f.center - Vec2::splat(sk.size))
@@ -177,13 +181,15 @@ impl Style for Resonant {
     }
 
     fn beyond(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) {
-        map.skyline_ground(sk.size, GROUND);
+        map.skyline_ground(sk, GROUND);
         map.skyline_lots(rng, sk, |map, rng, lot, h, _, _| {
             far_house(map, rng, lot, 8.0 + h * 0.3)
         });
         for a in sk.avenues().filter(|a| a.out) {
             let (d, p) = (a.dir(), a.to + a.dir() * 220.0);
+            let mark = Mark::of(map);
             bell_tower(map, p, -angle(d));
+            mark.raise(map, sk.ground(p));
         }
     }
 
@@ -419,7 +425,7 @@ fn hall(map: &mut Map, rng: &mut Rng, lot: &OBox, h: f32, solid: bool) {
                 map,
                 &rig,
                 Vec3::new(u * w, top * 0.5, cut + rng.range(0.2, 0.5)),
-                Vec3::new(w / n as f32 * 0.96, top * 0.5, 0.6),
+                Vec3::new(w / n as f32 * 0.96 - 0.12, top * 0.5, 0.6),
                 color * rng.range(0.88, 0.96),
                 Material::Plaster,
                 false,
@@ -1083,13 +1089,13 @@ fn veins(map: &mut Map, sk: &Skeleton, s: &Street) {
     // Stretches that cross lie one over the other.
     let lift = ((s.from.x * 3.7 + s.from.y * 5.3) as i32).rem_euclid(9) as f32 * 0.012;
     for k in [-1.0f32, 1.0] {
-        let n = ((end - start) / 4.0).max(1.0) as usize;
+        let n = ((end - start) / 2.0).max(1.0) as usize;
         let points: Vec<Vec3> = (0..=n)
             .map(|i| {
                 let t = start + (end - start) * i as f32 / n as f32;
                 let wobble = (i as f32 * 1.7 + k).sin() * 0.35;
                 let p = s.from + d * t + side * (k * (s.half - 2.6) + wobble);
-                Vec3::new(p.x, 0.1 + lift, p.y)
+                Vec3::new(p.x, sk.ground(p) + 0.1 + lift, p.y)
             })
             .collect();
         map.glow_paths.push(GlowPath {

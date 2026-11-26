@@ -18,17 +18,21 @@
 //! monument gets the style's monument, so pieces are shared across every
 //! map built in that style.
 //!
-//! Each biome has its own skeleton: a city's (`skeleton`) is streets and
-//! lots; a hull foundry's (`foundry`) is halls, yards, rails and slag; a crystal mine's (`mine::Layout`) is an escarpment, a mine under
-//! it, a wash and a railroad, and its styles (`mine::MineStyle`) fill in
-//! the lamps, machines and freight.
+//! Cities, deserts and hull foundries are laid out by their own grammars into the one
+//! `Skeleton`: the ground in `land`'s landforms, the rest in shared
+//! placeholders, with one greybox. A crystal mine still has its own layout
+//! (`mine::Layout`): an escarpment, a mine under it, a wash and a railroad,
+//! and its styles (`mine::MineStyle`) fill in the lamps, machines and
+//! freight.
 
 pub mod check;
 pub mod city;
 mod civic;
+pub mod crossing;
 pub mod desert;
 pub mod foundry;
 mod imperium;
+pub mod land;
 pub mod mine;
 mod resonant;
 pub mod shield;
@@ -217,10 +221,12 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     for (k, lot) in sk.lots.iter().enumerate() {
         let start = map.oboxes.len();
+        let mark = skeleton::Mark::of(&map);
         match lot.kind {
             LotKind::Civic(kind) => civic::build(&mut map, &mut rng, lot, kind, st.stone()),
             _ => drifts.extend(st.lot(&mut map, &sk, lot, &mut rng)),
         }
+        mark.raise(&mut map, sk.ground(lot.footprint.center));
         claims.push((Claim::Lot(k), start..map.oboxes.len()));
     }
     let mut terrain = sk.terrain(|p| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max));
@@ -228,8 +234,10 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     terrain.material = crate::render::material::Material::Concrete;
     sk.paint(&mut terrain, st.road());
     map.terrain = Some(terrain);
-    for p in &sk.platforms {
+    for p in &sk.land.platforms {
+        let mark = skeleton::Mark::of(&map);
         st.platform(&mut map, &sk, p, &mut rng);
+        mark.raise(&mut map, sk.land.base(p.center));
     }
     for s in &sk.streets {
         st.street(&mut map, &sk, s, &mut rng);
@@ -244,11 +252,22 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         st.deco(&mut map, &sk, d, &mut rng);
         claims.push((Claim::Deco(k), start..map.oboxes.len()));
     }
+    for c in &sk.crossings {
+        c.build(&mut map, st.stone(), |p| sk.ground(p));
+    }
     for (k, b) in sk.bases.iter().enumerate() {
+        let mark = skeleton::Mark::of(&map);
         st.base(&mut map, &sk, k, b, &mut rng);
+        mark.raise(&mut map, sk.ground(b.middle()));
     }
     for e in &sk.edges {
+        // Heaps and barriers, each on the ground where it lies.
+        let start = map.oboxes.len();
         st.edge(&mut map, &sk, e, &mut rng);
+        for o in &mut map.oboxes[start..] {
+            let h = sk.ground(o.center);
+            skeleton::lift(std::slice::from_mut(o), h);
+        }
     }
     st.beyond(&mut map, &sk, &mut rng);
     if let Some(t) = &mut map.scenery_terrain {
@@ -1013,6 +1032,82 @@ mod tests {
         }
     }
 
+    /// How much of a city's ground (off its plazas and courts) is built on.
+    fn built(sk: &Skeleton) -> f32 {
+        let (mut all, mut on) = (0, 0);
+        let n = (sk.size / 3.0) as i32;
+        for i in 0..n {
+            for j in 0..n {
+                let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * 3.0;
+                if sk.off_plazas(p) < 4.0 || sk.bases.iter().any(|b| b.contains(p, 4.0)) {
+                    continue;
+                }
+                all += 1;
+                on += sk
+                    .lots
+                    .iter()
+                    .any(|l| l.kind != LotKind::Rubble && l.footprint.distance(p) <= 0.0)
+                    as i32;
+            }
+        }
+        on as f32 / all as f32
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn how_hilly() {
+        for seed in 0..16 {
+            let sk = skeleton(&spec(seed));
+            let n = (sk.size / 4.0) as i32;
+            let (mut lo, mut hi, mut steep) = (f32::MAX, f32::MIN, 0.0f32);
+            let (mut gl, mut gh) = (f32::MAX, f32::MIN);
+            for i in 0..n {
+                for j in 0..n {
+                    let p = Vec2::new(i as f32, j as f32) * 4.0;
+                    let h = sk.land.swell(p);
+                    (lo, hi) = (lo.min(h), hi.max(h));
+                    let g = sk.land.base(p);
+                    (gl, gh) = (gl.min(g), gh.max(g));
+                    steep = steep.max((sk.land.swell(p + Vec2::X * 4.0) - h).abs() / 4.0);
+                }
+            }
+            println!(
+                "hilly {seed} size {} land {lo:.1}..{hi:.1} ground {gl:.1}..{gh:.1} steepest {steep:.2} {}",
+                sk.size,
+                sk.land.describe()
+                    + &sk
+                        .crossings
+                        .iter()
+                        .map(|c| format!(
+                            " | {:?} {:.0} m, {:.0} to {:.0}, floor {:.1} top {:.1}",
+                            c.kind,
+                            c.len(),
+                            c.from,
+                            c.to,
+                            c.floor,
+                            c.top
+                        ))
+                        .collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn how_built_up() {
+        for seed in 0..24 {
+            let sk = skeleton(&spec(seed));
+            let plan = super::city::Plan::of(seed, 2, false);
+            println!(
+                "built {seed} {:?} {:?} {:?} {:.3}",
+                plan.density,
+                plan.form,
+                plan.extent,
+                built(&sk)
+            );
+        }
+    }
+
     #[test]
     #[ignore = "a probe"]
     fn sweep_cities() {
@@ -1050,18 +1145,42 @@ mod tests {
         }
     }
 
+    /// A cramped city's more built up than a middling one, and that than an
+    /// open one.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn density_shows() {
+        use super::city::{Density, Plan};
+        let mean = |density: Density| {
+            let of: Vec<f32> = (0..24)
+                .filter(|&s| Plan::of(s, 2, false).density == density)
+                .map(|s| built(&skeleton(&spec(s))))
+                .collect();
+            of.iter().sum::<f32>() / of.len() as f32
+        };
+        let (c, m, o) = (
+            mean(Density::Cramped),
+            mean(Density::Middling),
+            mean(Density::Open),
+        );
+        assert!(c > m * 1.25 && m > o * 1.15, "{c:.2} {m:.2} {o:.2}");
+    }
+
     /// The plaza's slope is gentle enough to drive up anywhere.
     #[test]
     fn the_plaza_slope_is_drivable() {
         for seed in SEEDS {
             let sk = skeleton(&spec(seed));
-            for pl in &sk.platforms {
+            for pl in &sk.land.platforms {
                 for k in 0..16 {
                     let a = k as f32 / 16.0 * std::f32::consts::TAU;
                     let dir = Vec2::new(a.cos(), a.sin());
-                    let mut prev = sk.ground(pl.center);
+                    let mut prev = pl.height_at(pl.center);
                     for r in 1..(pl.half as i32 * 2) {
-                        let h = sk.ground(pl.center + dir * r as f32);
+                        let h = pl.height_at(pl.center + dir * r as f32);
                         assert!((prev - h).abs() < 0.25, "seed {seed}: plaza edge too steep");
                         prev = h;
                     }

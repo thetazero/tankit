@@ -143,7 +143,11 @@ impl Style for Imperium {
                 map.rubble_lot(rng, &lot.footprint, CONCRETE);
                 Vec::new()
             }
-            LotKind::Civic(_) => Vec::new(),
+            LotKind::Civic(_)
+            | LotKind::Works(_)
+            | LotKind::Spires
+            | LotKind::Fins
+            | LotKind::Boulders => Vec::new(),
             LotKind::Distant => {
                 map.distant_block(rng, &lot.footprint, sk);
                 Vec::new()
@@ -1644,7 +1648,7 @@ impl Map {
     /// hung with crimson. Visual only.
     fn skyline(&mut self, rng: &mut Rng, sk: &Skeleton) {
         let avenues: Vec<Street> = sk.avenues().filter(|a| a.out).copied().collect();
-        self.skyline_ground(sk.size, GROUND);
+        self.skyline_ground(sk, GROUND);
         self.skyline_lots(rng, sk, |map, rng, lot, h, broken, (shade, toward)| {
             map.skyline_tower(rng, lot.center, lot.half, h, broken, shade, toward);
         });
@@ -1654,6 +1658,7 @@ impl Map {
         for a in &avenues {
             let dir = a.dir();
             let p = a.to + dir * 220.0;
+            let mark = Mark::of(self);
             let yaw = -angle(dir);
             let half = Vec2::new(12.0, 16.0);
             let h = 110.0;
@@ -1722,11 +1727,13 @@ impl Map {
                 CRIMSON,
                 true,
             );
+            mark.raise(self, sk.ground(p));
         }
     }
 
     /// The flat ground beyond the edge, `color`.
-    pub(super) fn skyline_ground(&mut self, size: f32, color: Vec3) {
+    pub(super) fn skyline_ground(&mut self, sk: &Skeleton, color: Vec3) {
+        let size = sk.size;
         // Flat ground from the edge out past the far plane, matching the
         // play ground at the edge (grid lines on 0 and size); under the
         // arena it sinks out of sight.
@@ -1736,12 +1743,13 @@ impl Map {
         // flat, so it shades like the play ground there and no seam shows.)
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
             let inside = |m: f32| x > m && z > m && x < size - m && z < size - m;
+            let h = sk.ground(Vec2::new(x, z));
             if inside(cell + 0.01) {
-                -8.0
+                h - 8.0
             } else if inside(0.01) {
-                -0.25
+                h - 0.25
             } else {
-                0.0
+                h
             }
         });
         t.color = color;
@@ -1799,7 +1807,9 @@ impl Map {
             let broken = rng.f32() < 0.3;
             let toward = Vec2::new(-d.x.signum(), -d.y.signum());
             let shade = rng.range(0.8, 0.95);
+            let mark = Mark::of(self);
             tower(self, rng, &lot, h, broken, (shade, toward));
+            mark.raise(self, sk.ground(lot.center));
             placed.push(lot);
         }
     }

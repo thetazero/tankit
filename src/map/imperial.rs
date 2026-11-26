@@ -325,8 +325,8 @@ impl Map {
                             for i in 0..=bays {
                                 let s = -l + i as f32 * bw;
                                 let w = if i == 0 || i == bays { 0.9 } else { 0.4 };
-                                let s0 = (s - w).max(-l - 0.02);
-                                let s1 = (s + w).min(l + 0.02);
+                                let s0 = (s - w).max(-l - 0.05);
+                                let s1 = (s + w).min(l + 0.05);
                                 put(self, (s0, s1), (w0, top), (-0.09, 0.2), fin.body * 0.96);
                             }
                         }
@@ -345,8 +345,8 @@ impl Map {
                         // Pilasters between the slots, standing proud.
                         for i in 0..=bays {
                             let s = -l + i as f32 * bw;
-                            let s0 = (s - bw * 0.2).max(-l - 0.02);
-                            let s1 = (s + bw * 0.2).min(l + 0.02);
+                            let s0 = (s - bw * 0.2).max(-l - 0.05);
+                            let s1 = (s + bw * 0.2).min(l + 0.05);
                             put(self, (s0, s1), (w0, top), (-0.09, 0.35), fin.body * 1.04);
                         }
                         // Spandrels every two floors.

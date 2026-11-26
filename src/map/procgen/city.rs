@@ -15,6 +15,8 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
+use super::crossing;
+use super::land::Land;
 use super::skeleton::*;
 use crate::map::OBox;
 use crate::rng::Rng;
@@ -143,7 +145,7 @@ impl Density {
     /// Half an avenue's width.
     fn avenue(self) -> f32 {
         match self {
-            Density::Cramped => 11.0,
+            Density::Cramped => 8.5,
             Density::Middling => AVENUE_HALF,
             Density::Open => 17.0,
         }
@@ -152,8 +154,8 @@ impl Density {
     /// How far apart streets branch off.
     fn blocks(self) -> f32 {
         match self {
-            Density::Cramped => 30.0,
-            Density::Middling => 40.0,
+            Density::Cramped => 40.0,
+            Density::Middling => 44.0,
             Density::Open => 56.0,
         }
     }
@@ -161,7 +163,7 @@ impl Density {
     /// A lane's half-width.
     fn lane(self) -> (f32, f32) {
         match self {
-            Density::Cramped => (4.6, 6.0),
+            Density::Cramped => (3.9, 4.8),
             Density::Middling => (5.4, 7.5),
             Density::Open => (7.0, 9.5),
         }
@@ -170,9 +172,9 @@ impl Density {
     /// How far back from the street a building may stand.
     fn setback(self) -> f32 {
         match self {
-            Density::Cramped => 1.0,
+            Density::Cramped => 0.3,
             Density::Middling => 2.2,
-            Density::Open => 4.5,
+            Density::Open => 6.0,
         }
     }
 
@@ -180,18 +182,19 @@ impl Density {
     /// most, and how wide an alley is.
     fn row(self) -> (i32, f32) {
         match self {
-            Density::Cramped => (9, 5.6),
+            Density::Cramped => (12, 5.6),
             Density::Middling => (6, 6.5),
-            Density::Open => (4, 9.0),
+            Density::Open => (2, 15.0),
         }
     }
 
-    /// How much of the ground behind the streets is built on.
-    fn infill(self) -> f32 {
+    /// Behind the streets: how much to try to build there (tries for every
+    /// 100 m²), how close together, and how often with room to drive round.
+    fn infill(self) -> (f32, f32, f32) {
         match self {
-            Density::Cramped => 0.95,
-            Density::Middling => 0.65,
-            Density::Open => 0.25,
+            Density::Cramped => (12.0, 0.4, 0.05),
+            Density::Middling => (1.4, 1.2, 0.5),
+            Density::Open => (0.25, 5.6, 1.0),
         }
     }
 }
@@ -349,6 +352,10 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             precinct: (radius + 20.0).min(half - 8.0),
             doors,
             fallen,
+            kind: LandmarkKind::Great,
+            clear: 0.0,
+            reach: (radius + 20.0).min(half - 8.0),
+            facing: Vec2::X,
         });
     }
 
@@ -362,6 +369,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             corner: corner + inward * Vec2::new(rng.range(3.0, 16.0), rng.range(3.0, 16.0)),
             inward,
             size: court,
+            kind: BaseKind::Court,
         }));
     }
     let mut tries = 0;
@@ -404,13 +412,18 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                 corner: m - inward * court * 0.5,
                 inward,
                 size: court,
+                kind: BaseKind::Court,
             });
         }
     }
 
+    let land = Land {
+        platforms,
+        ..Land::default()
+    };
     let mut sk = Skeleton {
         size,
-        platforms,
+        land,
         streets: Vec::new(),
         squares: Vec::new(),
         landmarks,
@@ -421,6 +434,20 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         edges: Vec::new(),
         decos: Vec::new(),
         repair_spots: Vec::new(),
+        crossings: Vec::new(),
+    };
+    // The land, its great shapes kept off the great buildings and courts.
+    let avoid: Vec<(Vec2, f32)> = sk
+        .land
+        .platforms
+        .iter()
+        .map(|p| (p.center, p.half * 1.15 + p.ramp))
+        .chain(sk.bases.iter().map(|b| (b.middle(), b.size * 0.75)))
+        .chain([(heart, 30.0)])
+        .collect();
+    sk.land = Land {
+        platforms: std::mem::take(&mut sk.land.platforms),
+        ..Land::rolling(rng, size, &avoid)
     };
 
     if plan.form == Form::OldTown {
@@ -483,12 +510,71 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         }
     }
     sk.repair_spots = repairs;
+    level(&mut sk);
     sk
+}
+
+/// Levels the ground under everything that stands on it, the biggest last:
+/// a plaza's level wins over a house's plot by it.
+pub(super) fn level(sk: &mut Skeleton) {
+    let mut land = sk.land.clone();
+    for l in &sk.lots {
+        // (What stands over a road leaves the road its own level.)
+        if matches!(l.kind, LotKind::Works(p) if p.over()) {
+            continue;
+        }
+        land.level_box(&l.footprint, 0.6, 3.0);
+    }
+    for d in &sk.decos {
+        land.level_round(d.at, d.kind.reach() * 0.8, 4.0);
+    }
+    for s in &sk.spans {
+        land.level_round(s.at, s.opening + 7.0, 10.0);
+    }
+    for b in &sk.bases {
+        let court = OBox {
+            center: b.middle(),
+            half: Vec2::splat(b.size * 0.5),
+            ..OBox::default()
+        };
+        land.level_box(&court, 3.0, 18.0);
+    }
+    for pl in &sk.land.platforms {
+        land.level_round(pl.center, pl.half * 1.2 + pl.ramp, 24.0);
+    }
+    if sk.land.platforms.is_empty() {
+        land.level_round(sk.heart, 24.0, 16.0);
+    }
+    // Ready for the crossings: both ends level with a bridge's deck; a
+    // tunnel's way dug down, the crest over it level with its roof.
+    for x in &sk.crossings {
+        let (d, yaw) = (x.dir(), x.dir().x.atan2(x.dir().y));
+        let strip = |t0: f32, t1: f32, w: f32| OBox {
+            center: x.from + d * (t0 + t1) * 0.5,
+            yaw,
+            half: Vec2::new(w, (t1 - t0) * 0.5),
+            ..OBox::default()
+        };
+        match x.kind {
+            crossing::Kind::Bridge => {
+                land.level_at(strip(-9.0, 0.5, x.half + 1.0), 0.0, 7.0, x.top);
+                let len = x.len();
+                land.level_at(strip(len - 0.5, len + 9.0, x.half + 1.0), 0.0, 7.0, x.top);
+            }
+            crossing::Kind::Tunnel => {
+                let (a, b) = x.roofed;
+                land.level_at(strip(a, b, x.half + 11.0), 0.0, 5.0, x.top);
+                // (Flat right across, and up again inside the walls.)
+                land.level_at(strip(-5.0, x.len() + 5.0, x.half + 3.2), 0.0, 1.4, x.floor);
+            }
+        }
+    }
+    sk.land = land;
 }
 
 /// Where the avenues meet each edge (counter-clockwise from the south), as
 /// (t from, t to) along it.
-type Mouths = [Vec<(f32, f32)>; 4];
+pub(super) type Mouths = [Vec<(f32, f32)>; 4];
 
 /// The edges, counter-clockwise from the south: (start, along, inward).
 pub fn sides(size: f32) -> [(Vec2, Vec2, Vec2); 4] {
@@ -593,7 +679,7 @@ fn clear_courts(sk: &mut Skeleton, rng: &mut Rng) {
 /// runs a long way between buildings (down a street, across open ground),
 /// barriers in clumps here and there, not a line all along it: they slow a
 /// tank down more than they stop it.
-fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
+pub(super) fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
     let size = sk.size;
     // Where a tank would run into a building on the edge line.
     let walled = |sk: &Skeleton, p: Vec2| {
@@ -691,7 +777,7 @@ fn gates_and_lines(sk: &mut Skeleton, rng: &mut Rng) {
             sk.spans.push(Span {
                 at,
                 along: dir,
-                opening: 6.5,
+                opening: (a.half - 3.0).min(6.5),
                 ruined: k == ruined && rng.chance(0.75),
             });
         }
@@ -733,7 +819,7 @@ fn gates_and_lines(sk: &mut Skeleton, rng: &mut Rng) {
 /// low cover scattered on the open ground round its foot.
 fn plaza_dressing(sk: &mut Skeleton, rng: &mut Rng) {
     let mut fonts = Vec::new();
-    for (lm, plaza) in sk.landmarks.iter().zip(&sk.platforms) {
+    for (lm, plaza) in sk.landmarks.iter().zip(&sk.land.platforms) {
         for b in bisectors(lm) {
             // On the top, well in from its edge, outside the precinct.
             let mut d = lm.precinct + 8.0;
@@ -748,7 +834,7 @@ fn plaza_dressing(sk: &mut Skeleton, rng: &mut Rng) {
         }
     }
     sk.decos.extend(fonts);
-    if sk.platforms.is_empty() {
+    if sk.land.platforms.is_empty() {
         return;
     }
     let c = sk.heart;
@@ -808,7 +894,11 @@ fn civics(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
             ..OBox::default()
         };
         let r = half.length();
-        let clear = sk.off_plazas(p) > r + 8.0
+        let clear = sk.land.cuts().iter().all(|c| {
+            let (t, off) = c.local(p);
+            !(c.floor - r..c.floor + c.bank(t) + r * 0.7).contains(&off.abs())
+                && off.abs() > c.floor
+        }) && sk.off_plazas(p) > r + 8.0
             && sk
                 .squares
                 .iter()
@@ -830,7 +920,7 @@ fn civics(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
 }
 
 /// Does the way along `pts`, `half` wide, run through something standing?
-fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
+pub(super) fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
     pts.windows(2).any(|w| {
         let n = (w[0].distance(w[1]) / 2.0).ceil().max(1.0) as i32;
         (0..=n).any(|k| {
@@ -838,6 +928,7 @@ fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
             sk.bases.iter().any(|b| b.contains(p, half + 3.0))
                 || sk.lots.iter().any(|l| l.footprint.distance(p) < half + 1.0)
                 || sk
+                    .land
                     .platforms
                     .iter()
                     .any(|pl| !own.contains(&pl.center) && pl.sdf(p) < pl.ramp * 0.5 + half)
@@ -847,7 +938,7 @@ fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
 
 /// A crooked way from `a` to `b`, leaving along `lead` m of straight at
 /// each end that's asked for: bent about, its corners cut off.
-fn crooked(rng: &mut Rng, a: Vec2, b: Vec2, lead: (f32, f32), bend: f32) -> Vec<Vec2> {
+pub(super) fn crooked(rng: &mut Rng, a: Vec2, b: Vec2, lead: (f32, f32), bend: f32) -> Vec<Vec2> {
     let d = (b - a).normalize_or(Vec2::X);
     let side = Vec2::new(-d.y, d.x);
     let (a1, b1) = (a + d * lead.0, b - d * lead.1);
@@ -907,7 +998,8 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
             plan.density.avenue() * rng.range(0.85, 1.1)
         };
         let reach = |p: Vec2| {
-            sk.platforms
+            sk.land
+                .platforms
                 .iter()
                 .find(|pl| pl.center == p)
                 .map_or(4.0, |pl| pl.half * 1.15 + pl.ramp)
@@ -961,18 +1053,21 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
         }
     }
 
+    valley_roads(sk, rng, plan);
+    crossings(sk);
+
     // To the nearest road so far from every medium structure's ends, and
     // from each way out of every court.
     let nearest = |sk: &Skeleton, p: Vec2| {
         sk.streets
             .iter()
-            .filter(|s| s.rank != Rank::Beyond)
+            .filter(|s| !matches!(s.rank, Rank::Beyond | Rank::Crossing))
             .map(|s| {
                 let d = s.to - s.from;
                 let t = ((p - s.from).dot(d) / d.length_squared()).clamp(0.0, 1.0);
                 s.from + d * t
             })
-            .filter(|q| sk.off_plazas(*q) > -4.0 || sk.platforms.is_empty())
+            .filter(|q| sk.off_plazas(*q) > -4.0 || sk.land.platforms.is_empty())
             .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
     };
     let mut doors: Vec<Vec2> = Vec::new();
@@ -1010,6 +1105,9 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
     while k < sk.streets.len() && sk.streets.len() < most {
         let s = sk.streets[k];
         k += 1;
+        if s.rank == Rank::Crossing {
+            continue;
+        }
         let d = s.dir();
         // (Roads are short bends: each takes up where a run of blocks is.)
         let mut t = rng.range(0.0, 1.0) * block;
@@ -1082,6 +1180,201 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
     mouths
 }
 
+/// A road along each valley's floor or ridge's crest, in from one edge and
+/// out at another (now and then there's none).
+fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
+    let size = sk.size;
+    let inside = |p: Vec2| p.min_element() > 0.0 && p.max_element() < size;
+    for c in sk.land.cuts() {
+        if rng.chance(0.2) {
+            continue;
+        }
+        let half = rng.range(plan.density.lane().0, plan.density.lane().1 + 1.0);
+        let half = half.min(c.floor - 2.5);
+        let pts: Vec<Vec2> = (-40..=40)
+            .map(|k| c.point(k as f32 * 18.0))
+            .filter(|&p| p.min_element() > -SPRAWL - 80.0 && p.max_element() < size + SPRAWL + 80.0)
+            .collect();
+        for w in pts.windows(2) {
+            let rank = if inside(w[0]) && inside(w[1]) {
+                Rank::Lane
+            } else {
+                Rank::Beyond
+            };
+            sk.streets.push(Street {
+                from: w[0],
+                to: w[1],
+                half,
+                clear: 2.0,
+                rank,
+                out: false,
+            });
+        }
+    }
+}
+
+/// Bridges where the plan's roads cross a valley, tunnels where they go
+/// through a ridge: straight from rim to rim, or foot to foot.
+pub(super) fn crossings(sk: &mut Skeleton) {
+    let cuts = sk.land.cuts();
+    let old = std::mem::take(&mut sk.streets);
+    // Roads whole, then cut where they cross.
+    let mut roads: Vec<(Street, Vec<Vec2>)> = Vec::new();
+    for s in old {
+        match roads.last_mut() {
+            Some((r, pts))
+                if r.half == s.half && r.rank == s.rank && pts.last() == Some(&s.from) =>
+            {
+                pts.push(s.to);
+                r.out = s.out;
+            }
+            _ => roads.push((s, vec![s.from, s.to])),
+        }
+    }
+    for (road, pts) in roads {
+        // Fine points along it.
+        let mut fine = vec![pts[0]];
+        for w in pts.windows(2) {
+            let n = (w[0].distance(w[1]) / 3.0).ceil().max(1.0) as i32;
+            fine.extend((1..=n).map(|k| w[0].lerp(w[1], k as f32 / n as f32)));
+        }
+        let mut spans: Vec<(usize, usize, crossing::Crossing)> = Vec::new();
+        if road.rank != Rank::Beyond {
+            for c in &cuts {
+                let on = |p: Vec2| c.depth(p) > 0.03;
+                let mut k = 0;
+                while k < fine.len() {
+                    if !on(fine[k]) {
+                        k += 1;
+                        continue;
+                    }
+                    let a = k;
+                    while k < fine.len() && on(fine[k]) {
+                        k += 1;
+                    }
+                    let (a, b) = (a.saturating_sub(1), k.min(fine.len() - 1));
+                    if let Some(x) = crossing_at(sk, c, fine[a], fine[b], road.half)
+                        && a > 0
+                        && k < fine.len()
+                        && spans.iter().all(|&(p, q, _)| b < p || a > q)
+                        && sk
+                            .crossings
+                            .iter()
+                            .all(|o| o.distance((fine[a] + fine[b]) * 0.5) > 34.0)
+                    {
+                        spans.push((a, b, x));
+                    }
+                }
+            }
+        }
+        spans.sort_by_key(|s| s.0);
+        let lay = |sk: &mut Skeleton, from: usize, to: usize, last: bool| {
+            // Back to its own bends, between two of the fine points.
+            let mut line = vec![fine[from]];
+            for &p in &fine[from + 1..to.max(from + 1)] {
+                if pts.contains(&p) {
+                    line.push(p);
+                }
+            }
+            line.push(fine[to]);
+            let n = line.len() - 1;
+            for (k, w) in line.windows(2).enumerate() {
+                if w[0].distance(w[1]) > 0.5 {
+                    sk.streets.push(Street {
+                        from: w[0],
+                        to: w[1],
+                        out: road.out && last && k + 1 == n,
+                        ..road
+                    });
+                }
+            }
+        };
+        let mut from = 0;
+        for &(a, b, x) in &spans {
+            if a > from {
+                lay(sk, from, a, false);
+            }
+            sk.streets.push(Street {
+                from: x.from,
+                to: x.to,
+                // (With its walls.)
+                half: x.half
+                    + match x.kind {
+                        crossing::Kind::Bridge => 0.5,
+                        crossing::Kind::Tunnel => crossing::ROOF,
+                    },
+                clear: 2.0,
+                rank: Rank::Crossing,
+                out: false,
+            });
+            sk.crossings.push(x);
+            from = b;
+        }
+        if from + 1 < fine.len() {
+            lay(sk, from, fine.len() - 1, true);
+        }
+    }
+}
+
+/// The crossing of `c` from `a` to `b` by a road `half` wide, if one fits.
+fn crossing_at(
+    sk: &Skeleton,
+    c: &super::land::Cut,
+    a: Vec2,
+    b: Vec2,
+    half: f32,
+) -> Option<crossing::Crossing> {
+    let len = a.distance(b);
+    if !(26.0..120.0).contains(&len) || c.local(a).1 * c.local(b).1 > 0.0 {
+        return None;
+    }
+    let inside = |p: Vec2| p.min_element() > 14.0 && p.max_element() < sk.size - 14.0;
+    if !inside(a) || !inside(b) || sk.off_plazas(a) < 6.0 || sk.off_plazas(b) < 6.0 {
+        return None;
+    }
+    let r = &sk.land;
+    let (ha, hb) = (r.swell(a), r.swell(b));
+    let mid = r.swell((a + b) * 0.5);
+    let half = half.min(8.5);
+    let end = (ha + hb) * 0.5;
+    if (ha - hb).abs() > 4.0 {
+        return None;
+    }
+    if c.height < 0.0 {
+        // Room to drive under it.
+        (end - mid > 5.0).then_some(crossing::Crossing {
+            kind: crossing::Kind::Bridge,
+            from: a,
+            to: b,
+            half,
+            top: end,
+            floor: 0.0,
+            roofed: (0.0, 0.0),
+        })
+    } else {
+        // Roofed where the crest's high enough to be.
+        let high = |t: f32| r.swell(a + (b - a) * t) > end + 5.6;
+        let ts: Vec<f32> = (0..=40)
+            .map(|k| k as f32 / 40.0)
+            .filter(|&t| high(t))
+            .collect();
+        let (t0, t1) = (*ts.first()?, *ts.last()?);
+        let top = (0..=8)
+            .map(|k| r.swell(a + (b - a) * (t0 + (t1 - t0) * k as f32 / 8.0)))
+            .fold(f32::MAX, f32::min)
+            .min(end + 9.0);
+        ((t1 - t0) * len > 10.0).then_some(crossing::Crossing {
+            kind: crossing::Kind::Tunnel,
+            from: a,
+            to: b,
+            half: half.min(7.0),
+            top,
+            floor: end,
+            roofed: (t0 * len, t1 * len),
+        })
+    }
+}
+
 /// Buildings along every road, facing it: shoulder to shoulder, an alley
 /// every few; then, behind them, a scatter of smaller ones.
 fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
@@ -1090,22 +1383,29 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let rubble = rng.range(0.05, 0.14);
     let beyond = |q: Vec2| q.min_element() < -SPRAWL || q.max_element() > size + SPRAWL;
     let fits = |sk: &Skeleton, lot: &OBox, margin: f32| {
-        let (ax, az) = lot.axes();
-        let mut pts = vec![lot.center];
-        for u in [-1.0f32, 0.0, 1.0] {
-            for v in [-1.0f32, 0.0, 1.0] {
-                pts.push(lot.center + ax * u * lot.half.x + az * v * lot.half.y);
-            }
-        }
-        !pts.iter().any(|&q| sk.reserved(q) || beyond(q))
-            && !sk.lots.iter().any(|l| {
+        // Cheapest first: what's nearby, then the corners.
+        let r = lot.half.length();
+        if beyond(lot.center)
+            || sk.reserved(lot.center)
+            || sk.lots.iter().any(|l| {
                 let m = if matches!(l.kind, LotKind::Civic(_)) {
                     5.0
                 } else {
                     margin
                 };
-                l.footprint.overlaps(lot, m)
+                let f = &l.footprint;
+                f.center.distance(lot.center) < r + f.half.length() + m && f.overlaps(lot, m)
             })
+        {
+            return false;
+        }
+        let (ax, az) = lot.axes();
+        [-1.0f32, 0.0, 1.0].into_iter().all(|u| {
+            [-1.0f32, 0.0, 1.0].into_iter().all(|v| {
+                let q = lot.center + ax * u * lot.half.x + az * v * lot.half.y;
+                !sk.reserved(q) && !beyond(q)
+            })
+        })
     };
     let kind_at = |rng: &mut Rng, p: Vec2| {
         let out = (-p).max(p - Vec2::splat(size)).max_element();
@@ -1121,47 +1421,79 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
         }
     };
     let (row, alley) = plan.density.row();
-    // The greatest roads' frontages first: they get the best of it.
-    let mut order: Vec<Street> = sk.streets.clone();
-    order.sort_by(|a, b| b.half.total_cmp(&a.half));
-    for s in order {
-        let d = s.dir();
-        let side = Vec2::new(-d.y, d.x);
+    // Every road whole, bends and all (its stretches are laid end to end),
+    // the greatest first: they get the best of it.
+    let mut chains: Vec<(f32, Vec<Vec2>)> = Vec::new();
+    for s in sk.streets.iter().filter(|s| s.rank != Rank::Crossing) {
+        match chains.last_mut() {
+            Some((half, pts)) if *half == s.half && pts.last() == Some(&s.from) => pts.push(s.to),
+            _ => chains.push((s.half, vec![s.from, s.to])),
+        }
+    }
+    chains.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (road, pts) in chains {
+        // The point `t` along it, and its heading there (over a house's
+        // width, so a house on a bend faces it squarely).
+        let total: f32 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let at = |t: f32| {
+            let mut left = t.clamp(0.0, total);
+            for w in pts.windows(2) {
+                let l = w[0].distance(w[1]);
+                if left <= l {
+                    return w[0].lerp(w[1], left / l.max(1e-3));
+                }
+                left -= l;
+            }
+            *pts.last().unwrap()
+        };
         for e in [-1.0f32, 1.0] {
             let mut t = rng.range(0.0, 4.0);
             let mut run = 0;
             let mut upto = rng.int(2, row);
-            while t < s.len() {
-                let mut half = Vec2::new(rng.range(4.2, 8.0), rng.range(5.0, 9.0));
+            while t < total {
+                let mut half = Vec2::new(rng.range(4.2, 8.0), rng.range(5.5, 9.5));
                 let mut placed = false;
-                for small in [false, true] {
-                    if small {
-                        half = Vec2::new(rng.range(3.0, 4.4), rng.range(3.8, 5.6));
+                for size_down in 0..3 {
+                    match size_down {
+                        0 => {}
+                        1 => half = Vec2::new(rng.range(3.4, 4.6), half.y),
+                        _ => half = Vec2::new(rng.range(3.0, 4.0), rng.range(3.4, 4.8)),
                     }
+                    let mid = at(t + half.x);
+                    let d = (at(t + half.x + 4.0) - at(t + half.x - 4.0)).normalize_or(Vec2::X);
+                    let side = Vec2::new(-d.y, d.x);
                     // A far block's details need room on its faces.
-                    let q = s.from + d * t;
-                    if (-q).max(q - Vec2::splat(size)).max_element() > NEAR - 24.0 {
+                    let far = (-mid).max(mid - Vec2::splat(size)).max_element() > NEAR - 24.0;
+                    if far {
                         half = half.max(Vec2::splat(6.5));
                     }
-                    let back = s.half + 0.8 + rng.range(0.0, plan.density.setback()) + half.y;
-                    let p = s.from + d * (t + half.x) + side * e * back;
-                    let lot = OBox {
-                        center: p,
-                        yaw: -d.y.atan2(d.x) + rng.range(-0.06, 0.06),
+                    let set = rng.range(0.0, plan.density.setback());
+                    let mut lot = OBox {
+                        center: mid + side * e * (road + 0.9 + set + half.y),
+                        yaw: -d.y.atan2(d.x) + rng.range(-0.05, 0.05),
                         half,
                         y0: 0.0,
                         y1: 1.0,
                         ..OBox::default()
                     };
-                    // (Far blocks' cornices stand out over their lots.)
-                    let out = (-p).max(p - Vec2::splat(size)).max_element();
-                    if !fits(sk, &lot, if out > NEAR - 4.0 { 1.6 } else { 0.4 }) {
+                    // On the inside of a bend it stands a little further back.
+                    let margin = if far { 1.6 } else { 0.4 };
+                    let mut ok = fits(sk, &lot, margin);
+                    for _ in 0..3 {
+                        if ok {
+                            break;
+                        }
+                        lot.center += side * e * 0.8;
+                        ok = fits(sk, &lot, margin);
+                    }
+                    // Few on the banks: steep ground's mostly left open.
+                    if !ok || (sk.land.steep(lot.center) > 0.3 && rng.chance(0.65)) {
                         continue;
                     }
-                    let to = lot.local_point(s.from + d * (t + half.x));
-                    let kind = match kind_at(rng, p) {
+                    let to = lot.local_point(mid);
+                    let kind = match kind_at(rng, lot.center) {
                         LotKind::Distant => LotKind::Distant,
-                        _ if small => LotKind::Small,
+                        _ if size_down == 2 => LotKind::Small,
                         k => k,
                     };
                     sk.lots.push(Lot {
@@ -1173,51 +1505,70 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
                     break;
                 }
                 if placed {
-                    t += half.x * 2.0 + rng.range(0.5, 1.2);
+                    t += half.x * 2.0 + rng.range(0.5, 1.0);
                     run += 1;
                     if run >= upto {
-                        t += alley * rng.range(0.9, 1.4);
+                        t += alley * rng.range(0.9, 1.3);
                         run = 0;
                         upto = rng.int(2, row);
                     }
                 } else {
-                    t += 1.5;
+                    t += 1.0;
                 }
             }
         }
     }
-    // Behind: whatever there's room for, with room to drive round it.
-    let n = ((size + 2.0 * SPRAWL) / 15.0) as i32;
-    for i in 0..n {
-        for j in 0..n {
-            if !rng.chance(plan.density.infill()) {
-                continue;
-            }
-            let p = Vec2::new(
-                (i as f32 + rng.range(0.0, 1.0)) * 15.0 - SPRAWL,
-                (j as f32 + rng.range(0.0, 1.0)) * 15.0 - SPRAWL,
-            );
-            let lot = OBox {
-                center: p,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(rng.range(4.5, 7.0), rng.range(4.5, 7.0)),
-                y0: 0.0,
-                y1: 1.0,
-                ..OBox::default()
-            };
-            if !fits(sk, &lot, 5.6) {
-                continue;
-            }
-            let kind = match kind_at(rng, p) {
-                LotKind::Distant => LotKind::Distant,
-                _ if rng.chance(0.35) => LotKind::Rubble,
-                _ => LotKind::Small,
-            };
-            sk.lots.push(Lot {
-                footprint: lot,
-                front: (1, 1.0),
-                kind,
-            });
+    // Behind: whatever there's room for, square to the nearest street, so
+    // a block's backs line up with its fronts.
+    let (tries, close, loose) = plan.density.infill();
+    let span = size + 2.0 * SPRAWL;
+    for _ in 0..(span * span / 100.0 * tries) as i32 {
+        let p = Vec2::new(rng.range(0.0, span), rng.range(0.0, span)) - Vec2::splat(SPRAWL);
+        let far = (-p).max(p - Vec2::splat(size)).max_element() > NEAR - 24.0;
+        // (Out past the edge it's only seen: no need to pack it.)
+        if far && !rng.chance((1.5 / tries).min(1.0)) {
+            continue;
         }
+        let near = sk
+            .streets
+            .iter()
+            .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)));
+        let turn = near.map_or(0.0, |s| {
+            let d = s.dir();
+            -d.y.atan2(d.x)
+        });
+        let lot = OBox {
+            center: p,
+            yaw: turn + rng.range(-0.08, 0.08),
+            half: if far {
+                Vec2::new(rng.range(6.5, 8.5), rng.range(6.5, 8.5))
+            } else {
+                Vec2::new(rng.range(3.2, 7.0), rng.range(3.2, 7.0))
+            },
+            y0: 0.0,
+            y1: 1.0,
+            ..OBox::default()
+        };
+        let margin = if far {
+            2.0
+        } else if rng.chance(loose) {
+            5.6
+        } else {
+            close
+        };
+        if !fits(sk, &lot, margin) || (sk.land.steep(p) > 0.3 && rng.chance(0.75)) {
+            continue;
+        }
+        let kind = match kind_at(rng, p) {
+            LotKind::Distant => LotKind::Distant,
+            LotKind::Rubble => LotKind::Rubble,
+            _ if lot.half.min_element() < 4.6 => LotKind::Small,
+            k => k,
+        };
+        sk.lots.push(Lot {
+            footprint: lot,
+            front: (1, 1.0),
+            kind,
+        });
     }
 }

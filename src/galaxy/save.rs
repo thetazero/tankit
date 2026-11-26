@@ -18,8 +18,9 @@ use crate::rng::Rng;
 pub const SEED: u64 = 1;
 /// Ticks a new galaxy runs before you join it: long enough that it's a
 /// war well under way, its fronts drawn, its realms' research and its merc
-/// pilots' gear grown (#438), not one just starting.
-const WARMUP: u64 = 600;
+/// pilots' gear grown (#438), and the companies that came through the first
+/// shakeout at work, not one just starting.
+const WARMUP: u64 = 1500;
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -80,12 +81,27 @@ struct Saved {
     taken_at: Vec<u64>,
     #[serde(default)]
     rates: Option<[f32; 4]>,
+    /// What a contract has lately made a company.
+    #[serde(default)]
+    job_worth: Option<f32>,
+    #[serde(default)]
+    hire_rank: f32,
+    #[serde(default)]
+    hire_trust: Option<[f32; 2]>,
+    #[serde(default)]
+    lessons: Vec<super::merc::Lesson>,
     /// What companies have lately made, each, and were all worth.
     #[serde(default)]
     profit: Option<(f32, f32)>,
     /// Every planet's vault: its side, its realm, its crystal.
     #[serde(default)]
     vaults: Vec<(u8, u32, f32)>,
+    /// Hulls in flight.
+    #[serde(default)]
+    fleets: Vec<super::Fleet>,
+    /// What a hull's worth in each system, and its best use this tick.
+    #[serde(default)]
+    hull_worth: Vec<(f32, f32)>,
     /// The share of merc pilots in work lately.
     #[serde(default)]
     employment: Option<f32>,
@@ -227,6 +243,10 @@ struct SavedContract {
     lent: bool,
     #[serde(default)]
     seats: u32,
+    #[serde(default)]
+    arrives: u64,
+    #[serde(default)]
+    inbound: u32,
     /// What the realm expected of it, and the ticks it expected to pay.
     #[serde(default)]
     expected: f32,
@@ -255,6 +275,8 @@ impl SavedContract {
             defend: k.defend,
             lent: k.lent,
             seats: k.seats,
+            arrives: k.arrives,
+            inbound: k.inbound,
             expected: k.expected,
             expected_ticks: k.expected_ticks,
             held: k.held,
@@ -278,7 +300,10 @@ impl SavedContract {
             defend: self.defend,
             lent: self.lent,
             seats: self.seats,
+            arrives: self.arrives,
+            inbound: self.inbound,
             expected: self.expected,
+            net: 0.0,
             expected_ticks: self.expected_ticks,
             held: self.held,
             worth: self.worth,
@@ -394,8 +419,14 @@ impl Galaxy {
             wage_curve: Some(self.wage_curve),
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
+            job_worth: Some(self.job_worth),
+            hire_rank: self.hire_rank,
+            hire_trust: Some(self.hire_trust),
+            lessons: self.lessons.clone(),
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
+            fleets: self.fleets.clone(),
+            hull_worth: self.hull_marks(),
             vaults: self
                 .vaults
                 .iter()
@@ -547,6 +578,17 @@ impl Galaxy {
         if let Some(ticks) = s.trust_ticks {
             g.trust_ticks = ticks;
         }
+        g.hire_rank = s.hire_rank;
+        if let Some(x) = s.hire_trust {
+            g.hire_trust = x;
+        }
+        g.lessons = s.lessons;
+        let n = g.systems.len();
+        g.lessons
+            .retain(|l| (l.system as usize) < n && (l.side as usize) < SIDES);
+        if let Some(x) = s.job_worth {
+            g.job_worth = x;
+        }
         if let Some((profit, worth)) = s.profit {
             (g.profit, g.worth_before) = (profit, worth);
         }
@@ -641,6 +683,12 @@ impl Galaxy {
         g.ended = s.ended;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
+        g.set_hull_marks(&s.hull_worth);
+        g.fleets = s.fleets;
+        let (systems, realms) = (g.systems.len() as u32, g.realms.len() as u32);
+        g.fleets.retain(|x| {
+            x.to < systems && (x.side as usize) < SIDES && (x.realm == NONE || x.realm < realms)
+        });
         if s.vaults.len() == g.vaults.len() {
             for (v, x) in g.vaults.iter_mut().zip(&s.vaults) {
                 let realm = if (x.1 as usize) < g.realms.len() {
@@ -714,7 +762,7 @@ impl Galaxy {
                         let (s, f) = (k.target as usize, k.side as usize);
                         !k.lent
                             && f != super::RAID
-                            && k.field >= 8
+                            && k.field >= 20
                             && g.fighting(s, f)
                             && !g.commits(s, f).is_empty()
                     })
@@ -723,14 +771,23 @@ impl Galaxy {
         while !hired(&g) {
             g.step();
         }
-        // Only that work, so it's what's found.
-        for c in 0..g.companies.len() {
-            let keep = g.companies[c]
-                .contract
-                .is_some_and(|k| !k.lent && k.side as usize != super::RAID && k.field >= 8);
-            if !keep {
-                g.companies[c].contract = None;
-            }
+        // Only that work, so it's what's found, and nobody's hired against it.
+        let best = (0..g.companies.len())
+            .filter(|&c| {
+                let one = &g.companies[c];
+                one.pilots.len() >= 4
+                    && one.contract.is_some_and(|k| {
+                        let (s, f) = (k.target as usize, k.side as usize);
+                        !k.lent
+                            && f != super::RAID
+                            && k.field >= 20
+                            && g.fighting(s, f)
+                            && !g.commits(s, f).is_empty()
+                    })
+            })
+            .max_by_key(|&c| g.companies[c].contract.map_or(0, |k| k.field));
+        for c in (0..g.companies.len()).filter(|&c| Some(c) != best) {
+            g.companies[c].contract = None;
         }
         g.clear_moves();
         g

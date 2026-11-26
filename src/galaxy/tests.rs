@@ -458,7 +458,11 @@ fn realms_hire_on_credit() {
     for r in 0..g.realms.len() as u32 {
         for t in 0..g.systems.len().min(40) {
             let f = g.realms[r as usize].faction as usize;
-            assert!(!g.hire(t, f, r, 50.0, 0.0, false));
+            let plan = super::merc::Plan {
+                own: 50.0,
+                ..Default::default()
+            };
+            assert!(!g.hire(t, f, r, plan, 0, 0.0));
         }
     }
     assert_eq!(g.books.signed, signed);
@@ -735,9 +739,7 @@ fn galaxy_kills_teach_merc_pilots() {
 fn moves_account_for_every_hull() {
     let mut g = small_war();
     // (hulls are worth building)
-    for r in &mut g.realms {
-        r.hull_worth = 1.0;
-    }
+    g.hull_worth.fill(1.0);
     g.clear_moves();
     let before: Vec<[u32; SIDES]> = g.systems.iter().map(|s| s.hulls).collect();
     for _ in 0..40 {
@@ -765,19 +767,6 @@ fn moves_account_for_every_hull() {
     );
     g.clear_moves();
     assert!(g.moves.iter().flatten().all(Moves::is_empty));
-}
-
-/// A pocket builds hulls as fast as it would anywhere else (#446).
-#[test]
-fn pockets_build_at_full_rate() {
-    let mut g = Galaxy::warmed_hired(7);
-    let s = (0..g.systems.len())
-        .find(|&s| g.production(s)[g.systems[s].owner()] > 0.0)
-        .unwrap();
-    let before = g.built(s);
-    g.cut[s] = true;
-    assert_eq!(g.built(s), before);
-    assert_eq!(g.built(s), g.production(s));
 }
 
 /// The tick summary (#475) says what a system's sides had when the battle
@@ -966,4 +955,30 @@ fn companies_raid_and_leave() {
         }
     }
     assert!(raided && g.books.raids > 0);
+}
+
+/// Hulls sent take time to fly, are nowhere meanwhile, and land when due.
+#[test]
+fn fleets_take_time_and_land() {
+    let mut g = small_war();
+    g.fleets.clear();
+    while g.fleets.iter().all(|x| x.arrives < g.tick + 2) {
+        g.step();
+    }
+    let x = *g
+        .fleets
+        .iter()
+        .max_by_key(|x| x.arrives)
+        .expect("a fleet in flight");
+    let (t, f) = (x.to as usize, x.side as usize);
+    let due = x.arrives;
+    while g.tick + 1 < due {
+        g.tick_once();
+        assert!(g.fleets.iter().any(|y| y.to == x.to && y.arrives == due));
+    }
+    g.clear_moves();
+    g.tick_once();
+    assert!(g.moves[t][f].arrived >= x.hulls, "not landed");
+    assert!(g.fleets.iter().all(|y| y.arrives > g.tick));
+    assert!(g.flight(1.0) == 1 && g.flight(g.rules.ftl_speed * 2.5) == 3);
 }

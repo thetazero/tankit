@@ -235,3 +235,34 @@ fn bots_fight_through_the_foundry() {
         }
     }
 }
+
+/// The works on the shared land: every seed's first playable draw drives
+/// everywhere it must, whoever's it is, and some have bridges and tunnels.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn plans_play_and_some_cross() {
+    use crate::map::procgen::crossing::Kind;
+    let (mut bridges, mut tunnels, mut big, mut lots) = (0, 0, 0, 0);
+    for seed in 0..24 {
+        let sp = spec(seed, LOOKS[seed as usize % 4]);
+        let sk = works_plan(&sp);
+        if let Err(why) = check::playable(&sk.greybox(&sp.sides)) {
+            panic!("seed {seed}: {why}");
+        }
+        let has = |k: Kind| sk.crossings.iter().any(|c| c.kind == k) as i32;
+        bridges += has(Kind::Bridge);
+        tunnels += has(Kind::Tunnel);
+        use crate::map::procgen::skeleton::LotKind;
+        big += sk
+            .lots
+            .iter()
+            .filter(|l| matches!(l.kind, LotKind::Works(p) if p.big()))
+            .count();
+        lots += sk.lots.len();
+    }
+    eprintln!("of 24: {bridges} with bridges, {tunnels} with tunnels; {big} big, {lots} parts");
+    assert!(bridges > 0 && tunnels > 0, "{bridges} {tunnels}");
+}
