@@ -513,6 +513,8 @@ impl Skeleton {
                 let p = Vec2::new(x, z);
                 let g = self.ground(p);
                 let ok = self.land.plateau(p).abs() > self.pad + 3.0
+                    // (A town's are on the floor: its mesa's a strip along the edge.)
+                    && (self.streets.is_empty() || self.land.plateau(p) > 0.0)
                     && self
                         .land
                         .high

@@ -229,17 +229,38 @@ pub fn build(spec: &Spec) -> Map {
 /// Builds `spec`'s desert, and what each placeholder's filler put down.
 pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let sk = skeleton(spec);
+    let mut built = dressed(spec, &sk, spec.seed);
+    if spec.biome == Biome::Reservoir {
+        // What its houses and boulders come down to isn't on the greybox: if
+        // they've shut somebody in, they fall another way.
+        for attempt in 1..6u64 {
+            match super::check::playable(&built.0) {
+                Ok(()) => break,
+                Err(why) => log::debug!("town seed {} dressed: {why}", spec.seed),
+            }
+            built = dressed(spec, &sk, spec.seed ^ (attempt << 40));
+        }
+    }
+    built
+}
+
+/// `spec`'s desert, laid out as `sk`, its pieces drawn from `dice`.
+fn dressed(
+    spec: &Spec,
+    sk: &Skeleton,
+    dice: u64,
+) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
-    let mut m = blank(&sk, &spec.sides);
+    let mut m = blank(sk, &spec.sides);
     m.atmosphere = atmosphere(&mut rng, &palette(spec.seed));
     let pal = palette(spec.seed);
     m.rock_dust = Some(pal.sand);
     m.planet = Some((spec.seed, pal.planet));
-    m.terrain = Some(dress::terrain(&sk, pal));
+    m.terrain = Some(dress::terrain(sk, pal));
     let mut ground = sk.land.surface(sk.size, 1.0, |_| 0.0);
     ground.rock = pal.stone;
     m.solid = Some(ground.into());
-    let claims = dress::dress(&mut m, &sk, pal, spec.seed, spec.centerpiece);
+    let claims = dress::dress(&mut m, sk, pal, dice, spec.centerpiece);
     if sk.landmarks[0].kind == LandmarkKind::Generator || spec.biome == Biome::Reservoir {
         // Built flush, piece against piece, as a city is.
         m.separate_coplanar_faces();
