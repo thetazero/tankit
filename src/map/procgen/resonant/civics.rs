@@ -75,7 +75,7 @@ fn garth(map: &mut Map, rng: &mut Rng, lot: &Lot) {
                 }
             }
             let mid = off - walk * 0.5 - 0.2;
-            let reach = if along_x { len } else { len - walk - 0.5 };
+            let reach = if along_x { len } else { len - walk - 0.75 };
             for (inset, y) in [(0.0, h), (0.9, h + 0.7), (1.8, h + 1.3)] {
                 let half = walk * 0.5 + 0.4 - inset;
                 let (at, hf) = if along_x {
