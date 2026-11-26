@@ -167,9 +167,13 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         return Err("no way up".into());
     }
 
-    // The Hold site: out in front of the first dig's mouth.
-    let first = &land.digs[0];
-    let heart = first.at - first.facing * 26.0;
+    // The Hold site: out in front of the mouth of the dig nearest the middle.
+    land.digs
+        .sort_by(|a, b| a.at.distance(mid).total_cmp(&b.at.distance(mid)));
+    let heart = land.digs[0].at - land.digs[0].facing * 26.0;
+    if (heart - mid).abs().max_element() > size * 0.5 - 45.0 {
+        return Err("the Hold site's at the edge".into());
+    }
     let mut sk = Skeleton {
         size,
         land,
