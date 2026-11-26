@@ -1697,7 +1697,7 @@ mod tests {
 
     #[test]
     fn ledger_backs_out_this_matchs_earnings() {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 11, 21);
         m.start();
         m.phase = Phase::Over;
         let mut p = Profile::in_memory();
@@ -1712,7 +1712,7 @@ mod tests {
 
     #[test]
     fn round_over_has_buttons() {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 11, 21);
         m.start();
         let t = &m.world.tanks[0];
         let camera = Camera {
@@ -1762,7 +1762,7 @@ mod tests {
     }
 
     fn draws_at_any_size_under(contract: Contract) {
-        let mut m = Match::new(crate::map::Map::saltmarket(), 0, 11, 21);
+        let mut m = Match::new(crate::map::Map::reservoir(0), 0, 11, 21);
         m.start();
         m.set_contract(contract);
         m.fighters[0].alive = false;

@@ -176,7 +176,7 @@ mod tests {
     fn any_map_has_a_day_a_dusk_and_a_night() {
         let g = Generator::up(Faction::Imperium);
         for kind in [
-            MapKind::Saltmarket,
+            MapKind::Reservoir,
             MapKind::Sanctum,
             MapKind::Kiln,
             MapKind::Foundry(
@@ -186,6 +186,7 @@ mod tests {
             MapKind::City(Look::Imperium, Default::default()),
             MapKind::City(Look::Resonant, Default::default()),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
+            MapKind::Depot(Look::Imperium),
             MapKind::Mine,
             MapKind::Desert,
             MapKind::ShieldDesert(g),

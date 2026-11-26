@@ -774,6 +774,7 @@ fn check_cover_everywhere(seed: u64) {
         map: &mut copy,
         l: &l,
         st: &super::ithessar::Ithessar,
+        inside: false,
     };
     let mut bare = Vec::new();
     let n = (l.size / 5.0) as usize;
@@ -1285,6 +1286,7 @@ fn probe() {
         map: &mut copy,
         l: &l,
         st: &super::ithessar::Ithessar,
+        inside: false,
     };
     eprintln!(
         "ground {} wash {} mesa {} keep_clear {} in_the_way {} cover_near {} size {}",

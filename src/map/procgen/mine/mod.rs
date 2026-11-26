@@ -20,11 +20,9 @@
 //! mining gear any mine has are dug in `dig`.
 
 mod dig;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod dress;
 mod ithessar;
 mod layout;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod plan;
 #[cfg(test)]
 mod tests;
@@ -245,6 +243,12 @@ fn fair(l: &Skeleton, map: &Map, nav: &crate::ai::nav::NavGrid) -> Result<(), St
 
 /// Builds `spec`'s mine.
 pub fn build(spec: &Spec) -> Map {
+    // To try the new ones, until they take over.
+    if std::env::var_os("TANKIT_NEW_MINE").is_some()
+        && let Some((_, m)) = dress::build(spec)
+    {
+        return m;
+    }
     let l = layout(spec);
     let mut m = dig::build(&l, spec, style(spec.look));
     l.orient(&mut m);

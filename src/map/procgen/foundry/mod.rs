@@ -10,7 +10,7 @@ mod ground;
 mod imperium;
 mod ithessar;
 mod parts;
-mod plan;
+pub(super) mod plan;
 mod resonant;
 mod style;
 #[cfg(test)]
@@ -27,7 +27,7 @@ pub use ground::Ground;
 pub use parts::{Part, build as build_part};
 use style::Works;
 
-fn works(look: Look) -> &'static dyn Works {
+pub(super) fn works(look: Look) -> &'static dyn Works {
     match look {
         Look::Imperium => &imperium::Imperium,
         Look::Resonant => &resonant::Resonant,
@@ -69,8 +69,8 @@ pub fn build(spec: &Spec, ground: Ground) -> Map {
     dressed(spec, ground, &skeleton(spec))
 }
 
-/// The foundry `sk` lays out, dressed.
-fn dressed(spec: &Spec, ground: Ground, sk: &Skeleton) -> Map {
+/// What `sk` lays out, dressed as `spec`'s works.
+pub(super) fn dressed(spec: &Spec, ground: Ground, sk: &Skeleton) -> Map {
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let mut m = sk.blank(&spec.sides);
     m.atmosphere = ground.atmosphere(&mut rng);

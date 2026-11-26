@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn desert_has_blowing_sand_and_trickles() {
-        let map = Map::saltmarket();
+        let map = Map::reservoir(0);
         let mut a = Ambience::new(&map);
         assert!(!a.ledges.is_empty(), "no broken ledges to trickle sand off");
         a.focus = Vec3::new(70.0, 2.0, 120.0);

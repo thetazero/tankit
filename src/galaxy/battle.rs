@@ -1046,7 +1046,7 @@ mod merc_tests {
             .filter(|&e| e != f)
             .max_by_key(|&a| g.systems[t].hulls[a])
             .unwrap();
-        let mut map = crate::map::Map::saltmarket();
+        let mut map = crate::map::Map::reservoir(0);
         map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 5, 21);
         let b = g
@@ -1107,7 +1107,7 @@ mod merc_tests {
     fn shields_close_an_attackers_seat() {
         let (mut g, t, sides) = staged(20, 40);
         let battle = |g: &Galaxy| {
-            let mut map = crate::map::Map::saltmarket();
+            let mut map = crate::map::Map::reservoir(0);
             map.factions = sides.to_vec();
             let mut m = crate::combat::Match::new(map, 0, 11, 21);
             let b = begin(g, &mut m, g.muster_at(t, &sides, None, None).unwrap());
@@ -1330,7 +1330,7 @@ mod gear_tests {
         for p in &mut g.companies[c].pilots {
             p.known = veteran;
         }
-        let mut map = crate::map::Map::saltmarket();
+        let mut map = crate::map::Map::reservoir(0);
         map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
         let b = g
@@ -1396,7 +1396,7 @@ mod gear_tests {
         for p in &mut g.companies[c].pilots {
             p.known = salt;
         }
-        let mut map = crate::map::Map::saltmarket();
+        let mut map = crate::map::Map::reservoir(0);
         map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
         let b = g

@@ -19,8 +19,8 @@ use super::*;
 use crate::faction::Faction;
 use crate::map::crag;
 use crate::map::landmarks::Rig;
+use crate::map::noise::{noise, noise2};
 use crate::map::rocks;
-use crate::map::valley::{noise, noise2};
 use crate::map::vault;
 use crate::map::{Ambient, Crystal, Map, OBox, Terrain};
 use crate::render::material::Material;
@@ -62,6 +62,8 @@ pub(in crate::map) struct Dig<'a> {
     pub map: &'a mut Map,
     pub l: &'a Skeleton,
     pub st: &'a dyn MineStyle,
+    /// Building inside digs: the ground in one is its floor (else its top).
+    pub inside: bool,
 }
 
 impl Deref for Dig<'_> {
@@ -133,6 +135,7 @@ pub fn build(l: &Skeleton, spec: &Spec, st: &dyn MineStyle) -> Map {
         map: &mut map,
         l,
         st,
+        inside: false,
     };
     d.dig(spec.seed);
     map
@@ -156,6 +159,7 @@ pub fn greybox(l: &Skeleton, sides: &[Faction]) -> Map {
         map: &mut map,
         l,
         st: &super::ithessar::Ithessar,
+        inside: false,
     };
     let rng = &mut Rng::new(1);
     d.cave_walls(rng);
@@ -1025,7 +1029,8 @@ impl Dig<'_> {
 
     /// What something at `p` stands on: a dig's floor, in one.
     pub(super) fn stand(&self, p: Vec2) -> f32 {
-        let dig = self.l.land.digs.iter().find(|d| d.distance(p) < 0.0);
+        let digs = self.l.land.digs.iter().filter(|_| self.inside);
+        let dig = digs.into_iter().find(|d| d.distance(p) < 0.0);
         dig.map_or_else(|| self.map.ground_height(p.x, p.y), |d| d.floor)
     }
 

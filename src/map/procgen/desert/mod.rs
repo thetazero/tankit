@@ -10,6 +10,9 @@
 //! wide, a wall of boulders round the edge and the desert going on to the
 //! horizon past it.
 //!
+//! A reservoir town (`Biome::Reservoir`) is a desert with people in it: a
+//! layout of its own (`town`), dressed by the same hands.
+//!
 //! Nothing here is anyone's, but for a shield generator (#337): with
 //! `Centerpiece::ShieldGenerator` the landmark's slot is a generator's, a
 //! graded pad out on the floor with room round it, and the holder's
@@ -18,12 +21,13 @@
 
 pub mod dress;
 pub mod skeleton;
+pub mod town;
 
 use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
-use super::{Centerpiece, Spec};
+use super::{Biome, Centerpiece, Spec};
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::Map;
@@ -105,12 +109,16 @@ pub fn form_of(seed: u64) -> Form {
 /// fair place for every side's spawns and whose greybox is playable.
 pub fn skeleton(spec: &Spec) -> Skeleton {
     let form = form_of(spec.seed);
+    let town = spec.biome == Biome::Reservoir;
     let mut last = None;
     for attempt in 0..24u64 {
         let mut rng =
             Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x00DE_5E27);
         let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
-        let mut sk = Skeleton::desert(&mut rng, form, generator);
+        let mut sk = match town {
+            true => Skeleton::town(&mut rng, town::source_of(spec.seed)),
+            false => Skeleton::desert(&mut rng, form, generator),
+        };
         let bare = sk.greybox(&spec.sides);
         if !sk.place_bases(&mut rng, spec.sides.len(), &NavGrid::build(&bare)) {
             log::debug!(
@@ -119,7 +127,15 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
             );
             continue;
         }
-        sk.place_lots(&mut rng, form);
+        match town {
+            true => sk.place_houses(&mut rng),
+            false => sk.place_lots(&mut rng, form),
+        }
+        if town && sk.houses().count() < town::MIN_HOUSES {
+            log::debug!("town seed {} attempt {attempt}: too few houses", spec.seed);
+            last = last.or(Some(sk));
+            continue;
+        }
         let grey = sk.greybox(&spec.sides);
         let nav = NavGrid::build(&grey);
         match super::check::playable_on(&grey, &nav).and_then(|()| fair(&sk, &nav)) {
@@ -167,6 +183,8 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
         LandmarkKind::Needles => "NEEDLES",
         LandmarkKind::Crater => "CRATER",
         LandmarkKind::Arch => "ARCH",
+        LandmarkKind::Dam => "DAM",
+        LandmarkKind::Well => "WELL",
         LandmarkKind::Open => "FLATS",
         LandmarkKind::Generator | LandmarkKind::Great(_) => "GENERATOR",
     };
@@ -211,18 +229,31 @@ pub fn build(spec: &Spec) -> Map {
 /// Builds `spec`'s desert, and what each placeholder's filler put down.
 pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let sk = skeleton(spec);
-    let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let pal = palette(spec.seed);
-    let sky = atmosphere(&mut rng, &pal);
-    dressed(&sk, spec, &pal, sky)
+    let sky = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &pal);
+    let mut built = dressed(&sk, spec, &pal, sky, spec.seed);
+    if spec.biome == Biome::Reservoir {
+        // What its houses and boulders come down to isn't on the greybox: if
+        // they've shut somebody in, they fall another way.
+        for attempt in 1..6u64 {
+            match super::check::playable(&built.0) {
+                Ok(()) => break,
+                Err(why) => log::debug!("town seed {} dressed: {why}", spec.seed),
+            }
+            built = dressed(&sk, spec, &pal, sky, spec.seed ^ (attempt << 40));
+        }
+    }
+    built
 }
 
-/// `sk` dressed as a desert in `pal`, under `sky`.
+/// `sk` dressed as a desert in `pal`, under `sky`, its pieces drawn from
+/// `dice`.
 pub(in crate::map::procgen) fn dressed(
     sk: &Skeleton,
     spec: &Spec,
     pal: &Palette,
     sky: crate::render::Atmosphere,
+    dice: u64,
 ) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let mut m = blank(sk, &spec.sides);
     m.atmosphere = sky;
@@ -232,9 +263,9 @@ pub(in crate::map::procgen) fn dressed(
     let mut ground = sk.land.surface(sk.size, 1.0, |_| 0.0);
     ground.rock = pal.stone;
     m.solid = Some(ground.into());
-    let claims = dress::dress(&mut m, sk, *pal, spec.seed, spec.centerpiece);
-    if sk.landmarks[0].kind == LandmarkKind::Generator {
-        // The generator's built flush, piece against piece, as a city is.
+    let claims = dress::dress(&mut m, sk, *pal, dice, spec.centerpiece);
+    if sk.landmarks[0].kind == LandmarkKind::Generator || spec.biome == Biome::Reservoir {
+        // Built flush, piece against piece, as a city is.
         m.separate_coplanar_faces();
     }
     (m, claims)
@@ -242,3 +273,5 @@ pub(in crate::map::procgen) fn dressed(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod town_tests;
