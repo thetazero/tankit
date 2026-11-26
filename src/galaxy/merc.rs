@@ -591,7 +591,7 @@ impl Galaxy {
         // them, at its bid: a ship pays what it offers, so one that bids
         // too high pays for it.
         let mut pool = std::mem::take(&mut self.pool);
-        pool.sort_by(|a, b| b.level().total_cmp(&a.level()));
+        pool.sort_by_cached_key(|p| -((p.level() * 2.0) as i32));
         let mut left = Vec::new();
         for mut p in pool {
             let Some((c, wage)) = self.clearing(&want, p.level(), reserve) else {
@@ -927,6 +927,7 @@ impl Galaxy {
             .partition(|l| tick >= l.due);
         self.lessons = wait;
         for l in due {
+            self.learning.remove(&(l.realm, l.system));
             let sys = &self.systems[l.system as usize];
             let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
             let (now, then) = (sys.held[l.side as usize] as f32, l.held as f32);
@@ -1371,11 +1372,7 @@ impl Galaxy {
         }
         #[cfg(test)]
         let alone_guess = alone;
-        if !self
-            .lessons
-            .iter()
-            .any(|l| l.realm == r && l.system == t as u32)
-        {
+        if self.learning.insert((r, t as u32)) {
             if let Some(b) = &best {
                 lesson.cell = b.5;
             }
@@ -1511,7 +1508,8 @@ impl Galaxy {
             // Only those flying its hulls on a contract are working, and
             // paid: its best. Those it can't pay leave for the pool.
             let Some(k) = co.contract else { continue };
-            co.pilots.sort_by(|a, b| b.level().total_cmp(&a.level()));
+            co.pilots
+                .sort_by_cached_key(|p| -((p.level() * 2.0) as i32));
             let flying = (k.field.min(self.rules.frontage as u32) as usize).min(co.pilots.len());
             let mut paid = 0;
             while paid < flying && co.pilots[paid].wage <= co.crystals.max(0.0) {

@@ -523,6 +523,7 @@ impl Galaxy {
         if s.memory.len() == g.memory.len() {
             g.memory = s.memory;
             g.lessons = s.lessons;
+            g.learning = g.lessons.iter().map(|l| (l.realm, l.system)).collect();
         }
         g.reviews = s.reviews.iter().map(SavedContract::contract).collect();
         if let Some((trust, ticks)) = s.trust {
