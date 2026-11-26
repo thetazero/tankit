@@ -1684,9 +1684,9 @@ mod tests {
             defend: false,
             ticks_left: 10,
             signed: 4,
-            news: None,
             committed: 0,
             own: Default::default(),
+            pay: (0, 0),
             ended: Vec::new(),
         });
         let mut b = a.clone();
@@ -1717,9 +1717,9 @@ mod tests {
             defend: false,
             ticks_left: 0,
             signed: 10,
-            news: None,
             committed: 0,
             own: Default::default(),
+            pay: (0, 0),
             ended: Vec::new(),
         });
         let tr = Transfer::new(a.clone());

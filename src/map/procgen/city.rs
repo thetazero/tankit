@@ -564,9 +564,13 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
 
 /// Levels the ground under everything that stands on it, the biggest last:
 /// a plaza's level wins over a house's plot by it.
-fn level(sk: &mut Skeleton) {
+pub(super) fn level(sk: &mut Skeleton) {
     let mut land = sk.land.clone();
     for l in &sk.lots {
+        // (What stands over a road leaves the road its own level.)
+        if matches!(l.kind, LotKind::Works(p) if p.over()) {
+            continue;
+        }
         land.level_box(&l.footprint, 0.6, 3.0);
     }
     for d in &sk.decos {
@@ -618,7 +622,7 @@ fn level(sk: &mut Skeleton) {
 
 /// Where the avenues meet each edge (counter-clockwise from the south), as
 /// (t from, t to) along it.
-type Mouths = [Vec<(f32, f32)>; 4];
+pub(super) type Mouths = [Vec<(f32, f32)>; 4];
 
 /// The edges, counter-clockwise from the south: (start, along, inward).
 pub fn sides(size: f32) -> [(Vec2, Vec2, Vec2); 4] {
@@ -723,7 +727,7 @@ fn clear_courts(sk: &mut Skeleton, rng: &mut Rng) {
 /// runs a long way between buildings (down a street, across open ground),
 /// barriers in clumps here and there, not a line all along it: they slow a
 /// tank down more than they stop it.
-fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
+pub(super) fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
     let size = sk.size;
     // Where a tank would run into a building on the edge line.
     let walled = |sk: &Skeleton, p: Vec2| {
@@ -970,7 +974,7 @@ fn civics(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
 }
 
 /// Does the way along `pts`, `half` wide, run through something standing?
-fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
+pub(super) fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
     pts.windows(2).any(|w| {
         let n = (w[0].distance(w[1]) / 2.0).ceil().max(1.0) as i32;
         (0..=n).any(|k| {
@@ -995,7 +999,7 @@ fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bool {
 
 /// A crooked way from `a` to `b`, leaving along `lead` m of straight at
 /// each end that's asked for: bent about, its corners cut off.
-fn crooked(rng: &mut Rng, a: Vec2, b: Vec2, lead: (f32, f32), bend: f32) -> Vec<Vec2> {
+pub(super) fn crooked(rng: &mut Rng, a: Vec2, b: Vec2, lead: (f32, f32), bend: f32) -> Vec<Vec2> {
     let d = (b - a).normalize_or(Vec2::X);
     let side = Vec2::new(-d.y, d.x);
     let (a1, b1) = (a + d * lead.0, b - d * lead.1);
@@ -1308,7 +1312,7 @@ fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
 
 /// Bridges where the plan's roads cross a valley, tunnels where they go
 /// through a ridge: straight from rim to rim, or foot to foot.
-fn crossings(sk: &mut Skeleton) {
+pub(super) fn crossings(sk: &mut Skeleton) {
     let cuts = sk.land.cuts();
     let old = std::mem::take(&mut sk.streets);
     // Roads whole, then cut where they cross.

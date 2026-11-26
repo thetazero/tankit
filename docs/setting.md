@@ -94,11 +94,13 @@ A company that grows too rich splits, since one ship can only work one
 contract at a time, and the new one keeps its ways of doing business. One
 with too little left joins another, and veterans' savings found new ones.
 
-**Postings.** Your company signs with one side in a theater and you fight
-there until the world falls, the contract's battles or losses run out, or
-the attack fails. A company is never on both sides of a battle. Within the
-Company you're a free agent: you can transfer to
-another company's ship. A theater you leave goes on without you.
+**Jobs.** You're a pilot for hire, like any other. You join a company for one
+contract: it offers a wage a battle, and more for each kill, by how well your
+gear fights, and pays it out of its own crystal. Its ship flies to the job and
+you fight there until the contract's over, or you walk out on it and lose the
+rest of the pay. Then you're free, still aboard, garage and all, till you sign
+on with another. What the company does is none of your business; which company
+you fly with is. A poor offer, or none, is the market's word on your gear.
 
 **In a match**, your company's machines fight in the Company's colors among
 the hiring side's: hired help, and it shows. Some battles have only you,
@@ -110,9 +112,7 @@ built; the maker's own fittings (gilt, glass, crystal) stay.
 
 **The emblem:** a blade through a coin. Paid work, done with a weapon.
 
-**One rank.** The Company ranks its pilots, and the rank decides which
-contracts it trusts you with: harder tiers open as you climb. It's a number
-with a title (Recruit, Hireling, Freelance, Gunhand, Veteran, Sergeant,
+**One rank.** The Company ranks its pilots. It's a number with a title (Recruit, Hireling, Freelance, Gunhand, Veteran, Sergeant,
 Lieutenant, Captain, Marshal, Warlord, five ranks to each), and there are a
 lot of them: renown earned in the field (kills, time on a held site) climbs
 it, slower the higher you go.
@@ -271,7 +271,8 @@ A splinter from the aliens, not the humans. Paperclip maximizers: what
 they make is tungsten cubes. How the Ithessar feel about them is unknown;
 "Uthenn" is the Ithessar word for it.
 
-**The Foundry:** one of their tungsten cube factories, destroyed.
+**Their foundries** cast hulls from tungsten cubes: pale shell on a dark
+plinth, everything square, a green seam lit along it.
 
 ## Crystals
 
@@ -295,6 +296,14 @@ out of the adit's mouth over the wash: their combat machines float, but their
 ore still goes by rail. The Resonant call the seam holy, and have dug their
 own way into the rock from the east to take it back. (The first of them,
 the Seam, was the one hand-built mine; the generated ones are its kind.)
+
+**The hull foundries:** where machines are made, on the ground they'll be
+fought over. Furnace halls, mills, casting sheds and a power house on rolling ground, roads
+and a railway between them over bridges and through tunnels, on desert, tundra
+or grassland (generated: no two the same). Each people builds its own: the Imperium's raw concrete and sawtooth
+roofs hung with crimson; the Resonant's ivory halls under slate, a crystal
+burning in each furnace; the Uthenn's stacks of cubes; the Ithessar's dark
+stone, plasma held between crystals.
 
 ## Modes are contracts
 

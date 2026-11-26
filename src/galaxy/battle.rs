@@ -308,6 +308,7 @@ fn kit(g: &Galaxy, m: &mut Match, b: &mut Battle) {
     if let Some(&enemy) = b.sides.get(1) {
         m.rating = tier(enemy);
     }
+    m.wage = b.crew.and_then(|_| g.pay_rates());
 }
 
 /// Feed match `m`'s result (it's over) back into the galaxy: its tick.
@@ -999,6 +1000,7 @@ mod merc_tests {
             .expect("a company under contract")
             .id;
         g.crew = Some(c);
+        g.stay_on();
         g
     }
 
@@ -1026,6 +1028,7 @@ mod merc_tests {
         let k = h.companies[c].contract.as_mut().unwrap();
         k.signed += 1;
         let half = k.field.div_ceil(2);
+        h.stay_on();
         h.claim_own(46);
         assert_eq!(h.own_left(), own_hulls(46).min(half));
         assert!(h.own_left() <= half);
@@ -1220,6 +1223,7 @@ mod merc_tests {
         g.crew = None;
         assert!(g.muster_crew(t, &sides, None).is_none(), "no company");
         g.crew = Some(g.companies[0].id);
+        g.stay_on();
         let b = g
             .muster_crew(t, &sides, None)
             .expect("your company's battle");
@@ -1244,6 +1248,7 @@ mod merc_tests {
         let f = sides[0].index();
         let mine = g.companies[0].id;
         g.crew = Some(mine);
+        g.stay_on();
         let alone = g.muster_crew(t, &sides, None).unwrap();
         let other = second_company(&mut g, 30);
         let b = g.muster_crew(t, &sides, None).unwrap();
@@ -1307,6 +1312,7 @@ mod gear_tests {
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
         g.crew = Some(g.companies[c].id);
+        g.stay_on();
         let enemy = (0..SIDES)
             .filter(|&e| e != f)
             .max_by_key(|&a| g.systems[t].hulls[a])
@@ -1369,6 +1375,7 @@ mod gear_tests {
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
         g.crew = Some(g.companies[c].id);
+        g.stay_on();
         let enemy = (0..SIDES)
             .filter(|&e| e != f)
             .max_by_key(|&a| g.systems[t].hulls[a])

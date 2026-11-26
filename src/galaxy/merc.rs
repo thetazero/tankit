@@ -84,7 +84,7 @@ const FADE: f32 = 0.005;
 pub const MARKS: usize = crate::economy::MAX_MARK as usize + 1;
 
 /// How well gear at `level` fights: its damage and armor together.
-fn gear_value(level: f32) -> f32 {
+pub(super) fn gear_value(level: f32) -> f32 {
     let l = level.round() as u8;
     crate::economy::damage_factor(l) * crate::economy::armor_factor(l)
 }
@@ -2185,13 +2185,6 @@ impl Galaxy {
                 self.companies[c].earned -= co.earned / 2.0;
                 self.companies[c].worked -= co.worked / 2.0;
                 self.companies[new].idle_since = co.idle_since;
-                if self.crew == Some(co.id) {
-                    self.crew_choice = Some(super::theater::CrewChoice {
-                        from: co.id,
-                        joined: false,
-                        ships: [co.id, self.companies[new].id],
-                    });
-                }
                 self.books.splits += 1;
             }
         }
@@ -2263,25 +2256,9 @@ impl Galaxy {
             for d in self.debts.iter_mut().filter(|d| d.company == from) {
                 d.company = to;
             }
-            // And you go with it, or (your choice) with the next nearest.
+            // And you go with it.
             if self.crew == Some(from) {
                 self.crew = Some(to);
-                self.crew_news = Some(super::theater::CrewNews::Joined { from });
-                let next = (0..self.companies.len())
-                    .filter(|&n| n != c && n != o && !gone[n])
-                    .min_by(|&a, &b| {
-                        let d = |n: usize| {
-                            self.systems[self.companies[n].at as usize]
-                                .pos
-                                .distance(here)
-                        };
-                        d(a).total_cmp(&d(b))
-                    });
-                self.crew_choice = next.map(|n| super::theater::CrewChoice {
-                    from,
-                    joined: true,
-                    ships: [to, self.companies[n].id],
-                });
             }
             gone[c] = true;
             self.books.joins += 1;

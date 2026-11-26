@@ -55,17 +55,20 @@ tankit [OPTIONS]
                           Saltmarket (desert town, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
                           (a generated city, see --look), the shield site (the same, a shield
-                          generator in place of its great building), the Foundry (a
-                          wrecked Uthenn tungsten cube factory), or the mine (a generated Ithessar
+                          generator in place of its great building), a hull foundry
+                          (generated: see --look and --ground), or the mine (a generated Ithessar
                           crystal mine: caves, rails and stacked levels), the desert (generated open
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
-  --map-seed <n>          which one a generated map (city, shield-site, mine, desert, shield-desert) builds (default: the --seed)
+  --map-seed <n>          which one a generated map (city, shield-site, foundry, mine, desert, shield-desert) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --generator <faction>   (with --map shield-site or shield-desert) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-site or shield-desert) the generator's down, n ticks of repair
                           to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
-  --look <imperium|resonant>  (with --map city or shield-site) whose city it is (default imperium)
+  --look <imperium|resonant|uthenn|ithessar>
+                          (with --map city, shield-site or foundry) who built it (default imperium;
+                          uthenn and ithessar only have foundries of their own)
+  --ground <desert|tundra|grassland>  (with --map foundry) what kind of world it's on (default desert)
   --in-desert             (with --map city or shield-site) the city stands in the desert
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
@@ -143,8 +146,6 @@ tankit [OPTIONS]
   --summary               (with --transfer) stop at the summary of how the old contract ended, before
                           the transfer plays
   --failed                (with --summary) wait for a contract that failed (else the first to end)
-  --choice <split|merge>  (with --screen missions) your company splits in two, or merges into
-                          another, and you choose which ship to go with
   --tab <n>               (with --screen companies|contract) the nth filter on: 1-4 work for, 5-8 fight, 9 take, 10 hold
   --won                   (with --screen missions) your company just won the battle at --site
                           (default the first it fights for), under that site's contract, and
@@ -206,9 +207,6 @@ pub struct Args {
     summary: bool,
     /// --failed, with --summary: show a failed contract.
     failed: bool,
-    /// --choice, for missions shots: your company splits (false) or joins
-    /// another (true), and the screen asks which ship you go with.
-    choice: Option<bool>,
     /// --won, for missions shots: your company just won its battle.
     won: bool,
     /// --tab, for companies shots: the tab of who you'd fight (#454).
@@ -309,6 +307,9 @@ impl Args {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City(l, _)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
             (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
+            (true, MapKind::Foundry(l, g)) => {
+                map::procgen::greybox(&foundry_spec(self.map_seed, l, g))
+            }
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
             (true, MapKind::ShieldSite(l, _, g)) => {
                 map::procgen::greybox(&shield_spec(self.map_seed, l, g))
@@ -346,8 +347,9 @@ pub enum MapKind {
         map::procgen::setting::Setting,
         Generator,
     ),
-    /// The Foundry: a wrecked Uthenn tungsten cube factory.
-    Foundry,
+    /// A hull foundry, in someone's style on some kind of ground.
+    /// Generated: a different one for each map seed.
+    Foundry(map::procgen::Look, map::procgen::foundry::Ground),
     /// An Ithessar crystal mine in a desert escarpment, on three levels.
     /// Generated: a different mine for each map seed.
     Mine,
@@ -368,7 +370,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
         MapKind::ShieldSite(l, s, g) => map::procgen::map(&shield_spec(seed, l, g).set_in(s)),
-        MapKind::Foundry => map::Map::foundry(),
+        MapKind::Foundry(l, g) => map::procgen::map(&foundry_spec(seed, l, g)),
         MapKind::Mine => map::procgen::map(&mine_spec(seed)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
         MapKind::ShieldDesert(g) => map::procgen::map(&shield_desert_spec(seed, g)),
@@ -428,6 +430,22 @@ pub fn mine_spec(seed: u64) -> map::procgen::Spec {
         look: map::procgen::Look::Ithessar,
         sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
         centerpiece: map::procgen::Centerpiece::Monument,
+    }
+}
+
+/// The hull foundry `seed` names in `look` on `ground`: the default matchup.
+pub fn foundry_spec(
+    seed: u64,
+    look: map::procgen::Look,
+    ground: map::procgen::foundry::Ground,
+) -> map::procgen::Spec {
+    map::procgen::Spec {
+        seed,
+        biome: map::procgen::Biome::Foundry(ground),
+        look,
+        sides: map::DEFAULT_SIDES.to_vec(),
+        centerpiece: map::procgen::Centerpiece::Monument,
+        setting: Default::default(),
     }
 }
 
@@ -639,6 +657,7 @@ fn parse_args() -> Result<Args> {
     let mut generator: Option<faction::Faction> = None;
     let mut conditions = conditions::Conditions::default();
     let mut look: Option<map::procgen::Look> = None;
+    let mut ground: Option<map::procgen::foundry::Ground> = None;
     let mut in_desert = false;
     let mut generator_down = 0u8;
     let mut learned = None;
@@ -648,7 +667,6 @@ fn parse_args() -> Result<Args> {
     let mut summary = false;
     let mut waiting = false;
     let mut failed = false;
-    let mut choice = None;
     let mut won = false;
     let mut shields_down = false;
     let mut tab = 0;
@@ -717,7 +735,12 @@ fn parse_args() -> Result<Args> {
                         Generator::up(faction::Faction::Imperium),
                     )
                 }
-                Some("foundry") => map_kind = MapKind::Foundry,
+                Some("foundry") => {
+                    map_kind = MapKind::Foundry(
+                        map::procgen::Look::Imperium,
+                        map::procgen::foundry::Ground::Desert,
+                    )
+                }
                 Some("mine") => map_kind = MapKind::Mine,
                 Some("desert") => map_kind = MapKind::Desert,
                 Some("shield-desert") => {
@@ -754,9 +777,23 @@ fn parse_args() -> Result<Args> {
                 look = Some(match args.next().as_deref() {
                     Some("imperium") => map::procgen::Look::Imperium,
                     Some("resonant") => map::procgen::Look::Resonant,
+                    Some("uthenn") => map::procgen::Look::Uthenn,
                     Some("ithessar") => map::procgen::Look::Ithessar,
                     other => {
-                        bail!("--look expects imperium, resonant or ithessar, got {other:?}")
+                        bail!(
+                            "--look expects imperium, resonant, uthenn or ithessar, got {other:?}"
+                        )
+                    }
+                })
+            }
+            "--ground" => {
+                use map::procgen::foundry::Ground;
+                ground = Some(match args.next().as_deref() {
+                    Some("desert") => Ground::Desert,
+                    Some("tundra") => Ground::Tundra,
+                    Some("grassland") => Ground::Grassland,
+                    other => {
+                        bail!("--ground expects desert, tundra or grassland, got {other:?}")
                     }
                 })
             }
@@ -799,13 +836,6 @@ fn parse_args() -> Result<Args> {
             }
             "--summary" => summary = true,
             "--failed" => failed = true,
-            "--choice" => {
-                choice = Some(match args.next().as_deref() {
-                    Some("split") => false,
-                    Some("merge") => true,
-                    other => bail!("--choice expects split or merge, got {other:?}"),
-                })
-            }
             "--won" => won = true,
             "--shields-down" => shields_down = true,
             "--tab" => tab = args.next().context("--tab needs a number")?.parse()?,
@@ -993,10 +1023,16 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
+    if let (MapKind::Foundry(_, g), Some(ground)) = (&mut map_kind, ground) {
+        *g = ground;
+    }
     if let (MapKind::City(_, s) | MapKind::ShieldSite(_, s, _), true) = (&mut map_kind, in_desert) {
         *s = map::procgen::setting::Setting::Desert;
     }
-    if let (MapKind::City(l, _) | MapKind::ShieldSite(l, _, _), Some(look)) = (&mut map_kind, look)
+    if let (
+        MapKind::City(l, _) | MapKind::ShieldSite(l, _, _) | MapKind::Foundry(l, _),
+        Some(look),
+    ) = (&mut map_kind, look)
     {
         *l = look;
     }
@@ -1055,7 +1091,6 @@ fn parse_args() -> Result<Args> {
         summary,
         waiting,
         failed,
-        choice,
         won,
         shields_down,
         tab,
@@ -1468,45 +1503,6 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
     Ok(())
 }
 
-/// Your company splits (or, `joined`, merges into another), leaving you the
-/// choice of ship; after a split, the war goes on a little, while that
-/// choice stays open, until one of the two halves is at work (so they differ).
-fn force_choice(g: &mut galaxy::Galaxy, joined: bool) -> Result<()> {
-    let c = (0..g.companies.len())
-        .find(|&c| g.companies[c].contract.is_none())
-        .context("no idle company")?;
-    g.crew = Some(g.companies[c].id);
-    g.rules.merc_split = 1000.0;
-    let co = &mut g.companies[c];
-    if joined {
-        (co.crystals, co.hulls) = (10.0, 0);
-    } else {
-        co.crystals = 1600.0;
-    }
-    g.split_and_join();
-    anyhow::ensure!(g.crew_choice().is_some(), "no choice of ship");
-    if joined {
-        // The ships it could go with are at work or not already: and a
-        // small one of them might join another of its own if we waited.
-        return Ok(());
-    }
-    for _ in 0..300 {
-        let Some(v) = g.crew_choice() else { break };
-        if v.ships.iter().any(|b| b.work.is_some()) {
-            return Ok(());
-        }
-        let keep = (v.choice, g.crew);
-        g.step();
-        // A split or join of its own on the way: keep the one we're showing.
-        if g.crew_choice.is_none_or(|c| c != keep.0) {
-            g.crew_choice = Some(keep.0);
-            g.crew = keep.1;
-        }
-    }
-    anyhow::ensure!(g.crew_choice().is_some(), "the choice closed");
-    Ok(())
-}
-
 /// The main menu or mission select over the menu backdrop, headless.
 fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let mut profile = args.profile();
@@ -1546,15 +1542,6 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 menu.set_theater(None);
                 menu.waited(37);
             }
-            if let Some(joined) = args.choice {
-                let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
-                let rank = profile.rank().level;
-                g.await_work_staying(prefer, rank, 100);
-                force_choice(&mut g, joined)?;
-                profile.ship = g.crew;
-                menu.set_choice(g.crew_choice());
-                menu.set_theater(g.aboard(rank));
-            }
             if let Some(kind) = args.transfer {
                 let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
                 let rank = profile.rank().level;
@@ -1564,12 +1551,12 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     // As the app does on SIGN ON: switch to the first other
                     // ship with a battle for you, then on to its theater.
                     let id = g
-                        .other_ships()
+                        .open_work(rank)
                         .iter()
-                        .map(|b| b.id)
-                        .find(|&id| g.contract_of(id, rank).is_some())
-                        .context("no other ship with work to switch to")?;
-                    anyhow::ensure!(g.switch_crew(id), "couldn't switch to ship {id}");
+                        .find(|o| o.flight == 0 && Some(o.id) != g.crew)
+                        .map(|o| o.id)
+                        .context("no other ship with work to sign on with")?;
+                    anyhow::ensure!(g.sign_on(id), "couldn't sign on with ship {id}");
                     menu.switched();
                     menu.set_theater(g.aboard(rank));
                 }
@@ -1683,31 +1670,17 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         Some(Screen::Companies | Screen::Contract) => {
             let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+            // (on till there's a board worth the name)
+            while g.open_work(1).len() < 8 {
+                g.step();
+            }
             g.await_work_staying(prefer, profile.rank().level, 100);
             profile.ship = g.crew;
             menu.input(menu::Nav::Down);
             menu.input(menu::Nav::Select);
             menu.set_cluster(cluster_view::Cluster::of(&g));
             let rank = profile.rank().level;
-            // The war goes on until there's work on offer.
-            for _ in 0..500 {
-                if !g.open_work(rank).is_empty() {
-                    break;
-                }
-                g.step();
-                g.await_work_staying(prefer, rank, 100);
-            }
-            profile.ship = g.crew;
-            // The war goes on until there's work on offer.
-            for _ in 0..500 {
-                if !g.open_work(rank).is_empty() {
-                    break;
-                }
-                g.step();
-                g.await_work_staying(prefer, rank, 100);
-            }
-            profile.ship = g.crew;
-            let mine = g.aboard(rank).and_then(|t| galaxy::theater::Offer::of(&t));
+            let mine = g.my_work(rank);
             menu.board.set(g.open_work(rank), mine);
             if args.tab > 0 {
                 menu.board.toggle(args.tab - 1);
