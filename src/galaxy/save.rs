@@ -85,6 +85,10 @@ struct Saved {
     job_worth: Option<f32>,
     #[serde(default)]
     hire_rank: f32,
+    #[serde(default)]
+    hire_trust: Option<[f32; 2]>,
+    #[serde(default)]
+    lessons: Vec<super::merc::Lesson>,
     /// What companies have lately made, each, and were all worth.
     #[serde(default)]
     profit: Option<(f32, f32)>,
@@ -416,6 +420,8 @@ impl Galaxy {
             trust_ticks: Some(self.trust_ticks),
             job_worth: Some(self.job_worth),
             hire_rank: self.hire_rank,
+            hire_trust: Some(self.hire_trust),
+            lessons: self.lessons.clone(),
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
             fleets: self.fleets.clone(),
@@ -572,6 +578,13 @@ impl Galaxy {
             g.trust_ticks = ticks;
         }
         g.hire_rank = s.hire_rank;
+        if let Some(x) = s.hire_trust {
+            g.hire_trust = x;
+        }
+        g.lessons = s.lessons;
+        let n = g.systems.len();
+        g.lessons
+            .retain(|l| (l.system as usize) < n && (l.side as usize) < SIDES);
         if let Some(x) = s.job_worth {
             g.job_worth = x;
         }

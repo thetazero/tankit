@@ -442,6 +442,10 @@ pub struct Galaxy {
     pub(crate) profit: f32,
     /// What a contract has lately made a company, over its costs.
     pub(crate) job_worth: f32,
+    /// What hires have lately come to, of what was expected of them (attacks,
+    /// defenses), and those yet to be looked back on.
+    pub hire_trust: [f32; 2],
+    pub(crate) lessons: Vec<merc::Lesson>,
     /// The gear of pilots ships have lately hired.
     pub(crate) hire_rank: f32,
     pub(crate) worth_before: f32,
@@ -659,6 +663,8 @@ impl Galaxy {
             profit: 0.0,
             ban: None,
             job_worth: 5.0,
+            hire_trust: [1.0; 2],
+            lessons: Vec::new(),
             hire_rank: 0.0,
             worth_before: 0.0,
             hull_rate: rules.hull_cost,
@@ -1007,6 +1013,9 @@ impl Galaxy {
         }
         for (r, c) in crystals.into_iter().enumerate() {
             let retired = self.rng.binomial(self.realms[r].pilots, self.rules.career);
+            // What they saved, as a merc's: their pay over a career.
+            let pay = self.realms[r].pay(&self.rules);
+            self.savings += retired as f32 * pay / self.rules.career.max(1e-6);
             let realm = &mut self.realms[r];
             // Some of it goes to research (#438): a step at a time, at a
             // price by how much there is to refit.

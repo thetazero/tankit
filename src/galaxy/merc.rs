@@ -474,6 +474,17 @@ pub(crate) struct Plan {
     pub defend: bool,
 }
 
+/// A hire to look back on (`Galaxy::learn`).
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Lesson {
+    pub system: u32,
+    pub side: u8,
+    pub defend: bool,
+    pub held: u8,
+    pub expected: f32,
+    pub due: u64,
+}
+
 /// How things stand in a system for a side that might fight there
 /// (`Galaxy::scene`): sites its and others', its fire and armor, its enemies'
 /// hulls, fire, armor and pilots, what they could bring and how soon, and
@@ -1316,6 +1327,30 @@ impl Galaxy {
         (known + hired.max(0.0) * self.hire_rank) / n
     }
 
+    /// Hires whose term's up, looked back on: the share of the world held,
+    /// of what was expected.
+    fn learn(&mut self) {
+        let tick = self.tick;
+        let (due, wait): (Vec<Lesson>, Vec<Lesson>) = std::mem::take(&mut self.lessons)
+            .into_iter()
+            .partition(|l| tick >= l.due);
+        self.lessons = wait;
+        for l in due {
+            let sys = &self.systems[l.system as usize];
+            let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
+            let (now, then) = (sys.held[l.side as usize] as f32, l.held as f32);
+            let got = if l.defend {
+                (now / then.max(1.0)).min(1.0)
+            } else {
+                ((now - then) / (total - then).max(1.0)).max(0.0)
+            };
+            if l.expected > 0.05 {
+                let trust = &mut self.hire_trust[l.defend as usize];
+                *trust += LEARN * ((got / l.expected).min(1.5) - *trust);
+            }
+        }
+    }
+
     /// Ticks for realm `e` (of side `g`) to bring help to system `t`.
     fn rescue(&self, t: usize, g: usize, e: u32) -> u64 {
         self.neighbors(t)
@@ -1495,10 +1530,12 @@ impl Galaxy {
                     self.books.refused += 1;
                     continue;
                 }
-                let net = fc.share * worth - fc.lost * realm.hull_worth - price - base;
+                // As far as hires have lately come to what was expected of them.
+                let gain = fc.share * worth - fc.lost * realm.hull_worth - base;
+                let net = gain * self.hire_trust[defend as usize] - price;
                 if net <= 0.0 {
                     self.books.dear += 1;
-                    self.books.dear_gain += (net + price) as f64;
+                    self.books.dear_gain += gain as f64;
                     self.books.dear_price += price as f64;
                     continue;
                 }
@@ -1529,6 +1566,15 @@ impl Galaxy {
             expected_ticks,
         };
         let c = q.company;
+        let (t, side) = (t as u32, f as u8);
+        self.lessons.push(Lesson {
+            system: t,
+            side,
+            defend,
+            held: self.systems[t as usize].held[f],
+            expected: expected / worth.max(1e-3),
+            due: self.tick + q.fly + self.rules.merc_term as u64,
+        });
         self.sign(q, &offers, &terms);
         if let Some(k) = &mut self.companies[c].contract {
             k.net = net;
@@ -2004,6 +2050,7 @@ impl Galaxy {
     /// are done end, idle companies' margins thin, debts are paid down; and every few
     /// ticks companies split and join.
     pub(crate) fn mercs(&mut self) {
+        self.learn();
         self.collect_debts();
         self.pay_crews();
         self.pilot_market();
