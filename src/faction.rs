@@ -1,7 +1,7 @@
 //! The sides of the war (see docs/setting.md). Every warring faction makes
 //! turrets and fields teams; most maps are two of them against each other, a
 //! free-for-all map all four. The Company, the mercenaries, is a faction too,
-//! but fights for whoever hires it rather than as a side of its own.
+//! but fights for whoever hires it, or raids for itself, and holds no ground.
 
 use glam::Vec3;
 
@@ -46,6 +46,12 @@ impl Faction {
         Faction::ALL
             .into_iter()
             .find(|f| f.name().eq_ignore_ascii_case(name))
+    }
+
+    /// `by_name`, or the Company.
+    pub fn by_name_or_company(name: &str) -> Option<Faction> {
+        let company = Faction::Company.name().eq_ignore_ascii_case(name);
+        Faction::by_name(name).or(company.then_some(Faction::Company))
     }
 
     pub fn name(self) -> &'static str {
@@ -97,8 +103,12 @@ impl Faction {
         }
     }
 
-    /// The turrets this faction makes (and its bots fight with).
+    /// The turrets this faction makes (and its bots fight with). The Company
+    /// makes none: its starter kit's, the Imperium's.
     pub fn turrets(self) -> Vec<TurretKind> {
+        if self == Faction::Company {
+            return Faction::Imperium.turrets();
+        }
         TurretKind::ALL
             .into_iter()
             .filter(|k| k.maker() == self)
