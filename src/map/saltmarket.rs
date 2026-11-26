@@ -542,6 +542,7 @@ impl Map {
                 dust: Vec3::new(0.74, 0.62, 0.45),
                 settle: crate::render::SAND_SETTLE,
                 ambient: 1.0,
+                stars: 0.0,
             },
             bases: Map::no_bases(&DEFAULT_SIDES),
             factions: DEFAULT_SIDES.to_vec(),

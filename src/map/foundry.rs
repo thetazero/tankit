@@ -153,6 +153,7 @@ impl Map {
                 // Ash and soot settle here, not sand.
                 settle: Vec3::new(0.2, 0.19, 0.18),
                 ambient: 1.0,
+                stars: 0.0,
             },
             bases: Map::no_bases(&sides),
             factions: sides.to_vec(),

@@ -292,6 +292,7 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
         dust: Vec3::new(0.72, 0.55, 0.38),
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 
