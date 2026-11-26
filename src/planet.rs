@@ -40,6 +40,15 @@ pub const ICE: Look = Look {
     cloudiness: 0.35,
 };
 
+/// A green world: grassland, brown uplands, blue seas, broken cloud.
+pub const GREEN: Look = Look {
+    land: Vec3::new(0.17, 0.26, 0.1),
+    basin: Vec3::new(0.2, 0.19, 0.11),
+    sea: Vec3::new(0.03, 0.09, 0.16),
+    cloud: Vec3::new(0.58, 0.6, 0.62),
+    cloudiness: 0.5,
+};
+
 /// The world `seed` names, as a sphere of radius 0.5 (scale it up where
 /// it's drawn), flat-shaded material, colored per vertex.
 pub fn mesh(seed: u64, look: &Look) -> MeshData {

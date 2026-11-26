@@ -807,6 +807,8 @@ mod tests {
         ignore = "slow unoptimized: run with cargo test --release"
     )]
     fn maps_hardly_z_fight() {
+        use crate::map::procgen::{Look, foundry::Ground};
+        let foundry = |seed, l, g| crate::make_map(crate::MapKind::Foundry(l, g), seed);
         for (name, map) in [
             ("saltmarket", Map::saltmarket()),
             ("sanctum", Map::sanctum()),
@@ -832,7 +834,22 @@ mod tests {
                 "shield-site ithessar",
                 Map::shield_city(0, crate::faction::Faction::Ithessar),
             ),
-            ("foundry", Map::foundry()),
+            (
+                "foundry imperium",
+                foundry(0, Look::Imperium, Ground::Desert),
+            ),
+            (
+                "foundry resonant",
+                foundry(1, Look::Resonant, Ground::Tundra),
+            ),
+            (
+                "foundry uthenn",
+                foundry(2, Look::Uthenn, Ground::Grassland),
+            ),
+            (
+                "foundry ithessar",
+                foundry(3, Look::Ithessar, Ground::Desert),
+            ),
             ("mine", Map::mine(0)),
         ] {
             let fights = map_fights(name, &map);

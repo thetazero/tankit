@@ -124,7 +124,7 @@ pub fn dress(
     s.edge_rocks(&mut dice(8));
     s.spawns();
     s.horizon(&mut dice(9));
-    s.map.vistas = s.vistas();
+    s.map.vistas = crate::map::procgen::sunlit_views(s.map, &sk.bases, sk.landmark.at);
     claims
 }
 
@@ -772,54 +772,5 @@ impl Sand<'_> {
                 ..rocks::boulder(at, yaw, half, g, g + h, color)
             });
         }
-    }
-
-    /// Where the menus show each side's tank: by its spawns, in the sun,
-    /// the camera looking past it toward the landmark.
-    fn vistas(&self) -> Vec<(Vec2, f32)> {
-        let sk = self.sk;
-        let m = &*self.map;
-        let sun = m.atmosphere.sun_dir.normalize();
-        let lm = sk.landmark.at;
-        let view = |p: Vec2| {
-            let d = lm - p;
-            (-d.x).atan2(-d.y)
-        };
-        sk.bases
-            .iter()
-            .map(|&b| {
-                let want = b.lerp(lm, 0.12);
-                let mut spots = Vec::new();
-                let mut u = -30.0;
-                while u <= 30.0 {
-                    let mut v = -30.0;
-                    while v <= 30.0 {
-                        spots.push(want + Vec2::new(u, v));
-                        v += 3.0;
-                    }
-                    u += 3.0;
-                }
-                spots.sort_by(|a, c| a.distance(want).total_cmp(&c.distance(want)));
-                let good = |p: Vec2| {
-                    let g = m.ground_height(p.x, p.y);
-                    let at = Vec3::new(p.x, g + 1.9, p.y);
-                    let blocked =
-                        |dir: Vec3, len: f32| m.oboxes.iter().any(|o| o.ray_hit(at, dir, len));
-                    let under = m
-                        .oboxes
-                        .iter()
-                        .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0);
-                    let v = view(p);
-                    let back = Vec2::new(v.sin(), v.cos());
-                    let level = (0..=14).all(|k| {
-                        let q = p + back * k as f32;
-                        (m.ground_height(q.x, q.y) - g).abs() < 0.5
-                    });
-                    level && !under && !blocked(sun, 300.0) && !blocked(Vec3::Y, 60.0)
-                };
-                let p = spots.into_iter().find(|&p| good(p)).unwrap_or(b);
-                (p, view(p))
-            })
-            .collect()
     }
 }
