@@ -430,6 +430,7 @@ pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, asp
         fog_density: 0.012,
         blowing_sand: 0.0,
         ambient: 0.6,
+        stars: 0.0,
         ..Atmosphere::default()
     };
     Scene {

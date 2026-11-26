@@ -185,6 +185,7 @@ fn atmosphere(l: &Layout) -> Atmosphere {
         dust: Vec3::splat(0.2),
         settle: Vec3::splat(0.2),
         ambient: 0.35,
+        stars: 0.0,
     }
 }
 

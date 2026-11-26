@@ -11,7 +11,6 @@
 use glam::Vec2;
 use winit::keyboard::KeyCode;
 
-use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::cluster_view::{self, Cluster};
 use crate::faction::Faction;
@@ -751,13 +750,16 @@ impl Menu {
         }
     }
 
-    /// The map the selected site is fought on, and the side you'd take in
+    /// The map the selected site is fought on, its conditions, and the side you'd take in
     /// it (always the first: the theater's sides stand in for the map's):
     /// the menu's backdrop shows it (under the system view on the missions
     /// screen, loaded ready to deploy). None off the theater.
-    pub fn backdrop(&self) -> Option<(MapKind, u64, usize)> {
+    pub fn backdrop(&self) -> Option<crate::app::Backdrop> {
         (self.screen == Screen::Missions)
-            .then(|| self.selected_site().map(|s| (s.map_kind(), s.map_seed, 0)))
+            .then(|| {
+                self.selected_site()
+                    .map(|s| (s.map_kind(), s.map_seed, s.conditions(), 0))
+            })
             .flatten()
     }
 
