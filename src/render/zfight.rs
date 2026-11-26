@@ -187,12 +187,19 @@ impl Soup {
         let bucket = |x: f32, cell: f32| (x / cell + 0.5).floor() as i32;
         let span = |x: f32, tol: f32, cell: f32| bucket(x - tol, cell)..=bucket(x + tol, cell);
         let center = |c: IVec3| (c.as_vec3() + 0.5) * self.space;
+        // Faces are looked up with their normal turned to lean this way, so
+        // they need only be kept the ways round that do (or might, within
+        // the tolerance).
+        let lean = Vec3::new(1.0, 0.37, 0.11);
         let mut space: FastMap<IVec3, Vec<usize>> = FastMap::default();
         let mut planes: FastMap<(IVec3, [i32; 4]), Vec<usize>> = FastMap::default();
         for (i, t) in self.tris.iter().enumerate() {
             for c in cubes(&t.p, PLANE_TOL, self.space) {
                 space.entry(c).or_default().push(i);
                 for (n, d) in [(t.n, t.d), (-t.n, -t.d)] {
+                    if n.dot(lean) < -2.0 * N_TOL {
+                        continue;
+                    }
                     let dist = n.dot(center(c)) - d;
                     for x in span(n.x, N_TOL, N_CELL) {
                         for y in span(n.y, N_TOL, N_CELL) {
@@ -210,12 +217,17 @@ impl Soup {
         let mut near = Vec::new();
         for (i, a) in self.tris.iter().enumerate() {
             near.clear();
+            let (n, d) = if a.n.dot(lean) < 0.0 {
+                (-a.n, -a.d)
+            } else {
+                (a.n, a.d)
+            };
             for c in cubes(&a.p, PLANE_TOL, self.space) {
-                let dist = a.n.dot(center(c)) - a.d;
+                let dist = n.dot(center(c)) - d;
                 let key = [
-                    bucket(a.n.x, N_CELL),
-                    bucket(a.n.y, N_CELL),
-                    bucket(a.n.z, N_CELL),
+                    bucket(n.x, N_CELL),
+                    bucket(n.y, N_CELL),
+                    bucket(n.z, N_CELL),
                     bucket(dist, D_CELL),
                 ];
                 if let Some(v) = planes.get(&(c, key)) {

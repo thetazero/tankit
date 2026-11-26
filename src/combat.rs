@@ -2141,19 +2141,24 @@ impl Match {
         best.map_or(dir, |(_, d)| d)
     }
 
-    fn fly_shells(&mut self) {
-        let physics = &self.world.physics;
-        let sphere = |c: ColliderHandle| {
-            physics.colliders.get(c).map_or((Vec3::ZERO, -1.0), |col| {
+    /// Tank `j`'s hull and turret bounding spheres (center, radius).
+    fn spheres(&self, j: usize) -> [(Vec3, f32); 2] {
+        let t = &self.world.tanks[j];
+        [t.collider, t.turret_hitbox].map(|c| {
+            let col = self.world.physics.colliders.get(c);
+            col.map_or((Vec3::ZERO, -1.0), |col| {
                 let b = col.shape().compute_bounding_sphere(col.position());
                 (b.center, b.radius)
             })
-        };
+        })
+    }
+
+    fn fly_shells(&mut self) {
         // Only flames and tolls look at them.
         let reaching = |s: &Shell| matches!(s.spec.look, Look::Flame | Look::Toll);
         self.bounds = if self.shells.iter().any(reaching) {
-            (self.world.tanks.iter())
-                .map(|t| [sphere(t.collider), sphere(t.turret_hitbox)])
+            (0..self.world.tanks.len())
+                .map(|j| self.spheres(j))
                 .collect()
         } else {
             Vec::new()
@@ -3163,6 +3168,20 @@ impl Match {
             let reach = spec.speed * spec.life;
             return ray(from, t.gun_dir(), reach).unwrap_or((from + t.gun_dir() * reach, None));
         }
+        // Who a toll strikes passing close by, and their bounding spheres:
+        // only those near the shot get the exact (and costly) check.
+        let tolled: Vec<(usize, [(Vec3, f32); 2])> = if spec.look == Look::Toll {
+            (0..self.world.tanks.len())
+                .filter(|&j| {
+                    j != i
+                        && self.fighters[j].alive
+                        && self.fighters[j].team != self.fighters[i].team
+                })
+                .map(|j| (j, self.spheres(j)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Fly it as `fly_shells` would, a step at a time.
         let (mut pos, mut vel) = (from, t.gun_dir() * spec.speed);
         for _ in 0..(spec.life / DT).ceil() as usize {
@@ -3174,14 +3193,10 @@ impl Match {
             }
             pos += step;
             // A toll strikes whatever enemy it passes close to.
-            if spec.look == Look::Toll
-                && let Some(at) = (0..self.world.tanks.len())
-                    .filter(|&j| {
-                        j != i
-                            && self.fighters[j].alive
-                            && self.fighters[j].team != self.fighters[i].team
-                    })
-                    .find_map(|j| self.within(pos, j, TOLL_RADIUS).map(|at| (at, Some(j))))
+            if let Some(at) = tolled
+                .iter()
+                .filter(|(_, b)| b.iter().any(|b| b.0.distance(pos) - b.1 <= TOLL_RADIUS))
+                .find_map(|&(j, _)| self.within(pos, j, TOLL_RADIUS).map(|at| (at, Some(j))))
             {
                 return at;
             }
