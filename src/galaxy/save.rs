@@ -128,6 +128,9 @@ struct Saved {
     /// Not an older save.
     #[serde(default)]
     jobs: bool,
+    /// Hulls are ten to what they were (older saves: they aren't).
+    #[serde(default)]
+    tenfold: bool,
     /// Your own hulls on its contract (#385).
     #[serde(default)]
     own: Option<super::theater::Own>,
@@ -502,6 +505,7 @@ impl Galaxy {
             crew: self.crew,
             job: self.job,
             jobs: true,
+            tenfold: true,
             own: self.own,
             ended: self.ended.clone(),
         }
@@ -782,6 +786,31 @@ impl Galaxy {
                 }
             }
             g.fill_vaults();
+        }
+        if !s.tenfold {
+            // An older save: one of its hulls is ten of today's, and worth
+            // as much.
+            for sys in &mut g.systems {
+                sys.hulls.iter_mut().for_each(|h| *h *= 10);
+            }
+            for f in &mut g.fleets {
+                f.hulls *= 10;
+            }
+            for co in &mut g.companies {
+                co.hulls *= 10;
+                co.lost_before *= 10;
+                if let Some(k) = &mut co.contract {
+                    k.committed *= 10;
+                    k.field *= 10;
+                    k.lost *= 10;
+                    k.inbound *= 10;
+                }
+            }
+            for r in &mut g.realms {
+                r.hull_worth /= 10.0;
+            }
+            g.hull_worth.iter_mut().for_each(|w| *w /= 10.0);
+            g.hull_rate /= 10.0;
         }
         g.update_share();
         g.refresh();

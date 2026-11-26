@@ -861,7 +861,8 @@ fn pilots_cap_fire_not_losses() {
     g.realms[r].pilots = 5;
     g.share_pilots();
     assert_eq!(g.firing(s, owner), 5.0);
-    assert_eq!(g.firing(s, other), g.rules.frontage);
+    let battles = g.battles_in(s)[other].max(1) as f32;
+    assert_eq!(g.firing(s, other), g.rules.seats * battles);
     g.battles(None);
     assert!(
         100 - g.systems[s].hulls[owner] > 5,

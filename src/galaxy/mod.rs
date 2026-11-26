@@ -121,12 +121,14 @@ pub const FTL_RANGE: f32 = 250.0;
 const NEIGHBORS: usize = 12;
 
 /// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
-const RESONANT_HULL_COST: f32 = 0.0005;
+const RESONANT_HULL_COST: f32 = 0.00005;
 /// What a site that makes one thing makes of it, against one of a pair that
 /// made both: the galaxy's output of each is the same.
 const BOTH: f32 = 18.0 / 11.0;
+/// Hulls a foundry makes, against what it's rated at.
+const HULLS: f32 = 10.0;
 /// Smallest sending worth the FTL (hulls).
-const MIN_SEND: u32 = 20;
+const MIN_SEND: u32 = 200;
 /// Most quiet ticks a step skips looking for the next war.
 const QUIET_SKIP: usize = 1000;
 /// A system counts as at war when two sides each have a hull in it: a
@@ -144,22 +146,13 @@ pub struct Rules {
     pub ftl_cost: f32,
     /// Light years a fleet, or a company's ship, flies in a tick.
     pub ftl_speed: f32,
-    /// Fraction of each side's hulls the others destroy a tick, per unit of their fire.
+    /// Hulls a pilot destroys in a battle, gear and numbers even: what bots
+    /// do in a played one (`--arena`: about 80 kills a round among 12).
     pub kill: f32,
-    /// Most of a side's hulls in a system that can fire in a tick. Machines
-    /// can only be in contact so fast: past this, more hulls don't shoot
-    /// harder, they only last longer, so a big army grinds a world down
-    /// over many ticks instead of erasing it in one.
-    pub frontage: f32,
-    /// Seats a side fights the galaxy's battles with, as a played one's do:
-    /// an attacker under an enemy's shield fights with `SHIELD_SEATS` fewer,
-    /// its fire cut by that share.
+    /// Seats a side has in a battle, as in a played one: an attacker under
+    /// an enemy's shield fights with `SHIELD_SEATS` fewer, its fire cut by
+    /// that share.
     pub seats: f32,
-    /// Fire bonus for a side fighting on ground it holds (all its sites in the system).
-    pub home_ground: f32,
-    /// Chance a tick that a side in a fight wins its objective there (the
-    /// next site it goes for), times its share of the fight's fire.
-    pub take: f32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
     pub blitz: u32,
@@ -235,13 +228,10 @@ pub struct Rules {
 impl Default for Rules {
     fn default() -> Rules {
         Rules {
-            ftl_cost: 0.1,
+            ftl_cost: 0.01,
             ftl_speed: 40.0,
-            kill: 0.15,
-            frontage: 85.0,
+            kill: 6.7,
             seats: 6.0,
-            home_ground: 0.3,
-            take: 0.3,
             blitz: 2,
             keep: 0.3,
             reach: 800.0,
@@ -260,7 +250,7 @@ impl Default for Rules {
             research_price: 1.2,
             pilot_upkeep: 0.02,
             ship_upkeep: 0.2,
-            hull_cost: 0.1,
+            hull_cost: 0.01,
             train_cost: 3.0,
             career: 0.002,
             patience: 60,
@@ -268,8 +258,8 @@ impl Default for Rules {
             sense: 0.03,
             train: 2,
             crew: 40,
-            wage_cr: 50.0,
-            kill_share: 0.3,
+            wage_cr: 100.0,
+            kill_share: 0.1,
             defect: 0.01,
         }
     }
@@ -631,7 +621,7 @@ impl Galaxy {
                                 }
                             } else {
                                 SiteKind::Foundry {
-                                    hulls: hulls * BOTH,
+                                    hulls: hulls * BOTH * HULLS,
                                 }
                             }
                         },
@@ -1197,11 +1187,9 @@ impl Galaxy {
     /// by: more hulls don't fire harder past the frontage, but they last.
     fn strength(&self, s: usize) -> [f32; SIDES] {
         let sys = &self.systems[s];
-        let total = (sys.sites.1 - sys.sites.0).max(1) as f32;
         let mut out = [0.0; SIDES];
         for f in 0..SIDES {
-            out[f] =
-                sys.hulls[f] as f32 * (1.0 + self.rules.home_ground * sys.held[f] as f32 / total);
+            out[f] = sys.hulls[f] as f32;
         }
         out
     }
@@ -1282,7 +1270,12 @@ impl Galaxy {
                 (own as f32).min(pilots * own as f32 / fights.max(1) as f32)
             }
         };
-        (realm + crewed as f32).min(self.rules.frontage)
+        // A battle has so many seats, and it's in so many.
+        let battles = match self.engaged {
+            Some((at, n)) if at == s => n[f],
+            _ => self.battles_in(s)[f],
+        };
+        (realm + crewed as f32).min(self.rules.seats * battles.max(1) as f32)
     }
 
     /// Side `f`'s merc hulls in system `s`, and how many of them their
@@ -1512,7 +1505,7 @@ impl Galaxy {
     /// in `sides` has: `take` times its share of the battle's fire.
     fn take_chance(&self, fire: &[f32; SIDES], sides: &[usize], f: usize) -> f32 {
         let against: f32 = sides.iter().filter(|&&g| g != f).map(|&g| fire[g]).sum();
-        self.rules.take * fire[f] / (fire[f] + against).max(1e-3)
+        fire[f] / (fire[f] + against).max(1e-3)
     }
 
     /// What the galaxy's own battle math (`sim`) expects of the battle for
@@ -1576,23 +1569,46 @@ impl Galaxy {
         }
         let level = self.gear(s, f);
         let maker = Faction::side(f);
-        let parts: Vec<crate::economy::Part> = crate::economy::PARTS
-            .into_iter()
-            .filter(|p| p.maker() == maker)
-            .collect();
-        if parts.is_empty() {
+        let made = |hull: bool| -> Vec<crate::economy::Part> {
+            crate::economy::PARTS
+                .into_iter()
+                .filter(|p| p.maker() == maker)
+                .filter(|p| matches!(p, crate::economy::Part::Hull(_)) == hull)
+                .collect()
+        };
+        let (bodies, guns) = (made(true), made(false));
+        if bodies.is_empty() || guns.is_empty() {
             return out;
         }
-        // The companies here, each side's: (index, side, its hulls here).
-        let here: Vec<(usize, usize, u32)> = (0..self.companies.len())
-            .filter_map(|c| {
-                let k = self.companies[c].contract?;
-                (k.target as usize == s && k.field > 0 && !self.companies[c].pilots.is_empty())
-                    .then_some((c, k.side as usize, k.field))
-            })
-            .collect();
+        // The companies here, each side's: (index, side, its pilots flying),
+        // and each side's, all told.
+        let mut here: Vec<(usize, usize, f32)> = Vec::new();
+        let mut flying = [0.0f32; SIDES];
+        for (c, co) in self.companies.iter().enumerate() {
+            if let Some(k) = co.contract
+                && k.target as usize == s
+                && k.field > 0
+                && !co.pilots.is_empty()
+            {
+                let n = (k.field as usize).min(co.pilots.len()) as f32;
+                here.push((c, k.side as usize, n));
+            }
+        }
+        if here.is_empty() {
+            return out;
+        }
+        for g in 0..SIDES {
+            // (all those in reach of a seat, sharing the seats)
+            let (mercs, crewed) = self.crewed(s, g);
+            let own = (hulls[g].saturating_sub(mercs)) as f32;
+            let realm = match self.systems[s].realms[g] {
+                NONE => own,
+                r => self.pilots_for(r, own).min(own),
+            };
+            flying[g] = realm + crewed as f32;
+        }
         for _ in 0..lost {
-            // Whose side, then whose hull.
+            // Whose side, then whose pilot.
             let mut x = self.rng.f32() * total;
             let Some(g) = (0..SIDES).find(|&g| {
                 x -= by[g];
@@ -1600,17 +1616,22 @@ impl Galaxy {
             }) else {
                 continue;
             };
-            let mut y = self.rng.f32() * hulls[g].max(1) as f32;
+            if !here.iter().any(|h| h.1 == g) {
+                continue;
+            }
+            let mut y = self.rng.f32() * flying[g].max(1.0);
             let Some(&(c, ..)) = here.iter().filter(|h| h.1 == g).find(|h| {
-                y -= h.2 as f32;
+                y -= h.2;
                 y < 0.0
             }) else {
                 continue;
             };
             let p = self.rng.index(self.companies[c].pilots.len());
-            let part = parts[self.rng.index(parts.len())];
+            let body = bodies[self.rng.index(bodies.len())];
+            let gun = guns[self.rng.index(guns.len())];
             let co = &self.companies[c];
-            out.push((co.id, co.pilots[p].id, part, level));
+            out.push((co.id, co.pilots[p].id, body, level));
+            out.push((co.id, co.pilots[p].id, gun, level));
         }
         out
     }
@@ -1947,9 +1968,9 @@ impl Galaxy {
             let reserve = self.pilots_for(r, have + late + all);
             let most = play(self, all, reserve).0;
             let (mut pilot, mut hull) = (0.0f32, 0.0f32);
-            for n in [10.0, 40.0, 85.0] {
+            for n in [6.0, 18.0, 36.0] {
                 pilot = pilot.max((play(self, more, p + n).0 - fly - now) / n / length);
-                hull = hull.max((play(self, all + 4.0 * n, reserve).0 - most) / (4.0 * n));
+                hull = hull.max((play(self, all + 100.0 * n, reserve).0 - most) / (100.0 * n));
             }
             let x = &mut self.realms[r as usize];
             x.pilot_use = x.pilot_use.max(pilot);

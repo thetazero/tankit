@@ -153,9 +153,12 @@ pub fn armor_factor(level: u8) -> f32 {
     ARMOR.at(level)
 }
 
-/// What a kill teaches of each of the wreck's parts: this share of the gap
-/// between its level and what you know, rounded down to a whole step.
-pub const SCRAP_LEARNING: f32 = 0.01;
+/// What a kill teaches of each of the wreck's parts, in steps: this much of
+/// `ln(1 + e^(gap / SCRAP_REACH))`, its level over yours. Much from what's
+/// better than yours, a little from what's like it (so you can get past it),
+/// and hardly anything, but something, from what's far worse.
+pub const SCRAP_LEARNING: f32 = 0.1;
+pub const SCRAP_REACH: f32 = 5.0;
 
 /// How far a pilot has reverse-engineered each part (#438), in level steps,
 /// continuous: the highest level they can build it to is this rounded down.
@@ -187,17 +190,11 @@ impl Known {
     /// than what's known teaches nothing. Returns what was learned.
     pub fn scrap(&mut self, part: Part, level: u8) -> f32 {
         let i = part.index();
-        let gap = level as f32 - self.0[i].floor();
-        if gap <= 0.0 {
-            return 0.0;
-        }
-        let learned = SCRAP_LEARNING * gap;
-        // A hundred hundredths make a whole step, not a hair under one.
-        let v = self.0[i] + learned;
-        let whole = v.round();
-        let v = if (v - whole).abs() < 1e-4 { whole } else { v };
-        self.0[i] = v.min(MAX_LEVEL as f32);
-        learned
+        let gap = level as f32 - self.0[i];
+        let was = self.0[i];
+        let learned = SCRAP_LEARNING * (gap / SCRAP_REACH).exp().ln_1p();
+        self.0[i] = (was + learned).min(MAX_LEVEL as f32);
+        self.0[i] - was
     }
 
     /// What's known of every part, in `PARTS` order (for saves).

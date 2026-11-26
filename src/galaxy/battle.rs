@@ -640,13 +640,22 @@ impl Galaxy {
                 (total[f], mercs[f]) = self.lose(s, f, *realm, hired);
             }
         }
+        // (wrecks come company by company, often)
+        let mut last: Option<(u32, usize)> = None;
         for &(id, pilot, part, level) in &o.scrap {
-            if let Some(c) = self.company(id)
-                && let Some(p) = self.companies[c].pilots.iter().position(|p| p.id == pilot)
-            {
-                self.companies[c].pilots[p].known.scrap(part, level);
-                self.companies[c].pilots[p].learned();
-                // And their ship pays them for the kill.
+            let c = match last {
+                Some((at, c)) if at == id => Some(c),
+                _ => self.company(id),
+            };
+            let Some(c) = c else { continue };
+            last = Some((id, c));
+            let Some(p) = self.companies[c].pilots.iter().position(|p| p.id == pilot) else {
+                continue;
+            };
+            self.companies[c].pilots[p].known.scrap(part, level);
+            self.companies[c].pilots[p].learned();
+            // And their ship pays them for the kill: a wreck has one hull.
+            if matches!(part, crate::economy::Part::Hull(_)) {
                 let bonus = self.rules.kill_share * self.companies[c].pilots[p].wage;
                 self.bonus(c, p, bonus);
                 self.companies[c].kills += 1;

@@ -87,7 +87,7 @@ impl Realm {
             pilots: 0,
             wage: 0.0,
             pilot_worth: 0.1,
-            hull_worth: 0.1,
+            hull_worth: 0.01,
             pilot_use: 0.0,
             hull_use: 0.0,
             hired: 0,
@@ -105,7 +105,7 @@ impl Realm {
     /// The pilots a realm starts with: a quarter of its income's worth, or a
     /// front's if that's fewer.
     pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
-        (0.25 * self.income.max(0.0) / self.pay(rules)).min(rules.frontage) as u32
+        (0.25 * self.income.max(0.0) / self.pay(rules)).min(rules.seats * 6.0) as u32
     }
 
     /// Pay its pilots (those it can't pay leave), then train some if one's

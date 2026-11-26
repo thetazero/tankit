@@ -30,7 +30,8 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         for f in 0..SIDES {
             if g.fighting(s, f) {
                 sides += 1;
-                seats += (g.systems[s].hulls[f] as f32).min(g.rules.frontage);
+                seats += (g.systems[s].hulls[f] as f32)
+                    .min(g.rules.seats * g.battles_in(s)[f].max(1) as f32);
                 let x = g.firing(s, f);
                 filled += x;
                 merc += (g.crewed(s, f).1 as f32).min(x);
@@ -130,7 +131,6 @@ fn tweak(rules: &mut Rules) {
             "keep" => rules.keep = x,
             "ftl_speed" => rules.ftl_speed = x,
             "research" => rules.research = x,
-            "home_ground" => rules.home_ground = x,
             "ftl_cost" => rules.ftl_cost = x,
             "ship_cost" => rules.ship_cost = x,
             "hull_cost" => rules.hull_cost = x,
@@ -139,11 +139,9 @@ fn tweak(rules: &mut Rules) {
             "ship_upkeep" => rules.ship_upkeep = x,
             "pilot_upkeep" => rules.pilot_upkeep = x,
             "sense" => rules.sense = x,
-            "frontage" => rules.frontage = x,
             "kill_share" => rules.kill_share = x,
             "merc_term" => rules.merc_term = x as u32,
             "blitz" => rules.blitz = x as u32,
-            "take" => rules.take = x,
             "kill" => rules.kill = x,
             _ => println!("no rule {name}"),
         }

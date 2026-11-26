@@ -819,12 +819,14 @@ impl Galaxy {
     }
 
     /// What company `c` pays you a battle on its contract, crystals: what its
-    /// crew's paid, by how well your gear fights.
+    /// crew's paid, by what pilots with your gear go for.
     fn wage_for_you(&self, c: usize) -> f32 {
         let crew = &self.companies[c].pilots;
-        let each = |p: &super::merc::Pilot| p.wage / super::merc::gear_value(p.rank);
-        let going = crew.iter().map(each).sum::<f32>() / crew.len().max(1) as f32;
-        going * super::merc::gear_value(self.you.level())
+        let n = crew.len().max(1) as f32;
+        let paid = crew.iter().map(|p| p.wage).sum::<f32>() / n;
+        let rank = crew.iter().map(|p| p.rank).sum::<f32>() / n;
+        let going = |level: f32| self.wage_curve[super::merc::mark(level)].max(1e-6);
+        paid * going(self.you.level()) / going(rank)
     }
 
     /// The contract you're signed on for, while it runs: your company (an
