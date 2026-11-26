@@ -34,8 +34,9 @@ use crate::map::Map;
 use crate::rng::Rng;
 
 pub use super::land::Butte;
+pub use super::skeleton::Mine;
 pub(in crate::map) use dig::Dig;
-pub use layout::{Bridge, Layout, Mine};
+pub use layout::Layout;
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;

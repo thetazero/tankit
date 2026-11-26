@@ -118,13 +118,13 @@ fn different_seeds_make_different_mines() {
     let ls: Vec<Layout> = (0..6).map(lay).collect();
     for (i, a) in ls.iter().enumerate() {
         for b in &ls[i + 1..] {
-            let same = a.caves().eq(b.caves()) && a.lines == b.lines;
+            let same = a.caves().eq(b.caves()) && a.tracks == b.tracks;
             assert!(!same, "two seeds laid out the same mine");
         }
     }
     let again = lay(1);
     assert!(again.caves().eq(ls[1].caves()));
-    assert_eq!(again.lines, ls[1].lines);
+    assert_eq!(again.tracks, ls[1].tracks);
 }
 
 /// Each seed's dressed map is playable: every side has its spawns, reaches
@@ -424,10 +424,11 @@ fn the_chase_camera_keeps_out_of_the_rock_at_spawn() {
 fn check_levels_stack(seed: u64) {
     let (l, m) = (lay(seed), mine(seed));
     let w = crate::sim::World::empty(m);
-    for br in &l.bridges {
-        let (a, b) = (br.a, br.b);
+    for br in &l.crossings {
+        let (bw, bs) = l.bridged(br);
+        let (a, b) = (br.from, br.to);
         let dir = (b - a).normalize();
-        let c = line_at(&l.land.washes[br.wash].line, br.s).0;
+        let c = line_at(&l.land.washes[bw].line, bs).0;
         let p = a + dir * (c - a).dot(dir);
         assert!(
             (land_on(&w, p, 30.0) - DECK_TOP).abs() < 0.1,
@@ -481,12 +482,13 @@ fn check_every_spawn_reaches_everything_and_the_sides_are_fair(seed: u64) {
     let nav = NavGrid::build(&m);
     let s = l.size;
     let mut goals: Vec<(String, Vec2)> = Vec::new();
-    for (k, br) in l.bridges.iter().enumerate() {
-        let dir = (br.b - br.a).normalize();
-        goals.push((format!("bridge {k}'s far end"), br.b + dir * 6.0));
+    for (k, br) in l.crossings.iter().enumerate() {
+        let (bw, bs) = l.bridged(br);
+        let dir = (br.to - br.from).normalize();
+        goals.push((format!("bridge {k}'s far end"), br.to + dir * 6.0));
         goals.push((
             format!("the wash under bridge {k}"),
-            line_at(&l.land.washes[br.wash].line, br.s - 9.0).0,
+            line_at(&l.land.washes[bw].line, bs - 9.0).0,
         ));
     }
     for (k, mn) in l.mines.iter().enumerate() {
@@ -570,7 +572,7 @@ fn steepest(l: &Layout, m: &Map, a: Vec2, b: Vec2) -> (f32, Vec2) {
 fn check_ways_are_climbable(seed: u64) {
     let (l, m) = (lay(seed), mine(seed));
     let mut ways: Vec<(String, Vec2, Vec2)> = Vec::new();
-    for (k, &(a, b)) in l.ways_up.iter().enumerate() {
+    for (k, &(a, b)) in l.paths.iter().enumerate() {
         ways.push((format!("way up {k}"), a, b));
     }
     for (k, &(a, b, _)) in l.land.hauls.iter().enumerate() {
@@ -595,7 +597,7 @@ fn check_ways_are_climbable(seed: u64) {
         );
     }
     let g = |p: Vec2| m.ground_height(p.x, p.y);
-    for (k, &(a, b)) in l.ways_up.iter().enumerate().filter(|&(k, _)| k != 1) {
+    for (k, &(a, b)) in l.paths.iter().enumerate().filter(|&(k, _)| k != 1) {
         let top = (0..=a.distance(b) as usize)
             .map(|i| a + (b - a).normalize() * i as f32)
             .filter(|&p| l.cave_distance(p) > CAVE_WALL + 1.0)
@@ -624,17 +626,18 @@ fn check_routes_keep_to_their_level(seed: u64) {
         );
     }
     let mut cases = Vec::new();
-    for br in &l.bridges {
+    for br in &l.crossings {
+        let (bw, bs) = l.bridged(br);
         let deck = |t: f32| {
-            let p = br.a.lerp(br.b, t);
+            let p = br.from.lerp(br.to, t);
             Vec3::new(p.x, DECK_TOP, p.y)
         };
         cases.push((deck(0.15), deck(0.85), DECK_TOP));
         let floor = |u: f32| {
-            let p = line_at(&l.land.washes[br.wash].line, u).0;
+            let p = line_at(&l.land.washes[bw].line, u).0;
             Vec3::new(p.x, m.ground_height(p.x, p.y), p.y)
         };
-        cases.push((floor(br.s - 12.0), floor(br.s + 12.0), -WASH_DEPTH));
+        cases.push((floor(bs - 12.0), floor(bs + 12.0), -WASH_DEPTH));
     }
     for mn in &l.mines {
         let wa = mid(mn.west_adit());
@@ -914,8 +917,8 @@ mod play {
     /// Which of `LEVELS` a tank at `p` is on.
     fn level(l: &Layout, p: Vec3) -> usize {
         let q = flat(p);
-        let under = l.bridges.iter().any(|b| {
-            let (d, t) = seg(q, b.a, b.b);
+        let under = l.crossings.iter().any(|b| {
+            let (d, t) = seg(q, b.from, b.to);
             d < DECK_HALF + 4.0 && t > 0.0 && t < 1.0
         });
         if l.on_bridge(q) && p.y > -2.0 {
@@ -1078,8 +1081,8 @@ mod play {
             );
             // (Only the levels this mine has: no bridge, no deck.)
             let has = [
-                !l.bridges.is_empty(),
-                !l.bridges.is_empty(),
+                !l.crossings.is_empty(),
+                !l.crossings.is_empty(),
                 !l.land.washes.is_empty(),
                 true,
                 true,
@@ -1368,7 +1371,7 @@ fn list_mines() {
             l.mines.len(),
             l.land.washes.len(),
             l.land.buttes.len(),
-            l.bridges.len(),
+            l.crossings.len(),
             l.mirror,
             l.turns
         );
