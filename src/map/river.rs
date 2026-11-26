@@ -2,11 +2,8 @@
 //! lined, plasma running down it. Hover hulls ride on its surface; anything
 //! else sinks in it and burns (see `combat`).
 
-use std::f32::consts::TAU;
-
 use glam::{Vec2, Vec3};
 
-use super::OBox;
 use crate::render::material::Material;
 use crate::render::mesh::MeshData;
 
@@ -79,65 +76,6 @@ impl River {
                 m.indices.extend_from_slice(&[a, c, b, a, d, c]);
             }
         }
-    }
-
-    /// Posts of dark glass down both banks, every `step` m, and a lip
-    /// between them: what keeps the plasma in.
-    pub fn lining(&self, ground: impl Fn(Vec2) -> f32, skip: impl Fn(Vec2) -> bool) -> Vec<OBox> {
-        let glass = Vec3::new(0.035, 0.05, 0.09);
-        let mut out = Vec::new();
-        for (i, w) in self.points.windows(2).enumerate() {
-            let (a, b) = (Vec2::new(w[0].x, w[0].z), Vec2::new(w[1].x, w[1].z));
-            let d = (b - a).normalize_or(Vec2::X);
-            let side = Vec2::new(-d.y, d.x);
-            for e in [-1.0f32, 1.0] {
-                let mid = (a + b) * 0.5 + side * e * (self.half + 3.4);
-                if skip(mid) {
-                    continue;
-                }
-                let g = ground(mid);
-                let yaw = d.x.atan2(d.y);
-                // A kerb a tank rolls over.
-                out.push(OBox {
-                    center: mid,
-                    yaw,
-                    half: Vec2::new(0.5, a.distance(b) * 0.5 + 0.1),
-                    y0: g - 0.8,
-                    y1: g + 0.22,
-                    color: glass * 1.6,
-                    side_mat: Material::Vhaal,
-                    top_mat: Material::Vhaal,
-                    solid: false,
-                    ..OBox::default()
-                });
-                if i % 4 == 0 {
-                    out.push(OBox {
-                        center: mid + side * e * 0.3,
-                        yaw: yaw + TAU / 8.0,
-                        half: Vec2::splat(0.55),
-                        y0: g - 0.8,
-                        y1: g + 2.6,
-                        color: glass,
-                        side_mat: Material::Vhaal,
-                        top_mat: Material::Vhaal,
-                        ..OBox::default()
-                    });
-                    out.push(OBox {
-                        center: mid + side * e * 0.3,
-                        yaw,
-                        half: Vec2::splat(0.22),
-                        y0: g + 2.55,
-                        y1: g + 3.1,
-                        color: Vec3::new(1.0, 0.16, 0.52),
-                        side_mat: Material::Glow,
-                        top_mat: Material::Glow,
-                        solid: false,
-                        ..OBox::default()
-                    });
-                }
-            }
-        }
-        out
     }
 }
 

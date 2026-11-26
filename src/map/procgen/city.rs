@@ -392,6 +392,16 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         });
     }
 
+    // Its river, if it has one, off the great buildings; the rest keeps off it.
+    let mut channel = plan.river.then(|| {
+        let mut avoid: Vec<(Vec2, f32)> = platforms
+            .iter()
+            .map(|p: &Platform| (p.center, p.half * 1.15 + p.ramp))
+            .collect();
+        avoid.push((heart, 30.0));
+        super::channel::Channel::pick(rng, size, &avoid)
+    });
+
     // A court for each side, anywhere there's room for one: nothing says the
     // sides start as far from the fight as each other. (More than two keep
     // to the corners.)
@@ -436,7 +446,11 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             };
             s.distance(m) > (reach + 24.0) * ease
         });
+        let off_river = channel
+            .as_ref()
+            .is_none_or(|c| c.local(m).1.abs() > c.reach() - 6.0 + reach);
         if off_plazas > reach + 10.0
+            && off_river
             && off_ways
             && bases
                 .iter()
@@ -485,9 +499,14 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         platforms: std::mem::take(&mut sk.land.platforms),
         ..Land::rolling(rng, size, &avoid)
     };
-    if plan.river {
-        sk.land.cut_river(rng, size, &avoid);
+    if let Some(c) = &mut channel {
+        // (No valleys or ridges besides.)
+        sk.land
+            .swells
+            .retain(|s| !matches!(s, super::land::Swell::Cut(_)));
+        c.settle(rng, &sk.land, size);
     }
+    sk.land.channel = channel;
 
     if plan.form == Form::OldTown {
         // The square the fight's about, open in the middle.
@@ -548,15 +567,12 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             repairs.push(p);
         }
     }
-    // Nothing stands in a river.
-    let cuts = sk.land.cuts();
-    let wet = |p: Vec2, r: f32| {
-        cuts.iter()
-            .any(|c| c.river && c.local(p).1.abs() < c.floor + c.bank(0.0) + r)
-    };
-    sk.decos.retain(|d| !wet(d.at, d.kind.reach()));
-    sk.spans.retain(|s| !wet(s.at, 8.0));
-    let repairs = repairs.into_iter().filter(|&p| !wet(p, 3.0)).collect();
+    // Nothing stands in the river.
+    if let Some(c) = &sk.land.channel {
+        sk.decos.retain(|d| !c.wet(d.at, d.kind.reach() + 1.0));
+        sk.spans.retain(|s| !c.wet(s.at, 18.0));
+        repairs.retain(|&p| !c.wet(p, 2.0));
+    }
     sk.repair_spots = repairs;
     level(&mut sk);
     sk
@@ -952,7 +968,8 @@ fn civics(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
             let (t, off) = c.local(p);
             !(c.floor - r..c.floor + c.bank(t) + r * 0.7).contains(&off.abs())
                 && off.abs() > c.floor
-        }) && sk.off_plazas(p) > r + 8.0
+        }) && sk.land.channel.as_ref().is_none_or(|c| !c.wet(p, r + 22.0))
+            && sk.off_plazas(p) > r + 8.0
             && sk
                 .squares
                 .iter()
@@ -979,13 +996,7 @@ pub(super) fn fouled(sk: &Skeleton, pts: &[Vec2], half: f32, own: &[Vec2]) -> bo
         let n = (w[0].distance(w[1]) / 2.0).ceil().max(1.0) as i32;
         (0..=n).any(|k| {
             let p = w[0].lerp(w[1], k as f32 / n as f32);
-            // (Only the plan's roads and the crossings go over a river.)
-            own.is_empty()
-                && sk
-                    .land
-                    .cuts()
-                    .iter()
-                    .any(|c| c.river && c.local(p).1.abs() < c.floor + c.bank(0.0) + half + 1.0)
+            sk.land.channel.as_ref().is_some_and(|c| c.wet(p, 0.0))
                 || sk.bases.iter().any(|b| b.contains(p, half + 3.0))
                 || sk.lots.iter().any(|l| l.footprint.distance(p) < half + 1.0)
                 || sk
@@ -1066,6 +1077,47 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
                 .map_or(4.0, |pl| pl.half * 1.15 + pl.ramp)
         };
         let lead = (reach(from), if out { 14.0 } else { reach(to) });
+        // Over the river by a bridge: there, and on from it.
+        if let Some(mut c) = sk.land.channel.clone()
+            && c.local(from).1 * c.local(to).1 < 0.0
+        {
+            let met = (0..=80)
+                .map(|k| from.lerp(to, k as f32 / 80.0))
+                .find(|&p| c.local(p).1 * c.local(from).1 <= 0.0)
+                .unwrap_or((from + to) * 0.5);
+            let wide = half.min(7.5);
+            let k = c.bridge(c.local(met).0, wide);
+            let b = c.bridges[k];
+            sk.land.channel = Some(c.clone());
+            let (mut a, mut z) = (b.ends[0], b.ends[1]);
+            if c.local(from).1 > 0.0 {
+                (a, z) = (z, a);
+            }
+            let rank = if town { Rank::Lane } else { Rank::Avenue };
+            for (p, q, lead) in [(from, a, (lead.0, 9.0)), (z, to, (9.0, lead.1))] {
+                for t in 0..40 {
+                    let pts = crooked(rng, p, q, lead, 0.1 + t as f32 * 0.01);
+                    if !fouled(sk, &pts, half, &[from, to]) {
+                        lay(sk, &pts, half, rank, out && q == to);
+                        break;
+                    }
+                }
+            }
+            if out {
+                let d = (to - z).normalize_or(Vec2::X);
+                let far = to + d * (SPRAWL + 160.0);
+                lay(sk, &[to, far], half, Rank::Beyond, false);
+                for (k, &(start, along, inward)) in self::sides(size).iter().enumerate() {
+                    if !town && (to - start).dot(inward).abs() < 0.5 {
+                        let t = (to - start).dot(along);
+                        let w = (half + 1.5) / d.dot(inward).abs().max(0.4);
+                        mouths[k].push((t - w, t + w));
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
         let mut best = None;
         for t in 0..40 {
             let bend = if town { 0.28 } else { 0.12 } + t as f32 * 0.006;
@@ -1076,6 +1128,10 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
             }
         }
         // No way round: whatever stands in it goes.
+        if best.is_none() && plan.river {
+            // (Never through the river.)
+            continue;
+        }
         let pts = best.unwrap_or_else(|| {
             let pts = vec![from, to];
             let street = Street {
@@ -1115,6 +1171,7 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan, ways: &[(Vec2, Vec2, boo
     }
 
     valley_roads(sk, rng, plan);
+    river_roads(sk, rng, plan);
     crossings(sk);
 
     // To the nearest road so far from every medium structure's ends, and
@@ -1253,36 +1310,6 @@ fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let size = sk.size;
     let inside = |p: Vec2| p.min_element() > 0.0 && p.max_element() < size;
     for c in sk.land.cuts() {
-        if c.river {
-            // Plenty of ways over: a short road across, every so often.
-            let mut t = -size;
-            while t < size {
-                t += rng.range(48.0, 78.0);
-                let p = c.point(t);
-                if p.min_element() < 34.0 || p.max_element() > size - 34.0 {
-                    continue;
-                }
-                let d = (c.point(t + 4.0) - c.point(t - 4.0)).normalize_or(Vec2::X);
-                let side = Vec2::from_angle(rng.range(-0.2, 0.2)).rotate(Vec2::new(-d.y, d.x));
-                let reach = c.floor + c.bank(0.0) + 15.0;
-                let half = plan.density.lane().1 + 0.5;
-                let ends = [p - side * reach, p + side * reach];
-                let clear = ends.iter().all(|&q| {
-                    sk.off_plazas(q) > 2.0 && sk.bases.iter().all(|b| !b.contains(q, half + 4.0))
-                });
-                if clear {
-                    sk.streets.push(Street {
-                        from: ends[0],
-                        to: ends[1],
-                        half,
-                        clear: 2.0,
-                        rank: Rank::Lane,
-                        out: false,
-                    });
-                }
-            }
-            continue;
-        }
         if rng.chance(0.2) {
             continue;
         }
@@ -1308,6 +1335,60 @@ fn valley_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
             });
         }
     }
+}
+
+/// A road along each of the river's quays, and bridges over it wherever
+/// there's a long way without one.
+fn river_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
+    let Some(mut c) = sk.land.channel.clone() else {
+        return;
+    };
+    let size = sk.size;
+    let inside = |p: Vec2, m: f32| p.min_element() > m && p.max_element() < size - m;
+    let half = 5.2;
+    for e in [-1.0f32, 1.0] {
+        let off = e * (c.half + super::channel::WALL + 1.2 + half);
+        let pts: Vec<Vec2> = (-60..=60).map(|k| c.point(k as f32 * 12.0, off)).collect();
+        for w in pts.windows(2) {
+            let m = (w[0] + w[1]) * 0.5;
+            if !inside(m, -SPRAWL) {
+                continue;
+            }
+            sk.streets.push(Street {
+                from: w[0],
+                to: w[1],
+                half,
+                clear: 2.0,
+                rank: if inside(m, 0.0) {
+                    Rank::Lane
+                } else {
+                    Rank::Beyond
+                },
+                out: false,
+            });
+        }
+    }
+    let mut t = -size;
+    while t < size {
+        t += 10.0;
+        let ends = [-1.0f32, 1.0].map(|e| c.point(t, e * (c.half + 22.0)));
+        let gap = rng.range(58.0, 76.0);
+        if ends.iter().all(|&p| inside(p, 22.0)) && c.bridges.iter().all(|b| (b.t - t).abs() > gap)
+        {
+            c.bridge(t, plan.density.lane().1.max(5.0));
+        }
+    }
+    for b in &c.bridges {
+        sk.streets.push(Street {
+            from: b.ends[0],
+            to: b.ends[1],
+            half: b.half + 0.8,
+            clear: 2.0,
+            rank: Rank::Crossing,
+            out: false,
+        });
+    }
+    sk.land.channel = Some(c);
 }
 
 /// Bridges where the plan's roads cross a valley, tunnels where they go
@@ -1449,8 +1530,7 @@ fn crossing_at(
     half: f32,
 ) -> Option<crossing::Crossing> {
     let len = a.distance(b);
-    let least = if c.river { 12.0 } else { 26.0 };
-    if !(least..120.0).contains(&len) || c.local(a).1 * c.local(b).1 > 0.0 {
+    if !(26.0..120.0).contains(&len) || c.local(a).1 * c.local(b).1 > 0.0 {
         return None;
     }
     let inside = |p: Vec2| p.min_element() > 14.0 && p.max_element() < sk.size - 14.0;
@@ -1467,7 +1547,7 @@ fn crossing_at(
     }
     if c.height < 0.0 {
         // Room to drive under it.
-        (c.river || end - mid > 5.0).then_some(crossing::Crossing {
+        (end - mid > 5.0).then_some(crossing::Crossing {
             kind: crossing::Kind::Bridge,
             from: a,
             to: b,

@@ -645,7 +645,11 @@ fn plasma_surface(q: vec3<f32>, view: vec3<f32>) -> Surface {
     // The skin, in plates that drift and crack.
     let plate = pnoise(vec2<f32>(along * 0.16 - run * 0.1, off * 0.3 + 20.0));
     let skin = smoothstep(0.28, 0.6, plate * 0.75 + edge * edge * 0.62 - 0.12);
-    let crack = pow(1.0 - abs(pnoise(vec2<f32>(along * 0.5 - run * 0.32, off * 0.6 + 40.0)) - 0.5) * 2.0, 9.0);
+    // (Turned and bent, so its cells' squares don't show.)
+    let cq = vec2<f32>(along * 0.34 - run * 0.2 + off * 0.2, off * 0.36 - along * 0.15 + run * 0.09);
+    let bend = vec2<f32>(pnoise(cq * 1.7 + 11.0), pnoise(cq * 1.7 + 47.0)) - 0.5;
+    let cn = pnoise(cq + bend * 1.5) * 0.7 + pnoise(cq * 2.3 + bend * 2.0 + 31.0) * 0.3;
+    let crack = pow(1.0 - min(abs(cn - 0.5) * 2.4, 1.0), 9.0);
     let deep = vec3<f32>(0.13, 0.004, 0.07);
     let body = vec3<f32>(0.72, 0.05, 0.3);
     let hot = vec3<f32>(1.0, 0.72, 0.88);

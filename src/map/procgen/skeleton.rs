@@ -609,11 +609,7 @@ impl Skeleton {
             .squares
             .iter()
             .any(|s| s.center.distance(p) < s.radius + 4.0);
-        let river = self
-            .land
-            .cuts()
-            .iter()
-            .any(|c| c.river && c.local(p).1.abs() < c.floor + c.bank(0.0) + 1.2);
+        let river = self.land.channel.as_ref().is_some_and(|c| c.wet(p, 0.6));
         street || plaza || square || river
     }
 
@@ -843,7 +839,10 @@ impl Skeleton {
             roof: Vec3::splat(0.5),
             land: Vec3::splat(0.3),
         };
-        map.rivers = self.land.rivers(self.size);
+        if let Some(c) = &self.land.channel {
+            c.build(&mut map, self.size);
+            map.rivers.push(c.river());
+        }
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));
         }
