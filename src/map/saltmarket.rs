@@ -556,6 +556,7 @@ impl Map {
                 Vec2::new(166.0, 9.0),
             ],
             hold_site: None,
+            hold_more: Vec::new(),
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),

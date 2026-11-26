@@ -110,3 +110,10 @@ pub fn button(p: &mut Painter, min: Vec2, width: f32, text: &str, on: bool, hove
     let at = Vec2::new(min.x + width * 0.5, min.y + (BUTTON - style.size) * 0.5);
     p.text(at, text, &style, Align::Center);
 }
+
+/// Where a panel's foot buttons go on a screen `h` tall, each its column wide:
+/// the way back at the bottom (0), and the main one on top of it (1).
+pub fn foot(h: f32, k: usize) -> Vec2 {
+    let up = (BUTTON + UNIT) * k as f32;
+    Vec2::new(MARGIN, h - MARGIN - BUTTON - up)
+}

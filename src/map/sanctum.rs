@@ -255,6 +255,7 @@ impl Map {
                 CENTER + Vec2::new(62.0, -22.0),
             ],
             hold_site: Some(CENTER),
+            hold_more: Vec::new(),
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),

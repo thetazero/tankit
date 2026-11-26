@@ -30,6 +30,9 @@ pub fn playable_on(map: &Map, nav: &NavGrid) -> Result<(), String> {
         if nav.path(from, hold).is_empty() {
             return Err(format!("side {k} can't reach the hold site"));
         }
+        if map.hold_more.iter().any(|h| nav.path(from, h.0).is_empty()) {
+            return Err(format!("side {k} can't reach every hold site"));
+        }
         for (j, other) in map.bases.iter().enumerate().skip(k + 1) {
             if nav.path(from, mid(other)).is_empty() {
                 return Err(format!("side {k} can't reach side {j}"));
