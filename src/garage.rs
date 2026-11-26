@@ -28,7 +28,7 @@ use crate::render::{Camera, UiVertex};
 use crate::sim::{Chassis, HullKind, HullStats, Tank, TurretKind, World, wrap_angle};
 use crate::thumbs::Thumbs;
 use crate::ui::emblem;
-use crate::ui::{Align, Hits, Layer, Painter, TextStyle, design, theme, with_alpha};
+use crate::ui::{Align, Hits, Layer, Painter, TextStyle, design, measure, theme, with_alpha};
 
 const REF_HEIGHT: f32 = 900.0;
 pub const PANEL_X: f32 = 64.0;
@@ -280,15 +280,38 @@ fn tab_parts(section: usize) -> Vec<Part> {
     }
 }
 
-/// How far along `part` is to its next step, 0..1: full once that can be
-/// bought (or there's none left).
+/// How far along learning `part`'s next step is, 0..1 (full once there's none).
 fn progress(part: Part, profile: &Profile) -> f32 {
     let known = profile.known.of(part);
-    let cap = profile.known.cap(part);
-    if cap > profile.levels.of(part) || cap >= crate::economy::MAX_LEVEL {
+    if profile.known.cap(part) >= crate::economy::MAX_LEVEL {
         1.0
     } else {
         known - known.floor()
+    }
+}
+
+/// `part`'s tiers at `at`, aligned like text: the one it's built to in amber,
+/// then, if you've learned further, how far in white, as on its track.
+fn tiers(p: &mut Painter, at: Vec2, part: Part, profile: &Profile, style: TextStyle, align: Align) {
+    use design::{AMBER, TEXT, TEXT_2};
+    if !profile.owns(part) {
+        return;
+    }
+    let (level, cap) = (profile.levels.of(part), profile.known.cap(part));
+    let mut text = vec![(crate::economy::level_label(level), AMBER)];
+    if cap > level {
+        text.push((" / ".to_string(), TEXT_2));
+        text.push((crate::economy::level_label(cap), TEXT));
+    }
+    let gap = style.tracking;
+    let wide: f32 = text.iter().map(|(t, _)| measure(t, &style) + gap).sum();
+    let mut x = match align {
+        Align::Right => at.x - wide + gap,
+        _ => at.x,
+    };
+    for (t, color) in text {
+        p.text(Vec2::new(x, at.y), &t, &style.colored(color), Align::Left);
+        x += measure(&t, &style) + gap;
     }
 }
 
@@ -636,7 +659,7 @@ impl Garage {
         width: f32,
         height: f32,
     ) -> Layer<Hit> {
-        use design::{BLUE, BODY, BUTTON, MARGIN, Press, SMALL, TEXT_2, UNIT};
+        use design::{BLUE, BODY, BUTTON, MARGIN, SMALL, TEXT_2, UNIT};
         let e = smooth(self.blend);
         if e <= 0.0 {
             return Layer::empty();
@@ -668,7 +691,7 @@ impl Garage {
             .enumerate()
         {
             let min = Vec2::new(x + (bw + UNIT) * k as f32, foot);
-            self.button(&mut p, &mut hits, min, bw, name, Press::Other, Some(input));
+            self.button(&mut p, &mut hits, min, bw, name, Some(input));
         }
 
         self.draw_stats(&mut p, &mut hits, w, queued, profile);
@@ -765,8 +788,8 @@ impl Garage {
         }
     }
 
-    /// One row: the part (dark if it isn't yours), its name (amber if it's
-    /// on), and how far along it is, with its tier once it's yours.
+    /// One row: the part (faded if it isn't yours), its name (amber if it's
+    /// on), its tiers once it's yours, and how far along learning the next is.
     fn draw_row(&self, p: &mut Painter, min: Vec2, part: Part, equipped: bool, profile: &Profile) {
         use design::{AMBER, SMALL, TEXT, TEXT_2, UNIT};
         let owned = profile.owns(part);
@@ -793,23 +816,13 @@ impl Garage {
             (_, true) => TEXT,
             _ => TEXT_2,
         });
-        p.text(Vec2::new(x, min.y + UNIT), part.name(), &style, Align::Left);
-        let y = min.y + UNIT * 3.5;
-        let mut end = right;
-        if owned {
-            let tier = crate::economy::level_label(profile.levels.of(part));
-            let at = Vec2::new(right, y - SMALL.size * 0.5 + 1.0);
-            end -= UNIT * 5.0;
-            p.text(at, &tier, &SMALL.colored(TEXT_2), Align::Right);
-        }
-        let k = progress(part, profile);
-        p.rect(
-            Vec2::new(x, y),
-            Vec2::new(end - x, 2.0),
-            with_alpha(TEXT_2, 0.3),
-        );
-        let color = if k >= 1.0 { AMBER } else { TEXT };
-        p.rect(Vec2::new(x, y), Vec2::new((end - x) * k, 2.0), color);
+        p.text(Vec2::new(x, min.y + 2.0), part.name(), &style, Align::Left);
+        let at = Vec2::new(x, min.y + UNIT * 2.25);
+        tiers(p, at, part, profile, SMALL, Align::Left);
+        let bar = Vec2::new(x, min.y + UNIT * 4.5);
+        let w = right - x;
+        p.rect(bar, Vec2::new(w, 2.0), with_alpha(TEXT_2, 0.3));
+        p.rect(bar, Vec2::new(w * progress(part, profile), 2.0), TEXT);
     }
 
     /// The highlighted part's card, top right over the scene: what it is, how
@@ -822,7 +835,7 @@ impl Garage {
         queued: Loadout,
         profile: &Profile,
     ) {
-        use design::{BODY, BUTTON, GROUND, MARGIN, Press, SMALL, UNIT};
+        use design::{BODY, BUTTON, GROUND, MARGIN, SMALL, UNIT};
         let part = self.focused();
         let (items, stats, equipped) = if self.section == 0 {
             (tab_parts(0), &HULL_STATS[..], Part::Hull(queued.0))
@@ -847,11 +860,8 @@ impl Garage {
         emblem::faction_name(p, Vec2::new(x, y), maker, &style, Align::Left);
         y += UNIT * 2.5;
         p.text(Vec2::new(x, y), part.name(), &BODY, Align::Left);
-        if profile.owns(part) {
-            let tier = crate::economy::level_label(profile.levels.of(part));
-            let at = Vec2::new(x + STATS_W, y);
-            p.text(at, &tier, &BODY, Align::Right);
-        }
+        let at = Vec2::new(x + STATS_W, y);
+        tiers(p, at, part, profile, BODY, Align::Right);
         y += UNIT * 3.5;
         let (level, cap) = (profile.levels.of(part), profile.known.cap(part));
         upgrade_track(p, Vec2::new(x, y), STATS_W, level, cap);
@@ -871,14 +881,9 @@ impl Garage {
             y += STAT_ROW;
         }
         y += UNIT;
-        for (i, (text, input)) in actions.iter().enumerate() {
-            let press = match input {
-                None => Press::Off,
-                Some(_) if i == 0 => Press::Main,
-                Some(_) => Press::Other,
-            };
+        for (text, input) in &actions {
             let min = Vec2::new(x, y);
-            self.button(p, hits, min, STATS_W, text, press, *input);
+            self.button(p, hits, min, STATS_W, text, *input);
             y += BUTTON + UNIT;
         }
     }
@@ -892,11 +897,10 @@ impl Garage {
         min: Vec2,
         width: f32,
         text: &str,
-        press: design::Press,
         input: Option<Input>,
     ) {
         let hover = input.is_some_and(|i| self.hover == Some(Hit::Key(i)));
-        design::button(p, min, width, text, press, hover);
+        design::button(p, min, width, text, input.is_some(), hover);
         if let Some(i) = input {
             let size = Vec2::new(width, design::BUTTON);
             hits.add(p, min, size, Hit::Key(i));
@@ -1075,7 +1079,6 @@ fn smooth(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::measure;
 
     #[test]
     fn upgrade_steps_are_bought_then_available_then_locked() {
@@ -1119,10 +1122,10 @@ mod tests {
             ]
         );
         assert_eq!(progress(kastron, &p), 0.5);
-        // Known further: the bar's full, and crystals decide.
+        // Known further: crystals decide.
         p.known.set(kastron, 2.5);
         p.crystals = 0;
-        assert_eq!(progress(kastron, &p), 1.0);
+        assert_eq!(progress(kastron, &p), 0.5);
         assert!(words(&p, kastron)[1].0.contains("costs"));
         p.crystals = 100_000;
         assert!(words(&p, kastron)[1].1);

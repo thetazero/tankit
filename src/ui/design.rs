@@ -90,39 +90,23 @@ pub fn link(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
     )
 }
 
-/// How loud a button is.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Press {
-    /// The thing to do.
-    Main,
-    /// Something else you can do.
-    Other,
-    /// Can't be pressed: it says why.
-    Off,
-}
-
 /// How tall a button is.
 pub const BUTTON: f32 = UNIT * 5.0;
 
-/// A button `width` wide, its top left at `min`.
-pub fn button(p: &mut Painter, min: Vec2, width: f32, text: &str, press: Press, hover: bool) {
+/// A button `width` wide, its top left at `min`: amber in a box if it can be
+/// pressed (`on`), flat and grey, saying why, if it can't.
+pub fn button(p: &mut Painter, min: Vec2, width: f32, text: &str, on: bool, hover: bool) {
     let size = Vec2::new(width, BUTTON);
-    let (fill, ink) = match press {
-        Press::Main if hover => (TEXT, GROUND),
-        Press::Main => (AMBER, GROUND),
-        Press::Other if hover => (with_alpha(TEXT, 0.14), TEXT),
-        Press::Other => (with_alpha(TEXT, 0.05), TEXT),
-        Press::Off => (with_alpha(TEXT, 0.012), TEXT_2),
+    let fill = match (on, hover) {
+        (true, true) => 0.06,
+        (true, false) => 0.015,
+        (false, _) => 0.008,
     };
-    p.rect(min, size, fill);
-    if press == Press::Other {
+    p.rect(min, size, with_alpha(TEXT, fill));
+    if on {
         p.rect_outline(min, size, 1.0, TEXT_2);
     }
-    let mut style = BODY.colored(ink);
-    if press == Press::Main {
-        // Dark on bright reads thinner than it is.
-        style.weight = 2.4;
-    }
+    let style = BODY.colored(if on { AMBER } else { TEXT_2 });
     let at = Vec2::new(min.x + width * 0.5, min.y + (BUTTON - style.size) * 0.5);
     p.text(at, text, &style, Align::Center);
 }
