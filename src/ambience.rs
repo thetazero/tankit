@@ -2,6 +2,7 @@
 //! match so it runs the same in play and in screenshots.
 //!
 //! - Wind-blown sand skittering low across the ground (maps with blowing sand).
+//! - In a sandstorm, sheets of dust driven past at every height.
 //! - Slow, faint dust drifting through the air.
 //! - Sand trickling off broken wall tops, in on-and-off bursts.
 //! - Dust kicked up behind tanks' tracks, by speed.
@@ -58,8 +59,10 @@ pub struct Ambience {
     pub focus: Vec3,
     wind: Vec2,
     blowing: f32,
+    storm: bool,
     dust: Vec3,
     sand_budget: f32,
+    sheet_budget: f32,
     mote_budget: f32,
 }
 
@@ -99,8 +102,10 @@ impl Ambience {
             focus: Vec3::ZERO,
             wind: a.wind,
             blowing: a.blowing_sand,
+            storm: crate::conditions::storming(a),
             dust: a.dust,
             sand_budget: 0.0,
+            sheet_budget: 0.0,
             mote_budget: 0.0,
         }
     }
@@ -146,6 +151,33 @@ impl Ambience {
                     drag: 0.0,
                     stretch: self.rng.range(8.0, 16.0),
                     hover: self.rng.range(0.08, 0.45),
+                };
+                self.push(p);
+            }
+        }
+
+        // A sandstorm: rags of dust tearing past, low and high.
+        if self.storm {
+            self.sheet_budget += 60.0 * DT;
+            while self.sheet_budget >= 1.0 {
+                self.sheet_budget -= 1.0;
+                let r = RADIUS * self.rng.f32().sqrt();
+                let a = self.rng.range(0.0, std::f32::consts::TAU);
+                let p2 = focus2 + Vec2::new(a.cos(), a.sin()) * r;
+                let g = map.ground_height(p2.x, p2.y);
+                let p = P {
+                    pos: Vec3::new(p2.x, g + self.rng.range(0.3, 7.0), p2.y),
+                    vel: wind3 * self.rng.range(0.8, 1.3) + Vec3::Y * self.rng.range(-0.4, 0.6),
+                    age: 0.0,
+                    life: self.rng.range(1.5, 3.0),
+                    size0: self.rng.range(0.8, 1.6),
+                    size1: self.rng.range(2.0, 3.5),
+                    alpha: self.rng.range(0.08, 0.18),
+                    color: self.dust * self.rng.range(0.9, 1.25),
+                    gravity: 0.0,
+                    drag: 0.0,
+                    stretch: self.rng.range(2.5, 5.0),
+                    hover: 0.0,
                 };
                 self.push(p);
             }

@@ -49,7 +49,7 @@ const USAGE: &str = "\
 tankit [OPTIONS]
 
   (no options)            open the main menu (missions, garage)
-  any of --seed --map-seed --map --time-of-day --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
+  any of --seed --map-seed --map --time-of-day --weather --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
   --map <reservoir|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-desert>
                           the reservoir (a generated desert town round a dam or a well, the default), the Sanctum (a Resonant church
@@ -62,6 +62,7 @@ tankit [OPTIONS]
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
   --map-seed <n>          which one a generated map (reservoir, city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
+  --weather <clear|sandstorm>  the weather it's fought in (default: clear)
   --generator <faction>   (with --map shield-site or shield-desert) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-site or shield-desert) the generator's down, n ticks of repair
@@ -184,7 +185,7 @@ pub struct Args {
     /// --greybox: a generated map's skeleton, undressed.
     pub greybox: bool,
     pub map: MapKind,
-    /// --time-of-day.
+    /// --time-of-day and --weather.
     pub conditions: conditions::Conditions,
     pub spawn: usize,
     pub bots: usize,
@@ -371,6 +372,23 @@ pub enum MapKind {
     /// The desert with a shield generator in its landmark's slot (#337),
     /// the standard model of the side that holds it, and its camp.
     ShieldDesert(Generator),
+}
+
+impl MapKind {
+    /// Whether it stands on desert, where sandstorms blow.
+    pub fn sandy(self) -> bool {
+        use map::procgen::{foundry::Ground, setting::Setting};
+        match self {
+            MapKind::Desert
+            | MapKind::ShieldDesert(_)
+            | MapKind::Reservoir
+            | MapKind::Depot(_)
+            | MapKind::Mine(_) => true,
+            MapKind::City(_, s) | MapKind::ShieldSite(_, s, _) => s == Setting::Desert,
+            MapKind::Foundry(_, g) => g == Ground::Desert,
+            MapKind::Sanctum | MapKind::Kiln => false,
+        }
+    }
 }
 
 /// The map `kind` names; `seed` picks which one, for a generated kind (the
@@ -737,6 +755,7 @@ fn parse_args() -> Result<Args> {
             "--seed"
                 | "--map-seed"
                 | "--time-of-day"
+                | "--weather"
                 | "--map"
                 | "--spawn"
                 | "--team-size"
@@ -758,6 +777,12 @@ fn parse_args() -> Result<Args> {
                 let name = args.next().unwrap_or_default();
                 conditions.time = conditions::TimeOfDay::by_name(&name).with_context(|| {
                     format!("--time-of-day expects day, dusk or night, got {name:?}")
+                })?;
+            }
+            "--weather" => {
+                let name = args.next().unwrap_or_default();
+                conditions.weather = conditions::Weather::by_name(&name).with_context(|| {
+                    format!("--weather expects clear or sandstorm, got {name:?}")
                 })?;
             }
             "--greybox" => greybox = true,

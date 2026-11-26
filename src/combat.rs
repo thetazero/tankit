@@ -1788,7 +1788,8 @@ impl Match {
             let yaw = t.turret_yaw();
             let level = Vec3::new(yaw.sin(), 0.0, yaw.cos());
             let g = self.fighters[i].levels.gun(t.turret_kind);
-            let range = g.range().min(ASSIST_RANGE);
+            let sight = self.world.map.atmosphere.sight();
+            let range = g.range().min(ASSIST_RANGE).min(sight);
             // The nearest enemy in the cone that the gun can see. Nearest
             // first, so the costly checks stop at the first that passes.
             let mut candidates: Vec<(f32, usize)> = (0..n)

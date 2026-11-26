@@ -284,7 +284,10 @@ impl Bot {
         // stop to fight. Everything else picks a distance that suits it and
         // fights from there, further out when hurt.
         let brawler = g.range() < BRAWL_RANGE || husk;
-        let reach = FIRE_RANGE.min(g.range());
+        // Nor does any gun fight at the edge of what a storm lets it see.
+        let reach = FIRE_RANGE
+            .min(g.range())
+            .min(world.map.atmosphere.sight() * 0.95);
         let mut ideal = ideal_range(t.turret_kind).min(reach * 0.8);
         if !brawler && contacts[me].health < WOUNDED {
             ideal = (ideal * 1.35).min(reach * 0.9);
@@ -1081,11 +1084,13 @@ fn flat(v: Vec3) -> Vec2 {
     Vec2::new(v.x, v.z)
 }
 
-/// Line of sight from an eye point to a tank's upper hull, against static geometry.
+/// Line of sight from an eye point to a tank's upper hull, against static
+/// geometry and through the haze (a sandstorm's hides what's far off).
 pub fn can_see(world: &World, eye: Vec3, o: &Tank) -> bool {
     let to = o.pos + o.up() * o.chassis.hull_top - eye;
     let len = to.length();
-    len < 1e-3 || world.raycast(eye, to / len, len) >= len - 0.5
+    len < 1e-3
+        || len < world.map.atmosphere.sight() && world.raycast(eye, to / len, len) >= len - 0.5
 }
 
 #[cfg(test)]
@@ -1175,7 +1180,10 @@ mod tests {
     /// ground, for `secs`: the distance between them and the bot's position,
     /// sampled every step.
     fn standoff_track(turret: TurretKind, start: f32, secs: f32) -> Vec<(f32, Vec2)> {
-        let map = Map::empty(400.0);
+        standoff_on(Map::empty(400.0), turret, start, secs)
+    }
+
+    fn standoff_on(map: Map, turret: TurretKind, start: f32, secs: f32) -> Vec<(f32, Vec2)> {
         let nav = NavGrid::build(&map);
         let mut w = World::empty(map);
         let hull = crate::sim::HullKind::Kataphrakt;
@@ -1230,6 +1238,54 @@ mod tests {
             end < 100.0,
             "rail cannon never closed in: still {end:.1} m off"
         );
+    }
+
+    fn stormy() -> Map {
+        let mut map = Map::empty(400.0);
+        crate::conditions::Conditions {
+            weather: crate::conditions::Weather::Sandstorm,
+            ..Default::default()
+        }
+        .apply(&mut map);
+        map
+    }
+
+    /// In a sandstorm bots don't see far, with nothing in the way.
+    #[test]
+    fn a_sandstorm_hides_tanks_from_bots() {
+        let sees = |map: Map, d: f32| {
+            let mut w = World::empty(map);
+            for z in [0.0, d] {
+                w.spawn_tank(
+                    Vec3::ONE,
+                    Vec2::new(200.0, 100.0 + z),
+                    0.0,
+                    crate::sim::HullKind::Kataphrakt,
+                    TurretKind::Kontos,
+                );
+            }
+            let t = &w.tanks[0];
+            can_see(&w, t.pos + Vec3::Y * t.gun_height(), &w.tanks[1])
+        };
+        assert!(sees(Map::empty(400.0), 90.0));
+        assert!(!sees(stormy(), 90.0));
+        assert!(sees(stormy(), 50.0));
+    }
+
+    /// In one, the longest guns close in to where they see their enemy, and
+    /// hold there.
+    #[test]
+    fn ranged_bots_close_in_through_a_sandstorm() {
+        for turret in [TurretKind::Kontos, TurretKind::Lumen] {
+            let track = standoff_on(stormy(), turret, 120.0, 25.0);
+            let sight = crate::conditions::STORM_SIGHT;
+            let late = &track[track.len() * 3 / 4..];
+            assert!(
+                late.iter().all(|&(d, _)| d > 25.0 && d < sight),
+                "{turret:?} ended {:?} m off",
+                late.last()
+            );
+        }
     }
 
     /// Started on top of the enemy, a ranged bot backs out to fighting range.
