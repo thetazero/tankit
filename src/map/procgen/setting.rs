@@ -67,7 +67,7 @@ pub fn desert(map: &mut Map, sk: &Skeleton, seed: u64, road: Vec3) {
     };
     // How much sand lies over the road at `p`.
     let blown = |p: Vec2| {
-        let n = noise2(p.x / 17.0, p.y / 17.0, 11) * 0.5 + 0.5;
+        let n = noise2(p.x / 17.0, p.y / 17.0, 11);
         smoothstep(0.62, 0.95, n)
     };
     // Past the houses, dunes.
