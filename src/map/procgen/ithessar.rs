@@ -90,8 +90,8 @@ impl Style for Ithessar {
         map.generator_rubble(rng, lm, base, STONE * 1.2)
     }
 
-    fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
-        map.paving(p, &sk.landmarks, STONE * 1.7);
+    fn platform(&self, map: &mut Map, _sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
+        map.paving(p, &[], STONE * 1.7);
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
@@ -107,6 +107,9 @@ impl Style for Ithessar {
     fn lot(&self, map: &mut Map, sk: &Skeleton, lot: &Lot, rng: &mut Rng) -> Vec<Drift> {
         let f = &lot.footprint;
         match lot.kind {
+            LotKind::Big if f.half.min_element() > 5.0 && rng.chance(0.16) => {
+                blades(map, rng, f);
+            }
             LotKind::Big if f.half.min_element() > 5.0 && rng.chance(0.4) => {
                 crescent(map, rng, lot)
             }
@@ -312,11 +315,14 @@ fn shards(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32, solid: bool) {
         // (Turning, it keeps to its ground.)
         let hh = h * if k == 0 { 1.0 } else { rng.range(0.5, 0.85) };
         twist(map, rng, o, at, hf * 0.93, hh, color, solid);
-        if k == 0 && rng.chance(0.45) {
+        if k == 0 && rng.chance(0.7) {
             let (ax, az) = o.axes();
             let p = o.center + ax * at.x + az * at.y;
             let lean = Vec3::new(rng.range(-0.25, 0.25), 1.0, rng.range(-0.25, 0.25));
-            let (tall, r) = (rng.range(2.5, 5.0), rng.range(0.5, 0.9));
+            let (tall, r) = (
+                hh * rng.range(0.35, 0.75),
+                hf.min_element() * rng.range(0.26, 0.42),
+            );
             crystal(
                 map,
                 rng,
@@ -327,6 +333,37 @@ fn shards(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32, solid: bool) {
                 false,
             );
         }
+    }
+}
+
+/// Not a house: a stand of great blades grown on a stone foot, what their
+/// glass is cut from.
+fn blades(map: &mut Map, rng: &mut Rng, o: &OBox) {
+    let r = o.half.min_element();
+    put(
+        map,
+        o,
+        Vec2::ZERO,
+        o.half * 0.85,
+        0.1,
+        (-0.5, 1.6),
+        STONE * 1.1,
+        C,
+        true,
+    );
+    for k in 0..5 {
+        let d = dir(k as f32 * TAU / 5.0 + rng.range(-0.3, 0.3));
+        let out = if k == 0 { 0.0 } else { r * 0.45 };
+        let lean = if k == 0 { 0.0 } else { rng.range(0.12, 0.3) };
+        let h = if k == 0 {
+            rng.range(14.0, 20.0)
+        } else {
+            rng.range(7.0, 13.0)
+        };
+        let wide = r * rng.range(0.16, 0.26);
+        let axis = Vec3::new(d.x * lean, 1.0, d.y * lean).normalize() * h;
+        let foot = Vec3::new(o.center.x + d.x * out, 0.8, o.center.y + d.y * out);
+        crystal(map, rng, foot, axis, wide, k < 2, true);
     }
 }
 
@@ -494,6 +531,25 @@ fn floating(map: &mut Map, rng: &mut Rng, o: &OBox) {
 fn tower(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32) {
     let color = WALLS[rng.index(WALLS.len())] * rng.range(0.75, 0.95);
     let turn = rng.range(-0.14, 0.14);
+    if rng.chance(0.3) {
+        // A great blade, on a stone foot.
+        put(
+            map,
+            o,
+            Vec2::ZERO,
+            o.half * 0.9,
+            0.0,
+            (-0.6, h * 0.22),
+            color,
+            C,
+            false,
+        );
+        let lean = Vec3::new(rng.range(-0.16, 0.16), 1.0, rng.range(-0.16, 0.16));
+        let foot = Vec3::new(o.center.x, h * 0.18, o.center.y);
+        let r = o.half.min_element() * rng.range(0.4, 0.6);
+        crystal(map, rng, foot, lean.normalize() * h * 1.1, r, true, false);
+        return;
+    }
     for (k, (grow, y0, y1)) in [(0.95, 0.0, 0.45), (0.78, 0.44, 0.78), (0.55, 0.77, 1.0)]
         .into_iter()
         .enumerate()

@@ -542,11 +542,19 @@ pub(super) fn repairs(sk: &mut Skeleton, rng: &mut Rng) {
         }
     }
     let mut tries = 0;
-    let want = repairs.len() + 6;
-    while repairs.len() < want && tries < 2000 {
+    // (A strip's a small part of its square.)
+    let (more, most) = if sk.band.is_some() {
+        (12, 30000)
+    } else {
+        (6, 2000)
+    };
+    let want = repairs.len() + more;
+    while repairs.len() < want && tries < most {
         tries += 1;
         let p = Vec2::new(rng.range(0.1, 0.9), rng.range(0.1, 0.9)) * size;
-        let clear = sk.lots.iter().all(|l| l.footprint.distance(p) > 5.5)
+        let clear = (sk.band.is_none() || sk.out(p) < -10.0)
+            && sk.land.channel.as_ref().is_none_or(|c| !c.wet(p, 4.0))
+            && sk.lots.iter().all(|l| l.footprint.distance(p) > 5.5)
             && sk.bases.iter().all(|b| !b.contains(p, 10.0))
             && sk
                 .decos

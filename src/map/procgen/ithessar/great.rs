@@ -56,7 +56,7 @@ pub(super) fn sun(map: &mut Map, rng: &mut Rng, lm: &Landmark, base: f32) {
         points: (0..=n)
             .map(|k| {
                 let q = c + dir(k as f32 / n as f32 * TAU) * 7.3;
-                Vec3::new(q.x, base + 0.05, q.y)
+                Vec3::new(q.x, base + 0.12, q.y)
             })
             .collect(),
         widths: vec![0.45; n + 1],
@@ -179,7 +179,8 @@ pub(super) fn lens(map: &mut Map, rng: &mut Rng, lm: &Landmark, base: f32) {
     for k in 0..4 {
         let an = angle(long) + FRAC_PI_4 + k as f32 * FRAC_PI_2;
         let d = dir(an);
-        let foot = c + d * 5.0;
+        // (Room for a tank between them.)
+        let foot = c + d * 7.6;
         let tip = at(lm, base, 8.4) + Vec3::new(d.x, 0.0, d.y) * 2.3;
         let from = Vec3::new(foot.x, base - 0.6, foot.y);
         crystal(map, rng, from, tip - from, 0.8, true, true);
@@ -288,7 +289,7 @@ pub(super) fn weir(map: &mut Map, rng: &mut Rng, lm: &Landmark, base: f32) {
                 .map(|k| {
                     let r = lm.radius - 9.0 - (lm.radius - 13.5) * k as f32 / n as f32;
                     let q = c + d * r;
-                    Vec3::new(q.x, base + 0.05, q.y)
+                    Vec3::new(q.x, base + 0.12, q.y)
                 })
                 .collect(),
             widths: vec![0.5; n + 1],

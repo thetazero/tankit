@@ -785,8 +785,10 @@ mod tests {
 
     /// Every seed in every style of city there is.
     fn cities() -> impl Iterator<Item = (u64, Look)> {
-        [Look::Imperium, Look::Resonant]
+        [Look::Imperium, Look::Resonant, Look::Ithessar]
             .into_iter()
+            // (The Ithessar's are the biggest: not unoptimized.)
+            .filter(|&l| l != Look::Ithessar || !cfg!(debug_assertions))
             .flat_map(|look| SEEDS.map(|s| (s, look)))
     }
 
@@ -931,7 +933,7 @@ mod tests {
     #[test]
     fn fillers_keep_to_their_envelopes() {
         for (seed, look) in cities() {
-            let sk = skeleton(&spec(seed));
+            let sk = skeleton(&crate::city_spec(seed, look));
             let (m, claims) = build(&crate::city_spec(seed, look));
             for (claim, range) in claims {
                 for o in &m.oboxes[range] {
@@ -988,7 +990,7 @@ mod tests {
     #[test]
     fn the_avenues_are_open_to_the_middle() {
         for (seed, look) in cities() {
-            let sk = skeleton(&spec(seed));
+            let sk = skeleton(&crate::city_spec(seed, look));
             let m = map(&crate::city_spec(seed, look));
             for a in sk.avenues() {
                 let (dir, side) = (a.dir(), Vec2::new(-a.dir().y, a.dir().x));
@@ -1000,8 +1002,7 @@ mod tests {
                     for across in [-1.0, 0.0, 1.0] {
                         let p = a.from + dir * r + side * across * (a.clear - 1.0);
                         // (The heap across the edge is the edge's.)
-                        let edge = p.min(Vec2::splat(sk.size) - p).min_element();
-                        if edge < 11.0 {
+                        if sk.out(p) > -11.0 {
                             continue;
                         }
                         // (Once: the ground's slow to work out.)
