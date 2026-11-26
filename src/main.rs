@@ -51,8 +51,8 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --time-of-day --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <saltmarket|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-desert>
-                          Saltmarket (desert town, the default), the Sanctum (a Resonant church
+  --map <reservoir|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-desert>
+                          the reservoir (a generated desert town round a dam or a well, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map), the Kiln (Ithessar ground), the city
                           (a generated city, see --look), the shield site (the same, a shield
                           generator in place of its great building), a hull foundry
@@ -60,7 +60,7 @@ tankit [OPTIONS]
                           (generated: see --look), or the mine (a generated
                           crystal mine: caves, rails and stacked levels; see --look), the desert (generated open
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
-  --map-seed <n>          which one a generated map (city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
+  --map-seed <n>          which one a generated map (reservoir, city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --generator <faction>   (with --map shield-site or shield-desert) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
@@ -314,6 +314,7 @@ impl Args {
             }
             (true, MapKind::Depot(l)) => map::procgen::greybox(&depot_spec(self.map_seed, l)),
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
+            (true, MapKind::Reservoir) => map::procgen::greybox(&reservoir_spec(self.map_seed)),
             (true, MapKind::ShieldSite(l, _, g)) => {
                 map::procgen::greybox(&shield_spec(self.map_seed, l, g))
             }
@@ -333,8 +334,6 @@ impl Args {
 /// Which arena to load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapKind {
-    /// Hand-built desert town on a dry reservoir.
-    Saltmarket,
     /// The Sanctum: a Resonant church on a mesa (the Hold map).
     Sanctum,
     /// Ithessar ground: crystal monoliths holding a plasma core.
@@ -362,6 +361,9 @@ pub enum MapKind {
     /// Open desert: dunes, buttes and spires of sandstone round the
     /// Needles in the middle. Generated: a different desert for each seed.
     Desert,
+    /// A small town in the desert, round a dry reservoir's dam or a well.
+    /// Generated: a different town for each seed.
+    Reservoir,
     /// The desert with a shield generator in its landmark's slot (#337),
     /// the standard model of the side that holds it, and its camp.
     ShieldDesert(Generator),
@@ -371,7 +373,6 @@ pub enum MapKind {
 /// hand-built ones are always the same).
 pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
     match kind {
-        MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
@@ -380,6 +381,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Mine(l) => map::procgen::map(&mine_spec(seed, l)),
         MapKind::Depot(l) => map::procgen::map(&depot_spec(seed, l)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
+        MapKind::Reservoir => map::procgen::map(&reservoir_spec(seed)),
         MapKind::ShieldDesert(g) => map::procgen::map(&shield_desert_spec(seed, g)),
     }
 }
@@ -484,6 +486,14 @@ pub fn desert_spec(seed: u64) -> map::procgen::Spec {
         look: map::procgen::Look::Imperium,
         sides: map::DEFAULT_SIDES.to_vec(),
         centerpiece: map::procgen::Centerpiece::Monument,
+    }
+}
+
+/// The reservoir town `seed` names: the default matchup.
+pub fn reservoir_spec(seed: u64) -> map::procgen::Spec {
+    map::procgen::Spec {
+        biome: map::procgen::Biome::Reservoir,
+        ..desert_spec(seed)
     }
 }
 
@@ -674,7 +684,7 @@ fn parse_args() -> Result<Args> {
     let mut time: Option<f32> = None;
     let (mut width, mut height) = (1600, 900);
     let (mut frames, mut fps) = (1u32, 30.0f32);
-    let (mut map_kind, mut spawn, mut straight) = (MapKind::Saltmarket, 0usize, false);
+    let (mut map_kind, mut spawn, mut straight) = (MapKind::Reservoir, 0usize, false);
     let mut tilt = scene::TILT_HOME;
     let mut showroom = false;
     let mut cam: Option<(Vec3, Vec3)> = None;
@@ -749,7 +759,7 @@ fn parse_args() -> Result<Args> {
             "--greybox" => greybox = true,
             "--no-lod" => render::lod::disable(),
             "--map" => match args.next().as_deref() {
-                Some("saltmarket") => map_kind = MapKind::Saltmarket,
+                Some("reservoir") => map_kind = MapKind::Reservoir,
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => {
@@ -776,7 +786,7 @@ fn parse_args() -> Result<Args> {
                 }
                 other => {
                     bail!(
-                        "--map expects saltmarket, sanctum, kiln, city, shield-site, foundry, mine, desert or shield-desert, got {other:?}"
+                        "--map expects reservoir, sanctum, kiln, city, shield-site, foundry, mine, desert or shield-desert, got {other:?}"
                     )
                 }
             },

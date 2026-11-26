@@ -18,8 +18,8 @@ use glam::{Vec2, Vec3};
 use super::mine::{line_at, line_distance, line_len, seg};
 use super::skeleton::{Platform, smoothstep};
 use crate::map::OBox;
+use crate::map::noise::{noise, noise2};
 use crate::map::solid::{Rock, Surface};
-use crate::map::valley::{noise, noise2};
 use crate::rng::Rng;
 
 /// The high ground falls to the floor over this far out from its edge
@@ -483,6 +483,67 @@ impl Dunes {
     }
 }
 
+/// A lake's bed, dried out: a lobed hollow, its shore sloping in `shore` m.
+#[derive(Clone, Copy, Debug)]
+pub struct Lake {
+    pub center: Vec2,
+    pub radius: f32,
+    pub phase: f32,
+    pub depth: f32,
+    pub shore: f32,
+}
+
+impl Lake {
+    /// Signed distance (about) to its old waterline, negative in it.
+    pub fn sdf(&self, p: Vec2) -> f32 {
+        let d = p - self.center;
+        let r = d.length().max(1e-3);
+        r - lobed(self.radius, self.phase, d / r)
+    }
+
+    /// How much of its depth is cut at `p`, 0 to 1.
+    pub fn cut(&self, p: Vec2) -> f32 {
+        smoothstep(0.0, self.shore, -self.sdf(p))
+    }
+}
+
+/// An earth dam from `a` to `b`, `height` m, its crest `crest` m either side
+/// of its line, sloping down over `run` all round, broken through in the
+/// middle: the floor open `breach` m either side.
+#[derive(Clone, Copy, Debug)]
+pub struct Dam {
+    pub a: Vec2,
+    pub b: Vec2,
+    pub height: f32,
+    pub crest: f32,
+    pub run: f32,
+    pub breach: f32,
+}
+
+/// How far from a breach's floor up to the crest.
+pub const BREACH_RUN: f32 = 14.0;
+
+impl Dam {
+    pub fn middle(&self) -> Vec2 {
+        (self.a + self.b) * 0.5
+    }
+
+    pub fn along(&self) -> Vec2 {
+        (self.b - self.a).normalize()
+    }
+
+    pub fn distance(&self, p: Vec2) -> f32 {
+        seg(p, self.a, self.b).0
+    }
+
+    /// Its heights at `p`, 0 off it.
+    pub fn height_at(&self, p: Vec2) -> f32 {
+        let body = 1.0 - smoothstep(self.crest, self.crest + self.run, self.distance(p));
+        let t = (p - self.middle()).dot(self.along()).abs();
+        self.height * body * smoothstep(self.breach, self.breach + BREACH_RUN, t)
+    }
+}
+
 /// A flat-topped rock standing on the flats, steep all round but for the
 /// ramp up one side.
 #[derive(Clone, Copy, Debug)]
@@ -758,6 +819,8 @@ pub struct Land {
     pub fins: Vec<Fin>,
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
+    pub lake: Option<Lake>,
+    pub dam: Option<Dam>,
     pub digs: Vec<Dig>,
     /// A plasma river's, cut through all of it.
     pub channel: Option<super::channel::Channel>,
@@ -926,7 +989,12 @@ impl Land {
             h += d.at(p) * self.drift(d, p, s) * (0.3 + 0.7 * low);
         }
         let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
-        h += (bowls - self.wash_cut(p)) * low + self.butte(p) + self.fin(p) + self.mound(p);
+        let lake = self.lake.map_or(0.0, |l| l.depth * l.cut(p));
+        let dam = self.dam.map_or(0.0, |d| d.height_at(p));
+        h += (bowls + dam - lake - self.wash_cut(p)) * low
+            + self.butte(p)
+            + self.fin(p)
+            + self.mound(p);
         self.graded(p, h)
     }
 

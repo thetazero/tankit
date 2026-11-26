@@ -176,7 +176,7 @@ mod tests {
     fn any_map_has_a_day_a_dusk_and_a_night() {
         let g = Generator::up(Faction::Imperium);
         for kind in [
-            MapKind::Saltmarket,
+            MapKind::Reservoir,
             MapKind::Sanctum,
             MapKind::Kiln,
             MapKind::Foundry(

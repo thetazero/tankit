@@ -1,6 +1,6 @@
-//! Arena geometry: the hand-built maps (Saltmarket, the Sanctum, the Kiln),
+//! Arena geometry: the hand-built maps (the Sanctum, the Kiln),
 //! the generated ones (`procgen`: cities, crystal mines, hull foundries,
-//! open desert), and the shapes they're made of: boxes, wedges (ramps), turned boxes,
+//! open desert, reservoir towns), and the shapes they're made of: boxes, wedges (ramps), turned boxes,
 //! crystals and an optional heightfield ground.
 
 use crate::render::material::Material;
@@ -12,18 +12,18 @@ mod crag;
 mod imperial;
 mod kiln;
 mod landmarks;
+mod noise;
+mod pieces;
 pub mod procgen;
 mod props;
 pub mod river;
 pub mod rocks;
 mod ruins;
-mod saltmarket;
 mod sanctum;
 pub mod solid;
 mod strata;
 #[cfg(test)]
 mod test_kit;
-mod valley;
 mod vault;
 
 /// Blocking collider.
@@ -1018,16 +1018,6 @@ impl Map {
             }
         }
         out
-    }
-
-    /// On Saltmarket (in the shifted frame `Map::saltmarket` returns), how
-    /// far a point is past the edge a tank should never cross: into the
-    /// cliff's rock past its foot, or west behind the barricade. Negative:
-    /// on the open ground.
-    #[cfg(test)]
-    pub fn saltmarket_past_edge(p: Vec2) -> f32 {
-        let q = p - Vec2::splat(valley::MARGIN);
-        valley::past_foot(q).0.max(-q.x - 1.0)
     }
 
     /// Moves everything on the map by `by` on the ground plane (a map built

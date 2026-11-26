@@ -396,7 +396,8 @@ pub fn ship_name(id: u32) -> String {
 /// fought on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
-    /// A desert world: its sites are generated (cities, mines, open desert).
+    /// A desert world: its sites are generated (cities, mines,
+    /// reservoir towns, open desert).
     Desert,
     /// A frozen world: its foundries are generated, its other sites fought
     /// on the hand-built maps.
@@ -429,11 +430,13 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(..) | MapKind::Mine(_) | MapKind::Desert | MapKind::Depot(_) => {
-                self == Class::Desert
-            }
+            MapKind::City(..)
+            | MapKind::Mine(_)
+            | MapKind::Desert
+            | MapKind::Depot(_)
+            | MapKind::Reservoir => self == Class::Desert,
             MapKind::Foundry(..) => self.ground().is_some(),
-            MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln => self != Class::Desert,
+            MapKind::Sanctum | MapKind::Kiln => self != Class::Desert,
             MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
         }
     }
@@ -1773,7 +1776,8 @@ mod tests {
     }
 
     /// Outposts are fought on no production site's map (#547): on desert
-    /// worlds the city, depot and open desert, elsewhere the hand-built maps.
+    /// worlds the city, depot, open desert and reservoir town, elsewhere the
+    /// hand-built maps.
     #[test]
     fn outposts_have_maps_of_their_own() {
         let g = galaxy();
@@ -1789,8 +1793,8 @@ mod tests {
                     MapKind::Depot(look) => {
                         assert!(desert && look == Look::own(s.founder()));
                     }
-                    MapKind::City(..) | MapKind::Desert => assert!(desert),
-                    MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln => assert!(!desert),
+                    MapKind::City(..) | MapKind::Desert | MapKind::Reservoir => assert!(desert),
+                    MapKind::Sanctum | MapKind::Kiln => assert!(!desert),
                     k => panic!("an outpost fought on {k:?}"),
                 }
                 seen.insert(s.mission);
@@ -1804,6 +1808,7 @@ mod tests {
             "DEAD LINE",
             "NIGHT FREIGHT",
             "DEAD TOWN",
+            "LOW WATER",
             "HOLY GROUND",
             "KEPT FIRE",
         ] {

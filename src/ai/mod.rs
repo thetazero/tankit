@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn paths_avoid_buildings() {
-        let map = Map::saltmarket();
+        let map = Map::reservoir(0);
         let nav = NavGrid::build(&map);
         let (a, b) = (map.open_spots[0], *map.open_spots.last().unwrap());
         let path = nav.path(a, b);
@@ -1114,7 +1114,7 @@ mod tests {
 
     #[test]
     fn spawn_spots_are_open() {
-        for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
+        for map in [Map::reservoir(0), Map::sanctum(), Map::kiln()] {
             let nav = NavGrid::build(&map);
             // There must be open nav ground right next to each spawn.
             for &p in &map.open_spots {
@@ -1260,7 +1260,7 @@ mod tests {
     /// A bot with nobody to fight drives somewhere: it roams and actually moves.
     #[test]
     fn lone_bot_roams() {
-        let mut w = World::new(Map::saltmarket(), 0);
+        let mut w = World::new(Map::reservoir(0), 0);
         let nav = NavGrid::build(&w.map);
         let mut bot = Bot::new(1);
         let start = w.tanks[0].pos;

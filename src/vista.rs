@@ -21,8 +21,6 @@ pub struct Vista {
 /// One per side, so each contract's sides show the map differently.
 pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
     match kind {
-        // The town's domes under the pyramids; the cliffs and a ruined tower.
-        MapKind::Saltmarket => &[(257.0, 88.0, 1.83), (163.0, 48.0, 1.31)],
         // The church and its bell tower; a chapel's gable.
         MapKind::Sanctum => &[(68.0, 113.0, 3.40), (78.0, 203.0, 4.71)],
         // Crystal spires over the kiln; crystals and the plasma river.
@@ -37,7 +35,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::Mine(_) => &[],
         // Generated: each desert picks its own (by each side's spawns,
         // looking at the Needles).
-        MapKind::Desert | MapKind::ShieldDesert(_) => &[],
+        MapKind::Desert | MapKind::Reservoir | MapKind::ShieldDesert(_) => &[],
     }
 }
 
@@ -202,7 +200,8 @@ mod tests {
     fn picked_spots_are_clear() {
         let mut bad = Vec::new();
         for (kind, seed) in [
-            (MapKind::Saltmarket, 0),
+            (MapKind::Reservoir, 0),
+            (MapKind::Reservoir, 1),
             (MapKind::Sanctum, 0),
             (MapKind::Kiln, 0),
             (
@@ -304,7 +303,7 @@ mod tests {
     #[test]
     #[ignore]
     fn vista_search() {
-        for kind in [MapKind::Saltmarket, MapKind::Sanctum, MapKind::Kiln] {
+        for kind in [MapKind::Sanctum, MapKind::Kiln] {
             let world = World::new(make_map(kind, 0), 0);
             let s = world.map.size;
             let sun = world.map.atmosphere.sun_dir.normalize();

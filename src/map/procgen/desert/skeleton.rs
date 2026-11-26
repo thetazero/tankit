@@ -30,7 +30,7 @@ use crate::map::procgen::mine::{line_distance, smoothstep};
 pub use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
-/// Each side's spawns: kept clear and level this far round.
+/// Each side's spawns, in the open: kept clear and level this far round.
 pub const PAD: f32 = 24.0;
 /// How far a ramp runs out from the rim, per m of height (15 degrees).
 pub const RAMP_RUN: f32 = 3.7;
@@ -66,7 +66,7 @@ pub const GENERATOR_PRECINCT: f32 = GENERATOR_RING + 16.0;
 
 /// A line wandering through `via` in turn, wiggling up to `wiggle` rad
 /// off its way each 10 m, smoothed.
-fn meander(rng: &mut Rng, via: &[Vec2], wiggle: f32) -> Vec<Vec2> {
+pub(super) fn meander(rng: &mut Rng, via: &[Vec2], wiggle: f32) -> Vec<Vec2> {
     let mut out = vec![via[0]];
     let mut at = via[0];
     for &goal in &via[1..] {
@@ -170,6 +170,7 @@ impl Skeleton {
             squares: Vec::new(),
             landmarks: vec![landmark],
             heart: at,
+            pad: PAD,
             bases: Vec::new(),
             lots: Vec::new(),
             spans: Vec::new(),
@@ -402,7 +403,7 @@ impl Skeleton {
     /// Ramps up the cliffs, by rule: every cliff line of any length in the
     /// arena gets one, and one more for each 140 m of it, spread out,
     /// where there's a run of open floor for it.
-    fn place_ramps(&mut self, rng: &mut Rng) {
+    pub(super) fn place_ramps(&mut self, rng: &mut Rng) {
         let run = self.land.high.height * RAMP_RUN;
         let s = self.size;
         let inside = |p: Vec2, m: f32| p.min_element() > m && p.max_element() < s - m;
@@ -488,7 +489,7 @@ impl Skeleton {
     /// Kept clear of anything put down: the spawns, the landmark's open
     /// ground, the ramps.
     pub fn keep_clear(&self, p: Vec2) -> bool {
-        self.base_spots().iter().any(|b| b.distance(p) < PAD)
+        self.base_spots().iter().any(|b| b.distance(p) < self.pad)
             || self.landmarks[0].center.distance(p) < self.landmarks[0].clear
             || self
                 .land
@@ -496,6 +497,7 @@ impl Skeleton {
                 .ramps
                 .iter()
                 .any(|r| r.distance(p) < RAMP_HALF + 3.0)
+            || self.streets.iter().any(|s| s.distance(p) < s.half + 1.0)
             || self.tracks.iter().any(|t| line_distance(t, p) < 4.5)
             || self.spur.as_ref().is_some_and(|s| {
                 line_distance(&s.line, p) < 4.5
@@ -521,34 +523,42 @@ impl Skeleton {
 
     /// Where side spawns could go: level ground all on one level, off the
     /// ramps and washes, well out from the landmark.
-    fn base_sites(&self) -> Vec<Vec2> {
+    pub(super) fn base_sites(&self) -> Vec<Vec2> {
         let s = self.size;
         let mut out = Vec::new();
-        let m = PAD + 10.0;
+        let m = self.pad + 10.0;
         let mut z = m;
         while z <= s - m {
             let mut x = m;
             while x <= s - m {
                 let p = Vec2::new(x, z);
                 let g = self.ground(p);
-                let ok = self.land.plateau(p).abs() > PAD + 3.0
+                let ok = self.land.plateau(p).abs() > self.pad + 3.0
+                    // (A town's are on the floor: its mesa's a strip along the edge.)
+                    && (self.streets.is_empty() || self.land.plateau(p) > 0.0)
                     && self
                         .land
                         .high
                         .ramps
                         .iter()
-                        .all(|r| r.distance(p) > PAD + 6.0)
-                    && self.land.wash_distance(p) > PAD + WASH_FLOOR + WASH_BANK
+                        .all(|r| r.distance(p) > self.pad + 6.0)
+                    && self.land.wash_distance(p) > self.pad + WASH_FLOOR + WASH_BANK
+                    && self.streets.iter().all(|s| s.distance(p) > self.pad + 5.0)
+                    && self.land.lake.is_none_or(|l| l.sdf(p) > self.pad - 6.0)
+                    && self
+                        .land
+                        .dam
+                        .is_none_or(|d| d.distance(p) > self.pad + 14.0)
                     && self.landmarks[0].center.distance(p) > s * 0.3
-                    && self.tracks.iter().all(|t| line_distance(t, p) > PAD + 4.0)
-                    && self.shed_distance(p) > PAD + 10.0
+                    && self.tracks.iter().all(|t| line_distance(t, p) > self.pad + 4.0)
+                    && self.shed_distance(p) > self.pad + 10.0
                     && self
                         .land
                         .mounds
                         .iter()
-                        .all(|m| m.at.distance(p) > PAD + 34.0)
+                        .all(|m| m.at.distance(p) > self.pad + 34.0)
                     && (0..12).all(|k| {
-                        let q = p + Vec2::from_angle(k as f32 * TAU / 12.0) * PAD;
+                        let q = p + Vec2::from_angle(k as f32 * TAU / 12.0) * self.pad;
                         (self.ground(q) - g).abs() < 2.5
                     });
                 if ok {
@@ -589,6 +599,11 @@ impl Skeleton {
             .filter_map(|p| drive(p).map(|l| (p, l)))
             .collect();
         let apart = self.size * if sides <= 2 { 0.5 } else { 0.38 };
+        // A town's sides aren't out of sight of the fight.
+        let far = match self.streets.is_empty() {
+            true => f32::INFINITY,
+            false => super::town::FAR,
+        };
         let mut best: Option<(f32, Vec<Vec2>)> = None;
         for &(first, len) in &found {
             let mut pick = vec![first];
@@ -596,7 +611,10 @@ impl Skeleton {
                 if pick.len() >= sides {
                     break;
                 }
-                if (l - len).abs() / len.max(l) < 0.12 && pick.iter().all(|q| q.distance(p) > apart)
+                if (l - len).abs() / len.max(l) < 0.12
+                    && pick
+                        .iter()
+                        .all(|q| q.distance(p) > apart && q.distance(p) < far)
                 {
                     pick.push(p);
                 }
@@ -618,9 +636,10 @@ impl Skeleton {
         match best {
             Some((_, b)) => {
                 for &at in &b {
-                    self.dunes_mut().calm.push((at, PAD - 4.0, PAD + 14.0));
+                    let pad = self.pad;
+                    self.dunes_mut().calm.push((at, pad - 4.0, pad + 14.0));
                 }
-                self.bases = b.into_iter().map(|at| Base::pad(at, PAD)).collect();
+                self.bases = b.into_iter().map(|at| Base::pad(at, self.pad)).collect();
                 true
             }
             None => false,
@@ -658,7 +677,7 @@ impl Skeleton {
                     && self
                         .base_spots()
                         .iter()
-                        .all(|&b| b.distance(at) > PAD + reach + 4.0)
+                        .all(|&b| b.distance(at) > self.pad + reach + 4.0)
                     && self
                         .land
                         .high

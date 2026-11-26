@@ -49,8 +49,8 @@ pub const MISSIONS: &[Mission] = &[
     Mission {
         name: "DEAD TOWN",
         contract: Contract::Attrition,
-        map: "SALTMARKET",
-        map_kind: MapKind::Saltmarket,
+        map: "DRY RESERVOIR",
+        map_kind: MapKind::Reservoir,
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -137,6 +137,15 @@ pub const MISSIONS: &[Mission] = &[
         contract: Contract::Attrition,
         map: "OPEN DESERT",
         map_kind: MapKind::Desert,
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
+    Mission {
+        name: "LOW WATER",
+        contract: Contract::Hold,
+        map: "DRY RESERVOIR",
+        map_kind: MapKind::Reservoir,
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -292,15 +301,17 @@ mod tests {
                 .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
         );
         // Every desert mission is there from the start: the open desert's
-        // Hold and Attrition both.
-        for contract in [Contract::Hold, Contract::Attrition] {
-            assert!(
-                for_sites(Class::Desert).iter().any(|&i| {
-                    let m = &MISSIONS[i];
-                    m.map_kind == MapKind::Desert && m.contract == contract
-                }),
-                "{contract:?}"
-            );
+        // Hold and Attrition both, and the reservoir town's.
+        for kind in [MapKind::Desert, MapKind::Reservoir] {
+            for contract in [Contract::Hold, Contract::Attrition] {
+                assert!(
+                    for_sites(Class::Desert).iter().any(|&i| {
+                        let m = &MISSIONS[i];
+                        m.map_kind == kind && m.contract == contract
+                    }),
+                    "{kind:?} {contract:?}"
+                );
+            }
         }
     }
 
