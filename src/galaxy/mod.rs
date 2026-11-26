@@ -444,6 +444,8 @@ pub struct Galaxy {
     pub(crate) savings: f32,
     /// Hulls in flight.
     pub fleets: Vec<Fleet>,
+    /// The share of what foundries could make that they have lately.
+    pub(crate) foundry_use: f32,
     /// Scratch: the system whose battles are being fought, and how many each
     /// side was in as the tick's began.
     engaged: Option<(usize, [u32; SIDES])>,
@@ -697,6 +699,7 @@ impl Galaxy {
             lose_old: 0.003,
             savings: 0.0,
             fleets: Vec::new(),
+            foundry_use: 0.02,
             engaged: None,
             hull_worth: vec![rules.hull_cost; count],
             hull_use: vec![0.0; count],
@@ -1016,6 +1019,7 @@ impl Galaxy {
             *worth += sense * (seen.min(most) - *worth);
             *seen = 0.0;
         }
+        let (mut could, mut did) = (0.0f32, 0.0f32);
         for i in 0..self.systems.len() {
             // Whoever's first gets the crystal, so a different one each tick.
             let s = (i + offset) % self.systems.len();
@@ -1041,15 +1045,18 @@ impl Galaxy {
                     SiteKind::Foundry { hulls } => {
                         let cost = hulls * (self.rules.hull_cost + extra(f));
                         let realm = &mut self.realms[r as usize];
+                        could += hulls;
                         if self.hull_worth[s] > self.rules.hull_cost && realm.crystals >= cost {
                             realm.crystals -= cost;
                             sys.building[f] += hulls;
+                            did += hulls;
                         }
                     }
                     SiteKind::Shield { .. } | SiteKind::Outpost => {}
                 }
             }
         }
+        self.foundry_use += 0.02 * (did / could.max(1.0) - self.foundry_use);
         // The yards deliver whole hulls: those done, the rest still building.
         for (sys, moves) in self.systems.iter_mut().zip(&mut self.moves) {
             for f in 0..SIDES {
