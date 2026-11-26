@@ -505,6 +505,8 @@ pub struct Galaxy {
     /// looked back on.
     pub(crate) memory: Vec<(f32, f32)>,
     pub(crate) lessons: Vec<merc::Lesson>,
+    /// The (realm, system) of each of those.
+    pub(crate) learning: std::collections::HashSet<(u32, u32)>,
     pub(crate) pays_tick: u64,
     /// Your company (a `Company::id`), once you're with one (#350): you stay
     /// with it, and go with it if it joins another.
@@ -717,6 +719,7 @@ impl Galaxy {
             pays: Vec::new(),
             memory: vec![(0.0, 0.0); merc::MEMORY],
             lessons: Vec::new(),
+            learning: Default::default(),
             pays_tick: 0,
             crew: None,
             own: None,
