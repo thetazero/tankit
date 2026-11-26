@@ -307,6 +307,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         }
     }
     let mut platforms = Vec::new();
+    let which = rng.index(3);
     let mut landmarks = Vec::new();
     for &center in &at {
         let half = if small || plan.form != Form::Radial {
@@ -353,7 +354,8 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             precinct: (radius + 20.0).min(half - 8.0),
             doors,
             fallen,
-            kind: LandmarkKind::Great,
+            // No two the same in a city.
+            kind: LandmarkKind::Great(((which + landmarks.len()) % 3) as u8),
             clear: 0.0,
             reach: (radius + 20.0).min(half - 8.0),
             facing: Vec2::X,
@@ -371,6 +373,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             inward,
             size: court,
             kind: BaseKind::Court,
+            camp: None,
         }));
     }
     let mut tries = 0;
@@ -414,6 +417,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                 inward,
                 size: court,
                 kind: BaseKind::Court,
+                camp: None,
             });
         }
     }

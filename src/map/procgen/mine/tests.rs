@@ -23,8 +23,8 @@ const SEEDS: &[u64] = &[0, 3, 9];
 /// The heaviest hull climbs a little over 20 degrees.
 const CLIMB: f32 = 20.0;
 
-fn lay(seed: u64) -> Layout {
-    static CACHE: LazyLock<Mutex<HashMap<u64, Layout>>> = LazyLock::new(Default::default);
+fn lay(seed: u64) -> Skeleton {
+    static CACHE: LazyLock<Mutex<HashMap<u64, Skeleton>>> = LazyLock::new(Default::default);
     if let Some(l) = CACHE.lock().unwrap().get(&seed) {
         return l.clone();
     }
@@ -87,7 +87,7 @@ fn draws_mostly_hold_together() {
     let mut kinds = std::collections::BTreeSet::new();
     for k in 0..200u64 {
         let mut rng = Rng::new(k * 7919);
-        match Layout::generate(&mut rng) {
+        match Skeleton::mine(&mut rng) {
             Ok(l) => {
                 ok += 1;
                 kinds.insert((l.mines.len(), l.land.washes.len(), l.land.buttes.len()));
@@ -115,7 +115,7 @@ fn draws_mostly_hold_together() {
     ignore = "slow unoptimized: run with cargo test --release"
 )]
 fn different_seeds_make_different_mines() {
-    let ls: Vec<Layout> = (0..6).map(lay).collect();
+    let ls: Vec<Skeleton> = (0..6).map(lay).collect();
     for (i, a) in ls.iter().enumerate() {
         for b in &ls[i + 1..] {
             let same = a.caves().eq(b.caves()) && a.tracks == b.tracks;
@@ -547,7 +547,7 @@ fn check_every_spawn_reaches_everything_and_the_sides_are_fair(seed: u64) {
 /// The ground along `a` to `b`: nowhere steeper than `max` degrees,
 /// stepping 0.5 m, skipping stretches over a cave's roof (the ground's cut
 /// away under that).
-fn steepest(l: &Layout, m: &Map, a: Vec2, b: Vec2) -> (f32, Vec2) {
+fn steepest(l: &Skeleton, m: &Map, a: Vec2, b: Vec2) -> (f32, Vec2) {
     let g = |p: Vec2| m.ground_height(p.x, p.y);
     let (dir, len) = ((b - a).normalize(), a.distance(b));
     let mut worst = (0.0, a);
@@ -671,11 +671,11 @@ fn check_routes_keep_to_their_level(seed: u64) {
 /// path through it, on its floor.
 fn check_the_warehouse_has_ways_through(seed: u64) {
     let (l, m) = (lay(seed), mine(seed));
-    if l.branch.is_empty() {
+    if l.spur.is_none() {
         return;
     }
     let nav = NavGrid::build(&m);
-    let (at, along) = l.shed;
+    let (at, along) = l.shed();
     let across = Vec2::new(along.y, -along.x);
     let w = |u: f32, v: f32| at + across * u + along * v;
     let doors = [
@@ -915,7 +915,7 @@ mod play {
     const LEVELS: [&str; 6] = ["deck", "under bridge", "wash", "mine", "mesa", "flats"];
 
     /// Which of `LEVELS` a tank at `p` is on.
-    fn level(l: &Layout, p: Vec3) -> usize {
+    fn level(l: &Skeleton, p: Vec3) -> usize {
         let q = flat(p);
         let under = l.crossings.iter().any(|b| {
             let (d, t) = seg(q, b.from, b.to);
@@ -1288,7 +1288,7 @@ fn probe() {
     };
     eprintln!(
         "ground {} wash {} mesa {} keep_clear {} in_the_way {} cover_near {} size {}",
-        l.ground(p.x, p.y),
+        l.ground(p),
         l.wash(p),
         l.mesa(p),
         keep_clear(&l, p),
