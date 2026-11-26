@@ -240,7 +240,7 @@ impl Dig<'_> {
         self.fill_cover(&mut rng);
         for (k, b) in lay.bases.iter().enumerate() {
             if let Some(at) = b.camp {
-                st.base(self, k, at, &mut dice(0xba5e_0529 + k as u64));
+                st.base(self, k, at, &mut rng);
             }
         }
         self.edge_rocks(&mut rng);
