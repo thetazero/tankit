@@ -79,7 +79,7 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         .sum::<f32>()
         + owed;
     println!(
-        "         companies {} on {} capital {cap:.0} margin p10/50/90 {:.2}/{:.2}/{:.2} | per t: asked {:.0} signed {:.2} (crews {:.2}) refused {:.0} dear {:.0}; per contract: price {:.1} surplus {:.1} wages {:.1} hulls {:.1} flight {:.1}; won {:.0}% | sailing/t {:.1} split {} join {} founded {} profit/t {:.1} raids/t {:.2} won {:.0}% loot/t {:.1} | merc/realm pay {:.3}/{:.3}",
+        "         companies {} on {} capital {cap:.0} margin p10/50/90 {:.2}/{:.2}/{:.2} | per t: asked {:.0} signed {:.2} (crews {:.2}) refused {:.0} dear {:.0}; per contract: price {:.1} surplus {:.1} wages {:.1} hulls {:.1} flight {:.1}; won {:.0}% | sailing/t {:.1} split {} join {} founded {} profit/t {:.1} raids/t {:.2} won {:.0}% loot/t {:.1} trained/t {:.1} defected/t {:.1} | merc/realm pay {:.3}/{:.3}",
         g.companies.len(),
         g.companies.iter().filter(|c| c.contract.is_some()).count(),
         mid(g.companies.iter().map(|c| c.margin).collect(), 0.1),
@@ -104,6 +104,8 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
         per(b.raids as f64, last.raids as f64),
         100.0 * (b.raids_won - last.raids_won) as f64 / (b.raids - last.raids).max(1) as f64,
         per(b.raided, last.raided),
+        per(b.trained as f64, last.trained as f64),
+        per(b.defected as f64, last.defected as f64),
         (b.wages + b.kill_bonuses - last.wages - last.kill_bonuses) / ct,
         (b.crew_realm_pay - last.crew_realm_pay) / ct,
     );

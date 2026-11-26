@@ -298,6 +298,8 @@ pub struct Books {
     pub raid_hulls: f64,
     pub raid_lost: f64,
     pub raid_ticks: f64,
+    /// Rookies companies trained.
+    pub trained: u64,
     pub raids: u64,
     pub raids_won: u64,
     pub raided: f64,
@@ -443,6 +445,8 @@ struct Quote {
     crew: u32,
     wage: f32,
     lent: bool,
+    /// Of the crew, rookies it trains for it.
+    trained: u32,
 }
 
 /// How a fight's expected to go (`Galaxy::forecast`).
@@ -773,19 +777,25 @@ impl Galaxy {
             } else {
                 0.0
             };
-            let n = if room > 0 && realm.pilots > 0 && offer > 0.0 {
+            // Better to match an offer, or to lose some of its pilots and
+            // train others? Whichever costs it less.
+            let (rules, employed) = (&self.rules, self.employment.clamp(0.1, 1.0));
+            let need = offer * employed;
+            let lose = rules.defect * rules.train_cost;
+            let matched = need > wage && need - wage < lose && need < realm.pilot_worth;
+            let n = if room > 0 && realm.pilots > 0 && offer > 0.0 && !matched {
                 self.rng.binomial(realm.pilots, self.rules.defect).min(room)
             } else {
                 0
             };
+            let (step, floor) = (self.rules.pay_step, self.rules.pilot_upkeep);
             let realm = &mut self.realms[r];
-            let step = self.rules.pay_step;
-            realm.wage = if n > 0 {
-                wage * (1.0 + step)
-            } else if !ease {
+            realm.wage = if matched {
+                need
+            } else if n > 0 || !ease {
                 wage
             } else {
-                (wage * (1.0 - step)).max(self.rules.pilot_upkeep)
+                (wage * (1.0 - step)).max(floor)
             };
             if n == 0 {
                 continue;
@@ -887,6 +897,7 @@ impl Galaxy {
         pos: glam::Vec3,
         pay: f32,
         lent: bool,
+        train: bool,
     ) -> Quote {
         let co = &self.companies[c];
         let mut short = if lent {
@@ -910,7 +921,7 @@ impl Galaxy {
             co.hulls.min(size) + bought
         };
         let d = self.systems[co.at as usize].pos.distance(pos);
-        let cost = spend + self.voyage(co.hulls, d);
+        let mut cost = spend + self.voyage(co.hulls, d);
         let unit = if bought > 0 {
             spend / bought as f32
         } else {
@@ -927,7 +938,12 @@ impl Galaxy {
             .max(self.reserve(pay));
         let hired = (missing as f32).min(self.supply(wage));
         wages += hired * wage;
-        let crew = aboard as u32 + hired as u32;
+        let mut crew = aboard as u32 + hired as u32;
+        // And the rest it can train itself, as a realm would.
+        let trained = if train { seats as u32 - crew } else { 0 };
+        cost += trained as f32 * self.rules.train_cost;
+        wages += trained as f32 * wage;
+        crew += trained;
         let losses = if lent {
             0.0
         } else {
@@ -947,6 +963,7 @@ impl Galaxy {
             crew,
             wage,
             lent,
+            trained,
         }
     }
 
@@ -1285,19 +1302,21 @@ impl Galaxy {
         let mut affordable = false;
         for c in near {
             let offers = self.offers(t, f, r, self.companies[c].at as usize);
-            for (lent, size) in [
-                (true, 20),
-                (true, 40),
-                (true, 85),
-                (false, 30),
-                (false, 80),
-                (false, 200),
-                (false, 500),
+            for (lent, size, train) in [
+                (true, 20, false),
+                (true, 40, false),
+                (true, 85, false),
+                (true, 85, true),
+                (false, 30, false),
+                (false, 80, false),
+                (false, 200, false),
+                (false, 200, true),
+                (false, 500, false),
             ] {
                 if lent && own < size as f32 {
                     continue;
                 }
-                let q = self.quote(c, size, &offers, pos, pay, lent);
+                let q = self.quote(c, size, &offers, pos, pay, lent, train);
                 if q.hulls < MIN_SEND || q.crew == 0 || q.upfront + q.rate >= worth - base {
                     continue;
                 }
@@ -1413,7 +1432,15 @@ impl Galaxy {
         let land = if q.lent { 0 } else { q.hulls };
         let spent: f32 = offers_spend(offers, q.bought);
         self.books.bought += spent as f64;
-        self.books.flown += (q.cost - spent) as f64;
+        let schooling = q.trained as f32 * self.rules.train_cost;
+        self.books.trained += q.trained as u64;
+        self.books.flown += (q.cost - spent - schooling) as f64;
+        for _ in 0..q.trained {
+            let p = self.new_pilot();
+            self.companies[q.company]
+                .pilots
+                .push(Pilot { wage: q.wage, ..p });
+        }
         let co = &mut self.companies[q.company];
         co.crystals -= q.cost;
         // Its own hulls go in first; the rest stay aboard.
@@ -1647,8 +1674,15 @@ impl Galaxy {
                 let pos = self.systems[t].pos;
                 let none = super::realm::NONE;
                 let offers = self.offers(t, super::RAID, none, self.companies[c].at as usize);
-                for size in [30, 80, 200, 400] {
-                    let q = self.quote(c, size, &offers, pos, pay, false);
+                for (size, train) in [
+                    (30, false),
+                    (80, false),
+                    (80, true),
+                    (200, false),
+                    (200, true),
+                    (500, true),
+                ] {
+                    let q = self.quote(c, size, &offers, pos, pay, false, train);
                     if q.hulls < MIN_SEND || q.crew == 0 || q.cost + q.wages >= loot {
                         far = far.max(if q.hulls < MIN_SEND || q.crew == 0 {
                             1
