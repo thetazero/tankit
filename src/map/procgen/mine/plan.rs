@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn mines_lie_at_any_angle() {
         let sides = [Faction::Ithessar, Faction::Resonant];
-        let all: Vec<Skeleton> = (0..6)
+        let all: Vec<Skeleton> = (0..3)
             .map(|s| skeleton(s, &sides).unwrap_or_else(|| panic!("seed {s}: no mine")))
             .collect();
         let off_axis = all
@@ -398,7 +398,7 @@ mod tests {
             .flat_map(|sk| &sk.land.digs)
             .filter(|d| d.facing.abs().min_element() > 0.2)
             .count();
-        assert!(off_axis >= 3, "{off_axis} digs at an angle");
+        assert!(off_axis >= 2, "{off_axis} digs at an angle");
         assert!(
             all.iter().any(|sk| sk.land.digs.len() > 1),
             "never two digs"

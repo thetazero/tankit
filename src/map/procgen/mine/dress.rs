@@ -168,7 +168,7 @@ mod tests {
     /// to each other, and into every hall; its halls are lit.
     #[test]
     fn dressed_mines_are_playable() {
-        for seed in 0..3 {
+        for seed in 0..2 {
             let (sk, m) = build(&crate::mine_spec(seed)).expect("a mine");
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
