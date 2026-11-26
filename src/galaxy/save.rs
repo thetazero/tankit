@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::merc::{Company, Contract, Debt, Pilot, Pricing, RULES};
 use super::realm::{NONE, Realm};
-use super::{Galaxy, Offensive, REGION, Rules, SIDES, SiteKind};
+use super::{Galaxy, Offensive, PEOPLES, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
 
 /// The war every new pilot joins: one seed for everyone.
@@ -80,6 +80,9 @@ struct Saved {
     taken_at: Vec<u64>,
     #[serde(default)]
     rates: Option<[f32; 4]>,
+    /// Every planet's vault: its side, its realm, its crystal.
+    #[serde(default)]
+    vaults: Vec<(u8, u32, f32)>,
     /// The share of merc pilots in work lately.
     #[serde(default)]
     employment: Option<f32>,
@@ -389,6 +392,11 @@ impl Galaxy {
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
             taken_at: self.taken_at.clone(),
+            vaults: self
+                .vaults
+                .iter()
+                .map(|v| (v.side, v.realm, v.crystals))
+                .collect(),
             rates: Some([self.lose_new, self.lose_old, self.hull_rate, self.savings]),
             employment: Some(self.employment),
             unmet: self
@@ -424,8 +432,9 @@ impl Galaxy {
         anyhow::ensure!(
             s.owners.len() == g.sites.len()
                 && s.down.len() == g.sites.len()
-                && s.hulls.len() == g.systems.len() * SIDES
-                && s.tags.len() == g.systems.len() * SIDES,
+                && (s.hulls.len() == g.systems.len() * SIDES
+                    || s.hulls.len() == g.systems.len() * PEOPLES)
+                && s.tags.len() == s.hulls.len(),
             "saved for a different layout"
         );
         for (i, site) in g.sites.iter_mut().enumerate() {
@@ -448,13 +457,14 @@ impl Galaxy {
                 .all(|&t| t == NONE || (t as usize) < s.realms.len()),
             "hulls of no realm"
         );
+        // Older saves have only the peoples' sides.
+        let sides = s.hulls.len() / g.systems.len().max(1);
         for (i, sys) in g.systems.iter_mut().enumerate() {
-            for f in 0..SIDES {
-                sys.hulls[f] = whole(s.hulls[i * SIDES + f]);
-                sys.building[f] = s.building.get(i * SIDES + f).copied().unwrap_or(0.0);
+            for f in 0..sides {
+                sys.hulls[f] = whole(s.hulls[i * sides + f]);
+                sys.building[f] = s.building.get(i * sides + f).copied().unwrap_or(0.0);
             }
-            sys.realms
-                .copy_from_slice(&s.tags[i * SIDES..(i + 1) * SIDES]);
+            sys.realms[..sides].copy_from_slice(&s.tags[i * sides..(i + 1) * sides]);
             sys.held = [0; SIDES];
             for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
                 sys.held[site.owner as usize] += 1;
@@ -548,7 +558,7 @@ impl Galaxy {
                 companies.iter().all(|c| (c.at as usize) < systems
                     && c.contract
                         .as_ref()
-                        .is_none_or(|k| (k.realm as usize) < realms
+                        .is_none_or(|k| ((k.realm as usize) < realms || k.side as usize == super::RAID)
                             && (k.side as usize) < SIDES
                             && (k.target as usize) < systems)),
                 "a company nowhere, or working for nobody"
@@ -626,6 +636,16 @@ impl Galaxy {
         g.ended = s.ended;
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
+        if s.vaults.len() == g.vaults.len() {
+            for (v, x) in g.vaults.iter_mut().zip(&s.vaults) {
+                let realm = if (x.1 as usize) < g.realms.len() { x.1 } else { NONE };
+                *v = super::Vault {
+                    side: x.0.min(SIDES as u8 - 1),
+                    realm,
+                    crystals: x.2,
+                };
+            }
+        }
         g.update_share();
         g.refresh();
         Ok(g)

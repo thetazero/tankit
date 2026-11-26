@@ -31,7 +31,7 @@
 //! picked at random, and on a generated kind the one map its seed names
 //! (`SiteView::map_seed`): the site is one place, the same each visit.
 
-use super::{AT_WAR, Galaxy, SIDES, SiteKind};
+use super::{AT_WAR, Galaxy, PEOPLES, SIDES, SiteKind};
 use crate::faction::Faction;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
@@ -486,7 +486,7 @@ impl SiteView {
         match (self.kind, MISSIONS[self.mission].map_kind) {
             (SiteKind::Shield { damaged }, MapKind::ShieldSite(_)) => {
                 MapKind::ShieldSite(Generator {
-                    owner: Faction::ALL[self.owner],
+                    owner: Faction::side(self.owner),
                     condition: if damaged {
                         Condition::DAMAGED
                     } else {
@@ -519,13 +519,13 @@ impl Theater {
             mission: s.mission,
             map_kind: s.map_kind(),
             map_seed: s.map_seed,
-            factions: [Faction::ALL[self.employer], Faction::ALL[s.enemy]],
+            factions: [Faction::side(self.employer), Faction::side(s.enemy)],
         })
     }
 
     /// The sides in the war here (hulls or sites), most hulls first.
     pub fn sides(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = (0..SIDES)
+        let mut out: Vec<usize> = (0..PEOPLES)
             .filter(|&f| self.hulls[f] >= AT_WAR || self.held[f] > 0)
             .collect();
         out.sort_by_key(|&a| std::cmp::Reverse(self.hulls[a]));
@@ -585,7 +585,7 @@ impl Galaxy {
         }
         let present = self.present(s);
         let mut out = self.targets(s, f);
-        for g in (0..SIDES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
+        for g in (0..PEOPLES).filter(|&g| present[g] && self.hostile(f, g) && self.fighting(s, g)) {
             for t in self.targets(s, g) {
                 if self.sites[t].owner as usize == f && !out.contains(&t) {
                     out.push(t);
@@ -677,7 +677,7 @@ impl Galaxy {
                 out.dedup();
                 out
             }),
-            work: co.contract.map(|k| Work {
+            work: co.contract.filter(|k| k.side as usize != super::RAID).map(|k| Work {
                 side: k.side as usize,
                 realm: system_name(self.realms[k.realm as usize].seat as usize),
                 system: system_name(k.target as usize),
@@ -885,7 +885,7 @@ impl Galaxy {
     /// The theater aboard company `c` (an index into `companies`).
     fn aboard_company(&self, c: usize, rank: u32) -> Option<Theater> {
         let co = &self.companies[c];
-        let k = co.contract?;
+        let k = co.contract.filter(|k| k.side as usize != super::RAID)?;
         let (s, f) = (k.target as usize, k.side as usize);
         if self.commits(s, f).is_empty() {
             return None;
@@ -961,10 +961,10 @@ impl Galaxy {
                 attacker[t - sys.sites.0 as usize].get_or_insert(g);
             }
         }
-        let strongest = (0..SIDES)
+        let strongest = (0..PEOPLES)
             .filter(|&g| present[g] && self.hostile(f, g))
             .max_by_key(|&a| sys.hulls[a])
-            .unwrap_or((f + 1) % SIDES);
+            .unwrap_or((f + 1) % PEOPLES);
         self.site_range(s)
             .map(|i| {
                 let owner = self.sites[i].owner as usize;
@@ -1193,7 +1193,7 @@ mod tests {
                     );
                 }
                 for s in &committed {
-                    let sides = [Faction::ALL[t.employer], Faction::ALL[s.enemy]];
+                    let sides = [Faction::side(t.employer), Faction::side(s.enemy)];
                     let b = g
                         .muster_crew(t.system, &sides, Some(s.index))
                         .expect("a battle with your company in it");
@@ -1537,7 +1537,7 @@ mod tests {
             match (s.kind, s.map_kind()) {
                 (SiteKind::Shield { damaged }, MapKind::ShieldSite(made)) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
-                    assert_eq!(made.owner, Faction::ALL[s.owner]);
+                    assert_eq!(made.owner, Faction::side(s.owner));
                     let shape = if damaged {
                         Condition::DAMAGED
                     } else {

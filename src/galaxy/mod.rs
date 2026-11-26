@@ -95,8 +95,23 @@ use crate::rng::Rng;
 use merc::{Books, Company, Debt, Pilot};
 use realm::{NONE, Realm};
 
-/// The four warring sides (the Company holds no ground).
-pub const SIDES: usize = 4;
+/// The four warring peoples.
+pub const PEOPLES: usize = 4;
+/// Every side there can be in a system: the peoples, and a company fighting
+/// for itself (one to a system).
+pub const SIDES: usize = 5;
+/// That company's side.
+pub const RAID: usize = 4;
+
+/// A planet's vault: the crystal its mines have turned out and its realm
+/// hasn't spent. It changes hands only with the whole planet.
+#[derive(Clone, Copy, Debug)]
+pub struct Vault {
+    /// Whose it is: the side, and its realm (`NONE`: nobody's left to own it).
+    pub side: u8,
+    pub realm: u32,
+    pub crystals: f32,
+}
 
 /// Colonized systems in the war.
 pub const SYSTEMS: usize = 10_000;
@@ -441,6 +456,9 @@ pub struct Galaxy {
     pub(crate) lose_old: f32,
     /// Savings of retired pilots and dead ships, for new companies.
     pub(crate) savings: f32,
+    /// Every planet's vault, and each system's first.
+    pub vaults: Vec<Vault>,
+    pub(crate) vault_at: Vec<u32>,
     /// What a company has lately made a tick, on average; and what they
     /// were all worth last tick.
     pub(crate) profit: f32,
@@ -676,6 +694,8 @@ impl Galaxy {
             lose_new: 0.01,
             lose_old: 0.003,
             savings: 0.0,
+            vaults: Vec::new(),
+            vault_at: Vec::new(),
             profit: 0.0,
             worth_before: 0.0,
             hull_rate: rules.hull_cost,
@@ -708,7 +728,18 @@ impl Galaxy {
             g.systems[s].hulls[owner] =
                 (g.production(s)[owner] * 27.0).round() as u32;
         }
+        for s in 0..g.systems.len() {
+            g.vault_at.push(g.vaults.len() as u32);
+            for _ in 0..g.systems[s].planets {
+                g.vaults.push(Vault {
+                    side: g.systems[s].owner() as u8,
+                    realm: NONE,
+                    crystals: 0.0,
+                });
+            }
+        }
         g.form_realms();
+        g.fill_vaults();
         (g.splits, g.merges) = (0, 0);
         g.found_companies();
         g.update_share();
@@ -910,6 +941,8 @@ impl Galaxy {
     }
 
     fn produce(&mut self) {
+        self.fill_vaults();
+        let mut mined = vec![0.0f32; self.vaults.len()];
         let mut crystals = vec![0.0; self.realms.len()];
         let resonant = Faction::Resonant.index();
         let extra = |f: usize| if f == resonant { RESONANT_HULL_COST } else { 0.0 };
@@ -926,7 +959,12 @@ impl Galaxy {
                     if r == NONE {
                         continue;
                     }
-                    crystals[r as usize] += c;
+                    // A mine pays only its planet's vault's owner.
+                    let v = self.vault_at[s] as usize + site.planet as usize;
+                    if self.vaults[v].side as usize == f {
+                        crystals[r as usize] += c;
+                        mined[v] += c * (1.0 - self.rules.research);
+                    }
                     // A yard works while a hull's worth more to the realm
                     // than it costs, and it can pay for it.
                     let cost = hulls * (self.rules.hull_cost + extra(f));
@@ -972,6 +1010,97 @@ impl Galaxy {
                 self.savings += p.wallet;
             }
             self.free_pilots(r, left);
+        }
+        for (v, x) in self.vaults.iter_mut().zip(mined) {
+            v.crystals += x;
+        }
+        self.fill_vaults();
+    }
+
+    /// Each realm's crystal is in its planets' vaults: what it's spent since
+    /// comes out of them all alike, and what it's been paid goes in.
+    pub(crate) fn fill_vaults(&mut self) {
+        let mut sum = vec![0.0f64; self.realms.len()];
+        let mut count = vec![0u32; self.realms.len()];
+        for s in 0..self.systems.len() {
+            let a = self.vault_at[s] as usize;
+            for v in a..a + self.systems[s].planets as usize {
+                let vault = &mut self.vaults[v];
+                let here = self.systems[s].realms[vault.side as usize];
+                if here != NONE {
+                    vault.realm = here;
+                } else if vault.realm != NONE {
+                    let r = &self.realms[vault.realm as usize];
+                    if r.systems == 0 || r.faction != vault.side {
+                        vault.realm = NONE;
+                    }
+                }
+                if vault.realm != NONE {
+                    sum[vault.realm as usize] += vault.crystals as f64;
+                    count[vault.realm as usize] += 1;
+                }
+            }
+        }
+        for v in &mut self.vaults {
+            if v.realm == NONE {
+                continue;
+            }
+            let r = v.realm as usize;
+            let bank = self.realms[r].crystals.max(0.0) as f64;
+            v.crystals = if sum[r] > 1e-3 {
+                (v.crystals as f64 * bank / sum[r]) as f32
+            } else {
+                (bank / count[r] as f64) as f32
+            };
+        }
+    }
+
+    /// System `s`'s vaults.
+    pub fn vaults_of(&self, s: usize) -> &[Vault] {
+        let a = self.vault_at[s] as usize;
+        &self.vaults[a..a + self.systems[s].planets as usize]
+    }
+
+    /// If side `w` holds every site on `planet` of system `s` now, its vault
+    /// is theirs: the realm's, with the planet, or the raiding company's, who
+    /// takes the crystal and leaves the planet its owner's.
+    fn loot(&mut self, s: usize, planet: u8, w: usize) {
+        let (a, b) = self.systems[s].sites;
+        if self.sites[a as usize..b as usize]
+            .iter()
+            .any(|x| x.planet == planet && x.owner as usize != w)
+        {
+            return;
+        }
+        let v = self.vault_at[s] as usize + planet as usize;
+        let vault = self.vaults[v];
+        if vault.side as usize == w {
+            return;
+        }
+        let loot = vault.crystals.max(0.0);
+        if vault.realm != NONE {
+            let r = &mut self.realms[vault.realm as usize];
+            r.crystals = (r.crystals - loot).max(0.0);
+        }
+        self.captured += loot as f64;
+        if w == RAID {
+            self.vaults[v].crystals = 0.0;
+            self.books.raided += loot as f64;
+            if let Some(c) = self.companies.iter_mut().find(|c| {
+                c.contract
+                    .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
+            }) {
+                c.crystals += loot;
+            }
+            return;
+        }
+        let r = self.systems[s].realms[w];
+        self.vaults[v].side = w as u8;
+        self.vaults[v].realm = r;
+        if r != NONE {
+            self.realms[r as usize].crystals += loot;
+        } else {
+            self.vaults[v].crystals = 0.0;
         }
     }
 
@@ -1310,7 +1439,7 @@ impl Galaxy {
                 let gear = self.gear(s, f);
                 let lost = losses[f] / crate::economy::armor_factor(gear);
                 ledger::Predicted {
-                    faction: Faction::ALL[f].name().to_string(),
+                    faction: Faction::side(f).name().to_string(),
                     hulls: hulls[f],
                     gear,
                     fire: fire[f],
@@ -1341,7 +1470,7 @@ impl Galaxy {
             return out;
         }
         let level = self.gear(s, f);
-        let maker = Faction::ALL[f];
+        let maker = Faction::side(f);
         let parts: Vec<crate::economy::Part> = crate::economy::PARTS
             .into_iter()
             .filter(|p| p.maker() == maker)
@@ -1473,10 +1602,11 @@ impl Galaxy {
         sys.held[w] += 1;
         self.taken += 1;
         self.claim(s, w);
-        if loser != NONE && self.holder(s) != loser {
+        if loser != NONE && w != RAID && self.holder(s) != loser {
             self.fallen(s);
-            self.capture(loser, self.systems[s].realms[w]);
         }
+        let planet = self.sites[i].planet;
+        self.loot(s, planet, w);
         // An offensive rolls on from what it takes.
         let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
         if self.pushing(r, pos)
@@ -1523,18 +1653,6 @@ impl Galaxy {
     /// Ticks a side can expect to hold a world it takes (`new`), or has.
     pub(crate) fn hold_for(&self, new: bool) -> f32 {
         1.0 / if new { self.lose_new } else { self.lose_old }.max(0.001)
-    }
-
-    /// Realm `loser` lost a system to realm `by`, which captures the
-    /// system's share of its bank: all that's left, for its last.
-    fn capture(&mut self, loser: u32, by: u32) {
-        let realm = &mut self.realms[loser as usize];
-        let left = realm.systems.saturating_sub(realm.fell).max(1);
-        let loot = realm.crystals.max(0.0) / left as f32;
-        realm.fell += 1;
-        realm.crystals -= loot;
-        self.realms[by as usize].crystals += loot;
-        self.captured += loot as f64;
     }
 
     /// Up enemy shield generators on each planet of system `s`, as `f` sees them.
@@ -1589,7 +1707,7 @@ impl Galaxy {
         // A different people moves first each tick, starting at a different
         // system, so nobody always gets first pick.
         let mut order = [0, 1, 2, 3];
-        for i in (1..SIDES).rev() {
+        for i in (1..PEOPLES).rev() {
             order.swap(i, self.rng.index(i + 1));
         }
         self.stage();
@@ -1824,7 +1942,7 @@ fn settle(spots: &[Vec3], hearts: &[(Vec2, u8)]) -> Vec<u8> {
                 .unwrap_or(0);
             count[*o as usize] += 1;
         }
-        let fair = spots.len() as f32 / SIDES as f32;
+        let fair = spots.len() as f32 / PEOPLES as f32;
         for f in 0..SIDES {
             // A side with too much pulls in its borders, and vice versa.
             reach[f] += 60.0 * (1.0 - count[f] as f32 / fair).clamp(-1.0, 1.0);
@@ -1903,7 +2021,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
         if g.tick / every > printed {
             printed = g.tick / every;
             let names = Faction::ALL.map(|f| f.name());
-            let shares: Vec<String> = (0..SIDES)
+            let shares: Vec<String> = (0..PEOPLES)
                 .map(|f| {
                     format!(
                         "{} {:4.1}% {:3}",

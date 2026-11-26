@@ -207,7 +207,7 @@ impl Galaxy {
     /// it. The realm whose hulls are there does; if none are, the realm of `f`
     /// holding the nearest system within range; else a new one, seated here.
     pub(crate) fn claim(&mut self, s: usize, f: usize) {
-        if self.systems[s].realms[f] != NONE {
+        if f == super::RAID || self.systems[s].realms[f] != NONE {
             return;
         }
         let near = self

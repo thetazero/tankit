@@ -283,6 +283,11 @@ pub struct Debt {
 /// The mercenary trade, all told (for charts and tuning).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Books {
+    /// Raids companies set out on for themselves, those that got all there
+    /// was, and what they took.
+    pub raids: u64,
+    pub raids_won: u64,
+    pub raided: f64,
     pub signed: u64,
     /// Contracts that ended with the world taken, with the cap on losses
     /// reached, and otherwise (ran out of time, employer gone).
@@ -577,7 +582,7 @@ impl Galaxy {
     pub(crate) fn free_pilots(&mut self, r: usize, n: u32) {
         let realm = &self.realms[r];
         let half = realm.tier as f32 / 2.0;
-        let maker = crate::faction::Faction::ALL[realm.faction as usize];
+        let maker = crate::faction::Faction::side(realm.faction as usize);
         for _ in 0..n {
             let mut p = self.new_pilot();
             p.home = Some(r as u32);
@@ -795,7 +800,14 @@ impl Galaxy {
                 SiteKind::Shield { .. } => 0.0,
             })
             .sum();
-        income * self.hold_for(!own)
+        // And what's in the vaults, won or lost with the planets.
+        let vaults: f32 = self
+            .vaults_of(t)
+            .iter()
+            .filter(|v| (v.side as usize == f) == own)
+            .map(|v| v.crystals)
+            .sum();
+        income * self.hold_for(!own) + vaults
     }
 
     /// Hulls for sale to a company at system `from` working for realm `r`
@@ -966,11 +978,12 @@ impl Galaxy {
         // Its own side: the realm's gear (the mercs' is their own, but the
         // realm reckons by what it knows), the ground it holds here, and
         // its offensive's initiative.
-        let tier = self.realms[r as usize].tier;
+        let raid = r == super::realm::NONE;
+        let tier = if raid { 0 } else { self.realms[r as usize].tier };
         let mut pf = 1.0 + self.rules.home_ground * mine0 / total;
         // (an attack it launches is its offensive, if it's on none)
         if self.pushing(r, sys.pos)
-            || (!defend && self.realms[r as usize].offensive.is_none())
+            || (!raid && !defend && self.realms[r as usize].offensive.is_none())
         {
             pf *= 1.0 + self.rules.initiative;
         }
@@ -999,6 +1012,7 @@ impl Galaxy {
         for g in (0..SIDES).filter(|&g| g != f) {
             let e = sys.realms[g];
             if e == super::realm::NONE {
+                crew_e += self.crewed(t, g).1 as f32;
                 continue;
             }
             let (m, crewed) = self.crewed(t, g);
@@ -1332,9 +1346,11 @@ impl Galaxy {
             expected_ticks,
         } = terms;
         // Sign: the company buys and goes, and the realm owes it.
-        self.lend(r, q.company, q.upfront);
-        let owed = q.upfront;
-        self.settle_up(r, q.company, owed);
+        if r != super::realm::NONE {
+            self.lend(r, q.company, q.upfront);
+            let owed = q.upfront;
+            self.settle_up(r, q.company, owed);
+        }
         let mut short = q.bought;
         for o in offers {
             if short == 0 {
@@ -1387,7 +1403,11 @@ impl Galaxy {
         if self.systems[t].realms[f] == super::realm::NONE {
             self.systems[t].realms[f] = r;
         }
-        self.books.signed += 1;
+        if r == super::realm::NONE {
+            self.books.raids += 1;
+        } else {
+            self.books.signed += 1;
+        }
         self.books.defenses += defend as u64;
         // It takes on pilots for its hulls before the fight.
         if q.lent && let Some(k) = &mut self.companies[q.company].contract {
@@ -1502,6 +1522,115 @@ impl Galaxy {
         cr as u32
     }
 
+    /// Company `c` breaks off its raid `k`: what it held goes back to whoever
+    /// held the planet before it came, and what's left of its hulls aboard.
+    fn leave(&mut self, c: usize, k: Contract) {
+        let t = k.target as usize;
+        let back = k.field.min(self.systems[t].hulls[super::RAID]);
+        self.systems[t].hulls[super::RAID] = 0;
+        self.moves[t][super::RAID].released += back;
+        self.merc_moves[t][super::RAID].released += back;
+        let (a, b) = self.systems[t].sites;
+        for i in a as usize..b as usize {
+            if self.sites[i].owner as usize != super::RAID {
+                continue;
+            }
+            let v = self.vault_at[t] as usize + self.sites[i].planet as usize;
+            let f = self.vaults[v].side;
+            self.sites[i].owner = f;
+            let sys = &mut self.systems[t];
+            sys.held[super::RAID] -= 1;
+            sys.held[f as usize] += 1;
+            let r = self.vaults[v].realm;
+            if sys.realms[f as usize] == super::realm::NONE && r != super::realm::NONE {
+                sys.realms[f as usize] = r;
+            }
+            self.claim(t, f as usize);
+        }
+        let co = &mut self.companies[c];
+        co.hulls += back;
+        co.contract = None;
+        co.lost_before = 0;
+        co.idle_since = self.tick;
+    }
+
+    /// Idle companies look for a rich world too weakly held, and raid it if
+    /// the battle maths says what's in its vaults beats what it'd cost: the
+    /// flight, the hulls, the crew. Yours doesn't (yet).
+    fn raid(&mut self) {
+        if self.pays_tick != self.tick {
+            self.pays_tick = self.tick;
+            self.tally_pays();
+            self.pay = self.realm_pay();
+        }
+        let pay = self.pay;
+        for c in 0..self.companies.len() {
+            let co = &self.companies[c];
+            if co.contract.is_some()
+                || Some(co.id) == self.crew
+                || co.crystals <= 0.0
+                || !(self.tick + co.id as u64).is_multiple_of(super::THINK)
+            {
+                continue;
+            }
+            let here = self.systems[co.at as usize].pos;
+            // The richest few it knows of in range.
+            let mut seen: Vec<(f32, usize)> = (0..self.systems.len())
+                .filter(|&s| {
+                    let sys = &self.systems[s];
+                    sys.pos.distance(here) <= self.rules.merc_range
+                        && sys.hulls[super::RAID] == 0
+                        && sys.held[super::RAID] == 0
+                })
+                .map(|s| (self.vaults_of(s).iter().map(|v| v.crystals).sum::<f32>(), s))
+                .filter(|x| x.0 > 5.0)
+                .map(|(x, s)| {
+                    // ... for their defenders, as far as one can see.
+                    let h: u32 = self.systems[s].hulls.iter().sum();
+                    (x / (50.0 + h as f32), s)
+                })
+                .collect();
+            seen.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let mut best: Option<(f32, Quote, usize, f32, f32, Vec<Offer>)> = None;
+            for &(_, t) in seen.iter().take(6) {
+                let loot: f32 = self.vaults_of(t).iter().map(|v| v.crystals).sum();
+                let pos = self.systems[t].pos;
+                let none = super::realm::NONE;
+                let offers = self.offers(t, super::RAID, none, self.companies[c].at as usize);
+                for size in [30, 80, 200, 400] {
+                    let q = self.quote(c, size, &offers, pos, pay, false);
+                    if q.hulls < MIN_SEND || q.crew == 0 || q.cost + q.wages >= loot {
+                        continue;
+                    }
+                    let (hulls, crew) = (q.hulls as f32, q.crew as f32);
+                    let fc = self.forecast(t, super::RAID, none, 0.0, hulls, crew, 0.0, false);
+                    let ticks = fc.ticks * self.trust_ticks;
+                    // What it brings back is still worth something.
+                    let cost = q.cost + q.wages * ticks;
+                    if cost > self.companies[c].crystals {
+                        continue;
+                    }
+                    let net = loot * fc.share.powi(2) - cost;
+                    if net > 0.0 && best.as_ref().is_none_or(|b| net > b.0) {
+                        best = Some((net, q, t, loot * fc.share, fc.ticks, offers.clone()));
+                    }
+                }
+            }
+            if let Some((_, q, t, expected, expected_ticks, offers)) = best {
+                let terms = Terms {
+                    t,
+                    f: super::RAID,
+                    r: super::realm::NONE,
+                    defend: false,
+                    worth: expected,
+                    expected,
+                    expected_ticks,
+                };
+                self.sign(q, &offers, &terms);
+            }
+        }
+    }
+
     /// Each realm in a company's debt pays some of it back, out of its income.
     fn collect_debts(&mut self) {
         let mut debts = std::mem::take(&mut self.debts);
@@ -1552,6 +1681,19 @@ impl Galaxy {
             co.loss_rate += RATE_FADE * (lost_now as f32 / fielded - co.loss_rate);
             co.kill_rate += RATE_FADE * (co.kills as f32 / fielded - co.kill_rate);
             co.kills = 0;
+            if f == super::RAID {
+                // Raiding for itself: off once it's got what's there, or it's
+                // lost most of what it brought, or it's taking too long.
+                let got = self.vaults_of(t).iter().all(|v| v.crystals < 1.0);
+                let spent = k.field * 4 < k.committed;
+                if got || spent || self.tick >= k.signed + self.rules.merc_term as u64 {
+                    self.books.raids_won += got as u64;
+                    self.leave(c, k);
+                } else {
+                    self.companies[c].contract = Some(k);
+                }
+                continue;
+            }
             // The tick's bill, on the realm's account.
             k.billed += k.rate;
             self.books.billed += k.rate as f64;
@@ -1662,6 +1804,7 @@ impl Galaxy {
             co.lost_before = 0;
             co.idle_since = self.tick;
         }
+        self.raid();
         self.seek_work();
         self.reckon_profit();
         if self.tick.is_multiple_of(self.rules.politics.max(1) as u64) {

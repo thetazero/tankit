@@ -389,11 +389,11 @@ fn describe_allocation(b: &Battle) -> String {
             if mercs > 0 {
                 format!(
                     "{} {a} hulls ({mercs} mercs', {} companies)",
-                    Faction::ALL[f].name(),
+                    Faction::side(f).name(),
                     b.hired[t].len()
                 )
             } else {
-                format!("{} {a} hulls", Faction::ALL[f].name())
+                format!("{} {a} hulls", Faction::side(f).name())
             }
         })
         .collect::<Vec<_>>()
@@ -407,7 +407,7 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
     for &f in &b.sides {
         out += &format!(
             "\n  {:<9} hulls here {:6.1} -> {:6.1} (lost {:4.1} all told)  sites {} -> {}  shields up {} -> {}",
-            Faction::ALL[f].name(),
+            Faction::side(f).name(),
             s.before.hulls[f],
             s.after.hulls[f],
             s.lost[f],
@@ -427,7 +427,7 @@ pub fn describe(b: &Battle, s: &Settled) -> String {
         if s.merc_lost[f] > 0 {
             out += &format!(
                 "\n  the {}' mercs lost {:.0} of those",
-                Faction::ALL[f].name(),
+                Faction::side(f).name(),
                 s.merc_lost[f]
             );
         }
@@ -1039,7 +1039,7 @@ mod merc_tests {
             .max_by_key(|&a| g.systems[t].hulls[a])
             .unwrap();
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 5, 21);
         let b = g
             .muster_crew(t, &m.factions, None)
@@ -1092,7 +1092,7 @@ mod merc_tests {
             held: 0,
             worth: 0.0,
         });
-        (g, t, [Faction::ALL[f], Faction::ALL[e]])
+        (g, t, [Faction::side(f), Faction::side(e)])
     }
 
     /// Fighting for a site under its holder's shield, the attacker (mercs
@@ -1324,7 +1324,7 @@ mod gear_tests {
             p.known = veteran;
         }
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
         let b = g
             .muster_crew(t, &m.factions, None)
@@ -1389,14 +1389,14 @@ mod gear_tests {
             p.known = salt;
         }
         let mut map = crate::map::Map::saltmarket();
-        map.factions = vec![Faction::ALL[f], Faction::ALL[enemy]];
+        map.factions = vec![Faction::side(f), Faction::side(enemy)];
         let mut m = crate::combat::Match::new(map, 0, 11, 21);
         let b = g
             .muster_crew(t, &m.factions, None)
             .expect("your company's battle");
         let b = begin(&g, &mut m, b);
         assert!(!b.pilots.is_empty());
-        let realm_hulls = Faction::ALL[f].hulls();
+        let realm_hulls = Faction::side(f).hulls();
         let mut seen = 0;
         for i in 1..m.fighters.len() {
             let tank = &m.world.tanks[i];
