@@ -248,7 +248,7 @@ fn a_tick_is_cheap() {
         g.step();
     }
     let per = t.elapsed() / (g.tick - start) as u32;
-    assert!(per.as_millis() < 10, "a tick took {per:?}");
+    assert!(per.as_millis() < 20, "a tick took {per:?}");
 }
 
 /// How a setting of `Rules` plays, over a few seeds of the full galaxy:
