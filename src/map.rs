@@ -655,6 +655,8 @@ pub struct Map {
     pub crystals: Vec<Crystal>,
     /// Glowing ribbons laid on the ground (a river of plasma). Visual only.
     pub glow_paths: Vec<GlowPath>,
+    /// The arena, if it isn't the whole square.
+    pub band: Option<std::sync::Arc<Band>>,
     /// Plasma rivers.
     pub rivers: std::sync::Arc<Vec<river::River>>,
     /// Beams of plasma held on for good (a borer cutting rock): drawn with
@@ -767,6 +769,33 @@ impl Beam {
         let d = self.to - self.from;
         let t = ((p - self.from).dot(d) / d.length_squared()).clamp(0.0, 1.0);
         p.distance(self.from + d * t)
+    }
+}
+
+/// An arena that's a strip along a winding line (and round a few places
+/// off it), rather than a square.
+#[derive(Clone, Debug)]
+pub struct Band {
+    pub line: Vec<Vec2>,
+    /// How far it reaches off the line.
+    pub reach: f32,
+    /// Places it bulges out round, and how far.
+    pub bulges: Vec<(Vec2, f32)>,
+}
+
+impl Band {
+    /// How far past its edge `p` is (negative: inside).
+    pub fn out(&self, p: Vec2) -> f32 {
+        let mut best = f32::MAX;
+        for w in self.line.windows(2) {
+            let d = w[1] - w[0];
+            let t = ((p - w[0]).dot(d) / d.length_squared().max(1e-6)).clamp(0.0, 1.0);
+            best = best.min(p.distance_squared(w[0] + d * t));
+        }
+        self.bulges
+            .iter()
+            .map(|(c, r)| p.distance(*c) - r)
+            .fold(best.sqrt() - self.reach, f32::min)
     }
 }
 
@@ -1110,6 +1139,7 @@ impl Map {
             cores: Vec::new(),
             crystals: Vec::new(),
             glow_paths: Vec::new(),
+            band: None,
             rivers: Default::default(),
             beams: Vec::new(),
             lights: Vec::new(),
@@ -1152,11 +1182,18 @@ impl Map {
         }
     }
 
+    /// How far past the arena's edge `p` is, m (negative: inside).
+    pub fn out(&self, p: Vec2) -> f32 {
+        match &self.band {
+            Some(b) => b.out(p),
+            None => (-p).max(p - Vec2::splat(self.size)).max_element(),
+        }
+    }
+
     /// Well past the arena's edge (12 m, so it rarely comes up): out of the
     /// fight (see `combat`).
     pub fn is_out(&self, p: Vec3) -> bool {
-        let m = 12.0;
-        p.x < -m || p.z < -m || p.x > self.size + m || p.z > self.size + m
+        self.out(Vec2::new(p.x, p.z)) > 12.0
     }
 
     /// Every point a little inside the arena's edge (`inset` m in, every

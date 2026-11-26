@@ -1352,7 +1352,7 @@ impl Map {
     /// out. Visual only.
     fn distant_block(&mut self, rng: &mut Rng, lot: &OBox, sk: &Skeleton) {
         let p = lot.center;
-        let out = (-p).max(p - Vec2::splat(sk.size)).max_element();
+        let out = sk.out(p);
         let broken = rng.f32() < 0.3;
         // Built square to the map round its middle, then turned onto the lot.
         let toward = lot.local_point(sk.center()).signum();
