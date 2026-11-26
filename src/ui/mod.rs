@@ -9,6 +9,7 @@
 // Segments, pips and the combat colour are ready for hull and ammo, which the sim doesn't have yet.
 #![allow(dead_code)]
 
+pub mod design;
 pub mod emblem;
 pub mod font;
 pub mod widgets;
@@ -65,6 +66,7 @@ pub struct TextStyle {
     pub color: Rgba,
     /// Keep lowercase letters (sentence-case body text); otherwise all caps.
     pub lower: bool,
+    pub face: font::Face,
 }
 
 impl TextStyle {
@@ -75,6 +77,7 @@ impl TextStyle {
         weight: 1.0,
         color: theme::DIM,
         lower: false,
+        face: font::Face::Inter,
     };
     /// Readout numbers.
     pub fn value(size: f32) -> TextStyle {
@@ -84,6 +87,7 @@ impl TextStyle {
             weight: 1.2,
             color: theme::FG,
             lower: false,
+            face: font::Face::Inter,
         }
     }
 }
@@ -301,6 +305,20 @@ impl Painter {
         push_rect(&mut self.verts, min * s, size * s, color);
     }
 
+    /// A filled convex polygon; no halo, not clipped.
+    pub fn poly(&mut self, pts: &[Vec2], color: Rgba) {
+        let s = self.scale;
+        let v = |p: Vec2| UiVertex {
+            pos: [p.x * s, p.y * s],
+            color,
+            uv: NO_UV,
+            sdf: NO_SDF,
+        };
+        for w in pts.windows(2).skip(1) {
+            self.verts.extend([v(pts[0]), v(w[0]), v(w[1])]);
+        }
+    }
+
     /// A rect showing the thumbnail atlas between `uv_min` and `uv_max`,
     /// tinted by `tint`, no halo. Clipped (and its UVs with it) like a rect.
     pub fn image(&mut self, min: Vec2, size: Vec2, uv_min: Vec2, uv_max: Vec2, tint: Rgba) {
@@ -377,7 +395,7 @@ impl Painter {
             Align::Right => pos.x - w,
         };
         let f = font::font();
-        let em = style.size / f.cap_height;
+        let em = style.size / f.cap(style.face);
         let baseline = pos.y + style.size;
         let s = self.scale;
         // Heavier styles thicken the strokes a touch; the halo is a soft dark rim around them.
@@ -483,13 +501,13 @@ fn text_halo(
 /// advances, kerning and tracking. Characters the font lacks count as spaces.
 fn layout<'a>(text: &str, style: &TextStyle) -> Vec<(f32, &'a font::Glyph)> {
     let f = font::font();
-    let em = style.size / f.cap_height;
+    let em = style.size / f.cap(style.face);
     let mut out = Vec::new();
     let mut x = 0.0;
     let mut prev: Option<&font::Glyph> = None;
     for c in text.chars() {
-        let Some(g) = f.glyph_as(c, style.lower) else {
-            x += f.space * em + style.tracking;
+        let Some(g) = f.glyph_in(style.face, c, style.lower) else {
+            x += f.space(style.face) * em + style.tracking;
             prev = None;
             continue;
         };
@@ -616,14 +634,14 @@ pub fn hull_pips(
 /// Width of `text` in logical px (no trailing tracking).
 pub fn measure(text: &str, style: &TextStyle) -> f32 {
     let f = font::font();
-    let em = style.size / f.cap_height;
+    let em = style.size / f.cap(style.face);
     let mut w = 0.0;
     let mut prev: Option<&font::Glyph> = None;
     let mut n = 0;
     for c in text.chars() {
         n += 1;
-        let Some(g) = f.glyph_as(c, style.lower) else {
-            w += f.space * em + style.tracking;
+        let Some(g) = f.glyph_in(style.face, c, style.lower) else {
+            w += f.space(style.face) * em + style.tracking;
             prev = None;
             continue;
         };

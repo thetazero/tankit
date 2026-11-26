@@ -7,6 +7,7 @@ mod audio;
 mod bay;
 mod bench;
 mod binds;
+mod cluster_view;
 mod combat;
 mod economy;
 mod faction;
@@ -1490,7 +1491,13 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         (g.crew, t)
     };
     match args.screen {
-        None | Some(Screen::Menu) => profile.ship = war().0,
+        None | Some(Screen::Menu) => {
+            let mut g = galaxy::Galaxy::warmed(galaxy::save::SEED);
+            g.await_work_staying(prefer, profile.rank().level, 100);
+            profile.ship = g.crew;
+            menu.set_cluster(cluster_view::Cluster::of(&g));
+            menu.advance(shot.time);
+        }
         Some(Screen::Missions | Screen::Site) => {
             menu.input(menu::Nav::Select);
             let (crew, t) = war();
@@ -1697,7 +1704,10 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             sys.show(&mut renderer, theater_view::on_screen(t, menu.transfer()));
             theater_view::scene(&sys, t, menu.transfer(), shot.time, w / h)
         }
-        None => scene::build(&game.world, &tanks, &art, camera),
+        None => match menu.cluster() {
+            Some((c, time)) => cluster_view::scene(c, time, w / h),
+            None => scene::build(&game.world, &tanks, &art, camera),
+        },
     };
     frame.ui = match &summary {
         Some(t) => {
