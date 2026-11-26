@@ -79,11 +79,6 @@ impl Rank {
         let i = ((self.level - 1) / RANKS_PER_TITLE) as usize;
         TITLES[i.min(TITLES.len() - 1)]
     }
-
-    /// "RANK 7 · HIRELING".
-    pub fn label(&self) -> String {
-        format!("RANK {} · {}", self.level, self.title())
-    }
 }
 
 /// What's on disk. Parts are stored by name so the file stays readable;
@@ -522,7 +517,6 @@ mod tests {
     /// run out, the climb getting longer as it goes.
     #[test]
     fn ranks_are_many_and_titled() {
-        assert_eq!(Rank::of(0).label(), "RANK 1 · RECRUIT");
         assert_eq!(Rank::of(0).title(), Rank::of(399).title());
         let top = TITLES.len() as u32 * RANKS_PER_TITLE;
         assert!(top >= 50);

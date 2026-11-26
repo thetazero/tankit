@@ -216,6 +216,14 @@ pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
     pool
 }
 
+/// The missions an outpost on a `class` world can be fought with (#547):
+/// those on none of the maps production sites are fought on.
+pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
+    let mut pool = for_sites(class);
+    pool.retain(|&i| !matches!(MISSIONS[i].map_kind, MapKind::Foundry(..) | MapKind::Mine));
+    pool
+}
+
 /// The missions a shield generator on a `class` world can be fought with: a
 /// Hold on the shield city, or on a desert world perhaps the shield desert.
 pub fn for_shields(class: crate::galaxy::theater::Class) -> Vec<usize> {
@@ -250,6 +258,7 @@ mod tests {
             assert!(!for_foundries(class).is_empty(), "{class:?}");
             assert!(!for_sites(class).is_empty(), "{class:?}");
             assert!(!for_mines(class).is_empty(), "{class:?}");
+            assert!(!for_outposts(class).is_empty(), "{class:?}");
             assert!(!for_shields(class).is_empty(), "{class:?}");
         }
         // Cities among them (two-sided, as every site's battle is).

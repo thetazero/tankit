@@ -167,6 +167,8 @@ pub enum LandmarkKind {
     Arch,
     /// A shield generator out in the open, on a graded pad.
     Generator,
+    /// Open ground, nothing on it.
+    Open,
 }
 
 /// The big thing in the middle: round, `radius` across, standing on the

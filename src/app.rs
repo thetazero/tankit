@@ -1763,7 +1763,7 @@ impl App {
                                 )
                                 .verts,
                         );
-                        let pause = self.pause.draw(&self.profile, self.game.renown, w, h);
+                        let pause = self.pause.draw(&self.profile, w, h);
                         ui.extend(pause.verts);
                         // The garage, opened from the box, fades the box out under it.
                         let layer = self
