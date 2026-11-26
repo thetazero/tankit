@@ -422,6 +422,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         edges: Vec::new(),
         decos: Vec::new(),
         repair_spots: Vec::new(),
+        relief: super::relief::Relief::new(rng, size),
     };
 
     if plan.form == Form::OldTown {
@@ -484,7 +485,38 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         }
     }
     sk.repair_spots = repairs;
+    level(&mut sk);
     sk
+}
+
+/// Levels the ground under everything that stands on it, the biggest last:
+/// a plaza's level wins over a house's plot by it.
+fn level(sk: &mut Skeleton) {
+    let mut relief = std::mem::take(&mut sk.relief);
+    for l in &sk.lots {
+        relief.level_box(&l.footprint, 0.6, 3.0);
+    }
+    for d in &sk.decos {
+        relief.level_round(d.at, d.kind.reach() * 0.8, 4.0);
+    }
+    for s in &sk.spans {
+        relief.level_round(s.at, s.opening + 7.0, 10.0);
+    }
+    for b in &sk.bases {
+        let court = OBox {
+            center: b.middle(),
+            half: Vec2::splat(b.size * 0.5),
+            ..OBox::default()
+        };
+        relief.level_box(&court, 3.0, 18.0);
+    }
+    for pl in &sk.platforms {
+        relief.level_round(pl.center, pl.half * 1.2 + pl.ramp, 24.0);
+    }
+    if sk.platforms.is_empty() {
+        relief.level_round(sk.heart, 24.0, 16.0);
+    }
+    sk.relief = relief;
 }
 
 /// Where the avenues meet each edge (counter-clockwise from the south), as

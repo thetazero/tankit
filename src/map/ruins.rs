@@ -591,6 +591,7 @@ pub(super) fn building_in(
         if in_ramp_path(c) {
             continue;
         }
+        let start = f.map.oboxes.len();
         // A touch taller than the walls it sits in, so their tops never coincide.
         let h = cut(c).min(top_y + 0.9) + 0.07;
         let (lo, hi) = (
@@ -601,6 +602,13 @@ pub(super) fn building_in(
             f.put_broken(rng, lo, hi, color * 0.92, wall);
         } else {
             f.put(lo, hi, color * 0.92, true, wall);
+        }
+        // Worn no deeper than it stands proud of the walls: cut back further,
+        // its edges land on their faces and fight with them.
+        for o in &mut f.map.oboxes[start..] {
+            if o.chip > 0.04 {
+                o.chip = 0.04;
+            }
         }
     }
 
