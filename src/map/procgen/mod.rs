@@ -31,6 +31,7 @@ pub mod depot;
 pub mod desert;
 pub mod foundry;
 mod imperium;
+mod ithessar;
 pub mod land;
 mod memo;
 pub mod mine;
@@ -101,8 +102,7 @@ impl Look {
     pub fn of(founder: Faction) -> Look {
         match founder {
             Faction::Resonant => Look::Resonant,
-            // (Not yet: so far theirs is an Imperium city with a river.)
-            Faction::Ithessar => Look::Imperium,
+            Faction::Ithessar => Look::Ithessar,
             Faction::Imperium | Faction::Uthenn | Faction::Company => Look::Imperium,
         }
     }
@@ -173,7 +173,8 @@ fn style(look: Look) -> &'static dyn Style {
         Look::Imperium => &imperium::Imperium,
         Look::Resonant => &resonant::Resonant,
         // Nobody else's city yet: any other look is dressed as theirs.
-        Look::Uthenn | Look::Ithessar => &imperium::Imperium,
+        Look::Ithessar => &ithessar::Ithessar,
+        Look::Uthenn => &imperium::Imperium,
     }
 }
 
@@ -210,8 +211,10 @@ fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
     for attempt in 0..16u64 {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
         let sk = city::skeleton(&mut rng, spec.sides.len(), plan);
+        let whole = sk.bases.len() >= spec.sides.len() && (!plan.river || !sk.landmarks.is_empty());
         match check::playable(&sk.greybox(&spec.sides)) {
-            Ok(()) => return sk,
+            Ok(()) if whole => return sk,
+            Ok(()) => {}
             Err(why) => log::debug!("map seed {} attempt {attempt}: {why}", spec.seed),
         }
         last = Some(sk);
@@ -564,9 +567,12 @@ mod tests {
 
     /// Every seed in every style of city there is.
     fn cities() -> impl Iterator<Item = (u64, Look)> {
-        [Look::Imperium, Look::Resonant]
+        [Look::Imperium, Look::Resonant, Look::Ithessar]
             .into_iter()
+            // (The Ithessar's are the biggest: not unoptimized.)
+            .filter(|&l| l != Look::Ithessar || !cfg!(debug_assertions))
             .flat_map(|look| SEEDS.map(|s| (s, look)))
+            .filter(|&(s, l)| l != Look::Ithessar || s < 2)
     }
 
     fn spec(seed: u64) -> Spec {
@@ -710,7 +716,7 @@ mod tests {
     #[test]
     fn fillers_keep_to_their_envelopes() {
         for (seed, look) in cities() {
-            let sk = skeleton(&spec(seed));
+            let sk = skeleton(&crate::city_spec(seed, look));
             let (m, claims) = build(&crate::city_spec(seed, look));
             for (claim, range) in claims {
                 for o in &m.oboxes[range] {
@@ -767,7 +773,7 @@ mod tests {
     #[test]
     fn the_avenues_are_open_to_the_middle() {
         for (seed, look) in cities() {
-            let sk = skeleton(&spec(seed));
+            let sk = skeleton(&crate::city_spec(seed, look));
             let m = map(&crate::city_spec(seed, look));
             for a in sk.avenues() {
                 let (dir, side) = (a.dir(), Vec2::new(-a.dir().y, a.dir().x));
@@ -779,8 +785,7 @@ mod tests {
                     for across in [-1.0, 0.0, 1.0] {
                         let p = a.from + dir * r + side * across * (a.clear - 1.0);
                         // (The heap across the edge is the edge's.)
-                        let edge = p.min(Vec2::splat(sk.size) - p).min_element();
-                        if edge < 11.0 {
+                        if sk.out(p) > -11.0 {
                             continue;
                         }
                         // (Once: the ground's slow to work out.)
@@ -959,17 +964,20 @@ mod tests {
     #[test]
     #[ignore = "a probe"]
     fn where_greats() {
-        for seed in 0..12 {
-            let sk = skeleton(&spec(seed));
-            for l in &sk.landmarks {
-                let (c, g) = (l.center, sk.ground(l.center));
-                println!("great {seed} {:?} {:.0} {:.0} {g:.1}", l.kind, c.x, c.y);
+        for look in [Look::Imperium, Look::Ithessar] {
+            for seed in 0..10 {
+                let sk = skeleton(&crate::city_spec(seed, look));
+                for l in &sk.landmarks {
+                    let (c, g) = (l.center, sk.ground(l.center));
+                    println!(
+                        "great {seed} {:?} {:.0} {:.0} {g:.1} {look:?}",
+                        l.kind, c.x, c.y
+                    );
+                }
             }
         }
     }
 
-    /// Every bridge over a plasma river is clear of it all along, and can
-    /// be driven from one end to the other; and there are enough of them.
     #[test]
     #[cfg_attr(
         debug_assertions,

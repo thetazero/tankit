@@ -871,6 +871,18 @@ mod tests {
         ]);
     }
 
+    /// An Ithessar city, on its own: they're the biggest.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn an_ithessar_city_hardly_z_fights() {
+        use crate::map::procgen::Look;
+        let kind = crate::MapKind::City(Look::Ithessar, Default::default());
+        hardly_z_fight([("ithessar city", crate::make_map(kind, 0))]);
+    }
+
     /// The same for other sides' cities, and each side's generator in one
     /// (a test of their own: the suite runs the two side by side).
     #[test]
