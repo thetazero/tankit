@@ -27,8 +27,11 @@ pub struct Skeleton {
     pub streets: Vec<Street>,
     /// Open ground among the buildings, with a deco in the middle.
     pub squares: Vec<Square>,
-    /// The thing in the middle the fight is about: the Hold site.
-    pub landmark: Landmark,
+    /// The great buildings, if there are any; the first is the Hold site.
+    /// Each stands on the platform of the same number.
+    pub landmarks: Vec<Landmark>,
+    /// What the fight is about: the Hold site.
+    pub heart: Vec2,
     /// One per side, in side order.
     pub bases: Vec<Base>,
     pub lots: Vec<Lot>,
@@ -75,6 +78,10 @@ pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 pub enum Rank {
     /// A wide way from the middle out to the edge: the long sight lines.
     Avenue,
+    /// An ordinary street between buildings.
+    Lane,
+    /// A road's run beyond the arena's edge, only seen.
+    Beyond,
 }
 
 /// A straight street from `from` to `to`.
@@ -89,6 +96,8 @@ pub struct Street {
     #[cfg_attr(not(test), allow(dead_code))]
     pub clear: f32,
     pub rank: Rank,
+    /// It runs out through the arena's edge (else it ends inside).
+    pub out: bool,
 }
 
 impl Street {
@@ -156,6 +165,14 @@ impl Base {
     }
 }
 
+/// What a medium structure is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CivicKind {
+    Courtyard,
+    Market,
+    Terrace,
+}
+
 /// What a lot holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LotKind {
@@ -167,6 +184,8 @@ pub enum LotKind {
     Raised,
     /// A lot that's been flattened: heaps to drive between.
     Rubble,
+    /// A medium structure (see `civic`).
+    Civic(CivicKind),
     /// A building far out past the edge, only ever seen from afar.
     Distant,
 }
@@ -254,7 +273,7 @@ pub const LOT_SPILL: f32 = 4.0;
 
 impl Skeleton {
     pub fn center(&self) -> Vec2 {
-        self.landmark.center
+        self.heart
     }
 
     /// Ground height before anything's heaped on it.
@@ -265,9 +284,25 @@ impl Skeleton {
             .fold(0.0, f32::max)
     }
 
-    /// The main platform (the one under the landmark).
-    pub fn plaza(&self) -> &Platform {
-        &self.platforms[0]
+    /// How far `p` is off every plaza's slope (negative: on one).
+    pub fn off_plazas(&self, p: Vec2) -> f32 {
+        self.platforms
+            .iter()
+            .map(|pl| pl.sdf(p) - pl.ramp)
+            .fold(f32::MAX, f32::min)
+    }
+
+    /// The stretch of street `s` clear of every plaza, from and to along it.
+    pub fn off_plaza_span(&self, s: &Street, margin: f32) -> (f32, f32) {
+        let on = |t: f32| self.off_plazas(s.from + s.dir() * t) < margin;
+        let (mut a, mut b) = (0.0, s.len());
+        while a < b && on(a) {
+            a += 1.0;
+        }
+        while b > a && on(b) {
+            b -= 1.0;
+        }
+        (a, b)
     }
 
     pub fn avenues(&self) -> impl Iterator<Item = &Street> {
@@ -277,18 +312,13 @@ impl Skeleton {
     /// Ground kept open for streets and set pieces: no lot may cover it.
     /// (The courts are cleared out of the city once it's laid out.)
     pub fn reserved(&self, p: Vec2) -> bool {
-        let street = self.streets.iter().any(|s| s.distance(p) < s.half + 7.0);
-        // An avenue runs on out past the edge, out of sight.
-        let vista = self.avenues().any(|a| {
-            let (d, q) = (a.dir(), p - a.to);
-            q.dot(d) > 0.0 && q.perp_dot(d).abs() < a.half + 7.0
-        });
-        let plaza = self.plaza().sdf(p) < self.plaza().ramp + 10.0;
+        let street = self.streets.iter().any(|s| s.distance(p) < s.half + 0.4);
+        let plaza = self.off_plazas(p) < 4.0;
         let square = self
             .squares
             .iter()
             .any(|s| s.center.distance(p) < s.radius + 4.0);
-        street || vista || plaza || square
+        street || plaza || square
     }
 
     /// A blank map the size of the arena, for `factions`, with the
@@ -300,9 +330,37 @@ impl Skeleton {
         map.bases = Map::no_bases(factions);
         map.open_spots = Vec::new();
         map.spawn_yaw = None;
-        map.hold_site = Some(self.landmark.center);
+        map.hold_site = Some(self.heart);
         map.repair_spots = self.repair_spots.clone();
         map
+    }
+
+    /// How much of the ground at `p` is road, 0 to 1.
+    pub fn road(&self, p: Vec2) -> f32 {
+        self.streets
+            .iter()
+            .map(|s| 1.0 - smoothstep(s.half - 0.8, s.half + 1.2, s.distance(p)))
+            .fold(0.0, f32::max)
+            .max(
+                self.squares
+                    .iter()
+                    .map(|q| 1.0 - smoothstep(q.radius - 1.0, q.radius + 1.5, q.center.distance(p)))
+                    .fold(0.0, f32::max),
+            )
+    }
+
+    /// Paints `t`'s ground: `road` (multiplied into its color) down the
+    /// streets.
+    pub fn paint(&self, t: &mut Terrain, road: Vec3) {
+        t.tint = (0..t.nz)
+            .flat_map(|iz| (0..t.nx).map(move |ix| (ix, iz)))
+            .map(|(ix, iz)| {
+                let p = t.origin + Vec2::new(ix as f32, iz as f32) * t.cell;
+                // Pale along the kerb, so the road's edge reads.
+                let k = self.road(p);
+                Vec3::ONE.lerp(road, k) * (1.0 + 0.7 * k * (1.0 - k))
+            })
+            .collect();
     }
 
     /// The ground under the arena: the platforms, and `heaps` on them.
@@ -341,7 +399,12 @@ impl Skeleton {
         for i in 0..n {
             for j in 0..n {
                 let p = Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
-                if clear(map, p) && p.distance(self.landmark.center) > self.landmark.radius + 2.0 {
+                if clear(map, p)
+                    && self
+                        .landmarks
+                        .iter()
+                        .all(|l| p.distance(l.center) > l.radius + 2.0)
+                {
                     open.push(p);
                 }
             }
@@ -374,38 +437,39 @@ impl Skeleton {
         };
         let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
         // The landmark: a ring wall, open at its doors and where it fell.
-        let lm = &self.landmark;
-        let g = self.ground(lm.center);
-        let segs = 40;
-        for k in 0..segs {
-            let a = (k as f32 + 0.5) / segs as f32 * std::f32::consts::TAU;
-            let dir = Vec2::new(a.cos(), a.sin());
-            if lm.doors.iter().any(|d| d.dot(dir) > 0.985) {
-                continue;
+        for lm in &self.landmarks {
+            let g = self.ground(lm.center);
+            let segs = 40;
+            for k in 0..segs {
+                let a = (k as f32 + 0.5) / segs as f32 * std::f32::consts::TAU;
+                let dir = Vec2::new(a.cos(), a.sin());
+                if lm.doors.iter().any(|d| d.dot(dir) > 0.985) {
+                    continue;
+                }
+                let h = if lm.fallen.is_some_and(|f| f.dot(dir) > 0.73) {
+                    3.0
+                } else {
+                    16.0
+                };
+                let half = Vec2::new(lm.radius * std::f32::consts::PI / segs as f32 * 1.02, 1.3);
+                put(
+                    &mut map,
+                    lm.center + dir * (lm.radius - 1.3),
+                    -a + std::f32::consts::FRAC_PI_2,
+                    half,
+                    (g, g + h),
+                    Vec3::new(0.7, 0.6, 0.3),
+                );
             }
-            let h = if lm.fallen.is_some_and(|f| f.dot(dir) > 0.73) {
-                3.0
-            } else {
-                16.0
-            };
-            let half = Vec2::new(lm.radius * std::f32::consts::PI / segs as f32 * 1.02, 1.3);
             put(
                 &mut map,
-                lm.center + dir * (lm.radius - 1.3),
-                -a + std::f32::consts::FRAC_PI_2,
-                half,
-                (g, g + h),
+                lm.center,
+                0.0,
+                Vec2::splat(1.6),
+                (g, g + 8.0),
                 Vec3::new(0.7, 0.6, 0.3),
             );
         }
-        put(
-            &mut map,
-            lm.center,
-            0.0,
-            Vec2::splat(1.6),
-            (g, g + 8.0),
-            Vec3::new(0.7, 0.6, 0.3),
-        );
         for lot in &self.lots {
             let f = &lot.footprint;
             let (h, c) = match lot.kind {
@@ -413,6 +477,7 @@ impl Skeleton {
                 LotKind::Small => (6.0, Vec3::new(0.55, 0.55, 0.6)),
                 LotKind::Raised => (0.0, Vec3::new(0.35, 0.45, 0.6)),
                 LotKind::Rubble => (1.2, Vec3::new(0.5, 0.42, 0.35)),
+                LotKind::Civic(_) => (2.0, Vec3::new(0.6, 0.5, 0.5)),
                 LotKind::Distant => (16.0, Vec3::new(0.38, 0.38, 0.4)),
             };
             match lot.kind {
@@ -434,7 +499,7 @@ impl Skeleton {
                     put(&mut map, f.center, f.yaw, f.half * 0.8, (0.0, h), c);
                     map.oboxes.last_mut().unwrap().solid = false;
                 }
-                LotKind::Distant => {
+                LotKind::Distant | LotKind::Civic(_) => {
                     put(&mut map, f.center, f.yaw, f.half, (0.0, h), c);
                     map.oboxes.last_mut().unwrap().solid = false;
                 }

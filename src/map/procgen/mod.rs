@@ -25,6 +25,7 @@
 
 pub mod check;
 pub mod city;
+mod civic;
 pub mod desert;
 pub mod foundry;
 mod imperium;
@@ -116,9 +117,13 @@ pub struct Spec {
 pub(in crate::map) trait Style {
     /// The ground between its buildings.
     fn ground(&self) -> glam::Vec3;
+    /// Its roads' color, multiplied into the ground's.
+    fn road(&self) -> glam::Vec3;
+    /// What it builds medium structures of.
+    fn stone(&self) -> civic::Stone;
     /// The Hold site's name on the HUD, with `piece` in the middle.
     fn hold_name(&self, piece: Centerpiece) -> &'static str;
-    fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift>;
+    fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift>;
     /// Paving and the like on a platform's top.
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, rng: &mut Rng);
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, rng: &mut Rng);
@@ -155,9 +160,11 @@ pub enum Claim {
 /// greybox passes `check`.
 pub fn skeleton(spec: &Spec) -> Skeleton {
     let mut last = None;
-    for attempt in 0..8u64 {
+    for attempt in 0..16u64 {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
-        let sk = city::skeleton(&mut rng, spec.sides.len());
+        let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
+        let plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
+        let sk = city::skeleton(&mut rng, spec.sides.len(), &plan);
         match check::playable(&sk.greybox(&spec.sides)) {
             Ok(()) => return sk,
             Err(why) => log::debug!("map seed {} attempt {attempt}: {why}", spec.seed),
@@ -184,40 +191,42 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let mut map = sk.blank(&spec.sides);
     map.atmosphere = city::atmosphere(&mut rng);
-    map.hold_name = st.hold_name(spec.centerpiece);
+    map.hold_name = if sk.landmarks.is_empty() {
+        "SQUARE"
+    } else {
+        st.hold_name(spec.centerpiece)
+    };
     map.planet = Some((spec.seed, planet(spec.biome)));
     let mut claims = Vec::new();
-    let mut drifts = match spec.centerpiece {
-        Centerpiece::Monument => st.landmark(&mut map, &sk, &mut rng),
-        Centerpiece::ShieldGenerator(owner, condition) => {
-            // The city round it is the same as round the monument, block
-            // for block: the generator draws on its own numbers, and the
-            // city's are drawn on past the monument as if it stood here.
-            st.landmark(&mut Map::empty(sk.size), &sk, &mut rng);
-            let mut own = Rng::new(spec.seed ^ 0x5E1D_0000);
-            let mark = shield::Mark::of(&map);
-            let drifts = shield::build(&mut map, &sk, &mut own, owner);
-            let base = sk.ground(sk.landmark.center);
-            shield::ruin(
-                &mut map,
-                &mut own,
-                &sk.landmark,
-                base,
-                &mark,
-                owner,
-                condition,
-            );
-            drifts
+    let mut drifts = Vec::new();
+    for (k, lm) in sk.landmarks.iter().enumerate() {
+        match spec.centerpiece {
+            Centerpiece::ShieldGenerator(owner, condition) if k == 0 => {
+                // The city round it is the same as round the monument, block
+                // for block: the generator draws on its own numbers, and the
+                // city's are drawn on past the monument as if it stood here.
+                st.landmark(&mut Map::empty(sk.size), &sk, lm, &mut rng);
+                let mut own = Rng::new(spec.seed ^ 0x5E1D_0000);
+                let mark = shield::Mark::of(&map);
+                drifts.extend(shield::build(&mut map, &sk, &mut own, owner));
+                let base = sk.ground(lm.center);
+                shield::ruin(&mut map, &mut own, lm, base, &mark, owner, condition);
+            }
+            _ => drifts.extend(st.landmark(&mut map, &sk, lm, &mut rng)),
         }
-    };
+    }
     for (k, lot) in sk.lots.iter().enumerate() {
         let start = map.oboxes.len();
-        drifts.extend(st.lot(&mut map, &sk, lot, &mut rng));
+        match lot.kind {
+            LotKind::Civic(kind) => civic::build(&mut map, &mut rng, lot, kind, st.stone()),
+            _ => drifts.extend(st.lot(&mut map, &sk, lot, &mut rng)),
+        }
         claims.push((Claim::Lot(k), start..map.oboxes.len()));
     }
     let mut terrain = sk.terrain(|p| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max));
     terrain.color = st.ground();
     terrain.material = crate::render::material::Material::Concrete;
+    sk.paint(&mut terrain, st.road());
     map.terrain = Some(terrain);
     for p in &sk.platforms {
         st.platform(&mut map, &sk, p, &mut rng);
@@ -242,6 +251,9 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         st.edge(&mut map, &sk, e, &mut rng);
     }
     st.beyond(&mut map, &sk, &mut rng);
+    if let Some(t) = &mut map.scenery_terrain {
+        sk.paint(t, st.road());
+    }
     st.finish(&mut map);
     map.drop_tiny_hitboxes();
     map.separate_coplanar_faces();
@@ -685,7 +697,7 @@ mod tests {
             assert_eq!(m.factions, crate::map::DEFAULT_SIDES.to_vec());
             assert_eq!(m.bases.len(), 2);
             if let Err(why) = check::playable(&m) {
-                panic!("seed {seed}: {why}");
+                panic!("seed {seed} {look:?}: {why}");
             }
             assert!(
                 m.open_spots.len() > 100,
@@ -706,16 +718,14 @@ mod tests {
         let sk: Vec<Skeleton> = SEEDS.iter().map(|&s| skeleton(&spec(s))).collect();
         for (i, a) in sk.iter().enumerate() {
             for b in &sk[i + 1..] {
-                let same = a.size == b.size
-                    && a.landmark.center == b.landmark.center
-                    && a.lots.len() == b.lots.len();
+                let same = a.size == b.size && a.heart == b.heart && a.lots.len() == b.lots.len();
                 assert!(!same, "two seeds laid out the same city");
             }
         }
         // And the same seed, the same city.
         let again = skeleton(&spec(SEEDS[1]));
         assert_eq!(again.lots.len(), sk[1].lots.len());
-        assert_eq!(again.landmark.center, sk[1].landmark.center);
+        assert_eq!(again.heart, sk[1].heart);
     }
 
     /// Along the edge, never a long way without a building or something
@@ -748,7 +758,7 @@ mod tests {
                     t += 0.5;
                 }
             }
-            for a in sk.avenues() {
+            for a in sk.avenues().filter(|a| a.out) {
                 assert!(
                     sk.edges.iter().any(|e| e.kind == EdgeKind::Blockade
                         && (a.to - e.start).perp_dot(e.along).abs() < 0.01
@@ -877,19 +887,27 @@ mod tests {
             let m = map(&crate::city_spec(seed, look));
             for a in sk.avenues() {
                 let (dir, side) = (a.dir(), Vec2::new(-a.dir().y, a.dir().x));
-                let mut r = sk.landmark.precinct + 4.0;
-                while r < a.len() - 8.0 {
+                // From plaza to plaza, or to the heap at the edge.
+                let (t0, t1) = sk.off_plaza_span(a, -10.0);
+                let t1 = if a.out { t1 - 8.0 } else { t1 };
+                let mut r = t0;
+                while r < t1 {
                     for across in [-1.0, 0.0, 1.0] {
                         let p = a.from + dir * r + side * across * (a.clear - 1.0);
+                        // (The heap across the edge is the edge's.)
+                        let edge = p.min(Vec2::splat(sk.size) - p).min_element();
+                        if edge < 11.0 {
+                            continue;
+                        }
                         assert!(
                             !m.oboxes.iter().any(|o| {
                                 let (y0, _) = o.y_range();
-                                o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
+                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
                             }),
                             "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {:?}",
                             m.oboxes.iter().find(|o| {
                                 let (y0, _) = o.y_range();
-                                o.solid && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
+                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
                             })
                         );
                     }
@@ -911,10 +929,12 @@ mod tests {
         for (k, owner) in Faction::ALL.into_iter().enumerate() {
             // One seed each (a different one for each side): building a
             // city takes seconds in a debug build.
-            let seed = SEEDS[k];
+            // (Seeds whose plain city has a great building: an old town's has
+            // none, so the generator's city is another.)
+            let seed = [0, 1, 3, 4][k];
             let plain = skeleton(&spec(seed));
             let sk = skeleton(&crate::shield_city_spec(seed, owner));
-            assert_eq!(sk.landmark.center, plain.landmark.center);
+            assert_eq!(sk.heart, plain.heart);
             assert_eq!(sk.lots.len(), plain.lots.len());
             let (m, our_claims) = build(&crate::shield_city_spec(seed, owner));
             let what = format!("{owner:?} seed {seed}");
@@ -935,13 +955,13 @@ mod tests {
                 }
             }
             assert_eq!(m.hold_name, "GENERATOR");
-            assert_eq!(m.hold_site, Some(sk.landmark.center));
+            assert_eq!(m.hold_site, Some(sk.heart));
             if let Err(why) = check::playable(&m) {
                 panic!("{what}: {why}");
             }
             assert!(m.open_spots.len() > 100, "{what}");
             assert_eq!(m.vistas.len(), 2, "{what}");
-            let lm = &sk.landmark;
+            let lm = &sk.landmarks[0];
             let g = sk.ground(lm.center);
             assert!(
                 m.lights.iter().any(|l| {
@@ -975,20 +995,76 @@ mod tests {
         }
     }
 
+    /// Four seeds in a row are four forms, and there are cities of every
+    /// size and density.
+    #[test]
+    fn cities_vary() {
+        use super::city::Plan;
+        let plans: Vec<Plan> = (0..64).map(|s| Plan::of(s, 2, false)).collect();
+        let forms: std::collections::HashSet<_> = plans[..4].iter().map(|p| p.form).collect();
+        assert_eq!(forms.len(), 4);
+        let extents: std::collections::HashSet<_> = plans.iter().map(|p| p.extent).collect();
+        let densities: std::collections::HashSet<_> = plans.iter().map(|p| p.density).collect();
+        assert_eq!((extents.len(), densities.len()), (3, 3));
+        // A generator always has a great building's place to stand in.
+        for seed in 0..8 {
+            let spec = crate::shield_city_spec(seed, Faction::Uthenn);
+            assert!(!skeleton(&spec).landmarks.is_empty(), "seed {seed}");
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn sweep_cities() {
+        for seed in 0..24 {
+            for look in [Look::Imperium, Look::Resonant] {
+                let spec = crate::city_spec(seed, look);
+                let sk = skeleton(&spec);
+                let m = build(&spec).0;
+                let r = check::playable(&m);
+                let lm = sk.landmarks.first();
+                let mut reach = String::new();
+                if let Some(lm) = lm {
+                    let nav = crate::ai::nav::NavGrid::build(&m);
+                    for d in [0.0, 6.0, 10.0, 16.0, 20.0, 24.0, 28.0, 36.0, 44.0, 60.0] {
+                        let ok: Vec<u8> = lm
+                            .doors
+                            .iter()
+                            .map(|q| {
+                                let p = lm.center + *q * d;
+                                let b = m.bases[0][0];
+                                !nav.path(b, p).is_empty() as u8
+                            })
+                            .collect();
+                        reach += &format!(" {d}:{ok:?}");
+                    }
+                }
+                println!(
+                    "{seed} {look:?} {:?} spots {} repairs {} {r:?}{}",
+                    super::city::Plan::of(seed, 2, false),
+                    m.open_spots.len(),
+                    m.repair_spots.len(),
+                    if r.is_err() { reach } else { String::new() }
+                );
+            }
+        }
+    }
+
     /// The plaza's slope is gentle enough to drive up anywhere.
     #[test]
     fn the_plaza_slope_is_drivable() {
         for seed in SEEDS {
             let sk = skeleton(&spec(seed));
-            let pl = sk.plaza();
-            for k in 0..16 {
-                let a = k as f32 / 16.0 * std::f32::consts::TAU;
-                let dir = Vec2::new(a.cos(), a.sin());
-                let mut prev = sk.ground(pl.center);
-                for r in 1..(pl.half as i32 * 2) {
-                    let h = sk.ground(pl.center + dir * r as f32);
-                    assert!((prev - h).abs() < 0.25, "seed {seed}: plaza edge too steep");
-                    prev = h;
+            for pl in &sk.platforms {
+                for k in 0..16 {
+                    let a = k as f32 / 16.0 * std::f32::consts::TAU;
+                    let dir = Vec2::new(a.cos(), a.sin());
+                    let mut prev = sk.ground(pl.center);
+                    for r in 1..(pl.half as i32 * 2) {
+                        let h = sk.ground(pl.center + dir * r as f32);
+                        assert!((prev - h).abs() < 0.25, "seed {seed}: plaza edge too steep");
+                        prev = h;
+                    }
                 }
             }
         }
