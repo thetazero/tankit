@@ -1290,8 +1290,9 @@ mod tests {
             .unwrap();
         g.unmet[near] = 5.0;
         // And contracts pay well enough for the fare.
-        g.books.signed = 1;
-        g.books.upfront = 1000.0;
+        for c in &mut g.companies {
+            c.earned = 1000.0;
+        }
         assert!(g.seek_work() >= 1);
         assert_eq!(g.crew, Some(id));
         let c = g.crew_company().unwrap();

@@ -454,9 +454,8 @@ struct Quote {
     cost: f32,
     upfront: f32,
     rate: f32,
-    /// Of the rate (before its margin): wages, and hulls lost.
+    /// Of the rate (before its margin): its wages.
     wages: f32,
-    losses: f32,
     /// Pilots it reckons it'll have, and what it'd pay one at T0.
     crew: u32,
     wage: f32,
@@ -978,7 +977,6 @@ impl Galaxy {
             upfront: cost * up,
             rate: (wages + losses + kills) * up,
             wages,
-            losses,
             crew,
             wage,
             lent,

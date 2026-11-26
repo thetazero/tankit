@@ -162,15 +162,9 @@ pub struct Rules {
     /// are a pocket, cut off from the rest: once an enemy borders it, the
     /// enemy goes for it.
     pub pocket: u32,
-    /// ... or until this many ticks pass without taking a site.
-    pub stall: u32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
     pub blitz: u32,
-    /// Share of a quiet system's spare hulls brought up a tick...
-    pub bring_up: f32,
-    /// ... spending at most this many ticks of crystal income a tick on it.
-    pub tempo: f32,
     /// A realm keeps at least this fraction of a quiet system's hulls home.
     pub keep: f32,
     /// How far from its seat a realm can rule, light years: holdings past
@@ -250,10 +244,7 @@ impl Default for Rules {
             home_ground: 0.3,
             take: 0.3,
             pocket: 20,
-            stall: 30,
             blitz: 2,
-            bring_up: 0.5,
-            tempo: 0.5,
             keep: 0.3,
             reach: 800.0,
             fold: 12,
@@ -503,17 +494,6 @@ pub struct Galaxy {
 
 /// Ticks between a realm's looks for somewhere to push.
 const THINK: u64 = 10;
-
-/// A realm pushing into one stretch of the front: it attacks only there
-/// (and into enemy pockets), until its crystals run low or the push stalls.
-#[derive(Clone, Copy, Debug)]
-pub struct Offensive {
-    /// Where it's aimed, and (as it's launched; not saved) at what system.
-    pub at: Vec3,
-    pub target: usize,
-    /// The last tick it took a site.
-    pub gained: u64,
-}
 
 /// One tick's numbers, for charts and tests.
 #[derive(Clone, Copy, Debug, Default)]
@@ -830,16 +810,6 @@ impl Galaxy {
         }
     }
 
-    /// An offensive ends when it stalls; `consider` starts them.
-    fn plan(&mut self) {
-        let (tick, stall) = (self.tick, self.rules.stall as u64);
-        for realm in &mut self.realms {
-            if realm.offensive.is_some_and(|o| tick > o.gained + stall) {
-                realm.offensive = None;
-            }
-        }
-    }
-
     /// Run the whole galaxy forward to its next battle: one tick, or, if
     /// that leaves nowhere at war, on through the quiet until somewhere is
     /// (the player is always posted to a war, so quiet ticks pass unseen).
@@ -894,7 +864,6 @@ impl Galaxy {
         self.reckon_holds();
         self.update_share();
         self.update_supply();
-        self.plan();
         self.send();
         settled
     }
@@ -1561,14 +1530,6 @@ impl Galaxy {
         }
         let planet = self.sites[i].planet;
         self.loot(s, planet, w);
-        // An offensive rolls on from what it takes.
-        let (pos, r) = (self.systems[s].pos, self.systems[s].realms[w]);
-        if r != NONE
-            && let Some(o) = &mut self.realms[r as usize].offensive
-        {
-            o.gained = self.tick;
-            o.at = pos;
-        }
     }
 
     /// System `s` changed hands: the sooner worlds do, the less one's worth.
@@ -1670,7 +1631,6 @@ impl Galaxy {
         for i in (1..PEOPLES).rev() {
             order.swap(i, self.rng.index(i + 1));
         }
-        self.stage();
         let offset = self.rng.index(n);
         for f in order {
             for i in 0..n {
@@ -1707,58 +1667,6 @@ impl Galaxy {
         }
         // Crews hired to fly their employer's hulls have them.
         self.lend_hulls();
-    }
-
-    /// Each realm on an offensive brings hulls up toward it: every quiet
-    /// system of its own sends some of its spare hulls one jump on, to its
-    /// own system nearest the offensive's aim (paying the FTL).
-    fn stage(&mut self) {
-        let mut moves: Vec<(usize, usize, usize, f32)> = Vec::new();
-        for r in 0..self.realms.len() {
-            let Some(o) = self.realms[r].offensive else {
-                continue;
-            };
-            let f = self.realms[r].faction as usize;
-            let first = moves.len();
-            let mut cost = 0.0;
-            for &s in self.territory(r) {
-                let s = s as usize;
-                let here = self.systems[s].pos.distance(o.at);
-                if self.spare[s][f] < MIN_SEND {
-                    continue;
-                }
-                let next = self
-                    .neighbors(s)
-                    .filter(|&(t, _)| self.holder(t) == r as u32)
-                    .map(|(t, d)| (t, d, self.systems[t].pos.distance(o.at)))
-                    .filter(|&(_, _, there)| there < here)
-                    .min_by(|a, b| a.2.total_cmp(&b.2));
-                if let Some((t, d, _)) = next {
-                    let m = self.spare[s][f] as f32 * self.rules.bring_up;
-                    cost += m * d / FTL_RANGE * self.rules.ftl_cost;
-                    moves.push((f, s, t, m));
-                }
-            }
-            // Bring up only what this tick's budget pays for, from everywhere alike.
-            let realm = &mut self.realms[r];
-            let budget = (self.rules.tempo * realm.income)
-                .min(realm.crystals)
-                .max(0.0);
-            let afford = if cost > budget { budget / cost } else { 1.0 };
-            for mv in &mut moves[first..] {
-                mv.3 *= afford;
-            }
-            realm.crystals -= cost * afford;
-        }
-        for (f, s, t, m) in moves {
-            // Whole hulls go.
-            let m = (m as u32).min(self.spare[s][f]);
-            self.spare[s][f] -= m;
-            self.systems[s].hulls[f] -= m;
-            self.systems[t].hulls[f] += m;
-            self.moves[s][f].left += m;
-            self.moves[t][f].arrived += m;
-        }
     }
 
     /// Should realm `r` (of side `f`) send hulls to system `t`, hire for it,
@@ -1885,13 +1793,6 @@ impl Galaxy {
         self.systems[t].hulls[f] += moved;
         self.moves[t][f].arrived += moved;
         self.systems[t].realms[f] = r;
-        if !ours && self.realms[r as usize].offensive.is_none() {
-            self.realms[r as usize].offensive = Some(Offensive {
-                target: t,
-                at: self.systems[t].pos,
-                gained: self.tick,
-            });
-        }
     }
 
     /// The pilots realm `r` would have for `own` hulls in one fight, sharing
@@ -2014,7 +1915,6 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
                 })
                 .collect();
             let hulls: f32 = c.hulls.iter().sum();
-            let pushing = g.living().filter(|(_, r)| r.offensive.is_some()).count();
             // Realms' gear tiers (#438): lowest, median, highest.
             let mut tiers: Vec<u8> = g.living().map(|(_, r)| r.tier).collect();
             tiers.sort();
@@ -2042,7 +1942,7 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
             };
             let tiers = format!("{tiers} pilots {}/{}", pilot(0.5), pilot(1.0));
             println!(
-                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  pushing {pushing:3}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
+                "tick {:6}  {}  at war {:4.1}%  sent {:4} shields {:4} taken {:4}  hulls {:8.0}  splits {} merges {}  pockets {}  vaults {:.0}  companies {} on contract {} worth {:.0}  tiers {tiers}",
                 g.tick,
                 shares.join("  "),
                 c.at_war * 100.0,

@@ -23,7 +23,7 @@
 
 use glam::Vec3;
 
-use super::{Galaxy, NEIGHBORS, Offensive, SIDES};
+use super::{Galaxy, NEIGHBORS, SIDES};
 
 /// No realm.
 pub const NONE: u32 = u32::MAX;
@@ -41,8 +41,6 @@ pub struct Realm {
     pub crystals: f32,
     /// Its crystal income last tick.
     pub income: f32,
-    /// Its offensive, if it's on one.
-    pub offensive: Option<Offensive>,
     /// The tick it was founded (broke away, or the war's start).
     pub founded: u64,
     /// Systems it holds (updated each tick); 0 for a realm that's gone.
@@ -82,7 +80,6 @@ impl Realm {
             seat,
             crystals: 0.0,
             income: 0.0,
-            offensive: None,
             founded: tick,
             systems: 0,
             tier: 0,
@@ -343,7 +340,6 @@ impl Galaxy {
             self.realms[r].systems = count[r].max(tagged[r] as u32);
             self.realms[r].fell = 0;
             if !tagged[r] {
-                self.realms[r].offensive = None;
                 self.free.push(r as u32);
                 continue;
             }

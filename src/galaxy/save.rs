@@ -6,12 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use glam::{Vec2, Vec3};
+use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use super::merc::{Company, Contract, Debt, Pilot, Pricing, RULES};
 use super::realm::{NONE, Realm};
-use super::{Galaxy, Offensive, PEOPLES, REGION, Rules, SIDES, SiteKind};
+use super::{Galaxy, PEOPLES, REGION, Rules, SIDES, SiteKind};
 use crate::rng::Rng;
 
 /// The war every new pilot joins: one seed for everyone.
@@ -293,8 +293,6 @@ struct SavedRealm {
     crystals: f32,
     income: f32,
     founded: u64,
-    /// Where its offensive is aimed, and the last tick it took a site.
-    offensive: Option<([f32; 3], u64)>,
     /// Its gear tier and research toward the next (#438).
     #[serde(default)]
     tier: u8,
@@ -350,7 +348,6 @@ impl Galaxy {
                     crystals: r.crystals,
                     income: r.income,
                     founded: r.founded,
-                    offensive: r.offensive.map(|o| (o.at.to_array(), o.gained)),
                     tier: r.tier,
                     research: r.research,
                     pilots: Some(r.pilots),
@@ -498,11 +495,6 @@ impl Galaxy {
                 hull_use: r.senses.map_or(0.0, |x| x[3]),
                 crystals: r.crystals,
                 income: r.income,
-                offensive: r.offensive.map(|(at, gained)| Offensive {
-                    target: r.seat as usize,
-                    at: Vec3::from_array(at),
-                    gained,
-                }),
                 tier: r.tier.min(crate::economy::MAX_LEVEL),
                 research: r.research,
                 ..Realm::new(r.faction, r.seat, r.founded)
