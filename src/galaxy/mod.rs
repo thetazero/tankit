@@ -1885,25 +1885,31 @@ impl Galaxy {
                 }
             }
         }
-        // Or with a company, going in with all it can pay to move.
-        let with = if best.1 > 0.0 {
-            pool as f32 * best.1
+        // Or with a company, going in with all it can pay to move (nothing,
+        // if that's too little to send).
+        let sends = if best.1 > 0.0 {
+            best.1
+        } else if all >= MIN_SEND as f32 {
+            afford
         } else {
-            all
+            0.0
         };
+        let with = pool as f32 * sends;
+        // What it's to beat: what it'd do alone, its flight not counted as
+        // that's paid either way; or staying, its flight then a cost.
         let base = if best.1 > 0.0 {
-            stay + best.0
+            stay + best.0 + cost_all * best.1
         } else {
-            stay + cost_all * afford
+            stay + cost_all * sends
         };
         let help = plan(with, self.pilots_for(r, have + late + with));
-        let start = if fresh { slowest } else { 0 };
+        let start = if fresh && with > 0.0 { slowest } else { 0 };
         if realm.hires
             && (attacked || pool >= MIN_SEND)
             && self.hire(t, f, r, help, start, base)
             && best.1 == 0.0
         {
-            best.1 = afford;
+            best.1 = sends;
         }
         if best.1 * (pool as f32) < MIN_SEND as f32 {
             return;
