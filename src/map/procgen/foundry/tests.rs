@@ -246,6 +246,7 @@ fn bots_fight_through_the_foundry() {
 fn plans_play_and_some_cross() {
     use crate::map::procgen::crossing::Kind;
     let (mut bridges, mut tunnels, mut big, mut lots) = (0, 0, 0, 0);
+    let (mut railed, mut spurs) = (0, 0);
     for seed in 0..24 {
         let sp = spec(seed, LOOKS[seed as usize % 4]);
         let sk = works_plan(&sp);
@@ -253,6 +254,8 @@ fn plans_play_and_some_cross() {
             panic!("seed {seed}: {why}");
         }
         let has = |k: Kind| sk.crossings.iter().any(|c| c.kind == k) as i32;
+        railed += !sk.rails.is_empty() as i32;
+        spurs += sk.rails.len().saturating_sub(1);
         bridges += has(Kind::Bridge);
         tunnels += has(Kind::Tunnel);
         use crate::map::procgen::skeleton::LotKind;
@@ -263,6 +266,9 @@ fn plans_play_and_some_cross() {
             .count();
         lots += sk.lots.len();
     }
-    eprintln!("of 24: {bridges} with bridges, {tunnels} with tunnels; {big} big, {lots} parts");
+    eprintln!(
+        "of 24: {bridges} with bridges, {tunnels} with tunnels; {big} big, {lots} parts; {railed} railed, {spurs} spurs"
+    );
+    assert!(railed >= 22, "{railed} of 24 have a railway");
     assert!(bridges > 0 && tunnels > 0, "{bridges} {tunnels}");
 }

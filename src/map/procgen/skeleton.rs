@@ -45,6 +45,8 @@ pub struct Skeleton {
     pub repair_spots: Vec<Vec2>,
     /// Where roads cross valleys and ridges.
     pub crossings: Vec<super::crossing::Crossing>,
+    /// Railway lines, each along its bends (past the edge, where it runs out).
+    pub rails: Vec<Vec<Vec2>>,
 }
 
 /// Raised ground: a rounded square, flat on top, sloping down over `ramp`
@@ -473,6 +475,56 @@ impl Skeleton {
         })
     }
 
+    /// Puts down the railways' track: rails on sleepers, over the ground or
+    /// a bridge's deck. Nothing that stops a tank.
+    pub fn lay_rails(&self, map: &mut Map) {
+        let y = |p: Vec2| {
+            let deck = self
+                .crossings
+                .iter()
+                .filter(|c| c.kind == super::crossing::Kind::Bridge && c.distance(p) < c.half)
+                .map(|c| c.top);
+            deck.fold(self.ground(p), f32::max)
+        };
+        for line in &self.rails {
+            for w in line.windows(2) {
+                let len = w[0].distance(w[1]);
+                let d = (w[1] - w[0]) / len.max(1e-3);
+                let yaw = d.x.atan2(d.y);
+                let n = (len / 1.6).round().max(1.0) as i32;
+                for k in 0..n {
+                    let p = w[0] + d * len * (k as f32 + 0.5) / n as f32;
+                    let h = y(p);
+                    map.oboxes.push(OBox {
+                        center: p,
+                        yaw,
+                        half: Vec2::new(1.4, 0.18),
+                        y0: h - 0.3,
+                        y1: h + 0.08,
+                        color: Vec3::new(0.3, 0.23, 0.17),
+                        side_mat: Material::Wood,
+                        top_mat: Material::Wood,
+                        solid: false,
+                        ..OBox::default()
+                    });
+                }
+                let side = Vec2::new(-d.y, d.x) * 0.75;
+                let (a, b) = (y(w[0]) + 0.16, y(w[1]) + 0.16);
+                for s in [side, -side] {
+                    let (p, q) = (w[0] + s, w[1] + s);
+                    map.segment(
+                        Vec3::new(p.x, a, p.y),
+                        Vec3::new(q.x, b, q.y),
+                        0.08,
+                        Vec3::new(0.36, 0.34, 0.33),
+                        Material::Metal,
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
     /// Once everything's built: each side's spawns in its court, the open
     /// spots, and the repair drops that landed clear.
     pub fn finish(&self, map: &mut Map) {
@@ -597,6 +649,7 @@ impl Skeleton {
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));
         }
+        self.lay_rails(&mut map);
         for lot in &self.lots {
             let f = &lot.footprint;
             if let LotKind::Works(part) = lot.kind {

@@ -70,6 +70,7 @@ pub fn skeleton(rng: &mut Rng, look: Look) -> Skeleton {
         decos: Vec::new(),
         repair_spots: Vec::new(),
         crossings: Vec::new(),
+        rails: Vec::new(),
     };
     let a = rng.range(0.0, TAU);
     let habit = match look {
@@ -79,7 +80,9 @@ pub fn skeleton(rng: &mut Rng, look: Look) -> Skeleton {
         Look::Ithessar => Habit::Ring,
     };
     plant(&mut sk, rng, habit);
+    railway(&mut sk, rng);
     roads(&mut sk, rng);
+    bed(&mut sk);
     yard(&mut sk, rng);
     cover(&mut sk, rng);
     repairs(&mut sk, rng);
@@ -361,7 +364,167 @@ fn lay(
     true
 }
 
-/// The railway across, the haul road past the heart, a road to every door
+/// Corners cut off, twice: as easy a curve as a train wants.
+fn eased(pts: &[Vec2]) -> Vec<Vec2> {
+    let mut line = pts.to_vec();
+    for _ in 0..2 {
+        let mut out = vec![line[0]];
+        for w in line.windows(3) {
+            out.push(w[1].lerp(w[0], 0.25));
+            out.push(w[1].lerp(w[2], 0.25));
+        }
+        out.push(*line.last().unwrap());
+        out.dedup_by(|p, q| p.distance(*q) < 0.5);
+        line = out;
+    }
+    line
+}
+
+/// How far past the edge a line's seen running on.
+const RUN_ON: f32 = 150.0;
+
+/// The railway: in over one edge, by the buildings it serves, out over
+/// another; then spurs off it to others.
+fn railway(sk: &mut Skeleton, rng: &mut Rng) {
+    let size = sk.size;
+    let half = 2.6;
+    // Beside a building, along its long wall.
+    let halt = |l: &Lot, s: f32| {
+        let (ax, az) = l.footprint.axes();
+        let h = l.footprint.half;
+        let off = ax * s * (h.x + half + 3.0);
+        (l.at() + off - az * h.y, l.at() + off + az * h.y)
+    };
+    let clear = |sk: &Skeleton, p: Vec2| {
+        p.min_element() > 8.0
+            && p.max_element() < size - 8.0
+            && sk.lots.iter().all(|l| l.footprint.distance(p) > half + 1.6)
+            && sk.bases.iter().all(|b| b.middle().distance(p) > PAD + half)
+    };
+    let big: Vec<Lot> = sk.lots.clone();
+    let add = |sk: &mut Skeleton, pts: &[Vec2]| {
+        for w in pts.windows(2) {
+            sk.streets.push(Street {
+                from: w[0],
+                to: w[1],
+                half,
+                clear: 2.0,
+                rank: Rank::Rail,
+                out: false,
+            });
+        }
+    };
+    for _ in 0..60 {
+        let (k, turn) = (rng.index(4), 1 + rng.index(3));
+        let ends = [k, k + turn].map(|e| {
+            let (start, along, inward) = city::sides(size)[e % 4];
+            (start + along * size * rng.range(0.15, 0.85), -inward)
+        });
+        let serve = big[rng.index(big.len())];
+        let (p, q) = halt(&serve, if rng.chance(0.5) { 1.0 } else { -1.0 });
+        if ends[0].0.distance(ends[1].0) < size * 0.6
+            || ![p, q, p.lerp(q, 0.5)].iter().all(|&x| clear(sk, x))
+        {
+            continue;
+        }
+        let (p, q) = if p.distance(ends[0].0) < q.distance(ends[0].0) {
+            (p, q)
+        } else {
+            (q, p)
+        };
+        let (Some(a), Some(b)) = (
+            way(sk, rng, (ends[0].0, p), half),
+            way(sk, rng, (q, ends[1].0), half),
+        ) else {
+            continue;
+        };
+        let pts: Vec<Vec2> = a.into_iter().chain(b).collect();
+        // Not back on itself.
+        let sharp = pts.windows(3).any(|w| {
+            let (d, e) = (w[1] - w[0], w[2] - w[1]);
+            d.normalize_or(Vec2::X).dot(e.normalize_or(Vec2::X)) < 0.1
+        });
+        if sharp {
+            continue;
+        }
+        let line = eased(&pts);
+        add(sk, &line);
+        let mut whole = vec![ends[0].0 + ends[0].1 * RUN_ON];
+        whole.extend(&line);
+        whole.push(ends[1].0 + ends[1].1 * RUN_ON);
+        sk.rails.push(whole);
+        break;
+    }
+    let Some(main) = sk.rails.first().cloned() else {
+        return;
+    };
+    // Spurs: off the line, up to another building's wall.
+    let mut want = rng.int(1, 2);
+    for _ in 0..40 {
+        if want == 0 {
+            break;
+        }
+        let l = big[rng.index(big.len())];
+        let (p, q) = halt(&l, if rng.chance(0.5) { 1.0 } else { -1.0 });
+        let k = 2 + rng.index(main.len().saturating_sub(4).max(1));
+        let Some(&from) = main.get(k) else { continue };
+        let far = main
+            .iter()
+            .all(|m| m.distance(p) > 22.0 && m.distance(q) > 22.0);
+        if !far || !clear(sk, p) || !clear(sk, q) || !clear(sk, from) {
+            continue;
+        }
+        let (p, q) = if p.distance(from) < q.distance(from) {
+            (p, q)
+        } else {
+            (q, p)
+        };
+        if let Some(mut pts) = way(sk, rng, (from, p), half) {
+            pts.push(q);
+            // It leaves the line the way the line runs, near enough.
+            let lead = (main[k] - main[k - 1]).normalize_or(Vec2::X);
+            let turn = (pts[1] - pts[0]).normalize_or(Vec2::X).dot(lead).abs();
+            if turn < 0.5 {
+                continue;
+            }
+            let line = eased(&pts);
+            add(sk, &line);
+            sk.rails.push(line);
+            want -= 1;
+        }
+    }
+}
+
+/// Grades the ground under the rails, off the bridges and tunnels.
+fn bed(sk: &mut Skeleton) {
+    for line in sk.rails.clone() {
+        let mut fine = Vec::new();
+        for w in line.windows(2) {
+            let n = (w[0].distance(w[1]) / 4.0).ceil().max(1.0) as i32;
+            fine.extend((0..n).map(|k| w[0].lerp(w[1], k as f32 / n as f32)));
+        }
+        let h: Vec<f32> = fine.iter().map(|&p| sk.land.base(p)).collect();
+        for k in 1..fine.len().saturating_sub(1) {
+            let p = fine[k];
+            let outside = p.min_element() < -8.0 || p.max_element() > sk.size + 8.0;
+            if outside || sk.crossings.iter().any(|c| c.distance(p) < 16.0) {
+                continue;
+            }
+            let (a, b) = (k.saturating_sub(5), (k + 6).min(h.len()));
+            let mean = h[a..b].iter().sum::<f32>() / (b - a) as f32;
+            let d = fine[k + 1] - fine[k - 1];
+            let strip = OBox {
+                center: p,
+                yaw: d.x.atan2(d.y),
+                half: Vec2::new(1.6, 2.4),
+                ..OBox::default()
+            };
+            sk.land.level_at(strip, 0.8, 5.0, mean);
+        }
+    }
+}
+
+/// The haul road past the heart, a road to every door
 /// and base, and a few more to make loops of it.
 fn roads(sk: &mut Skeleton, rng: &mut Rng) {
     let size = sk.size;
@@ -383,15 +546,6 @@ fn roads(sk: &mut Skeleton, rng: &mut Rng) {
                 mouths[side % 4].push((t - 9.0, t + 9.0));
                 break;
             }
-        }
-    }
-    // The railway, clear across, off to one side of it.
-    let r = rng.index(4);
-    for _ in 0..24 {
-        let other = r + 1 + rng.index(3);
-        let (a, b) = (edge(rng, r), edge(rng, other));
-        if a.distance(b) > size * 0.6 && lay(sk, rng, (a, b), 2.6, Rank::Rail, true) {
-            break;
         }
     }
     // Doors and bases onto the nearest road so far, nearest first.
