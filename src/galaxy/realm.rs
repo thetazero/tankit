@@ -56,6 +56,8 @@ pub struct Realm {
     pub pilots: u32,
     /// Systems it's fighting in, as of the last tick's battles.
     pub fronts: u32,
+    /// Scratch: systems it's lost since they were last counted.
+    pub fell: u32,
 }
 
 impl Realm {
@@ -72,6 +74,7 @@ impl Realm {
             research: 0.0,
             pilots: 0,
             fronts: 0,
+            fell: 0,
         }
     }
 
@@ -281,6 +284,7 @@ impl Galaxy {
             // A realm with hulls out but no system left still counts as one
             // until they're gone (it might take something yet).
             self.realms[r].systems = count[r].max(tagged[r] as u32);
+            self.realms[r].fell = 0;
             if !tagged[r] {
                 self.realms[r].offensive = None;
                 self.free.push(r as u32);
