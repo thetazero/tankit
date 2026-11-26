@@ -1,22 +1,20 @@
 //! Finding work: the board, a table of the contracts on offer to compare and
 //! filter (`Board`), and the deal, one of them to take or not: your side's
-//! tanks facing the enemy's you'd get to take apart, what you'd gain, and
+//! tanks facing the enemy's, what you'd gain, and
 //! the contract you'd leave for it.
 
 use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
-use crate::economy::{Part, level_label, win_pay};
+use crate::economy::{level_label, win_pay};
 use crate::faction::Faction;
 use crate::galaxy::PEOPLES;
 use crate::galaxy::theater::Offer;
 use crate::garage::{self, Loadout};
 use crate::menu::{Hit, Nav};
-use crate::profile::Profile;
 use crate::render::mesh::{Instance, MeshId};
 use crate::render::{Atmosphere, Camera, PointLight, Scene};
-use crate::scene::project;
 use crate::sim::Tank;
 use crate::tank::TankArt;
 use crate::ui::design::{self, AMBER, BLUE, BODY, HEAD, MARGIN, SMALL, TEXT, TEXT_2, UNIT};
@@ -190,10 +188,9 @@ impl Board {
             hits.add(p, min, size, Hit::Sort(k));
         }
         let style = SMALL.colored(TEXT_2);
-        let at = Vec2::new(cols.enemy - 11.0, y);
-        p.text(at, "Enemy", &style, Align::Left);
-        p.text(Vec2::new(x0, y), "Job", &style, Align::Left);
-        p.text(Vec2::new(cols.hulls, y), "Your hulls", &style, Align::Right);
+        p.text(Vec2::new(x0, y), "For", &style, Align::Left);
+        p.text(Vec2::new(cols.enemy, y), "Vs", &style, Align::Center);
+        p.text(Vec2::new(cols.job, y), "Job", &style, Align::Left);
         y += UNIT * 4.0;
 
         // The contract you're on, to compare with.
@@ -201,7 +198,7 @@ impl Board {
             draw_row(p, &cols, y, mine, AMBER);
             y += ROW;
             let rule = with_alpha(AMBER, 0.6);
-            p.rect(Vec2::new(x0, y), Vec2::new(cols.hulls - x0, 1.0), rule);
+            p.rect(Vec2::new(x0, y), Vec2::new(cols.win - x0, 1.0), rule);
             y += UNIT * 2.0;
         }
         let listed = self.listed();
@@ -216,7 +213,7 @@ impl Board {
         let first = (picked + 1).saturating_sub(fit);
         for (i, o) in listed.iter().enumerate().skip(first).take(fit) {
             let min = Vec2::new(x0 - UNIT * 2.0, y);
-            let size = Vec2::new(cols.hulls - x0 + UNIT * 4.0, ROW);
+            let size = Vec2::new(cols.win - x0 + UNIT * 4.0, ROW);
             let on = i == picked;
             if on {
                 p.rect(min, size, with_alpha(TEXT, 0.014));
@@ -277,24 +274,24 @@ const ROW: f32 = UNIT * 8.0;
 
 /// Where the board's columns are.
 struct Columns {
+    side: f32,
+    enemy: f32,
     job: f32,
     bar: (f32, f32),
-    enemy: f32,
     gear: f32,
     win: f32,
-    hulls: f32,
 }
 
 impl Columns {
     fn new(x0: f32, x1: f32) -> Columns {
         let at = |k: f32| x0 + (x1 - x0) * k;
         Columns {
-            job: x0,
-            bar: (at(0.32), at(0.6)),
-            enemy: at(0.65),
-            gear: at(0.74),
-            win: at(0.87),
-            hulls: x1,
+            side: x0 + UNIT * 1.5,
+            enemy: x0 + UNIT * 9.0,
+            job: x0 + UNIT * 16.0,
+            bar: (at(0.46), at(0.72)),
+            gear: at(0.8),
+            win: x1,
         }
     }
 }
@@ -303,23 +300,31 @@ impl Columns {
 fn draw_row(p: &mut Painter, c: &Columns, y: f32, o: &Offer, color: Rgba) {
     let mid = y + ROW * 0.5;
     let top = mid - BODY.size * 0.5;
-    let side = Faction::side(o.side);
-    let at = Vec2::new(c.job + 11.0, mid);
-    emblem::emblem(p, side, at, 22.0, 1.4, side.ui());
-    let at = Vec2::new(c.job + UNIT * 5.0, top);
+    for (x, f) in [(c.side, o.side), (c.enemy, o.enemy)] {
+        let f = Faction::side(f);
+        emblem::emblem(p, f, Vec2::new(x, mid), 22.0, 1.4, f.ui());
+    }
+    let at = Vec2::new(c.job, top);
     p.text(at, &o.job(), &BODY.colored(color), Align::Left);
-    strength(p, o, Vec2::new(c.bar.0, mid - 3.0), c.bar.1 - c.bar.0, 6.0);
-    let enemy = Faction::side(o.enemy);
-    emblem::emblem(p, enemy, Vec2::new(c.enemy, mid), 22.0, 1.4, enemy.ui());
-    let gear = level_label(o.tier);
+    share(p, o, Vec2::new(c.bar.0, mid), c.bar.1 - c.bar.0);
     let at = Vec2::new(c.gear, top);
-    p.text(at, &gear, &BODY, Align::Left);
+    p.text(at, &level_label(o.tier), &BODY, Align::Left);
     let pay = win_pay(o.tier).to_string();
     let at = Vec2::new(c.win, top);
     p.text(at, &pay, &BODY.colored(BLUE), Align::Right);
-    let at = Vec2::new(c.hulls, top);
-    let own = o.own.to_string();
-    p.text(at, &own, &BODY.colored(AMBER), Align::Right);
+}
+
+/// Your side's share of the hulls, the same on every row whoever's in it:
+/// filled for yours, with a mark at even. `at` is its left end's middle.
+fn share(p: &mut Painter, o: &Offer, at: Vec2, w: f32) {
+    let h = 6.0;
+    let min = at - Vec2::Y * h * 0.5;
+    p.rect(min, Vec2::new(w, h), with_alpha(TEXT_2, 0.2));
+    let ahead = o.strength() >= 0.5;
+    let fill = if ahead { TEXT } else { TEXT_2 };
+    p.rect(min, Vec2::new(w * o.strength(), h), fill);
+    let mark = Vec2::new(at.x + w * 0.5 - 1.0, at.y - h);
+    p.rect(mark, Vec2::new(2.0, h * 2.0), TEXT);
 }
 
 /// How it's going: the side's hulls, its mercs' in amber, and the enemy's.
@@ -452,10 +457,8 @@ pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, asp
 pub fn draw_deal(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
-    profile: &Profile,
     o: Option<&Offer>,
     mine: Option<&Offer>,
-    time: f32,
     back_lit: bool,
     w: f32,
     h: f32,
@@ -500,43 +503,6 @@ pub fn draw_deal(
     p.text(at, &o.foes.to_string(), &names, Align::Right);
     y += UNIT * 3.0;
     strength(p, o, Vec2::new(x0, y), wide, UNIT);
-
-    // Under each enemy tank, what taking it apart would teach you.
-    let vp = camera(time, w / h).view_proj(w / h);
-    let mut seen: Vec<Part> = Vec::new();
-    for (kit, at) in stands(enemy) {
-        let Some((x, y)) = project(vp, at + Vec3::new(0.0, 0.0, 2.6), w, h) else {
-            continue;
-        };
-        let mut y = y + UNIT * 3.0;
-        if seen.is_empty() {
-            let style = SMALL.colored(TEXT_2);
-            let at = Vec2::new(x - UNIT * 10.0, y);
-            p.text(at, "Learn from wrecks", &style, Align::Left);
-        }
-        y += UNIT * 3.0;
-        for part in [Part::Hull(kit.0), Part::Turret(kit.1)] {
-            if seen.contains(&part) {
-                continue;
-            }
-            seen.push(part);
-            let half = UNIT * 10.0;
-            let at = Vec2::new(x - half, y);
-            p.text(at, part.name(), &SMALL, Align::Left);
-            let known = profile.known.of(part);
-            let owned = profile.owns(part);
-            let (text, color) = if owned {
-                (level_label(profile.known.cap(part)), AMBER)
-            } else {
-                (format!("{}%", (known * 100.0).min(99.0) as u32), TEXT_2)
-            };
-            let style = SMALL.colored(color);
-            p.text(Vec2::new(x + half, y), &text, &style, Align::Right);
-            let frac = if owned { 1.0 } else { known };
-            design::bar(p, Vec2::new(x - half, y + UNIT * 2.0), half * 2.0, frac);
-            y += UNIT * 4.0;
-        }
-    }
 
     // The trade: what you'd gain on the left, what you'd leave on the right.
     let top = h - MARGIN - UNIT * 13.0;
@@ -645,7 +611,6 @@ mod tests {
             Some(offer(40, 1, 2)),
         );
         b.scroll(29);
-        let profile = Profile::in_memory();
         for (w, h) in [(1600.0, 900.0), (1200.0, 900.0), (2100.0, 900.0)] {
             for side in 0..4 {
                 let (mut p, mut q) = (Painter::new(1.0), Painter::new(1.0));
@@ -654,17 +619,7 @@ mod tests {
                 assert!(hits.center_of(Hit::Row(29)).is_some(), "the pick's in view");
                 let o = offer(1, 0, side);
                 let mine = b.mine.as_ref();
-                draw_deal(
-                    &mut q,
-                    &mut hits,
-                    &profile,
-                    Some(&o),
-                    mine,
-                    3.0,
-                    false,
-                    w,
-                    h,
-                );
+                draw_deal(&mut q, &mut hits, Some(&o), mine, false, w, h);
                 assert!(hits.center_of(Hit::Deploy).is_some());
                 assert!(p.finish().iter().chain(&q.finish()).all(|v| {
                     let [x, y] = v.pos;

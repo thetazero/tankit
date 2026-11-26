@@ -784,8 +784,7 @@ impl Menu {
             } else {
                 let o = self.board.offer(self.previewing);
                 let mine = self.board.mine.as_ref();
-                let (time, lit) = (self.clock, self.back_lit);
-                work_view::draw_deal(&mut p, &mut hits, profile, o, mine, time, lit, w, h);
+                work_view::draw_deal(&mut p, &mut hits, o, mine, self.back_lit, w, h);
             }
             return Layer {
                 verts: fade(p.finish(), alpha),
