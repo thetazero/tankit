@@ -1,8 +1,7 @@
 //! A mine laid out on the shared skeleton: a cliff wandering across the
 //! map at any angle, digs in it wherever there's rock enough behind, each
 //! square to the cliff where it stands, ramps up onto the top, the spawns
-//! out on the floor. (The dressed mine's still `layout`'s: this takes its
-//! place piece by piece.)
+//! as far apart as they come.
 
 use std::f32::consts::TAU;
 
@@ -277,7 +276,7 @@ fn works(
     let mut spur = None;
     while spur.is_none() && !spots.is_empty() {
         let (s, side) = spots.swap_remove(rng.index(spots.len()));
-        spur = Some(super::layout::spur(track, s, side)).filter(|s| fits(s));
+        spur = Some(super::works::spur(track, s, side)).filter(|s| fits(s));
     }
     if let Some(s) = &spur {
         let dunes = land.dunes.as_mut().unwrap();
@@ -775,13 +774,15 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
 }
 
 /// The mine `seed` names: the first, from it on, that holds together.
-pub fn skeleton(seed: u64, sides: &[Faction]) -> Option<Skeleton> {
-    (0..64u64).find_map(|attempt| {
-        let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x3_D16);
-        draw(&mut rng, sides)
-            .map_err(|why| log::debug!("mine seed {seed} attempt {attempt}: {why}"))
-            .ok()
-    })
+pub fn skeleton(seed: u64, sides: &[Faction]) -> Skeleton {
+    (0..64u64)
+        .find_map(|attempt| {
+            let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x3_D16);
+            draw(&mut rng, sides)
+                .map_err(|why| log::debug!("mine seed {seed} attempt {attempt}: {why}"))
+                .ok()
+        })
+        .expect("no crystal mine laid out in 64 draws")
 }
 
 #[cfg(test)]
@@ -793,9 +794,7 @@ mod tests {
     #[test]
     fn mines_lie_at_any_angle() {
         let sides = [Faction::Ithessar, Faction::Resonant];
-        let all: Vec<Skeleton> = (0..3)
-            .map(|s| skeleton(s, &sides).unwrap_or_else(|| panic!("seed {s}: no mine")))
-            .collect();
+        let all: Vec<Skeleton> = (0..3).map(|s| skeleton(s, &sides)).collect();
         let off_axis = all
             .iter()
             .flat_map(|sk| &sk.land.digs)

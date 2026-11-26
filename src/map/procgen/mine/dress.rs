@@ -28,9 +28,9 @@ const PALETTE: Palette = Palette {
 /// How far in from a wall its lamps and gear stand, m.
 const WALL: f32 = 0.35;
 
-/// Builds `spec`'s mine, if there's one.
-pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
-    let sk = plan::skeleton(spec.seed, &spec.sides)?;
+/// Builds `spec`'s mine.
+pub fn build(spec: &Spec) -> (Skeleton, Map) {
+    let sk = plan::skeleton(spec.seed, &spec.sides);
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let st = style(spec.look);
     let sky = atmosphere(&mut rng);
@@ -144,7 +144,7 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
     }
     sounds(&mut map, &sk);
     settle(&mut map, &sk);
-    Some((sk, map))
+    (sk, map)
 }
 
 /// What sounds: lit crystal, the borers, the train, the wash under a bridge.
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn dressed_mines_are_playable() {
         for seed in 0..2 {
-            let (sk, m) = build(&crate::mine_spec(seed)).expect("a mine");
+            let (sk, m) = build(&crate::mine_spec(seed));
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
                 panic!("seed {seed}: {why}");

@@ -1,31 +1,18 @@
-//! The crystal mine biome: mines dug into a desert escarpment, on levels
-//! stacked over each other. Laid out in layers from each seed (`layout`):
-//! landforms (the escarpment with one or two mines in it, each under its
-//! Crag with a scree beside it; none to two washes, a second one perhaps
-//! running into the first; none to two buttes), then a railroad out of each
-//! mine bridging what it crosses, then whatever's cut off joined up by rule
-//! (haul ramps, crossings, ways up), then each side's spawns where it's
-//! fairest, then the details. The arena is sized to what's there, and the
-//! finished map is mirrored and turned so the escarpment can lie along any
-//! edge.
-//!
-//! Each mine is the Seam's (the hand-built mine this replaced): the rail
-//! adit in from its Crag's face, the new heading and the borer's bay at its
-//! end, the pillared hall, the west adit, the drift to the breach, the box
-//! cut up through the Crag; its rooms placed and sized by the seed.
+//! The crystal mine biome: digs in a cliff wandering across a desert, at
+//! whatever angle it and they lie. Laid out (`plan`) on the one `Skeleton`
+//! and its solid land, dressed (`dress`) outside as a desert is and inside
+//! each dig in the dig's own frame. The mining gear any mine has (`dig`)
+//! and its railroads (`works`) are built wherever they're put.
 //!
 //! Nothing here is anyone's: whose mine it is (their lamps, their machine
 //! in the bay, their freight, their marker by their spawns) is the style's
-//! (`MineStyle`; `ithessar` is the Ithessar's). The earthworks and the
-//! mining gear any mine has are dug in `dig`.
+//! (`MineStyle`; `ithessar` is the Ithessar's).
 
 mod dig;
 pub mod dress;
 mod ithessar;
-mod layout;
 pub mod plan;
-#[cfg(test)]
-mod tests;
+mod works;
 
 use std::f32::consts::PI;
 
@@ -35,45 +22,16 @@ use super::{Look, Spec};
 use crate::map::Map;
 use crate::rng::Rng;
 
-pub use super::land::Butte;
-pub use super::skeleton::{Mine, Skeleton};
+pub use super::skeleton::Skeleton;
 pub(in crate::map) use dig::Dig;
 
-/// Clearance a spawn needs from anything solid.
-const TANK_CLEAR: f32 = 4.6;
-
-/// The mesa's top over the desert floor.
-pub const TOP: f32 = 10.0;
-/// How far the Face's foot is from its lip (horizontally).
-pub const FACE_RISE: f32 = 4.0;
-/// The scree runs this far out from the Face's foot up to the lip.
-const SCREE_RUN: f32 = 38.0;
-/// The Crag rises to this height. Nothing climbs it.
-pub const CRAG_TOP: f32 = 40.0;
-/// Its foot is quarried flat this high (over the floor) along its face.
-const CRAG_CUT: f32 = 12.0;
-/// Roofs this high (their underside) in the high rooms: the bay, and the
-/// hall and crosscut where they're under the Crag.
-const BAY_ROOF: f32 = 12.0;
-const HALL_ROOF: f32 = 11.0;
-/// Cave roofs: underside and top (flush with the mesa).
-pub const ROOF: (f32, f32) = (7.4, TOP + 0.05);
-/// A roof's top under the Crag: just under its top (the lid over the
-/// tunnels is drawn at the top itself, see `crag_lid`).
-pub const CRAG_ROOF: f32 = CRAG_TOP - 0.3;
-/// Cave walls stand this thick round each corridor.
-pub const CAVE_WALL: f32 = 2.4;
-pub const WASH_DEPTH: f32 = 7.0;
-/// The wash's banks, from the floor's edge to the top.
-const WASH_BANK: f32 = 5.0;
 pub const DECK_HALF: f32 = 3.6;
 pub const DECK_TOP: f32 = 0.25;
 const DECK_T: f32 = 1.0;
 /// Track gauge (rail to rail, m): broad, for big ore cars.
 const GAUGE: f32 = 2.2;
-/// The warehouse's branch line: it leaves the main line `Skeleton::junction`
-/// m past the track's fifth point, back the way the trains came, swings
-/// off on a curve of this radius through this angle, and runs straight in
+/// The warehouse's spur: it leaves the main line back the way the trains
+/// came, swings off on a curve of this radius through this angle, and runs straight in
 /// at the warehouse's rail door this far on.
 const BRANCH_R: f32 = 14.0;
 const BRANCH_TURN: f32 = 85.0 * PI / 180.0;
@@ -86,12 +44,6 @@ const SHED_RIDGE: f32 = 11.3;
 /// Where the branch ends, inside, at its buffer stop (along from the middle).
 const SHED_BUFFER: f32 = 13.0;
 
-/// A rect on the ground: (min, max).
-pub type Rect = (Vec2, Vec2);
-/// A ramp or crossing: from its top to its floor (or the far top), and
-/// its half-width.
-pub type Ramp = (Vec2, Vec2, f32);
-
 pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -102,16 +54,6 @@ pub(crate) fn seg(p: Vec2, a: Vec2, b: Vec2) -> (f32, f32) {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
     (p.distance(a + ab * t), t)
-}
-
-/// Inside a rect, grown by `grow`.
-pub(crate) fn within((a, b): Rect, p: Vec2, grow: f32) -> bool {
-    p.x > a.x - grow && p.x < b.x + grow && p.y > a.y - grow && p.y < b.y + grow
-}
-
-pub(crate) fn rect_distance((a, b): Rect, p: Vec2) -> f32 {
-    let q = (p - (a + b) * 0.5).abs() - (b - a) * 0.5;
-    q.max(Vec2::ZERO).length()
 }
 
 /// Position and heading `s` m along a line.
@@ -143,14 +85,6 @@ pub(crate) fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
 /// Yaw that turns a box's local +z along `dir`.
 pub(crate) fn yaw_along(dir: Vec2) -> f32 {
     dir.x.atan2(dir.y)
-}
-
-/// On the 2 m grid: nearest, down, up.
-fn even(x: f32) -> f32 {
-    (x / 2.0).round() * 2.0
-}
-fn even_down(x: f32) -> f32 {
-    (x / 2.0).floor() * 2.0
 }
 
 /// What a mine's owner puts in it: their lamps, the machine in the borer's
@@ -186,82 +120,15 @@ fn style(look: Look) -> &'static dyn MineStyle {
     }
 }
 
-/// The layout `spec` makes: the first, from its seed on, that holds
-/// together and whose greybox is playable.
-pub fn layout(spec: &Spec) -> Skeleton {
-    let mut last = None;
-    for attempt in 0..64u64 {
-        let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
-        let l = match Skeleton::mine(&mut rng) {
-            Ok(l) => l,
-            Err(line) => {
-                log::trace!(
-                    "mine seed {} attempt {attempt}: no layout ({line})",
-                    spec.seed
-                );
-                continue;
-            }
-        };
-        let grey = dig::greybox(&l, &spec.sides);
-        let nav = crate::ai::nav::NavGrid::build(&grey);
-        match super::check::playable_on(&grey, &nav).and_then(|()| fair(&l, &grey, &nav)) {
-            Ok(()) => return l,
-            Err(why) => log::debug!("mine seed {} attempt {attempt}: {why}", spec.seed),
-        }
-        last = Some(l);
-    }
-    last.expect("no crystal mine laid out in 64 draws")
-}
-
-/// Whether neither side is much further than the other from what's worth
-/// taking, driving there on `map` (the layout's greybox): the spawns were
-/// placed by straight-line distance, and a wash or a mesa between can
-/// make one side's drive much longer.
-fn fair(l: &Skeleton, map: &Map, nav: &crate::ai::nav::NavGrid) -> Result<(), String> {
-    let total = |side: usize| {
-        let base = &map.bases[side];
-        let from = base.iter().copied().sum::<Vec2>() / base.len().max(1) as f32;
-        l.goals()
-            .iter()
-            .map(|&g| {
-                let mut at = from;
-                let mut len = 0.0;
-                for p in nav.path(from, g) {
-                    len += at.distance(p);
-                    at = p;
-                }
-                len
-            })
-            .sum::<f32>()
-    };
-    let (a, b) = (total(0), total(1));
-    if (a - b).abs() / a.max(b).max(1.0) > 0.22 {
-        return Err(format!("unfair: {a:.0} m against {b:.0} m"));
-    }
-    Ok(())
-}
-
 /// Builds `spec`'s mine.
 pub fn build(spec: &Spec) -> Map {
-    // To try the new ones, until they take over.
-    if std::env::var_os("TANKIT_NEW_MINE").is_some()
-        && let Some((_, m)) = dress::build(spec)
-    {
-        return m;
-    }
-    let l = layout(spec);
-    let mut m = dig::build(&l, spec, style(spec.look));
-    l.orient(&mut m);
-    m
+    dress::build(spec).1
 }
 
-/// `spec`'s mine undressed: its ground, the caves' walls and roofs, the
-/// bridge's deck.
+/// `spec`'s mine undressed.
 pub fn greybox(spec: &Spec) -> Map {
-    let l = layout(spec);
-    let mut m = dig::greybox(&l, &spec.sides);
+    let mut m = plan::skeleton(spec.seed, &spec.sides).greybox(&spec.sides);
     m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5));
-    l.orient(&mut m);
     m
 }
 
@@ -298,16 +165,3 @@ pub const PLANET: crate::planet::Look = crate::planet::Look {
     cloud: Vec3::new(0.45, 0.42, 0.4),
     cloudiness: 0.35,
 };
-
-impl Skeleton {
-    /// Turns the map built from this layout the way round it's meant to
-    /// be: mirrored, then turned.
-    pub fn orient(&self, m: &mut Map) {
-        if self.mirror {
-            m.mirror_x();
-        }
-        for _ in 0..self.turns {
-            m.turn();
-        }
-    }
-}
