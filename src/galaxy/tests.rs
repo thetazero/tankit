@@ -854,14 +854,15 @@ fn unpaid_bills_are_debts() {
             if let Some(k) = c.contract
                 && k.signed == g.tick
             {
-                assert!(
-                    g.debts
-                        .iter()
-                        .filter(|d| d.realm == k.realm)
-                        .all(|d| d.company == c.id),
-                    "tick {}: hired while in debt",
-                    g.tick
-                );
+                // All it owes is to companies it signed with this tick.
+                for d in g.debts.iter().filter(|d| d.realm == k.realm) {
+                    let same = g.companies.iter().any(|c| {
+                        c.id == d.company
+                            && c.contract
+                                .is_some_and(|j| j.realm == k.realm && j.signed == g.tick)
+                    });
+                    assert!(same, "tick {}: hired while in debt", g.tick);
+                }
             }
         }
     }

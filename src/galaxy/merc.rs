@@ -86,9 +86,9 @@ const RATE_FADE: f32 = 0.05;
 const UNMET_FADE: f32 = 0.1;
 
 /// Fights alike, as realms remember them: attack or defense, by the odds in
-/// hulls and by how many of its own fire.
+/// hulls and by how hard its own fire.
 pub const ODDS: usize = 9;
-pub const FIRES: usize = 5;
+pub const FIRES: usize = 7;
 pub const MEMORY: usize = 2 * ODDS * FIRES;
 
 /// Fights a realm takes the forecast's word as being worth, before it's
@@ -96,7 +96,7 @@ pub const MEMORY: usize = 2 * ODDS * FIRES;
 const PRIOR: f32 = 4.0;
 
 /// A fight a realm looked for help with, to look back on.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Lesson {
     pub cell: usize,
     pub system: u32,
@@ -703,7 +703,11 @@ impl Galaxy {
             }
             let half = realm.tier as f32 / 2.0;
             let wage = realm.pay(&self.rules);
-            let offer = self.clearing(want, half, 2.0 * wage).map_or(0.0, |b| b.1);
+            let offer = if room > 0 && realm.pilots > 0 {
+                self.clearing(want, half, 2.0 * wage).map_or(0.0, |b| b.1)
+            } else {
+                0.0
+            };
             let n = if room > 0 && realm.pilots > 0 && offer * 0.5 >= wage && offer > 0.0 {
                 self.rng.binomial(realm.pilots, self.rules.defect).min(room)
             } else {
@@ -879,8 +883,18 @@ impl Galaxy {
         }
     }
 
+    /// The gear of the pilots a ship could take on: the free ones', on
+    /// average, else half what realms fly.
+    fn free_level(&self) -> f32 {
+        if self.pool.is_empty() {
+            let n = self.living().count().max(1) as f32;
+            return self.living().map(|(_, r)| r.tier as f32 / 2.0).sum::<f32>() / n;
+        }
+        self.pool.iter().map(|p| p.level()).sum::<f32>() / self.pool.len() as f32
+    }
+
     /// Which fights this one's like (`memory`): side `f` with `ours` hulls
-    /// in system `t`, `firing` of them at once.
+    /// in system `t`, `firing` of them at once (each by its gear).
     fn alike(&self, t: usize, f: usize, ours: f32, firing: f32, defend: bool) -> usize {
         let enemy: f32 = (0..SIDES)
             .filter(|&g| g != f)
@@ -888,7 +902,7 @@ impl Galaxy {
             .sum();
         let odds = ((ours + 1.0) / (enemy + 1.0)).log2() * 1.5 + ODDS as f32 / 2.0;
         let odds = (odds.max(0.0) as usize).min(ODDS - 1);
-        let fire = (firing / self.rules.frontage * (FIRES - 1) as f32).round();
+        let fire = (firing / self.rules.frontage * 4.0).round();
         let fire = (fire.max(0.0) as usize).min(FIRES - 1);
         (defend as usize * ODDS + odds) * FIRES + fire
     }
@@ -1207,7 +1221,8 @@ impl Galaxy {
                 .min(own)
                 .min(front)
         };
-        let alone_cell = self.alike(t, f, own, flown, defend);
+        let tier = crate::economy::damage_factor(self.realms[r as usize].tier);
+        let alone_cell = self.alike(t, f, own, flown * tier, defend);
         let alone = self.remembered(alone_cell, alone);
         let mut lesson = Lesson {
             cell: alone_cell,
@@ -1219,7 +1234,14 @@ impl Galaxy {
             due: self.tick + self.rules.merc_term as u64,
         };
 
+        let rest = crate::economy::damage_factor(self.free_level().round() as u8);
         for c in near {
+            let mut best_levels: Vec<f32> = self.companies[c]
+                .pilots
+                .iter()
+                .map(|p| crate::economy::damage_factor(p.level().round() as u8))
+                .collect();
+            best_levels.sort_by(|a, b| b.total_cmp(a));
             let offers = self.offers(t, f, r, self.companies[c].at as usize);
             sale = sale.max(offers.iter().map(|o| o.hulls).sum());
             for share in [0.05, 0.1, 0.25, 0.5, 1.0] {
@@ -1230,6 +1252,16 @@ impl Galaxy {
                     continue;
                 }
                 able = true;
+                // Not worth a guess if taking it all wouldn't pay for a tick.
+                #[cfg(test)]
+                let forced = self.force.is_some();
+                #[cfg(not(test))]
+                let forced = false;
+                let least = quote.upfront.min(purse.max(0.0)) + quote.rate * self.trust_ticks;
+                if !forced && (1.0 - alone) * worth <= least {
+                    affordable = true;
+                    continue;
+                }
                 // The realm's guess: how much more of the world it gets
                 // with the company than without, and for how long it pays.
                 let (with, raw_ticks) = self.forecast(
@@ -1242,11 +1274,17 @@ impl Galaxy {
                     quote.upfront.min(purse),
                     defend,
                 );
+                // The company's pilots fire by their own gear.
+                let crew = (quote.crew.min(quote.hulls) as f32).min(front);
+                let n = (crew as usize).min(best_levels.len());
+                let known: f32 = best_levels[..n].iter().sum();
+                // Those it's still to hire, it reckons at what's going.
+                let kit = (known + (crew - n as f32) * rest) / crew.max(1.0);
                 let cell = self.alike(
                     t,
                     f,
                     own + quote.hulls as f32,
-                    (flown + quote.crew.min(quote.hulls) as f32).min(front),
+                    flown.min((front - crew).max(0.0)) * tier + crew * kit,
                     defend,
                 );
                 let with = self.remembered(cell, with);

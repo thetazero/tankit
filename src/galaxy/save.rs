@@ -83,6 +83,11 @@ struct Saved {
     unmet: Vec<(u32, f32)>,
     #[serde(default)]
     reviews: Vec<SavedContract>,
+    /// What realms have seen of fights, and those yet to look back on.
+    #[serde(default)]
+    memory: Vec<(f32, f32)>,
+    #[serde(default)]
+    lessons: Vec<super::merc::Lesson>,
     /// Bonuses realms owe companies: (realm, company id, crystals).
     #[serde(default)]
     debts: Vec<(u32, u32, f32)>,
@@ -375,6 +380,8 @@ impl Galaxy {
                 .map(|(s, &u)| (s as u32, u))
                 .collect(),
             reviews: self.reviews.iter().map(SavedContract::of).collect(),
+            memory: self.memory.clone(),
+            lessons: self.lessons.clone(),
             owed_you: self.owed_you.clone(),
             your_wallet: self.you.wallet,
             debts: self
@@ -505,6 +512,10 @@ impl Galaxy {
             if let Some(x) = g.unmet.get_mut(sys as usize) {
                 *x = u;
             }
+        }
+        if s.memory.len() == g.memory.len() {
+            g.memory = s.memory;
+            g.lessons = s.lessons;
         }
         g.reviews = s.reviews.iter().map(SavedContract::contract).collect();
         if let Some((trust, ticks)) = s.trust {
