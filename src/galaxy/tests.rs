@@ -1051,7 +1051,7 @@ fn planets_have_outposts() {
     // Worth nothing, and no hulls out of them.
     let mut bare = g.clone();
     for site in &mut bare.sites {
-        if matches!(site.kind, SiteKind::Production { .. }) {
+        if site.kind.produces() {
             site.kind = SiteKind::Outpost;
         }
     }

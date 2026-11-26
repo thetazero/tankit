@@ -476,7 +476,7 @@ impl Class {
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
             MapKind::City(..)
-            | MapKind::Mine
+            | MapKind::Mine(_)
             | MapKind::Desert
             | MapKind::Depot(_)
             | MapKind::Reservoir => self == Class::Desert,
@@ -521,14 +521,12 @@ pub fn planet_name(name: &str, p: u8) -> String {
 /// The `kind_name` of a production site that makes mostly crystals.
 pub const CRYSTAL_MINE: &str = "CRYSTAL MINE";
 
-/// What a site is, in caps: a shield generator, an outpost, or what a production site
-/// makes most of, for what sites make (1 to 5 hulls, 0.02 to 0.1 crystals):
-/// about half are mines.
+/// What a site is, in caps.
 pub fn kind_name(kind: SiteKind) -> &'static str {
     match kind {
         SiteKind::Shield { .. } => "SHIELD GENERATOR",
-        SiteKind::Production { hulls, crystals } if crystals * 50.0 > hulls => CRYSTAL_MINE,
-        SiteKind::Production { .. } => "HULL FOUNDRY",
+        SiteKind::Mine { .. } => CRYSTAL_MINE,
+        SiteKind::Foundry { .. } => "HULL FOUNDRY",
         SiteKind::Outpost => "OUTPOST",
     }
 }
@@ -560,10 +558,7 @@ impl SiteView {
             kind: if shield {
                 SiteKind::Shield { damaged: false }
             } else {
-                SiteKind::Production {
-                    hulls: 0.1,
-                    crystals: 0.1,
-                }
+                SiteKind::Mine { crystals: 0.1 }
             },
             contested: false,
             committed: false,
@@ -578,7 +573,7 @@ impl SiteView {
     }
 
     /// The map it's fought on: its mission's, a city in its founder's style,
-    /// a foundry in its founder's own on its world's ground,
+    /// a depot or mine in its founder's own, a foundry too on its world's ground,
     /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
@@ -592,6 +587,7 @@ impl SiteView {
             return match kind {
                 MapKind::City(..) => MapKind::City(look, setting),
                 MapKind::Depot(_) => MapKind::Depot(Look::own(self.founder())),
+                MapKind::Mine(_) => MapKind::Mine(Look::own(self.founder())),
                 MapKind::Foundry(_, ground) => MapKind::Foundry(
                     Look::own(self.founder()),
                     self.class.ground().unwrap_or(ground),
@@ -1749,7 +1745,7 @@ mod tests {
         let made: Vec<&str> = g
             .sites
             .iter()
-            .filter(|s| matches!(s.kind, SiteKind::Production { .. }))
+            .filter(|s| s.kind.produces())
             .map(|s| kind_name(s.kind))
             .collect();
         let mines = made.iter().filter(|&&k| k == CRYSTAL_MINE).count();
@@ -1764,22 +1760,24 @@ mod tests {
         for mine in [true, false] {
             let mut g = galaxy();
             for site in &mut g.sites {
-                if let SiteKind::Production { hulls, crystals } = &mut site.kind {
-                    (*hulls, *crystals) = if mine { (0.0, 0.1) } else { (5.0, 0.0) };
+                if site.kind.produces() {
+                    site.kind = match mine {
+                        true => SiteKind::Mine { crystals: 0.1 },
+                        false => SiteKind::Foundry { hulls: 5.0 },
+                    };
                 }
             }
             let mut in_mine = [0; 2];
             for sys in 0..g.systems.len() {
                 let sites = g.theater_at(sys, 0).sites;
                 for (s, other) in sites.iter().zip(&g.theater_at(sys, 1).sites) {
-                    if world(sys, s.planet as usize).0 != Class::Desert
-                        || !matches!(s.kind, SiteKind::Production { .. })
-                    {
+                    if world(sys, s.planet as usize).0 != Class::Desert || !s.kind.produces() {
                         continue;
                     }
                     assert_eq!(s.kind_name() == CRYSTAL_MINE, mine);
                     assert_eq!((s.mission, s.map_seed), (other.mission, other.map_seed));
-                    in_mine[(s.map_kind() == MapKind::Mine) as usize] += 1;
+                    in_mine[matches!(s.map_kind(), MapKind::Mine(l) if l == Look::own(s.founder()))
+                        as usize] += 1;
                 }
             }
             assert!(in_mine[mine as usize] > 0, "{in_mine:?}");

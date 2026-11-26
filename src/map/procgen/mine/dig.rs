@@ -272,7 +272,7 @@ impl Dig<'_> {
             // The borer: its machinery, and the beam's roar on the rock.
             let (from, to, _) = m.beam;
             found.push((Ambient::Machine, Vec3::new(from.x - 5.0, 3.0, from.z)));
-            found.push((Ambient::Core, to));
+            found.push((self.st.strike_sound(), to));
         }
         let (at, _) = lay.track_at(lay.track_len(3) + 18.0);
         let g = self.ground_height(at.x, at.y);
@@ -1506,7 +1506,7 @@ impl Dig<'_> {
                 }
             }
         }
-        // Timber portals at the Ithessar's mouths in the Face.
+        // Timber portals at the mine's mouths in the Face.
         for (a, b) in lay
             .mines
             .iter()
@@ -3164,7 +3164,8 @@ impl Dig<'_> {
         // The conveyor from beside the rig in the wash, up over the bank,
         // to its head over the heap.
         // (None without a wash under the Face to work.)
-        let Some((rig_at, rig_yaw)) = lay.wash_rig else {
+        // (None to a rig too far off for one.)
+        let Some((rig_at, rig_yaw)) = lay.wash_rig.filter(|r| r.0.distance(at) < 60.0) else {
             return;
         };
         let boom = Vec2::new(rig_yaw.sin(), rig_yaw.cos());

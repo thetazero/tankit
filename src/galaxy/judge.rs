@@ -150,6 +150,66 @@ fn tweak(rules: &mut Rules) {
     }
 }
 
+/// How long wars and contracts last.
+struct Spans {
+    at_war: Vec<u64>,
+    on: std::collections::HashMap<(u32, u64), u64>,
+    wars: Vec<u64>,
+    jobs: Vec<u64>,
+}
+
+impl Spans {
+    fn of(g: &Galaxy) -> Spans {
+        Spans {
+            at_war: vec![0; g.systems.len()],
+            on: Default::default(),
+            wars: Vec::new(),
+            jobs: Vec::new(),
+        }
+    }
+
+    fn watch(&mut self, g: &Galaxy) {
+        for (s, n) in self.at_war.iter_mut().enumerate() {
+            if g.systems[s].at_war() {
+                *n += 1;
+            } else if *n > 0 {
+                self.wars.push(std::mem::take(n));
+            }
+        }
+        let now: std::collections::HashMap<(u32, u64), u64> = g
+            .companies
+            .iter()
+            .filter_map(|c| {
+                let k = c.contract?;
+                (k.side as usize != super::RAID && g.tick >= k.arrives)
+                    .then_some(((c.id, k.signed), k.arrives))
+            })
+            .collect();
+        for (k, arrived) in &self.on {
+            if !now.contains_key(k) {
+                self.jobs.push(g.tick - arrived);
+            }
+        }
+        self.on = now;
+    }
+
+    fn report(&mut self, g: &Galaxy) {
+        let q = |v: &mut Vec<u64>| {
+            v.sort();
+            [0.25, 0.5, 0.75, 0.9]
+                .map(|q| v.get((v.len() as f32 * q) as usize).copied().unwrap_or(0))
+        };
+        println!(
+            "         ticks at 25/50/75/90%: wars {:?}, contracts once landed {:?}; offers {}",
+            q(&mut self.wars),
+            q(&mut self.jobs),
+            g.open_work(1).len(),
+        );
+        self.wars.clear();
+        self.jobs.clear();
+    }
+}
+
 /// What raids come to.
 fn raids(g: &Galaxy, last: &super::merc::Books) {
     let b = &g.books;
@@ -162,7 +222,11 @@ fn raids(g: &Galaxy, last: &super::merc::Books) {
         .collect();
     rich.sort_by(f32::total_cmp);
     let at = |q: f32| rich[((rich.len() - 1) as f32 * q) as usize];
-    println!("         hires come to, of expected: {:.2?}", g.hire_trust);
+    println!(
+        "         hires come to, of expected: {:.2?}; foundries at work {:.1}%",
+        g.hire_trust,
+        100.0 * g.foundry_use
+    );
     println!(
         "         raids: looks nowhere/no crew/can't pay/not worth/went {looks:?}; spent {} late {}; each: there {:.0} expected {:.0} took {:.0} hulls {:.0} lost {:.0} ticks {:.1}; crew quoted {:.0} had {:.0}, foes {:.0} then {:.0}, firing {:.0} then {:.0} | system vaults p50/90/99 {:.0}/{:.0}/{:.0}",
         b.raid_spent - last.raid_spent,
@@ -205,7 +269,7 @@ fn realm_worth(g: &Galaxy, r: u32) -> f64 {
             x += (own as f32 * g.hull_worth[s]) as f64;
             for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
                 if site.owner as usize == f
-                    && let super::SiteKind::Production { crystals, .. } = site.kind
+                    && let super::SiteKind::Mine { crystals } = site.kind
                 {
                     x += crystals as f64 * hold;
                 }
@@ -326,13 +390,16 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             }
             let t0 = std::time::Instant::now();
             let (mut last, mut was, mut at) = (g.books, 0.0, 0);
+            let mut spans = Spans::of(&g);
             g.step();
             let start = hiring(&g);
             while g.tick < ticks {
                 g.tick_once();
+                spans.watch(&g);
                 if g.tick >= at + ticks / 8 {
                     report(&g, &last, was, (g.tick - at) as f64);
                     raids(&g, &last);
+                    spans.report(&g);
                     (last, was, at) = (g.books, g.destroyed, g.tick);
                 }
             }

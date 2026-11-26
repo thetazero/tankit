@@ -28,7 +28,7 @@ fn lay(seed: u64) -> Skeleton {
     if let Some(l) = CACHE.lock().unwrap().get(&seed) {
         return l.clone();
     }
-    let l = layout(&crate::mine_spec(seed));
+    let l = layout(&crate::mine_spec(seed, crate::map::procgen::Look::Ithessar));
     CACHE.lock().unwrap().insert(seed, l.clone());
     l
 }
@@ -43,7 +43,7 @@ fn mine(seed: u64) -> Map {
     }
     let m = dig::build(
         &lay(seed),
-        &crate::mine_spec(seed),
+        &crate::mine_spec(seed, crate::map::procgen::Look::Ithessar),
         &super::ithessar::Ithessar,
     );
     let mut cache = CACHE.lock().unwrap();
@@ -1392,5 +1392,36 @@ fn ground_paint_is_finite() {
         let m = Map::mine(seed);
         let t = m.terrain.as_ref().unwrap();
         assert!(t.tint.iter().all(|c| c.is_finite()), "seed {seed}");
+    }
+}
+
+/// The same skeleton dressed as any faction's: the same ground, spawns and
+/// ways through, whoever's it is, playable, and each its own to look at.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn any_faction_can_have_the_mine() {
+    use crate::map::procgen::Look;
+    let theirs = mine(0);
+    let mut beams = vec![theirs.beams[0].color];
+    for look in [Look::Imperium, Look::Resonant, Look::Uthenn] {
+        let m = dig::build(&lay(0), &crate::mine_spec(0, look), style(look));
+        if let Err(why) = crate::map::procgen::check::playable(&m) {
+            panic!("{look:?}: {why}");
+        }
+        let (a, b) = (
+            m.terrain.as_ref().unwrap(),
+            theirs.terrain.as_ref().unwrap(),
+        );
+        assert!(a.heights == b.heights, "{look:?}: other ground");
+        assert_eq!(m.bases, theirs.bases, "{look:?}");
+        assert_eq!(m.routes, theirs.routes, "{look:?}");
+        let line = |m: &Map| m.beams.iter().map(|b| (b.from, b.to)).collect::<Vec<_>>();
+        assert_eq!(line(&m), line(&theirs), "{look:?}");
+        assert!(m.cores.is_empty(), "{look:?}: a plasma core");
+        assert!(!beams.contains(&m.beams[0].color), "{look:?}");
+        beams.push(m.beams[0].color);
     }
 }

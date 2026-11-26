@@ -297,6 +297,13 @@ ore still goes by rail. The Resonant call the seam holy, and have dug their
 own way into the rock from the east to take it back. (The first of them,
 the Seam, was the one hand-built mine; the generated ones are its kind.)
 
+The others' mines are the same ground, worked their own way: a site's mine is
+in its founder's style. The Imperium cuts with a thermal lance on a crawler,
+by caged amber lamps, and hauls behind a crimson diesel. The Resonant bring a
+reliquary whose choir of pipes sings the rock apart in crystal light, and haul
+in chapels on wheels. The Uthenn hold a Lumen's beam on it out of a stack of
+cubes. Whoever's it is, driving into the beam destroys you.
+
 **The hull foundries:** where machines are made, on the ground they'll be
 fought over. Furnace halls, mills, casting sheds and a power house on rolling ground, roads
 and a railway between them over bridges and through tunnels, on desert, tundra
