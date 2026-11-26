@@ -2233,15 +2233,13 @@ impl Dig<'_> {
     pub(super) fn rails(&mut self, line: &[Vec2], branch: bool) {
         let lay = self.l;
         let total = line_len(line, line.len() - 1);
-        let y_at = |m: &Map, s: f32| {
+        let y_at = |m: &Dig, s: f32| {
             let (p, dir) = line_at(line, s);
             if lay.on_bridge(p) {
                 DECK_TOP
             } else {
                 let side = dir.perp() * 1.5;
-                m.ground_height(p.x, p.y)
-                    .max(m.ground_height(p.x + side.x, p.y + side.y))
-                    .max(m.ground_height(p.x - side.x, p.y - side.y))
+                m.stand(p).max(m.stand(p + side)).max(m.stand(p - side))
             }
         };
         let step = 1.6;

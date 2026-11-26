@@ -11,8 +11,10 @@ use glam::Vec2;
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::procgen::check;
+use crate::map::procgen::crossing::{Crossing, Kind};
 use crate::map::procgen::desert::skeleton::RAMP_RUN;
 use crate::map::procgen::land::*;
+use crate::map::procgen::mine::line_distance;
 use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
@@ -86,6 +88,79 @@ fn fits(land: &Land, dig: &Dig, size: f32) -> bool {
         })
 }
 
+/// `pts` with their corners cut.
+fn eased(pts: &[Vec2]) -> Vec<Vec2> {
+    let mut out = pts.to_vec();
+    for _ in 0..2 {
+        let mut s = vec![out[0]];
+        for w in out.windows(2) {
+            s.push(w[0].lerp(w[1], 0.25));
+            s.push(w[0].lerp(w[1], 0.75));
+        }
+        s.push(*out.last().unwrap());
+        out = s;
+    }
+    out
+}
+
+/// Crosses `wash`: a bridge for each track over it, and fords between. None
+/// if it doesn't work out: it comes too near something, or a track meets it
+/// aslant.
+fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Option<Vec<Crossing>> {
+    let edge = wash.floor + wash.bank;
+    if land.digs.iter().any(|d| wash.distance(d.at) < edge + 24.0) {
+        return None;
+    }
+    let mut over = Vec::new();
+    let mut at = Vec::new();
+    for t in tracks {
+        let (a, b) = (t[1], t[2]);
+        let n = (a.distance(b) / 0.5) as usize;
+        let near = (0..=n)
+            .map(|k| a.lerp(b, k as f32 / n as f32))
+            .min_by(|p, q| wash.distance(*p).total_cmp(&wash.distance(*q)))?;
+        if wash.distance(near) > 1.0 {
+            if wash.distance(near) < edge + 8.0 {
+                return None;
+            }
+            continue;
+        }
+        let (_, s) = wash.near(near);
+        let (_, way, _) = wash.frame(s);
+        let dir = (b - a).normalize();
+        if way.dot(dir).abs() > 0.55 {
+            return None;
+        }
+        let half = (edge + 4.0) / way.perp_dot(dir).abs();
+        over.push(Crossing {
+            kind: Kind::Bridge,
+            from: near - dir * half,
+            to: near + dir * half,
+            half: super::DECK_HALF,
+            top: super::DECK_TOP,
+            floor: 0.0,
+            roofed: (0.0, 0.0),
+            walled: (0.0, 0.0),
+        });
+        at.push(s);
+    }
+    let (lo, hi) = wash.inside(size);
+    let mut fords = Vec::new();
+    for f in [0.1, 0.3, 0.5, 0.7, 0.9] {
+        let s = lo + (hi - lo) * f;
+        if hi - lo < 60.0 || at.iter().any(|&b| (b - s).abs() < 24.0) {
+            continue;
+        }
+        let (p, _, n) = wash.frame(s);
+        fords.push((p + n * 27.0, p - n * 27.0, 7.0));
+    }
+    if fords.len() < 2 {
+        return None;
+    }
+    land.fords.extend(fords);
+    Some(over)
+}
+
 /// A mine for `sides` sides, if this draw holds together.
 fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     let size = 2.0 * rng.int(125, 160) as f32;
@@ -153,6 +228,61 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         }
     }
 
+    // A railroad out of each dig's first way in, straight on to the edge.
+    let mut tracks: Vec<Vec<Vec2>> = Vec::new();
+    for d in &land.digs {
+        let from = d.to_map(Vec2::new(0.0, d.rooms[2].max.y - 3.0));
+        let dir = -d.facing;
+        let mut end = d.at;
+        while end.min_element() > -6.0 && end.max_element() < size + 6.0 {
+            end += dir;
+        }
+        let clear = land.digs.iter().all(|o| {
+            o.at == d.at || (0..=40).all(|k| o.distance(d.at.lerp(end, k as f32 / 40.0)) > 8.0)
+        }) && tracks
+            .iter()
+            .all(|t| (0..=40).all(|k| line_distance(t, d.at.lerp(end, k as f32 / 40.0)) > 16.0));
+        // (Not out along the cliff and back into it.)
+        let out = (2..=40).all(|k| land.plateau(d.at.lerp(end, k as f32 / 40.0)) > 4.0);
+        if clear && out {
+            tracks.push(vec![from, d.at, end]);
+        }
+    }
+    let dunes = land.dunes.as_mut().unwrap();
+    for t in &tracks {
+        let n = (t[1].distance(t[2]) / 8.0) as usize;
+        for k in 0..=n {
+            dunes
+                .calm
+                .push((t[1].lerp(t[2], k as f32 / n as f32), 6.0, 16.0));
+        }
+    }
+
+    // A wash along the floor, out from under the cliff, perhaps.
+    let mut crossings = Vec::new();
+    if rng.chance(0.65) {
+        for _ in 0..12 {
+            let out = rng.range(62.0, 85.0);
+            let pts: Vec<Vec2> = line
+                .iter()
+                .map(|&p| p - along.perp() * (out + rng.range(-9.0, 9.0)))
+                .collect();
+            let wash = Wash {
+                line: eased(&pts),
+                floor: 6.5,
+                bank: 5.0,
+                depth: 6.0,
+                sway: 1.2,
+                phase: rng.range(0.0, TAU),
+            };
+            if let Some(x) = cross(&mut land, &wash, &tracks, size) {
+                crossings = x;
+                land.washes.push(wash);
+                break;
+            }
+        }
+    }
+
     // Ways up, square to the cliff, off the digs.
     let run = land.high.height * RAMP_RUN;
     let mut tries = 0;
@@ -175,7 +305,12 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             .high
             .ramps
             .iter()
-            .all(|r| r.top.distance(ramp.top) > 50.0);
+            .all(|r| r.top.distance(ramp.top) > 50.0)
+            && (0..=8).all(|i| {
+                let q = ramp.foot.lerp(ramp.top, i as f32 / 8.0);
+                tracks.iter().all(|t| line_distance(t, q) > RAMP_HALF + 6.0)
+                    && land.wash_distance(q) > RAMP_HALF + 16.0
+            });
         if inside && clear {
             land.high.ramps.push(ramp);
         }
@@ -187,7 +322,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     // The Hold site: out in front of the mouth of the dig nearest the middle.
     land.digs
         .sort_by(|a, b| a.at.distance(mid).total_cmp(&b.at.distance(mid)));
-    let heart = land.digs[0].at - land.digs[0].facing * 26.0;
+    let first = &land.digs[0];
+    let heart = first.at - first.facing * 26.0 - first.facing.perp() * 15.0;
     if (heart - mid).abs().max_element() > size * 0.5 - 45.0 {
         return Err("the Hold site's at the edge".into());
     }
@@ -206,6 +342,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             facing: along,
         }],
         heart,
+        tracks,
+        crossings,
         ..Skeleton::default()
     };
     let nav = NavGrid::build(&sk.greybox(sides));

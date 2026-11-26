@@ -35,6 +35,17 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
     let sky = atmosphere(&mut rng);
     let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky);
     map.hold_name = st.hold_name();
+    let mut b = Dig {
+        map: &mut map,
+        l: &sk,
+        st,
+    };
+    for t in &sk.tracks {
+        b.rails(t, false);
+    }
+    for x in &sk.crossings {
+        b.rail_bridge(x);
+    }
     for (k, d) in sk.land.digs.iter().enumerate() {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x2545_F491).wrapping_add(k as u64));
         Inside {
