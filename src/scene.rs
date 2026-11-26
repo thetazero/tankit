@@ -812,7 +812,6 @@ mod tests {
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
-            ("foundry", Map::foundry()),
             ("mine", Map::mine(0)),
         ]);
     }
@@ -829,7 +828,10 @@ mod tests {
         hardly_z_fight([
             (
                 "resonant city",
-                crate::make_map(crate::MapKind::City(crate::map::procgen::Look::Resonant), 0),
+                crate::make_map(
+                    crate::MapKind::City(crate::map::procgen::Look::Resonant, Default::default()),
+                    0,
+                ),
             ),
             (
                 "shield-site imperium",
@@ -843,6 +845,35 @@ mod tests {
             (
                 "shield-site ithessar",
                 Map::shield_city(0, Faction::Ithessar),
+            ),
+        ]);
+    }
+
+    /// The same for each faction's hull foundry.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn foundries_hardly_z_fight() {
+        use crate::map::procgen::{Look, foundry::Ground};
+        let foundry = |seed, l, g| crate::make_map(crate::MapKind::Foundry(l, g), seed);
+        hardly_z_fight([
+            (
+                "foundry imperium",
+                foundry(0, Look::Imperium, Ground::Desert),
+            ),
+            (
+                "foundry resonant",
+                foundry(1, Look::Resonant, Ground::Tundra),
+            ),
+            (
+                "foundry uthenn",
+                foundry(2, Look::Uthenn, Ground::Grassland),
+            ),
+            (
+                "foundry ithessar",
+                foundry(3, Look::Ithessar, Ground::Desert),
             ),
         ]);
     }

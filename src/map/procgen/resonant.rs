@@ -152,7 +152,11 @@ impl Style for Resonant {
                     toppled_spire(map, rng, f);
                 }
             }
-            LotKind::Civic(_) | LotKind::Spires | LotKind::Fins | LotKind::Boulders => {}
+            LotKind::Civic(_)
+            | LotKind::Works(_)
+            | LotKind::Spires
+            | LotKind::Fins
+            | LotKind::Boulders => {}
             LotKind::Distant => {
                 let out = (-f.center)
                     .max(f.center - Vec2::splat(sk.size))

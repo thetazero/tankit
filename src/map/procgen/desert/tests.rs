@@ -185,6 +185,33 @@ fn the_high_ground_is_reachable() {
     }
 }
 
+/// The bots' ways between the sides: some on every form, each on ground
+/// they can drive, some over the high ground where the form's made of it.
+#[test]
+fn there_are_ways_round() {
+    for seed in SEEDS {
+        let m = Map::desert(seed);
+        let sk = skeleton(&spec(seed));
+        let nav = NavGrid::build(&m);
+        let what = format!("seed {seed} ({:?})", form_of(seed));
+        let high = |w: &Vec<Vec3>| {
+            let up = w.iter().filter(|p| sk.land.on_high(Vec2::new(p.x, p.z)));
+            up.count() as f32 / w.len() as f32
+        };
+        assert!(!m.routes.is_empty(), "{what}: no ways");
+        for p in m.routes.iter().flatten() {
+            let f = nav.floor_at(*p);
+            assert!(
+                f.is_some_and(|f| (f - p.y).abs() < 1.5),
+                "{what}: {p} is on {f:?}"
+            );
+        }
+        if form_of(seed) == Form::Canyonlands {
+            assert!(m.routes.iter().any(|w| high(w) > 0.2), "{what}");
+        }
+    }
+}
+
 /// The shield desert (#337), one seed of each form, each with a different
 /// side's generator: playable, the Hold site the generator, its light high
 /// over the middle, its doors open from the plinth out past the precinct,

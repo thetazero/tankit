@@ -25,7 +25,7 @@ use crate::economy::{Part, Payout};
 use crate::faction::Faction;
 use crate::galaxy::battle::{self, Battle};
 use crate::galaxy::save::War;
-use crate::galaxy::theater::{Offer, Shown, Sortie, TickSummary};
+use crate::galaxy::theater::{Shown, Sortie, TickSummary};
 use crate::game::Clock;
 use crate::garage::{self, Garage};
 use crate::hitch::{self, Laps};
@@ -674,8 +674,6 @@ impl App {
         self.map_seed = o.map_seed;
         (self.contract, self.side) = (m.contract, 0);
         self.sortie = Some(o);
-        // What happened to your company has been told by now.
-        self.war.get().crew_news = None;
         // The kit you'd picked by now, if it changed while the map was built.
         let kit = self.profile.loadout;
         game.set_player_hull(kit.0);
@@ -714,8 +712,8 @@ impl App {
     }
 
     /// The war goes on a slice of this frame while your company's between
-    /// contracts on the contract screen, until it has work (or a ship to
-    /// choose); the screen counts the ticks.
+    /// contracts on the contract screen, until it has work (or you've
+    /// work to choose); the screen counts the ticks.
     fn pump_waiting(&mut self) {
         if self.mode != Mode::Menu || self.garage.is_open() || !self.menu.waiting() {
             return;
@@ -728,8 +726,14 @@ impl App {
         let done = g.await_work_slice(None, rank, &mut left, || start.elapsed() >= WAIT_BUDGET);
         let ticked = u32::MAX - left;
         self.menu.waited(ticked);
+        let free = done && g.free_to_choose();
         if done {
             self.sync_theater_after(0, ticked > 0);
+            // Your contract's over: what's next is yours to pick.
+            if free && self.menu.waiting() {
+                self.menu.screen = menu::Screen::Ships;
+                self.sync_ships();
+            }
         } else if ticked > 0 {
             // What ended meanwhile (your contract, say) shows now.
             let ended = g.ended.clone();
@@ -746,20 +750,15 @@ impl App {
         let rank = self.profile.rank().level;
         let g = self.war.get();
         adopt(g, &mut self.profile);
-        let choice = g.crew_choice();
-        let shown = self.menu.choice().map(|c| c.choice) == choice.as_ref().map(|c| c.choice);
-        if shown
-            && self.menu.theater().is_some_and(|t| {
-                t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == g.crew)
-            })
-        {
+        if self.menu.theater().is_some_and(|t| {
+            t.tick == g.tick && t.ship.as_ref().is_some_and(|s| Some(s.id) == g.crew)
+        }) {
             return;
         }
         // No battle for you this tick: the war goes on until there is one.
         let before = g.crew;
         let (t, ticked) = g.await_work(None, rank, ticks);
         let crew = g.crew;
-        let choice = g.crew_choice();
         if changed || ticked || crew != before {
             self.war.save();
         }
@@ -775,7 +774,6 @@ impl App {
         // How the contract you were last shown ended, if it has.
         let ended = self.war.get().ended.clone();
         self.menu.set_ended(&ended);
-        self.menu.set_choice(choice);
         self.menu.set_theater(t);
         self.keep_shown();
     }
@@ -794,32 +792,24 @@ impl App {
         let rank = self.profile.rank().level;
         let g = self.war.get();
         adopt(g, &mut self.profile);
-        let mine = g.aboard(rank).and_then(|t| Offer::of(&t));
+        let mine = g.my_work(rank);
         self.menu.board.set(g.open_work(rank), mine);
     }
 
-    /// Leave your company for ship `id` (#365), then on to its theater.
+    /// Sign on with ship `id` (#557), then on to its theater, when it lands.
     fn switch_crew(&mut self, id: u32) {
         let g = self.war.get();
-        if g.switch_crew(id) {
+        let before = g.crew;
+        if g.sign_on(id) {
             let crew = g.crew;
             self.war.save();
             self.profile.board(crew);
-            self.menu.switched();
+            if crew != before {
+                self.menu.switched();
+            }
             self.menu.screen = menu::Screen::Missions;
         }
         self.sync_ships();
-        self.sync_theater();
-    }
-
-    /// Go with ship `id`, of those your company's split or join offered (#364).
-    fn choose_crew(&mut self, id: u32) {
-        let g = self.war.get();
-        if g.choose_crew(id) {
-            let crew = g.crew;
-            self.war.save();
-            self.profile.board(crew);
-        }
         self.sync_theater();
     }
 
@@ -1296,7 +1286,6 @@ impl App {
                 // Your side isn't fighting there this tick.
                 self.audio.garage(audio::GarageCue::Refused);
             }
-            Some(menu::Action::Crew(id)) => self.choose_crew(id),
             Some(menu::Action::Switch(id)) => self.switch_crew(id),
             Some(menu::Action::Garage) => {
                 if let Some(cam) = self.camera {

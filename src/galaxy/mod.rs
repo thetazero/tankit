@@ -477,13 +477,8 @@ pub struct Galaxy {
     pub own: Option<theater::Own>,
     /// Your company's last few ended contracts, newest last (#414).
     pub ended: Vec<theater::Ended>,
-    /// What just happened to your company, for the missions screen (not saved).
-    pub crew_news: Option<theater::CrewNews>,
-    /// Your company just split or joined another: which ship you go with,
-    /// for you to choose on the missions screen (#364). You're with the
-    /// first meanwhile, and the war waits on your choice (not saved: a
-    /// choice left open when you quit stays the first).
-    pub crew_choice: Option<theater::CrewChoice>,
+    /// The contract you're signed on for (#557).
+    pub job: Option<theater::Job>,
     /// Hulls destroyed in the galaxy's battles, all told.
     pub destroyed: f64,
     /// Crystal captured with fallen systems, all told (not saved).
@@ -682,8 +677,7 @@ impl Galaxy {
             crew: None,
             own: None,
             ended: Vec::new(),
-            crew_news: None,
-            crew_choice: None,
+            job: None,
             destroyed: 0.0,
             captured: 0.0,
             rng,
