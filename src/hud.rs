@@ -20,9 +20,9 @@ use crate::raid;
 use crate::render::{Camera, UiVertex};
 use crate::scene::project;
 use crate::sim::Tank;
-use crate::ui::emblem;
 use crate::ui::widgets::{self, label};
 use crate::ui::{Align, Hits, Layer, Painter, Rgba, TextStyle, measure, theme, with_alpha};
+use crate::ui::{design, emblem};
 
 /// What the HUD calls fighter `i`: "YOU", or its turret.
 pub fn callsign(m: &Match, i: usize) -> &'static str {
@@ -583,17 +583,6 @@ impl Hud {
             }
         }
 
-        // Round over: the debrief, unless Tab's held for the tables.
-        let debrief = m.phase == Phase::Over && !scores;
-        if board && !debrief {
-            // Four sides stack two rows of tables: start higher.
-            let top = if m.factions.len() > 2 { 0.17 } else { 0.28 };
-            // The tables sit on opaque panels.
-            p.set_over_scene(false);
-            scoreboard(&mut p, m, Vec2::new(w * 0.5, h * top), h);
-            p.set_over_scene(true);
-        }
-
         // Bottom left: speed.
         let bl = Vec2::new(MARGIN, h - MARGIN);
         label(&mut p, bl + Vec2::new(0.0, -62.0), "SPEED", Align::Left);
@@ -646,15 +635,16 @@ impl Hud {
             );
         }
 
-        if debrief {
+        // The board, over everything: Tab's, or with the round over, the same
+        // one opened up with how it went and what you got.
+        if board {
             p.set_over_scene(false);
-            let view = DebriefView {
-                m,
+            p.set_halo(None);
+            let end = (m.phase == Phase::Over).then_some(Debrief {
                 ledger,
                 war: self.debrief.as_ref(),
-                hover: self.hover,
-            };
-            draw_debrief(&mut p, &mut hits, &view, w, h);
+            });
+            draw_board(&mut p, &mut hits, m, end, w, h);
         }
 
         Layer {
@@ -676,202 +666,290 @@ fn name_in(score: &str) -> f32 {
     52.0 + (measure(score, &style) - two).max(0.0)
 }
 
-/// Each side's standings table, two to a row (your side first, top left).
-fn scoreboard(p: &mut Painter, m: &Match, top: Vec2, screen_h: f32) {
-    let holding = m.contract == Contract::Hold;
-    let cols = StatColumns::new(holding);
-    // Wide enough for the longest tank name in the match beside the stat columns.
+/// The board's row pitch; a table's head and foot (its side and score; its
+/// hulls left); and the gaps between tables, across and down.
+const BOARD_ROW: f32 = design::UNIT * 3.0;
+const BOARD_HEAD: f32 = design::UNIT * 7.0;
+const BOARD_FOOT: f32 = design::UNIT * 5.0;
+const BOARD_GAP: f32 = design::UNIT * 8.0;
+const BOARD_DOWN: f32 = design::UNIT * 3.0;
+/// Round the tables, and how much the board opens above them at the end.
+const BOARD_PAD: f32 = design::UNIT * 4.0;
+const BOARD_OVER: f32 = design::UNIT * 12.0;
+/// A line of what you got, and the way on under them.
+const GAIN_ROW: f32 = design::UNIT * 4.0;
+const BOARD_ON: f32 = design::UNIT * 5.0;
+/// How long the board takes to open.
+const BOARD_OPENS: f32 = 0.35;
+
+/// What the board shows besides the tables once the round's over.
+struct Debrief<'a> {
+    ledger: Ledger,
+    war: Option<&'a WarResult>,
+}
+
+/// How wide a table is: the longest name in the match beside its columns.
+fn table_width(pilots: &[Pilot], cols: &StatColumns) -> f32 {
+    let widest = pilots.iter().map(row_name_width).fold(0.0, f32::max);
+    (widest + NAME_GAP + cols.width).max(380.0).ceil()
+}
+
+/// The board: each side's table, two to a row (your side first, top left).
+/// With the round over (`end`) it opens up round them, which stay where they
+/// were: how it went above, what you got below.
+fn draw_board(
+    p: &mut Painter,
+    hits: &mut Hits<Hit>,
+    m: &Match,
+    end: Option<Debrief>,
+    w: f32,
+    h: f32,
+) {
+    let cols = StatColumns::new(m.contract == Contract::Hold);
     let pilots = m.pilots();
-    let widest = pilots
-        .iter()
-        .map(|pi| row_name_width(pi))
-        .fold(0.0, f32::max);
-    let col = (widest + NAME_GAP + cols.width).max(380.0).ceil();
-    let gap = 48.0;
+    let col = table_width(&pilots, &cols);
     let sides = m.factions.len();
-    let rows = (0..sides)
+    let blocks = sides.div_ceil(2) as f32;
+    // Kept the size it'll be at the end, so the tables don't move then.
+    let under = BOARD_PAD + GAIN_ROW * SCRAP_LINES as f32 + BOARD_ON;
+    let room = h - 48.0 - BOARD_OVER - under - BOARD_PAD * 2.0;
+    let fixed = blocks * (BOARD_HEAD + BOARD_FOOT) + (blocks - 1.0) * BOARD_DOWN;
+    let fit = (((room - fixed) / blocks / BOARD_ROW) as usize).max(1);
+    let most = (0..sides)
         .map(|t| pilots.iter().filter(|pi| pi.team == t).count())
         .max()
-        .unwrap_or(0) as f32;
-    // Under each table, its hulls left (#423): a line for the realm and
-    // one per merc company, under an allocation.
-    let summaries: Vec<_> = (0..sides).map(|t| m.hull_summary(t)).collect();
-    let lines = summaries
-        .iter()
-        .flatten()
-        .map(|(_, c)| 1 + c.len())
-        .max()
-        .map_or(0.0, |n| SUMMARY_TOP + n as f32 * SUMMARY_ROW);
-    // Tables stack two to a row.
-    let block = 56.0 + rows * 22.0 + lines;
-    let block_gap = 24.0;
-    let blocks = sides.div_ceil(2) as f32;
-    let body = blocks * block + (blocks - 1.0) * block_gap;
-    let width = col * 2.0 + gap;
-    let y = top.y;
-    let (x0, x1) = (top.x - width * 0.5, top.x + width * 0.5);
-    let height = 28.0 + body;
-    // Too tall for where it was asked to start: up, as far as needed to fit.
-    let y = y.min(screen_h - 24.0 - height + 24.0).max(48.0);
+        .unwrap_or(0);
+    let rows = most.min(fit);
+    let block = BOARD_HEAD + rows as f32 * BOARD_ROW + BOARD_FOOT;
+    let body = blocks * block + (blocks - 1.0) * BOARD_DOWN;
+    let width = col * 2.0 + BOARD_GAP;
+    let (x0, x1) = ((w - width) * 0.5, (w + width) * 0.5);
+    let top = (h - BOARD_OVER - body - under) * 0.5 + BOARD_OVER;
+
+    // The gains take as many lines as there are.
+    let scrap = if end.is_some() {
+        scrap_lines(m)
+    } else {
+        Vec::new()
+    };
+    let lines = if scrap.is_empty() {
+        1
+    } else {
+        scrap.len().max(2)
+    };
+    let opened = if end.is_some() {
+        ease_out(m.over_for / BOARD_OPENS)
+    } else {
+        0.0
+    };
+    let above = BOARD_PAD + BOARD_OVER * opened;
+    let below = BOARD_PAD * 2.0 + GAIN_ROW * lines as f32 + BOARD_ON;
+    let below = BOARD_PAD + (below - BOARD_PAD) * opened;
     p.rect(
-        Vec2::new(x0 - 24.0, y - 24.0),
-        Vec2::new(width + 48.0, height),
-        theme::PANEL,
-    );
-    widgets::corners(
-        p,
-        Vec2::new(x0 - 24.0, y - 24.0),
-        Vec2::new(x1 + 24.0, y - 24.0 + height),
-        14.0,
-        theme::DIM,
+        Vec2::new(x0 - BOARD_PAD, top - above),
+        Vec2::new(width + BOARD_PAD * 2.0, above + body + below),
+        design::GROUND,
     );
     for team in 0..sides {
-        let (a, b) = if team % 2 == 0 {
-            (x0, x0 + col)
-        } else {
-            (x1 - col, x1)
+        let a = if team % 2 == 0 { x0 } else { x1 - col };
+        let y = top + (team / 2) as f32 * (block + BOARD_DOWN);
+        table(p, m, &pilots, team, &cols, Vec2::new(a, y), col, rows);
+    }
+    let Some(end) = end.filter(|_| opened > 0.9) else {
+        return;
+    };
+
+    // How it went, and what became of the site.
+    let mid = w * 0.5;
+    let (word, color) = match m.leader() {
+        Some(t) if t == m.player().team => ("Victory", design::AMBER),
+        Some(_) => ("Defeat", theme::HOT),
+        None => ("Draw", design::TEXT),
+    };
+    let y = top - BOARD_OVER;
+    let style = design::TITLE.colored(color);
+    p.text(Vec2::new(mid, y), word, &style, Align::Center);
+    if let Some(r) = end.war {
+        let style = design::BODY.colored(design::TEXT_2);
+        let at = Vec2::new(mid, y + design::UNIT * 5.0);
+        p.text(at, &r.line(), &style, Align::Center);
+    }
+
+    // What you got: your rank and crystals, and beside them the parts.
+    let t = m.over_for - RESULTS_DELAY;
+    let y = top + body + BOARD_PAD;
+    rank_gain(p, &end.ledger, m.renown, t, Vec2::new(x0, y), col);
+    let pay = Payout::of(m).total();
+    let at = if scrap.is_empty() {
+        Vec2::new(x1 - col, y)
+    } else {
+        Vec2::new(x0, y + GAIN_ROW)
+    };
+    crystal_gain(p, end.ledger.crystals, pay, t, at, col);
+    for (k, line) in scrap.iter().enumerate() {
+        let at = Vec2::new(x1 - col, y + GAIN_ROW * k as f32);
+        match line {
+            ScrapLine::Part(sc) => part_gain(p, sc, t, at, col),
+            ScrapLine::More(n) => {
+                let style = design::SMALL.colored(design::TEXT_2);
+                p.text(at, &format!("+{n} more"), &style, Align::Left);
+            }
+        }
+    }
+
+    let style = design::HEAD.colored(design::AMBER);
+    let at = Vec2::new(mid, y + GAIN_ROW * lines as f32 + design::UNIT * 2.0);
+    let tw = p.text(at, "Continue", &style, Align::Center);
+    let pad = Vec2::splat(design::UNIT * 2.0);
+    let min = Vec2::new(mid - tw * 0.5, at.y) - pad;
+    let size = Vec2::new(tw, style.size) + pad * 2.0;
+    hits.add(p, min, size, Hit::Missions);
+}
+
+/// Side `team`'s table at `at`, `col` wide, with its first `rows` pilots
+/// (and you, always).
+#[allow(clippy::too_many_arguments)]
+fn table(
+    p: &mut Painter,
+    m: &Match,
+    pilots: &[Pilot],
+    team: usize,
+    cols: &StatColumns,
+    at: Vec2,
+    col: f32,
+    rows: usize,
+) {
+    use design::{BODY, HEAD, SMALL, TEXT_2, UNIT};
+    let (a, b) = (at.x, at.x + col);
+    let f = m.factions[team];
+    let style = HEAD.colored(f.ui());
+    emblem::tagged(p, at, f, &m.score(team).to_string(), &style, Align::Left);
+    for (name, dx) in cols.headers() {
+        let at = Vec2::new(b - dx, at.y + HEAD.size - SMALL.size);
+        p.text(at, name, &SMALL.colored(TEXT_2), Align::Right);
+    }
+    let rule = Vec2::new(a, at.y + UNIT * 4.0);
+    p.rect(rule, Vec2::new(col, 2.0), with_alpha(f.ui(), 0.7));
+
+    let side: Vec<&Pilot> = pilots.iter().filter(|pi| pi.team == team).collect();
+    let mut shown: Vec<&Pilot> = side.iter().copied().take(rows).collect();
+    if let Some(you) = side.iter().skip(rows).find(|pi| pi.seat == 0) {
+        shown.pop();
+        shown.push(you);
+    }
+    let mut y = at.y + BOARD_HEAD;
+    for pi in shown {
+        let s = row_style(pi);
+        let mut x = a;
+        if pi.company {
+            // A merc: the Company's mark, in its colors (#389).
+            let mut c = s;
+            if pi.active {
+                c.color = design::AMBER;
+            }
+            x += emblem::mark(p, Vec2::new(x, y), Faction::Company, &c);
+        }
+        p.text(Vec2::new(x, y), &kit_name(pi), &s, Align::Left);
+        let mut stat = |dx: f32, n: String| {
+            p.text(Vec2::new(b - dx, y), &n, &s, Align::Right);
         };
-        let y = y + (team / 2) as f32 * (block + block_gap);
-        let f = m.factions[team];
-        let mut name = TextStyle::value(12.0);
-        name.color = f.ui();
-        emblem::faction_name(p, Vec2::new(a, y), f, &name, Align::Left);
-        let mut score = TextStyle::value(18.0);
-        score.color = f.ui();
-        p.text(
-            Vec2::new(b, y - 4.0),
-            &m.score(team).to_string(),
-            &score,
-            Align::Right,
-        );
-        let mut ty = y + 32.0;
-        label(p, Vec2::new(a, ty), "TANK", Align::Left);
-        for (name, dx) in cols.headers() {
-            label(p, Vec2::new(b - dx, ty), name, Align::Right);
+        if let Some(dx) = cols.held {
+            stat(dx, format!("{:.0}", pi.held.floor()));
         }
-        ty += 14.0;
-        p.line(
-            Vec2::new(a, ty),
-            Vec2::new(b, ty),
-            1.0,
-            with_alpha(f.ui(), 0.4),
-        );
-        ty += 10.0;
-        for pi in pilots.iter().filter(|pi| pi.team == team) {
-            let s = row_style(pi);
-            let mut x = a;
-            if pi.company {
-                // A merc: the Company's mark, in its colors (#389).
-                let mut c = s;
-                c.color = if pi.active {
-                    Faction::Company.ui()
-                } else {
-                    s.color
-                };
-                x += emblem::mark(p, Vec2::new(x, ty), Faction::Company, &c);
-            }
-            p.text(Vec2::new(x, ty), &kit_name(pi), &s, Align::Left);
-            if let Some(dx) = cols.held {
-                p.text(
-                    Vec2::new(b - dx, ty),
-                    &format!("{:.0}", pi.held.floor()),
-                    &s,
-                    Align::Right,
-                );
-            }
-            p.text(
-                Vec2::new(b - cols.kills, ty),
-                &pi.kills.to_string(),
-                &s,
-                Align::Right,
-            );
-            p.text(Vec2::new(b, ty), &pi.deaths.to_string(), &s, Align::Right);
-            ty += 22.0;
-        }
-        if let Some(summary) = &summaries[team] {
-            let ty = y + 56.0 + rows * 22.0;
-            hull_summary(p, m, team, summary, a, b, ty);
-        }
+        stat(cols.kills, pi.kills.to_string());
+        stat(0.0, pi.deaths.to_string());
+        y += BOARD_ROW;
+    }
+
+    // Hulls left (#423): the realm's, and its mercs' together.
+    let Some((realm, companies)) = m.hull_summary(team) else {
+        return;
+    };
+    let y = at.y + BOARD_HEAD + rows as f32 * BOARD_ROW + UNIT;
+    let mercs: u32 = companies.iter().map(|(_, n)| n).sum();
+    let style = SMALL.colored(TEXT_2);
+    p.text(Vec2::new(a, y + 1.5), "Hulls left", &style, Align::Left);
+    let seats = m.seats(team) as u32;
+    let mut x = b;
+    let mut count = |f: Faction, n: u32, color: Rgba| {
+        let color = match n {
+            0 => TEXT_2,
+            n if n <= seats => theme::HOT,
+            _ => color,
+        };
+        let style = BODY.colored(color);
+        x -= emblem::tagged(p, Vec2::new(x, y), f, &n.to_string(), &style, Align::Right);
+        x -= UNIT * 2.0;
+    };
+    if !companies.is_empty() {
+        count(Faction::Company, mercs, design::AMBER);
+    }
+    count(f, realm, f.ui());
+}
+
+/// A gain's bar, in the middle of its line at `at`: what you had, and what
+/// you got lit.
+fn gain_bar(p: &mut Painter, at: Vec2, col: f32, from: f32, to: f32) {
+    let (x, w) = (at.x + col * 0.4, col * 0.45);
+    let y = at.y + design::SMALL.size * 0.5 - 1.5;
+    let h = 3.0;
+    let rail = with_alpha(design::TEXT_2, 0.3);
+    p.rect(Vec2::new(x, y), Vec2::new(w, h), rail);
+    p.rect(Vec2::new(x, y), Vec2::new(w * from, h), design::TEXT_2);
+    if to > from {
+        let size = Vec2::new(w * (to - from), h);
+        p.rect(Vec2::new(x + w * from, y), size, design::AMBER);
     }
 }
 
-/// The hull summary under a table: the space above it, and each line.
-const SUMMARY_TOP: f32 = 32.0;
-const SUMMARY_ROW: f32 = 22.0;
+/// Your rank, its bar filling by the renown you earned.
+fn rank_gain(p: &mut Painter, ledger: &Ledger, gained: u32, t: f32, at: Vec2, col: f32) {
+    let shown = renown_shown(gained, t);
+    let start = Rank::of(ledger.renown);
+    let now = Rank::of(ledger.renown + shown);
+    let up = now.level > start.level;
+    let style = design::SMALL.colored(if up { design::AMBER } else { design::TEXT });
+    let name = format!("{} {}", now.title(), now.level);
+    p.text(at, &name, &style, Align::Left);
+    let from = if up { 0.0 } else { start.progress() };
+    gain_bar(p, at, col, from, now.progress());
+    let style = design::SMALL.colored(design::AMBER);
+    let right = at + Vec2::X * col;
+    p.text(right, &format!("+{shown}"), &style, Align::Right);
+}
 
-/// Side `team`'s hulls left (#423), between `a` and `b` from `y` down:
-/// under a rule and its header, the realm's, then each merc company's on
-/// its side. Hot when the last few are going; dim once there are none.
-fn hull_summary(
-    p: &mut Painter,
-    m: &Match,
-    team: usize,
-    (realm, companies): &(u32, Vec<(String, u32)>),
-    a: f32,
-    b: f32,
-    y: f32,
-) {
-    let f = m.factions[team];
-    p.line(
-        Vec2::new(a, y + 4.0),
-        Vec2::new(b, y + 4.0),
-        1.0,
-        with_alpha(f.ui(), 0.25),
-    );
-    label(p, Vec2::new(a, y + 12.0), "HULLS LEFT", Align::Left);
-    let seats = m.seats(team) as u32;
-    let lines = std::iter::once((f, f.name().to_string(), *realm)).chain(
-        companies
-            .iter()
-            .map(|(n, h)| (Faction::Company, n.clone(), *h)),
-    );
-    let mut ly = y + SUMMARY_TOP;
-    for (who, name, n) in lines {
-        let mut s = TextStyle::value(ROW_SIZE);
-        s.color = if n == 0 { theme::DIM } else { who.ui() };
-        emblem::tagged(p, Vec2::new(a, ly), who, &name, &s, Align::Left);
-        let mut v = TextStyle::value(ROW_SIZE);
-        v.color = if n == 0 {
-            theme::DIM
-        } else if n <= seats {
-            theme::HOT
-        } else {
-            theme::FG
-        };
-        p.text(Vec2::new(b, ly), &n.to_string(), &v, Align::Right);
-        ly += SUMMARY_ROW;
-    }
+/// Your crystals going up by the pay, and the pay.
+fn crystal_gain(p: &mut Painter, before: u32, pay: u32, t: f32, at: Vec2, col: f32) {
+    let got = (pay as f32 * ease_out(t / REP_FILL)).round() as u32;
+    let style = design::SMALL.colored(design::BLUE);
+    p.text(at, &format!("{} cr", before + got), &style, Align::Left);
+    let right = at + Vec2::X * col;
+    p.text(right, &format!("+{got}"), &style, Align::Right);
+}
+
+/// A part you've got further with: its bar filling, and the step it's
+/// heading for, or that it's new.
+fn part_gain(p: &mut Painter, sc: &Scrapped, t: f32, at: Vec2, col: f32) {
+    let k = ease_out(t / REP_FILL);
+    let maker = sc.part.maker();
+    let style = design::SMALL.colored(maker.ui());
+    emblem::tagged(p, at, maker, sc.part.name(), &style, Align::Left);
+    let (from, to) = scrap_bar(sc);
+    gain_bar(p, at, col, from, from + (to - from) * k);
+    let whole = sc.known.floor() as u8;
+    let reached = sc.stepped();
+    let text = match sc.toward().filter(|_| !reached) {
+        Some((_, next)) => economy::level_label(next),
+        None if whole == 1 && !sc.part.starter() => "New".to_string(),
+        None => economy::level_label(whole),
+    };
+    let lit = reached && k >= 1.0;
+    let style = design::SMALL.colored(if lit { design::AMBER } else { design::TEXT_2 });
+    p.text(at + Vec2::X * col, &text, &style, Align::Right);
 }
 
 const BUTTON_H: f32 = 26.0;
 const BUTTON_PAD: f32 = 12.0;
-
-/// A button: `what` in a hairline box at `min`, lit while hovered, that
-/// clicks as `id`. Returns its width.
-fn button(
-    p: &mut Painter,
-    hits: &mut Hits<Hit>,
-    hover: Option<Hit>,
-    min: Vec2,
-    what: &str,
-    id: Hit,
-) -> f32 {
-    let style = TextStyle::LABEL;
-    let size = Vec2::new(BUTTON_PAD * 2.0 + measure(what, &style), BUTTON_H);
-    let fill = if hover == Some(id) { 0.16 } else { 0.07 };
-    p.rect(min, size, with_alpha(theme::FG, fill));
-    p.rect_outline(min, size, 1.0, theme::FG);
-    let mut a = style;
-    a.color = theme::FG;
-    p.text(
-        Vec2::new(min.x + size.x * 0.5, min.y + (BUTTON_H - style.size) * 0.5),
-        what,
-        &a,
-        Align::Center,
-    );
-    hits.add(p, min, size, id);
-    size.x
-}
 
 /// What your battle did to the war (its site), for the debrief.
 #[derive(Clone, Debug, PartialEq)]
@@ -881,6 +959,18 @@ pub struct WarResult {
     /// What was fought over: "SHIELD GENERATOR".
     pub site: &'static str,
     pub verdict: Verdict,
+}
+
+impl WarResult {
+    /// "FOUNDRY TAKEN".
+    fn line(&self) -> String {
+        let site = match self.site {
+            "SHIELD GENERATOR" => "Shield",
+            "CRYSTAL MINE" => "Mine",
+            _ => "Foundry",
+        };
+        format!("{site} {}", self.verdict.word())
+    }
 }
 
 /// What became of the site your battle was for.
@@ -907,233 +997,49 @@ impl Verdict {
         }
     }
 
-    pub fn good(self) -> bool {
-        matches!(self, Verdict::Taken | Verdict::Held)
-    }
-
     pub fn word(self) -> &'static str {
         match self {
-            Verdict::Taken => "TAKEN",
-            Verdict::Holds => "HOLDS",
-            Verdict::Held => "HELD",
-            Verdict::Lost => "LOST",
+            Verdict::Taken => "taken",
+            Verdict::Holds => "not taken",
+            Verdict::Held => "held",
+            Verdict::Lost => "lost",
         }
     }
-}
-
-/// What the debrief draws from.
-struct DebriefView<'a> {
-    m: &'a Match,
-    ledger: Ledger,
-    war: Option<&'a WarResult>,
-    hover: Option<Hit>,
-}
-
-/// Width of the debrief's panel, and its columns' gap.
-const DEBRIEF_W: f32 = 640.0;
-const DEBRIEF_PAD: f32 = 40.0;
-const DEBRIEF_GAP: f32 = 48.0;
-
-/// The round's debrief, over the dimmed battle: how it went (victory,
-/// defeat, draw), what it did to the site it was for, the score, then what
-/// you earned. One button on; Tab shows the tables instead.
-fn draw_debrief(p: &mut Painter, hits: &mut Hits<Hit>, v: &DebriefView, w: f32, h: f32) {
-    let m = v.m;
-    let me = m.player().team;
-    p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.6]);
-
-    let learned = Payout::of(m).schematic;
-    let scrap = scrap_lines(m);
-    let scrap_h = scrap.len().div_ceil(2) as f32 * SCRAP_ROW_H;
-    let head_h = 30.0 + 52.0 + 30.0 + if m.factions.len() == 2 { 30.0 } else { 0.0 };
-    let height = DEBRIEF_PAD
-        + head_h
-        + 24.0
-        + RESULTS_H
-        + if learned.is_some() {
-            STOLEN_H + 8.0
-        } else {
-            0.0
-        }
-        + if scrap.is_empty() {
-            0.0
-        } else {
-            scrap_h + 12.0
-        }
-        + 24.0
-        + BUTTON_H
-        + DEBRIEF_PAD * 0.75;
-    let min = Vec2::new(
-        w * 0.5 - DEBRIEF_W * 0.5,
-        (h * 0.5 - height * 0.5).max(24.0),
-    );
-    p.rect(min, Vec2::new(DEBRIEF_W, height), theme::PANEL);
-    widgets::corners(p, min, min + Vec2::new(DEBRIEF_W, height), 14.0, theme::DIM);
-    let cx = w * 0.5;
-    let (x0, x1) = (min.x + DEBRIEF_PAD, min.x + DEBRIEF_W - DEBRIEF_PAD);
-    let mut y = min.y + DEBRIEF_PAD;
-
-    // Where, then how it went.
-    let place = match v.war {
-        Some(r) => format!("{} · {}", r.world, r.site),
-        None => String::new(),
-    };
-    if !place.is_empty() {
-        label(p, Vec2::new(cx, y), &place, Align::Center);
-    }
-    y += 30.0;
-    let (title, color) = match m.leader() {
-        Some(t) if t == me => ("VICTORY", Faction::Company.ui()),
-        Some(_) => ("DEFEAT", theme::HOT),
-        None => ("DRAW", theme::FG),
-    };
-    let mut big = TextStyle::value(40.0);
-    big.color = color;
-    p.text(Vec2::new(cx, y), title, &big, Align::Center);
-    y += 52.0;
-    if let Some(r) = v.war {
-        let mut s = TextStyle::value(14.0);
-        s.color = if r.verdict.good() {
-            theme::FG
-        } else {
-            theme::DIM
-        };
-        p.text(
-            Vec2::new(cx, y),
-            &format!("{} {}", r.site, r.verdict.word()),
-            &s,
-            Align::Center,
-        );
-    }
-    y += 30.0;
-    if m.factions.len() == 2 {
-        final_score(p, m, Vec2::new(cx, y));
-        y += 30.0;
-    }
-    p.line(Vec2::new(x0, y), Vec2::new(x1, y), 1.0, theme::FAINT);
-    y += 24.0;
-
-    // What you earned.
-    let col = (x1 - x0 - DEBRIEF_GAP) * 0.5;
-    let t = m.over_for - RESULTS_DELAY;
-    renown_gained(p, v.ledger.renown, m.renown, t, x0, x0 + col, y);
-    crystal_tally(
-        p,
-        v.ledger.crystals,
-        Payout::of(m).total(),
-        t,
-        x1 - col,
-        x1,
-        y,
-    );
-    y += RESULTS_H;
-    if let Some(part) = learned {
-        // A schematic your wrecks made yours (#438).
-        let mut s = TextStyle::value(12.0);
-        s.color = theme::HOT;
-        emblem::tagged(
-            p,
-            Vec2::new(cx, y + 8.0),
-            part.maker(),
-            &format!("{} SCHEMATIC", part.name()),
-            &s,
-            Align::Center,
-        );
-        y += STOLEN_H + 8.0;
-    }
-    if !scrap.is_empty() {
-        y += 12.0;
-        for (i, line) in scrap.iter().enumerate() {
-            let (a, b) = if i % 2 == 0 {
-                (x0, x0 + col)
-            } else {
-                (x1 - col, x1)
-            };
-            let ly = y + (i / 2) as f32 * SCRAP_ROW_H;
-            match line {
-                ScrapLine::Part(sc) => scrap_row(p, sc, t, a, b, ly),
-                ScrapLine::More(k) => scrap_more(p, *k, a, ly),
-            }
-        }
-        y += scrap_h;
-    }
-
-    // On, or the tables.
-    y += 24.0;
-    let mut hint = TextStyle::LABEL;
-    hint.color = theme::DIM;
-    p.text(
-        Vec2::new(x0, y + (BUTTON_H - hint.size) * 0.5),
-        "TAB  SCOREBOARD",
-        &hint,
-        Align::Left,
-    );
-    let go = "CONTINUE";
-    let bw = BUTTON_PAD * 2.0 + measure(go, &TextStyle::LABEL);
-    button(p, hits, v.hover, Vec2::new(x1 - bw, y), go, Hit::Missions);
-}
-
-/// The round's final score, centred on `at`: each side's name and score,
-/// yours on the left, in its colour.
-fn final_score(p: &mut Painter, m: &Match, at: Vec2) {
-    for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
-        let f = m.factions[team];
-        let mut s = TextStyle::value(16.0);
-        s.color = f.ui();
-        let score = m.score(team).to_string();
-        let sw = p.text(Vec2::new(at.x + dir * 18.0, at.y), &score, &s, align);
-        let mut l = TextStyle::LABEL;
-        l.color = with_alpha(f.ui(), 0.8);
-        emblem::faction_name(
-            p,
-            Vec2::new(at.x + dir * (18.0 + sw + 14.0), at.y + 5.0),
-            f,
-            &l,
-            align,
-        );
-    }
-    p.line(
-        Vec2::new(at.x, at.y + 2.0),
-        Vec2::new(at.x, at.y + 16.0),
-        1.0,
-        theme::FAINT,
-    );
 }
 
 /// Scoreboard row text size.
-const ROW_SIZE: f32 = 11.0;
+const ROW_STYLE: TextStyle = design::SMALL;
 /// Space between a tank's name and the first stat column, and between stat columns.
 const NAME_GAP: f32 = 20.0;
 const STAT_GAP: f32 = 22.0;
 
-/// A pilot's scoreboard name: their hull and turret, yours marked.
+/// A pilot's name on the board: their hull and turret.
 fn kit_name(pi: &Pilot) -> String {
     format!(
-        "{}{} · {}",
-        if pi.seat == 0 { "YOU  " } else { "" },
+        "{} · {}",
         crate::garage::hull_name(pi.hull),
         crate::garage::turret_name(pi.turret)
     )
 }
 
-/// A scoreboard row's text: yours hot, and greyed out once the pilot's
+/// A scoreboard row's text: yours amber, and greyed out once the pilot's
 /// out of the fight (#389).
 fn row_style(pi: &Pilot) -> TextStyle {
-    let mut s = TextStyle::value(ROW_SIZE);
+    let mut s = ROW_STYLE;
     if !pi.active {
         s.color = OUT_ROW;
     } else if pi.seat == 0 {
-        s.color = theme::HOT;
+        s.color = design::AMBER;
     }
     s
 }
 
 /// A pilot out of the fight, on the scoreboard: there, but faint.
-const OUT_ROW: Rgba = [0.94, 0.91, 0.86, 0.32];
+const OUT_ROW: Rgba = [0.36, 0.365, 0.38, 0.45];
 
 /// How wide a pilot's name is on its row, the Company's mark among it.
 fn row_name_width(pi: &Pilot) -> f32 {
-    let s = TextStyle::value(ROW_SIZE);
+    let s = ROW_STYLE;
     let mark = if pi.company {
         emblem::mark_width(&s)
     } else {
@@ -1154,23 +1060,21 @@ struct StatColumns {
 
 impl StatColumns {
     fn new(holding: bool) -> StatColumns {
-        let w = |s: &str| {
-            measure(s, &TextStyle::LABEL).max(measure("000", &TextStyle::value(ROW_SIZE)))
-        };
-        let kills = w("DEATHS") + STAT_GAP;
-        let held = holding.then(|| kills + w("KILLS") + STAT_GAP);
+        let w = |s: &str| measure(s, &design::SMALL).max(measure("000", &ROW_STYLE));
+        let kills = w("Deaths") + STAT_GAP;
+        let held = holding.then(|| kills + w("Kills") + STAT_GAP);
         let width = match held {
-            Some(h) => h + w("HELD"),
-            None => kills + w("KILLS"),
+            Some(h) => h + w("Held"),
+            None => kills + w("Kills"),
         };
         StatColumns { held, kills, width }
     }
 
     /// Each header with its right edge's distance from the table's right edge.
     fn headers(&self) -> Vec<(&'static str, f32)> {
-        let mut out: Vec<_> = self.held.map(|h| ("HELD", h)).into_iter().collect();
-        out.push(("KILLS", self.kills));
-        out.push(("DEATHS", 0.0));
+        let mut out: Vec<_> = self.held.map(|h| ("Held", h)).into_iter().collect();
+        out.push(("Kills", self.kills));
+        out.push(("Deaths", 0.0));
         out
     }
 }
@@ -1262,16 +1166,9 @@ fn hold_color(m: &Match, c: Control) -> Rgba {
 
 /// Seconds after the round ends before the results start moving.
 const RESULTS_DELAY: f32 = 0.6;
-/// Height of the renown and crystal blocks under the tables.
-const RESULTS_H: f32 = 84.0;
-/// The line under the winner saying which schematic you reverse-engineered.
-const STOLEN_H: f32 = 26.0;
 /// How many parts get a line in the round-over scrap list (#444, #480)
 /// before the rest fold into one "+N MORE PARTS".
-const SCRAP_LINES: usize = 6;
-/// Each line of the round-over scrap list: the part, then its thin bar.
-const SCRAP_ROW_H: f32 = 30.0;
-
+const SCRAP_LINES: usize = 4;
 /// One line of the round-over scrap summary.
 enum ScrapLine {
     Part(Scrapped),
@@ -1382,12 +1279,6 @@ fn scrap_bar(sc: &Scrapped) -> (f32, f32) {
 
 /// Renown: the bar fills from where you stood over this long.
 const REP_FILL: f32 = 1.2;
-/// Crystals: "+0" joins the balance, ticks up to the pay, then folds into it.
-const CR_PLUS: f32 = 0.2;
-const CR_TICK: f32 = 0.6;
-const CR_TICK_TIME: f32 = 1.0;
-const CR_FOLD: f32 = 1.9;
-const CR_FOLD_TIME: f32 = 0.4;
 
 fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
@@ -1396,205 +1287,6 @@ fn ease_out(x: f32) -> f32 {
 /// How much of `gained` the renown graphic shows `t` seconds in.
 fn renown_shown(gained: u32, t: f32) -> u32 {
     (gained as f32 * ease_out(t / REP_FILL)).round() as u32
-}
-
-/// What the crystal tally reads `t` seconds in: the balance, and the pay
-/// beside it (with its opacity) until it folds in.
-#[derive(Debug, PartialEq)]
-struct Tally {
-    balance: u32,
-    plus: Option<(u32, f32)>,
-}
-
-fn tally(before: u32, pay: u32, t: f32) -> Tally {
-    let fold = ((t - CR_FOLD) / CR_FOLD_TIME).clamp(0.0, 1.0);
-    let balance = before + (pay as f32 * ease_out(fold)).round() as u32;
-    let plus = (t >= CR_PLUS && fold < 1.0).then(|| {
-        // Ticks: the count steps evenly, so every crystal shows.
-        let k = (pay as f32 * ((t - CR_TICK) / CR_TICK_TIME).clamp(0.0, 1.0)).floor() as u32;
-        let alpha = (((t - CR_PLUS) / 0.15).clamp(0.0, 1.0)) * (1.0 - fold);
-        (k, alpha)
-    });
-    Tally { balance, plus }
-}
-
-/// Renown gained with the Company, as a graphic: the rank bar filling from
-/// where you stood, the new part lit, the rank ticking over if it fills.
-#[allow(clippy::too_many_arguments)]
-fn renown_gained(p: &mut Painter, before: u32, gained: u32, t: f32, a: f32, b: f32, y: f32) {
-    let shown = renown_shown(gained, t);
-    let start = Rank::of(before);
-    let now = Rank::of(before + shown);
-    label(p, Vec2::new(a, y), "RENOWN", Align::Left);
-    let mut name = TextStyle::LABEL;
-    name.color = Faction::Company.ui();
-    emblem::faction_name(p, Vec2::new(b, y), Faction::Company, &name, Align::Right);
-
-    let mut big = TextStyle::value(22.0);
-    big.color = theme::HOT;
-    p.text(
-        Vec2::new(a, y + 18.0),
-        &format!("+{shown}"),
-        &big,
-        Align::Left,
-    );
-    let mut tier = TextStyle::value(14.0);
-    let up = now.level > start.level;
-    if up {
-        tier.color = theme::HOT;
-    }
-    let tw = p.text(
-        Vec2::new(b, y + 24.0),
-        &format!("RANK {}", now.level),
-        &tier,
-        Align::Right,
-    );
-    label(
-        p,
-        Vec2::new(b - tw - 8.0, y + 27.0),
-        if up { "RANK UP" } else { now.title() },
-        Align::Right,
-    );
-
-    // The bar: where you stood in neutral, this match lit.
-    let (bar_y, bar_h, width) = (y + 56.0, 6.0, b - a);
-    p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
-    let from = if up { 0.0 } else { start.progress() };
-    let to = now.progress();
-    if from > 0.0 {
-        p.rect(
-            Vec2::new(a, bar_y),
-            Vec2::new(width * from, bar_h),
-            theme::DIM,
-        );
-    }
-    if to > from {
-        p.rect(
-            Vec2::new(a + width * from, bar_y),
-            Vec2::new(width * (to - from), bar_h),
-            theme::HOT,
-        );
-    }
-    // Quarter ticks under the bar, so the fill reads as distance.
-    for q in 0..=4 {
-        let x = a + width * q as f32 / 4.0;
-        p.line(
-            Vec2::new(x, bar_y + bar_h + 2.0),
-            Vec2::new(x, bar_y + bar_h + 6.0),
-            1.0,
-            theme::FAINT,
-        );
-    }
-    label(
-        p,
-        Vec2::new(b, bar_y + bar_h + 10.0),
-        &format!("{} / {} TO RANK {}", now.into, now.span, now.level + 1),
-        Align::Right,
-    );
-}
-
-/// One part's line in the round-over scrap list (#480): the part and its
-/// maker's emblem, where it stands on the right, and a thin bar under them
-/// filling from where it stood, on renown's timer.
-fn scrap_row(p: &mut Painter, sc: &Scrapped, t: f32, a: f32, b: f32, y: f32) {
-    let k = ease_out(t / REP_FILL);
-    let mut name = TextStyle::value(12.0);
-    name.color = sc.part.maker().ui();
-    emblem::tagged(
-        p,
-        Vec2::new(a, y),
-        sc.part.maker(),
-        sc.part.name(),
-        &name,
-        Align::Left,
-    );
-    let reached = sc.stepped() && k >= 1.0;
-    let mut l = TextStyle::LABEL;
-    l.color = if reached { theme::HOT } else { theme::DIM };
-    p.text(Vec2::new(b, y + 2.0), &scrap_status(sc), &l, Align::Right);
-
-    let (from, to) = scrap_bar(sc);
-    let to = from + (to - from) * k;
-    let (bar_y, bar_h, width) = (y + 19.0, 2.0, b - a);
-    p.rect(Vec2::new(a, bar_y), Vec2::new(width, bar_h), theme::FAINT);
-    if from > 0.0 {
-        p.rect(
-            Vec2::new(a, bar_y),
-            Vec2::new(width * from, bar_h),
-            theme::DIM,
-        );
-    }
-    if to > from {
-        p.rect(
-            Vec2::new(a + width * from, bar_y),
-            Vec2::new(width * (to - from), bar_h),
-            theme::HOT,
-        );
-    }
-}
-
-/// Where a part stands, for its round-over line: the step it just reached,
-/// or the one it's heading for. No percentages: the bar shows how far.
-fn scrap_status(sc: &Scrapped) -> String {
-    match sc.toward().filter(|_| !sc.stepped()) {
-        Some((_, next)) => format!("NEXT {}", economy::level_label(next)),
-        None => scrap_progress(sc),
-    }
-}
-
-/// The parts the scrap list has no room for, folded into one line.
-fn scrap_more(p: &mut Painter, n: usize, a: f32, y: f32) {
-    let mut l = TextStyle::LABEL;
-    l.color = theme::DIM;
-    p.text(
-        Vec2::new(a, y + 2.0),
-        &format!("+{n} MORE PARTS"),
-        &l,
-        Align::Left,
-    );
-}
-
-/// Contract pay as one clean number: your crystals, then "+0" beside them
-/// ticking up to the pay, which then folds into the balance.
-fn crystal_tally(p: &mut Painter, before: u32, pay: u32, t: f32, a: f32, b: f32, y: f32) {
-    let now = tally(before, pay, t);
-    label(p, Vec2::new(a, y), "CRYSTALS", Align::Left);
-    label(p, Vec2::new(b, y), "CR", Align::Right);
-    let big = TextStyle::value(22.0);
-    let bw = p.text(
-        Vec2::new(a, y + 18.0),
-        &now.balance.to_string(),
-        &big,
-        Align::Left,
-    );
-    if let Some((k, alpha)) = now.plus {
-        let mut s = TextStyle::value(22.0);
-        s.color = with_alpha(theme::HOT, alpha);
-        p.text(
-            Vec2::new(a + bw + 14.0, y + 18.0),
-            &format!("+{k}"),
-            &s,
-            Align::Left,
-        );
-    }
-    p.line(
-        Vec2::new(a, y + 59.0),
-        Vec2::new(b, y + 59.0),
-        1.0,
-        theme::FAINT,
-    );
-    // Once folded in, what the contract paid, small.
-    let done = ((t - CR_FOLD - CR_FOLD_TIME) / 0.3).clamp(0.0, 1.0);
-    if done > 0.0 {
-        let mut l = TextStyle::LABEL;
-        l.color = with_alpha(theme::DIM, done);
-        p.text(
-            Vec2::new(b, y + 66.0),
-            &format!("+{pay} CONTRACT PAY"),
-            &l,
-            Align::Right,
-        );
-    }
 }
 
 /// The debug overlay's frame rate, small in the top right corner above the HUD brackets.
@@ -2010,11 +1702,11 @@ mod tests {
             .flat_map(|&h| crate::garage::TURRETS.iter().map(move |&t| (h, t)))
             .map(|(h, t)| {
                 let name = format!(
-                    "YOU  {} · {}",
+                    "{} · {}",
                     crate::garage::hull_name(h),
                     crate::garage::turret_name(t)
                 );
-                measure(&name, &TextStyle::value(ROW_SIZE))
+                measure(&name, &ROW_STYLE)
             })
             .fold(0.0, f32::max);
         let col = widest + NAME_GAP + StatColumns::new(true).width;
@@ -2032,45 +1724,11 @@ mod tests {
                 let (right, r) = pair[1];
                 // The right column's header starts after the left column ends.
                 assert!(
-                    r + measure(right, &TextStyle::LABEL) + 8.0 < l,
+                    r + measure(right, &design::SMALL) + 8.0 < l,
                     "{left} {right}"
                 );
             }
         }
-    }
-
-    #[test]
-    fn crystals_show_x_then_x_plus_0_then_tick_up_and_fold_in() {
-        // Before anything moves: just the balance.
-        assert_eq!(
-            tally(1200, 250, -0.5),
-            Tally {
-                balance: 1200,
-                plus: None
-            }
-        );
-        // Then "+0" beside it.
-        let t = tally(1200, 250, CR_PLUS + 0.2);
-        assert_eq!((t.balance, t.plus.map(|p| p.0)), (1200, Some(0)));
-        // Ticking up, never past the pay, never backwards.
-        let mut last = 0;
-        let mut t = CR_TICK;
-        while t < CR_FOLD {
-            let k = tally(1200, 250, t).plus.unwrap().0;
-            assert!(k >= last && k <= 250);
-            last = k;
-            t += 1.0 / 60.0;
-        }
-        assert_eq!(last, 250);
-        // Folded in: one clean number.
-        let end = tally(1200, 250, CR_FOLD + CR_FOLD_TIME + 1.0);
-        assert_eq!(
-            end,
-            Tally {
-                balance: 1450,
-                plus: None
-            }
-        );
     }
 
     #[test]
@@ -2122,8 +1780,9 @@ mod tests {
         // Mid-round the scoreboard has nothing to click.
         assert!(draw(&mut hud, &m, true).is_empty());
         m.phase = Phase::Over;
-        // Over, Tab shows the tables alone; else the debrief, with its button.
-        assert!(draw(&mut hud, &m, true).is_empty());
+        // Over, it has its way on, Tab held or not.
+        m.over_for = 1.0;
+        assert!(!draw(&mut hud, &m, true).is_empty());
         let hits = draw(&mut hud, &m, false);
         let at = hits.center_of(Hit::Missions).expect("button drawn");
         assert_eq!(hits.at(at).map(|(h, _)| h), Some(Hit::Missions));
@@ -2136,8 +1795,6 @@ mod tests {
         assert_eq!(Verdict::of(false, false), Verdict::Holds);
         assert_eq!(Verdict::of(true, false), Verdict::Held);
         assert_eq!(Verdict::of(true, true), Verdict::Lost);
-        assert!(Verdict::Taken.good() && Verdict::Held.good());
-        assert!(!Verdict::Holds.good() && !Verdict::Lost.good());
     }
 
     #[test]
