@@ -435,6 +435,11 @@ impl Skeleton {
         self.streets
             .iter()
             .filter(|s| s.rank != Rank::Crossing)
+            // (Most are nowhere near: their boxes are quick to rule out.)
+            .filter(|s| {
+                let reach = Vec2::splat(s.half + 1.2);
+                p.cmpgt(s.from.min(s.to) - reach).all() && p.cmplt(s.from.max(s.to) + reach).all()
+            })
             .map(|s| 1.0 - smoothstep(s.half - 0.8, s.half + 1.2, s.distance(p)))
             .fold(0.0, f32::max)
             .max(
