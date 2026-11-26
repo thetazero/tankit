@@ -73,13 +73,13 @@ pub const MISSIONS: &[Mission] = &[
         sides: &[Faction::Ithessar, Faction::Imperium],
     },
     Mission {
-        name: "FOUR WINDS",
+        name: "BROKEN STREETS",
         contract: Contract::Attrition,
-        map: "IMPERIAL CITY",
+        map: "CITY",
         map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
         seed: 0,
-        team_size: 4,
-        sides: &Faction::ALL,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
     },
     Mission {
         name: "SCRAP METAL",
@@ -142,6 +142,15 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    Mission {
+        name: "HIGH SEAT",
+        contract: Contract::Hold,
+        map: "CITY",
+        map_kind: MapKind::City(crate::map::procgen::Look::Imperium),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
 ];
 
 /// The missions a site on a `class` world can be fought with (#311): every
@@ -191,6 +200,12 @@ mod tests {
             assert!(!for_sites(class).is_empty(), "{class:?}");
             assert!(!for_shields(class).is_empty(), "{class:?}");
         }
+        // Cities among them (two-sided, as every site's battle is).
+        assert!(
+            for_sites(Class::Desert)
+                .iter()
+                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(_)))
+        );
         // Every desert mission is there from the start, not just Dry Wind.
         assert!(for_sites(Class::Desert).len() > 1);
     }

@@ -3856,7 +3856,7 @@ mod tests {
 
     /// A free-for-all: all four factions, in an imperial city.
     fn four_sides(bots: usize) -> Match {
-        let map = Map::city(0);
+        let map = Map::four_way_city(0);
         Match::new(map, 0, bots, 21)
     }
 

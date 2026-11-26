@@ -300,8 +300,7 @@ the Seam, was the one hand-built mine; the generated ones are its kind.)
 
 - **Attrition** (a raid on an enemy camp): no ground changes hands; the job
   is to cost the enemy machines. Paid per kill.
-  Most battles are two sides; some are all four at once, every side against
-  every other.
+  Every battle is two sides.
 - **Raid** (one-sided capture the flag): one side guards a flag, the other
   has to carry it off. First in the crystal mines.
 - **Harvest** (instead of capture the flag): a crystal bloom surfaces; crack it,

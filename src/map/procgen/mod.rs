@@ -528,6 +528,16 @@ impl Map {
         map(&crate::city_spec(seed, Look::Imperium))
     }
 
+    /// The same with a corner each for all four sides: the engine still
+    /// takes a free-for-all, though no mission's one.
+    #[cfg(test)]
+    pub fn four_way_city(seed: u64) -> Map {
+        map(&Spec {
+            sides: Faction::ALL.to_vec(),
+            ..crate::city_spec(seed, Look::Imperium)
+        })
+    }
+
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
     pub fn mine(seed: u64) -> Map {
         // Tests build the same few mines over and over: each once (the
@@ -568,7 +578,6 @@ impl Map {
             seed,
             Look::Imperium,
             crate::Generator { owner, condition },
-            false,
         ))
     }
 }
@@ -597,8 +606,8 @@ mod tests {
     fn every_seed_is_playable_dressed() {
         for (seed, look) in cities() {
             let m = map(&crate::city_spec(seed, look));
-            assert_eq!(m.factions, Faction::ALL.to_vec());
-            assert_eq!(m.bases.len(), 4);
+            assert_eq!(m.factions, crate::map::DEFAULT_SIDES.to_vec());
+            assert_eq!(m.bases.len(), 2);
             if let Err(why) = check::playable(&m) {
                 panic!("seed {seed}: {why}");
             }
@@ -612,7 +621,7 @@ mod tests {
                 "seed {seed}: {:?}",
                 m.repair_spots
             );
-            assert_eq!(m.vistas.len(), 4, "seed {seed}");
+            assert_eq!(m.vistas.len(), 2, "seed {seed}");
         }
     }
 
@@ -855,7 +864,7 @@ mod tests {
                 panic!("{what}: {why}");
             }
             assert!(m.open_spots.len() > 100, "{what}");
-            assert_eq!(m.vistas.len(), 4, "{what}");
+            assert_eq!(m.vistas.len(), 2, "{what}");
             let lm = &sk.landmark;
             let g = sk.ground(lm.center);
             assert!(

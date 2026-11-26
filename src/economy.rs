@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn wrecks_reverse_engineer_a_schematic() {
         let pelekys = Part::Turret(TurretKind::Pelekys);
-        let mut m = Match::new(crate::map::Map::city(0), 0, 5, 3);
+        let mut m = Match::new(crate::map::Map::four_way_city(0), 0, 5, 3);
         m.start();
         m.fighters[0].scrap.push((pelekys, 20));
         assert_eq!(Payout::of(&m).schematic, None, "outside the war");
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     /// Fighting better-geared enemies pays more (#438).
     fn better_geared_enemies_pay_more() {
-        let mut m = Match::new(crate::map::Map::city(0), 0, 15, 3);
+        let mut m = Match::new(crate::map::Map::four_way_city(0), 0, 15, 3);
         m.start();
         m.fighters[0].kills = 2;
         m.fighters[0].damage_dealt = 300.0;
