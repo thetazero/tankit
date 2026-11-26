@@ -13,13 +13,13 @@
 
 use glam::{Vec2, Vec3};
 
-use super::land::Land;
+use super::land::{Crag, Land};
 use crate::faction::Faction;
 use crate::map::{Map, OBox, Terrain};
 use crate::render::material::Material;
 
 /// The arena, laid out.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Skeleton {
     /// Arena spans [0, size] on x and z.
     pub size: f32,
@@ -43,10 +43,30 @@ pub struct Skeleton {
     /// Smaller things standing on the ground.
     pub decos: Vec<Deco>,
     pub repair_spots: Vec<Vec2>,
-    /// Where roads cross valleys and ridges.
+    /// Where roads cross valleys and ridges, and railroads washes.
     pub crossings: Vec<super::crossing::Crossing>,
-    /// Railway lines, each along its bends (past the edge, where it runs out).
-    pub rails: Vec<Vec<Vec2>>,
+    /// Dug into the rock: each mine's rooms.
+    pub mines: Vec<Mine>,
+    /// Railroads.
+    pub tracks: Vec<Vec<Vec2>>,
+    /// Ways up onto high ground, kept clear.
+    pub paths: Vec<(Vec2, Vec2)>,
+    /// Where each side's Raid stand is wanted.
+    pub stands: Vec<Vec2>,
+    /// Places bots head for.
+    pub spots: Vec<Vec2>,
+    /// A railroad's spur to a warehouse.
+    pub spur: Option<Spur>,
+    /// A seam of crystal's line, and the rig cutting it (where, which way
+    /// its boom reaches).
+    pub seam: Vec<Vec2>,
+    pub wash_rig: Option<(Vec2, f32)>,
+    /// Pillars of rock standing alone, and how tall.
+    pub hoodoos: Vec<(Vec2, f32)>,
+    /// Built the other way round, east to west (`Map::mirror_x`), then
+    /// turned this many quarter turns (`Map::turn`).
+    pub mirror: bool,
+    pub turns: u8,
 }
 
 /// Raised ground: a rounded square, flat on top, sloping down over `ramp`
@@ -177,6 +197,20 @@ pub struct Base {
     pub inward: Vec2,
     pub size: f32,
     pub kind: BaseKind,
+    /// What stands by its spawns, if anything.
+    pub camp: Option<Vec2>,
+}
+
+/// A spur off the first track to a warehouse: it leaves the track
+/// `junction` m past its fifth point, to the left of the way out (`side` 1)
+/// or the right (-1).
+#[derive(Clone, Debug)]
+pub struct Spur {
+    pub line: Vec<Vec2>,
+    pub junction: f32,
+    pub side: f32,
+    /// The warehouse's middle, and its way along (from the rail door in).
+    pub shed: (Vec2, Vec2),
 }
 
 /// What a base is.
@@ -186,6 +220,9 @@ pub enum BaseKind {
     Court,
     /// Open ground, the circle in the square.
     Pad,
+    /// Columns of spawns along an edge, 7 m apart, rows 6 m apart, from the
+    /// corner.
+    Rows { cols: u8, rows: u8 },
 }
 
 impl Base {
@@ -196,6 +233,7 @@ impl Base {
             inward: Vec2::ONE,
             size: radius * 2.0,
             kind: BaseKind::Pad,
+            camp: None,
         }
     }
 
@@ -206,6 +244,12 @@ impl Base {
 
     /// Where its side's tanks may start: a grid over it.
     pub fn spawn_points(&self) -> Vec<Vec2> {
+        if let BaseKind::Rows { cols, rows } = self.kind {
+            return (0..cols)
+                .flat_map(|c| (0..rows).map(move |r| (c, r)))
+                .map(|(c, r)| self.at(c as f32 * 7.0, r as f32 * 6.0))
+                .collect();
+        }
         if self.kind == BaseKind::Court {
             return (0..25)
                 .map(|k| self.at(9.0 + (k / 5) as f32 * 7.0, 9.0 + (k % 5) as f32 * 7.0))
@@ -221,6 +265,9 @@ impl Base {
 
     /// The middle of it.
     pub fn middle(&self) -> Vec2 {
+        if let BaseKind::Rows { cols, rows } = self.kind {
+            return self.at((cols as f32 - 1.0) * 3.5, (rows as f32 - 1.0) * 3.0);
+        }
         self.at(self.size * 0.5, self.size * 0.5)
     }
 
@@ -335,6 +382,107 @@ impl Room {
     }
 }
 
+/// One mine dug into the escarpment: its Crag and rooms, every edge on the
+/// terrain's 2 m grid so the cut is clean.
+#[derive(Clone, Debug)]
+pub struct Mine {
+    pub crag: Crag,
+    /// Its rooms, in the order of `Role`.
+    pub rooms: Vec<Room>,
+    /// The borer's beam: from its emitter to the bore's face, and how thick.
+    pub beam: (Vec3, Vec3, f32),
+    /// The hall's rock pillars.
+    pub pillars: [Vec2; 4],
+    /// The cutting rig working the hall, and which way its boom reaches.
+    pub hall_rig: (Vec2, f32),
+    /// The headframe over the hall's shaft, on the mesa.
+    pub headframe: Vec2,
+    /// The scree east of it, where the Face fell in (x), and the worn way
+    /// up its middle (x).
+    pub scree: (f32, f32),
+    pub scree_x: f32,
+}
+
+impl Mine {
+    /// Every room with a roof.
+    pub fn caves(&self) -> impl Iterator<Item = (Vec2, Vec2)> {
+        self.rooms.iter().filter(|r| !r.open()).map(|r| r.rect)
+    }
+
+    /// The room that's its `role`.
+    pub fn room(&self, role: Role) -> (Vec2, Vec2) {
+        self.rooms.iter().find(|r| r.role == role).unwrap().rect
+    }
+
+    pub fn adit(&self) -> (Vec2, Vec2) {
+        self.room(Role::Adit)
+    }
+
+    pub fn hall(&self) -> (Vec2, Vec2) {
+        self.room(Role::Hall)
+    }
+
+    pub fn crosscut(&self) -> (Vec2, Vec2) {
+        self.room(Role::Crosscut)
+    }
+
+    pub fn west_adit(&self) -> (Vec2, Vec2) {
+        self.room(Role::WestAdit)
+    }
+
+    pub fn drift(&self) -> (Vec2, Vec2) {
+        self.room(Role::Drift)
+    }
+
+    pub fn breach(&self) -> (Vec2, Vec2) {
+        self.room(Role::Breach)
+    }
+
+    pub fn heading(&self) -> (Vec2, Vec2) {
+        self.room(Role::Heading)
+    }
+
+    pub fn bay(&self) -> (Vec2, Vec2) {
+        self.room(Role::Bay)
+    }
+
+    pub fn bore(&self) -> (Vec2, Vec2) {
+        self.room(Role::Bore)
+    }
+
+    pub fn box_cut(&self) -> (Vec2, Vec2) {
+        self.room(Role::BoxCut)
+    }
+
+    /// Its mouths in the Crag's face: the rail adit and the new heading.
+    pub fn mouths(&self) -> [(Vec2, Vec2); 2] {
+        [self.adit(), self.heading()]
+    }
+
+    /// Feet of the Crag's face further back than this (z) run up its sides,
+    /// not along its front.
+    pub fn front_limit(&self) -> f32 {
+        self.bay().0.y + 10.0
+    }
+
+    /// The box cut's floor at `x`: from the adit's floor up to the mesa's top.
+    pub fn box_cut_floor(&self, x: f32) -> f32 {
+        let (a, b) = self.box_cut();
+        super::mine::TOP * ((x - a.x - 2.0) / (b.x - a.x - 4.0)).clamp(0.0, 1.0)
+    }
+
+    /// A high room's roof over a point in it: the bay, and the hall and
+    /// crosscut where the Crag is deep over them.
+    pub fn high_roof(&self, p: Vec2, crag_depth: f32) -> Option<f32> {
+        self.rooms
+            .iter()
+            .filter(|r| super::mine::within(r.rect, p, 0.0))
+            // (The hall's only high where the Crag is deep over it.)
+            .filter(|r| r.role == Role::Bay || crag_depth > 4.0)
+            .find_map(|r| r.roof)
+    }
+}
+
 /// Something standing over a street at `at` (across `along`, the street's
 /// direction): piers either side of an opening `opening` m each side of
 /// the center line, which stays clear.
@@ -419,6 +567,9 @@ impl Skeleton {
 
     /// Ground height before anything's heaped on it.
     pub fn ground(&self, p: Vec2) -> f32 {
+        if self.land.scarp.is_some() {
+            return self.mined_ground(p);
+        }
         self.land.height(p)
     }
 
@@ -529,7 +680,7 @@ impl Skeleton {
                 .map(|c| c.top);
             deck.fold(self.ground(p), f32::max)
         };
-        for line in &self.rails {
+        for line in &self.tracks {
             for w in line.windows(2) {
                 let len = w[0].distance(w[1]);
                 let d = (w[1] - w[0]) / len.max(1e-3);
@@ -774,7 +925,7 @@ impl Skeleton {
             lift(&mut map.oboxes[start..], self.ground(c));
         }
         for (k, b) in self.bases.iter().enumerate() {
-            if b.kind == BaseKind::Pad {
+            if b.kind != BaseKind::Court {
                 continue;
             }
             let start = map.oboxes.len();

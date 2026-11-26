@@ -1,7 +1,7 @@
 # Design system, v0
 
 The code is the reference: tokens and components are in `src/ui/design.rs`.
-The main menu, Find work, the contract page and the scoreboard (and what it
+The main menu, Find work, the contract page, the garage and the scoreboard (and what it
 opens into at a round's end) are made from it; the other screens aren't yet.
 
 ## Principles
@@ -22,4 +22,4 @@ opens into at a round's end) are made from it; the other screens aren't yet.
 
 ## Components
 
-Panel, bar, action, link.
+Panel, bar, action, link, button.

@@ -70,7 +70,7 @@ pub fn skeleton(rng: &mut Rng, look: Look) -> Skeleton {
         decos: Vec::new(),
         repair_spots: Vec::new(),
         crossings: Vec::new(),
-        rails: Vec::new(),
+        ..Skeleton::default()
     };
     let a = rng.range(0.0, TAU);
     let habit = match look {
@@ -452,10 +452,10 @@ fn railway(sk: &mut Skeleton, rng: &mut Rng) {
         let mut whole = vec![ends[0].0 + ends[0].1 * RUN_ON];
         whole.extend(&line);
         whole.push(ends[1].0 + ends[1].1 * RUN_ON);
-        sk.rails.push(whole);
+        sk.tracks.push(whole);
         break;
     }
-    let Some(main) = sk.rails.first().cloned() else {
+    let Some(main) = sk.tracks.first().cloned() else {
         return;
     };
     // Spurs: off the line, up to another building's wall.
@@ -489,7 +489,7 @@ fn railway(sk: &mut Skeleton, rng: &mut Rng) {
             }
             let line = eased(&pts);
             add(sk, &line);
-            sk.rails.push(line);
+            sk.tracks.push(line);
             want -= 1;
         }
     }
@@ -497,7 +497,7 @@ fn railway(sk: &mut Skeleton, rng: &mut Rng) {
 
 /// Grades the ground under the rails, off the bridges and tunnels.
 fn bed(sk: &mut Skeleton) {
-    for line in sk.rails.clone() {
+    for line in sk.tracks.clone() {
         let mut fine = Vec::new();
         for w in line.windows(2) {
             let n = (w[0].distance(w[1]) / 4.0).ceil().max(1.0) as i32;

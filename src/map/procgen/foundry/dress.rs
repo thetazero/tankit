@@ -310,7 +310,7 @@ fn beyond(
         let hills = 5.0 * ((x * 0.011).sin() * (z * 0.013).cos()).abs()
             + 4.0 * (1.0 + (x * 0.021 + z * 0.017).sin());
         let track = sk
-            .rails
+            .tracks
             .iter()
             .flat_map(|l| l.windows(2))
             .map(|w| crate::map::procgen::mine::seg(p, w[0], w[1]).0)
@@ -330,7 +330,7 @@ fn beyond(
         Vec2::splat(s * 0.5) + dir * (edge + rng.range(lo, hi))
     };
     let on_track = |p: Vec2, r: f32| {
-        sk.rails
+        sk.tracks
             .iter()
             .flat_map(|l| l.windows(2))
             .any(|w| crate::map::procgen::mine::seg(p, w[0], w[1]).0 < r)

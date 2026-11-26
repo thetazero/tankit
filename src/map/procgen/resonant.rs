@@ -15,6 +15,8 @@
 //! - beyond: gables and spires to the haze, a great bell tower closing each
 //!   avenue's vista.
 
+mod civics;
+
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::{Quat, Vec2, Vec3};
@@ -78,6 +80,10 @@ impl Style for Resonant {
             roof: SLATE,
             land: GROUND,
         }
+    }
+
+    fn civic(&self, map: &mut Map, lot: &Lot, kind: CivicKind, rng: &mut Rng) {
+        civics::build(map, rng, lot, kind, self.stone());
     }
 
     fn hold_name(&self, piece: Centerpiece) -> &'static str {

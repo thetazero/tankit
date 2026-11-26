@@ -371,6 +371,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
             inward,
             size: court,
             kind: BaseKind::Court,
+            camp: None,
         }));
     }
     let mut tries = 0;
@@ -414,6 +415,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
                 inward,
                 size: court,
                 kind: BaseKind::Court,
+                camp: None,
             });
         }
     }
@@ -436,7 +438,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         decos: Vec::new(),
         repair_spots: Vec::new(),
         crossings: Vec::new(),
-        rails: Vec::new(),
+        ..Skeleton::default()
     };
     // The land, its great shapes kept off the great buildings and courts.
     let avoid: Vec<(Vec2, f32)> = sk

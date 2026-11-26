@@ -1,5 +1,6 @@
 //! Medium structures: bigger than a house, smaller than a great building,
-//! each a fight of its own. Anyone's: a style lends its stone.
+//! each a fight of its own. These are anyone's, in a style's stone; a style
+//! builds its own in the same shapes (`Style::civic`).
 //!
 //! - **Courtyard**: a wall with a gate in each side, towers at its corners.
 //! - **Market**: a great roof on pillars, open all round.
@@ -26,17 +27,37 @@ pub struct Stone {
 /// Wall and roof heights; a terrace's floor and its slopes' pitch.
 const WALL_H: f32 = 4.2;
 const ROOF_H: f32 = 7.0;
-const FLOOR_H: f32 = 2.2;
+pub const FLOOR_H: f32 = 2.2;
 const PITCH: f32 = 0.3;
 
-struct Site<'a> {
-    map: &'a mut Map,
-    f: OBox,
+/// A lot being built on, in its own frame.
+pub struct Site<'a> {
+    pub map: &'a mut Map,
+    pub f: OBox,
 }
 
-impl Site<'_> {
+impl<'a> Site<'a> {
+    pub fn new(map: &'a mut Map, lot: &Lot) -> Site<'a> {
+        Site {
+            map,
+            f: lot.footprint,
+        }
+    }
+
+    /// Half its width and half its length.
+    pub fn half(&self) -> (f32, f32) {
+        (self.f.half.x, self.f.half.y)
+    }
+
+    /// The point at `at` on the site, `y` up.
+    pub fn point(&self, at: Vec2, y: f32) -> Vec3 {
+        let (ax, az) = self.f.axes();
+        let p = self.f.center + ax * at.x + az * at.y;
+        Vec3::new(p.x, y, p.y)
+    }
+
     /// A box `half` across at (`x`, `z`) on the site, from `y0` to `y1`.
-    fn put(&mut self, at: Vec2, half: Vec2, y: (f32, f32), c: Vec3, m: Material, solid: bool) {
+    pub fn put(&mut self, at: Vec2, half: Vec2, y: (f32, f32), c: Vec3, m: Material, solid: bool) {
         let (ax, az) = self.f.axes();
         self.map.oboxes.push(OBox {
             center: self.f.center + ax * at.x + az * at.y,

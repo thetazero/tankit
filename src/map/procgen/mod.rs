@@ -18,12 +18,9 @@
 //! monument gets the style's monument, so pieces are shared across every
 //! map built in that style.
 //!
-//! Cities, deserts and hull foundries are laid out by their own grammars into the one
-//! `Skeleton`: the ground in `land`'s landforms, the rest in shared
-//! placeholders, with one greybox. A crystal mine still has its own layout
-//! (`mine::Layout`): an escarpment, a mine under it, a wash and a railroad,
-//! and its styles (`mine::MineStyle`) fill in the lamps, machines and
-//! freight.
+//! Every biome's grammar lays out the one `Skeleton`: the ground in
+//! `land`'s landforms, the rest in shared placeholders. A mine's still built
+//! facing north and then turned (`Skeleton::orient`).
 
 pub mod check;
 pub mod city;
@@ -125,6 +122,8 @@ pub(in crate::map) trait Style {
     fn road(&self) -> glam::Vec3;
     /// What it builds medium structures of.
     fn stone(&self) -> civic::Stone;
+    /// A medium structure, its own or anyone's (see `civic`).
+    fn civic(&self, map: &mut Map, lot: &Lot, kind: CivicKind, rng: &mut Rng);
     /// The Hold site's name on the HUD, with `piece` in the middle.
     fn hold_name(&self, piece: Centerpiece) -> &'static str;
     fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift>;
@@ -241,7 +240,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         let start = map.oboxes.len();
         let mark = skeleton::Mark::of(&map);
         match lot.kind {
-            LotKind::Civic(kind) => civic::build(&mut map, &mut rng, lot, kind, st.stone()),
+            LotKind::Civic(kind) => st.civic(&mut map, lot, kind, &mut rng),
             _ => drifts.extend(st.lot(&mut map, &sk, lot, &mut rng)),
         }
         mark.raise(&mut map, sk.ground(lot.footprint.center));
@@ -1107,6 +1106,25 @@ mod tests {
                         ))
                         .collect::<String>()
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn where_civics() {
+        for seed in [4, 8] {
+            let sk = skeleton(&spec(seed));
+            for l in &sk.lots {
+                if let LotKind::Civic(k) = l.kind {
+                    let c = l.footprint.center;
+                    println!(
+                        "civic {seed} {k:?} {:.0} {:.0} {:.1}",
+                        c.x,
+                        c.y,
+                        sk.ground(c)
+                    );
+                }
+            }
         }
     }
 

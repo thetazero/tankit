@@ -132,8 +132,8 @@ fn plans_play_and_some_cross() {
             panic!("seed {seed}: {why}");
         }
         let has = |k: Kind| sk.crossings.iter().any(|c| c.kind == k) as i32;
-        railed += !sk.rails.is_empty() as i32;
-        spurs += sk.rails.len().saturating_sub(1);
+        railed += !sk.tracks.is_empty() as i32;
+        spurs += sk.tracks.len().saturating_sub(1);
         bridges += has(Kind::Bridge);
         tunnels += has(Kind::Tunnel);
         big += sk
