@@ -34,8 +34,9 @@ use crate::map::Map;
 use crate::rng::Rng;
 
 pub use super::land::Butte;
+pub use super::skeleton::Mine;
 pub(in crate::map) use dig::Dig;
-pub use layout::{Bridge, Layout, Mine};
+pub use layout::Layout;
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
@@ -277,6 +278,7 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
         dust: Vec3::new(0.72, 0.55, 0.38),
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 

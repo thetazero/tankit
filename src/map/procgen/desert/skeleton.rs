@@ -177,6 +177,7 @@ impl Skeleton {
             decos: Vec::new(),
             repair_spots: Vec::new(),
             crossings: Vec::new(),
+            ..Skeleton::default()
         };
         let out = |rng: &mut Rng, dir: Vec2| {
             mid + dir * (size * 0.5 + 40.0) + dir.perp() * rng.range(-30.0, 30.0)

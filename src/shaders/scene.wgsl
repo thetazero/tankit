@@ -11,7 +11,7 @@ struct Globals {
     sky_horizon: vec4<f32>,
     ground_color: vec4<f32>,
     params: vec4<f32>,       // x: time, y: fog density, z: screen width, w: screen height
-    settle: vec4<f32>,       // xyz: color of the dust settled on upward faces
+    settle: vec4<f32>,       // xyz: color of the dust settled on upward faces, w: stars (0..1)
     light_count: vec4<f32>,  // x: point lights in use
     // Point lights, two each: xyz position, w radius; rgb color.
     lights: array<vec4<f32>, 64>,
@@ -697,6 +697,36 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(apply_fog(c, v.wpos), 1.0);
 }
 
+// Stars: a point in some cells of a grid on the unit cube round the camera,
+// fading into the haze at the horizon.
+fn stars(dir: vec3<f32>) -> vec3<f32> {
+    let a = abs(dir);
+    var p: vec2<f32>;
+    var face: f32;
+    if (a.y >= a.x && a.y >= a.z) {
+        p = dir.xz / a.y;
+        face = 0.0;
+    } else if (a.x >= a.z) {
+        p = dir.yz / a.x;
+        face = select(1.0, 2.0, dir.x > 0.0);
+    } else {
+        p = dir.xy / a.z;
+        face = select(3.0, 4.0, dir.z > 0.0);
+    }
+    let q = p * 90.0;
+    let cell = floor(q);
+    let seed = cell + vec2<f32>(face * 211.0 + 17.0, 43.0);
+    let h = hash2(seed);
+    if (h < 0.86) {
+        return vec3<f32>(0.0);
+    }
+    let at = vec2<f32>(hash2(seed + 7.3), hash2(seed + 19.1)) * 0.7 + 0.15;
+    let d = distance(q - cell, at);
+    let bright = (h - 0.86) / 0.14;
+    let tint = mix(vec3<f32>(0.7, 0.82, 1.0), vec3<f32>(1.0, 0.88, 0.72), hash2(seed + 31.7));
+    return tint * exp(-d * d * 90.0) * (0.25 + 1.3 * bright * bright * bright) * smoothstep(0.03, 0.35, dir.y);
+}
+
 // Sky: fullscreen triangle at the far plane (depth 0: the camera's depth is
 // reverse Z), drawn after geometry.
 struct SkyOut {
@@ -718,5 +748,9 @@ fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4<f32>(v.ndc, 0.0, 1.0);
     let near = g.inv_view_proj * vec4<f32>(v.ndc, 1.0, 1.0);
     let dir = normalize(far.xyz / far.w - near.xyz / near.w);
-    return vec4<f32>(sky_color(dir), 1.0);
+    var c = sky_color(dir);
+    if (g.settle.w > 0.0) {
+        c += stars(dir) * g.settle.w;
+    }
+    return vec4<f32>(c, 1.0);
 }

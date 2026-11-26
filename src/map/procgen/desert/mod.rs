@@ -198,6 +198,7 @@ pub fn atmosphere(rng: &mut Rng, pal: &Palette) -> crate::render::Atmosphere {
         dust: pal.sand,
         settle: pal.sand,
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 

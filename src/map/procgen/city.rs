@@ -39,6 +39,7 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
         dust: Vec3::new(0.62, 0.6, 0.57),
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 
@@ -437,6 +438,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         decos: Vec::new(),
         repair_spots: Vec::new(),
         crossings: Vec::new(),
+        ..Skeleton::default()
     };
     // The land, its great shapes kept off the great buildings and courts.
     let avoid: Vec<(Vec2, f32)> = sk

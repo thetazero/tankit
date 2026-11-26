@@ -85,7 +85,7 @@ fn blank(l: &Layout, sides: &[Faction]) -> Map {
     map.open_spots = Vec::new();
     map.spawn_yaw = None;
     map.rock_dust = Some(SAND);
-    map.hold_site = Some(l.hold);
+    map.hold_site = Some(l.heart);
     map
 }
 
@@ -160,7 +160,7 @@ pub fn greybox(l: &Layout, sides: &[Faction]) -> Map {
     let rng = &mut Rng::new(1);
     d.cave_walls(rng);
     d.roof_slabs();
-    for b in &l.bridges {
+    for b in &l.crossings {
         d.rail_bridge(b);
     }
     for o in d.oboxes.iter_mut() {
@@ -170,6 +170,8 @@ pub fn greybox(l: &Layout, sides: &[Faction]) -> Map {
     d.mine_spawns();
     map
 }
+
+use crate::map::procgen::crossing::Crossing;
 
 impl Dig<'_> {
     /// Everything, in order: the ways round first (they're on the ground
@@ -201,7 +203,7 @@ impl Dig<'_> {
             self.box_cut(m, &mut rng);
         }
         self.railroad();
-        for b in &lay.bridges {
+        for b in &lay.crossings {
             self.rail_bridge(b);
         }
         self.wash_rocks(&mut rng, &seam_rocks);
@@ -268,8 +270,11 @@ impl Dig<'_> {
         let (at, _) = lay.track_at(lay.track_len(3) + 18.0);
         let g = self.ground_height(at.x, at.y);
         found.push((Ambient::Hull, Vec3::new(at.x, g + 2.5, at.y)));
-        for b in &lay.bridges {
-            let (p, _) = line_at(&lay.land.washes[b.wash].line, b.s);
+        for b in &lay.crossings {
+            let (p, _) = {
+                let (bw, bs) = lay.bridged(b);
+                line_at(&lay.land.washes[bw].line, bs)
+            };
             found.push((Ambient::River, Vec3::new(p.x, -6.5, p.y)));
         }
         for (kind, at) in found {
@@ -328,9 +333,9 @@ impl Dig<'_> {
         let lay = self.l;
         let sun = self.atmosphere.sun_dir.normalize();
         // (No wash under the Face: from out in front of the adit.)
-        let (mouth, end) = match lay.bridges.first() {
-            Some(b) => (b.a, b.b),
-            None => (lay.lines[0][1], lay.lines[0][2]),
+        let (mouth, end) = match lay.crossings.first() {
+            Some(b) => (b.from, b.to),
+            None => (lay.tracks[0][1], lay.tracks[0][2]),
         };
         let view = |p: Vec2| {
             let d = mouth - p;
@@ -652,9 +657,9 @@ impl Dig<'_> {
             let (p, t) = line_at(&line, u);
             let p = p + t.perp() * rng.range(-2.5, 2.5);
             if lay
-                .bridges
+                .crossings
                 .iter()
-                .any(|b| seg(p, b.a, b.b).0 < DECK_HALF + 2.0)
+                .any(|b| seg(p, b.from, b.to).0 < DECK_HALF + 2.0)
                 || !self.room(p, 2.0)
                 || lay
                     .land
@@ -1252,7 +1257,7 @@ impl Dig<'_> {
             let z = rng.range(f - SCREE_RUN + 2.0, f + FACE_RISE);
             let p = Vec2::new(x, z);
             // A worn way up the middle stays clear.
-            if lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < 8.0)
+            if lay.paths.iter().any(|&(a, b)| seg(p, a, b).0 < 8.0)
                 || lay.in_cave(p)
                 || lay.wash(p) < -0.3
                 || self
@@ -2162,7 +2167,7 @@ impl Dig<'_> {
     /// two rails on sleepers. Visual only.
     pub(super) fn railroad(&mut self) {
         let lay = self.l;
-        for line in &lay.lines {
+        for line in &lay.tracks {
             self.rails(line, false);
         }
         // The warehouse's branch, if there's a warehouse.
@@ -2268,9 +2273,9 @@ impl Dig<'_> {
     /// The rail bridge out of the adit's mouth over the wash: a deck on
     /// concrete piers, low steel girders along its edges, a truss
     /// over them, tilted plates up onto it at each end.
-    pub(super) fn rail_bridge(&mut self, br: &Bridge) {
+    pub(super) fn rail_bridge(&mut self, br: &Crossing) {
         let lay = self.l;
-        let (a, b) = (br.a, br.b);
+        let (a, b) = (br.from, br.to);
         let len = a.distance(b);
         let dir = (b - a) / len;
         let yaw = yaw_along(dir);
@@ -2362,7 +2367,8 @@ impl Dig<'_> {
         // Ten meters apart: room to drive between them, and either side of
         // where the wash's middle runs under the deck (the way along its
         // floor).
-        let cross = (line_at(&lay.land.washes[br.wash].line, br.s).0 - a).dot(dir);
+        let (bw, bs) = lay.bridged(br);
+        let cross = (line_at(&lay.land.washes[bw].line, bs).0 - a).dot(dir);
         let mut t = cross - 5.0;
         while t - 10.0 >= 4.0 {
             t -= 10.0;
@@ -2438,9 +2444,9 @@ impl Dig<'_> {
             if q.min_element() < 12.0
                 || q.max_element() > lay.size - 12.0
                 || lay
-                    .bridges
+                    .crossings
                     .iter()
-                    .any(|b| seg(q, b.a, b.b).0 < DECK_HALF + 3.0)
+                    .any(|b| seg(q, b.from, b.to).0 < DECK_HALF + 3.0)
                 || lay
                     .land
                     .hauls
@@ -3317,7 +3323,7 @@ impl Dig<'_> {
                     && lay.crag_depth(p) < -6.0
                     && lay.cave_distance(p) > CAVE_WALL + 5.0
                     && !lay.in_box_cut(p, 8.0)
-                    && lay.ways_up.iter().all(|&(a, b)| seg(p, a, b).0 > 8.0)
+                    && lay.paths.iter().all(|&(a, b)| seg(p, a, b).0 > 8.0)
                     && lay.mines.iter().all(|m| p.distance(m.headframe) > 16.0)
                     && ways.iter().all(|q| q.distance(p) > 11.0)
                     && taken.iter().all(|q| q.distance(p) > 14.0);
@@ -3905,7 +3911,7 @@ impl Dig<'_> {
         }
         // Timber cribs: stacked pit props waiting by the west adit's mouth,
         // and by the line, either side of the bridge's end.
-        let end = lay.lines[0][2];
+        let end = lay.tracks[0][2];
         let (p3, dir) = lay.track_at(lay.track_len(3) + 12.0);
         let x = lay.mines[0].west_adit().0.x - 2.0;
         let landing = lay.face(x) - 9.0;
@@ -3982,7 +3988,7 @@ impl Dig<'_> {
                     .iter()
                     .chain(&lay.land.fords)
                     .any(|&(s, e, h)| seg(q, s, e).0 < h + 4.0)
-                && !lay.ways_up.iter().any(|&(a, b)| seg(q, a, b).0 < 6.0)
+                && !lay.paths.iter().any(|&(a, b)| seg(q, a, b).0 < 6.0)
         })
     }
 
@@ -4004,7 +4010,7 @@ impl Dig<'_> {
             .iter()
             .chain(&lay.land.fords)
             .any(|&(a, b, h)| seg(p, a, b).0 < r + h + 1.5)
-            || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < r + 4.0)
+            || lay.paths.iter().any(|&(a, b)| seg(p, a, b).0 < r + 4.0)
             || (0..9).any(|k| {
                 // Nor where a side spawns.
                 let a = k as f32 * TAU / 8.0;
@@ -4289,8 +4295,9 @@ impl Dig<'_> {
         };
         let mid = |r: Rect| (r.0 + r.1) * 0.5;
         let mut ways = Vec::new();
-        for (bi, br) in lay.bridges.iter().enumerate() {
-            let (a, b) = (br.a, br.b);
+        for (bi, br) in lay.crossings.iter().enumerate() {
+            let (bw, bs) = lay.bridged(br);
+            let (a, b) = (br.from, br.to);
             let dir = (b - a).normalize();
             let deck = |t: f32| {
                 let p = a.lerp(b, t);
@@ -4302,7 +4309,7 @@ impl Dig<'_> {
             match lay
                 .mines
                 .iter()
-                .find(|m| br.a == lay.lines[br.line][1] && within(m.adit(), a, 2.0))
+                .find(|m| lay.tracks.iter().any(|t| t[1] == br.from) && within(m.adit(), a, 2.0))
             {
                 Some(m) => {
                     let ax = mid(m.adit()).x;
@@ -4314,10 +4321,10 @@ impl Dig<'_> {
             // Under it on the wash's floor: down one ramp, between the
             // piers, up the other.
             let (r0, r1) = (lay.land.hauls[2 * bi], lay.land.hauls[2 * bi + 1]);
-            let w = &lay.land.washes[br.wash];
+            let w = &lay.land.washes[bw];
             let (s0, s1) = (w.near(r0.1).1, w.near(r1.1).1);
             let mut under = vec![at(r0.0), at(r0.1)];
-            under.extend(along(br.wash, s0.min(br.s - 15.0), s1.max(br.s + 10.0)));
+            under.extend(along(bw, s0.min(bs - 15.0), s1.max(bs + 10.0)));
             under.extend([at(r1.1), at(r1.0)]);
             ways.push(under);
         }
@@ -4500,7 +4507,7 @@ impl Dig<'_> {
         // Repair drops come down out of the sky: open over them. Four, the
         // first wanted places that have room.
         self.repair_spots = lay
-            .repairs
+            .repair_spots
             .iter()
             .filter_map(|&p| {
                 (0..60).find_map(|k| {
@@ -4740,9 +4747,9 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
         || lay.shed_distance(p) < 6.0
         || lay.shed_doorways(p)
         || lay
-            .bridges
+            .crossings
             .iter()
-            .any(|b| seg(p, b.a, b.b).0 < DECK_HALF + 5.0)
+            .any(|b| seg(p, b.from, b.to).0 < DECK_HALF + 5.0)
         || lay
             .land
             .hauls
@@ -4764,9 +4771,9 @@ pub(super) fn keep_clear(lay: &Layout, p: Vec2) -> bool {
         })
         || lay.crag_depth(p) > -4.0
         || (p.y > f - 12.0 && p.y < f + FACE_RISE + 0.5)
-        || lay.ways_up.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
+        || lay.paths.iter().any(|&(a, b)| seg(p, a, b).0 < 6.0)
         || lay.spots.iter().any(|&q| p.distance(q) < 6.5)
-        || lay.repairs.iter().any(|&q| p.distance(q) < 6.0)
+        || lay.repair_spots.iter().any(|&q| p.distance(q) < 6.0)
         || p.min_element() < 7.0
         || p.max_element() > lay.size - 7.0
 }
@@ -5044,7 +5051,7 @@ fn paint(lay: &Layout, seam: &[Vec2], x: f32, z: f32, h: f32, slope: f32) -> Vec
     c = c.lerp(TAILINGS * mottle, smoothstep(0.05, 0.4, waste));
     // The ways up, worn into the rock and sand.
     let way = lay
-        .ways_up
+        .paths
         .iter()
         .map(|&(a, b)| seg(p, a, b).0)
         .fold(f32::INFINITY, f32::min);

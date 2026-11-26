@@ -25,107 +25,21 @@ use std::f32::consts::{PI, TAU};
 use glam::{Vec2, Vec3};
 
 use super::*;
-use crate::map::procgen::land::{Butte, Crag, Fin, Land, Mound, Scarp, Wash};
-use crate::map::procgen::skeleton::{Role, Room};
+use crate::map::procgen::crossing::{self, Crossing};
+use crate::map::procgen::land::{Butte, Crag, Fin, Mound, Scarp, Wash};
+use crate::map::procgen::skeleton::{Mine, Role, Room, Skeleton};
 
-/// One mine dug into the escarpment: its Crag and rooms, every edge on the
-/// terrain's 2 m grid so the cut is clean.
-#[derive(Clone, Debug)]
-pub struct Mine {
-    pub crag: Crag,
-    /// Its rooms, in the order of `Role`.
-    pub rooms: Vec<Room>,
-    /// The borer's beam: from its emitter to the bore's face, and how thick.
-    pub beam: (Vec3, Vec3, f32),
-    /// The hall's rock pillars.
-    pub pillars: [Vec2; 4],
-    /// The cutting rig working the hall, and which way its boom reaches.
-    pub hall_rig: (Vec2, f32),
-    /// The headframe over the hall's shaft, on the mesa.
-    pub headframe: Vec2,
-    /// The scree east of it, where the Face fell in (x), and the worn way
-    /// up its middle (x).
-    pub scree: (f32, f32),
-    pub scree_x: f32,
-}
-
-impl Mine {
-    /// Every room with a roof.
-    pub fn caves(&self) -> impl Iterator<Item = Rect> {
-        self.rooms.iter().filter(|r| !r.open()).map(|r| r.rect)
-    }
-
-    /// The room that's its `role`.
-    pub fn room(&self, role: Role) -> Rect {
-        self.rooms.iter().find(|r| r.role == role).unwrap().rect
-    }
-
-    pub fn adit(&self) -> Rect {
-        self.room(Role::Adit)
-    }
-
-    pub fn hall(&self) -> Rect {
-        self.room(Role::Hall)
-    }
-
-    pub fn crosscut(&self) -> Rect {
-        self.room(Role::Crosscut)
-    }
-
-    pub fn west_adit(&self) -> Rect {
-        self.room(Role::WestAdit)
-    }
-
-    pub fn drift(&self) -> Rect {
-        self.room(Role::Drift)
-    }
-
-    pub fn breach(&self) -> Rect {
-        self.room(Role::Breach)
-    }
-
-    pub fn heading(&self) -> Rect {
-        self.room(Role::Heading)
-    }
-
-    pub fn bay(&self) -> Rect {
-        self.room(Role::Bay)
-    }
-
-    pub fn bore(&self) -> Rect {
-        self.room(Role::Bore)
-    }
-
-    pub fn box_cut(&self) -> Rect {
-        self.room(Role::BoxCut)
-    }
-
-    /// Its mouths in the Crag's face: the rail adit and the new heading.
-    pub fn mouths(&self) -> [Rect; 2] {
-        [self.adit(), self.heading()]
-    }
-
-    /// Feet of the Crag's face further back than this (z) run up its sides,
-    /// not along its front.
-    pub fn front_limit(&self) -> f32 {
-        self.bay().0.y + 10.0
-    }
-
-    /// The box cut's floor at `x`: from the adit's floor up to the mesa's top.
-    pub fn box_cut_floor(&self, x: f32) -> f32 {
-        let (a, b) = self.box_cut();
-        TOP * ((x - a.x - 2.0) / (b.x - a.x - 4.0)).clamp(0.0, 1.0)
-    }
-
-    /// A high room's roof over a point in it: the bay, and the hall and
-    /// crosscut where the Crag is deep over them.
-    fn high_roof(&self, p: Vec2, crag_depth: f32) -> Option<f32> {
-        self.rooms
-            .iter()
-            .filter(|r| within(r.rect, p, 0.0))
-            // (The hall's only high where the Crag is deep over it.)
-            .filter(|r| r.role == Role::Bay || crag_depth > 4.0)
-            .find_map(|r| r.roof)
+/// A railroad's bridge over a wash.
+fn rail_bridge(from: Vec2, to: Vec2) -> Crossing {
+    Crossing {
+        kind: crossing::Kind::Bridge,
+        from,
+        to,
+        half: DECK_HALF,
+        top: DECK_TOP,
+        floor: 0.0,
+        roofed: (0.0, 0.0),
+        walled: (0.0, 0.0),
     }
 }
 
@@ -141,28 +55,11 @@ fn wash(line: Vec<Vec2>, phase: f32) -> Wash {
     }
 }
 
-/// A bridge carrying a line over a wash.
-#[derive(Clone, Copy, Debug)]
-pub struct Bridge {
-    pub a: Vec2,
-    pub b: Vec2,
-    /// Which line, which wash, and how far along the wash it crosses.
-    pub line: usize,
-    pub wash: usize,
-    pub s: f32,
-}
-
 /// A crystal mine, laid out: everything the ground and the build need.
 #[derive(Clone, Debug)]
 pub struct Layout {
-    pub size: f32,
-    pub mines: Vec<Mine>,
-    /// The landforms out on the flats.
-    pub land: Land,
-    /// A railroad out of each mine: in the adit, out at its mouth, on south
-    /// across the flats to the edge.
-    pub lines: Vec<Vec<Vec2>>,
-    pub bridges: Vec<Bridge>,
+    /// All of it that any biome has.
+    pub sk: Skeleton,
     /// The warehouse's branch off the first line, from the junction to the
     /// buffer stop: it leaves the line `junction` m past its fifth point, to
     /// the left of the way out (`branch_side` 1) or the right (-1).
@@ -183,18 +80,6 @@ pub struct Layout {
     /// The west side's yard by its spawns, and the east side's camp.
     pub yard: Vec2,
     pub camp: Vec2,
-    /// The ways up, kept clear: the haul road up the mesa's west end, the
-    /// way round the Face's west end to its foot, a way up each scree and
-    /// each butte.
-    pub ways_up: Vec<(Vec2, Vec2)>,
-    /// The Hold site.
-    pub hold: Vec2,
-    /// Where repair drops are wanted, best first.
-    pub repairs: Vec<Vec2>,
-    /// Where each side's Raid stand is wanted.
-    pub stands: [Vec2; 2],
-    /// Places bots head for.
-    pub spots: Vec<Vec2>,
     /// Built the other way round, east to west (`Map::mirror_x`), then
     /// turned this many quarter turns (`Map::turn`): the layout itself is
     /// always laid out with the escarpment along the north.
@@ -202,7 +87,35 @@ pub struct Layout {
     pub turns: u8,
 }
 
+impl std::ops::Deref for Layout {
+    type Target = Skeleton;
+    fn deref(&self) -> &Skeleton {
+        &self.sk
+    }
+}
+
+impl std::ops::DerefMut for Layout {
+    fn deref_mut(&mut self) -> &mut Skeleton {
+        &mut self.sk
+    }
+}
+
 impl Layout {
+    /// Which wash `x` bridges, and how far along it.
+    pub fn bridged(&self, x: &Crossing) -> (usize, f32) {
+        let n = (x.len() / 0.25) as usize;
+        (0..=n)
+            .flat_map(|i| {
+                let p = x.from + x.dir() * (i as f32 * 0.25);
+                (self.sk.land.washes.iter().enumerate()).map(move |(k, w)| {
+                    let (d, s) = w.near(p);
+                    (d, k, s)
+                })
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map_or((0, 0.0), |(_, k, s)| (k, s))
+    }
+
     /// A mine from `rng`, if this draw holds together (the caller draws
     /// again if not; the error is the line it failed at).
     pub fn generate(rng: &mut Rng) -> Result<Layout, u32> {
@@ -210,11 +123,7 @@ impl Layout {
         let n_washes = [0, 1, 1, 1, 2, 2][rng.index(6)];
         let n_buttes = [0, 1, 1, 2][rng.index(4)];
         let mut l = Layout {
-            size: 0.0,
-            mines: Vec::new(),
-            land: Land::default(),
-            lines: Vec::new(),
-            bridges: Vec::new(),
+            sk: Skeleton::default(),
             branch: Vec::new(),
             junction: 0.0,
             branch_side: 1.0,
@@ -225,11 +134,6 @@ impl Layout {
             spawns: [(Vec::new(), -1000.0, 0), (Vec::new(), -1000.0, 0)],
             yard: Vec2::splat(-1000.0),
             camp: Vec2::splat(-1000.0),
-            ways_up: Vec::new(),
-            hold: Vec2::ZERO,
-            repairs: Vec::new(),
-            stands: [Vec2::ZERO; 2],
-            spots: Vec::new(),
             mirror: false,
             turns: 0,
         };
@@ -366,7 +270,7 @@ impl Layout {
         }
         self.scarp_mut().west = (wr0, wr1);
         let (_, z) = self.face_range(0.0, wr1 + 12.0);
-        self.ways_up = vec![
+        self.paths = vec![
             (Vec2::new(wr0, z + 12.0), Vec2::new(wr1 + 12.0, z + 12.0)),
             // Round the Face's west end, from the flats onto the road's foot.
             (
@@ -642,7 +546,7 @@ impl Layout {
     }
 
     /// The railroad out of mine `k`, and its bridges, if this try fits.
-    fn lay_line(&self, rng: &mut Rng, k: usize) -> Result<(Vec<Vec2>, Vec<Bridge>), u32> {
+    fn lay_line(&self, rng: &mut Rng, k: usize) -> Result<(Vec<Vec2>, Vec<Crossing>), u32> {
         let s = self.size;
         let n = self.mines.len();
         let mut bridges = Vec::new();
@@ -676,13 +580,7 @@ impl Layout {
                 return Err(line!());
             }
             let end = cross + dir * 18.0;
-            bridges.push(Bridge {
-                a: mouth,
-                b: end,
-                line: k,
-                wash: 0,
-                s: along,
-            });
+            bridges.push(rail_bridge(mouth, end));
             end
         } else {
             mouth + dir * rng.range(26.0, 32.0)
@@ -731,13 +629,10 @@ impl Layout {
                     if t.dot(dirl).abs() > 0.6 {
                         return Err(line!());
                     }
-                    bridges.push(Bridge {
-                        a: line_at(&track, c - 18.0).0,
-                        b: line_at(&track, c + 18.0).0,
-                        line: k,
-                        wash: wi,
-                        s: along,
-                    });
+                    bridges.push(rail_bridge(
+                        line_at(&track, c - 18.0).0,
+                        line_at(&track, c + 18.0).0,
+                    ));
                 }
                 falling = dd <= prev;
                 prev = dd;
@@ -745,7 +640,7 @@ impl Layout {
             }
         }
         if self
-            .lines
+            .tracks
             .iter()
             .any(|o| track[2..].iter().any(|&p| line_distance(o, p) < 30.0))
         {
@@ -768,8 +663,8 @@ impl Layout {
                 }
             }
             let (track, bridges) = last?;
-            self.bridges.extend(bridges);
-            self.lines.push(track);
+            self.crossings.extend(bridges);
+            self.tracks.push(track);
         }
         // The warehouse's branch off the first line, off one side or the
         // other.
@@ -827,7 +722,7 @@ impl Layout {
                 p.min_element() > 6.0
                     && p.max_element() < s - 6.0
                     && self.land.washes.iter().all(|w| w.near(p).0 > 18.0)
-                    && self.lines[1..].iter().all(|l| line_distance(l, p) > 8.0)
+                    && self.tracks[1..].iter().all(|l| line_distance(l, p) > 8.0)
             })
         })
     }
@@ -846,12 +741,13 @@ impl Layout {
                 && p.y < l.face(p.x) - 5.0
                 && l.land.washes.iter().all(|w| w.near(p).0 > 14.0)
         };
-        for bi in 0..self.bridges.len() {
-            let b = self.bridges[bi];
-            let w = &self.land.washes[b.wash];
+        for bi in 0..self.crossings.len() {
+            let b = self.crossings[bi];
+            let (bw, bs) = self.bridged(&b);
+            let w = &self.land.washes[bw];
             // Which side of the wash the line comes from: the near bank.
-            let (_, _, n) = w.frame(b.s);
-            let near = if (b.a - line_at(&w.line, b.s).0).dot(n) > 0.0 {
+            let (_, _, n) = w.frame(bs);
+            let near = if (b.from - line_at(&w.line, bs).0).dot(n) > 0.0 {
                 1.0
             } else {
                 -1.0
@@ -865,8 +761,8 @@ impl Layout {
             };
             // Down off the far bank short of the bridge, off the near bank
             // past it (slantwise, toward the bridge's mouth).
-            let r0 = ramp(b.s - rng.range(24.0, 30.0), -3.0, -near, 0.0).ok_or(line!())?;
-            let r1 = ramp(b.s + rng.range(24.0, 30.0), 3.0, near, 9.0).ok_or(line!())?;
+            let r0 = ramp(bs - rng.range(24.0, 30.0), -3.0, -near, 0.0).ok_or(line!())?;
+            let r1 = ramp(bs + rng.range(24.0, 30.0), 3.0, near, 9.0).ok_or(line!())?;
             self.land.hauls.push(r0);
             self.land.hauls.push(r1);
         }
@@ -883,10 +779,11 @@ impl Layout {
                     let u = u0 + 6.0 * ((k + 1) / 2) as f32 * if k % 2 == 0 { 1.0 } else { -1.0 };
                     let (p, _, n) = w.frame(u);
                     let clear = self
-                        .bridges
+                        .crossings
                         .iter()
-                        .filter(|b| b.wash == wi)
-                        .all(|b| (b.s - u).abs() > 30.0)
+                        .map(|b| self.bridged(b))
+                        .filter(|b| b.0 == wi)
+                        .all(|b| (b.1 - u).abs() > 30.0)
                         && self
                             .land
                             .hauls
@@ -928,23 +825,24 @@ impl Layout {
         }
         // The seam in the first bridge's wash (if it's under the Face),
         // the rig cutting it short of the bridge, the Hold site by them.
-        if let Some(b) = self.bridges.first().copied() {
-            let w = &self.land.washes[b.wash];
+        if let Some(b) = self.crossings.first().copied() {
+            let (bw, bs) = self.bridged(&b);
+            let w = self.land.washes[bw].clone();
             self.seam = (0..=24)
                 .map(|k| {
-                    let u = b.s - 43.0 + 70.0 * k as f32 / 24.0;
+                    let u = bs - 43.0 + 70.0 * k as f32 / 24.0;
                     let (p, _, n) = w.frame(u);
                     p + n * (1.6 * (u * 0.21).sin() - 1.0)
                 })
                 .collect();
-            let (p, t, n) = w.frame(b.s - 16.0);
+            let (p, t, n) = w.frame(bs - 16.0);
             self.wash_rig = Some((p - n * 3.5, yaw_along(t)));
-            self.hold = w.frame(b.s - 25.0).0;
+            self.heart = w.frame(bs - 25.0).0;
         } else {
             // No wash: the Hold site out on the flats in front of the
             // first mine's mouth, by its line.
-            let (p, dir) = line_at(&self.lines[0], line_len(&self.lines[0], 2));
-            self.hold = p - dir.perp() * 12.0 * self.branch_side;
+            let (p, dir) = line_at(&self.tracks[0], line_len(&self.tracks[0], 2));
+            self.heart = p - dir.perp() * 12.0 * self.branch_side;
         }
         // The worn way up each scree, wherever across it is furthest from
         // the ramps and crossings (they're on the landing too), starting on
@@ -987,7 +885,7 @@ impl Layout {
                 })
                 .ok_or(line!())?;
             self.mines[k].scree_x = x;
-            self.ways_up.push((Vec2::new(x, start), b));
+            self.paths.push((Vec2::new(x, start), b));
         }
         Ok(())
     }
@@ -1020,7 +918,7 @@ impl Layout {
             && p.max_element() < s - r - 8.0
             && self.land.washes.iter().all(|w| w.near(p).0 > r + 14.0)
             && p.y < self.face(p.x) - r - 24.0
-            && self.lines.iter().all(|t| line_distance(t, p) > r + 8.0)
+            && self.tracks.iter().all(|t| line_distance(t, p) > r + 8.0)
             && (self.branch.is_empty() || line_distance(&self.branch, p) > r + 8.0)
             && l.max(Vec2::ZERO).length() > r + 12.0
             && spawn(0) > r + 10.0
@@ -1033,7 +931,7 @@ impl Layout {
                 .iter()
                 .chain(&self.land.fords)
                 .all(|&(a, b, h)| seg(p, a, b).0 > r + h + 6.0)
-            && self.ways_up.iter().all(|&(a, b)| seg(p, a, b).0 > r + 8.0)
+            && self.paths.iter().all(|&(a, b)| seg(p, a, b).0 > r + 8.0)
             && self.land.buttes.iter().all(|b| b.distance(p) > r + 8.0)
     }
 
@@ -1064,7 +962,7 @@ impl Layout {
                     .iter()
                     .all(|o| o.center.distance(c) > o.radius + reach + 30.0);
             if ok {
-                self.ways_up.push(b.way());
+                self.paths.push(b.way());
                 self.land.buttes.push(b);
                 return;
             }
@@ -1088,7 +986,7 @@ impl Layout {
                         && p.y < self.face(p.x) - 24.0
                         && self.mesa(p) < 0.01
                         && self.land.washes.iter().all(|w| w.near(p).0 > 14.0)
-                        && self.lines.iter().all(|t| line_distance(t, p) > 12.0)
+                        && self.tracks.iter().all(|t| line_distance(t, p) > 12.0)
                         && self
                             .land
                             .hauls
@@ -1170,7 +1068,7 @@ impl Layout {
                 Vec2::new(x, self.face(x) - 6.0)
             })
             .collect();
-        goals.extend(self.bridges.iter().map(|b| b.b));
+        goals.extend(self.crossings.iter().map(|b| b.to));
         goals.extend(self.land.buttes.iter().map(|b| b.way().0));
         goals
     }
@@ -1266,7 +1164,7 @@ impl Layout {
             let x = xs.iter().sum::<f32>() / xs.len() as f32;
             Vec2::new(x, z + (*rows as f32 - 1.0) * 3.0)
         };
-        self.stands = [
+        self.stands = vec![
             mid(0) + Vec2::new(26.0, 6.0),
             mid(1) + Vec2::new(-26.0, 6.0),
         ];
@@ -1276,7 +1174,7 @@ impl Layout {
             repairs.push(f(m.west_adit().0.x - 20.0));
             repairs.push(f(m.breach().1.x + 6.0));
         }
-        let x = self.lines[0][3].x;
+        let x = self.tracks[0][3].x;
         repairs.extend([
             Vec2::new(x - rng.range(45.0, 55.0), rng.range(0.3, 0.4) * s),
             Vec2::new(x + rng.range(26.0, 34.0), rng.range(0.28, 0.35) * s),
@@ -1284,7 +1182,7 @@ impl Layout {
             Vec2::new(x + rng.range(25.0, 35.0), rng.range(0.12, 0.18) * s),
         ]);
         repairs.extend(self.land.buttes.iter().map(|b| b.center));
-        self.repairs = repairs;
+        self.repair_spots = repairs;
     }
 
     /// Places bots head for: across the flats and the landing under the
@@ -1459,7 +1357,7 @@ impl Layout {
 
     /// How near any main line.
     pub fn main_line_distance(&self, p: Vec2) -> f32 {
-        self.lines
+        self.tracks
             .iter()
             .map(|l| line_distance(l, p))
             .fold(f32::INFINITY, f32::min)
@@ -1467,12 +1365,12 @@ impl Layout {
 
     /// Position and heading `s` m along the first line.
     pub fn track_at(&self, s: f32) -> (Vec2, Vec2) {
-        line_at(&self.lines[0], s)
+        line_at(&self.tracks[0], s)
     }
 
     /// Length of the first line up to its point `k`.
     pub fn track_len(&self, k: usize) -> f32 {
-        line_len(&self.lines[0], k)
+        line_len(&self.tracks[0], k)
     }
 
     /// Where the branch leaves the first line, and the line's way there.
@@ -1482,8 +1380,8 @@ impl Layout {
 
     /// Over a bridge's deck (not its end plates).
     pub fn on_bridge(&self, p: Vec2) -> bool {
-        self.bridges.iter().any(|b| {
-            let (d, t) = seg(p, b.a, b.b);
+        self.crossings.iter().any(|b| {
+            let (d, t) = seg(p, b.from, b.to);
             d < DECK_HALF && t > 0.0 && t < 1.0
         })
     }
@@ -1557,7 +1455,7 @@ impl Layout {
             .map(|&(a, b, h)| smoothstep(h + 2.0, h + 8.0, seg(p, a, b).0))
             .fold(1.0, f32::min);
         let road = self
-            .ways_up
+            .paths
             .iter()
             .map(|&(a, b)| smoothstep(4.0, 10.0, seg(p, a, b).0))
             .fold(1.0, f32::min);
@@ -1567,7 +1465,7 @@ impl Layout {
         let f = self.face(x);
         let cave = self.cave_distance(p);
         let by_cut = self.box_cut_distance(p);
-        let (a, b) = self.ways_up[0];
+        let (a, b) = self.paths[0];
         let haul = smoothstep(5.0, 11.0, seg(p, a, b).0);
         let relief = (1.8 * (0.09 * x + 0.7).sin() * (0.07 * z).cos()
             + 0.6 * (0.21 * x - 0.17 * z).sin())

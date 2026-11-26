@@ -109,6 +109,7 @@ pub fn atmosphere() -> Atmosphere {
         dust: Vec3::new(0.5, 0.5, 0.5),
         settle: Vec3::new(0.3, 0.31, 0.32),
         ambient: 1.0,
+        stars: 0.0,
     }
 }
 
