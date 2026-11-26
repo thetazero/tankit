@@ -10,6 +10,7 @@ use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
+use super::Palette;
 use super::skeleton::*;
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
@@ -41,20 +42,19 @@ pub enum Claim {
 
 /// The play ground, painted: crests pale, troughs and the washes darker,
 /// the high ground's top weathered rock with sand lying on it.
-pub fn terrain(sk: &Skeleton) -> Terrain {
-    terrain_of(sk, None)
+pub fn terrain(sk: &Skeleton, pal: Palette) -> Terrain {
+    terrain_of(sk, pal, None)
 }
 
 /// `terrain`, with a generator's camp (`camp`) on it if there's one.
-fn terrain_of(sk: &Skeleton, camp: Option<&camp::Camp>) -> Terrain {
+fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>) -> Terrain {
     let n = (sk.size / 2.0).round() as usize + 1;
     let mut t = Terrain::from_fn(Vec2::ZERO, 2.0, n, n, |x, z| {
-        sk.ground(x, z) + camp.map_or(0.0, |c| c.heap(Vec2::new(x, z)))
+        sk.ground(Vec2::new(x, z)) + camp.map_or(0.0, |c| c.heap(Vec2::new(x, z)))
     });
     t.color = Vec3::ONE;
     t.material = Material::Sand;
-    let pal = sk.palette;
-    let high = sk.high;
+    let high = sk.land.high.height;
     t.paint(|x, z, h, slope| {
         let p = Vec2::new(x, z);
         let mottle =
@@ -62,8 +62,8 @@ fn terrain_of(sk: &Skeleton, camp: Option<&camp::Camp>) -> Terrain {
         let rel = if h > high * 0.6 { h - high } else { h };
         let mut c = pal
             .low
-            .lerp(pal.sand, smoothstep(-0.3, sk.dune_h * 0.8, rel));
-        let cut = sk.wash_cut(p) / WASH_DEPTH;
+            .lerp(pal.sand, smoothstep(-0.3, sk.dunes().height * 0.8, rel));
+        let cut = sk.land.wash_cut(p) / WASH_DEPTH;
         c = c.lerp(
             pal.low * 0.85 + pal.stone_dark * 0.15,
             smoothstep(0.5, 0.95, cut),
@@ -87,19 +87,20 @@ fn terrain_of(sk: &Skeleton, camp: Option<&camp::Camp>) -> Terrain {
 pub fn dress(
     map: &mut Map,
     sk: &Skeleton,
+    pal: Palette,
     seed: u64,
     piece: Centerpiece,
 ) -> Vec<(Claim, std::ops::Range<usize>)> {
     let dice = |k: u64| Rng::new(seed.wrapping_mul(0x2545_F491).wrapping_add(k));
-    let mut s = Sand { map, sk };
+    let mut s = Sand { map, sk, pal };
     let mut claims = Vec::new();
     s.cliffs(&mut dice(1));
     let start = s.map.oboxes.len();
-    match sk.landmark.kind {
+    match sk.landmarks[0].kind {
         LandmarkKind::Needles => s.needles(&mut dice(2)),
         LandmarkKind::Crater => s.crater(&mut dice(2)),
         LandmarkKind::Arch => s.arch(&mut dice(2)),
-        LandmarkKind::Generator => {
+        LandmarkKind::Generator | LandmarkKind::Great => {
             let (owner, condition) = match piece {
                 Centerpiece::ShieldGenerator(owner, condition) => (owner, condition),
                 Centerpiece::Monument => (Faction::Imperium, Default::default()),
@@ -115,6 +116,7 @@ pub fn dress(
             LotKind::Spires => s.spires(&mut rng, lot),
             LotKind::Fins => s.fins(&mut rng, lot),
             LotKind::Boulders => s.boulder_field(&mut rng, lot),
+            _ => {}
         }
         claims.push((Claim::Lot(k), start..s.map.oboxes.len()));
     }
@@ -132,6 +134,7 @@ pub fn dress(
 struct Sand<'a> {
     map: &'a mut Map,
     sk: &'a Skeleton,
+    pal: Palette,
 }
 
 impl Sand<'_> {
@@ -140,7 +143,7 @@ impl Sand<'_> {
     }
 
     fn shade(&self, rng: &mut Rng) -> Vec3 {
-        let p = self.sk.palette;
+        let p = self.pal;
         [p.stone, p.stone_dark, p.stone_pale][rng.index(3)] * rng.range(0.88, 1.06)
     }
 
@@ -167,7 +170,7 @@ impl Sand<'_> {
         if p.min_element() < 5.0 || p.max_element() > size - 5.0 {
             return false;
         }
-        let cliff = self.sk.plateau(p);
+        let cliff = self.sk.land.plateau(p);
         if cliff > -4.0 - r && cliff < FOOT + 7.0 + r {
             return false;
         }
@@ -203,14 +206,15 @@ impl Sand<'_> {
     /// off them lying out on the floor.
     fn cliffs(&mut self, rng: &mut Rng) {
         let sk = self.sk;
-        let lines = sk.cliffs();
+        let lines = sk.land.cliffs(sk.size);
         let from = self.map.sculpted.verts.len();
         for (k, line) in lines.iter().enumerate() {
-            self.map.rock_face(line, sk.high, false, k as f32 * 977.0);
+            self.map
+                .rock_face(line, sk.land.high.height, false, k as f32 * 977.0);
         }
         // The rock faces are sculpted in red sandstone: turned to this
         // desert's stone.
-        let tint = sk.palette.stone / RED_SANDSTONE;
+        let tint = self.pal.stone / RED_SANDSTONE;
         for v in &mut self.map.sculpted.verts[from..] {
             let c = Vec3::from_slice(&v.color[..3]) * tint;
             v.color[..3].copy_from_slice(&c.to_array());
@@ -242,7 +246,7 @@ impl Sand<'_> {
     fn spire(&mut self, rng: &mut Rng, p: Vec2, h: f32, w: f32) {
         let g = self.g(p);
         let lean = Vec2::new(rng.range(-0.2, 0.2), rng.range(-0.2, 0.2)) * (h / 10.0);
-        let pal = self.sk.palette;
+        let pal = self.pal;
         // (fraction up from, to, girth, lean, colour)
         let parts = [
             (0.0, 0.34, 1.2, 0.0, pal.stone),
@@ -269,9 +273,9 @@ impl Sand<'_> {
     /// Small stones strewn over the landmark's open ground: nothing to stop
     /// a tank.
     fn strew(&mut self, rng: &mut Rng) {
-        let lm = self.sk.landmark;
+        let lm = &self.sk.landmarks[0];
         for _ in 0..24 {
-            let q = lm.at + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(2.0, lm.clear);
+            let q = lm.center + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(2.0, lm.clear);
             let s = rng.range(0.25, 0.5);
             self.boulder(rng, q, s, false);
         }
@@ -280,9 +284,9 @@ impl Sand<'_> {
     /// The directions out of the landmark's ground toward each side's
     /// spawns, kept open.
     fn ways_in(&self) -> Vec<Vec2> {
-        let lm = self.sk.landmark.at;
+        let lm = self.sk.landmarks[0].center;
         self.sk
-            .bases
+            .base_spots()
             .iter()
             .map(|&b| (b - lm).normalize_or(Vec2::X))
             .collect()
@@ -291,7 +295,7 @@ impl Sand<'_> {
     /// The Needles: a ring of spires round the open ground, open toward
     /// each side's spawns; what's fallen off them.
     fn needles(&mut self, rng: &mut Rng) {
-        let lm = self.sk.landmark;
+        let lm = &self.sk.landmarks[0];
         let ways = self.ways_in();
         let ring = lm.clear + rng.range(5.0, 8.0);
         let count = rng.int(7, 9);
@@ -303,7 +307,7 @@ impl Sand<'_> {
                 continue;
             }
             let w = rng.range(2.2, 3.0);
-            let p = lm.at + dir * (ring + rng.range(-1.5, 2.0));
+            let p = lm.center + dir * (ring + rng.range(-1.5, 2.0));
             let h = rng.range(10.0, 18.0);
             self.spire(rng, p, h, w);
             spires.push((p, w));
@@ -312,7 +316,8 @@ impl Sand<'_> {
             for _ in 0..rng.int(1, 3) {
                 let q = p + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(w + 3.0, w + 5.0);
                 let s = rng.range(0.9, 1.6);
-                if q.distance(lm.at) + s * 1.2 < lm.reach && q.distance(lm.at) > lm.clear + s * 1.2
+                if q.distance(lm.center) + s * 1.2 < lm.reach
+                    && q.distance(lm.center) > lm.clear + s * 1.2
                 {
                     self.boulder(rng, q, s, s > 1.2);
                 }
@@ -324,7 +329,7 @@ impl Sand<'_> {
     /// An old crater: its rim (the ground's, see `Landmark`) heaped with
     /// broken blocks thrown out of it, gaps in it toward each side.
     fn crater(&mut self, rng: &mut Rng) {
-        let lm = self.sk.landmark;
+        let lm = &self.sk.landmarks[0];
         let ways = self.ways_in();
         let rim = lm.clear + 9.0;
         let n = 34;
@@ -333,7 +338,7 @@ impl Sand<'_> {
             if ways.iter().any(|&w| dir.dot(w) > 0.94) || rng.chance(0.25) {
                 continue;
             }
-            let p = lm.at + dir * (rim + rng.range(-1.5, 2.5));
+            let p = lm.center + dir * (rim + rng.range(-1.5, 2.5));
             let s = rng.range(1.4, 2.6);
             let g = self.g(p);
             let color = self.shade(rng);
@@ -353,9 +358,9 @@ impl Sand<'_> {
         // Ejecta: blocks flung out past the rim.
         for _ in 0..12 {
             let dir = Vec2::from_angle(rng.range(0.0, TAU));
-            let p = lm.at + dir * rng.range(rim + 4.0, lm.reach - 2.5);
+            let p = lm.center + dir * rng.range(rim + 4.0, lm.reach - 2.5);
             let s = rng.range(0.8, 1.8);
-            if p.distance(lm.at) + s * 1.2 < lm.reach {
+            if p.distance(lm.center) + s * 1.2 < lm.reach {
                 self.boulder(rng, p, s, s > 1.1);
             }
         }
@@ -365,11 +370,11 @@ impl Sand<'_> {
     /// A great arch: two legs either side of the open ground, the span
     /// over it high enough for a tank to pass under, rubble round the feet.
     fn arch(&mut self, rng: &mut Rng) {
-        let lm = self.sk.landmark;
+        let lm = &self.sk.landmarks[0];
         let across = lm.facing;
         let half = lm.clear + 3.0;
-        let pal = self.sk.palette;
-        let legs = [lm.at - across * half, lm.at + across * half];
+        let pal = self.pal;
+        let legs = [lm.center - across * half, lm.center + across * half];
         let foot = legs.map(|p| self.g(p));
         let spring = 11.0 + rng.range(0.0, 2.0);
         for (k, &p) in legs.iter().enumerate() {
@@ -430,7 +435,8 @@ impl Sand<'_> {
             for _ in 0..rng.int(2, 4) {
                 let q = p + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(5.0, 8.0);
                 let s = rng.range(0.9, 1.7);
-                if q.distance(lm.at) > lm.clear + s * 1.2 && q.distance(lm.at) + s * 1.2 < lm.reach
+                if q.distance(lm.center) > lm.clear + s * 1.2
+                    && q.distance(lm.center) + s * 1.2 < lm.reach
                 {
                     self.boulder(rng, q, s, s > 1.2);
                 }
@@ -448,8 +454,8 @@ impl Sand<'_> {
                 break;
             }
             let w = rng.range(1.8, 2.5);
-            let p = lot.at
-                + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach - w * 1.6);
+            let p = lot.at()
+                + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach() - w * 1.6);
             if placed.iter().any(|q| q.distance(p) < 8.0) || self.sk.keep_clear(p) {
                 continue;
             }
@@ -458,8 +464,8 @@ impl Sand<'_> {
             placed.push(p);
         }
         for _ in 0..3 {
-            let p =
-                lot.at + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach - 2.0);
+            let p = lot.at()
+                + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach() - 2.0);
             let s = rng.range(0.8, 1.4);
             if self.room(p, s, 1.0, None) {
                 self.boulder(rng, p, s, s > 1.1);
@@ -479,10 +485,10 @@ impl Sand<'_> {
                 } else {
                     (k as f32 - 0.5) * 9.0
                 };
-            let half = (lot.reach * lot.reach - off.length_squared()).sqrt() - 2.0;
+            let half = (lot.reach() * lot.reach() - off.length_squared()).sqrt() - 2.0;
             let len = rng.range(0.6, 0.95) * 2.0 * half;
             let dir = Vec2::from_angle(rng.range(-0.25, 0.25)).rotate(along);
-            let a = lot.at + off - dir * len * 0.5;
+            let a = lot.at() + off - dir * len * 0.5;
             let mut t = 0.0;
             while t < len - 1.0 {
                 let piece = rng.range(2.2, 3.4).min(len - t);
@@ -508,15 +514,15 @@ impl Sand<'_> {
     fn boulder_field(&mut self, rng: &mut Rng, lot: &Lot) {
         for _ in 0..60 {
             let s = rng.range(1.4, 2.6);
-            let p = lot.at
-                + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach - s * 1.3);
+            let p = lot.at()
+                + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach() - s * 1.3);
             if self.room(p, s, 5.0, None) {
                 self.boulder(rng, p, s, true);
             }
         }
         for _ in 0..14 {
-            let p =
-                lot.at + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach - 1.0);
+            let p = lot.at()
+                + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(0.0, lot.reach() - 1.0);
             let s = rng.range(0.3, 0.7);
             self.boulder(rng, p, s, false);
         }
@@ -525,11 +531,11 @@ impl Sand<'_> {
     /// Stones washed down the washes and left on their floors.
     fn wash_stones(&mut self, rng: &mut Rng) {
         let sk = self.sk;
-        for wash in &sk.washes {
-            let total: f32 = wash.windows(2).map(|w| w[0].distance(w[1])).sum();
+        for wash in &sk.land.washes {
+            let total: f32 = wash.line.windows(2).map(|w| w[0].distance(w[1])).sum();
             let mut t = 0.0;
             while t < total {
-                let (p, dir) = line_at(wash, t);
+                let (p, dir) = line_at(&wash.line, t);
                 t += rng.range(6.0, 14.0);
                 if p.min_element() < 6.0 || p.max_element() > sk.size - 6.0 {
                     continue;
@@ -677,7 +683,7 @@ impl Sand<'_> {
     fn spawns(&mut self) {
         let sk = self.sk;
         for side in 0..self.map.bases.len().min(sk.bases.len()) {
-            let pts = sk.spawn_points(side);
+            let pts = sk.bases[side].spawn_points();
             self.map.bases[side] = pts
                 .into_iter()
                 .filter(|&p| self.clear(p, TANK_CLEAR))
@@ -689,7 +695,7 @@ impl Sand<'_> {
             let mut x = 8.0;
             while x < sk.size - 8.0 {
                 let p = Vec2::new(x, z);
-                if self.clear(p, TANK_CLEAR) && sk.plateau(p).abs() > 3.0 {
+                if self.clear(p, TANK_CLEAR) && sk.land.plateau(p).abs() > 3.0 {
                     spots.push(p);
                 }
                 x += 10.0;
@@ -697,20 +703,20 @@ impl Sand<'_> {
             z += 10.0;
         }
         let nav = NavGrid::build(self.map);
-        let from = sk.bases[0];
+        let from = sk.base_spots()[0];
         self.map.open_spots = spots
             .into_iter()
             .filter(|&q| !nav.path(from, q).is_empty())
             .collect();
         // Repair drops: either side of the landmark, and partway out to
         // each side's spawns.
-        let lm = sk.landmark.at;
-        let across = (sk.bases[0] - lm).normalize_or(Vec2::X).perp();
+        let lm = sk.landmarks[0].center;
+        let across = (sk.base_spots()[0] - lm).normalize_or(Vec2::X).perp();
         let mut want = vec![
-            lm + across * (sk.landmark.reach + 10.0),
-            lm - across * (sk.landmark.reach + 10.0),
+            lm + across * (sk.landmarks[0].reach + 10.0),
+            lm - across * (sk.landmarks[0].reach + 10.0),
         ];
-        for &b in &sk.bases {
+        for &b in &sk.base_spots() {
             want.push(lm.lerp(b, 0.55) + (b - lm).normalize_or(Vec2::X).perp() * 14.0);
         }
         self.map.repair_spots = want
@@ -732,7 +738,7 @@ impl Sand<'_> {
                     let ok = inside
                         && level
                         && sky
-                        && sk.plateau(q).abs() > 6.0
+                        && sk.land.plateau(q).abs() > 6.0
                         && self.clear(q, TANK_CLEAR)
                         && !nav.path(from, q).is_empty();
                     ok.then_some(q)
@@ -752,7 +758,7 @@ impl Sand<'_> {
         let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
             sk.scenery_ground(x, z)
         });
-        t.color = sk.palette.sand * 0.95;
+        t.color = self.pal.sand * 0.95;
         t.material = Material::Sand;
         self.map.scenery_terrain = Some(t);
         for _ in 0..36 {
@@ -780,12 +786,12 @@ impl Sand<'_> {
         let sk = self.sk;
         let m = &*self.map;
         let sun = m.atmosphere.sun_dir.normalize();
-        let lm = sk.landmark.at;
+        let lm = sk.landmarks[0].center;
         let view = |p: Vec2| {
             let d = lm - p;
             (-d.x).atan2(-d.y)
         };
-        sk.bases
+        sk.base_spots()
             .iter()
             .map(|&b| {
                 let want = b.lerp(lm, 0.12);

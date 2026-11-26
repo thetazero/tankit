@@ -13,6 +13,7 @@
 
 use glam::{Vec2, Vec3};
 
+use super::land::Land;
 use crate::faction::Faction;
 use crate::map::{Map, OBox, Terrain};
 use crate::render::material::Material;
@@ -22,8 +23,8 @@ use crate::render::material::Material;
 pub struct Skeleton {
     /// Arena spans [0, size] on x and z.
     pub size: f32,
-    /// Raised ground, sloping down to the rest at its edge.
-    pub platforms: Vec<Platform>,
+    /// The ground: its landforms, and the height they make.
+    pub land: Land,
     pub streets: Vec<Street>,
     /// Open ground among the buildings, with a deco in the middle.
     pub squares: Vec<Square>,
@@ -42,8 +43,6 @@ pub struct Skeleton {
     /// Smaller things standing on the ground.
     pub decos: Vec<Deco>,
     pub repair_spots: Vec<Vec2>,
-    /// The lie of the land under it all.
-    pub relief: super::relief::Relief,
     /// Where roads cross valleys and ridges.
     pub crossings: Vec<super::crossing::Crossing>,
 }
@@ -130,6 +129,21 @@ pub struct Square {
     pub radius: f32,
 }
 
+/// What stands at a landmark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LandmarkKind {
+    /// A great building (a style's own, or a shield generator).
+    Great,
+    /// A ring of sandstone spires.
+    Needles,
+    /// An old impact crater: a bowl, its rim heaped with blocks.
+    Crater,
+    /// A great natural arch spanning the open ground.
+    Arch,
+    /// A shield generator out in the open, on a graded pad.
+    Generator,
+}
+
 /// The big thing in the middle: round, `radius` across, standing on the
 /// ground at `center`, with a `precinct` round it (a ring the style may
 /// stand things on, open where the streets come in).
@@ -142,6 +156,13 @@ pub struct Landmark {
     pub doors: Vec<Vec2>,
     /// The way a side of it has fallen in, if it has (war damage).
     pub fallen: Option<Vec2>,
+    pub kind: LandmarkKind,
+    /// Nothing solid at tank height within this (0: only its doors open).
+    pub clear: f32,
+    /// Its filler keeps to this.
+    pub reach: f32,
+    /// What it's turned across (an arch's span).
+    pub facing: Vec2,
 }
 
 /// A side's base: a square court in a corner, `size` on a side, along two
@@ -151,15 +172,50 @@ pub struct Base {
     pub corner: Vec2,
     pub inward: Vec2,
     pub size: f32,
+    pub kind: BaseKind,
+}
+
+/// What a base is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseKind {
+    /// A walled court.
+    Court,
+    /// Open ground, the circle in the square.
+    Pad,
 }
 
 impl Base {
+    /// Open ground `radius` round `at`.
+    pub fn pad(at: Vec2, radius: f32) -> Base {
+        Base {
+            corner: at - Vec2::splat(radius),
+            inward: Vec2::ONE,
+            size: radius * 2.0,
+            kind: BaseKind::Pad,
+        }
+    }
+
     /// The point `u` m in along x from the corner and `v` along z.
     pub fn at(&self, u: f32, v: f32) -> Vec2 {
         self.corner + Vec2::new(self.inward.x * u, self.inward.y * v)
     }
 
-    /// The middle of the court.
+    /// Where its side's tanks may start: a grid over it.
+    pub fn spawn_points(&self) -> Vec<Vec2> {
+        if self.kind == BaseKind::Court {
+            return (0..25)
+                .map(|k| self.at(9.0 + (k / 5) as f32 * 7.0, 9.0 + (k % 5) as f32 * 7.0))
+                .collect();
+        }
+        let (c, r, step) = (self.middle(), self.size * 0.5 - 5.0, 4.5);
+        let n = (r / step) as i32;
+        (-n..=n)
+            .flat_map(|i| (-n..=n).map(move |j| c + Vec2::new(i as f32, j as f32) * step))
+            .filter(|p| p.distance(c) <= r)
+            .collect()
+    }
+
+    /// The middle of it.
     pub fn middle(&self) -> Vec2 {
         self.at(self.size * 0.5, self.size * 0.5)
     }
@@ -194,6 +250,12 @@ pub enum LotKind {
     Civic(CivicKind),
     /// A building far out past the edge, only ever seen from afar.
     Distant,
+    /// A cluster of hoodoos.
+    Spires,
+    /// Fins of rock standing out of the ground.
+    Fins,
+    /// A field of boulders.
+    Boulders,
 }
 
 /// A building plot: its footprint (`y0`, `y1` unused), the side facing the
@@ -203,6 +265,30 @@ pub struct Lot {
     pub footprint: OBox,
     pub front: (usize, f32),
     pub kind: LotKind,
+}
+
+impl Lot {
+    /// A round plot, `reach` about `at`, facing no way in particular.
+    pub fn round(kind: LotKind, at: Vec2, reach: f32) -> Lot {
+        Lot {
+            footprint: OBox {
+                center: at,
+                half: Vec2::splat(reach),
+                ..OBox::default()
+            },
+            front: (1, 1.0),
+            kind,
+        }
+    }
+
+    pub fn at(&self) -> Vec2 {
+        self.footprint.center
+    }
+
+    /// How far a round plot's filler may reach.
+    pub fn reach(&self) -> f32 {
+        self.footprint.half.x
+    }
 }
 
 /// Something standing over a street at `at` (across `along`, the street's
@@ -282,19 +368,20 @@ impl Skeleton {
         self.heart
     }
 
+    /// The middle of each side's base.
+    pub fn base_spots(&self) -> Vec<Vec2> {
+        self.bases.iter().map(Base::middle).collect()
+    }
+
     /// Ground height before anything's heaped on it.
     pub fn ground(&self, p: Vec2) -> f32 {
-        self.relief.height(p)
-            + self
-                .platforms
-                .iter()
-                .map(|pl| pl.height_at(p))
-                .fold(0.0, f32::max)
+        self.land.height(p)
     }
 
     /// How far `p` is off every plaza's slope (negative: on one).
     pub fn off_plazas(&self, p: Vec2) -> f32 {
-        self.platforms
+        self.land
+            .platforms
             .iter()
             .map(|pl| pl.sdf(p) - pl.ramp)
             .fold(f32::MAX, f32::min)
@@ -391,15 +478,11 @@ impl Skeleton {
                 .any(|o| o.solid && o.distance(p) < TANK_CLEAR)
         };
         for (k, b) in self.bases.iter().enumerate() {
-            let mut spots = Vec::new();
-            for i in 0..5 {
-                for j in 0..5 {
-                    let p = b.at(9.0 + i as f32 * 7.0, 9.0 + j as f32 * 7.0);
-                    if clear(map, p) {
-                        spots.push(p);
-                    }
-                }
-            }
+            let spots = b
+                .spawn_points()
+                .into_iter()
+                .filter(|&p| clear(map, p))
+                .collect();
             map.bases[k] = spots;
         }
         let step = 10.0;
@@ -445,9 +528,31 @@ impl Skeleton {
             });
         };
         let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
-        // The landmark: a ring wall, open at its doors and where it fell.
+        // The cliffs, as the boxes that stop tanks.
+        for line in self.land.cliffs(self.size) {
+            map.rock_face(&line, self.land.high.height, false, 0.0);
+        }
+        map.sculpted = Default::default();
+        for o in &mut map.oboxes {
+            o.hidden = false;
+            o.color = Vec3::new(0.55, 0.45, 0.35);
+        }
+        // The landmark: a ring wall, open at its doors and where it fell;
+        // anything else, a low slab on its reach.
         for lm in &self.landmarks {
             let g = self.ground(lm.center);
+            if lm.kind != LandmarkKind::Great {
+                put(
+                    &mut map,
+                    lm.center,
+                    std::f32::consts::FRAC_PI_4,
+                    Vec2::splat(lm.reach * 0.7),
+                    (g - 0.5, g + 0.3),
+                    Vec3::new(0.7, 0.3, 0.2),
+                );
+                map.oboxes.last_mut().unwrap().solid = false;
+                continue;
+            }
             let segs = 40;
             for k in 0..segs {
                 let a = (k as f32 + 0.5) / segs as f32 * std::f32::consts::TAU;
@@ -498,6 +603,9 @@ impl Skeleton {
                 LotKind::Rubble => (1.2, Vec3::new(0.5, 0.42, 0.35)),
                 LotKind::Civic(_) => (2.0, Vec3::new(0.6, 0.5, 0.5)),
                 LotKind::Distant => (16.0, Vec3::new(0.38, 0.38, 0.4)),
+                LotKind::Spires => (0.3, Vec3::new(0.6, 0.5, 0.2)),
+                LotKind::Fins => (0.3, Vec3::new(0.3, 0.5, 0.6)),
+                LotKind::Boulders => (0.3, Vec3::new(0.4, 0.6, 0.3)),
             };
             match lot.kind {
                 LotKind::Raised => {
@@ -518,7 +626,11 @@ impl Skeleton {
                     put(&mut map, f.center, f.yaw, f.half * 0.8, (0.0, h), c);
                     map.oboxes.last_mut().unwrap().solid = false;
                 }
-                LotKind::Distant | LotKind::Civic(_) => {
+                LotKind::Distant
+                | LotKind::Civic(_)
+                | LotKind::Spires
+                | LotKind::Fins
+                | LotKind::Boulders => {
                     put(&mut map, f.center, f.yaw, f.half, (0.0, h), c);
                     map.oboxes.last_mut().unwrap().solid = false;
                 }
@@ -556,6 +668,9 @@ impl Skeleton {
             lift(&mut map.oboxes[start..], self.ground(c));
         }
         for (k, b) in self.bases.iter().enumerate() {
+            if b.kind == BaseKind::Pad {
+                continue;
+            }
             let start = map.oboxes.len();
             let col = factions.get(k).map_or(Vec3::ONE, |f| f.paint());
             let s = b.size;
