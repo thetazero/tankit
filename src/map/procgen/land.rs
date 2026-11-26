@@ -428,19 +428,6 @@ impl Dig {
         })
     }
 
-    /// Its rooms' corners, on the map.
-    pub fn corners(&self) -> impl Iterator<Item = Vec2> + '_ {
-        self.rooms.iter().flat_map(|r| {
-            [
-                r.min,
-                r.max,
-                Vec2::new(r.min.x, r.max.y),
-                Vec2::new(r.max.x, r.min.y),
-            ]
-            .map(|p| self.to_map(p))
-        })
-    }
-
     /// How far `p` is from its rooms, seen from above (negative: over one).
     pub fn distance(&self, p: Vec2) -> f32 {
         let q = self.to_dig(p);
