@@ -58,6 +58,8 @@ pub enum Biome {
     Mine,
     /// Open desert: dunes, buttes, spires, perhaps a dry wash.
     Desert,
+    /// A small town in the desert, round a dry reservoir's dam or a well.
+    Reservoir,
     /// A hull foundry, on whichever ground.
     Foundry(foundry::Ground),
     /// A rail depot on desert.
@@ -222,7 +224,7 @@ fn build_map(spec: &Spec) -> Map {
     match spec.biome {
         Biome::City => build(spec).0,
         Biome::Mine => mine::build(spec),
-        Biome::Desert => desert::build(spec),
+        Biome::Desert | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot => depot::build(spec),
     }
@@ -368,7 +370,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
     match biome {
         Biome::City => city::PLANET,
         Biome::Mine => mine::PLANET,
-        Biome::Desert => desert::PALETTES[0].planet,
+        Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
         Biome::Foundry(ground) => ground.planet(),
         Biome::Depot => foundry::Ground::Desert.planet(),
     }
@@ -378,7 +380,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
 pub fn greybox(spec: &Spec) -> Map {
     match spec.biome {
         Biome::Mine => return mine::greybox(spec),
-        Biome::Desert => return desert::greybox(spec),
+        Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::Depot => return depot::greybox(spec),
         Biome::City => {}
@@ -745,6 +747,11 @@ impl Map {
     /// The open desert `seed` names (see `crate::desert_spec`).
     pub fn desert(seed: u64) -> Map {
         map(&crate::desert_spec(seed))
+    }
+
+    /// The reservoir town `seed` names (see `crate::reservoir_spec`).
+    pub fn reservoir(seed: u64) -> Map {
+        map(&crate::reservoir_spec(seed))
     }
 
     /// The imperial city `seed` names, with `owner`'s shield generator in

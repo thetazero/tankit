@@ -404,7 +404,7 @@ mod tests {
     /// A real bot battle, recorded: loud enough to hear, never clipping hard.
     #[test]
     fn a_battle_sounds_sane() {
-        let map = crate::map::Map::saltmarket();
+        let map = crate::map::Map::reservoir(0);
         let mut game = Match::new(map, 0, 5, 7);
         game.start();
         let buf = record(&mut game, 6.0, 24_000, 0.8, |w| {
@@ -425,7 +425,7 @@ mod tests {
     #[ignore]
     fn audio_cost() {
         use std::time::{Duration, Instant};
-        let map = crate::map::Map::saltmarket();
+        let map = crate::map::Map::reservoir(0);
         let mut game = Match::new(map, 0, 12, 3);
         game.start();
         let rate = 48_000;

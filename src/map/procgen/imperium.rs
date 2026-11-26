@@ -61,6 +61,8 @@ const CONCRETES: [Vec3; 7] = [
 const CAST: ruins::Style = ruins::Style {
     colors: &CONCRETES,
     wall: Material::Concrete,
+    storeys: (2, 4),
+    light: 0.35,
 };
 
 /// The four directions on the map: east, north, west, south.
