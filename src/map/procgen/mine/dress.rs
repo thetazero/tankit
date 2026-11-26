@@ -1,7 +1,7 @@
 //! Dressing a mine's skeleton (see `plan`): the outside as a desert is, in
 //! red rock, and what stands in each dig, placed in the dig's own frame.
 
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::f32::consts::FRAC_PI_2;
 
 use glam::{Vec2, Vec3};
 
