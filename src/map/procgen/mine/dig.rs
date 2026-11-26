@@ -1014,6 +1014,18 @@ impl Dig<'_> {
         let lay = self.l;
         let mid = (a + b) * 0.5;
         let h = lay.drawn_roof(mid) - arch(lay, a).max(arch(lay, b)) - 0.1;
+        self.steel_set_to(a, b, h);
+    }
+
+    /// What something at `p` stands on: a dig's floor, in one.
+    pub(super) fn stand(&self, p: Vec2) -> f32 {
+        let dig = self.l.land.digs.iter().find(|d| d.distance(p) < 0.0);
+        dig.map_or_else(|| self.ground_height(p.x, p.y), |d| d.floor)
+    }
+
+    /// A steel set from `a` to `b`, its cap `h` up.
+    pub(super) fn steel_set_to(&mut self, a: Vec2, b: Vec2, h: f32) {
+        let mid = (a + b) * 0.5;
         let across = (b - a).normalize();
         for p in [a, b] {
             self.pipe(
@@ -1946,7 +1958,7 @@ impl Dig<'_> {
     pub(super) fn block_stack(&mut self, at: Vec2, yaw: f32) {
         // Its detail comes from its own stream.
         let rng = &mut own_rng(at);
-        let g = self.ground_height(at.x, at.y);
+        let g = self.stand(at);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
             rot: Quat::from_rotation_y(yaw),
@@ -2590,7 +2602,7 @@ impl Dig<'_> {
             return;
         }
         let rng = &mut own_rng(at);
-        let g = self.ground_height(at.x, at.y);
+        let g = self.stand(at);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
             rot: Quat::from_rotation_y(yaw),

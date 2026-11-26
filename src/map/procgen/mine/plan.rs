@@ -11,7 +11,7 @@ use glam::Vec2;
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::procgen::check;
-use crate::map::procgen::desert::skeleton::RAMP_RUN;
+use crate::map::procgen::desert::skeleton::{PAD, RAMP_RUN};
 use crate::map::procgen::land::*;
 use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
@@ -46,6 +46,21 @@ fn rooms(rng: &mut Rng) -> Vec<Hollow> {
             6.5,
         ),
     ]
+}
+
+/// `dig` with pillars left in its hall, between its ways in: toward the back
+/// wall, so there's a way past in front of them.
+fn pillared(rng: &mut Rng, mut dig: Dig) -> Dig {
+    let hall = dig.rooms[2];
+    let mid = Vec2::new(
+        (hall.min.x + hall.max.x) * 0.5,
+        hall.min.y + (hall.max.y - hall.min.y) * 0.68,
+    );
+    let r = rng.range(1.7, 2.2);
+    for s in [-1.0, 1.0] {
+        dig.pillars.push((mid + Vec2::X * s * 6.5, r));
+    }
+    dig
 }
 
 /// Whether `dig` fits in `land`: rock all round its rooms but at its
@@ -118,7 +133,9 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             facing: (b - a).normalize().perp(),
             floor: 0.0,
             rooms: rooms(rng),
+            pillars: Vec::new(),
         };
+        let dig = pillared(rng, dig);
         if fits(&land, &dig, size) {
             land.digs.push(dig);
         }
@@ -189,6 +206,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             facing: along,
         }],
         heart,
+        pad: PAD,
         ..Skeleton::default()
     };
     let nav = NavGrid::build(&sk.greybox(sides));

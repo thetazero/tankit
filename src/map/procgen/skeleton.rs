@@ -788,7 +788,9 @@ impl Skeleton {
         };
         let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
         if !self.land.high.slabs.is_empty() {
-            let mut ground = self.land.surface(self.size, 2.0, |_| 0.0);
+            // (What's dug is too fine for the coarse one to say if it's open.)
+            let cell = if self.land.digs.is_empty() { 2.0 } else { 1.0 };
+            let mut ground = self.land.surface(self.size, cell, |_| 0.0);
             ground.rock = Vec3::new(0.55, 0.45, 0.35);
             map.solid = Some(ground.into());
         }

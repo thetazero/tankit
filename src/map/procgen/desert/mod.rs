@@ -229,7 +229,9 @@ pub fn build(spec: &Spec) -> Map {
 /// Builds `spec`'s desert, and what each placeholder's filler put down.
 pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let sk = skeleton(spec);
-    let mut built = dressed(spec, &sk, spec.seed);
+    let pal = palette(spec.seed);
+    let sky = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &pal);
+    let mut built = dressed(&sk, spec, &pal, sky, spec.seed);
     if spec.biome == Biome::Reservoir {
         // What its houses and boulders come down to isn't on the greybox: if
         // they've shut somebody in, they fall another way.
@@ -238,29 +240,30 @@ pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Rang
                 Ok(()) => break,
                 Err(why) => log::debug!("town seed {} dressed: {why}", spec.seed),
             }
-            built = dressed(spec, &sk, spec.seed ^ (attempt << 40));
+            built = dressed(&sk, spec, &pal, sky, spec.seed ^ (attempt << 40));
         }
     }
     built
 }
 
-/// `spec`'s desert, laid out as `sk`, its pieces drawn from `dice`.
-fn dressed(
-    spec: &Spec,
+/// `sk` dressed as a desert in `pal`, under `sky`, its pieces drawn from
+/// `dice`.
+pub(in crate::map::procgen) fn dressed(
     sk: &Skeleton,
+    spec: &Spec,
+    pal: &Palette,
+    sky: crate::render::Atmosphere,
     dice: u64,
 ) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
-    let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let mut m = blank(sk, &spec.sides);
-    m.atmosphere = atmosphere(&mut rng, &palette(spec.seed));
-    let pal = palette(spec.seed);
+    m.atmosphere = sky;
     m.rock_dust = Some(pal.sand);
     m.planet = Some((spec.seed, pal.planet));
-    m.terrain = Some(dress::terrain(sk, pal));
+    m.terrain = Some(dress::terrain(sk, *pal));
     let mut ground = sk.land.surface(sk.size, 1.0, |_| 0.0);
     ground.rock = pal.stone;
     m.solid = Some(ground.into());
-    let claims = dress::dress(&mut m, sk, pal, dice, spec.centerpiece);
+    let claims = dress::dress(&mut m, sk, *pal, dice, spec.centerpiece);
     if sk.landmarks[0].kind == LandmarkKind::Generator || spec.biome == Biome::Reservoir {
         // Built flush, piece against piece, as a city is.
         m.separate_coplanar_faces();

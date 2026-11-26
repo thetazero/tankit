@@ -443,7 +443,12 @@ fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
     for t in &s.tris {
         let v = t.map(|k| s.verts[k as usize]);
         let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or(Vec3::Y);
-        if n.y > 0.6 {
+        let mid = (v[0] + v[1] + v[2]) / 3.0;
+        // What's dug out is rock all round.
+        let under = s
+            .top(Vec2::new(mid.x, mid.z))
+            .is_some_and(|top| top > mid.y + 2.0);
+        if n.y > 0.6 && !under {
             m.indices.extend(t.map(|k| base + k));
             continue;
         }
@@ -452,7 +457,9 @@ fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
             m.verts.push(Vertex {
                 pos: s.verts[*k as usize].to_array(),
                 normal: s.normals[*k as usize].to_array(),
-                color: s.rock.extend(Material::Cliff.id()).to_array(),
+                color: (s.rock * if under { 0.7 } else { 1.0 })
+                    .extend(Material::Cliff.id())
+                    .to_array(),
             });
         }
         m.indices.extend([at, at + 1, at + 2]);
