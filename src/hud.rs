@@ -890,7 +890,7 @@ fn table(
 /// A gain's bar, in the middle of its line at `at`: what you had, and what
 /// you got lit.
 fn gain_bar(p: &mut Painter, at: Vec2, col: f32, from: f32, to: f32) {
-    let (x, w) = (at.x + col * 0.5, col * 0.28);
+    let (x, w) = (at.x + col * 0.4, col * 0.45);
     let y = at.y + design::SMALL.size * 0.5 - 1.5;
     let h = 3.0;
     let rail = with_alpha(design::TEXT_2, 0.3);
