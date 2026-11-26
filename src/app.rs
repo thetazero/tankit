@@ -1242,6 +1242,7 @@ impl App {
                 Action::NextHull,
                 Action::NextTurret,
                 Action::CameraReset,
+                Action::Map,
             ],
         );
         match code {
@@ -1269,6 +1270,7 @@ impl App {
                 self.back_to_missions();
             }
             _ if action == Some(Action::CameraReset) => self.cam_homing = true,
+            _ if action == Some(Action::Map) => self.hud.map_up = !self.hud.map_up,
             // Quick-cycle the kit queued for the next respawn.
             _ if action == Some(Action::NextHull) => {
                 let (hull, turret) = self.queued();

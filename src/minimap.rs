@@ -1,4 +1,4 @@
-//! The minimap, top right in battle: the map's layout (`Map::skeleton`), so
+//! The minimap, top right in battle (M: the whole map, big): the map's layout (`Map::skeleton`), so
 //! only generated maps have one. The land shaded by height, then streets,
 //! washes, buildings, digs and railroads; over it your side, what you're
 //! fighting over and you. Enemies aren't on it.
@@ -11,18 +11,26 @@ use crate::combat::{Match, Phase};
 use crate::map::Map;
 use crate::map::procgen::skeleton::{LotKind, Rank, Skeleton};
 use crate::sim::Tank;
-use crate::ui::{Painter, Rgba, design, theme, with_alpha};
+use crate::ui::{Align, Painter, Rgba, design, theme, with_alpha};
 
 /// Its side, in logical px.
 pub const SIZE: f32 = 190.0;
-/// How many cells across its land's shaded in.
+/// The whole map's side, of the screen's height.
+pub const BIG: f32 = 0.7;
+/// How many cells across its land's shaded in, small and big.
 const CELLS: usize = 48;
+const BIG_CELLS: usize = 128;
 
 /// A map drawn once: polygons on the unit square, up the screen +z.
 pub struct Chart {
     of: Arc<Skeleton>,
-    polys: Vec<(Vec<Vec2>, Rgba)>,
+    /// The land, small and big.
+    land: [Vec<Poly>; 2],
+    /// What's on it.
+    polys: Vec<Poly>,
 }
+
+type Poly = (Vec<Vec2>, Rgba);
 
 /// A point of a map `size` across, on the unit square. (Seen from above
 /// with +z up the screen, +x is to the left.)
@@ -56,9 +64,9 @@ impl Chart {
         let sk = map.skeleton.clone()?;
         let mut c = Chart {
             of: sk.clone(),
+            land: [CELLS, BIG_CELLS].map(|n| land(map, &sk, n)),
             polys: Vec::new(),
         };
-        c.land(map, &sk);
         let grey = |v: f32, a: f32| -> Rgba { [v, v * 0.98, v * 0.94, a] };
         for w in &sk.land.washes {
             c.line(&w.line, w.floor + 2.0, grey(0.02, 0.5));
@@ -137,55 +145,54 @@ impl Chart {
         }
     }
 
-    /// The land: lighter the higher, slopes lit from one corner.
-    fn land(&mut self, map: &Map, sk: &Skeleton) {
-        let cell = sk.size / CELLS as f32;
-        let at = |i: usize, j: usize| (Vec2::new(i as f32, j as f32) + 0.5) * cell;
-        let h: Vec<f32> = (0..CELLS * CELLS)
-            .map(|k| sk.ground(at(k % CELLS, k / CELLS)))
-            .collect();
-        let (lo, hi) = h
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
-        let span = (hi - lo).max(8.0);
-        for j in 0..CELLS {
-            for i in 0..CELLS {
-                let p = at(i, j);
-                let g = h[j * CELLS + i];
-                if map.is_out(glam::Vec3::new(p.x, g, p.y)) {
-                    continue;
-                }
-                let next = |di: usize, dj: usize| {
-                    h[(j + dj).min(CELLS - 1) * CELLS + (i + di).min(CELLS - 1)]
-                };
-                let slope = (next(1, 0) - g + next(0, 1) - g) / cell;
-                let v = 0.08 + 0.16 * (g - lo) / span + (slope * 0.06).clamp(-0.06, 0.06);
-                let wet = sk.land.channel.as_ref().is_some_and(|c| c.wet(p, -2.0));
-                let color = if wet {
-                    [0.5, 0.12, 0.42, 0.9]
-                } else {
-                    [v * 1.04, v, v * 0.9, 0.9]
-                };
-                let a = Vec2::new(i as f32, j as f32) * cell;
-                self.poly(
-                    &[
-                        a,
-                        a + Vec2::new(cell, 0.0),
-                        a + Vec2::splat(cell),
-                        a + Vec2::new(0.0, cell),
-                    ],
-                    color,
-                );
-            }
-        }
-    }
-
     /// Whether it's `map`'s.
     fn is_of(&self, map: &Map) -> bool {
         map.skeleton
             .as_ref()
             .is_some_and(|s| Arc::ptr_eq(s, &self.of))
     }
+}
+
+/// The land: lighter the higher, slopes lit from one corner.
+fn land(map: &Map, sk: &Skeleton, cells: usize) -> Vec<Poly> {
+    let mut out = Vec::new();
+    let cell = sk.size / cells as f32;
+    let at = |i: usize, j: usize| (Vec2::new(i as f32, j as f32) + 0.5) * cell;
+    let h: Vec<f32> = (0..cells * cells)
+        .map(|k| sk.ground(at(k % cells, k / cells)))
+        .collect();
+    let (lo, hi) = h
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    let span = (hi - lo).max(8.0);
+    for j in 0..cells {
+        for i in 0..cells {
+            let p = at(i, j);
+            let g = h[j * cells + i];
+            if map.is_out(glam::Vec3::new(p.x, g, p.y)) {
+                continue;
+            }
+            let next =
+                |di: usize, dj: usize| h[(j + dj).min(cells - 1) * cells + (i + di).min(cells - 1)];
+            let slope = (next(1, 0) - g + next(0, 1) - g) / cell;
+            let v = 0.08 + 0.16 * (g - lo) / span + (slope * 0.06).clamp(-0.06, 0.06);
+            let wet = sk.land.channel.as_ref().is_some_and(|c| c.wet(p, -2.0));
+            let color = if wet {
+                [0.5, 0.12, 0.42, 0.9]
+            } else {
+                [v * 1.04, v, v * 0.9, 0.9]
+            };
+            let a = Vec2::new(i as f32, j as f32) * cell;
+            let quad = [
+                a,
+                a + Vec2::new(cell, 0.0),
+                a + Vec2::splat(cell),
+                a + Vec2::new(0.0, cell),
+            ];
+            out.push((quad.map(|p| unit(p, sk.size)).to_vec(), color));
+        }
+    }
+    out
 }
 
 /// Keeps `chart` to the match's map.
@@ -199,25 +206,25 @@ pub fn keep(chart: &mut Option<Chart>, map: &Map) {
     }
 }
 
-/// Draws it with its top right corner at `corner`.
-pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], corner: Vec2) {
-    let min = corner - Vec2::new(SIZE, 0.0);
-    let pad = Vec2::splat(design::UNIT * 0.5);
-    p.rect(
-        min - pad,
-        Vec2::splat(SIZE) + pad * 2.0,
-        with_alpha(design::GROUND, 0.88),
-    );
-    for (poly, color) in &chart.polys {
-        let pts: Vec<Vec2> = poly.iter().map(|&q| min + q * SIZE).collect();
+/// Draws it `side` px across, its top left corner at `min`: big, with a
+/// compass.
+pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], min: Vec2, side: f32) {
+    let big = side > SIZE * 1.5;
+    let pad = Vec2::splat(design::UNIT * if big { 1.5 } else { 0.5 });
+    let plate = with_alpha(design::GROUND, if big { 0.94 } else { 0.88 });
+    p.rect(min - pad, Vec2::splat(side) + pad * 2.0, plate);
+    for (poly, color) in chart.land[big as usize].iter().chain(&chart.polys) {
+        let pts: Vec<Vec2> = poly.iter().map(|&q| min + q * side).collect();
         p.poly(&pts, *color);
     }
+    // Marks, bigger on the big one.
+    let k = if big { 2.0 } else { 1.0 };
     let size = chart.of.size;
-    let on = |q: Vec2| min + unit(q, size).clamp(Vec2::ZERO, Vec2::ONE) * SIZE;
+    let on = |q: Vec2| min + unit(q, size).clamp(Vec2::ZERO, Vec2::ONE) * side;
     let flat = |v: glam::Vec3| Vec2::new(v.x, v.z);
     let me = m.player();
     let ring = |p: &mut Painter, at: Vec2, r: f32, color: Rgba| {
-        p.arc(at, r, 0.0, std::f32::consts::TAU, 1.6, color);
+        p.arc(at, r * k, 0.0, std::f32::consts::TAU, 1.6, color);
     };
     if let Some(h) = &m.hold {
         for s in &h.sites {
@@ -230,10 +237,10 @@ pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], corner: V
         let color = m.factions[r.defenders()].ui();
         p.poly(
             &[
-                at + Vec2::new(0.0, -5.0),
-                at + Vec2::new(4.0, 0.0),
-                at + Vec2::new(0.0, 5.0),
-                at + Vec2::new(-4.0, 0.0),
+                at + Vec2::new(0.0, -5.0) * k,
+                at + Vec2::new(4.0, 0.0) * k,
+                at + Vec2::new(0.0, 5.0) * k,
+                at + Vec2::new(-4.0, 0.0) * k,
             ],
             color,
         );
@@ -241,7 +248,8 @@ pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], corner: V
     for (t, f) in tanks.iter().zip(&m.fighters).skip(1) {
         if f.alive && f.team == me.team {
             let color = m.factions[f.team].ui();
-            p.rect(on(flat(t.pos)) - Vec2::splat(2.2), Vec2::splat(4.4), color);
+            let half = Vec2::splat(2.2 * k);
+            p.rect(on(flat(t.pos)) - half, half * 2.0, color);
         }
     }
     if me.alive && m.phase == Phase::Playing {
@@ -249,12 +257,44 @@ pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], corner: V
         let (s, c) = t.yaw().sin_cos();
         let fwd = -Vec2::new(s, c);
         let at = on(flat(t.pos));
-        let side = fwd.perp() * 4.2;
+        let wing = fwd.perp() * 4.2 * k;
         p.poly(
-            &[at + fwd * 7.5, at - fwd * 4.5 + side, at - fwd * 4.5 - side],
+            &[
+                at + fwd * 7.5 * k,
+                at - fwd * 4.5 * k + wing,
+                at - fwd * 4.5 * k - wing,
+            ],
             theme::HOT,
         );
     }
+    if big {
+        compass(p, min + Vec2::new(side - 44.0, 52.0));
+    }
+}
+
+/// An arrow north (+z, up the map) with its N.
+fn compass(p: &mut Painter, at: Vec2) {
+    let (up, across) = (Vec2::NEG_Y, Vec2::X);
+    p.disc(
+        at,
+        30.0,
+        with_alpha(design::GROUND, 0.8),
+        with_alpha(design::GROUND, 0.8),
+    );
+    let tip = at + up * 14.0;
+    let tail = at - up * 18.0;
+    let waist = at - up * 2.0;
+    p.poly(
+        &[tip, waist + across * 6.0, waist - across * 6.0],
+        theme::HOT,
+    );
+    p.poly(
+        &[tail, waist - across * 6.0, waist + across * 6.0],
+        theme::DIM,
+    );
+    let mut n = design::BODY;
+    n.color = theme::FG;
+    p.text(tip + up * 13.0, "N", &n, Align::Center);
 }
 
 #[cfg(test)]
@@ -273,8 +313,9 @@ mod tests {
         ] {
             let m = crate::map::procgen::map(&spec);
             let c = Chart::of(&m).expect("a minimap");
-            assert!(c.polys.len() > 100);
-            for p in c.polys.iter().flat_map(|p| &p.0) {
+            assert!(c.land.iter().all(|l| l.len() > 1000) && !c.polys.is_empty());
+            let all = c.land.iter().flatten().chain(&c.polys);
+            for p in all.flat_map(|p| &p.0) {
                 assert!(
                     p.min_element() > -1e-4 && p.max_element() < 1.0 + 1e-4,
                     "{p}"
