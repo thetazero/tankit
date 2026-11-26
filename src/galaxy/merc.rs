@@ -436,6 +436,17 @@ struct Quote {
     wage: f32,
 }
 
+/// A contract's terms, but for the company.
+struct Terms {
+    t: usize,
+    f: usize,
+    r: u32,
+    defend: bool,
+    worth: f32,
+    expected: f32,
+    expected_ticks: f32,
+}
+
 impl Company {
     /// What it's worth: its crystal, and its hulls at the going price.
     pub fn capital(&self, hull_price: f32) -> f32 {
@@ -1002,6 +1013,86 @@ impl Galaxy {
             })
     }
 
+    /// Several companies that together do realm `r` more good than `single`
+    /// does: (company, hulls to ask, worth expected, ticks expected) of
+    /// each; none if one's as good.
+    #[allow(clippy::too_many_arguments)]
+    fn bundle(
+        &self,
+        t: usize,
+        f: usize,
+        r: u32,
+        need: u32,
+        own: f32,
+        defend: bool,
+        worth: f32,
+        flown: f32,
+        alone: f32,
+        single: f32,
+    ) -> Option<Vec<(usize, u32, f32, f32)>> {
+        let (pos, pay) = (self.systems[t].pos, self.pay);
+        let (owed, income) = (self.owes(r), self.realms[r as usize].income.max(0.0));
+        let front = self.rules.frontage;
+        let tier = crate::economy::damage_factor(self.realms[r as usize].tier);
+        let mut quotes: Vec<(f32, Quote)> = Vec::new();
+        for c in 0..self.companies.len() {
+            let co = &self.companies[c];
+            if co.contract.is_some()
+                || self.systems[co.at as usize].pos.distance(pos) > self.rules.merc_range
+            {
+                continue;
+            }
+            let offers = self.offers(t, f, r, co.at as usize);
+            let q = self.quote(c, need.max(MIN_SEND), &offers, pos, pay);
+            if q.hulls >= MIN_SEND && q.cost + q.wages <= co.crystals {
+                quotes.push(((q.upfront + q.rate) / q.hulls as f32, q));
+            }
+        }
+        quotes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        quotes.truncate(6);
+        let (mut hulls, mut crew, mut upfront, mut rate) = (0.0, 0.0f32, 0.0, 0.0);
+        let mut best: Option<(f32, usize, f32, f32)> = None;
+        for (k, (_, q)) in quotes.iter().enumerate() {
+            hulls += q.hulls as f32;
+            crew = (crew + q.crew as f32).min(front);
+            upfront += q.upfront;
+            rate += q.rate;
+            if k == 0 {
+                continue;
+            }
+            let cell = self.alike(
+                t,
+                f,
+                own + hulls,
+                flown.min((front - crew).max(0.0)) * tier + crew,
+                defend,
+            );
+            let (share, raw) = self.forecast(t, f, r, own, hulls, crew, 0.0, defend);
+            let with = self.remembered(cell, share);
+            let ticks = raw * self.trust_ticks;
+            let price = upfront + rate * ticks;
+            // Every lender has to be happy with all of it.
+            if quotes[..=k]
+                .iter()
+                .any(|(_, q)| owed + price > income * self.companies[q.company].patience)
+            {
+                break;
+            }
+            let net = (with - alone) * worth - price;
+            if net > single && best.is_none_or(|b| net > b.0) {
+                best = Some((net, k, with * worth, raw));
+            }
+        }
+        let (_, k, expected, raw) = best?;
+        let n = (k + 1) as f32;
+        Some(
+            quotes[..=k]
+                .iter()
+                .map(|(_, q)| (q.company, q.hulls, expected / n, raw))
+                .collect(),
+        )
+    }
+
     /// The fight for system `t` played forward by the galaxy's own battle
     /// math, without the dice: side `f` with `own` hulls and `mercs` hired
     /// ones, against everyone else there and what they can spare nearby,
@@ -1259,13 +1350,7 @@ impl Galaxy {
         if self.ban == Some((r, t as u32)) {
             return false;
         }
-        if !self.realms[r as usize].hires
-            || self.companies.is_empty()
-            || self.companies.iter().any(|c| {
-                c.contract
-                    .is_some_and(|k| k.target as usize == t && k.side as usize == f)
-            })
-        {
+        if !self.realms[r as usize].hires || self.companies.is_empty() {
             return false;
         }
         let (owed, income) = (self.owes(r), self.realms[r as usize].income.max(0.0));
@@ -1442,6 +1527,29 @@ impl Galaxy {
             }
             self.lessons.push(lesson);
         }
+        // Or several at once, as one alone may not be enough: the cheapest by
+        // the hull first, as many as does it the most good.
+        let single = best.as_ref().map_or(0.0, |b| b.1);
+        if let Some(bundle) = self.bundle(t, f, r, need, own, defend, worth, flown, alone, single) {
+            for (c, size, expected, expected_ticks) in bundle {
+                let offers = self.offers(t, f, r, self.companies[c].at as usize);
+                let q = self.quote(c, size, &offers, pos, pay);
+                if q.hulls < MIN_SEND || q.cost > self.companies[c].crystals {
+                    continue;
+                }
+                let terms = Terms {
+                    t,
+                    f,
+                    r,
+                    defend,
+                    worth,
+                    expected,
+                    expected_ticks,
+                };
+                self.sign(q, &offers, &terms);
+            }
+            return true;
+        }
         let Some((q, _, expected, expected_ticks, offers, _)) = best else {
             if !able {
                 self.books.none_able += 1;
@@ -1455,10 +1563,37 @@ impl Galaxy {
             }
             return false;
         };
+        let terms = Terms {
+            t,
+            f,
+            r,
+            defend,
+            worth,
+            expected,
+            expected_ticks,
+        };
+        #[cfg(test)]
+        self.guesses
+            .push((r, t as u32, alone_guess, expected / worth.max(1e-6)));
+        self.sign(q, &offers, &terms);
+        true
+    }
+
+    /// Company `q.company` signs on `terms`.
+    fn sign(&mut self, q: Quote, offers: &[Offer], terms: &Terms) {
+        let &Terms {
+            t,
+            f,
+            r,
+            defend,
+            worth,
+            expected,
+            expected_ticks,
+        } = terms;
         // Sign: the company buys and goes, and the realm owes it.
         self.lend(r, q.company, q.upfront);
         let mut short = q.bought;
-        for o in &offers {
+        for o in offers {
             if short == 0 {
                 break;
             }
@@ -1473,7 +1608,7 @@ impl Galaxy {
             self.books.sold += paid as f64;
         }
         let land = q.hulls;
-        let spent: f32 = offers_spend(&offers, q.bought);
+        let spent: f32 = offers_spend(offers, q.bought);
         self.books.bought += spent as f64;
         self.books.flown += (q.cost - spent) as f64;
         let co = &mut self.companies[q.company];
@@ -1507,15 +1642,11 @@ impl Galaxy {
         if self.systems[t].realms[f] == super::realm::NONE {
             self.systems[t].realms[f] = r;
         }
-        #[cfg(test)]
-        self.guesses
-            .push((r, t as u32, alone_guess, expected / worth.max(1e-6)));
         self.books.signed += 1;
         self.books.defenses += defend as u64;
         // It takes on pilots for its hulls before the fight.
         self.fill_seats(false);
         self.books.upfront += q.upfront as f64;
-        true
     }
 
     /// Contracts whose term is up, looked back on by their realms: what
