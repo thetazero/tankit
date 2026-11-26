@@ -19,7 +19,6 @@ The main menu is made from it; the other screens aren't yet.
   map, factions keep their own colors.
 - **Type:** Michroma, capitals, three sizes.
 - **Space:** 8 px units, and plenty of them. No dense blobs of text.
-- **Shape:** a corner cut at 45 degrees.
 
 ## Components
 

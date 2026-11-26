@@ -51,24 +51,10 @@ impl TextStyle {
     }
 }
 
-/// The signature shape: a corner cut at 45 degrees.
-const CUT: f32 = UNIT * 6.0;
-
-/// The left-hand panel, `h` tall, its top right corner cut. Text on it has no halo.
+/// The left-hand panel, `h` tall. Text on it has no halo.
 pub fn panel(p: &mut Painter, h: f32) {
-    let w = MARGIN * 2.0 + COLUMN;
-    p.poly(
-        &[
-            Vec2::ZERO,
-            Vec2::new(w - CUT, 0.0),
-            Vec2::new(w, CUT),
-            Vec2::new(w, h),
-            Vec2::new(0.0, h),
-        ],
-        GROUND,
-    );
     p.set_halo(None);
-    p.line(Vec2::new(w - CUT, 0.0), Vec2::new(w, CUT), 2.0, AMBER);
+    p.rect(Vec2::ZERO, Vec2::new(MARGIN * 2.0 + COLUMN, h), GROUND);
 }
 
 /// How far along you are: an amber line on a faint one.
