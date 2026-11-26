@@ -18,10 +18,12 @@
 //! monument gets the style's monument, so pieces are shared across every
 //! map built in that style.
 //!
-//! Each biome has its own skeleton: a city's (`skeleton`) is streets and
-//! lots; a crystal mine's (`mine::Layout`) is an escarpment, a mine under
-//! it, a wash and a railroad, and its styles (`mine::MineStyle`) fill in
-//! the lamps, machines and freight.
+//! Cities and deserts are laid out by their own grammars into the one
+//! `Skeleton`: the ground in `land`'s landforms, the rest in shared
+//! placeholders, with one greybox. A crystal mine still has its own layout
+//! (`mine::Layout`): an escarpment, a mine under it, a wash and a railroad,
+//! and its styles (`mine::MineStyle`) fill in the lamps, machines and
+//! freight.
 
 pub mod check;
 pub mod city;
@@ -29,8 +31,8 @@ mod civic;
 pub mod crossing;
 pub mod desert;
 mod imperium;
+pub mod land;
 pub mod mine;
-mod relief;
 mod resonant;
 pub mod shield;
 pub mod skeleton;
@@ -216,10 +218,10 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     terrain.material = crate::render::material::Material::Concrete;
     sk.paint(&mut terrain, st.road());
     map.terrain = Some(terrain);
-    for p in &sk.platforms {
+    for p in &sk.land.platforms {
         let mark = skeleton::Mark::of(&map);
         st.platform(&mut map, &sk, p, &mut rng);
-        mark.raise(&mut map, sk.relief.height(p.center));
+        mark.raise(&mut map, sk.land.base(p.center));
     }
     for s in &sk.streets {
         st.street(&mut map, &sk, s, &mut rng);
@@ -986,17 +988,17 @@ mod tests {
             for i in 0..n {
                 for j in 0..n {
                     let p = Vec2::new(i as f32, j as f32) * 4.0;
-                    let h = sk.relief.land(p);
+                    let h = sk.land.swell(p);
                     (lo, hi) = (lo.min(h), hi.max(h));
-                    let g = sk.relief.height(p);
+                    let g = sk.land.base(p);
                     (gl, gh) = (gl.min(g), gh.max(g));
-                    steep = steep.max((sk.relief.land(p + Vec2::X * 4.0) - h).abs() / 4.0);
+                    steep = steep.max((sk.land.swell(p + Vec2::X * 4.0) - h).abs() / 4.0);
                 }
             }
             println!(
                 "hilly {seed} size {} land {lo:.1}..{hi:.1} ground {gl:.1}..{gh:.1} steepest {steep:.2} {}",
                 sk.size,
-                sk.relief.describe()
+                sk.land.describe()
                     + &sk
                         .crossings
                         .iter()
@@ -1096,7 +1098,7 @@ mod tests {
     fn the_plaza_slope_is_drivable() {
         for seed in SEEDS {
             let sk = skeleton(&spec(seed));
-            for pl in &sk.platforms {
+            for pl in &sk.land.platforms {
                 for k in 0..16 {
                     let a = k as f32 / 16.0 * std::f32::consts::TAU;
                     let dir = Vec2::new(a.cos(), a.sin());

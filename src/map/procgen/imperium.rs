@@ -144,7 +144,7 @@ impl Style for Imperium {
                 map.rubble_lot(rng, &lot.footprint, CONCRETE);
                 Vec::new()
             }
-            LotKind::Civic(_) => Vec::new(),
+            LotKind::Civic(_) | LotKind::Spires | LotKind::Fins | LotKind::Boulders => Vec::new(),
             LotKind::Distant => {
                 map.distant_block(rng, &lot.footprint, sk);
                 Vec::new()

@@ -26,10 +26,9 @@ use glam::{Vec2, Vec3};
 use super::{Centerpiece, Spec};
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
-use crate::map::{Map, OBox, Terrain};
-use crate::render::material::Material;
+use crate::map::Map;
 use crate::rng::Rng;
-pub use skeleton::{Form, LandmarkKind, LotKind, Skeleton};
+pub use skeleton::{Form, LandmarkKind, Skeleton};
 
 /// The sand and rock of one desert: a few kinds, one per seed.
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +90,11 @@ pub const PALETTES: [Palette; 3] = [
     },
 ];
 
+/// The colors a seed's desert comes in.
+pub fn palette(seed: u64) -> Palette {
+    PALETTES[Rng::new(seed ^ 0x9A1E_77E0).index(PALETTES.len())]
+}
+
 /// The form a seed's desert takes: each in turn, so any four seeds in a
 /// row show them all.
 pub fn form_of(seed: u64) -> Form {
@@ -106,8 +110,8 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
         let mut rng =
             Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x00DE_5E27);
         let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
-        let mut sk = Skeleton::generate(&mut rng, form, generator);
-        let bare = greybox_of(&sk, &spec.sides);
+        let mut sk = Skeleton::desert(&mut rng, form, generator);
+        let bare = sk.greybox(&spec.sides);
         if !sk.place_bases(&mut rng, spec.sides.len(), &NavGrid::build(&bare)) {
             log::debug!(
                 "desert seed {} attempt {attempt}: no fair spawns",
@@ -115,8 +119,8 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
             );
             continue;
         }
-        sk.place_lots(&mut rng);
-        let grey = greybox_of(&sk, &spec.sides);
+        sk.place_lots(&mut rng, form);
+        let grey = sk.greybox(&spec.sides);
         let nav = NavGrid::build(&grey);
         match super::check::playable_on(&grey, &nav).and_then(|()| fair(&sk, &nav)) {
             Ok(()) => return sk,
@@ -130,12 +134,12 @@ pub fn skeleton(spec: &Spec) -> Skeleton {
 /// Whether no side's drive to the landmark is much longer than another's.
 fn fair(sk: &Skeleton, nav: &NavGrid) -> Result<(), String> {
     let lens: Vec<f32> = sk
-        .bases
+        .base_spots()
         .iter()
         .map(|&from| {
             let mut at = from;
             let mut len = 0.0;
-            for p in nav.path(from, sk.landmark.at) {
+            for p in nav.path(from, sk.landmarks[0].center) {
                 len += at.distance(p);
                 at = p;
             }
@@ -158,75 +162,21 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
     map.bases = Map::no_bases(sides);
     map.open_spots = Vec::new();
     map.spawn_yaw = None;
-    map.rock_dust = Some(sk.palette.sand);
-    map.hold_site = Some(sk.landmark.at);
-    map.hold_name = match sk.landmark.kind {
+    map.hold_site = Some(sk.landmarks[0].center);
+    map.hold_name = match sk.landmarks[0].kind {
         LandmarkKind::Needles => "NEEDLES",
         LandmarkKind::Crater => "CRATER",
         LandmarkKind::Arch => "ARCH",
-        LandmarkKind::Generator => "GENERATOR",
+        LandmarkKind::Generator | LandmarkKind::Great => "GENERATOR",
     };
-    map
-}
-
-fn ground_grid(sk: &Skeleton) -> Terrain {
-    let n = (sk.size / 2.0).round() as usize + 1;
-    Terrain::from_fn(Vec2::ZERO, 2.0, n, n, |x, z| sk.ground(x, z))
-}
-
-/// The skeleton as its greybox: its ground in grey, the cliffs as the
-/// boxes that stop tanks, each placeholder (the landmark, the lots) as a
-/// low slab on its reach, the spawns. What `check` drives on.
-fn greybox_of(sk: &Skeleton, sides: &[Faction]) -> Map {
-    let mut map = blank(sk, sides);
-    let mut t = ground_grid(sk);
-    t.color = Vec3::splat(0.35);
-    t.material = Material::Concrete;
-    map.terrain = Some(t);
-    for line in sk.cliffs() {
-        map.rock_face(&line, sk.high, false, 0.0);
-    }
-    map.sculpted = Default::default();
-    for o in map.oboxes.iter_mut() {
-        o.hidden = false;
-        o.color = Vec3::new(0.55, 0.45, 0.35);
-    }
-    let marker = |map: &mut Map, at: Vec2, r: f32, color: Vec3| {
-        let g = map.ground_height(at.x, at.y);
-        map.oboxes.push(OBox {
-            center: at,
-            half: Vec2::splat(r * 0.7),
-            yaw: TAU / 8.0,
-            y0: g - 0.5,
-            y1: g + 0.3,
-            color,
-            solid: false,
-            ..OBox::default()
-        });
-    };
-    let lm = sk.landmark;
-    marker(&mut map, lm.at, lm.reach, Vec3::new(0.7, 0.3, 0.2));
-    for lot in &sk.lots {
-        let c = match lot.kind {
-            LotKind::Spires => Vec3::new(0.6, 0.5, 0.2),
-            LotKind::Fins => Vec3::new(0.3, 0.5, 0.6),
-            LotKind::Boulders => Vec3::new(0.4, 0.6, 0.3),
-        };
-        marker(&mut map, lot.at, lot.reach, c);
-    }
-    for side in 0..sk.bases.len().min(map.bases.len()) {
-        map.bases[side] = sk.spawn_points(side);
-    }
-    map.open_spots = map.bases.concat();
-    map.open_spots.push(lm.at);
     map
 }
 
 /// `spec`'s desert undressed.
 pub fn greybox(spec: &Spec) -> Map {
     let sk = skeleton(spec);
-    let mut m = greybox_of(&sk, &spec.sides);
-    m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &sk.palette);
+    let mut m = sk.greybox(&spec.sides);
+    m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &palette(spec.seed));
     m
 }
 
@@ -261,11 +211,13 @@ pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Rang
     let sk = skeleton(spec);
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let mut m = blank(&sk, &spec.sides);
-    m.atmosphere = atmosphere(&mut rng, &sk.palette);
-    m.planet = Some((spec.seed, sk.palette.planet));
-    m.terrain = Some(dress::terrain(&sk));
-    let claims = dress::dress(&mut m, &sk, spec.seed, spec.centerpiece);
-    if sk.landmark.kind == LandmarkKind::Generator {
+    m.atmosphere = atmosphere(&mut rng, &palette(spec.seed));
+    let pal = palette(spec.seed);
+    m.rock_dust = Some(pal.sand);
+    m.planet = Some((spec.seed, pal.planet));
+    m.terrain = Some(dress::terrain(&sk, pal));
+    let claims = dress::dress(&mut m, &sk, pal, spec.seed, spec.centerpiece);
+    if sk.landmarks[0].kind == LandmarkKind::Generator {
         // The generator's built flush, piece against piece, as a city is.
         m.separate_coplanar_faces();
     }
