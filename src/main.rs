@@ -116,7 +116,7 @@ tankit [OPTIONS]
   --learning <0-1>        (with --preview) how far learning that part (or its next tier, if owned) is
   --own <part>            (with --shot) the pilot has bought this hull or turret (repeatable)
   --screen <menu|missions|companies|contract|settings|controls|rebind|pause|results>  (with --shot) render that screen
-  --screen pause-settings (with --shot) the pause box with its settings open
+  --screen pause-settings (with --shot) the pause box with its settings open (pause-controls: its controls)
   --screen pause --garage (with --shot) the garage opened from the pause box, the match frozen under it
   --debug                 (with --shot) debug mode on: FPS counter
   --screen tab            (with --shot) Tab held: the board
@@ -525,6 +525,8 @@ enum Screen {
     Pause,
     /// The pause box with its settings open.
     PauseSettings,
+    /// The pause box with its controls open.
+    PauseControls,
     Results,
     /// The death screen: destroyed, counting down to the respawn.
     Dead,
@@ -977,6 +979,7 @@ fn parse_args() -> Result<Args> {
                     Some("rebind") => Screen::Rebind,
                     Some("pause") => Screen::Pause,
                     Some("pause-settings") => Screen::PauseSettings,
+                    Some("pause-controls") => Screen::PauseControls,
                     Some("tab") => Screen::Tab,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
@@ -1429,16 +1432,27 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let mut ui = menu::dim(ui);
                 ui.extend(hud::loading("ROUND OVER", "LOADING", 0.4, w, h));
                 ui
-            } else if matches!(args.screen, Some(Screen::Pause | Screen::PauseSettings)) {
+            } else if matches!(
+                args.screen,
+                Some(Screen::Pause | Screen::PauseSettings | Screen::PauseControls)
+            ) {
                 let mut ui = menu::dim(ui);
                 let mut pause = menu::Pause::new();
-                if args.screen == Some(Screen::PauseSettings) {
+                if matches!(
+                    args.screen,
+                    Some(Screen::PauseSettings | Screen::PauseControls)
+                ) {
                     // Down to SETTINGS, and open it.
                     for nav in [menu::Nav::Down, menu::Nav::Down, menu::Nav::Select] {
                         pause.input(nav);
                     }
                 }
-                ui.extend(pause.draw(&profile, game.renown, w, h).verts);
+                if args.screen == Some(Screen::PauseControls) {
+                    // Up wraps round to CONTROLS.
+                    pause.input(menu::Nav::Up);
+                    pause.input(menu::Nav::Select);
+                }
+                ui.extend(pause.draw(&profile, w, h).verts);
                 ui
             } else {
                 ui
@@ -1696,9 +1710,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             }
             menu.input(menu::Nav::Select);
             if args.screen != Some(Screen::Settings) {
-                // Up wraps round to CONTROLS.
-                menu.input(menu::Nav::Up);
-                menu.input(menu::Nav::Select);
+                // Down past the settings, to the keys.
+                menu.input(menu::Nav::Down);
+                menu.input(menu::Nav::Down);
             }
             if args.screen == Some(Screen::Rebind) {
                 for _ in 0..binds::Action::Fire.index() {
