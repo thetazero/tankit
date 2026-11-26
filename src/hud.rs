@@ -198,7 +198,9 @@ impl Hud {
 
         p.set_halo(outline);
         // Health over the other tanks in view, in their side's colour; allies get a tick above.
+        // What a storm hides has no bar (your own side's still show).
         let vp = camera.view_proj(width / height);
+        let sight = m.world.map.atmosphere.sight();
         for (i, (t, f)) in tanks.iter().zip(&m.fighters).enumerate().skip(1) {
             let d = t.pos.distance(camera.pos);
             if board || !f.alive || d > 160.0 {
@@ -216,7 +218,13 @@ impl Hud {
             if at.x < 0.0 || at.x > w || at.y < 0.0 || at.y > h {
                 continue;
             }
-            let fade = (1.0 - (d - 110.0) / 50.0).clamp(0.0, 1.0);
+            let mut fade = (1.0 - (d - 110.0) / 50.0).clamp(0.0, 1.0);
+            if f.team != me.team {
+                fade *= bar_fade(d, sight);
+                if fade <= 0.0 {
+                    continue;
+                }
+            }
             let side = m.factions[f.team].ui();
             if f.team == me.team {
                 p.polyline(
@@ -664,6 +672,16 @@ const LABEL: TextStyle = TextStyle {
 };
 
 /// The dark behind a readout `size` at `min`, with room round it.
+/// How far an enemy's health bar has faded, `d` away where tanks can be made
+/// out `sight` away: 1 is not at all. Gone by `sight`.
+fn bar_fade(d: f32, sight: f32) -> f32 {
+    if sight.is_finite() {
+        ((sight - d) / (sight * 0.25)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
 fn plate(p: &mut Painter, min: Vec2, size: Vec2, fade: f32) {
     plate_by(p, min, size, Vec2::splat(design::UNIT * 1.75), fade);
 }

@@ -8,7 +8,7 @@
 use glam::{Vec2, Vec3};
 
 use crate::map::Map;
-use crate::render::Atmosphere;
+use crate::render::{Atmosphere, HIDDEN};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -46,7 +46,31 @@ pub enum Weather {
     /// The map's own air.
     #[default]
     Clear,
+    /// Sand blown so thick that nothing's made out past `STORM_SIGHT`.
+    Sandstorm,
 }
+
+impl Weather {
+    pub const ALL: [Weather; 2] = [Weather::Clear, Weather::Sandstorm];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Weather::Clear => "CLEAR",
+            Weather::Sandstorm => "SANDSTORM",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Weather> {
+        Weather::ALL
+            .into_iter()
+            .find(|w| w.name().eq_ignore_ascii_case(name))
+    }
+}
+
+/// How far off a tank can be made out in a sandstorm, m.
+pub const STORM_SIGHT: f32 = 65.0;
+/// How hard a sandstorm blows, m/s.
+const STORM_WIND: f32 = 15.0;
 
 /// What a map's fought in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -57,18 +81,21 @@ pub struct Conditions {
 
 impl Conditions {
     /// The conditions at the site whose map seed this is: half of them are
-    /// fought over by day, a quarter at dusk, a quarter at night.
-    pub fn of_site(map_seed: u64) -> Conditions {
+    /// fought over by day, a quarter at dusk, a quarter at night; a quarter
+    /// of those on sand (`sandy`) in a sandstorm, whatever the hour.
+    pub fn of_site(map_seed: u64, sandy: bool) -> Conditions {
         // Salted: what else is drawn from the seed stays as it was.
         let time = match Rng::new(map_seed ^ 0x0DA7_0D05).index(4) {
             0 => TimeOfDay::Dusk,
             1 => TimeOfDay::Night,
             _ => TimeOfDay::Day,
         };
-        Conditions {
-            time,
-            weather: Weather::Clear,
-        }
+        let storm = sandy && Rng::new(map_seed ^ 0x5A2D_5702).index(4) == 0;
+        let weather = match storm {
+            true => Weather::Sandstorm,
+            false => Weather::Clear,
+        };
+        Conditions { time, weather }
     }
 
     /// Makes `map`'s sky over, from its own.
@@ -83,6 +110,7 @@ impl Conditions {
         }
         match self.weather {
             Weather::Clear => {}
+            Weather::Sandstorm => storm(&mut map.atmosphere),
         }
     }
 }
@@ -126,6 +154,31 @@ const NIGHT: Sky = Sky {
     share: 0.75,
     stars: 1.0,
 };
+
+/// Blows a sandstorm up in `a`: the sky one wall of dust, as bright as the
+/// horizon was, the sun a dim smear behind it, and the haze thick.
+fn storm(a: &mut Atmosphere) {
+    let shade = fill(a);
+    let dust = a.dust / luma(a.dust).max(1e-4);
+    // Keeps some of the hour's own hue (orange at dusk, blue by moonlight).
+    // At night the dust holds what moonlight there is.
+    let light = (luma(a.sky_horizon) * 0.8).max(0.1);
+    let hue = (a.sky_horizon / luma(a.sky_horizon).max(1e-4)).lerp(dust, 0.75);
+    a.sky_horizon = hue * light;
+    a.sky_zenith = a.sky_horizon * 0.8;
+    a.sun_color = a.sun_color * hue * 0.3;
+    a.stars = 0.0;
+    // The light the sun lost comes from all round instead.
+    a.ambient *= shade / fill(a).max(1e-4) * 1.15;
+    a.fog_density = -HIDDEN.ln() / STORM_SIGHT;
+    a.wind = a.wind.normalize_or(Vec2::X) * STORM_WIND;
+    a.blowing_sand = 1.0;
+}
+
+/// Whether a sandstorm's blowing in `a`.
+pub fn storming(a: &Atmosphere) -> bool {
+    a.sight() < 1.5 * STORM_SIGHT
+}
 
 /// How much of the map's own hues its sky keeps.
 const KEEP_HUE: f32 = 0.3;
@@ -225,12 +278,50 @@ mod tests {
     fn sites_are_fought_over_at_all_hours() {
         let count = |t| {
             (0..4000)
-                .filter(|&s| Conditions::of_site(s).time == t)
+                .filter(|&s| Conditions::of_site(s, true).time == t)
                 .count()
         };
         let [day, dusk, night] = TimeOfDay::ALL.map(count);
         assert!((1800..2200).contains(&day), "{day}");
         assert!((850..1150).contains(&dusk), "{dusk}");
         assert!((850..1150).contains(&night), "{night}");
+    }
+
+    /// A quarter of the sites on sand are fought over in a sandstorm, and no
+    /// others; the hour's the same either way.
+    #[test]
+    fn storms_blow_on_sand() {
+        let storms = (0..4000)
+            .filter(|&s| {
+                let (on, off) = (Conditions::of_site(s, true), Conditions::of_site(s, false));
+                assert_eq!(on.time, off.time);
+                assert_eq!(off.weather, Weather::Clear);
+                on.weather == Weather::Sandstorm
+            })
+            .count();
+        assert!((850..1150).contains(&storms), "{storms}");
+    }
+
+    /// A sandstorm cuts sight to `STORM_SIGHT` at any hour; without one,
+    /// haze hides nothing a bot could see.
+    #[test]
+    fn a_sandstorm_cuts_sight() {
+        for kind in [MapKind::Desert, MapKind::Mine(Look::Ithessar)] {
+            let own = make_map(kind, 1);
+            assert!(own.atmosphere.sight() > 2.0 * crate::ai::SIGHT);
+            assert!(!storming(&own.atmosphere));
+            for time in TimeOfDay::ALL {
+                let mut m = own.clone();
+                Conditions {
+                    time,
+                    weather: Weather::Sandstorm,
+                }
+                .apply(&mut m);
+                let a = &m.atmosphere;
+                assert!((a.sight() - STORM_SIGHT).abs() < 0.1);
+                assert!(storming(a) && kind.sandy());
+                assert!(luma(a.sun_color) > 0.05 && fill(a) > 0.15, "{time:?}");
+            }
+        }
     }
 }

@@ -107,6 +107,7 @@ fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let ao = 1.0 - occ / f32(count);
     // Fade out with distance so far geometry doesn't turn into noise.
-    let fade = smoothstep(80.0, 30.0, cam_dist);
+    // And with the haze: what a sandstorm hides casts nothing through it.
+    let fade = smoothstep(80.0, 30.0, cam_dist) * exp(-cam_dist * g.params.y);
     return vec4<f32>(mix(1.0, pow(clamp(ao, 0.0, 1.0), 2.0), fade));
 }

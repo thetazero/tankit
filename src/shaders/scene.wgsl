@@ -358,7 +358,9 @@ fn apply_fog(c: vec3<f32>, wpos: vec3<f32>) -> vec3<f32> {
     let wind = vec2<f32>(g.sun_color.w, g.sky_zenith.w);
     let mid = mix(g.cam_pos.xz, wpos.xz, 0.5);
     let bank = noise2(mid * 0.012 - wind * g.params.x * 0.006);
-    let thick = 1.0 + g.sky_horizon.w * (bank - 0.4) * 1.4;
+    // Milder in a storm: how far you see in one hardly changes.
+    let uneven = mix(1.4, 0.4, smoothstep(0.015, 0.035, g.params.y));
+    let thick = 1.0 + g.sky_horizon.w * (bank - 0.4) * uneven;
     let f = 1.0 - exp(-d * g.params.y * max(thick, 0.3));
     let dir = normalize(wpos - g.cam_pos.xyz);
     return mix(c, sky_color(vec3<f32>(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), f);
