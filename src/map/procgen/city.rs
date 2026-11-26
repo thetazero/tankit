@@ -435,6 +435,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         decos: Vec::new(),
         repair_spots: Vec::new(),
         crossings: Vec::new(),
+        ..Skeleton::default()
     };
     // The land, its great shapes kept off the great buildings and courts.
     let avoid: Vec<(Vec2, f32)> = sk
