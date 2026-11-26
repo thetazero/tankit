@@ -9,8 +9,8 @@ use glam::{Vec2, Vec3};
 
 use super::desert;
 use super::skeleton::{LotKind, Skeleton, smoothstep};
+use crate::map::noise::noise2;
 use crate::map::ruins::Drift;
-use crate::map::valley::noise2;
 use crate::map::{Map, rocks};
 use crate::render::material::Material;
 use crate::rng::Rng;

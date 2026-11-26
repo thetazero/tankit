@@ -247,7 +247,7 @@ fn way(sk: &Skeleton, rng: &mut Rng, (a, b): (Vec2, Vec2), half: f32) -> Option<
             let cut = cuts.iter().any(|c| c.depth(p) > 0.03);
             // A bridge costs what a fair way round does; up a bank, more.
             let slope = if cut { 1.6 } else { sk.land.steep(p) * 9.0 };
-            let bends = crate::map::valley::noise2(p.x / 31.0, p.y / 31.0, salt) * 1.6;
+            let bends = crate::map::noise::noise2(p.x / 31.0, p.y / 31.0, salt) * 1.6;
             (1.0 + slope + bends) * if on { 0.35 } else { 1.0 }
         })
         .collect();

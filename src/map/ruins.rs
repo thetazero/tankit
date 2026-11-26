@@ -21,9 +21,6 @@ use crate::rng::Rng;
 
 /// Ground floor is tall (shopfronts a tank fits through); upper storeys less so.
 const GROUND_H: f32 = 3.8;
-/// Height of the first-floor slab (top of a collapsed-floor ramp).
-#[cfg(test)]
-pub(super) const FIRST_FLOOR: f32 = GROUND_H;
 const STOREY_H: f32 = 3.1;
 const SLAB: f32 = 0.3;
 const WALL_T: f32 = 0.45;
@@ -33,17 +30,6 @@ const PIER: f32 = 0.55;
 /// Width of a collapsed-floor ramp.
 const RAMP_W: f32 = 4.5;
 
-const PLASTERS: [Vec3; 9] = [
-    Vec3::new(0.80, 0.70, 0.52), // ochre
-    Vec3::new(0.76, 0.74, 0.69), // pale grey
-    Vec3::new(0.72, 0.58, 0.44), // sandstone
-    Vec3::new(0.86, 0.82, 0.72), // bleached cream
-    Vec3::new(0.66, 0.62, 0.57), // dust grey
-    Vec3::new(0.74, 0.47, 0.36), // faded terracotta
-    Vec3::new(0.52, 0.64, 0.66), // faded teal
-    Vec3::new(0.58, 0.62, 0.72), // faded blue
-    Vec3::new(0.80, 0.62, 0.42), // apricot
-];
 const SLAB_C: Vec3 = Vec3::new(0.6, 0.58, 0.54);
 const RUBBLE_C: Vec3 = Vec3::new(0.62, 0.57, 0.5);
 
@@ -236,28 +222,15 @@ enum Damage {
 pub(super) struct Style {
     pub colors: &'static [Vec3],
     pub wall: Material,
+    /// How many storeys, from and to.
+    pub storeys: (i32, i32),
+    /// How many of them are only lightly damaged, 0 to 1.
+    pub light: f32,
 }
-
-/// Saltmarket's: sun-bleached plaster in faded colors.
-pub(super) const PLASTERED: Style = Style {
-    colors: &PLASTERS,
-    wall: Material::Plaster,
-};
 
 /// Build one ruined building on `lot` (footprint in the world). `front` is the
 /// local face toward the street: (axis, sign). Returns heaps for the terrain.
-/// `clear` says whether a world point is free ground (no other building).
-pub(super) fn building(
-    map: &mut Map,
-    rng: &mut Rng,
-    lot: OBox,
-    front: (usize, f32),
-    clear: &dyn Fn(Vec2) -> bool,
-) -> Vec<Drift> {
-    building_in(map, rng, lot, front, clear, &PLASTERED)
-}
-
-/// `building`, with walls in `style`.
+/// `clear` says whether a world point is free ground (no other building). Walls in `style`.
 pub(super) fn building_in(
     map: &mut Map,
     rng: &mut Rng,
@@ -271,9 +244,13 @@ pub(super) fn building_in(
     let color = style.colors[rng.index(style.colors.len())] * rng.range(0.94, 1.04);
     let wall = style.wall;
     let small = half.x.min(half.y) < 4.0;
-    let storeys: usize = if small { 1 } else { rng.int(2, 4) as usize };
+    let storeys: usize = if small {
+        1
+    } else {
+        rng.int(style.storeys.0, style.storeys.1) as usize
+    };
     let damage = match rng.f32() {
-        x if x < 0.35 => Damage::Light,
+        x if x < style.light => Damage::Light,
         x if x < 0.85 => Damage::Heavy,
         _ => Damage::Gutted,
     };

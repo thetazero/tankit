@@ -3898,7 +3898,7 @@ mod tests {
 
     /// A real map with room for a full match.
     fn arena(bots: usize) -> Match {
-        Match::new(Map::saltmarket(), 0, bots, 21)
+        Match::new(Map::reservoir(0), 0, bots, 21)
     }
 
     /// A match on flat ground with a river over it, its surface 2 m up, and
@@ -5806,7 +5806,7 @@ mod tests {
     #[test]
     fn a_tank_knocked_out_of_any_map_dies_out_there() {
         let mut maps = vec![
-            ("saltmarket", Map::saltmarket()),
+            ("reservoir", Map::reservoir(0)),
             ("sanctum", Map::sanctum()),
             ("kiln", Map::kiln()),
             ("city", Map::city(0)),
@@ -5836,7 +5836,7 @@ mod tests {
     #[test]
     fn every_hull_knocked_out_is_wrecked() {
         for hull in crate::garage::HULLS {
-            let mut m = Match::new(Map::saltmarket(), 0, 1, 1);
+            let mut m = Match::new(Map::reservoir(0), 0, 1, 1);
             m.start();
             for f in &mut m.fighters {
                 f.shield = 0.0;
@@ -5971,7 +5971,7 @@ mod tests {
 
     #[test]
     fn each_side_spawns_at_its_own_base() {
-        for map in [Map::saltmarket(), Map::sanctum(), Map::kiln()] {
+        for map in [Map::reservoir(0), Map::sanctum(), Map::kiln()] {
             let mut m = Match::new(map, 0, 11, 5);
             m.start();
             for (i, f) in m.fighters.iter().enumerate() {
@@ -6492,7 +6492,7 @@ mod tests {
     /// one gun because every seat of a side has an even number.
     #[test]
     fn seats_handed_to_the_realm_field_all_its_guns() {
-        let mut map = Map::saltmarket();
+        let mut map = Map::reservoir(0);
         map.factions = vec![Faction::Resonant, Faction::Imperium];
         let mut m = Match::new(map, 0, 21, 21);
         let ours: Vec<usize> = (1..m.fighters.len())

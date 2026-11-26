@@ -140,7 +140,7 @@ mod tests {
     /// only while the tank is alive.
     #[test]
     fn each_shield_drops_once() {
-        let mut game = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        let mut game = Match::new(crate::map::Map::reservoir(0), 0, 5, 7);
         game.start();
         let n = game.fighters.len();
         let mut drops = vec![0; n];
@@ -200,7 +200,7 @@ mod tests {
         }
         std::fs::write("docs/audio/shield.wav", wav(&out, RATE)).unwrap();
 
-        let mut game = Match::new(crate::map::Map::saltmarket(), 0, 5, 7);
+        let mut game = Match::new(crate::map::Map::reservoir(0), 0, 5, 7);
         game.start();
         let buf = crate::audio::record(&mut game, 3.5, RATE, volume, |w| {
             crate::game::autopilot(w.time)
