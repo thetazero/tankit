@@ -2286,26 +2286,28 @@ impl Galaxy {
         // Pooled savings found new ships, where there's war, with ways of
         // their own.
         // Nobody founds one while those there are lose money, unless there's
-        // none idle that could take work.
+        // none in range of where it's wanted.
+        // Where help's most wanted, and whether there's any about: a company
+        // not at work, with something to work with.
         let price = self.rules.hull_cost;
-        let spare = self
-            .companies
-            .iter()
-            .any(|c| c.contract.is_none() && c.capital(price) >= self.rules.merc_join);
-        while self.savings > self.rules.merc_capital && (self.profit > 0.0 || !spare) {
-            let wars: Vec<usize> = (0..self.systems.len())
-                .filter(|&s| self.systems[s].at_war())
-                .collect();
-            if wars.is_empty() {
-                break;
+        let wanted = (0..self.systems.len())
+            .filter(|&s| self.unmet[s] >= 1.0)
+            .max_by(|&a, &b| self.unmet[a].total_cmp(&self.unmet[b]));
+        if self.savings > self.rules.merc_capital
+            && self.rules.companies > 0
+            && let Some(s) = wanted
+        {
+            let pos = self.systems[s].pos;
+            let about = self.companies.iter().any(|c| {
+                c.capital(price) >= self.rules.merc_join
+                    && self.systems[c.at as usize].pos.distance(pos) <= self.rules.merc_range
+            });
+            if self.profit > 0.0 || !about {
+                self.savings -= self.rules.merc_capital;
+                self.new_company(s as u32, self.rules.merc_capital, 0);
+                self.books.founded += 1;
+                self.worth_before += self.rules.merc_capital;
             }
-            self.savings -= self.rules.merc_capital;
-            let at = wars[self.rng.index(wars.len())] as u32;
-            self.new_company(at, self.rules.merc_capital, 0);
-            self.books.founded += 1;
-            self.worth_before += self.rules.merc_capital;
-            // One at a time: the next waits to see how this one does.
-            break;
         }
         let mut gone = vec![false; self.companies.len()];
         for c in 0..self.companies.len() {
