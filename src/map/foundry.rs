@@ -129,6 +129,7 @@ impl Map {
             wedges: Vec::new(),
             oboxes: Vec::new(),
             terrain: None,
+            solid: None,
             scenery_terrain: None,
             sculpted: crate::render::mesh::MeshData::default(),
             rock_dust: None,

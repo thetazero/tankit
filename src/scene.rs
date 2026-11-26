@@ -21,7 +21,10 @@ pub fn map_mesh(map: &Map) -> MeshData {
     }
     match &map.terrain {
         Some(t) => {
-            terrain_mesh(t, &mut m);
+            match &map.solid {
+                Some(s) => surface_mesh(s, t, &mut m),
+                None => terrain_mesh(t, &mut m),
+            }
             let rects = if map.scenery_terrain.is_some() {
                 Vec::new()
             } else {
@@ -421,6 +424,21 @@ fn decal_tri(map: &Map, m: &mut MeshData, p: [Vec2; 3], c: Vec4) {
         lay((a + b + o) / 3.0) - Vec3::Y,
         c,
     );
+}
+
+/// A solid's surface, colored as `t`'s ground is.
+fn surface_mesh(s: &crate::map::solid::Surface, t: &Terrain, m: &mut MeshData) {
+    let base = m.verts.len() as u32;
+    for (v, n) in s.verts.iter().zip(&s.normals) {
+        m.verts.push(Vertex {
+            pos: v.to_array(),
+            normal: n.to_array(),
+            color: (t.color * t.tint_at(v.x, v.z))
+                .extend(t.material.id())
+                .to_array(),
+        });
+    }
+    m.indices.extend(s.tris.iter().flatten().map(|k| base + k));
 }
 
 fn terrain_mesh(t: &Terrain, m: &mut MeshData) {

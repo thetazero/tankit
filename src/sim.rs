@@ -1372,10 +1372,11 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
     };
     match &map.terrain {
         Some(t) => {
-            added.push(physics.insert_collider(
-                terrain_collider(t, |_| true).friction(ground_friction),
-                None,
-            ));
+            let ground = match &map.solid {
+                Some(s) => surface_collider(s),
+                None => terrain_collider(t, |_| true),
+            };
+            added.push(physics.insert_collider(ground.friction(ground_friction), None));
             // Flat apron around (not under) the terrain. Where the map has
             // ground of its own beyond the edge, only the part of the apron
             // inside the arena (if the play terrain stops short of its edge).
@@ -1468,6 +1469,16 @@ fn add_static_colliders(physics: &mut PhysicsWorld, map: &Map) -> Vec<ColliderHa
         ));
     }
     added
+}
+
+/// A solid's surface as a collider.
+fn surface_collider(s: &crate::map::solid::Surface) -> ColliderBuilder {
+    ColliderBuilder::trimesh_with_flags(
+        s.verts.clone(),
+        s.tris.clone(),
+        TriMeshFlags::FIX_INTERNAL_EDGES,
+    )
+    .expect("a solid's surface has triangles")
 }
 
 /// A heightfield collider for `t`, keeping only the cells whose centers
@@ -1638,6 +1649,8 @@ fn drive(
                 let (shape, at) = (col.shape(), col.position());
                 let hit = if let Some(hf) = shape.as_heightfield() {
                     crate::sweep::ball_heightfield(hf, at, origin, -up, wheel_r, reach)
+                } else if let Some(mesh) = shape.as_trimesh() {
+                    crate::sweep::ball_trimesh(mesh, at, origin, -up, wheel_r, reach)
                 } else if let Some(cp) = shape.as_compound() {
                     let options = rapier3d::parry::query::ShapeCastOptions {
                         max_time_of_impact: reach,
