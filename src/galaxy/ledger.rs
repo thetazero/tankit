@@ -323,7 +323,7 @@ mod tests {
     /// A galaxy with you in a company under contract, and its battle,
     /// drawn as the game draws one you play.
     fn played() -> (Galaxy, Battle, Match) {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = g
             .companies
             .iter()

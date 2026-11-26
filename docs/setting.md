@@ -63,26 +63,32 @@ the pilot is, is left deliberately vague.
 ## The Company
 
 The mercenaries are a faction of their own: **the Company**, the name many
-free companies fight under. It isn't one of the war's sides and doesn't hold
-ground; it fights inside other people's battles.
+free companies fight under. It isn't one of the war's sides and keeps no
+ground. Mostly it fights inside other people's battles.
 
 **Companies are ships.** Each free company is a single ship, with its own
 machines, pilots and crystal aboard. It goes where the work is and pays to
 cross the stars like anyone else. Your garage is a hangar aboard your
 company's ship, in orbit over the world it's contracted to fight for.
 
-**Why realms hire it.** A realm that wants its neighbor's world but can't
-take it alone hires a company to make up the difference. The company is
-**capital**: it puts its own machines at risk for a price, and realms pay it
-to carry that risk. A contract pays some crystal up front and a bonus if the
-world falls, and caps how many machines the company can lose; past that, it
-pulls out. A company is paid in crystal and buys its machines as it needs
-them, from whichever realm nearby sells cheapest. Each realm that hires is better off for it, but hired force makes
-war cheap to start, so the galaxy is more violent and poorer for the
-Company's being in it.
+**Why realms hire it.** A realm that could use more force for a while, to take
+a neighbor's world or hold its own, hires a company when the company's price
+is less than what the help is worth. A company brings its own machines, or
+only a crew to drive its employer's. It quotes some crystal up front and so
+much a battle, and a realm short of crystal owes the rest.
+
+**Raids.** Companies are amoral. One with no work looks for a rich world too
+weakly held, takes it planet by planet, empties the vaults, and leaves; the
+world goes back to whoever held it. A planet's vault falls only with the whole
+planet. So a realm that piles up crystal has to keep an army to guard it, or
+spend it.
+
+**Pilots** go where the pay is. Realms train them and pay them; companies bid
+them away.
 
 A company that grows too rich splits, since one ship can only work one
-contract at a time; one too small to change any fight joins another.
+contract at a time, and the new one keeps its ways of doing business. One
+with too little left joins another, and veterans' savings found new ones.
 
 **Postings.** Your company signs with one side in a theater and you fight
 there until the world falls, the contract's battles or losses run out, or

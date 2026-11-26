@@ -686,6 +686,40 @@ impl Galaxy {
         g
     }
 
+    /// Tests: a war where a company's at work for a realm, with hulls of its
+    /// own.
+    #[cfg(test)]
+    pub fn warmed_hired(seed: u64) -> Galaxy {
+        let mut g = Galaxy::warmed_by(seed, 100);
+        let hired = |g: &Galaxy| {
+            g.companies.iter().any(|c| {
+                c.pilots.len() >= 4
+                    && c.contract.is_some_and(|k| {
+                        let (s, f) = (k.target as usize, k.side as usize);
+                        !k.lent
+                            && f != super::RAID
+                            && k.field >= 8
+                            && g.fighting(s, f)
+                            && !g.commits(s, f).is_empty()
+                    })
+            })
+        };
+        while !hired(&g) {
+            g.step();
+        }
+        // Only that work, so it's what's found.
+        for c in 0..g.companies.len() {
+            let keep = g.companies[c]
+                .contract
+                .is_some_and(|k| !k.lent && k.side as usize != super::RAID && k.field >= 8);
+            if !keep {
+                g.companies[c].contract = None;
+            }
+        }
+        g.clear_moves();
+        g
+    }
+
     pub fn default_path() -> Option<PathBuf> {
         crate::profile::Profile::default_path().map(|p| p.with_file_name("galaxy.json"))
     }

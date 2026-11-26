@@ -19,16 +19,16 @@
 //! **Realms, not factions, are the actors** (#315; see `realm`). A faction
 //! is a people; what fights is a realm, a ruler holding a handful of systems
 //! from a seat. Every side's sites and hulls in a system are one realm's
-//! (`System::realms`); each realm banks its own crystal (crystal is light, so
-//! moving it within the realm costs nothing), launches its own offensives,
-//! and keeps what it takes. Realms split at their edges and merge, by
+//! (`System::realms`); each realm has its own crystal, in its planets' vaults, and
+//! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
 //! **A tick:**
-//! 1. *Production.* Every production site adds hulls and crystals to its realm.
-//!    Realms pay their pilots and train more.
-//!    Hulls cost nothing to build, except a little crystal for the Resonant.
-//!    Hulls last until they're shot down.
+//! 1. *Production.* Every mine adds crystal to its planet's vault (`Vault`),
+//!    which changes hands only with the whole planet. A yard builds while a
+//!    hull's worth more to its realm than it costs; hulls last until they're
+//!    shot down. Realms pay their pilots, and train more or let some go by
+//!    what their fights show one's worth.
 //! 2. *Battles.* Wherever two or more sides have hulls, they fight: a cheap
 //!    Lanchester-style exchange, with a bonus for the side holding the ground.
 //!    Each side in a fight attacks every site there it can at once
@@ -50,25 +50,17 @@
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
 //!    spent, time up) end.
-//! 3. *Supply.* A people's systems that hang together (within FTL range of
-//!    each other) fewer than a few dozen are a **pocket**: once an enemy
-//!    borders it, every enemy around goes for it. Enclaves don't last. Every few ticks realms
-//!    split and merge.
-//! 4. *Offensives.* A realm banks crystals until it can afford a push, aims
-//!    it at the stretch of its border where it's strongest against the
-//!    defense, brings hulls up toward it, and fights there with the
-//!    initiative (a fire bonus). The push rolls on from what it takes, until
-//!    the crystals run low or it stalls. Then quiet, while it banks for the next.
-//! 5. *Sending hulls.* Each realm looks at every system it could reach
-//!    (within FTL range of its systems with hulls to spare) and sends hulls
-//!    where it sees a high chance of capture: to defend anywhere, but to
-//!    attack only within its offensive, or a pocket. Several systems can send
-//!    to one. FTL costs crystals per hull by distance. An attack
-//!    the realm is set on but can't make alone, or a world of its own it
-//!    can't hold alone, can hire a **mercenary company** to make up the
-//!    difference (see `merc`, #318, #340): paid in crystal, up front and a
-//!    bonus if it comes off; the company buys the hulls it lacks from the
-//!    cheapest realm nearby.
+//! 3. *Politics.* Every few ticks realms split and merge.
+//! 4. *Sending hulls.* Each realm looks at every fight it's in, and now and
+//!    then at every world it could reach, and plays each way of fighting for
+//!    it through by the battle maths (`Galaxy::forecast`): alone, with more
+//!    or less of what it could bring, with a company's help (see `merc`). It
+//!    does whatever gains it most, if anything does: what the world turns out
+//!    for as long as worlds have lately been held, and what's in its vaults,
+//!    less what it'd cost. FTL costs crystal per hull by distance.
+//! 5. *Companies* that aren't working for anyone raid rich, weakly held
+//!    worlds for themselves, as a side of their own (`RAID`, one company to a
+//!    system). They take the vaults and go, and give the sites back.
 //!
 //! A step runs ticks until somewhere is at war: the player is posted to a
 //! battle, so quiet ticks pass unseen.

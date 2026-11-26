@@ -4,51 +4,35 @@
 //! aboard. It isn't a side and holds no ground: it fights inside a realm's
 //! attack, as that realm's people, for pay.
 //!
-//! **Hiring.** A realm that wants a world (on its offensive, or an enemy
-//! pocket) but can't take it alone, or that can't hold one of its own
-//! against an attack (#340), asks the companies within
-//! `Rules::merc_range` for a quote to make up the difference, and signs the
-//! cheapest it can afford and that's worth it: what the world turns out over
-//! `Rules::merc_horizon` ticks (crystal, and hulls at the going price) must
-//! cover the price. Each side of a fight can have one company there.
+//! **Hiring.** A realm fighting for a world, or thinking of it, gets quotes
+//! from the nearest few companies within `Rules::merc_range`, and signs
+//! whichever the battle maths says does it the most good for its price, if
+//! any does. A company brings hulls of its own, or only a crew to fly its
+//! employer's (`Contract::lent`).
 //!
-//! **A quote** is what the company puts in, marked up by its margin:
-//! - the hulls it needs beyond what it has aboard, bought from whichever
-//!   realms near the target sell cheapest (a realm sells only spare hulls from
-//!   a quiet system, never to an attack on itself; it asks more the further
-//!   below its garrison's level the system is), plus their FTL to the target;
-//! - its own FTL there: the ship, and every hull aboard, by distance.
+//! **A quote** is what the company pays out (hulls it buys, flying there,
+//! training pilots it's short of) up front, and its wages and losses a tick,
+//! both marked up by its margin. What the realm can't pay at once it owes,
+//! with no interest, as far as its income would clear it in the ticks the
+//! company is willing to wait.
 //!
-//! A contract pays that **up front**, plus a **bonus** if the world falls,
-//! for the hulls the company commits. It fights with all of them: once
-//! they're spent, or after `Rules::merc_term` ticks, or with its employer
-//! gone, it's done, and takes back aboard what's left of its hulls. The bonus comes out of the
-//! employer's vaults when the world falls (or, for a defense, when the attack
-//! is beaten off). An employer who can't pay it all pays what it has and
-//! **owes the rest** (#340): the company takes `Rules::merc_dues` of the
-//! realm's income each tick until it's paid, and no company works for a
-//! realm while it owes one. A debt dies with the realm; when the company
-//! joins another, the debt goes with it.
+//! **Pilots** sign with whoever bids most, no less than makes up for the time
+//! mercs are out of work. Realm pilots defect for that, unless matching it
+//! costs their realm less than training others. Pilots out of work wait in
+//! the pool, then quit; they all retire in time.
 //!
-//! **The market.** Each company's margin rises a little each time it wins a
-//! contract and falls while it waits for one, so where companies crowd,
-//! margins thin.
+//! **Companies live and die.** Each has its own margin, way of pricing pilots
+//! and patience, passed on, a little changed, when it grows rich and splits
+//! (`Rules::merc_split`). One with too little left joins another. Retired
+//! pilots' savings found new ones while companies are making money. A ship
+//! costs something to keep, working or not.
 //!
-//! **Splitting and joining** (every `Rules::politics` ticks, idle companies
-//! only): one ship works one contract at a time, so a company worth more than
-//! `Rules::merc_split` splits in two (off for now); one worth less than `Rules::merc_join`
-//! can't change a fight, so it joins the nearest company (paying the FTL).
-//! A split halves the crew; a join adds both crews together.
-//! The pilot's company (`Galaxy::crew`) keeps its id when it splits, and
-//! the pilot goes with it when it joins another; either way, the pilot then
-//! chooses which ship to go with (`Galaxy::crew_choice`, #364): either half
-//! of a split, or, on a join, the company it joined or the next nearest.
+//! **Raids.** An idle company raids a rich, weakly held world if what's in
+//! its vaults beats what it'd cost (`Galaxy::raid`). It holds what it takes
+//! only till it's done, and then it's its old owner's again.
 //!
-//! **Looking for work** (#355). A company idle `Rules::merc_idle` ticks
-//! sails to the nearest other system at war (one with a side no company
-//! works for yet, if there's any), paying the FTL as far as its crystal
-//! goes, and waits there. Nobody stays idle forever: every war is somebody's
-//! chance. The pilot's company is no different.
+//! **Looking for work.** An idle company sails to where realms have looked
+//! for one and found none, if a contract would likely pay the fare.
 
 use super::theater::{ENDED_KEPT, Ended, Outcome};
 use super::{AT_WAR, FTL_RANGE, Galaxy, MIN_SEND, SIDES, SiteKind};

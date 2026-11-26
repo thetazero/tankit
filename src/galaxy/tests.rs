@@ -593,7 +593,7 @@ fn your_ended_contracts_are_kept() {
 #[test]
 fn a_contract_is_spent_only_with_every_hull_gone() {
     let spent = |field: u32| {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = g
             .companies
             .iter()
@@ -683,7 +683,7 @@ fn losses_are_rolled() {
 /// pilots learn from the wrecks their side leaves, a part at a time.
 #[test]
 fn galaxy_kills_teach_merc_pilots() {
-    let mut g = Galaxy::warmed_by(7, 200);
+    let mut g = Galaxy::warmed_hired(7);
     let c = g
         .companies
         .iter()
@@ -770,7 +770,7 @@ fn moves_account_for_every_hull() {
 /// A pocket builds hulls as fast as it would anywhere else (#446).
 #[test]
 fn pockets_build_at_full_rate() {
-    let mut g = Galaxy::warmed_by(7, 200);
+    let mut g = Galaxy::warmed_hired(7);
     let s = (0..g.systems.len())
         .find(|&s| g.production(s)[g.systems[s].owner()] > 0.0)
         .unwrap();

@@ -868,9 +868,14 @@ mod tests {
             if (0..SIDES).any(|f| !b.sides.contains(&f) && sys.hulls[f] >= AT_WAR) {
                 continue;
             }
-            tried += 1;
+            let at = g.tick;
             let s = g.step_played(&played(&b, &[0, 0], &[0, 0], Some(1 - t)));
             assert!(s.taken);
+            // (with no war left, a step runs on through later ticks)
+            if g.tick > at + 1 {
+                continue;
+            }
+            tried += 1;
             assert_eq!(g.sites[site].owner as usize, b.sides[1 - t], "seed {seed}");
         }
         assert!(tried >= 5, "only {tried} seeds had a held site at stake");
@@ -987,7 +992,7 @@ mod merc_tests {
     /// A galaxy with you in a company under contract with at least
     /// `hulls` committed.
     fn on_contract(hulls: u32) -> Galaxy {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = g
             .companies
             .iter()
@@ -1298,7 +1303,7 @@ mod gear_tests {
     /// pays by the enemy realm's tier. The pilots learn from their kills.
     #[test]
     fn bots_fly_their_realms_and_pilots_gear() {
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = hired_company(&g);
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
@@ -1360,7 +1365,7 @@ mod gear_tests {
     #[test]
     fn mercs_drive_their_own_kit() {
         use crate::sim::{HullKind, TurretKind};
-        let mut g = Galaxy::warmed_by(7, 200);
+        let mut g = Galaxy::warmed_hired(7);
         let c = hired_company(&g);
         let k = g.companies[c].contract.unwrap();
         let (t, f) = (k.target as usize, k.side as usize);
@@ -1415,7 +1420,7 @@ mod gear_tests {
     /// breaks away keeps its parent's gear.
     #[test]
     fn realms_research_their_gear() {
-        let mut g = Galaxy::warmed_by(3, 200);
+        let mut g = Galaxy::warmed_hired(3);
         let before: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
         for _ in 0..200 {
             g.step();
