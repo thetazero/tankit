@@ -431,7 +431,7 @@ impl Class {
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
             MapKind::City(..)
-            | MapKind::Mine
+            | MapKind::Mine(_)
             | MapKind::Desert
             | MapKind::Depot(_)
             | MapKind::Reservoir => self == Class::Desert,
@@ -528,7 +528,7 @@ impl SiteView {
     }
 
     /// The map it's fought on: its mission's, a city in its founder's style,
-    /// a foundry in its founder's own on its world's ground,
+    /// a depot or mine in its founder's own, a foundry too on its world's ground,
     /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
@@ -542,6 +542,7 @@ impl SiteView {
             return match kind {
                 MapKind::City(..) => MapKind::City(look, setting),
                 MapKind::Depot(_) => MapKind::Depot(Look::own(self.founder())),
+                MapKind::Mine(_) => MapKind::Mine(Look::own(self.founder())),
                 MapKind::Foundry(_, ground) => MapKind::Foundry(
                     Look::own(self.founder()),
                     self.class.ground().unwrap_or(ground),
@@ -1736,7 +1737,8 @@ mod tests {
                     }
                     assert_eq!(s.kind_name() == CRYSTAL_MINE, mine);
                     assert_eq!((s.mission, s.map_seed), (other.mission, other.map_seed));
-                    in_mine[(s.map_kind() == MapKind::Mine) as usize] += 1;
+                    in_mine[matches!(s.map_kind(), MapKind::Mine(l) if l == Look::own(s.founder()))
+                        as usize] += 1;
                 }
             }
             assert!(in_mine[mine as usize] > 0, "{in_mine:?}");
