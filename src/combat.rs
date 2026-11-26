@@ -4096,7 +4096,7 @@ mod tests {
         let pops: Vec<_> = m.scrap_pops.iter().map(|x| x.scrapped).collect();
         assert_eq!(pops.len(), 1, "the hull's no better than what's known");
         assert_eq!(pops[0].part, kontos);
-        assert_eq!(pops[0].percent(), 20);
+        assert!((pops[0].gained * 100.0 - 20.0).abs() < 0.5);
         // The earlier wreck's 20% is in where it stands: 40% of the first step.
         assert_eq!(pops[0].toward(), Some((40, 1)));
         // They fade.
