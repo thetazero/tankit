@@ -1160,10 +1160,20 @@ impl Galaxy {
                     hm *= left;
                     he = (he - battles * k * ff / ae).max(0.0);
                 }
+                // A raid goes on till it has everything (or all but).
+                if raid && theirs < 0.3 {
+                    return Forecast {
+                        share: 1.0,
+                        ticks: f32::max(paid, 1.0),
+                        lost: 0.0,
+                    };
+                }
                 // Done, the mercs go, and it holds on alone.
                 if (hm >= 1.0 || (crew > 0.0 && on))
                     && if defend {
                         he < AT_WAR as f32
+                    } else if raid {
+                        false
                     } else {
                         mine > theirs
                     }
