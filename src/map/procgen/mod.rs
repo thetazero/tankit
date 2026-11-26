@@ -31,6 +31,7 @@ mod imperium;
 pub mod land;
 pub mod mine;
 mod resonant;
+pub mod setting;
 pub mod shield;
 pub mod skeleton;
 
@@ -93,8 +94,17 @@ pub struct Spec {
     pub seed: u64,
     pub biome: Biome,
     pub look: Look,
+    /// (Of a city.)
+    pub setting: setting::Setting,
     pub sides: Vec<Faction>,
     pub centerpiece: Centerpiece,
+}
+
+impl Spec {
+    /// The same, set in `setting`.
+    pub fn set_in(self, setting: setting::Setting) -> Spec {
+        Spec { setting, ..self }
+    }
 }
 
 /// A style: fills in each kind of placeholder. Each filler builds onto the
@@ -110,7 +120,7 @@ pub(in crate::map) trait Style {
     /// A medium structure, its own or anyone's (see `civic`).
     fn civic(&self, map: &mut Map, lot: &Lot, kind: CivicKind, rng: &mut Rng);
     /// The Hold site's name on the HUD, with `piece` in the middle.
-    fn hold_name(&self, piece: Centerpiece) -> &'static str;
+    fn hold_name(&self, piece: Centerpiece, kind: LandmarkKind) -> &'static str;
     fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift>;
     /// Paving and the like on a platform's top.
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, rng: &mut Rng);
@@ -199,8 +209,18 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     map.hold_name = if sk.landmarks.is_empty() {
         "SQUARE"
     } else {
-        st.hold_name(spec.centerpiece)
+        st.hold_name(spec.centerpiece, sk.landmarks[0].kind)
     };
+    // Every other great building's a site too (but by a shield generator,
+    // which is what that fight's for).
+    if spec.centerpiece == Centerpiece::Monument {
+        map.hold_more = sk
+            .landmarks
+            .iter()
+            .skip(1)
+            .map(|l| (l.center, st.hold_name(spec.centerpiece, l.kind)))
+            .collect();
+    }
     map.planet = Some((spec.seed, planet(spec.biome)));
     let mut claims = Vec::new();
     let mut drifts = Vec::new();
@@ -275,6 +295,9 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         sk.paint(t, st.road());
     }
     st.finish(&mut map);
+    if spec.setting == setting::Setting::Desert {
+        setting::desert(&mut map, &sk, spec.seed, st.road());
+    }
     map.drop_tiny_hitboxes();
     map.separate_coplanar_faces();
     sk.finish(&mut map);
@@ -461,6 +484,7 @@ impl Map {
         if let Some(h) = &mut self.hold_site {
             p2(h);
         }
+        self.hold_more.iter_mut().for_each(|h| p2(&mut h.0));
         for (p, view) in &mut self.vistas {
             p2(p);
             *view = -*view;
@@ -559,6 +583,7 @@ impl Map {
         if let Some(h) = &mut self.hold_site {
             p2(h);
         }
+        self.hold_more.iter_mut().for_each(|h| p2(&mut h.0));
         for (p, view) in &mut self.vistas {
             p2(p);
             *view += quarter;
@@ -955,14 +980,14 @@ mod tests {
         }
     }
 
-    /// Four seeds in a row are four forms, and there are cities of every
+    /// Five seeds in a row are five forms, and there are cities of every
     /// size and density.
     #[test]
     fn cities_vary() {
         use super::city::Plan;
         let plans: Vec<Plan> = (0..64).map(|s| Plan::of(s, 2, false)).collect();
-        let forms: std::collections::HashSet<_> = plans[..4].iter().map(|p| p.form).collect();
-        assert_eq!(forms.len(), 4);
+        let forms: std::collections::HashSet<_> = plans[..5].iter().map(|p| p.form).collect();
+        assert_eq!(forms.len(), 5);
         let extents: std::collections::HashSet<_> = plans.iter().map(|p| p.extent).collect();
         let densities: std::collections::HashSet<_> = plans.iter().map(|p| p.density).collect();
         assert_eq!((extents.len(), densities.len()), (3, 3));
@@ -1030,6 +1055,18 @@ mod tests {
                         ))
                         .collect::<String>()
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "a probe"]
+    fn where_greats() {
+        for seed in 0..12 {
+            let sk = skeleton(&spec(seed));
+            for l in &sk.landmarks {
+                let (c, g) = (l.center, sk.ground(l.center));
+                println!("great {seed} {:?} {:.0} {:.0} {g:.1}", l.kind, c.x, c.y);
+            }
         }
     }
 

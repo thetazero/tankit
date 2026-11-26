@@ -36,6 +36,7 @@ use super::{AT_WAR, Galaxy, PEOPLES, SIDES, SiteKind};
 use crate::conditions::Conditions;
 use crate::faction::Faction;
 use crate::map::procgen::Look;
+use crate::map::procgen::setting::Setting;
 use crate::map::procgen::shield::Condition;
 use crate::mission::MISSIONS;
 use crate::rng::Rng;
@@ -207,6 +208,8 @@ pub struct SiteView {
     /// Index into `Galaxy::sites`.
     pub index: usize,
     pub planet: u8,
+    /// Its world's.
+    pub class: Class,
     /// Index into `Faction::ALL`.
     pub owner: usize,
     pub kind: SiteKind,
@@ -402,7 +405,7 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(_) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
+            MapKind::City(..) | MapKind::Mine | MapKind::Desert => self == Class::Desert,
             MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
                 self == Class::Placeholder
             }
@@ -477,6 +480,7 @@ impl SiteView {
         SiteView {
             index: 0,
             planet: 0,
+            class: Class::Placeholder,
             owner: 0,
             kind: if shield {
                 SiteKind::Shield { damaged: false }
@@ -504,9 +508,13 @@ impl SiteView {
     pub fn map_kind(&self) -> MapKind {
         let kind = MISSIONS[self.mission].map_kind;
         let look = Look::of(self.founder());
+        let setting = match self.class {
+            Class::Desert => Setting::Desert,
+            Class::Placeholder => Setting::Plain,
+        };
         let SiteKind::Shield { damaged } = self.kind else {
             return match kind {
-                MapKind::City(_) => MapKind::City(look),
+                MapKind::City(..) => MapKind::City(look, setting),
                 kind => kind,
             };
         };
@@ -519,7 +527,7 @@ impl SiteView {
             },
         };
         match kind {
-            MapKind::ShieldSite(..) => MapKind::ShieldSite(look, made),
+            MapKind::ShieldSite(..) => MapKind::ShieldSite(look, setting, made),
             MapKind::ShieldDesert(_) => MapKind::ShieldDesert(made),
             kind => kind,
         }
@@ -1223,6 +1231,7 @@ impl Galaxy {
                 SiteView {
                     index: i,
                     planet: site.planet,
+                    class: world(s, site.planet as usize).0,
                     owner,
                     kind: site.kind,
                     contested: contested.contains(&i),
@@ -1592,7 +1601,7 @@ mod tests {
             match (s.kind, s.map_kind()) {
                 (
                     SiteKind::Shield { damaged },
-                    MapKind::ShieldSite(_, made) | MapKind::ShieldDesert(made),
+                    MapKind::ShieldSite(_, _, made) | MapKind::ShieldDesert(made),
                 ) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
                     assert_eq!(made.owner, Faction::side(s.owner));

@@ -66,6 +66,7 @@ tankit [OPTIONS]
   --generator-down <n>    (with --map shield-site or shield-desert) the generator's down, n ticks of repair
                           to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
   --look <imperium|resonant>  (with --map city or shield-site) whose city it is (default imperium)
+  --in-desert             (with --map city or shield-site) the city stands in the desert
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -301,10 +302,10 @@ impl Args {
 
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
-            (true, MapKind::City(l)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
+            (true, MapKind::City(l, _)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
             (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
-            (true, MapKind::ShieldSite(l, g)) => {
+            (true, MapKind::ShieldSite(l, _, g)) => {
                 map::procgen::greybox(&shield_spec(self.map_seed, l, g))
             }
             (true, MapKind::ShieldDesert(g)) => {
@@ -331,11 +332,15 @@ pub enum MapKind {
     Kiln,
     /// A city in someone's style, half ruined round its great building:
     /// two sides. Generated: a different city for each map seed.
-    City(map::procgen::Look),
+    City(map::procgen::Look, map::procgen::setting::Setting),
     /// The same city, a shield generator in the middle in place of its great
     /// building (#341): its holder's standard model, in the shape it's in.
     /// The same layout for the same seed.
-    ShieldSite(map::procgen::Look, Generator),
+    ShieldSite(
+        map::procgen::Look,
+        map::procgen::setting::Setting,
+        Generator,
+    ),
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// An Ithessar crystal mine in a desert escarpment, on three levels.
@@ -356,8 +361,8 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Saltmarket => map::Map::saltmarket(),
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
-        MapKind::City(l) => map::procgen::map(&city_spec(seed, l)),
-        MapKind::ShieldSite(l, g) => map::procgen::map(&shield_spec(seed, l, g)),
+        MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
+        MapKind::ShieldSite(l, s, g) => map::procgen::map(&shield_spec(seed, l, g).set_in(s)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::procgen::map(&mine_spec(seed)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
@@ -372,6 +377,7 @@ pub fn city_spec(seed: u64, look: map::procgen::Look) -> map::procgen::Spec {
         seed,
         biome: map::procgen::Biome::City,
         look,
+        setting: Default::default(),
         sides: map::DEFAULT_SIDES.to_vec(),
         centerpiece: map::procgen::Centerpiece::Monument,
     }
@@ -413,6 +419,7 @@ pub fn mine_spec(seed: u64) -> map::procgen::Spec {
     map::procgen::Spec {
         seed,
         biome: map::procgen::Biome::Mine,
+        setting: Default::default(),
         look: map::procgen::Look::Ithessar,
         sides: vec![faction::Faction::Ithessar, faction::Faction::Resonant],
         centerpiece: map::procgen::Centerpiece::Monument,
@@ -425,6 +432,7 @@ pub fn desert_spec(seed: u64) -> map::procgen::Spec {
         seed,
         biome: map::procgen::Biome::Desert,
         // Nobody's: the look only matters once something's built there.
+        setting: Default::default(),
         look: map::procgen::Look::Imperium,
         sides: map::DEFAULT_SIDES.to_vec(),
         centerpiece: map::procgen::Centerpiece::Monument,
@@ -626,6 +634,7 @@ fn parse_args() -> Result<Args> {
     let mut generator: Option<faction::Faction> = None;
     let mut conditions = conditions::Conditions::default();
     let mut look: Option<map::procgen::Look> = None;
+    let mut in_desert = false;
     let mut generator_down = 0u8;
     let mut learned = None;
     let mut scrap = Vec::new();
@@ -692,10 +701,13 @@ fn parse_args() -> Result<Args> {
                 Some("saltmarket") => map_kind = MapKind::Saltmarket,
                 Some("sanctum") => map_kind = MapKind::Sanctum,
                 Some("kiln") => map_kind = MapKind::Kiln,
-                Some("city") => map_kind = MapKind::City(map::procgen::Look::Imperium),
+                Some("city") => {
+                    map_kind = MapKind::City(map::procgen::Look::Imperium, Default::default())
+                }
                 Some("shield-site") => {
                     map_kind = MapKind::ShieldSite(
                         map::procgen::Look::Imperium,
+                        Default::default(),
                         Generator::up(faction::Faction::Imperium),
                     )
                 }
@@ -731,6 +743,7 @@ fn parse_args() -> Result<Args> {
                     format!("--generator expects a faction name, got {name:?}")
                 })?);
             }
+            "--in-desert" => in_desert = true,
             "--look" => {
                 look = Some(match args.next().as_deref() {
                     Some("imperium") => map::procgen::Look::Imperium,
@@ -964,10 +977,14 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
-    if let (MapKind::City(l) | MapKind::ShieldSite(l, _), Some(look)) = (&mut map_kind, look) {
+    if let (MapKind::City(_, s) | MapKind::ShieldSite(_, s, _), true) = (&mut map_kind, in_desert) {
+        *s = map::procgen::setting::Setting::Desert;
+    }
+    if let (MapKind::City(l, _) | MapKind::ShieldSite(l, _, _), Some(look)) = (&mut map_kind, look)
+    {
         *l = look;
     }
-    if let MapKind::ShieldSite(_, g) | MapKind::ShieldDesert(g) = &mut map_kind {
+    if let MapKind::ShieldSite(_, _, g) | MapKind::ShieldDesert(g) = &mut map_kind {
         if let Some(owner) = generator {
             g.owner = owner;
         }

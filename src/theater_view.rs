@@ -1345,8 +1345,8 @@ pub fn verdict(from: &Theater, e: &Ended) -> (&'static str, String) {
 
 /// Width of the contract summary card. Its height depends on the number of rows.
 const SUMMARY_W: f32 = 420.0;
-const GO_W: f32 = 120.0;
-const GO_H: f32 = 28.0;
+const GO_W: f32 = design::UNIT * 20.0;
+const GO_H: f32 = design::BUTTON;
 
 /// Draws the contract summary card (#414), centered in the system view
 /// between `min` and `max`. It shows how the contract `e` ended and its
@@ -1417,16 +1417,7 @@ fn summary(
     // CONTINUE button.
     let go = Vec2::new(mid.x - GO_W * 0.5, at.y + size.y - GO_H - PAD);
     let gs = Vec2::new(GO_W, GO_H);
-    p.rect(go, gs, with_alpha(tone, if lit { 0.3 } else { 0.12 }));
-    p.rect_outline(go, gs, 1.0, tone);
-    let mut a = design::SMALL;
-    a.color = design::TEXT;
-    p.text(
-        Vec2::new(mid.x, go.y + (GO_H - a.size) * 0.5),
-        "CONTINUE",
-        &a,
-        Align::Center,
-    );
+    design::button(p, go, gs.x, "Continue", true, lit);
     hits.add(p, go, gs, Hit::Continue);
 }
 

@@ -2726,7 +2726,11 @@ impl Match {
     /// hunt it down), the stand it's on (to guard it), or, carrying it, home.
     fn objective(&self, i: usize) -> Option<Objective> {
         if let Some(h) = &self.hold {
-            return Some(Objective::ring(h.at, hold::RADIUS));
+            // A side's tanks go round the sites in turn.
+            let team = self.fighters[i].team;
+            let k = self.fighters[..i].iter().filter(|f| f.team == team).count();
+            let site = &h.sites[k % h.sites.len()];
+            return Some(Objective::ring(site.at, hold::RADIUS));
         }
         let r = self.raid.as_ref()?;
         let on = |p: Vec3, radius: f32, fight: bool| {
@@ -5438,7 +5442,7 @@ mod tests {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.start();
         m.set_contract(Contract::Hold);
-        let at = m.hold.as_ref().unwrap().at;
+        let at = m.hold.as_ref().unwrap().sites[0].at;
         m.world.teleport(0, at, 0.0);
         m.hold.as_mut().unwrap().own[0] = hold::RENOWN_EVERY - 0.1;
         for _ in 0..60 {
@@ -5676,7 +5680,9 @@ mod tests {
     /// long it took, and whether it had come down (on the ground out there,
     /// or on a rock) when it died.
     fn throw_out(m: &mut Match, i: usize, secs: f32) -> Option<(f32, bool)> {
-        let at = Vec2::new(-6.0, m.world.map.size * 0.5);
+        // (Past the line it's out at: a city's buildings stand by the edge,
+        // and one might stop it short of that.)
+        let at = Vec2::new(-13.0, m.world.map.size * 0.5);
         m.world.teleport(i, at, 0.0);
         let y = m.world.map.ground_beyond(at.x, at.y) + 12.0;
         let b = &mut m.world.physics.bodies[m.world.tanks[i].body];

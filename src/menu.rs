@@ -298,7 +298,7 @@ pub struct Menu {
     controls: Controls,
     /// The pointer is on the BACK button.
     back_lit: bool,
-    /// The mouse is over CONTINUE on the contract summary card (#414).
+    /// The mouse is over the page's way on: CONTINUE, DEPLOY or SIGN ON.
     go_lit: bool,
     /// Your stretch of the war, behind the main menu (the app keeps it up
     /// to date), and the star the pointer's on.
@@ -611,7 +611,7 @@ impl Menu {
             return !std::mem::replace(&mut self.back_lit, true);
         }
         self.back_lit = false;
-        if hit == Hit::Continue {
+        if matches!(hit, Hit::Continue | Hit::Deploy) {
             return !std::mem::replace(&mut self.go_lit, true);
         }
         self.go_lit = false;
@@ -625,8 +625,8 @@ impl Menu {
         let i = match hit {
             Hit::Row(i) | Hit::Bind(i, _) => i,
             Hit::Volume => VOLUME_ROW,
-            Hit::Filter(_) | Hit::Sort(_) | Hit::Star(_) | Hit::Deploy => return false,
-            Hit::Back | Hit::Continue => unreachable!(),
+            Hit::Filter(_) | Hit::Sort(_) | Hit::Star(_) => return false,
+            Hit::Back | Hit::Continue | Hit::Deploy => unreachable!(),
         };
         let slot = match self.screen {
             Screen::Main => &mut self.cursor,
@@ -747,7 +747,8 @@ impl Menu {
             } else {
                 let o = self.board.offer(self.previewing);
                 let mine = self.board.mine.as_ref();
-                work_view::draw_deal(&mut p, &mut hits, o, mine, self.back_lit, w, h);
+                let lit = (self.back_lit, self.go_lit);
+                work_view::draw_deal(&mut p, &mut hits, o, mine, lit, w, h);
             }
             return Layer {
                 verts: fade(p.finish(), alpha),
@@ -918,9 +919,7 @@ impl Menu {
                 p.text(at, "No work", &design::HEAD, Align::Left);
             }
         }
-        let at = Vec2::new(design::MARGIN, h - design::MARGIN - design::SMALL.size);
-        let (min, size) = design::link(p, at, "Back", self.back_lit);
-        hits.add(p, min, size, Hit::Back);
+        back_at_foot(p, hits, self.back_lit, h);
     }
 
     /// The contract page's panel: the system, and (while there's a pick to
@@ -992,9 +991,9 @@ impl Menu {
         };
 
         // What you're up against, what a win pays, and what you've got left.
-        let deploy = h - design::MARGIN - UNIT * 10.0;
+        let deploy = design::foot(h, 1);
         let row = UNIT * 3.0;
-        let mut y = deploy - UNIT * 2.0 - row * 3.0;
+        let mut y = deploy.y - UNIT * 2.0 - row * 3.0;
         let mut line = |p: &mut Painter, name: &str, value: &str, color| {
             let at = Vec2::new(x, y);
             p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
@@ -1009,9 +1008,17 @@ impl Menu {
         line(p, "Enemy gear", &gear, TEXT);
         line(p, "Pay", &format!("{wage} cr + {kill} a kill"), BLUE);
         line(p, "Your hulls", &own.to_string(), design::AMBER);
-        let (min, size) = design::action(p, Vec2::new(x, deploy), "Deploy", true);
-        hits.add(p, min, size, Hit::Deploy);
+        design::button(p, deploy, design::COLUMN, "Deploy", true, self.go_lit);
+        let size = Vec2::new(design::COLUMN, design::BUTTON);
+        hits.add(p, deploy, size, Hit::Deploy);
     }
+}
+
+/// BACK, at the left of a panel's foot.
+pub fn back_at_foot(p: &mut Painter, hits: &mut Hits<Hit>, lit: bool, h: f32) {
+    let min = design::foot(h, 0);
+    design::button(p, min, design::COLUMN, "Back", true, lit);
+    hits.add(p, min, Vec2::new(design::COLUMN, design::BUTTON), Hit::Back);
 }
 
 /// `text` after `faction`'s emblem, in its colour: who's hiring, or whose ship.
