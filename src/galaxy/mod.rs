@@ -182,9 +182,6 @@ pub struct Rules {
     /// Ticks of crystal income a realm keeps back from attacks, to pay for
     /// defending what it holds.
     pub reserve: f32,
-    /// Most crystal a realm can bank, in ticks of its income: the rest is
-    /// lost to the war's waste (no realm sits on a war chest for long).
-    pub hoard: f32,
     /// How far from its seat a realm can rule, light years: holdings past
     /// this break away.
     pub reach: f32,
@@ -273,7 +270,6 @@ impl Default for Rules {
             keep: 0.3,
             commit: 0.6,
             reserve: 0.0,
-            hoard: 80.0,
             reach: 500.0,
             fold: 8,
             found: 300.0,
@@ -931,10 +927,7 @@ impl Galaxy {
                     realm.tier += 1;
                 }
             }
-            let cap = self.rules.hoard * c.max(0.05);
-            // Over it, it banks no more; what it's captured, it keeps.
-            let most = cap.max(realm.crystals);
-            realm.crystals = (realm.crystals + c).clamp(0.0, most);
+            realm.crystals = (realm.crystals + c).max(0.0);
             realm.income = c + study;
             realm.keep_pilots(&self.rules);
         }
