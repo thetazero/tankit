@@ -290,29 +290,74 @@ pub struct Sortie {
 /// What the war did to a system's hulls since your battle there began
 /// (#475): the tick summary screen between the battle's results and the
 /// contract screen, so a count gone from 5 to 55 says why.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TickSummary {
-    pub system: usize,
     pub name: String,
-    /// Ticks since the battle began: its own, and the ones the war went on
-    /// without you after it.
-    pub ticks: u64,
     /// Every side with hulls there before or now, the most now first, each
     /// followed by the company on contract for it there, if any.
     pub sides: Vec<SideChange>,
     /// The system's sites that changed hands since, in order.
     pub flips: Vec<Flip>,
+    /// The system as it is now, from the side you fought for.
+    pub theater: Theater,
 }
 
 /// A site that changed hands, in a `TickSummary`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flip {
-    /// Which world of the system it's on (0 for the first), and what it is.
-    pub planet: u8,
-    pub kind: &'static str,
+    /// Which (an index into `Galaxy::sites`).
+    pub site: usize,
     /// Who held it, and who does now (indices into `Faction::ALL`).
     pub from: usize,
     pub to: usize,
+}
+
+impl TickSummary {
+    /// Seconds before anything moves; how long the hulls take to; and when
+    /// the first site changes hands, and each after it.
+    pub const HOLD: f32 = 0.7;
+    pub const RUN: f32 = 1.6;
+    const FLIP: (f32, f32) = (1.2, 0.45);
+
+    /// When flip `k` happens, seconds in.
+    pub fn flips_at(k: usize) -> f32 {
+        Self::FLIP.0 + Self::FLIP.1 * k as f32
+    }
+
+    /// Each side's hulls when the battle began, its mercs' among them.
+    pub fn before(&self) -> [u32; SIDES] {
+        let mut out = [0; SIDES];
+        for c in &self.sides {
+            out[c.side] += c.before;
+        }
+        out
+    }
+
+    /// The system `time` seconds into the page: from as it was before the
+    /// battle to as it is now.
+    pub fn at(&self, time: f32) -> Theater {
+        let mut t = self.theater.clone();
+        let u = ((time - Self::HOLD) / Self::RUN).clamp(0.0, 1.0);
+        let u = u * u * (3.0 - 2.0 * u);
+        let part = |c: &SideChange| {
+            (c.before as f32 + (c.now as f32 - c.before as f32) * u).round() as u32
+        };
+        (t.hulls, t.mercs) = ([0; SIDES], [0; SIDES]);
+        for c in &self.sides {
+            t.hulls[c.side] += part(c);
+            if c.merc {
+                t.mercs[c.side] += part(c);
+            }
+        }
+        for (k, f) in self.flips.iter().enumerate() {
+            if time < Self::flips_at(k)
+                && let Some(s) = t.sites.iter_mut().find(|s| s.index == f.site)
+            {
+                s.owner = f.from;
+            }
+        }
+        t
+    }
 }
 
 /// One side's hulls in a `TickSummary`.
@@ -622,15 +667,6 @@ impl Theater {
         (0..PEOPLES)
             .filter(|&f| self.hulls[f] >= AT_WAR && Some(f) != defender)
             .collect()
-    }
-
-    /// The sides in the war here (hulls or sites), most hulls first.
-    pub fn sides(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = (0..PEOPLES)
-            .filter(|&f| self.hulls[f] >= AT_WAR || self.held[f] > 0)
-            .collect();
-        out.sort_by_key(|&a| std::cmp::Reverse(self.hulls[a]));
-        out
     }
 }
 
@@ -1161,16 +1197,15 @@ impl Galaxy {
     }
 
     /// System `s`'s tick summary (#475): its hulls since the battle fought
-    /// there at tick `fought_at` began (`moves` start over then).
-    pub fn tick_summary(&self, s: usize, fought_at: u64, owners: &[u8]) -> TickSummary {
+    /// there began (`moves` start over then).
+    pub fn tick_summary(&self, s: usize, employer: usize, owners: &[u8]) -> TickSummary {
         let sys = &self.systems[s];
         let (a, b) = (sys.sites.0 as usize, sys.sites.1 as usize);
         let flips = (a..b)
             .filter_map(|i| {
                 let (site, was) = (&self.sites[i], *owners.get(i)?);
                 (site.owner != was).then(|| Flip {
-                    planet: site.planet,
-                    kind: kind_name(site.kind),
+                    site: i,
                     from: was as usize,
                     to: site.owner as usize,
                 })
@@ -1208,12 +1243,16 @@ impl Galaxy {
                 sides.push(mercs);
             }
         }
+        // No battles to pick on it: what's next is the contract page's.
+        let mut theater = self.theater_at(s, employer);
+        for site in &mut theater.sites {
+            site.committed = false;
+        }
         TickSummary {
-            system: s,
             name: system_name(s),
-            ticks: self.tick.saturating_sub(fought_at),
             sides,
             flips,
+            theater,
         }
     }
 

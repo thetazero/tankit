@@ -1548,10 +1548,10 @@ impl App {
             log::info!("contract paid {paid} of {} CR ({pay:?})", pay.total());
             if let Some(b) = self.battle.take() {
                 let g = self.war.get();
-                let (tick, owners) = (g.tick, g.owners());
+                let owners = g.owners();
                 let site = b.site.map(|t| g.sites[t]);
                 let settled = battle::conclude(g, &b, &self.game);
-                self.tick_summary = Some(g.tick_summary(b.system, tick, &owners));
+                self.tick_summary = Some(g.tick_summary(b.system, b.sides[0], &owners));
                 // What it did to the site it was for, for the debrief.
                 self.hud.debrief = site.map(|site| hud::WarResult {
                     world: crate::galaxy::theater::planet_name(
@@ -1602,8 +1602,17 @@ impl App {
         let system = (self.mode == Mode::Menu)
             .then(|| self.menu.system())
             .flatten();
+        // Or the one a battle's just changed, on the way back from it.
+        let after = self.returning.as_ref().and_then(|r| {
+            let s = r.summary.as_ref()?;
+            Some((s.view.at(r.time), r.time))
+        });
         if let (Some(r), Some(art), Some(t)) = (&mut self.renderer, &mut self.system, system) {
             art.show(r, theater_view::on_screen(t, self.menu.transfer()));
+        } else if let (Some(r), Some(art), Some((t, _))) =
+            (&mut self.renderer, &mut self.system, &after)
+        {
+            art.show(r, t);
         }
         if let (Some(r), Some(art), Some(bay)) = (&mut self.renderer, &self.art, &self.bay) {
             let (w, h) = (r.width as f32, r.height as f32);
@@ -1655,6 +1664,8 @@ impl App {
                     self.game.world.time,
                     view,
                 )
+            } else if let (Some((t, time)), Some(sys)) = (&after, &self.system) {
+                theater_view::scene(sys, t, None, *time, w / h)
             } else if let Some((c, time)) = self.menu.cluster().filter(|_| menu_up) {
                 crate::cluster_view::scene(c, time, w / h)
             } else if let (Some(t), Some(sys)) = (system, &self.system) {
@@ -1709,13 +1720,6 @@ impl App {
                         }
                     }
                     Mode::Playing if self.returning.is_some() => {
-                        let ledger =
-                            Ledger::before(&self.profile, &self.game, self.banked, self.paid);
-                        let mut ui = menu::dim(
-                            self.hud
-                                .draw(&self.game, &tanks, &camera, w, h, dt, false, ledger)
-                                .verts,
-                        );
                         let r = self.returning.as_ref().expect("returning");
                         match &r.summary {
                             // The tick summary, the contract screen loading behind it (#475).
@@ -1728,10 +1732,20 @@ impl App {
                                     hover: self.hud.hover,
                                 };
                                 let layer = hud::tick_summary(view, state, w, h);
-                                ui.extend(layer.verts);
-                                (ui, layer.hits.map(UiHit::Hud))
+                                (layer.verts, layer.hits.map(UiHit::Hud))
                             }
                             None => {
+                                let ledger = Ledger::before(
+                                    &self.profile,
+                                    &self.game,
+                                    self.banked,
+                                    self.paid,
+                                );
+                                let mut ui = menu::dim(
+                                    self.hud
+                                        .draw(&self.game, &tanks, &camera, w, h, dt, false, ledger)
+                                        .verts,
+                                );
                                 ui.extend(hud::loading("ROUND OVER", "LOADING", r.time, w, h));
                                 (ui, Hits::new())
                             }

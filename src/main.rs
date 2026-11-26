@@ -154,7 +154,7 @@ tankit [OPTIONS]
   --quiet <n>             (with --won) the war goes on n ticks more before the missions screen
   --waiting               (with --screen missions) your company's between contracts: the war
                           goes on until there's work, over the system you were last in
-  --ticks                 (with --won) the tick summary instead, the screen before the missions
+  --ticks                 (with --won) the page after a battle instead, before the missions
                           screen: what the war did to the system's hulls since the battle, and why
   --shields-down          (with --screen missions|site) every shield generator on the system's first
                           world is damaged, so its shields are down
@@ -1678,7 +1678,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 let b = g
                     .muster_crew(o.system, &o.factions, Some(o.site))
                     .context("your company isn't in it")?;
-                let (fought_at, owners) = (g.tick, g.owners());
+                let owners = g.owners();
                 let s = g.step_played(&galaxy::battle::Played {
                     battle: b.clone(),
                     lost: vec![0, 0],
@@ -1690,7 +1690,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 log::info!("won: {}", galaxy::battle::describe(&b, &s));
                 // As the app does: the summary's of the battle's tick alone.
                 if args.ticks {
-                    summary = Some(g.tick_summary(b.system, fought_at, &owners));
+                    summary = Some(g.tick_summary(b.system, b.sides[0], &owners));
                 }
                 for _ in 0..args.quiet {
                     g.step();
@@ -1774,7 +1774,8 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
     let angle = vista::sway(garage::front_angle(&game.world.tanks[0]), shot.time);
     let tanks = game.display_tanks(1.0);
     let camera = vista::camera(&game.world, &tanks[0], angle, w / h);
-    let mut frame = match menu.system() {
+    let after = summary.as_ref().map(|s| s.at(shot.time));
+    let mut frame = match after.as_ref().or(menu.system()) {
         // The missions screen: the system, in 3D.
         Some(t) => {
             let mut sys = theater_view::SystemArt::upload(&mut renderer);
@@ -1797,7 +1798,7 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             let state = hud::SummaryState {
                 loading: false,
                 going: false,
-                time: 0.0,
+                time: shot.time,
                 hover: None,
             };
             hud::tick_summary(t, state, w, h).verts
