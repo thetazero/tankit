@@ -2508,9 +2508,12 @@ mod tests {
         let mut next = None;
         for _ in 0..400 {
             g.step();
-            let (n, _) = g.await_work_staying(f, 1, 400);
-            // Nobody hires it for a while: the war goes on.
-            let Some(n) = n else { continue };
+            let (n, _) = g.await_work_staying(f, 1, 40);
+            // Nobody hires it for a while: you go with another that's hired.
+            let Some(n) = n else {
+                g.crew = None;
+                continue;
+            };
             if Transfer::between(&t, &n) {
                 next = Some(n);
                 break;

@@ -77,9 +77,9 @@ company's ship, in orbit over the world it's contracted to fight for.
 
 **Why realms hire it.** A realm that could use more force for a while, to take
 a neighbor's world or hold its own, hires a company when the company's price
-is less than what the help is worth. A company brings its own machines, or
-only a crew to drive its employer's. It quotes some crystal up front and so
-much a battle, and a realm short of crystal owes the rest.
+is less than what the help is worth. A company brings its own machines
+and pilots. It quotes some crystal up front and so much a battle, and a realm
+short of crystal owes the rest.
 
 **Raids.** Companies are amoral. One with no work looks for a rich world too
 weakly held, takes it planet by planet, empties the vaults, and leaves; the
