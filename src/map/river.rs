@@ -35,6 +35,29 @@ impl River {
         best.map(|(_, y)| y)
     }
 
+    /// The stretch of it nearest `at`: `n` points, every `step`th of its own,
+    /// each with how far down it that is.
+    pub fn stretch(&self, at: Vec3, n: usize, step: usize) -> Vec<glam::Vec4> {
+        let mut down = 0.0;
+        let all: Vec<glam::Vec4> = (0..self.points.len())
+            .map(|i| {
+                if i > 0 {
+                    down += self.points[i].distance(self.points[i - 1]);
+                }
+                self.points[i].extend(down)
+            })
+            .step_by(step)
+            .collect();
+        let near = (0..all.len())
+            .min_by(|&a, &b| {
+                let d = |i: usize| all[i].truncate().distance_squared(at);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap_or(0);
+        let from = near.saturating_sub(n / 2).min(all.len().saturating_sub(n));
+        all[from..(from + n).min(all.len())].to_vec()
+    }
+
     /// Its surface: each vertex's color is how far down it is, how far
     /// across (0 to 1) and how wide it is (tens of meters); the shader
     /// makes the plasma of that.

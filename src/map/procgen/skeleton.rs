@@ -845,7 +845,7 @@ impl Skeleton {
         };
         if let Some(c) = &self.land.channel {
             c.build(&mut map, self.size);
-            map.rivers.push(c.river());
+            map.rivers = std::sync::Arc::new(vec![c.river()]);
         }
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));

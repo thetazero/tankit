@@ -304,7 +304,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     if let Some(c) = &sk.land.channel {
         c.build(&mut map, sk.size);
-        map.rivers.push(c.river());
+        map.rivers = std::sync::Arc::new(vec![c.river()]);
     }
     for (k, b) in sk.bases.iter().enumerate() {
         let mark = skeleton::Mark::of(&map);

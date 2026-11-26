@@ -115,7 +115,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
     for g in &map.glow_paths {
         g.mesh(&mut m);
     }
-    for r in &map.rivers {
+    for r in map.rivers.iter() {
         r.mesh(&mut m);
     }
 
@@ -811,6 +811,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         instances,
         particles,
         lights: world.map.lights.clone(),
+        rivers: world.map.rivers.clone(),
         ui: Vec::new(),
         world: true,
     }
