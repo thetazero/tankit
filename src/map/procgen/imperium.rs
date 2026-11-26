@@ -99,14 +99,14 @@ impl Style for Imperium {
         }
     }
 
-    fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
-        let drifts = map.rotunda(rng, &sk.landmark, sk.ground(sk.landmark.center));
-        map.colonnade(rng, &sk.landmark, sk.ground(sk.landmark.center));
+    fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift> {
+        let drifts = map.rotunda(rng, lm, sk.ground(lm.center));
+        map.colonnade(rng, lm, sk.ground(lm.center));
         drifts
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
-        map.paving(p, &sk.landmark, STONE);
+        map.paving(p, &sk.landmarks, STONE);
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
@@ -282,7 +282,7 @@ impl Map {
     // The middle
 
     /// Large paving slabs over the plaza top (visual; the terrain carries you).
-    pub(super) fn paving(&mut self, p: &Platform, lm: &Landmark, stone: Vec3) {
+    pub(super) fn paving(&mut self, p: &Platform, lms: &[Landmark], stone: Vec3) {
         let step = 8.0;
         let n = (p.half * 2.0 / step) as i32;
         for i in 0..n {
@@ -290,7 +290,9 @@ impl Map {
                 let c = p.center - Vec2::splat(p.half)
                     + Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * step;
                 // Only where the top is flat, and not under the rotunda.
-                if p.sdf(c) > -step * 0.75 || c.distance(lm.center) < lm.radius + 2.0 {
+                if p.sdf(c) > -step * 0.75
+                    || lms.iter().any(|l| c.distance(l.center) < l.radius + 2.0)
+                {
                     continue;
                 }
                 let shade = 0.94 + 0.06 * (((i * 7 + j * 13) % 5) as f32 / 4.0);
@@ -323,7 +325,7 @@ impl Map {
         );
         let segs = 40;
         let collapsed = |a: f32| from_fall(a) < 0.75;
-        let door = |a: f32| door_a.iter().any(|&d| apart(a, d) < 0.16);
+        let door = |a: f32| door_a.iter().any(|&d| apart(a, d) < 0.24);
         let r_mid = radius - DRUM_T * 0.5;
         // Wide enough that the outer faces meet: no slits between piers.
         let seg_half = radius * PI / segs as f32 * 1.02;
@@ -840,17 +842,14 @@ impl Map {
     pub(super) fn processional_way(&mut self, sk: &Skeleton, s: &Street, stone: Vec3) {
         let dir = s.dir();
         let side = Vec2::new(-dir.y, dir.x);
-        let plaza = sk.plaza();
-        let mut start = 0.0;
-        while plaza.sdf(s.from + dir * start) < plaza.ramp + 2.0 {
-            start += 1.0;
-        }
+        let (start, end) = sk.off_plaza_span(s, 2.0);
+        let end = if s.out { end - 4.0 } else { end };
         let (len, across) = (6.0, 4);
         let width = (s.half - 3.0) * 2.0;
         let yaw = -angle(dir);
         let mut d = start;
         let mut row = 0;
-        while d < s.len() - 4.0 {
+        while d < end {
             for j in 0..across {
                 let off = -width * 0.5 + (j as f32 + 0.5) * width / across as f32;
                 let c = s.from + dir * (d + len * 0.5) + side * off;
@@ -1664,7 +1663,7 @@ impl Map {
     /// avenues' vistas stay open, each closed far off by a great tower
     /// hung with crimson. Visual only.
     fn skyline(&mut self, rng: &mut Rng, sk: &Skeleton) {
-        let avenues: Vec<Street> = sk.avenues().copied().collect();
+        let avenues: Vec<Street> = sk.avenues().filter(|a| a.out).copied().collect();
         self.skyline_ground(sk.size, GROUND);
         self.skyline_lots(rng, sk, |map, rng, lot, h, broken, (shade, toward)| {
             map.skyline_tower(rng, lot.center, lot.half, h, broken, shade, toward);
@@ -1782,7 +1781,7 @@ impl Map {
     ) {
         let size = sk.size;
         let mid = size * 0.5;
-        let avenues: Vec<Street> = sk.avenues().copied().collect();
+        let avenues: Vec<Street> = sk.avenues().filter(|a| a.out).copied().collect();
         let mut placed: Vec<OBox> = Vec::new();
         for _ in 0..1600 {
             let p = Vec2::new(

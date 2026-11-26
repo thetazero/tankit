@@ -73,8 +73,8 @@ impl Style for Resonant {
         }
     }
 
-    fn landmark(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) -> Vec<Drift> {
-        let (lm, base) = (&sk.landmark, sk.ground(sk.landmark.center));
+    fn landmark(&self, map: &mut Map, sk: &Skeleton, lm: &Landmark, rng: &mut Rng) -> Vec<Drift> {
+        let base = sk.ground(lm.center);
         cathedral(map, rng, lm, base);
         for a in between_doors(lm) {
             if !shelled(lm, a) {
@@ -88,7 +88,7 @@ impl Style for Resonant {
     }
 
     fn platform(&self, map: &mut Map, sk: &Skeleton, p: &Platform, _rng: &mut Rng) {
-        map.paving(p, &sk.landmark, IVORY * 0.9);
+        map.paving(p, &sk.landmarks, IVORY * 0.9);
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
@@ -166,7 +166,7 @@ impl Style for Resonant {
         map.skyline_lots(rng, sk, |map, rng, lot, h, _, _| {
             far_house(map, rng, lot, 8.0 + h * 0.3)
         });
-        for a in sk.avenues() {
+        for a in sk.avenues().filter(|a| a.out) {
             let (d, p) = (a.dir(), a.to + a.dir() * 220.0);
             bell_tower(map, p, -angle(d));
         }
@@ -1058,16 +1058,16 @@ fn cone(
 fn veins(map: &mut Map, sk: &Skeleton, s: &Street) {
     let d = s.dir();
     let side = Vec2::new(-d.y, d.x);
-    let plaza = sk.plaza();
-    let mut start = 0.0;
-    while plaza.sdf(s.from + d * start) < plaza.ramp + 2.0 {
-        start += 1.0;
+    let (start, end) = sk.off_plaza_span(s, 2.0);
+    let end = if s.out { end - 6.0 } else { end };
+    if end - start < 8.0 {
+        return;
     }
     for k in [-1.0f32, 1.0] {
-        let n = ((s.len() - 6.0 - start) / 4.0).max(1.0) as usize;
+        let n = ((end - start) / 4.0).max(1.0) as usize;
         let points: Vec<Vec3> = (0..=n)
             .map(|i| {
-                let t = start + (s.len() - 6.0 - start) * i as f32 / n as f32;
+                let t = start + (end - start) * i as f32 / n as f32;
                 let wobble = (i as f32 * 1.7 + k).sin() * 0.35;
                 let p = s.from + d * t + side * (k * (s.half - 4.6) + wobble);
                 Vec3::new(p.x, 0.1, p.y)

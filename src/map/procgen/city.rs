@@ -60,84 +60,332 @@ pub const SPRAWL: f32 = 130.0;
 /// (`LotKind::Distant`).
 pub const NEAR: f32 = 34.0;
 
-/// Lays out a city for `sides` sides (2 to 4), one corner court each.
-pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
-    let size = 20.0 * rng.int(16, 18) as f32;
-    let mid = size * 0.5;
-    let center =
-        Vec2::splat(mid) + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)) * size * 0.04;
+/// How a city's laid out: its streets, and where the fight is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Form {
+    /// One great building near the middle, avenues out to the edges.
+    Radial,
+    /// No great building: lanes winding in rings round a square.
+    OldTown,
+    /// Two great buildings off the middle, an avenue between them.
+    Twin,
+    /// One great building toward an edge, at the end of a long avenue.
+    Spine,
+}
 
-    let half = rng.range(54.0, 66.0);
-    let plaza = Platform {
-        center,
-        half,
-        round: rng.range(14.0, 26.0),
-        height: 2.0,
-        ramp: 14.0,
-    };
-    let radius = rng.range(21.0, 26.0);
+/// How built up it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Density {
+    Cramped,
+    Middling,
+    Open,
+}
 
-    // The avenues: one to each edge (now and then one edge goes without),
-    // meeting it somewhere near its middle.
-    let skip = if rng.chance(0.25) {
-        Some(rng.index(4))
-    } else {
-        None
-    };
-    let mut streets = Vec::new();
-    // The edges, counter-clockwise from the south: (start, along, inward).
-    let sides4 = self::sides(size);
-    // Mouths along each edge, as (t from, t to).
-    let mut mouths: Mouths = Default::default();
-    for (k, &(start, along, _)) in sides4.iter().enumerate() {
-        if skip == Some(k) {
-            continue;
+/// How big it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Extent {
+    Small,
+    Middling,
+    Large,
+}
+
+/// What kind of city a seed names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Plan {
+    pub form: Form,
+    pub density: Density,
+    pub extent: Extent,
+}
+
+impl Plan {
+    /// The plan of the city `seed` names, for `sides` sides; one with a
+    /// great building, if it's to hold a shield `generator`.
+    pub fn of(seed: u64, sides: usize, generator: bool) -> Plan {
+        // Each form in turn, so any four seeds in a row are four forms.
+        let forms = [Form::Radial, Form::Twin, Form::OldTown, Form::Spine];
+        let form = forms[(seed % 4) as usize];
+        // More than two sides only fit round a middle.
+        let form = match form {
+            _ if sides > 2 => Form::Radial,
+            Form::OldTown if generator => Form::Spine,
+            f => f,
+        };
+        let mut rng = Rng::new(seed ^ 0x91A4_0C17);
+        let density = match rng.index(3) {
+            0 => Density::Cramped,
+            1 => Density::Middling,
+            _ => Density::Open,
+        };
+        let extent = match rng.index(3) {
+            0 => Extent::Small,
+            1 => Extent::Middling,
+            _ => Extent::Large,
+        };
+        // Two great buildings don't fit in a small city, nor four courts;
+        // an old town's never open.
+        let extent = match extent {
+            Extent::Small if form == Form::Twin || sides > 2 => Extent::Middling,
+            e => e,
+        };
+        let density = match density {
+            Density::Open if form == Form::OldTown => Density::Cramped,
+            d => d,
+        };
+        Plan {
+            form,
+            density,
+            extent,
         }
-        let t = size * rng.range(0.4, 0.6);
-        let to = start + along * t;
-        streets.push(Street {
-            from: center,
-            to,
-            half: AVENUE_HALF,
-            clear: 6.0,
-            rank: Rank::Avenue,
-        });
-        mouths[k].push((t - AVENUE_HALF - 3.0, t + AVENUE_HALF + 3.0));
     }
-    let doors: Vec<Vec2> = streets.iter().map(|s| s.dir()).collect();
-    let fallen = rng.chance(0.85).then(|| {
-        // Between two doors.
-        let k = rng.index(doors.len());
-        (doors[k] + doors[(k + 1) % doors.len()]).normalize_or(doors[k])
-    });
-    let landmark = Landmark {
-        center,
-        radius,
-        precinct: (radius + 20.0).min(half - 8.0),
-        doors: doors.clone(),
-        fallen,
-    };
+}
 
-    // A court in a corner for each side, opposite corners first.
+impl Density {
+    /// Half an avenue's width.
+    fn avenue(self) -> f32 {
+        match self {
+            Density::Cramped => 11.0,
+            Density::Middling => AVENUE_HALF,
+            Density::Open => 17.0,
+        }
+    }
+
+    /// From one lot to the next, at least and at most.
+    fn step(self) -> (f32, f32) {
+        match self {
+            Density::Cramped => (23.5, 25.5),
+            Density::Middling => (27.0, 31.0),
+            Density::Open => (35.0, 41.0),
+        }
+    }
+
+    /// How many lots are left empty.
+    fn empty(self) -> f32 {
+        match self {
+            Density::Cramped => 0.02,
+            Density::Middling => 0.07,
+            Density::Open => 0.16,
+        }
+    }
+}
+
+/// Lays out a city for `sides` sides (2 to 4) on `plan`, a court in a
+/// corner each.
+pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
+    let size = 20.0
+        * match plan.extent {
+            Extent::Small => rng.int(13, 14),
+            Extent::Middling => rng.int(15, 18),
+            Extent::Large => rng.int(20, 23),
+        } as f32;
+    let small = plan.extent == Extent::Small;
+    let mid = Vec2::splat(size * 0.5);
+    let avenue = plan.density.avenue();
+
+    // Which way round it lies: quarter turns, and which corners the courts
+    // are in (the first two in the order are the sides', opposite across
+    // the fight either way).
     let corners = [
         (Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0)),
         (Vec2::new(size, 0.0), Vec2::new(-1.0, 1.0)),
         (Vec2::new(size, size), Vec2::new(-1.0, -1.0)),
         (Vec2::new(0.0, size), Vec2::new(1.0, -1.0)),
     ];
-    let order: &[usize] = match sides {
-        0..=2 => &[0, 2],
-        3 => &[0, 1, 2],
-        _ => &[0, 1, 2, 3],
+    let turn = rng.index(4);
+    // (x across, y along) of the middle, turned.
+    let turned = |x: f32, y: f32| {
+        let (mut u, mut v) = (x, y);
+        for _ in 0..turn {
+            (u, v) = (-v, u);
+        }
+        mid + Vec2::new(u, v) * size
     };
-    let court = rng.range(42.0, 48.0);
-    // Each a little in from its corner, by its own amount: the city's
-    // buildings stand behind it too.
+    let edge_at = |p: Vec2, d: Vec2| {
+        // Where the ray from `p` along `d` leaves the arena.
+        let t = |p: f32, d: f32| {
+            if d > 1e-4 {
+                (size - p) / d
+            } else if d < -1e-4 {
+                -p / d
+            } else {
+                f32::MAX
+            }
+        };
+        p + d * t(p.x, d.x).min(t(p.y, d.y))
+    };
+
+    // Where the great buildings stand.
+    let j = |rng: &mut Rng| rng.range(-0.04, 0.04);
+    let at: Vec<Vec2> = match plan.form {
+        Form::Radial => vec![mid + Vec2::new(j(rng), j(rng)) * size],
+        Form::OldTown => Vec::new(),
+        // Along the diagonal across from the courts', so each is as far
+        // from both.
+        Form::Twin => {
+            let d = rng.range(0.17, 0.2);
+            vec![turned(-d, d), turned(d, -d)]
+        }
+        Form::Spine => vec![turned(0.0, rng.range(-0.22, -0.17))],
+    };
+    let heart = at.first().copied().unwrap_or(mid);
+
+    // The avenues, as (from, to, whether it runs out through the edge).
+    let mut ways: Vec<(Vec2, Vec2, bool)> = Vec::new();
+    match plan.form {
+        Form::Radial => {
+            let skip = if rng.chance(0.25) {
+                Some(rng.index(4))
+            } else {
+                None
+            };
+            for (k, &(start, along, _)) in self::sides(size).iter().enumerate() {
+                if skip != Some(k) {
+                    ways.push((heart, start + along * size * rng.range(0.4, 0.6), true));
+                }
+            }
+        }
+        Form::OldTown => {}
+        Form::Twin => {
+            ways.push((at[0], at[1], false));
+            for &p in &at {
+                let d = (p - mid).normalize();
+                // Out to the two edges by its corner.
+                for e in [Vec2::new(d.x.signum(), 0.0), Vec2::new(0.0, d.y.signum())] {
+                    ways.push((p, edge_at(p, e), true));
+                }
+            }
+        }
+        Form::Spine => {
+            let d = (turned(0.0, 0.5) - turned(0.0, -0.5)).normalize();
+            let cross = Vec2::new(-d.y, d.x);
+            ways.push((heart, edge_at(heart, d), true));
+            // And a way across, through the building's plaza.
+            for s in [-1.0f32, 1.0] {
+                ways.push((heart, edge_at(heart, cross * s), true));
+            }
+        }
+    }
+    let mut mouths: Mouths = Default::default();
+    let mut streets = Vec::new();
+    for &(from, to, out) in &ways {
+        streets.push(Street {
+            from,
+            to,
+            half: avenue,
+            clear: 6.0,
+            rank: Rank::Avenue,
+            out,
+        });
+        if !out {
+            continue;
+        }
+        for (k, &(start, along, inward)) in self::sides(size).iter().enumerate() {
+            if (to - start).dot(inward).abs() < 0.5 {
+                let t = (to - start).dot(along);
+                mouths[k].push((t - avenue - 3.0, t + avenue + 3.0));
+                break;
+            }
+        }
+    }
+
+    let mut platforms = Vec::new();
+    let mut landmarks = Vec::new();
+    for &center in &at {
+        let half = if small || plan.form != Form::Radial {
+            rng.range(42.0, 48.0)
+        } else {
+            rng.range(54.0, 66.0)
+        };
+        platforms.push(Platform {
+            center,
+            half,
+            round: rng.range(14.0, 26.0),
+            height: 2.0,
+            ramp: 14.0,
+        });
+        let doors: Vec<Vec2> = ways
+            .iter()
+            .filter_map(|&(a, b, _)| {
+                if a == center {
+                    Some((b - a).normalize())
+                } else if b == center {
+                    Some((a - b).normalize())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let radius = rng.range(21.0, 26.0);
+        let fallen = rng.chance(0.85).then(|| {
+            // Between two doors next to each other.
+            let mut round: Vec<f32> = doors.iter().map(|d| d.y.atan2(d.x)).collect();
+            round.sort_by(f32::total_cmp);
+            let k = rng.index(round.len());
+            let a0 = round[k];
+            let mut a1 = round[(k + 1) % round.len()];
+            if a1 <= a0 {
+                a1 += TAU;
+            }
+            let a = (a0 + a1) * 0.5;
+            Vec2::new(a.cos(), a.sin())
+        });
+        landmarks.push(Landmark {
+            center,
+            radius,
+            precinct: (radius + 20.0).min(half - 8.0),
+            doors,
+            fallen,
+        });
+    }
+
+    // A court in a corner for each side: opposite corners, as far from the
+    // fight either way; a spine's at its far end.
+    let order: Vec<usize> = match (plan.form, sides) {
+        (Form::Spine, _) => {
+            let far = [turned(-0.5, 0.5), turned(0.5, 0.5)];
+            far.iter()
+                .map(|f| {
+                    (0..4)
+                        .min_by(|&a, &b| {
+                            corners[a]
+                                .0
+                                .distance(*f)
+                                .total_cmp(&corners[b].0.distance(*f))
+                        })
+                        .unwrap()
+                })
+                .collect()
+        }
+        (Form::Twin, _) => {
+            let far = turned(0.5, 0.5);
+            let k = (0..4)
+                .min_by(|&a, &b| {
+                    corners[a]
+                        .0
+                        .distance(far)
+                        .total_cmp(&corners[b].0.distance(far))
+                })
+                .unwrap();
+            vec![k, (k + 2) % 4]
+        }
+        (_, 0..=2) => vec![turn, (turn + 2) % 4],
+        (_, 3) => vec![0, 1, 2],
+        _ => vec![0, 1, 2, 3],
+    };
+    let court = if small { 42.0 } else { rng.range(42.0, 48.0) };
+    // Each a little in from its corner: the city's buildings stand behind
+    // it too. (A spine's by the same amount, as fair as its corners are.)
+    let same = Vec2::new(rng.range(3.0, 16.0), rng.range(3.0, 16.0));
+    let in_by = if small { 8.0 } else { 16.0 };
     let bases = order
         .iter()
         .map(|&k| Base {
             corner: corners[k].0
-                + corners[k].1 * Vec2::new(rng.range(3.0, 16.0), rng.range(3.0, 16.0)),
+                + corners[k].1
+                    * if plan.form == Form::Radial {
+                        Vec2::new(rng.range(3.0, in_by), rng.range(3.0, in_by))
+                    } else {
+                        Vec2::splat(same.x.min(in_by))
+                    },
             inward: corners[k].1,
             size: court,
         })
@@ -145,10 +393,11 @@ pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
 
     let mut sk = Skeleton {
         size,
-        platforms: vec![plaza],
+        platforms,
         streets,
         squares: Vec::new(),
-        landmark,
+        landmarks,
+        heart,
         bases,
         lots: Vec::new(),
         spans: Vec::new(),
@@ -157,21 +406,54 @@ pub fn skeleton(rng: &mut Rng, sides: usize) -> Skeleton {
         repair_spots: Vec::new(),
     };
 
+    if plan.form == Form::OldTown {
+        // The square the fight's about, open in the middle.
+        let radius = rng.range(22.0, 28.0);
+        sk.squares.push(Square {
+            center: heart,
+            radius,
+        });
+        for k in 0..4 {
+            let a = (k as f32 + 0.5) * FRAC_PI_2 + rng.range(-0.2, 0.2);
+            let d = Vec2::new(a.cos(), a.sin());
+            sk.decos.push(Deco {
+                at: heart + d * (radius - 6.0),
+                face: Vec2::new(-d.y, d.x),
+                kind: DecoKind::Cover,
+            });
+        }
+    }
     squares(&mut sk, rng);
     gates_and_lines(&mut sk, rng);
     plaza_dressing(&mut sk, rng);
-    districts(&mut sk, rng);
+    districts(&mut sk, rng, plan);
     clear_courts(&mut sk, rng);
     cordon(&mut sk, rng, &mouths);
 
-    // Repair drops: down the middle of each avenue, twice, and between
-    // the avenues on the plaza where they land clear.
+    // Repair drops: down each avenue, twice; between the avenues on each
+    // plaza; and, where there are few of those, out among the streets.
     let mut repairs: Vec<Vec2> = sk
         .avenues()
-        .flat_map(|a| [0.55, 0.8].map(|f| a.from + a.dir() * a.len() * f))
+        .flat_map(|a| {
+            let (t0, t1) = sk.off_plaza_span(a, 6.0);
+            [0.3, 0.75].map(|f| a.from + a.dir() * (t0 + (t1 - t0) * f))
+        })
         .collect();
-    for b in bisectors(&sk) {
-        repairs.push(center + b * (sk.landmark.precinct + 14.0));
+    for lm in &sk.landmarks {
+        for b in bisectors(lm) {
+            repairs.push(lm.center + b * (lm.precinct + 6.0));
+        }
+    }
+    let mut tries = 0;
+    while repairs.len() < 12 && tries < 400 {
+        tries += 1;
+        let p = Vec2::new(rng.range(0.1, 0.9), rng.range(0.1, 0.9)) * size;
+        let clear = sk.lots.iter().all(|l| l.footprint.distance(p) > 5.5)
+            && sk.bases.iter().all(|b| !b.contains(p, 10.0))
+            && repairs.iter().all(|q| q.distance(p) > 40.0);
+        if clear {
+            repairs.push(p);
+        }
     }
     sk.repair_spots = repairs;
     sk
@@ -344,15 +626,9 @@ fn cordon(sk: &mut Skeleton, rng: &mut Rng, mouths: &Mouths) {
     }
 }
 
-/// Directions halfway between each avenue and the next round the middle.
-fn bisectors(sk: &Skeleton) -> Vec<Vec2> {
-    let mut angles: Vec<f32> = sk
-        .avenues()
-        .map(|a| {
-            let d = a.dir();
-            d.y.atan2(d.x)
-        })
-        .collect();
+/// Directions halfway between each of `lm`'s doors and the next round it.
+fn bisectors(lm: &Landmark) -> Vec<Vec2> {
+    let mut angles: Vec<f32> = lm.doors.iter().map(|d| d.y.atan2(d.x)).collect();
     angles.sort_by(f32::total_cmp);
     (0..angles.len())
         .map(|k| {
@@ -370,7 +646,7 @@ fn bisectors(sk: &Skeleton) -> Vec<Vec2> {
 /// One to three squares out in the districts, a fountain or a monument in
 /// each.
 fn squares(sk: &mut Skeleton, rng: &mut Rng) {
-    let want = rng.int(1, 3);
+    let want = sk.squares.len() as i32 + rng.int(1, 3);
     let mut tries = 0;
     while (sk.squares.len() as i32) < want && tries < 400 {
         tries += 1;
@@ -382,7 +658,7 @@ fn squares(sk: &mut Skeleton, rng: &mut Rng) {
             .streets
             .iter()
             .all(|st| st.distance(p) > st.half + r + 6.0);
-        let off_plaza = sk.plaza().sdf(p) > sk.plaza().ramp + r + 14.0;
+        let off_plaza = sk.off_plazas(p) > r + 14.0;
         let off_bases = sk.bases.iter().all(|b| !b.contains(p, r + 16.0));
         let apart = sk
             .squares
@@ -398,7 +674,7 @@ fn squares(sk: &mut Skeleton, rng: &mut Rng) {
             } else {
                 DecoKind::Monument
             };
-            let face = (sk.landmark.center - p).normalize();
+            let face = (sk.heart - p).normalize_or(Vec2::X);
             sk.decos.push(Deco { at: p, face, kind });
         }
     }
@@ -407,19 +683,18 @@ fn squares(sk: &mut Skeleton, rng: &mut Rng) {
 /// Down each avenue: a gate over it partway out, and monuments and masts
 /// lining it.
 fn gates_and_lines(sk: &mut Skeleton, rng: &mut Rng) {
-    let plaza = *sk.plaza();
     let avenues: Vec<Street> = sk.avenues().copied().collect();
     let ruined = rng.index(avenues.len().max(1));
     for (k, a) in avenues.iter().enumerate() {
         let dir = a.dir();
         let side = Vec2::new(-dir.y, dir.x);
-        // Where the avenue leaves the plaza's slope.
-        let mut start = 0.0;
-        while plaza.sdf(a.from + dir * start) < plaza.ramp + 4.0 {
-            start += 1.0;
+        // The stretch of it between the plazas' slopes and the edge.
+        let (start, end) = sk.off_plaza_span(a, 4.0);
+        let end = if a.out { end - 12.0 } else { end };
+        if end - start < 24.0 {
+            continue;
         }
-        let end = a.len() - 12.0;
-        let gate = rng.range(start + 18.0, (end - 28.0).max(start + 20.0));
+        let gate = rng.range(start + 9.0, (end - 14.0).max(start + 10.0));
         sk.spans.push(Span {
             at: a.from + dir * gate,
             along: dir,
@@ -456,27 +731,33 @@ fn gates_and_lines(sk: &mut Skeleton, rng: &mut Rng) {
 /// On the plaza and round it: a fountain between each pair of avenues, and
 /// low cover scattered on the open ground round its foot.
 fn plaza_dressing(sk: &mut Skeleton, rng: &mut Rng) {
-    let plaza = *sk.plaza();
-    let c = plaza.center;
-    for b in bisectors(sk) {
-        // On the top, well in from its edge, outside the precinct.
-        let mut d = sk.landmark.precinct + 8.0;
-        while plaza.sdf(c + b * (d + 1.0)) < -10.0 {
-            d += 1.0;
+    let mut fonts = Vec::new();
+    for (lm, plaza) in sk.landmarks.iter().zip(&sk.platforms) {
+        for b in bisectors(lm) {
+            // On the top, well in from its edge, outside the precinct.
+            let mut d = lm.precinct + 8.0;
+            while plaza.sdf(plaza.center + b * (d + 1.0)) < -10.0 {
+                d += 1.0;
+            }
+            fonts.push(Deco {
+                at: plaza.center + b * d,
+                face: b,
+                kind: DecoKind::Fountain,
+            });
         }
-        sk.decos.push(Deco {
-            at: c + b * d,
-            face: b,
-            kind: DecoKind::Fountain,
-        });
     }
+    sk.decos.extend(fonts);
+    if sk.platforms.is_empty() {
+        return;
+    }
+    let c = sk.heart;
     let mut placed: Vec<Vec2> = Vec::new();
     let mut tries = 0;
     while placed.len() < 120 && tries < 6000 {
         tries += 1;
         let p = Vec2::new(rng.range(0.0, sk.size), rng.range(0.0, sk.size));
-        let s = plaza.sdf(p);
-        if !(plaza.ramp + 3.0..plaza.ramp + 24.0).contains(&s)
+        let s = sk.off_plazas(p);
+        if !(3.0..24.0).contains(&s)
             || sk.streets.iter().any(|st| st.distance(p) < st.half + 3.0)
             || sk.bases.iter().any(|b| b.contains(p, 6.0))
             || placed.iter().any(|q| q.distance(p) < 8.5)
@@ -497,15 +778,19 @@ fn plaza_dressing(sk: &mut Skeleton, rng: &mut Rng) {
 
 /// The blocks between the avenues: lots on a grid, each district (the
 /// wedge between two avenues) on its own grid turned along one of them.
-fn districts(sk: &mut Skeleton, rng: &mut Rng) {
-    let c = sk.landmark.center;
+fn districts(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
+    let c = sk.heart;
     let mut angles: Vec<f32> = sk
         .avenues()
+        .filter(|a| a.from == c || a.to == c)
         .map(|a| {
-            let d = a.dir();
+            let d = if a.from == c { a.dir() } else { -a.dir() };
             d.y.atan2(d.x).rem_euclid(TAU)
         })
         .collect();
+    if angles.is_empty() {
+        angles.push(rng.range(0.0, TAU));
+    }
     angles.sort_by(f32::total_cmp);
     let n = angles.len();
     // How the city's built this seed: how many slabs on pillars, how much
@@ -528,15 +813,37 @@ fn districts(sk: &mut Skeleton, rng: &mut Rng) {
             Vec2::new(turn.cos(), turn.sin()),
             Vec2::new(-turn.sin(), turn.cos()),
         );
-        let step = rng.range(26.0, 30.0);
+        let (s0, s1) = plan.density.step();
+        let step = rng.range(s0, s1);
         let off = Vec2::new(rng.range(0.0, step), rng.range(0.0, step));
-        let reach = ((sk.size * 0.5 + SPRAWL) / step) as i32 + 3;
+        // Over the whole city from wherever its heart is (an old town's
+        // rings need more round them than across).
+        let reach = ((sk.size + SPRAWL) / step) as i32 + 3;
+        let reach = if plan.form == Form::OldTown {
+            reach * 7
+        } else {
+            reach
+        };
         let size = sk.size;
         for i in -reach..=reach {
             for j in -reach..=reach {
                 let q = Vec2::new(i as f32, j as f32) * step + off;
-                let p =
+                let mut turn = turn;
+                let mut p =
                     c + u * q.x + v * q.y + Vec2::new(rng.range(-1.5, 1.5), rng.range(-1.5, 1.5));
+                if plan.form == Form::OldTown {
+                    // In rings round the square, each ring's lots turned to
+                    // it, the lanes between them never lining up.
+                    let ring = i.max(0) as f32;
+                    let r = 38.0 + ring * step;
+                    let n = (TAU * r / step).floor();
+                    if i < 0 || j < 0 || j as f32 >= n {
+                        continue;
+                    }
+                    let a = (j as f32 + ring * 0.37) / n * TAU + (ring * 1.9).sin() * 0.3;
+                    p = c + Vec2::new(a.cos(), a.sin()) * (r + rng.range(-1.5, 1.5));
+                    turn = a;
+                }
                 let d = p - c;
                 let ang = d.y.atan2(d.x).rem_euclid(TAU);
                 let ang = if ang < a0 { ang + TAU } else { ang };
@@ -584,7 +891,7 @@ fn districts(sk: &mut Skeleton, rng: &mut Rng) {
                 {
                     continue;
                 }
-                if rng.chance(0.06) {
+                if rng.chance(plan.density.empty()) {
                     // An empty lot: a little more open ground.
                     continue;
                 }
