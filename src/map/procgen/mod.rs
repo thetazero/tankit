@@ -204,6 +204,16 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     } else {
         st.hold_name(spec.centerpiece, sk.landmarks[0].kind)
     };
+    // Every other great building's a site too (but by a shield generator,
+    // which is what that fight's for).
+    if spec.centerpiece == Centerpiece::Monument {
+        map.hold_more = sk
+            .landmarks
+            .iter()
+            .skip(1)
+            .map(|l| (l.center, st.hold_name(spec.centerpiece, l.kind)))
+            .collect();
+    }
     map.planet = Some((spec.seed, planet(spec.biome)));
     let mut claims = Vec::new();
     let mut drifts = Vec::new();
@@ -464,6 +474,7 @@ impl Map {
         if let Some(h) = &mut self.hold_site {
             p2(h);
         }
+        self.hold_more.iter_mut().for_each(|h| p2(&mut h.0));
         for (p, view) in &mut self.vistas {
             p2(p);
             *view = -*view;
@@ -562,6 +573,7 @@ impl Map {
         if let Some(h) = &mut self.hold_site {
             p2(h);
         }
+        self.hold_more.iter_mut().for_each(|h| p2(&mut h.0));
         for (p, view) in &mut self.vistas {
             p2(p);
             *view += quarter;
@@ -958,14 +970,14 @@ mod tests {
         }
     }
 
-    /// Four seeds in a row are four forms, and there are cities of every
+    /// Five seeds in a row are five forms, and there are cities of every
     /// size and density.
     #[test]
     fn cities_vary() {
         use super::city::Plan;
         let plans: Vec<Plan> = (0..64).map(|s| Plan::of(s, 2, false)).collect();
-        let forms: std::collections::HashSet<_> = plans[..4].iter().map(|p| p.form).collect();
-        assert_eq!(forms.len(), 4);
+        let forms: std::collections::HashSet<_> = plans[..5].iter().map(|p| p.form).collect();
+        assert_eq!(forms.len(), 5);
         let extents: std::collections::HashSet<_> = plans.iter().map(|p| p.extent).collect();
         let densities: std::collections::HashSet<_> = plans.iter().map(|p| p.density).collect();
         assert_eq!((extents.len(), densities.len()), (3, 3));

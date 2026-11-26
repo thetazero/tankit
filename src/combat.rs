@@ -2722,7 +2722,11 @@ impl Match {
     /// hunt it down), the stand it's on (to guard it), or, carrying it, home.
     fn objective(&self, i: usize) -> Option<Objective> {
         if let Some(h) = &self.hold {
-            return Some(Objective::ring(h.at, hold::RADIUS));
+            // A side's tanks go round the sites in turn.
+            let team = self.fighters[i].team;
+            let k = self.fighters[..i].iter().filter(|f| f.team == team).count();
+            let site = &h.sites[k % h.sites.len()];
+            return Some(Objective::ring(site.at, hold::RADIUS));
         }
         let r = self.raid.as_ref()?;
         let on = |p: Vec3, radius: f32, fight: bool| {
@@ -5434,7 +5438,7 @@ mod tests {
         let mut m = Match::new(Map::yard(200.0), 0, 0, 3);
         m.start();
         m.set_contract(Contract::Hold);
-        let at = m.hold.as_ref().unwrap().at;
+        let at = m.hold.as_ref().unwrap().sites[0].at;
         m.world.teleport(0, at, 0.0);
         m.hold.as_mut().unwrap().own[0] = hold::RENOWN_EVERY - 0.1;
         for _ in 0..60 {

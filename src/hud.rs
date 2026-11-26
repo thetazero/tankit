@@ -318,22 +318,21 @@ impl Hud {
             && !board
         {
             hold_meter(&mut p, m, hd, Vec2::new(top.x, sy + 32.0));
-            // The site's tag, unless you're on it.
-            let anchor = Vec3::new(hd.at.x, hd.ground + 9.0, hd.at.y);
-            if !hd.inside(tank.pos)
-                && let Some((x, y)) = project(vp, anchor, width, height)
-            {
+            // Each site's tag, unless you're on it.
+            for site in &hd.sites {
+                let anchor = Vec3::new(site.at.x, site.ground + 9.0, site.at.y);
+                if site.inside(tank.pos) {
+                    continue;
+                }
+                let Some((x, y)) = project(vp, anchor, width, height) else {
+                    continue;
+                };
                 let at = Vec2::new(x, y) / scale;
                 if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
                     let mut s = TextStyle::LABEL;
-                    s.color = hold_color(m, hd.control);
-                    let d = Vec2::new(tank.pos.x, tank.pos.z).distance(hd.at);
-                    p.text(
-                        at,
-                        &format!("{}  {d:.0} M", m.world.map.hold_name),
-                        &s,
-                        Align::Center,
-                    );
+                    s.color = hold_color(m, site.control);
+                    let d = Vec2::new(tank.pos.x, tank.pos.z).distance(site.at);
+                    p.text(at, &format!("{}  {d:.0} M", site.name), &s, Align::Center);
                 }
             }
         }
@@ -1082,17 +1081,38 @@ impl StatColumns {
 /// Who has the site, then each side's time held against the target: your
 /// side's bar grows left from the middle, theirs right.
 fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
-    let status = match hd.control {
-        Control::Open => format!("{} OPEN", m.world.map.hold_name),
-        Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
-        Control::Contested => "CONTESTED".to_string(),
-    };
     let mut l = TextStyle::LABEL;
-    l.color = hold_color(m, hd.control);
-    match hd.control {
-        Control::Held(s) => emblem::tagged(p, at, m.factions[s], &status, &l, Align::Center),
-        _ => p.text(at, &status, &l, Align::Center),
-    };
+    match &hd.sites[..] {
+        [site] => {
+            let status = match site.control {
+                Control::Open => format!("{} OPEN", site.name),
+                Control::Held(s) => format!("{} HOLDS", m.factions[s].name()),
+                Control::Contested => "CONTESTED".to_string(),
+            };
+            l.color = hold_color(m, site.control);
+            match site.control {
+                Control::Held(s) => {
+                    emblem::tagged(p, at, m.factions[s], &status, &l, Align::Center)
+                }
+                _ => p.text(at, &status, &l, Align::Center),
+            };
+        }
+        // Several: each one's name, in the color of who has it.
+        sites => {
+            let wide = 130.0;
+            for (k, site) in sites.iter().enumerate() {
+                let x = (k as f32 - (sites.len() - 1) as f32 * 0.5) * wide;
+                let at = at + Vec2::new(x, 0.0);
+                l.color = hold_color(m, site.control);
+                match site.control {
+                    Control::Held(s) => {
+                        emblem::tagged(p, at, m.factions[s], site.name, &l, Align::Center)
+                    }
+                    _ => p.text(at, site.name, &l, Align::Center),
+                };
+            }
+        }
+    }
     let half = 110.0;
     let y = at.y + 20.0;
     p.line(

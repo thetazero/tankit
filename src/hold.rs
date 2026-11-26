@@ -1,7 +1,8 @@
-//! Hold contract (king of the hill, side against side): one site per map,
-//! a crystal deposit (`Map::hold_site`, else the open spot nearest the
-//! middle). A side with tanks in the ring and no other side's holds it and
-//! banks time; two or more sides in it contest it and nobody scores. First side to
+//! Hold contract (king of the hill, side against side): a site, a crystal
+//! deposit (`Map::hold_site`, else the open spot nearest the middle), or
+//! several at once (`Map::hold_more`). A side with tanks in the ring and no other side's holds it and
+//! banks time (its share: both of two sites bank as fast as one on its own);
+//! two or more sides in it contest it and nobody scores. First side to
 //! `TARGET` seconds held ends the round, otherwise the clock does.
 //!
 //! Each tank's own time in the ring while its side holds is kept too: it
@@ -51,19 +52,26 @@ pub enum Cue {
     Paid,
 }
 
-pub struct Hold {
+/// One ring to hold.
+pub struct Site {
     pub at: Vec2,
     pub ground: f32,
-    /// Seconds each side has held the site this round.
-    pub held: Vec<f32>,
-    /// Seconds each tank has spent on the site while its side held it.
-    pub own: Vec<f32>,
+    pub name: &'static str,
     pub control: Control,
     /// Ground height under each dash of the ring.
     dash_y: Vec<f32>,
     /// The state last announced, and how long `control` has stood unchanged.
     heard: Control,
     steady: f32,
+}
+
+pub struct Hold {
+    /// At least one.
+    pub sites: Vec<Site>,
+    /// Seconds each side has held this round (of the sites, the share held).
+    pub held: Vec<f32>,
+    /// Seconds each tank has spent on a site while its side held it.
+    pub own: Vec<f32>,
 }
 
 impl Hold {
@@ -77,17 +85,82 @@ impl Hold {
                 .min_by(|a, b| a.distance_squared(c).total_cmp(&b.distance_squared(c)))
                 .unwrap_or(c)
         });
+        let sites = std::iter::once((at, map.hold_name))
+            .chain(map.hold_more.iter().copied())
+            .map(|(at, name)| Site::new(map, at, name))
+            .collect();
+        Hold {
+            sites,
+            held: vec![0.0; sides],
+            own: vec![0.0; tanks],
+        }
+    }
+
+    /// The site a tank at `p` is on, if any.
+    pub fn inside(&self, p: Vec3) -> bool {
+        self.sites.iter().any(|s| s.inside(p))
+    }
+
+    /// Advance by `dt`. `side(i)` is tank `i`'s side, or `None` if it doesn't
+    /// count (a wreck). Returns the side holding the first site that's held,
+    /// if any is.
+    pub fn step(
+        &mut self,
+        dt: f32,
+        tanks: &[Tank],
+        side: impl Fn(usize) -> Option<usize>,
+    ) -> Option<usize> {
+        self.own.resize(tanks.len(), 0.0);
+        let share = dt / self.sites.len() as f32;
+        let mut first = None;
+        for site in &mut self.sites {
+            let on: Vec<(usize, usize)> = (0..tanks.len())
+                .filter_map(|i| side(i).map(|s| (i, s)))
+                .filter(|&(i, _)| site.inside(tanks[i].pos))
+                .collect();
+            let Some(s) = site.step(dt, &on) else {
+                continue;
+            };
+            first = first.or(Some(s));
+            self.held[s] = (self.held[s] + share).min(TARGET);
+            for &(i, _) in &on {
+                self.own[i] += dt;
+            }
+        }
+        first
+    }
+
+    /// What the player should hear about a site now, if anything. Call once
+    /// a step.
+    pub fn cue(&mut self) -> Option<Cue> {
+        self.sites.iter_mut().find_map(Site::cue)
+    }
+
+    /// The side that has reached `TARGET`.
+    pub fn winner(&self) -> Option<usize> {
+        (0..self.held.len()).find(|&s| self.held[s] >= TARGET)
+    }
+
+    /// Every site's ring (see `Site::instances`).
+    pub fn instances(&self, time: f32, paint: &[Vec3], out: &mut Vec<(MeshId, Instance)>) {
+        for s in &self.sites {
+            s.instances(time, paint, out);
+        }
+    }
+}
+
+impl Site {
+    fn new(map: &Map, at: Vec2, name: &'static str) -> Site {
         let dash_y = (0..DASHES)
             .map(|i| {
                 let p = at + ring_dir(i as f32 / DASHES as f32) * RADIUS;
                 map.ground_height(p.x, p.y)
             })
             .collect();
-        Hold {
+        Site {
             at,
             ground: map.ground_height(at.x, at.y),
-            held: vec![0.0; sides],
-            own: vec![0.0; tanks],
+            name,
             control: Control::Open,
             dash_y,
             heard: Control::Open,
@@ -100,19 +173,9 @@ impl Hold {
         Vec2::new(p.x, p.z).distance(self.at) < RADIUS && (p.y - self.ground).abs() < REACH_Y
     }
 
-    /// Advance by `dt`. `side(i)` is tank `i`'s side, or `None` if it doesn't
-    /// count (a wreck). Returns the side holding, if any.
-    pub fn step(
-        &mut self,
-        dt: f32,
-        tanks: &[Tank],
-        side: impl Fn(usize) -> Option<usize>,
-    ) -> Option<usize> {
-        self.own.resize(tanks.len(), 0.0);
-        let on: Vec<(usize, usize)> = (0..tanks.len())
-            .filter_map(|i| side(i).map(|s| (i, s)))
-            .filter(|&(i, _)| self.inside(tanks[i].pos))
-            .collect();
+    /// Advance by `dt`, `on` the tanks on it, each with its side. Returns the
+    /// side holding it, if any.
+    fn step(&mut self, dt: f32, on: &[(usize, usize)]) -> Option<usize> {
         let mut present: Vec<usize> = on.iter().map(|&(_, s)| s).collect();
         present.sort_unstable();
         present.dedup();
@@ -127,14 +190,10 @@ impl Hold {
             0.0
         };
         self.control = control;
-        let Control::Held(s) = self.control else {
-            return None;
-        };
-        self.held[s] = (self.held[s] + dt).min(TARGET);
-        for &(i, _) in &on {
-            self.own[i] += dt;
+        match control {
+            Control::Held(s) => Some(s),
+            _ => None,
         }
-        Some(s)
     }
 
     /// What the player should hear about the site now, if anything: once a
@@ -150,11 +209,6 @@ impl Hold {
             (_, Control::Held(_)) | (Control::Held(0), Control::Open) => Some(Cue::Lost),
             _ => None,
         }
-    }
-
-    /// The side that has reached `TARGET`.
-    pub fn winner(&self) -> Option<usize> {
-        (0..self.held.len()).find(|&s| self.held[s] >= TARGET)
     }
 
     /// The ring painted on the ground and its four marker posts, tinted by
@@ -247,8 +301,8 @@ mod tests {
     }
 
     fn put(w: &mut World, h: &Hold, i: usize, off: Vec2) {
-        let p = h.at + off;
-        w.tanks[i].pos = Vec3::new(p.x, h.ground + 0.5, p.y);
+        let p = h.sites[0].at + off;
+        w.tanks[i].pos = Vec3::new(p.x, h.sites[0].ground + 0.5, p.y);
     }
 
     #[test]
@@ -269,7 +323,7 @@ mod tests {
         assert_eq!(h.step(0.5, &w.tanks, side(true)), Some(2));
         assert_eq!(h.held[2], 0.5);
         assert_eq!(h.step(0.5, &w.tanks, side(false)), None);
-        assert_eq!(h.control, Control::Contested);
+        assert_eq!(h.sites[0].control, Control::Contested);
     }
     /// Tanks 0 and 1 on side 0, the rest on side 1.
     fn sides(i: usize) -> Option<usize> {
@@ -285,7 +339,7 @@ mod tests {
         for _ in 0..60 {
             assert_eq!(h.step(DT, &w.tanks, sides), Some(0));
         }
-        assert_eq!(h.control, Control::Held(0));
+        assert_eq!(h.sites[0].control, Control::Held(0));
         assert!((h.held[0] - 60.0 * DT).abs() < 1e-4);
         assert_eq!(h.held[1], 0.0);
         // Both allies on the site get the time.
@@ -300,7 +354,7 @@ mod tests {
         put(&mut w, &h, 2, Vec2::new(-3.0, 1.0));
         put(&mut w, &h, 1, Vec2::new(RADIUS + 10.0, 0.0));
         assert_eq!(h.step(DT, &w.tanks, sides), None);
-        assert_eq!(h.control, Control::Contested);
+        assert_eq!(h.sites[0].control, Control::Contested);
         assert_eq!(h.held, [0.0, 0.0]);
         // An enemy wreck in the ring doesn't count.
         assert_eq!(
@@ -371,7 +425,7 @@ mod tests {
         put(&mut w, &h, 0, Vec2::ZERO);
         w.tanks[0].pos.y += 8.0;
         assert_eq!(h.step(DT, &w.tanks, sides), None);
-        assert_eq!(h.control, Control::Open);
+        assert_eq!(h.sites[0].control, Control::Open);
     }
 
     #[test]
@@ -391,12 +445,39 @@ mod tests {
     fn sanctum_site_is_the_altar_with_room_to_drive_in_the_ring() {
         let m = Map::sanctum();
         let h = Hold::new(&m, 1);
-        assert_eq!(Some(h.at), m.hold_site);
+        assert_eq!(Some(h.sites[0].at), m.hold_site);
         let nav = crate::ai::NavGrid::build(&m);
         // The altar and the crossing's piers stand in it; most of the ring is open.
         let open = (0..32)
-            .filter(|&i| !nav.is_blocked(h.at + ring_dir(i as f32 / 32.0) * RADIUS * 0.7))
+            .filter(|&i| !nav.is_blocked(h.sites[0].at + ring_dir(i as f32 / 32.0) * RADIUS * 0.7))
             .count();
         assert!(open >= 24, "only {open}/32 points in the ring are drivable");
+    }
+
+    /// Two sites: each banks half, and they're held apart.
+    #[test]
+    fn several_sites_count_at_once() {
+        let (mut w, _) = world_with(3);
+        let c = w.map.center();
+        w.map.hold_site = Some(c - Vec2::X * 40.0);
+        w.map.hold_more = vec![(c + Vec2::X * 40.0, "OTHER")];
+        let mut h = Hold::new(&w.map, 3);
+        let place = |w: &mut World, i: usize, at: Vec2| {
+            let y = w.map.ground_height(at.x, at.y) + 0.5;
+            w.tanks[i].pos = Vec3::new(at.x, y, at.y);
+        };
+        let (a, b) = (h.sites[0].at, h.sites[1].at);
+        place(&mut w, 0, a);
+        place(&mut w, 1, c + Vec2::Y * 60.0);
+        place(&mut w, 2, b);
+        h.step(1.0, &w.tanks, sides);
+        assert_eq!(h.held, [0.5, 0.5]);
+        assert_eq!(h.sites[0].control, Control::Held(0));
+        assert_eq!(h.sites[1].control, Control::Held(1));
+        // Both of them banks as fast as a site on its own.
+        place(&mut w, 1, b);
+        place(&mut w, 2, c + Vec2::Y * 60.0);
+        h.step(1.0, &w.tanks, sides);
+        assert_eq!(h.held, [1.5, 0.5]);
     }
 }
