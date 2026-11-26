@@ -3,6 +3,7 @@
 @group(0) @binding(0) var hdr_tex: texture_2d<f32>;
 @group(0) @binding(1) var hdr_samp: sampler;
 @group(0) @binding(2) var ao_tex: texture_2d<f32>;
+@group(0) @binding(3) var bloom_tex: texture_2d<f32>;
 
 struct PostOut {
     @builtin(position) clip: vec4<f32>,
@@ -44,6 +45,7 @@ fn fs_post(v: PostOut) -> @location(0) vec4<f32> {
         }
     }
     c *= ao / 25.0;
+    c += textureSample(bloom_tex, hdr_samp, v.uv).rgb;
     // Exposure, filmic tonemap, then a little contrast (an S-curve) and
     // saturation so the image doesn't sit washed out in the mid-greys.
     c = aces(c * 0.68);
