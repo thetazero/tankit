@@ -52,32 +52,59 @@ pub const GREEN: Look = Look {
 /// The world `seed` names, as a sphere of radius 0.5 (scale it up where
 /// it's drawn), flat-shaded material, colored per vertex.
 pub fn mesh(seed: u64, look: &Look) -> MeshData {
-    let mut m = MeshData::sphere(160, 80);
+    let mut m = MeshData::sphere(320, 160);
     // Each seed shifts the noise to a different patch of an endless field.
     let mut rng = crate::rng::Rng::new(seed);
-    let land_at = Vec3::new(
-        rng.range(0.0, 500.0),
-        rng.range(0.0, 500.0),
-        rng.range(0.0, 500.0),
-    );
-    let cloud_at = Vec3::new(
-        rng.range(0.0, 500.0),
-        rng.range(0.0, 500.0),
-        rng.range(0.0, 500.0),
-    );
-    let thresh = 0.72 - 0.4 * look.cloudiness.clamp(0.0, 1.0);
-    for v in &mut m.verts {
-        let n = Vec3::from(v.normal);
-        let land = fbm(n * 6.0 + land_at);
+    let mut patch = || {
+        Vec3::new(
+            rng.range(0.0, 500.0),
+            rng.range(0.0, 500.0),
+            rng.range(0.0, 500.0),
+        )
+    };
+    let (land_at, warp_at, cloud_at) = (patch(), patch(), patch());
+    let thresh = 0.72 - 0.32 * look.cloudiness.clamp(0.0, 1.0);
+    let edge = |v: f32, at: f32, w: f32| {
+        let t = ((v - at) / w + 0.5).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let paint = |n: Vec3| {
+        // The coasts' shapes are bent by a slower noise, so they wander.
+        let warp = Vec3::new(
+            noise(n * 2.2 + warp_at),
+            noise(n * 2.2 + warp_at + Vec3::splat(31.0)),
+            noise(n * 2.2 + warp_at + Vec3::splat(67.0)),
+        ) - Vec3::splat(0.5);
+        let at = n * 2.4 + warp * 1.5 + land_at;
+        let land = fbm(at);
+        let fine = fbm(at * 5.0);
         let mut c = look
             .land
-            .lerp(look.basin, ((land - 0.45) * 6.0).clamp(0.0, 1.0));
-        c = c.lerp(look.sea, ((land - 0.6) * 12.0).clamp(0.0, 1.0));
-        // Clouds in streaks along the latitudes.
-        let streak = fbm(Vec3::new(n.x * 5.0, n.y * 22.0, n.z * 5.0) + cloud_at);
-        c = c.lerp(look.cloud, ((streak - thresh) * 5.0).clamp(0.0, 0.85));
-        v.color = [c.x, c.y, c.z, Material::Plain.id()];
-    }
+            .lerp(look.basin, edge(land + 0.12 * fine, 0.52, 0.16));
+        // Relief: ridges catch the light, gullies lose it.
+        c *= 0.72 + 0.56 * fine;
+        // Seas, with a hard shore.
+        c = c.lerp(look.sea, edge(land + 0.05 * fine, 0.6, 0.02));
+        // Ice at the poles.
+        let ice = n.y.abs() + 0.1 * (fine - 0.5);
+        c = c.lerp(Vec3::splat(0.4), edge(ice, 0.93, 0.03));
+        // Cloud, in streaks along the latitudes, curled.
+        let q = n + warp * 0.35;
+        let streak = fbm(Vec3::new(q.x * 3.5, q.y * 9.0, q.z * 3.5) + cloud_at);
+        c.lerp(look.cloud, 0.8 * edge(streak, thresh + 0.06, 0.14))
+    };
+    // A few threads: one would hitch the screen it's shown on.
+    let chunk = m.verts.len().div_ceil(3);
+    std::thread::scope(|scope| {
+        for part in m.verts.chunks_mut(chunk) {
+            scope.spawn(|| {
+                for v in part {
+                    let c = paint(Vec3::from(v.normal));
+                    v.color = [c.x, c.y, c.z, Material::Plain.id()];
+                }
+            });
+        }
+    });
     m
 }
 

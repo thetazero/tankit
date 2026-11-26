@@ -691,6 +691,7 @@ impl Galaxy {
         out
     }
 
+    #[cfg(test)]
     /// Hulls each side's yards in system `s` turn out a tick, as `produce`
     /// adds them. A pocket builds at the full rate (#446).
     pub fn built(&self, s: usize) -> [f32; SIDES] {
