@@ -188,6 +188,25 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    // A site's is in its founder's style (see `SiteView::map_kind`).
+    Mission {
+        name: "DEAD LINE",
+        contract: Contract::Attrition,
+        map: "RAIL DEPOT",
+        map_kind: MapKind::Depot(Look::Imperium),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
+    Mission {
+        name: "NIGHT FREIGHT",
+        contract: Contract::Raid,
+        map: "RAIL DEPOT",
+        map_kind: MapKind::Depot(Look::Imperium),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Imperium, Faction::Resonant],
+    },
 ];
 
 /// The missions a site on a `class` world can be fought with (#311): every
@@ -307,11 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn raid_is_in_the_crystal_mine() {
-        let m = MISSIONS
+    fn raids_are_in_the_crystal_mine_and_the_rail_depot() {
+        let raids: Vec<MapKind> = MISSIONS
             .iter()
-            .find(|m| m.contract == Contract::Raid)
-            .unwrap();
-        assert_eq!(m.map_kind, MapKind::Mine);
+            .filter(|m| m.contract == Contract::Raid)
+            .map(|m| m.map_kind)
+            .collect();
+        assert_eq!(raids, [MapKind::Mine, MapKind::Depot(Look::Imperium)]);
     }
 }

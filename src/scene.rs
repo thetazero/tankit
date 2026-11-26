@@ -115,7 +115,7 @@ pub fn map_mesh(map: &Map) -> MeshData {
     for g in &map.glow_paths {
         g.mesh(&mut m);
     }
-    for r in &map.rivers {
+    for r in map.rivers.iter() {
         r.mesh(&mut m);
     }
 
@@ -811,6 +811,7 @@ pub fn build(world: &World, tanks: &[Tank], art: &TankArt, camera: Camera) -> Sc
         instances,
         particles,
         lights: world.map.lights.clone(),
+        rivers: world.map.rivers.clone(),
         ui: Vec::new(),
         world: true,
     }
@@ -922,6 +923,23 @@ mod tests {
                 "foundry ithessar",
                 foundry(3, Look::Ithessar, Ground::Desert),
             ),
+        ]);
+    }
+
+    /// The same for rail depots.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn depots_hardly_z_fight() {
+        use crate::map::procgen::Look;
+        let depot = |seed, l| crate::make_map(crate::MapKind::Depot(l), seed);
+        hardly_z_fight([
+            ("depot imperium", depot(0, Look::Imperium)),
+            ("depot resonant", depot(1, Look::Resonant)),
+            ("depot uthenn", depot(2, Look::Uthenn)),
+            ("depot ithessar", depot(3, Look::Ithessar)),
         ]);
     }
 

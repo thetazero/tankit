@@ -24,7 +24,7 @@ use crate::rng::Rng;
 pub const MIN_HOUSES: usize = 14;
 const MAX_HOUSES: i32 = 34;
 /// Each side's spawns: kept clear and level this far round.
-pub const PAD: f32 = 16.0;
+pub const PAD: f32 = 22.0;
 /// The furthest apart two sides' spawns may be.
 pub const FAR: f32 = 205.0;
 /// Nothing's built nearer the arena's edge than this.

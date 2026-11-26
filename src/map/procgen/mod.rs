@@ -27,6 +27,7 @@ pub mod check;
 pub mod city;
 mod civic;
 pub mod crossing;
+pub mod depot;
 pub mod desert;
 pub mod foundry;
 mod imperium;
@@ -60,6 +61,8 @@ pub enum Biome {
     Reservoir,
     /// A hull foundry, on whichever ground.
     Foundry(foundry::Ground),
+    /// A rail depot on desert.
+    Depot,
 }
 
 /// Whose place it is.
@@ -224,6 +227,7 @@ fn build_map(spec: &Spec) -> Map {
         Biome::Mine => mine::build(spec),
         Biome::Desert | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
+        Biome::Depot => depot::build(spec),
     }
 }
 
@@ -306,7 +310,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     if let Some(c) = &sk.land.channel {
         c.build(&mut map, sk.size);
-        map.rivers.push(c.river());
+        map.rivers = std::sync::Arc::new(vec![c.river()]);
     }
     for (k, b) in sk.bases.iter().enumerate() {
         let mark = skeleton::Mark::of(&map);
@@ -369,6 +373,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
         Biome::Mine => mine::PLANET,
         Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
         Biome::Foundry(ground) => ground.planet(),
+        Biome::Depot => foundry::Ground::Desert.planet(),
     }
 }
 
@@ -378,6 +383,7 @@ pub fn greybox(spec: &Spec) -> Map {
         Biome::Mine => return mine::greybox(spec),
         Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
+        Biome::Depot => return depot::greybox(spec),
         Biome::City => {}
     }
     let sk = skeleton(spec);
@@ -731,6 +737,12 @@ impl Map {
             Look::Imperium,
             foundry::Ground::Desert,
         ))
+    }
+
+    /// The Imperium's rail depot `seed` names (see `crate::depot_spec`).
+    #[cfg(test)]
+    pub fn depot(seed: u64) -> Map {
+        map(&crate::depot_spec(seed, Look::Imperium))
     }
 
     /// The open desert `seed` names (see `crate::desert_spec`).

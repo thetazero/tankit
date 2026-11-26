@@ -297,24 +297,6 @@ impl Channel {
                     Material::Glow,
                 );
                 map_solid(&mut loose, i, false);
-                // And the wall above it lit by the plasma, less the higher.
-                for i in 0..5 {
-                    let y = s + 0.1 + i as f32 * 0.8;
-                    if y + 0.8 > q - 0.3 {
-                        break;
-                    }
-                    let band = self.point(t, e * (self.half - 0.005));
-                    let dim = 0.2 * (1.0 - i as f32 / 5.0).powi(2);
-                    let j = put(
-                        band,
-                        yaw,
-                        Vec2::new(0.03, long),
-                        (y, y + 0.8),
-                        plasma * dim,
-                        Material::Glow,
-                    );
-                    map_solid(&mut loose, j, false);
-                }
                 if k % 5 == 0 {
                     let post = self.point(t, e * (self.half + 0.8));
                     put(
@@ -429,11 +411,6 @@ impl Channel {
             map.oboxes[i].tilt = tilt;
         }
         for at in lamps {
-            map.lights.push(crate::render::PointLight {
-                pos: at,
-                color: plasma * 20.0,
-                radius: 24.0,
-            });
             map.sound(crate::map::Ambient::River, at);
         }
     }

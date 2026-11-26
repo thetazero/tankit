@@ -583,7 +583,8 @@ impl Dig<'_> {
     /// An outcrop of seam crystal at ground level: one big shard for cover
     /// and small ones round it.
     pub(super) fn outcrop(&mut self, rng: &mut Rng, p: Vec2, h: f32) {
-        if self.in_the_way(p, 1.5) {
+        // (A dig's own layout keeps things out of the way.)
+        if self.l.land.scarp.is_some() && self.in_the_way(p, 1.5) {
             return;
         }
         let g = self.ground_height(p.x, p.y);
@@ -1017,10 +1018,15 @@ impl Dig<'_> {
         self.steel_set_to(a, b, h);
     }
 
+    /// The ground at a point: a dig's floor, in one.
+    pub(super) fn ground_height(&self, x: f32, z: f32) -> f32 {
+        self.stand(Vec2::new(x, z))
+    }
+
     /// What something at `p` stands on: a dig's floor, in one.
     pub(super) fn stand(&self, p: Vec2) -> f32 {
         let dig = self.l.land.digs.iter().find(|d| d.distance(p) < 0.0);
-        dig.map_or_else(|| self.ground_height(p.x, p.y), |d| d.floor)
+        dig.map_or_else(|| self.map.ground_height(p.x, p.y), |d| d.floor)
     }
 
     /// A steel set from `a` to `b`, its cap `h` up.
@@ -2233,15 +2239,13 @@ impl Dig<'_> {
     pub(super) fn rails(&mut self, line: &[Vec2], branch: bool) {
         let lay = self.l;
         let total = line_len(line, line.len() - 1);
-        let y_at = |m: &Map, s: f32| {
+        let y_at = |m: &Dig, s: f32| {
             let (p, dir) = line_at(line, s);
             if lay.on_bridge(p) {
                 DECK_TOP
             } else {
                 let side = dir.perp() * 1.5;
-                m.ground_height(p.x, p.y)
-                    .max(m.ground_height(p.x + side.x, p.y + side.y))
-                    .max(m.ground_height(p.x - side.x, p.y - side.y))
+                m.stand(p).max(m.stand(p + side)).max(m.stand(p - side))
             }
         };
         let step = 1.6;
@@ -2269,6 +2273,8 @@ impl Dig<'_> {
         // Rails, in runs of up to 6 m following the ground, broken at the
         // line's bends.
         let mut s = if branch { 1.0 } else { 0.0 };
+        // (Solid ground has finer bumps than a terrain.)
+        let run = if self.solid.is_some() { 2.0 } else { 6.0 };
         let bends: Vec<f32> = (1..line.len()).map(|k| line_len(line, k)).collect();
         while s < total - 0.01 {
             let next_bend = bends
@@ -2276,7 +2282,7 @@ impl Dig<'_> {
                 .copied()
                 .find(|&b| b > s + 0.01)
                 .unwrap_or(total);
-            let e = (s + 6.0).min(next_bend);
+            let e = (s + run).min(next_bend);
             let (pa, dir) = line_at(line, s + 0.001);
             let (pb, _) = line_at(line, e - 0.001);
             let (ya, yb) = (y_at(self, s) + 0.16, y_at(self, e - 0.001) + 0.16);
@@ -2829,14 +2835,18 @@ impl Dig<'_> {
     /// The ore train, stopped on the flats headed out: the locomotive, two
     /// ore cars behind it under the tipple. Far down the line, two cars off
     /// the rails, one on its side, its load spilled out of it.
-    pub(super) fn ore_train(&mut self, rng: &mut Rng) {
-        let lay = self.l;
-        let s0 = lay.track_len(3) + 6.0;
-        // Ore cars under and past the tipple, then the loco ahead (south).
+    /// Ore cars under and past the tipple `s0` m along the first track, then
+    /// the loco ahead.
+    pub(super) fn loaded_train(&mut self, s0: f32) {
         for (s, loco) in [(s0, false), (s0 + 10.0, false), (s0 + 22.0, true)] {
-            let (p, dir) = lay.track_at(s);
+            let (p, dir) = self.l.track_at(s);
             self.rail_car(p, yaw_along(dir), 0.0, loco);
         }
+    }
+
+    pub(super) fn ore_train(&mut self, rng: &mut Rng) {
+        let lay = self.l;
+        self.loaded_train(lay.track_len(3) + 6.0);
         // The wreck, far down the line, off the side away from the branch.
         let away = -lay.branch_side();
         let (p, dir) = lay.track_at(lay.track_len(5) - 10.0);
@@ -2871,6 +2881,12 @@ impl Dig<'_> {
     pub(super) fn tipple(&mut self) {
         let lay = self.l;
         let (at, dir) = lay.track_at(lay.track_len(3) + 6.0);
+        self.tipple_at(at, dir);
+    }
+
+    /// A tipple over the track at `at`, which runs along `dir`.
+    pub(super) fn tipple_at(&mut self, at: Vec2, dir: Vec2) {
+        let lay = self.l;
         let g = self.ground_height(at.x, at.y);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
@@ -4002,11 +4018,14 @@ impl Dig<'_> {
                 let a = k as f32 / 8.0 * TAU;
                 at + Vec2::new(a.cos(), a.sin()) * r
             };
-            let f = lay.face(q.x);
+            let by_face = lay.land.scarp.as_ref().is_some_and(|s| {
+                let f = s.face(q.x);
+                q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0
+            });
             !self.on_way(q)
                 && lay.track_distance(q) > 6.0
                 && lay.shed_distance(q) > 14.0
-                && !(q.y > f - 8.0 && q.y < f + FACE_RISE + 5.0)
+                && !by_face
                 && !lay
                     .land
                     .hauls

@@ -430,9 +430,11 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(..) | MapKind::Mine | MapKind::Desert | MapKind::Reservoir => {
-                self == Class::Desert
-            }
+            MapKind::City(..)
+            | MapKind::Mine
+            | MapKind::Desert
+            | MapKind::Depot(_)
+            | MapKind::Reservoir => self == Class::Desert,
             MapKind::Foundry(..) => self.ground().is_some(),
             MapKind::Sanctum | MapKind::Kiln => self != Class::Desert,
             MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
@@ -544,6 +546,7 @@ impl SiteView {
         let SiteKind::Shield { damaged } = self.kind else {
             return match kind {
                 MapKind::City(..) => MapKind::City(look, setting),
+                MapKind::Depot(_) => MapKind::Depot(Look::own(self.founder())),
                 MapKind::Foundry(_, ground) => MapKind::Foundry(
                     Look::own(self.founder()),
                     self.class.ground().unwrap_or(ground),
@@ -1771,7 +1774,8 @@ mod tests {
     }
 
     /// Outposts are fought on no production site's map (#547): on desert
-    /// worlds the city, the open desert and the reservoir town, elsewhere the hand-built maps.
+    /// worlds the city, depot, open desert and reservoir town, elsewhere the
+    /// hand-built maps.
     #[test]
     fn outposts_have_maps_of_their_own() {
         let g = galaxy();
@@ -1784,6 +1788,9 @@ mod tests {
                 assert_eq!((s.kind_name(), s.short_name()), ("OUTPOST", "OUTPOST"));
                 let desert = s.class == Class::Desert;
                 match s.map_kind() {
+                    MapKind::Depot(look) => {
+                        assert!(desert && look == Look::own(s.founder()));
+                    }
                     MapKind::City(..) | MapKind::Desert | MapKind::Reservoir => assert!(desert),
                     MapKind::Sanctum | MapKind::Kiln => assert!(!desert),
                     k => panic!("an outpost fought on {k:?}"),
@@ -1796,6 +1803,8 @@ mod tests {
             "HIGH SEAT",
             "DRY WIND",
             "LONG SHADOWS",
+            "DEAD LINE",
+            "NIGHT FREIGHT",
             "DEAD TOWN",
             "LOW WATER",
             "HOLY GROUND",

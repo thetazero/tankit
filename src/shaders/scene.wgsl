@@ -15,7 +15,73 @@ struct Globals {
     light_count: vec4<f32>,  // x: point lights in use
     // Point lights, two each: xyz position, w radius; rgb color.
     lights: array<vec4<f32>, 64>,
+    river_info: vec4<f32>,   // x: points in use, y: half its width, z: how strong its light is, w: night
+    river: array<vec4<f32>, 40>, // xyz: a point of a plasma river's course, w: how far down it
 };
+
+const PLASMA = vec3<f32>(1.0, 0.1, 0.44);
+
+// A surge running down a plasma river, `along` it.
+fn surge(along: f32) -> f32 {
+    let u = fract(along / 190.0 - g.params.x / 15.0) - 0.5;
+    return 1.0 + 1.1 * exp(-u * u * 90.0);
+}
+
+// A plasma river's light on a face at `p` facing `n`: one long strip of it,
+// the plasma and the glowing air over it.
+fn river_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let count = i32(g.river_info.x);
+    let half = g.river_info.y;
+    var best = 1e9;
+    var at = vec3<f32>(0.0);
+    var along = 0.0;
+    for (var k = 0; k + 1 < count; k++) {
+        let a = g.river[k];
+        let d = g.river[k + 1] - a;
+        let t = clamp(dot(p.xz - a.xz, d.xz) / max(dot(d.xz, d.xz), 1e-4), 0.0, 1.0);
+        let q = a + d * t;
+        let off = distance(p.xz, q.xz);
+        if (off < best) {
+            best = off;
+            at = q.xyz;
+            along = q.w;
+        }
+    }
+    if (best > 95.0) {
+        return vec3<f32>(0.0);
+    }
+    // Toward the near side of it, not its middle.
+    let flat_to = at.xz - p.xz;
+    let near = flat_to * max(1.0 - half * 0.8 / max(best, 0.01), 0.12);
+    let low = vec3<f32>(near.x, at.y - p.y, near.y);
+    let high = vec3<f32>(near.x, at.y + 8.0 - p.y, near.y);
+    var e = 0.0;
+    for (var k = 0; k < 2; k++) {
+        let to = select(low, high, k == 1);
+        let dist = length(to);
+        let facing = clamp((dot(n, to / max(dist, 0.01)) + 0.15) / 1.15, 0.0, 1.0);
+        let share = select(0.45, 0.55, k == 1);
+        e += share * facing * half / (dist + half * 0.45);
+    }
+    let q = clamp(best / 95.0, 0.0, 1.0);
+    let fade = (1.0 - q * q) * (1.0 - q * q);
+    return PLASMA * e * fade * surge(along) * g.river_info.z * 2.3;
+}
+
+// The air over a plasma river, glowing, along the view's ray: from `o` along
+// `dir`, `len` m.
+fn river_haze(o: vec3<f32>, dir: vec3<f32>, len: f32) -> vec3<f32> {
+    let count = i32(g.river_info.x);
+    var sum = 0.0;
+    for (var k = 0; k < count; k++) {
+        let p = g.river[k].xyz + vec3<f32>(0.0, 3.0, 0.0);
+        let to = p - o;
+        let b = dot(to, dir);
+        let h = sqrt(max(dot(to, to) - b * b, 0.0) + 90.0);
+        sum += (atan((len - b) / h) + atan(b / h)) / h * surge(g.river[k].w);
+    }
+    return PLASMA * sum * g.river_info.w * 0.036;
+}
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var shadow_tex: texture_depth_2d;
@@ -654,13 +720,15 @@ fn plasma_surface(q: vec3<f32>, view: vec3<f32>) -> Surface {
     let body = vec3<f32>(0.72, 0.05, 0.3);
     let hot = vec3<f32>(1.0, 0.72, 0.88);
     var glow = mix(deep, body, smoothstep(0.3, 0.85, flow));
-    glow += hot * thread * 0.6;
+    glow += mix(body, hot, 0.45) * thread * 0.5;
     glow += body * exp(-u * u * 7.0) * 0.4;
     let cooled = deep * 0.16 + (body + hot * 0.25) * crack * 1.2;
     glow = mix(glow, cooled, skin * 0.93);
     // A hot line where it meets the lining.
     glow += body * smoothstep(0.93, 0.99, edge) * (0.8 + 0.4 * sin(along * 0.9 - t * 4.0));
-    s.emissive = glow * (1.15 + 0.15 * sin(t * 1.3 + along * 0.05));
+    // White only where it's hottest; brighter as a surge passes.
+    glow += vec3<f32>(1.0, 0.9, 0.96) * pow(thread, 4.0) * (1.0 - skin) * 0.8;
+    s.emissive = glow * 1.2 * surge(along);
     s.albedo = vec3<f32>(0.02, 0.005, 0.012);
     s.rough = mix(0.22, 0.7, skin);
     s.ao = 1.0;
@@ -754,13 +822,24 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
         let lspec = pow(max(dot(n, lh), 0.0), gloss) * (gloss + 8.0) / 25.0 * f * spec_col * (1.0 - s.rough * 0.7);
         c += (lamp_kd * s.ao + lspec) * g.lights[k * 2 + 1].rgb * lndl * fade;
     }
+    if (g.river_info.x > 1.0 && m != MAT_PLASMA) {
+        // (Dark glass takes some of it too.)
+        let kd = max(lamp_kd, vec3<f32>(0.09));
+        c += kd * s.ao * river_light(v.wpos, n);
+    }
     c += s.emissive;
 
     // Emissive instances (effects, pickups) replace lighting with their own glow.
     let e = v.tint.a;
     c = mix(c, base * e, clamp(e, 0.0, 1.0));
 
-    return vec4<f32>(apply_fog(c, v.wpos), 1.0);
+    var out = apply_fog(c, v.wpos);
+    if (g.river_info.x > 1.0) {
+        let to = v.wpos - g.cam_pos.xyz;
+        let len = length(to);
+        out += river_haze(g.cam_pos.xyz, to / max(len, 0.01), len);
+    }
+    return vec4<f32>(out, 1.0);
 }
 
 // Stars: a point in some cells of a grid on the unit cube round the camera,
@@ -817,6 +896,9 @@ fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
     var c = sky_color(dir);
     if (g.settle.w > 0.0) {
         c += stars(dir) * g.settle.w;
+    }
+    if (g.river_info.x > 1.0) {
+        c += river_haze(g.cam_pos.xyz, dir, 600.0);
     }
     return vec4<f32>(c, 1.0);
 }

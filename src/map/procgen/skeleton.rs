@@ -59,6 +59,8 @@ pub struct Skeleton {
     pub spots: Vec<Vec2>,
     /// A railroad's spur to a warehouse.
     pub spur: Option<Spur>,
+    /// Where its trains are loaded: how far along the first track.
+    pub loading: Option<f32>,
     /// A seam of crystal's line, and the rig cutting it (where, which way
     /// its boom reaches).
     pub seam: Vec<Vec2>,
@@ -211,8 +213,8 @@ pub struct Base {
 }
 
 /// A spur off the first track to a warehouse: it leaves the track
-/// `junction` m past its fifth point, to the left of the way out (`side` 1)
-/// or the right (-1).
+/// `junction` m along it, to the left of the way out (`side` 1) or the right
+/// (-1).
 #[derive(Clone, Debug)]
 pub struct Spur {
     pub line: Vec<Vec2>,
@@ -851,7 +853,7 @@ impl Skeleton {
         };
         if let Some(c) = &self.land.channel {
             c.build(&mut map, self.size);
-            map.rivers.push(c.river());
+            map.rivers = std::sync::Arc::new(vec![c.river()]);
         }
         for c in &self.crossings {
             c.build(&mut map, stone, |p| self.ground(p));

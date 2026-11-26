@@ -1,8 +1,7 @@
-//! Driving HUD in the hairline style: readouts in the four corners inside
-//! faint brackets, the middle left to the city and the crosshair.
+//! Driving HUD: readouts round the edges, the middle left to the city and the crosshair.
 //!
-//! Team deathmatch readouts: round clock and kills top left, team scores
-//! under the compass, kill feed top right, hull and reload bottom centre,
+//! Team deathmatch readouts: round clock top left, team scores
+//! top centre, kill feed top right, hull and reload bottom centre,
 //! team-coloured health bars over tanks, a death screen, and the scoreboard
 //! (Tab, or when the round ends). Tanks have no names: "YOU", or their turret.
 
@@ -36,7 +35,7 @@ pub fn callsign(m: &Match, i: usize) -> &'static str {
 /// Fighter `i`'s side colour (the player in the combat orange).
 fn side_color(m: &Match, i: usize) -> Rgba {
     if i == 0 {
-        theme::HOT
+        design::AMBER
     } else {
         m.factions[m.fighters[i].team].ui()
     }
@@ -79,7 +78,6 @@ impl Ledger {
 /// Eased values so readouts glide instead of snapping.
 pub struct Hud {
     speed: f32,
-    heading: f32,
     initialized: bool,
     /// The button under the pointer, lit.
     pub hover: Option<Hit>,
@@ -92,7 +90,6 @@ impl Hud {
     pub fn new() -> Hud {
         Hud {
             speed: 0.0,
-            heading: 0.0,
             initialized: false,
             hover: None,
             debrief: None,
@@ -117,16 +114,11 @@ impl Hud {
         let board = scores || m.phase == Phase::Over;
         let speed = tank.speed().abs() * 3.6;
         let max_speed = tank.hull.max_speed * 3.6;
-        // Turning right (negative yaw) should read as an increasing compass heading.
-        let heading = (-tank.turret_yaw()).to_degrees().rem_euclid(360.0);
-
         if !self.initialized {
-            (self.speed, self.heading, self.initialized) = (speed, heading, true);
+            (self.speed, self.initialized) = (speed, true);
         }
         let k = 1.0 - (-dt * 10.0).exp();
         self.speed += (speed - self.speed) * k;
-        let dh = (heading - self.heading + 540.0).rem_euclid(360.0) - 180.0;
-        self.heading = (self.heading + dh * k).rem_euclid(360.0);
 
         let scale = height / REF_HEIGHT;
         let (w, h) = (width / scale, REF_HEIGHT);
@@ -134,18 +126,18 @@ impl Hud {
         p.set_over_scene(true);
         let mut hits = Hits::new();
 
-        widgets::corners(
-            &mut p,
-            Vec2::splat(18.0),
-            Vec2::new(w - 18.0, h - 18.0),
-            22.0,
-            theme::FAINT,
-        );
-
-        // Top left: round clock, kills / deaths, renown.
+        let outline = Some((theme::HALO, theme::HALO_PX));
+        p.set_halo(None);
+        // Top left: round clock.
         let secs = m.time_left.ceil() as u32;
-        label(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
-        let mut clock = TextStyle::value(20.0);
+        plate(
+            &mut p,
+            Vec2::new(MARGIN, MARGIN),
+            Vec2::new(84.0, 32.0),
+            1.0,
+        );
+        small(&mut p, Vec2::new(MARGIN, MARGIN), "ROUND", Align::Left);
+        let mut clock = hud_text(18.0);
         if m.time_left < 30.0 && m.phase == Phase::Playing {
             clock.color = theme::HOT;
         }
@@ -155,50 +147,20 @@ impl Hud {
             &clock,
             Align::Left,
         );
-        label(
-            &mut p,
-            Vec2::new(MARGIN, MARGIN + 50.0),
-            "KILLS",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN, MARGIN + 64.0),
-            &me.kills.to_string(),
-            &TextStyle::value(14.0),
-            Align::Left,
-        );
-        label(
-            &mut p,
-            Vec2::new(MARGIN + 70.0, MARGIN + 50.0),
-            "DEATHS",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN + 70.0, MARGIN + 64.0),
-            &me.deaths.to_string(),
-            &TextStyle::value(14.0),
-            Align::Left,
-        );
-        label(
-            &mut p,
-            Vec2::new(MARGIN + 150.0, MARGIN + 50.0),
-            "RENOWN",
-            Align::Left,
-        );
-        p.text(
-            Vec2::new(MARGIN + 150.0, MARGIN + 64.0),
-            &format!("+{}", m.renown),
-            &TextStyle::value(14.0),
-            Align::Left,
-        );
 
         // Top right: kill feed, newest on top, each side in its colour.
         let tr = Vec2::new(w - MARGIN, MARGIN);
         for (row, k) in m.feed.iter().rev().take(5).enumerate() {
             let fade = ((FEED_TIME - k.age) / 0.8).clamp(0.0, 1.0);
-            let y = tr.y + row as f32 * 18.0;
-            let mut s = TextStyle::value(10.0);
-            s.tracking = 1.0;
+            let y = tr.y + row as f32 * 26.0;
+            let names = [callsign(m, k.killer), callsign(m, k.victim)];
+            let mut wide = measure(names[1], &hud_text(9.0));
+            if k.killer != k.victim {
+                wide += measure(names[0], &hud_text(9.0)) + 28.0;
+            }
+            let size = Vec2::new(wide, 9.0);
+            feed_plate(&mut p, Vec2::new(tr.x - wide, y), size, fade);
+            let mut s = hud_text(9.0);
             s.color = with_alpha(side_color(m, k.victim), fade * 0.95);
             let vw = p.text(Vec2::new(tr.x, y), callsign(m, k.victim), &s, Align::Right);
             // A small chevron between killer and victim.
@@ -224,6 +186,7 @@ impl Hud {
             }
         }
 
+        p.set_halo(outline);
         // Health over the other tanks in view, in their side's colour; allies get a tick above.
         let vp = camera.view_proj(width / height);
         for (i, (t, f)) in tanks.iter().zip(&m.fighters).enumerate().skip(1) {
@@ -268,19 +231,31 @@ impl Hud {
             p.line(o, o + Vec2::new(bw * frac.clamp(0.0, 1.0), 0.0), 2.0, fill);
         }
 
-        // Top centre: turret heading, and under it the team score (your side on the left).
-        let top = Vec2::new(w * 0.5, MARGIN + 6.0);
-        widgets::compass(&mut p, top, 360.0, self.heading);
-        let sy = top.y + 58.0;
+        // Top centre: the team score (your side on the left).
+        let top = Vec2::new(w * 0.5, MARGIN);
+        let sy = top.y;
+        p.set_halo(None);
         let sides = m.factions.len();
+        if sides == 2 {
+            let meter = match (&m.hold, &m.raid) {
+                (Some(_), _) => 44.0,
+                (_, Some(_)) => 26.0,
+                _ => 0.0,
+            };
+            // Several sites' names take more.
+            let sites = m.hold.as_ref().map_or(0, |h| h.sites.len());
+            let wide = SCORES_W.max(if sites > 1 { 130.0 * sites as f32 } else { 0.0 });
+            let size = Vec2::new(wide, 14.0 + meter);
+            plate(&mut p, Vec2::new(top.x - size.x * 0.5, sy), size, 1.0);
+        }
         if sides == 2 {
             for (team, dir, align) in [(0, -1.0, Align::Right), (1, 1.0, Align::Left)] {
                 let f = m.factions[team];
-                let mut s = TextStyle::value(16.0);
+                let mut s = hud_text(14.0);
                 s.color = f.ui();
                 let score = m.score(team).to_string();
                 p.text(Vec2::new(top.x + dir * SCORE_IN, sy), &score, &s, align);
-                let mut l = TextStyle::LABEL;
+                let mut l = LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
                 emblem::faction_name(
                     &mut p,
@@ -301,7 +276,7 @@ impl Hud {
             let step = 110.0;
             for (team, &f) in m.factions.iter().enumerate() {
                 let x = top.x + (team as f32 - (sides - 1) as f32 * 0.5) * step;
-                let mut s = TextStyle::value(16.0);
+                let mut s = hud_text(14.0);
                 s.color = f.ui();
                 p.text(
                     Vec2::new(x, sy),
@@ -309,7 +284,7 @@ impl Hud {
                     &s,
                     Align::Center,
                 );
-                let mut l = TextStyle::LABEL;
+                let mut l = LABEL;
                 l.color = with_alpha(f.ui(), 0.8);
                 emblem::faction_name(&mut p, Vec2::new(x, sy + 20.0), f, &l, Align::Center);
             }
@@ -318,6 +293,7 @@ impl Hud {
             && !board
         {
             hold_meter(&mut p, m, hd, Vec2::new(top.x, sy + 32.0));
+            p.set_halo(outline);
             // Each site's tag, unless you're on it.
             for site in &hd.sites {
                 let anchor = Vec3::new(site.at.x, site.ground + 9.0, site.at.y);
@@ -329,7 +305,7 @@ impl Hud {
                 };
                 let at = Vec2::new(x, y) / scale;
                 if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
-                    let mut s = TextStyle::LABEL;
+                    let mut s = LABEL;
                     s.color = hold_color(m, site.control);
                     let d = Vec2::new(tank.pos.x, tank.pos.z).distance(site.at);
                     p.text(at, &format!("{}  {d:.0} M", site.name), &s, Align::Center);
@@ -342,11 +318,12 @@ impl Hud {
             && !r.done()
         {
             raid_meter(&mut p, m, r, Vec2::new(top.x, sy + 32.0));
+            p.set_halo(outline);
             let mut tag = |at: Vec3, text: &str, color: Rgba| {
                 if let Some((x, y)) = project(vp, at, width, height) {
                     let at = Vec2::new(x, y) / scale;
                     if at.x >= 0.0 && at.x <= w && at.y >= 0.0 && at.y <= h {
-                        let mut s = TextStyle::LABEL;
+                        let mut s = LABEL;
                         s.color = color;
                         p.text(at, text, &s, Align::Center);
                     }
@@ -374,6 +351,7 @@ impl Hud {
             }
         }
 
+        p.set_halo(outline);
         // Crosshair where the shot would land, down the gun as the aim assist
         // lays it (so it moves onto a tank the assist bends onto); the gap
         // kicks open when firing.
@@ -387,13 +365,20 @@ impl Hud {
             let color = if me.since_dealt < 0.2 {
                 theme::HOT
             } else {
-                theme::FG
+                design::TEXT
             };
             widgets::crosshair(&mut p, Vec2::new(x, y) / scale, kick, color);
         }
 
         // Bottom centre: hull and reload.
         let bc = Vec2::new(w * 0.5, h - MARGIN);
+        p.set_halo(None);
+        plate(
+            &mut p,
+            bc + Vec2::new(-130.0, -42.0),
+            Vec2::new(260.0, 42.0),
+            1.0,
+        );
         let max_hp = me.max_health(&m.world.tanks[0]);
         let segs = 12;
         // A husk (broken Vigil running on): the bar is the strength it has left.
@@ -408,11 +393,11 @@ impl Hud {
         };
         let lit = (fill * segs as f32).ceil() as usize;
         let hot = (me.since_hit < 0.3 && lit < segs).then_some(lit);
-        label(&mut p, bc + Vec2::new(-130.0, -40.0), name, Align::Left);
+        small(&mut p, bc + Vec2::new(-130.0, -40.0), name, Align::Left);
         p.text(
             bc + Vec2::new(130.0, -42.0),
             &value,
-            &TextStyle::value(10.0),
+            &hud_text(9.0),
             Align::Right,
         );
         widgets::segments(&mut p, bc + Vec2::new(-130.0, -26.0), 260.0, segs, lit, hot);
@@ -429,7 +414,7 @@ impl Hud {
             };
             widgets::hairbar(&mut p, bc + Vec2::new(-130.0, -10.0), 260.0, me.heat, color);
             if me.overheated {
-                let mut s = TextStyle::LABEL;
+                let mut s = LABEL;
                 s.color = theme::HOT;
                 p.text(bc + Vec2::new(0.0, 4.0), "OVERHEATED", &s, Align::Center);
             }
@@ -450,26 +435,31 @@ impl Hud {
                 bc + Vec2::new(-130.0, -10.0),
                 260.0,
                 ready,
-                if ready >= 1.0 { theme::FG } else { theme::DIM },
+                if ready >= 1.0 {
+                    design::TEXT
+                } else {
+                    theme::DIM
+                },
             );
         }
+        p.set_halo(outline);
         if me.since_repair < 1.8 {
-            let mut s = TextStyle::value(10.0);
+            let mut s = hud_text(9.0);
             s.color = with_alpha(
                 theme::MEND,
                 (1.0 - (me.since_repair - 1.2) / 0.6).clamp(0.0, 1.0),
             );
             p.text(
-                bc + Vec2::new(0.0, -78.0),
+                bc + Vec2::new(0.0, -100.0),
                 &format!("+{:.0} HULL", me.repaired),
                 &s,
                 Align::Center,
             );
         }
         if me.shield > 0.0 && me.alive {
-            label(
+            small(
                 &mut p,
-                bc + Vec2::new(0.0, -60.0),
+                bc + Vec2::new(0.0, -78.0),
                 "SPAWN SHIELD",
                 Align::Center,
             );
@@ -477,12 +467,14 @@ impl Hud {
 
         // Death screen.
         if !me.alive && m.phase == Phase::Playing {
+            p.set_halo(None);
             let c = Vec2::new(w * 0.5, h * 0.36);
-            let mut big = TextStyle::value(26.0);
+            plate(&mut p, c - Vec2::X * 190.0, Vec2::new(380.0, 140.0), 1.0);
+            let mut big = hud_text(24.0);
             big.color = theme::HOT;
             p.text(c, "DESTROYED", &big, Align::Center);
             if let Some(k) = me.killed_by.filter(|&k| k != 0) {
-                let mut s = TextStyle::LABEL;
+                let mut s = LABEL;
                 s.color = side_color(m, k);
                 let f = m.factions[m.fighters[k].team];
                 emblem::tagged(
@@ -504,7 +496,7 @@ impl Hud {
                 None
             };
             if let Some(head) = out {
-                let mut s = TextStyle::value(16.0);
+                let mut s = hud_text(14.0);
                 s.color = theme::HOT;
                 p.text(c + Vec2::new(0.0, 84.0), head, &s, Align::Center);
                 if m.sitting_out() {
@@ -513,79 +505,74 @@ impl Hud {
                     p.text(
                         c + Vec2::new(0.0, 116.0),
                         "PLAYING OUT",
-                        &TextStyle::LABEL,
+                        &LABEL,
                         Align::Center,
                     );
                     let o = c + Vec2::new(-80.0, 138.0);
                     widgets::hairbar(&mut p, o, 160.0, m.progress(), theme::HOT);
                 }
             } else {
-                // The countdown: whole seconds left, big, over a bar that fills
-                // as the new chassis comes up.
+                // The countdown: whole seconds left, big.
                 let left = me.respawn_in.max(0.0);
                 p.text(
                     c + Vec2::new(0.0, 74.0),
                     "RESPAWN IN",
-                    &TextStyle::LABEL,
+                    &LABEL,
                     Align::Center,
                 );
                 p.text(
                     c + Vec2::new(0.0, 104.0),
                     &(left.ceil().max(1.0) as u32).to_string(),
-                    &TextStyle::value(30.0),
+                    &hud_text(26.0),
                     Align::Center,
                 );
-                let done = 1.0 - (left / crate::combat::RESPAWN_TIME).clamp(0.0, 1.0);
-                let (bw, o) = (160.0, c + Vec2::new(-80.0, 146.0));
-                p.line(o, o + Vec2::new(bw, 0.0), 1.0, theme::DIM);
-                p.line(o, o + Vec2::new(bw * done, 0.0), 2.0, theme::HOT);
             }
         }
 
+        p.set_halo(outline);
         // Renown popups, just above the crosshair, drifting up as they fade.
         if !board {
             for (row, x) in m.renown_pops.iter().rev().take(3).enumerate() {
                 let fade = ((RENOWN_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
                     * (x.age / 0.08).clamp(0.0, 1.0);
                 let at = Vec2::new(w * 0.5, h * 0.30 - x.age * 14.0 - row as f32 * 30.0);
-                let mut s = TextStyle::value(16.0);
-                s.color = with_alpha(theme::HOT, fade);
+                let mut s = hud_text(14.0);
+                s.color = with_alpha(design::AMBER, fade);
                 p.text(at, &format!("+{} RENOWN", x.amount), &s, Align::Center);
-                let mut l = TextStyle::LABEL;
-                l.color = with_alpha(theme::FG, 0.8 * fade);
+                let mut l = LABEL;
+                l.color = with_alpha(design::TEXT, 0.8 * fade);
                 p.text(at + Vec2::new(0.0, 24.0), x.reason, &l, Align::Center);
             }
         }
 
-        // Scrap popups (#444), off to the side (#474): under your renown in
-        // the top-left stats, what the newest kill's wreck taught of each
+        p.set_halo(None);
+        // Scrap popups (#444), off to the side (#474): under the
+        // clock, what the newest kill's wreck taught of each
         // part, with a bar for how far into its next step you are. They
         // slide in, sit, and fade, leaving the middle of the screen clear.
         if !board {
             let n = m.scrap_pops.len();
-            let top = MARGIN + 100.0;
+            let top = MARGIN + 70.0;
             let shown = &m.scrap_pops[n.saturating_sub(2)..];
-            // The header fades with the newest kill's popups.
-            if let Some(x) = shown.last() {
-                let fade = ((SCRAP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
-                    * (x.age / 0.12).clamp(0.0, 1.0);
-                let mut l = TextStyle::LABEL;
-                l.color = with_alpha(theme::FG, 0.8 * fade);
-                p.text(Vec2::new(MARGIN, top), "SCRAP", &l, Align::Left);
-            }
             for (row, x) in shown.iter().enumerate() {
                 let fade = ((SCRAP_POP_TIME - x.age) / 0.6).clamp(0.0, 1.0)
                     * (x.age / 0.12).clamp(0.0, 1.0);
                 let slide = (1.0 - ease_out(x.age / 0.25)) * -16.0;
-                let at = Vec2::new(MARGIN + slide, top + 22.0 + row as f32 * SCRAP_POP_ROW);
+                let at = Vec2::new(MARGIN + slide, top + row as f32 * SCRAP_POP_ROW);
                 scrap_pop(&mut p, &x.scrapped, at, fade);
             }
         }
 
         // Bottom left: speed.
+        plate(
+            &mut p,
+            Vec2::new(MARGIN, h - MARGIN - 62.0),
+            Vec2::new(200.0, 60.0),
+            1.0,
+        );
         let bl = Vec2::new(MARGIN, h - MARGIN);
-        label(&mut p, bl + Vec2::new(0.0, -62.0), "SPEED", Align::Left);
-        let num = TextStyle::value(22.0);
+        small(&mut p, bl + Vec2::new(0.0, -62.0), "SPEED", Align::Left);
+        let num = hud_text(20.0);
         let nw = widgets::odometer(
             &mut p,
             bl + Vec2::new(0.0, -48.0),
@@ -594,9 +581,9 @@ impl Hud {
             &num,
             Align::Left,
         );
-        label(
+        small(
             &mut p,
-            bl + Vec2::new(nw + 10.0, -48.0 + num.size - TextStyle::LABEL.size),
+            bl + Vec2::new(nw + 10.0, -48.0 + num.size - LABEL.size),
             "KM/H",
             Align::Left,
         );
@@ -605,12 +592,8 @@ impl Hud {
             bl + Vec2::new(0.0, -8.0),
             200.0,
             self.speed / max_speed,
-            theme::FG,
+            design::TEXT,
         );
-
-        // Bottom right: turret angle relative to the hull.
-        let br = Vec2::new(w - MARGIN, h - MARGIN);
-        widgets::turret_gauge(&mut p, br + Vec2::new(-30.0, -30.0), tank.turret_rel);
 
         // Bottom centre: the kit queued for the next respawn, if any.
         let at = Vec2::new(w * 0.5, h - MARGIN - 8.0);
@@ -620,7 +603,7 @@ impl Hud {
                 crate::garage::hull_name(hull),
                 crate::garage::turret_name(turret)
             );
-            label(
+            small(
                 &mut p,
                 at - Vec2::new(0.0, 30.0),
                 "NEXT SPAWN",
@@ -629,7 +612,7 @@ impl Hud {
             p.text(
                 at - Vec2::new(0.0, 18.0),
                 &kit,
-                &TextStyle::value(10.0),
+                &hud_text(9.0),
                 Align::Center,
             );
         }
@@ -661,9 +644,44 @@ const SCORE_IN: f32 = 14.0;
 /// `score`: where it's always been for up to two digits, and pushed out by
 /// any wider score so the two never touch.
 fn name_in(score: &str) -> f32 {
-    let style = TextStyle::value(16.0);
-    let two = measure("00", &style);
-    52.0 + (measure(score, &style) - two).max(0.0)
+    SCORE_IN + measure(score, &hud_text(14.0)).max(measure("00", &hud_text(14.0))) + 14.0
+}
+
+/// The HUD's small text, and its readouts.
+const LABEL: TextStyle = TextStyle {
+    weight: 1.3,
+    ..design::SMALL
+};
+
+/// The dark behind a readout `size` at `min`, with room round it.
+fn plate(p: &mut Painter, min: Vec2, size: Vec2, fade: f32) {
+    plate_by(p, min, size, Vec2::splat(design::UNIT * 1.75), fade);
+}
+
+/// `plate`, closer in: a line of the kill feed's.
+fn feed_plate(p: &mut Painter, min: Vec2, size: Vec2, fade: f32) {
+    plate_by(p, min, size, Vec2::splat(design::UNIT), fade);
+}
+
+fn plate_by(p: &mut Painter, min: Vec2, size: Vec2, pad: Vec2, fade: f32) {
+    let color = with_alpha(design::GROUND, 0.88 * fade);
+    p.rect(min - pad, size + pad * 2.0, color);
+}
+
+/// How wide the team scores' plate is.
+const SCORES_W: f32 = 380.0;
+
+fn small(p: &mut Painter, at: Vec2, text: &str, align: Align) -> f32 {
+    p.text(at, text, &LABEL, align)
+}
+
+fn hud_text(size: f32) -> TextStyle {
+    TextStyle {
+        size,
+        tracking: size * 0.1,
+        weight: 1.3,
+        ..design::BODY
+    }
 }
 
 /// The board's row pitch; a table's head and foot (its side and score; its
@@ -936,14 +954,8 @@ fn part_gain(p: &mut Painter, sc: &Scrapped, t: f32, at: Vec2, col: f32) {
     emblem::tagged(p, at, maker, sc.part.name(), &style, Align::Left);
     let (from, to) = scrap_bar(sc);
     gain_bar(p, at, col, from, from + (to - from) * k);
-    let whole = sc.known.floor() as u8;
-    let reached = sc.stepped();
-    let text = match sc.toward().filter(|_| !reached) {
-        Some((_, next)) => economy::level_label(next),
-        None if whole == 1 && !sc.part.starter() => "New".to_string(),
-        None => economy::level_label(whole),
-    };
-    let lit = reached && k >= 1.0;
+    let text = step_label(sc);
+    let lit = sc.stepped() && k >= 1.0;
     let style = design::SMALL.colored(if lit { design::AMBER } else { design::TEXT_2 });
     p.text(at + Vec2::X * col, &text, &style, Align::Right);
 }
@@ -1081,7 +1093,7 @@ impl StatColumns {
 /// Who has the site, then each side's time held against the target: your
 /// side's bar grows left from the middle, theirs right.
 fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
-    let mut l = TextStyle::LABEL;
+    let mut l = LABEL;
     match &hd.sites[..] {
         [site] => {
             let status = match site.control {
@@ -1142,38 +1154,30 @@ fn hold_meter(p: &mut Painter, m: &Match, hd: &hold::Hold, at: Vec2) {
     }
 }
 
-/// The Raid under the scores: whether your side attacks or defends, then
-/// where the flag is.
+/// The Raid under the scores: while the flag's home, whether your side
+/// attacks or defends; once it's not, who has it, or how long it lies.
 fn raid_meter(p: &mut Painter, m: &Match, r: &raid::Raid, at: Vec2) {
     let mine = m.player().team;
-    let attacking = r.attackers() == mine;
-    let mut l = TextStyle::LABEL;
-    l.color = m.factions[mine].ui();
-    p.text(
-        at,
-        if attacking { "ATTACK" } else { "DEFEND" },
-        &l,
-        Align::Center,
-    );
     let (text, color) = match r.flag {
-        raid::Flag::Home if attacking => ("TAKE THEIR FLAG".to_string(), theme::DIM),
-        raid::Flag::Home => ("YOUR FLAG IS HOME".to_string(), theme::DIM),
-        raid::Flag::Carried(0) => ("YOU HAVE THE FLAG: TAKE IT HOME".to_string(), theme::HOT),
-        raid::Flag::Carried(i) => (
-            format!("{} HAS THE FLAG", m.factions[m.fighters[i].team].name()),
-            m.factions[m.fighters[i].team].ui(),
-        ),
-        raid::Flag::Dropped { for_, .. } => (
-            format!(
-                "FLAG DROPPED  ·  HOME IN {:.0}",
-                (raid::RETURN_TIME - for_).ceil()
-            ),
-            theme::HOT,
-        ),
+        raid::Flag::Home => {
+            let job = if r.attackers() == mine {
+                "ATTACK"
+            } else {
+                "DEFEND"
+            };
+            (job.to_string(), m.factions[mine].ui())
+        }
+        raid::Flag::Carried(0) => ("YOU HAVE THE FLAG".to_string(), design::AMBER),
+        raid::Flag::Carried(i) => {
+            let f = m.factions[m.fighters[i].team];
+            (format!("{} HAS THE FLAG", f.name()), f.ui())
+        }
+        raid::Flag::Dropped { for_, .. } => {
+            let left = (raid::RETURN_TIME - for_).ceil();
+            (format!("FLAG DROPPED  {left:.0}"), theme::HOT)
+        }
     };
-    let mut s = TextStyle::LABEL;
-    s.color = color;
-    p.text(at + Vec2::new(0.0, 18.0), &text, &s, Align::Center);
+    p.text(at, &text, &LABEL.colored(color), Align::Center);
 }
 
 fn hold_color(m: &Match, c: Control) -> Rgba {
@@ -1214,72 +1218,45 @@ fn scrap_lines(m: &Match) -> Vec<ScrapLine> {
     out
 }
 
-/// Where a part stands after scrap: how far to its next step, or the step
-/// it just reached.
-fn scrap_progress(sc: &Scrapped) -> String {
+/// The step a part's heading for, the one it just reached, or that it's new.
+fn step_label(sc: &Scrapped) -> String {
     let whole = sc.known.floor() as u8;
-    if sc.stepped() {
-        if whole == 1 {
-            "SCHEMATIC REVERSE-ENGINEERED".to_string()
-        } else {
-            format!("{} REVERSE-ENGINEERED", economy::level_label(whole))
-        }
-    } else {
-        match sc.toward() {
-            Some((pct, next)) => format!("{pct}% TO {}", economy::level_label(next)),
-            None => "FULLY KNOWN".to_string(),
-        }
+    match sc.toward().filter(|_| !sc.stepped()) {
+        Some((_, next)) => economy::level_label(next),
+        None if whole == 1 && !sc.part.starter() => "New".to_string(),
+        None => economy::level_label(whole),
     }
 }
 
 /// Each in-battle scrap popup's height, and its width (the speed bar's).
-const SCRAP_POP_ROW: f32 = 50.0;
+const SCRAP_POP_ROW: f32 = 52.0;
 const SCRAP_POP_W: f32 = 200.0;
 
-/// One part's scrap popup at `at` (its top left): the part and the gain
-/// over a bar for how far into its next step it is, then where it stands.
+/// One part's scrap popup at `at` (its top left): the part, the step it's
+/// heading for or just reached, and a bar for how far into it you are.
 fn scrap_pop(p: &mut Painter, sc: &Scrapped, at: Vec2, fade: f32) {
-    let mut name = TextStyle::value(11.0);
-    name.color = with_alpha(theme::FG, fade);
-    emblem::tagged(p, at, sc.part.maker(), sc.part.name(), &name, Align::Left);
-    let mut gain = TextStyle::value(11.0);
-    gain.color = with_alpha(theme::HOT, fade);
-    p.text(
-        at + Vec2::new(SCRAP_POP_W, 0.0),
-        &format!("+{}%", sc.percent()),
-        &gain,
-        Align::Right,
-    );
+    plate(p, at, Vec2::new(SCRAP_POP_W, 18.0), fade);
+    let faded = |c: Rgba| with_alpha(c, fade);
+    let maker = sc.part.maker();
+    let style = LABEL.colored(faded(maker.ui()));
+    emblem::tagged(p, at, maker, sc.part.name(), &style, Align::Left);
+    let color = if sc.stepped() {
+        design::AMBER
+    } else {
+        design::TEXT
+    };
+    let right = at + Vec2::X * SCRAP_POP_W;
+    let style = LABEL.colored(faded(color));
+    p.text(right, &step_label(sc), &style, Align::Right);
     let (from, to) = scrap_bar(sc);
-    let bar = at + Vec2::new(0.0, 18.0);
-    p.line(
-        bar,
-        bar + Vec2::new(SCRAP_POP_W, 0.0),
-        1.0,
-        with_alpha(theme::DIM, fade),
-    );
-    if from > 0.0 {
-        p.line(
-            bar,
-            bar + Vec2::new(SCRAP_POP_W * from, 0.0),
-            2.0,
-            with_alpha(theme::FG, fade),
-        );
-    }
-    p.line(
-        bar + Vec2::new(SCRAP_POP_W * from, 0.0),
-        bar + Vec2::new(SCRAP_POP_W * to, 0.0),
-        2.0,
-        with_alpha(theme::HOT, fade),
-    );
-    let mut l = TextStyle::LABEL;
-    l.color = with_alpha(if sc.stepped() { theme::HOT } else { theme::DIM }, fade);
-    p.text(
-        at + Vec2::new(SCRAP_POP_W, 24.0),
-        &scrap_progress(sc),
-        &l,
-        Align::Right,
-    );
+    let bar = at + Vec2::Y * 16.0;
+    let piece = |p: &mut Painter, a: f32, b: f32, color: Rgba| {
+        let min = bar + Vec2::X * SCRAP_POP_W * a;
+        p.rect(min, Vec2::new(SCRAP_POP_W * (b - a), 2.0), faded(color));
+    };
+    piece(p, 0.0, 1.0, with_alpha(design::TEXT, 0.2));
+    piece(p, 0.0, from, design::TEXT);
+    piece(p, from, to, design::AMBER);
 }
 
 /// A part's bar after scrap, as fractions of its current step: where it

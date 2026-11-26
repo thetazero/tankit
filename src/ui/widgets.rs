@@ -2,8 +2,6 @@
 //! keeps no state; anything that animates (eased values, rolling digits)
 //! gets its value from the caller.
 
-use std::f32::consts::{FRAC_PI_2, TAU};
-
 use glam::Vec2;
 
 use super::{Align, Painter, Rgba, TextStyle, theme, with_alpha};
@@ -126,7 +124,7 @@ pub fn segments(
         if hot == Some(i) {
             p.rect(min, size, theme::HOT);
         } else if i < lit {
-            p.rect(min, size, theme::FG);
+            p.rect(min, size, super::design::TEXT);
         } else {
             p.rect_outline(min, size, 1.0, theme::DIM);
         }
@@ -228,96 +226,6 @@ pub fn crosshair(p: &mut Painter, c: Vec2, kick: f32, color: Rgba) {
     p.rect(c - 1.0, Vec2::splat(2.0), color);
 }
 
-/// Heading strip: ticks every 5°, labels every 30°, a caret and the heading
-/// readout underneath. Fades out toward the ends. `heading` in degrees, 0 = N.
-pub fn compass(p: &mut Painter, center: Vec2, width: f32, heading: f32) {
-    let span = 120.0; // degrees visible across the strip
-    let px_per_deg = width / span;
-    let half = width * 0.5;
-    let first = ((heading - span * 0.5) / 5.0).ceil() as i32 * 5;
-    let mut deg = first;
-    while (deg as f32) <= heading + span * 0.5 {
-        let x = center.x + (deg as f32 - heading) * px_per_deg;
-        let fade = (1.0 - ((x - center.x).abs() / half))
-            .clamp(0.0, 1.0)
-            .powf(0.7);
-        let norm = deg.rem_euclid(360);
-        let (h, c) = if norm % 30 == 0 {
-            (8.0, theme::DIM)
-        } else {
-            (4.0, theme::FAINT)
-        };
-        p.line(
-            Vec2::new(x, center.y),
-            Vec2::new(x, center.y + h),
-            1.0,
-            with_alpha(c, fade),
-        );
-        if norm % 30 == 0 {
-            let text = match norm {
-                0 => "N".to_string(),
-                90 => "E".to_string(),
-                180 => "S".to_string(),
-                270 => "W".to_string(),
-                n => format!("{n:03}"),
-            };
-            let mut s = TextStyle::LABEL;
-            s.tracking = 0.8;
-            s.color = with_alpha(
-                if norm % 90 == 0 {
-                    theme::FG
-                } else {
-                    theme::DIM
-                },
-                fade,
-            );
-            p.text(Vec2::new(x, center.y + 13.0), &text, &s, Align::Center);
-        }
-        deg += 5;
-    }
-    p.line(
-        Vec2::new(center.x - half, center.y),
-        Vec2::new(center.x + half, center.y),
-        1.0,
-        theme::FAINT,
-    );
-    // Caret above the strip.
-    p.polyline(
-        &[
-            center + Vec2::new(-4.0, -7.0),
-            center + Vec2::new(0.0, -2.0),
-            center + Vec2::new(4.0, -7.0),
-        ],
-        1.2,
-        theme::FG,
-    );
-}
-
-/// Top-down hull outline with the turret and barrel at `turret_rel` radians
-/// (0 = straight ahead, positive = turned left), hull nose pointing up.
-pub fn turret_gauge(p: &mut Painter, c: Vec2, turret_rel: f32) {
-    let (hw, hh) = (13.0, 22.0);
-    p.polyline(
-        &[
-            c + Vec2::new(-hw, -hh + 4.0),
-            c + Vec2::new(-hw + 4.0, -hh),
-            c + Vec2::new(hw - 4.0, -hh),
-            c + Vec2::new(hw, -hh + 4.0),
-            c + Vec2::new(hw, hh),
-            c + Vec2::new(-hw, hh),
-            c + Vec2::new(-hw, -hh + 4.0),
-        ],
-        1.0,
-        theme::DIM,
-    );
-    let tc = c + Vec2::new(0.0, 2.0);
-    p.arc(tc, 8.0, 0.0, TAU, 1.2, theme::FG);
-    // Screen angle: up is -y; turning left (positive) rotates counter-clockwise on screen.
-    let a = -FRAC_PI_2 - turret_rel;
-    let dir = Vec2::new(a.cos(), a.sin());
-    p.line(tc + dir * 8.0, tc + dir * 34.0, 1.6, theme::FG);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,8 +273,6 @@ mod tests {
     #[test]
     fn widgets_emit_geometry() {
         let mut p = Painter::new(1.0);
-        compass(&mut p, Vec2::new(400.0, 40.0), 360.0, 359.0);
-        turret_gauge(&mut p, Vec2::new(100.0, 100.0), 0.5);
         odometer(
             &mut p,
             Vec2::ZERO,

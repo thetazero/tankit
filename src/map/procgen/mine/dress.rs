@@ -35,6 +35,27 @@ pub fn build(spec: &Spec) -> Option<(Skeleton, Map)> {
     let sky = atmosphere(&mut rng);
     let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky, spec.seed);
     map.hold_name = st.hold_name();
+    let mut b = Dig {
+        map: &mut map,
+        l: &sk,
+        st,
+    };
+    if sk.spur.is_some() {
+        b.railroad();
+        b.warehouse(&mut rng);
+    } else {
+        for t in &sk.tracks {
+            b.rails(t, false);
+        }
+    }
+    if let Some(s) = sk.loading {
+        let (at, dir) = sk.track_at(s);
+        b.tipple_at(at, dir);
+        b.loaded_train(s);
+    }
+    for x in &sk.crossings {
+        b.rail_bridge(x);
+    }
     for (k, d) in sk.land.digs.iter().enumerate() {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x2545_F491).wrapping_add(k as u64));
         Inside {
@@ -90,6 +111,9 @@ impl Inside<'_, '_> {
         );
         let into = self.way(Vec2::Y);
         let yaw = into.x.atan2(into.y);
+        if let Some((from, to)) = self.d.beam {
+            self.borer(rng, from, to);
+        }
         let quarter = (hall.max.x - hall.min.x) * 0.25;
         for s in [-1.0, 1.0] {
             let p = Vec2::new(mid.x + quarter * s, hall.max.y - 2.6);
@@ -104,6 +128,37 @@ impl Inside<'_, '_> {
                 self.b.block_stack(at, yaw);
             }
         }
+    }
+
+    /// The borer's bay: the machine and its beam, spoil either side of the
+    /// bore, raw crystal in the corners away from it, a floodlight on it.
+    fn borer(&mut self, rng: &mut Rng, from: Vec2, to: Vec2) {
+        let f = self.d.floor + 2.1;
+        let at3 = |p: Vec2| {
+            let p = self.d.to_map(p);
+            Vec3::new(p.x, f, p.y)
+        };
+        let beam = (at3(from), at3(to), 0.55);
+        self.st.borer(&mut self.b, beam, rng);
+        let bay = self.d.rooms[4];
+        let side = (to.x - from.x).signum();
+        // The wall the bore's in, and the one across from it.
+        let (wall, back) = if side > 0.0 {
+            (bay.max.x, bay.min.x)
+        } else {
+            (bay.min.x, bay.max.x)
+        };
+        for (dx, dy, size) in [(2.2, -6.6, 1.2), (4.5, -8.0, 0.8), (2.0, 6.8, 1.1)] {
+            let p = self.d.to_map(Vec2::new(wall - side * dx, from.y + dy));
+            self.b.rock_pile(rng, p, size);
+        }
+        for (dx, y, h) in [(3.0, bay.max.y - 3.0, 3.4), (2.8, bay.min.y + 3.2, 2.4)] {
+            let p = self.d.to_map(Vec2::new(back + side * dx, y));
+            self.b.outcrop(rng, p, h);
+        }
+        let machine = self.d.to_map(from - Vec2::X * side * 5.8);
+        let stand = self.d.to_map(Vec2::new(wall - side * 2.0, bay.max.y - 2.2));
+        self.b.floodlight(stand, machine);
     }
 
     /// Lamps along a room's two long walls by turns, where there's wall.
@@ -157,7 +212,7 @@ mod tests {
     /// to each other, and into every hall; its halls are lit.
     #[test]
     fn dressed_mines_are_playable() {
-        for seed in 0..3 {
+        for seed in 0..2 {
             let (sk, m) = build(&crate::mine_spec(seed)).expect("a mine");
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {

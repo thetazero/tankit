@@ -3905,10 +3905,10 @@ mod tests {
     /// tank 1 (a `hull`) put down in it.
     fn in_the_river(hull: HullKind) -> Match {
         let mut map = Map::yard(200.0);
-        map.rivers.push(crate::map::river::River {
+        map.rivers = std::sync::Arc::new(vec![crate::map::river::River {
             points: vec![Vec3::new(20.0, 2.0, 100.0), Vec3::new(180.0, 2.0, 100.0)],
             half: 12.0,
-        });
+        }]);
         let mut m = Match::new(map, 0, 1, 3);
         m.start();
         for f in &mut m.fighters {
@@ -4096,7 +4096,7 @@ mod tests {
         let pops: Vec<_> = m.scrap_pops.iter().map(|x| x.scrapped).collect();
         assert_eq!(pops.len(), 1, "the hull's no better than what's known");
         assert_eq!(pops[0].part, kontos);
-        assert_eq!(pops[0].percent(), 20);
+        assert!((pops[0].gained * 100.0 - 20.0).abs() < 0.5);
         // The earlier wreck's 20% is in where it stands: 40% of the first step.
         assert_eq!(pops[0].toward(), Some((40, 1)));
         // They fade.
