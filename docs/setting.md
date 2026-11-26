@@ -35,7 +35,11 @@ on the ground, so defending is cheap; moving machines between stars is
 expensive, so attacking is not. Most of the region is quiet at any one time,
 but there is always war somewhere.
 
-**Realms, not empires.** News crosses the stars slowly, so no faction is run
+**Light things travel, heavy things don't.** Information, pilots and crystal
+cross the stars quickly, for next to nothing. Hulls, and the basic resources an
+economy runs on (not modeled in the game), don't: moving them is expensive.
+
+**Realms, not empires.** Armies don't travel well, so no faction is run
 as one state. The four factions are four peoples (a faith, a culture, a way
 of building machines), and the war is fought by their **realms**: a ruler
 holding a handful of systems from a seat, with its own crystal in its own
@@ -93,7 +97,7 @@ with too little left joins another, and veterans' savings found new ones.
 **Postings.** Your company signs with one side in a theater and you fight
 there until the world falls, the contract's battles or losses run out, or
 the attack fails. A company is never on both sides of a battle. Within the
-Company you're a free agent: for a price in crystals, you can transfer to
+Company you're a free agent: you can transfer to
 another company's ship. A theater you leave goes on without you.
 
 **In a match**, your company's machines fight in the Company's colors among
@@ -113,13 +117,13 @@ Lieutenant, Captain, Marshal, Warlord, five ranks to each), and there are a
 lot of them: renown earned in the field (kills, time on a held site) climbs
 it, slower the higher you go.
 
-**Stolen gear.** The Company makes nothing of its own yet. Its pilots start
-on the Imperium's basic kit (Kataphrakt and Kontos), the most common machine
-in the galaxy, refitted in Company amber. Everything else is **stolen**: each
-contract names a schematic from a side you're fighting there as its prize,
-and winning it brings the schematic home. Lose or draw and you don't get it.
-Once the Company has a schematic, that contract just pays crystals. A
-Company tank is a set of stolen parts from different makers, which is the
+**Gear is schematics.** The Company makes nothing of its own yet. Its pilots
+start on the Imperium's basic kit (Kataphrakt and Kontos), the most common
+machine in the galaxy, refitted in Company amber. Everything else is
+**reverse-engineered**: destroy other people's tanks, take apart the wrecks,
+and you learn to build their parts. A schematic is only information, so a
+pilot's gear goes wherever the pilot does. A
+Company tank is a set of parts learned from different makers, which is the
 mercenary's look: mixed builds are the merc identity. Company-made gear may
 come later.
 
@@ -158,9 +162,9 @@ play. Factions are the world, never a lock on your build. They show up as:
 
 - **Employers**: who the contract is for. Whoever hires you, you're the
   Company's: renown goes to your one Company rank, not to the employer.
-- **Schematic sources**: the parts the Company doesn't start with are stolen
-  from their makers, as the prize of a mission against them. Stolen parts
-  stay yours whoever hires you next.
+- **Schematic sources**: the parts a pilot doesn't start with are
+  reverse-engineered from their makers' wrecks. They stay yours whoever hires
+  you next.
 - **Enemies**: who the bots are, how they look, and the guns they bring (each
   side's bots use its own faction's turrets).
 - **Map owners**: whose territory a map is.
@@ -273,7 +277,7 @@ they make is tungsten cubes. How the Ithessar feel about them is unknown;
 
 What everyone fights over: your pay, the Resonant's sacrament, and the reason
 anyone fights over dead worlds. They're the currency in the arcade loop:
-contracts pay them, and they buy upgrades to the parts you've stolen.
+contracts pay them, and they buy upgrades to the parts you've learned.
 
 Crystal is nobody's: one substance, the same wherever it's found. Raw, in the
 rock and in the ore, it's cloudy blue-grey and dull, crusted with rock dust,
