@@ -80,6 +80,9 @@ struct Saved {
     taken_at: Vec<u64>,
     #[serde(default)]
     rates: Option<[f32; 4]>,
+    /// What a contract has lately made a company.
+    #[serde(default)]
+    job_worth: Option<f32>,
     /// What companies have lately made, each, and were all worth.
     #[serde(default)]
     profit: Option<(f32, f32)>,
@@ -408,6 +411,7 @@ impl Galaxy {
             wage_curve: Some(self.wage_curve),
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
+            job_worth: Some(self.job_worth),
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
             fleets: self.fleets.clone(),
@@ -562,6 +566,9 @@ impl Galaxy {
         }
         if let Some(ticks) = s.trust_ticks {
             g.trust_ticks = ticks;
+        }
+        if let Some(x) = s.job_worth {
+            g.job_worth = x;
         }
         if let Some((profit, worth)) = s.profit {
             (g.profit, g.worth_before) = (profit, worth);

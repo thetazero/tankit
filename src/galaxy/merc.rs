@@ -1426,6 +1426,8 @@ impl Galaxy {
             } else {
                 self.books.none_affordable += 1;
             }
+            // Word gets round: help was wanted here, and none was any use.
+            self.unmet[t] += 1.0;
             return false;
         };
         self.books.surplus += net as f64;
@@ -2018,6 +2020,10 @@ impl Galaxy {
                         LEARN * ((took / k.expected_ticks).min(5.0) - self.trust_ticks);
                 }
                 self.books.paid_all += (k.upfront + k.billed) as f64;
+                // What a job makes a company, over its costs.
+                let m = self.companies[c].margin;
+                let made = (k.upfront + k.billed) * m / (1.0 + m);
+                self.job_worth += LEARN * (made - self.job_worth);
             }
             if won {
                 // (counted above)
@@ -2138,9 +2144,14 @@ impl Galaxy {
         }
         // Pooled savings found new ships, where there's war, with ways of
         // their own.
-        // Nobody founds one while those there are lose money, or have enough
-        // idle to take what work there is.
-        while self.savings > self.rules.merc_capital && self.profit > 0.0 {
+        // Nobody founds one while those there are lose money, unless there's
+        // none idle that could take work.
+        let price = self.rules.hull_cost;
+        let spare = self
+            .companies
+            .iter()
+            .any(|c| c.contract.is_none() && c.capital(price) >= self.rules.merc_join);
+        while self.savings > self.rules.merc_capital && (self.profit > 0.0 || !spare) {
             let wars: Vec<usize> = (0..self.systems.len())
                 .filter(|&s| self.systems[s].at_war())
                 .collect();
@@ -2238,9 +2249,6 @@ impl Galaxy {
         let wanted: Vec<usize> = (0..self.systems.len())
             .filter(|&s| self.unmet[s] >= 1.0)
             .collect();
-        // What companies have lately been making.
-        let n = self.companies.len().max(1) as f32;
-        let earns = self.companies.iter().map(|c| c.earned).sum::<f32>() / n;
         let mut went = 0;
         for c in 0..self.companies.len() {
             let co = self.companies[c].clone();
@@ -2257,7 +2265,7 @@ impl Galaxy {
             };
             // Where it's wanted, if a contract there would pay the fare.
             let wanted =
-                nearest(&wanted).filter(|&s| self.voyage(co.hulls, d(s)) <= earns.max(0.0));
+                nearest(&wanted).filter(|&s| self.voyage(co.hulls, d(s)) <= self.job_worth);
             let Some(to) = wanted else {
                 continue;
             };

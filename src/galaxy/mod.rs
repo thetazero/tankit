@@ -443,6 +443,8 @@ pub struct Galaxy {
     /// What a company has lately made a tick, on average; and what they
     /// were all worth last tick.
     pub(crate) profit: f32,
+    /// What a contract has lately made a company, over its costs.
+    pub(crate) job_worth: f32,
     pub(crate) worth_before: f32,
     /// What hulls have lately sold for.
     pub hull_rate: f32,
@@ -657,6 +659,7 @@ impl Galaxy {
             vaults: Vec::new(),
             vault_at: Vec::new(),
             profit: 0.0,
+            job_worth: 5.0,
             worth_before: 0.0,
             hull_rate: rules.hull_cost,
             fell_new: 0,
