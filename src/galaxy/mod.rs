@@ -376,8 +376,10 @@ pub struct Fleet {
 }
 
 /// The whole war.
-#[cfg_attr(test, derive(Clone))]
+#[derive(Clone)]
 pub struct Galaxy {
+    /// A hire (realm, system) that isn't to happen (`judge`).
+    pub(crate) ban: Option<(u32, u32)>,
     /// What it was generated from (the layout of systems and sites).
     pub seed: u64,
     pub systems: Vec<System>,
@@ -489,7 +491,7 @@ pub struct Galaxy {
     /// Of `moves`, the companies' hulls on contract for the side: hired,
     /// released and lost. Not saved.
     pub merc_moves: Vec<[Moves; SIDES]>,
-    rng: Rng,
+    pub(crate) rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
     /// Scratch: each realm's hulls in this tick's fights.
@@ -655,6 +657,7 @@ impl Galaxy {
             vaults: Vec::new(),
             vault_at: Vec::new(),
             profit: 0.0,
+            ban: None,
             job_worth: 5.0,
             hire_rank: 0.0,
             worth_before: 0.0,

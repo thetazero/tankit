@@ -298,6 +298,7 @@ impl SavedContract {
             arrives: self.arrives,
             inbound: self.inbound,
             expected: self.expected,
+            net: 0.0,
             expected_ticks: self.expected_ticks,
             held: self.held,
             worth: self.worth,

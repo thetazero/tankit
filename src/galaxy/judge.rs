@@ -183,6 +183,118 @@ fn raids(g: &Galaxy, last: &super::merc::Books) {
     );
 }
 
+/// What realm `r` is worth: its crystal, less what it owes, its hulls, and
+/// what its mines will turn out for as long as worlds are held.
+fn realm_worth(g: &Galaxy, r: u32) -> f64 {
+    let mut x = g.realms[r as usize].crystals as f64;
+    x -= g
+        .debts
+        .iter()
+        .filter(|d| d.realm == r)
+        .map(|d| d.crystals as f64)
+        .sum::<f64>();
+    let hold = g.hold_for(false).min(g.hold_for(true) * 2.0) as f64;
+    for (s, sys) in g.systems.iter().enumerate() {
+        for f in 0..super::PEOPLES {
+            if sys.realms[f] != r {
+                continue;
+            }
+            let own = sys.hulls[f].saturating_sub(g.crewed(s, f).0);
+            x += (own as f32 * g.hull_worth[s]) as f64;
+            for site in &g.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
+                if site.owner as usize == f
+                    && let super::SiteKind::Production { crystals, .. } = site.kind
+                {
+                    x += crystals as f64 * hold;
+                }
+            }
+        }
+    }
+    x
+}
+
+/// Contracts signed, each replayed without it, under a few dice: what it
+/// gained the realm, against what it expected.
+pub fn replay(seeds: &[u64]) {
+    const DICE: u64 = 3;
+    const AFTER: u64 = 60;
+    for defend in [false, true] {
+        let (mut n, mut gain, mut sq, mut net) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let (mut paid, mut share_with, mut share_without, mut guess) = (0.0, 0.0, 0.0, 0.0);
+        for &seed in seeds {
+            let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, Rules::default());
+            while g.tick < 1500 {
+                g.tick_once();
+            }
+            let mut took = 0;
+            for _ in 0..80 {
+                if took >= 22 {
+                    break;
+                }
+                let pre = g.clone();
+                g.tick_once();
+                let Some(k) = g.companies.iter().filter_map(|c| c.contract).find(|k| {
+                    k.signed == g.tick && k.side as usize != super::RAID && k.defend == defend
+                }) else {
+                    continue;
+                };
+                took += 1;
+                let (t, f) = (k.target as usize, k.side as usize);
+                let total = (g.systems[t].sites.1 - g.systems[t].sites.0) as f64;
+                let held = pre.systems[t].held[f] as f64;
+                let got = |g: &Galaxy| {
+                    let now = g.systems[t].held[f] as f64;
+                    if defend {
+                        (now / held.max(1.0)).min(1.0)
+                    } else {
+                        ((now - held) / (total - held).max(1.0)).max(0.0)
+                    }
+                };
+                let (mut x, mut a_paid) = (0.0, 0.0);
+                for dice in 0..DICE {
+                    let (mut a, mut b) = (pre.clone(), pre.clone());
+                    b.ban = Some((k.realm, k.target));
+                    a.tick_once();
+                    b.tick_once();
+                    a.ban = b.ban;
+                    for g in [&mut a, &mut b] {
+                        g.rng =
+                            crate::rng::Rng::from_state((seed << 20) ^ (g.tick << 4) ^ dice | 1);
+                    }
+                    for i in 0..AFTER {
+                        a.tick_once();
+                        b.tick_once();
+                        if i == (k.arrives - k.signed) + 29 {
+                            share_with += got(&a) / DICE as f64;
+                            share_without += got(&b) / DICE as f64;
+                        }
+                    }
+                    x += (realm_worth(&a, k.realm) - realm_worth(&b, k.realm)) / DICE as f64;
+                    a_paid += k.upfront as f64 / DICE as f64;
+                }
+                n += 1.0;
+                gain += x;
+                sq += x * x;
+                net += k.net as f64;
+                paid += a_paid;
+                guess += (k.expected / k.worth.max(1e-3)) as f64;
+            }
+        }
+        let n = n.max(1.0);
+        let se = ((sq / n - (gain / n).powi(2)).max(0.0) / n).sqrt();
+        println!(
+            "REPLAY {}: {n} contracts; expected to gain {:+.1}, gained {:+.1} (se {se:.1}); up front {:.1}; share of the world expected {:.2}, got {:.2}, without {:.2}",
+            if defend { "defenses" } else { "attacks" },
+            net / n,
+            gain / n,
+            paid / n,
+            guess / n,
+            share_with / n,
+            share_without / n,
+        );
+    }
+}
+
 pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
     let mut diffs = Vec::new();
     for &seed in seeds {
@@ -194,17 +306,18 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             let mut rules = Rules::default();
             tweak(&mut rules);
             let rules = Rules {
-                companies: if i == 0 && std::env::var("NONE").is_err() {
+                companies: if std::env::var("NONE").is_err() {
                     rules.companies
                 } else {
                     0
                 },
                 ..rules
             };
-            println!("seed {seed} {}", ["companies", "none"][i]);
+            println!("seed {seed} {}", ["companies", "swapped"][i]);
             let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, rules);
-            // A control for the control: the tags the other way round.
-            if std::env::var("FLIP").is_ok() {
+            // The same galaxy, its hirers' and the others' marks swapped: what's
+            // luck in who's marked is against them then.
+            if i == 1 {
                 for r in &mut g.realms {
                     r.hires = !r.hires;
                 }
@@ -229,7 +342,7 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             );
         }
         if arms {
-            diffs.push(moved[0] - moved[1]);
+            diffs.push((moved[0] + moved[1]) / 2.0);
         }
     }
     if arms {
@@ -237,7 +350,7 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
         let mean = diffs.iter().sum::<f64>() / n;
         let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
         println!(
-            "ARMS hiring realms, with companies less without: {mean:+.2} points (se {:.2}) {diffs:.2?}",
+            "ARMS hiring realms, with the marks one way and swapped, on average: {mean:+.2} points (se {:.2}) {diffs:.2?}",
             (var / n).sqrt()
         );
     }

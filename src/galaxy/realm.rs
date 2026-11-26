@@ -498,7 +498,8 @@ impl Galaxy {
                         continue;
                     }
                     let realm = &self.realms[b as usize];
-                    if realm.faction != f {
+                    // (and only with its own kind)
+                    if realm.faction != f || realm.hires != self.realms[a].hires {
                         continue;
                     }
                     let d = self.systems[realm.seat as usize].pos.distance(seat);

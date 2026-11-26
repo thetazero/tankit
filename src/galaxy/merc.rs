@@ -262,6 +262,8 @@ pub struct Contract {
     /// What the realm expected of it when it signed: the worth of the
     /// world it would hold at the end, and the ticks it would pay for.
     pub expected: f32,
+    /// And to gain by it, over going without, after paying.
+    pub net: f32,
     pub expected_ticks: f32,
     /// The sites of the world it held when it signed, and what the world
     /// was worth to it.
@@ -1400,6 +1402,9 @@ impl Galaxy {
         start: u64,
         base: f32,
     ) -> bool {
+        if self.ban == Some((r, t as u32)) {
+            return false;
+        }
         let (own, defend) = (plan.own + plan.late, plan.defend);
         let worth = self.worth(t, f, defend);
         let realm = self.realms[r as usize];
@@ -1523,7 +1528,11 @@ impl Galaxy {
             expected,
             expected_ticks,
         };
+        let c = q.company;
         self.sign(q, &offers, &terms);
+        if let Some(k) = &mut self.companies[c].contract {
+            k.net = net;
+        }
         true
     }
 
@@ -1674,6 +1683,7 @@ impl Galaxy {
             lost: 0,
             defend,
             expected,
+            net: 0.0,
             expected_ticks,
             held: self.systems[t].held[f],
             worth,
