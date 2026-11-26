@@ -291,6 +291,44 @@ impl Lot {
     }
 }
 
+/// What a room is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// In from the Face, with a railroad in it.
+    Adit,
+    Hall,
+    Crosscut,
+    /// Another way in.
+    WestAdit,
+    Drift,
+    /// A way in the other side broke.
+    Breach,
+    /// A tunnel still being cut.
+    Heading,
+    Bay,
+    /// Round, cut by a borer.
+    Bore,
+    /// A trench open to the sky.
+    BoxCut,
+}
+
+/// A space dug out of the rock, level with the ground round it.
+#[derive(Clone, Copy, Debug)]
+pub struct Room {
+    pub role: Role,
+    /// (min, max) on the ground.
+    pub rect: (Vec2, Vec2),
+    /// Its roof's height where that's higher than a plain tunnel's.
+    pub roof: Option<f32>,
+}
+
+impl Room {
+    /// No roof over it.
+    pub fn open(&self) -> bool {
+        self.role == Role::BoxCut
+    }
+}
+
 /// Something standing over a street at `at` (across `along`, the street's
 /// direction): piers either side of an opening `opening` m each side of
 /// the center line, which stays clear.
@@ -435,6 +473,11 @@ impl Skeleton {
         self.streets
             .iter()
             .filter(|s| s.rank != Rank::Crossing)
+            // (Most are nowhere near: their boxes are quick to rule out.)
+            .filter(|s| {
+                let reach = Vec2::splat(s.half + 1.2);
+                p.cmpgt(s.from.min(s.to) - reach).all() && p.cmplt(s.from.max(s.to) + reach).all()
+            })
             .map(|s| 1.0 - smoothstep(s.half - 0.8, s.half + 1.2, s.distance(p)))
             .fold(0.0, f32::max)
             .max(

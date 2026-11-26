@@ -147,15 +147,33 @@ pub enum Claim {
     Span(usize),
 }
 
-/// The skeleton `spec` lays out: the first, from its seed on, whose
-/// greybox passes `check`.
+/// The city skeleton `spec` lays out: the first, from its seed on, whose
+/// greybox passes `check`. Worked out only the first time it's asked for
+/// (the last few are kept): whose city it is and whose generator stands in
+/// it don't change it.
 pub fn skeleton(spec: &Spec) -> Skeleton {
+    type Key = (u64, usize, city::Plan);
+    static CACHE: LazyLock<Mutex<HashMap<Key, Skeleton>>> = LazyLock::new(Default::default);
+    let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
+    let plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
+    let key = (spec.seed, spec.sides.len(), plan);
+    if let Some(sk) = CACHE.lock().unwrap().get(&key) {
+        return sk.clone();
+    }
+    let sk = lay_out(spec, &plan);
+    let mut cache = CACHE.lock().unwrap();
+    if cache.len() >= 8 {
+        cache.clear();
+    }
+    cache.insert(key, sk.clone());
+    sk
+}
+
+fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
     let mut last = None;
     for attempt in 0..16u64 {
         let mut rng = Rng::new(spec.seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt));
-        let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
-        let plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
-        let sk = city::skeleton(&mut rng, spec.sides.len(), &plan);
+        let sk = city::skeleton(&mut rng, spec.sides.len(), plan);
         match check::playable(&sk.greybox(&spec.sides)) {
             Ok(()) => return sk,
             Err(why) => log::debug!("map seed {} attempt {attempt}: {why}", spec.seed),
@@ -845,16 +863,15 @@ mod tests {
                         if edge < 11.0 {
                             continue;
                         }
+                        // (Once: the ground's slow to work out.)
+                        let g = sk.ground(p);
+                        let hit = m.oboxes.iter().find(|o| {
+                            let (y0, _) = o.y_range();
+                            o.solid && !o.ramp && y0 < g + 3.0 && o.distance(p) < 1.0
+                        });
                         assert!(
-                            !m.oboxes.iter().any(|o| {
-                                let (y0, _) = o.y_range();
-                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
-                            }),
-                            "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {:?}",
-                            m.oboxes.iter().find(|o| {
-                                let (y0, _) = o.y_range();
-                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
-                            })
+                            hit.is_none(),
+                            "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {hit:?}"
                         );
                     }
                     r += 2.0;
