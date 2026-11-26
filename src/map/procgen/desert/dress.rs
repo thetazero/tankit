@@ -32,6 +32,8 @@ const WEATHERED: Vec3 = Vec3::new(0.46, 0.27, 0.18);
 
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
+/// On a salt flat, open ground's no further than about this from cover.
+pub(super) const SALT_REACH: f32 = 26.0;
 /// The most ways round a desert lays out for the bots (see `Sand::routes`).
 const MAX_ROUTES: usize = 6;
 
@@ -76,6 +78,9 @@ fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>, drifts: &[
             pal.low * 0.85 + pal.stone_dark * 0.15,
             smoothstep(0.5, 0.95, cut),
         );
+        if sk.land.salt {
+            c = salt_crust(sk, p, c, &pal);
+        }
         // The high ground: rock showing through the sand.
         let top =
             smoothstep(high * 0.6, high * 0.95, h) * (0.45 + 0.4 * noise2(x / 9.0, z / 9.0, 92));
@@ -89,6 +94,36 @@ fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>, drifts: &[
         c * mottle
     });
     t
+}
+
+/// The salt flat's ground at `p`: crust cracked into broad plates, mud
+/// showing in the cracks and the damp hollows, the ridges clean white.
+fn salt_crust(sk: &Skeleton, p: Vec2, c: Vec3, pal: &Palette) -> Vec3 {
+    const PLATE: f32 = 13.0;
+    let cell = (p / PLATE).floor();
+    let (mut first, mut second) = (f32::MAX, f32::MAX);
+    for j in -1..=1 {
+        for i in -1..=1 {
+            let q = cell + Vec2::new(i as f32, j as f32);
+            let off = |k| {
+                let n = noise2(q.x * 7.31 + 0.5, q.y * 7.31 + 0.5, k);
+                (0.5 + (n - 0.5) * 1.9).clamp(0.0, 1.0)
+            };
+            let at = q + Vec2::new(off(96), off(97));
+            let d = at.distance(p / PLATE);
+            if d < first {
+                (first, second) = (d, first);
+            } else {
+                second = second.min(d);
+            }
+        }
+    }
+    let crack = 1.0 - smoothstep(0.05, 0.22, second - first);
+    let damp = smoothstep(0.55, 0.85, noise2(p.x / 45.0, p.y / 45.0, 98));
+    let mud = (0.7 * crack + 0.45 * damp).min(1.0) * (1.0 - smoothstep(0.2, 1.0, sk.land.ridge(p)));
+    // (A wash's bed is mud already.)
+    let dry = 1.0 - smoothstep(0.1, 0.6, sk.land.wash_cut(p) / WASH_DEPTH);
+    c.lerp(pal.sand.lerp(pal.low, mud), dry)
 }
 
 /// Dresses `map` (its ground already laid) to `sk`. Returns what each
@@ -144,7 +179,10 @@ pub fn dress(
     }
     s.town(&mut dice(10));
     s.wash_stones(&mut dice(5));
-    s.scatter(&mut dice(6));
+    match sk.land.salt {
+        true => s.salt_slabs(&mut dice(6)),
+        false => s.scatter(&mut dice(6)),
+    }
     s.fill_cover(&mut dice(7));
     s.edge_rocks(&mut dice(8));
     s.spawns();
@@ -566,6 +604,38 @@ impl Sand<'_> {
         }
     }
 
+    /// Slabs of salt heaved up along the ridges' crests, leaning on each
+    /// other, with gaps to drive through.
+    fn salt_slabs(&mut self, rng: &mut Rng) {
+        let sk = self.sk;
+        for ridge in &sk.land.ridges {
+            let total: f32 = ridge.line.windows(2).map(|w| w[0].distance(w[1])).sum();
+            let mut t = 8.0;
+            while t < total - 8.0 {
+                // A run of slabs, then a gap.
+                let end = (t + rng.range(8.0, 16.0)).min(total - 8.0);
+                while t < end {
+                    let (p, dir) = line_at(&ridge.line, t);
+                    let half = Vec2::new(rng.range(0.7, 1.1), rng.range(1.3, 2.0));
+                    t += half.y * 1.6;
+                    let p = p + dir.perp() * rng.range(-0.6, 0.6);
+                    if sk.keep_clear(p) {
+                        continue;
+                    }
+                    let g = self.g(p);
+                    let yaw = dir.x.atan2(dir.y) + rng.range(-0.3, 0.3);
+                    let color = self.pal.sand * rng.range(0.88, 1.04);
+                    let top = g + rng.range(0.9, 1.9);
+                    let mut o = rocks::block(p, yaw, half, g - 1.0, top, color);
+                    o.tilt = rng.range(-0.25, 0.25);
+                    o.broken = true;
+                    self.map.oboxes.push(o);
+                }
+                t += rng.range(10.0, 18.0);
+            }
+        }
+    }
+
     /// Boulders scattered thinly over the rest, on both levels.
     fn scatter(&mut self, rng: &mut Rng) {
         const STEP: f32 = 12.0;
@@ -597,16 +667,17 @@ impl Sand<'_> {
             let (lo, hi) = o.y_range();
             let go = self.g(o.center);
             hi > go + 1.4 && lo < go + 2.0 && (go - g).abs() < 4.5
-        }) || (0..8).any(|k| {
-            let q = p + Vec2::from_angle(k as f32 * TAU / 8.0) * (r * 0.5);
-            self.g(q) > g + 2.0
-        })
+        }) || self.sk.land.ridge_distance(p) < r
+            || (0..8).any(|k| {
+                let q = p + Vec2::from_angle(k as f32 * TAU / 8.0) * (r * 0.5);
+                self.g(q) > g + 2.0
+            })
     }
 
-    /// Wherever open ground is more than `REACH` m from anything to hide
-    /// behind, a pile of rock.
+    /// Wherever open ground is more than `reach` m from anything to hide
+    /// behind (a good deal further on a salt flat), a pile of rock.
     fn fill_cover(&mut self, rng: &mut Rng) {
-        const REACH: f32 = 14.0;
+        let reach = if self.sk.land.salt { SALT_REACH } else { 14.0 };
         let size = self.sk.size;
         let mut pts = Vec::new();
         let mut z = 8.0;
@@ -622,7 +693,7 @@ impl Sand<'_> {
             pts.swap(i, rng.index(i + 1));
         }
         for p in pts {
-            if self.sk.keep_clear(p) || self.cover_near(p, REACH) {
+            if self.sk.keep_clear(p) || self.cover_near(p, reach) {
                 continue;
             }
             let s = rng.range(1.5, 2.2);
@@ -669,7 +740,11 @@ impl Sand<'_> {
             let half = Vec2::new(s, s * rng.range(0.85, 1.0));
             let color = self.shade(rng);
             let yaw = rng.range(0.0, TAU);
-            let tall = rng.range(5.0, 8.0);
+            // (A salt flat's low: its horizon's a long way off.)
+            let tall = match self.sk.land.salt {
+                true => rng.range(3.5, 5.0),
+                false => rng.range(5.0, 8.0),
+            };
             self.map.oboxes.push(rocks::boulder(
                 at,
                 yaw,

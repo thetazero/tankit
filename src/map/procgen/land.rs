@@ -618,6 +618,34 @@ impl Mound {
     }
 }
 
+/// A long low ridge along a line (salt heaved up where the crust's pushed
+/// together): its crest `height` m, sloping down `run` m either side, easy
+/// to drive over; sagging low in places, tapering at its ends.
+#[derive(Clone, Debug)]
+pub struct Ridge {
+    pub line: Vec<Vec2>,
+    pub height: f32,
+    pub run: f32,
+}
+
+impl Ridge {
+    pub fn distance(&self, p: Vec2) -> f32 {
+        line_distance(&self.line, p)
+    }
+
+    fn height_at(&self, p: Vec2) -> f32 {
+        let d = self.distance(p);
+        if d >= self.run {
+            return 0.0;
+        }
+        let end = p
+            .distance(self.line[0])
+            .min(p.distance(self.line[self.line.len() - 1]));
+        let sag = 0.55 + 0.45 * smoothstep(0.2, 0.45, noise2(p.x / 16.0, p.y / 16.0, 84));
+        self.height * sag * smoothstep(0.0, 14.0, end) * (1.0 - smoothstep(0.0, self.run, d))
+    }
+}
+
 /// A `Land` as a solid, with `heaps` on it.
 struct LandRock<'a, F> {
     land: &'a Land,
@@ -697,6 +725,9 @@ pub struct Land {
     /// Crossings of the washes: down one bank and up the other.
     pub fords: Vec<(Vec2, Vec2, f32)>,
     pub mounds: Vec<Mound>,
+    pub ridges: Vec<Ridge>,
+    /// The floor's a salt flat's.
+    pub salt: bool,
     pub bowls: Vec<Bowl>,
     pub dunes: Option<Dunes>,
     pub lake: Option<Lake>,
@@ -917,7 +948,7 @@ impl Land {
         let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
         let lake = self.lake.map_or(0.0, |l| l.depth * l.cut(p));
         let dam = self.dam.map_or(0.0, |d| d.height_at(p));
-        h += (bowls + dam - lake - self.wash_cut(p)) * low + self.mound(p);
+        h += (bowls + dam - lake - self.wash_cut(p)) * low + self.mound(p) + self.ridge(p) * low;
         self.graded(p, h)
     }
 
@@ -1011,6 +1042,22 @@ impl Land {
     /// How high the heaps stand at `p`.
     pub fn mound(&self, p: Vec2) -> f32 {
         self.mounds.iter().map(|m| m.height_at(p)).sum()
+    }
+
+    /// How high the ridges stand at `p`.
+    pub fn ridge(&self, p: Vec2) -> f32 {
+        self.ridges
+            .iter()
+            .map(|r| r.height_at(p))
+            .fold(0.0, f32::max)
+    }
+
+    /// How far `p` is from any ridge's line.
+    pub fn ridge_distance(&self, p: Vec2) -> f32 {
+        self.ridges
+            .iter()
+            .map(|r| r.distance(p))
+            .fold(f32::INFINITY, f32::min)
     }
 
     /// The nearest wash to `p`: how far its line is, and half its floor's

@@ -1,5 +1,6 @@
 //! The desert biome: open land nobody's built on. Laid out as a skeleton
-//! (`skeleton`): its form (an erg, canyonlands, a basin, an escarpment),
+//! (`skeleton`): its form (an erg, canyonlands, a basin, an escarpment, a
+//! salt flat),
 //! the high ground's cliffs and the ramps up them, the landmark's slot,
 //! each side's spawns placed for a fair drive, the lots. Checked for play
 //! on its greybox (a skeleton that fails is laid out again from the next
@@ -94,12 +95,30 @@ pub const PALETTES: [Palette; 3] = [
     },
 ];
 
+/// A salt flat's ground: white crust, damp brown mud under it (its rock is
+/// the seed's palette's).
+const SALT: Vec3 = Vec3::new(0.84, 0.82, 0.78);
+const MUD: Vec3 = Vec3::new(0.5, 0.43, 0.35);
+
+/// The colors `spec`'s open desert comes in.
+fn colors(spec: &Spec) -> Palette {
+    let pal = palette(spec.seed);
+    if spec.biome == Biome::Reservoir || form_of(spec.seed) != Form::SaltFlat {
+        return pal;
+    }
+    Palette {
+        sand: SALT,
+        low: MUD,
+        ..pal
+    }
+}
+
 /// The colors a seed's desert comes in.
 pub fn palette(seed: u64) -> Palette {
     PALETTES[Rng::new(seed ^ 0x9A1E_77E0).index(PALETTES.len())]
 }
 
-/// The form a seed's desert takes: each in turn, so any four seeds in a
+/// The form a seed's desert takes: each in turn, so any five seeds in a
 /// row show them all.
 pub fn form_of(seed: u64) -> Form {
     Form::ALL[(seed % Form::ALL.len() as u64) as usize]
@@ -195,7 +214,7 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
 pub fn greybox(spec: &Spec) -> Map {
     let sk = skeleton(spec);
     let mut m = sk.greybox(&spec.sides);
-    m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &palette(spec.seed));
+    m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &colors(spec));
     m
 }
 
@@ -229,7 +248,7 @@ pub fn build(spec: &Spec) -> Map {
 /// Builds `spec`'s desert, and what each placeholder's filler put down.
 pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let sk = skeleton(spec);
-    let pal = palette(spec.seed);
+    let pal = colors(spec);
     let sky = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &pal);
     let mut built = dressed(&sk, spec, &pal, sky, spec.seed);
     if spec.biome == Biome::Reservoir {

@@ -3,8 +3,9 @@
 //! First its **form**, the shape of the land: an erg (a sea of dunes with
 //! mesas standing out of it), canyonlands (a plateau cut by a network of
 //! canyons), a basin (a bowl ringed by high ground, passes cut through the
-//! ring) or an escarpment (a long cliff between high ground and low, cut
-//! back by a canyon). Every form is two levels, the desert floor and the
+//! ring), an escarpment (a long cliff between high ground and low, cut
+//! back by a canyon) or a salt flat (a dead level pan: its cover is ridges
+//! of heaved salt, a channel sunk in it, an island or two of rock). Every form is two levels, the desert floor and the
 //! high ground `high` m over it, the high ground's shape a union of
 //! `Slab`s with `Channel`s and parks cut out of it (`plateau`, a signed
 //! distance). Wherever the two levels meet is a cliff (sculpted when it's
@@ -51,10 +52,19 @@ pub enum Form {
     /// A long cliff between the high ground and the floor, a canyon cut
     /// back into it, outliers standing off it.
     Escarpment,
+    /// A level pan, open a long way: ridges of heaved salt lying across it,
+    /// a brine channel sunk in it, an island or two of rock.
+    SaltFlat,
 }
 
 impl Form {
-    pub const ALL: [Form; 4] = [Form::Erg, Form::Canyonlands, Form::Basin, Form::Escarpment];
+    pub const ALL: [Form; 5] = [
+        Form::Erg,
+        Form::Canyonlands,
+        Form::Basin,
+        Form::Escarpment,
+        Form::SaltFlat,
+    ];
 }
 
 /// A generator's ring wall: this far round from its middle (a city's
@@ -315,6 +325,13 @@ impl Skeleton {
                     sk.cut_desert_wash(rng);
                 }
             }
+            Form::SaltFlat => {
+                sk.land.salt = true;
+                sk.dunes_mut().height = 0.2;
+                sk.cut_desert_wash(rng);
+                let want = rng.int(1, 2) as usize;
+                sk.islands(rng, want, (10.0, 16.0));
+            }
         }
         sk.place_ramps(rng);
         sk
@@ -389,7 +406,12 @@ impl Skeleton {
         let e = p.clamp(Vec2::ZERO, Vec2::splat(s));
         let base = self.ground(e);
         let big = 1.0 + (p.dot(dunes.wind) / (dunes.wave * 2.2) + dunes.phase).sin();
-        let hills = smoothstep(6.0, 70.0, d)
+        // (A salt flat runs on a long way first.)
+        let (near, far) = match self.land.salt {
+            true => (90.0, 330.0),
+            false => (6.0, 70.0),
+        };
+        let hills = smoothstep(near, far, d)
             * (4.0 * big
                 + 5.0 * ((x * 0.011).sin() * (z * 0.013).cos()).abs()
                 + 8.0
@@ -648,14 +670,61 @@ impl Skeleton {
         }
     }
 
+    /// A salt flat's ridges: most of them across the way between the sides,
+    /// apart, off the spawns, the landmark, the channel and the rock.
+    fn place_ridges(&mut self, rng: &mut Rng) {
+        const RUN: f32 = 7.0;
+        let spots = self.base_spots();
+        let way = (spots[spots.len() - 1] - spots[0]).normalize_or(Vec2::X);
+        let want = rng.int(7, 10) as usize;
+        for _ in 0..600 {
+            if self.land.ridges.len() >= want {
+                break;
+            }
+            let turn = match rng.chance(0.7) {
+                true => rng.range(-0.5, 0.5),
+                false => rng.range(0.0, TAU),
+            };
+            let dir = Vec2::from_angle(turn).rotate(way.perp());
+            let mid = Vec2::new(
+                rng.range(20.0, self.size - 20.0),
+                rng.range(20.0, self.size - 20.0),
+            );
+            let half = rng.range(22.0, 48.0);
+            let line = meander(rng, &[mid - dir * half, mid, mid + dir * half], 0.45);
+            let lm = &self.landmarks[0];
+            let ok = line.iter().all(|&p| {
+                p.min_element() > 14.0
+                    && p.max_element() < self.size - 14.0
+                    && lm.center.distance(p) > lm.reach + RUN + 3.0
+                    && spots.iter().all(|b| b.distance(p) > self.pad + RUN + 2.0)
+                    && self.land.plateau(p) > RUN + 8.0
+                    && self.land.ramp_distance(p) > RAMP_HALF + RUN + 6.0
+                    && self.land.wash_distance(p) > WASH_FLOOR + WASH_BANK + RUN
+                    && self.land.ridge_distance(p) > 30.0
+            });
+            if ok {
+                self.land.ridges.push(Ridge {
+                    line,
+                    height: rng.range(2.1, 2.5),
+                    run: RUN,
+                });
+            }
+        }
+    }
+
     /// The lots: clusters of spires, fins and boulder fields, each wholly
     /// on one level, off what's kept clear and apart.
     pub fn place_lots(&mut self, rng: &mut Rng, form: Form) {
+        if form == Form::SaltFlat {
+            self.place_ridges(rng);
+        }
         let (spires, fins, boulders) = match form {
             Form::Erg => (rng.int(3, 5), rng.int(3, 5), rng.int(3, 5)),
             Form::Canyonlands => (rng.int(3, 5), rng.int(1, 3), rng.int(2, 4)),
             Form::Basin => (rng.int(3, 4), rng.int(2, 4), rng.int(3, 4)),
             Form::Escarpment => (rng.int(2, 4), rng.int(2, 4), rng.int(3, 5)),
+            Form::SaltFlat => (rng.int(1, 3), rng.int(2, 4), rng.int(1, 2)),
         };
         let wants = [
             (LotKind::Spires, spires, (8.0, 13.0)),
@@ -688,6 +757,7 @@ impl Skeleton {
                         .iter()
                         .all(|r| r.distance(at) > reach + RAMP_HALF + 4.0)
                     && self.land.wash_distance(at) > reach + WASH_FLOOR
+                    && self.land.ridge_distance(at) > reach + 9.0
                     && self
                         .tracks
                         .iter()

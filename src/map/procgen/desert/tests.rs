@@ -3,7 +3,7 @@ use super::skeleton::*;
 use super::*;
 
 /// One seed of each form (see `form_of`).
-const SEEDS: [u64; 4] = [0, 1, 2, 3];
+const SEEDS: [u64; 5] = [0, 1, 2, 3, 4];
 
 fn spec(seed: u64) -> Spec {
     crate::desert_spec(seed)
@@ -53,6 +53,7 @@ fn the_forms_are_different_land() {
             Form::Canyonlands => (0.4, 0.9),
             Form::Basin => (0.15, 0.7),
             Form::Escarpment => (0.1, 0.6),
+            Form::SaltFlat => (0.0, 0.1),
         };
         assert!(
             (lo..hi).contains(&f),
@@ -60,7 +61,7 @@ fn the_forms_are_different_land() {
             form_of(seed)
         );
         assert!(
-            form_of(seed) == Form::Erg || !sk.land.high.ramps.is_empty(),
+            matches!(form_of(seed), Form::Erg | Form::SaltFlat) || !sk.land.high.ramps.is_empty(),
             "{:?}: no ramps",
             form_of(seed)
         );
@@ -71,9 +72,9 @@ fn the_forms_are_different_land() {
 /// same map.
 #[test]
 fn seeds_of_a_form_differ() {
-    for form_seed in [1u64, 2] {
+    for form_seed in [1u64, 2, 4] {
         let a = skeleton(&spec(form_seed));
-        let b = skeleton(&spec(form_seed + 4));
+        let b = skeleton(&spec(form_seed + Form::ALL.len() as u64));
         assert!(
             a.size != b.size
                 || a.base_spots() != b.base_spots()
@@ -223,8 +224,9 @@ fn there_are_ways_round() {
 )]
 fn the_shield_desert_comes_with_any_sides_generator() {
     use crate::map::procgen::shield;
-    for (k, owner) in Faction::ALL.into_iter().enumerate() {
-        let seed = SEEDS[k];
+    // (The first side's again on the last form.)
+    let sides = Faction::ALL.into_iter().cycle();
+    for (seed, owner) in SEEDS.into_iter().zip(sides) {
         let damaged = crate::Generator {
             owner,
             condition: shield::Condition::DAMAGED,
@@ -326,5 +328,61 @@ fn the_generator_faces_every_side() {
                 "seed {seed}: {a:?}"
             );
         }
+    }
+}
+
+/// A salt flat is open, but not bare: the pan's level but for its ridges
+/// and channel, there are long clear lines across it, and nowhere on it is
+/// far from something to get behind.
+#[test]
+fn a_salt_flat_is_open_with_cover() {
+    for seed in [4u64, 9] {
+        assert_eq!(form_of(seed), Form::SaltFlat);
+        let sk = skeleton(&spec(seed));
+        let m = Map::desert(seed);
+        assert!(sk.land.ridges.len() >= 4, "seed {seed}: few ridges");
+        assert!(!sk.land.washes.is_empty(), "seed {seed}: no channel");
+        let (mut far, mut floor) = (0, 0);
+        for &p in &m.open_spots {
+            if sk.land.on_high(p) {
+                continue;
+            }
+            floor += 1;
+            let rock = m
+                .oboxes
+                .iter()
+                .any(|o| o.solid && o.distance(p) < dress::SALT_REACH + 4.0);
+            let dip = sk.land.ridge_distance(p) < dress::SALT_REACH + 4.0
+                || sk.land.wash_distance(p) < dress::SALT_REACH + 4.0;
+            if !rock && !dip && sk.base_spots().iter().all(|b| b.distance(p) > sk.pad) {
+                far += 1;
+            }
+        }
+        assert!(far * 50 <= floor, "seed {seed}: {far} of {floor} bare");
+        // From eye height, how often a 60 m look over the floor is clear.
+        let (mut clear, mut looks) = (0, 0);
+        for (k, &p) in m.open_spots.iter().enumerate() {
+            let q = p + Vec2::from_angle(k as f32 * 2.4) * 60.0;
+            if q.min_element() < 8.0 || q.max_element() > sk.size - 8.0 {
+                continue;
+            }
+            looks += 1;
+            let at = |p: Vec2| Vec3::new(p.x, sk.ground(p) + 2.2, p.y);
+            let (a, b) = (at(p), at(q));
+            let dir = (b - a).normalize();
+            let blocked = m
+                .oboxes
+                .iter()
+                .any(|o| o.solid && o.ray_hit(a, dir, a.distance(b)))
+                || (1..30).any(|i| {
+                    let r = a.lerp(b, i as f32 / 30.0);
+                    sk.ground(Vec2::new(r.x, r.z)) > r.y
+                });
+            clear += !blocked as usize;
+        }
+        assert!(
+            clear * 2 > looks,
+            "seed {seed}: {clear} of {looks} looks clear"
+        );
     }
 }
