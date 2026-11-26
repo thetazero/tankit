@@ -842,16 +842,15 @@ mod tests {
                         if edge < 11.0 {
                             continue;
                         }
+                        // (Once: the ground's slow to work out.)
+                        let g = sk.ground(p);
+                        let hit = m.oboxes.iter().find(|o| {
+                            let (y0, _) = o.y_range();
+                            o.solid && !o.ramp && y0 < g + 3.0 && o.distance(p) < 1.0
+                        });
                         assert!(
-                            !m.oboxes.iter().any(|o| {
-                                let (y0, _) = o.y_range();
-                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
-                            }),
-                            "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {:?}",
-                            m.oboxes.iter().find(|o| {
-                                let (y0, _) = o.y_range();
-                                o.solid && !o.ramp && y0 < sk.ground(p) + 3.0 && o.distance(p) < 1.0
-                            })
+                            hit.is_none(),
+                            "seed {seed}: avenue {dir:?} blocked at {r}, {across}: {hit:?}"
                         );
                     }
                     r += 2.0;
