@@ -412,7 +412,7 @@ impl Class {
             MapKind::Saltmarket | MapKind::Sanctum | MapKind::Kiln | MapKind::Foundry => {
                 self == Class::Placeholder
             }
-            MapKind::ShieldCity(_) | MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
+            MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
         }
     }
 
@@ -494,12 +494,17 @@ impl SiteView {
         matches!(self.kind, SiteKind::Shield { .. })
     }
 
-    /// The map it's fought on: its mission's, and for a shield generator,
+    /// The map it's fought on: its mission's, a city in its founder's style,
+    /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
         let kind = MISSIONS[self.mission].map_kind;
+        let look = Look::of(self.founder());
         let SiteKind::Shield { damaged } = self.kind else {
-            return kind;
+            return match kind {
+                MapKind::City(_) => MapKind::City(look),
+                kind => kind,
+            };
         };
         let made = Generator {
             owner: Faction::side(self.owner),
@@ -510,7 +515,7 @@ impl SiteView {
             },
         };
         match kind {
-            MapKind::ShieldSite(..) => MapKind::ShieldSite(Look::of(self.founder()), made),
+            MapKind::ShieldSite(..) => MapKind::ShieldSite(look, made),
             MapKind::ShieldDesert(_) => MapKind::ShieldDesert(made),
             kind => kind,
         }

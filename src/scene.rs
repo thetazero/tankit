@@ -817,19 +817,19 @@ mod tests {
                 crate::make_map(crate::MapKind::City(crate::map::procgen::Look::Resonant), 0),
             ),
             (
-                "shield-city imperium",
+                "shield-site imperium",
                 Map::shield_city(0, crate::faction::Faction::Imperium),
             ),
             (
-                "shield-city resonant",
+                "shield-site resonant",
                 Map::shield_city(0, crate::faction::Faction::Resonant),
             ),
             (
-                "shield-city uthenn",
+                "shield-site uthenn",
                 Map::shield_city(0, crate::faction::Faction::Uthenn),
             ),
             (
-                "shield-city ithessar",
+                "shield-site ithessar",
                 Map::shield_city(0, crate::faction::Faction::Ithessar),
             ),
             ("foundry", Map::foundry()),
@@ -862,7 +862,7 @@ mod tests {
         use crate::map::procgen::shield::Condition;
         for (k, owner) in crate::faction::Faction::ALL.into_iter().enumerate() {
             let done = if k % 2 == 0 { 0 } else { 2 };
-            let name = format!("shield-city {owner:?} {done}/4 repaired");
+            let name = format!("shield-site {owner:?} {done}/4 repaired");
             let map = Map::shield_city_in(0, owner, Condition::Down { done, of: 4 });
             let fights = map_fights(&name, &map);
             let area: f32 = fights.iter().map(|f| f.area).sum();
