@@ -419,7 +419,7 @@ fn hall(map: &mut Map, rng: &mut Rng, lot: &OBox, h: f32, solid: bool) {
                 map,
                 &rig,
                 Vec3::new(u * w, top * 0.5, cut + rng.range(0.2, 0.5)),
-                Vec3::new(w / n as f32 * 0.96, top * 0.5, 0.6),
+                Vec3::new(w / n as f32 * 0.96 - 0.12, top * 0.5, 0.6),
                 color * rng.range(0.88, 0.96),
                 Material::Plaster,
                 false,

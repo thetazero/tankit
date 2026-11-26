@@ -143,7 +143,7 @@ impl Density {
     /// Half an avenue's width.
     fn avenue(self) -> f32 {
         match self {
-            Density::Cramped => 11.0,
+            Density::Cramped => 8.5,
             Density::Middling => AVENUE_HALF,
             Density::Open => 17.0,
         }
@@ -152,8 +152,8 @@ impl Density {
     /// How far apart streets branch off.
     fn blocks(self) -> f32 {
         match self {
-            Density::Cramped => 30.0,
-            Density::Middling => 40.0,
+            Density::Cramped => 40.0,
+            Density::Middling => 44.0,
             Density::Open => 56.0,
         }
     }
@@ -161,7 +161,7 @@ impl Density {
     /// A lane's half-width.
     fn lane(self) -> (f32, f32) {
         match self {
-            Density::Cramped => (4.6, 6.0),
+            Density::Cramped => (3.9, 4.8),
             Density::Middling => (5.4, 7.5),
             Density::Open => (7.0, 9.5),
         }
@@ -170,9 +170,9 @@ impl Density {
     /// How far back from the street a building may stand.
     fn setback(self) -> f32 {
         match self {
-            Density::Cramped => 1.0,
+            Density::Cramped => 0.3,
             Density::Middling => 2.2,
-            Density::Open => 4.5,
+            Density::Open => 6.0,
         }
     }
 
@@ -180,18 +180,19 @@ impl Density {
     /// most, and how wide an alley is.
     fn row(self) -> (i32, f32) {
         match self {
-            Density::Cramped => (9, 5.6),
+            Density::Cramped => (12, 5.6),
             Density::Middling => (6, 6.5),
-            Density::Open => (4, 9.0),
+            Density::Open => (2, 15.0),
         }
     }
 
-    /// How much of the ground behind the streets is built on.
-    fn infill(self) -> f32 {
+    /// Behind the streets: how much to try to build there (tries for every
+    /// 100 m²), how close together, and how often with room to drive round.
+    fn infill(self) -> (f32, f32, f32) {
         match self {
-            Density::Cramped => 0.95,
-            Density::Middling => 0.65,
-            Density::Open => 0.25,
+            Density::Cramped => (12.0, 0.4, 0.05),
+            Density::Middling => (1.4, 1.2, 0.5),
+            Density::Open => (0.25, 5.6, 1.0),
         }
     }
 }
@@ -691,7 +692,7 @@ fn gates_and_lines(sk: &mut Skeleton, rng: &mut Rng) {
             sk.spans.push(Span {
                 at,
                 along: dir,
-                opening: 6.5,
+                opening: (a.half - 3.0).min(6.5),
                 ruined: k == ruined && rng.chance(0.75),
             });
         }
@@ -1090,22 +1091,29 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let rubble = rng.range(0.05, 0.14);
     let beyond = |q: Vec2| q.min_element() < -SPRAWL || q.max_element() > size + SPRAWL;
     let fits = |sk: &Skeleton, lot: &OBox, margin: f32| {
-        let (ax, az) = lot.axes();
-        let mut pts = vec![lot.center];
-        for u in [-1.0f32, 0.0, 1.0] {
-            for v in [-1.0f32, 0.0, 1.0] {
-                pts.push(lot.center + ax * u * lot.half.x + az * v * lot.half.y);
-            }
-        }
-        !pts.iter().any(|&q| sk.reserved(q) || beyond(q))
-            && !sk.lots.iter().any(|l| {
+        // Cheapest first: what's nearby, then the corners.
+        let r = lot.half.length();
+        if beyond(lot.center)
+            || sk.reserved(lot.center)
+            || sk.lots.iter().any(|l| {
                 let m = if matches!(l.kind, LotKind::Civic(_)) {
                     5.0
                 } else {
                     margin
                 };
-                l.footprint.overlaps(lot, m)
+                let f = &l.footprint;
+                f.center.distance(lot.center) < r + f.half.length() + m && f.overlaps(lot, m)
             })
+        {
+            return false;
+        }
+        let (ax, az) = lot.axes();
+        [-1.0f32, 0.0, 1.0].into_iter().all(|u| {
+            [-1.0f32, 0.0, 1.0].into_iter().all(|v| {
+                let q = lot.center + ax * u * lot.half.x + az * v * lot.half.y;
+                !sk.reserved(q) && !beyond(q)
+            })
+        })
     };
     let kind_at = |rng: &mut Rng, p: Vec2| {
         let out = (-p).max(p - Vec2::splat(size)).max_element();
@@ -1121,47 +1129,78 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
         }
     };
     let (row, alley) = plan.density.row();
-    // The greatest roads' frontages first: they get the best of it.
-    let mut order: Vec<Street> = sk.streets.clone();
-    order.sort_by(|a, b| b.half.total_cmp(&a.half));
-    for s in order {
-        let d = s.dir();
-        let side = Vec2::new(-d.y, d.x);
+    // Every road whole, bends and all (its stretches are laid end to end),
+    // the greatest first: they get the best of it.
+    let mut chains: Vec<(f32, Vec<Vec2>)> = Vec::new();
+    for s in &sk.streets {
+        match chains.last_mut() {
+            Some((half, pts)) if *half == s.half && pts.last() == Some(&s.from) => pts.push(s.to),
+            _ => chains.push((s.half, vec![s.from, s.to])),
+        }
+    }
+    chains.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (road, pts) in chains {
+        // The point `t` along it, and its heading there (over a house's
+        // width, so a house on a bend faces it squarely).
+        let total: f32 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let at = |t: f32| {
+            let mut left = t.clamp(0.0, total);
+            for w in pts.windows(2) {
+                let l = w[0].distance(w[1]);
+                if left <= l {
+                    return w[0].lerp(w[1], left / l.max(1e-3));
+                }
+                left -= l;
+            }
+            *pts.last().unwrap()
+        };
         for e in [-1.0f32, 1.0] {
             let mut t = rng.range(0.0, 4.0);
             let mut run = 0;
             let mut upto = rng.int(2, row);
-            while t < s.len() {
-                let mut half = Vec2::new(rng.range(4.2, 8.0), rng.range(5.0, 9.0));
+            while t < total {
+                let mut half = Vec2::new(rng.range(4.2, 8.0), rng.range(5.5, 9.5));
                 let mut placed = false;
-                for small in [false, true] {
-                    if small {
-                        half = Vec2::new(rng.range(3.0, 4.4), rng.range(3.8, 5.6));
+                for size_down in 0..3 {
+                    match size_down {
+                        0 => {}
+                        1 => half = Vec2::new(rng.range(3.4, 4.6), half.y),
+                        _ => half = Vec2::new(rng.range(3.0, 4.0), rng.range(3.4, 4.8)),
                     }
+                    let mid = at(t + half.x);
+                    let d = (at(t + half.x + 4.0) - at(t + half.x - 4.0)).normalize_or(Vec2::X);
+                    let side = Vec2::new(-d.y, d.x);
                     // A far block's details need room on its faces.
-                    let q = s.from + d * t;
-                    if (-q).max(q - Vec2::splat(size)).max_element() > NEAR - 24.0 {
+                    let far = (-mid).max(mid - Vec2::splat(size)).max_element() > NEAR - 24.0;
+                    if far {
                         half = half.max(Vec2::splat(6.5));
                     }
-                    let back = s.half + 0.8 + rng.range(0.0, plan.density.setback()) + half.y;
-                    let p = s.from + d * (t + half.x) + side * e * back;
-                    let lot = OBox {
-                        center: p,
-                        yaw: -d.y.atan2(d.x) + rng.range(-0.06, 0.06),
+                    let set = rng.range(0.0, plan.density.setback());
+                    let mut lot = OBox {
+                        center: mid + side * e * (road + 0.9 + set + half.y),
+                        yaw: -d.y.atan2(d.x) + rng.range(-0.05, 0.05),
                         half,
                         y0: 0.0,
                         y1: 1.0,
                         ..OBox::default()
                     };
-                    // (Far blocks' cornices stand out over their lots.)
-                    let out = (-p).max(p - Vec2::splat(size)).max_element();
-                    if !fits(sk, &lot, if out > NEAR - 4.0 { 1.6 } else { 0.4 }) {
+                    // On the inside of a bend it stands a little further back.
+                    let margin = if far { 1.6 } else { 0.4 };
+                    let mut ok = fits(sk, &lot, margin);
+                    for _ in 0..3 {
+                        if ok {
+                            break;
+                        }
+                        lot.center += side * e * 0.8;
+                        ok = fits(sk, &lot, margin);
+                    }
+                    if !ok {
                         continue;
                     }
-                    let to = lot.local_point(s.from + d * (t + half.x));
-                    let kind = match kind_at(rng, p) {
+                    let to = lot.local_point(mid);
+                    let kind = match kind_at(rng, lot.center) {
                         LotKind::Distant => LotKind::Distant,
-                        _ if small => LotKind::Small,
+                        _ if size_down == 2 => LotKind::Small,
                         k => k,
                     };
                     sk.lots.push(Lot {
@@ -1173,51 +1212,70 @@ fn frontages(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
                     break;
                 }
                 if placed {
-                    t += half.x * 2.0 + rng.range(0.5, 1.2);
+                    t += half.x * 2.0 + rng.range(0.5, 1.0);
                     run += 1;
                     if run >= upto {
-                        t += alley * rng.range(0.9, 1.4);
+                        t += alley * rng.range(0.9, 1.3);
                         run = 0;
                         upto = rng.int(2, row);
                     }
                 } else {
-                    t += 1.5;
+                    t += 1.0;
                 }
             }
         }
     }
-    // Behind: whatever there's room for, with room to drive round it.
-    let n = ((size + 2.0 * SPRAWL) / 15.0) as i32;
-    for i in 0..n {
-        for j in 0..n {
-            if !rng.chance(plan.density.infill()) {
-                continue;
-            }
-            let p = Vec2::new(
-                (i as f32 + rng.range(0.0, 1.0)) * 15.0 - SPRAWL,
-                (j as f32 + rng.range(0.0, 1.0)) * 15.0 - SPRAWL,
-            );
-            let lot = OBox {
-                center: p,
-                yaw: rng.range(0.0, TAU),
-                half: Vec2::new(rng.range(4.5, 7.0), rng.range(4.5, 7.0)),
-                y0: 0.0,
-                y1: 1.0,
-                ..OBox::default()
-            };
-            if !fits(sk, &lot, 5.6) {
-                continue;
-            }
-            let kind = match kind_at(rng, p) {
-                LotKind::Distant => LotKind::Distant,
-                _ if rng.chance(0.35) => LotKind::Rubble,
-                _ => LotKind::Small,
-            };
-            sk.lots.push(Lot {
-                footprint: lot,
-                front: (1, 1.0),
-                kind,
-            });
+    // Behind: whatever there's room for, square to the nearest street, so
+    // a block's backs line up with its fronts.
+    let (tries, close, loose) = plan.density.infill();
+    let span = size + 2.0 * SPRAWL;
+    for _ in 0..(span * span / 100.0 * tries) as i32 {
+        let p = Vec2::new(rng.range(0.0, span), rng.range(0.0, span)) - Vec2::splat(SPRAWL);
+        let far = (-p).max(p - Vec2::splat(size)).max_element() > NEAR - 24.0;
+        // (Out past the edge it's only seen: no need to pack it.)
+        if far && !rng.chance((1.5 / tries).min(1.0)) {
+            continue;
         }
+        let near = sk
+            .streets
+            .iter()
+            .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)));
+        let turn = near.map_or(0.0, |s| {
+            let d = s.dir();
+            -d.y.atan2(d.x)
+        });
+        let lot = OBox {
+            center: p,
+            yaw: turn + rng.range(-0.08, 0.08),
+            half: if far {
+                Vec2::new(rng.range(6.5, 8.5), rng.range(6.5, 8.5))
+            } else {
+                Vec2::new(rng.range(3.2, 7.0), rng.range(3.2, 7.0))
+            },
+            y0: 0.0,
+            y1: 1.0,
+            ..OBox::default()
+        };
+        let margin = if far {
+            2.0
+        } else if rng.chance(loose) {
+            5.6
+        } else {
+            close
+        };
+        if !fits(sk, &lot, margin) {
+            continue;
+        }
+        let kind = match kind_at(rng, p) {
+            LotKind::Distant => LotKind::Distant,
+            LotKind::Rubble => LotKind::Rubble,
+            _ if lot.half.min_element() < 4.6 => LotKind::Small,
+            k => k,
+        };
+        sk.lots.push(Lot {
+            footprint: lot,
+            front: (1, 1.0),
+            kind,
+        });
     }
 }
