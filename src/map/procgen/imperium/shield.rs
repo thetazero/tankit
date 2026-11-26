@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::map::GlowPath;
-use crate::map::procgen::shield::{between_doors, shelled};
+use crate::map::procgen::shield::{between_doors, in_door, shelled};
 use crate::render::PointLight;
 
 /// The shield's light: a cold, pale blue.
@@ -57,14 +57,12 @@ impl Map {
     /// flanking each door. Broken down to stumps where it was shelled.
     fn blast_wall(&mut self, rng: &mut Rng, lm: &Landmark, base: f32) {
         let (center, radius) = (lm.center, lm.radius);
-        let door_a: Vec<f32> = lm.doors.iter().map(|&d| angle(d)).collect();
-        let door = |a: f32| door_a.iter().any(|&d| apart(a, d) < 0.16);
         let segs = 40;
         let r_mid = radius - DRUM_T * 0.5;
         let seg_half = radius * PI / segs as f32 * 1.02;
         for k in 0..segs {
             let a = (k as f32 + 0.5) / segs as f32 * TAU;
-            if door(a) {
+            if in_door(lm, a) {
                 continue;
             }
             let dir = Vec2::new(a.cos(), a.sin());
