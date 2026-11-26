@@ -36,7 +36,7 @@
 //!
 //! **Splitting and joining** (every `Rules::politics` ticks, idle companies
 //! only): one ship works one contract at a time, so a company worth more than
-//! `Rules::merc_split` splits in two; one worth less than `Rules::merc_join`
+//! `Rules::merc_split` splits in two (off for now); one worth less than `Rules::merc_join`
 //! can't change a fight, so it joins the nearest company (paying the FTL).
 //! A split halves the crew; a join adds both crews together.
 //! The pilot's company (`Galaxy::crew`) keeps its id when it splits, and

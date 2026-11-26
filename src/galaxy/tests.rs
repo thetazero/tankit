@@ -898,6 +898,7 @@ fn companies_split_and_join() {
         c.hulls = 0;
     }
     let n = g.companies.len();
+    g.rules.merc_split = 1000.0;
     g.companies[0].crystals = g.rules.merc_split * 3.0;
     g.companies[1].crystals = g.rules.merc_join / 2.0;
     let total: f32 = g.companies.iter().map(|c| c.crystals).sum();
@@ -1335,7 +1336,10 @@ fn pilots_cap_fire_not_losses() {
 /// few at a time.
 #[test]
 fn realms_pay_and_train_pilots() {
-    let rules = Rules::default();
+    let rules = Rules {
+        pilot_upkeep: 0.01,
+        ..Rules::default()
+    };
     let mut r = super::realm::Realm::new(0, 0, 0);
     r.income = 4.0;
     // Affords 100, uses a front's worth.
@@ -1665,4 +1669,110 @@ fn judge_arms() {
             moved[0] - moved[1]
         );
     }
+}
+
+/// How realms measure up: their size, who can fight and afford to, and
+/// whether pilots are short. Leaves out realms that can reach nobody.
+#[test]
+#[ignore = "a tuning report: run by hand in release"]
+fn judge_realms() {
+    for seed in [121, 122] {
+        let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, Rules::default());
+        while g.tick < 1500 {
+            g.step();
+        }
+        let q = |mut v: Vec<f32>| {
+            v.sort_by(f32::total_cmp);
+            [0.1, 0.5, 0.9].map(|p| (v[((v.len() - 1) as f32 * p) as usize] * 10.0).round() / 10.0)
+        };
+        let live: Vec<usize> = g
+            .living()
+            .map(|(r, _)| r)
+            .filter(|&r| {
+                g.territory(r)
+                    .iter()
+                    .any(|&s| g.neighbors(s as usize).count() > 0)
+            })
+            .collect();
+        let near = |r: usize| {
+            g.territory(r).iter().any(|&s| {
+                g.neighbors(s as usize).any(|(o, _)| {
+                    let h = g.holder(o);
+                    h != super::realm::NONE && g.realms[h as usize].faction != g.realms[r].faction
+                })
+            })
+        };
+        let border: Vec<usize> = live.iter().copied().filter(|&r| near(r)).collect();
+        let can = border
+            .iter()
+            .filter(|&&r| g.realms[r].offensive.is_some() || g.realms[r].bank() >= g.rules.launch)
+            .count();
+        let (mut sides, mut short, mut seats, mut fire) = (0, 0, 0.0, 0.0);
+        for s in 0..g.systems.len() {
+            for f in 0..SIDES {
+                if g.fighting(s, f) {
+                    let most = (g.systems[s].hulls[f] as f32).min(g.rules.frontage);
+                    sides += 1;
+                    short += (g.firing(s, f) < most - 0.5) as u32;
+                    seats += most;
+                    fire += g.firing(s, f);
+                }
+            }
+        }
+        let pilots = |of: &[usize]| of.iter().map(|&r| g.realms[r].pilots).sum::<u32>();
+        println!(
+            "SZ seed {seed}: {} realms, systems 10/50/90 {:?}, enemy in range {:.0}%, of those can push {:.0}% | pilots: border {} interior {}, seats in fights {seats:.0}, filled {:.0}%, sides short {:.0}% of {sides} | companies {} signed {} | share {:?}",
+            live.len(),
+            q(live.iter().map(|&r| g.territory(r).len() as f32).collect()),
+            100.0 * border.len() as f32 / live.len() as f32,
+            100.0 * can as f32 / border.len() as f32,
+            pilots(&border),
+            pilots(&live) - pilots(&border),
+            100.0 * fire / seats.max(1.0),
+            100.0 * short as f32 / sides.max(1) as f32,
+            g.companies.len(),
+            g.books.signed,
+            g.share.map(|s| (s * 100.0).round()),
+        );
+    }
+}
+
+/// Taking a system captures its share of the loser's bank, the last one all
+/// that's left; and however big a bank is, it's kept.
+#[test]
+fn conquest_captures_the_bank() {
+    let mut g = Galaxy::with_size(2, SYSTEMS / 10, REGION * 0.3, Rules::default());
+    let (r, territory) = g
+        .living()
+        .map(|(r, _)| (r, g.territory(r).to_vec()))
+        .find(|(_, t)| t.len() >= 3)
+        .unwrap();
+    let f = g.realms[r].faction as usize;
+    let w = (f + 1) % SIDES;
+    let n = territory.len();
+    g.realms[r].crystals = 100.0;
+    g.realms[r].systems = n as u32;
+    let total = |g: &Galaxy| g.realms.iter().map(|x| x.crystals as f64).sum::<f64>();
+    let before = total(&g);
+    for (k, &s) in territory.iter().enumerate() {
+        let s = s as usize;
+        let sites: Vec<usize> = (g.systems[s].sites.0 as usize..g.systems[s].sites.1 as usize)
+            .filter(|&i| g.sites[i].owner as usize == f)
+            .collect();
+        for i in sites {
+            g.win(s, i, w);
+        }
+        let left = 100.0 * (n - k - 1) as f32 / n as f32;
+        assert!(
+            (g.realms[r].crystals - left).abs() < 0.01,
+            "{} of {left}",
+            g.realms[r].crystals
+        );
+    }
+    assert!((total(&g) - before).abs() < 0.1, "none lost");
+    // However big, a bank stays.
+    let by = g.living().map(|(r, _)| r).next().unwrap();
+    g.realms[by].crystals = 1e6;
+    g.produce();
+    assert!(g.realms[by].crystals > 0.99e6);
 }
