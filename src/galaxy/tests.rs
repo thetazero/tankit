@@ -458,7 +458,11 @@ fn realms_hire_on_credit() {
     for r in 0..g.realms.len() as u32 {
         for t in 0..g.systems.len().min(40) {
             let f = g.realms[r as usize].faction as usize;
-            assert!(!g.hire(t, f, r, 50.0, 0.0, false));
+            let plan = super::merc::Plan {
+                own: 50.0,
+                ..Default::default()
+            };
+            assert!(!g.hire(t, f, r, plan, 0, 0.0));
         }
     }
     assert_eq!(g.books.signed, signed);
@@ -735,9 +739,7 @@ fn galaxy_kills_teach_merc_pilots() {
 fn moves_account_for_every_hull() {
     let mut g = small_war();
     // (hulls are worth building)
-    for r in &mut g.realms {
-        r.hull_worth = 1.0;
-    }
+    g.hull_worth.fill(1.0);
     g.clear_moves();
     let before: Vec<[u32; SIDES]> = g.systems.iter().map(|s| s.hulls).collect();
     for _ in 0..40 {

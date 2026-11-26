@@ -257,12 +257,12 @@ impl Default for Rules {
             research_price: 1.2,
             pilot_upkeep: 0.02,
             ship_upkeep: 0.2,
-            hull_cost: 0.2,
+            hull_cost: 0.1,
             train_cost: 3.0,
             career: 0.002,
             patience: 60,
             pay_step: 0.005,
-            sense: 0.01,
+            sense: 0.03,
             train: 2,
             crew: 40,
             wage_cr: 50.0,
@@ -430,6 +430,10 @@ pub struct Galaxy {
     pub(crate) savings: f32,
     /// Hulls in flight.
     pub fleets: Vec<Fleet>,
+    /// What one more hull in each system has lately been worth to its holder,
+    /// and its best use this tick (scratch).
+    pub(crate) hull_worth: Vec<f32>,
+    hull_use: Vec<f32>,
     /// Scratch: what each side has on the way to a system: hulls, and their
     /// ticks to go all told.
     incoming: std::collections::HashMap<(u32, u8), (f32, f32)>,
@@ -647,6 +651,8 @@ impl Galaxy {
             lose_old: 0.003,
             savings: 0.0,
             fleets: Vec::new(),
+            hull_worth: vec![rules.hull_cost; count],
+            hull_use: vec![0.0; count],
             incoming: Default::default(),
             vaults: Vec::new(),
             vault_at: Vec::new(),
@@ -882,6 +888,22 @@ impl Galaxy {
         settled
     }
 
+    /// What a hull's worth in each system, and its best use this tick, to save.
+    pub(crate) fn hull_marks(&self) -> Vec<(f32, f32)> {
+        self.hull_worth
+            .iter()
+            .copied()
+            .zip(self.hull_use.iter().copied())
+            .collect()
+    }
+
+    pub(crate) fn set_hull_marks(&mut self, marks: &[(f32, f32)]) {
+        if marks.len() == self.hull_worth.len() {
+            self.hull_worth = marks.iter().map(|x| x.0).collect();
+            self.hull_use = marks.iter().map(|x| x.1).collect();
+        }
+    }
+
     /// Ticks to fly `d` light years.
     pub(crate) fn flight(&self, d: f32) -> u64 {
         (d / self.rules.ftl_speed.max(1.0)).ceil().max(1.0) as u64
@@ -954,6 +976,18 @@ impl Galaxy {
             }
         };
         let offset = self.rng.index(self.systems.len());
+        // What a hull's worth where: no more than building another and
+        // bringing it; and it keeps, so quiet ticks say little.
+        let most = self.rules.hull_cost + self.rules.ftl_cost;
+        for (worth, seen) in self.hull_worth.iter_mut().zip(&mut self.hull_use) {
+            let sense = if *seen > 0.0 {
+                self.rules.sense
+            } else {
+                self.rules.sense / 100.0
+            };
+            *worth += sense * (seen.min(most) - *worth);
+            *seen = 0.0;
+        }
         for i in 0..self.systems.len() {
             // Whoever's first gets the crystal, so a different one each tick.
             let s = (i + offset) % self.systems.len();
@@ -976,7 +1010,7 @@ impl Galaxy {
                     // than it costs, and it can pay for it.
                     let cost = hulls * (self.rules.hull_cost + extra(f));
                     let realm = &mut self.realms[r as usize];
-                    if realm.hull_worth > self.rules.hull_cost && realm.crystals >= cost {
+                    if self.hull_worth[s] > self.rules.hull_cost && realm.crystals >= cost {
                         realm.crystals -= cost;
                         sys.building[f] += hulls;
                     }
@@ -1732,6 +1766,11 @@ impl Galaxy {
                     }
                 }
                 let here = self.systems[t].realms[f];
+                // A realm's own world under attack it always looks at, if only
+                // to see what it's missing.
+                if here != NONE && self.systems[t].held[f] > 0 && !from[..k].contains(&here) {
+                    self.consider(t, f, here);
+                }
                 for &r in &from[..k] {
                     if here == NONE || here == r {
                         self.consider(t, f, r);
@@ -1755,7 +1794,8 @@ impl Galaxy {
             return;
         }
         // A fight it's in, every tick; somewhere new, now and then.
-        if here == 0 && !(self.tick + t as u64).is_multiple_of(THINK) {
+        let raided = ours && attacked;
+        if here == 0 && !raided && !(self.tick + t as u64).is_multiple_of(THINK) {
             return;
         }
         let worth = self.worth(t, f, ours);
@@ -1822,7 +1862,7 @@ impl Galaxy {
         // What more pilots, or hulls, would be worth to it: in a fight it's
         // in, or an attack it could make.
         let all = pool as f32 * afford;
-        if (here > 0 && attacked) || (here == 0 && pool >= MIN_SEND) {
+        if (here > 0 && attacked) || raided || (here == 0 && pool >= MIN_SEND) {
             let more = if here > 0 { 0.0 } else { all };
             let p = self.pilots_for(r, have + late + more);
             let fly = if here > 0 { 0.0 } else { cost_all * afford };
@@ -1840,6 +1880,15 @@ impl Galaxy {
             let x = &mut self.realms[r as usize];
             x.pilot_use = x.pilot_use.max(pilot);
             x.hull_use = x.hull_use.max(hull);
+            // There, and wherever it could send one from.
+            for s in std::iter::once(t)
+                .chain(self.neighbors(t).map(|(s, _)| s))
+                .collect::<Vec<_>>()
+            {
+                if self.systems[s].realms[f] == r {
+                    self.hull_use[s] = self.hull_use[s].max(hull);
+                }
+            }
         }
         let mut best = (0.0, 0.0f32);
         if pool >= MIN_SEND {

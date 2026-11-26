@@ -890,10 +890,8 @@ impl Galaxy {
             if hulls < MIN_SEND {
                 continue;
             }
-            // A realm sells at what one's worth to it, and the dearest to
-            // replace it.
-            let seller_worth = self.realms[seller as usize].hull_worth;
-            let ask = seller_worth.max(0.0);
+            // A realm sells at what one's worth to it there.
+            let ask = self.hull_worth[s].max(0.0);
             out.push(Offer {
                 s: s as u32,
                 side: g as u8,
