@@ -167,6 +167,7 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
         LandmarkKind::Needles => "NEEDLES",
         LandmarkKind::Crater => "CRATER",
         LandmarkKind::Arch => "ARCH",
+        LandmarkKind::Open => "FLATS",
         LandmarkKind::Generator | LandmarkKind::Great(_) => "GENERATOR",
     };
     map
@@ -211,16 +212,27 @@ pub fn build(spec: &Spec) -> Map {
 pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let sk = skeleton(spec);
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
-    let mut m = blank(&sk, &spec.sides);
-    m.atmosphere = atmosphere(&mut rng, &palette(spec.seed));
     let pal = palette(spec.seed);
+    let sky = atmosphere(&mut rng, &pal);
+    dressed(&sk, spec, &pal, sky)
+}
+
+/// `sk` dressed as a desert in `pal`, under `sky`.
+pub(in crate::map::procgen) fn dressed(
+    sk: &Skeleton,
+    spec: &Spec,
+    pal: &Palette,
+    sky: crate::render::Atmosphere,
+) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
+    let mut m = blank(sk, &spec.sides);
+    m.atmosphere = sky;
     m.rock_dust = Some(pal.sand);
     m.planet = Some((spec.seed, pal.planet));
-    m.terrain = Some(dress::terrain(&sk, pal));
+    m.terrain = Some(dress::terrain(sk, *pal));
     let mut ground = sk.land.surface(sk.size, 1.0, |_| 0.0);
     ground.rock = pal.stone;
     m.solid = Some(ground.into());
-    let claims = dress::dress(&mut m, &sk, pal, spec.seed, spec.centerpiece);
+    let claims = dress::dress(&mut m, sk, *pal, spec.seed, spec.centerpiece);
     if sk.landmarks[0].kind == LandmarkKind::Generator {
         // The generator's built flush, piece against piece, as a city is.
         m.separate_coplanar_faces();

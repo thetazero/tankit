@@ -20,8 +20,12 @@
 //! mining gear any mine has are dug in `dig`.
 
 mod dig;
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod dress;
 mod ithessar;
 mod layout;
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod plan;
 #[cfg(test)]
 mod tests;
 

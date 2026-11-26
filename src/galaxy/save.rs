@@ -344,6 +344,45 @@ struct SavedRealm {
     senses: Option<[f32; 4]>,
 }
 
+impl Saved {
+    /// A galaxy saved before outposts: they're put in among its sites, each
+    /// held by whoever holds most of the others on its planet.
+    fn add_outposts(&mut self, g: &Galaxy) {
+        let older = g
+            .sites
+            .iter()
+            .filter(|x| x.kind != SiteKind::Outpost)
+            .count();
+        if older == g.sites.len() || self.owners.len() != older || self.down.len() != older {
+            return;
+        }
+        let mut old = self.owners.iter().copied().zip(self.down.iter().copied());
+        let mut now: Vec<(u8, u8)> = Vec::with_capacity(g.sites.len());
+        // (A planet's outposts come last of its sites.)
+        let (mut held, mut at) = ([0u32; SIDES], None);
+        for sys in &g.systems {
+            for i in sys.sites.0 as usize..sys.sites.1 as usize {
+                let site = &g.sites[i];
+                if at != Some((sys.sites.0, site.planet)) {
+                    (held, at) = ([0; SIDES], Some((sys.sites.0, site.planet)));
+                }
+                if site.kind == SiteKind::Outpost {
+                    let most = (0..SIDES)
+                        .max_by_key(|&f| (held[f], SIDES - f))
+                        .unwrap_or(0);
+                    now.push((most as u8, 0));
+                } else if let Some(x) = old.next() {
+                    if let Some(n) = held.get_mut(x.0 as usize) {
+                        *n += 1;
+                    }
+                    now.push(x);
+                }
+            }
+        }
+        (self.owners, self.down) = now.into_iter().unzip();
+    }
+}
+
 impl Galaxy {
     fn saved(&self, region: Vec2) -> Saved {
         Saved {
@@ -358,7 +397,7 @@ impl Galaxy {
                 .iter()
                 .map(|s| match s.kind {
                     SiteKind::Shield { damaged } => damaged as u8,
-                    SiteKind::Production { .. } => 0,
+                    SiteKind::Production { .. } | SiteKind::Outpost => 0,
                 })
                 .collect(),
             hulls: self
@@ -467,9 +506,10 @@ impl Galaxy {
         serde_json::to_string(&self.saved(REGION)).unwrap_or_default()
     }
 
-    fn restore(s: Saved) -> anyhow::Result<Galaxy> {
+    fn restore(mut s: Saved) -> anyhow::Result<Galaxy> {
         let region = Vec2::from_array(s.region);
         let mut g = Galaxy::with_size(s.seed, s.systems, region, Rules::default());
+        s.add_outposts(&g);
         anyhow::ensure!(
             s.owners.len() == g.sites.len()
                 && s.down.len() == g.sites.len()
@@ -957,6 +997,62 @@ mod tests {
             old.step();
         }
         unique(&old);
+    }
+
+    /// A save from before outposts keeps its other sites as they were, and
+    /// each outpost goes to a side holding the most of its planet.
+    #[test]
+    fn older_saves_get_outposts() {
+        let region = REGION * 0.3;
+        let mut g = Galaxy::with_size(5, SYSTEMS / 10, region, Rules::default());
+        for _ in 0..60 {
+            g.step();
+        }
+        let mut v = serde_json::to_value(g.saved(region)).unwrap();
+        for key in ["owners", "down"] {
+            let all = v[key].as_array().unwrap().clone();
+            let older: Vec<_> = all
+                .into_iter()
+                .zip(&g.sites)
+                .filter(|(_, x)| x.kind != SiteKind::Outpost)
+                .map(|(o, _)| o)
+                .collect();
+            v[key] = older.into();
+        }
+        let mut old = Galaxy::from_json(&v.to_string()).unwrap();
+        assert_eq!(old.sites.len(), g.sites.len());
+        let mut posts = 0;
+        for sys in &old.systems {
+            let range = sys.sites.0 as usize..sys.sites.1 as usize;
+            for i in range.clone() {
+                let (x, was) = (old.sites[i], g.sites[i]);
+                if x.kind != SiteKind::Outpost {
+                    assert_eq!((x.owner, x.kind), (was.owner, was.kind));
+                    continue;
+                }
+                posts += 1;
+                let held = |f: u8| {
+                    range
+                        .clone()
+                        .filter(|&j| {
+                            let y = old.sites[j];
+                            y.planet == x.planet && y.owner == f && y.kind != SiteKind::Outpost
+                        })
+                        .count()
+                };
+                assert!((0..SIDES as u8).all(|f| held(f) <= held(x.owner)));
+            }
+            let held: u32 = sys.held.iter().map(|&n| n as u32).sum();
+            assert_eq!(held, sys.sites.1 - sys.sites.0);
+        }
+        assert!(posts > 0);
+        for _ in 0..30 {
+            old.step();
+        }
+        // Saved again, it loads as it is.
+        let again = Galaxy::from_json(&serde_json::to_string(&old.saved(region)).unwrap()).unwrap();
+        let owners = |g: &Galaxy| g.sites.iter().map(|s| s.owner).collect::<Vec<_>>();
+        assert_eq!(owners(&again), owners(&old));
     }
 
     /// A save from before vaults gives each to whoever holds its planet.

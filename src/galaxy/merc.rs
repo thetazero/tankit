@@ -875,7 +875,7 @@ impl Galaxy {
             .filter(|s| (s.owner as usize == f) == own)
             .map(|s| match s.kind {
                 SiteKind::Production { crystals, .. } => crystals,
-                SiteKind::Shield { .. } => 0.0,
+                SiteKind::Shield { .. } | SiteKind::Outpost => 0.0,
             })
             .sum();
         // And what's in the vaults, won or lost with the planets.
@@ -1141,15 +1141,14 @@ impl Galaxy {
                     let won = (take * at * open).min(theirs);
                     let lost = (take * (1.0 - share) * mine).min(mine);
                     gens = (gens - won).max(0.0);
-                    let battles = open + mine;
                     mine += won - lost;
                     theirs += lost - won;
-                    // Hulls are lost in each site's battle, the mercs' by
-                    // their share of the side's.
-                    let left = 1.0 - (battles * k * fe / af / hf).min(1.0);
+                    // Fire's split between the sites' battles, so it's all
+                    // told what one would do; the mercs lose their share.
+                    let left = 1.0 - (k * fe / af / hf).min(1.0);
                     ho *= left;
                     hm *= left;
-                    he = (he - battles * k * ff / ae).max(0.0);
+                    he = (he - k * ff / ae).max(0.0);
                 }
                 // A raid goes on till it has everything (or all but).
                 if raid && theirs < 0.3 {

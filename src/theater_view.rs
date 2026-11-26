@@ -1572,6 +1572,23 @@ fn glyph(p: &mut Painter, at: Vec2, s: &SiteView, color: Rgba) {
             1.5,
             color,
         );
+    } else if s.kind == crate::galaxy::SiteKind::Outpost {
+        // A flag.
+        p.line(
+            at + Vec2::new(-4.0, -7.0),
+            at + Vec2::new(-4.0, 7.0),
+            1.5,
+            color,
+        );
+        p.polyline(
+            &[
+                at + Vec2::new(-4.0, -7.0),
+                at + Vec2::new(6.0, -3.5),
+                at + Vec2::new(-4.0, 0.0),
+            ],
+            1.5,
+            color,
+        );
     } else {
         p.rect_outline(at - Vec2::splat(5.5), Vec2::splat(11.0), 1.5, color);
     }

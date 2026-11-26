@@ -98,6 +98,7 @@ pub fn dress(
         LandmarkKind::Needles => s.needles(&mut dice(2)),
         LandmarkKind::Crater => s.crater(&mut dice(2)),
         LandmarkKind::Arch => s.arch(&mut dice(2)),
+        LandmarkKind::Open => {}
         LandmarkKind::Generator | LandmarkKind::Great(_) => {
             let (owner, condition) = match piece {
                 Centerpiece::ShieldGenerator(owner, condition) => (owner, condition),

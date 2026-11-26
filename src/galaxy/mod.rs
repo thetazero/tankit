@@ -23,6 +23,8 @@
 //! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
+//! Outposts make nothing: they're sites a world isn't taken without.
+//!
 //! **A tick:**
 //! 1. *Production.* Every mine adds crystal to its planet's vault (`Vault`),
 //!    which changes hands only with the whole planet. A yard builds while a
@@ -45,7 +47,8 @@
 //!    sites can't be attacked while its generators are up, so it goes for
 //!    them first, all of them together, to get out from under them. Only so many of a side's hulls fire a tick however big it
 //!    is (`Rules::frontage`), so a world holds out for many ticks.
-//!    Each firing hull needs a pilot (`Galaxy::firing`). Pilots cap fire,
+//!    Each firing hull needs a pilot (`Galaxy::firing`), and a pilot fights
+//!    one battle a tick: a side's are split between all it's in. Pilots cap fire,
 //!    not losses: a pilot who loses a hull takes the next.
 //!    Mercenary companies' hulls in a fight take their share of their side's
 //!    losses there (`Galaxy::lose`); contracts done (world taken, hulls
@@ -278,6 +281,8 @@ pub enum SiteKind {
     /// it's taken, and working again once its holder wins a battle for it,
     /// or a tick goes by without one.
     Shield { damaged: bool },
+    /// Makes nothing and shields nothing, but a world isn't taken without it.
+    Outpost,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -427,6 +432,9 @@ pub struct Galaxy {
     pub(crate) savings: f32,
     /// Hulls in flight.
     pub fleets: Vec<Fleet>,
+    /// Scratch: the system whose battles are being fought, and how many each
+    /// side was in as the tick's began.
+    engaged: Option<(usize, [u32; SIDES])>,
     /// What one more hull in each system has lately been worth to its holder,
     /// and its best use this tick (scratch).
     pub(crate) hull_worth: Vec<f32>,
@@ -571,6 +579,8 @@ impl Galaxy {
         let mut sites = Vec::new();
         let spots = disk.scatter(count, &mut rng);
         let owners = settle(&spots, &hearts);
+        // (Outposts' own dice: the rest of the galaxy's as it was without them.)
+        let mut posts = Rng::new(seed ^ 0x0007_9057);
         for (pos, owner) in spots.into_iter().zip(owners) {
             let planets = match rng.f32() {
                 x if x < 0.5 => 1,
@@ -600,6 +610,20 @@ impl Galaxy {
                             hulls: rng.range(1.0, 5.0),
                             crystals: rng.range(0.02, 0.1),
                         },
+                    });
+                }
+                // Most planets have an outpost or two.
+                let outposts = match posts.f32() {
+                    x if x < 0.1 => 0,
+                    x if x < 0.5 => 1,
+                    x if x < 0.9 => 2,
+                    _ => 3,
+                };
+                for _ in 0..outposts {
+                    sites.push(Site {
+                        planet,
+                        owner,
+                        kind: SiteKind::Outpost,
                     });
                 }
             }
@@ -650,6 +674,7 @@ impl Galaxy {
             lose_old: 0.003,
             savings: 0.0,
             fleets: Vec::new(),
+            engaged: None,
             hull_worth: vec![rules.hull_cost; count],
             hull_use: vec![0.0; count],
             incoming: Default::default(),
@@ -1143,11 +1168,39 @@ impl Galaxy {
         out
     }
 
+    /// How many battles each side's in, in system `s` this tick: one for each
+    /// site it attacks, and each of its own that's attacked.
+    pub(crate) fn battles_in(&self, s: usize) -> [u32; SIDES] {
+        let mut n = [0; SIDES];
+        let mut attacked: Vec<usize> = Vec::new();
+        for f in (0..SIDES).filter(|&f| self.fighting(s, f)) {
+            for t in self.targets(s, f) {
+                n[f] += 1;
+                if !attacked.contains(&t) {
+                    attacked.push(t);
+                }
+            }
+        }
+        for t in attacked {
+            n[self.sites[t].owner as usize] += 1;
+        }
+        n
+    }
+
     /// Each side's fire in the battle for site `t` in system `s`: its
     /// fire with no shield in its way, a seat short for a side attacking
     /// under an enemy's shield up on the site's planet (#426).
     fn fire(&self, s: usize, t: usize) -> [f32; SIDES] {
         let mut fire = self.open_fire(s);
+        // A pilot fights one battle a tick: each side's are split between
+        // all it's in.
+        let in_battles = match self.engaged {
+            Some((at, n)) if at == s => n,
+            _ => self.battles_in(s),
+        };
+        for f in 0..SIDES {
+            fire[f] /= in_battles[f].max(1) as f32;
+        }
         let planet = self.sites[t].planet as usize;
         for f in 0..SIDES {
             if f != self.sites[t].owner as usize && self.shields_up(s, f)[planet] > 0 {
@@ -1306,6 +1359,7 @@ impl Galaxy {
                 }
                 continue;
             }
+            self.engaged = Some((s, self.battles_in(s)));
             let targets: [Vec<usize>; SIDES] = std::array::from_fn(|f| match war {
                 true if self.fighting(s, f) => self.targets(s, f),
                 _ => Vec::new(),
@@ -1331,6 +1385,7 @@ impl Galaxy {
                 self.fight(s, &o);
             }
         }
+        self.engaged = None;
         // Nobody fought over them: repaired.
         for (site, &fought) in self.sites.iter_mut().zip(&self.assaulted) {
             if let SiteKind::Shield { damaged } = &mut site.kind
