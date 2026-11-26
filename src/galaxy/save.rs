@@ -83,6 +83,8 @@ struct Saved {
     /// What a contract has lately made a company.
     #[serde(default)]
     job_worth: Option<f32>,
+    #[serde(default)]
+    hire_rank: f32,
     /// What companies have lately made, each, and were all worth.
     #[serde(default)]
     profit: Option<(f32, f32)>,
@@ -412,6 +414,7 @@ impl Galaxy {
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
             job_worth: Some(self.job_worth),
+            hire_rank: self.hire_rank,
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
             fleets: self.fleets.clone(),
@@ -567,6 +570,7 @@ impl Galaxy {
         if let Some(ticks) = s.trust_ticks {
             g.trust_ticks = ticks;
         }
+        g.hire_rank = s.hire_rank;
         if let Some(x) = s.job_worth {
             g.job_worth = x;
         }

@@ -466,6 +466,8 @@ pub(crate) struct Plan {
     pub mercs: f32,
     pub crew: f32,
     pub merc_at: f32,
+    /// The gear the crew flies.
+    pub rank: f32,
     pub flown: f32,
     pub defend: bool,
 }
@@ -693,6 +695,7 @@ impl Galaxy {
             p.idle = 0;
             want[c].0 -= 1;
             want[c].1 -= wage;
+            self.hire_rank += 0.01 * (p.rank - self.hire_rank);
             let m = mark(p.rank);
             self.companies[c].pilots.push(p);
             self.books.hired += 1;
@@ -960,7 +963,9 @@ impl Galaxy {
             .bid(c, 0.0, (missing, co.crystals), pay)
             .max(self.reserve(pay));
         let hired = (missing as f32).min(self.supply(wage));
-        wages += hired * wage;
+        // (they're paid by how well their gear fights: as those hired lately)
+        let geared = wage * gear_value(self.hire_rank) / gear_value(0.0);
+        wages += hired * geared;
         let mut crew = aboard as u32 + hired as u32;
         // And the rest it can train itself, as a realm would.
         let trained = if train { seats as u32 - crew } else { 0 };
@@ -1029,6 +1034,7 @@ impl Galaxy {
             mercs,
             crew,
             merc_at,
+            rank,
             flown,
             defend,
         } = plan;
@@ -1054,6 +1060,9 @@ impl Galaxy {
         } else {
             self.realms[r as usize].tier
         };
+        // (for the crew, theirs)
+        let kit =
+            crate::economy::damage_factor(rank.round() as u8) / crate::economy::damage_factor(tier);
         let mut pf = 1.0 + self.rules.home_ground * mine0 / total;
         pf *= crate::economy::damage_factor(tier);
         let af = crate::economy::armor_factor(tier);
@@ -1170,7 +1179,10 @@ impl Galaxy {
                     } else {
                         0.0
                     };
-                    let ff = (ho.min(flown + lent) + hm.min(crew)).min(front) * pf;
+                    // Its crews fire first: there's a place for so many.
+                    let crews = (hm.min(crew) + lent.min(ho)).min(front);
+                    let own_fire = (ho - lent.min(ho)).min(flown).min(front - crews);
+                    let ff = (crews * kit + own_fire) * pf;
                     let fe = he.min(crew_e).min(front) * pe;
                     let share = ff / (ff + fe).max(1e-3);
                     // Theirs open to it: while generators are up, those and
@@ -1232,6 +1244,16 @@ impl Galaxy {
                 length: f32::max(length, 1.0),
             }
         }
+    }
+
+    /// The gear company `c` would fly on quote `q`: its crew's, those it'd
+    /// hire as those hired lately, and rookies.
+    fn crew_rank(&self, c: usize, q: &Quote) -> f32 {
+        let n = q.crew.max(1) as f32;
+        let aboard = &self.companies[c].pilots;
+        let known: f32 = aboard.iter().take(q.crew as usize).map(|p| p.rank).sum();
+        let hired = q.crew as f32 - aboard.len().min(q.crew as usize) as f32 - q.trained as f32;
+        (known + hired.max(0.0) * self.hire_rank) / n
     }
 
     /// Ticks for realm `e` (of side `g`) to bring help to system `t`.
@@ -1389,6 +1411,7 @@ impl Galaxy {
                     mercs,
                     crew: q.crew as f32,
                     merc_at,
+                    rank: self.crew_rank(c, &q),
                     ..plan
                 };
                 let fc = self.forecast(t, f, r, &with);
@@ -1837,6 +1860,7 @@ impl Galaxy {
                     let with = Plan {
                         mercs: hulls,
                         crew,
+                        rank: self.crew_rank(c, &q),
                         ..Default::default()
                     };
                     let fc = self.forecast(t, super::RAID, none, &with);
