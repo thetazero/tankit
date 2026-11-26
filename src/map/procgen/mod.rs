@@ -1181,17 +1181,20 @@ mod tests {
     #[test]
     #[ignore = "a probe"]
     fn where_greats() {
-        for seed in 0..12 {
-            let sk = skeleton(&spec(seed));
-            for l in &sk.landmarks {
-                let (c, g) = (l.center, sk.ground(l.center));
-                println!("great {seed} {:?} {:.0} {:.0} {g:.1}", l.kind, c.x, c.y);
+        for look in [Look::Imperium, Look::Ithessar] {
+            for seed in 0..10 {
+                let sk = skeleton(&crate::city_spec(seed, look));
+                for l in &sk.landmarks {
+                    let (c, g) = (l.center, sk.ground(l.center));
+                    println!(
+                        "great {seed} {:?} {:.0} {:.0} {g:.1} {look:?}",
+                        l.kind, c.x, c.y
+                    );
+                }
             }
         }
     }
 
-    /// Every bridge over a plasma river is clear of it all along, and can
-    /// be driven from one end to the other; and there are enough of them.
     #[test]
     #[cfg_attr(
         debug_assertions,
