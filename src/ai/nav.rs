@@ -172,7 +172,7 @@ impl NavGrid {
                 let Some(y) = map.rivers.iter().find_map(|r| r.surface(c, 2.5)) else {
                     continue;
                 };
-                for l in [TOP, UNDER] {
+                for l in 0..LEVELS {
                     if nav.floor[i][l] < y + 1.0 {
                         nav.blocked[i][l] = true;
                     }
