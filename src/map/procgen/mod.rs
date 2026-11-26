@@ -61,6 +61,18 @@ pub enum Look {
     Ithessar,
 }
 
+impl Look {
+    /// The style `founder` builds cities in: the Imperium's, for those whose
+    /// own isn't made yet.
+    pub fn of(founder: Faction) -> Look {
+        match founder {
+            Faction::Resonant => Look::Resonant,
+            Faction::Ithessar => Look::Ithessar,
+            Faction::Imperium | Faction::Uthenn | Faction::Company => Look::Imperium,
+        }
+    }
+}
+
 /// What stands in the middle, the thing the fight's about. Either keeps to
 /// the skeleton's landmark: the same map round it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -554,6 +566,7 @@ impl Map {
     pub fn shield_city_in(seed: u64, owner: Faction, condition: shield::Condition) -> Map {
         map(&crate::shield_spec(
             seed,
+            Look::Imperium,
             crate::Generator { owner, condition },
             false,
         ))

@@ -61,7 +61,7 @@ tankit [OPTIONS]
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-city, shield-site or shield-desert) the generator's down, n ticks of repair
                           to go: 4 a wreck nobody's started on, 1 to 3 going back up (default 0: up)
-  --look <imperium|resonant>  (with --map city) whose city it is (default imperium)
+  --look <imperium|resonant>  (with --map city or shield-site) whose city it is (default imperium)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -302,11 +302,14 @@ impl Args {
             (true, MapKind::City(l)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
             (true, MapKind::Mine) => map::procgen::greybox(&mine_spec(self.map_seed)),
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
-            (true, MapKind::ShieldCity(g)) => {
-                map::procgen::greybox(&shield_spec(self.map_seed, g, false))
-            }
-            (true, MapKind::ShieldSite(g)) => {
-                map::procgen::greybox(&shield_spec(self.map_seed, g, true))
+            (true, MapKind::ShieldCity(g)) => map::procgen::greybox(&shield_spec(
+                self.map_seed,
+                map::procgen::Look::Imperium,
+                g,
+                false,
+            )),
+            (true, MapKind::ShieldSite(l, g)) => {
+                map::procgen::greybox(&shield_spec(self.map_seed, l, g, true))
             }
             (true, MapKind::ShieldDesert(g)) => {
                 map::procgen::greybox(&shield_desert_spec(self.map_seed, g))
@@ -339,7 +342,7 @@ pub enum MapKind {
     /// The shield city as a theater's shield generator site is fought on
     /// (#341): two sides (the theater's), the generator its holder's, in
     /// the shape the site's in.
-    ShieldSite(Generator),
+    ShieldSite(map::procgen::Look, Generator),
     /// The Foundry: a wrecked Uthenn tungsten cube factory.
     Foundry,
     /// An Ithessar crystal mine in a desert escarpment, on three levels.
@@ -361,8 +364,10 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Sanctum => map::Map::sanctum(),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City(l) => map::procgen::map(&city_spec(seed, l)),
-        MapKind::ShieldCity(g) => map::procgen::map(&shield_spec(seed, g, false)),
-        MapKind::ShieldSite(g) => map::procgen::map(&shield_spec(seed, g, true)),
+        MapKind::ShieldCity(g) => {
+            map::procgen::map(&shield_spec(seed, map::procgen::Look::Imperium, g, false))
+        }
+        MapKind::ShieldSite(l, g) => map::procgen::map(&shield_spec(seed, l, g, true)),
         MapKind::Foundry => map::Map::foundry(),
         MapKind::Mine => map::procgen::map(&mine_spec(seed)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
@@ -384,7 +389,12 @@ pub fn city_spec(seed: u64, look: map::procgen::Look) -> map::procgen::Spec {
 /// The imperial city `seed` names, `owner`'s shield generator in its
 /// middle (whoever holds the city now).
 pub fn shield_city_spec(seed: u64, owner: faction::Faction) -> map::procgen::Spec {
-    shield_spec(seed, Generator::up(owner), false)
+    shield_spec(
+        seed,
+        map::procgen::Look::Imperium,
+        Generator::up(owner),
+        false,
+    )
 }
 
 /// A shield generator for a map: whose model it is, and what shape it's in.
@@ -403,10 +413,15 @@ impl Generator {
     }
 }
 
-/// The imperial city `seed` names with generator `g` in its middle: all
+/// The city `seed` names in `look` with generator `g` in its middle: all
 /// four sides, or for a theater's site, two (the default matchup, which the
 /// theater's sides stand in for).
-pub fn shield_spec(seed: u64, g: Generator, site: bool) -> map::procgen::Spec {
+pub fn shield_spec(
+    seed: u64,
+    look: map::procgen::Look,
+    g: Generator,
+    site: bool,
+) -> map::procgen::Spec {
     let sides = match site {
         true => map::DEFAULT_SIDES.to_vec(),
         false => faction::Faction::ALL.to_vec(),
@@ -414,7 +429,7 @@ pub fn shield_spec(seed: u64, g: Generator, site: bool) -> map::procgen::Spec {
     map::procgen::Spec {
         centerpiece: map::procgen::Centerpiece::ShieldGenerator(g.owner, g.condition),
         sides,
-        ..city_spec(seed, map::procgen::Look::Imperium)
+        ..city_spec(seed, look)
     }
 }
 
@@ -698,7 +713,10 @@ fn parse_args() -> Result<Args> {
                     map_kind = MapKind::ShieldCity(Generator::up(faction::Faction::Imperium))
                 }
                 Some("shield-site") => {
-                    map_kind = MapKind::ShieldSite(Generator::up(faction::Faction::Imperium))
+                    map_kind = MapKind::ShieldSite(
+                        map::procgen::Look::Imperium,
+                        Generator::up(faction::Faction::Imperium),
+                    )
                 }
                 Some("foundry") => map_kind = MapKind::Foundry,
                 Some("mine") => map_kind = MapKind::Mine,
@@ -968,10 +986,10 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
-    if let (MapKind::City(l), Some(look)) = (&mut map_kind, look) {
+    if let (MapKind::City(l) | MapKind::ShieldSite(l, _), Some(look)) = (&mut map_kind, look) {
         *l = look;
     }
-    if let MapKind::ShieldCity(g) | MapKind::ShieldSite(g) | MapKind::ShieldDesert(g) =
+    if let MapKind::ShieldCity(g) | MapKind::ShieldSite(_, g) | MapKind::ShieldDesert(g) =
         &mut map_kind
     {
         if let Some(owner) = generator {

@@ -124,7 +124,10 @@ pub const MISSIONS: &[Mission] = &[
         name: "SHIELD WALL",
         contract: Contract::Hold,
         map: "SHIELD CITY",
-        map_kind: MapKind::ShieldSite(crate::Generator::up(Faction::Imperium)),
+        map_kind: MapKind::ShieldSite(
+            crate::map::procgen::Look::Imperium,
+            crate::Generator::up(Faction::Imperium),
+        ),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],

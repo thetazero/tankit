@@ -96,8 +96,8 @@ impl Style for Resonant {
         veins(map, sk, s);
     }
 
-    fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, rng: &mut Rng) {
-        bell_gate(map, rng, s, sk.ground(s.at));
+    fn span(&self, map: &mut Map, sk: &Skeleton, s: &Span, _rng: &mut Rng) {
+        bell_gate(map, s, sk.ground(s.at));
     }
 
     fn lot(&self, map: &mut Map, sk: &Skeleton, lot: &Lot, rng: &mut Rng) -> Vec<Drift> {
@@ -106,6 +106,7 @@ impl Style for Resonant {
             LotKind::Big if rng.chance(0.5) => {
                 return ruins::building_in(map, rng, *f, lot.front, &|_| true, &HOUSES);
             }
+            LotKind::Big if rng.chance(0.35) => nave(map, rng, f),
             LotKind::Big => {
                 let h = rng.range(9.0, 15.0);
                 hall(map, rng, f, h, true);
@@ -115,7 +116,12 @@ impl Style for Resonant {
                 hall(map, rng, f, h, true);
             }
             LotKind::Raised => cloister(map, rng, f),
-            LotKind::Rubble => map.rubble_lot(rng, f, IVORY * 0.85),
+            LotKind::Rubble => {
+                map.rubble_lot(rng, f, IVORY * 0.85);
+                if rng.chance(0.6) {
+                    toppled_spire(map, rng, f);
+                }
+            }
             LotKind::Distant => {
                 let out = (-f.center)
                     .max(f.center - Vec2::splat(sk.size))
@@ -388,6 +394,23 @@ fn hall(map: &mut Map, rng: &mut Rng, lot: &OBox, h: f32, solid: bool) {
         );
         let o = *map.oboxes.last().unwrap();
         map.ragged_top(rng, &o);
+        // The standing part's torn end: broken stubs of wall against it,
+        // highest at the sides.
+        let n = 5;
+        for k in 0..n {
+            let u = (k as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let top = (low + (h - low) * (0.25 + 0.6 * u.abs()) * rng.range(0.7, 1.1)).min(h);
+            put(
+                map,
+                &rig,
+                Vec3::new(u * w, top * 0.5, cut + rng.range(0.2, 0.5)),
+                Vec3::new(w / n as f32 * 0.96, top * 0.5, 0.6),
+                color * rng.range(0.88, 0.96),
+                Material::Plaster,
+                false,
+            );
+            map.oboxes.last_mut().unwrap().broken = true;
+        }
     }
     // Bays down each side: a buttress, a window.
     let bays = ((l * 2.0) / 3.6).round().max(2.0) as i32;
@@ -463,6 +486,108 @@ fn hall(map: &mut Map, rng: &mut Rng, lot: &OBox, h: f32, solid: bool) {
             mend(map, rng, &rig, x, z + s * 0.03, (0.3, h * 0.85));
         }
     }
+}
+
+/// A nave on `lot`, open at both ends: two walls of lit lancets, pointed
+/// arches and a steep roof over; tanks drive right through.
+fn nave(map: &mut Map, rng: &mut Rng, lot: &OBox) {
+    let (rig, w, l) = stand(lot, 0.0);
+    let color = WALLS[rng.index(WALLS.len())];
+    let (h, t) = (rng.range(8.0, 10.5), 0.6);
+    let (w, l) = (w - 0.4, l - 0.3);
+    for s in [-1.0f32, 1.0] {
+        put(
+            map,
+            &rig,
+            Vec3::new(s * (w - t), h * 0.5 - 0.1, 0.0),
+            Vec3::new(t, h * 0.5 + 0.1, l),
+            color,
+            Material::Plaster,
+            true,
+        );
+        map.oboxes.last_mut().unwrap().chip = 0.01;
+        for k in -1..=1 {
+            let z = k as f32 * l * 0.62;
+            for x in [w + 0.02, w - t * 2.0 - 0.02] {
+                window(
+                    map,
+                    &rig,
+                    Vec3::new(s * x, h * 0.52, z),
+                    true,
+                    (0.6, h * 0.26),
+                    true,
+                );
+            }
+        }
+        // Each end's half of the arch, and one in the middle.
+        for z in [-l + 0.4, 0.0, l - 0.4] {
+            map.pipe(
+                rig.point(Vec3::new(s * (w - t * 2.0), h * 0.72, z)),
+                rig.point(Vec3::new(0.0, h + w * 1.2, z)),
+                0.3,
+                GILT,
+                Material::Metal,
+                false,
+            );
+        }
+    }
+    // Just the slopes: the ends stay open under the gables' arches.
+    let rise = w * 1.3;
+    let slope = rise.atan2(w);
+    let len = w.hypot(rise) + 0.35;
+    for s in [-1.0f32, 1.0] {
+        rig.part(
+            map,
+            Vec3::new(s * w * 0.5, h + rise * 0.5, 0.0)
+                + Vec3::new(s * slope.sin(), slope.cos(), 0.0) * 0.2,
+            Vec3::new(len * 0.5, 0.2, l + 0.3),
+            Quat::from_rotation_z(-s * slope),
+            SLATE,
+            Material::Roof,
+            true,
+            0.0,
+        );
+    }
+    put(
+        map,
+        &rig,
+        Vec3::new(0.0, h + rise + 0.45, 0.0),
+        Vec3::new(0.14, 0.25, l + 0.4),
+        GILT,
+        Material::Metal,
+        false,
+    );
+    let p = rig.point(Vec3::new(0.0, h * 0.8, 0.0));
+    map.lights.push(PointLight {
+        pos: p,
+        color: CRYSTAL_LIGHT * 5.0,
+        radius: 14.0,
+    });
+}
+
+/// A steeple that came down on `lot`, lying along it: cover from end to end.
+fn toppled_spire(map: &mut Map, rng: &mut Rng, lot: &OBox) {
+    let (rig, w, l) = stand(lot, 0.0);
+    let x = rng.range(-0.4, 0.4) * w;
+    let end = if rng.chance(0.5) { 1.0 } else { -1.0 };
+    let at = |u: f32| rig.point(Vec3::new(x, 0.0, end * l * (u * 2.0 - 1.0) * 0.9));
+    let n = 4;
+    for k in 0..n {
+        let r = 2.0 - 1.4 * (k as f32 + 0.5) / n as f32;
+        let (a, b) = (at(k as f32 / n as f32), at((k as f32 + 0.93) / n as f32));
+        let up = Vec3::Y * (r - 0.15);
+        let slate = SLATE * rng.range(0.9, 1.1);
+        map.pipe(a + up, b + up, r, slate, Material::Roof, true);
+    }
+    let tip = at(1.0) + Vec3::Y * 0.4;
+    map.segment(
+        at(0.96) + Vec3::Y * 0.5,
+        tip,
+        0.12,
+        GILT,
+        Material::Metal,
+        false,
+    );
 }
 
 /// A cloister on `lot`: a heavy upper storey and steep roof lifted on
@@ -636,24 +761,11 @@ fn far_house(map: &mut Map, rng: &mut Rng, lot: &OBox, h: f32) {
     );
 }
 
-/// A spire from `at` up `h`, `r` at the foot: boxes stepping in.
+/// A round spire of slates from `at` up `h`, `r` at the foot.
 fn spire(map: &mut Map, rig: &Rig, at: Vec3, r: f32, h: f32) {
-    let n = 14;
-    for k in 0..n {
-        let u = k as f32 / n as f32;
-        let hh = h / n as f32;
-        let rr = (r * (1.0 - u)).max(0.12);
-        rig.part(
-            map,
-            at + Vec3::Y * (u * h + hh * 0.5),
-            Vec3::new(rr, hh * 0.5 + 0.02, rr),
-            Quat::IDENTITY,
-            SLATE * (1.0 + 0.1 * u),
-            Material::Roof,
-            false,
-            0.0,
-        );
-    }
+    cone(map, rig.point(at), (r * 1.15, 0.0), (0.12, h), 3, |_, _| {
+        false
+    });
     put(
         map,
         rig,
@@ -971,7 +1083,7 @@ fn veins(map: &mut Map, sk: &Skeleton, s: &Street) {
 
 /// A gate over a street: two buttressed piers, a pointed arch, a bell hung
 /// from its point. Ruined, one pier's broken and its half of the arch gone.
-fn bell_gate(map: &mut Map, rng: &mut Rng, s: &Span, g: f32) {
+fn bell_gate(map: &mut Map, s: &Span, g: f32) {
     let yaw = (-s.along.y).atan2(s.along.x);
     let rig = Rig {
         pos: Vec3::new(s.at.x, g, s.at.y),
@@ -983,7 +1095,7 @@ fn bell_gate(map: &mut Map, rng: &mut Rng, s: &Span, g: f32) {
     let apex = Vec3::new(0.0, h + 8.0, 0.0);
     for k in [-1.0f32, 1.0] {
         let broken = s.ruined && k > 0.0;
-        let top = if broken { 7.0 } else { h };
+        let top = if broken { 2.2 } else { h };
         put(
             map,
             &rig,
@@ -995,8 +1107,28 @@ fn bell_gate(map: &mut Map, rng: &mut Rng, s: &Span, g: f32) {
         );
         map.oboxes.last_mut().unwrap().chip = 0.01;
         if broken {
-            let o = *map.oboxes.last().unwrap();
-            map.ragged_top(rng, &o);
+            // Broken down to a stump, what fell heaped into a slope up it
+            // from either side: somewhere to jump from.
+            let (slope, rise) = (0.3f32, 2.2);
+            let len = rise / slope.sin();
+            for z in [-1.0f32, 1.0] {
+                let run = len * slope.cos();
+                let c = rig.point(Vec3::new(x, 0.0, z * (2.2 + run * 0.5)));
+                let down = rig.rot * Vec3::Z * z;
+                map.oboxes.push(OBox {
+                    center: Vec2::new(c.x, c.z),
+                    yaw: down.x.atan2(down.z),
+                    half: Vec2::new(w, len * 0.5),
+                    y0: g + rise * 0.5 - 0.3,
+                    y1: g + rise * 0.5,
+                    color: IVORY * 0.9,
+                    side_mat: Material::Plaster,
+                    top_mat: Material::Plaster,
+                    tilt: slope,
+                    ramp: true,
+                    ..OBox::default()
+                });
+            }
             continue;
         }
         put(
