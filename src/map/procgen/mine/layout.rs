@@ -26,32 +26,17 @@ use glam::{Vec2, Vec3};
 
 use super::*;
 use crate::map::procgen::land::{Butte, Crag, Fin, Land, Mound, Scarp, Wash};
+use crate::map::procgen::skeleton::{Role, Room};
 
 /// One mine dug into the escarpment: its Crag and rooms, every edge on the
 /// terrain's 2 m grid so the cut is clean.
 #[derive(Clone, Debug)]
 pub struct Mine {
     pub crag: Crag,
-    pub adit: Rect,
-    pub hall: Rect,
-    /// From the hall to the adit, where the cut crystal waits for the train.
-    pub crosscut: Rect,
-    /// From the hall out to the Face.
-    pub west_adit: Rect,
-    /// Along from the adit to the breach.
-    pub drift: Rect,
-    /// The other side's way in, from the Face to the drift.
-    pub breach: Rect,
-    /// The newest tunnel into the Crag, still being cut.
-    pub heading: Rect,
-    /// The borer's bay at the heading's end, high under the Crag.
-    pub bay: Rect,
-    /// The round tunnel it's cutting.
-    pub bore: Rect,
+    /// Its rooms, in the order of `Role`.
+    pub rooms: Vec<Room>,
     /// The borer's beam: from its emitter to the bore's face, and how thick.
     pub beam: (Vec3, Vec3, f32),
-    /// An open trench climbing east from the adit's end to the mesa's top.
-    pub box_cut: Rect,
     /// The hall's rock pillars.
     pub pillars: [Vec2; 4],
     /// The cutting rig working the hall, and which way its boom reaches.
@@ -65,47 +50,82 @@ pub struct Mine {
 }
 
 impl Mine {
-    pub fn caves(&self) -> [Rect; 9] {
-        [
-            self.adit,
-            self.hall,
-            self.crosscut,
-            self.west_adit,
-            self.drift,
-            self.breach,
-            self.heading,
-            self.bay,
-            self.bore,
-        ]
+    /// Every room with a roof.
+    pub fn caves(&self) -> impl Iterator<Item = Rect> {
+        self.rooms.iter().filter(|r| !r.open()).map(|r| r.rect)
+    }
+
+    /// The room that's its `role`.
+    pub fn room(&self, role: Role) -> Rect {
+        self.rooms.iter().find(|r| r.role == role).unwrap().rect
+    }
+
+    pub fn adit(&self) -> Rect {
+        self.room(Role::Adit)
+    }
+
+    pub fn hall(&self) -> Rect {
+        self.room(Role::Hall)
+    }
+
+    pub fn crosscut(&self) -> Rect {
+        self.room(Role::Crosscut)
+    }
+
+    pub fn west_adit(&self) -> Rect {
+        self.room(Role::WestAdit)
+    }
+
+    pub fn drift(&self) -> Rect {
+        self.room(Role::Drift)
+    }
+
+    pub fn breach(&self) -> Rect {
+        self.room(Role::Breach)
+    }
+
+    pub fn heading(&self) -> Rect {
+        self.room(Role::Heading)
+    }
+
+    pub fn bay(&self) -> Rect {
+        self.room(Role::Bay)
+    }
+
+    pub fn bore(&self) -> Rect {
+        self.room(Role::Bore)
+    }
+
+    pub fn box_cut(&self) -> Rect {
+        self.room(Role::BoxCut)
     }
 
     /// Its mouths in the Crag's face: the rail adit and the new heading.
     pub fn mouths(&self) -> [Rect; 2] {
-        [self.adit, self.heading]
+        [self.adit(), self.heading()]
     }
 
     /// Feet of the Crag's face further back than this (z) run up its sides,
     /// not along its front.
     pub fn front_limit(&self) -> f32 {
-        self.bay.0.y + 10.0
+        self.bay().0.y + 10.0
     }
 
     /// The box cut's floor at `x`: from the adit's floor up to the mesa's top.
     pub fn box_cut_floor(&self, x: f32) -> f32 {
-        let (a, b) = self.box_cut;
+        let (a, b) = self.box_cut();
         TOP * ((x - a.x - 2.0) / (b.x - a.x - 4.0)).clamp(0.0, 1.0)
     }
 
     /// A high room's roof over a point in it: the bay, and the hall and
     /// crosscut where the Crag is deep over them.
     fn high_roof(&self, p: Vec2, crag_depth: f32) -> Option<f32> {
-        if within(self.bay, p, 0.0) {
-            Some(BAY_ROOF)
-        } else if (within(self.hall, p, 0.0) || within(self.crosscut, p, 0.0)) && crag_depth > 4.0 {
-            Some(HALL_ROOF)
-        } else {
-            None
-        }
+        self.rooms
+            .iter()
+            .filter(|r| within(r.rect, p, 0.0))
+            // (The hall's only high where the Crag is deep over it.)
+            .filter(|r| r.role == Role::Bay || crag_depth > 4.0)
+            .find_map(|r| r.roof)
     }
 }
 
@@ -137,8 +157,6 @@ pub struct Bridge {
 pub struct Layout {
     pub size: f32,
     pub mines: Vec<Mine>,
-    /// Every mine's rooms.
-    pub caves: Vec<Rect>,
     /// The landforms out on the flats.
     pub land: Land,
     /// A railroad out of each mine: in the adit, out at its mouth, on south
@@ -194,7 +212,6 @@ impl Layout {
         let mut l = Layout {
             size: 0.0,
             mines: Vec::new(),
-            caves: Vec::new(),
             land: Land::default(),
             lines: Vec::new(),
             bridges: Vec::new(),
@@ -327,20 +344,22 @@ impl Layout {
             }
         }
         for k in 0..self.mines.len() {
-            let (bx0, bx1) = (self.mines[k].breach.0.x, self.mines[k].breach.1.x);
+            let (bx0, bx1) = (self.mines[k].breach().0.x, self.mines[k].breach().1.x);
             let (lo, _) = self.face_range(bx0, bx1);
-            self.mines[k].breach.0.y = even_down(lo - 6.0);
+            let breach = self.mines[k].rooms.iter_mut();
+            for r in breach.filter(|r| r.role == Role::Breach) {
+                r.rect.0.y = even_down(lo - 6.0);
+            }
             let m = &self.mines[k];
             let (_, hi) = self.face_range(m.crag.w, m.crag.e);
-            if hi + FACE_RISE + 4.0 > m.bay.0.y {
+            if hi + FACE_RISE + 4.0 > m.bay().0.y {
                 return Err(line!());
             }
         }
-        self.caves = self.mines.iter().flat_map(|m| m.caves()).collect();
         // The mesa's west end: long enough for the heaviest hull to drive up
         // (the Seam's ran 40 m), its foot in from the west edge (room to
         // drive round onto it), short of the first west adit.
-        let wx = self.mines[0].west_adit.0.x;
+        let wx = self.mines[0].west_adit().0.x;
         let wr1 = rng.range(48.0, 54.0).min(wx - 8.0);
         if wr1 - wr0 < 36.0 {
             return Err(line!());
@@ -434,6 +453,20 @@ impl Layout {
         if scree.1 - scree.0 < 24.0 {
             return Err(line!());
         }
+        let rooms = [
+            (Role::Adit, adit, None),
+            (Role::Hall, hall, Some(HALL_ROOF)),
+            (Role::Crosscut, crosscut, Some(HALL_ROOF)),
+            (Role::WestAdit, west_adit, None),
+            (Role::Drift, drift, None),
+            (Role::Breach, breach, None),
+            (Role::Heading, heading, None),
+            (Role::Bay, bay, Some(BAY_ROOF)),
+            (Role::Bore, bore, None),
+            (Role::BoxCut, box_cut, None),
+        ]
+        .map(|(role, rect, roof)| Room { role, rect, roof })
+        .to_vec();
         Ok(Mine {
             crag: Crag {
                 w: cw,
@@ -442,17 +475,8 @@ impl Layout {
                 flare_z: z0 - 8.0,
                 phase: rng.range(0.0, TAU),
             },
-            adit,
-            hall,
-            crosscut,
-            west_adit,
-            drift,
-            breach,
-            heading,
-            bay,
-            bore,
+            rooms,
             beam,
-            box_cut,
             pillars,
             hall_rig: (v(x1 - 4.0, z0 + 4.5), -PI * 0.5 - 0.3),
             headframe: v(x0 - 2.0, (z1 + 9.0).min(s - 10.0)),
@@ -520,7 +544,7 @@ impl Layout {
         // away between them.
         let mut marks = vec![(-14.0, z_west)];
         for (k, m) in self.mines.iter().enumerate() {
-            let x = m.adit.0.x + 6.0;
+            let x = m.adit().0.x + 6.0;
             if k > 0 {
                 // Well out from under the scree between them (its way up
                 // starts at its foot).
@@ -622,7 +646,7 @@ impl Layout {
         let s = self.size;
         let n = self.mines.len();
         let mut bridges = Vec::new();
-        let x = self.mines[k].adit.0.x + 6.0;
+        let x = self.mines[k].adit().0.x + 6.0;
         let mouth = Vec2::new(x, self.face(x) + 1.0);
         // The first line leans east (or west, with another east of it).
         let a = match (n, k) {
@@ -1142,7 +1166,7 @@ impl Layout {
             .mines
             .iter()
             .map(|m| {
-                let x = m.adit.0.x + 6.0;
+                let x = m.adit().0.x + 6.0;
                 Vec2::new(x, self.face(x) - 6.0)
             })
             .collect();
@@ -1249,8 +1273,8 @@ impl Layout {
         let f = |x: f32| Vec2::new(x, self.face(x) - 15.0);
         let mut repairs = Vec::new();
         for m in &self.mines {
-            repairs.push(f(m.west_adit.0.x - 20.0));
-            repairs.push(f(m.breach.1.x + 6.0));
+            repairs.push(f(m.west_adit().0.x - 20.0));
+            repairs.push(f(m.breach().1.x + 6.0));
         }
         let x = self.lines[0][3].x;
         repairs.extend([
@@ -1313,14 +1337,14 @@ impl Layout {
         let mid = |r: Rect| (r.0 + r.1) * 0.5;
         spots.push(self.shed.0);
         for m in &self.mines {
-            spots.push(Vec2::new(mid(m.adit).x, m.bay.0.y + 10.0));
-            spots.push(Vec2::new(mid(m.adit).x, m.drift.0.y - 4.0));
-            spots.push(mid(m.hall));
-            spots.push(Vec2::new(m.hall.0.x + 5.0, m.hall.1.y - 4.0));
-            spots.push(mid(m.drift));
-            spots.push(Vec2::new(mid(m.breach).x, m.drift.0.y - 14.0));
-            spots.push(Vec2::new(mid(m.heading).x, m.heading.0.y + 8.0));
-            spots.push(Vec2::new(m.bay.0.x + 4.0, m.bay.1.y - 5.0));
+            spots.push(Vec2::new(mid(m.adit()).x, m.bay().0.y + 10.0));
+            spots.push(Vec2::new(mid(m.adit()).x, m.drift().0.y - 4.0));
+            spots.push(mid(m.hall()));
+            spots.push(Vec2::new(m.hall().0.x + 5.0, m.hall().1.y - 4.0));
+            spots.push(mid(m.drift()));
+            spots.push(Vec2::new(mid(m.breach()).x, m.drift().0.y - 14.0));
+            spots.push(Vec2::new(mid(m.heading()).x, m.heading().0.y + 8.0));
+            spots.push(Vec2::new(m.bay().0.x + 4.0, m.bay().1.y - 5.0));
         }
         for b in &self.land.buttes {
             spots.push(b.center);
@@ -1378,16 +1402,20 @@ impl Layout {
         self.scarp().mesa(p)
     }
 
+    /// Every mine's rooms with a roof.
+    pub fn caves(&self) -> impl Iterator<Item = Rect> {
+        self.mines.iter().flat_map(|m| m.caves())
+    }
+
     /// Distance from a point to the nearest cave (0 inside one).
     pub fn cave_distance(&self, p: Vec2) -> f32 {
-        self.caves
-            .iter()
-            .map(|&r| rect_distance(r, p))
+        self.caves()
+            .map(|r| rect_distance(r, p))
             .fold(f32::INFINITY, f32::min)
     }
 
     pub fn in_cave(&self, p: Vec2) -> bool {
-        self.caves.iter().any(|&r| within(r, p, 0.0))
+        self.caves().any(|r| within(r, p, 0.0))
     }
 
     /// Every mouth in a Crag's face.
@@ -1397,14 +1425,14 @@ impl Layout {
 
     /// In a box cut, grown by `grow`.
     pub fn in_box_cut(&self, p: Vec2, grow: f32) -> bool {
-        self.mines.iter().any(|m| within(m.box_cut, p, grow))
+        self.mines.iter().any(|m| within(m.box_cut(), p, grow))
     }
 
     /// Distance to the nearest box cut.
     pub fn box_cut_distance(&self, p: Vec2) -> f32 {
         self.mines
             .iter()
-            .map(|m| rect_distance(m.box_cut, p))
+            .map(|m| rect_distance(m.box_cut(), p))
             .fold(f32::INFINITY, f32::min)
     }
 
@@ -1565,8 +1593,8 @@ impl Layout {
         let mut rock = (TOP * m + (CRAG_TOP - TOP) * c + relief) * cut;
         // The box cuts, down through the rock.
         for mine in &self.mines {
-            let (a, b) = mine.box_cut;
-            let d = rect_distance(mine.box_cut, p);
+            let (a, b) = mine.box_cut();
+            let d = rect_distance(mine.box_cut(), p);
             rock = rock.min(mine.box_cut_floor(x.clamp(a.x, b.x)) + rock * smoothstep(0.0, 2.0, d));
         }
         let g = dunes * flat
@@ -1655,9 +1683,13 @@ impl Layout {
     pub fn drawn_roof(&self, p: Vec2) -> f32 {
         let under = ROOF.0 - 0.08;
         let near = |r: Rect| rect_distance(r, p) < 3.0;
-        let target = if self.mines.iter().any(|m| near(m.bay)) {
+        let target = if self.mines.iter().any(|m| near(m.bay())) {
             BAY_ROOF
-        } else if self.mines.iter().any(|m| near(m.hall) || near(m.crosscut)) {
+        } else if self
+            .mines
+            .iter()
+            .any(|m| near(m.hall()) || near(m.crosscut()))
+        {
             HALL_ROOF
         } else {
             return under;
@@ -1680,12 +1712,10 @@ impl Layout {
     /// The span of ground the mines' roofs and lining are worked over.
     pub fn mine_bounds(&self) -> Rect {
         let lo = self
-            .caves
-            .iter()
+            .caves()
             .fold(Vec2::splat(f32::INFINITY), |m, r| m.min(r.0));
         let hi = self
-            .caves
-            .iter()
+            .caves()
             .fold(Vec2::splat(f32::NEG_INFINITY), |m, r| m.max(r.1));
         (
             Vec2::new(even_down(lo.x - 6.0), even_down(lo.y - 4.0)),
