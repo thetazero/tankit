@@ -15,7 +15,7 @@ use crate::MapKind;
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
 use crate::faction::Faction;
 use crate::galaxy::theater::{
-    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name, system_name,
+    Berth, ChoiceView, CrewNews, Ended, Ship, SiteView, Sortie, Theater, ship_name,
 };
 use crate::garage::{self, Loadout, PANEL_W, PANEL_X};
 use crate::mission::{Contract, MISSIONS};
@@ -1293,10 +1293,6 @@ fn contract(p: &mut Painter, at: Vec2, ship: &Ship, system: &str) -> f32 {
             "The {} merged into this ship",
             title(&ship_name(from))
         )),
-        Some(CrewNews::Sailed { from }) => Some(format!(
-            "Sailed here from {} for work",
-            title(&system_name(from as usize))
-        )),
         Some(CrewNews::Gone { from }) => Some(format!(
             "Moved here: the {} is gone",
             title(&ship_name(from))
@@ -2450,6 +2446,7 @@ fn fade(mut v: Vec<UiVertex>, alpha: f32) -> Vec<UiVertex> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::galaxy::theater::system_name;
 
     #[test]
     fn main_menu_navigation() {

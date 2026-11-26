@@ -192,8 +192,6 @@ impl Shown {
 pub enum CrewNews {
     /// It joined another (yours now): `from` was its id.
     Joined { from: u32 },
-    /// It had no work for long, and sailed from system `from` for some.
-    Sailed { from: u32 },
     /// It's gone, and the Company put you with another: `from` was its id.
     Gone { from: u32 },
     /// It split in two, and you went with this half: `other` is the other's id.
@@ -1300,7 +1298,8 @@ mod tests {
         assert_ne!(to as u32, at);
         assert!(g.systems[to].at_war());
         assert_eq!(g.companies[c].idle_since, g.tick);
-        assert_eq!(g.crew_news, Some(CrewNews::Sailed { from: at }));
+        // The contract card doesn't tell you it sailed (#499).
+        assert_eq!(g.crew_news, None);
     }
 
     /// Waiting for work a slice at a time (#452, a few ticks a frame) ends
