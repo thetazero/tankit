@@ -583,9 +583,13 @@ fn spawns(sk: &mut Skeleton, sites: &[Vec2], rng: &mut Rng, sides: usize, must: 
     true
 }
 
+/// How many mines have a wash.
+const WET: f32 = 0.85;
+
 /// A mine for `sides` sides, if this draw holds together (and, if it `must`,
-/// a dig's on the way from one side to another).
-fn draw(rng: &mut Rng, sides: &[Faction], must: bool) -> Result<Skeleton, String> {
+/// a dig's on the way from one side to another): one with a wash, if it's
+/// `wet`.
+fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skeleton, String> {
     let size = 2.0 * rng.int(125, 160) as f32;
     let mid = Vec2::splat(size * 0.5);
     let mut land = Land {
@@ -751,9 +755,9 @@ fn draw(rng: &mut Rng, sides: &[Faction], must: bool) -> Result<Skeleton, String
         }
     }
 
-    // A wash along the floor, out from under the cliff, perhaps.
+    // A wash along the floor, out from under the cliff.
     let mut crossings = Vec::new();
-    if rng.chance(0.65) {
+    if wet {
         for _ in 0..12 {
             let out = rng.range(62.0, 85.0);
             let bend = (rng.range(0.0, TAU), rng.range(8.0, 18.0));
@@ -782,6 +786,9 @@ fn draw(rng: &mut Rng, sides: &[Faction], must: bool) -> Result<Skeleton, String
                 land.washes.push(wash);
                 break;
             }
+        }
+        if must && land.washes.is_empty() {
+            return Err("no room for the wash".into());
         }
     }
 
@@ -994,10 +1001,13 @@ fn draw(rng: &mut Rng, sides: &[Faction], must: bool) -> Result<Skeleton, String
 
 /// The mine `seed` names: the first, from it on, that holds together.
 pub fn skeleton(seed: u64, sides: &[Faction]) -> Skeleton {
+    // Settled once for all its draws: those with a wash fail more often, so
+    // settled draw by draw few mines end up with one.
+    let wet = Rng::new(seed.wrapping_mul(0x9E37_79B9) ^ 0x3A54).chance(WET);
     (0..128u64)
         .find_map(|attempt| {
             let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x3_D16);
-            draw(&mut rng, sides, attempt < 64)
+            draw(&mut rng, sides, wet, attempt < 64)
                 .map_err(|why| log::debug!("mine seed {seed} attempt {attempt}: {why}"))
                 .ok()
         })
@@ -1033,6 +1043,21 @@ mod tests {
             let b = sk.base_spots();
             assert!(b[0].distance(b[1]) > sk.size * 0.68, "{b:?}");
         }
+    }
+
+    /// Most mines have a dry wash, whatever else is laid out round it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn most_mines_have_a_wash() {
+        let sides = [Faction::Ithessar, Faction::Resonant];
+        let n = 8;
+        let washes = (0..n)
+            .filter(|&s| !skeleton(s, &sides).land.washes.is_empty())
+            .count();
+        assert!(washes * 4 >= n as usize * 3, "{washes} of {n} have a wash");
     }
 
     /// Driving into a mine takes you somewhere else: every dig's mouths are
