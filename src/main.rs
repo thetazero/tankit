@@ -35,6 +35,7 @@ mod scene;
 mod ship_model;
 mod showroom;
 mod sim;
+mod stars;
 mod sweep;
 mod tank;
 mod theater_view;
@@ -64,6 +65,7 @@ tankit [OPTIONS]
   --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, mine, desert, shield-camp) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --weather <clear|sandstorm>  the weather it's fought in (default: clear)
+  --system <n>            whose stars are in the sky (some systems have two or three; default: one star); with --screen missions, whose stars and worlds it shows
   --generator <faction>   (with --map shield-site or shield-camp) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-site or shield-camp) the generator's down, n ticks of repair
@@ -190,6 +192,8 @@ pub struct Args {
     pub map: MapKind,
     /// --time-of-day and --weather.
     pub conditions: conditions::Conditions,
+    /// Whose stars the sky and the system view show (`--system`).
+    pub system: Option<usize>,
     pub spawn: usize,
     pub bots: usize,
     pub contract: mission::Contract,
@@ -739,6 +743,7 @@ fn parse_args() -> Result<Args> {
     let mut employer: Option<faction::Faction> = None;
     let mut generator: Option<faction::Faction> = None;
     let mut conditions = conditions::Conditions::default();
+    let mut system = None;
     let mut look: Option<map::procgen::Look> = None;
     let mut ground: Option<map::procgen::foundry::Ground> = None;
     let mut in_desert = false;
@@ -808,6 +813,11 @@ fn parse_args() -> Result<Args> {
                 conditions.weather = conditions::Weather::by_name(&name).with_context(|| {
                     format!("--weather expects clear or sandstorm, got {name:?}")
                 })?;
+            }
+            "--system" => {
+                let s = args.next().context("--system needs a number")?.parse()?;
+                conditions.companions = stars::companions(s);
+                system = Some(s);
             }
             "--greybox" => greybox = true,
             "--no-lod" => render::lod::disable(),
@@ -1231,6 +1241,7 @@ fn parse_args() -> Result<Args> {
         ticks,
         map: map_kind,
         conditions,
+        system,
         spawn,
         // Every side filled to the team size around you.
         bots: sides.len() * team_size.unwrap_or(6) - 1,
@@ -1698,8 +1709,11 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         Some(Screen::Missions | Screen::Site) => {
             menu.input(menu::Nav::Select);
-            let (crew, t) = war();
+            let (crew, mut t) = war();
             profile.ship = crew;
+            if let (Some(t), Some(s)) = (&mut t, args.system) {
+                t.system = s;
+            }
             menu.set_theater(t);
             if args.waiting {
                 // Your company's between contracts: the war's gone on a while

@@ -17,6 +17,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use crate::stars::{MAX_COMPANIONS, SkyStar};
 use glam::camera::rh::proj::directx as proj;
 use glam::camera::rh::view::look_at_mat4;
 use mesh::{Instance, MeshData, MeshId, Vertex};
@@ -100,6 +101,8 @@ pub struct Atmosphere {
     pub ambient: f32,
     /// 0..1: how bright the stars are.
     pub stars: f32,
+    /// The main star's companions (they light nothing).
+    pub companions: [SkyStar; MAX_COMPANIONS],
 }
 
 /// Desert sand, settled: `Atmosphere::settle` on most maps.
@@ -135,6 +138,7 @@ impl Default for Atmosphere {
             settle: SAND_SETTLE,
             ambient: 1.0,
             stars: 0.0,
+            companions: Default::default(),
         }
     }
 }
@@ -267,6 +271,8 @@ struct Globals {
     river_info: [f32; 4],
     /// Its course: each point, and how far down it that is.
     river: [[f32; 4]; RIVER_POINTS],
+    /// Companion stars, two vec4s each: direction and how sharp, color.
+    companions: [[f32; 4]; MAX_COMPANIONS * 2],
 }
 
 /// How much of a river lights a frame: this many points, `RIVER_STEP` apart
@@ -2009,7 +2015,12 @@ impl Renderer {
             lights: [[0.0; 4]; MAX_LIGHTS * 2],
             river_info: [0.0; 4],
             river: [[0.0; 4]; RIVER_POINTS],
+            companions: [[0.0; 4]; MAX_COMPANIONS * 2],
         };
+        for (k, c) in scene.atmosphere.companions.iter().enumerate() {
+            globals.companions[k * 2] = c.dir.extend(c.sharp).to_array();
+            globals.companions[k * 2 + 1] = c.color.extend(0.0).to_array();
+        }
         if let Some(r) = scene.rivers.first() {
             let near = r.stretch(scene.camera.pos, RIVER_POINTS, RIVER_STEP);
             let night = 1.0 - daylight(&scene.atmosphere);

@@ -1,4 +1,4 @@
-//! What a map's fought in: the time of day, and the weather. A layer over
+//! What a map's fought in: the time of day, the weather, and the stars in its sky. A layer over
 //! any map: the map is built as ever, with its own sky (its day), and the
 //! conditions then make that sky over (`Conditions::apply`). Nothing on the
 //! map moves, so its layout, cover and vistas are the same in any of them.
@@ -10,6 +10,7 @@ use glam::{Vec2, Vec3};
 use crate::map::Map;
 use crate::render::{Atmosphere, HIDDEN};
 use crate::rng::Rng;
+use crate::stars::{self, Companions};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TimeOfDay {
@@ -77,6 +78,8 @@ const STORM_WIND: f32 = 15.0;
 pub struct Conditions {
     pub time: TimeOfDay,
     pub weather: Weather,
+    /// The companions of its system's star.
+    pub companions: Companions,
 }
 
 impl Conditions {
@@ -95,7 +98,11 @@ impl Conditions {
             true => Weather::Sandstorm,
             false => Weather::Clear,
         };
-        Conditions { time, weather }
+        Conditions {
+            time,
+            weather,
+            ..Default::default()
+        }
     }
 
     /// Makes `map`'s sky over, from its own.
@@ -112,6 +119,8 @@ impl Conditions {
             Weather::Clear => {}
             Weather::Sandstorm => storm(&mut map.atmosphere),
         }
+        let night = self.time == TimeOfDay::Night;
+        stars::light_up(&self.companions, night, &mut map.atmosphere);
     }
 }
 
@@ -335,6 +344,7 @@ mod tests {
                 Conditions {
                     time,
                     weather: Weather::Sandstorm,
+                    ..Default::default()
                 }
                 .apply(&mut m);
                 let a = &m.atmosphere;

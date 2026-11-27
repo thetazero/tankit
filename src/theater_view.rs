@@ -1,5 +1,5 @@
 //! The missions screen's picture of the theater (#311): the system you're
-//! posted to, in 3D (#346). Its star on the left, its worlds on their
+//! posted to, in 3D (#346). Its star (or two, or three) on the left, its worlds on their
 //! orbits, each turning in the star's light under a haze of its holder's
 //! colour, and your company's ship (#327) parked over the world it's
 //! fighting for.
@@ -32,6 +32,7 @@ use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::scene::project;
 use crate::ship_model;
+use crate::stars;
 use crate::ui::{Align, Hits, Painter, Rgba, design, theme, with_alpha};
 
 const STAR: Rgba = [1.0, 0.86, 0.62, 1.0];
@@ -133,6 +134,30 @@ fn world_look(system: usize, planet: usize) -> (u64, planet::Look) {
     (seed, look)
 }
 
+/// Each star of system `system`: where it is from their middle, its radius
+/// (both in radii of a lone star), and its color.
+fn suns(system: usize, time: f32) -> Vec<(Vec3, f32, Vec3)> {
+    let main = Vec3::from_slice(&STAR[..3]);
+    let companions: Vec<_> = stars::companions(system).into_iter().flatten().collect();
+    let Some(first) = companions.first() else {
+        return vec![(Vec3::ZERO, 1.0, main)];
+    };
+    let round = |a: f32| Vec3::new(a.cos(), 0.0, -a.sin());
+    // The close pair swing about their middle, the nearer it the heavier;
+    // a third goes round them both, slower.
+    let start = system as f32 * 2.4;
+    let pair = round(start + time * 0.08);
+    let mut all = vec![
+        (pair * -0.6, 0.72, main),
+        (pair * 1.1, 0.72 * first.kind.size(), first.kind.color()),
+    ];
+    if let Some(third) = companions.get(1) {
+        let at = round(start + 2.0 + time * 0.03) * 2.2;
+        all.push((at, 0.6 * third.kind.size(), third.kind.color()));
+    }
+    all
+}
+
 /// The system view's meshes: its worlds, rebuilt when the theater changes,
 /// and your ship.
 pub struct SystemArt {
@@ -141,7 +166,7 @@ pub struct SystemArt {
     ship: MeshId,
     /// Each people's warship, and a raiding company's ship.
     fleet: [MeshId; SIDES],
-    /// A smooth ball, for the star.
+    /// A smooth ball, for the stars.
     ball: MeshId,
 }
 
@@ -173,28 +198,33 @@ impl SystemArt {
         }
     }
 
-    /// The star at `at`, `r` in radius: a white-hot ball in its own light,
-    /// and its glow.
-    pub fn star(
+    /// System `system`'s stars round `at`: its star, `r` in radius alone,
+    /// or it and its companions turning round each other.
+    pub fn stars(
         &self,
+        system: usize,
         at: Vec3,
         r: f32,
+        time: f32,
         instances: &mut Vec<(MeshId, Instance)>,
         particles: &mut Vec<Particle>,
     ) {
-        let star = Vec3::from_slice(&STAR[..3]);
-        instances.push((
-            self.ball,
-            Instance::new(
-                Mat4::from_scale_rotation_translation(Vec3::splat(r * 2.0), Quat::IDENTITY, at),
-                Vec4::new(1.0, 0.88, 0.66, 6.0),
-            ),
-        ));
-        // Many faint shells, so no one's edge shows.
-        for k in 0..24 {
-            let shell = r * (1.1 + 0.075 * k as f32);
-            let light = star.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
-            particles.push(Particle::glow(at, shell, light, 0.11, Vec3::ZERO));
+        for (off, size, color) in suns(system, time) {
+            let hot = color.lerp(Vec3::ONE, 0.1);
+            let (at, r) = (at + off * r, size * r);
+            instances.push((
+                self.ball,
+                Instance::new(
+                    Mat4::from_scale_rotation_translation(Vec3::splat(r * 2.0), Quat::IDENTITY, at),
+                    hot.extend(6.0),
+                ),
+            ));
+            // Many faint shells, so no one's edge shows.
+            for k in 0..24 {
+                let shell = r * (1.1 + 0.075 * k as f32);
+                let light = color.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
+                particles.push(Particle::glow(at, shell, light, 0.11, Vec3::ZERO));
+            }
         }
     }
 
@@ -254,6 +284,7 @@ fn atmosphere(l: &Layout) -> Atmosphere {
         settle: Vec3::splat(0.2),
         ambient: 0.35,
         stars: 0.0,
+        companions: Default::default(),
     }
 }
 
@@ -387,7 +418,14 @@ fn system_scene(
     ));
     stars(camera.pos, &mut particles);
 
-    art.star(l.star, STAR_R, &mut instances, &mut particles);
+    art.stars(
+        t.system,
+        l.star,
+        STAR_R,
+        time,
+        &mut instances,
+        &mut particles,
+    );
 
     // Orbits: hairline rings of faint light round the star.
     for w in &l.worlds {
@@ -1740,6 +1778,28 @@ mod tests {
                         "world at x {x} ({planets} worlds, aspect {aspect})"
                     );
                     assert!(y > VIEW_TOP + 100.0 && y < h - VIEW_BOTTOM - LEGEND_H - 100.0);
+                }
+            }
+        }
+    }
+
+    /// A system's stars never run into each other or the first world, and
+    /// stay in the view.
+    #[test]
+    fn suns_keep_clear() {
+        let t = theater(3);
+        for system in 0..300 {
+            for time in (0..40).map(|k| k as f32 * 7.0) {
+                let all = suns(system, time);
+                for (i, &(at, r, _)) in all.iter().enumerate() {
+                    for &(b, q, _) in &all[..i] {
+                        assert!(at.distance(b) > r + q, "system {system} at {time}");
+                    }
+                    assert!((at.length() + r) * STAR_R < ORBIT0 - WORLD_R);
+                    let aspect = 16.0 / 9.0;
+                    let vp = camera(&t, aspect).view_proj(aspect);
+                    let (x, _) = project(vp, at * STAR_R, REF_HEIGHT * aspect, REF_HEIGHT).unwrap();
+                    assert!(x > VIEW_LEFT, "star at {x} in system {system}");
                 }
             }
         }

@@ -17,6 +17,8 @@ struct Globals {
     lights: array<vec4<f32>, 64>,
     river_info: vec4<f32>,   // x: points in use, y: half its width, z: how strong its light is, w: night
     river: array<vec4<f32>, 40>, // xyz: a point of a plasma river's course, w: how far down it
+    // Companion stars, two each: xyz direction, w sharpness (0: none); rgb color.
+    companions: array<vec4<f32>, 4>,
 };
 
 const PLASMA = vec3<f32>(1.0, 0.1, 0.44);
@@ -349,6 +351,13 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     }
     let sd = max(dot(dir, g.sun_dir.xyz), 0.0);
     c += g.sun_color.rgb * (pow(sd, 2400.0) * 30.0 + pow(sd, 40.0) * 0.12 + pow(sd, 6.0) * 0.06);
+    for (var k = 0; k < 4; k += 2) {
+        let s = g.companions[k];
+        if (s.w > 0.0) {
+            let d = max(dot(dir, s.xyz), 0.0);
+            c += g.companions[k + 1].rgb * (pow(d, s.w) * 6.0 + pow(d, 300.0) * 0.12 + pow(d, 40.0) * 0.05);
+        }
+    }
     return c;
 }
 

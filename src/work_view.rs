@@ -537,7 +537,7 @@ pub fn scene(
     instances.push((MeshId::SPHERE, Instance::new(space, dark)));
     theater_view::stars(camera.pos, &mut particles);
     let (at, r) = in_sky(STAR, aspect);
-    sys.star(at, r, &mut instances, &mut particles);
+    sys.stars(o.at, at, r, time, &mut instances, &mut particles);
     for (i, (&holder, &place)) in o.holders.iter().zip(&WORLDS).enumerate() {
         let (at, r) = in_sky(place, aspect);
         let out = (&mut instances, &mut particles);
