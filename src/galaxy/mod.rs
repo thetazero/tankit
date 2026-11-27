@@ -123,11 +123,16 @@ const NEIGHBORS: usize = 12;
 
 /// How far either way luck takes a side's fire in a battle.
 const LUCK: f32 = 0.25;
-/// What a site that makes one thing makes of it, against one of a pair that
-/// made both: the galaxy's output of each is the same.
-const BOTH: f32 = 18.0 / 11.0;
-/// Hulls a foundry makes, against what it's rated at.
-const HULLS: f32 = 5.0;
+/// What a planet of ordinary riches makes a tick, all its sites together:
+/// crystals, and hulls.
+const CRYSTALS: f32 = 0.127;
+const HULLS: f32 = 31.7;
+/// How far planets' riches, and stars, spread: the deviation of their
+/// logarithm. Most are a little poor; a few, very rich.
+const RICH_SPREAD: f32 = 0.8;
+const STAR_SPREAD: f32 = 0.9;
+/// The richest of either, against the ordinary.
+const RICHEST: f32 = 8.0;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: u32 = 200;
 /// Most quiet ticks a step skips looking for the next war.
@@ -337,10 +342,56 @@ impl Moves {
     }
 }
 
+/// What's in a planet's ground, 1 the galaxy's average: crystal and what
+/// hulls are made of, as its mines and foundries make of them; and
+/// tungsten. One says nothing of the others.
+#[derive(Clone, Copy, Debug)]
+pub struct Riches {
+    pub crystal: f32,
+    pub hulls: f32,
+    pub tungsten: f32,
+}
+
+impl Riches {
+    fn roll(rng: &mut Rng) -> Riches {
+        Riches {
+            crystal: spread(rng, RICH_SPREAD),
+            hulls: spread(rng, RICH_SPREAD),
+            tungsten: spread(rng, RICH_SPREAD),
+        }
+    }
+
+    /// Its mines and its foundries: more where it's richer, none where
+    /// there's hardly any, but always one or the other.
+    fn sites(&self) -> (u32, u32) {
+        let of = |x: f32| match x {
+            x if x < 0.45 => 0,
+            x if x < 1.4 => 1,
+            x if x < 3.0 => 2,
+            _ => 3,
+        };
+        match (of(self.crystal), of(self.hulls)) {
+            (0, 0) if self.crystal > self.hulls => (1, 0),
+            (0, 0) => (0, 1),
+            n => n,
+        }
+    }
+}
+
+/// How much of something there is, 1 on average: a little, mostly, now and
+/// then a lot.
+fn spread(rng: &mut Rng, deviation: f32) -> f32 {
+    (deviation * rng.normal() - deviation * deviation / 2.0)
+        .exp()
+        .min(RICHEST)
+}
+
 #[derive(Clone, Debug)]
 pub struct System {
     /// Light years: in `REGION` in the plane, `z` off the midplane.
     pub pos: Vec3,
+    /// How bright its star is, 1 the galaxy's average.
+    pub starlight: f32,
     pub planets: u8,
     /// This system's sites, a range of `Galaxy::sites`.
     pub sites: (u32, u32),
@@ -445,6 +496,8 @@ pub struct Galaxy {
     incoming: std::collections::HashMap<(u32, u8), (f32, f32)>,
     /// Every planet's vault, and each system's first.
     pub vaults: Vec<Vault>,
+    /// Every planet's riches, in the vaults' order.
+    pub riches: Vec<Riches>,
     pub(crate) vault_at: Vec<u32>,
     /// What a company has lately made a tick, on average; and what they
     /// were all worth last tick.
@@ -582,6 +635,9 @@ impl Galaxy {
         let owners = settle(&spots, &hearts);
         // (Outposts' own dice: the rest of the galaxy's as it was without them.)
         let mut posts = Rng::new(seed ^ 0x0007_9057);
+        // (And its riches' and stars'.)
+        let mut ground = Rng::new(seed ^ 0x0060_0D5E);
+        let mut riches = Vec::new();
         for (pos, owner) in spots.into_iter().zip(owners) {
             let planets = match rng.f32() {
                 x if x < 0.5 => 1,
@@ -603,23 +659,22 @@ impl Galaxy {
                         kind: SiteKind::Shield { damaged: false },
                     });
                 }
-                for _ in 0..rng.int(1, 3) {
+                // Mines and foundries, sharing out what the planet makes.
+                let rich = Riches::roll(&mut ground);
+                riches.push(rich);
+                let (mines, foundries) = rich.sites();
+                for k in 0..mines + foundries {
+                    let uneven = rng.range(0.7, 1.3);
                     sites.push(Site {
                         planet,
                         owner,
-                        // A site makes the one of them it'd make more of, for
-                        // what sites make, so about half are mines; and as
-                        // much of it as both kinds together would.
-                        kind: {
-                            let (hulls, crystals) = (rng.range(1.0, 5.0), rng.range(0.02, 0.1));
-                            if crystals * 50.0 > hulls {
-                                SiteKind::Mine {
-                                    crystals: crystals * BOTH,
-                                }
-                            } else {
-                                SiteKind::Foundry {
-                                    hulls: hulls * BOTH * HULLS,
-                                }
+                        kind: if k < mines {
+                            SiteKind::Mine {
+                                crystals: CRYSTALS * rich.crystal / mines as f32 * uneven,
+                            }
+                        } else {
+                            SiteKind::Foundry {
+                                hulls: HULLS * rich.hulls / foundries as f32 * uneven,
                             }
                         },
                     });
@@ -644,6 +699,7 @@ impl Galaxy {
             held[owner as usize] = (end - start) as u8;
             systems.push(System {
                 pos,
+                starlight: spread(&mut ground, STAR_SPREAD),
                 planets,
                 sites: (start, end),
                 hulls: [0; SIDES],
@@ -692,6 +748,7 @@ impl Galaxy {
             hull_use: vec![0.0; count],
             incoming: Default::default(),
             vaults: Vec::new(),
+            riches,
             vault_at: Vec::new(),
             profit: 0.0,
             ban: None,
@@ -1111,6 +1168,12 @@ impl Galaxy {
     pub fn vaults_of(&self, s: usize) -> &[Vault] {
         let a = self.vault_at[s] as usize;
         &self.vaults[a..a + self.systems[s].planets as usize]
+    }
+
+    /// System `s`'s planets' riches.
+    pub fn riches_of(&self, s: usize) -> &[Riches] {
+        let a = self.vault_at[s] as usize;
+        &self.riches[a..a + self.systems[s].planets as usize]
     }
 
     /// If side `w` holds every site on `planet` of system `s` now, its vault
@@ -2189,6 +2252,18 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
         g.sites.len(),
         g.living().count(),
         t0.elapsed()
+    );
+    let at = |mut v: Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        [0.5, 0.9, 0.99, 1.0].map(|q| v[((v.len() - 1) as f32 * q) as usize])
+    };
+    let ground = || (0..g.systems.len()).flat_map(|s| g.riches_of(s));
+    println!(
+        "at 50/90/99/100%: starlight {:.1?}; a planet's crystal {:.1?}, hulls {:.1?}, tungsten {:.1?}",
+        at(g.systems.iter().map(|s| s.starlight).collect()),
+        at(ground().map(|x| x.crystal).collect()),
+        at(ground().map(|x| x.hulls).collect()),
+        at(ground().map(|x| x.tungsten).collect()),
     );
     let mut history = vec![g.census()];
     let mut snaps = vec![chart::Snapshot::take(&g)];

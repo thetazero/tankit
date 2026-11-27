@@ -1215,3 +1215,59 @@ fn planets_have_outposts() {
     assert!((0..bare.systems.len()).all(|s| bare.built(s) == [0.0; SIDES]));
     assert!(bare.realm_income().iter().all(|&x| x == 0.0));
 }
+
+/// Stars, and planets' crystal, hulls and tungsten: 1 on average, a few of
+/// them a lot, and none of it says anything of the rest; some planets are
+/// rich in crystal and hulls both. What the galaxy makes, all told, is about
+/// what it's meant to be.
+#[test]
+fn riches_spread_by_chance() {
+    let g = Galaxy::new(1);
+    let mut x: Vec<[f32; 4]> = Vec::new();
+    let (mut crystals, mut hulls, mut made) = (0.0f32, 0.0f32, 0);
+    for (s, sys) in g.systems.iter().enumerate() {
+        for r in g.riches_of(s) {
+            x.push([sys.starlight, r.crystal, r.hulls, r.tungsten]);
+        }
+        for (p, r) in g.riches_of(s).iter().enumerate() {
+            let here = || {
+                g.sites[sys.sites.0 as usize..sys.sites.1 as usize]
+                    .iter()
+                    .filter(move |x| x.planet as usize == p && x.kind.produces())
+            };
+            let (mines, foundries) = r.sites();
+            assert!(mines + foundries > 0);
+            assert_eq!(here().count() as u32, mines + foundries);
+            for site in here() {
+                made += 1;
+                match site.kind {
+                    SiteKind::Mine { crystals: c } => crystals += c,
+                    SiteKind::Foundry { hulls: h } => hulls += h,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let n = x.len() as f32;
+    let mean = |k: usize| x.iter().map(|v| v[k]).sum::<f32>() / n;
+    for k in 0..4 {
+        assert!((mean(k) - 1.0).abs() < 0.06, "{k}: {}", mean(k));
+        let rich = x.iter().filter(|v| v[k] > 3.0).count() as f32 / n;
+        assert!((0.02..0.08).contains(&rich), "{k}: {rich}");
+        for j in 0..k {
+            // (logarithms: they're what spreads evenly)
+            let l = |v: &[f32; 4], k: usize| v[k].ln();
+            let m = |k: usize| x.iter().map(|v| l(v, k)).sum::<f32>() / n;
+            let (a, b) = (m(j), m(k));
+            let co =
+                |j, k, a: f32, b: f32| x.iter().map(|v| (l(v, j) - a) * (l(v, k) - b)).sum::<f32>();
+            let r = co(j, k, a, b) / (co(j, j, a, a) * co(k, k, b, b)).sqrt();
+            assert!(r.abs() < 0.03, "{j} and {k}: {r}");
+        }
+    }
+    let both = x.iter().filter(|v| v[1] > 1.5 && v[2] > 1.5).count();
+    assert!(both as f32 / n > 0.02, "{both} rich in both");
+    assert!((crystals / n / 0.12 - 1.0).abs() < 0.04, "{}", crystals / n);
+    assert!((hulls / n / 30.0 - 1.0).abs() < 0.04, "{}", hulls / n);
+    assert!((made as f32 / n - 2.0).abs() < 0.15, "{}", made as f32 / n);
+}
