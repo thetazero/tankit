@@ -12,6 +12,7 @@ use super::parts;
 use super::style::Works;
 use crate::ai::nav::NavGrid;
 use crate::map::noise::noise2;
+use crate::map::procgen::Look;
 use crate::map::procgen::civic::Stone;
 use crate::map::procgen::skeleton::*;
 use crate::map::{Map, OBox, Terrain, rocks};
@@ -20,7 +21,8 @@ use crate::rng::Rng;
 
 const TIMBER: Vec3 = Vec3::new(0.3, 0.23, 0.17);
 
-pub fn dress(map: &mut Map, sk: &Skeleton, st: &dyn Works, ground: Ground, rng: &mut Rng) {
+pub fn dress(map: &mut Map, sk: &Skeleton, look: Look, ground: Ground, rng: &mut Rng) {
+    let st = super::works(look);
     let land = ground.land();
     let pal = st.palette();
     map.terrain = Some(terrain(sk, &land, ground));
@@ -35,7 +37,7 @@ pub fn dress(map: &mut Map, sk: &Skeleton, st: &dyn Works, ground: Ground, rng: 
         land: land.open,
     };
     for c in &sk.crossings {
-        c.build(map, stone, |p| sk.ground(p));
+        c.build(map, stone, Some(look), |p| sk.ground(p));
     }
     sk.lay_rails(map);
     for lot in &sk.lots {
@@ -309,7 +311,7 @@ fn growth(map: &mut Map, sk: &Skeleton, land: &Land, ground: Ground, rng: &mut R
 }
 
 /// A tree past the edge: a trunk and a few rounds of leaf.
-fn tree(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32) {
+pub(in crate::map) fn tree(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32) {
     let h = rng.range(4.0, 7.0);
     map.segment(
         Vec3::new(p.x, g - 1.0, p.y),

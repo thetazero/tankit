@@ -1,5 +1,5 @@
 //! The Sanctum: a Resonant holy site, the Hold map. A great mesa standing
-//! 40 m over the desert floor, sheer on every side, and on its top a church
+//! 40 m over the land, sheer on every side, and on its top a church
 //! built around the crystal on its altar. Driving off the edge is a fall to
 //! your death (a Vigil runs on at the bottom a while, as it does). 300 m
 //! square (+x east, +z north), the mesa ~200 m across in the middle:
@@ -14,13 +14,24 @@
 //! - west and east edges of the top: the two sides' bases, the Imperium at
 //!   the great door, the Resonant behind the apse
 //!
-//! The top sits at y = 0 and the desert floor at -40, so everything on the
+//! It stands on a desert, tundra or grassland world, in that land's looks,
+//! and comes of a seed: the mesa's outline, the church's proportions and
+//! ruin, and what stands where round it (see `plan`). Seed 0 is the
+//! hand-made one.
+//!
+//! The top sits at y = 0 and the land's floor at -40, so everything on the
 //! top works like any flat map.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Quat, Vec2, Vec3};
 
+mod plan;
+
+use self::plan::{BAY, Plan, bumps};
+use super::noise::noise2;
+use super::procgen::foundry::{self, Ground};
+use super::procgen::memo::Memo;
 use super::rocks::{self, Dust, Kind, Rock};
 use super::strata;
 use super::{Ambient, DEFAULT_SIDES, GlowPath, Map, OBox, Terrain};
@@ -34,98 +45,36 @@ const LOW: f32 = -40.0;
 /// Below this you've gone over the edge: dead when you hit the floor.
 pub const FALL_Y: f32 = -10.0;
 
-const SAND: Vec3 = Vec3::new(0.78, 0.66, 0.5);
-const STONE: Vec3 = Vec3::new(0.82, 0.76, 0.64);
-const SLATE: Vec3 = Vec3::new(0.3, 0.28, 0.3);
 const GILT: Vec3 = Vec3::new(0.62, 0.47, 0.22);
 /// Resonant crystal, drawn glowing.
 const CRYSTAL: Vec3 = Vec3::new(0.25, 0.55, 1.0);
 
 // The church (inner faces of its walls).
-/// Nave: from the west door to the crossing.
-const NAVE_X: (f32, f32) = (102.0, 138.0);
 /// Half-width of the nave and the transepts.
 const HALF_W: f32 = 12.0;
-/// The transepts reach this far north and south of the axis.
-const ARM: f32 = 36.0;
 /// Chancel east of the crossing, then the apse round its end.
-const CHANCEL_X: f32 = 172.0;
 const CHANCEL_HALF: f32 = 10.0;
 const APSE_R: f32 = 10.0;
 const WALL: f32 = 1.6;
 const WALL_H: f32 = 18.0;
 const ROOF_T: f32 = 1.2;
 
-/// Bays cut back into the mesa: (angle, half-width in radians, depth in m).
-/// Kept clear of the bases (east and west) and of everything built.
-const BAYS: [(f32, f32, f32); 4] = [
-    (0.85, 0.16, 11.0),
-    (2.25, 0.15, 9.0),
-    (-0.95, 0.18, 15.0),
-    (-2.25, 0.17, 15.0),
-];
-/// Spurs jutting out of it.
-const SPURS: [(f32, f32, f32); 4] = [
-    (0.45, 0.06, 9.0),
-    (1.6, 0.07, 12.0),
-    (-0.4, 0.05, 8.0),
-    (-2.78, 0.07, 11.0),
-];
-/// Notches broken out of the top edge, where rock has fallen away.
-const NOTCHES: [(f32, f32, f32); 8] = [
-    (0.8, 0.025, 3.0),
-    (1.35, 0.03, 4.0),
-    (1.95, 0.02, 2.5),
-    (2.75, 0.03, 3.5),
-    (-0.6, 0.025, 3.0),
-    (-1.5, 0.03, 4.0),
-    (-2.6, 0.02, 2.5),
-    (3.4, 0.03, 3.0),
-];
-
-/// `d` radians wrapped to -PI..PI.
-fn wrap(d: f32) -> f32 {
-    (d + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI
-}
-
-/// Sum of bumps at angle `a`: (center, half-width, size) each.
-fn bumps(a: f32, list: &[(f32, f32, f32)]) -> f32 {
-    list.iter()
-        .map(|&(c, w, h)| h * (-(wrap(a - c) / w).powi(2)).exp())
-        .sum()
-}
-
-/// Edge of the mesa top, distance from the center at angle `a`.
-fn rim(a: f32) -> f32 {
-    102.0 + 6.0 * (2.0 * a).cos() + 4.0 * (5.0 * a + 0.7).sin() + 1.5 * (9.0 * a + 2.0).sin()
-        - bumps(a, &BAYS)
-        + bumps(a, &SPURS)
-}
-
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-/// How far `p` is outside the mesa's edge (negative: on top).
-fn past_edge(p: Vec2) -> f32 {
-    let d = p - CENTER;
-    d.length() - rim(d.y.atan2(d.x))
-}
-
-/// The mesa's top: flat round the church, a gentle roll further out, and
-/// broken down at the edge where a notch has fallen away.
-fn mesa_top(x: f32, z: f32) -> f32 {
-    let p = Vec2::new(x, z);
-    let r = p.distance(CENTER);
-    let a = (z - CENTER.y).atan2(x - CENTER.x);
-    let roll = 0.3 * (x * 0.07).sin() * (z * 0.05).cos() * smoothstep(60.0, 80.0, r);
-    roll - bumps(a, &NOTCHES) * smoothstep(-8.0, -1.0, past_edge(p))
-}
-
-/// A block of sandstone lying loose on the floor at `at`, turned by `rot`:
+/// A block of rock lying loose on the floor at `at`, turned by `rot`:
 /// looks only, from the rocks toolkit.
-fn loose_block(m: &mut Map, at: Vec3, half: Vec3, rot: Quat, color: Vec3, rng: &mut Rng) {
+fn loose_block(
+    m: &mut Map,
+    plan: &Plan,
+    at: Vec3,
+    half: Vec3,
+    rot: Quat,
+    color: Vec3,
+    rng: &mut Rng,
+) {
     let rock = Rock {
         half,
         kind: Kind::Block,
@@ -134,95 +83,72 @@ fn loose_block(m: &mut Map, at: Vec3, half: Vec3, rot: Quat, color: Vec3, rng: &
         material: Material::Cliff,
         broken: false,
     };
-    let floor = |p: Vec2| ground(p.x, p.y);
+    let floor = |p: Vec2| plan.height(p.x, p.y);
     let dust = Dust {
-        color: SAND,
+        color: plan.colors.rock.dust,
         ground: &floor,
     };
     rock.draw(&mut m.sculpted, at, rot, Some(dust));
 }
 
-fn ground(x: f32, z: f32) -> f32 {
-    let p = Vec2::new(x, z);
-    let d = past_edge(p);
-    let top = mesa_top(x, z);
-    // The floor: scree banked against the cliff's foot, fans of it under
-    // the notches where rock came down, dunes beyond.
-    let a = (z - CENTER.y).atan2(x - CENTER.x);
-    let fans = NOTCHES
-        .iter()
-        .map(|&(c, w, _)| 7.0 * (-(wrap(a - c) / (w * 2.5)).powi(2)).exp())
-        .sum::<f32>();
-    let scree = (10.0 + fans) * (-(d - 4.0).max(0.0) / (12.0 + fans)).exp();
-    let dunes = 1.5 * (x * 0.04).sin() * (z * 0.05 + 1.0).cos();
-    let cones = BUTTES
-        .iter()
-        .map(|&(a, out, r, h)| talus(p.distance(butte_center(a, out)), r, h))
-        .fold(0.0, f32::max);
-    let floor = LOW + (scree + dunes).max(cones);
-    // The drop itself is steep, behind the rock face (see `strata`).
-    let t = smoothstep(-1.5, 0.3, d);
-    top * (1.0 - t) + floor * t
-}
-
-/// Beyond the arena: the open desert floor (the mesas out there are
-/// sculpted, see `sanctum_horizon`). Sunk out of sight under the arena.
-fn scenery_ground(x: f32, z: f32) -> f32 {
-    let p = Vec2::new(x, z);
-    let edge = p.clamp(Vec2::ZERO, Vec2::splat(SIZE));
-    if edge == p {
-        // Under the arena's own ground, meeting it at the edge, and well
-        // down under the mesa: its cells are coarse, and would cut out
-        // through the cliff's face.
-        let inside = x.min(z).min(SIZE - x).min(SIZE - z);
-        return ground(x, z).min(LOW + 6.0) - 0.6 * smoothstep(0.0, 14.0, inside);
-    }
-    // Carry on from the arena's edge, easing into the open desert.
-    let dunes =
-        2.0 * (x * 0.02).sin() * (z * 0.025 + 1.0).cos() + 1.0 * (x * 0.05 + z * 0.03).sin();
-    let cones = HILLS
-        .iter()
-        .map(|&(c, r, h)| talus(p.distance(c), r, h))
-        .fold(0.0, f32::max);
-    ground(edge.x, edge.y)
-        + (LOW + dunes.max(cones) - ground(edge.x, edge.y))
-            * smoothstep(0.0, 40.0, p.distance(edge))
-}
-
-/// Mesas and buttes on the horizon: (center, radius, height over the floor).
-const HILLS: [(Vec2, f32, f32); 9] = [
-    (Vec2::new(-260.0, 120.0), 90.0, 46.0),
-    (Vec2::new(520.0, -80.0), 120.0, 38.0),
-    (Vec2::new(420.0, 520.0), 70.0, 52.0),
-    (Vec2::new(-150.0, 520.0), 60.0, 30.0),
-    (Vec2::new(150.0, -330.0), 100.0, 44.0),
-    (Vec2::new(-200.0, -220.0), 18.0, 48.0),
-    (Vec2::new(520.0, 260.0), 14.0, 40.0),
-    (Vec2::new(60.0, 560.0), 16.0, 58.0),
-    (Vec2::new(-330.0, 360.0), 12.0, 34.0),
-];
-
-/// Buttes broken away from the mesa, down on the floor: (angle, how far out
-/// from the edge, radius, height over the floor).
-const BUTTES: [(f32, f32, f32, f32); 2] = [(2.5, 30.0, 8.0, 30.0), (-0.15, 34.0, 6.0, 24.0)];
-
-fn butte_center(a: f32, out: f32) -> Vec2 {
-    CENTER + Vec2::new(a.cos(), a.sin()) * (rim(a) + out)
-}
-
-/// The cone of scree round a rock `r` across and `h` tall, at distance `d`
-/// from its middle.
-fn talus(d: f32, r: f32, h: f32) -> f32 {
-    0.35 * h * smoothstep(r * 2.2 + 6.0, r * 0.9, d).powf(1.6)
+/// Tints the land: worn or blown bare in patches, and round the church.
+fn paint(t: &mut Terrain, plan: &Plan, bare: Vec3) {
+    let (land, rock) = (plan.colors.land, plan.colors.blocks[0]);
+    t.color = Vec3::ONE;
+    let salt = (plan.seed & 0xffff) as u32;
+    let doors = [
+        (CENTER - Vec2::X * 98.0, CENTER - Vec2::X * 40.0),
+        (CENTER + Vec2::X * 98.0, CENTER + Vec2::X * 30.0),
+        (CENTER - Vec2::Y * 66.0, CENTER + Vec2::Y * 66.0),
+    ];
+    t.paint(|x, z, h, slope| {
+        let p = Vec2::new(x, z);
+        let n = |s: f32, k: u32| noise2(x / s, z / s, k + salt);
+        let patch = n(13.0, 215) + 0.25 * (n(4.0, 216) - 0.5);
+        let mut worn = match plan.ground {
+            Ground::Tundra => smoothstep(0.52, 0.68, patch),
+            _ => smoothstep(0.62, 0.8, patch),
+        };
+        if h > LOW * 0.5 {
+            // Trodden to the doors.
+            let path = doors
+                .iter()
+                .map(|&(a, b)| {
+                    let f = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+                    p.distance(a.lerp(b, f))
+                })
+                .fold(f32::MAX, f32::min);
+            worn = worn.max(0.75 * smoothstep(8.0, 3.0, path + 5.0 * n(5.0, 217)));
+        }
+        // All one at the edge, as the land past it is.
+        let edge = p.min_element().min(SIZE - p.max_element());
+        worn *= smoothstep(0.0, 26.0, edge);
+        let c = land.lerp(bare, worn);
+        let c = c.lerp(rock, 0.8 * smoothstep(0.5, 0.9, slope));
+        let mottle = 0.92 + 0.14 * n(6.0, 210);
+        c * (1.0 + (mottle - 1.0) * smoothstep(0.0, 26.0, edge))
+            * (1.0 - 0.05 * smoothstep(26.0, 0.0, edge))
+    });
 }
 
 impl Map {
-    pub fn sanctum() -> Map {
-        static BUILT: std::sync::OnceLock<Map> = std::sync::OnceLock::new();
-        Map::built_once(&BUILT, Map::build_sanctum)
+    /// The Sanctum `seed` names, on `ground`.
+    pub fn sanctum_on(ground: Ground, seed: u64) -> Map {
+        // (The whole suite runs in one process.)
+        const KEEP: usize = if cfg!(test) { 24 } else { 4 };
+        static KEPT: Memo<(Ground, u64), Map, KEEP> = Memo::new();
+        KEPT.get(&(ground, seed), || {
+            Map::build_sanctum(&Plan::new(ground, seed))
+        })
     }
 
-    fn build_sanctum() -> Map {
+    /// The hand-made one, in the desert.
+    #[cfg(test)]
+    pub fn sanctum() -> Map {
+        Map::sanctum_on(Ground::Desert, 0)
+    }
+
+    fn build_sanctum(plan: &Plan) -> Map {
         let mut map = Map {
             size: SIZE,
             solids: Vec::new(),
@@ -234,26 +160,11 @@ impl Map {
             scenery_terrain: None,
             open_spots: Vec::new(),
             spawn_yaw: None,
-            // Late afternoon: a low warm sun out of the west-southwest, so it
-            // comes in at the great door and the south windows.
-            atmosphere: crate::render::Atmosphere {
-                sun_dir: Vec3::new(-0.6, 0.42, -0.45),
-                sun_color: Vec3::new(2.3, 1.8, 1.35),
-                sky_zenith: Vec3::new(0.3, 0.45, 0.68),
-                sky_horizon: Vec3::new(0.86, 0.72, 0.58),
-                ground_color: Vec3::new(0.45, 0.33, 0.24),
-                fog_density: 0.0014,
-                ..crate::render::Atmosphere::default()
-            },
+            atmosphere: plan.atmosphere(),
             bases: Map::no_bases(&DEFAULT_SIDES),
             factions: DEFAULT_SIDES.to_vec(),
             // In the yards round the church, out from under its roof.
-            repair_spots: vec![
-                CENTER + Vec2::new(0.0, 58.0),
-                CENTER + Vec2::new(0.0, -58.0),
-                CENTER + Vec2::new(-66.0, 22.0),
-                CENTER + Vec2::new(62.0, -22.0),
-            ],
+            repair_spots: plan.repairs.clone(),
             hold_site: Some(CENTER),
             hold_more: Vec::new(),
             cores: Vec::new(),
@@ -270,27 +181,30 @@ impl Map {
             posts: Vec::new(),
             skeleton: None,
             sculpted: crate::render::mesh::MeshData::default(),
-            rock_dust: Some(SAND),
+            rock_dust: Some(plan.colors.rock.dust),
             sounds: Vec::new(),
             vistas: Vec::new(),
-            planet: None,
+            planet: Some((plan.seed, plan.ground.planet())),
         };
-        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 151, 151, ground);
-        terrain.color = SAND;
-        terrain.material = Material::Sand;
+        let mut terrain = Terrain::from_fn(Vec2::ZERO, 2.0, 151, 151, |x, z| plan.height(x, z));
+        terrain.color = plan.colors.land;
+        terrain.material = plan.colors.material;
+        if let Some(bare) = plan.colors.bare {
+            paint(&mut terrain, plan, bare);
+        }
         map.terrain = Some(terrain);
-        let mut rng = Rng::new(0x5a4c_7c11);
+        let mut rng = Rng::new(0x5a4c_7c11 ^ plan.seed);
 
-        map.cliffs();
+        map.cliffs(plan);
         // The church and the precinct draw from `rng` where the cliffs'
         // boulders used to leave it (1760 draws), so they stand where they
         // always have.
         for _ in 0..1760 {
             rng.next_u64();
         }
-        map.church(&mut rng);
-        map.precinct(&mut rng);
-        map.sanctum_horizon();
+        map.church(plan, &mut rng);
+        map.precinct(plan, &mut rng);
+        map.sanctum_horizon(plan);
 
         // Bases: two columns of drop zones near the west and east edges.
         for (side, xs) in [
@@ -304,7 +218,10 @@ impl Map {
             }
         }
         // Roam points about the top.
-        for (n, r) in [(10, 48.0f32), (14, 78.0)] {
+        // (A ring more where more may be built over.)
+        let rings = [(10, 48.0f32), (14, 78.0), (16, 64.0)];
+        let rings = &rings[..if plan.seed == 0 { 2 } else { 3 }];
+        for &(n, r) in rings {
             for i in 0..n {
                 let a = i as f32 / n as f32 * TAU + 0.2;
                 map.open_spots
@@ -312,7 +229,7 @@ impl Map {
             }
         }
         let blocked = |p: Vec2, m: &Map| {
-            past_edge(p) > -10.0 || m.oboxes.iter().any(|o| o.solid && o.distance(p) < 4.0)
+            plan.past_edge(p) > -10.0 || m.oboxes.iter().any(|o| o.solid && o.distance(p) < 4.0)
         };
         let spots = std::mem::take(&mut map.open_spots);
         map.open_spots = spots.into_iter().filter(|&p| !blocked(p, &map)).collect();
@@ -323,21 +240,40 @@ impl Map {
 
         // Down on the desert floor, a ring of boulders closes the arena (a
         // Vigil runs on a while after the fall).
-        map.floor_rim();
+        map.floor_rim(plan);
+        // The hand-made one's are hand-picked.
+        if plan.seed != 0 {
+            let nav = crate::ai::NavGrid::build(&map);
+            let ok =
+                |p: &Vec2| !nav.is_blocked(*p) && !nav.path(*p, CENTER - Vec2::X * 6.0).is_empty();
+            map.open_spots.retain(ok);
+            map.repair_spots.retain(ok);
+            for base in &mut map.bases {
+                base.retain(ok);
+            }
+            let bases = [CENTER - Vec2::X * 82.0, CENTER + Vec2::X * 82.0];
+            map.vistas = super::procgen::sunlit_views(&map, &bases, CENTER);
+        }
+        map.growth(plan);
         map
     }
 
     /// Boulders along the arena's edge down on the desert floor, shoulder
-    /// to shoulder: sandstone come down off the mesas long ago, too tall and
+    /// to shoulder: rock come down off the mesas long ago, too tall and
     /// steep to climb.
-    fn floor_rim(&mut self) {
+    /// (The same ones whatever the seed: they're known to close it.)
+    fn floor_rim(&mut self, plan: &Plan) {
         let mut rng = Rng::new(0x0b01_de55);
         let boulder = |m: &mut Map, rng: &mut Rng, at: Vec2, s: f32, h: f32, solid: bool| {
             let g = m.ground_height(at.x, at.y);
             let yaw = rng.range(0.0, TAU);
             let half = Vec2::new(s, s * rng.range(0.7, 1.0));
             let (tilt, roll) = (rng.range(-0.15, 0.15), rng.range(-0.15, 0.15));
-            let color = STONE * rng.range(0.72, 0.92);
+            let shade = match plan.ground {
+                Ground::Desert => plan.colors.stone,
+                _ => plan.colors.blocks[2],
+            };
+            let color = shade * rng.range(0.72, 0.92);
             m.oboxes.push(OBox {
                 tilt,
                 roll,
@@ -375,11 +311,14 @@ impl Map {
     /// The cliff face round the mesa (layered sandstone, see `strata`),
     /// slabs fallen from it and from its notches lying at its foot, and two
     /// buttes broken away from it, of the same beds.
-    fn cliffs(&mut self) {
-        let rng = &mut Rng::new(0xc11f_f5ab);
-        let top = |p: Vec2| mesa_top(p.x, p.y);
-        let floor = |p: Vec2| ground(p.x, p.y);
-        let beds = strata::beds(0.6, LOW - 8.0, 1.0, 0x5a4c_bed5);
+    fn cliffs(&mut self, plan: &Plan) {
+        let rng = &mut Rng::new(0xc11f_f5ab ^ plan.seed);
+        let rock = &plan.colors.rock;
+        let salt = (plan.seed & 0xffff) << 8;
+        let rim = |a: f32| plan.rim(a);
+        let top = |p: Vec2| plan.top(p.x, p.y);
+        let floor = |p: Vec2| plan.height(p.x, p.y);
+        let beds = strata::beds(rock, 0.6, LOW - 8.0, 1.0, 0x5a4c_bed5 ^ plan.seed);
         let fallen = strata::build(
             &mut self.sculpted,
             &strata::Tower {
@@ -394,24 +333,22 @@ impl Map {
                 scale: 1.0,
                 cell: 1.0,
                 ring_cap: Some(-4.0),
-                seed: 1,
+                seed: 1 + salt,
+                rock,
             },
         );
-        let shades = [
-            Vec3::new(0.66, 0.44, 0.29),
-            Vec3::new(0.55, 0.34, 0.22),
-            Vec3::new(0.74, 0.56, 0.39),
-        ];
+        let shades = plan.colors.blocks;
         // A block of rock lying on the floor `out` past the rim at angle `a`.
         let block = |m: &mut Map, a: f32, out: f32, half: Vec3, rng: &mut Rng| {
             let p = CENTER + Vec2::new(a.cos(), a.sin()) * (rim(a) + out);
-            let g = ground(p.x, p.y);
+            let g = plan.height(p.x, p.y);
             let rot = Quat::from_rotation_y(rng.range(0.0, TAU))
                 * Quat::from_rotation_x(rng.range(-0.45, 0.45))
                 * Quat::from_rotation_z(rng.range(-0.45, 0.45));
             let color = shades[rng.index(shades.len())] * rng.range(0.9, 1.08);
             loose_block(
                 m,
+                plan,
                 Vec3::new(p.x, g + half.y * 0.35, p.y),
                 half,
                 rot,
@@ -426,7 +363,7 @@ impl Map {
         }
         // Under the notches, where the edge came down: big slabs and their
         // pieces.
-        for &(c, w, depth) in &NOTCHES {
+        for &(c, w, depth) in &plan.notches {
             for k in 0..(depth as usize + 3) {
                 let a = c + rng.range(-2.5, 2.5) * w;
                 let s = if k < 2 {
@@ -446,8 +383,8 @@ impl Map {
         }
         // Two buttes standing off the mesa, broken away from it long ago:
         // the same beds, where they stand.
-        for (k, (a, out, r, h)) in BUTTES.into_iter().enumerate() {
-            let c = butte_center(a, out);
+        for (k, (a, out, r, h)) in plan.buttes.iter().copied().enumerate() {
+            let c = plan.butte_center(a, out);
             let sd = k as f32 * 2.3;
             let brim =
                 move |t: f32| r + 1.5 * (3.0 * t + sd).sin() + 0.8 * (7.0 * t + 2.0 * sd).sin();
@@ -466,18 +403,19 @@ impl Map {
                     scale: 0.8,
                     cell: 1.2,
                     ring_cap: None,
-                    seed: 10 + k as u64,
+                    seed: 10 + k as u64 + salt,
+                    rock,
                 },
             );
             for f in &fallen {
                 let half = (f.size * Vec3::new(0.45, 0.5, 0.5)).min(Vec3::new(2.0, 1.5, 1.5));
                 let d = rng.range(r + 3.0, r + 8.0);
                 let p = c + Vec2::new(f.angle.cos(), f.angle.sin()) * d;
-                let g = ground(p.x, p.y);
+                let g = plan.height(p.x, p.y);
                 let rot = Quat::from_rotation_y(rng.range(0.0, TAU))
                     * Quat::from_rotation_x(rng.range(-0.4, 0.4));
                 let at = Vec3::new(p.x, g + half.y * 0.35, p.y);
-                loose_block(self, at, half, rot, shades[k % shades.len()], rng);
+                loose_block(self, plan, at, half, rot, shades[k % shades.len()], rng);
             }
         }
     }
@@ -487,6 +425,7 @@ impl Map {
     /// and (bottom, top) heights. Lintels and sills stay.
     fn stone_wall(
         &mut self,
+        plan: &Plan,
         a: Vec2,
         b: Vec2,
         thick: f32,
@@ -506,7 +445,7 @@ impl Map {
                 half: Vec2::new((u1 - u0) * 0.5, thick * 0.5),
                 y0: if y0 <= 0.0 { -1.0 } else { y0 },
                 y1,
-                color: STONE,
+                color: plan.colors.stone,
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 chip: 0.12,
@@ -541,7 +480,7 @@ impl Map {
 
     /// A flat roof slab over `min`..`max` at `y`, and a pitched roof of
     /// slate on it, its ridge along x (`along_x`) or z, rising `rise`.
-    fn roof(&mut self, min: Vec2, max: Vec2, y: f32, along_x: bool, rise: f32) {
+    fn roof(&mut self, plan: &Plan, min: Vec2, max: Vec2, y: f32, along_x: bool, rise: f32) {
         let c = (min + max) * 0.5;
         let h = (max - min) * 0.5;
         self.oboxes.push(OBox {
@@ -549,7 +488,7 @@ impl Map {
             half: h,
             y0: y,
             y1: y + ROOF_T,
-            color: STONE * 0.9,
+            color: plan.colors.stone * 0.9,
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             ..OBox::default()
@@ -572,7 +511,7 @@ impl Map {
                 half: Vec2::new(len + 0.6, run + 0.4),
                 y0: mid - 0.3,
                 y1: mid + 0.3,
-                color: SLATE,
+                color: plan.colors.roof,
                 side_mat: Material::Roof,
                 top_mat: Material::Roof,
                 tilt: slope * s,
@@ -598,7 +537,7 @@ impl Map {
                     half,
                     y0,
                     y1,
-                    color: STONE,
+                    color: plan.colors.stone,
                     side_mat: Material::Plaster,
                     top_mat: Material::Rubble,
                     ..OBox::default()
@@ -608,13 +547,13 @@ impl Map {
     }
 
     /// A square pillar.
-    fn pillar(&mut self, at: Vec2, half: f32, height: f32) {
+    fn pillar(&mut self, plan: &Plan, at: Vec2, half: f32, height: f32) {
         self.oboxes.push(OBox {
             center: at,
             half: Vec2::splat(half),
             y0: -1.0,
             y1: height,
-            color: STONE * 0.96,
+            color: plan.colors.stone * 0.96,
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             chip: 0.15,
@@ -654,14 +593,14 @@ impl Map {
 
     /// A grave slab set into the ground at `p` (ground height `g`), long
     /// along z: flat enough to drive over.
-    fn grave_slab(&mut self, p: Vec2, g: f32, rng: &mut Rng) {
+    fn grave_slab(&mut self, plan: &Plan, p: Vec2, g: f32, rng: &mut Rng) {
         self.oboxes.push(OBox {
             center: p,
             yaw: rng.range(-0.06, 0.06),
             half: Vec2::new(0.5, 0.9),
             y0: g - 0.3,
             y1: g + rng.range(0.06, 0.12),
-            color: STONE * rng.range(0.78, 0.9),
+            color: plan.colors.stone * rng.range(0.78, 0.9),
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             chip: 0.06,
@@ -695,7 +634,7 @@ impl Map {
 
     /// A solid tomb at `p`, long along z: a chest tomb on a plinth, or a
     /// small mausoleum with a stepped roof and a door at its south end.
-    fn tomb(&mut self, p: Vec2, mausoleum: bool, rng: &mut Rng) {
+    fn tomb(&mut self, plan: &Plan, p: Vec2, mausoleum: bool, rng: &mut Rng) {
         let g = self.ground_height(p.x, p.y);
         let half = if mausoleum {
             Vec2::new(1.5, 2.1)
@@ -722,24 +661,31 @@ impl Map {
             half + Vec2::splat(0.3),
             g - 0.6,
             g + 0.35,
-            STONE * shade * 0.9,
+            plan.colors.stone * shade * 0.9,
             0.1,
         );
         if mausoleum {
-            block(self, half, g, g + 3.0, STONE * shade, 0.12);
+            block(self, half, g, g + 3.0, plan.colors.stone * shade, 0.12);
             // A cornice, and a roof stepped up from it.
             block(
                 self,
                 half + Vec2::splat(0.25),
                 g + 3.0,
                 g + 3.35,
-                STONE * shade * 0.92,
+                plan.colors.stone * shade * 0.92,
                 0.0,
             );
             for k in 0..3 {
                 let f = k as f32 / 3.0;
                 let y = g + 3.35 + k as f32 * 0.4;
-                block(self, half * (1.0 - f * 0.55), y, y + 0.4, SLATE, 0.0);
+                block(
+                    self,
+                    half * (1.0 - f * 0.55),
+                    y,
+                    y + 0.4,
+                    plan.colors.roof,
+                    0.0,
+                );
             }
             // The door: dark, flush with the south face.
             self.oboxes.push(OBox {
@@ -747,21 +693,21 @@ impl Map {
                 half: Vec2::new(0.55, 0.05),
                 y0: g + 0.35,
                 y1: g + 2.2,
-                color: SLATE * 0.6,
+                color: Vec3::new(0.18, 0.168, 0.18),
                 side_mat: Material::Metal,
                 top_mat: Material::Metal,
                 solid: false,
                 ..OBox::default()
             });
         } else {
-            block(self, half, g, g + 1.5, STONE * shade, 0.1);
+            block(self, half, g, g + 1.5, plan.colors.stone * shade, 0.1);
             // The lid, overhanging.
             block(
                 self,
                 half + Vec2::splat(0.15),
                 g + 1.5,
                 g + 1.8,
-                STONE * shade * 0.95,
+                plan.colors.stone * shade * 0.95,
                 0.05,
             );
         }
@@ -771,10 +717,10 @@ impl Map {
         self.grave_shards(p + corner * Vec2::new(side, 1.0), g, 2, rng);
     }
 
-    fn church(&mut self, rng: &mut Rng) {
+    fn church(&mut self, plan: &Plan, rng: &mut Rng) {
         let (z0, z1) = (CENTER.y - HALF_W, CENTER.y + HALF_W);
         let (cx0, cx1) = (CENTER.x - HALF_W, CENTER.x + HALF_W);
-        let (nx0, _) = NAVE_X;
+        let nx0 = plan.nave_x();
         let t = WALL;
         let h = WALL_H;
         let window = |u: f32| (u - 1.5, u + 1.5, 8.0, 14.5);
@@ -782,6 +728,7 @@ impl Map {
 
         // West front: the great door, a rose window over it.
         self.stone_wall(
+            plan,
             Vec2::new(nx0 - t * 0.5, z0 - t),
             Vec2::new(nx0 - t * 0.5, z1 + t),
             t,
@@ -797,19 +744,21 @@ impl Map {
                 (12.1, 15.1, 13.4, 17.6),
             ],
         );
-        // Nave walls, windows down both; a breach in the north wall.
+        // Nave walls, windows down both; a breach in one.
         let nave_len = cx0 - nx0 + t;
-        for (z, breach) in [(z0 - t * 0.5, false), (z1 + t * 0.5, true)] {
-            let mut open: Vec<(f32, f32, f32, f32)> = [6.0, 15.0, 33.0]
-                .iter()
-                .flat_map(|&u| [window(u), window_top(u)])
-                .collect();
-            if breach {
-                open.push((21.0, 29.0, 0.0, 10.5));
-            } else {
-                open.extend([window(24.0), window_top(24.0)]);
+        let (fallen_bay, fallen_side) = plan.breach;
+        for (z, side) in [(z0 - t * 0.5, -1.0), (z1 + t * 0.5, 1.0)] {
+            let mut open: Vec<(f32, f32, f32, f32)> = Vec::new();
+            for k in 0..plan.nave_bays {
+                let u = BAY * k as f32;
+                if side == fallen_side && k == fallen_bay {
+                    open.push((u + 3.0, u + 11.0, 0.0, 10.5));
+                } else {
+                    open.extend([window(u + 6.0), window_top(u + 6.0)]);
+                }
             }
             self.stone_wall(
+                plan,
                 Vec2::new(nx0 - t, z),
                 Vec2::new(nx0 - t + nave_len, z),
                 t,
@@ -819,14 +768,17 @@ impl Map {
         }
         // The breach's rubble, spilled in and out.
         for k in 0..7 {
-            let p = Vec2::new(nx0 + 21.0 + rng.range(0.0, 10.0), z1 + rng.range(-5.0, 6.0));
+            let p = Vec2::new(
+                plan.breach_x() - 2.4 + rng.range(0.0, 10.0),
+                CENTER.y + fallen_side * (HALF_W + rng.range(-5.0, 6.0)),
+            );
             self.oboxes.push(OBox {
                 center: p,
                 yaw: rng.range(0.0, TAU),
                 half: Vec2::new(rng.range(0.4, 1.2), rng.range(0.3, 0.8)),
                 y0: -0.4,
                 y1: rng.range(0.3, 0.9),
-                color: STONE * rng.range(0.85, 1.0),
+                color: plan.colors.stone * rng.range(0.85, 1.0),
                 side_mat: Material::Rubble,
                 top_mat: Material::Rubble,
                 tilt: rng.range(-0.3, 0.3),
@@ -838,19 +790,27 @@ impl Map {
 
         // Transepts: side walls with windows, an end wall with a door and a
         // window over it.
+        let len = plan.arm - HALF_W;
+        let gaps = ((len - 14.0) / 10.0).round();
+        let windows: Vec<_> = (0..=gaps as usize)
+            .map(|k| 8.0 + (len - 14.0) * k as f32 / gaps.max(1.0))
+            .flat_map(|u| [window(u), window_top(u)])
+            .collect();
         for s in [1.0f32, -1.0] {
             let inner = CENTER.y + s * HALF_W;
-            let end = CENTER.y + s * (ARM + t * 0.5);
+            let end = CENTER.y + s * (plan.arm + t * 0.5);
             for x in [cx0 - t * 0.5, cx1 + t * 0.5] {
                 self.stone_wall(
+                    plan,
                     Vec2::new(x, inner + s * t * 0.5),
                     Vec2::new(x, end + s * t * 0.5),
                     t,
                     h,
-                    &[window(8.0), window_top(8.0), window(18.0), window_top(18.0)],
+                    &windows,
                 );
             }
             self.stone_wall(
+                plan,
                 Vec2::new(cx0 - t, end),
                 Vec2::new(cx1 + t, end),
                 t,
@@ -867,13 +827,15 @@ impl Map {
 
         // Chancel walls, then the apse in segments round its end, one fallen in.
         let (cz0, cz1) = (CENTER.y - CHANCEL_HALF, CENTER.y + CHANCEL_HALF);
+        let mid = (plan.chancel_x - cx1) * 0.5;
         for z in [cz0 - t * 0.5, cz1 + t * 0.5] {
             self.stone_wall(
+                plan,
                 Vec2::new(cx1, z),
-                Vec2::new(CHANCEL_X, z),
+                Vec2::new(plan.chancel_x, z),
                 t,
                 h,
-                &[window(5.0), window_top(5.0)],
+                &[window(mid), window_top(mid)],
             );
         }
         // Fill between the transepts' east walls and the narrower chancel.
@@ -883,15 +845,15 @@ impl Map {
                 half: Vec2::new(t * 0.5, (zb - za).abs() * 0.5),
                 y0: -1.0,
                 y1: h,
-                color: STONE,
+                color: plan.colors.stone,
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 ..OBox::default()
             });
         }
-        let apse = Vec2::new(CHANCEL_X, CENTER.y);
+        let apse = Vec2::new(plan.chancel_x, CENTER.y);
         let segs = 5;
-        let fallen = 1..=2;
+        let fallen = plan.fallen.clone();
         for i in 0..segs {
             let a0 = -FRAC_PI_2 + i as f32 / segs as f32 * std::f32::consts::PI;
             let a1 = -FRAC_PI_2 + (i + 1) as f32 / segs as f32 * std::f32::consts::PI;
@@ -911,7 +873,7 @@ impl Map {
                         half: Vec2::new(rng.range(0.5, 1.4), rng.range(0.4, 0.9)),
                         y0: -0.4,
                         y1: rng.range(0.3, 1.0),
-                        color: STONE * rng.range(0.85, 1.0),
+                        color: plan.colors.stone * rng.range(0.85, 1.0),
                         side_mat: Material::Rubble,
                         top_mat: Material::Rubble,
                         tilt: rng.range(-0.3, 0.3),
@@ -930,7 +892,7 @@ impl Map {
                         half: Vec2::new(0.5, t * 0.5),
                         y0: -1.0,
                         y1: rng.range(4.0, 8.0),
-                        color: STONE,
+                        color: plan.colors.stone,
                         side_mat: Material::Plaster,
                         top_mat: Material::Rubble,
                         broken: true,
@@ -938,22 +900,22 @@ impl Map {
                     });
                 }
                 // Over it, the wall still hangs from the roof.
-                self.stone_wall(pa - ext, pb + ext, t, h, &[(0.0, 10.0, 0.0, 11.0)]);
+                self.stone_wall(plan, pa - ext, pb + ext, t, h, &[(0.0, 10.0, 0.0, 11.0)]);
                 continue;
             }
-            self.stone_wall(pa - ext, pb + ext, t, h, &[]);
+            self.stone_wall(plan, pa - ext, pb + ext, t, h, &[]);
         }
 
         // Stone floor throughout: nave, crossing and transepts, chancel and apse.
         for (min, max) in [
             (Vec2::new(nx0 - t, z0 - t), Vec2::new(cx1, z1 + t)),
             (
-                Vec2::new(cx0 - t, CENTER.y - ARM - t),
-                Vec2::new(cx1 + t, CENTER.y + ARM + t),
+                Vec2::new(cx0 - t, CENTER.y - plan.arm - t),
+                Vec2::new(cx1 + t, CENTER.y + plan.arm + t),
             ),
             (
                 Vec2::new(cx1, cz0 - t),
-                Vec2::new(CHANCEL_X + APSE_R, cz1 + t),
+                Vec2::new(plan.chancel_x + APSE_R, cz1 + t),
             ),
         ] {
             self.oboxes.push(OBox {
@@ -961,7 +923,7 @@ impl Map {
                 half: (max - min) * 0.5,
                 y0: -0.6,
                 y1: 0.04,
-                color: STONE * 0.8,
+                color: plan.colors.stone * 0.8,
                 side_mat: Material::Paving,
                 top_mat: Material::Paving,
                 solid: false,
@@ -970,28 +932,29 @@ impl Map {
         }
 
         // Twin towers flanking the west front, their spires stepping up.
-        for s in [-1.0f32, 1.0] {
+        for (s, (tall, spire)) in [-1.0f32, 1.0].into_iter().zip(plan.towers) {
             let c = Vec2::new(nx0 - 2.5, CENTER.y + s * (HALF_W + 2.5));
             self.oboxes.push(OBox {
                 center: c,
                 half: Vec2::splat(3.6),
                 y0: -1.0,
-                y1: 27.0,
-                color: STONE,
+                y1: tall,
+                color: plan.colors.stone,
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 chip: 0.15,
+                broken: !spire,
                 ..OBox::default()
             });
-            for k in 0..5 {
+            for k in 0..if spire { 5 } else { 0 } {
                 let f = k as f32 / 5.0;
                 self.oboxes.push(OBox {
                     center: c,
                     yaw: TAU / 8.0 * (k % 2) as f32,
                     half: Vec2::splat(3.8 * (1.0 - f)),
-                    y0: 27.0 + f * 12.0,
-                    y1: 27.0 + (f + 0.2) * 12.0,
-                    color: SLATE,
+                    y0: tall + f * 12.0,
+                    y1: tall + (f + 0.2) * 12.0,
+                    color: plan.colors.roof,
                     side_mat: Material::Roof,
                     top_mat: Material::Roof,
                     ..OBox::default()
@@ -1002,6 +965,7 @@ impl Map {
         // Roofs: nave, transepts, chancel and apse; the crossing tower.
         let ry = h;
         self.roof(
+            plan,
             Vec2::new(nx0 - t, z0 - t),
             Vec2::new(cx0, z1 + t),
             ry,
@@ -1009,15 +973,17 @@ impl Map {
             7.0,
         );
         self.roof(
-            Vec2::new(cx0 - t, CENTER.y - ARM - t),
-            Vec2::new(cx1 + t, CENTER.y + ARM + t),
+            plan,
+            Vec2::new(cx0 - t, CENTER.y - plan.arm - t),
+            Vec2::new(cx1 + t, CENTER.y + plan.arm + t),
             ry,
             false,
             7.0,
         );
         self.roof(
+            plan,
             Vec2::new(cx1, cz0 - t),
-            Vec2::new(CHANCEL_X + APSE_R + t, cz1 + t),
+            Vec2::new(plan.chancel_x + APSE_R + t, cz1 + t),
             ry - 2.0,
             true,
             5.0,
@@ -1029,15 +995,15 @@ impl Map {
                 (Vec2::new(-tower, s * tower), Vec2::new(tower, s * tower)),
                 (Vec2::new(s * tower, -tower), Vec2::new(s * tower, tower)),
             ] {
-                let base = ry + ROOF_T + 4.0;
+                let top = ry + ROOF_T + plan.crossing.0;
                 let len = a.distance(b);
                 self.oboxes.push(OBox {
                     center: CENTER + (a + b) * 0.5,
                     yaw: if a.x == b.x { FRAC_PI_2 } else { 0.0 },
                     half: Vec2::new(len * 0.5 + 0.6, 0.6),
                     y0: ry,
-                    y1: base + 10.0,
-                    color: STONE,
+                    y1: top,
+                    color: plan.colors.stone,
                     side_mat: Material::Plaster,
                     top_mat: Material::Rubble,
                     chip: 0.12,
@@ -1045,7 +1011,7 @@ impl Map {
                 });
             }
         }
-        let spire0 = ry + ROOF_T + 14.0;
+        let (spire0, spire) = (ry + ROOF_T + plan.crossing.0, plan.crossing.1);
         for k in 0..6 {
             let f = k as f32 / 6.0;
             let w = (tower + 0.6) * (1.0 - f);
@@ -1053,9 +1019,9 @@ impl Map {
                 center: CENTER,
                 yaw: TAU / 8.0 * (k % 2) as f32,
                 half: Vec2::splat(w),
-                y0: spire0 + f * 16.0,
-                y1: spire0 + (f + 1.0 / 6.0) * 16.0,
-                color: SLATE,
+                y0: spire0 + f * spire,
+                y1: spire0 + (f + 1.0 / 6.0) * spire,
+                color: plan.colors.roof,
                 side_mat: Material::Roof,
                 top_mat: Material::Roof,
                 ..OBox::default()
@@ -1064,8 +1030,8 @@ impl Map {
         self.oboxes.push(OBox {
             center: CENTER,
             half: Vec2::splat(0.25),
-            y0: spire0 + 16.0,
-            y1: spire0 + 20.0,
+            y0: spire0 + spire,
+            y1: spire0 + spire + 4.0,
             color: GILT,
             side_mat: Material::Metal,
             top_mat: Material::Metal,
@@ -1073,26 +1039,27 @@ impl Map {
         });
 
         // Inside: arcades down the nave, the crossing's piers.
-        for x in [108.0f32, 116.0, 124.0, 132.0] {
+        for x in (0..plan.nave_bays).map(|k| nx0 + 6.0 + 8.0 * k as f32) {
             for z in [CENTER.y - 5.5, CENTER.y + 5.5] {
-                self.pillar(Vec2::new(x, z), 0.8, h);
+                self.pillar(plan, Vec2::new(x, z), 0.8, h);
             }
         }
         for (dx, dz) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
             self.pillar(
+                plan,
                 CENTER + Vec2::new(dx * (HALF_W - 1.2), dz * (HALF_W - 1.2)),
                 1.2,
                 h,
             );
         }
-        // A pillar down across the south aisle: cover.
+        // A pillar down across an aisle: cover.
         self.oboxes.push(OBox {
-            center: Vec2::new(119.0, CENTER.y - 8.0),
+            center: Vec2::new(nx0 + 17.0, CENTER.y + plan.pillar_side * 8.0),
             yaw: 0.25,
             half: Vec2::new(5.5, 0.8),
             y0: 0.0,
             y1: 1.6,
-            color: STONE * 0.94,
+            color: plan.colors.stone * 0.94,
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             chip: 0.25,
@@ -1101,7 +1068,7 @@ impl Map {
         // Choir stalls down the chancel.
         for z in [CENTER.y - CHANCEL_HALF + 1.4, CENTER.y + CHANCEL_HALF - 1.4] {
             self.oboxes.push(OBox {
-                center: Vec2::new(CHANCEL_X - 3.0, z),
+                center: Vec2::new(plan.chancel_x - 3.0, z),
                 half: Vec2::new(3.5, 0.6),
                 y0: 0.0,
                 y1: 1.3,
@@ -1118,7 +1085,7 @@ impl Map {
             half: Vec2::new(1.8, 1.1),
             y0: -0.5,
             y1: 1.3,
-            color: STONE * 1.05,
+            color: plan.colors.stone * 1.05,
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             ..OBox::default()
@@ -1155,7 +1122,7 @@ impl Map {
 
     /// Everything round the church: bell tower, chapels, cells, a cloister,
     /// graves, crystals.
-    fn precinct(&mut self, rng: &mut Rng) {
+    fn precinct(&mut self, plan: &Plan, rng: &mut Rng) {
         // A small roofed building, its door on the side facing `door`.
         let chapel = |m: &mut Map, c: Vec2, half: Vec2, door: Vec2| {
             let (x0, x1, z0, z1) = (c.x - half.x, c.x + half.x, c.y - half.y, c.y + half.y);
@@ -1174,9 +1141,10 @@ impl Map {
                 } else {
                     vec![(len * 0.5 - 0.8, len * 0.5 + 0.8, 3.0, 5.0)]
                 };
-                m.stone_wall(a, b, w, ht, &open);
+                m.stone_wall(plan, a, b, w, ht, &open);
             }
             m.roof(
+                plan,
                 Vec2::new(x0 - 0.5, z0 - 0.5),
                 Vec2::new(x1 + 0.5, z1 + 0.5),
                 ht,
@@ -1184,13 +1152,8 @@ impl Map {
                 2.5,
             );
         };
-        // Chapels on the four quarters, doors facing the church.
-        for (c, half) in [
-            (Vec2::new(98.0, 196.0), Vec2::new(7.0, 5.0)),
-            (Vec2::new(202.0, 104.0), Vec2::new(7.0, 5.0)),
-            (Vec2::new(208.0, 192.0), Vec2::new(5.0, 6.0)),
-            (Vec2::new(92.0, 108.0), Vec2::new(5.0, 6.0)),
-        ] {
+        // Chapels, doors facing the church.
+        for &(c, half) in &plan.chapels {
             let to = CENTER - c;
             let door = if to.x.abs() > to.y.abs() {
                 Vec2::new(to.x.signum(), 0.0)
@@ -1200,15 +1163,15 @@ impl Map {
             chapel(self, c, half, door);
         }
 
-        // The bell tower, north-west of the great door.
-        let bt = Vec2::new(82.0, 186.0);
+        // The bell tower.
+        let bt = plan.bell;
         let half = 4.0;
         self.oboxes.push(OBox {
             center: bt,
             half: Vec2::splat(half),
             y0: -1.0,
             y1: 22.0,
-            color: STONE,
+            color: plan.colors.stone,
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             chip: 0.15,
@@ -1220,7 +1183,7 @@ impl Map {
                 half: Vec2::splat(0.6),
                 y0: 22.0,
                 y1: 28.0,
-                color: STONE,
+                color: plan.colors.stone,
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 ..OBox::default()
@@ -1231,7 +1194,7 @@ impl Map {
             half: Vec2::splat(half + 0.4),
             y0: 28.0,
             y1: 29.0,
-            color: STONE * 0.9,
+            color: plan.colors.stone * 0.9,
             side_mat: Material::Plaster,
             top_mat: Material::Rubble,
             ..OBox::default()
@@ -1243,7 +1206,7 @@ impl Map {
                 half: Vec2::splat((half + 0.2) * (1.0 - f)),
                 y0: 29.0 + f * 7.0,
                 y1: 29.0 + (f + 0.25) * 7.0,
-                color: SLATE,
+                color: plan.colors.roof,
                 side_mat: Material::Roof,
                 top_mat: Material::Roof,
                 ..OBox::default()
@@ -1265,30 +1228,39 @@ impl Map {
             });
         }
 
-        // A row of cells along the south, each open to the north.
-        for k in 0..6 {
-            let c = Vec2::new(122.0 + k as f32 * 11.0, 80.0);
-            let (x0, x1, z0, z1) = (c.x - 4.5, c.x + 4.5, c.y - 3.5, c.y + 3.5);
-            self.stone_wall(Vec2::new(x0, z0), Vec2::new(x1, z0), 1.0, 5.0, &[]);
-            self.stone_wall(Vec2::new(x0, z0), Vec2::new(x0, z1), 1.0, 5.0, &[]);
-            if k == 5 {
-                self.stone_wall(Vec2::new(x1, z0), Vec2::new(x1, z1), 1.0, 5.0, &[]);
+        // A row of cells, each open to the church.
+        for (k, row) in plan
+            .cells
+            .iter()
+            .flat_map(|r| (0..r.n).map(move |k| (k, r)))
+        {
+            let c = row.first + Vec2::new(k as f32 * 11.0, 0.0);
+            let s = -row.side;
+            let (x0, x1, z0, z1) = (c.x - 4.5, c.x + 4.5, c.y - s * 3.5, c.y + s * 3.5);
+            self.stone_wall(plan, Vec2::new(x0, z0), Vec2::new(x1, z0), 1.0, 5.0, &[]);
+            self.stone_wall(plan, Vec2::new(x0, z0), Vec2::new(x0, z1), 1.0, 5.0, &[]);
+            if k + 1 == row.n {
+                self.stone_wall(plan, Vec2::new(x1, z0), Vec2::new(x1, z1), 1.0, 5.0, &[]);
             }
             self.oboxes.push(OBox {
-                center: c + Vec2::new(0.0, -1.0),
+                center: c + Vec2::new(0.0, -s),
                 half: Vec2::new(5.0, 2.8),
                 y0: 5.0,
                 y1: 5.6,
-                color: STONE * 0.9,
+                color: plan.colors.stone * 0.9,
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 ..OBox::default()
             });
         }
-        // Their mirror on the north: a broken cloister, low walls and stumps.
-        for k in 0..9 {
-            let x = 120.0 + k as f32 * 7.5;
-            let z = 222.0;
+        // Across from them: a broken cloister, low walls and stumps.
+        for (k, row) in plan
+            .cloister
+            .iter()
+            .flat_map(|r| (0..r.n).map(move |k| (k, r)))
+        {
+            let x = row.first.x + k as f32 * 7.5;
+            let z = row.first.y;
             let ht = if k % 3 == 1 {
                 rng.range(1.2, 2.0)
             } else {
@@ -1299,7 +1271,7 @@ impl Map {
                 half: Vec2::new(rng.range(1.8, 3.2), 0.6),
                 y0: -1.0,
                 y1: ht,
-                color: STONE * rng.range(0.9, 1.0),
+                color: plan.colors.stone * rng.range(0.9, 1.0),
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 broken: true,
@@ -1307,7 +1279,12 @@ impl Map {
                 ..OBox::default()
             });
             if k % 2 == 0 {
-                self.pillar(Vec2::new(x + 3.7, z - 5.0), 0.6, rng.range(2.0, 5.0));
+                self.pillar(
+                    plan,
+                    Vec2::new(x + 3.7, z - row.side * 5.0),
+                    0.6,
+                    rng.range(2.0, 5.0),
+                );
             }
         }
 
@@ -1316,20 +1293,11 @@ impl Map {
         // soil marking them), and two solid tombs in each, spaced out so
         // there's open ground to steer through between them, and kept off
         // the walls and chapels near by so they don't make dead ends.
-        // Tombs: (offset from the yard's middle, a mausoleum or a plain tomb).
-        let w = Vec2::new;
-        for (gx, gz, tombs) in [
-            (
-                78.0f32,
-                128.0f32,
-                [(w(-4.6, -3.6), true), (w(4.6, -3.6), false)],
-            ),
-            (110.0, 186.0, [(w(4.6, 3.6), true), (w(-1.0, -4.4), false)]),
-            (184.0, 116.0, [(w(-4.6, 3.6), true), (w(4.6, -3.6), false)]),
-        ] {
+        for yard in &plan.yards {
+            let (gx, gz, tombs) = (yard.at.x, yard.at.y, yard.tombs);
             let c = Vec2::new(gx + 4.5, gz + 5.2);
             for &(off, mausoleum) in &tombs {
-                self.tomb(c + off, mausoleum, rng);
+                self.tomb(plan, c + off, mausoleum, rng);
             }
             for i in 0..4 {
                 for j in 0..5 {
@@ -1343,7 +1311,7 @@ impl Map {
                     }
                     let g = self.ground_height(p.x, p.y);
                     if rng.range(0.0, 1.0) < 0.6 {
-                        self.grave_slab(p, g, rng);
+                        self.grave_slab(plan, p, g, rng);
                         // A shard at its head, now and then.
                         if rng.range(0.0, 1.0) < 0.5 {
                             self.grave_shards(p + Vec2::new(0.0, 1.15), g, 1, rng);
@@ -1357,34 +1325,21 @@ impl Map {
         }
 
         // Crystals breaking the surface about the top: cover and light.
-        for (p, n, w, ht) in [
-            (Vec2::new(110.0, 130.0), 4, 1.6, 3.5),
-            (Vec2::new(190.0, 172.0), 4, 1.6, 3.5),
-            (Vec2::new(150.0, 112.0), 3, 1.2, 2.6),
-            (Vec2::new(150.0, 192.0), 3, 1.2, 2.6),
-            (Vec2::new(75.0, 152.0), 3, 1.4, 3.0),
-            (Vec2::new(226.0, 148.0), 3, 1.4, 3.0),
-            (Vec2::new(176.0, 220.0), 4, 1.8, 4.0),
-            (Vec2::new(130.0, 72.0), 4, 1.8, 4.0),
-        ] {
+        for c in &plan.clusters {
+            let (p, n, w, ht) = (c.at, c.n, c.width, c.height);
             let g = self.ground_height(p.x, p.y);
             self.resonant_crystals(p, g, n, w, ht, rng);
             self.sound(Ambient::Shrine, Vec3::new(p.x, g + ht * 0.5, p.y));
         }
         // Low stone walls on each side's approach: cover on the run in.
-        for (c, yaw, len) in [
-            (Vec2::new(88.0, 140.0), 0.2, 6.0),
-            (Vec2::new(86.0, 162.0), -0.3, 5.0),
-            (Vec2::new(212.0, 160.0), 0.2, 6.0),
-            (Vec2::new(214.0, 138.0), -0.3, 5.0),
-        ] {
+        for &(c, yaw, len) in &plan.walls {
             self.oboxes.push(OBox {
                 center: c,
                 yaw,
                 half: Vec2::new(len, 0.6),
                 y0: -1.0,
                 y1: 1.8,
-                color: STONE * 0.92,
+                color: plan.colors.stone * 0.92,
                 side_mat: Material::Plaster,
                 top_mat: Material::Rubble,
                 broken: true,
@@ -1394,19 +1349,95 @@ impl Map {
         }
     }
 
-    fn sanctum_horizon(&mut self) {
+    /// What the land's put there itself: drifted snow, or tufts of grass and
+    /// trees down on the floor. Nothing that stops a tank.
+    fn growth(&mut self, plan: &Plan) {
+        let rng = &mut Rng::new(0x6120_3713 ^ plan.seed);
+        let on_top = |m: &Map, p: Vec2| {
+            // (Not where the menus park a tank.)
+            let parked = m.vistas.iter().any(|v| v.0.distance(p) < 7.0);
+            !parked && plan.past_edge(p) < -6.0 && m.oboxes.iter().all(|o| o.distance(p) > 1.6)
+        };
+        let n = match plan.ground {
+            Ground::Desert => return,
+            Ground::Tundra => 220,
+            Ground::Grassland => 900,
+        };
+        // (Told apart from what's built before any of it's added.)
+        let mut spots = Vec::new();
+        for _ in 0..n {
+            let r = 114.0 * rng.f32().sqrt();
+            let p = CENTER + Vec2::from_angle(rng.range(0.0, TAU)) * r;
+            if on_top(self, p) {
+                spots.push(p);
+            }
+        }
+        for p in spots {
+            let g = self.ground_height(p.x, p.y);
+            let yaw = rng.range(0.0, TAU);
+            if plan.ground == Ground::Tundra {
+                let half = Vec2::new(rng.range(0.9, 2.4), rng.range(0.6, 1.3));
+                let top = g + rng.range(0.1, 0.28);
+                let o = rocks::boulder(p, yaw, half, g - 0.8, top, plan.colors.land);
+                self.oboxes.push(OBox { solid: false, ..o });
+                continue;
+            }
+            for k in 0..4 {
+                let q = p + Vec2::from_angle(yaw + k as f32 * 1.7) * rng.range(0.1, 0.3);
+                self.segment(
+                    Vec3::new(p.x, g - 0.05, p.y),
+                    Vec3::new(q.x, g + rng.range(0.3, 0.7), q.y),
+                    0.035,
+                    plan.colors.land * rng.range(0.8, 1.35),
+                    Material::Grass,
+                    false,
+                );
+            }
+        }
+        if plan.ground != Ground::Grassland {
+            return;
+        }
+        // Copses on the floor and past the arena's edge.
+        for _ in 0..70 {
+            let c = CENTER + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(145.0, 340.0);
+            for _ in 0..rng.int(2, 6) {
+                let p = c + Vec2::new(rng.range(-9.0, 9.0), rng.range(-9.0, 9.0));
+                let inside = p.min_element().min(SIZE - p.max_element());
+                // (Not among the boulders round the edge.)
+                let clear = plan.past_edge(p) > 24.0
+                    && !(-14.0..12.0).contains(&inside)
+                    && (plan.buttes.iter())
+                        .all(|&(a, out, r, _)| plan.butte_center(a, out).distance(p) > r + 8.0)
+                    && plan.hills.iter().all(|h| h.0.distance(p) > h.1 * 1.3 + 6.0);
+                if clear {
+                    let g = if inside > 0.0 {
+                        self.ground_height(p.x, p.y)
+                    } else {
+                        plan.scenery_height(p.x, p.y)
+                    };
+                    foundry::tree(self, rng, p, g);
+                }
+            }
+        }
+    }
+
+    fn sanctum_horizon(&mut self, plan: &Plan) {
         let (cell, reach) = (6.0f32, 700.0f32);
         let n = ((SIZE + 2.0 * reach) / cell) as usize + 1;
-        let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, scenery_ground);
-        t.color = SAND * 0.95;
-        t.material = Material::Sand;
+        let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, |x, z| {
+            plan.scenery_height(x, z)
+        });
+        t.color = plan.colors.land * 0.95;
+        t.material = plan.colors.material;
         self.scenery_terrain = Some(t);
 
         // Mesas and buttes on the horizon, layered like this one, each with
         // its own bays and its own beds; seen only from far off, so built
         // coarser.
-        let floor = |p: Vec2| scenery_ground(p.x, p.y);
-        for (k, (c, r, h)) in HILLS.into_iter().enumerate() {
+        let floor = |p: Vec2| plan.scenery_height(p.x, p.y);
+        let rock = &plan.colors.rock;
+        let salt = (plan.seed & 0xffff) << 8;
+        for (k, (c, r, h)) in plan.hills.iter().copied().enumerate() {
             let sd = k as f32 * 1.7 + 0.5;
             let bays = [
                 (sd, 0.12, r * 0.18),
@@ -1422,7 +1453,13 @@ impl Map {
             };
             let htop = move |_: Vec2| LOW + h;
             let scale = if r > 30.0 { 2.0 } else { 1.4 };
-            let beds = strata::beds(LOW + h + 0.5, LOW - 6.0, scale, 0x0b0e_d500 + k as u64);
+            let beds = strata::beds(
+                rock,
+                LOW + h + 0.5,
+                LOW - 6.0,
+                scale,
+                (0x0b0e_d500 + k as u64) ^ plan.seed,
+            );
             strata::build(
                 &mut self.sculpted,
                 &strata::Tower {
@@ -1437,7 +1474,8 @@ impl Map {
                     scale,
                     cell: 2.2,
                     ring_cap: None,
-                    seed: 20 + k as u64,
+                    seed: 20 + k as u64 + salt,
+                    rock,
                 },
             );
         }
@@ -1449,88 +1487,155 @@ mod tests {
     use super::*;
     use crate::ai::NavGrid;
 
+    /// The hand-made one, and some generated: every kind of ground, every
+    /// size of nave.
+    fn some() -> Vec<(String, Plan, Map)> {
+        let grounds = [Ground::Desert, Ground::Tundra, Ground::Grassland];
+        (0..7u64)
+            .map(|seed| {
+                let ground = grounds[seed as usize % 3];
+                (
+                    format!("{ground:?} {seed}"),
+                    Plan::new(ground, seed),
+                    Map::sanctum_on(ground, seed),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn every_spawn_reaches_the_altar() {
-        let m = Map::sanctum();
-        assert!(
-            m.open_spots.len() >= 12,
-            "{} open spots",
-            m.open_spots.len()
-        );
-        for (side, base) in m.bases.iter().enumerate() {
-            assert!(base.len() >= 12, "side {side} has {} spawns", base.len());
-        }
-        let nav = NavGrid::build(&m);
-        for &p in m.open_spots.iter().chain(m.bases.iter().flatten()) {
-            assert!(
-                !nav.path(p, CENTER + Vec2::new(-6.0, 0.0)).is_empty(),
-                "no path from {p} to the altar"
-            );
+        for (name, _, m) in some() {
+            let open = m.open_spots.len();
+            assert!(open >= 12, "{name}: {open} open spots");
+            for (side, base) in m.bases.iter().enumerate() {
+                let n = base.len();
+                assert!(n >= 12, "{name}: side {side} has {n} spawns");
+            }
+            let nav = NavGrid::build(&m);
+            for &p in m.open_spots.iter().chain(m.bases.iter().flatten()) {
+                assert!(
+                    !nav.path(p, CENTER + Vec2::new(-6.0, 0.0)).is_empty(),
+                    "{name}: no path from {p} to the altar"
+                );
+            }
         }
     }
 
     #[test]
     fn the_top_is_level_and_the_floor_is_far_below() {
-        let m = Map::sanctum();
-        for p in m
-            .bases
-            .iter()
-            .flatten()
-            .chain(&m.repair_spots)
-            .chain([&CENTER])
-        {
-            assert!(
-                m.ground_height(p.x, p.y).abs() < 0.5,
-                "{p} isn't on the top"
-            );
+        for (name, _, m) in some() {
+            for p in m
+                .bases
+                .iter()
+                .flatten()
+                .chain(&m.repair_spots)
+                .chain([&CENTER])
+            {
+                assert!(
+                    m.ground_height(p.x, p.y).abs() < 0.5,
+                    "{name}: {p} isn't on the top"
+                );
+            }
+            assert!(m.ground_height(5.0, 5.0) < FALL_Y - 15.0, "{name}");
+            assert!(m.ground_height(150.0, 295.0) < FALL_Y - 15.0, "{name}");
         }
-        assert!(m.ground_height(5.0, 5.0) < FALL_Y - 15.0);
-        assert!(m.ground_height(150.0, 295.0) < FALL_Y - 15.0);
     }
 
-    /// Boulders close the desert floor's edge all round: a Vigil running
-    /// on after the fall never drives out of the arena.
+    /// Boulders close the floor's edge all round: a Vigil running on after
+    /// the fall never drives out of the arena.
     #[test]
     fn boulders_close_the_floor() {
-        Map::sanctum().assert_edge_walled(0.5, |_| false);
+        for (_, _, m) in some() {
+            m.assert_edge_walled(0.5, |_| false);
+        }
     }
 
     #[test]
     fn repair_spots_are_open() {
-        let m = Map::sanctum();
-        let nav = NavGrid::build(&m);
-        for &p in &m.repair_spots {
-            assert!(!nav.is_blocked(p), "repair spot {p} is blocked");
+        for (name, _, m) in some() {
+            assert!(m.repair_spots.len() >= 3, "{name}");
+            let nav = NavGrid::build(&m);
+            for &p in &m.repair_spots {
+                assert!(!nav.is_blocked(p), "{name}: repair spot {p} is blocked");
+            }
         }
     }
 
     /// The edge is off-limits to bots' paths.
     #[test]
     fn nav_keeps_off_the_edge() {
-        let m = Map::sanctum();
-        let nav = NavGrid::build(&m);
-        for i in 0..64 {
-            let a = i as f32 / 64.0 * TAU;
-            let p = CENTER + Vec2::new(a.cos(), a.sin()) * (rim(a) - 2.0);
-            assert!(nav.is_blocked(p), "{p} at the edge is open");
+        for (name, plan, m) in some() {
+            let nav = NavGrid::build(&m);
+            for i in 0..64 {
+                let a = i as f32 / 64.0 * TAU;
+                let p = CENTER + Vec2::new(a.cos(), a.sin()) * (plan.rim(a) - 2.0);
+                assert!(nav.is_blocked(p), "{name}: {p} at the edge is open");
+            }
         }
     }
-}
 
-#[cfg(test)]
-mod breach {
-    use super::*;
     /// The fallen apse wall is a way in: a path from outside it to the altar
     /// runs through it, not round by the transept doors.
     #[test]
     fn the_apse_breach_is_a_way_in() {
-        let m = Map::sanctum();
-        let nav = crate::ai::NavGrid::build(&m);
-        let a = -std::f32::consts::FRAC_PI_2 + 2.0 / 5.0 * std::f32::consts::PI;
-        let out = Vec2::new(CHANCEL_X, CENTER.y) + Vec2::new(a.cos(), a.sin()) * (APSE_R + 9.0);
-        let path = nav.path(out, CENTER + Vec2::new(8.0, 0.0));
-        assert!(!path.is_empty());
-        let len: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
-        assert!(len < 45.0, "path round is {len:.0} m");
+        for (name, plan, m) in some() {
+            let nav = NavGrid::build(&m);
+            let i = (*plan.fallen.start() + *plan.fallen.end()) as f32 * 0.5 + 0.5;
+            let a = -FRAC_PI_2 + i / 5.0 * std::f32::consts::PI;
+            let apse = Vec2::new(plan.chancel_x, CENTER.y);
+            let out = apse + Vec2::new(a.cos(), a.sin()) * (APSE_R + 9.0);
+            let path = nav.path(out, CENTER + Vec2::new(8.0, 0.0));
+            assert!(!path.is_empty(), "{name}");
+            let len: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+            assert!(len < 51.0, "{name}: path round is {len:.0} m");
+        }
+    }
+
+    /// A seed is one Sanctum, the same layout on any ground; another seed's
+    /// another.
+    #[test]
+    fn a_seed_names_a_sanctum() {
+        let walls = |ground, seed| {
+            let m = Map::sanctum_on(ground, seed);
+            let solid: Vec<_> = (m.oboxes.iter().filter(|o| o.solid))
+                .map(|o| (o.center, o.half, o.y1))
+                .collect();
+            (solid, m.terrain.unwrap().heights)
+        };
+        let a = walls(Ground::Desert, 3);
+        assert!(a == walls(Ground::Tundra, 3));
+        assert!(a == walls(Ground::Grassland, 3));
+        assert!(a != walls(Ground::Desert, 4));
+        assert!(a != walls(Ground::Desert, 0));
+    }
+
+    /// Whatever the seed, the top holds the bell tower, chapels, graves and
+    /// crystals, on it and clear of each other, and the rim's in the arena.
+    #[test]
+    fn every_seed_lays_out() {
+        for seed in 1..400 {
+            let p = Plan::new(Ground::Desert, seed);
+            assert!(p.chapels.len() >= 2, "{seed}: {} chapels", p.chapels.len());
+            assert!(!p.yards.is_empty(), "{seed}: no graves");
+            assert!(p.clusters.len() >= 4, "{seed}: few crystals");
+            assert!(p.repairs.len() >= 3, "{seed}: few repairs");
+            assert!(p.cells.is_some() && p.cloister.is_some(), "{seed}");
+            assert!(p.hills.len() >= 6, "{seed}: few hills");
+            for &(c, _) in &p.chapels {
+                assert!(
+                    c.distance(p.bell) > 10.0,
+                    "{seed}: a chapel in the bell tower"
+                );
+            }
+            assert!(
+                p.past_edge(p.bell) < -13.0,
+                "{seed}: the bell tower's off the top"
+            );
+            for i in 0..360 {
+                let r = p.rim((i as f32).to_radians());
+                assert!((70.0..130.0).contains(&r), "{seed}: rim at {r}");
+            }
+        }
     }
 }

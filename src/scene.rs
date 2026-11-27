@@ -871,6 +871,21 @@ mod tests {
         ]);
     }
 
+    /// The same for generated Sanctums, one of each ground.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn sanctums_hardly_z_fight() {
+        use crate::map::procgen::foundry::Ground;
+        hardly_z_fight([
+            ("sanctum desert", Map::sanctum_on(Ground::Desert, 1)),
+            ("sanctum tundra", Map::sanctum_on(Ground::Tundra, 2)),
+            ("sanctum grassland", Map::sanctum_on(Ground::Grassland, 3)),
+        ]);
+    }
+
     /// An Ithessar city, on its own: they're the biggest.
     #[test]
     #[cfg_attr(

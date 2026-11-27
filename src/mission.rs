@@ -59,7 +59,8 @@ pub const MISSIONS: &[Mission] = &[
         name: "HOLY GROUND",
         contract: Contract::Hold,
         map: "THE SANCTUM",
-        map_kind: MapKind::Sanctum,
+        // A site's is on its world's ground.
+        map_kind: MapKind::Sanctum(Ground::Desert),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],

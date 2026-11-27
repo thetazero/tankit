@@ -40,6 +40,7 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
         map: &mut map,
         l: &sk,
         st,
+        look: spec.look,
         inside: true,
     };
     b.railroad();
@@ -60,6 +61,7 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
                 map: &mut map,
                 l: &sk,
                 st,
+                look: spec.look,
                 inside: true,
             },
             d,
@@ -71,6 +73,7 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
         map: &mut map,
         l: &sk,
         st,
+        look: spec.look,
         inside: false,
     };
     for d in &sk.land.digs {

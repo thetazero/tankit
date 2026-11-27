@@ -5,6 +5,8 @@
 
 use glam::{Vec2, Vec3};
 
+use super::Look;
+use super::bridge::{self, Deck, Form};
 use super::civic::Stone;
 use super::land::Bore;
 use crate::map::{Map, OBox};
@@ -64,6 +66,16 @@ impl Crossing {
         }
     }
 
+    /// A bridge's deck.
+    pub fn deck(&self) -> Deck {
+        Deck {
+            from: self.from,
+            to: self.to,
+            half: self.half,
+            top: self.top,
+        }
+    }
+
     /// Distance from its center line.
     pub fn distance(&self, p: Vec2) -> f32 {
         let d = self.to - self.from;
@@ -71,8 +83,9 @@ impl Crossing {
         p.distance(self.from + d * t)
     }
 
-    /// Builds it, `ground` the land's height.
-    pub fn build(&self, map: &mut Map, s: Stone, ground: impl Fn(Vec2) -> f32) {
+    /// Builds it, `ground` the land's height, a bridge the way `look` does
+    /// (none: undressed).
+    pub fn build(&self, map: &mut Map, s: Stone, look: Option<Look>, ground: impl Fn(Vec2) -> f32) {
         let (d, side) = (self.dir(), Vec2::new(-self.dir().y, self.dir().x));
         let yaw = d.x.atan2(d.y);
         let mut put = |t: (f32, f32), off: f32, w: f32, y: (f32, f32), c: Vec3, solid: bool| {
@@ -189,6 +202,9 @@ impl Crossing {
         }
         for &k in &floors {
             map.oboxes[k].ramp = true;
+        }
+        if let (Kind::Bridge, Some(look)) = (self.kind, look) {
+            bridge::dress(map, self.deck(), look, Form::of(look));
         }
     }
 }

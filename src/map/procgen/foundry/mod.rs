@@ -6,6 +6,7 @@
 //! them.
 
 mod dress;
+pub(in crate::map) use self::dress::tree;
 mod ground;
 mod imperium;
 mod ithessar;
@@ -84,6 +85,6 @@ pub(super) fn dressed(spec: &Spec, ground: Ground, sk: &Skeleton) -> Map {
     m.hold_name = "WORKS YARD";
     // (Its own dice: each ground's sky draws a different number.)
     let mut rng = Rng::new(spec.seed ^ 0x00D2_E55E);
-    dress::dress(&mut m, sk, works(spec.look), ground, &mut rng);
+    dress::dress(&mut m, sk, spec.look, ground, &mut rng);
     m
 }
