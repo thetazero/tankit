@@ -25,8 +25,9 @@ pub const BLUE: Rgba = [0.12, 0.42, 1.0, 1.0];
 
 pub const UNIT: f32 = 8.0;
 pub const MARGIN: f32 = UNIT * 6.0;
-/// A panel's column of content.
-pub const COLUMN: f32 = UNIT * 27.0;
+/// A panel's column of content: wide enough for a contract page's fights,
+/// the longest site name and mode on one line.
+pub const COLUMN: f32 = UNIT * 32.0;
 /// From one action to the next.
 pub const ACTION: f32 = UNIT * 7.0;
 
