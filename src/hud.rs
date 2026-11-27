@@ -508,6 +508,18 @@ impl Hud {
                     Align::Center,
                 );
             }
+            if me.burned {
+                let y = match me.killed_by {
+                    Some(k) if k != 0 => 57.0,
+                    _ => 42.0,
+                };
+                p.text(
+                    c + Vec2::new(0.0, y),
+                    "BURNED IN A PLASMA RIVER",
+                    &LABEL,
+                    Align::Center,
+                );
+            }
             // Your side's allocation spent, or your company's: there's no
             // chassis to come back in, and the match plays out without you.
             let out = if m.crew_out() {

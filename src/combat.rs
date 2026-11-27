@@ -578,6 +578,10 @@ pub struct Fighter {
     pub beam: Option<Vec3>,
     /// What that beam is burning (for the sound of it).
     pub burning: Burn,
+    /// Burning in a plasma river: its surface's height there.
+    pub in_plasma: Option<f32>,
+    /// A plasma river burned it down, the last time it died.
+    pub burned: bool,
     /// Part upgrade levels (bots stay at M0), and new levels to fit at the next respawn.
     pub levels: Levels,
     pub next_levels: Option<Levels>,
@@ -1093,6 +1097,24 @@ impl Match {
     #[cfg(test)]
     pub fn idle(&mut self, i: usize) {
         self.bots[i] = None;
+    }
+
+    /// Put the player's tank in the middle of the nearest plasma river, its
+    /// spawn shield down (`--screen burning`). False if there's none here.
+    pub fn sink_player(&mut self) -> bool {
+        let p = self.world.tanks[0].pos;
+        let rivers = self.world.map.rivers.clone();
+        let near = rivers.iter().flat_map(|r| &r.points).min_by(|a, b| {
+            let d = |q: &Vec3| flat(*q).distance_squared(flat(p));
+            d(a).total_cmp(&d(b))
+        });
+        let Some(&at) = near else {
+            return false;
+        };
+        let yaw = self.world.tanks[0].yaw();
+        self.world.teleport(0, flat(at), yaw);
+        self.fighters[0].shield = 0.0;
+        true
     }
 
     /// Destroy the player now, credited to the nearest enemy (death-screen
@@ -2463,6 +2485,7 @@ impl Match {
     fn kill(&mut self, killer: usize, victim: usize) {
         let v = &mut self.fighters[victim];
         v.health = 0.0;
+        v.burned = false;
         v.deaths += 1;
         if let Some(k) = self.seat_company.get(victim).copied().flatten() {
             let team = v.team;
@@ -2635,21 +2658,39 @@ impl Match {
         }
         let map = &self.world.map;
         let tanks = &self.world.tanks;
-        let burning: Vec<usize> = (0..self.fighters.len())
-            .filter(|&i| {
+        let burning: Vec<Option<f32>> = (0..self.fighters.len())
+            .map(|i| {
                 let f = &self.fighters[i];
                 let t = &tanks[i];
-                f.alive
-                    && !f.is_husk()
-                    && f.shield <= 0.0
-                    && !t.chassis.hover
-                    && map.rivers.iter().any(|r| {
-                        r.surface(Vec2::new(t.pos.x, t.pos.z), 0.0)
-                            .is_some_and(|y| t.pos.y < y + 0.5)
-                    })
+                if !f.alive || f.is_husk() || f.shield > 0.0 || t.chassis.hover {
+                    return None;
+                }
+                map.rivers
+                    .iter()
+                    .filter_map(|r| r.surface(Vec2::new(t.pos.x, t.pos.z), 0.0))
+                    .find(|y| t.pos.y < y + 0.5)
             })
             .collect();
-        for i in burning {
+        let time = self.world.time;
+        for (i, surface) in burning.into_iter().enumerate() {
+            self.fighters[i].in_plasma = surface;
+            let Some(y) = surface else {
+                continue;
+            };
+            // Smoke rolls up off it. (Scattered by a hash: it's only looks,
+            // so it leaves the match's rng alone.)
+            if (time / 0.09).floor() != ((time - DT) / 0.09).floor() {
+                let t = &self.world.tanks[i];
+                let k = fx::seed_at(Vec3::new(i as f32, time, 0.0));
+                let h = |n: f32| fx::seed_at(Vec3::new(k * 91.0, n, k * 37.0));
+                let off = Vec3::new(h(1.0) * 2.0 - 1.0, 0.0, h(2.0) * 2.0 - 1.0);
+                let mut p = t.pos + off * 1.4;
+                p.y = fx::fire_base(t.pos.y, y);
+                self.blasts.push(Blast {
+                    drift: off * 1.5 + Vec3::Y * (4.0 + 2.5 * h(3.0)),
+                    ..Blast::new(p, BlastKind::Smoke)
+                });
+            }
             let f = &self.fighters[i];
             let killer = f.hit_by.filter(|_| f.since_hit < FALL_CREDIT).unwrap_or(i);
             // (Its own damage, so a shove's credit runs out as it would.)
@@ -2657,7 +2698,9 @@ impl Match {
             let f = &mut self.fighters[i];
             f.health -= burn;
             if f.health <= 0.0 {
+                f.in_plasma = None;
                 self.kill(killer, i);
+                self.fighters[i].burned = true;
                 if self.fighters[i].alive {
                     self.wreck(i);
                 }
@@ -3348,6 +3391,14 @@ impl Match {
                 _ => {}
             }
         }
+        // Tanks on fire in a plasma river.
+        for (t, f) in self.world.tanks.iter().zip(&self.fighters) {
+            if let Some(y) = f.in_plasma {
+                let at = t.interpolated(alpha).pos;
+                let at = Vec3::new(at.x, fx::fire_base(at.y, y), at.z);
+                fx::plasma_fire(at, t.rot, self.world.time + alpha * DT, out);
+            }
+        }
         // Shell strikes, exploding tanks and burning wrecks.
         for b in &self.blasts {
             match b.kind {
@@ -3837,6 +3888,8 @@ fn fighter(team: usize, health: f32) -> Fighter {
         charging: false,
         beam: None,
         burning: Burn::Air,
+        in_plasma: None,
+        burned: false,
         levels: Levels::default(),
         next_levels: None,
         damage_dealt: 0.0,
@@ -3945,6 +3998,25 @@ mod tests {
         }
         assert!(m.fighters[1].alive, "it doesn't die at once");
         assert!(m.fighters[1].health < was * 0.8);
+        // It's seen to burn, smoke and all, and nobody else is.
+        assert!(m.fighters[1].in_plasma.is_some());
+        assert!(m.fighters[0].in_plasma.is_none());
+        assert!(m.blasts.iter().any(|b| b.kind == BlastKind::Smoke));
+        let fire = |m: &Match| {
+            let mut out = Vec::new();
+            m.glow_particles(1.0, &mut out);
+            out.iter()
+                .filter(|p| p.glow > 0.0 && p.billow > 0.0)
+                .count()
+        };
+        assert!(fire(&m) > 8, "{}", fire(&m));
+        // Out of it, it stops.
+        m.world.teleport(1, Vec2::new(100.0, 150.0), 0.0);
+        m.step(Command::default(), false);
+        assert!(m.fighters[1].in_plasma.is_none());
+        m.world.teleport(1, Vec2::new(100.0, 100.0), 0.0);
+        m.step(Command::default(), false);
+        assert!(m.fighters[1].in_plasma.is_some());
         // Whoever knocked it in gets the kill.
         m.fighters[1].hit_by = Some(0);
         m.fighters[1].since_hit = 0.0;
@@ -3952,6 +4024,7 @@ mod tests {
         for _ in 0..(3.0 / DT) as usize {
             m.step(Command::default(), false);
             if m.fighters[0].kills > kills {
+                assert!(m.fighters[1].burned && m.fighters[1].in_plasma.is_none());
                 return;
             }
         }
