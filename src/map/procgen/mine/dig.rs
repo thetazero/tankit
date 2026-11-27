@@ -9,6 +9,7 @@ use glam::{Quat, Vec2, Vec3, Vec4};
 
 use super::*;
 use crate::map::landmarks::Rig;
+use crate::map::procgen::rails;
 use crate::map::rocks;
 use crate::map::{Ambient, Crystal, Map, OBox};
 use crate::render::material::Material;
@@ -522,14 +523,13 @@ impl Dig<'_> {
     pub(super) fn rails(&mut self, line: &[Vec2], off: Option<&[Vec2]>) {
         let lay = self.l;
         let total = line_len(line, line.len() - 1);
-        let y_at = |m: &Dig, s: f32| {
-            let (p, dir) = line_at(line, s);
+        let digs: Vec<_> = lay.land.digs.iter().filter(|_| self.inside).collect();
+        let ground = |m: &Map, p: Vec2| {
             if lay.on_bridge(p) {
-                DECK_TOP
-            } else {
-                let side = dir.perp() * 1.5;
-                m.stand(p).max(m.stand(p + side)).max(m.stand(p - side))
+                return DECK_TOP;
             }
+            let dig = digs.iter().find(|d| d.distance(p) < 0.0);
+            dig.map_or_else(|| rails::ground(m, p), |d| d.floor)
         };
         let step = 1.6;
         let n = (total / step) as usize;
@@ -539,7 +539,10 @@ impl Dig<'_> {
             if off.is_some_and(|m| line_distance(m, p) < 2.4) {
                 continue;
             }
-            let y = y_at(self, s);
+            let y = [0.0, 1.5, -1.5]
+                .map(|o| ground(self.map, p + dir.perp() * o))
+                .into_iter()
+                .fold(f32::MIN, f32::max);
             self.oboxes.push(OBox {
                 center: p,
                 yaw: yaw_along(dir),
@@ -553,34 +556,15 @@ impl Dig<'_> {
                 ..OBox::default()
             });
         }
-        // Rails, in runs of up to 6 m following the ground, broken at the
-        // line's bends.
-        let mut s = if off.is_some() { 1.0 } else { 0.0 };
-        // (Solid ground has finer bumps than a terrain.)
-        let run = if self.solid.is_some() { 2.0 } else { 6.0 };
-        let bends: Vec<f32> = (1..line.len()).map(|k| line_len(line, k)).collect();
-        while s < total - 0.01 {
-            let next_bend = bends
-                .iter()
-                .copied()
-                .find(|&b| b > s + 0.01)
-                .unwrap_or(total);
-            let e = (s + run).min(next_bend);
-            let (pa, dir) = line_at(line, s + 0.001);
-            let (pb, _) = line_at(line, e - 0.001);
-            let (ya, yb) = (y_at(self, s) + 0.16, y_at(self, e - 0.001) + 0.16);
-            for side in [-1.0f32, 1.0] {
-                let o = dir.perp() * side * GAUGE * 0.5;
-                self.segment(
-                    Vec3::new(pa.x + o.x, ya, pa.y + o.y),
-                    Vec3::new(pb.x + o.x, yb, pb.y + o.y),
-                    0.08,
-                    STEEL * 1.4,
-                    Material::Metal,
-                    false,
-                );
+        // Rails, piece by piece between the line's bends.
+        let from = if off.is_some() { 1.0 } else { 0.0 };
+        for k in 1..line.len() {
+            let (s, e) = (line_len(line, k - 1), line_len(line, k));
+            if e < from + 0.01 {
+                continue;
             }
-            s = e;
+            let a = line[k - 1].lerp(line[k], ((from - s) / (e - s)).max(0.0));
+            rails::lay(self.map, (a, line[k]), GAUGE, RAIL, ground);
         }
     }
 

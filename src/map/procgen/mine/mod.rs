@@ -38,6 +38,8 @@ pub const DECK_TOP: f32 = 0.25;
 const DECK_T: f32 = 1.0;
 /// Track gauge (rail to rail, m): broad, for big ore cars.
 const GAUGE: f32 = 2.2;
+/// What color its rails are.
+pub(in crate::map::procgen) const RAIL: Vec3 = Vec3::new(0.28, 0.294, 0.336);
 /// The warehouse's spur: it leaves the main line back the way the trains
 /// came, swings off on a curve of this radius through this angle, and runs straight in
 /// at the warehouse's rail door this far on.
