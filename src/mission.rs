@@ -167,12 +167,12 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
-    // The same out in the open, on desert worlds only.
+    // The same out in the open, on its world's ground.
     Mission {
         name: "BARE SKY",
         contract: Contract::Hold,
-        map: "SHIELD DESERT",
-        map_kind: MapKind::ShieldDesert(crate::Generator::up(Faction::Imperium)),
+        map: "SHIELD CAMP",
+        map_kind: MapKind::ShieldCamp(Ground::Desert, crate::Generator::up(Faction::Imperium)),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -265,7 +265,7 @@ pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
 }
 
 /// The missions a shield generator on a `class` world can be fought with: a
-/// Hold on the shield city, or on a desert world perhaps the shield desert.
+/// Hold on the shield city, or where its ground's made the shield camp.
 pub fn for_shields(class: crate::galaxy::theater::Class) -> Vec<usize> {
     (0..MISSIONS.len())
         .filter(|&i| class.shields_on(MISSIONS[i].map_kind))

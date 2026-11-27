@@ -257,7 +257,11 @@ mod tests {
                 crate::map::procgen::foundry::Ground::Grassland,
             ),
             MapKind::Desert,
-            MapKind::ShieldDesert(g),
+            MapKind::ShieldSite(Look::Imperium, Setting::Tundra, g),
+            MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
+            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Desert, g),
+            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Tundra, g),
+            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Grassland, g),
         ] {
             let own = make_map(kind, 1);
             let mut last = (f32::INFINITY, f32::INFINITY);

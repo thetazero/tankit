@@ -16,7 +16,7 @@ use crate::render::material::Material;
 use crate::rng::Rng;
 
 /// The colors of the land and its cliffs.
-pub(super) fn palette(ground: Ground) -> Palette {
+pub(in crate::map::procgen) fn palette(ground: Ground) -> Palette {
     let planet = planet(ground);
     match ground {
         // Red rock and pale sand.
@@ -145,9 +145,16 @@ pub fn planet(ground: Ground) -> crate::planet::Look {
 }
 
 /// What the land's put there itself: drifted snow, and snow on the roofs;
-/// tufts of grass, and copses past the edge. Nothing that stops a tank.
-pub(super) fn growth(map: &mut Map, sk: &Skeleton, ground: Ground, rng: &mut Rng) {
-    let color = palette(ground).sand;
+/// tufts of grass, and copses past the edge. Nothing that stops a tank. In
+/// `color`, on the ground only where it's `open`.
+pub(in crate::map::procgen) fn growth(
+    map: &mut Map,
+    sk: &Skeleton,
+    ground: Ground,
+    color: Vec3,
+    rng: &mut Rng,
+    open: impl Fn(Vec2) -> bool,
+) {
     let density = match ground {
         Ground::Desert => return,
         Ground::Tundra => 0.0035,
@@ -167,6 +174,7 @@ pub(super) fn growth(map: &mut Map, sk: &Skeleton, ground: Ground, rng: &mut Rng
             (map.ground_height(q.x, q.y) - g).abs() < 0.9
         });
         let taken = !level
+            || !open(p)
             || sk.lots.iter().any(|l| l.footprint.distance(p) < 1.5)
             || sk.bases.iter().any(|b| b.contains(p, 0.0))
             || sk.tracks.iter().any(|t| line_distance(t, p) < 4.0)

@@ -5,8 +5,9 @@
 //! - **The pad**: the ground graded flat out past the precinct and packed
 //!   hard, paler than the sand round it.
 //! - **Tracks** beaten out from its doors toward each side's spawns.
-//! - **Sand fences** across the windward approach, slatted panels between
-//!   posts, sand banked up against them, some panels gone.
+//! - **Fences** across the windward approach, slatted panels between
+//!   posts, sand or snow banked up against them, some panels gone.
+//!   (On grassland, where nothing blows, post and rail.)
 //! - **Supply dumps** by the doors: crates stacked on pallets in the
 //!   holder's colours, fuel drums, a tarp over some of it.
 //!
@@ -35,12 +36,14 @@ pub struct Camp {
     at: Vec2,
     tracks: Vec<Vec<Vec2>>,
     fences: Vec<(Vec2, Vec2)>,
+    /// How high it banks up against them.
+    bank: f32,
     /// Upwind: the side of a fence the sand banks up on.
     upwind: Vec2,
     drifts: Vec<Drift>,
 }
 
-/// How high sand banks up against a fence.
+/// How high sand or snow banks up against a fence.
 const BANK: f32 = 0.7;
 /// A track's half-width.
 const TRACK: f32 = 2.2;
@@ -62,7 +65,7 @@ impl Camp {
                 let side = (p - a).dot(self.upwind);
                 let run = if side > 0.0 { 4.5 } else { 1.5 };
                 let ends = smoothstep(0.0, 0.12, t) * smoothstep(0.0, 0.12, 1.0 - t);
-                BANK * (1.0 - smoothstep(0.0, run, d)) * (0.4 + 0.6 * ends)
+                self.bank * (1.0 - smoothstep(0.0, run, d)) * (0.4 + 0.6 * ends)
             })
             .fold(0.0, f32::max);
         rubble.max(sand)
@@ -74,11 +77,11 @@ impl Camp {
         let d = self.at.distance(p);
         // Graded down to the hard ground under the sand: gravel, darker
         // and greyer than the loose sand round it.
-        let packed = pal.low.lerp(pal.stone, 0.5) * 0.82;
+        let packed = pal.bare.unwrap_or(pal.low).lerp(pal.stone, 0.5) * 0.82;
         let packed = packed * (0.95 + 0.06 * noise2(p.x / 3.0, p.y / 3.0, 140));
         let pad = 1.0 - smoothstep(GENERATOR_PRECINCT - 2.0, GENERATOR_PRECINCT + 7.0, d);
         let mut c = c.lerp(packed, pad * 0.85);
-        let worn = pal.stone_dark * 0.85;
+        let worn = pal.bare.map_or(pal.stone_dark, |b| b * 0.8) * 0.85;
         for t in &self.tracks {
             let off = line_distance(t, p);
             let k = (1.0 - smoothstep(TRACK * 0.5, TRACK + 1.2, off))
@@ -139,7 +142,10 @@ impl Sand<'_> {
         let fences = camp.fences.clone();
         let upwind = camp.upwind;
         for (a, b) in fences {
-            self.sand_fence(rng, a, b, upwind);
+            match self.blows() {
+                true => self.sand_fence(rng, a, b, upwind),
+                false => self.rail_fence(rng, a, b),
+            }
         }
         self.supply_dumps(rng, lm, owner);
     }
@@ -226,13 +232,59 @@ impl Sand<'_> {
             at: lm.center,
             tracks,
             fences,
+            bank: if self.blows() { BANK } else { 0.0 },
             upwind,
             drifts,
         }
     }
 
-    /// A sand fence from `a` to `b`: posts, slatted panels between them
-    /// (some gone, some leaning), half buried in the sand banked against
+    /// Whether the wind carries anything here: sand, or snow.
+    fn blows(&self) -> bool {
+        self.map.atmosphere.blowing_sand > 0.0
+    }
+
+    /// A post and rail fence from `a` to `b`, a rail gone or fallen here
+    /// and there. Nothing a tank can't push through.
+    fn rail_fence(&mut self, rng: &mut Rng, a: Vec2, b: Vec2) {
+        let n = (a.distance(b) / 2.6).round().max(1.0) as usize;
+        let wood = Vec3::new(0.33, 0.27, 0.2);
+        let at = |k: usize| a.lerp(b, k as f32 / n as f32);
+        for k in 0..=n {
+            let p = at(k);
+            let g = self.g(p);
+            self.map.block(
+                p,
+                Vec2::splat(0.09),
+                -shield::angle(b - a),
+                (g - 0.6, g + rng.range(1.15, 1.3)),
+                wood * rng.range(0.8, 1.0),
+                Material::Wood,
+                false,
+            );
+            if k == n {
+                continue;
+            }
+            let q = at(k + 1);
+            let h = self.g(q);
+            for y in [0.5, 0.95] {
+                if rng.chance(0.12) {
+                    continue;
+                }
+                let drop = if rng.chance(0.08) { y - 0.06 } else { 0.0 };
+                self.map.segment(
+                    Vec3::new(p.x, g + y, p.y),
+                    Vec3::new(q.x, h + y - drop, q.y),
+                    0.06,
+                    wood * rng.range(0.8, 1.05),
+                    Material::Wood,
+                    false,
+                );
+            }
+        }
+    }
+
+    /// A sand or snow fence from `a` to `b`: posts, slatted panels between them
+    /// (some gone, some leaning), half buried in what's banked against
     /// it. Nothing a tank can't push through.
     fn sand_fence(&mut self, rng: &mut Rng, a: Vec2, b: Vec2, upwind: Vec2) {
         let len = a.distance(b);
@@ -442,7 +494,7 @@ impl Sand<'_> {
             false,
         );
         o.roll = PI / 8.0;
-        // Spilled sand round the lot, a few stones.
+        // A few stones round the lot.
         for _ in 0..4 {
             let q = p + Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(4.5, 6.5);
             let gq = self.g(q);

@@ -961,6 +961,51 @@ mod tests {
         hardly_z_fight([("ithessar city tundra", crate::make_map(kind, 0))]);
     }
 
+    /// The same for shield sites on tundra and grassland, in cities and out
+    /// in the open.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn snowy_and_green_shield_sites_hardly_z_fight() {
+        use crate::MapKind::{ShieldCamp, ShieldSite};
+        use crate::faction::Faction;
+        use crate::map::procgen::{Look, foundry::Ground, setting::Setting};
+        let site = |seed, l, s, f| crate::make_map(ShieldSite(l, s, crate::Generator::up(f)), seed);
+        let camp = |seed, g, f| crate::make_map(ShieldCamp(g, crate::Generator::up(f)), seed);
+        hardly_z_fight([
+            (
+                "shield-site tundra",
+                site(0, Look::Imperium, Setting::Tundra, Faction::Uthenn),
+            ),
+            (
+                "shield-site grassland",
+                site(1, Look::Resonant, Setting::Grassland, Faction::Imperium),
+            ),
+            (
+                "shield-camp tundra imperium",
+                camp(0, Ground::Tundra, Faction::Imperium),
+            ),
+            (
+                "shield-camp tundra resonant",
+                camp(1, Ground::Tundra, Faction::Resonant),
+            ),
+            (
+                "shield-camp tundra uthenn",
+                camp(2, Ground::Tundra, Faction::Uthenn),
+            ),
+            (
+                "shield-camp tundra ithessar",
+                camp(7, Ground::Tundra, Faction::Ithessar),
+            ),
+            (
+                "shield-camp grassland",
+                camp(2, Ground::Grassland, Faction::Resonant),
+            ),
+        ]);
+    }
+
     /// The same for each faction's hull foundry.
     #[test]
     #[cfg_attr(

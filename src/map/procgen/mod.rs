@@ -59,8 +59,9 @@ pub enum Biome {
     City,
     /// A crystal mine dug into an escarpment, on whichever ground.
     Mine(foundry::Ground),
-    /// Open desert: dunes, buttes, spires, perhaps a dry wash.
-    Desert,
+    /// Open desert (dunes, buttes, spires, perhaps a dry wash), or the same
+    /// land under snow or grass.
+    Open(foundry::Ground),
     /// A small town in the desert, round a dry reservoir's dam or a well.
     Reservoir,
     /// A hull foundry, on whichever ground.
@@ -230,7 +231,7 @@ fn build_map(spec: &Spec) -> Map {
     let mut map = match spec.biome {
         Biome::City => build(spec).0,
         Biome::Mine(ground) => mine::build(spec, ground),
-        Biome::Desert | Biome::Reservoir => desert::build(spec),
+        Biome::Open(_) | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot(ground) => depot::build(spec, ground),
     };
@@ -416,8 +417,8 @@ fn planet(biome: Biome) -> crate::planet::Look {
     match biome {
         Biome::City => city::PLANET,
         Biome::Mine(ground) => mine::planet(ground),
-        Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
-        Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
+        Biome::Open(foundry::Ground::Desert) | Biome::Reservoir => desert::PALETTES[0].planet,
+        Biome::Open(ground) | Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
     }
 }
 
@@ -425,7 +426,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
 pub fn greybox(spec: &Spec) -> Map {
     match spec.biome {
         Biome::Mine(ground) => return mine::greybox(spec, ground),
-        Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
+        Biome::Open(_) | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::Depot(ground) => return depot::greybox(spec, ground),
         Biome::City => {}

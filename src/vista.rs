@@ -36,7 +36,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::Mine(..) => &[],
         // Generated: each desert picks its own (by each side's spawns,
         // looking at the Needles).
-        MapKind::Desert | MapKind::Reservoir | MapKind::ShieldDesert(_) => &[],
+        MapKind::Desert | MapKind::Reservoir | MapKind::ShieldCamp(..) => &[],
     }
 }
 
