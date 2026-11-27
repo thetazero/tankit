@@ -408,8 +408,8 @@ fn smart_realms_budget_for_pilots() {
     );
 }
 
-/// Only the Uthenn have realms after what they want: to those a world's worth
-/// more the more cubes it has, or would make, theirs to lose or to win.
+/// Only the Uthenn have realms after what they want, and what those want of
+/// a world is the cubes there and the cubes it'd make; none of its own.
 #[test]
 fn uthenn_realms_want_cubes() {
     use realm::Arm;
@@ -427,23 +427,19 @@ fn uthenn_realms_want_cubes() {
     let theirs = (0..g.systems.len())
         .find(|&s| g.systems[s].owner() != f)
         .unwrap();
-    let mut worth = |arm, cubes: u32| {
-        g.realms[r].arm = arm;
-        for s in [mine, theirs] {
-            let v = g.vault_at[s] as usize;
-            g.stashes[v].cubes = cubes;
-        }
-        [
-            g.prize(r as u32, mine, f, true),
-            g.prize(r as u32, theirs, f, false),
-        ]
-    };
-    let smart = worth(Arm::Smart, 10_000);
-    assert_eq!(smart, worth(Arm::Smart, 0));
-    let (none, some) = (worth(Arm::Wants, 0), worth(Arm::Wants, 10_000));
-    for k in 0..2 {
-        assert!(smart[k] < none[k] && none[k] < some[k], "{k}");
-    }
+    g.realms[r].arm = Arm::Smart;
+    assert_eq!(g.wanted(r as u32, theirs), 0.0);
+    g.realms[r].arm = Arm::Wants;
+    assert_eq!(g.wanted(r as u32, mine), 0.0);
+    let none = g.wanted(r as u32, theirs);
+    let v = g.vault_at[theirs] as usize;
+    g.stashes[v].cubes = 10_000;
+    let some = g.wanted(r as u32, theirs);
+    assert!(0.0 < none && none < some);
+    // Not what it'd pay: that's crystal's.
+    let pays = g.prize(r as u32, theirs, f, false);
+    g.realms[r].arm = Arm::Smart;
+    assert_eq!(pays, g.prize(r as u32, theirs, f, false));
 }
 
 /// A smart realm in a fight goes for every site, shielded or not, when it has

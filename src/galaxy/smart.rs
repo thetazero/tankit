@@ -13,6 +13,10 @@
 //! best attack it has idle pilots and crystal for, looking further ahead
 //! than others do and sticking with the neighbor it's begun on.
 //!
+//! **Wants.** Some realms are after what their people want: the Uthenn, as
+//! many tungsten cubes as they can control. Of the attacks worth what they
+//! cost, they're drawn to those that win it.
+//!
 //! **Battles.** In a fight it picks the sites worth fighting for: all of them,
 //! shielded or not, with the pilots to fill the seats; else fewer, so its
 //! pilots aren't spread too thin.
@@ -79,13 +83,11 @@ const HORIZON: f32 = 100.0;
 const LAND: f32 = 5.0;
 /// Share of a world it must expect to take, to attack.
 const SURE: f32 = 0.5;
-/// What a tungsten cube's worth to a realm after them, in crystal.
-fn cube_worth() -> f32 {
-    std::env::var("CUBE")
-        .ok()
-        .and_then(|x| x.parse().ok())
-        .unwrap_or(0.025)
-}
+/// What a tungsten cube's worth to a realm after them, in crystal (a planet's
+/// of ordinary tungsten make what its mines do); and how much it's drawn by
+/// what it wants.
+const CUBE: f32 = 0.025;
+const WANT: f32 = 5.0;
 /// How much more it's after a world of the neighbor it's out to conquer.
 const GRUDGE: f32 = 1.5;
 /// It hires if it'd gain this much over the price, and the price, with what
@@ -108,18 +110,18 @@ impl Galaxy {
             return self.worth_over(t, f, own, hold);
         }
         let ticks = hold.max(if own { 0.0 } else { HORIZON });
-        self.worth_over(t, f, own, ticks) + self.wanted(r, t, own, ticks)
+        self.worth_over(t, f, own, ticks)
     }
 
-    /// What system `t` has of what realm `r`'s people want, in crystal, if
-    /// it's after that: with `own`, what it'd lose with it; else what it'd
-    /// gain, held for `ticks`.
-    fn wanted(&self, r: u32, t: usize, own: bool, ticks: f32) -> f32 {
+    /// What system `t` has that realm `r`'s people want, if it's after that,
+    /// in crystal: what it'd gain with it, held a while. It's what it goes
+    /// for, not what it'll pay for it.
+    pub(crate) fn wanted(&self, r: u32, t: usize) -> f32 {
         if self.realms[r as usize].arm != Arm::Wants {
             return 0.0;
         }
         // Cubes: those there, and those it'd make.
-        self.cubes_in(t, own, ticks) * cube_worth()
+        self.cubes_to_win(t, self.hold_for().max(HORIZON)) * CUBE
     }
 }
 
@@ -207,6 +209,7 @@ impl Galaxy {
                 continue;
             }
             let mut prize = self.prize(r, t, f, false);
+            let wanted = self.wanted(r, t);
             prize += LAND;
             if sys.pos.distance(seat) > self.rules.reach {
                 prize *= 0.5;
@@ -257,6 +260,12 @@ impl Galaxy {
                 // It sticks to a neighbor once it's begun on it.
                 let score = if rival != NONE && self.holder(t) == rival {
                     score * GRUDGE
+                } else {
+                    score
+                };
+                // Of those worth what they cost, it's after what it wants.
+                let score = if score > 0.0 {
+                    score * (1.0 + WANT * wanted / prize.max(1.0))
                 } else {
                     score
                 };

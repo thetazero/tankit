@@ -34,26 +34,23 @@ impl Galaxy {
         &self.stashes[a..a + self.systems[s].planets as usize]
     }
 
-    /// System `s`'s cubes: with `own`, those the Uthenn have there and those
-    /// they'd make in `ticks`; else those they'd have, if they took the rest
-    /// of it. (A planet's cubes go with its vault, with the whole planet.)
-    pub(crate) fn cubes_in(&self, s: usize, own: bool, ticks: f32) -> f32 {
+    /// The cubes the Uthenn would have with all of system `s` that they
+    /// haven't without: those there, and those they'd make in `ticks`. (A
+    /// planet's cubes go with its vault, with the whole planet.)
+    pub(crate) fn cubes_to_win(&self, s: usize, ticks: f32) -> f32 {
         let uthenn = Faction::Uthenn.index();
         let makes = self.makes_cubes(s);
-        let (a, n) = (self.vault_at[s] as usize, self.systems[s].planets as usize);
-        (0..n)
+        let a = self.vault_at[s] as usize;
+        (0..self.systems[s].planets as usize)
             .map(|p| {
-                let stash = if (self.vaults[a + p].side as usize == uthenn) == own {
-                    self.stashes[a + p].cubes as f32
-                } else {
-                    0.0
-                };
-                let made = if makes[p] == own {
-                    self.rules.cubes * self.riches[a + p].tungsten * ticks
-                } else {
-                    0.0
-                };
-                stash + made
+                let mut cubes = 0.0;
+                if self.vaults[a + p].side as usize != uthenn {
+                    cubes += self.stashes[a + p].cubes as f32;
+                }
+                if !makes[p] {
+                    cubes += self.rules.cubes * self.riches[a + p].tungsten * ticks;
+                }
+                cubes
             })
             .sum()
     }

@@ -24,8 +24,7 @@ fn uthenn(g: &Galaxy) -> [[f64; 3]; 4] {
             .iter()
             .zip(g.stashes_of(s))
             .zip(g.riches_of(s));
-        for ((v, x), rich) in vaults.filter(|((v, _), _)| v.side as usize == f && v.realm == r) {
-            let _ = v;
+        for ((_, x), rich) in vaults.filter(|((v, _), _)| v.side as usize == f && v.realm == r) {
             out[1][arm] += x.cubes as f64;
             out[2][arm] += rich.tungsten as f64;
         }
@@ -517,6 +516,12 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                     cubes[k][a] += ended[k][a] / turns as f64;
                 }
             }
+            let made: f64 = g.stashes.iter().map(|x| x.cubes as f64).sum();
+            println!(
+                "  cubes everywhere {:.2} M, the Uthenn's {:.2} M",
+                made / 1e6,
+                ended[3].iter().sum::<f64>() / 1e6
+            );
             println!(
                 "  Uthenn systems {:.1?} from {:.1?}, cubes {:.1?} M, tungsten {:.1?} from {:.1?}",
                 ended[0],
