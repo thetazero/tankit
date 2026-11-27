@@ -1505,6 +1505,13 @@ impl Galaxy {
     /// side out of hulls fires no more.
     fn clash(&self, s: usize, fire: &[f32; SIDES], sides: &[usize]) -> [[f32; SIDES]; SIDES] {
         let hulls = self.systems[s].hulls;
+        let armor: [f32; SIDES] = std::array::from_fn(|f| {
+            if sides.contains(&f) {
+                crate::economy::armor_factor(self.gear(s, f))
+            } else {
+                1.0
+            }
+        });
         let mut by = [[0.0f32; SIDES]; SIDES];
         for &g in sides {
             let enemies = || sides.iter().copied().filter(move |&f| f != g);
@@ -1513,8 +1520,7 @@ impl Galaxy {
                 continue;
             }
             for f in enemies() {
-                let armor = crate::economy::armor_factor(self.gear(s, f));
-                by[f][g] = self.rules.kill * fire[g] * hulls[f] as f32 / targets / armor;
+                by[f][g] = self.rules.kill * fire[g] * hulls[f] as f32 / targets / armor[f];
             }
         }
         // How much of the battle each side's hulls last it.
