@@ -227,7 +227,16 @@ fn settle(map: &mut Map, sk: &Skeleton) {
         .map(|&want| {
             (0..300)
                 .map(|k| want + Vec2::from_angle(k as f32 * 2.4) * (k as f32 * 0.08))
-                .find(|&p| clear(map, p, 6.0) && !nav.is_blocked(p))
+                .find(|&p| {
+                    // (Open to drive up to from all round, too.)
+                    let round = |r: f32| {
+                        (0..24).all(|i| {
+                            let a = i as f32 / 24.0 * TAU;
+                            !nav.is_blocked(p + Vec2::from_angle(a) * r)
+                        })
+                    };
+                    clear(map, p, 6.0) && !nav.is_blocked(p) && round(4.0)
+                })
                 .unwrap_or(want)
         })
         .collect();
