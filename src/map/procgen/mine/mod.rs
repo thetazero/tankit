@@ -1,5 +1,5 @@
-//! The crystal mine biome: digs in a cliff wandering across a desert, at
-//! whatever angle it and they lie. Laid out (`plan`) on the one `Skeleton`
+//! The crystal mine biome: digs in a cliff wandering across a desert, tundra or
+//! grassland (`Ground`), at whatever angle it and they lie. Laid out (`plan`) on the one `Skeleton`
 //! and its solid land, dressed (`dress`) outside as a desert is and inside
 //! each dig in the dig's own frame. The mining gear any mine has (`dig`)
 //! and its railroads (`works`) are built wherever they're put.
@@ -14,6 +14,7 @@ pub mod dress;
 mod imperium;
 mod ithessar;
 mod kit;
+pub(in crate::map::procgen) mod land;
 pub mod plan;
 mod resonant;
 mod uthenn;
@@ -23,6 +24,7 @@ use std::f32::consts::PI;
 
 use glam::{Vec2, Vec3};
 
+use super::foundry::Ground;
 use super::{Look, Spec};
 use crate::map::Map;
 use crate::rng::Rng;
@@ -152,48 +154,16 @@ fn style(look: Look) -> &'static dyn MineStyle {
     }
 }
 
-/// Builds `spec`'s mine.
-pub fn build(spec: &Spec) -> Map {
-    dress::build(spec).1
+/// Builds `spec`'s mine on `ground`.
+pub fn build(spec: &Spec, ground: Ground) -> Map {
+    dress::build(spec, ground).1
 }
 
 /// `spec`'s mine undressed.
-pub fn greybox(spec: &Spec) -> Map {
+pub fn greybox(spec: &Spec, ground: Ground) -> Map {
     let mut m = plan::skeleton(spec.seed, &spec.sides).greybox(&spec.sides);
-    m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5));
+    m.atmosphere = land::atmosphere(ground, &mut Rng::new(spec.seed ^ 0x5EED_D2E5));
     m
 }
 
-/// The sky over the mine: hot late afternoon, a low gold sun from a
-/// different quarter each seed (but never straight down the Face), a hazy
-/// sky going white at the horizon, sand blowing off the mesa.
-pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
-    // The Seam's sun came from the south-east, low.
-    let az = -0.53 + rng.range(-1.1, 1.1);
-    let up = rng.range(0.5, 0.62);
-    let flat = 0.81 * (1.0 - up * up).sqrt();
-    crate::render::Atmosphere {
-        sun_dir: Vec3::new(az.cos() * flat, up * 0.81, az.sin() * flat),
-        sun_color: Vec3::new(2.2, 1.85, 1.45),
-        sky_zenith: Vec3::new(0.2, 0.36, 0.62),
-        sky_horizon: Vec3::new(0.7, 0.6, 0.5),
-        ground_color: Vec3::new(0.42, 0.3, 0.2),
-        fog_density: rng.range(0.0011, 0.0015),
-        wind: Vec2::new(rng.range(1.5, 3.5), rng.range(-1.5, 1.5)),
-        blowing_sand: 0.3,
-        dust: Vec3::new(0.72, 0.55, 0.38),
-        settle: crate::render::SAND_SETTLE,
-        ambient: 1.0,
-        stars: 0.0,
-    }
-}
-
-/// A mine world from orbit: red desert, dark basins, little sea, thin
-/// cloud.
-pub const PLANET: crate::planet::Look = crate::planet::Look {
-    land: Vec3::new(0.34, 0.2, 0.12),
-    basin: Vec3::new(0.17, 0.1, 0.07),
-    sea: Vec3::new(0.03, 0.06, 0.1),
-    cloud: Vec3::new(0.45, 0.42, 0.4),
-    cloudiness: 0.35,
-};
+pub use land::planet;

@@ -57,10 +57,11 @@ use crate::rng::Rng;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Biome {
     City,
-    /// A crystal mine dug into a desert escarpment.
-    Mine,
-    /// Open desert: dunes, buttes, spires, perhaps a dry wash.
-    Desert,
+    /// A crystal mine dug into an escarpment, on whichever ground.
+    Mine(foundry::Ground),
+    /// Open desert (dunes, buttes, spires, perhaps a dry wash), or the same
+    /// land under snow or grass.
+    Open(foundry::Ground),
     /// A small town in the desert, round a dry reservoir's dam or a well.
     Reservoir,
     /// A hull foundry, on whichever ground.
@@ -229,8 +230,8 @@ fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
 fn build_map(spec: &Spec) -> Map {
     let mut map = match spec.biome {
         Biome::City => build(spec).0,
-        Biome::Mine => mine::build(spec),
-        Biome::Desert | Biome::Reservoir => desert::build(spec),
+        Biome::Mine(ground) => mine::build(spec, ground),
+        Biome::Open(_) | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot(ground) => depot::build(spec, ground),
     };
@@ -368,8 +369,16 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     st.finish(&mut map);
     let mut rock = st.ground() * glam::Vec3::new(0.9, 0.84, 0.78);
     let mut banks = Vec::new();
+    let ground = match spec.setting {
+        setting::Setting::Plain | setting::Setting::Desert => None,
+        setting::Setting::Tundra => Some(foundry::Ground::Tundra),
+        setting::Setting::Grassland => Some(foundry::Ground::Grassland),
+    };
     if spec.setting == setting::Setting::Desert {
         (banks, rock) = setting::desert(&mut map, &sk, spec.seed, st.road());
+    } else if let Some(g) = ground {
+        (banks, rock) =
+            setting::green_or_white(&mut map, &sk, spec.seed, g, st.ground(), st.road());
     }
     let heaped = |d: &[Drift], p: Vec2| {
         d.iter()
@@ -407,17 +416,17 @@ pub fn map(spec: &Spec) -> Map {
 fn planet(biome: Biome) -> crate::planet::Look {
     match biome {
         Biome::City => city::PLANET,
-        Biome::Mine => mine::PLANET,
-        Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
-        Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
+        Biome::Mine(ground) => mine::planet(ground),
+        Biome::Open(foundry::Ground::Desert) | Biome::Reservoir => desert::PALETTES[0].planet,
+        Biome::Open(ground) | Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
     }
 }
 
 /// The skeleton `spec` lays out, as its greybox.
 pub fn greybox(spec: &Spec) -> Map {
     match spec.biome {
-        Biome::Mine => return mine::greybox(spec),
-        Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
+        Biome::Mine(ground) => return mine::greybox(spec, ground),
+        Biome::Open(_) | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::Depot(ground) => return depot::greybox(spec, ground),
         Biome::City => {}
@@ -548,7 +557,11 @@ impl Map {
 
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
     pub fn mine(seed: u64) -> Map {
-        map(&crate::mine_spec(seed, Look::Ithessar))
+        map(&crate::mine_spec(
+            seed,
+            Look::Ithessar,
+            foundry::Ground::Desert,
+        ))
     }
 
     /// The Imperium's hull foundry `seed` names, on desert (see
@@ -643,6 +656,33 @@ mod tests {
                 m.repair_spots
             );
             assert_eq!(m.vistas.len(), 2, "seed {seed}");
+        }
+    }
+
+    /// Whatever its ground, a seed's the same city, playable, under another
+    /// sky: snow on the roofs of the tundra's only.
+    #[test]
+    fn the_ground_changes_no_layout() {
+        use super::setting::Setting;
+        // (Every look, optimized: see `cities`.)
+        for (seed, look) in cities().filter(|&(s, _)| s < 1) {
+            let plain = crate::city_spec(seed, look);
+            let sk = skeleton(&plain);
+            let snow = foundry::Ground::Tundra.land().open;
+            let mut horizons = Vec::new();
+            for s in [Setting::Desert, Setting::Tundra, Setting::Grassland] {
+                let spec = plain.clone().set_in(s);
+                let m = map(&spec);
+                assert_eq!(skeleton(&spec).lots.len(), sk.lots.len());
+                if let Err(why) = check::playable(&m) {
+                    panic!("seed {seed} {look:?} {s:?}: {why}");
+                }
+                let lying = m.oboxes.iter().filter(|o| o.color == snow);
+                let lying = lying.filter(|o| o.rock.is_none()).count();
+                assert_eq!(lying > 20, s == Setting::Tundra, "{look:?} {s:?}: {lying}");
+                assert!(!horizons.contains(&m.atmosphere.sky_horizon));
+                horizons.push(m.atmosphere.sky_horizon);
+            }
         }
     }
 

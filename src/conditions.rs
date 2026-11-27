@@ -220,6 +220,7 @@ mod tests {
     use super::*;
     use crate::faction::Faction;
     use crate::map::procgen::Look;
+    use crate::map::procgen::setting::Setting;
     use crate::{Generator, MapKind, make_map};
 
     /// Every kind of map can be fought at any time of day: each darker than
@@ -240,6 +241,8 @@ mod tests {
             ),
             MapKind::City(Look::Imperium, Default::default()),
             MapKind::City(Look::Resonant, Default::default()),
+            MapKind::City(Look::Imperium, Setting::Tundra),
+            MapKind::City(Look::Resonant, Setting::Grassland),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
             MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Desert),
             MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Tundra),
@@ -247,9 +250,18 @@ mod tests {
                 Look::Imperium,
                 crate::map::procgen::foundry::Ground::Grassland,
             ),
-            MapKind::Mine(Look::Ithessar),
+            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Desert),
+            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Tundra),
+            MapKind::Mine(
+                Look::Ithessar,
+                crate::map::procgen::foundry::Ground::Grassland,
+            ),
             MapKind::Desert,
-            MapKind::ShieldDesert(g),
+            MapKind::ShieldSite(Look::Imperium, Setting::Tundra, g),
+            MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
+            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Desert, g),
+            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Tundra, g),
+            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Grassland, g),
         ] {
             let own = make_map(kind, 1);
             let mut last = (f32::INFINITY, f32::INFINITY);
@@ -313,7 +325,10 @@ mod tests {
     /// haze hides nothing a bot could see.
     #[test]
     fn a_sandstorm_cuts_sight() {
-        for kind in [MapKind::Desert, MapKind::Mine(Look::Ithessar)] {
+        for kind in [
+            MapKind::Desert,
+            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Desert),
+        ] {
             let own = make_map(kind, 1);
             assert!(own.atmosphere.sight() > 2.0 * crate::ai::SIGHT);
             assert!(!storming(&own.atmosphere));

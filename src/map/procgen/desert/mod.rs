@@ -13,6 +13,8 @@
 //! A reservoir town (`Biome::Reservoir`) is a desert with people in it: a
 //! layout of its own (`town`), dressed by the same hands.
 //!
+//! The same land under snow or grass is `land`'s (`Biome::Open`'s ground).
+//!
 //! Nothing here is anyone's, but for a shield generator (#337): with
 //! `Centerpiece::ShieldGenerator` the landmark's slot is a generator's, a
 //! graded pad out on the floor with room round it, and the holder's
@@ -20,6 +22,7 @@
 //! round it: tracks beaten out to it, sand fences, supply dumps.
 
 pub mod dress;
+mod land;
 pub mod skeleton;
 pub mod town;
 
@@ -27,11 +30,13 @@ use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
+use super::foundry::Ground;
 use super::memo::{Memo, SKELETONS};
 use super::{Biome, Centerpiece, Spec};
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::Map;
+use crate::render::material::Material;
 use crate::rng::Rng;
 pub use skeleton::{Form, LandmarkKind, Skeleton};
 
@@ -44,8 +49,18 @@ pub struct Palette {
     pub stone: Vec3,
     pub stone_dark: Vec3,
     pub stone_pale: Vec3,
+    /// What the ground's made of (sand here; other grounds' is snow or grass).
+    pub material: Material,
+    /// Weathered rock on the high ground's top, and how much of it shows.
+    pub weathered: Vec3,
+    pub exposed: f32,
+    /// The ground where it's worn or blown bare, in patches, if it is.
+    pub bare: Option<Vec3>,
     pub planet: crate::planet::Look,
 }
+
+/// Weathered rock, on a desert's high ground.
+pub const WEATHERED: Vec3 = Vec3::new(0.46, 0.27, 0.18);
 
 pub const PALETTES: [Palette; 3] = [
     // Ochre: yellow sand, buff stone.
@@ -55,6 +70,10 @@ pub const PALETTES: [Palette; 3] = [
         stone: Vec3::new(0.62, 0.45, 0.3),
         stone_dark: Vec3::new(0.44, 0.31, 0.21),
         stone_pale: Vec3::new(0.76, 0.6, 0.44),
+        material: Material::Sand,
+        weathered: WEATHERED,
+        exposed: 1.0,
+        bare: None,
         planet: crate::planet::Look {
             land: Vec3::new(0.42, 0.32, 0.18),
             basin: Vec3::new(0.26, 0.19, 0.11),
@@ -70,6 +89,10 @@ pub const PALETTES: [Palette; 3] = [
         stone: Vec3::new(0.58, 0.34, 0.22),
         stone_dark: Vec3::new(0.4, 0.23, 0.15),
         stone_pale: Vec3::new(0.7, 0.5, 0.34),
+        material: Material::Sand,
+        weathered: WEATHERED,
+        exposed: 1.0,
+        bare: None,
         planet: crate::planet::Look {
             land: Vec3::new(0.38, 0.2, 0.11),
             basin: Vec3::new(0.2, 0.1, 0.06),
@@ -85,6 +108,10 @@ pub const PALETTES: [Palette; 3] = [
         stone: Vec3::new(0.56, 0.47, 0.38),
         stone_dark: Vec3::new(0.38, 0.32, 0.26),
         stone_pale: Vec3::new(0.72, 0.64, 0.53),
+        material: Material::Sand,
+        weathered: WEATHERED,
+        exposed: 1.0,
+        bare: None,
         planet: crate::planet::Look {
             land: Vec3::new(0.46, 0.4, 0.3),
             basin: Vec3::new(0.3, 0.26, 0.2),
@@ -206,11 +233,34 @@ fn blank(sk: &Skeleton, sides: &[Faction]) -> Map {
     map
 }
 
+/// The ground `spec`'s on.
+fn ground_of(spec: &Spec) -> Ground {
+    match spec.biome {
+        Biome::Open(ground) => ground,
+        _ => Ground::Desert,
+    }
+}
+
+/// `spec`'s colors and its sky.
+fn look(spec: &Spec) -> (Palette, crate::render::Atmosphere) {
+    let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
+    match ground_of(spec) {
+        Ground::Desert => {
+            let pal = palette(spec.seed);
+            (pal, atmosphere(&mut rng, &pal))
+        }
+        ground => {
+            let pal = land::palette(ground, spec.seed);
+            (pal, land::atmosphere(ground, &mut rng))
+        }
+    }
+}
+
 /// `spec`'s desert undressed.
 pub fn greybox(spec: &Spec) -> Map {
     let sk = skeleton(spec);
     let mut m = sk.greybox(&spec.sides);
-    m.atmosphere = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &palette(spec.seed));
+    m.atmosphere = look(spec).1;
     m
 }
 
@@ -244,8 +294,7 @@ pub fn build(spec: &Spec) -> Map {
 /// Builds `spec`'s desert, and what each placeholder's filler put down.
 pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Range<usize>)>) {
     let sk = skeleton(spec);
-    let pal = palette(spec.seed);
-    let sky = atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5), &pal);
+    let (pal, sky) = look(spec);
     let mut built = dressed(&sk, spec, &pal, sky, spec.seed);
     if spec.biome == Biome::Reservoir {
         // What its houses and boulders come down to isn't on the greybox: if
@@ -258,6 +307,7 @@ pub fn build_with_claims(spec: &Spec) -> (Map, Vec<(dress::Claim, std::ops::Rang
             built = dressed(&sk, spec, &pal, sky, spec.seed ^ (attempt << 40));
         }
     }
+    land::growth(&mut built.0, &sk, ground_of(spec), &pal, spec.seed);
     built
 }
 

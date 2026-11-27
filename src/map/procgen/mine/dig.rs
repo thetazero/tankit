@@ -17,9 +17,6 @@ use crate::rng::Rng;
 use crate::tank::model::{self, Skin};
 
 /// Sandstone, in a few shades; the desert floor.
-pub(super) const STONE: Vec3 = Vec3::new(0.58, 0.34, 0.22);
-pub(super) const STONE_DARK: Vec3 = Vec3::new(0.4, 0.23, 0.15);
-pub(super) const STONE_PALE: Vec3 = Vec3::new(0.7, 0.5, 0.34);
 /// The mesa's top: weathered rock, and the cave roofs laid flush with it.
 pub(super) const MESA_TOP: Vec3 = Vec3::new(0.46, 0.26, 0.17);
 /// Raw crystal, in the rock and in the ore: the crystal everyone's here
@@ -41,6 +38,8 @@ pub(in crate::map) struct Dig<'a> {
     pub l: &'a Skeleton,
     pub st: &'a dyn MineStyle,
     pub look: Look,
+    /// Loose rock: the usual, dark and pale (`land::loose`).
+    pub loose: [Vec3; 3],
     /// Building inside digs: the ground in one is its floor (else its top).
     pub inside: bool,
 }
@@ -77,7 +76,7 @@ impl Dig<'_> {
             return;
         }
         let g = self.stand(at);
-        let shades = [STONE, STONE_DARK, STONE_PALE];
+        let shades = self.loose;
         let yaw = rng.range(0.0, TAU);
         let half = Vec2::new(size * rng.range(0.8, 1.1), size * rng.range(0.6, 0.9));
         let top = g + size * rng.range(0.9, 1.4);
@@ -1674,6 +1673,7 @@ impl Dig<'_> {
     /// An open-top steel bin, tank high, heaped with crystal-rich ore:
     /// broken red rock with raw crystal through it.
     pub(super) fn ore_bin(&mut self, rng: &mut Rng, at: Vec2, yaw: f32, colour: Vec3) {
+        let [stone, dark, _] = self.loose;
         let g = self.ground_height(at.x, at.y);
         let rig = Rig {
             pos: Vec3::new(at.x, g, at.y),
@@ -1769,7 +1769,7 @@ impl Dig<'_> {
                 p,
                 Vec3::new(s, s * 0.7, s * 1.2),
                 tip,
-                STONE * shade,
+                stone * shade,
                 Material::Rubble,
                 false,
                 0.0,
@@ -1781,7 +1781,7 @@ impl Dig<'_> {
             Vec3::new(0.0, top - 0.55, 0.0),
             Vec3::new(hx - 2.0 * t - 0.02, 0.3, hz - 2.0 * t - 0.02),
             id,
-            STONE_DARK,
+            dark,
             Material::Rubble,
             false,
             0.0,

@@ -264,7 +264,15 @@ mod tests {
         use crate::map::procgen::foundry::Ground;
         for (name, spec, kind) in [
             ("city", crate::city_spec(1, Look::Imperium), Kind::Street),
-            ("mine", crate::mine_spec(1, Look::Ithessar), Kind::Dig),
+            (
+                "mine",
+                crate::mine_spec(
+                    1,
+                    Look::Ithessar,
+                    crate::map::procgen::foundry::Ground::Desert,
+                ),
+                Kind::Dig,
+            ),
             ("desert", crate::desert_spec(1), Kind::Canyon),
             (
                 "foundry",

@@ -3,9 +3,10 @@
 //! itself; what's seen past the edge. Then the places bots head for, repair
 //! drops, the menus' vistas.
 
+use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-use glam::{Vec2, Vec3};
+use glam::{IVec2, Vec2, Vec3};
 
 use super::ground::{Ground, Land};
 use super::parts;
@@ -47,11 +48,11 @@ pub fn dress(map: &mut Map, sk: &Skeleton, look: Look, ground: Ground, rng: &mut
         }
     }
     if ground == Ground::Tundra {
-        snow(map, sk, land.open);
+        snow(map, sk, land.open, |_| true);
     }
     edges(map, sk, rng, pal.wall, pal.wall_mat);
     bases(map, sk, pal.floor, pal.dark);
-    growth(map, sk, &land, ground, rng);
+    growth(map, sk, &land, ground, rng, &|_, _| true);
     beyond(map, sk, st, &land, ground, rng);
     map.separate_coplanar_faces();
     play(map, sk);
@@ -110,9 +111,23 @@ fn terrain(sk: &Skeleton, land: &Land, ground: Ground) -> Terrain {
 }
 
 /// Snow lying on every roof that's open to the sky, in places blown or
-/// melted off. Nothing solid.
-fn snow(map: &mut Map, sk: &Skeleton, color: Vec3) {
+/// melted off. Nothing solid. Only on boxes `on` allows, by their middles.
+pub(in crate::map) fn snow(map: &mut Map, sk: &Skeleton, color: Vec3, on: impl Fn(Vec2) -> bool) {
     const DEEP: f32 = 0.14;
+    // What's over each patch of the map (a city's too big to look through
+    // it all for every roof).
+    const CELL: f32 = 8.0;
+    let cell = |p: Vec2| (p / CELL).floor().as_ivec2();
+    let mut over: HashMap<IVec2, Vec<usize>> = HashMap::new();
+    for (k, o) in map.oboxes.iter().enumerate() {
+        let r = o.half.extend((o.y1 - o.y0) * 0.5).length();
+        let (a, b) = (cell(o.center - r), cell(o.center + r));
+        for x in a.x..=b.x {
+            for z in a.y..=b.y {
+                over.entry(IVec2::new(x, z)).or_default().push(k);
+            }
+        }
+    }
     let mut lying = Vec::new();
     for o in &map.oboxes {
         let turn = o.rotation();
@@ -122,14 +137,19 @@ fn snow(map: &mut Map, sk: &Skeleton, color: Vec3) {
             && up.y > 0.8
             && !o.hidden
             && !o.ramp
-            && o.rock.is_none();
+            && o.rock.is_none()
+            && on(o.center);
         if !roof || noise2(o.center.x / 5.0, o.center.y / 5.0, 230) < 0.22 {
             continue;
         }
         let top = o.center3() + up * (o.y1 - o.y0) * 0.5;
         let open = |x: f32, z: f32| {
             let from = top + up * DEEP * 2.0 + turn * Vec3::new(x, 0.0, z);
-            !map.oboxes.iter().any(|q| q.ray_hit(from, Vec3::Y, 80.0))
+            let near = over.get(&cell(Vec2::new(from.x, from.z)));
+            !near
+                .into_iter()
+                .flatten()
+                .any(|&k| map.oboxes[k].ray_hit(from, Vec3::Y, 80.0))
         };
         // (A stepped roof's course shows only at its edges.)
         let (x, z) = (o.half.x - 0.15, o.half.y - 0.15);
@@ -261,8 +281,15 @@ fn bases(map: &mut Map, sk: &Skeleton, floor: Vec3, dark: Vec3) {
 }
 
 /// What the land's put there itself: stones, drifted snow, tufts. Nothing
-/// that stops a tank.
-fn growth(map: &mut Map, sk: &Skeleton, land: &Land, ground: Ground, rng: &mut Rng) {
+/// that stops a tank, and only where it's `open`.
+pub(in crate::map) fn growth(
+    map: &mut Map,
+    sk: &Skeleton,
+    land: &Land,
+    ground: Ground,
+    rng: &mut Rng,
+    open: &dyn Fn(&Map, Vec2) -> bool,
+) {
     let n = match ground {
         Ground::Desert => 160,
         Ground::Tundra => 260,
@@ -272,7 +299,8 @@ fn growth(map: &mut Map, sk: &Skeleton, land: &Land, ground: Ground, rng: &mut R
         let p = Vec2::new(rng.range(3.0, sk.size - 3.0), rng.range(3.0, sk.size - 3.0));
         let taken = sk.lots.iter().any(|l| l.footprint.distance(p) < 1.5)
             || sk.bases.iter().any(|b| b.contains(p, 0.0))
-            || sk.streets.iter().any(|s| s.distance(p) < s.half + 0.5);
+            || sk.streets.iter().any(|s| s.distance(p) < s.half + 0.5)
+            || !open(map, p);
         if taken {
             continue;
         }
@@ -287,26 +315,42 @@ fn growth(map: &mut Map, sk: &Skeleton, land: &Land, ground: Ground, rng: &mut R
                 put(map, o);
             }
             Ground::Tundra => {
-                let half = Vec2::new(rng.range(1.0, 3.0), rng.range(0.7, 1.5));
-                let top = g + rng.range(0.12, 0.35);
-                let o = rocks::boulder(p, yaw, half, g - 0.8, top, land.open);
-                put(map, o);
+                snowdrift(map, rng, p, g, yaw, land.open);
             }
             Ground::Grassland => {
-                for k in 0..4 {
-                    let lean = Vec2::from_angle(yaw + k as f32 * 1.7) * rng.range(0.1, 0.3);
-                    let q = p + lean;
-                    map.segment(
-                        Vec3::new(p.x, g - 0.05, p.y),
-                        Vec3::new(q.x, g + rng.range(0.3, 0.7), q.y),
-                        0.035,
-                        land.open * rng.range(0.8, 1.35),
-                        Material::Grass,
-                        false,
-                    );
-                }
+                tuft(map, rng, p, g, yaw, land.open);
             }
         }
+    }
+}
+
+/// A low drift of snow at `p`, the ground there at `g`.
+pub(in crate::map) fn snowdrift(
+    map: &mut Map,
+    rng: &mut Rng,
+    p: Vec2,
+    g: f32,
+    yaw: f32,
+    color: Vec3,
+) {
+    let half = Vec2::new(rng.range(1.0, 3.0), rng.range(0.7, 1.5));
+    let top = g + rng.range(0.12, 0.35);
+    let o = rocks::boulder(p, yaw, half, g - 0.8, top, color);
+    map.oboxes.push(OBox { solid: false, ..o });
+}
+
+/// A tuft of grass at `p`, the ground there at `g`.
+pub(in crate::map) fn tuft(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32, yaw: f32, color: Vec3) {
+    for k in 0..4 {
+        let q = p + Vec2::from_angle(yaw + k as f32 * 1.7) * rng.range(0.1, 0.3);
+        map.segment(
+            Vec3::new(p.x, g - 0.05, p.y),
+            Vec3::new(q.x, g + rng.range(0.3, 0.7), q.y),
+            0.035,
+            color * rng.range(0.8, 1.35),
+            Material::Grass,
+            false,
+        );
     }
 }
 

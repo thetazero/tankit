@@ -230,11 +230,11 @@ fn the_shield_desert_comes_with_any_sides_generator() {
             owner,
             condition: shield::Condition::DAMAGED,
         };
-        let m = build(&crate::shield_desert_spec(seed, damaged));
+        let m = build(&crate::shield_camp_spec(seed, Ground::Desert, damaged));
         if let Err(why) = crate::map::procgen::check::playable(&m) {
             panic!("damaged {owner:?} seed {seed}: {why}");
         }
-        let spec = crate::shield_desert_spec(seed, crate::Generator::up(owner));
+        let spec = crate::shield_camp_spec(seed, Ground::Desert, crate::Generator::up(owner));
         let what = format!("{owner:?} seed {seed} ({:?})", form_of(seed));
         let sk = skeleton(&spec);
         assert_eq!(sk.landmarks[0].kind, LandmarkKind::Generator, "{what}");
@@ -301,7 +301,8 @@ fn the_shield_desert_comes_with_any_sides_generator() {
 #[test]
 fn the_generator_faces_every_side() {
     for seed in SEEDS {
-        let spec = crate::shield_desert_spec(seed, crate::Generator::up(Faction::Uthenn));
+        let spec =
+            crate::shield_camp_spec(seed, Ground::Desert, crate::Generator::up(Faction::Uthenn));
         let sk = skeleton(&spec);
         let site = &sk.landmarks[0];
         for &b in &sk.base_spots() {
@@ -340,7 +341,7 @@ fn the_generator_faces_every_side() {
 fn the_imperiums_generator_lets_tanks_in() {
     for seed in [1u64, 10] {
         let g = crate::Generator::up(Faction::Imperium);
-        let m = build(&crate::shield_desert_spec(seed, g));
+        let m = build(&crate::shield_camp_spec(seed, Ground::Desert, g));
         if let Err(why) = crate::map::procgen::check::playable(&m) {
             panic!("seed {seed}: {why}");
         }
@@ -360,4 +361,34 @@ fn deserts_have_what_mines_do() {
     let rocks = all.iter().filter(|sk| !sk.land.towers.is_empty()).count();
     println!("{washes} washes, {rigs} rigs, {rocks} with rocks");
     assert!(rigs > 0 && rocks > 2, "{rigs} rigs, {rocks} with rocks");
+}
+
+/// A seed's the same open land on any ground (#686): a generator's is
+/// playable on each, its cover standing where the desert's does, under its
+/// own sky, with snow or grass on it.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn the_shield_camp_is_on_any_ground() {
+    for seed in SEEDS {
+        let owner = Faction::ALL[seed as usize];
+        let g = crate::Generator::up(owner);
+        let built = Ground::ALL.map(|ground| build(&crate::shield_camp_spec(seed, ground, g)));
+        let [desert, tundra, grass] = &built;
+        for (m, ground) in [(tundra, Ground::Tundra), (grass, Ground::Grassland)] {
+            let what = format!("{owner:?} seed {seed} on {ground:?}");
+            if let Err(why) = crate::map::procgen::check::playable(m) {
+                panic!("{what}: {why}");
+            }
+            assert_eq!(m.hold_site, desert.hold_site, "{what}");
+            assert_eq!(m.bases, desert.bases, "{what}");
+            assert!(m.repair_spots.len() >= 3, "{what}");
+            assert!(m.atmosphere.settle != desert.atmosphere.settle, "{what}");
+            assert!(m.oboxes.len() > desert.oboxes.len() + 50, "{what}");
+            let planet = m.planet.unwrap().1.land;
+            assert_eq!(planet, ground.planet().land, "{what}");
+        }
+    }
 }

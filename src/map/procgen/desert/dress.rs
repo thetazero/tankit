@@ -25,9 +25,6 @@ use crate::rng::Rng;
 mod camp;
 mod town;
 
-/// Weathered rock, on the high ground's top.
-const WEATHERED: Vec3 = Vec3::new(0.46, 0.27, 0.18);
-
 /// Clearance a spawn needs from anything solid.
 const TANK_CLEAR: f32 = 4.6;
 /// The most ways round a desert lays out for the bots (see `Sand::routes`).
@@ -59,7 +56,7 @@ fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>, drifts: &[
                 .fold(0.0, f32::max)
     });
     t.color = Vec3::ONE;
-    t.material = Material::Sand;
+    t.material = pal.material;
     let high = sk.land.high.height;
     t.paint(|x, z, h, slope| {
         let p = Vec2::new(x, z);
@@ -69,15 +66,20 @@ fn terrain_of(sk: &Skeleton, pal: Palette, camp: Option<&camp::Camp>, drifts: &[
         let mut c = pal
             .low
             .lerp(pal.sand, smoothstep(-0.3, sk.dunes().height * 0.8, rel));
+        if let Some(bare) = pal.bare {
+            let patch = noise2(x / 13.0, z / 13.0, 215) + 0.25 * noise2(x / 3.0, z / 3.0, 216);
+            c = c.lerp(bare, smoothstep(0.55, 0.8, patch));
+        }
         let cut = sk.land.wash_cut(p) / WASH_DEPTH;
         c = c.lerp(
             pal.low * 0.85 + pal.stone_dark * 0.15,
             smoothstep(0.5, 0.95, cut),
         );
         // The high ground: rock showing through the sand.
-        let top =
-            smoothstep(high * 0.6, high * 0.95, h) * (0.45 + 0.4 * noise2(x / 9.0, z / 9.0, 92));
-        let rock = WEATHERED.lerp(pal.stone, 0.6);
+        let top = pal.exposed
+            * smoothstep(high * 0.6, high * 0.95, h)
+            * (0.45 + 0.4 * noise2(x / 9.0, z / 9.0, 92));
+        let rock = pal.weathered.lerp(pal.stone, 0.6);
         c = c.lerp(rock, top);
         c = c.lerp(pal.stone_dark, smoothstep(0.45, 0.9, slope) * 0.6);
         c = town::paint(sk, p, c, &pal);
@@ -899,7 +901,7 @@ impl Sand<'_> {
             sk.scenery_ground(x, z)
         });
         t.color = self.pal.sand * 0.95;
-        t.material = Material::Sand;
+        t.material = self.pal.material;
         self.map.scenery_terrain = Some(t);
         for _ in 0..36 {
             let dir = Vec2::from_angle(rng.range(0.0, TAU));
