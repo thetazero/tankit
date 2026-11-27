@@ -21,8 +21,9 @@ pub struct Vista {
 /// One per side, so each contract's sides show the map differently.
 pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
     match kind {
-        // The church and its bell tower; a chapel's gable.
-        MapKind::Sanctum => &[(68.0, 113.0, 3.40), (78.0, 203.0, 4.71)],
+        // The church and its bell tower; a chapel's gable. (Generated ones
+        // pick their own.)
+        MapKind::Sanctum(_) => &[(68.0, 113.0, 3.40), (78.0, 203.0, 4.71)],
         // Crystal spires over the kiln; crystals and the plasma river.
         MapKind::Kiln => &[(53.0, 93.0, 4.97), (141.0, 128.5, 6.02)],
         // Generated: each city picks its own (`Map::vistas`).
@@ -202,7 +203,30 @@ mod tests {
         for (kind, seed) in [
             (MapKind::Reservoir, 0),
             (MapKind::Reservoir, 1),
-            (MapKind::Sanctum, 0),
+            (
+                MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
+                0,
+            ),
+            (
+                MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
+                1,
+            ),
+            (
+                MapKind::Sanctum(crate::map::procgen::foundry::Ground::Tundra),
+                2,
+            ),
+            (
+                MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
+                3,
+            ),
+            (
+                MapKind::Sanctum(crate::map::procgen::foundry::Ground::Tundra),
+                4,
+            ),
+            (
+                MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
+                5,
+            ),
             (MapKind::Kiln, 0),
             (
                 MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
@@ -303,7 +327,10 @@ mod tests {
     #[test]
     #[ignore]
     fn vista_search() {
-        for kind in [MapKind::Sanctum, MapKind::Kiln] {
+        for kind in [
+            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
+            MapKind::Kiln,
+        ] {
             let world = World::new(make_map(kind, 0), 0);
             let s = world.map.size;
             let sun = world.map.atmosphere.sun_dir.normalize();

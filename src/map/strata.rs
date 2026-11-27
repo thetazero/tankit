@@ -1,4 +1,4 @@
-//! Layered sandstone, for the Sanctum's mesa, the buttes broken off it and
+//! Layered rock, for the Sanctum's mesa, the buttes broken off it and
 //! the mesas on its horizon.
 //!
 //! A tower of rock is beds stacked up at fixed heights, level across the
@@ -22,18 +22,41 @@ use crate::render::material::Material;
 use crate::render::mesh::{MeshData, Vertex};
 use crate::rng::Rng;
 
-/// Loose sand, for tops and ledges.
-const SAND: Vec3 = Vec3::new(0.74, 0.62, 0.47);
+/// What kind of rock it is, and what lies on it.
+pub struct Rock {
+    /// What lies loose on tops and ledges and banks up at the foot: sand,
+    /// snow, grass.
+    pub dust: Vec3,
+    /// What the ground on its top's made of.
+    pub ground: Material,
+    /// How thick the dust lies on ledges, 0..1.
+    pub lying: f32,
+    /// Its beds' colors.
+    pub shades: [Vec3; 6],
+    /// What hard beds bleach toward.
+    pub bleach: Vec3,
+    /// Soft beds' color, times this.
+    pub soft: Vec3,
+}
 
-/// Sandstone, bed by bed: pale buff to deep red-brown.
-const SHADES: [Vec3; 6] = [
-    Vec3::new(0.72, 0.5, 0.33),
-    Vec3::new(0.52, 0.31, 0.2),
-    Vec3::new(0.8, 0.64, 0.46),
-    Vec3::new(0.6, 0.37, 0.24),
-    Vec3::new(0.68, 0.44, 0.28),
-    Vec3::new(0.76, 0.58, 0.4),
-];
+impl Rock {
+    /// Pale buff to deep red-brown, sand on it.
+    pub const SANDSTONE: Rock = Rock {
+        dust: Vec3::new(0.74, 0.62, 0.47),
+        ground: Material::Sand,
+        lying: 0.5,
+        shades: [
+            Vec3::new(0.72, 0.5, 0.33),
+            Vec3::new(0.52, 0.31, 0.2),
+            Vec3::new(0.8, 0.64, 0.46),
+            Vec3::new(0.6, 0.37, 0.24),
+            Vec3::new(0.68, 0.44, 0.28),
+            Vec3::new(0.76, 0.58, 0.4),
+        ],
+        bleach: Vec3::new(0.84, 0.7, 0.54),
+        soft: Vec3::new(0.95, 0.88, 0.85),
+    };
+}
 
 /// One bed of rock, from `y0` up to `y1`.
 #[derive(Clone, Copy, Debug)]
@@ -50,7 +73,7 @@ pub struct Bed {
 
 /// Beds from `top` down to `bottom`, each `scale` times the usual thickness.
 /// A hard caprock first.
-pub fn beds(top: f32, bottom: f32, scale: f32, seed: u64) -> Vec<Bed> {
+pub fn beds(rock: &Rock, top: f32, bottom: f32, scale: f32, seed: u64) -> Vec<Bed> {
     let mut rng = Rng::new(seed);
     let mut out: Vec<Bed> = Vec::new();
     let mut y = top;
@@ -73,13 +96,13 @@ pub fn beds(top: f32, bottom: f32, scale: f32, seed: u64) -> Vec<Bed> {
         } else {
             rng.range(0.0, 0.3)
         };
-        let shade = SHADES[rng.index(SHADES.len())];
+        let shade = rock.shades[rng.index(rock.shades.len())];
         // Hard beds bleach paler; soft ones are redder, and darker for the
         // shade they sit in.
         let color = if hard {
-            shade.lerp(Vec3::new(0.84, 0.7, 0.54), 0.08)
+            shade.lerp(rock.bleach, 0.08)
         } else {
-            shade * Vec3::new(0.95, 0.88, 0.85)
+            shade * rock.soft
         } * rng.range(0.94, 1.06);
         out.push(Bed {
             y0: y - thick,
@@ -126,6 +149,7 @@ pub struct Tower<'a> {
     /// over, out of reach.
     pub ring_cap: Option<f32>,
     pub seed: u64,
+    pub rock: &'a Rock,
 }
 
 /// A slab that fell out of the face: where it was (angle, height) and how
@@ -355,7 +379,7 @@ pub fn build(m: &mut MeshData, t: &Tower) -> Vec<Fallen> {
 /// The rock's color at `p`, its own `color` there, facing `n`: sand on what
 /// faces up and where the sand has drifted against the foot, the ground in
 /// front of it being at `ground`.
-fn tint(p: Vec3, n: Vec3, ground: f32, color: Vec3, k: u32) -> Vec3 {
+fn tint(p: Vec3, n: Vec3, ground: f32, color: Vec3, rock: &Rock, k: u32) -> Vec3 {
     let blotch = 0.92 + 0.14 * noise(p * 0.18, k) + 0.05 * noise(p * 0.7, k + 1);
     let c = color * blotch * if n.y < -0.3 { 0.82 } else { 1.0 };
     // Sand lies in patches on what faces up, bare rock between.
@@ -364,9 +388,9 @@ fn tint(p: Vec3, n: Vec3, ground: f32, color: Vec3, k: u32) -> Vec3 {
         0.35,
         noise(p * 0.3, k + 7) + 0.5 * noise(p * 0.9, k + 8),
     );
-    let dust = smoothstep(0.6, 0.92, n.y) * 0.5 * patches;
+    let dust = smoothstep(0.6, 0.92, n.y) * rock.lying * patches;
     let drift = smoothstep(5.0, 0.8, p.y - ground);
-    c.lerp(SAND, dust.max(drift))
+    c.lerp(rock.dust, dust.max(drift))
 }
 
 fn push(
@@ -544,7 +568,7 @@ fn slab(m: &mut MeshData, t: &Tower, s: &Slab) {
             pos.push(p);
             want.push(n);
             let ground = t.ground_before(a, out);
-            col.push(tint(p, n, ground, s.color, k));
+            col.push(tint(p, n, ground, s.color, t.rock, k));
         }
     }
     let mut tris = Vec::new();
@@ -587,7 +611,7 @@ fn core(m: &mut MeshData, t: &Tower) {
             row(
                 p,
                 dir,
-                tint(p, dir, ground, SHADES[1] * 0.55, 9),
+                tint(p, dir, ground, t.rock.shades[1] * 0.55, t.rock, 9),
                 Material::Cliff,
             );
         }
@@ -595,23 +619,23 @@ fn core(m: &mut MeshData, t: &Tower) {
         row(
             t.at(a, t.core_at(a, top), top),
             Vec3::Y,
-            SAND,
-            Material::Sand,
+            t.rock.dust,
+            t.rock.ground,
         );
         // Back across the top, to the ground on it or to the middle.
         match t.ring_cap {
             Some(inner) => {
                 let p = t.at(a, inner, 0.0);
                 let p = Vec3::new(p.x, (t.lip)(p.xz()) + 0.03, p.z);
-                row(p, Vec3::Y, SAND, Material::Sand);
+                row(p, Vec3::Y, t.rock.dust, t.rock.ground);
             }
             None => {
                 let c = t.center;
                 row(
                     Vec3::new(c.x, top + 0.2, c.y),
                     Vec3::Y,
-                    SAND,
-                    Material::Sand,
+                    t.rock.dust,
+                    t.rock.ground,
                 );
             }
         }
@@ -628,7 +652,7 @@ fn core(m: &mut MeshData, t: &Tower) {
     }
     // Sand lies flat; the shading break at its edge is the rock's lip.
     for k in 0..pos.len() {
-        if mat[k] == Material::Sand {
+        if mat[k] == t.rock.ground {
             nrm[k] = Vec3::Y;
         }
     }

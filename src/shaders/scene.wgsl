@@ -414,7 +414,6 @@ fn surface_detail(lpos: vec3<f32>, lnormal: vec3<f32>, ax: vec3<f32>, ay: vec3<f
 // world space (static map geometry has an identity transform).
 
 /// Loose desert sand, drifted onto ledges.
-const SAND_COL: vec3<f32> = vec3<f32>(0.74, 0.6, 0.42);
 
 fn world_surface(m: i32, base: vec3<f32>, wpos: vec3<f32>, n: vec3<f32>, d: Detail) -> Surface {
     var s: Surface;
@@ -645,10 +644,10 @@ fn cliff_surface(base: vec3<f32>, wpos: vec3<f32>, n_geo: vec3<f32>, px: f32) ->
     s.rough = 0.93;
     s.emissive = vec3<f32>(0.0);
     s.metal = 0.0;
-    // Sand caught on the ledges.
+    // Sand (or snow, or grass) caught on the ledges.
     let up = clamp(n0.y, 0.0, 1.0);
     let dust = smoothstep(0.55, 0.85, up) * smoothstep(0.3, 0.6, noise3(wpos * 0.35 + 5.0));
-    s.albedo = mix(s.albedo, SAND_COL, dust * 0.45);
+    s.albedo = mix(s.albedo, g.settle.xyz, dust * 0.45);
     out.s = s;
     return out;
 }

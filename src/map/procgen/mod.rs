@@ -485,7 +485,7 @@ fn vistas(map: &Map, sk: &Skeleton) -> Vec<(Vec2, f32)> {
 
 /// Where the menus show each side's tank: by its spawns, in the sun,
 /// the camera looking past it toward the middle.
-fn sunlit_views(m: &Map, bases: &[Vec2], middle: Vec2) -> Vec<(Vec2, f32)> {
+pub(in crate::map) fn sunlit_views(m: &Map, bases: &[Vec2], middle: Vec2) -> Vec<(Vec2, f32)> {
     let sun = m.atmosphere.sun_dir.normalize();
     let lm = middle;
     let view = |p: Vec2| {

@@ -469,14 +469,15 @@ pub fn ship_name(id: u32) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     /// A desert world: its sites are generated (cities, mines,
-    /// reservoir towns, open desert).
+    /// reservoir towns, open desert, Sanctums).
     Desert,
-    /// A frozen world: its foundries are generated, its other sites fought
-    /// on the hand-built maps.
+    /// A frozen world: its foundries and Sanctums are generated, its other
+    /// sites fought on the hand-built Kiln.
     Tundra,
     /// A green world, likewise.
     Grassland,
-    /// Not made yet: its sites are fought on the hand-built maps.
+    /// Not made yet: its sites are fought on the Kiln and the desert's
+    /// Sanctums.
     Placeholder,
 }
 
@@ -508,7 +509,9 @@ impl Class {
             | MapKind::Depot(_)
             | MapKind::Reservoir => self == Class::Desert,
             MapKind::Foundry(..) => self.ground().is_some(),
-            MapKind::Sanctum | MapKind::Kiln => self != Class::Desert,
+            // Anywhere: each class has its own.
+            MapKind::Sanctum(_) => true,
+            MapKind::Kiln => self != Class::Desert,
             MapKind::ShieldSite(..) | MapKind::ShieldDesert(_) => false,
         }
     }
@@ -616,6 +619,7 @@ impl SiteView {
                 MapKind::City(..) => MapKind::City(look, setting),
                 MapKind::Depot(_) => MapKind::Depot(Look::own(self.founder())),
                 MapKind::Mine(_) => MapKind::Mine(Look::own(self.founder())),
+                MapKind::Sanctum(ground) => MapKind::Sanctum(self.class.ground().unwrap_or(ground)),
                 MapKind::Foundry(_, ground) => MapKind::Foundry(
                     Look::own(self.founder()),
                     self.class.ground().unwrap_or(ground),
@@ -1979,11 +1983,12 @@ mod tests {
 
     /// Outposts are fought on no production site's map (#547): on desert
     /// worlds the city, depot, open desert and reservoir town, elsewhere the
-    /// hand-built maps.
+    /// Kiln, on any the Sanctum.
     #[test]
     fn outposts_have_maps_of_their_own() {
         let g = galaxy();
         let mut seen = std::collections::HashSet::new();
+        let mut sanctums = std::collections::HashSet::new();
         for sys in 0..g.systems.len() {
             for s in &g.theater_at(sys, 0).sites {
                 if s.kind != SiteKind::Outpost {
@@ -1996,12 +2001,18 @@ mod tests {
                         assert!(desert && look == Look::own(s.founder()));
                     }
                     MapKind::City(..) | MapKind::Desert | MapKind::Reservoir => assert!(desert),
-                    MapKind::Sanctum | MapKind::Kiln => assert!(!desert),
+                    // On its world's ground (#681).
+                    MapKind::Sanctum(ground) => {
+                        assert_eq!(Some(ground), s.class.ground().or(Some(Ground::Desert)));
+                        sanctums.extend(s.class.ground());
+                    }
+                    MapKind::Kiln => assert!(!desert),
                     k => panic!("an outpost fought on {k:?}"),
                 }
                 seen.insert(s.mission);
             }
         }
+        assert_eq!(sanctums.len(), 3, "Sanctums on {sanctums:?} only");
         for name in [
             "BROKEN STREETS",
             "HIGH SEAT",

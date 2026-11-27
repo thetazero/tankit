@@ -6,6 +6,7 @@
 //! them.
 
 mod dress;
+pub(in crate::map) use self::dress::tree;
 mod ground;
 mod imperium;
 mod ithessar;

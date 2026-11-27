@@ -230,7 +230,9 @@ mod tests {
         let g = Generator::up(Faction::Imperium);
         for kind in [
             MapKind::Reservoir,
-            MapKind::Sanctum,
+            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
+            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Tundra),
+            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
             MapKind::Kiln,
             MapKind::Foundry(
                 crate::map::procgen::Look::Imperium,
