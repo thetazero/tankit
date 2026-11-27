@@ -217,6 +217,10 @@ pub struct Rules {
     pub wage_cr: f32,
     /// A ship pays a pilot this share of their wage for each kill.
     pub kill_share: f32,
+    /// Of its income, and of its savings, what a realm that keeps a garrison
+    /// would spend on its pilots' pay a tick.
+    pub garrison_income: f32,
+    pub garrison_savings: f32,
     /// Share of a realm's pilots a tick who defect, when ships offer them
     /// more than their realm pays.
     pub defect: f32,
@@ -256,6 +260,8 @@ impl Default for Rules {
             crew: 40,
             wage_cr: 100.0,
             kill_share: 0.1,
+            garrison_income: 0.5,
+            garrison_savings: 1.0 / 300.0,
             defect: 0.01,
         }
     }
@@ -1030,7 +1036,17 @@ impl Galaxy {
                 moves[f].built += done as u32;
             }
         }
+        let mut guard = vec![0.0f32; self.realms.len()];
+        for sys in &self.systems {
+            for f in 0..PEOPLES {
+                if sys.realms[f] != NONE {
+                    let x = &mut guard[sys.realms[f] as usize];
+                    *x = x.max(self.rules.seats * sys.held[f] as f32);
+                }
+            }
+        }
         for (r, c) in crystals.into_iter().enumerate() {
+            self.realms[r].guard = guard[r];
             let retired = self.rng.binomial(self.realms[r].pilots, self.rules.career);
             // What they saved, as a merc's: their pay over a career.
             let pay = self.realms[r].pay(&self.rules);
@@ -1134,6 +1150,10 @@ impl Galaxy {
         if w == RAID {
             self.vaults[v].crystals = 0.0;
             self.books.raided += loot as f64;
+            if vault.realm != NONE {
+                let arm = self.realms[vault.realm as usize].garrisons as usize;
+                self.books.arms[arm].looted += loot as f64;
+            }
             if let Some(c) = self.companies.iter_mut().find(|c| {
                 c.contract
                     .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
@@ -1465,6 +1485,16 @@ impl Galaxy {
             }
         }
         o.winner = Some(best.map_or(holder, |b| b.0));
+        let r = self.systems[s].realms[holder];
+        if r != NONE {
+            let battles = self.engaged.map_or(1, |e| e.1[holder].max(1)) as f32;
+            let manned = self.able(s, holder) / battles >= 0.5;
+            let arm = &mut self.books.arms[self.realms[r as usize].garrisons as usize];
+            let raid = attackers.contains(&RAID) as usize;
+            arm.fought[raid] += 1.0;
+            arm.held[raid] += (o.winner == Some(holder)) as u8 as f64;
+            arm.manned[raid] += manned as u8 as f64;
+        }
         o
     }
 

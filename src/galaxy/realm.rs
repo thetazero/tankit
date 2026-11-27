@@ -72,6 +72,11 @@ pub struct Realm {
     /// those that do and those that don't, to see which fare better. A
     /// realm breaking away keeps its parent's way.
     pub hires: bool,
+    /// Whether it keeps a garrison, or only the pilots its fights have lately
+    /// been worth: split at random too, to see which fare better.
+    pub garrisons: bool,
+    /// The seats there'd be at its biggest world, all of it attacked (scratch).
+    pub guard: f32,
     /// Systems it's fighting in, as of the last tick's battles.
     pub fronts: u32,
     /// Scratch: systems it's lost since they were last counted.
@@ -100,6 +105,8 @@ impl Realm {
             seats_next: 0.0,
             hired: 0,
             hires: true,
+            garrisons: true,
+            guard: 0.0,
             fronts: 0,
             fell: 0,
         }
@@ -119,7 +126,9 @@ impl Realm {
     /// Pay its pilots (those it can't pay leave), then train some if there's
     /// a seat for them and one's worth more over a career than its training
     /// and pay, or let some go if one's worth less than its pay, or has no
-    /// seat to fill. Returns those who left or were let go.
+    /// seat to fill. One that keeps a garrison keeps pilots for every seat at
+    /// its biggest world, as far as part of its income and savings pay for,
+    /// whatever one's worth. Returns those who left or were let go.
     pub fn keep_pilots(&mut self, rules: &super::Rules, retired: u32, free: u32) -> u32 {
         // What its fights showed this tick.
         self.pilot_worth += rules.sense * (self.pilot_use - self.pilot_worth);
@@ -144,7 +153,23 @@ impl Realm {
         let gain = (self.pilot_worth - upkeep) / rules.career.max(1e-6);
         let open = (self.seats.ceil() as u32).saturating_sub(self.pilots);
         let idle = self.pilots.saturating_sub(self.seats.ceil() as u32);
-        if gain > 0.0 && free > 0 && open > 0 {
+        let garrison = if self.garrisons {
+            let purse = rules.garrison_income * self.income.max(0.0)
+                + rules.garrison_savings * self.crystals;
+            self.guard.max(self.seats).min(purse / upkeep) as u32
+        } else {
+            0
+        };
+        let short = garrison.saturating_sub(self.pilots);
+        if short > 0 {
+            // Pilots out of work need no training.
+            let n = rules.train.min(short);
+            let taken = n.min(free);
+            let n = (n - taken).min((self.crystals / rules.train_cost.max(1e-6)) as u32);
+            self.pilots += taken + n;
+            self.hired = taken;
+            self.crystals -= n as f32 * rules.train_cost;
+        } else if gain > 0.0 && free > 0 && open > 0 {
             // Pilots out of work need no training.
             let n = rules.train.min(free).min(open);
             self.pilots += n;
@@ -158,7 +183,7 @@ impl Realm {
             self.crystals -= n as f32 * rules.train_cost;
         } else if gain < 0.0 || idle > 0 {
             let all = if gain < 0.0 { self.pilots } else { idle };
-            let n = rules.train.min(all);
+            let n = rules.train.min(all).min(self.pilots - garrison);
             self.pilots -= n;
             left += n;
         }
@@ -201,6 +226,7 @@ impl Galaxy {
     pub(crate) fn found(&mut self, faction: u8, seat: u32) -> u32 {
         let realm = Realm {
             hires: self.rng.chance(0.5),
+            garrisons: self.rng.chance(0.5),
             ..Realm::new(faction, seat, self.tick)
         };
         // A slot is free once nothing is tagged with it (`systems` and `alive`
@@ -259,8 +285,10 @@ impl Galaxy {
             for &seat in seats {
                 of_seat[seat as usize] = self.realms.len() as u32;
                 let hires = self.rng.chance(0.5);
+                let garrisons = self.rng.chance(0.5);
                 self.realms.push(Realm {
                     hires,
+                    garrisons,
                     ..Realm::new(f as u8, seat, 0)
                 });
                 self.spans.push((0, 0));
@@ -463,6 +491,7 @@ impl Galaxy {
             self.realms[new as usize].pilot_worth = self.realms[old as usize].pilot_worth;
             self.realms[new as usize].hull_worth = self.realms[old as usize].hull_worth;
             self.realms[new as usize].hires = self.realms[old as usize].hires;
+            self.realms[new as usize].garrisons = self.realms[old as usize].garrisons;
             // Its share of the vaults, by systems.
             let (vault, size) = vaults[old as usize];
             let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
@@ -513,7 +542,10 @@ impl Galaxy {
                     }
                     let realm = &self.realms[b as usize];
                     // (and only with its own kind)
-                    if realm.faction != f || realm.hires != self.realms[a].hires {
+                    let own = &self.realms[a];
+                    if realm.faction != f
+                        || (realm.hires, realm.garrisons) != (own.hires, own.garrisons)
+                    {
                         continue;
                     }
                     let d = self.systems[realm.seat as usize].pos.distance(seat);

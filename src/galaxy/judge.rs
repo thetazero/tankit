@@ -165,6 +165,54 @@ fn arms(g: &Galaxy) {
     }
 }
 
+/// The share of systems the realms with a garrison hold, %.
+fn garrisoned(g: &Galaxy) -> f64 {
+    let (mut all, mut mine) = (0, 0);
+    for (_, r) in g.living() {
+        all += r.systems;
+        mine += r.systems * r.garrisons as u32;
+    }
+    100.0 * mine as f64 / all.max(1) as f64
+}
+
+/// Realms with a garrison beside those without.
+fn garrisons(g: &Galaxy, last: &super::merc::Books, dt: f64) {
+    for on in [false, true] {
+        let (mut n, mut systems, mut vault, mut income, mut pilots, mut pay, mut none) =
+            (0, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0);
+        for (_, r) in g.living().filter(|(_, r)| r.garrisons == on) {
+            n += 1;
+            systems += r.systems as f64;
+            vault += r.crystals as f64;
+            income += r.income as f64;
+            pilots += r.pilots as f64;
+            pay += (r.pilots as f32 * r.pay(&g.rules)) as f64;
+            none += (r.pilots == 0) as u32;
+        }
+        let (a, b) = (&g.books.arms[on as usize], &last.arms[on as usize]);
+        let of = |x: f64, y: f64| 100.0 * x / y.max(1.0);
+        let fought = [0, 1].map(|k| a.fought[k] - b.fought[k]);
+        let held = [0, 1].map(|k| of(a.held[k] - b.held[k], fought[k]));
+        let manned = [0, 1].map(|k| of(a.manned[k] - b.manned[k], fought[k]));
+        println!(
+            "         GARRISON {}: realms {n} (no pilots {:.0}%) systems {systems:.0}; a system: vault {:.1} income {:.3} pilots {:.2}; pay {:.0}% of income; raid battles/t {:.1} manned {:.0}% held {:.0}% looted/t {:.1}; war battles/t {:.1} manned {:.0}% held {:.0}%",
+            if on { "with" } else { "without" },
+            of(none as f64, n as f64),
+            vault / systems.max(1.0),
+            income / systems.max(1.0),
+            pilots / systems.max(1.0),
+            of(pay, income),
+            fought[1] / dt,
+            manned[1],
+            held[1],
+            (a.looted - b.looted) / dt,
+            fought[0] / dt,
+            manned[0],
+            held[0],
+        );
+    }
+}
+
 /// `RULES=name=value,..` changes a rule for a run.
 fn tweak(rules: &mut Rules) {
     let Ok(all) = std::env::var("RULES") else {
@@ -403,9 +451,10 @@ pub fn replay(seeds: &[u64]) {
 }
 
 pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
-    let mut diffs = Vec::new();
+    let (mut diffs, mut kept) = (Vec::new(), Vec::new());
     for &seed in seeds {
         let mut moved = [0.0; 2];
+        let mut guarded = [0.0; 2];
         for (i, m) in moved.iter_mut().enumerate() {
             if i == 1 && !arms {
                 break;
@@ -427,13 +476,14 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             if i == 1 {
                 for r in &mut g.realms {
                     r.hires = !r.hires;
+                    r.garrisons = !r.garrisons;
                 }
             }
             let t0 = std::time::Instant::now();
             let (mut last, mut was, mut at) = (g.books, 0.0, 0);
             let mut spans = Spans::of(&g);
             g.step();
-            let start = hiring(&g);
+            let (start, start_g) = (hiring(&g), garrisoned(&g));
             while g.tick < ticks {
                 g.tick_once();
                 spans.watch(&g);
@@ -441,28 +491,34 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                     report(&g, &last, was, (g.tick - at) as f64);
                     raids(&g, &last);
                     self::arms(&g);
+                    garrisons(&g, &last, (g.tick - at) as f64);
                     spans.report(&g);
                     (last, was, at) = (g.books, g.destroyed, g.tick);
                 }
             }
             *m = hiring(&g) - start;
+            guarded[i] = garrisoned(&g) - start_g;
             println!(
-                "  hiring realms {:+.2} points; {:.1} ms a tick",
+                "  hiring realms {:+.2} points; garrisons {:+.2} points; {:.1} ms a tick",
                 *m,
+                guarded[i],
                 t0.elapsed().as_secs_f64() * 1e3 / g.tick as f64
             );
         }
         if arms {
             diffs.push((moved[0] + moved[1]) / 2.0);
+            kept.push((guarded[0] + guarded[1]) / 2.0);
         }
     }
     if arms {
-        let n = diffs.len().max(1) as f64;
-        let mean = diffs.iter().sum::<f64>() / n;
-        let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
-        println!(
-            "ARMS hiring realms, with the marks one way and swapped, on average: {mean:+.2} points (se {:.2}) {diffs:.2?}",
-            (var / n).sqrt()
-        );
+        for (name, diffs) in [("hiring", diffs), ("garrisoned", kept)] {
+            let n = diffs.len().max(1) as f64;
+            let mean = diffs.iter().sum::<f64>() / n;
+            let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
+            println!(
+                "ARMS {name} realms, with the marks one way and swapped, on average: {mean:+.2} points (se {:.2}) {diffs:.2?}",
+                (var / n).sqrt()
+            );
+        }
     }
 }

@@ -882,6 +882,7 @@ fn pilots_cap_fire_not_losses() {
 fn realms_pay_and_train_pilots() {
     let rules = Rules::default();
     let mut r = super::realm::Realm::new(0, 0, 0);
+    r.garrisons = false;
     r.crystals = 100.0;
     // Worth a lot: trained, for crystal.
     r.pilot_worth = 1.0;
@@ -911,6 +912,27 @@ fn realms_pay_and_train_pilots() {
         "{}",
         r.pilots
     );
+}
+
+/// A realm with a garrison trains up to the seats at its biggest world
+/// however little a pilot's worth, and no further than it can pay for; one
+/// without, with nothing to fight, keeps nobody.
+#[test]
+fn garrisons_fill_the_biggest_worlds_seats() {
+    let rules = Rules::default();
+    let settle = |garrisons: bool, crystals: f32| {
+        let mut r = super::realm::Realm::new(0, 0, 0);
+        (r.garrisons, r.guard, r.pilot_worth) = (garrisons, 24.0, 0.0);
+        for _ in 0..40 {
+            r.crystals = crystals;
+            r.keep_pilots(&rules, 0, 0);
+        }
+        r.pilots
+    };
+    assert_eq!(settle(true, 1000.0), 24);
+    // (it saves what's left after pay: 59.8, which pays 0.199 a tick)
+    assert_eq!(settle(true, 60.0), 9);
+    assert_eq!(settle(false, 1000.0), 0);
 }
 
 /// A vault changes hands only with the whole planet: its crystal goes with
