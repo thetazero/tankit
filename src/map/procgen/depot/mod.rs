@@ -1,4 +1,5 @@
-//! The rail depot biome: a freight yard on a desert world. Parallel sidings
+//! The rail depot biome: a freight yard on desert, tundra or
+//! grassland (a seed's the same yard on any). Parallel sidings
 //! with lanes to fight down between rows of standing cars, gaps through the
 //! rows, gantries over them, sheds and water towers round them (`plan`).
 //! It's built of a foundry's parts, in its builder's style.
@@ -40,21 +41,21 @@ fn lay_out(spec: &Spec) -> Skeleton {
 }
 
 /// `spec`'s depot undressed.
-pub fn greybox(spec: &Spec) -> Map {
+pub fn greybox(spec: &Spec, ground: Ground) -> Map {
     let sk = skeleton(spec);
     let mut m = sk.greybox(&spec.sides);
     if let Some(t) = &mut m.terrain {
         sk.paint(t, Vec3::splat(0.4));
     }
     m.raid_stands = sk.stands.clone();
-    m.atmosphere = Ground::Desert.atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5));
+    m.atmosphere = ground.atmosphere(&mut Rng::new(spec.seed ^ 0x5EED_D2E5));
     m
 }
 
 /// Builds `spec`'s depot.
-pub fn build(spec: &Spec) -> Map {
+pub fn build(spec: &Spec, ground: Ground) -> Map {
     let sk = skeleton(spec);
-    let mut m = foundry::dressed(spec, Ground::Desert, &sk);
+    let mut m = foundry::dressed(spec, ground, &sk);
     m.hold_name = "RAIL YARD";
     m.raid_stands = sk.stands.clone();
     m

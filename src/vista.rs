@@ -30,7 +30,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::City(..) | MapKind::ShieldSite(..) => &[],
         // Generated: each foundry picks its own (by each side's spawns,
         // looking at the great hall).
-        MapKind::Foundry(..) | MapKind::Depot(_) => &[],
+        MapKind::Foundry(..) | MapKind::Depot(..) => &[],
         // Generated: each mine picks its own (the Face, the adit's mouth
         // and the bridge out of it, from either side of the bridge's end).
         MapKind::Mine(..) => &[],
@@ -254,8 +254,34 @@ mod tests {
                 ),
                 1,
             ),
-            (MapKind::Depot(crate::map::procgen::Look::Imperium), 0),
-            (MapKind::Depot(crate::map::procgen::Look::Ithessar), 1),
+            (
+                MapKind::Depot(
+                    crate::map::procgen::Look::Imperium,
+                    crate::map::procgen::foundry::Ground::Desert,
+                ),
+                0,
+            ),
+            (
+                MapKind::Depot(
+                    crate::map::procgen::Look::Ithessar,
+                    crate::map::procgen::foundry::Ground::Desert,
+                ),
+                1,
+            ),
+            (
+                MapKind::Depot(
+                    crate::map::procgen::Look::Resonant,
+                    crate::map::procgen::foundry::Ground::Tundra,
+                ),
+                2,
+            ),
+            (
+                MapKind::Depot(
+                    crate::map::procgen::Look::Uthenn,
+                    crate::map::procgen::foundry::Ground::Grassland,
+                ),
+                3,
+            ),
             (
                 MapKind::Mine(
                     crate::map::procgen::Look::Ithessar,

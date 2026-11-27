@@ -967,13 +967,13 @@ mod tests {
         ignore = "slow unoptimized: run with cargo test --release"
     )]
     fn depots_hardly_z_fight() {
-        use crate::map::procgen::Look;
-        let depot = |seed, l| crate::make_map(crate::MapKind::Depot(l), seed);
+        use crate::map::procgen::{Look, foundry::Ground};
+        let depot = |seed, l, g| crate::make_map(crate::MapKind::Depot(l, g), seed);
         hardly_z_fight([
-            ("depot imperium", depot(0, Look::Imperium)),
-            ("depot resonant", depot(1, Look::Resonant)),
-            ("depot uthenn", depot(2, Look::Uthenn)),
-            ("depot ithessar", depot(3, Look::Ithessar)),
+            ("depot imperium", depot(0, Look::Imperium, Ground::Desert)),
+            ("depot resonant", depot(1, Look::Resonant, Ground::Tundra)),
+            ("depot uthenn", depot(2, Look::Uthenn, Ground::Grassland)),
+            ("depot ithessar", depot(3, Look::Ithessar, Ground::Tundra)),
         ]);
     }
 
