@@ -465,7 +465,7 @@ mod tests {
     /// a constant noise.
     #[test]
     fn battles_knock_now_and_then() {
-        for map in [crate::map::Map::reservoir(0), crate::map::Map::kiln()] {
+        for map in [crate::map::Map::reservoir(0), crate::map::Map::sanctum()] {
             let mut game = Match::new(map, 0, 5, 7);
             game.start();
             let mut n = 0;

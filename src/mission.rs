@@ -66,15 +66,6 @@ pub const MISSIONS: &[Mission] = &[
         sides: &[Faction::Imperium, Faction::Resonant],
     },
     Mission {
-        name: "KEPT FIRE",
-        contract: Contract::Attrition,
-        map: "THE KILN",
-        map_kind: MapKind::Kiln,
-        seed: 0,
-        team_size: 6,
-        sides: &[Faction::Ithessar, Faction::Imperium],
-    },
-    Mission {
         name: "BROKEN STREETS",
         contract: Contract::Attrition,
         map: "CITY",
@@ -224,31 +215,21 @@ pub fn for_sites(class: crate::galaxy::theater::Class) -> Vec<usize> {
         .collect()
 }
 
-/// The missions a hull foundry on a `class` world can be fought with: those
-/// in a foundry (#525), if its ground has one, else any of theirs.
-pub fn for_foundries(class: crate::galaxy::theater::Class) -> Vec<usize> {
-    let mut pool = for_sites(class);
-    if class.ground().is_some() {
-        pool.retain(|&i| matches!(MISSIONS[i].map_kind, MapKind::Foundry(..)));
-    }
-    pool
+/// The missions on the maps `on` picks out.
+fn on_maps(on: fn(MapKind) -> bool) -> Vec<usize> {
+    (0..MISSIONS.len())
+        .filter(|&i| on(MISSIONS[i].map_kind))
+        .collect()
 }
 
-/// The missions a crystal mine on a `class` world can be fought with: those
-/// in a mine (#523), if its ground has one, else any of theirs but the
-/// foundries, depots and cities (outposts').
-pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
-    let mut pool = for_sites(class);
-    pool.retain(|&i| {
-        !matches!(
-            MISSIONS[i].map_kind,
-            MapKind::Foundry(..) | MapKind::Depot(..) | MapKind::City(..)
-        )
-    });
-    if class.ground().is_some() {
-        pool.retain(|&i| matches!(MISSIONS[i].map_kind, MapKind::Mine(..)));
-    }
-    pool
+/// The missions a hull foundry can be fought with: those in a foundry (#525).
+pub fn for_foundries() -> Vec<usize> {
+    on_maps(|kind| matches!(kind, MapKind::Foundry(..)))
+}
+
+/// The missions a crystal mine can be fought with: those in a mine (#523).
+pub fn for_mines() -> Vec<usize> {
+    on_maps(|kind| matches!(kind, MapKind::Mine(..)))
 }
 
 /// The missions an outpost on a `class` world can be fought with (#547):
@@ -264,12 +245,10 @@ pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
     pool
 }
 
-/// The missions a shield generator on a `class` world can be fought with: a
-/// Hold on the shield city, or where its ground's made the shield camp.
-pub fn for_shields(class: crate::galaxy::theater::Class) -> Vec<usize> {
-    (0..MISSIONS.len())
-        .filter(|&i| class.shields_on(MISSIONS[i].map_kind))
-        .collect()
+/// The missions a shield generator can be fought with: a Hold on the shield
+/// city or the shield camp.
+pub fn for_shields() -> Vec<usize> {
+    on_maps(|kind| matches!(kind, MapKind::ShieldSite(..) | MapKind::ShieldCamp(..)))
 }
 
 impl Mission {
@@ -294,23 +273,19 @@ mod tests {
     #[test]
     fn sites_have_maps_from_the_start() {
         use crate::galaxy::theater::Class;
+        assert!(!for_foundries().is_empty());
+        assert!(!for_mines().is_empty());
+        assert!(!for_shields().is_empty());
         for class in Class::ALL {
-            assert!(!for_foundries(class).is_empty(), "{class:?}");
             assert!(!for_sites(class).is_empty(), "{class:?}");
-            assert!(!for_mines(class).is_empty(), "{class:?}");
             assert!(!for_outposts(class).is_empty(), "{class:?}");
-            assert!(!for_shields(class).is_empty(), "{class:?}");
         }
         // Cities among them (two-sided, as every site's battle is).
-        assert!(
-            [Class::Desert, Class::Tundra, Class::Grassland]
+        assert!(Class::ALL.iter().all(|&class| {
+            for_outposts(class)
                 .iter()
-                .all(|&class| {
-                    for_outposts(class)
-                        .iter()
-                        .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
-                })
-        );
+                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
+        }));
         // Every desert mission is there from the start: the open desert's
         // Hold and Attrition both, and the reservoir town's.
         for kind in [MapKind::Desert, MapKind::Reservoir] {
