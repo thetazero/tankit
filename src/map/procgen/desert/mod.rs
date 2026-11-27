@@ -27,7 +27,7 @@ use std::f32::consts::TAU;
 
 use glam::{Vec2, Vec3};
 
-use super::memo::Memo;
+use super::memo::{Memo, SKELETONS};
 use super::{Biome, Centerpiece, Spec};
 use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
@@ -110,7 +110,7 @@ pub fn form_of(seed: u64) -> Form {
 /// fair place for every side's spawns and whose greybox is playable. Worked
 /// out only the first time it's asked for (the last few are kept).
 pub fn skeleton(spec: &Spec) -> Skeleton {
-    static KEPT: Memo<Spec, Skeleton, 8> = Memo::new();
+    static KEPT: Memo<Spec, Skeleton, SKELETONS> = Memo::new();
     KEPT.get(spec, || lay_out(spec))
 }
 

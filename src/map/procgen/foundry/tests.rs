@@ -19,7 +19,8 @@ fn spec(seed: u64, look: Look) -> Spec {
 fn check_dressed(seed: u64, look: Look) {
     let what = format!("{look:?} seed {seed}");
     let m = map(&spec(seed, look));
-    if let Err(why) = check::playable(&m) {
+    let nav = NavGrid::build(&m);
+    if let Err(why) = check::playable_on(&m, &nav) {
         panic!("{what}: {why}");
     }
     let open = m.open_spots.len();
@@ -33,7 +34,6 @@ fn check_dressed(seed: u64, look: Look) {
         let over = m.oboxes.iter().find(|o| o.ray_hit(from, Vec3::Y, 80.0));
         assert!(over.is_none(), "{what}: repair drop at {p} under {over:?}");
     }
-    let nav = NavGrid::build(&m);
     let from = m.bases[0][m.bases[0].len() / 2];
     for p in m.bases.iter().flatten() {
         assert!(!nav.path(from, *p).is_empty(), "{what}: {p} cut off");
@@ -187,7 +187,7 @@ fn different_seeds_make_different_foundries() {
             assert!(a.heart != b.heart && a.lots.len() > 30);
         }
     }
-    let again = skeleton(&spec(SEEDS[1], Look::Imperium));
+    let again = lay_out(&spec(SEEDS[1], Look::Imperium));
     assert_eq!(again.heart, sk[1].heart);
     assert_eq!(again.lots.len(), sk[1].lots.len());
 }
