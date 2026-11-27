@@ -275,6 +275,11 @@ they make is tungsten cubes. How the Ithessar feel about them is unknown;
 **Their foundries** cast hulls from tungsten cubes: pale shell on a dark
 plinth, everything square, a green seam lit along it.
 
+**Their hoards:** where the cubes go. Worlds with the most of them have a
+hoard among their outposts: stacks of cubes on a strict grid round the
+counting floor. It stays a hoard whoever takes it, as long as the cubes
+are there.
+
 ## Crystals
 
 What everyone fights over: your pay, the Resonant's sacrament, and the reason

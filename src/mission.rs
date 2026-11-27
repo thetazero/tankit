@@ -200,6 +200,25 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
+    // A site's is on its world's ground.
+    Mission {
+        name: "DEAD WEIGHT",
+        contract: Contract::Attrition,
+        map: "TUNGSTEN HOARD",
+        map_kind: MapKind::Hoard(Ground::Desert),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Uthenn, Faction::Ithessar],
+    },
+    Mission {
+        name: "FULL COUNT",
+        contract: Contract::Hold,
+        map: "TUNGSTEN HOARD",
+        map_kind: MapKind::Hoard(Ground::Desert),
+        seed: 0,
+        team_size: 6,
+        sides: &[Faction::Uthenn, Faction::Ithessar],
+    },
 ];
 
 /// The missions a site on a `class` world can be fought with (#311): every
@@ -232,14 +251,19 @@ pub fn for_mines() -> Vec<usize> {
     on_maps(|kind| matches!(kind, MapKind::Mine(..)))
 }
 
+/// The missions a tungsten hoard can be fought with (#710): those on one.
+pub fn for_hoards() -> Vec<usize> {
+    on_maps(|kind| matches!(kind, MapKind::Hoard(_)))
+}
+
 /// The missions an outpost on a `class` world can be fought with (#547):
-/// those on none of the maps production sites are fought on.
+/// those on none of the maps production sites or hoards are fought on.
 pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
     let mut pool = for_sites(class);
     pool.retain(|&i| {
         !matches!(
             MISSIONS[i].map_kind,
-            MapKind::Foundry(..) | MapKind::Mine(..)
+            MapKind::Foundry(..) | MapKind::Mine(..) | MapKind::Hoard(_)
         )
     });
     pool
@@ -276,6 +300,7 @@ mod tests {
         assert!(!for_foundries().is_empty());
         assert!(!for_mines().is_empty());
         assert!(!for_shields().is_empty());
+        assert!(!for_hoards().is_empty());
         for class in Class::ALL {
             assert!(!for_sites(class).is_empty(), "{class:?}");
             assert!(!for_outposts(class).is_empty(), "{class:?}");

@@ -4,11 +4,20 @@
 //! as there's tungsten for, and they're stashed there. They stay there
 //! whoever takes the planet. Moving them between the stars costs crystal, as
 //! hulls do, and takes as long.
+//!
+//! A planet with a lot of them has a hoard (`hoards`): one of its outposts
+//! is where they're stacked, and is fought over on a map of its own (#710).
 
 use serde::{Deserialize, Serialize};
 
-use super::{FTL_RANGE, Galaxy};
+use super::{FTL_RANGE, Galaxy, SiteKind};
 use crate::faction::Faction;
+
+/// Fewest cubes that make a hoard, and how many times what worlds with any
+/// have on average: the hoards are the biggest stashes there are, however
+/// long the war's gone on.
+const HOARD: u32 = 500;
+const HOARD_SHARE: f64 = 1.5;
 
 /// A planet's cubes: whole ones, and how far along the next is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -32,6 +41,47 @@ impl Galaxy {
     pub fn stashes_of(&self, s: usize) -> &[Stash] {
         let a = self.vault_at[s] as usize;
         &self.stashes[a..a + self.systems[s].planets as usize]
+    }
+
+    /// How many cubes make a hoard now.
+    fn hoard_size(&self) -> u32 {
+        let (mut cubes, mut worlds) = (0u64, 0u64);
+        for x in self.stashes.iter().filter(|x| x.cubes > 0) {
+            cubes += x.cubes as u64;
+            worlds += 1;
+        }
+        let average = cubes as f64 / worlds.max(1) as f64;
+        HOARD.max((average * HOARD_SHARE) as u32)
+    }
+
+    /// The sites of system `s` that are hoards, whoever holds them: on each
+    /// planet with that many cubes, its first outpost, if it has one.
+    pub fn hoards(&self, s: usize) -> Vec<usize> {
+        let stashes = self.stashes_of(s);
+        // (Few systems are worth counting every stash there is for.)
+        if stashes.iter().all(|x| x.cubes < HOARD) {
+            return Vec::new();
+        }
+        let size = self.hoard_size();
+        (0..stashes.len())
+            .filter(|&p| stashes[p].cubes >= size)
+            .filter_map(|p| {
+                self.site_range(s).find(|&i| {
+                    let site = &self.sites[i];
+                    site.planet as usize == p && site.kind == SiteKind::Outpost
+                })
+            })
+            .collect()
+    }
+
+    /// What site `i` is, in caps.
+    pub fn site_name(&self, i: usize) -> &'static str {
+        // (Systems' sites lie in their order.)
+        let s = self.systems.partition_point(|x| x.sites.1 as usize <= i);
+        if self.hoards(s).contains(&i) {
+            return super::theater::HOARD;
+        }
+        super::theater::kind_name(self.sites[i].kind)
     }
 
     /// Uthenn planets turn out their cubes.
@@ -117,7 +167,8 @@ impl Galaxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::galaxy::{REGION, Rules, SYSTEMS, SiteKind};
+    use crate::MapKind;
+    use crate::galaxy::{REGION, Rules, SYSTEMS};
 
     fn war() -> Galaxy {
         Galaxy::with_size(4, SYSTEMS / 4, REGION * 0.5, Rules::default())
@@ -164,6 +215,64 @@ mod tests {
         g.sites[site].owner = ((uthenn + 1) % 4) as u8;
         g.make_cubes();
         assert_eq!(g.stashes_of(s)[0], made);
+    }
+
+    /// A world with a lot of cubes has one hoard, if it has an outpost, on a
+    /// map of its own; a world with fewer has none, and neither changes the
+    /// map of any other site.
+    #[test]
+    fn worlds_with_a_lot_of_cubes_have_hoards() {
+        let mut g = war();
+        assert!((0..g.systems.len()).all(|s| g.hoards(s).is_empty()));
+        let before: Vec<_> = (0..g.systems.len()).map(|s| g.theater_at(s, 0)).collect();
+        for _ in 0..300 {
+            g.make_cubes();
+        }
+        let size = g.hoard_size();
+        let (mut hoards, mut stashed, mut grounds) = (0, 0, std::collections::HashSet::new());
+        let mut contracts = std::collections::HashSet::new();
+        for s in 0..g.systems.len() {
+            let t = g.theater_at(s, 0);
+            stashed += g.stashes_of(s).iter().filter(|x| x.cubes > 0).count();
+            for (site, old) in t.sites.iter().zip(&before[s].sites) {
+                assert_eq!(site.map_seed, old.map_seed);
+                assert_eq!(site.kind_name(), g.site_name(site.index));
+                let cubes = g.stashes_of(s)[site.planet as usize].cubes;
+                if !site.hoard {
+                    assert_eq!(site.mission, old.mission);
+                    assert!(!matches!(site.map_kind(), MapKind::Hoard(_)));
+                    continue;
+                }
+                assert!(cubes >= size, "{cubes} of {size}");
+                assert_eq!(site.kind, SiteKind::Outpost);
+                assert_eq!(site.map_kind(), MapKind::Hoard(site.class.ground()));
+                assert_eq!(
+                    (site.kind_name(), site.short_name()),
+                    ("TUNGSTEN HOARD", "HOARD")
+                );
+                hoards += 1;
+                grounds.insert(site.class.ground());
+                contracts.insert(site.mission);
+            }
+            for (p, x) in g.stashes_of(s).iter().enumerate() {
+                let on = |f: fn(&crate::galaxy::theater::SiteView) -> bool| {
+                    let here = t.sites.iter().filter(|x| x.planet as usize == p);
+                    here.filter(|x| f(x)).count()
+                };
+                let posts = on(|x| x.kind == SiteKind::Outpost);
+                let want = (x.cubes >= size && posts > 0) as usize;
+                assert_eq!(on(|x| x.hoard), want, "{} cubes", x.cubes);
+            }
+        }
+        assert!(hoards > 0 && hoards * 4 < stashed, "{hoards} of {stashed}");
+        assert_eq!((grounds.len(), contracts.len()), (3, 2));
+        // It stays one whoever takes it.
+        let s = (0..g.systems.len())
+            .find(|&s| !g.hoards(s).is_empty())
+            .unwrap();
+        let i = g.hoards(s)[0];
+        g.sites[i].owner = Faction::Imperium.index() as u8;
+        assert_eq!(g.hoards(s)[0], i);
     }
 
     /// Cubes fly for crystal, only as many as there are and can be paid for,

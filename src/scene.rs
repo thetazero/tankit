@@ -1051,6 +1051,22 @@ mod tests {
         ]);
     }
 
+    /// The same for tungsten hoards.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn hoards_hardly_z_fight() {
+        use crate::map::procgen::foundry::Ground;
+        let hoard = |seed, g| crate::make_map(crate::MapKind::Hoard(g), seed);
+        hardly_z_fight([
+            ("hoard desert", hoard(0, Ground::Desert)),
+            ("hoard tundra", hoard(1, Ground::Tundra)),
+            ("hoard grassland", hoard(2, Ground::Grassland)),
+        ]);
+    }
+
     /// The same for the other factions' crystal mines.
     #[test]
     #[cfg_attr(

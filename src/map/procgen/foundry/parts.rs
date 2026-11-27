@@ -55,6 +55,13 @@ pub enum Part {
     Billets,
     Pot,
     Rubble,
+    // A hoard's.
+    /// Tungsten cubes stacked on a square, some of it higher.
+    Stack,
+    /// One great cube.
+    Monolith,
+    /// A cube on its own.
+    Cube,
 }
 
 impl Part {
@@ -140,6 +147,9 @@ impl Part {
             Part::Billets => ((1.4, 2.0), (2.4, 3.2)),
             Part::Pot => ((1.7, 1.7), (1.7, 1.7)),
             Part::Rubble => ((1.5, 2.4), (1.8, 3.0)),
+            Part::Stack => ((4.8, 5.8), (4.8, 5.8)),
+            Part::Monolith => ((5.0, 5.8), (5.0, 5.8)),
+            Part::Cube => ((1.0, 1.7), (1.0, 1.7)),
         };
         Vec2::new(rng.range(w.0, w.1), rng.range(l.0, l.1))
     }
@@ -1133,10 +1143,56 @@ pub fn build(map: &mut Map, f: &OBox, part: Part, g: f32, st: Option<&dyn Works>
             s.put(0.0, 0.0, (w, l), (-0.6, 1.4)).tilt = 0.08;
             s.put(w * 0.4, 0.3, (w * 0.5, l * 0.5), (0.2, 2.2)).tilt = -0.2;
         }
+        Part::Stack => {
+            let n = (w / 1.75).round().max(1.0) as i32;
+            let a = 2.0 * w / n as f32;
+            let tallest = s.rng.int(2, 3);
+            for i in 0..n {
+                for j in 0..n {
+                    let at = |k: i32| -w + a * (k as f32 + 0.5);
+                    let inner = (1..n - 1).contains(&i) && (1..n - 1).contains(&j);
+                    let high = match inner {
+                        true => tallest + 1,
+                        false => s.rng.int(1, tallest),
+                    };
+                    for k in 0..high {
+                        s.cube(at(i), at(j), a, k as f32 * a);
+                    }
+                }
+            }
+        }
+        Part::Monolith => {
+            s.cube(0.0, 0.0, w * 2.0, 0.0);
+            let p = s.at(0.0, w, 0.0);
+            s.map.sound(Ambient::Machine, p);
+        }
+        Part::Cube => s.cube(0.0, 0.0, w * 2.0, 0.0),
     }
 }
 
 impl Site<'_> {
+    /// A tungsten cube `a` on a side standing on `y`, a hair's gap all round
+    /// it. Dressed, some have a lit seam round them.
+    fn cube(&mut self, x: f32, z: f32, a: f32, y: f32) {
+        self.role = Role::Cast;
+        let h = a * 0.5 - 0.03;
+        // (The bottom one's sunk into uneven ground.)
+        let foot = if y == 0.0 { -0.5 } else { y };
+        self.put(x, z, (h, h), (foot, y + a - 0.06));
+        let Some(p) = &self.pal else { return };
+        let (dark, glow) = (p.dark, p.molten);
+        let lit = self.dice.chance(0.14) || a > 8.0;
+        if lit || self.dice.chance(0.3) {
+            let (c, m) = match lit {
+                true => (glow, Material::Glow),
+                false => (dark, Material::Metal),
+            };
+            let t = (a * 0.02).max(0.05);
+            let mid = y + a * 0.5;
+            self.deck(x, z, (h + 0.02, h + 0.02), (mid - t, mid + t), c, m);
+        }
+    }
+
     /// A hull as it comes out of the mould, on `y`, `k` full size.
     fn casting(&mut self, x: f32, z: f32, y: f32, k: f32) {
         let (c, m) = self.look(Role::Cast);

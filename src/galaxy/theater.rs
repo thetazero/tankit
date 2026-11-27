@@ -221,6 +221,8 @@ pub struct SiteView {
     /// Whose the place is: its owner's, or under raiders, the planet's.
     pub landlord: usize,
     pub kind: SiteKind,
+    /// It's an outpost with a hoard of tungsten cubes (`Galaxy::hoards`).
+    pub hoard: bool,
     pub contested: bool,
     /// Your side commits to a battle here this tick: you can enter it.
     pub committed: bool,
@@ -504,6 +506,7 @@ impl Class {
             MapKind::City(..)
             | MapKind::Foundry(..)
             | MapKind::Depot(..)
+            | MapKind::Hoard(_)
             | MapKind::Mine(..)
             | MapKind::Sanctum(_) => true,
             MapKind::ShieldSite(..) | MapKind::ShieldCamp(..) => false,
@@ -538,7 +541,10 @@ pub fn planet_name(name: &str, p: u8) -> String {
 /// The `kind_name` of a production site that makes mostly crystals.
 pub const CRYSTAL_MINE: &str = "CRYSTAL MINE";
 
-/// What a site is, in caps.
+/// What an outpost with a hoard of cubes is, in caps.
+pub const HOARD: &str = "TUNGSTEN HOARD";
+
+/// What a site of `kind` is, in caps.
 pub fn kind_name(kind: SiteKind) -> &'static str {
     match kind {
         SiteKind::Shield { .. } => "SHIELD GENERATOR",
@@ -551,6 +557,9 @@ pub fn kind_name(kind: SiteKind) -> &'static str {
 impl SiteView {
     /// What it is, in caps (see the free `kind_name`).
     pub fn kind_name(&self) -> &'static str {
+        if self.hoard {
+            return HOARD;
+        }
         kind_name(self.kind)
     }
 
@@ -560,6 +569,7 @@ impl SiteView {
             "SHIELD GENERATOR" => "SHIELD",
             "CRYSTAL MINE" => "MINE",
             "OUTPOST" => "OUTPOST",
+            HOARD => "HOARD",
             _ => "FOUNDRY",
         }
     }
@@ -578,6 +588,7 @@ impl SiteView {
             } else {
                 SiteKind::Mine { crystals: 0.1 }
             },
+            hoard: false,
             contested: false,
             committed: false,
             enemy: 1,
@@ -606,6 +617,7 @@ impl SiteView {
                 MapKind::Depot(..) => MapKind::Depot(Look::own(self.founder()), ground),
                 MapKind::Mine(..) => MapKind::Mine(Look::own(self.founder()), ground),
                 MapKind::Sanctum(_) => MapKind::Sanctum(ground),
+                MapKind::Hoard(_) => MapKind::Hoard(ground),
                 MapKind::Foundry(..) => MapKind::Foundry(Look::own(self.founder()), ground),
                 kind => kind,
             };
@@ -633,6 +645,9 @@ impl SiteView {
 
     /// Who built the place, whoever holds it now: a city's in their style.
     pub fn founder(&self) -> Faction {
+        if self.hoard {
+            return Faction::Uthenn;
+        }
         let mut r = Rng::new(self.map_seed ^ 0xF0_07DE);
         Faction::ALL[r.index(Faction::ALL.len())]
     }
@@ -1325,6 +1340,8 @@ impl Galaxy {
         let mines = crate::mission::for_mines();
         let shields = crate::mission::for_shields();
         let outposts = Class::ALL.map(crate::mission::for_outposts);
+        let hoards = crate::mission::for_hoards();
+        let hoarded = self.hoards(s);
         let sites: Vec<SiteView> = self
             .site_range(s)
             .map(|i| {
@@ -1349,6 +1366,12 @@ impl Galaxy {
                         (pool[r.index(pool.len())], r.next_u64())
                     }
                 };
+                // (Its hoard's mission after both: as an outpost it's the same.)
+                let hoard = hoarded.contains(&i);
+                let mission = match hoard {
+                    true => hoards[r.index(hoards.len())],
+                    false => mission,
+                };
                 SiteView {
                     index: i,
                     planet: site.planet,
@@ -1362,6 +1385,7 @@ impl Galaxy {
                         f => f,
                     },
                     kind: site.kind,
+                    hoard,
                     contested: contested.contains(&i),
                     committed: commits.contains(&i),
                     enemy,
@@ -1904,6 +1928,7 @@ mod tests {
                     }
                     MapKind::Foundry(_, on)
                     | MapKind::Depot(_, on)
+                    | MapKind::Hoard(on)
                     | MapKind::Mine(_, on)
                     | MapKind::Sanctum(on)
                     | MapKind::ShieldCamp(on, _) => assert_eq!(on, class.ground()),
@@ -2000,7 +2025,7 @@ mod tests {
         let mut sanctums = std::collections::HashSet::new();
         for sys in 0..g.systems.len() {
             for s in &g.theater_at(sys, 0).sites {
-                if s.kind != SiteKind::Outpost {
+                if s.kind != SiteKind::Outpost || s.hoard {
                     continue;
                 }
                 assert_eq!((s.kind_name(), s.short_name()), ("OUTPOST", "OUTPOST"));

@@ -268,6 +268,7 @@ mod tests {
                 Look::Ithessar,
                 crate::map::procgen::foundry::Ground::Grassland,
             ),
+            MapKind::Hoard(crate::map::procgen::foundry::Ground::Tundra),
             MapKind::Desert,
             MapKind::ShieldSite(Look::Imperium, Setting::Tundra, g),
             MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
