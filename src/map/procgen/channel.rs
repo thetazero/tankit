@@ -1,27 +1,31 @@
-//! A plasma river's channel through a city: a trench with sheer walls of
-//! dark glass, the surface well below the quays along both its banks, in
-//! level reaches with a drop between one and the next (it's plumbing: it
-//! doesn't follow the ground). Bridges are set from the quays, so their
-//! decks are always clear of it.
+//! A plasma river's channel through a city: a trench with sloped banks lined
+//! with dark glass, so a hover hull, which rides on the plasma, can drive
+//! down one and up the other. Its surface is well below the quays along
+//! both, in level reaches with a drop between one and the next (it's
+//! plumbing: it doesn't follow the ground). Bridges are set from the quays,
+//! so their decks are always clear of it.
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
-use glam::{Vec2, Vec3};
+use glam::{Vec2, Vec3, Vec4};
 
 use super::land::Land;
 use super::skeleton::smoothstep;
 use crate::map::river::River;
 use crate::map::{Map, OBox};
 use crate::render::material::Material;
+use crate::render::mesh::MeshData;
 use crate::rng::Rng;
 
 /// How far its surface is below the quays, at least, and its bed below that.
 pub const FALL: f32 = 5.0;
 const BED: f32 = 3.5;
-/// How thick its walls are: the ground's slope down is inside them.
-pub const WALL: f32 = 6.0;
-/// How far past its walls the quays run, level, and then how far it takes
+/// How wide its sloped banks are, from the river's edge up to the quay.
+pub const BANK: f32 = 12.0;
+/// How far their lining's drawn over the ground.
+const LINING: f32 = 0.06;
+/// How far past its banks the quays run, level, and then how far it takes
 /// them to meet the land.
 pub const QUAY: f32 = 13.0;
 const BLEND: f32 = 9.0;
@@ -98,7 +102,7 @@ impl Channel {
     /// A winding one, `play` m of it each way from the middle doubling back
     /// on itself, its ends running off straight; its middle at 0.
     pub fn wind(rng: &mut Rng) -> Channel {
-        let half = rng.range(13.0, 16.0);
+        let half = rng.range(11.0, 14.0);
         let mut tries = 0;
         loop {
             tries += 1;
@@ -130,7 +134,7 @@ impl Channel {
             back.extend(pts);
             let pts = back;
             // Never too near itself: a neck of city between two bends.
-            let gap = ((half + WALL) * 2.0 + 44.0).powi(2);
+            let gap = ((half + BANK) * 2.0 + 44.0).powi(2);
             let clear = (0..pts.len()).step_by(3).all(|a| {
                 (a + 45..pts.len())
                     .step_by(3)
@@ -168,7 +172,7 @@ impl Channel {
 
     /// How far off its middle it shapes the land.
     pub fn reach(&self) -> f32 {
-        self.half + WALL + QUAY + BLEND
+        self.half + BANK + QUAY + BLEND
     }
 
     /// Along it, and off its middle (to its left's positive).
@@ -262,17 +266,25 @@ impl Channel {
         if a > self.reach() || self.quay.is_empty() {
             return h;
         }
-        if a < self.half + 2.0 {
-            return self.surface_at(t) - BED;
+        if a < self.half + BANK {
+            return self.bank(t, a);
         }
-        let level = self.half + WALL + QUAY;
+        let level = self.half + BANK + QUAY;
         let q = self.quay_at(t);
         q + (h - q) * smoothstep(level, level + BLEND, a)
     }
 
-    /// Is `p` in it or its walls, or within `margin` of them?
+    /// How high its bank (or its bed, further in) is, `a` off its middle: it
+    /// goes into the plasma just at the river's edge.
+    fn bank(&self, t: f32, a: f32) -> f32 {
+        let (q, s) = (self.quay_at(t), self.surface_at(t));
+        let h = s + (q - s) * (a - self.half) / BANK;
+        h.clamp(s - BED, q)
+    }
+
+    /// Is `p` in it or its banks, or within `margin` of them?
     pub fn wet(&self, p: Vec2, margin: f32) -> bool {
-        self.local(p).1.abs() < self.half + WALL + margin
+        self.local(p).1.abs() < self.half + BANK + margin
     }
 
     /// A bridge over it, `t` along and `half` its width, unless one's there
@@ -281,7 +293,7 @@ impl Channel {
         if let Some(k) = self.bridges.iter().position(|b| (b.t - t).abs() < 56.0) {
             return k;
         }
-        let out = self.half + WALL + RISE / 0.2 + 1.0;
+        let out = self.half + BANK + RISE / 0.2 + 1.0;
         self.bridges.push(Bridge {
             t,
             ends: [self.point(t, -out), self.point(t, out)],
@@ -306,10 +318,61 @@ impl Channel {
                 })
                 .collect(),
             half: self.half,
+            bank: BANK,
         }
     }
 
-    /// Its walls, their lip, its lamps and its bridges.
+    /// Its banks' lining: a strip over the ground, and a kerb and a light
+    /// along it.
+    fn line(&self, mesh: &mut MeshData, k: usize, color: (Vec3, Vec3)) {
+        let (glass, plasma) = color;
+        let ts = [0.0, 1.0].map(|i| self.from + (k as f32 + i) * STEP);
+        let crest = self.half + BANK;
+        // How far off its middle the light is, where it's a little over the
+        // plasma.
+        let lit = |t: f32| {
+            let fall = (self.quay_at(t) - self.surface_at(t)).max(0.1);
+            self.half + BANK * 1.2 / fall
+        };
+        for e in [-1.0f32, 1.0] {
+            let at = |t: f32, a: f32, lift: f32| {
+                let p = self.point(t, e * a);
+                let h = self.heading(t);
+                let k = (self.quay_at(t) - self.surface_at(t)) / BANK;
+                let n = Vec3::new(h.y * e * k, 1.0, -h.x * e * k).normalize();
+                (Vec3::new(p.x, self.bank(t, a) + lift, p.y), n)
+            };
+            let mut strip = |off: [[f32; 2]; 2], lift: f32, c: Vec4| {
+                let ids = [0, 1].map(|i| {
+                    [0, 1].map(|j| {
+                        let (p, n) = at(ts[i], off[i][j], lift);
+                        mesh.vert(p, n, c)
+                    })
+                });
+                let [[a, b], [d, c]] = ids;
+                // (Outward's left on the one bank and right on the other.)
+                if e > 0.0 {
+                    mesh.indices.extend([a, c, b, a, d, c]);
+                } else {
+                    mesh.indices.extend([a, b, c, a, c, d]);
+                }
+            };
+            let dark = |c: Vec3| c.extend(Material::Vhaal.id());
+            strip([[self.half - 1.0, crest - 0.6]; 2], LINING, dark(glass));
+            strip(
+                [[crest - 0.6, crest + 0.8]; 2],
+                LINING + 0.02,
+                dark(glass * 1.8),
+            );
+            strip(
+                ts.map(|t| [lit(t), lit(t) + 0.45]),
+                LINING + 0.05,
+                (plasma * 0.9).extend(Material::Glow.id()),
+            );
+        }
+    }
+
+    /// Its banks' lining, its lamps and its bridges.
     pub fn build(&self, map: &mut Map, size: f32) {
         let glass = Vec3::new(0.05, 0.065, 0.11);
         let plasma = Vec3::new(1.0, 0.16, 0.52);
@@ -328,6 +391,7 @@ impl Channel {
             map.oboxes.len() - 1
         };
         let mut loose = Vec::new();
+        let mut lining = MeshData::default();
         let mut ramps: Vec<(usize, f32)> = Vec::new();
         let mut lamps = Vec::new();
         let inside = |p: Vec2| p.min_element() > -10.0 && p.max_element() < size + 10.0;
@@ -341,64 +405,14 @@ impl Channel {
             let h = self.heading(t);
             let yaw = h.x.atan2(h.y);
             let (q, s) = (self.quay_at(t), self.surface_at(t));
+            self.line(&mut lining, k, (glass, plasma));
             let spanned = self.bridges.iter().any(|b| (b.t - t).abs() < b.half + 2.0);
             for e in [-1.0f32, 1.0] {
-                // In slices, each as long as its own side of a bend.
-                let slice = WALL / 3.0;
-                let chord = |off: f32| {
-                    let (a, b) = (
-                        self.point(t - STEP * 0.5, e * off),
-                        self.point(t + STEP * 0.5, e * off),
-                    );
-                    a.distance(b) * 0.5
-                };
-                for i in 0..3 {
-                    let (near, far) = (
-                        self.half + slice * i as f32,
-                        self.half + slice * (i + 1) as f32,
-                    );
-                    let long = chord(near).max(chord(far)) + 0.1;
-                    let wall = self.point(t, e * (near + far) * 0.5);
-                    put(
-                        wall,
-                        yaw,
-                        Vec2::new(slice * 0.5, long),
-                        (
-                            s - BED - 1.0,
-                            q + 0.02 + 0.006 * (k % 3) as f32 + 0.002 * i as f32,
-                        ),
-                        glass,
-                        Material::Vhaal,
-                    );
-                }
-                let long = chord(self.half) + 0.12;
                 if spanned {
                     continue;
                 }
-                // The lip: too low to stop a shove.
-                let lip = self.point(t, e * (self.half + 0.5));
-                let i = put(
-                    lip,
-                    yaw,
-                    Vec2::new(0.45, long),
-                    (q - 0.3, q + 0.4),
-                    glass * 1.8,
-                    Material::Vhaal,
-                );
-                map_solid(&mut loose, i, false);
-                // Its light, along the wall's foot.
-                let foot = self.point(t, e * (self.half - 0.02));
-                let i = put(
-                    foot,
-                    yaw,
-                    Vec2::new(0.06, long),
-                    (s + 1.5, s + 1.75),
-                    plasma * 0.9,
-                    Material::Glow,
-                );
-                map_solid(&mut loose, i, false);
                 if k % 5 == 0 {
-                    let post = self.point(t, e * (self.half + 0.8));
+                    let post = self.point(t, e * (self.half + BANK + 0.6));
                     put(
                         post,
                         yaw,
@@ -419,7 +433,7 @@ impl Channel {
                 }
             }
             if inside(mid) && k % 5 == 2 {
-                // Down in it: it lights its walls and what's over it from
+                // Down in it: it lights its banks and what's over it from
                 // below.
                 lamps.push(Vec3::new(mid.x, s + 1.2, mid.y));
             }
@@ -430,7 +444,7 @@ impl Channel {
             let across = Vec2::new(-h.y, h.x);
             let yaw = across.x.atan2(across.y);
             let (top, q) = (self.deck(b), self.quay_at(b.t));
-            let span = self.half + WALL + 0.3;
+            let span = self.half + BANK + 0.3;
             let mid = self.point(b.t, 0.0);
             let i = put(
                 mid,
@@ -441,16 +455,16 @@ impl Channel {
                 Material::Concrete,
             );
             ramps.push((i, 0.0));
-            // Its ribs, deep at the walls and thin in the middle: an arch.
+            // Its ribs, deep at the banks and thin in the middle: an arch.
             let n = 30;
             for k in 0..n {
                 let u = (k as f32 + 0.5) / n as f32 * 2.0 - 1.0;
                 let deep = 0.25 + 2.9 * u * u;
                 for x in [-b.half + 0.5, 0.0, b.half - 0.5] {
                     let i = put(
-                        mid + across * u * self.half + h * x,
+                        mid + across * u * span + h * x,
                         yaw,
-                        Vec2::new(0.35, self.half / n as f32 + 0.02),
+                        Vec2::new(0.35, span / n as f32 + 0.02),
                         (top - DECK - deep, top - DECK + 0.05),
                         glass * 1.5,
                         Material::Vhaal,
@@ -510,6 +524,11 @@ impl Channel {
             map.oboxes[i].ramp = true;
             map.oboxes[i].tilt = tilt;
         }
+        let base = map.sculpted.verts.len() as u32;
+        map.sculpted.verts.extend(lining.verts);
+        map.sculpted
+            .indices
+            .extend(lining.indices.iter().map(|i| i + base));
         for at in lamps {
             map.sound(crate::map::Ambient::River, at);
         }

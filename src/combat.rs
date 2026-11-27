@@ -4089,6 +4089,7 @@ mod tests {
         map.rivers = std::sync::Arc::new(vec![crate::map::river::River {
             points: vec![Vec3::new(20.0, 2.0, 100.0), Vec3::new(180.0, 2.0, 100.0)],
             half: 12.0,
+            bank: 0.0,
         }]);
         let mut m = Match::new(map, 0, 1, 3);
         m.start();

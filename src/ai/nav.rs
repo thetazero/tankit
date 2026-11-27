@@ -52,9 +52,10 @@ const TANK_HEIGHT: f32 = 3.0;
 const DROP_MARGIN: f32 = 3.0;
 /// What counts as a drop there, m.
 const DROP: f32 = 2.0;
-/// How far past a plasma river's edge its channel's bed runs, m (inside its
-/// walls).
-const RIVER_MARGIN: f32 = 2.5;
+/// How far past a plasma river's edge it's still drawn, m.
+const RIVER_MARGIN: f32 = 0.6;
+/// How far back from the top of its banks tracked hulls keep, m.
+const BANK_MARGIN: f32 = 1.0;
 /// Floors further than this from a height aren't "at" it, m.
 const LEVEL_TOLERANCE: f32 = 2.5;
 
@@ -236,12 +237,16 @@ impl NavGrid {
                 }
             }
         }
-        // A plasma river's bed, and the slips down to it (its bridges are
-        // slabs over it).
+        // A plasma river's bed and its banks, which a tracked hull would slide
+        // down (its bridges are slabs over them).
         if !hover && !map.rivers.is_empty() {
             for i in 0..n * n {
                 let c = nav.center(i);
-                let Some(y) = map.rivers.iter().find_map(|r| r.surface(c, RIVER_MARGIN)) else {
+                let Some(y) = map
+                    .rivers
+                    .iter()
+                    .find_map(|r| r.surface(c, r.bank + BANK_MARGIN))
+                else {
                     continue;
                 };
                 let ground = nav.ground(c) + 0.1;

@@ -16,6 +16,8 @@ pub struct River {
     pub points: Vec<Vec3>,
     /// Half its width.
     pub half: f32,
+    /// How far past its edge its banks slope up to the land, m.
+    pub bank: f32,
 }
 
 impl River {
@@ -158,6 +160,7 @@ mod tests {
         let r = River {
             points: vec![Vec3::new(0.0, 1.0, 0.0), Vec3::new(100.0, 3.0, 0.0)],
             half: 8.0,
+            bank: 0.0,
         };
         assert_eq!(r.surface(Vec2::new(50.0, 5.0), 0.0), Some(2.0));
         assert_eq!(r.surface(Vec2::new(50.0, 9.0), 0.0), None);
@@ -174,6 +177,7 @@ mod tests {
                 Vec3::new(100.0, 4.0, 100.0),
             ],
             half: 8.0,
+            bank: 0.0,
         };
         let into = r
             .entry(Vec3::new(50.0, 12.0, -20.0), Vec3::new(50.0, -8.0, 20.0))

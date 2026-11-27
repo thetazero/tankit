@@ -176,7 +176,11 @@ fn land(map: &Map, sk: &Skeleton, cells: usize) -> Vec<Poly> {
                 |di: usize, dj: usize| h[(j + dj).min(cells - 1) * cells + (i + di).min(cells - 1)];
             let slope = (next(1, 0) - g + next(0, 1) - g) / cell;
             let v = 0.08 + 0.16 * (g - lo) / span + (slope * 0.06).clamp(-0.06, 0.06);
-            let wet = sk.land.channel.as_ref().is_some_and(|c| c.wet(p, -2.0));
+            let wet = sk
+                .land
+                .channel
+                .as_ref()
+                .is_some_and(|c| c.local(p).1.abs() < c.half);
             let color = if wet {
                 [0.5, 0.12, 0.42, 0.9]
             } else {

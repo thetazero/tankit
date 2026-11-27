@@ -1307,7 +1307,7 @@ fn river_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let inside = |p: Vec2, m: f32| p.min_element() > m && p.max_element() < size - m;
     let half = 5.2;
     for e in [-1.0f32, 1.0] {
-        let off = e * (c.half + super::channel::WALL + 1.2 + half);
+        let off = e * (c.half + super::channel::BANK + 1.2 + half);
         let pts: Vec<Vec2> = (-60..=60).map(|k| c.point(k as f32 * 12.0, off)).collect();
         for w in pts.windows(2) {
             let m = (w[0] + w[1]) * 0.5;
@@ -1331,7 +1331,7 @@ fn river_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
     let mut t = -size;
     while t < size {
         t += 10.0;
-        let ends = [-1.0f32, 1.0].map(|e| c.point(t, e * (c.half + 22.0)));
+        let ends = [-1.0f32, 1.0].map(|e| c.point(t, e * (c.half + super::channel::BANK + 16.0)));
         let gap = rng.range(56.0, 68.0);
         if t.abs() < c.play - 12.0
             && ends.iter().all(|&p| inside(p, 22.0))
