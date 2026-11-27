@@ -7,10 +7,12 @@
 //! - great buildings (`great`): the Sun, the Lens, the Weir.
 //! - lots: shard houses; crescents, a curved wall round a court tanks drive
 //!   into; houses floating on crystal legs; heaps of broken stone.
+//! - each side's staging court (`court`).
 //! - medium structures (`civics`): kiln courts, lens halls, terraces.
 //! - their power's the plasma river (`channel`), and every lit slit's on it.
 
 mod civics;
+mod court;
 mod great;
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
@@ -137,8 +139,8 @@ impl Style for Ithessar {
         Vec::new()
     }
 
-    fn base(&self, map: &mut Map, sk: &Skeleton, side: usize, b: &Base, rng: &mut Rng) {
-        map.staging_court(rng, side, b, sk.center(), STONE * 1.7);
+    fn base(&self, map: &mut Map, _sk: &Skeleton, side: usize, b: &Base, rng: &mut Rng) {
+        court::build(map, rng, side, b);
     }
 
     fn edge(&self, map: &mut Map, _sk: &Skeleton, e: &Edge, rng: &mut Rng) {
