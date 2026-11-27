@@ -24,8 +24,13 @@ pub enum Setting {
 }
 
 /// Sets `map`, the city laid out as `sk` (its roads tinted `road`), in the
-/// desert.
-pub fn desert(map: &mut Map, sk: &Skeleton, seed: u64, road: Vec3) {
+/// desert: the sand it banks up, and its rock's color.
+pub(in crate::map) fn desert(
+    map: &mut Map,
+    sk: &Skeleton,
+    seed: u64,
+    road: Vec3,
+) -> (Vec<Drift>, Vec3) {
     let mut rng = Rng::new(seed ^ 0xDE5E_47ED);
     let pal = &desert::PALETTES[rng.index(desert::PALETTES.len())];
     let pale = rng.range(0.74, 0.86);
@@ -137,4 +142,5 @@ pub fn desert(map: &mut Map, sk: &Skeleton, seed: u64, road: Vec3) {
             ..rocks::block(p, rng.range(0.0, 6.28), half, g - 8.0, g + h, color)
         });
     }
+    (drifts, pal.stone)
 }
