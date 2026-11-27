@@ -14,7 +14,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::audio::{self, Audio};
 use crate::bay::{self, BayArt};
@@ -249,6 +249,8 @@ struct App {
     held: HashMap<PhysicalKey, KeyCode>,
     /// Mouse pointer in window pixels, while it's over the window.
     pointer: Option<glam::Vec2>,
+    /// The cursor's a hand, over something clickable.
+    hand: bool,
     /// Wheel turned on the menu and not yet scrolled, in notches.
     wheel: f32,
     /// What can be clicked, as of the last frame drawn.
@@ -360,6 +362,7 @@ pub fn run(launch: Launch) -> anyhow::Result<()> {
         keys: HashSet::new(),
         held: HashMap::new(),
         pointer: None,
+        hand: false,
         wheel: 0.0,
         hits: Hits::new(),
         last: Instant::now(),
@@ -1342,23 +1345,12 @@ impl App {
     /// The pointer moved: whatever it's over takes the selection, as W/S would.
     fn on_hover(&mut self, at: glam::Vec2) {
         let hit = self.hits.at(at).map(|(h, _)| h);
-        self.garage.hover(match hit {
-            Some(UiHit::Garage(h)) => Some(h),
-            _ => None,
-        });
         let hud = match hit {
             Some(UiHit::Hud(h)) => Some(h),
             _ => None,
         };
         let lit = hud.is_some() && hud != self.hud.hover;
         self.hud.hover = hud;
-        // Off the BACK button (onto anything else, or nothing): unlit.
-        if !matches!(hit, Some(UiHit::Menu(_))) {
-            self.menu.unhover();
-        }
-        if !matches!(hit, Some(UiHit::Pause(_))) {
-            self.pause.unhover();
-        }
         let Some(hit) = hit else {
             return;
         };
@@ -1371,6 +1363,40 @@ impl App {
         };
         if moved {
             self.audio.ui(audio::Ui::Move);
+        }
+    }
+
+    /// Show what the pointer's on, if anything clickable: called every frame,
+    /// as a screen may change under a still pointer.
+    fn show_hover(&mut self) {
+        let hit = self.pointer.and_then(|p| self.hits.at(p)).map(|(h, _)| h);
+        self.garage.hover(match hit {
+            Some(UiHit::Garage(h)) => Some(h),
+            _ => None,
+        });
+        self.hud.hover = match hit {
+            Some(UiHit::Hud(h)) => Some(h),
+            _ => None,
+        };
+        self.menu.point(match hit {
+            Some(UiHit::Menu(h)) => Some(h),
+            _ => None,
+        });
+        self.pause.point(match hit {
+            Some(UiHit::Pause(h)) => Some(h),
+            _ => None,
+        });
+        // A star's only to read.
+        let hand = hit.is_some_and(|h| !matches!(h, UiHit::Menu(menu::Hit::Star(_))));
+        if hand != self.hand {
+            self.hand = hand;
+            if let Some(w) = &self.window {
+                w.set_cursor(if hand {
+                    CursorIcon::Pointer
+                } else {
+                    CursorIcon::Default
+                });
+            }
         }
     }
 
@@ -1469,6 +1495,7 @@ impl App {
     }
 
     fn frame(&mut self) {
+        self.show_hover();
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32();
         self.last = now;

@@ -285,14 +285,11 @@ pub struct Menu {
     previewing: u32,
     setting: usize,
     controls: Controls,
-    /// The pointer is on the BACK button.
-    back_lit: bool,
-    /// The mouse is over the page's way on: CONTINUE, DEPLOY or SIGN ON.
-    go_lit: bool,
+    /// What the pointer's on.
+    over: Option<Hit>,
     /// Your stretch of the war, behind the main menu (the app keeps it up
-    /// to date), and the star the pointer's on.
+    /// to date).
     cluster: Option<Cluster>,
-    star: Option<usize>,
 }
 
 impl Menu {
@@ -313,10 +310,8 @@ impl Menu {
             previewing: 0,
             setting: 0,
             controls: Controls::default(),
-            back_lit: false,
-            go_lit: false,
+            over: None,
             cluster: None,
-            star: None,
         }
     }
 
@@ -641,19 +636,10 @@ impl Menu {
 
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
-        if hit == Hit::Back {
-            self.go_lit = false;
-            return !std::mem::replace(&mut self.back_lit, true);
+        let entered = self.over.replace(hit) != Some(hit);
+        if matches!(hit, Hit::Back | Hit::Continue | Hit::Deploy) {
+            return entered;
         }
-        self.back_lit = false;
-        if matches!(hit, Hit::Continue | Hit::Deploy) {
-            return !std::mem::replace(&mut self.go_lit, true);
-        }
-        self.go_lit = false;
-        self.star = match hit {
-            Hit::Star(i) => Some(i),
-            _ => None,
-        };
         if matches!(self.screen, Screen::Settings | Screen::Controls) {
             return self.hover_settings(hit);
         }
@@ -703,7 +689,7 @@ impl Menu {
     /// A click on `hit`, `at` (0..1) across it.
     pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<Action> {
         if hit == Hit::Back {
-            self.back_lit = false;
+            self.over = None;
             self.controls.capturing = false;
             return (Nav::Back, self.input(Nav::Back));
         }
@@ -751,11 +737,18 @@ impl Menu {
         (nav, self.input(nav))
     }
 
-    /// The mouse left the BACK button (or CONTINUE).
-    pub fn unhover(&mut self) {
-        self.back_lit = false;
-        self.go_lit = false;
-        self.star = None;
+    /// What the pointer's on as drawn, selecting nothing.
+    pub fn point(&mut self, over: Option<Hit>) {
+        self.over = over;
+    }
+
+    /// The pointer's on the page's way on: CONTINUE, DEPLOY or SIGN ON.
+    fn go_lit(&self) -> bool {
+        matches!(self.over, Some(Hit::Continue | Hit::Deploy))
+    }
+
+    fn back_lit(&self) -> bool {
+        self.over == Some(Hit::Back)
     }
 
     /// The theater whose system the screen shows in 3D instead of a map
@@ -811,11 +804,11 @@ impl Menu {
         if matches!(self.screen, Screen::Ships | Screen::Contract) {
             if self.screen == Screen::Ships {
                 self.board
-                    .draw(&mut p, &mut hits, self.back_lit, self.clock, w, h);
+                    .draw(&mut p, &mut hits, self.over, self.clock, w, h);
             } else {
                 let o = self.board.offer(self.previewing);
                 let mine = self.board.mine.as_ref();
-                let lit = (self.back_lit, self.go_lit);
+                let lit = (self.back_lit(), self.go_lit());
                 work_view::draw_deal(&mut p, &mut hits, o, mine, lit, w, h);
             }
             return Layer {
@@ -845,7 +838,10 @@ impl Menu {
     /// The cluster the main menu shows.
     pub fn set_cluster(&mut self, c: Cluster) {
         self.cluster = Some(c);
-        self.star = None;
+        // The stars are other ones now.
+        if matches!(self.over, Some(Hit::Star(_))) {
+            self.over = None;
+        }
     }
 
     /// Whether the main menu's showing a cluster other than as of `tick`, aboard `crew`.
@@ -868,7 +864,11 @@ impl Menu {
     /// The main menu: who you are and what you can do, on a panel over the
     /// stars.
     fn draw_main(&self, p: &mut Painter, hits: &mut Hits<Hit>, profile: &Profile, w: f32, h: f32) {
-        cluster_view::draw(p, hits, self.cluster.as_ref(), self.star, self.clock, w, h);
+        let star = match self.over {
+            Some(Hit::Star(i)) => Some(i),
+            _ => None,
+        };
+        cluster_view::draw(p, hits, self.cluster.as_ref(), star, self.clock, w, h);
         design::panel(p, h);
         let x = design::MARGIN;
 
@@ -900,7 +900,13 @@ impl Menu {
                 design::action_off(p, at, name);
                 continue;
             }
-            let (min, size) = design::action(p, at, name, i == self.cursor);
+            let (min, size) = design::action(
+                p,
+                at,
+                name,
+                i == self.cursor,
+                self.over == Some(Hit::Row(i)),
+            );
             hits.add(p, min, size, Hit::Row(i));
         }
 
@@ -908,7 +914,13 @@ impl Menu {
         let mut fx = x;
         for (i, name) in MAIN_ITEMS.iter().enumerate().skip(MAIN_ACTIONS) {
             let at = Vec2::new(fx, h - design::MARGIN - design::SMALL.size);
-            let (min, size) = design::link(p, at, name, i == self.cursor);
+            let (min, size) = design::link(
+                p,
+                at,
+                name,
+                i == self.cursor,
+                self.over == Some(Hit::Row(i)),
+            );
             hits.add(p, min, size, Hit::Row(i));
             fx += size.x + design::UNIT * 2.0;
         }
@@ -927,13 +939,28 @@ impl Menu {
         let at = page(p, "Settings", 3, w, h);
         let setting = if on_keys { usize::MAX } else { self.setting };
         let set = &profile.settings;
-        settings_rows(p, hits, at[0], set, setting, PAGE_SETTINGS, Hit::Setting);
+        settings_rows(
+            p,
+            hits,
+            at[0],
+            set,
+            setting,
+            self.over,
+            PAGE_SETTINGS,
+            Hit::Setting,
+        );
         let mut keys = self.controls;
         if !on_keys {
             keys.row = usize::MAX;
         }
-        controls_page(p, hits, [at[1], at[2]], &set.binds, &keys);
-        back_button(p, hits, Vec2::new(at[0].x, back_y(h)), WIDE, self.back_lit);
+        controls_page(p, hits, [at[1], at[2]], &set.binds, &keys, self.over);
+        back_button(
+            p,
+            hits,
+            Vec2::new(at[0].x, back_y(h)),
+            WIDE,
+            self.back_lit(),
+        );
     }
 
     /// The contract page: the system with its marks, and the panel over it.
@@ -941,13 +968,17 @@ impl Menu {
         use crate::theater_view;
         // The contract that ended, over the theater it was in (#414).
         if let Some((t, e)) = &self.card {
-            theater_view::summary(p, hits, t, e, self.go_lit, w, h);
+            theater_view::summary(p, hits, t, e, self.go_lit(), w, h);
             return;
         }
         let theater = self.theater.as_ref().filter(|t| !t.contested.is_empty());
         if let Some(t) = theater {
             let moving = self.transfer.as_ref();
-            theater_view::draw(p, hits, t, moving, self.site, w, h);
+            let over = match self.over {
+                Some(Hit::Row(k)) => Some(k),
+                _ => None,
+            };
+            theater_view::draw(p, hits, t, moving, self.site, over, w, h);
         } else if self.system().is_none() && self.cluster.is_none() {
             // The galaxy's still loading.
             p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 1.0]);
@@ -975,7 +1006,7 @@ impl Menu {
             }
             (None, _) => {}
         }
-        back_at_foot(p, hits, self.back_lit, h);
+        back_at_foot(p, hits, self.back_lit(), h);
     }
 
     /// The contract page's panel: the system, and (while there's a pick to
@@ -1025,11 +1056,14 @@ impl Menu {
                 _ => s.short_name().to_string(),
             };
             let on = k == self.site;
-            let style = BODY.colored(if on { design::AMBER } else { TEXT });
+            let over = self.over == Some(Hit::Row(k));
+            let color = if on { design::AMBER } else { TEXT };
+            let style = BODY.colored(design::hovered(color, over));
             p.text(Vec2::new(x, y), &name, &style, Align::Left);
             let mode = MISSIONS[s.mission].contract.name();
             let at = Vec2::new(right, y + (BODY.size - SMALL.size) * 0.5);
-            p.text(at, mode, &SMALL.colored(TEXT_2), Align::Right);
+            let style = SMALL.colored(design::hovered(TEXT_2, over));
+            p.text(at, mode, &style, Align::Right);
             let pad = (UNIT * 3.5 - BODY.size) * 0.5;
             hits.add(
                 p,
@@ -1064,7 +1098,7 @@ impl Menu {
         line(p, "Enemy gear", &gear, TEXT);
         line(p, "Pay", &format!("{wage} cr + {kill} a kill"), BLUE);
         line(p, "Your hulls", &own.to_string(), design::AMBER);
-        design::button(p, deploy, design::COLUMN, "Deploy", true, self.go_lit);
+        design::button(p, deploy, design::COLUMN, "Deploy", true, self.go_lit());
         let size = Vec2::new(design::COLUMN, design::BUTTON);
         hits.add(p, deploy, size, Hit::Deploy);
     }
@@ -1102,8 +1136,8 @@ pub struct Pause {
     settings: Option<usize>,
     /// The controls screen is open in the box (over the settings).
     controls: Option<Controls>,
-    /// The pointer is on the BACK button.
-    back_lit: bool,
+    /// What the pointer's on.
+    over: Option<Hit>,
 }
 
 impl Pause {
@@ -1112,7 +1146,7 @@ impl Pause {
             cursor: 0,
             settings: None,
             controls: None,
-            back_lit: false,
+            over: None,
         }
     }
 
@@ -1161,10 +1195,10 @@ impl Pause {
 
     /// The pointer moved onto `hit`: select that row. True if the selection changed.
     pub fn hover(&mut self, hit: Hit) -> bool {
+        let entered = self.over.replace(hit) != Some(hit);
         if hit == Hit::Back {
-            return !std::mem::replace(&mut self.back_lit, true);
+            return entered;
         }
-        self.back_lit = false;
         if let Some(c) = &mut self.controls {
             return c.hover(hit);
         }
@@ -1188,7 +1222,7 @@ impl Pause {
     /// A click on `hit`, `at` (0..1) across it.
     pub fn click(&mut self, hit: Hit, at: Vec2, settings: &Settings) -> Click<PauseAction> {
         if hit == Hit::Back {
-            self.back_lit = false;
+            self.over = None;
             return (Nav::Back, self.input(Nav::Back));
         }
         if let Some(c) = &mut self.controls {
@@ -1217,9 +1251,13 @@ impl Pause {
         (nav, self.input(nav))
     }
 
-    /// The pointer left the BACK button.
-    pub fn unhover(&mut self) {
-        self.back_lit = false;
+    /// What the pointer's on as drawn, selecting nothing.
+    pub fn point(&mut self, over: Option<Hit>) {
+        self.over = over;
+    }
+
+    fn back_lit(&self) -> bool {
+        self.over == Some(Hit::Back)
     }
 
     /// Dims the battle and draws the box.
@@ -1237,9 +1275,10 @@ impl Pause {
                 [at[0], at[1]],
                 &profile.settings.binds,
                 c,
+                self.over,
             );
             let foot = Vec2::new(at[0].x, back_y(h));
-            back_button(&mut p, &mut hits, foot, WIDE, self.back_lit);
+            back_button(&mut p, &mut hits, foot, WIDE, self.back_lit());
             return Layer {
                 verts: p.finish(),
                 hits,
@@ -1266,7 +1305,16 @@ impl Pause {
         let title = match self.settings {
             Some(i) => {
                 let set = &profile.settings;
-                settings_rows(&mut p, &mut hits, list, set, i, SETTING_ROWS, Hit::Row);
+                settings_rows(
+                    &mut p,
+                    &mut hits,
+                    list,
+                    set,
+                    i,
+                    self.over,
+                    SETTING_ROWS,
+                    Hit::Row,
+                );
                 "Settings"
             }
             None => {
@@ -1276,7 +1324,13 @@ impl Pause {
                         y += LEAVE_GAP;
                     }
                     let on = i == self.cursor;
-                    let (hit, size) = design::action(&mut p, Vec2::new(at.x, y), name, on);
+                    let (hit, size) = design::action(
+                        &mut p,
+                        Vec2::new(at.x, y),
+                        name,
+                        on,
+                        self.over == Some(Hit::Row(i)),
+                    );
                     hits.add(&p, hit, size, Hit::Row(i));
                     if i == PAUSE_STAYS {
                         let at = Vec2::new(at.x, y + UNIT * 3.25);
@@ -1296,7 +1350,7 @@ impl Pause {
         };
         p.text(at, title, &design::HEAD.colored(color), Align::Left);
         if !listing {
-            back_button(&mut p, &mut hits, foot, WIDE, self.back_lit);
+            back_button(&mut p, &mut hits, foot, WIDE, self.back_lit());
         }
         Layer {
             verts: p.finish(),
@@ -1315,20 +1369,22 @@ const LEAVE_GAP: f32 = UNIT * 2.0;
 /// A setting's row.
 const SETTING_ROW: f32 = UNIT * 7.0;
 
-/// A row's name, amber if it's selected.
-fn row_name(p: &mut Painter, at: Vec2, name: &str, on: bool) {
-    let color = if on { design::AMBER } else { design::TEXT };
+/// A row's name, amber if it's selected, darker under the pointer.
+fn row_name(p: &mut Painter, at: Vec2, name: &str, on: bool, over: bool) {
+    let color = design::hovered(if on { design::AMBER } else { design::TEXT }, over);
     p.text(at, name, &design::BODY.colored(color), Align::Left);
 }
 
 /// The first `n` settings: a row each with its value on the right, and what
-/// it does; clicked as `hit`.
+/// it does; clicked as `hit`, the pointer `over` one.
+#[allow(clippy::too_many_arguments)]
 fn settings_rows(
     p: &mut Painter,
     hits: &mut Hits<Hit>,
     at: Vec2,
     settings: &Settings,
     selected: usize,
+    over: Option<Hit>,
     n: usize,
     hit: fn(usize) -> Hit,
 ) {
@@ -1345,9 +1401,10 @@ fn settings_rows(
         hits.add(p, min, size, hit(i));
         let at = Vec2::new(at.x, y);
         let on = i == selected;
+        let over = over == Some(hit(i)) || (i == VOLUME_ROW && over == Some(Hit::Volume));
         match i {
             VOLUME_ROW => {
-                row_name(p, at, "Sound volume", on);
+                row_name(p, at, "Sound volume", on, over);
                 let pct = (settings.volume() * 100.0).round() as u32;
                 let value = match pct {
                     0 => "Off".to_string(),
@@ -1356,7 +1413,7 @@ fn settings_rows(
                 p.text(
                     Vec2::new(right, y),
                     &value,
-                    &BODY.colored(TEXT),
+                    &BODY.colored(design::hovered(TEXT, over)),
                     Align::Right,
                 );
                 let bar = Vec2::new(at.x, y + UNIT * 3.0);
@@ -1366,13 +1423,13 @@ fn settings_rows(
                 hits.add(p, min, Vec2::new(WIDE, UNIT * 2.0), Hit::Volume);
             }
             CONTROLS_ROW => {
-                row_name(p, at, "Controls", on);
+                row_name(p, at, "Controls", on, over);
                 let changed = settings.binds != Binds::default();
                 note(p, y, if changed { "Changed" } else { "Default" });
             }
             _ => {
                 let (name, what, flag) = &SETTINGS[i];
-                row_name(p, at, name, on);
+                row_name(p, at, name, on, over);
                 note(p, y, what);
                 let mut copy = *settings;
                 let (text, color) = match *flag(&mut copy) {
@@ -1382,7 +1439,7 @@ fn settings_rows(
                 p.text(
                     Vec2::new(right, y),
                     text,
-                    &BODY.colored(color),
+                    &BODY.colored(design::hovered(color, over)),
                     Align::Right,
                 );
             }
@@ -1430,6 +1487,7 @@ fn controls_page(
     at: [Vec2; 2],
     binds: &Binds,
     c: &Controls,
+    over: Option<Hit>,
 ) {
     use design::{AMBER, SMALL, TEXT, TEXT_2};
     for (at, name) in at.into_iter().zip(["In battle", "In the garage"]) {
@@ -1450,7 +1508,9 @@ fn controls_page(
             Hit::Row(i),
         );
         let name = Vec2::new(at.x, mid - SMALL.size * 0.5);
-        let style = SMALL.colored(if on { AMBER } else { TEXT });
+        let in_row = matches!(over, Some(Hit::Row(k) | Hit::Bind(k, _)) if k == i);
+        let color = if on { AMBER } else { TEXT };
+        let style = SMALL.colored(design::hovered(color, in_row));
         p.text(name, action.name(), &style, Align::Left);
         for (slot, key) in binds.keys(action).into_iter().enumerate() {
             let left = (SLOTS - slot) as f32 * (SLOT.x + SLOT_GAP) - SLOT_GAP;
@@ -1468,6 +1528,7 @@ fn controls_page(
                 Some(name) => (name, if picked { AMBER } else { TEXT }),
                 None => continue,
             };
+            let color = design::hovered(color, over == Some(Hit::Bind(i, slot)) && !waiting);
             let at = Vec2::new(min.x + SLOT.x * 0.5, mid - SMALL.size * 0.5);
             p.text(at, text, &SMALL.colored(color), Align::Center);
         }
@@ -1478,10 +1539,12 @@ fn controls_page(
     let changed = *binds != Binds::default();
     let on = c.row == RESET_ROW;
     let text = if changed { "Reset" } else { "All default" };
-    design::button(p, min, WIDE, text, changed, on);
+    let lit = over == Some(Hit::Row(RESET_ROW));
+    design::button(p, min, WIDE, text, changed, lit);
     let size = Vec2::new(WIDE, design::BUTTON);
-    if on && !changed {
-        p.rect_outline(min, size, 1.0, TEXT_2);
+    if on {
+        let edge = if changed { AMBER } else { TEXT_2 };
+        p.rect_outline(min, size, 1.0, edge);
     }
     hits.add(p, min, size, Hit::Row(RESET_ROW));
 }
@@ -1781,6 +1844,44 @@ mod tests {
         assert!(p.controls.is_none() && p.settings.is_some());
         assert_eq!(click(&mut p), (Nav::Back, None));
         assert!(p.settings.is_none());
+    }
+
+    /// Whatever text is clickable on a page, pointing at it darkens some.
+    #[test]
+    fn clickable_text_darkens_under_the_pointer() {
+        let profile = Profile::in_memory();
+        let mut m = Menu::new();
+        m.set_theater(theater(Faction::Imperium));
+        m.board
+            .set(vec![crate::work_view::tests::offer(1, 3, 0)], None);
+        let dark = |m: &Menu| {
+            let verts = m.draw(&profile, 1600.0, 900.0, 1.0).verts;
+            verts.iter().any(|v| v.color[..3] == design::HOVER[..3])
+        };
+        let fight = {
+            let t = m.theater().unwrap();
+            (0..t.contested.len()).find(|&k| t.sites[t.contested[k]].committed)
+        };
+        for (screen, hit) in [
+            (Screen::Main, Hit::Row(2)),
+            (Screen::Main, Hit::Row(4)),
+            (Screen::Missions, Hit::Row(fight.unwrap())),
+            (Screen::Missions, Hit::Back),
+            (Screen::Ships, Hit::Row(0)),
+            (Screen::Ships, Hit::Sort(0)),
+            (Screen::Ships, Hit::Filter(2 * crate::galaxy::SIDES)),
+            (Screen::Settings, Hit::Setting(0)),
+            (Screen::Settings, Hit::Volume),
+            (Screen::Controls, Hit::Bind(0, 0)),
+        ] {
+            m.screen = screen;
+            m.point(None);
+            assert!(!dark(&m), "{screen:?}");
+            let hits = m.draw(&profile, 1600.0, 900.0, 1.0).hits;
+            assert!(hits.center_of(hit).is_some(), "{screen:?} {hit:?}");
+            m.point(Some(hit));
+            assert!(dark(&m), "{screen:?} {hit:?}");
+        }
     }
 
     #[test]

@@ -24,3 +24,6 @@ opens into at a round's end) are made from it; the other screens aren't yet.
 ## Components
 
 Panel, bar, action (a menu's row), link, button.
+
+Clickable text turns a darker grey under the pointer (`hovered`), and the
+cursor a hand.

@@ -140,6 +140,7 @@ tankit [OPTIONS]
                           yours, e.g. 'pelekys'
   --scrap <part>          (with --screen results) the round's kills took apart a T2.5 wreck of this
                           part (repeatable), e.g. 'kataphrakt'
+  --pointer <x,y>         (with --screen menu|missions|companies|contract|settings) the pointer is here, px
   --site <n>              (with --screen missions|site) select the theater's nth contested site
   --transfer <jump|move|renew|warp>
                           (with --screen missions) the war goes on until your company moves onto its
@@ -256,6 +257,8 @@ pub struct Args {
     straight: bool,
     /// Shots: the chase camera's tilt.
     tilt: f32,
+    /// Menu shots: where the pointer is, px.
+    pointer: Option<(f32, f32)>,
     /// Fixed screenshot camera: position and target.
     cam: Option<(Vec3, Vec3)>,
     shot: Option<ShotArgs>,
@@ -714,6 +717,7 @@ fn parse_args() -> Result<Args> {
     let (mut map_kind, mut spawn, mut straight) = (MapKind::Reservoir, 0usize, false);
     let mut tilt = scene::TILT_HOME;
     let mut showroom = false;
+    let mut pointer: Option<(f32, f32)> = None;
     let mut cam: Option<(Vec3, Vec3)> = None;
     let mut team_size: Option<usize> = None;
     let mut contract = mission::Contract::Attrition;
@@ -926,6 +930,11 @@ fn parse_args() -> Result<Args> {
                     .context("--tilt needs a number")?
                     .parse::<f32>()?;
                 anyhow::ensure!((0.0..=1.0).contains(&tilt), "--tilt goes from 0 to 1");
+            }
+            "--pointer" => {
+                let v = args.next().context("--pointer needs x,y")?;
+                let (x, y) = v.split_once(',').context("--pointer needs x,y")?;
+                pointer = Some((x.parse()?, y.parse()?));
             }
             "--cam" => {
                 let v: Vec<f32> = args
@@ -1201,6 +1210,7 @@ fn parse_args() -> Result<Args> {
         defend,
         own_hulls,
         tilt,
+        pointer,
         cam,
         wav: wav.map(|out| (out, time.unwrap_or(12.0))),
         bench: bench.map(|s| (time.unwrap_or(3.0), s, width, height)),
@@ -1861,7 +1871,15 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             };
             hud::tick_summary(t, state, w, h).verts
         }
-        None => menu.draw(&profile, w, h, 1.0).verts,
+        None => {
+            if let Some((x, y)) = args.pointer {
+                let hits = menu.draw(&profile, w, h, 1.0).hits;
+                if let Some((hit, _)) = hits.at(glam::Vec2::new(x, y)) {
+                    menu.hover(hit);
+                }
+            }
+            menu.draw(&profile, w, h, 1.0).verts
+        }
     };
     if profile.settings.debug {
         frame.ui.extend(hud::fps_counter(0.0, w, h));

@@ -14,6 +14,8 @@ pub const GROUND: Rgba = [0.011, 0.0115, 0.0125, 1.0];
 /// What you read, and what you read second.
 pub const TEXT: Rgba = [0.70, 0.71, 0.73, 1.0];
 pub const TEXT_2: Rgba = [0.36, 0.365, 0.38, 1.0];
+/// Clickable text under the pointer.
+pub const HOVER: Rgba = [0.2, 0.203, 0.21, 1.0];
 /// Yours: what's selected, your progress, where you are.
 pub const AMBER: Rgba = [1.0, 0.5, 0.05, 1.0];
 /// Amber's complement: crystal, and nothing else.
@@ -55,6 +57,11 @@ impl TextStyle {
     }
 }
 
+/// Clickable text's color: darker grey under the pointer, whatever it was.
+pub fn hovered(color: Rgba, hover: bool) -> Rgba {
+    if hover { HOVER } else { color }
+}
+
 /// The left-hand panel, `h` tall. Text on it has no halo.
 pub fn panel(p: &mut Painter, h: f32) {
     p.set_halo(None);
@@ -68,11 +75,12 @@ pub fn bar(p: &mut Painter, at: Vec2, width: f32, frac: f32) {
     p.rect(at, Vec2::new(width * frac.clamp(0.0, 1.0), 2.0), AMBER);
 }
 
-/// A main action, its caps' top at `at`: amber when selected.
+/// A main action, its caps' top at `at`: amber when selected,
+/// darker under the pointer (`hover`).
 /// Returns its clickable rect (top left, size).
-pub fn action(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
+pub fn action(p: &mut Painter, at: Vec2, name: &str, on: bool, hover: bool) -> (Vec2, Vec2) {
     let pad = (ACTION - ACTION_TEXT.size) * 0.5;
-    let color = if on { AMBER } else { TEXT };
+    let color = hovered(if on { AMBER } else { TEXT }, hover);
     p.text(at, name, &ACTION_TEXT.colored(color), Align::Left);
     (
         at - Vec2::new(UNIT * 2.0, pad),
@@ -87,8 +95,8 @@ pub fn action_off(p: &mut Painter, at: Vec2, name: &str) {
 }
 
 /// A small action, off to the side. Returns its clickable rect.
-pub fn link(p: &mut Painter, at: Vec2, name: &str, on: bool) -> (Vec2, Vec2) {
-    let color = if on { AMBER } else { TEXT_2 };
+pub fn link(p: &mut Painter, at: Vec2, name: &str, on: bool, hover: bool) -> (Vec2, Vec2) {
+    let color = hovered(if on { AMBER } else { TEXT_2 }, hover);
     p.text(at, name, &SMALL.colored(color), Align::Left);
     (
         at - Vec2::splat(UNIT),
@@ -104,7 +112,7 @@ pub const BUTTON: f32 = UNIT * 5.0;
 pub fn button(p: &mut Painter, min: Vec2, width: f32, text: &str, on: bool, hover: bool) {
     let size = Vec2::new(width, BUTTON);
     let fill = match (on, hover) {
-        (true, true) => 0.06,
+        (true, true) => 0.03,
         (true, false) => 0.015,
         (false, _) => 0.008,
     };
@@ -112,7 +120,8 @@ pub fn button(p: &mut Painter, min: Vec2, width: f32, text: &str, on: bool, hove
     if on {
         p.rect_outline(min, size, 1.0, TEXT_2);
     }
-    let style = BODY.colored(if on { AMBER } else { TEXT_2 });
+    let color = if on { AMBER } else { TEXT_2 };
+    let style = BODY.colored(hovered(color, on && hover));
     let at = Vec2::new(min.x + width * 0.5, min.y + (BUTTON - style.size) * 0.5);
     p.text(at, text, &style, Align::Center);
 }

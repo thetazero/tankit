@@ -721,8 +721,9 @@ impl Garage {
             let min = Vec2::new(x + s as f32 * tw, TABS_TOP);
             let size = Vec2::new(tw, TAB_H);
             let active = s == self.section;
-            let lit = active || self.hover == Some(Hit::Tab(s));
-            let style = SMALL.colored(if lit { TEXT } else { TEXT_2 });
+            let color = if active { TEXT } else { TEXT_2 };
+            let over = self.hover == Some(Hit::Tab(s));
+            let style = SMALL.colored(design::hovered(color, over));
             let at = min + Vec2::Y * (TAB_H - style.size) * 0.5;
             p.text(at, name, &style, Align::Left);
             let rule = min + Vec2::Y * (TAB_H - 2.0);
@@ -808,11 +809,12 @@ impl Garage {
         }
         let x = min.x + THUMB.x + UNIT * 1.5;
         let right = min.x + GRID_W;
-        let style = SMALL.colored(match (equipped, owned) {
+        let color = match (equipped, owned) {
             (true, _) => AMBER,
             (_, true) => TEXT,
             _ => TEXT_2,
-        });
+        };
+        let style = SMALL.colored(design::hovered(color, hovered));
         p.text(Vec2::new(x, min.y + 2.0), part.name(), &style, Align::Left);
         let at = Vec2::new(x, min.y + UNIT * 2.25);
         tiers(p, at, part, profile, SMALL, Align::Left);
