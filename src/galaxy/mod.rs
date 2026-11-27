@@ -43,9 +43,9 @@
 //!    damaged generator nobody fights over is working again the next tick.
 //!    An attacker fighting for a site under an enemy's working shield fights
 //!    a seat short there (`Rules::seats`, #426): its fire is cut by one seat
-//!    in that many, the same seat a played battle closes. A planet's other
-//!    sites can't be attacked while its generators are up, so it goes for
-//!    them first, all of them together, to get out from under them. Only so many of a side's hulls fire a tick however big it
+//!    in that many, the same seat a played battle closes. Most sides go for
+//!    the generators first, all of them together, to get out from under
+//!    them; a smart realm picks what's worth fighting for. Only so many of a side's hulls fire a tick however big it
 //!    is (`Rules::frontage`), so a world holds out for many ticks.
 //!    Each firing hull needs a pilot (`Galaxy::firing`), and a pilot fights
 //!    one battle a tick: a side's are split between all it's in. Pilots cap fire,

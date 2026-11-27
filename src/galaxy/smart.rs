@@ -13,6 +13,10 @@
 //! best attack it has idle pilots and crystal for, looking further ahead
 //! than others do and sticking with the neighbor it's begun on.
 //!
+//! **Battles.** In a fight it picks the sites worth fighting for: all of them,
+//! shielded or not, with the pilots to fill the seats; else fewer, so its
+//! pilots aren't spread too thin.
+//!
 //! **Hiring.** Where its own pilots are no match it looks for mercs, and
 //! takes only a good deal it can pay for. With a company it pays in
 //! instalments, keeping its pilots' pay by it.
@@ -24,7 +28,7 @@
 
 use super::merc::Plan;
 use super::realm::{Arm, NONE, Realm};
-use super::{FTL_RANGE, Fleet, Galaxy, MIN_SEND, Rules, SIDES};
+use super::{FTL_RANGE, Fleet, Galaxy, MIN_SEND, Rules, SIDES, SiteKind};
 
 /// Share of its income a smart realm's payroll may take for good...
 const PAYROLL: f32 = 0.6;
@@ -356,5 +360,105 @@ impl Galaxy {
                 co.margin = (co.margin * MARGIN_DOWN).max(MARGINS.0.min(co.margin));
             }
         }
+    }
+}
+
+/// What a generator's worth in a battle, against any other site: it's a seat
+/// in every battle on its planet.
+const GENERATOR: f32 = 1.5;
+
+impl Galaxy {
+    /// Whether realm `r` picks its battles.
+    pub(crate) fn chooses(&self, r: u32) -> bool {
+        r != NONE && self.realms[r as usize].arm == Arm::Smart
+    }
+
+    /// The sites side `f`'s realm, fighting in system `s`, goes for: those
+    /// that gain it the most sites, with those it keeps of its own. Its
+    /// pilots are split between its battles there, so a battle more helps
+    /// only while they're enough, or the enemy's are thinner still. At
+    /// least one, if there's any.
+    pub(crate) fn picks(&self, s: usize, f: usize) -> Vec<usize> {
+        let sys = &self.systems[s];
+        let up = self.shields_up(s, f);
+        let mut mine_up = [0u8; 4];
+        for i in self.site_range(s) {
+            let site = &self.sites[i];
+            if site.owner as usize == f && site.kind == (SiteKind::Shield { damaged: false }) {
+                mine_up[site.planet as usize] += 1;
+            }
+        }
+        // Both sides' pilots, guns and armor, the enemies as one.
+        let gear = self.gear(s, f);
+        let (hulls, pilots) = (sys.hulls[f] as f32, self.able(s, f));
+        let (guns, plate) = (
+            crate::economy::damage_factor(gear),
+            crate::economy::armor_factor(gear),
+        );
+        let (mut foes, mut their_hulls) = (0.0f32, 0.0f32);
+        let (mut their_guns, mut their_plate) = (0.0f32, 0.0f32);
+        for g in (0..SIDES).filter(|&g| g != f && sys.hulls[g] > 0) {
+            let (h, gear) = (sys.hulls[g] as f32, self.gear(s, g));
+            foes += self.able(s, g);
+            their_hulls += h;
+            their_guns += h * crate::economy::damage_factor(gear);
+            their_plate += h * crate::economy::armor_factor(gear);
+        }
+        let their_guns = their_guns / their_hulls.max(1.0);
+        let their_plate = their_plate / their_hulls.max(1.0);
+        // Its own sites they'll go for, shields first; and theirs.
+        let worth = |i: usize| match self.sites[i].kind {
+            SiteKind::Shield { .. } => GENERATOR,
+            _ => 1.0,
+        };
+        let mut keep = Vec::new();
+        let mut take: Vec<(f32, usize)> = Vec::new();
+        for i in self.site_range(s) {
+            let site = &self.sites[i];
+            let planet = site.planet as usize;
+            if site.owner as usize != f {
+                take.push((worth(i) * if up[planet] > 0 { 0.8 } else { 1.0 }, i));
+            } else if mine_up[planet] == 0 || matches!(site.kind, SiteKind::Shield { .. }) {
+                keep.push(worth(i));
+            }
+        }
+        take.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let kill = self.rules.kill;
+        let (full, short) = (self.seats_in(false), self.seats_in(true));
+        // The chance it wins a battle, of `n`, with so many seats each.
+        let chance = |n: f32, ours: f32, theirs: f32| {
+            let kills = kill * (pilots / n).min(ours) * guns / their_plate.max(0.1);
+            let dead = kill * (foes / n).min(theirs) * their_guns / plate;
+            // (halfway through the tick's battles)
+            super::odds(
+                (kills, hulls - dead * (n / 2.0).max(1.0)),
+                (dead, their_hulls - kills * (n / 2.0).max(1.0)),
+            )
+        };
+        let mut best = (f32::MIN, 1);
+        let mut open = 0.0;
+        let mut shut = 0.0;
+        let kept: f32 = keep.iter().sum();
+        for (k, &(_, i)) in take.iter().enumerate() {
+            if up[self.sites[i].planet as usize] > 0 {
+                shut += worth(i);
+            } else {
+                open += worth(i);
+            }
+            let n = (k + 1 + keep.len()) as f32;
+            let even = chance(n, full, full);
+            let under = if shut > 0.0 {
+                chance(n, short, full)
+            } else {
+                0.0
+            };
+            let all = open * even + shut * under + kept * even;
+            if all > best.0 {
+                best = (all, k + 1);
+            }
+        }
+        let mut out: Vec<usize> = take.into_iter().take(best.1).map(|x| x.1).collect();
+        out.sort_unstable();
+        out
     }
 }
