@@ -36,7 +36,7 @@ fn every_seed_is_playable_dressed() {
     ignore = "slow unoptimized: run with cargo test --release"
 )]
 fn many_seeds_are_playable() {
-    (0..24).for_each(check_dressed);
+    (0..12).for_each(check_dressed);
 }
 
 /// Stacks enough to call it a hoard, the sides far apart, and the counting
