@@ -1036,17 +1036,22 @@ impl Menu {
             .collect();
         let any = !fights.is_empty();
         let site = |k: usize| &t.sites[t.contested[k]];
+        // Set closer where there are too many to fit above the stakes.
+        let mut worlds: Vec<u8> = fights.iter().map(|&k| site(k).planet).collect();
+        worlds.dedup();
+        let room = stakes_y(h) - UNIT * 2.0 - y;
+        let (heading, gap, pitch) = fight_spacing(worlds.len(), fights.len(), room);
         let mut world = None;
         for &k in &fights {
             let s = site(k);
             if world != Some(s.planet) {
                 if world.is_some() {
-                    y += UNIT * 1.5;
+                    y += gap;
                 }
                 world = Some(s.planet);
                 let name = planet_name(&t.name, s.planet);
                 p.text(Vec2::new(x, y), &name, &SMALL.colored(TEXT_2), Align::Left);
-                y += UNIT * 3.0;
+                y += heading;
             }
             // Lettered, where a world has several of a kind.
             let alike: Vec<usize> = fights
@@ -1069,14 +1074,14 @@ impl Menu {
             let at = Vec2::new(right, y + (BODY.size - SMALL.size) * 0.5);
             let style = SMALL.colored(design::hovered(TEXT_2, over));
             p.text(at, mode, &style, Align::Right);
-            let pad = (UNIT * 3.5 - BODY.size) * 0.5;
+            let pad = (pitch - BODY.size) * 0.5;
             hits.add(
                 p,
                 Vec2::new(x - UNIT * 2.0, y - pad),
-                Vec2::new(design::COLUMN + UNIT * 4.0, UNIT * 3.5),
+                Vec2::new(design::COLUMN + UNIT * 4.0, pitch),
                 Hit::Row(k),
             );
-            y += UNIT * 3.5;
+            y += pitch;
         }
         let picked = self.selected_site().filter(|s| s.committed);
         let Some(site) = picked.filter(|_| any) else {
@@ -1087,14 +1092,13 @@ impl Menu {
 
         // What you're up against, what a win pays, and what you've got left.
         let deploy = design::foot(h, 1);
-        let row = UNIT * 3.0;
-        let mut y = deploy.y - UNIT * 2.0 - row * 3.0;
+        let mut y = stakes_y(h);
         let mut line = |p: &mut Painter, name: &str, value: &str, color| {
             let at = Vec2::new(x, y);
             p.text(at, name, &SMALL.colored(TEXT_2), Align::Left);
             let at = Vec2::new(right, y);
             p.text(at, value, &SMALL.colored(color), Align::Right);
-            y += row;
+            y += STAKE;
         };
         let tier = t.tiers[site.enemy];
         let gear = crate::economy::level_label(tier);
@@ -1107,6 +1111,26 @@ impl Menu {
         let size = Vec2::new(design::COLUMN, design::BUTTON);
         hits.add(p, deploy, size, Hit::Deploy);
     }
+}
+
+/// From one line of a contract page's stakes to the next.
+const STAKE: f32 = UNIT * 3.0;
+
+/// Where a contract page's three lines of stakes start, above DEPLOY.
+fn stakes_y(h: f32) -> f32 {
+    design::foot(h, 1).y - UNIT * 2.0 - STAKE * 3.0
+}
+
+/// A contract page's list of `fights` on so many `worlds`: how far each
+/// world's heading is above its first fight, the gap above the next heading,
+/// and from one fight to the next. All closer together, if that's what it
+/// takes to fit in `room`.
+fn fight_spacing(worlds: usize, fights: usize, room: f32) -> (f32, f32, f32) {
+    let (heading, gap, pitch) = (UNIT * 3.0, UNIT * 1.5, UNIT * 3.5);
+    let tall =
+        heading * worlds as f32 + gap * worlds.saturating_sub(1) as f32 + pitch * fights as f32;
+    let k = (room / tall.max(1.0)).min(1.0);
+    (heading * k, gap * k, pitch * k)
 }
 
 /// The way back, as a button.
@@ -1812,6 +1836,58 @@ mod tests {
         }
         let pay = measure("9999 cr + 999 a kill", &SMALL);
         fits(measure("Pay", &SMALL), pay, "Pay");
+    }
+
+    /// Even where every site of the biggest system is fought over: three
+    /// worlds, each with three of every kind.
+    #[test]
+    fn a_big_systems_fights_fit_above_the_stakes() {
+        use crate::galaxy::SiteKind;
+        let mut t = theater(Faction::Ithessar).unwrap();
+        let kinds = [
+            SiteKind::Shield { damaged: false },
+            SiteKind::Mine { crystals: 1.0 },
+            SiteKind::Outpost,
+        ];
+        let one = t.sites[t.contested[0]].clone();
+        t.planets = 3;
+        t.sites = (0..27)
+            .map(|i| {
+                let mut s = one.clone();
+                s.index = i;
+                s.planet = (i / 9) as u8;
+                s.kind = kinds[i / 3 % 3];
+                (s.contested, s.committed) = (true, true);
+                s
+            })
+            .collect();
+        t.contested = (0..27).collect();
+        t.ship.as_mut().unwrap().over = 0;
+
+        let profile = Profile::in_memory();
+        let mut m = Menu::new();
+        m.screen = Screen::Missions;
+        m.set_theater(Some(t));
+        let hits = m.draw(&profile, 1600.0, 900.0, 1.0).hits;
+        // Each fight's line can be clicked, down the column, above the
+        // stakes and clear of the last.
+        let x = design::MARGIN;
+        let mut seen = Vec::new();
+        for y in 0..900 {
+            if let Some((Hit::Row(k), _)) = hits.at(Vec2::new(x, y as f32)) {
+                assert!((y as f32) < stakes_y(900.0) - UNIT, "row {k} at {y}");
+                if seen.last() != Some(&k) {
+                    seen.push(k);
+                }
+            }
+        }
+        assert_eq!(seen, (0..27).collect::<Vec<_>>());
+        // With room between lines, and a world's few fights as they were.
+        let room = stakes_y(900.0) - UNIT * 2.0 - design::MARGIN - UNIT * 7.0;
+        let (heading, _, pitch) = fight_spacing(3, 27, room);
+        assert!(pitch >= design::BODY.size + UNIT * 0.75, "{pitch}");
+        assert!(heading >= design::SMALL.size + UNIT * 0.75, "{heading}");
+        assert_eq!(fight_spacing(1, 9, room).2, UNIT * 3.5);
     }
 
     /// Clicks the middle of `hit` where `draw` put it.

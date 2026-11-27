@@ -54,11 +54,11 @@ pub const MAX_PLANETS: usize = 3;
 const STAR_R: f32 = 11.0;
 const WORLD_R: f32 = 12.0;
 /// The first world's orbit, and how much wider each next one's is.
-const ORBIT0: f32 = 64.0;
-const ORBIT_STEP: f32 = 50.0;
+const ORBIT0: f32 = 56.0;
+const ORBIT_STEP: f32 = 55.0;
 /// How far round its orbit each world is from the camera's right (radians,
 /// positive away from the camera), so they don't stand in a flat row.
-const PHASE: [f32; MAX_PLANETS] = [0.2, -0.12, 0.06];
+const PHASE: [f32; MAX_PLANETS] = [0.2, -0.08, -0.04];
 /// How high over its world your ship is parked, and how big it's drawn
 /// (`ship_model` builds it `ship_model::LEN` long).
 const SHIP_UP: f32 = 29.0;
@@ -1102,6 +1102,12 @@ pub fn aftermath(
     (at, size)
 }
 
+/// How far from a world's middle its sites' marks are, a world drawn `r` in
+/// radius: closer in where they're drawn small, so rings don't meet.
+fn sites_ring(r: f32) -> f32 {
+    r + 30.0 * (r / 45.0).clamp(0.55, 1.0)
+}
+
 /// The worlds of `t` with their marks; `under` is called with each site and
 /// where its mark goes, before it's drawn.
 fn worlds(
@@ -1146,8 +1152,7 @@ fn worlds(
         }
 
         // Its sites on a ring round it, from the top.
-        // (Closer in where the worlds are drawn small, so rings don't meet.)
-        let ring_r = r + 30.0 * (r / 45.0).clamp(0.55, 1.0);
+        let ring_r = sites_ring(r);
         let k = sites.len().max(1);
         for (j, &(i, s)) in sites.iter().enumerate() {
             let a = -PI * 0.5 + TAU * j as f32 / k as f32;
@@ -1735,6 +1740,36 @@ mod tests {
                         "world at x {x} ({planets} worlds, aspect {aspect})"
                     );
                     assert!(y > VIEW_TOP + 100.0 && y < h - VIEW_BOTTOM - LEGEND_H - 100.0);
+                }
+            }
+        }
+    }
+
+    /// However many sites they have, no world's marks reach the next's.
+    #[test]
+    fn rings_of_sites_dont_meet() {
+        for planets in 2..=MAX_PLANETS as u8 {
+            let t = theater(planets);
+            let l = layout(&t);
+            for aspect in [5.0 / 4.0, 4.0 / 3.0, 16.0 / 10.0, 16.0 / 9.0, 32.0 / 9.0] {
+                let (w, h) = (REF_HEIGHT * aspect, REF_HEIGHT);
+                let cam = camera(&t, aspect);
+                let vp = cam.view_proj(aspect);
+                let at = |v: Vec3| project(vp, v, w, h).map(Vec2::from).unwrap();
+                let right = (cam.target - cam.pos).cross(Vec3::Y).normalize();
+                // Each world's middle, and how far out its marks reach.
+                let rings: Vec<(Vec2, f32)> = l
+                    .worlds
+                    .iter()
+                    .map(|&v| {
+                        let r = (at(v + right * WORLD_R) - at(v)).length();
+                        (at(v), sites_ring(r) + 18.0)
+                    })
+                    .collect();
+                for k in 1..rings.len() {
+                    let ((a, ra), (b, rb)) = (rings[k - 1], rings[k]);
+                    let room = (b - a).length() - ra - rb;
+                    assert!(room >= 0.0, "{room} px, world {k} of {planets}, {aspect}");
                 }
             }
         }
