@@ -984,6 +984,9 @@ impl Bot {
     }
 }
 
+/// Nearer than this along the way, a tank's alongside rather than in it, m.
+const ALONGSIDE: f32 = 1.5;
+
 /// What to do about a tank in the way.
 enum Past {
     /// None there.
@@ -1065,6 +1068,11 @@ fn way_past(
     }
     if !oncoming && flat(o.vel).dot(dir) > 1.0 {
         return Past::Wait;
+    }
+    // Alongside, or past it already: the other's the one behind, and if
+    // each let the other go first neither ever would (#696).
+    if !oncoming && ahead < ALONGSIDE {
+        return Past::Clear;
     }
     // The one that gives way backs off till there's room, the other after it.
     let against = t.forward().dot(o.forward()) < 0.0;
@@ -1346,6 +1354,47 @@ mod tests {
             w.step(&[cmd]);
         }
         assert!(bot.plans <= 3, "{} path searches in 3 s", bot.plans);
+    }
+
+    /// Two abreast in a street with no room to get round one another: the
+    /// one that's ahead goes on, rather than each letting the other go
+    /// first for good (#696).
+    #[test]
+    fn two_abreast_in_a_street_drive_on() {
+        let mut map = Map::empty(140.0);
+        for (x0, x1) in [(59.0, 65.0), (75.0, 81.0)] {
+            map.solids.push(crate::map::Solid {
+                min: Vec3::new(x0, 0.0, 10.0),
+                max: Vec3::new(x1, 4.0, 130.0),
+            });
+        }
+        let nav = NavGrid::build(&map);
+        let mut w = World::empty(map);
+        for at in [Vec2::new(67.7, 40.0), Vec2::new(72.3, 39.5)] {
+            w.spawn_tank(
+                Vec3::ONE,
+                at,
+                0.0,
+                crate::sim::HullKind::Kataphrakt,
+                crate::sim::TurretKind::Kontos,
+            );
+        }
+        let mut bots = [Bot::new(1), Bot::new(2)];
+        let contacts = [Contact {
+            targetable: false,
+            team: 0,
+            health: 1.0,
+        }; 2];
+        let goal = Some(Objective::ring(Vec2::new(70.0, 110.0), 8.0));
+        for _ in 0..(12.0 / DT) as usize {
+            let cmds: Vec<Command> = (0..2)
+                .map(|i| bots[i].think(i, &w, &contacts, goal, &[], &nav, DT).0)
+                .collect();
+            w.step(&cmds);
+        }
+        for t in &w.tanks {
+            assert!(t.pos.z > 85.0, "still at {}", t.pos);
+        }
     }
 
     /// Bot 0 with `turret` against a parked enemy `start` m away on open
