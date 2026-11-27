@@ -18,7 +18,7 @@ fn gap(style: &TextStyle) -> f32 {
 }
 
 /// An arc smooth at any size (`Painter::arc` is coarse below ~10 px).
-fn arc(p: &mut Painter, c: Vec2, r: f32, a0: f32, a1: f32, width: f32, color: Rgba) {
+pub(super) fn arc(p: &mut Painter, c: Vec2, r: f32, a0: f32, a1: f32, width: f32, color: Rgba) {
     let n = 24;
     let pts: Vec<Vec2> = (0..=n)
         .map(|i| a0 + (a1 - a0) * i as f32 / n as f32)
@@ -28,7 +28,7 @@ fn arc(p: &mut Painter, c: Vec2, r: f32, a0: f32, a1: f32, width: f32, color: Rg
 }
 
 /// A filled disc: one ring as wide as its radius.
-fn disc(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
+pub(super) fn disc(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
     arc(p, c, r * 0.5, 0.0, TAU, r, color);
 }
 
