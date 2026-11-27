@@ -93,7 +93,10 @@ pub struct Surface {
     lo: Vec2,
     nx: usize,
     nz: usize,
-    over: Vec<Vec<u32>>,
+    /// Square `k`'s are `over[starts[k]..starts[k + 1]]`, numbers in `floors`.
+    starts: Vec<u32>,
+    over: Vec<u32>,
+    floors: Vec<[Vec3; 3]>,
 }
 
 /// How far what's driven on may be from what's drawn, m.
@@ -221,22 +224,39 @@ impl Surface {
         self.lo = lo;
         self.nx = ((hi.x - lo.x) / SQUARE).ceil() as usize + 1;
         self.nz = ((hi.y - lo.y) / SQUARE).ceil() as usize + 1;
-        self.over = vec![Vec::new(); self.nx * self.nz];
+        // (square, floor)
+        let mut filed: Vec<(u32, u32)> = Vec::new();
         for i in 0..self.driven.1.len() {
             let [a, b, c] = self.driven_at(i as u32);
             let n = (b - a).cross(c - a);
             if n.y <= n.length() * FLOOR {
                 continue;
             }
+            let floor = self.floors.len() as u32;
+            self.floors.push([a, b, c]);
             let p = [a, b, c].map(|v| Vec2::new(v.x, v.z));
             let a = self.square(p[0].min(p[1]).min(p[2]));
             let b = self.square(p[0].max(p[1]).max(p[2]));
             for z in a.1..=b.1 {
                 for x in a.0..=b.0 {
-                    self.over[z * self.nx + x].push(i as u32);
+                    // Only the squares it's over, not all those its bounds
+                    // are: a long thin one's bounds cover a great many.
+                    let at = self.lo + Vec2::new(x as f32, z as f32) * SQUARE;
+                    if may_cover(p, at - 0.01, at + SQUARE + 0.01) {
+                        filed.push(((z * self.nx + x) as u32, floor));
+                    }
                 }
             }
         }
+        self.starts = vec![0; self.nx * self.nz + 1];
+        for &(k, _) in &filed {
+            self.starts[k as usize + 1] += 1;
+        }
+        for k in 1..self.starts.len() {
+            self.starts[k] += self.starts[k - 1];
+        }
+        filed.sort_by_key(|f| f.0);
+        self.over = filed.into_iter().map(|f| f.1).collect();
     }
 
     fn driven_at(&self, i: u32) -> [Vec3; 3] {
@@ -287,9 +307,10 @@ impl Surface {
     /// twice).
     pub fn over(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
         let (x, z) = self.square(p);
-        self.over[z * self.nx + x]
+        let k = z * self.nx + x;
+        self.over[self.starts[k] as usize..self.starts[k + 1] as usize]
             .iter()
-            .filter_map(move |&i| self.floor_of(i, p))
+            .filter_map(move |&i| floor_of(self.floors[i as usize], p))
     }
 
     /// Every floor over `p`, the highest first.
@@ -298,17 +319,6 @@ impl Surface {
         out.sort_by(|a, b| b.total_cmp(a));
         out.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
         out
-    }
-
-    fn floor_of(&self, i: u32, p: Vec2) -> Option<f32> {
-        let [a, b, c] = self.driven_at(i);
-        let flat = |v: Vec3| Vec2::new(v.x, v.z) - p;
-        let (pa, pb, pc) = (flat(a), flat(b), flat(c));
-        // (Every floor winds the same way seen from above.)
-        let (u, v, w) = (pb.perp_dot(pc), pc.perp_dot(pa), pa.perp_dot(pb));
-        let area = u + v + w;
-        let e = 1e-4 * area;
-        (u <= -e && v <= -e && w <= -e).then(|| (a.y * u + b.y * v + c.y * w) / area)
     }
 
     /// The highest floor over `p`.
@@ -321,6 +331,31 @@ impl Surface {
         self.over(p)
             .min_by(|a, b| (a - y).abs().total_cmp(&(b - y).abs()))
     }
+}
+
+/// The height of the floor `[a, b, c]` over `p`, if it's over it.
+#[inline]
+fn floor_of([a, b, c]: [Vec3; 3], p: Vec2) -> Option<f32> {
+    let flat = |v: Vec3| Vec2::new(v.x, v.z) - p;
+    let (pa, pb, pc) = (flat(a), flat(b), flat(c));
+    // (Every floor winds the same way seen from above.)
+    let (u, v, w) = (pb.perp_dot(pc), pc.perp_dot(pa), pa.perp_dot(pb));
+    let area = u + v + w;
+    let e = 1e-4 * area;
+    (u <= -e && v <= -e && w <= -e).then(|| (a.y * u + b.y * v + c.y * w) / area)
+}
+
+/// Whether a floor (seen from above: wound as `floor_of` takes it)
+/// may be over some point of the rectangle from `lo` to `hi`: not if all of
+/// the rectangle is past one of its edges, by more than the slack there.
+fn may_cover(t: [Vec2; 3], lo: Vec2, hi: Vec2) -> bool {
+    let area = (t[1] - t[0]).perp_dot(t[2] - t[0]);
+    (0..3).all(|k| {
+        let (a, b) = (t[k], t[(k + 1) % 3]);
+        [lo, hi, Vec2::new(lo.x, hi.y), Vec2::new(hi.x, lo.y)]
+            .into_iter()
+            .any(|q| (a - q).perp_dot(b - q) <= -2e-4 * area)
+    })
 }
 
 #[cfg(test)]
@@ -381,6 +416,20 @@ mod tests {
         is(floors(0.0, 20.0), &[10.0]);
         assert!(s.near(Dug::at(0.0, 8.0), 1.0).unwrap() < 0.3);
         assert!(s.top(Dug::at(0.0, 8.0)).unwrap() > 9.7);
+    }
+
+    /// Filing the floors by square loses none of them.
+    #[test]
+    fn every_floor_is_found() {
+        let s = dug();
+        for k in 0..4000 {
+            let p = Vec2::new((k % 61) as f32, (k / 61) as f32 * 0.9) * 0.97 - 29.0;
+            let mut all: Vec<f32> = s.floors.iter().filter_map(|&f| floor_of(f, p)).collect();
+            let mut found: Vec<f32> = s.over(p).collect();
+            all.sort_by(f32::total_cmp);
+            found.sort_by(f32::total_cmp);
+            assert_eq!(found, all, "at {p}");
+        }
     }
 
     /// Its faces look out of the rock, and no two meet wrongly: inside the

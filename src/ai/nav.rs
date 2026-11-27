@@ -65,7 +65,38 @@ pub struct NavGrid {
     solid: Option<std::sync::Arc<crate::map::solid::Surface>>,
     /// Drivable slabs: floors over the ground. Level ones (decks, roofs),
     /// and the ramps up onto those from the ground at their ends.
-    slabs: Vec<OBox>,
+    slabs: Vec<Slab>,
+    /// Each cell's ground, under any deck.
+    ground: Vec<f32>,
+}
+
+/// A slab, with what's asked of it all the time worked out.
+struct Slab {
+    o: OBox,
+    axes: (Vec2, Vec2),
+    /// How far from its middle it reaches (and a little more), squared.
+    reach2: f32,
+}
+
+impl Slab {
+    fn new(o: OBox) -> Slab {
+        let reach = o.half.length() + 0.1;
+        Slab {
+            o,
+            axes: o.axes(),
+            reach2: reach * reach,
+        }
+    }
+
+    /// `p` in its frame (see `OBox::local_point`), if it's over it.
+    fn over(&self, p: Vec2) -> Option<Vec2> {
+        let d = p - self.o.center;
+        if d.length_squared() > self.reach2 {
+            return None;
+        }
+        let l = Vec2::new(d.dot(self.axes.0), d.dot(self.axes.1));
+        (l.x.abs() <= self.o.half.x && l.y.abs() <= self.o.half.y).then_some(l)
+    }
 }
 
 /// Which of `floors` is nearest height `h` (the higher, if two are), and
@@ -117,8 +148,10 @@ impl NavGrid {
             blocked: vec![[false; LEVELS]; n * n],
             terrain: map.terrain.clone(),
             solid: map.solid.clone(),
-            slabs,
+            slabs: slabs.into_iter().map(Slab::new).collect(),
+            ground: Vec::new(),
         };
+        nav.ground = (0..n * n).map(|i| nav.ground(nav.center(i))).collect();
         nav.floor = (0..n * n).map(|i| nav.floors_at(nav.center(i))).collect();
 
         for s in &map.solids {
@@ -271,7 +304,7 @@ impl NavGrid {
                 let c = nav.center(i);
                 for l in 0..LEVELS {
                     let h = nav.floor[i][l];
-                    if h.is_nan() || nav.blocked[i][l] || (l == TOP && h > nav.ground(c) + 0.1) {
+                    if h.is_nan() || nav.blocked[i][l] || nav.on_deck((i, l)) {
                         continue;
                     }
                     nav.blocked[i][l] = (0..8).any(|k| {
@@ -282,6 +315,10 @@ impl NavGrid {
             }
         }
         // Back from drops.
+        let around: [Vec2; 16] = std::array::from_fn(|k| {
+            let a = k as f32 / 16.0 * std::f32::consts::TAU;
+            Vec2::new(a.cos(), a.sin())
+        });
         for i in 0..n * n {
             if plain[i] {
                 continue;
@@ -289,12 +326,10 @@ impl NavGrid {
             let c = nav.center(i);
             for l in 0..LEVELS {
                 let h = nav.floor[i][l];
-                if h.is_nan() || nav.blocked[i][l] || (l == TOP && h > nav.ground(c) + 0.1) {
+                if h.is_nan() || nav.blocked[i][l] || nav.on_deck((i, l)) {
                     continue;
                 }
-                let near_drop = (0..16).any(|k| {
-                    let a = k as f32 / 16.0 * std::f32::consts::TAU;
-                    let d = Vec2::new(a.cos(), a.sin());
+                let near_drop = around.iter().any(|&d| {
                     [DROP_MARGIN * 0.5, DROP_MARGIN]
                         .iter()
                         .any(|&r| nav.surface_near(c + d * r, h) < h - DROP)
@@ -341,7 +376,7 @@ impl NavGrid {
                     if f.is_nan() || self.blocked[i][l] {
                         continue;
                     }
-                    let on_slab = l == TOP && f > self.ground(c) + 0.1;
+                    let on_slab = self.on_deck((i, l));
                     if hits(c, f, on_slab) {
                         self.blocked[i][l] = true;
                     }
@@ -373,7 +408,11 @@ impl NavGrid {
 
     fn ground(&self, p: Vec2) -> f32 {
         let solid = self.solid.as_ref().and_then(|s| s.top(p));
-        solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)))
+        solid.unwrap_or_else(|| self.terrain_at(p))
+    }
+
+    fn terrain_at(&self, p: Vec2) -> f32 {
+        self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y))
     }
 
     /// The floors at a point, the highest first (NaN past the last): those
@@ -405,16 +444,13 @@ impl NavGrid {
                 }
             }
         }
-        let g = if m > 0 { dug[0] } else { self.ground(p) };
+        let g = if m > 0 { dug[0] } else { self.terrain_at(p) };
         // Decks and roofs laid over the ground.
         let (mut top, mut under) = (g, false);
         for s in &self.slabs {
-            let l = s.local_point(p);
-            if l.x.abs() > s.half.x || l.y.abs() > s.half.y {
-                continue;
-            }
-            under |= !s.is_turned() && s.y0 >= g + HEADROOM;
-            top = top.max(slab_top(s, l.y));
+            let Some(l) = s.over(p) else { continue };
+            under |= !s.o.is_turned() && s.o.y0 >= g + HEADROOM;
+            top = top.max(slab_top(&s.o, l.y));
         }
         put(top);
         if under && top > g {
@@ -464,16 +500,21 @@ impl NavGrid {
 
     /// The open floor of cell `i` within `step` of height `h`, nearest it.
     fn step_to(&self, i: usize, h: f32, step: f32) -> Option<usize> {
-        (0..LEVELS)
-            .filter(|&l| {
-                let f = self.floor[i][l];
-                !f.is_nan() && !self.blocked[i][l] && (f - h).abs() <= step
-            })
-            .min_by(|&a, &b| {
-                (self.floor[i][a] - h)
-                    .abs()
-                    .total_cmp(&(self.floor[i][b] - h).abs())
-            })
+        let (floor, blocked) = (&self.floor[i], &self.blocked[i]);
+        let mut best = None;
+        let mut off = step;
+        for l in 0..LEVELS {
+            // (NaN past the last.)
+            if floor[l].is_nan() {
+                break;
+            }
+            let d = (floor[l] - h).abs();
+            if !blocked[l] && (d < off || (d == off && best.is_none())) {
+                best = Some(l);
+                off = d;
+            }
+        }
+        best
     }
 
     /// Top floor blocked at `p` (what's driven on seen from above).
@@ -582,7 +623,7 @@ impl NavGrid {
 
     /// Is this floor a deck's (or one of its ramps')?
     fn on_deck(&self, (i, l): Spot) -> bool {
-        l == TOP && self.floor[i][l] > self.ground(self.center(i)) + 0.1
+        l == TOP && self.floor[i][l] > self.ground[i] + 0.1
     }
 
     /// Is `p` (a tank's position) over a deck rather than the ground?
@@ -734,12 +775,17 @@ impl NavGrid {
                     }
                 }
                 let next = id((j, l));
+                let far = if diag { std::f32::consts::SQRT_2 } else { 1.0 };
+                // (An edge only costs more: most are ruled out without.)
+                if gc + far >= g[next] {
+                    continue;
+                }
                 let edge = if self.by_decks_edge((j, l)) {
                     EDGE_COST
                 } else {
                     0.0
                 };
-                let cost = gc + edge + if diag { std::f32::consts::SQRT_2 } else { 1.0 };
+                let cost = gc + edge + far;
                 if cost < g[next] {
                     g[next] = cost;
                     came[next] = at;

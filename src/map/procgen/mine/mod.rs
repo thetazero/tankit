@@ -56,9 +56,15 @@ pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 
 /// Nearest point on segment a-b to p: (distance, 0..1 along).
 pub(crate) fn seg(p: Vec2, a: Vec2, b: Vec2) -> (f32, f32) {
+    let (d2, t) = seg_squared(p, a, b);
+    (d2.sqrt(), t)
+}
+
+/// The same, the distance squared.
+pub(crate) fn seg_squared(p: Vec2, a: Vec2, b: Vec2) -> (f32, f32) {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
-    (p.distance(a + ab * t), t)
+    (p.distance_squared(a + ab * t), t)
 }
 
 /// Position and heading `s` m along a line.
@@ -82,9 +88,11 @@ pub(crate) fn line_len(line: &[Vec2], k: usize) -> f32 {
 }
 
 pub(crate) fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
+    // (Squared, and one root at the end: the same least distance.)
     line.windows(2)
-        .map(|w| seg(p, w[0], w[1]).0)
+        .map(|w| seg_squared(p, w[0], w[1]).0)
         .fold(f32::INFINITY, f32::min)
+        .sqrt()
 }
 
 /// Yaw that turns a box's local +z along `dir`.

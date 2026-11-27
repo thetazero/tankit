@@ -34,7 +34,7 @@ pub mod foundry;
 mod imperium;
 mod ithessar;
 pub mod land;
-mod memo;
+pub mod memo;
 pub mod mine;
 mod resonant;
 pub mod setting;
@@ -44,7 +44,7 @@ pub mod ways;
 
 use glam::Vec2;
 
-use self::memo::Memo;
+use self::memo::{Memo, SKELETONS};
 use self::skeleton::*;
 use super::Map;
 use super::ruins::Drift;
@@ -194,7 +194,7 @@ pub enum Claim {
 /// it don't change it.
 pub fn skeleton(spec: &Spec) -> Skeleton {
     type Key = (u64, usize, city::Plan);
-    static KEPT: Memo<Key, Skeleton, 8> = Memo::new();
+    static KEPT: Memo<Key, Skeleton, SKELETONS> = Memo::new();
     let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
     let mut plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
     if spec.look == Look::Ithessar {
@@ -376,7 +376,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
 /// and over).
 pub fn map(spec: &Spec) -> Map {
     // (The whole suite runs in one process, on a few dozen maps.)
-    const KEEP: usize = if cfg!(test) { 24 } else { 6 };
+    const KEEP: usize = if cfg!(test) { 48 } else { 6 };
     static KEPT: Memo<Spec, Map, KEEP> = Memo::new();
     KEPT.get(spec, || build_map(spec))
 }

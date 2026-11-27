@@ -15,7 +15,7 @@ use std::f32::consts::TAU;
 
 use glam::Vec2;
 
-use super::mine::{line_at, line_distance, line_len, seg};
+use super::mine::{line_at, line_distance, line_len, seg, seg_squared};
 use super::skeleton::{Platform, smoothstep};
 use crate::map::OBox;
 use crate::map::noise::{noise, noise2};
@@ -186,7 +186,12 @@ fn behind(line: &[Vec2], p: Vec2) -> f32 {
             t = t.min(1.0);
         }
         let q = a + d * t;
-        let dist = p.distance(q);
+        let dist = p.distance_squared(q);
+        // (Clearly further: no need of its root, or its side.)
+        if dist > (best.0 + 1e-3) * (best.0 + 1e-3) {
+            continue;
+        }
+        let dist = dist.sqrt();
         // At a corner both stretches are as near: the one it's squarer to
         // says which side it's on.
         let side = d.normalize().perp_dot(p - q);
@@ -366,17 +371,19 @@ impl Wash {
 
     /// Distance from its line, and how far along it the nearest point is.
     pub fn near(&self, p: Vec2) -> (f32, f32) {
-        let (mut best, mut at, mut acc) = (f32::INFINITY, 0.0, 0.0);
-        for w in self.line.windows(2) {
-            let len = w[0].distance(w[1]);
-            let (d, t) = seg(p, w[0], w[1]);
-            if d < best {
-                best = d;
-                at = acc + t * len;
+        let (mut best, mut at) = (f32::INFINITY, None);
+        for (k, w) in self.line.windows(2).enumerate() {
+            let (d2, t) = seg_squared(p, w[0], w[1]);
+            if d2 <= best * best * 1.00001 && d2.sqrt() < best {
+                best = d2.sqrt();
+                at = Some((k, t));
             }
-            acc += len;
         }
-        (best, at)
+        let len = |k: usize| self.line[k].distance(self.line[k + 1]);
+        let along = at.map_or(0.0, |(k, t)| {
+            (0..k).map(len).fold(0.0, |acc, l| acc + l) + t * len(k)
+        });
+        (best, along)
     }
 
     /// Its line `s` m along it, its way along, and the normal to the right
@@ -1041,10 +1048,15 @@ impl Land {
         if let Some(d) = &self.dunes {
             h += d.at(p) * self.drift(d, p, s) * (0.3 + 0.7 * low);
         }
-        let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
-        let lake = self.lake.map_or(0.0, |l| l.depth * l.cut(p));
-        let dam = self.dam.map_or(0.0, |d| d.height_at(p));
-        h += (bowls + dam - lake - self.wash_cut(p)) * low + self.mound(p);
+        // (None of it shows on top of the high ground.)
+        if low != 0.0 {
+            let bowls: f32 = self.bowls.iter().map(|b| b.height(p)).sum();
+            let lake = self.lake.map_or(0.0, |l| l.depth * l.cut(p));
+            let dam = self.dam.map_or(0.0, |d| d.height_at(p));
+            h += (bowls + dam - lake - self.wash_cut(p)) * low + self.mound(p);
+        } else {
+            h += self.mound(p);
+        }
         self.graded(p, h)
     }
 

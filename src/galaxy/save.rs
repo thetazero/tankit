@@ -828,9 +828,17 @@ impl Galaxy {
     }
 
     /// Tests: a war where a company's at work for a realm, with hulls of its
-    /// own.
+    /// own. A copy of the one galaxy each seed is run to once (the tests ask
+    /// for the same ones over and over).
     #[cfg(test)]
     pub fn warmed_hired(seed: u64) -> Galaxy {
+        use crate::map::procgen::memo::Memo;
+        static KEPT: Memo<u64, Galaxy, 4> = Memo::new();
+        KEPT.get(&seed, || Galaxy::warm_hired(seed))
+    }
+
+    #[cfg(test)]
+    fn warm_hired(seed: u64) -> Galaxy {
         let mut g = Galaxy::warmed_by(seed, 100);
         let hired = |g: &Galaxy| {
             g.companies.iter().any(|c| {
