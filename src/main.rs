@@ -1826,7 +1826,9 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             None => match menu.deal() {
                 Some((o, time)) => {
                     let kit = profile.loadout;
-                    work_view::scene(&art, &tanks[0], kit, o, time, w / h)
+                    let mut sys = theater_view::SystemArt::upload(&mut renderer);
+                    sys.show_worlds(&mut renderer, o.at, o.holders.len());
+                    work_view::scene(&art, &sys, &tanks[0], kit, o, time, w / h)
                 }
                 None => scene::build(&game.world, &tanks, &art, camera),
             },

@@ -1,7 +1,7 @@
 //! Finding work: the board, a table of the contracts on offer to compare and
 //! filter (`Board`), and the deal, one of them to take or not: your side's
-//! tanks facing the enemy's, what you'd gain, and
-//! the contract you'd leave for it.
+//! tanks facing the enemy's under the sky of the system they'd fight over,
+//! what you'd gain, and the contract you'd leave for it.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -17,6 +17,7 @@ use crate::render::mesh::{Instance, MeshId};
 use crate::render::{Atmosphere, Camera, PointLight, Scene};
 use crate::sim::Tank;
 use crate::tank::TankArt;
+use crate::theater_view::{self, MAX_PLANETS, SPACE_R, SystemArt};
 use crate::ui::design::{self, AMBER, BLUE, BODY, HEAD, MARGIN, SMALL, TEXT, TEXT_2, UNIT};
 use crate::ui::{Align, Hits, Painter, Rgba, emblem, with_alpha};
 
@@ -405,6 +406,27 @@ const THEIRS: Vec3 = Vec3::new(-9.8, 0.0, -2.6);
 /// How far each tank's turned to the camera from facing the other side.
 const TURNED: f32 = 0.65;
 
+/// The system's sky: where its star and worlds hang, how far back, and how
+/// big, in halves of the screen from its middle, seen with no sway.
+const STAR: (Vec2, f32) = (Vec2::new(-0.78, 0.46), 0.055);
+const WORLDS: [(Vec2, f32); MAX_PLANETS] = [
+    (Vec2::new(0.06, 0.3), 0.29),
+    (Vec2::new(0.6, 0.48), 0.12),
+    (Vec2::new(-0.4, 0.5), 0.08),
+];
+const SKY_Z: f32 = -156.0;
+
+/// Where in the sky `(at, size)` is, and its radius.
+fn in_sky((at, size): (Vec2, f32), aspect: f32) -> (Vec3, f32) {
+    let cam = camera(0.0, aspect);
+    let ahead = (cam.target - cam.pos).normalize();
+    let up = Vec3::X.cross(ahead);
+    let half = (cam.fov_y * 0.5).tan();
+    let ray = ahead + (Vec3::X * at.x * aspect + up * at.y) * half;
+    let depth = (SKY_Z - cam.pos.z) / ray.z;
+    (cam.pos + ray * depth, size * half * depth)
+}
+
 fn camera(time: f32, aspect: f32) -> Camera {
     let sway = (time * 0.15).sin() * 0.05;
     // Wide enough for both sides on any screen.
@@ -417,8 +439,17 @@ fn camera(time: f32, aspect: f32) -> Camera {
 }
 
 /// Offer `o`'s two sides, facing off: you in `kit` and your employer on the
-/// left, the enemy on the right. `base` is a tank to dress up.
-pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, aspect: f32) -> Scene {
+/// left, the enemy on the right, and the system's star and worlds (`sys`,
+/// showing them) over them. `base` is a tank to dress up.
+pub fn scene(
+    art: &TankArt,
+    sys: &SystemArt,
+    base: &Tank,
+    kit: Loadout,
+    o: &Offer,
+    time: f32,
+    aspect: f32,
+) -> Scene {
     let (side, enemy) = (Faction::side(o.side), Faction::side(o.enemy));
     let mut instances = Vec::new();
     let mut particles = Vec::new();
@@ -449,9 +480,20 @@ pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, asp
     }
     let dark = Vec4::new(0.0015, 0.0018, 0.0025, 1.0);
     let camera = camera(time, aspect);
-    let space =
-        Mat4::from_scale_rotation_translation(Vec3::splat(400.0), Quat::IDENTITY, Vec3::ZERO);
+    let space = Mat4::from_scale_rotation_translation(
+        Vec3::splat(SPACE_R * 2.0),
+        Quat::IDENTITY,
+        camera.pos,
+    );
     instances.push((MeshId::SPHERE, Instance::new(space, dark)));
+    theater_view::stars(camera.pos, &mut particles);
+    let (at, r) = in_sky(STAR, aspect);
+    sys.star(at, r, &mut instances, &mut particles);
+    for (i, (&holder, &place)) in o.holders.iter().zip(&WORLDS).enumerate() {
+        let (at, r) = in_sky(place, aspect);
+        let out = (&mut instances, &mut particles);
+        sys.world(i, at, r, holder, camera.pos, time, out);
+    }
     let floor = Mat4::from_scale_rotation_translation(
         Vec3::new(120.0, 0.2, 120.0),
         Quat::IDENTITY,
@@ -466,12 +508,12 @@ pub fn scene(art: &TankArt, base: &Tank, kit: Loadout, o: &Offer, time: f32, asp
         radius: 16.0,
     };
     let atmosphere = Atmosphere {
-        sun_dir: Vec3::new(0.15, 0.75, 0.65).normalize(),
-        sun_color: Vec3::new(1.5, 1.45, 1.4),
+        sun_dir: Vec3::new(-0.6, 0.6, 0.55).normalize(),
+        sun_color: Vec3::new(1.1, 1.06, 1.02),
         sky_zenith: Vec3::splat(0.12),
         sky_horizon: Vec3::splat(0.012),
         ground_color: Vec3::splat(0.03),
-        fog_density: 0.012,
+        fog_density: 0.0,
         blowing_sand: 0.0,
         ambient: 0.6,
         stars: 0.0,
@@ -599,7 +641,9 @@ pub mod tests {
     pub fn offer(id: u32, side: usize, enemy: usize) -> Offer {
         Offer {
             id,
+            at: 0,
             system: "TORKAR".into(),
+            holders: vec![enemy],
             side,
             enemy,
             defend: false,
