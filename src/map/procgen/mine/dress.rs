@@ -6,12 +6,12 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use glam::{Vec2, Vec3};
 
 use super::dig::Dig;
-use super::{MineStyle, PLANET, atmosphere, plan, style};
+use super::{MineStyle, PLANET, along, atmosphere, line_at, line_distance, plan, style};
 use crate::ai::nav::NavGrid;
 use crate::map::procgen::Spec;
 use crate::map::procgen::desert::{self, Palette};
 use crate::map::procgen::land::{self, Hollow};
-use crate::map::procgen::skeleton::{Skeleton, TANK_CLEAR};
+use crate::map::procgen::skeleton::{Lot, LotKind, Skeleton, TANK_CLEAR};
 use crate::map::{Ambient, Map};
 use crate::rng::Rng;
 
@@ -42,18 +42,13 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
         st,
         inside: true,
     };
-    if sk.spur.is_some() {
-        b.railroad();
-        b.warehouse(&mut rng);
-    } else {
-        for t in &sk.tracks {
-            b.rails(t, false);
-        }
+    b.railroad();
+    for l in sk.lots_of(LotKind::Warehouse) {
+        b.warehouse(&mut rng, l);
     }
-    if let Some(s) = sk.loading {
-        let (at, dir) = sk.track_at(s);
-        b.tipple_at(at, dir);
-        b.loaded_train(s);
+    for (l, track, s) in loaders(&sk) {
+        b.tipple_at(l.at(), l.footprint.axes().1);
+        b.loaded_train(track, s);
     }
     for x in &sk.crossings {
         b.rail_bridge(x);
@@ -78,14 +73,6 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
         st,
         inside: false,
     };
-    let rocks = b.seam(&mut rng);
-    for (p, h) in rocks {
-        b.rock_at(p, h);
-    }
-    if let Some((p, yaw)) = sk.wash_rig {
-        let g = b.ground_height(p.x, p.y);
-        b.cutting_rig(p, yaw, g);
-    }
     for d in &sk.land.digs {
         // A headframe over the hall, on the top.
         let hall = d.rooms[1];
@@ -151,6 +138,18 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
     (sk, map)
 }
 
+/// The loaders, each with the track it's over and how far along that.
+fn loaders(sk: &Skeleton) -> impl Iterator<Item = (&Lot, &[Vec2], f32)> {
+    sk.lots_of(LotKind::Loader).filter_map(|l| {
+        let near = |t: &&Vec<Vec2>| line_distance(t, l.at());
+        let track = sk
+            .tracks
+            .iter()
+            .min_by(|a, b| near(a).total_cmp(&near(b)))?;
+        Some((l, &track[..], along(track, l.at())))
+    })
+}
+
 /// What sounds: lit crystal, the borers, the train, the wash under a bridge.
 fn sounds(map: &mut Map, sk: &Skeleton, st: &dyn MineStyle) {
     let lit: Vec<Vec3> = map
@@ -169,8 +168,8 @@ fn sounds(map: &mut Map, sk: &Skeleton, st: &dyn MineStyle) {
             map.sound(kind, Vec3::new(p.x, d.floor + 2.5, p.y));
         }
     }
-    if let Some(s) = sk.loading {
-        let (p, _) = sk.track_at(s + 18.0);
+    for (_, track, s) in loaders(sk) {
+        let (p, _) = line_at(track, s + 18.0);
         let g = map.ground_height(p.x, p.y);
         map.sound(Ambient::Hull, Vec3::new(p.x, g + 2.5, p.y));
     }

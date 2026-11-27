@@ -16,7 +16,8 @@
 //! open ground kept for it out on the floor, its kind picked (spires, a
 //! crater, an arch) but nothing of it built. Then each side's **spawns**,
 //! picked on the greybox's nav grid so every side's drive to the landmark
-//! is about as long (`place_bases`). Then the **lots**: "a cluster of
+//! is about as long (`place_bases`), and a generator's **doors** toward
+//! them (`place_doors`). Then the **lots**: "a cluster of
 //! spires here", "fins of rock", "a boulder field", each with the reach
 //! its filler keeps to.
 
@@ -27,6 +28,7 @@ use glam::Vec2;
 use crate::ai::nav::NavGrid;
 pub use crate::map::procgen::land::*;
 use crate::map::procgen::mine::{line_distance, smoothstep};
+use crate::map::procgen::shield;
 pub use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
@@ -500,11 +502,8 @@ impl Skeleton {
                 .any(|r| r.distance(p) < RAMP_HALF + 3.0)
             || self.streets.iter().any(|s| s.distance(p) < s.half + 1.0)
             || self.tracks.iter().any(|t| line_distance(t, p) < 4.5)
-            || self.spur.as_ref().is_some_and(|s| {
-                line_distance(&s.line, p) < 4.5
-                    || self.shed_distance(p) < 6.0
-                    || self.shed_doorways(p)
-            })
+            || self.shed_distance(p) < 6.0
+            || self.shed_doorways(p)
             || self
                 .crossings
                 .iter()
@@ -704,6 +703,133 @@ impl Skeleton {
                     self.lots.push(Lot::round(kind, at, reach));
                     placed += 1;
                 }
+            }
+        }
+    }
+
+    /// A generator's doors, once its spawns are placed: toward each side's
+    /// and more in any wide gap between them; perhaps a side of its ring
+    /// shelled.
+    pub fn place_doors(&mut self, rng: &mut Rng) {
+        let spots = self.base_spots();
+        let lm = &mut self.landmarks[0];
+        let mut doors: Vec<f32> = Vec::new();
+        for &b in &spots {
+            let a = shield::angle(b - lm.center);
+            if doors.iter().all(|&d| shield::apart(a, d) > 0.6) {
+                doors.push(a);
+            }
+        }
+        if doors.is_empty() {
+            doors.push(rng.range(0.0, TAU));
+        }
+        // A door in the middle of every gap over a third of the way round,
+        // and at least four in all.
+        loop {
+            doors.sort_by(|a, b| a.rem_euclid(TAU).total_cmp(&b.rem_euclid(TAU)));
+            let gaps: Vec<(f32, f32)> = (0..doors.len())
+                .map(|k| {
+                    let a0 = doors[k].rem_euclid(TAU);
+                    let mut a1 = doors[(k + 1) % doors.len()].rem_euclid(TAU);
+                    if a1 <= a0 {
+                        a1 += TAU;
+                    }
+                    (a1 - a0, a0)
+                })
+                .collect();
+            let &(gap, from) = gaps.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+            if doors.len() >= 4 && gap < TAU / 3.0 + 0.01 {
+                break;
+            }
+            doors.push(from + gap * 0.5);
+        }
+        lm.doors = doors.into_iter().map(shield::dir).collect();
+        lm.fallen = rng.chance(0.5).then(|| {
+            let k = rng.index(lm.doors.len());
+            (lm.doors[k] + lm.doors[(k + 1) % lm.doors.len()]).normalize_or(lm.doors[k])
+        });
+    }
+
+    /// Great rocks on a desert's high ground, off everything laid out.
+    pub fn place_rocks(&mut self, rng: &mut Rng) {
+        let want = rng.int(2, 4) as usize;
+        let mut land = std::mem::take(&mut self.land);
+        let (ramps, lots, bases) = (land.high.ramps.clone(), &self.lots, self.base_spots());
+        let lm = &self.landmarks[0];
+        let pad = self.pad;
+        land.stand_rocks(rng, self.size, want, |c, r| {
+            lm.center.distance(c) > lm.reach + r + 8.0
+                && bases.iter().all(|b| b.distance(c) > pad + r + 8.0)
+                && ramps.iter().all(|x| x.distance(c) > RAMP_HALF + r + 8.0)
+                && lots
+                    .iter()
+                    .all(|o| o.at().distance(c) > o.reach() + r + 8.0)
+        });
+        self.land = land;
+    }
+
+    /// A wash at work, if there is one with the room: a rig on its floor
+    /// cutting along it, rock cropping out either side of there, and the
+    /// faces it's cut back.
+    pub fn work_wash(&mut self, rng: &mut Rng) {
+        let Some(w) = self.land.washes.first().cloned() else {
+            return;
+        };
+        // Clear of everything kept clear, `r` round.
+        let clear = |sk: &Skeleton, p: Vec2, r: f32| {
+            (0..9).all(|k| {
+                let q = match k {
+                    0 => p,
+                    _ => p + Vec2::from_angle(k as f32 * TAU / 8.0) * r,
+                };
+                !sk.keep_clear(q) && sk.heart.distance(q) > 7.0 && sk.shed_distance(q) > 14.0
+            })
+        };
+        let (lo, hi) = w.inside(self.size);
+        let mut s = lo + 30.0;
+        while s < hi - 30.0 {
+            let (p, way, n) = w.frame(s);
+            let at = p - n * (w.floor - 3.0);
+            let off_crossings = self.crossings.iter().all(|x| x.distance(p) > 14.0)
+                && self
+                    .land
+                    .fords
+                    .iter()
+                    .all(|&(a, b, h)| crate::map::procgen::mine::seg(p, a, b).0 > h + 9.0);
+            if off_crossings && clear(self, at, 4.5) {
+                let yaw = way.x.atan2(way.y);
+                self.lots.push(Lot::turned(LotKind::Rig, at, 4.5, yaw));
+                break;
+            }
+            s += 4.0;
+        }
+        if s >= hi - 30.0 {
+            return;
+        }
+        let rig = *self.lots.last().unwrap();
+        for (u, h) in [
+            (-24.0, 3.0),
+            (-12.0, 3.6),
+            (8.0, 2.6),
+            (17.0, 4.2),
+            (30.0, 3.2),
+        ] {
+            let u = s + u;
+            let (p, _, n) = w.frame(u);
+            let p = p + n * (1.6 * (u * 0.21).sin() - 1.0 + rng.range(-2.5, 2.5));
+            if clear(self, p, 2.0) && rig.at().distance(p) > rig.reach() + h * 0.5 {
+                self.lots.push(Lot::round(LotKind::Outcrop, p, h));
+            }
+        }
+        for (u, side) in [(-24.0, 1.0), (36.0, -1.0)] {
+            let (p, t, n) = w.frame(s + u);
+            // Toward the bank, off the way down the floor's middle.
+            let p = p + n * side * (w.floor - 1.8);
+            if clear(self, p, 1.0) {
+                let yaw = (-t.y).atan2(t.x) + rng.range(-0.2, 0.2);
+                let mut lot = Lot::turned(LotKind::Cut, p, 3.2, yaw);
+                lot.footprint.half.y = 1.4;
+                self.lots.push(lot);
             }
         }
     }

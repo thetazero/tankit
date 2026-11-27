@@ -10,9 +10,8 @@
 //! - **Supply dumps** by the doors: crates stacked on pallets in the
 //!   holder's colours, fuel drums, a tarp over some of it.
 //!
-//! The generator's ring is laid out here (`site`) as a city's landmark is:
-//! its doors toward each side's spawns (and more, so none is a long way
-//! round), a side that may have been shelled.
+//! The generator's ring is laid out with the rest of the map, doors and all
+//! (see `Skeleton::place_doors`).
 
 use std::f32::consts::{PI, TAU};
 
@@ -29,57 +28,6 @@ use crate::map::ruins::Drift;
 use crate::map::{OBox, rocks};
 use crate::render::material::Material;
 use crate::rng::Rng;
-
-/// The generator's ring on `sk`'s slot, shaped as a city's landmark (what
-/// the models are built to): doors toward each side's spawns and more in
-/// any wide gap between them, perhaps a side shelled.
-pub fn site(sk: &Skeleton, seed: u64) -> city::Landmark {
-    let lm = &sk.landmarks[0];
-    let mut rng = Rng::new(seed ^ 0xD00B_5EED);
-    let mut doors: Vec<f32> = Vec::new();
-    for &b in &sk.base_spots() {
-        let a = shield::angle(b - lm.center);
-        if doors.iter().all(|&d| shield::apart(a, d) > 0.6) {
-            doors.push(a);
-        }
-    }
-    if doors.is_empty() {
-        doors.push(rng.range(0.0, TAU));
-    }
-    // A door in the middle of every gap over a third of the way round,
-    // and at least four in all.
-    loop {
-        doors.sort_by(|a, b| a.rem_euclid(TAU).total_cmp(&b.rem_euclid(TAU)));
-        let gaps: Vec<(f32, f32)> = (0..doors.len())
-            .map(|k| {
-                let a0 = doors[k].rem_euclid(TAU);
-                let mut a1 = doors[(k + 1) % doors.len()].rem_euclid(TAU);
-                if a1 <= a0 {
-                    a1 += TAU;
-                }
-                (a1 - a0, a0)
-            })
-            .collect();
-        let &(gap, from) = gaps.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
-        if doors.len() >= 4 && gap < TAU / 3.0 + 0.01 {
-            break;
-        }
-        doors.push(from + gap * 0.5);
-    }
-    let doors: Vec<Vec2> = doors.into_iter().map(shield::dir).collect();
-    let fallen = rng.chance(0.5).then(|| {
-        let k = rng.index(doors.len());
-        (doors[k] + doors[(k + 1) % doors.len()]).normalize_or(doors[k])
-    });
-    city::Landmark {
-        center: lm.center,
-        radius: GENERATOR_RING,
-        precinct: GENERATOR_PRECINCT,
-        doors,
-        fallen,
-        ..lm.clone()
-    }
-}
 
 /// What the camp does to the ground: heaps banked up (rubble where it was
 /// shelled, sand against the fences), the pad and the tracks painted.
@@ -175,22 +123,15 @@ fn colours(owner: Faction) -> (Vec3, Vec3, Vec3) {
 impl Sand<'_> {
     /// The generator `owner` holds, in the shape it's in, and its camp.
     /// Rebuilds the ground under it with the camp's heaps and paint.
-    pub(super) fn generator(
-        &mut self,
-        rng: &mut Rng,
-        seed: u64,
-        owner: Faction,
-        condition: Condition,
-    ) {
+    pub(super) fn generator(&mut self, rng: &mut Rng, owner: Faction, condition: Condition) {
         let sk = self.sk;
         let lm = &sk.landmarks[0];
-        let site = site(sk, seed);
         let base = sk.ground(lm.center);
         let mark = shield::Mark::of(self.map);
-        let drifts = shield::build_at(self.map, &site, base, rng, owner);
-        shield::ruin(self.map, rng, &site, base, &mark, owner, condition);
+        let drifts = shield::build_at(self.map, lm, base, rng, owner);
+        shield::ruin(self.map, rng, lm, base, &mark, owner, condition);
 
-        let camp = self.lay_out_camp(rng, &site, drifts);
+        let camp = self.lay_out_camp(rng, lm, drifts);
         self.map.terrain = Some(super::terrain_of(sk, self.pal, Some(&camp), &[]));
         let mut ground = sk.land.surface(sk.size, 1.0, |p| camp.heap(p));
         ground.rock = self.pal.stone;
@@ -200,7 +141,7 @@ impl Sand<'_> {
         for (a, b) in fences {
             self.sand_fence(rng, a, b, upwind);
         }
-        self.supply_dumps(rng, &site, owner);
+        self.supply_dumps(rng, lm, owner);
     }
 
     /// Where the tracks run and the fences stand.

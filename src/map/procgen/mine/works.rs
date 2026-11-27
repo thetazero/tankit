@@ -1,15 +1,17 @@
-//! A mine's works: its railroads, the spur to its warehouse and the bridges
+//! A mine's works: its railroads, a spur to a warehouse and the bridges
 //! over its washes, and how far things are from them.
 
 use glam::Vec2;
 
 use super::*;
+use crate::map::OBox;
 use crate::map::procgen::crossing::Crossing;
-use crate::map::procgen::skeleton::{Skeleton, Spur};
+use crate::map::procgen::skeleton::{Lot, LotKind, Skeleton};
 
 /// A spur off `track`, `junction` m along it, swinging off to the left of
-/// the way out (`side` 1) or the right (-1), with its warehouse.
-pub(super) fn spur(track: &[Vec2], junction: f32, side: f32) -> Spur {
+/// the way out (`side` 1) or the right (-1): its line, and the warehouse at
+/// its end.
+pub(super) fn spur(track: &[Vec2], junction: f32, side: f32) -> (Vec<Vec2>, Lot) {
     let (j, dir) = line_at(track, junction);
     let back = -dir;
     let centre = j + back.perp() * BRANCH_R * side;
@@ -25,25 +27,32 @@ pub(super) fn spur(track: &[Vec2], junction: f32, side: f32) -> Spur {
     let at = end + along * (SHED_LEAD + SHED_HALF.y);
     line.push(at - along * SHED_HALF.y);
     line.push(at + along * SHED_BUFFER);
-    Spur {
-        line,
-        junction,
-        side,
-        shed: (at, along),
-    }
+    let shed = Lot {
+        footprint: OBox {
+            center: at,
+            yaw: yaw_along(along),
+            half: SHED_HALF,
+            ..OBox::default()
+        },
+        front: (1, -1.0),
+        kind: LotKind::Warehouse,
+    };
+    (line, shed)
 }
 
 impl Skeleton {
-    /// The warehouse's middle and its way along (far off, if there's none).
-    pub fn shed(&self) -> (Vec2, Vec2) {
-        self.spur
-            .as_ref()
-            .map_or((Vec2::splat(-1000.0), Vec2::Y), |s| s.shed)
+    /// The track the `k`th is a spur off, if it's one, and how far along that
+    /// it leaves.
+    pub fn off_track(&self, k: usize) -> Option<(usize, f32)> {
+        let from = *self.tracks[k].first()?;
+        (0..k)
+            .find(|&m| line_distance(&self.tracks[m], from) < 0.1)
+            .map(|m| (m, along(&self.tracks[m], from)))
     }
 
-    /// Which side of the first track the spur's on.
-    pub fn branch_side(&self) -> f32 {
-        self.spur.as_ref().map_or(1.0, |s| s.side)
+    /// Its lots of one kind.
+    pub fn lots_of(&self, kind: LotKind) -> impl Iterator<Item = &Lot> {
+        self.lots.iter().filter(move |l| l.kind == kind)
     }
 
     /// Which wash `x` bridges, and how far along it.
@@ -61,30 +70,12 @@ impl Skeleton {
             .map_or((0, 0.0), |(_, k, s)| (k, s))
     }
 
-    /// How near a track, any line or the branch.
+    /// How near any track.
     pub fn track_distance(&self, p: Vec2) -> f32 {
-        self.spur
-            .iter()
-            .map(|s| line_distance(&s.line, p))
-            .fold(self.main_line_distance(p), f32::min)
-    }
-
-    /// How near any main line.
-    pub fn main_line_distance(&self, p: Vec2) -> f32 {
         self.tracks
             .iter()
             .map(|l| line_distance(l, p))
             .fold(f32::INFINITY, f32::min)
-    }
-
-    /// Position and heading `s` m along the first line.
-    pub fn track_at(&self, s: f32) -> (Vec2, Vec2) {
-        line_at(&self.tracks[0], s)
-    }
-
-    /// Where the branch leaves the first line, and the line's way there.
-    pub fn branch_from(&self) -> (Vec2, Vec2) {
-        self.track_at(self.spur.as_ref().map_or(0.0, |s| s.junction))
     }
 
     /// Over a bridge's deck (not its end plates).
@@ -95,23 +86,21 @@ impl Skeleton {
         })
     }
 
-    /// A point in the warehouse's own frame: (across, along) from its
-    /// middle, +across to the left of the way in.
-    pub fn shed_local(&self, p: Vec2) -> Vec2 {
-        let (at, along) = self.shed();
-        let d = p - at;
-        Vec2::new(d.dot(Vec2::new(along.y, -along.x)), d.dot(along))
-    }
-
-    /// How far outside the warehouse's walls (0 inside).
+    /// How far outside every warehouse's walls (0 inside).
     pub fn shed_distance(&self, p: Vec2) -> f32 {
-        let q = self.shed_local(p).abs() - SHED_HALF;
-        q.max(Vec2::ZERO).length()
+        self.lots_of(LotKind::Warehouse)
+            .map(|l| {
+                let q = l.footprint.local_point(p).abs() - l.footprint.half;
+                q.max(Vec2::ZERO).length()
+            })
+            .fold(f32::INFINITY, f32::min)
     }
 
-    /// The ground straight out in front of the warehouse's doors.
+    /// The ground straight out in front of a warehouse's doors.
     pub fn shed_doorways(&self, p: Vec2) -> bool {
-        let l = self.shed_local(p).abs();
-        (l.y < 7.0 && l.x < SHED_HALF.x + 16.0) || (l.x < 7.0 && l.y < SHED_HALF.y + 16.0)
+        self.lots_of(LotKind::Warehouse).any(|l| {
+            let (q, half) = (l.footprint.local_point(p).abs(), l.footprint.half);
+            (q.y < 7.0 && q.x < half.x + 16.0) || (q.x < 7.0 && q.y < half.y + 16.0)
+        })
     }
 }
