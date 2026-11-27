@@ -807,7 +807,11 @@ fn tick_summary_counts_from_the_battle() {
         // The page runs from what each had to what it has.
         let (first, last) = (t.at(0.0), t.at(60.0));
         assert_eq!(first.hulls, t.before());
-        assert_eq!(last.hulls, sys.hulls);
+        let mut left = sys.hulls;
+        for c in &t.sides {
+            left[c.side] += c.aboard;
+        }
+        assert_eq!(last.hulls, left);
         for f in &t.flips {
             let owner =
                 |t: &theater::Theater| t.sites.iter().find(|s| s.index == f.site).unwrap().owner;
@@ -836,17 +840,68 @@ fn tick_summary_counts_from_the_battle() {
             .iter()
             .filter(|c| !c.merc)
             .map(|c| {
-                c.now
+                c.left()
                     + t.sides
                         .iter()
                         .filter(|m| m.merc && m.side == c.side)
-                        .map(|m| m.now)
+                        .map(|m| m.left())
                         .sum::<u32>()
             })
             .collect();
         assert!(own.windows(2).all(|w| w[0] >= w[1]));
     }
     assert!(changed, "nothing changed: the test shows nothing");
+}
+
+/// A company whose contract ends in the battle's tick takes its hulls back
+/// aboard: the tick summary shows what it lost, not all of them gone (#645).
+#[test]
+fn tick_summary_keeps_hulls_back_aboard() {
+    let mut g = small_war();
+    for c in 1..g.companies.len() {
+        g.companies[c].contract = None;
+    }
+    let (s, f) = (0, super::RAID);
+    let id = g.companies[0].id;
+    let aboard = g.companies[0].hulls;
+    g.systems[s].hulls[f] = 999;
+    g.companies[0].contract = Some(super::merc::Contract {
+        realm: super::realm::NONE,
+        side: f as u8,
+        target: s as u32,
+        signed: g.tick,
+        upfront: 0.0,
+        rate: 0.0,
+        billed: 0.0,
+        wage: 0.0,
+        committed: 999,
+        field: 999,
+        inbound: 0,
+        arrives: g.tick,
+        lost: 0,
+        defend: false,
+        expected: 0.0,
+        expected_ticks: 0.0,
+        net: 0.0,
+        held: 0,
+        worth: 0.0,
+        loot: 0.0,
+    });
+    // Nothing left to take: the raid's over this tick.
+    for v in &mut g.vaults {
+        v.crystals = 0.0;
+    }
+    g.clear_moves();
+    let owners = g.owners();
+    g.lose(s, f, 0, &[(id, 2)]);
+    g.mercs();
+    assert!(g.companies[0].contract.is_none(), "the raid's over");
+    assert_eq!(g.companies[0].hulls, aboard + 997, "997 back aboard");
+    assert_eq!(g.systems[s].hulls[f], 0);
+    let t = g.tick_summary(s, f, &owners);
+    assert_eq!(t.before()[f], 999);
+    assert_eq!((t.at(0.0).hulls[f], t.at(60.0).hulls[f]), (999, 997));
+    assert_eq!(t.at(60.0).mercs[f], 997);
 }
 
 /// A side fires with no more hulls than it has pilots for, but loses
