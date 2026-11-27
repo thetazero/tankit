@@ -1,9 +1,73 @@
 //! A tank burning in a plasma river: it sizzles and spits, over a low roar
-//! of fire, for as long as it's in there.
+//! of fire, for as long as it's in there. And what splashes as it goes in.
 
+use glam::Vec3;
+
+use super::Play;
 use crate::audio::dsp::{Noise, OnePole, Smooth, Svf};
 use crate::audio::mixer::Coefs;
 use crate::audio::tank::{Loop, TankParams};
+use crate::audio::voice::{Filt, L, Layer, Src, noise, sine};
+
+/// Something about `size` m across going into a plasma river: a tank or its
+/// wreck, or a shell. The bigger, the louder and lower.
+pub fn splash(at: Vec3, size: f32, jitter: f32) -> Play {
+    if size > 2.0 {
+        Play::at(PLUNGE, at, 1.2, jitter * (3.0 / size).powf(0.5))
+    } else {
+        let gain = 0.4 + 0.4 * size;
+        Play::at(PLOP, at, gain, jitter * size.max(0.3).powf(-0.4))
+    }
+}
+
+/// A shell going in: a gulp, and a spatter of plasma.
+pub const PLOP: &[Layer] = &[
+    sine(130.0, 330.0, 0.09, 0.1, 0.4),
+    Layer {
+        q: 0.8,
+        ..noise(Filt::Band, 2400.0, 700.0, 0.12, 0.16, 0.6)
+    },
+    Layer {
+        src: Src::Crackle(320.0),
+        filt: Filt::Band,
+        cutoff: (3600.0, 2200.0),
+        q: 1.4,
+        decay: 0.25,
+        gain: 0.35,
+        delay: 0.06,
+        ..L
+    },
+];
+
+/// A tank going in: a heavy slap, the plasma closing over it, what it threw
+/// up hissing back down.
+pub const PLUNGE: &[Layer] = &[
+    sine(80.0, 38.0, 0.15, 0.3, 0.8),
+    noise(Filt::Low, 3200.0, 260.0, 0.22, 0.4, 0.9),
+    Layer {
+        attack: 0.03,
+        delay: 0.18,
+        ..sine(70.0, 170.0, 0.3, 0.28, 0.45)
+    },
+    Layer {
+        attack: 0.12,
+        delay: 0.1,
+        q: 0.7,
+        ..noise(Filt::Band, 2600.0, 900.0, 0.8, 0.6, 0.5)
+    },
+    Layer {
+        src: Src::Crackle(260.0),
+        filt: Filt::Band,
+        cutoff: (3400.0, 1800.0),
+        sweep: 0.6,
+        q: 1.2,
+        attack: 0.1,
+        decay: 0.7,
+        gain: 0.55,
+        delay: 0.3,
+        ..L
+    },
+];
 
 /// How loud tank `i` burns: your own is all round you.
 pub fn level(i: usize) -> f32 {
@@ -48,7 +112,7 @@ impl Loop for Sizzle {
 mod tests {
     use super::*;
     use crate::audio::mixer::Mixer;
-    use crate::audio::testkit::{alone, driving, mids, settle};
+    use crate::audio::testkit::{alone, driving, mids, sane, settle};
 
     fn burning(plasma: f32) -> TankParams {
         TankParams {
@@ -57,6 +121,19 @@ mod tests {
             plasma,
             ..TankParams::default()
         }
+    }
+
+    #[test]
+    fn every_sound_is_sane() {
+        sane(&[("plop", PLOP), ("plunge", PLUNGE)]);
+    }
+
+    #[test]
+    fn bigger_splashes_are_louder_and_lower() {
+        let [bolt, shell, tank, heavy] =
+            [0.6, 1.2, 3.0, 4.2].map(|size| splash(Vec3::ZERO, size, 1.0));
+        assert!(bolt.gain < shell.gain && shell.gain < tank.gain);
+        assert!(bolt.pitch > shell.pitch && tank.pitch > heavy.pitch);
     }
 
     /// Over the tank's own engine, on small speakers too.

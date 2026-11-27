@@ -35,6 +35,40 @@ impl River {
         best.map(|(_, y)| y)
     }
 
+    /// Where something going straight from `a` to `b` goes down through its
+    /// surface, if it does.
+    pub fn entry(&self, a: Vec3, b: Vec3) -> Option<Vec3> {
+        let step = b - a;
+        let flat = |p: Vec3| Vec2::new(p.x, p.z);
+        let mut first: Option<f32> = None;
+        for w in self.points.windows(2) {
+            let d = flat(w[1] - w[0]);
+            let l2 = d.length_squared().max(1e-6);
+            // How far above this piece's own plane a point is.
+            let above = |p: Vec3| {
+                let t = flat(p - w[0]).dot(d) / l2;
+                p.y - (w[0].y + (w[1].y - w[0].y) * t)
+            };
+            let (from, to) = (above(a), above(b));
+            if from <= 0.0 || to > 0.0 {
+                continue;
+            }
+            let s = from / (from - to);
+            if first.is_some_and(|f| f <= s) {
+                continue;
+            }
+            // Only if it's this piece that's there.
+            let p = a + step * s;
+            if self
+                .surface(flat(p), 0.0)
+                .is_some_and(|y| (y - p.y).abs() < 0.2)
+            {
+                first = Some(s);
+            }
+        }
+        first.map(|s| a + step * s)
+    }
+
     /// The stretch of it nearest `at`: `n` points, every `step`th of its own,
     /// each with how far down it that is.
     pub fn stretch(&self, at: Vec3, n: usize, step: usize) -> Vec<glam::Vec4> {
@@ -115,5 +149,27 @@ mod tests {
         assert_eq!(r.surface(Vec2::new(50.0, 5.0), 0.0), Some(2.0));
         assert_eq!(r.surface(Vec2::new(50.0, 9.0), 0.0), None);
         assert_eq!(r.surface(Vec2::new(50.0, 9.0), 2.0), Some(2.0));
+    }
+
+    #[test]
+    fn a_shot_goes_in_where_it_crosses_the_surface() {
+        // Bending, so the far pieces' planes are crossed elsewhere too.
+        let r = River {
+            points: vec![
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(100.0, 3.0, 0.0),
+                Vec3::new(100.0, 4.0, 100.0),
+            ],
+            half: 8.0,
+        };
+        let into = r
+            .entry(Vec3::new(50.0, 12.0, -20.0), Vec3::new(50.0, -8.0, 20.0))
+            .unwrap();
+        assert!(into.distance(Vec3::new(50.0, 2.0, 0.0)) < 0.01, "{into}");
+        // Up out of it, short of it, and down beside it: no.
+        let up = r.entry(Vec3::new(50.0, 0.0, 0.0), Vec3::new(50.0, 9.0, 0.0));
+        let short = r.entry(Vec3::new(50.0, 9.0, 0.0), Vec3::new(50.0, 2.5, 0.0));
+        let beside = r.entry(Vec3::new(50.0, 9.0, 12.0), Vec3::new(50.0, 0.0, 12.0));
+        assert_eq!((up, short, beside), (None, None, None));
     }
 }
