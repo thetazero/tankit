@@ -153,9 +153,12 @@ pub fn armor_factor(level: u8) -> f32 {
     ARMOR.at(level)
 }
 
-/// What a kill teaches of each of the wreck's parts: this share of the gap
-/// between its level and what you know, rounded down to a whole step.
-pub const SCRAP_LEARNING: f32 = 0.01;
+/// What a kill teaches of each of the wreck's parts, in steps: this much of
+/// `ln(1 + e^(gap / SCRAP_REACH))`, its level over yours. Much from what's
+/// better than yours, a little from what's like it (so you can get past it),
+/// and hardly anything, but something, from what's far worse.
+pub const SCRAP_LEARNING: f32 = 0.1;
+pub const SCRAP_REACH: f32 = 5.0;
 
 /// How far a pilot has reverse-engineered each part (#438), in level steps,
 /// continuous: the highest level they can build it to is this rounded down.
@@ -187,17 +190,11 @@ impl Known {
     /// than what's known teaches nothing. Returns what was learned.
     pub fn scrap(&mut self, part: Part, level: u8) -> f32 {
         let i = part.index();
-        let gap = level as f32 - self.0[i].floor();
-        if gap <= 0.0 {
-            return 0.0;
-        }
-        let learned = SCRAP_LEARNING * gap;
-        // A hundred hundredths make a whole step, not a hair under one.
-        let v = self.0[i] + learned;
-        let whole = v.round();
-        let v = if (v - whole).abs() < 1e-4 { whole } else { v };
-        self.0[i] = v.min(MAX_LEVEL as f32);
-        learned
+        let gap = level as f32 - self.0[i];
+        let was = self.0[i];
+        let learned = SCRAP_LEARNING * (gap / SCRAP_REACH).exp().ln_1p();
+        self.0[i] = (was + learned).min(MAX_LEVEL as f32);
+        self.0[i] - was
     }
 
     /// What's known of every part, in `PARTS` order (for saves).
@@ -445,11 +442,8 @@ pub enum Outcome {
 
 #[cfg(test)]
 mod tests {
-    /// A wreck teaches a hundredth of the gap to what you know, rounded
-    /// down to a whole step (#438): a hundred kills of T1.1 gear take a T1
-    /// pilot to T1.1, and one no better teaches nothing.
     /// A round's wrecks add up part by part (#444): what each taught and
-    /// where it stands, the ones that taught nothing left out.
+    /// where it stands.
     #[test]
     fn scrapped_adds_up_part_by_part() {
         let (kontos, pelekys) = (
@@ -465,37 +459,32 @@ mod tests {
         );
         assert_eq!(s.len(), 2);
         assert_eq!(s[0].part, kontos);
-        assert!((s[0].gained * 100.0 - 10.0).abs() < 0.5);
-        assert_eq!(s[0].toward(), Some((10, 11)));
+        let mut k = before;
+        let taught = k.scrap(kontos, 15) + k.scrap(kontos, 15) + k.scrap(kontos, 3);
+        assert!((s[0].gained - taught).abs() < 1e-3);
         assert!(!s[0].stepped());
         assert_eq!(s[1].part, pelekys);
-        assert!((s[1].gained * 100.0 - 30.0).abs() < 0.5);
-        assert_eq!(s[1].toward(), Some((80, 1)));
-        let s = scrapped(before, &[(pelekys, 50)]);
-        assert!(s[0].stepped(), "0.5 + 0.5 is the first step");
-        assert_eq!(s[0].toward(), Some((0, 2)));
+        assert!(s[1].gained > s[0].gained, "the bigger gap taught more");
+        assert!(s[1].stepped());
     }
 
+    /// A wreck teaches `0.1 ln(1 + e^(gap / 5))` steps: the more the better
+    /// it is than yours, but something from any.
     #[test]
-    fn scrap_teaches_a_hundredth_of_the_gap() {
+    fn scrap_teaches_by_the_gap() {
         let kontos = Part::Turret(TurretKind::Kontos);
-        let mut k = Known::default();
-        k.set(kontos, 10.0);
-        for _ in 0..99 {
-            k.scrap(kontos, 11);
-        }
-        assert_eq!(k.cap(kontos), 10, "not yet");
-        k.scrap(kontos, 11);
-        assert_eq!(k.cap(kontos), 11);
-        assert_eq!(k.scrap(kontos, 11), 0.0, "no better than what's known");
-        assert_eq!(k.scrap(kontos, 3), 0.0);
-        // The gap counts from what's known rounded down: wrecks of T3 teach
-        // a T1.06 pilot as fast as a T1 one.
-        let mut a = Known::default();
-        a.set(kontos, 10.6);
-        let mut b = Known::default();
-        b.set(kontos, 10.0);
-        assert_eq!(a.scrap(kontos, 30), b.scrap(kontos, 30));
+        let taught = |known: f32, level: u8| {
+            let mut k = Known::default();
+            k.set(kontos, known);
+            k.scrap(kontos, level)
+        };
+        assert!((taught(10.0, 10) - 0.0693).abs() < 1e-3, "as good as yours");
+        assert!((taught(10.0, 15) - 0.1313).abs() < 1e-3, "a mark half up");
+        assert!((taught(10.0, 30) - 0.4018).abs() < 1e-3, "far better");
+        let worse = taught(20.0, 0);
+        assert!(worse > 0.0 && worse < 0.002, "far worse: {worse}");
+        let top = MAX_LEVEL as f32;
+        assert_eq!(taught(top, MAX_LEVEL), 0.0, "there's no more to know");
     }
 
     use super::*;

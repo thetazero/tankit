@@ -79,6 +79,8 @@ struct Saved {
     #[serde(default)]
     taken_at: Vec<u64>,
     #[serde(default)]
+    fought_at: Vec<u64>,
+    #[serde(default)]
     rates: Option<[f32; 4]>,
     /// What a contract has lately made a company.
     #[serde(default)]
@@ -128,6 +130,10 @@ struct Saved {
     /// Not an older save.
     #[serde(default)]
     jobs: bool,
+    /// Hulls are ten to what they were. (An older save's aren't, and it
+    /// doesn't load.)
+    #[serde(default)]
+    tenfold: bool,
     /// Your own hulls on its contract (#385).
     #[serde(default)]
     own: Option<super::theater::Own>,
@@ -347,6 +353,9 @@ struct SavedRealm {
     /// What a pilot, and a hull, have lately been worth to it.
     #[serde(default)]
     senses: Option<[f32; 4]>,
+    /// `Realm::seats`, `seats_next`, `seats_now`.
+    #[serde(default)]
+    seats: Option<[f32; 3]>,
 }
 
 impl Saved {
@@ -428,6 +437,7 @@ impl Galaxy {
                     hires: Some(r.hires),
                     fronts: r.fronts,
                     senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
+                    seats: Some([r.seats, r.seats_next, r.seats_now]),
                 })
                 .collect(),
             splits: self.splits,
@@ -474,6 +484,7 @@ impl Galaxy {
             lessons: self.lessons.clone(),
             profit: Some((self.profit, self.worth_before)),
             taken_at: self.taken_at.clone(),
+            fought_at: self.fought_at.clone(),
             fleets: self.fleets.clone(),
             hull_worth: self.hull_marks(),
             vaults: self
@@ -502,6 +513,7 @@ impl Galaxy {
             crew: self.crew,
             job: self.job,
             jobs: true,
+            tenfold: true,
             own: self.own,
             ended: self.ended.clone(),
         }
@@ -513,6 +525,7 @@ impl Galaxy {
     }
 
     fn restore(mut s: Saved) -> anyhow::Result<Galaxy> {
+        anyhow::ensure!(s.tenfold, "saved before hulls were tenfold");
         let region = Vec2::from_array(s.region);
         let mut g = Galaxy::with_size(s.seed, s.systems, region, Rules::default());
         s.add_outposts(&g);
@@ -576,6 +589,9 @@ impl Galaxy {
                 hull_worth: r.senses.map_or(0.2, |x| x[1]),
                 pilot_use: r.senses.map_or(0.0, |x| x[2]),
                 hull_use: r.senses.map_or(0.0, |x| x[3]),
+                seats: r.seats.map_or(0.0, |x| x[0]),
+                seats_next: r.seats.map_or(0.0, |x| x[1]),
+                seats_now: r.seats.map_or(0.0, |x| x[2]),
                 crystals: r.crystals,
                 income: r.income,
                 tier: r.tier.min(crate::economy::MAX_LEVEL),
@@ -649,6 +665,9 @@ impl Galaxy {
         }
         if s.taken_at.len() == g.taken_at.len() {
             g.taken_at = s.taken_at;
+        }
+        if s.fought_at.len() == g.fought_at.len() {
+            g.fought_at = s.fought_at;
         }
         if let Some(x) = s.rates {
             [g.lose_new, g.lose_old, g.hull_rate, g.savings] = x;
@@ -1006,6 +1025,17 @@ mod tests {
             old.step();
         }
         unique(&old);
+    }
+
+    /// A save from before hulls were tenfold doesn't load.
+    #[test]
+    fn saves_from_before_tenfold_hulls_dont_load() {
+        let region = REGION * 0.3;
+        let g = Galaxy::with_size(5, SYSTEMS / 10, region, Rules::default());
+        let mut v = serde_json::to_value(g.saved(region)).unwrap();
+        assert!(Galaxy::from_json(&v.to_string()).is_ok());
+        v.as_object_mut().unwrap().remove("tenfold");
+        assert!(Galaxy::from_json(&v.to_string()).is_err());
     }
 
     /// A save from before outposts keeps its other sites as they were, and

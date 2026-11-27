@@ -152,8 +152,8 @@ fn damaged_generators_are_kept_down() {
         "the damaged one is a target"
     );
     g.systems[s].hulls = [0; SIDES];
-    g.systems[s].hulls[owner] = 40;
-    g.systems[s].hulls[other] = 40;
+    g.systems[s].hulls[owner] = 4000;
+    g.systems[s].hulls[other] = 4000;
     g.battles(None);
     assert!(g.assaulted[y], "fought over");
 }
@@ -861,7 +861,8 @@ fn pilots_cap_fire_not_losses() {
     g.realms[r].pilots = 5;
     g.share_pilots();
     assert_eq!(g.firing(s, owner), 5.0);
-    assert_eq!(g.firing(s, other), g.rules.frontage);
+    let battles = g.battles_in(s)[other].max(1) as f32;
+    assert_eq!(g.firing(s, other), g.rules.seats * battles);
     g.battles(None);
     assert!(
         100 - g.systems[s].hulls[owner] > 5,
