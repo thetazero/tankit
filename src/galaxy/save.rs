@@ -164,11 +164,6 @@ struct SavedCompany {
     /// far over it bids); its earnings and pilot-ticks worked lately.
     #[serde(default)]
     pricing: Option<(u8, f32)>,
-    /// Older saves: one way or the other, by its id.
-    #[serde(default)]
-    smart: Option<bool>,
-    #[serde(default)]
-    patience: Option<f32>,
     #[serde(default)]
     earned: f32,
     #[serde(default)]
@@ -345,11 +340,8 @@ struct SavedRealm {
     /// What it pays each.
     #[serde(default)]
     wage: f32,
-    /// Whether it hires mercs (older saves: they all do).
-    #[serde(default)]
-    hires: Option<bool>,
-    /// Its arm, an index into `Arm::ALL` (older saves have only `hires`:
-    /// a third of those realms become smart ones).
+    /// Its arm: 2 for smart, else plain (0 hired no mercs, once). Saves from
+    /// before arms have none: half their realms become smart ones.
     #[serde(default)]
     arm: Option<u8>,
     #[serde(default)]
@@ -441,8 +433,7 @@ impl Galaxy {
                     research: r.research,
                     pilots: Some(r.pilots),
                     wage: r.wage,
-                    hires: Some(r.arm.hires()),
-                    arm: Some(r.arm as u8),
+                    arm: Some(if r.arm == Arm::Smart { 2 } else { 1 }),
                     rival: (r.rival != NONE).then_some(r.rival),
                     fronts: r.fronts,
                     senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
@@ -468,8 +459,6 @@ impl Galaxy {
                             RULES.iter().position(|&r| r == c.pricing.rule).unwrap_or(0) as u8,
                             c.pricing.k,
                         )),
-                        smart: Some(c.smart),
-                        patience: Some(c.patience),
                         earned: c.earned,
                         worked: c.worked,
                         loss_rate: c.loss_rate,
@@ -594,11 +583,10 @@ impl Galaxy {
                 }),
                 wage: r.wage,
                 rival: r.rival.unwrap_or(NONE),
-                arm: match r.arm.and_then(|a| Arm::ALL.get(a as usize)) {
-                    Some(&arm) => arm,
-                    None if Rng::new(0xA_2B ^ i as u64).index(3) == 0 => Arm::Smart,
-                    None if r.hires.unwrap_or(true) => Arm::Hire,
-                    None => Arm::NoHire,
+                arm: match r.arm {
+                    Some(2) => Arm::Smart,
+                    Some(_) => Arm::Plain,
+                    None => Arm::draw(&mut Rng::new(0xA_2B ^ i as u64)),
                 },
                 fronts: r.fronts,
                 pilot_worth: r.senses.map_or(0.1, |x| x[0]),
@@ -741,10 +729,6 @@ impl Galaxy {
                                 k,
                             },
                         ),
-                        smart: c
-                            .smart
-                            .unwrap_or_else(|| Rng::new(0x5_3A2 ^ c.id as u64).chance(0.5)),
-                        patience: c.patience.unwrap_or(100.0),
                         earned: c.earned,
                         worked: c.worked,
                         loss_rate: c.loss_rate,
@@ -1180,9 +1164,6 @@ mod tests {
         assert_eq!(g.living().count(), back.living().count());
         for (a, b) in g.realms.iter().zip(&back.realms) {
             assert_eq!((a.arm, a.rival), (b.arm, b.rival));
-        }
-        for (a, b) in g.companies.iter().zip(&back.companies) {
-            assert_eq!(a.smart, b.smart);
         }
         assert_eq!(g.companies.len(), back.companies.len());
         assert_eq!(

@@ -1140,7 +1140,7 @@ impl Galaxy {
                     .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
             }) {
                 c.crystals += loot;
-                self.books.by_arm[c.smart as usize][1] += loot as f64;
+                self.books.trade[1] += loot as f64;
                 if let Some(k) = &mut c.contract {
                     k.loot += loot;
                 }
@@ -2027,10 +2027,7 @@ impl Galaxy {
         };
         let help = plan(with, self.pilots_for(r, have + late + with));
         let start = if fresh && with > 0.0 { slowest } else { 0 };
-        if realm.arm.hires()
-            && (attacked || pool >= MIN_SEND)
-            && self.hire(t, f, r, help, start, base)
-            && best.1 == 0.0
+        if (attacked || pool >= MIN_SEND) && self.hire(t, f, r, help, start, base) && best.1 == 0.0
         {
             best.1 = sends;
         }

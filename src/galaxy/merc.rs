@@ -20,8 +20,8 @@
 //! costs their realm less than training others. Pilots out of work wait in
 //! the pool, then quit; they all retire in time.
 //!
-//! **Companies live and die.** Each has its own margin, way of pricing pilots
-//! and patience, passed on, a little changed, when it grows rich and splits
+//! **Companies live and die.** Each has its own margin and way of pricing pilots,
+//! passed on, a little changed, when it grows rich and splits
 //! (`Rules::merc_split`). One with too little left joins another. Retired
 //! pilots' savings found new ones while companies are making money. A ship
 //! costs something to keep, working or not.
@@ -209,15 +209,8 @@ pub struct Company {
     /// Its crew. Each pilot flies one hull at a time, so the crew caps how
     /// many of its hulls fire.
     pub pilots: Vec<Pilot>,
-    /// Whether it plans ahead (`smart`): one way or the other at random, to
-    /// see which fares better, and a company splitting off keeps its
-    /// parent's way.
-    pub smart: bool,
     /// How it prices pilots.
     pub pricing: Pricing,
-    /// Ticks it'll wait to be paid back: it lends a realm what its income
-    /// would clear in as many.
-    pub patience: f32,
     /// Its contract income lately, and pilot-ticks worked lately (both
     /// fading a little each tick).
     pub earned: f32,
@@ -393,9 +386,9 @@ pub struct Books {
     pub founded: u64,
     /// What companies have made, all told.
     pub profit: f64,
-    /// Plain companies' and smart ones', apart: ticks lived, crystal raided,
+    /// All companies together: ticks lived, crystal raided,
     /// paid by realms, spent setting out, on wages, and sailing for work.
-    pub by_arm: [[f64; 6]; 2],
+    pub trade: [f64; 6],
     /// Voyages idle companies made to look for work.
     pub sailed: u64,
     /// Crystal companies paid their pilots: wages, and bonuses for kills;
@@ -565,12 +558,10 @@ impl Galaxy {
             idle_since: self.tick,
             id: self.next_company,
             pilots: Vec::new(),
-            smart: self.rng.chance(0.5),
             pricing: Pricing {
                 rule: RULES[self.rng.index(RULES.len())],
                 k: self.rng.range(0.5, 2.0),
             },
-            patience: 10.0 * 100f32.powf(self.rng.f32()),
             earned: 0.0,
             worked: 0.0,
             loss_rate: 0.0,
@@ -1391,8 +1382,7 @@ impl Galaxy {
     /// Realm `r` owes company `c` (an index) `crystals` more: no interest, to
     /// be paid back over the ticks the company waits.
     fn lend(&mut self, r: u32, c: usize, crystals: f32) {
-        let (id, patience) = (self.companies[c].id, self.companies[c].patience);
-        let credit = self.companies[c].smart.then(|| self.term(r, crystals));
+        let (id, term) = (self.companies[c].id, self.term(r, crystals));
         let i = match self
             .debts
             .iter()
@@ -1411,11 +1401,8 @@ impl Galaxy {
         };
         let d = &mut self.debts[i];
         d.crystals += crystals;
-        d.due = match credit {
-            // (a plan it can keep up with)
-            Some(term) => (d.crystals / term).max(d.due),
-            None => d.crystals / patience.max(1.0),
-        };
+        // (a plan it can keep up with)
+        d.due = (d.crystals / term).max(d.due);
         self.books.financed += crystals as f64;
     }
 
@@ -1435,7 +1422,7 @@ impl Galaxy {
         realm.crystals -= pay;
         self.companies[c].crystals += pay;
         self.companies[c].earned += pay;
-        self.books.by_arm[self.companies[c].smart as usize][2] += pay as f64;
+        self.books.trade[2] += pay as f64;
         self.books.repaid += pay as f64;
     }
 
@@ -1540,14 +1527,14 @@ impl Galaxy {
                 let co = &self.companies[c];
                 // It pays its way out of its own crystal, and lends what the
                 // realm can't pay now, if its income would clear it in time.
-                let now = self.down_payment(r, c, q.upfront);
+                let now = self.down_payment(r, q.upfront);
                 if q.cost + q.wages * (ticks + q.fly as f32) > co.crystals + now
                     || q.cost > co.crystals + now
                 {
                     continue;
                 }
                 affordable = true;
-                if owed + price > realm.crystals.max(0.0) + income * self.patience_with(c) {
+                if owed + price > realm.crystals.max(0.0) + income * super::smart::LENDS {
                     self.books.refused += 1;
                     continue;
                 }
@@ -1665,7 +1652,7 @@ impl Galaxy {
         // Sign: the company buys and goes, and the realm owes it.
         if r != super::realm::NONE {
             self.lend(r, q.company, q.upfront);
-            let owed = self.down_payment(r, q.company, q.upfront);
+            let owed = self.down_payment(r, q.upfront);
             self.settle_up(r, q.company, owed);
         }
         let mut short = q.bought;
@@ -1699,11 +1686,11 @@ impl Galaxy {
         }
         let co = &mut self.companies[q.company];
         co.crystals -= q.cost;
-        if co.smart && r != super::realm::NONE {
+        if r != super::realm::NONE {
             // In demand, it asks more.
             co.margin = (co.margin * super::smart::MARGIN_UP).min(super::smart::MARGINS.1);
         }
-        self.books.by_arm[co.smart as usize][3] += q.cost as f64;
+        self.books.trade[3] += q.cost as f64;
         // Its own hulls go in first; the rest stay aboard.
         let own = co.hulls.min(q.hulls - q.bought);
         co.hulls -= own;
@@ -1761,7 +1748,7 @@ impl Galaxy {
                 p.wallet += x;
                 co.crystals -= x;
             }
-            self.books.by_arm[co.smart as usize][0] += 1.0;
+            self.books.trade[0] += 1.0;
             // The ship costs something to keep, working or not.
             co.crystals = (co.crystals - ship_upkeep).max(0.0);
             co.earned *= 1.0 - FADE;
@@ -1787,7 +1774,7 @@ impl Galaxy {
                 p.earning += EARN_FADE * p.wage;
                 p.idle = 0;
                 self.books.wages += p.wage as f64;
-                self.books.by_arm[co.smart as usize][4] += p.wage as f64;
+                self.books.trade[4] += p.wage as f64;
                 paid += 1;
             }
             co.worked += paid.min(flying) as f32;
@@ -1932,11 +1919,10 @@ impl Galaxy {
         let pay = self.pay;
         // Worlds by what's in their vaults for their defenders, as far as
         // one can see.
-        let rich: Vec<(f32, usize, f32)> = (0..self.systems.len())
+        let rich: Vec<(f32, usize)> = (0..self.systems.len())
             .filter_map(|s| {
                 let x: f32 = self.vaults_of(s).iter().map(|v| v.crystals).sum();
-                let h: u32 = self.systems[s].hulls.iter().sum();
-                (x > 5.0).then_some((x * 2000.0 / (2000.0 + h as f32), s, self.soft(s) * x))
+                (x > 5.0).then(|| (self.soft(s) * x, s))
             })
             .collect();
         for c in 0..self.companies.len() {
@@ -1950,34 +1936,27 @@ impl Galaxy {
             }
             let here = self.systems[co.at as usize].pos;
             // The best few in range, for what's there less the flight.
-            let load = self.voyage(if co.smart { 300 } else { 2000 }, FTL_RANGE) / FTL_RANGE;
+            let load = self.voyage(300, FTL_RANGE) / FTL_RANGE;
             let mut seen: Vec<(f32, usize)> = rich
                 .iter()
-                .filter(|&&(_, s, _)| {
+                .filter(|&&(_, s)| {
                     let sys = &self.systems[s];
                     sys.hulls[super::RAID] == 0
                         && sys.held[super::RAID] == 0
                         && self.on_the_way(s, super::RAID).0 == 0.0
                 })
-                .filter_map(|&(x, s, soft)| {
-                    let x = if co.smart { soft } else { x };
+                .filter_map(|&(x, s)| {
                     let d = self.systems[s].pos.distance_squared(here);
                     if d > self.rules.merc_range.powi(2) {
                         return None;
                     }
                     let net = x - load * d.sqrt();
-                    // A smart company goes by what it'd make for its time.
-                    let time = if co.smart {
-                        d.sqrt() / self.rules.ftl_speed + super::smart::PAUSE
-                    } else {
-                        1.0
-                    };
+                    // It goes by what it'd make for its time.
+                    let time = d.sqrt() / self.rules.ftl_speed + super::smart::PAUSE;
                     (net > 0.0).then_some((net / time, s))
                 })
                 .collect();
-            let n = seen
-                .len()
-                .min(if co.smart { super::smart::LOOKS } else { 6 });
+            let n = seen.len().min(super::smart::LOOKS);
             if n < seen.len() {
                 seen.select_nth_unstable_by(n, |a, b| b.0.total_cmp(&a.0));
                 seen.truncate(n);
@@ -1989,19 +1968,7 @@ impl Galaxy {
                 let none = super::realm::NONE;
                 let offers = self.offers(t, super::RAID, none, self.companies[c].at as usize);
                 let scene = self.scene(t, super::RAID, none);
-                let ways: &[(u32, u32)] = if self.companies[c].smart {
-                    &super::smart::RAIDS
-                } else {
-                    &[
-                        (300, 0),
-                        (1000, 0),
-                        (1000, u32::MAX),
-                        (3000, 0),
-                        (3000, u32::MAX),
-                        (6000, u32::MAX),
-                    ]
-                };
-                for &(size, train) in ways {
+                for (size, train) in super::smart::RAIDS {
                     let q = self.quote(c, size, &offers, (t, super::RAID), pay, train);
                     if q.hulls < MIN_SEND || q.crew == 0 || q.cost + q.wages >= loot {
                         far = far.max(if q.hulls < MIN_SEND || q.crew == 0 {
@@ -2028,11 +1995,7 @@ impl Galaxy {
                     }
                     let net = loot * fc.share.powi(2) - cost;
                     far = far.max(3);
-                    let net = if self.companies[c].smart {
-                        net / (q.fly as f32 + ticks + super::smart::PAUSE)
-                    } else {
-                        net
-                    };
+                    let net = net / (q.fly as f32 + ticks + super::smart::PAUSE);
                     if net > 0.0 && best.as_ref().is_none_or(|b| net > b.0) {
                         best = Some((net, q, t, loot * fc.share, fc.ticks, offers.clone()));
                     }
@@ -2084,7 +2047,7 @@ impl Galaxy {
             d.crystals -= pay;
             self.companies[c].crystals += pay;
             self.companies[c].earned += pay;
-            self.books.by_arm[self.companies[c].smart as usize][2] += pay as f64;
+            self.books.trade[2] += pay as f64;
             self.books.repaid += pay as f64;
         }
         debts.retain(|d| d.crystals > 1e-3);
@@ -2291,7 +2254,6 @@ impl Galaxy {
                 for (i, &p) in co.pilots.iter().enumerate() {
                     if i % 2 == 0 { keep.push(p) } else { go.push(p) }
                 }
-                self.companies[new].smart = co.smart;
                 self.companies[c].pilots = keep;
                 self.companies[new].pilots = go;
                 self.companies[new].margin = (co.margin * self.rng.range(0.8, 1.25)).max(0.0);
@@ -2300,7 +2262,6 @@ impl Galaxy {
                     k: co.pricing.k * self.rng.range(0.9, 1.1),
                     ..co.pricing
                 };
-                self.companies[new].patience = co.patience * self.rng.range(0.9, 1.1);
                 self.companies[new].earned = co.earned / 2.0;
                 self.companies[new].worked = co.worked / 2.0;
                 self.companies[c].earned -= co.earned / 2.0;
@@ -2427,7 +2388,7 @@ impl Galaxy {
             self.books.sailing += fare as f64;
             let co = &mut self.companies[c];
             co.crystals -= fare;
-            self.books.by_arm[co.smart as usize][5] += fare as f64;
+            self.books.trade[5] += fare as f64;
             co.at = to as u32;
             co.idle_since = self.tick + fly;
             self.books.sailed += 1;
