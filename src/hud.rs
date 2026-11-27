@@ -12,6 +12,7 @@ use crate::economy::{self, Payout, Scrapped};
 use crate::faction::Faction;
 use crate::galaxy::theater::TickSummary;
 use crate::hold::{self, Control};
+use crate::minimap;
 use crate::mission::Contract;
 use crate::profile::{Profile, Rank};
 use crate::raid;
@@ -76,6 +77,10 @@ impl Ledger {
 
 /// Eased values so readouts glide instead of snapping.
 pub struct Hud {
+    /// The map's minimap, if it was generated.
+    chart: Option<minimap::Chart>,
+    /// The whole map's up, over the middle of the screen.
+    pub map_up: bool,
     speed: f32,
     initialized: bool,
     /// The button under the pointer, lit.
@@ -88,6 +93,8 @@ pub struct Hud {
 impl Hud {
     pub fn new() -> Hud {
         Hud {
+            chart: None,
+            map_up: false,
             speed: 0.0,
             initialized: false,
             hover: None,
@@ -147,8 +154,16 @@ impl Hud {
             Align::Left,
         );
 
-        // Top right: kill feed, newest on top, each side in its colour.
-        let tr = Vec2::new(w - MARGIN, MARGIN);
+        // Top right: the minimap, then the kill feed, newest on top, each
+        // side in its colour.
+        let mut tr = Vec2::new(w - MARGIN, MARGIN);
+        minimap::keep(&mut self.chart, &m.world.map);
+        if let Some(c) = self.chart.as_ref().filter(|_| !board) {
+            // (Its edge with the other readouts' plates.)
+            let min = tr + Vec2::new(10.0 - minimap::SIZE, -10.0);
+            minimap::draw(&mut p, c, m, tanks, min, minimap::SIZE);
+            tr.y += minimap::SIZE + 24.0;
+        }
         for (row, k) in m.feed.iter().rev().take(5).enumerate() {
             let fade = ((FEED_TIME - k.age) / 0.8).clamp(0.0, 1.0);
             let y = tr.y + row as f32 * 26.0;
@@ -635,6 +650,13 @@ impl Hud {
                 lit: self.hover == Some(Hit::Missions),
             });
             draw_board(&mut p, &mut hits, m, end, w, h);
+        }
+
+        if let Some(c) = self.chart.as_ref().filter(|_| self.map_up && !board) {
+            let size = h * minimap::BIG;
+            let min = (Vec2::new(w, h) - Vec2::splat(size)) * 0.5;
+            p.set_over_scene(false);
+            minimap::draw(&mut p, c, m, tanks, min, size);
         }
 
         Layer {

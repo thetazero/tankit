@@ -23,6 +23,7 @@ mod hud;
 mod keys;
 mod map;
 mod menu;
+mod minimap;
 mod mission;
 mod planet;
 mod profile;
@@ -566,6 +567,8 @@ impl TransferKind {
 enum Screen {
     /// Tab held: the board.
     Tab,
+    /// M: the whole map.
+    Map,
     Menu,
     Missions,
     /// A contested site of the theater.
@@ -1047,6 +1050,7 @@ fn parse_args() -> Result<Args> {
                     Some("pause-settings") => Screen::PauseSettings,
                     Some("pause-controls") => Screen::PauseControls,
                     Some("tab") => Screen::Tab,
+                    Some("map") => Screen::Map,
                     Some("results") => Screen::Results,
                     Some("dead") => Screen::Dead,
                     Some("spent") => Screen::Spent,
@@ -1482,6 +1486,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
                     verdict: hud::Verdict::of(false, game.leader() == Some(0)),
                 });
             }
+            hud.map_up = args.screen == Some(Screen::Map);
             let ui = hud
                 .draw(
                     &game,

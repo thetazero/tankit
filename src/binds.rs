@@ -28,6 +28,8 @@ pub enum Action {
     /// Ease the chase camera back to its usual tilt.
     CameraReset,
     Scoreboard,
+    /// The whole map, big, on and off.
+    Map,
     /// Opens the garage in battle; in the garage it deploys.
     Garage,
     NextHull,
@@ -59,7 +61,7 @@ impl Context {
 pub const SLOTS: usize = 2;
 
 /// Every action, in the order the settings panel lists them.
-pub const ACTIONS: [Action; 18] = [
+pub const ACTIONS: [Action; 19] = [
     Action::Forward,
     Action::Reverse,
     Action::TurnLeft,
@@ -72,6 +74,7 @@ pub const ACTIONS: [Action; 18] = [
     Action::CameraDown,
     Action::CameraReset,
     Action::Scoreboard,
+    Action::Map,
     Action::Garage,
     Action::NextHull,
     Action::NextTurret,
@@ -100,6 +103,7 @@ impl Action {
             Action::CameraDown => "CAMERA DOWN",
             Action::CameraReset => "CAMERA RESET",
             Action::Scoreboard => "SCOREBOARD",
+            Action::Map => "MAP",
             Action::Garage => "GARAGE",
             Action::NextHull => "NEXT HULL",
             Action::NextTurret => "NEXT TURRET",
@@ -124,6 +128,7 @@ impl Action {
             Action::CameraDown => "camera_down",
             Action::CameraReset => "camera_reset",
             Action::Scoreboard => "scoreboard",
+            Action::Map => "map",
             Action::Garage => "garage",
             Action::NextHull => "next_hull",
             Action::NextTurret => "next_turret",
@@ -161,6 +166,7 @@ impl Action {
             Action::CameraDown => (K::KeyE, Some(K::PageDown)),
             Action::CameraReset => (K::KeyR, None),
             Action::Scoreboard => (K::Tab, None),
+            Action::Map => (K::KeyM, None),
             Action::Garage => (K::KeyG, None),
             Action::NextHull => (K::Digit1, None),
             Action::NextTurret => (K::Digit2, None),
