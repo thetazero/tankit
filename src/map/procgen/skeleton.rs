@@ -88,6 +88,9 @@ pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// What color a railway's rails are.
+pub const RAIL: Vec3 = Vec3::new(0.36, 0.34, 0.33);
+
 /// How important a street is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rank {
@@ -530,15 +533,15 @@ impl Skeleton {
     /// a bridge's deck. Nothing that stops a tank.
     pub fn lay_rails(&self, map: &mut Map) {
         // (Over or through a crossing only along it: not across its way.)
-        let y = |p: Vec2, d: Vec2| {
+        let y = |m: &Map, p: Vec2, d: Vec2| {
             let along = |c: &&super::crossing::Crossing| {
                 c.dir().dot(d).abs() > 0.8 && c.distance(p) < c.half
             };
             let way = self.crossings.iter().find(along).map(|c| match c.kind {
-                super::crossing::Kind::Bridge => c.top.max(self.ground(p)),
-                super::crossing::Kind::Tunnel => c.floor,
+                super::crossing::Kind::Bridge => c.top.max(m.ground_height(p.x, p.y)),
+                super::crossing::Kind::Tunnel => m.ground_near(p.x, c.floor, p.y),
             });
-            way.unwrap_or_else(|| self.ground(p))
+            way.unwrap_or_else(|| super::rails::ground(m, p))
         };
         for line in &self.tracks {
             for w in line.windows(2) {
@@ -548,7 +551,7 @@ impl Skeleton {
                 let n = (len / 1.6).round().max(1.0) as i32;
                 for k in 0..n {
                     let p = w[0] + d * len * (k as f32 + 0.5) / n as f32;
-                    let h = y(p, d);
+                    let h = y(map, p, d);
                     map.oboxes.push(OBox {
                         center: p,
                         yaw,
@@ -562,19 +565,7 @@ impl Skeleton {
                         ..OBox::default()
                     });
                 }
-                let side = Vec2::new(-d.y, d.x) * 0.75;
-                let (a, b) = (y(w[0], d) + 0.16, y(w[1], d) + 0.16);
-                for s in [side, -side] {
-                    let (p, q) = (w[0] + s, w[1] + s);
-                    map.segment(
-                        Vec3::new(p.x, a, p.y),
-                        Vec3::new(q.x, b, q.y),
-                        0.08,
-                        Vec3::new(0.36, 0.34, 0.33),
-                        Material::Metal,
-                        false,
-                    );
-                }
+                super::rails::lay(map, (w[0], w[1]), 1.5, RAIL, |m, p| y(m, p, d));
             }
         }
     }

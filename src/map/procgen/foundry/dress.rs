@@ -40,6 +40,7 @@ pub fn dress(map: &mut Map, sk: &Skeleton, look: Look, ground: Ground, rng: &mut
     for c in &sk.crossings {
         c.build(map, stone, Some(look), |p| sk.ground(p));
     }
+    map.scenery_terrain = Some(far_ground(sk, &land, ground));
     sk.lay_rails(map);
     for lot in &sk.lots {
         if let LotKind::Works(part) = lot.kind {
@@ -377,8 +378,50 @@ pub(in crate::map) fn tree(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32) {
     }
 }
 
-/// Past the edge: the land going on, rising into hills; more works far off;
-/// crags, copses.
+/// How far past the arena's edge `p` is (negative: inside).
+fn off(sk: &Skeleton, p: Vec2) -> f32 {
+    let q = (p - Vec2::splat(sk.size * 0.5)).abs() - Vec2::splat(sk.size * 0.5);
+    q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0)
+}
+
+/// How high the land past the edge is, rising into hills.
+fn far_height(sk: &Skeleton, ground: Ground, x: f32, z: f32) -> f32 {
+    let tall = match ground {
+        Ground::Desert => 1.0,
+        Ground::Tundra => 1.4,
+        Ground::Grassland => 0.8,
+    };
+    let p = Vec2::new(x, z);
+    let d = off(sk, p);
+    if d < -0.01 {
+        return sk.ground(p) - 12.0;
+    }
+    let hills = 5.0 * ((x * 0.011).sin() * (z * 0.013).cos()).abs()
+        + 4.0 * (1.0 + (x * 0.021 + z * 0.017).sin());
+    let track = sk
+        .tracks
+        .iter()
+        .flat_map(|l| l.windows(2))
+        .map(|w| crate::map::procgen::mine::seg(p, w[0], w[1]).0)
+        .fold(f32::MAX, f32::min);
+    let level = smoothstep(8.0, 40.0, track).max(smoothstep(120.0, 200.0, d));
+    // (A little under the arena's own ground where they meet.)
+    sk.ground(p) - 0.15 * (1.0 - smoothstep(0.0, 8.0, d))
+        + tall * hills * smoothstep(20.0, 120.0, d) * level
+}
+
+/// The land going on past the edge.
+fn far_ground(sk: &Skeleton, land: &Land, ground: Ground) -> Terrain {
+    let (cell, reach) = (5.0, 480.0);
+    let n = ((sk.size + 2.0 * reach) / cell).round() as usize + 1;
+    let height = |x, z| far_height(sk, ground, x, z);
+    let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, height);
+    t.color = land.far;
+    t.material = land.far_material;
+    t
+}
+
+/// What's past the edge: more works far off; crags, copses.
 fn beyond(
     map: &mut Map,
     sk: &Skeleton,
@@ -388,41 +431,7 @@ fn beyond(
     rng: &mut Rng,
 ) {
     let s = sk.size;
-    let cell = 5.0f32;
-    let reach = 480.0;
-    let n = ((s + 2.0 * reach) / cell).round() as usize + 1;
-    let off = |p: Vec2| {
-        let q = (p - Vec2::splat(s * 0.5)).abs() - Vec2::splat(s * 0.5);
-        q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0)
-    };
-    let tall = match ground {
-        Ground::Desert => 1.0,
-        Ground::Tundra => 1.4,
-        Ground::Grassland => 0.8,
-    };
-    let height = |x: f32, z: f32| {
-        let p = Vec2::new(x, z);
-        let d = off(p);
-        if d < -0.01 {
-            return sk.ground(p) - 12.0;
-        }
-        let hills = 5.0 * ((x * 0.011).sin() * (z * 0.013).cos()).abs()
-            + 4.0 * (1.0 + (x * 0.021 + z * 0.017).sin());
-        let track = sk
-            .tracks
-            .iter()
-            .flat_map(|l| l.windows(2))
-            .map(|w| crate::map::procgen::mine::seg(p, w[0], w[1]).0)
-            .fold(f32::MAX, f32::min);
-        let level = smoothstep(8.0, 40.0, track).max(smoothstep(120.0, 200.0, d));
-        // (A little under the arena's own ground where they meet.)
-        sk.ground(p) - 0.15 * (1.0 - smoothstep(0.0, 8.0, d))
-            + tall * hills * smoothstep(20.0, 120.0, d) * level
-    };
-    let mut t = Terrain::from_fn(Vec2::splat(-reach), cell, n, n, height);
-    t.color = land.far;
-    t.material = land.far_material;
-    map.scenery_terrain = Some(t);
+    let height = |x, z| far_height(sk, ground, x, z);
     let out = |rng: &mut Rng, lo: f32, hi: f32| {
         let dir = Vec2::from_angle(rng.range(0.0, TAU));
         let edge = s * 0.5 / dir.x.abs().max(dir.y.abs());
@@ -450,7 +459,7 @@ fn beyond(
         ];
         let part = kinds[rng.index(kinds.len())];
         let half = part.half(rng);
-        if on_track(c, half.length() + 5.0) || off(c) < half.length() + 14.0 {
+        if on_track(c, half.length() + 5.0) || off(sk, c) < half.length() + 14.0 {
             continue;
         }
         put += 1;
@@ -478,7 +487,7 @@ fn beyond(
             let c = out(rng, 18.0, 150.0);
             for _ in 0..rng.int(2, 6) {
                 let p = c + Vec2::new(rng.range(-9.0, 9.0), rng.range(-9.0, 9.0));
-                if off(p) > 9.0 && !on_track(p, 5.0) {
+                if off(sk, p) > 9.0 && !on_track(p, 5.0) {
                     tree(map, rng, p, height(p.x, p.y));
                 }
             }
