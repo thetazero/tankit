@@ -438,6 +438,22 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             for r in &mut g.realms {
                 r.arm = Arm::ALL[(r.arm as usize + turn) % Arm::ALL.len()];
             }
+            // `WARM=ticks`: nobody's smart till the war's that old.
+            let warm = std::env::var("WARM")
+                .ok()
+                .and_then(|x| x.parse::<u64>().ok());
+            if let Some(warm) = warm {
+                let arms: Vec<Arm> = g.realms.iter().map(|r| r.arm).collect();
+                for r in &mut g.realms {
+                    r.arm = Arm::Hire;
+                }
+                while g.tick < warm {
+                    g.tick_once();
+                }
+                for (i, r) in g.realms.iter_mut().enumerate() {
+                    r.arm = arms[i % arms.len()];
+                }
+            }
             for c in &mut g.companies {
                 c.smart ^= turn % 2 == 1;
             }
@@ -446,7 +462,7 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             let mut spans = Spans::of(&g);
             g.step();
             let start = holdings(&g);
-            while g.tick < ticks {
+            while g.tick < ticks + warm.unwrap_or(0) {
                 g.tick_once();
                 spans.watch(&g);
                 if g.tick >= at + ticks / 8 {
@@ -459,6 +475,16 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                         "         holdings {:.1?}; smart companies {share:.1}% of capital, worth {smart:.0} each against {other:.0}",
                         holdings(&g)
                     );
+                    for (i, name) in ["plain", "smart"].into_iter().enumerate() {
+                        let of = |k: usize| g.books.by_arm[i][k] - last.by_arm[i][k];
+                        let n = of(0).max(1.0);
+                        let [loot, paid, out, wages, sail] = [1, 2, 3, 4, 5].map(|k| of(k) / n);
+                        println!(
+                            "         {name} companies, each a tick: loot {loot:.2} contracts {paid:.2}, less setting out {out:.2} wages {wages:.2} sailing {sail:.2} upkeep {:.2}: {:+.2}",
+                            g.rules.ship_upkeep,
+                            loot + paid - out - wages - sail - g.rules.ship_upkeep as f64,
+                        );
+                    }
                     (last, was, at) = (g.books, g.destroyed, g.tick);
                 }
             }
@@ -486,7 +512,10 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
         for arm in Arm::ALL {
             let v: Vec<f64> = moved.iter().map(|m| m[arm as usize]).collect();
             let (mean, se) = stat(&v);
-            println!("ARMS {}: {mean:+.2} points (se {se:.2}) {v:.2?}", arm.name());
+            println!(
+                "ARMS {}: {mean:+.2} points (se {se:.2}) {v:.2?}",
+                arm.name()
+            );
         }
         let (mean, se) = stat(&firms);
         println!("ARMS smart companies: {mean:.1}% of capital (se {se:.1}) {firms:.1?}");

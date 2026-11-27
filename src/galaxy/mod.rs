@@ -1140,6 +1140,7 @@ impl Galaxy {
                     .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
             }) {
                 c.crystals += loot;
+                self.books.by_arm[c.smart as usize][1] += loot as f64;
                 if let Some(k) = &mut c.contract {
                     k.loot += loot;
                 }
@@ -1829,6 +1830,7 @@ impl Galaxy {
         }
         let offset = self.rng.index(n);
         for f in order {
+            self.campaigns(f);
             for i in 0..n {
                 let t = (i + offset) % n;
                 // Nothing to do deep in anyone's space.
@@ -1884,7 +1886,11 @@ impl Galaxy {
         if here == 0 && !raided && !(self.tick + t as u64).is_multiple_of(THINK) {
             return;
         }
-        let worth = self.worth(t, f, ours);
+        // A smart realm picks its own attacks (`campaigns`).
+        if here == 0 && !ours && self.realms[r as usize].arm == realm::Arm::Smart {
+            return;
+        }
+        let worth = self.prize(r, t, f, ours);
         if worth <= 0.0 {
             return;
         }
@@ -1984,7 +1990,12 @@ impl Galaxy {
         }
         let mut best = (0.0, 0.0f32);
         if pool >= MIN_SEND {
-            for share in [0.1, 0.25, 0.5, 1.0] {
+            let shares: &[f32] = if realm.arm == realm::Arm::Smart {
+                &smart::SENDS
+            } else {
+                &[0.1, 0.25, 0.5, 1.0]
+            };
+            for &share in shares {
                 let n = pool as f32 * share * afford;
                 if n < MIN_SEND as f32 {
                     continue;

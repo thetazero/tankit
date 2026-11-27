@@ -104,6 +104,8 @@ pub struct Realm {
     /// Free pilots it took on this tick (scratch).
     pub hired: u32,
     pub arm: Arm,
+    /// The neighbor a smart realm's out to conquer, if any.
+    pub rival: u32,
     /// Systems it's fighting in, as of the last tick's battles.
     pub fronts: u32,
     /// Scratch: systems it's lost since they were last counted.
@@ -132,6 +134,7 @@ impl Realm {
             seats_next: 0.0,
             hired: 0,
             arm: Arm::Hire,
+            rival: NONE,
             fronts: 0,
             fell: 0,
         }

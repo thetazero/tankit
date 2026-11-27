@@ -358,6 +358,56 @@ fn far_holdings_break_away() {
     );
 }
 
+/// Realms breaking away, and folding together, keep their arm.
+#[test]
+fn realms_keep_their_arm() {
+    let arms = |g: &Galaxy| -> Vec<realm::Arm> {
+        (0..g.systems.len())
+            .map(|s| g.realms[g.holder(s) as usize].arm)
+            .collect()
+    };
+    let mut g = small_war();
+    for arm in realm::Arm::ALL {
+        assert!(g.living().any(|(_, r)| r.arm == arm), "no {}", arm.name());
+    }
+    let before = arms(&g);
+    g.rules.reach = 100.0;
+    g.reshape();
+    assert!(g.splits > 0);
+    assert_eq!(arms(&g), before);
+    g.rules.fold = 1000;
+    g.rules.reach = 5000.0;
+    g.reshape();
+    assert!(g.merges > 0);
+    assert_eq!(arms(&g), before);
+}
+
+/// A smart realm keeps its pilots within its budget, by the same limits on
+/// training as any.
+#[test]
+fn smart_realms_budget_for_pilots() {
+    let rules = Rules::default();
+    let mut r = realm::Realm {
+        arm: realm::Arm::Smart,
+        income: 4.0,
+        crystals: 300.0,
+        ..realm::Realm::new(0, 0, 0)
+    };
+    for _ in 0..400 {
+        let (pilots, bank) = (r.pilots, r.crystals);
+        let left = r.keep_pilots(&rules, 0, 0);
+        assert!(r.pilots <= pilots + rules.train);
+        assert!(left <= rules.train, "{left} of {pilots} let go with {bank}");
+        r.crystals += r.income * (1.0 - rules.research);
+    }
+    let budget = r.crew_budget(&rules);
+    assert!(
+        r.pilots > 60 && r.pilots <= budget + budget / 5,
+        "{} of {budget}",
+        r.pilots
+    );
+}
+
 /// Small neighbors of one people fold together when one seat can rule them.
 #[test]
 fn small_realms_fold_together() {
@@ -509,6 +559,8 @@ fn companies_split_and_join() {
     let total: f32 = g.companies.iter().map(|c| c.crystals).sum();
     g.split_and_join();
     assert_eq!((g.books.splits, g.books.joins), (1, 1));
+    // The one that split off has its parent's arm.
+    assert_eq!(g.companies.last().unwrap().smart, g.companies[0].smart);
     assert_eq!(g.companies.len(), n);
     // Nothing's lost but the small one's fare over.
     let after: f32 = g.companies.iter().map(|c| c.crystals).sum();

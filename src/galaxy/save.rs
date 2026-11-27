@@ -352,6 +352,8 @@ struct SavedRealm {
     /// a third of those realms become smart ones).
     #[serde(default)]
     arm: Option<u8>,
+    #[serde(default)]
+    rival: Option<u32>,
     /// Systems it was fighting in.
     #[serde(default)]
     fronts: u32,
@@ -441,6 +443,7 @@ impl Galaxy {
                     wage: r.wage,
                     hires: Some(r.arm.hires()),
                     arm: Some(r.arm as u8),
+                    rival: (r.rival != NONE).then_some(r.rival),
                     fronts: r.fronts,
                     senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
                     seats: Some([r.seats, r.seats_next, r.seats_now]),
@@ -590,6 +593,7 @@ impl Galaxy {
                     .pilots_wanted(&rules)
                 }),
                 wage: r.wage,
+                rival: r.rival.unwrap_or(NONE),
                 arm: match r.arm.and_then(|a| Arm::ALL.get(a as usize)) {
                     Some(&arm) => arm,
                     None if Rng::new(0xA_2B ^ i as u64).index(3) == 0 => Arm::Smart,
@@ -1174,6 +1178,12 @@ mod tests {
             assert_eq!(a.realms, b.realms);
         }
         assert_eq!(g.living().count(), back.living().count());
+        for (a, b) in g.realms.iter().zip(&back.realms) {
+            assert_eq!((a.arm, a.rival), (b.arm, b.rival));
+        }
+        for (a, b) in g.companies.iter().zip(&back.companies) {
+            assert_eq!(a.smart, b.smart);
+        }
         assert_eq!(g.companies.len(), back.companies.len());
         assert_eq!(
             g.debts
