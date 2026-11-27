@@ -245,3 +245,65 @@ impl Map {
         drifts
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::nav::NavGrid;
+    use crate::hold;
+    use crate::map::procgen::{self, Look, skeleton};
+
+    /// Bots know they can't drive in the middle of any model, up or down,
+    /// and that they can reach the Hold ring round it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn bots_keep_out_of_the_middle() {
+        let mut wrong = Vec::new();
+        for owner in [
+            Faction::Imperium,
+            Faction::Resonant,
+            Faction::Uthenn,
+            Faction::Ithessar,
+        ] {
+            for condition in [Condition::Up, Condition::DAMAGED] {
+                for seed in [2, 5] {
+                    let generator = crate::Generator { owner, condition };
+                    let spec = crate::shield_spec(seed, Look::Imperium, generator);
+                    let lm = skeleton(&spec).landmarks[0].clone();
+                    let (m, _) = procgen::build(&spec);
+                    let nav = NavGrid::build(&m);
+                    let what = format!("{owner:?} {condition:?}, seed {seed}");
+                    let mut open = Vec::new();
+                    // Each nav cell's middle (they're 2 m) that's well in on
+                    // the plinth: its corners aren't solid.
+                    for x in -3..=3 {
+                        for z in -3..=3 {
+                            let cell = (lm.center * 0.5).floor() + Vec2::new(x as f32, z as f32);
+                            let p = (cell + 0.5) * 2.0;
+                            if p.distance(lm.center) < PLINTH_R - 1.0 && !nav.is_blocked(p) {
+                                open.push(p - lm.center);
+                            }
+                        }
+                    }
+                    if !open.is_empty() {
+                        wrong.push(format!("{what}: drivable at {open:?}"));
+                    }
+                    let at = m.hold_site.unwrap_or(lm.center);
+                    let near = nav.nearest_open_point(at).unwrap_or(Vec2::INFINITY);
+                    if near.distance(at) > hold::RADIUS - 1.0 {
+                        wrong.push(format!("{what}: no room in the ring"));
+                    }
+                    for base in m.bases.iter().map(|b| b[0]) {
+                        if nav.path(base, at).is_empty() {
+                            wrong.push(format!("{what}: no way to the site from {base}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+}

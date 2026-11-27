@@ -603,18 +603,6 @@ impl Map {
                 at(corner(i + 1, r + depth), y),
             );
         }
-        // Inside the plinth: some models' feet are too low, and what stands
-        // on them too high, for bots to know they can't drive in there.
-        self.block(
-            c,
-            Vec2::splat(2.0),
-            0.0,
-            (base, base + 1.0),
-            TUBE,
-            Material::Concrete,
-            true,
-        )
-        .hidden = true;
         // Work lights on the top lift, turned in on the job.
         for i in (0..n).step_by(3) {
             let p = corner(i, r + depth);

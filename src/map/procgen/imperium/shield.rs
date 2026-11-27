@@ -174,7 +174,9 @@ impl Map {
         let at = |y: f32| Vec3::new(c.x, base + y, c.y);
         self.sound(Ambient::Machine, at(3.0));
         self.drum(at(0.0), at(0.55), PLINTH_R, STONE * 0.9);
-        self.drum(at(0.55), at(PLINTH_TOP), PLINTH_R - 1.4, CONCRETE);
+        // Down inside the foot: as two low steps, with the mast standing over
+        // them, bots would take it for ground they can drive on.
+        self.drum(at(0.1), at(PLINTH_TOP), PLINTH_R - 1.4, CONCRETE);
         self.pipe(
             at(PLINTH_TOP),
             at(MAST_TOP),
