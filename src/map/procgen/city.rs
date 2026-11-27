@@ -1338,7 +1338,8 @@ fn river_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
             && ends.iter().all(|&p| inside(p, 22.0))
             && c.bridges.iter().all(|b| (b.t - t).abs() > gap)
         {
-            c.bridge(t, plan.density.lane().1.max(5.0));
+            // (Never too narrow for two of the widest tanks to pass.)
+            c.bridge(t, plan.density.lane().1.max(7.5));
         }
     }
     for b in &c.bridges {

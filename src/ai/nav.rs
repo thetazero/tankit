@@ -24,6 +24,13 @@ const CLEARANCE: f32 = 2.2;
 /// On a deck, a low rail along its edge (that a tank can see and shoot
 /// over) is only kept this far off: it's there to keep tanks on.
 const RAIL_CLEARANCE: f32 = 1.0;
+/// Where a deck's wide enough, a route keeps this far in from its rails (a
+/// hull's half-width and some), m...
+const DECK_MARGIN: f32 = 2.0;
+/// ...and a cell by its edge costs this many times a cell more.
+const EDGE_COST: f32 = 1.5;
+/// Down the sides of a ramp up onto a deck, further than this is an edge, m.
+const KERB: f32 = 0.35;
 /// Steepest ground (rise over run) bots will path across.
 const MAX_SLOPE: f32 = 0.7;
 /// On a mesa, bots keep this far back from the edge, m.
@@ -56,7 +63,8 @@ pub struct NavGrid {
     blocked: Vec<[bool; LEVELS]>,
     terrain: Option<Terrain>,
     solid: Option<std::sync::Arc<crate::map::solid::Surface>>,
-    /// Flat drivable slabs (decks, roofs): floors over the ground.
+    /// Drivable slabs: floors over the ground. Level ones (decks, roofs),
+    /// and the ramps up onto those from the ground at their ends.
     slabs: Vec<OBox>,
 }
 
@@ -72,18 +80,37 @@ fn nearest(floors: &[f32; LEVELS], h: f32) -> (usize, f32) {
     best
 }
 
+/// The top of a slab `z` along it (its local +z tips down by its tilt).
+fn slab_top(s: &OBox, z: f32) -> f32 {
+    let thick = (s.y1 - s.y0) * 0.5;
+    (s.y0 + s.y1) * 0.5 + thick / s.tilt.cos() - z * s.tilt.tan()
+}
+
+/// Whether a ramp's high end meets one of the level `decks`.
+fn meets_deck(ramp: &OBox, decks: &[OBox]) -> bool {
+    let (_, az) = ramp.axes();
+    let end = -ramp.tilt.signum() * ramp.half.y * ramp.tilt.cos();
+    let top = slab_top(ramp, end);
+    let past = ramp.center + az * (end + 0.5 * end.signum());
+    decks.iter().any(|d| {
+        let l = d.local_point(past);
+        l.x.abs() <= d.half.x && l.y.abs() <= d.half.y && (d.y1 - top).abs() < 0.3
+    })
+}
+
 /// A floor of a cell: (cell index, which floor of it).
 type Spot = (usize, usize);
 
 impl NavGrid {
     pub fn build(map: &Map) -> NavGrid {
         let n = (map.size / NAV_CELL).ceil() as usize;
-        let slabs = map
-            .oboxes
-            .iter()
-            .filter(|o| o.solid && o.ramp && !o.is_turned())
-            .cloned()
+        let drivable = || map.oboxes.iter().filter(|o| o.solid && o.ramp);
+        let mut slabs: Vec<OBox> = drivable().filter(|o| !o.is_turned()).copied().collect();
+        let ramps: Vec<OBox> = drivable()
+            .filter(|o| o.tilt != 0.0 && o.roll == 0.0 && meets_deck(o, &slabs))
+            .copied()
             .collect();
+        slabs.extend(&ramps);
         let mut nav = NavGrid {
             n,
             floor: Vec::new(),
@@ -186,6 +213,32 @@ impl NavGrid {
                     }
                 }
             }
+        }
+        // Off the sides of the ramps up onto decks: one's driven up from its
+        // foot, not over the edge with a track hanging off it.
+        for r in &ramps {
+            let reach = Vec2::splat(r.half.length() + RAIL_CLEARANCE);
+            let (_, az) = r.axes();
+            let side = az.perp();
+            nav.mark(r.center - reach, r.center + reach, |c, f, _| {
+                let l = r.local_point(c);
+                if l.y.abs() > r.half.y * r.tilt.cos()
+                    || (l.x.abs() - r.half.x).abs() > RAIL_CLEARANCE
+                {
+                    return false;
+                }
+                let edge = |x: f32| r.center + side * x + az * l.y;
+                // Which way across `side` goes from the ramp's middle.
+                let e = if (c - r.center).dot(side) < 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let on = slab_top(r, l.y);
+                let p = edge(e * (r.half.x + 0.3));
+                let off = map.ground_height(p.x, p.y);
+                on - off > KERB && (f - on).abs() < STEP
+            });
         }
         // Floors too steep to drive up (cliffs, steep banks, a deck's edge).
         for i in 0..n * n {
@@ -310,8 +363,8 @@ impl NavGrid {
             if l.x.abs() > s.half.x || l.y.abs() > s.half.y {
                 continue;
             }
-            under |= s.y0 >= g + HEADROOM;
-            top = top.max(s.y1);
+            under |= !s.is_turned() && s.y0 >= g + HEADROOM;
+            top = top.max(slab_top(s, l.y));
         }
         put(top);
         if under && top > g {
@@ -479,6 +532,54 @@ impl NavGrid {
         Some(h)
     }
 
+    /// Is this floor a deck's (or one of its ramps')?
+    fn on_deck(&self, (i, l): Spot) -> bool {
+        l == TOP && self.floor[i][l] > self.ground(self.center(i)) + 0.1
+    }
+
+    /// Is `p` (a tank's position) over a deck rather than the ground?
+    pub fn over_deck(&self, p: Vec3) -> bool {
+        let i = self.cell(Vec2::new(p.x, p.z));
+        self.on_deck((i, self.level(i, p.y)))
+    }
+
+    /// A deck's cell with one beside it that can't be driven.
+    fn by_decks_edge(&self, s: Spot) -> bool {
+        let n = self.n as i32;
+        let (x0, z0) = ((s.0 % self.n) as i32, (s.0 / self.n) as i32);
+        let h = self.floor[s.0][s.1];
+        self.on_deck(s)
+            && (-1..=1).any(|dz| {
+                (-1..=1).any(|dx| {
+                    let (x, z) = (x0 + dx, z0 + dz);
+                    let inside = (0..n).contains(&x) && (0..n).contains(&z);
+                    !inside || self.step_to((z * n + x) as usize, h, STEP * 1.5).is_none()
+                })
+            })
+    }
+
+    /// Driving straight from `a` to `b`, wherever that's on a deck it keeps
+    /// `DECK_MARGIN` in from what can't be driven along the deck's edges.
+    fn off_rails(&self, a: Vec3, b: Vec2) -> bool {
+        let a2 = Vec2::new(a.x, a.z);
+        let Some(side) = (b - a2).try_normalize().map(|d| d.perp() * DECK_MARGIN) else {
+            return true;
+        };
+        let steps = (a2.distance(b) / (NAV_CELL * 0.5)).ceil().max(1.0) as usize;
+        let mut h = a.y;
+        (0..=steps).all(|k| {
+            let p = a2.lerp(b, k as f32 / steps as f32);
+            let i = self.cell(p);
+            let l = self.level(i, h);
+            h = self.floor[i][l];
+            !self.on_deck((i, l))
+                || [-1.0, 1.0].iter().all(|&e| {
+                    self.step_to(self.cell(p + side * e), h, STEP * 1.5)
+                        .is_some()
+                })
+        })
+    }
+
     /// Straight drive from `a` to `b` stays on open top floors.
     pub fn clear_line(&self, a: Vec2, b: Vec2) -> bool {
         self.walk(Vec3::new(a.x, f32::INFINITY, a.y), b).is_some()
@@ -585,7 +686,12 @@ impl NavGrid {
                     }
                 }
                 let next = id((j, l));
-                let cost = gc + if diag { std::f32::consts::SQRT_2 } else { 1.0 };
+                let edge = if self.by_decks_edge((j, l)) {
+                    EDGE_COST
+                } else {
+                    0.0
+                };
+                let cost = gc + edge + if diag { std::f32::consts::SQRT_2 } else { 1.0 };
                 if cost < g[next] {
                     g[next] = cost;
                     came[next] = at;
@@ -610,8 +716,8 @@ impl NavGrid {
         // straight line stays open and on the level.
         let pts: Vec<Vec3> = spots.iter().map(|&s| self.point(s)).collect();
         let reaches = |a: Vec3, b: Vec3| {
-            self.walk(a, Vec2::new(b.x, b.z))
-                .is_some_and(|h| (h - b.y).abs() < 0.5)
+            let to = Vec2::new(b.x, b.z);
+            self.walk(a, to).is_some_and(|h| (h - b.y).abs() < 0.5) && self.off_rails(a, to)
         };
         let mut out = Vec::new();
         let mut i = 0;
