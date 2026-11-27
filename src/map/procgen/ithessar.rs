@@ -7,10 +7,13 @@
 //! - great buildings (`great`): the Sun, the Lens, the Weir.
 //! - lots: shard houses; crescents, a curved wall round a court tanks drive
 //!   into; houses floating on crystal legs; heaps of broken stone.
+//! - each side's staging court (`court`).
 //! - medium structures (`civics`): kiln courts, lens halls, terraces.
-//! - their power's the plasma river (`channel`), and every lit slit's on it.
+//! - their power's the plasma river (`channel`), and every lit slit's on it: the Sun
+//!   and the Weir are joined to it overhead (`conduit`).
 
 mod civics;
+mod court;
 mod great;
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
@@ -19,7 +22,7 @@ use glam::{Quat, Vec2, Vec3};
 
 use super::shield::{angle, apart, dir, precinct_spots};
 use super::skeleton::*;
-use super::{Centerpiece, Style, civic};
+use super::{Centerpiece, Style, civic, conduit};
 use crate::map::landmarks::Rig;
 use crate::map::ruins::Drift;
 use crate::map::{Ambient, Crystal, GlowPath, Map, OBox};
@@ -84,6 +87,19 @@ impl Style for Ithessar {
             LandmarkKind::Great(2) => great::weir(map, rng, lm, base),
             _ => great::sun(map, rng, lm, base),
         }
+        if let Some(c) = sk
+            .conduits
+            .iter()
+            .find(|c| sk.landmarks[c.landmark].center == lm.center)
+        {
+            // From in the Sun's orb, or to the ring over the Weir's sluices.
+            match lm.kind {
+                LandmarkKind::Great(2) => {
+                    conduit::build(map, sk, c, lm.radius - 4.5, [11.1, 10.6, 8.0])
+                }
+                _ => conduit::build(map, sk, c, 2.0, [20.5, 9.0, 6.5]),
+            }
+        }
         for a in precinct_spots(lm, 10).into_iter().flatten() {
             obelisk(map, rng, lm.center + dir(a) * lm.precinct, base, 5.0);
         }
@@ -137,8 +153,8 @@ impl Style for Ithessar {
         Vec::new()
     }
 
-    fn base(&self, map: &mut Map, sk: &Skeleton, side: usize, b: &Base, rng: &mut Rng) {
-        map.staging_court(rng, side, b, sk.center(), STONE * 1.7);
+    fn base(&self, map: &mut Map, _sk: &Skeleton, side: usize, b: &Base, rng: &mut Rng) {
+        court::build(map, rng, side, b);
     }
 
     fn edge(&self, map: &mut Map, _sk: &Skeleton, e: &Edge, rng: &mut Rng) {

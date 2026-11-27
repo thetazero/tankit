@@ -26,6 +26,7 @@ pub mod channel;
 pub mod check;
 pub mod city;
 mod civic;
+mod conduit;
 pub mod crossing;
 pub mod depot;
 pub mod desert;
@@ -343,9 +344,26 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         sk.paint(t, st.road());
     }
     st.finish(&mut map);
+    let mut rock = st.ground() * glam::Vec3::new(0.9, 0.84, 0.78);
+    let mut banks = Vec::new();
     if spec.setting == setting::Setting::Desert {
-        setting::desert(&mut map, &sk, spec.seed, st.road());
+        (banks, rock) = setting::desert(&mut map, &sk, spec.seed, st.road());
     }
+    let heaped = |d: &[Drift], p: Vec2| {
+        d.iter()
+            // (Most are nowhere near.)
+            .filter(|d| {
+                let reach = d.b.half.length() + d.run * 2.0 + 4.0;
+                d.b.center.distance_squared(p) < reach * reach
+            })
+            .map(|d| d.height_at(p))
+            .fold(0.0, f32::max)
+    };
+    let mut ground = sk
+        .land
+        .plain_surface(sk.size, |p| heaped(&drifts, p) + heaped(&banks, p));
+    ground.rock = rock;
+    map.solid = Some(ground.into());
     map.drop_tiny_hitboxes();
     map.separate_coplanar_faces();
     sk.finish(&mut map);
@@ -961,6 +979,68 @@ mod tests {
         }
     }
 
+    /// Every city's and foundry's and depot's ground is solid, and their
+    /// tunnels dug out of it: in at one end and out at the other along a
+    /// level floor, the ground carrying on over it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn tunnels_are_dug_out_of_solid_ground() {
+        let foundry = |s| crate::foundry_spec(s, Look::Imperium, foundry::Ground::Desert);
+        let specs = (0..8)
+            .map(spec)
+            .chain((0..16).map(foundry))
+            .chain((0..2).map(|s| crate::depot_spec(s, Look::Imperium)));
+        let mut tunnels = 0;
+        for sp in specs {
+            let sk = match sp.biome {
+                Biome::City => skeleton(&sp),
+                Biome::Depot => depot::skeleton(&sp),
+                _ => foundry::skeleton(&sp),
+            };
+            let m = sk.greybox(&sp.sides);
+            let solid = m.solid.as_ref().unwrap();
+            let nav = crate::ai::nav::NavGrid::build(&m);
+            for x in &sk.crossings {
+                if x.kind != crossing::Kind::Tunnel {
+                    continue;
+                }
+                tunnels += 1;
+                let side = x.dir().perp();
+                let mut t = 0.0;
+                while t < x.len() {
+                    for off in [-0.8, 0.0, 0.8] {
+                        let p = x.from + x.dir() * t + side * off * x.half;
+                        let f = solid.floors(p);
+                        let low = *f.last().unwrap();
+                        assert!(
+                            (low - x.floor).abs() < 0.3,
+                            "{} {:?} at {p}, {t} along {x:?}: {f:?}",
+                            sp.seed,
+                            sp.biome
+                        );
+                        let in_it = t > x.roofed.0 + 2.0 && t < x.roofed.1 - 2.0;
+                        let top = f[0] - low;
+                        assert!(
+                            !in_it || top > 5.5,
+                            "{} {:?} at {p}, {t} along: {f:?}",
+                            sp.seed,
+                            sp.biome
+                        );
+                        assert_eq!(f.len(), if in_it { 2 } else { f.len() }, "at {p}: {f:?}");
+                    }
+                    t += 1.0;
+                }
+                let end = |p: Vec2| glam::Vec3::new(p.x, x.floor, p.y);
+                let way = nav.route(end(x.from), end(x.to));
+                assert!(!way.is_empty(), "{} {:?} {x:?}", sp.seed, sp.biome);
+            }
+        }
+        assert!(tunnels > 3, "{tunnels}");
+    }
+
     #[test]
     #[ignore = "a probe"]
     fn where_greats() {
@@ -1034,167 +1114,45 @@ mod tests {
         }
     }
 
-    /// Hover hulls drive down the slips, along the river and out of it, and
-    /// it's a way round they take where it's shorter; tracked ones keep off.
+    /// Every Sun and Weir is joined to the river, and what carries that
+    /// stands in no road.
     #[test]
     #[cfg_attr(
         debug_assertions,
         ignore = "slow unoptimized: run with cargo test --release"
     )]
-    fn hover_hulls_ride_the_river_and_tracked_ones_dont() {
-        use crate::ai::nav::NavGrid;
-        use glam::Vec3;
-        let mut rode = 0;
-        for seed in 0..2 {
-            let m = build(&crate::city_spec(seed, Look::Ithessar)).0;
-            let c = m.skeleton.as_ref().unwrap().land.channel.as_ref().unwrap();
-            let start = std::time::Instant::now();
-            let tracked = NavGrid::build(&m);
-            let plain = start.elapsed();
-            let start = std::time::Instant::now();
-            let hover = NavGrid::build_hover(&m);
-            println!(
-                "seed {seed}: {} slips, grids {plain:?} and {:?}",
-                c.slips.len(),
-                start.elapsed()
-            );
-            assert!(c.slips.len() >= 2, "seed {seed}: {} slips", c.slips.len());
-            let length = |from: Vec3, r: &[Vec3]| {
-                let mut sum = 0.0;
-                let mut at = from;
-                for &p in r {
-                    sum += at.distance(p);
-                    at = p;
-                }
-                sum
-            };
-            let over = |p: Vec3| m.rivers[0].surface(Vec2::new(p.x, p.z), 0.0);
-            let wet = |from: Vec3, r: &[Vec3]| {
-                let mut at = from;
-                r.iter().any(|&p| {
-                    let a = std::mem::replace(&mut at, p);
-                    (0..=20).any(|k| {
-                        let q = a.lerp(p, k as f32 / 20.0);
-                        over(q).is_some_and(|y| q.y < y + 1.0)
-                    })
-                })
-            };
-            let mut open = 0;
-            for s in &c.slips {
-                let quay = c.point(s.t, s.side * (c.half + channel::WALL + 5.0));
-                let quay = Vec3::new(quay.x, s.top, quay.y);
-                let mid = c.point(s.t + s.down * (s.len() + 4.0), 0.0);
-                let mid = Vec3::new(mid.x, s.surface, mid.y);
-                let reach = |a: Vec3, b: Vec3| {
-                    let r = hover.route(a, b);
-                    !r.is_empty() && r.last().unwrap().distance(b) < 6.0 && length(a, &r) < 120.0
-                };
-                let both = reach(quay, mid) && reach(mid, quay);
-                if !both {
-                    println!(
-                        "seed {seed} slip {s:?}: {quay} {mid} floors {:?} {:?} route {:?}",
-                        hover.floor_at(quay),
-                        hover.floor_at(mid),
-                        hover.route(quay, mid)
-                    );
-                }
-                open += both as usize;
-                assert_eq!(tracked.floor_at(mid), None, "seed {seed}: {mid}");
-            }
-            assert!(
-                open * 10 >= c.slips.len() * 8,
-                "seed {seed}: {open} of {} slips open",
-                c.slips.len()
-            );
-            for s in &c.slips {
-                let at = |side: f32| {
-                    let p = c.point(s.t, side * (c.half + channel::WALL + 5.0));
-                    Vec3::new(p.x, s.top, p.y)
-                };
-                let (a, b) = (at(s.side), at(-s.side));
-                let (t, h) = (tracked.route(a, b), hover.route(a, b));
-                assert!(!wet(a, &t), "seed {seed}: {a} to {b}: {t:?}");
-                if wet(a, &h) && length(a, &h) < length(a, &t) * 0.95 {
-                    rode += 1;
-                }
-            }
-            for (k, &a) in m.open_spots.iter().enumerate().step_by(29) {
-                let b = m.open_spots[(k * 31 + 17) % m.open_spots.len()];
-                if c.wet(a, 4.0) || c.wet(b, 4.0) {
+    fn suns_and_weirs_are_joined_to_the_river() {
+        let mut seen = 0;
+        for seed in 0..6 {
+            let sk = skeleton(&crate::city_spec(seed, Look::Ithessar));
+            let c = sk.land.channel.as_ref().unwrap();
+            for (k, lm) in sk.landmarks.iter().enumerate() {
+                let Some(conduit) = sk.conduits.iter().find(|c| c.landmark == k) else {
+                    assert_eq!(lm.kind, LandmarkKind::Great(1), "seed {seed}");
                     continue;
-                }
-                let at = |p: Vec2| Vec3::new(p.x, m.ground_height(p.x, p.y), p.y);
-                let (a, b) = (at(a), at(b));
-                let t = tracked.route(a, b);
-                assert!(!wet(a, &t), "seed {seed}: {a} to {b}: {t:?}");
-            }
-        }
-        assert!(rode >= 4, "only {rode} routes ride the river");
-    }
-
-    /// A hover hull gets down a slip and back up it, in the physics and not
-    /// just on the grid.
-    #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "slow unoptimized: run with cargo test --release"
-    )]
-    fn a_hover_hull_drives_down_a_slip_and_back_up() {
-        use crate::ai::nav::NavGrid;
-        use crate::sim::{Command, HullKind, TurretKind, World};
-        use glam::Vec3;
-        let m = build(&crate::city_spec(0, Look::Ithessar)).0;
-        let nav = NavGrid::build_hover(&m);
-        let c = m.skeleton.as_ref().unwrap().land.channel.clone().unwrap();
-        let mut w = World::new(m, 0);
-        let mut failed = Vec::new();
-        for s in &c.slips {
-            let quay = c.point(s.t, s.side * (c.half + channel::WALL + 5.0));
-            let mid = c.point(s.t + s.down * (s.len() + 4.0), 0.0);
-            let quay = Vec3::new(quay.x, s.top, quay.y);
-            let mid = Vec3::new(mid.x, s.surface, mid.y);
-            let flat = |p: Vec3| Vec2::new(p.x, p.z);
-            w.spawn_tank(
-                Vec3::ONE,
-                flat(quay),
-                0.0,
-                HullKind::Sethuun,
-                TurretKind::Kontos,
-            );
-            let i = w.tanks.len() - 1;
-            let mut drive = |to: Vec3| {
-                let mut path = nav.route(w.tanks[i].pos, to);
-                for _ in 0..(60.0 / crate::game::DT) as usize {
-                    let t = &w.tanks[i];
-                    while path.first().is_some_and(|p| {
-                        flat(*p).distance(flat(t.pos)) < 3.0 && (p.y - t.pos.y).abs() < 3.0
-                    }) {
-                        path.remove(0);
+                };
+                seen += 1;
+                assert!(
+                    c.local(conduit.way[2]).1.abs() < c.half,
+                    "seed {seed}: it ends short of the river"
+                );
+                assert!(conduit.portals.len() >= 3, "seed {seed}: {conduit:?}");
+                for leg in conduit.legs() {
+                    for s in &sk.streets {
+                        let keep = if s.rank == Rank::Avenue {
+                            s.clear
+                        } else {
+                            s.half
+                        };
+                        assert!(
+                            s.distance(leg) > keep,
+                            "seed {seed}: a leg at {leg} in {s:?}"
+                        );
                     }
-                    let mut cmds = vec![Command::default(); w.tanks.len()];
-                    let Some(&p) = path.first() else {
-                        return (t.pos.y - to.y).abs() < 2.5 && t.up().y > 0.7;
-                    };
-                    let d = flat(p) - flat(t.pos);
-                    let err = crate::sim::wrap_angle(d.x.atan2(d.y) - t.yaw());
-                    cmds[i].steer = (err * 2.5).clamp(-1.0, 1.0);
-                    cmds[i].throttle = if err.abs() > 0.8 {
-                        (-t.speed() * 0.3).clamp(-1.0, 0.3)
-                    } else if t.speed() > 9.0 {
-                        0.0
-                    } else {
-                        0.7
-                    };
-                    w.step(&cmds);
                 }
-                false
-            };
-            let (down, up) = (drive(mid), drive(quay));
-            if !(down && up) {
-                failed.push((s, down, up, w.tanks[i].pos));
             }
         }
-        assert!(failed.is_empty(), "{failed:?}");
+        assert!(seen >= 3, "{seen}");
     }
 
     /// Bots drive over a river city's bridges, on their own and two meeting

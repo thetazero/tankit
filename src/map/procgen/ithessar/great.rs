@@ -1,6 +1,6 @@
 //! The Ithessar's great buildings:
 //!
-//! - the **Sun**: what feeds the river. Great blades lean in over a dais and
+//! - the **Sun**: what feeds the river, down a conduit from its orb. Great blades lean in over a dais and
 //!   hold a ball of plasma high between their tips; a low broken ring round
 //!   them, open all about.
 //! - the **Lens**: their emblem, built. Two tall curved walls meeting in
@@ -202,6 +202,7 @@ pub(super) fn weir(map: &mut Map, rng: &mut Rng, lm: &Landmark, base: f32) {
             spots.push(a);
         }
     }
+    let fed: Vec<f32> = spots.iter().copied().filter(|&a| !shelled(lm, a)).collect();
     for a in spots {
         let d = dir(a);
         let side = Vec2::new(-d.y, d.x);
@@ -295,6 +296,34 @@ pub(super) fn weir(map: &mut Map, rng: &mut Rng, lm: &Landmark, base: f32) {
             widths: vec![0.5; n + 1],
             color: PLASMA,
         });
+    }
+    // What feeds them: a ring over them, from the conduit off the river (over
+    // the first door) round each way as far as there's a sluice standing.
+    if let Some(&door) = lm.doors.first() {
+        let r = lm.radius - 4.5;
+        let way = |u: f32| {
+            let q = c + dir(angle(door) + u) * r;
+            Vec3::new(q.x, base + 11.1, q.y)
+        };
+        for e in [-1.0f32, 1.0] {
+            let round = |a: f32| ((a - angle(door)) * e).rem_euclid(TAU);
+            let far = fed
+                .iter()
+                .map(|&a| round(a))
+                .filter(|&u| u < PI)
+                .fold(0.0, f32::max);
+            let n = (far / 0.17).ceil() as usize;
+            for k in 0..n {
+                let (u, v) = (far * k as f32 / n as f32, far * (k + 1) as f32 / n as f32);
+                let (p, q) = (way(u * e), way(v * e));
+                map.pipe(p, q, 0.5, PLASMA * 0.85, G, false);
+                let out = dir(angle(door) + (u + v) * 0.5 * e);
+                let out = Vec3::new(out.x, 0.0, out.y);
+                for f in [-0.8f32, 0.8] {
+                    map.pipe(p + out * f, q + out * f, 0.22, GLASS * 1.6, V, false);
+                }
+            }
+        }
     }
     // The middle: a round basin, a blade standing in it.
     let n = 12;
