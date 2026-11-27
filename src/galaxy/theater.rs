@@ -1818,7 +1818,8 @@ mod tests {
     }
 
     /// A shield generator is fought over on a shield map, a Hold for it,
-    /// its holder's model in the shape it's in (#341); nothing else is.
+    /// its holder's model (under raiders, the planet's holder's) in the shape
+    /// it's in (#341); nothing else is.
     #[test]
     fn generators_are_fought_over_on_shield_maps() {
         let g = galaxy();
@@ -1829,7 +1830,7 @@ mod tests {
                     MapKind::ShieldSite(_, _, made) | MapKind::ShieldDesert(made),
                 ) => {
                     assert_eq!(MISSIONS[s.mission].contract, crate::mission::Contract::Hold);
-                    assert_eq!(made.owner, Faction::side(s.owner));
+                    assert_eq!(made.owner, Faction::side(s.landlord));
                     let shape = if damaged {
                         Condition::DAMAGED
                     } else {
