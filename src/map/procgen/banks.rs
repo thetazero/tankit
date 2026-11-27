@@ -160,6 +160,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
     sk.repair_spots
         .retain(|r| legs.iter().all(|l| l.distance(*r) > 5.0));
     city::level(&mut sk);
+    super::rill::plan(&mut sk);
     sk
 }
 
