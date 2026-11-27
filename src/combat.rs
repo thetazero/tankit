@@ -6120,7 +6120,6 @@ mod tests {
         let mut maps = vec![
             ("reservoir", Map::reservoir(0)),
             ("sanctum", Map::sanctum()),
-            ("kiln", Map::kiln()),
             ("city", Map::city(0)),
             ("foundry", Map::foundry(0)),
         ];
@@ -6283,7 +6282,7 @@ mod tests {
 
     #[test]
     fn each_side_spawns_at_its_own_base() {
-        for map in [Map::reservoir(0), Map::sanctum(), Map::kiln()] {
+        for map in [Map::reservoir(0), Map::sanctum()] {
             let mut m = Match::new(map, 0, 11, 5);
             m.start();
             for (i, f) in m.fighters.iter().enumerate() {
@@ -7003,8 +7002,10 @@ mod hover_bots_stay_upright {
     /// running into each other at full speed off their spawn columns, or
     /// driving up crystal faces. A match's worth of them stays upright.
     #[test]
-    fn ithessar_bots_dont_flip_on_the_kiln() {
-        let mut m = Match::new(Map::kiln(), 0, 11, 1);
+    fn ithessar_bots_dont_flip_in_a_foundry() {
+        let mut map = Map::foundry(0);
+        map.factions = vec![Faction::Ithessar, Faction::Imperium];
+        let mut m = Match::new(map, 0, 11, 1);
         m.start();
         let n = m.world.tanks.len();
         let mut tipped = vec![false; n];

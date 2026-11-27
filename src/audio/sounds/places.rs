@@ -1,6 +1,6 @@
 //! The maps' own sounds, beyond the wind: what the places make, heard as you
-//! get near them. The Kiln's lit crystals sing and fizz, its cores thrum and
-//! crackle and the plasma river burbles; the Foundry's crucible still roars
+//! get near them. The Ithessar's lit crystals sing and fizz, their cores thrum
+//! and crackle and their plasma rivers burble; the Foundry's crucible still roars
 //! and its wrecked presses hum, hiss and clank; the Sanctum's altar crystal
 //! is a choir, its crystal clusters ring like rubbed glass and the wind
 //! stirs the bell; the imperial city's banners flap and its broken dome moans;
@@ -549,12 +549,18 @@ mod tests {
         assert!(p[..VOICED].iter().all(|p| p.gain > 0.0));
     }
 
+    /// An Ithessar foundry: crystals and cores.
+    fn ithessar() -> Map {
+        use crate::map::procgen::{Look, foundry::Ground};
+        crate::make_map(crate::MapKind::Foundry(Look::Ithessar, Ground::Desert), 0)
+    }
+
     /// Every map the issue names sounds somewhere, with what it should.
     #[test]
     fn every_map_has_its_places() {
         use Ambient::*;
         for (name, map, want) in [
-            ("kiln", Map::kiln(), &[Crystal, Core, River][..]),
+            ("ithessar foundry", ithessar(), &[Crystal, Core][..]),
             ("foundry", Map::foundry(0), &[Furnace, Machine]),
             ("sanctum", Map::sanctum(), &[Altar, Shrine, Bell]),
             ("city", Map::city(0), &[Banner, Dome]),
@@ -611,7 +617,7 @@ mod tests {
         const RATE: u32 = 48_000;
         let volume = crate::profile::Settings::default().volume();
         for (name, map) in [
-            ("kiln", Map::kiln()),
+            ("ithessar-foundry", ithessar()),
             ("foundry", Map::foundry(0)),
             ("sanctum", Map::sanctum()),
             ("city", Map::city(0)),

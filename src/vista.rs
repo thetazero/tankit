@@ -24,8 +24,6 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         // The church and its bell tower; a chapel's gable. (Generated ones
         // pick their own.)
         MapKind::Sanctum(_) => &[(68.0, 113.0, 3.40), (78.0, 203.0, 4.71)],
-        // Crystal spires over the kiln; crystals and the plasma river.
-        MapKind::Kiln => &[(53.0, 93.0, 4.97), (141.0, 128.5, 6.02)],
         // Generated: each city picks its own (`Map::vistas`).
         MapKind::City(..) | MapKind::ShieldSite(..) => &[],
         // Generated: each foundry picks its own (by each side's spawns,
@@ -227,7 +225,6 @@ mod tests {
                 MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
                 5,
             ),
-            (MapKind::Kiln, 0),
             (
                 MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
                 0,
@@ -245,14 +242,14 @@ mod tests {
                     crate::map::procgen::Look::Imperium,
                     crate::map::procgen::setting::Setting::Tundra,
                 ),
-                3,
+                0,
             ),
             (
                 MapKind::City(
                     crate::map::procgen::Look::Resonant,
                     crate::map::procgen::setting::Setting::Grassland,
                 ),
-                4,
+                1,
             ),
             (
                 MapKind::Foundry(
@@ -387,10 +384,9 @@ mod tests {
     #[test]
     #[ignore]
     fn vista_search() {
-        for kind in [
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Kiln,
-        ] {
+        for kind in [MapKind::Sanctum(
+            crate::map::procgen::foundry::Ground::Desert,
+        )] {
             let world = World::new(make_map(kind, 0), 0);
             let s = world.map.size;
             let sun = world.map.atmosphere.sun_dir.normalize();

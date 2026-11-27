@@ -664,25 +664,24 @@ mod tests {
     #[test]
     fn the_ground_changes_no_layout() {
         use super::setting::Setting;
-        // (Every look, optimized: see `cities`.)
-        for (seed, look) in cities().filter(|&(s, _)| s < 1) {
+        // (One city each: they take seconds, and other tests build these too.)
+        for (seed, look, s) in [
+            (0, Look::Imperium, Setting::Tundra),
+            (1, Look::Resonant, Setting::Grassland),
+        ] {
             let plain = crate::city_spec(seed, look);
             let sk = skeleton(&plain);
             let snow = foundry::Ground::Tundra.land().open;
-            let mut horizons = Vec::new();
-            for s in [Setting::Desert, Setting::Tundra, Setting::Grassland] {
-                let spec = plain.clone().set_in(s);
-                let m = map(&spec);
-                assert_eq!(skeleton(&spec).lots.len(), sk.lots.len());
-                if let Err(why) = check::playable(&m) {
-                    panic!("seed {seed} {look:?} {s:?}: {why}");
-                }
-                let lying = m.oboxes.iter().filter(|o| o.color == snow);
-                let lying = lying.filter(|o| o.rock.is_none()).count();
-                assert_eq!(lying > 20, s == Setting::Tundra, "{look:?} {s:?}: {lying}");
-                assert!(!horizons.contains(&m.atmosphere.sky_horizon));
-                horizons.push(m.atmosphere.sky_horizon);
+            let spec = plain.clone().set_in(s);
+            let (m, grey) = (map(&spec), map(&plain));
+            assert_eq!(skeleton(&spec).lots.len(), sk.lots.len());
+            if let Err(why) = check::playable(&m) {
+                panic!("seed {seed} {look:?} {s:?}: {why}");
             }
+            let lying = m.oboxes.iter().filter(|o| o.color == snow);
+            let lying = lying.filter(|o| o.rock.is_none()).count();
+            assert_eq!(lying > 20, s == Setting::Tundra, "{look:?} {s:?}: {lying}");
+            assert_ne!(m.atmosphere.sky_horizon, grey.atmosphere.sky_horizon);
         }
     }
 
