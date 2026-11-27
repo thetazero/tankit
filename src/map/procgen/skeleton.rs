@@ -893,4 +893,74 @@ impl Mark {
             s.at.y += h;
         }
     }
+
+    /// Runs the foot of everything built since, on ground `h` high, down into
+    /// the lowest ground under it: ground isn't always level right across
+    /// what stands on it, and nothing's to hang over the low side.
+    pub fn found(&self, map: &mut Map, sk: &Skeleton, h: f32) {
+        for o in &mut map.oboxes[self.boxes..] {
+            found(o, sk, h);
+        }
+        for c in &mut map.crystals[self.crystals..] {
+            let up = c.axis.normalize_or(glam::Vec3::Y);
+            // (Not those that stand on something, or lie.)
+            if c.base.y > h + 1.0 || up.y < 0.5 {
+                continue;
+            }
+            let at = Vec2::new(c.base.x, c.base.z);
+            let drop = c.base.y - (lowest(sk, at, c.radius) - ROOT);
+            if drop > 0.0 {
+                let down = up * (drop / up.y);
+                c.base -= down;
+                c.axis += down;
+            }
+        }
+    }
+
+    /// Lays everything loose built since, on ground `h` high, each on the
+    /// ground where it lies.
+    pub fn strew(&self, map: &mut Map, sk: &Skeleton, h: f32) {
+        for o in &mut map.oboxes[self.boxes..] {
+            let by = sk.ground(o.center) - h;
+            lift(std::slice::from_mut(o), by);
+        }
+        for c in &mut map.crystals[self.crystals..] {
+            let ground = |p: glam::Vec3| sk.ground(Vec2::new(p.x, p.z));
+            let (a, z) = (ground(c.base), ground(c.base + c.axis));
+            c.base.y += a - h;
+            c.axis.y += z - a;
+        }
+    }
+}
+
+/// How far into the ground a foot goes: past what the ground's mesh rounds off.
+const ROOT: f32 = 0.4;
+
+/// The lowest the ground is within `r` of `p`.
+fn lowest(sk: &Skeleton, p: Vec2, r: f32) -> f32 {
+    (0..8)
+        .map(|k| p + Vec2::from_angle(k as f32 * std::f32::consts::FRAC_PI_4) * r)
+        .chain([p])
+        .map(|q| sk.ground(q))
+        .fold(f32::MAX, f32::min)
+}
+
+/// Runs `o`, made to stand on ground `h` high, down into the lowest ground
+/// under it, if it's upright and its foot's on that ground.
+pub fn found(o: &mut OBox, sk: &Skeleton, h: f32) {
+    if o.is_turned() || o.ramp || o.y0 > h + 0.1 {
+        return;
+    }
+    // (Every meter: what it stands on can dip in the middle.)
+    let (ax, az) = o.axes();
+    let n = o.half.ceil().as_ivec2().max(glam::IVec2::ONE);
+    let mut low = f32::MAX;
+    for i in -n.x..=n.x {
+        for j in -n.y..=n.y {
+            let u = o.half.x * i as f32 / n.x as f32;
+            let v = o.half.y * j as f32 / n.y as f32;
+            low = low.min(sk.ground(o.center + ax * u + az * v));
+        }
+    }
+    o.y0 = o.y0.min(low - ROOT);
 }

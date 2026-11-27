@@ -1,12 +1,13 @@
 //! The Ithessar's style: near-black worked glass and squared dark stone,
 //! plasma in its slits. They shape plasma with crystal, and build the same
 //! way: masses that twist as they rise, curved walls, blades leaning in to
-//! hold something. Nothing's built for tracks or feet: no stairs, floors
-//! that float, openings at any height.
+//! hold something. Nothing's built for tracks or feet: no stairs, openings at
+//! any height. But it all stands on the ground: floating's for fighting
+//! machines, it takes too much plasma for a house.
 //!
 //! - great buildings (`great`): the Sun, the Lens, the Weir.
 //! - lots: shard houses; crescents, a curved wall round a court tanks drive
-//!   into; houses floating on crystal legs; heaps of broken stone.
+//!   into; houses raised on a pier and crystal legs; heaps of broken stone.
 //! - each side's staging court (`court`).
 //! - medium structures (`civics`): kiln courts, lens halls, terraces.
 //! - their power's the plasma river (`channel`), and every lit slit's on it: the Sun
@@ -143,7 +144,7 @@ impl Style for Ithessar {
                 let h = rng.range(4.0, 6.5);
                 shards(map, rng, f, h, true);
             }
-            LotKind::Raised => floating(map, rng, f),
+            LotKind::Raised => raised(map, rng, f),
             LotKind::Rubble => {
                 map.rubble_lot(rng, f, STONE * 1.2);
                 if rng.chance(0.5) {
@@ -184,9 +185,14 @@ impl Style for Ithessar {
 
     fn beyond(&self, map: &mut Map, sk: &Skeleton, rng: &mut Rng) {
         map.skyline_ground(sk, GROUND);
+        let start = map.oboxes.len();
         map.skyline_lots(rng, sk, |map, rng, lot, h, _, _| {
             tower(map, rng, lot, 12.0 + h * 0.8)
         });
+        for o in &mut map.oboxes[start..] {
+            let h = sk.ground(o.center);
+            found(o, sk, h);
+        }
     }
 
     fn finish(&self, map: &mut Map) {
@@ -474,11 +480,12 @@ fn crescent(map: &mut Map, rng: &mut Rng, lot: &Lot) {
     );
 }
 
-/// A house floating on crystal legs round a column of plasma: tanks drive
-/// under it.
-fn floating(map: &mut Map, rng: &mut Rng, o: &OBox) {
+/// A house standing on a stone pier and crystal legs, plasma up the pier's
+/// faces: tanks drive under it.
+fn raised(map: &mut Map, rng: &mut Rng, o: &OBox) {
     let (w, l) = (o.half.x, o.half.y);
     let lift = 6.6;
+    let pier = w.min(l) * 0.14;
     let color = WALLS[rng.index(WALLS.len())];
     put(
         map,
@@ -495,13 +502,28 @@ fn floating(map: &mut Map, rng: &mut Rng, o: &OBox) {
         map,
         o,
         Vec2::ZERO,
-        Vec2::splat(w.min(l) * 0.1),
+        Vec2::splat(pier),
         FRAC_PI_4,
-        (1.25, lift),
-        PLASMA,
-        G,
+        (1.25, lift + 0.1),
+        STONE * 0.9,
+        C,
         true,
     );
+    map.oboxes.last_mut().unwrap().chip = 0.01;
+    for k in 0..4 {
+        let d = dir(FRAC_PI_4 + k as f32 * FRAC_PI_2);
+        put(
+            map,
+            o,
+            d * (pier + 0.01),
+            Vec2::new(0.16, 0.05),
+            FRAC_PI_4 + k as f32 * FRAC_PI_2,
+            (1.7, lift - 0.4),
+            PLASMA * 0.85,
+            G,
+            false,
+        );
+    }
     for (x, z) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
         let at = Vec2::new(x * (w - 1.3), z * (l - 1.3));
         put(

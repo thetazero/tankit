@@ -285,7 +285,14 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
             LotKind::Civic(kind) => st.civic(&mut map, lot, kind, &mut rng),
             _ => drifts.extend(st.lot(&mut map, &sk, lot, &mut rng)),
         }
-        mark.raise(&mut map, sk.ground(lot.footprint.center));
+        let h = sk.ground(lot.footprint.center);
+        mark.raise(&mut map, h);
+        if spec.look == Look::Ithessar {
+            match lot.kind {
+                LotKind::Rubble => mark.strew(&mut map, &sk, h),
+                _ => mark.found(&mut map, &sk, h),
+            }
+        }
         claims.push((Claim::Lot(k), start..map.oboxes.len()));
     }
     let mut terrain = sk.terrain(|p| drifts.iter().map(|d| d.height_at(p)).fold(0.0, f32::max));
@@ -303,12 +310,20 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     for (k, s) in sk.spans.iter().enumerate() {
         let start = map.oboxes.len();
+        let mark = skeleton::Mark::of(&map);
         st.span(&mut map, &sk, s, &mut rng);
+        if spec.look == Look::Ithessar {
+            mark.found(&mut map, &sk, sk.ground(s.at));
+        }
         claims.push((Claim::Span(k), start..map.oboxes.len()));
     }
     for (k, d) in sk.decos.iter().enumerate() {
         let start = map.oboxes.len();
+        let mark = skeleton::Mark::of(&map);
         st.deco(&mut map, &sk, d, &mut rng);
+        if spec.look == Look::Ithessar {
+            mark.found(&mut map, &sk, sk.ground(d.at));
+        }
         claims.push((Claim::Deco(k), start..map.oboxes.len()));
     }
     for c in &sk.crossings {
@@ -322,7 +337,11 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     for (k, b) in sk.bases.iter().enumerate() {
         let mark = skeleton::Mark::of(&map);
         st.base(&mut map, &sk, k, b, &mut rng);
-        mark.raise(&mut map, sk.ground(b.middle()));
+        let h = sk.ground(b.middle());
+        mark.raise(&mut map, h);
+        if spec.look == Look::Ithessar {
+            mark.found(&mut map, &sk, h);
+        }
     }
     for e in &sk.edges {
         // Heaps and barriers, each on the ground where it lies.
@@ -1200,6 +1219,62 @@ mod tests {
             }
             println!("seed {seed}: {sources} off the river ({mains} up streets), {fed} houses fed");
             assert!(mains >= 4 && fed >= 20, "seed {seed}: {mains} {fed}");
+        }
+    }
+
+    /// Nothing of an Ithessar city's buildings hangs in the air: whatever's
+    /// made to stand on the ground does, right across.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn no_ithessar_building_floats() {
+        for seed in SEEDS {
+            let spec = crate::city_spec(seed, Look::Ithessar);
+            let sk = skeleton(&spec);
+            let (m, claims) = build(&spec);
+            let (mut feet, mut bad) = (0, Vec::new());
+            for (claim, range) in claims {
+                let Claim::Lot(k) = claim else { continue };
+                let lot = &sk.lots[k];
+                if lot.kind == LotKind::Rubble {
+                    continue;
+                }
+                let h = sk.ground(lot.footprint.center);
+                for o in &m.oboxes[range] {
+                    if !o.solid && lot.kind != LotKind::Distant || o.is_turned() || o.y0 > h + 0.1 {
+                        continue;
+                    }
+                    feet += 1;
+                    let gap = o
+                        .corners()
+                        .into_iter()
+                        .chain([o.center])
+                        .map(|p| {
+                            // (The arena's ground stops at its edge.)
+                            let on = p.min_element() > 0.0 && p.max_element() < sk.size;
+                            let g = if on {
+                                m.ground_height(p.x, p.y)
+                            } else {
+                                sk.ground(p)
+                            };
+                            o.y0 - g
+                        })
+                        .fold(f32::MIN, f32::max);
+                    if gap > 0.05 {
+                        bad.push((gap, lot.kind, o.center));
+                    }
+                }
+            }
+            bad.sort_by(|a, b| b.0.total_cmp(&a.0));
+            assert!(feet > 300, "seed {seed}: {feet} feet");
+            assert!(
+                bad.is_empty(),
+                "seed {seed}: {} of {feet} hang: {:?}",
+                bad.len(),
+                &bad[..bad.len().min(5)]
+            );
         }
     }
 
