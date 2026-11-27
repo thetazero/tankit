@@ -1787,6 +1787,28 @@ mod tests {
         assert!(m.draw(&profile, 1600.0, 900.0, 0.0).verts.is_empty());
     }
 
+    #[test]
+    fn contract_lines_fit_their_column() {
+        use crate::mission::Contract;
+        use crate::ui::measure;
+        use design::{BODY, COLUMN, SMALL};
+        let fits = |left: f32, right: f32, what: &str| {
+            let room = COLUMN - left - right;
+            assert!(room >= UNIT * 2.0, "{what}: {room} px between");
+        };
+        for name in ["SHIELD", "MINE", "FOUNDRY", "OUTPOST"] {
+            for letter in 'A'..='H' {
+                for c in [Contract::Attrition, Contract::Hold, Contract::Raid] {
+                    let name = format!("{name} {letter}");
+                    let (l, r) = (measure(&name, &BODY), measure(c.name(), &SMALL));
+                    fits(l, r, &format!("{name} / {}", c.name()));
+                }
+            }
+        }
+        let pay = measure("9999 cr + 999 a kill", &SMALL);
+        fits(measure("Pay", &SMALL), pay, "Pay");
+    }
+
     /// Clicks the middle of `hit` where `draw` put it.
     fn click_drawn(m: &mut Menu, profile: &Profile, hit: Hit) -> Click<Action> {
         let hits = m.draw(profile, 1600.0, 900.0, 1.0).hits;
