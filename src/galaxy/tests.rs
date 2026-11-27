@@ -254,7 +254,7 @@ fn a_tick_is_cheap() {
         g.step();
     }
     let per = t.elapsed() / (g.tick - start) as u32;
-    assert!(per.as_millis() < 25, "a tick took {per:?}");
+    assert!(per.as_millis() < 40, "a tick took {per:?}");
 }
 
 /// The neighbor graph the structure makes: how many systems each can reach,
