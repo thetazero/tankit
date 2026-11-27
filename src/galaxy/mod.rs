@@ -1982,7 +1982,7 @@ impl Galaxy {
             return;
         }
         // A smart realm picks its own attacks (`campaigns`).
-        if here == 0 && !ours && self.realms[r as usize].arm == realm::Arm::Smart {
+        if here == 0 && !ours && self.realms[r as usize].arm.plans() {
             return;
         }
         let worth = self.prize(r, t, f, ours);
@@ -2085,7 +2085,7 @@ impl Galaxy {
         }
         let mut best = (0.0, 0.0f32);
         if pool >= MIN_SEND {
-            let shares: &[f32] = if realm.arm == realm::Arm::Smart {
+            let shares: &[f32] = if realm.arm.plans() {
                 &smart::SENDS
             } else {
                 &[0.1, 0.25, 0.5, 1.0]

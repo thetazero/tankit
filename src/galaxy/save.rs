@@ -345,7 +345,8 @@ struct SavedRealm {
     /// What it pays each.
     #[serde(default)]
     wage: f32,
-    /// Its arm: 2 for smart, else plain (0 hired no mercs, once). Saves from
+    /// Its arm: 2 for smart, 3 for one after what its people want, else
+    /// plain (0 hired no mercs, once). Saves from
     /// before arms have none: half their realms become smart ones.
     #[serde(default)]
     arm: Option<u8>,
@@ -438,7 +439,7 @@ impl Galaxy {
                     research: r.research,
                     pilots: Some(r.pilots),
                     wage: r.wage,
-                    arm: Some(if r.arm == Arm::Smart { 2 } else { 1 }),
+                    arm: Some(1 + r.arm as u8),
                     rival: (r.rival != NONE).then_some(r.rival),
                     fronts: r.fronts,
                     senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
@@ -592,8 +593,9 @@ impl Galaxy {
                 rival: r.rival.unwrap_or(NONE),
                 arm: match r.arm {
                     Some(2) => Arm::Smart,
+                    Some(3) => Arm::Wants,
                     Some(_) => Arm::Plain,
-                    None => Arm::draw(&mut Rng::new(0xA_2B ^ i as u64)),
+                    None => Arm::draw(r.faction as usize, &mut Rng::new(0xA_2B ^ i as u64)),
                 },
                 fronts: r.fronts,
                 pilot_worth: r.senses.map_or(0.1, |x| x[0]),

@@ -79,6 +79,13 @@ const HORIZON: f32 = 100.0;
 const LAND: f32 = 5.0;
 /// Share of a world it must expect to take, to attack.
 const SURE: f32 = 0.5;
+/// What a tungsten cube's worth to a realm after them, in crystal.
+fn cube_worth() -> f32 {
+    std::env::var("CUBE")
+        .ok()
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(0.025)
+}
 /// How much more it's after a world of the neighbor it's out to conquer.
 const GRUDGE: f32 = 1.5;
 /// It hires if it'd gain this much over the price, and the price, with what
@@ -97,11 +104,22 @@ impl Galaxy {
     /// System `t`'s worth to realm `r` (`worth`, as long as it looks ahead).
     pub(crate) fn prize(&self, r: u32, t: usize, f: usize, own: bool) -> f32 {
         let hold = self.hold_for();
-        if self.realms[r as usize].arm != Arm::Smart {
+        if !self.realms[r as usize].arm.plans() {
             return self.worth_over(t, f, own, hold);
         }
-        let h = if own { 0.0 } else { HORIZON };
-        self.worth_over(t, f, own, hold.max(h))
+        let ticks = hold.max(if own { 0.0 } else { HORIZON });
+        self.worth_over(t, f, own, ticks) + self.wanted(r, t, own, ticks)
+    }
+
+    /// What system `t` has of what realm `r`'s people want, in crystal, if
+    /// it's after that: with `own`, what it'd lose with it; else what it'd
+    /// gain, held for `ticks`.
+    fn wanted(&self, r: u32, t: usize, own: bool, ticks: f32) -> f32 {
+        if self.realms[r as usize].arm != Arm::Wants {
+            return 0.0;
+        }
+        // Cubes: those there, and those it'd make.
+        self.cubes_in(t, own, ticks) * cube_worth()
     }
 }
 
@@ -124,7 +142,7 @@ impl Galaxy {
     pub(crate) fn campaigns(&mut self, f: usize) {
         for r in 0..self.realms.len() {
             let realm = &self.realms[r];
-            if realm.arm != Arm::Smart
+            if !realm.arm.plans()
                 || realm.faction as usize != f
                 || realm.systems == 0
                 || !(self.tick + r as u64).is_multiple_of(3)
@@ -188,7 +206,7 @@ impl Galaxy {
             {
                 continue;
             }
-            let mut prize = self.worth_over(t, f, false, self.hold_for().max(HORIZON));
+            let mut prize = self.prize(r, t, f, false);
             prize += LAND;
             if sys.pos.distance(seat) > self.rules.reach {
                 prize *= 0.5;
@@ -344,7 +362,7 @@ impl Galaxy {
     /// instalments: all it can; but a smart realm keeps its pilots' pay by it.
     pub(crate) fn down_payment(&self, r: u32, bill: f32) -> f32 {
         let realm = &self.realms[r as usize];
-        let keep = if realm.arm == Arm::Smart {
+        let keep = if realm.arm.plans() {
             KEEP_BY * realm.pilots as f32 * realm.pay(&self.rules)
         } else {
             0.0
@@ -370,7 +388,7 @@ const GENERATOR: f32 = 1.5;
 impl Galaxy {
     /// Whether realm `r` picks its battles.
     pub(crate) fn chooses(&self, r: u32) -> bool {
-        r != NONE && self.realms[r as usize].arm == Arm::Smart
+        r != NONE && self.realms[r as usize].arm.plans()
     }
 
     /// The sites side `f`'s realm, fighting in system `s`, goes for: those
