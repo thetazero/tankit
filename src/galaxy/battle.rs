@@ -997,7 +997,7 @@ mod tests {
             assert!(g.tick < 5000, "no raid");
         };
         for raider in [0, 1] {
-            let mut map = crate::map::Map::kiln();
+            let mut map = crate::map::Map::sanctum();
             map.factions = vec![Faction::side(e); 2];
             map.factions[raider] = Faction::Company;
             let mut m = Match::new(map, 0, 7, 1);

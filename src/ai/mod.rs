@@ -1291,7 +1291,7 @@ mod tests {
 
     #[test]
     fn spawn_spots_are_open() {
-        for map in [Map::reservoir(0), Map::sanctum(), Map::kiln()] {
+        for map in [Map::reservoir(0), Map::sanctum()] {
             let nav = NavGrid::build(&map);
             // There must be open nav ground right next to each spawn.
             for &p in &map.open_spots {

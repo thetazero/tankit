@@ -865,7 +865,6 @@ mod tests {
             ("dam town", Map::reservoir(0)),
             ("well town", Map::reservoir(1)),
             ("sanctum", Map::sanctum()),
-            ("kiln", Map::kiln()),
             ("city", Map::city(0)),
             ("mine", Map::mine(0)),
         ]);

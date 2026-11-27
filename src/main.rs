@@ -52,9 +52,9 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --time-of-day --weather --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <reservoir|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-camp>
+  --map <reservoir|sanctum|city|shield-site|foundry|mine|desert|shield-camp>
                           the reservoir (a generated desert town round a dam or a well, the default), the Sanctum (a Resonant church
-                          on a mesa, the Hold map; generated, map seed 0 the hand-made one: see --ground), the Kiln (Ithessar ground), the city
+                          on a mesa, the Hold map; generated, map seed 0 the hand-made one: see --ground), the city
                           (a generated city, see --look and --ground), the shield site (the same, a shield
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
@@ -348,8 +348,6 @@ pub enum MapKind {
     /// kind of ground. Generated: a different one for each map seed (0 is
     /// the hand-made one).
     Sanctum(map::procgen::foundry::Ground),
-    /// Ithessar ground: crystal monoliths holding a plasma core.
-    Kiln,
     /// A city in someone's style, half ruined round its great building:
     /// two sides. Generated: a different city for each map seed.
     City(map::procgen::Look, map::procgen::setting::Setting),
@@ -394,17 +392,14 @@ impl MapKind {
             | MapKind::Mine(_, g)
             | MapKind::ShieldCamp(g, _)
             | MapKind::Sanctum(g) => g == Ground::Desert,
-            MapKind::Kiln => false,
         }
     }
 }
 
-/// The map `kind` names; `seed` picks which one, for a generated kind (the
-/// hand-built one is always the same).
+/// The map `kind` names; `seed` picks which one.
 pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
     match kind {
         MapKind::Sanctum(g) => map::Map::sanctum_on(g, seed),
-        MapKind::Kiln => map::Map::kiln(),
         MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
         MapKind::ShieldSite(l, s, g) => map::procgen::map(&shield_spec(seed, l, g).set_in(s)),
         MapKind::Foundry(l, g) => map::procgen::map(&foundry_spec(seed, l, g)),
@@ -821,7 +816,6 @@ fn parse_args() -> Result<Args> {
                 Some("sanctum") => {
                     map_kind = MapKind::Sanctum(map::procgen::foundry::Ground::Desert)
                 }
-                Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => {
                     map_kind = MapKind::City(map::procgen::Look::Imperium, Default::default())
                 }
@@ -859,7 +853,7 @@ fn parse_args() -> Result<Args> {
                 }
                 other => {
                     bail!(
-                        "--map expects reservoir, sanctum, kiln, city, shield-site, foundry, mine, desert or shield-camp, got {other:?}"
+                        "--map expects reservoir, sanctum, city, shield-site, foundry, mine, desert or shield-camp, got {other:?}"
                     )
                 }
             },

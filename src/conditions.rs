@@ -234,7 +234,6 @@ mod tests {
             MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
             MapKind::Sanctum(crate::map::procgen::foundry::Ground::Tundra),
             MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
-            MapKind::Kiln,
             MapKind::Foundry(
                 crate::map::procgen::Look::Imperium,
                 crate::map::procgen::foundry::Ground::Desert,
