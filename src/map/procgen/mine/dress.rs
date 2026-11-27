@@ -88,7 +88,7 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
     }
     for d in &sk.land.digs {
         // A headframe over the hall, on the top.
-        let hall = d.rooms[2];
+        let hall = d.rooms[1];
         let p = d.to_map(Vec2::new(
             hall.min.x + (hall.max.x - hall.min.x) * 0.75,
             hall.min.y + 2.0,
@@ -96,9 +96,13 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
         if sk.land.tower_distance(p) > 8.0 && !sk.keep_clear(p) {
             b.headframe(p);
         }
-        // Raw crystal at the cliff's foot between its ways in.
+        // Raw crystal at the cliff's foot by its first way in.
         for x in [0.3, 0.62] {
-            let far = (d.rooms[1].min.x + d.rooms[1].max.x) * 0.5;
+            let far = if hall.max.x > -hall.min.x {
+                hall.max.x
+            } else {
+                hall.min.x
+            } - 5.0;
             let p = d.to_map(Vec2::new(far * x, -4.0));
             if !sk.keep_clear(p) {
                 b.outcrop(&mut rng, p, rng_height(x));
@@ -252,17 +256,25 @@ impl Inside<'_, '_> {
         self.d.distance(self.d.to_map(p)) < -0.2
     }
 
+    /// Well inside the rock.
+    fn deep(&self, p: Vec2) -> bool {
+        self.b.l.land.plateau(self.d.to_map(p)) < -2.0
+    }
+
     fn fill(&mut self, rng: &mut Rng) {
         let rooms = self.d.rooms.clone();
         for r in &rooms {
             self.lamps(r);
         }
-        for r in rooms.iter().filter(|r| r.min.y < 0.0) {
+        // (The ways in: the first, and the drift to the other.)
+        self.sets(&rooms[0]);
+        for r in &rooms[self.d.drift_from()..] {
             self.sets(r);
+            self.vein(rng, r);
         }
         // The hall: carts and crates along its back wall, off the ways
         // through it; a lamp hung over the middle.
-        let hall = rooms[2];
+        let hall = rooms[1];
         let mid = (hall.min + hall.max) * 0.5;
         let at = self.d.to_map(mid);
         self.st.hanging_lamp(
@@ -302,7 +314,7 @@ impl Inside<'_, '_> {
         };
         let beam = (at3(from), at3(to), 0.55);
         self.st.borer(&mut self.b, beam, rng);
-        let bay = self.d.rooms[4];
+        let bay = self.d.rooms[3];
         let side = (to.x - from.x).signum();
         // The wall the bore's in, and the one across from it.
         let (wall, back) = if side > 0.0 {
@@ -368,7 +380,7 @@ impl Inside<'_, '_> {
             let s = if k % 2 == 0 { 1.0 } else { -1.0 };
             let wall = mid + along * t + across * s * half;
             // Not where another room opens through it, nor out in the air.
-            if wall.y < 3.0 || self.opens(wall + across * s * 1.0) {
+            if !self.deep(wall) || self.opens(wall + across * s * 1.0) {
                 continue;
             }
             let p = self.d.to_map(wall - across * s * WALL);
@@ -379,17 +391,61 @@ impl Inside<'_, '_> {
         }
     }
 
-    /// Steel sets holding up a way in.
+    /// Steel sets holding up a way in or a drift, along it.
     fn sets(&mut self, r: &Hollow) {
-        let mut y = 3.0;
-        while y < r.max.y - 2.0 {
-            let (a, b) = (Vec2::new(r.min.x + 0.5, y), Vec2::new(r.max.x - 0.5, y));
+        let size = r.max - r.min;
+        let mid = (r.min + r.max) * 0.5;
+        let (along, across, len, half) = if size.x > size.y {
+            (Vec2::X, Vec2::Y, size.x, size.y * 0.5)
+        } else {
+            (Vec2::Y, Vec2::X, size.y, size.x * 0.5)
+        };
+        let n = (len / 6.0) as usize;
+        for k in 0..n {
+            let c = mid + along * ((k as f32 + 0.5) * 6.0 - n as f32 * 3.0);
+            let (a, b) = (c - across * (half - 0.5), c + across * (half - 0.5));
             // Both its legs against rock.
-            if !self.opens(a - Vec2::X * 1.6) && !self.opens(b + Vec2::X * 1.6) {
+            let held = self.deep(a) && self.deep(b);
+            if held && !self.opens(a - across * 1.6) && !self.opens(b + across * 1.6) {
                 let (a, b) = (self.d.to_map(a), self.d.to_map(b));
                 self.b.steel_set_to(a, b, self.d.floor + r.roof - 0.7);
             }
-            y += 6.0;
+        }
+    }
+
+    /// Raw crystal in a drift's walls.
+    fn vein(&mut self, rng: &mut Rng, r: &Hollow) {
+        let size = r.max - r.min;
+        let mid = (r.min + r.max) * 0.5;
+        let (along, across, len, half) = if size.x > size.y {
+            (Vec2::X, Vec2::Y, size.x, size.y * 0.5)
+        } else {
+            (Vec2::Y, Vec2::X, size.y, size.x * 0.5)
+        };
+        for k in 0..(len / 18.0) as usize {
+            let s = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let t = (k as f32 + rng.range(0.2, 0.8)) * 18.0 - len * 0.5;
+            let wall = mid + along * t + across * s * half;
+            // (Not at a mouth, where the wall falls away.)
+            let inside = self.b.l.land.plateau(self.d.to_map(wall)) < -9.0;
+            if !inside || self.opens(wall + across * s) {
+                continue;
+            }
+            let at = self.d.to_map(wall + across * s * 0.4);
+            let way = self.way(-across * s);
+            for _ in 0..3 {
+                let y = self.d.floor + rng.range(1.2, 4.2);
+                self.b.shard(
+                    rng.next_u64(),
+                    Vec3::new(at.x, y, at.y),
+                    rng.range(0.7, 1.4),
+                    0.26,
+                    way + way.perp() * rng.range(-0.5, 0.5),
+                    rng.range(0.6, 1.0),
+                    rng.chance(0.4),
+                    false,
+                );
+            }
         }
     }
 }
@@ -426,7 +482,7 @@ mod tests {
                 m.repair_spots
             );
             for d in &sk.land.digs {
-                let hall = d.rooms[2];
+                let hall = d.rooms[1];
                 let p = d.to_map((hall.min + hall.max) * 0.5);
                 let to = Vec3::new(p.x, d.floor, p.y);
                 for b in sk.base_spots() {

@@ -20,8 +20,20 @@ use crate::rng::Rng;
 /// How far a dig's rooms keep in from the rock's other faces, m.
 const ROCK: f32 = 7.0;
 
-/// The rooms of a dig: two ways in from the cliff, a hall joining them, and
-/// a heading on from it, the first way in at the middle of its frame.
+/// Half a drift's width, m.
+const DRIFT: f32 = 5.0;
+/// A dig's mouths come out at least this much of the arena's size apart: a
+/// mine's first dig's, and any others'.
+const APART: f32 = 0.3;
+const APART_MORE: f32 = 0.2;
+
+/// How long the way from one side's spawns to another's by a dig may be, to
+/// straight there.
+const SERVED: f32 = 1.45;
+
+/// The rooms of a dig: a way in from the cliff, at the middle of its frame,
+/// a hall off it, and a heading on from that. (Its other way in's at the end
+/// of a drift: see `drifted`.)
 fn rooms(rng: &mut Rng) -> Vec<Hollow> {
     let room = |x0: f32, y0: f32, x1: f32, y1: f32, roof: f32| Hollow {
         min: Vec2::new(x0.min(x1), y0),
@@ -29,7 +41,7 @@ fn rooms(rng: &mut Rng) -> Vec<Hollow> {
         floor: 0.0,
         roof,
     };
-    let depth = rng.range(22.0, 30.0);
+    let depth = rng.range(15.0, 22.0);
     let hall = rng.range(14.0, 20.0);
     // Which side of the first way in the rest is.
     let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
@@ -37,7 +49,6 @@ fn rooms(rng: &mut Rng) -> Vec<Hollow> {
     let heading = rng.range(0.35, 0.65) * far;
     vec![
         room(-5.5, -8.0, 5.5, depth + hall, 6.5),
-        room(far - 5.0, -8.0, far + 5.0, depth + hall, 6.5),
         room(-5.5 * side, depth, far + 5.0 * side, depth + hall, 9.0),
         room(
             heading - 4.5,
@@ -52,7 +63,7 @@ fn rooms(rng: &mut Rng) -> Vec<Hollow> {
 /// `dig` with pillars left in its hall, between its ways in: toward the back
 /// wall, so there's a way past in front of them.
 fn pillared(rng: &mut Rng, mut dig: Dig) -> Dig {
-    let hall = dig.rooms[2];
+    let hall = dig.rooms[1];
     let mid = Vec2::new(
         (hall.min.x + hall.max.x) * 0.5,
         hall.min.y + (hall.max.y - hall.min.y) * 0.68,
@@ -68,7 +79,7 @@ fn pillared(rng: &mut Rng, mut dig: Dig) -> Dig {
 /// bore out to one side.
 fn bored(rng: &mut Rng, dig: &Dig) -> Dig {
     let mut dig = dig.clone();
-    let heading = dig.rooms[3];
+    let heading = dig.rooms[2];
     let x = (heading.min.x + heading.max.x) * 0.5;
     let y0 = heading.max.y - 1.0;
     let (half, deep) = (rng.range(10.0, 12.0), rng.range(20.0, 24.0));
@@ -91,27 +102,174 @@ fn bored(rng: &mut Rng, dig: &Dig) -> Dig {
     dig
 }
 
-/// Whether `dig` fits in `land`: rock all round its rooms but at its
-/// mouths, inside an arena `size` across, off the other digs.
+/// Whether there's rock all round `r`, a room of `dig`, but at its mouths.
+fn rock_round(land: &Land, dig: &Dig, r: &Hollow) -> bool {
+    let n = 4;
+    (0..=n).all(|i| {
+        (0..=n).all(|j| {
+            let t = Vec2::new(i as f32, j as f32) / n as f32;
+            let q = r.min - ROCK + (r.max - r.min + 2.0 * ROCK) * t;
+            // (Out toward the mouth, it's the cliff.)
+            q.y < ROCK + 4.0 || land.plateau(dig.to_map(q)) < -2.0
+        })
+    })
+}
+
+/// Points all over `r`, no more than 3 m apart.
+fn spread(r: &Hollow) -> impl Iterator<Item = Vec2> {
+    let (min, size) = (r.min, r.max - r.min);
+    let (nx, ny) = ((size.x / 3.0).ceil() as i32, (size.y / 3.0).ceil() as i32);
+    (0..=nx).flat_map(move |i| {
+        (0..=ny).map(move |j| min + size * Vec2::new(i as f32 / nx as f32, j as f32 / ny as f32))
+    })
+}
+
+/// Whether `dig` fits in `land`: rock round its rooms, inside an arena
+/// `size` across, off the other digs and their mouths.
 fn fits(land: &Land, dig: &Dig, size: f32) -> bool {
-    let apart = land
+    let apart = |p: Vec2| {
+        land.digs
+            .iter()
+            .all(|o| o.distance(p) > 2.0 * ROCK && !o.before(p))
+    };
+    // (What's round a drift, `drifted` saw to.)
+    dig.rooms.iter().enumerate().all(|(k, r)| {
+        (k >= dig.drift_from() || rock_round(land, dig, r))
+            && spread(r).map(|q| dig.to_map(q)).all(|p| {
+                p.min_element() > ROCK + 2.0 && p.max_element() < size - ROCK - 2.0 && apart(p)
+            })
+    }) && land
         .digs
         .iter()
-        .all(|o| dig.corners().all(|p| o.distance(p) > 2.0 * ROCK));
-    apart
-        && dig.rooms.iter().all(|r| {
-            let n = 4;
-            (0..=n).all(|i| {
-                (0..=n).all(|j| {
-                    let t = Vec2::new(i as f32, j as f32) / n as f32;
-                    let q = r.min - ROCK + (r.max - r.min + 2.0 * ROCK) * t;
-                    let p = dig.to_map(q);
-                    // (Out toward the mouth, it's the cliff.)
-                    let deep = q.y < ROCK + 4.0 || land.plateau(p) < -2.0;
-                    deep && p.min_element() > 2.0 && p.max_element() < size - 2.0
-                })
-            })
-        })
+        .flat_map(|o| o.fronts(10.0))
+        .all(|p| dig.distance(p) > ROCK)
+}
+
+/// `dig` with a drift from its hall on through the rock and out somewhere
+/// else: another stretch of the cliff, or a canyon. The best of many drawn,
+/// None if none of them come out well away from its first mouth.
+fn drifted(rng: &mut Rng, land: &Land, dig: &Dig, size: f32) -> Option<Dig> {
+    let hall = dig.rooms[1];
+    let y = hall.min.y + (hall.max.y - hall.min.y) * 0.25;
+    let first = Vec2::ZERO;
+    let least = if land.digs.is_empty() {
+        APART
+    } else {
+        APART_MORE
+    };
+    let mut best: Option<(f32, Vec<Vec2>)> = None;
+    for _ in 0..160 {
+        let s = if rng.chance(0.5) { 1.0 } else { -1.0 };
+        let end = if s > 0.0 { hall.max.x } else { hall.min.x };
+        // Out of the hall's end, perhaps turning a time or two.
+        let from = Vec2::new(end - s * 2.0, y);
+        let mut line = vec![from];
+        let mut dir = Vec2::X * s;
+        let mut left = rng.int(0, 2);
+        let mut turn = if left == 0 {
+            f32::INFINITY
+        } else {
+            rng.range(14.0, 120.0)
+        };
+        let mut at = from;
+        let mut gone = 0.0;
+        let mut long = 0.0;
+        // Where it's on the way out: how far it's gone since the rock
+        // thinned.
+        let mut thin: Option<f32> = None;
+        let out = loop {
+            at += dir * 2.0;
+            gone += 2.0;
+            long += 2.0;
+            let p = dig.to_map(at);
+            let d = land.plateau(p);
+            if long > 260.0 || p.min_element() < 24.0 || p.max_element() > size - 24.0 {
+                break None;
+            }
+            // Off the rest of the dig.
+            let crowds = dig.rooms.iter().any(|r| {
+                let q = (at - (r.min + r.max) * 0.5).abs() - (r.max - r.min) * 0.5;
+                q.max_element() < DRIFT + ROCK
+            });
+            if crowds && (line.len() > 1 || gone > DRIFT + ROCK + 4.0) {
+                break None;
+            }
+            if d >= 0.0 {
+                break Some(at);
+            }
+            if d > -(DRIFT + ROCK) {
+                let t = *thin.get_or_insert(gone);
+                if gone - t > 22.0 {
+                    break None;
+                }
+            } else if thin.is_some() {
+                break None;
+            } else if gone >= turn {
+                line.push(at);
+                dir = if dir.x == 0.0 {
+                    Vec2::X * if rng.chance(0.5) { 1.0 } else { -1.0 }
+                } else {
+                    Vec2::Y * if rng.chance(0.5) { 1.0 } else { -1.0 }
+                };
+                gone = 0.0;
+                left -= 1;
+                turn = if left <= 0 {
+                    f32::INFINITY
+                } else {
+                    rng.range(20.0, 100.0)
+                };
+            }
+        };
+        let Some(mouth) = out else { continue };
+        // The last leg long enough to be one, open ground out in front.
+        let open = (3..=7).all(|k| {
+            let p = dig.to_map(mouth + dir * k as f32 * 3.0);
+            land.plateau(p) > 2.0 && p.min_element() > 14.0 && p.max_element() < size - 14.0
+        });
+        let apart = mouth.distance(first);
+        if gone < 16.0 || !open || apart < size * least || long > apart * 1.45 {
+            continue;
+        }
+        let score = apart - 0.6 * long + rng.range(0.0, 0.1) * size;
+        if best.as_ref().is_none_or(|b| score > b.0) {
+            line.push(mouth);
+            best = Some((score, line));
+        }
+    }
+    let (_, line) = best?;
+    let mut dig = dig.clone();
+    let legs = line.len() - 1;
+    for (k, w) in line.windows(2).enumerate() {
+        let dir = (w[1] - w[0]).normalize();
+        // Out past the mouth, however the cliff lies; round the corners.
+        let far = w[1] + dir * if k + 1 == legs { 8.0 } else { DRIFT };
+        let near = w[0] - dir * if k == 0 { 0.0 } else { DRIFT };
+        let side = dir.perp().abs() * DRIFT;
+        dig.rooms.push(Hollow {
+            min: near.min(far) - side,
+            max: near.max(far) + side,
+            floor: 0.0,
+            roof: 6.5,
+        });
+    }
+    let last = line[legs];
+    let out = (last - line[legs - 1]).normalize();
+    dig.mouths = vec![
+        Mouth {
+            at: first,
+            out: -Vec2::Y,
+            half: 5.5,
+        },
+        Mouth {
+            at: last,
+            out,
+            half: DRIFT,
+        },
+    ];
+    dig.through = vec![Vec2::new(0.0, -12.0), Vec2::new(0.0, y)];
+    dig.through.extend(&line[1..legs]);
+    dig.through.push(last + out * 12.0);
+    Some(dig)
 }
 
 /// A point `t` (0..1) of the way along a cliff, and the way into it there,
@@ -173,7 +331,12 @@ fn straighten(tracks: &mut [Vec<Vec2>], x: &Crossing) {
 fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Option<Vec<Crossing>> {
     // (At its widest.)
     let edge = wash.floor + wash.sway + wash.bank * 1.6;
-    if land.digs.iter().any(|d| wash.distance(d.at) < edge + 24.0) {
+    if land
+        .digs
+        .iter()
+        .flat_map(|d| d.fronts(0.0))
+        .any(|p| wash.distance(p) < edge + 24.0)
+    {
         return None;
     }
     let mut over = Vec::new();
@@ -259,6 +422,7 @@ fn works(
                     && p.max_element() < size - 6.0
                     && land.plateau(p) > 12.0
                     && land.wash_distance(p) > 18.0
+                    && land.digs.iter().all(|d| !d.before(p))
                     && tracks[1..].iter().all(|t| line_distance(t, p) > 8.0)
             })
         })
@@ -303,10 +467,22 @@ fn works(
     (spur, loading)
 }
 
-/// Each side's spawns, as far from each other's as the ground allows (near
-/// enough): nobody starts in sight of anybody. Not a word about how far
-/// each is from the fight. False if there's no such choice.
-fn spawns(sk: &mut Skeleton, rng: &mut Rng, sides: usize, nav: &NavGrid) -> bool {
+/// Whether some dig's a way from `a` to `b`: not much longer than straight
+/// there (see `ai::ways_toward`, which wants no more than half as long again).
+fn served(digs: &[Dig], a: Vec2, b: Vec2) -> bool {
+    digs.iter().any(|d| {
+        let long: f32 = d.through.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let (Some(&p), Some(&q)) = (d.through.first(), d.through.last()) else {
+            return false;
+        };
+        let (p, q) = (d.to_map(p), d.to_map(q));
+        let via = (a.distance(p) + q.distance(b)).min(a.distance(q) + p.distance(b));
+        via + long < a.distance(b) * SERVED
+    })
+}
+
+/// Places a side could spawn, if it can drive from there.
+fn sites(sk: &Skeleton, rng: &mut Rng) -> Vec<Vec2> {
     let size = sk.size;
     let land = &sk.land;
     let mut sites: Vec<Vec2> = Vec::new();
@@ -317,25 +493,54 @@ fn spawns(sk: &mut Skeleton, rng: &mut Rng, sides: usize, nav: &NavGrid) -> bool
             && land.tower_distance(p) > PAD + 5.0
             && land.ramp_distance(p) > PAD + 10.0
             && land.wash_distance(p) > PAD + 18.0
-            && land
-                .digs
-                .iter()
-                .all(|d| d.distance(p) > 10.0 && (d.at - d.facing * 12.0).distance(p) > PAD + 14.0)
+            && land.digs.iter().all(|d| {
+                d.distance(p) > 10.0 && d.fronts(12.0).all(|f| f.distance(p) > PAD + 14.0)
+            })
             && land.mounds.iter().all(|m| m.at.distance(p) > PAD + 34.0)
             && sk.tracks.iter().all(|t| line_distance(t, p) > PAD + 4.0)
             && sk.shed_distance(p) > PAD + 10.0
             && sk.heart.distance(p) > size * 0.25;
-        if ok && !nav.path(p, sk.heart).is_empty() {
+        if ok {
             sites.push(p);
         }
-        if sites.len() >= 60 {
+        if sites.len() >= 90 {
             break;
         }
     }
-    // Start from each, adding whichever's farthest from all so far.
+    sites
+}
+
+/// Whether two of `sites`, as far apart as `sides` sides start, have a dig on
+/// the way between them.
+fn any_served(sk: &Skeleton, sites: &[Vec2], sides: usize) -> bool {
+    sites.iter().enumerate().any(|(i, &a)| {
+        sites[..i]
+            .iter()
+            .any(|&b| a.distance(b) > sk.size * spread_of(sides) && served(&sk.land.digs, a, b))
+    })
+}
+
+/// How far apart sides spawn at least, of the arena's size.
+fn spread_of(sides: usize) -> f32 {
+    if sides <= 2 { 0.68 } else { 0.4 }
+}
+
+/// Each side's spawns, as far from each other's as the ground allows (near
+/// enough), a dig on the way between two of them if it `must` be: nobody
+/// starts in sight of anybody. Not a word about how far
+/// each is from the fight. False if there's no such choice.
+fn spawns(sk: &mut Skeleton, sites: &[Vec2], rng: &mut Rng, sides: usize, must: bool) -> bool {
+    let size = sk.size;
+    let land = &sk.land;
+    // Start from each two, adding whichever's farthest from all so far.
+    let apart = size * spread_of(sides);
+    let pairs = |n: usize| (0..n).flat_map(|i| (0..i).map(move |j| (i, j)));
     let mut best: Option<(f32, Vec<Vec2>)> = None;
-    for &first in &sites {
-        let mut pick = vec![first];
+    for (i, j) in pairs(sites.len()) {
+        let mut pick = vec![sites[i], sites[j]];
+        if pick[0].distance(pick[1]) < apart {
+            continue;
+        }
         while pick.len() < sides {
             let gap = |p: &Vec2| {
                 pick.iter()
@@ -351,10 +556,16 @@ fn spawns(sk: &mut Skeleton, rng: &mut Rng, sides: usize, nav: &NavGrid) -> bool
             };
             pick.push(next);
         }
-        let spread = (0..sides)
-            .flat_map(|i| (0..i).map(move |j| (i, j)))
+        let spread = pairs(sides)
             .map(|(i, j)| pick[i].distance(pick[j]))
             .fold(f32::INFINITY, f32::min);
+        if spread < apart {
+            continue;
+        }
+        let dug = pairs(sides).any(|(i, j)| served(&land.digs, pick[i], pick[j]));
+        if must && !dug {
+            continue;
+        }
         // (Any of the farther ones will do, not always the corners.)
         let score = spread * rng.range(0.88, 1.0);
         if best.as_ref().is_none_or(|b| score > b.0) {
@@ -362,13 +573,6 @@ fn spawns(sk: &mut Skeleton, rng: &mut Rng, sides: usize, nav: &NavGrid) -> bool
         }
     }
     let Some((_, pick)) = best else { return false };
-    let apart = if sides <= 2 { 0.68 } else { 0.4 };
-    let far = (0..sides)
-        .flat_map(|i| (0..i).map(move |j| (i, j)))
-        .all(|(i, j)| pick[i].distance(pick[j]) > size * apart);
-    if !far {
-        return false;
-    }
     for &at in &pick {
         sk.land.high.level.push((at, PAD, PAD + 22.0));
         if let Some(d) = &mut sk.land.dunes {
@@ -379,8 +583,9 @@ fn spawns(sk: &mut Skeleton, rng: &mut Rng, sides: usize, nav: &NavGrid) -> bool
     true
 }
 
-/// A mine for `sides` sides, if this draw holds together.
-fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
+/// A mine for `sides` sides, if this draw holds together (and, if it `must`,
+/// a dig's on the way from one side to another).
+fn draw(rng: &mut Rng, sides: &[Faction], must: bool) -> Result<Skeleton, String> {
     let size = 2.0 * rng.int(125, 160) as f32;
     let mid = Vec2::splat(size * 0.5);
     let mut land = Land {
@@ -463,7 +668,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
 
     // Digs along it.
     let want = rng.int(1, 3) as usize;
-    for _ in 0..160 {
+    for _ in 0..400 {
         if land.digs.len() >= want {
             break;
         }
@@ -475,6 +680,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             rooms: rooms(rng),
             pillars: Vec::new(),
             beam: None,
+            mouths: Vec::new(),
+            through: Vec::new(),
         };
         let dig = pillared(rng, dig);
         // A borer at work in it, if there's the rock.
@@ -484,7 +691,10 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         } else {
             dig
         };
-        if fits(&land, &dig, size) {
+        if !fits(&land, &dig, size) {
+            continue;
+        }
+        if let Some(dig) = drifted(rng, &land, &dig, size).filter(|d| fits(&land, d, size)) {
             land.digs.push(dig);
         }
     }
@@ -494,9 +704,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     for d in &land.digs {
         // Level in front of the mouths.
         let dunes = land.dunes.as_mut().unwrap();
-        for r in d.rooms.iter().filter(|r| r.min.y < 0.0) {
-            let x = (r.min.x + r.max.x) * 0.5;
-            let p = d.at - d.facing.perp() * x - d.facing * 6.0;
+        for p in d.fronts(6.0) {
             dunes.calm.push((p, 12.0, 24.0));
         }
     }
@@ -504,7 +712,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     // A railroad out of each dig's first way in, straight on to the edge.
     let mut tracks: Vec<Vec<Vec2>> = Vec::new();
     for d in &land.digs {
-        let from = d.to_map(Vec2::new(0.0, d.rooms[2].max.y - 3.0));
+        let from = d.to_map(Vec2::new(0.0, d.rooms[1].max.y - 3.0));
         // Straight out of the mouth, then bending as it goes.
         let mut dir = -d.facing;
         let mut end = d.at + dir * 34.0;
@@ -523,7 +731,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
         let clear = all.iter().all(|&p| {
             land.digs
                 .iter()
-                .all(|o| o.at == d.at || o.distance(p) > 8.0)
+                .all(|o| o.at == d.at || (o.distance(p) > 8.0 && !o.before(p)))
+                && d.to_map(d.mouths[1].at).distance(p) > 16.0
                 && tracks.iter().all(|o| line_distance(o, p) > 16.0)
         });
         // (Not out along the cliff and back into it.)
@@ -579,7 +788,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     // A great rock over some of the digs, back from the cliff.
     for k in 0..land.digs.len() {
         let d = &land.digs[k];
-        let hall = d.rooms[2];
+        let hall = d.rooms[1];
         let t = Tower {
             center: d.to_map(Vec2::new(
                 (hall.min.x + hall.max.x) * 0.5,
@@ -635,7 +844,8 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             && land
                 .digs
                 .iter()
-                .all(|d| (d.at - d.facing * 26.0).distance(m.at) > reach + 34.0);
+                .flat_map(|d| d.fronts(26.0))
+                .all(|f| f.distance(m.at) > reach + 34.0);
         if clear {
             land.mounds.push(m);
             break;
@@ -658,7 +868,11 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
             .iter()
             .all(|q| q.min_element() > 14.0 && q.max_element() < size - 14.0);
         let clear = land.digs.iter().all(|d| {
-            (0..=8).all(|i| d.distance(ramp.foot.lerp(ramp.top, i as f32 / 8.0)) > RAMP_HALF + 8.0)
+            (0..=8).all(|i| {
+                let q = ramp.foot.lerp(ramp.top, i as f32 / 8.0);
+                d.distance(q) > RAMP_HALF + 8.0
+                    && d.fronts(12.0).all(|f| f.distance(q) > RAMP_HALF + 10.0)
+            })
         }) && land
             .high
             .ramps
@@ -715,8 +929,13 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     if sk.shed_distance(heart) < 16.0 {
         return Err("the Hold site's by the warehouse".into());
     }
+    let mut sites = sites(&sk, rng);
+    if must && !any_served(&sk, &sites, sides.len()) {
+        return Err("no dig on the way between any spawns".into());
+    }
     let nav = NavGrid::build(&sk.greybox(sides));
-    if !spawns(&mut sk, rng, sides.len(), &nav) {
+    sites.retain(|&p| !nav.path(p, sk.heart).is_empty());
+    if !spawns(&mut sk, &sites, rng, sides.len(), must) {
         return Err("no room to spawn apart".into());
     }
     sk.place_lots(rng, Form::Escarpment);
@@ -757,7 +976,7 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
     check::playable_on(&grey, &nav)?;
     // Every hall a drive from every side.
     for d in &sk.land.digs {
-        let hall = d.rooms[2];
+        let hall = d.rooms[1];
         let p = d.to_map((hall.min + hall.max) * 0.5);
         for b in sk.base_spots() {
             let g = sk.ground(b);
@@ -775,14 +994,14 @@ fn draw(rng: &mut Rng, sides: &[Faction]) -> Result<Skeleton, String> {
 
 /// The mine `seed` names: the first, from it on, that holds together.
 pub fn skeleton(seed: u64, sides: &[Faction]) -> Skeleton {
-    (0..64u64)
+    (0..128u64)
         .find_map(|attempt| {
             let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(attempt) ^ 0x3_D16);
-            draw(&mut rng, sides)
+            draw(&mut rng, sides, attempt < 64)
                 .map_err(|why| log::debug!("mine seed {seed} attempt {attempt}: {why}"))
                 .ok()
         })
-        .expect("no crystal mine laid out in 64 draws")
+        .expect("no crystal mine laid out in 128 draws")
 }
 
 #[cfg(test)]
@@ -813,6 +1032,56 @@ mod tests {
             );
             let b = sk.base_spots();
             assert!(b[0].distance(b[1]) > sk.size * 0.68, "{b:?}");
+        }
+    }
+
+    /// Driving into a mine takes you somewhere else: every dig's mouths are
+    /// far apart, and there's a way from one to the other through it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn digs_lead_somewhere_else() {
+        let sides = [Faction::Ithessar, Faction::Resonant];
+        for seed in 0..12 {
+            let sk = skeleton(seed, &sides);
+            let nav = NavGrid::build(&sk.greybox(&sides));
+            for d in &sk.land.digs {
+                let f: Vec<Vec2> = d.fronts(12.0).collect();
+                assert!(
+                    f[0].distance(f[1]) > sk.size * APART_MORE,
+                    "seed {seed}: {f:?}"
+                );
+                let line: Vec<_> = d
+                    .through
+                    .iter()
+                    .map(|&p| d.to_map(p))
+                    .map(|p| glam::Vec3::new(p.x, d.floor, p.y))
+                    .collect();
+                for w in line.windows(2) {
+                    let legs = nav.route(w[0], w[1]);
+                    assert!(!legs.is_empty(), "seed {seed}: blocked at {}", w[0]);
+                    let mut at = w[0];
+                    let mut len = 0.0;
+                    for &l in &legs {
+                        len += at.distance(l);
+                        at = l;
+                    }
+                    let straight = w[0].distance(w[1]);
+                    assert!(
+                        len < straight * 1.2 + 8.0,
+                        "seed {seed}: {len} for {straight}"
+                    );
+                }
+            }
+            let apart = |d: &Dig| d.mouths[0].at.distance(d.mouths[1].at);
+            assert!(
+                sk.land.digs.iter().any(|d| apart(d) >= sk.size * APART),
+                "seed {seed}"
+            );
+            let b = sk.base_spots();
+            assert!(served(&sk.land.digs, b[0], b[1]), "seed {seed}: {b:?}");
         }
     }
 }

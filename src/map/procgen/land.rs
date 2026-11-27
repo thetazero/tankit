@@ -431,9 +431,45 @@ pub struct Dig {
     pub pillars: Vec<(Vec2, f32)>,
     /// A borer's beam in it, from and to, in its frame.
     pub beam: Option<(Vec2, Vec2)>,
+    /// Its ways in, in its frame.
+    pub mouths: Vec<Mouth>,
+    /// The way through it, from in front of one mouth to in front of
+    /// another, in its frame.
+    pub through: Vec<Vec2>,
+}
+
+/// A way into a dig: where its floor comes out of the rock, the way out
+/// there, and half its width.
+#[derive(Clone, Copy, Debug)]
+pub struct Mouth {
+    pub at: Vec2,
+    pub out: Vec2,
+    pub half: f32,
 }
 
 impl Dig {
+    /// `r` m out in front of each of its mouths, on the map.
+    pub fn fronts(&self, r: f32) -> impl Iterator<Item = Vec2> + '_ {
+        self.mouths
+            .iter()
+            .map(move |m| self.to_map(m.at + m.out * r))
+    }
+
+    /// Which of its rooms its drift starts at: after the way in, the hall,
+    /// the heading and, with a borer in it, the bay and the bore.
+    pub fn drift_from(&self) -> usize {
+        if self.beam.is_some() { 5 } else { 3 }
+    }
+
+    /// Whether `p` is out in front of a mouth.
+    pub fn before(&self, p: Vec2) -> bool {
+        let q = self.to_dig(p);
+        self.mouths.iter().any(|m| {
+            let (along, across) = ((q - m.at).dot(m.out), (q - m.at).perp_dot(m.out).abs());
+            along > -4.0 && along < 20.0 && across < m.half + 2.0
+        })
+    }
+
     /// A point of its frame on the map.
     pub fn to_map(&self, p: Vec2) -> Vec2 {
         self.at - self.facing.perp() * p.x + self.facing * p.y
@@ -470,19 +506,6 @@ impl Dig {
             .iter()
             .map(|&(c, r)| r + 0.12 * (y - self.floor - 3.0).abs() - q.distance(c))
             .fold(open, f32::max)
-    }
-
-    /// Its rooms' corners, on the map.
-    pub fn corners(&self) -> impl Iterator<Item = Vec2> + '_ {
-        self.rooms.iter().flat_map(|r| {
-            [
-                r.min,
-                r.max,
-                Vec2::new(r.min.x, r.max.y),
-                Vec2::new(r.max.x, r.min.y),
-            ]
-            .map(|p| self.to_map(p))
-        })
     }
 
     /// How far `p` is from its rooms, seen from above (negative: over one).
@@ -1225,6 +1248,8 @@ mod tests {
             rooms: tunnel(34.0),
             pillars: Vec::new(),
             beam: None,
+            mouths: Vec::new(),
+            through: Vec::new(),
         };
         let mesa = Vec2::new(52.0, 50.0);
         let face = Vec2::from_angle(2.1);
