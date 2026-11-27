@@ -418,7 +418,7 @@ impl Menu {
         matches!(self.screen, Screen::Ships | Screen::Contract)
     }
 
-    /// Move the board's pick by the wheel. True if it moved.
+    /// Scroll the board by the wheel. True if it moved.
     pub fn scroll(&mut self, steps: i32) -> bool {
         self.screen == Screen::Ships && self.board.scroll(steps)
     }
