@@ -10,7 +10,8 @@
 //! - each side's staging court (`court`).
 //! - medium structures (`civics`): kiln courts, lens halls, terraces.
 //! - their power's the plasma river (`channel`), and every lit slit's on it: the Sun
-//!   and the Weir are joined to it overhead (`conduit`).
+//!   and the Weir are joined to it overhead (`conduit`), and side channels run from it up the
+//!   streets into the houses (`rill`).
 
 mod civics;
 mod court;
@@ -111,7 +112,12 @@ impl Style for Ithessar {
     }
 
     fn street(&self, map: &mut Map, sk: &Skeleton, s: &Street, _rng: &mut Rng) {
-        if s.rank == Rank::Avenue {
+        // (Those off the quays have the river's own side channels.)
+        let fed = sk
+            .rills
+            .iter()
+            .any(|r| r.points.iter().any(|&p| s.distance(p) < s.half));
+        if s.rank == Rank::Avenue && !fed {
             feed(map, sk, s);
         }
     }
