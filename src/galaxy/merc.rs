@@ -1285,7 +1285,7 @@ impl Galaxy {
             let (m, crewed) = self.crewed(t, g);
             let theirs = (hulls[g] - m.min(hulls[g])) as f32;
             let more = self.can_move(t, g, e, self.realms[e as usize].crystals);
-            crew_e += crewed as f32 + self.pilots_for(e, theirs + more);
+            crew_e += crewed as f32 + self.pilots_for(e, t, g, theirs + more);
             spare0 += more;
             // (they see the attack, and then they fly)
             let wait = self.rescue(t, g, e) as f32;

@@ -110,16 +110,16 @@ impl Realm {
         self.wage.max(rules.pilot_upkeep)
     }
 
-    /// The pilots a realm starts with: a quarter of its income's worth, or a
-    /// front's if that's fewer.
+    /// The garrison a realm starts with and keeps: its share of the income's
+    /// worth of pilots, or a front's if that's fewer.
     pub fn pilots_wanted(&self, rules: &super::Rules) -> u32 {
-        (0.25 * self.income.max(0.0) / self.pay(rules)).min(rules.seats * 6.0) as u32
+        (rules.garrison * self.income.max(0.0) / self.pay(rules)).min(rules.seats * 6.0) as u32
     }
 
     /// Pay its pilots (those it can't pay leave), then train some if there's
     /// a seat for them and one's worth more over a career than its training
     /// and pay, or let some go if one's worth less than its pay, or has no
-    /// seat to fill. Returns those who left or were let go.
+    /// seat to fill; but keep up its garrison either way. Returns those who left or were let go.
     pub fn keep_pilots(&mut self, rules: &super::Rules, retired: u32, free: u32) -> u32 {
         // What its fights showed this tick.
         self.pilot_worth += rules.sense * (self.pilot_use - self.pilot_worth);
@@ -142,14 +142,21 @@ impl Realm {
         let mut left = before - self.pilots;
         // Over a career, what one earns it over their pay.
         let gain = (self.pilot_worth - upkeep) / rules.career.max(1e-6);
-        let open = (self.seats.ceil() as u32).saturating_sub(self.pilots);
-        let idle = self.pilots.saturating_sub(self.seats.ceil() as u32);
-        if gain > 0.0 && free > 0 && open > 0 {
+        // Its garrison it keeps up, whatever they're worth.
+        let garrison = self.pilots_wanted(rules);
+        let seats = (self.seats.ceil() as u32).max(garrison);
+        let idle = self.pilots.saturating_sub(seats);
+        let open = |worth: bool| {
+            let to = if worth { seats } else { garrison };
+            to.saturating_sub(self.pilots)
+        };
+        let (free_open, open) = (open(gain > 0.0), open(gain > rules.train_cost));
+        if free > 0 && free_open > 0 {
             // Pilots out of work need no training.
-            let n = rules.train.min(free).min(open);
+            let n = rules.train.min(free).min(free_open);
             self.pilots += n;
             self.hired = n;
-        } else if gain > rules.train_cost && open > 0 {
+        } else if open > 0 {
             let n = rules
                 .train
                 .min(open)
@@ -157,7 +164,11 @@ impl Realm {
             self.pilots += n;
             self.crystals -= n as f32 * rules.train_cost;
         } else if gain < 0.0 || idle > 0 {
-            let all = if gain < 0.0 { self.pilots } else { idle };
+            let all = if gain < 0.0 {
+                self.pilots - garrison.min(self.pilots)
+            } else {
+                idle
+            };
             let n = rules.train.min(all);
             self.pilots -= n;
             left += n;

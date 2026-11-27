@@ -1073,3 +1073,54 @@ fn planets_have_outposts() {
     assert!((0..bare.systems.len()).all(|s| bare.built(s) == [0.0; SIDES]));
     assert!(bare.realm_income().iter().all(|&x| x == 0.0));
 }
+
+/// A realm's pilots go to its fights by the seats to fill there, not by the
+/// hulls: a small garrison isn't left with none by a stockpile elsewhere (#652).
+#[test]
+fn pilots_are_split_by_seats() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let f = g.systems[0].owner();
+    let r = g.systems[0].realms[f];
+    let other = (1..50)
+        .find(|&s| g.systems[s].realms[f] == r && g.systems[s].owner() == f)
+        .expect("a second system");
+    let e = (f + 1) % super::PEOPLES;
+    for s in 0..50 {
+        g.systems[s].hulls = [0; SIDES];
+    }
+    for (s, hulls) in [(0, 200), (other, 50_000)] {
+        g.systems[s].hulls[f] = hulls;
+        g.systems[s].hulls[e] = 500;
+    }
+    g.realms[r as usize].pilots = 6;
+    g.share_pilots();
+    let (small, big) = (g.able(0, f), g.able(other, f));
+    assert!(small + big <= 6.001, "{small} and {big} of 6");
+    let seats = |s: usize| 6.0 * g.battles_in(s)[f].max(1) as f32;
+    let want = 6.0 * seats(0) / (seats(0) + seats(other));
+    assert!((small - want).abs() < 0.01, "{small}, not {want}");
+}
+
+/// A realm keeps its garrison whatever its fights have shown a pilot's
+/// worth, and trains back up to it, no further (#652).
+#[test]
+fn realms_keep_a_garrison() {
+    let rules = Rules::default();
+    let mut r = super::realm::Realm::new(0, 0, 0);
+    (r.crystals, r.income, r.pilot_worth) = (1000.0, 1.0, 0.0);
+    let garrison = r.pilots_wanted(&rules);
+    assert!(garrison > 0);
+    for _ in 0..50 {
+        r.keep_pilots(&rules, 0, 0);
+    }
+    assert_eq!(r.pilots, garrison);
+    r.pilots = garrison + 9;
+    for _ in 0..50 {
+        r.keep_pilots(&rules, 0, 0);
+    }
+    assert_eq!(r.pilots, garrison);
+    // What it can't pay for, it doesn't keep.
+    r.crystals = 0.0;
+    r.keep_pilots(&rules, 0, 0);
+    assert_eq!(r.pilots, 0);
+}

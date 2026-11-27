@@ -210,6 +210,10 @@ pub struct Rules {
     pub sense: f32,
     /// Most pilots a realm trains or dismisses a tick.
     pub train: u32,
+    /// A realm spends this share of its income on a standing garrison: pilots
+    /// it keeps whatever its fights show, so peace doesn't leave its worlds'
+    /// hulls with nobody to fly them.
+    pub garrison: f32,
     /// Pilots a new company starts with.
     pub crew: u32,
     /// What a pilot's wage a tick is in CR: your pay for a battle is in
@@ -253,6 +257,7 @@ impl Default for Rules {
             pay_step: 0.005,
             sense: 0.03,
             train: 2,
+            garrison: 0.1,
             crew: 40,
             wage_cr: 100.0,
             kill_share: 0.1,
@@ -501,8 +506,8 @@ pub struct Galaxy {
     pub(crate) rng: Rng,
     /// Scratch: the sites fought over this tick (see `Galaxy::win`).
     assaulted: Vec<bool>,
-    /// Scratch: each realm's hulls in this tick's fights.
-    war_hulls: Vec<u32>,
+    /// Scratch: each realm's seats in this tick's fights.
+    war_seats: Vec<f32>,
     /// Realms lately looking for a company at each system and finding none
     /// in range (fading): where idle companies go for work.
     pub(crate) unmet: Vec<f32>,
@@ -658,7 +663,7 @@ impl Galaxy {
             moves: vec![[Moves::default(); SIDES]; systems.len()],
             merc_moves: vec![[Moves::default(); SIDES]; systems.len()],
             assaulted: Vec::new(),
-            war_hulls: Vec::new(),
+            war_seats: Vec::new(),
             unmet: vec![0.0; systems.len()],
             systems,
             sites,
@@ -1228,12 +1233,16 @@ impl Galaxy {
     /// How many of side `f`'s hulls in system `s` fire: no more than it has
     /// pilots for, and no more than its battles have seats.
     pub fn firing(&self, s: usize, f: usize) -> f32 {
-        let battles = match self.engaged {
-            Some((at, n)) if at == s => n[f],
-            _ => self.battles_in(s)[f],
-        };
         self.able(s, f)
-            .min(self.rules.seats * battles.max(1) as f32)
+            .min(self.rules.seats * self.battles_of(s, f) as f32)
+    }
+
+    /// How many battles side `f`'s in, in system `s` this tick; one at least.
+    fn battles_of(&self, s: usize, f: usize) -> u32 {
+        match self.engaged {
+            Some((at, n)) if at == s => n[f].max(1),
+            _ => self.battles_in(s)[f].max(1),
+        }
     }
 
     /// Side `f`'s pilots with hulls in system `s`, its realm's and its mercs':
@@ -1243,7 +1252,7 @@ impl Galaxy {
         let own = self.systems[s].hulls[f] - mercs;
         let realm = match self.systems[s].realms[f] {
             NONE => own as f32,
-            r => self.pilots_for(r, own as f32).min(own as f32),
+            r => self.pilots_for(r, s, f, own as f32).min(own as f32),
         };
         realm + crewed as f32
     }
@@ -1266,10 +1275,10 @@ impl Galaxy {
         (mercs, crewed)
     }
 
-    /// Count each realm's hulls at war, so `firing` can split its pilots
-    /// between its fights.
+    /// Count each realm's seats in its fights, so `firing` can split its
+    /// pilots between them.
     fn share_pilots(&mut self) {
-        let mut war = vec![0; self.realms.len()];
+        let mut war = vec![0.0; self.realms.len()];
         for realm in &mut self.realms {
             realm.fronts = 0;
             realm.seats_now = 0.0;
@@ -1280,18 +1289,17 @@ impl Galaxy {
                 if r != NONE && self.fighting(s, f) {
                     let (mercs, crewed) = self.crewed(s, f);
                     let own = self.systems[s].hulls[f] - mercs;
-                    war[r as usize] += own;
+                    let all = self.rules.seats as u32 * self.battles_in(s)[f].max(1);
+                    war[r as usize] += all.min(own) as f32;
                     // Its own seats there, past its mercs'.
-                    let seats = (self.rules.seats as u32 * self.battles_in(s)[f].max(1))
-                        .saturating_sub(crewed)
-                        .min(own);
+                    let seats = all.saturating_sub(crewed).min(own);
                     let realm = &mut self.realms[r as usize];
                     realm.fronts += 1;
                     realm.seats_now += seats as f32;
                 }
             }
         }
-        self.war_hulls = war;
+        self.war_seats = war;
     }
 
     /// A side's seats in a battle: one fewer under an enemy's shield.
@@ -1911,7 +1919,7 @@ impl Galaxy {
         if here == 0 && late > 0.0 && !ours {
             return;
         }
-        let pilots = self.pilots_for(r, have + late);
+        let pilots = self.pilots_for(r, t, f, have + late);
         // How long what it sends would take: an attack lands all together.
         let (mut flight, mut slowest) = (0.0f32, 1u64);
         for (s, d) in self.neighbors(t) {
@@ -1950,16 +1958,17 @@ impl Galaxy {
         let all = pool as f32 * afford;
         if (here > 0 && attacked) || raided || (here == 0 && pool >= MIN_SEND) {
             let more = if here > 0 { 0.0 } else { all };
-            let p = self.pilots_for(r, have + late + more);
+            let p = self.pilots_for(r, t, f, have + late + more);
             let fly = if here > 0 { 0.0 } else { cost_all * afford };
             let (now, l) = play(self, more, p);
             let now = (now - fly).max(stay);
             let length = if here > 0 { length } else { l };
             // (a hull more than those it could already bring)
-            let reserve = self.pilots_for(r, have + late + all);
+            let reserve = self.pilots_for(r, t, f, have + late + all);
             let most = play(self, all, reserve).0;
             let (mut pilot, mut hull) = (0.0f32, 0.0f32);
-            for n in [6.0, 18.0, 36.0] {
+            // (and every seat there: a fight's often not won with less)
+            for n in [6.0, 18.0, 36.0, (self.seats_at(t, f) as f32).max(36.0)] {
                 pilot = pilot.max((play(self, more, p + n).0 - fly - now) / n / length);
                 hull = hull.max((play(self, all + 100.0 * n, reserve).0 - most) / (100.0 * n));
             }
@@ -1988,7 +1997,7 @@ impl Galaxy {
                 if n < MIN_SEND as f32 {
                     continue;
                 }
-                let gain = play(self, n, self.pilots_for(r, have + late + n)).0
+                let gain = play(self, n, self.pilots_for(r, t, f, have + late + n)).0
                     - stay
                     - cost_all * share * afford;
                 if gain > best.0 {
@@ -2013,7 +2022,7 @@ impl Galaxy {
         } else {
             stay + cost_all * sends
         };
-        let help = plan(with, self.pilots_for(r, have + late + with));
+        let help = plan(with, self.pilots_for(r, t, f, have + late + with));
         let start = if fresh && with > 0.0 { slowest } else { 0 };
         if realm.hires
             && (attacked || pool >= MIN_SEND)
@@ -2054,12 +2063,29 @@ impl Galaxy {
         }
     }
 
-    /// The pilots realm `r` would have for `own` hulls in one fight, sharing
-    /// them with its others (`Galaxy::firing`).
-    pub(crate) fn pilots_for(&self, r: u32, own: f32) -> f32 {
-        let pilots = self.realms[r as usize].pilots as f32;
-        let fights = self.war_hulls.get(r as usize).copied().unwrap_or(0) as f32;
-        pilots * own / fights.max(own).max(1.0)
+    /// The pilots realm `r`, side `f`'s, would have for `own` hulls in
+    /// system `s`, sharing them with its other fights (`Galaxy::firing`) by
+    /// the seats each has to fill: a stockpile at one front doesn't take the
+    /// pilots from a small garrison at another.
+    pub(crate) fn pilots_for(&self, r: u32, s: usize, f: usize, own: f32) -> f32 {
+        // Its seats here, with so many hulls.
+        let fighting = self.fighting(s, f);
+        let seats = if fighting {
+            self.rules.seats * self.battles_of(s, f) as f32
+        } else {
+            self.seats_at(s, f) as f32
+        };
+        let want = seats.min(own);
+        // And the others' (this one as it stands is among them).
+        let here = if fighting {
+            let mercs = self.crewed(s, f).0;
+            seats.min((self.systems[s].hulls[f] - mercs) as f32)
+        } else {
+            0.0
+        };
+        let all = self.war_seats.get(r as usize).copied().unwrap_or(0.0);
+        let all = (all - here).max(0.0) + want;
+        self.realms[r as usize].pilots as f32 * want / all.max(1.0)
     }
 }
 
