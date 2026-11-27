@@ -601,6 +601,8 @@ enum Screen {
     /// A kill of yours half a second before the shot, its wreck's gear well
     /// past what you know: the scrap popups (#444).
     Kill,
+    /// The player's tank in a plasma river, from a second before the shot.
+    Burning,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -1054,10 +1056,11 @@ fn parse_args() -> Result<Args> {
                     Some("leaving") => Screen::Leaving,
                     Some("returning") => Screen::Returning,
                     Some("kill") => Screen::Kill,
+                    Some("burning") => Screen::Burning,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, returning, kill or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, returning, kill, burning or carry, got {other:?}"
                         )
                     }
                 })
@@ -1420,6 +1423,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
         }
         game.kill_nearest_enemy()
             .context("--screen kill needs an enemy in play")?;
+        advance(&mut game, &mut cam, &mut garage, lead)
+    } else if args.screen == Some(Screen::Burning) {
+        // With the burn's time in hand, past what it takes to sink.
+        let lead = 1.2f32.min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        anyhow::ensure!(
+            game.sink_player(),
+            "--screen burning needs a map with a plasma river"
+        );
         advance(&mut game, &mut cam, &mut garage, lead)
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.

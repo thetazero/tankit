@@ -10,7 +10,7 @@ use crate::sim::HullKind;
 use super::Listener;
 use super::dsp::{Noise, OnePole, Panner, Smooth};
 use super::mixer::Coefs;
-use super::sounds::{beam, engine, guns, knocks, shield, tracks, turret, vigil};
+use super::sounds::{beam, engine, guns, knocks, plasma, shield, tracks, turret, vigil};
 
 /// What one tank sounds like this frame, from the game thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -35,6 +35,8 @@ pub struct TankParams {
     pub heat: f32,
     /// Flamethrower pouring (0/1).
     pub flame: f32,
+    /// Burning in a plasma river (0/1; more in your own tank).
+    pub plasma: f32,
     /// A Knell ringing up: how far its charge has got, 0..1.
     pub charge: f32,
     /// A broken Vigil running on: how much light still pours out, 0..1.
@@ -65,6 +67,7 @@ impl TankParams {
             beam: 1.0,
             heat: 1.0,
             flame: 1.0,
+            plasma: plasma::level(0),
             charge: 1.0,
             husk: 1.0,
             shield: shield::level(0),
@@ -116,6 +119,9 @@ pub fn params(
                 },
                 heat: f.map_or(0.0, |f| f.heat),
                 flame: flaming as u8 as f32,
+                plasma: f
+                    .filter(|f| f.in_plasma.is_some())
+                    .map_or(0.0, |_| plasma::level(i)),
                 charge: t.charge,
                 husk: f.filter(|f| f.is_husk()).map_or(0.0, |f| f.strength()),
                 shield: f
@@ -147,6 +153,7 @@ struct Loops {
     traverse: turret::Traverse,
     buzz: beam::Buzz,
     flame: guns::Flame,
+    plasma: plasma::Sizzle,
     hum: guns::Hum,
     husk: vigil::Husk,
     ward: shield::Ward,
@@ -161,6 +168,7 @@ impl Loops {
         f(&mut self.traverse);
         f(&mut self.buzz);
         f(&mut self.flame);
+        f(&mut self.plasma);
         f(&mut self.hum);
         f(&mut self.husk);
         f(&mut self.ward);

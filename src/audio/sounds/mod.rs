@@ -40,6 +40,7 @@ pub mod hold;
 pub mod hull;
 pub mod knocks;
 pub mod places;
+pub mod plasma;
 pub mod repair;
 pub mod round;
 pub mod shield;

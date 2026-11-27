@@ -247,6 +247,56 @@ pub fn wreck_puff(at: Vec3, drift: Vec3, f: f32, out: &mut Vec<Particle>) {
     }
 }
 
+/// Where the fire on a tank at height `tank` burns from, in a plasma river
+/// whose surface is at `surface`: off its hull, or off the surface it's sunk
+/// under.
+pub fn fire_base(tank: f32, surface: f32) -> f32 {
+    (tank + 1.0).max(surface + 0.1)
+}
+
+/// A tank burning in a plasma river, at `time`: flames licking up all round
+/// and over it, and sparks spat out. `at` is the middle of the fire's foot.
+pub fn plasma_fire(at: Vec3, rot: Quat, time: f32, out: &mut Vec<Particle>) {
+    const TONGUES: u32 = 18;
+    for k in 0..TONGUES {
+        let life = 0.45 + 0.35 * rand(0.37, k);
+        let t = time / life + rand(0.71, k);
+        // Each lick's different from the one before it.
+        let (f, seed) = (t.fract(), rand(t.floor().rem_euclid(97.0) * 0.173, k));
+        let a = k as f32 / TONGUES as f32 * std::f32::consts::TAU + seed;
+        let r = 0.35 + 0.65 * rand(seed, 1);
+        let mut off = rot * Vec3::new(a.cos() * 1.7 * r, 0.0, a.sin() * 2.8 * r);
+        off.y = 0.0;
+        // They lean in and up as they go.
+        let p = at + off * (1.0 - 0.45 * f) + Vec3::Y * (0.2 + 2.6 * f * (0.7 + 0.6 * seed));
+        let heat = (1.0 - f) * (f / 0.12).min(1.0);
+        out.push(Particle::fire(
+            p,
+            (0.6 + 0.5 * rand(seed, 2)) * (1.0 - 0.5 * f),
+            flame(1.0 - f),
+            2.4 * heat,
+            Vec3::Y * 0.9,
+            rand(seed, 3) * 0.9 + f * 0.05,
+        ));
+    }
+    // Spits of sparks, one round after another.
+    for k in 0..2 {
+        let t = time / 0.5 + k as f32 * 0.5;
+        let seed = rand(t.floor().rem_euclid(97.0) * 0.319, k);
+        let p = at + rot * Vec3::new(seed * 2.0 - 1.0, 0.0, rand(seed, 4) * 4.0 - 2.0);
+        sparks(p, seed, 5, 7.0, 0.45, t.fract() * 0.5, out);
+    }
+    // And the glow of it all.
+    let shiver = 1.0 + 0.1 * (time * 23.0).sin() + 0.07 * (time * 41.0).sin();
+    out.push(Particle::glow(
+        at + Vec3::Y * 0.8,
+        3.2 * shiver,
+        FIRE,
+        0.5,
+        Vec3::ZERO,
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
