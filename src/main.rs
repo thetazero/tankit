@@ -55,7 +55,7 @@ tankit [OPTIONS]
   --map <reservoir|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-desert>
                           the reservoir (a generated desert town round a dam or a well, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map; generated, map seed 0 the hand-made one: see --ground), the Kiln (Ithessar ground), the city
-                          (a generated city, see --look), the shield site (the same, a shield
+                          (a generated city, see --look and --ground), the shield site (the same, a shield
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
                           (generated: see --look and --ground), or the mine (a generated
@@ -72,8 +72,9 @@ tankit [OPTIONS]
                           (with --map city, shield-site, foundry, depot or mine) who built it (default
                           imperium, a mine's ithessar; uthenn and ithessar only have foundries,
                           depots and mines of their own)
-  --ground <desert|tundra|grassland>  (with --map foundry, depot or sanctum) what kind of world it's on (default desert)
-  --in-desert             (with --map city or shield-site) the city stands in the desert
+  --ground <desert|tundra|grassland>  (with --map foundry, depot, sanctum, city or shield-site) what kind of world it's on
+                          (default desert; a city's, grey built-over land)
+  --in-desert             (with --map city or shield-site) the city stands in the desert (as --ground desert)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
   --spawn <n>             which spawn point to start at
@@ -1129,8 +1130,13 @@ fn parse_args() -> Result<Args> {
     {
         *g = ground;
     }
-    if let (MapKind::City(_, s) | MapKind::ShieldSite(_, s, _), true) = (&mut map_kind, in_desert) {
-        *s = map::procgen::setting::Setting::Desert;
+    if let MapKind::City(_, s) | MapKind::ShieldSite(_, s, _) = &mut map_kind {
+        if let Some(ground) = ground {
+            *s = ground.into();
+        }
+        if in_desert {
+            *s = map::procgen::setting::Setting::Desert;
+        }
     }
     if let (
         MapKind::City(l, _)

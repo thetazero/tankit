@@ -471,7 +471,7 @@ pub enum Class {
     /// A desert world: its sites are generated (cities, mines,
     /// depots, reservoir towns, open desert, Sanctums).
     Desert,
-    /// A frozen world: its foundries, depots and Sanctums are generated,
+    /// A frozen world: its cities, foundries, depots and Sanctums are generated,
     /// its other sites fought on the hand-built Kiln.
     Tundra,
     /// A green world, likewise.
@@ -490,7 +490,7 @@ impl Class {
         Class::Placeholder,
     ];
 
-    /// The ground its foundries, depots and Sanctums stand on, if it has them.
+    /// The ground its cities, foundries, depots and Sanctums stand on, if it has them.
     pub fn ground(self) -> Option<Ground> {
         match self {
             Class::Desert => Some(Ground::Desert),
@@ -503,10 +503,10 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(..) | MapKind::Mine(_) | MapKind::Desert | MapKind::Reservoir => {
-                self == Class::Desert
+            MapKind::Mine(_) | MapKind::Desert | MapKind::Reservoir => self == Class::Desert,
+            MapKind::City(..) | MapKind::Foundry(..) | MapKind::Depot(..) => {
+                self.ground().is_some()
             }
-            MapKind::Foundry(..) | MapKind::Depot(..) => self.ground().is_some(),
             // Anywhere: each class has its own.
             MapKind::Sanctum(_) => true,
             MapKind::Kiln => self != Class::Desert,
@@ -601,20 +601,24 @@ impl SiteView {
         matches!(self.kind, SiteKind::Shield { .. })
     }
 
-    /// The map it's fought on: its mission's, a city in its founder's style,
+    /// The map it's fought on: its mission's, a city in its founder's style
+    /// on its world's ground,
     /// a mine in its founder's own, a foundry or depot too on its world's ground,
     /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
         let kind = MISSIONS[self.mission].map_kind;
         let look = Look::of(self.founder());
+        // (A shield city's.)
         let setting = match self.class {
             Class::Desert => Setting::Desert,
             Class::Tundra | Class::Grassland | Class::Placeholder => Setting::Plain,
         };
         let SiteKind::Shield { damaged } = self.kind else {
             return match kind {
-                MapKind::City(..) => MapKind::City(look, setting),
+                MapKind::City(_, plain) => {
+                    MapKind::City(look, self.class.ground().map_or(plain, Setting::from))
+                }
                 MapKind::Depot(_, ground) => MapKind::Depot(
                     Look::own(self.founder()),
                     self.class.ground().unwrap_or(ground),
@@ -1983,12 +1987,13 @@ mod tests {
     }
 
     /// Outposts are fought on no production site's map (#547): on desert
-    /// worlds the city, open desert and reservoir town, elsewhere the Kiln, on
-    /// any the Sanctum, on any but a placeholder the depot.
+    /// worlds the open desert and reservoir town, elsewhere the Kiln, on any
+    /// the Sanctum, on any but a placeholder the city and the depot.
     #[test]
     fn outposts_have_maps_of_their_own() {
         let g = galaxy();
         let mut seen = std::collections::HashSet::new();
+        let mut cities = std::collections::HashSet::new();
         let mut depots = std::collections::HashSet::new();
         let mut sanctums = std::collections::HashSet::new();
         for sys in 0..g.systems.len() {
@@ -2004,7 +2009,12 @@ mod tests {
                         assert_eq!(Some(ground), s.class.ground());
                         depots.insert(ground);
                     }
-                    MapKind::City(..) | MapKind::Desert | MapKind::Reservoir => assert!(desert),
+                    MapKind::City(look, setting) => {
+                        assert_eq!(look, Look::of(s.founder()));
+                        assert_eq!(Some(setting), s.class.ground().map(Setting::from));
+                        cities.insert(setting);
+                    }
+                    MapKind::Desert | MapKind::Reservoir => assert!(desert),
                     // On its world's ground (#681).
                     MapKind::Sanctum(ground) => {
                         assert_eq!(Some(ground), s.class.ground().or(Some(Ground::Desert)));
@@ -2016,6 +2026,7 @@ mod tests {
                 seen.insert(s.mission);
             }
         }
+        assert_eq!(cities.len(), 3, "cities on {cities:?} only");
         assert_eq!(depots.len(), 3, "depots on {depots:?} only");
         assert_eq!(sanctums.len(), 3, "Sanctums on {sanctums:?} only");
         for name in [

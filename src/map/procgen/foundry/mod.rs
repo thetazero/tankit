@@ -6,7 +6,7 @@
 //! them.
 
 mod dress;
-pub(in crate::map) use self::dress::tree;
+pub(in crate::map) use self::dress::{growth, snow, tree};
 mod ground;
 mod imperium;
 mod ithessar;
