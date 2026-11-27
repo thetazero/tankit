@@ -31,6 +31,41 @@ pub const NONE: u32 = u32::MAX;
 /// within this share of the reach of all of it.
 const FOLD_REACH: f32 = 0.8;
 
+/// How a realm runs its war: each is one of three at random, to see which
+/// fare better. A realm breaking away keeps its parent's way, and realms only
+/// fold together with their own kind. All play by the same rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm {
+    /// As realms always have, hiring no mercs.
+    NoHire,
+    /// As realms always have, mercs and all.
+    Hire,
+    /// Plans its war (see `smart`).
+    Smart,
+}
+
+impl Arm {
+    pub const ALL: [Arm; 3] = [Arm::NoHire, Arm::Hire, Arm::Smart];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Arm::NoHire => "no hire",
+            Arm::Hire => "hire",
+            Arm::Smart => "smart",
+        }
+    }
+
+    /// One at random.
+    pub(crate) fn draw(rng: &mut crate::rng::Rng) -> Arm {
+        Arm::ALL[rng.index(Arm::ALL.len())]
+    }
+
+    /// Whether it hires mercs at all.
+    pub fn hires(self) -> bool {
+        self != Arm::NoHire
+    }
+}
+
 /// One realm.
 #[derive(Clone, Copy, Debug)]
 pub struct Realm {
@@ -68,10 +103,9 @@ pub struct Realm {
     pub seats_next: f32,
     /// Free pilots it took on this tick (scratch).
     pub hired: u32,
-    /// Whether it hires mercs at all: realms are split at random between
-    /// those that do and those that don't, to see which fare better. A
-    /// realm breaking away keeps its parent's way.
-    pub hires: bool,
+    pub arm: Arm,
+    /// The neighbor a smart realm's out to conquer, if any.
+    pub rival: u32,
     /// Systems it's fighting in, as of the last tick's battles.
     pub fronts: u32,
     /// Scratch: systems it's lost since they were last counted.
@@ -99,7 +133,8 @@ impl Realm {
             seats_now: 0.0,
             seats_next: 0.0,
             hired: 0,
-            hires: true,
+            arm: Arm::Hire,
+            rival: NONE,
             fronts: 0,
             fell: 0,
         }
@@ -140,6 +175,9 @@ impl Realm {
         self.pilots = self.pilots.min((self.crystals / upkeep) as u32);
         self.crystals = (self.crystals - self.pilots as f32 * upkeep).max(0.0);
         let mut left = before - self.pilots;
+        if self.arm == Arm::Smart {
+            return left + self.crew_up(rules, free);
+        }
         // Over a career, what one earns it over their pay.
         let gain = (self.pilot_worth - upkeep) / rules.career.max(1e-6);
         let open = (self.seats.ceil() as u32).saturating_sub(self.pilots);
@@ -200,7 +238,7 @@ impl Galaxy {
     /// gone if there is one.
     pub(crate) fn found(&mut self, faction: u8, seat: u32) -> u32 {
         let realm = Realm {
-            hires: self.rng.chance(0.5),
+            arm: Arm::draw(&mut self.rng),
             ..Realm::new(faction, seat, self.tick)
         };
         // A slot is free once nothing is tagged with it (`systems` and `alive`
@@ -258,9 +296,9 @@ impl Galaxy {
         for (f, seats) in seats.iter().enumerate() {
             for &seat in seats {
                 of_seat[seat as usize] = self.realms.len() as u32;
-                let hires = self.rng.chance(0.5);
+                let arm = Arm::draw(&mut self.rng);
                 self.realms.push(Realm {
-                    hires,
+                    arm,
                     ..Realm::new(f as u8, seat, 0)
                 });
                 self.spans.push((0, 0));
@@ -457,12 +495,12 @@ impl Galaxy {
                 .unwrap_or(&members[0]);
             let f = self.realms[old as usize].faction;
             let new = self.found(f, seat);
-            // It breaks away with the gear it has, and its way with mercs.
+            // It breaks away with the gear it has, and its way of war.
             self.realms[new as usize].tier = self.realms[old as usize].tier;
             self.realms[new as usize].wage = self.realms[old as usize].wage;
             self.realms[new as usize].pilot_worth = self.realms[old as usize].pilot_worth;
             self.realms[new as usize].hull_worth = self.realms[old as usize].hull_worth;
-            self.realms[new as usize].hires = self.realms[old as usize].hires;
+            self.realms[new as usize].arm = self.realms[old as usize].arm;
             // Its share of the vaults, by systems.
             let (vault, size) = vaults[old as usize];
             let take = vault * (members.len() as f32 / size.max(1) as f32).min(1.0);
@@ -513,7 +551,7 @@ impl Galaxy {
                     }
                     let realm = &self.realms[b as usize];
                     // (and only with its own kind)
-                    if realm.faction != f || realm.hires != self.realms[a].hires {
+                    if realm.faction != f || realm.arm != self.realms[a].arm {
                         continue;
                     }
                     let d = self.systems[realm.seat as usize].pos.distance(seat);

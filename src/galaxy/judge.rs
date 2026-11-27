@@ -1,17 +1,34 @@
 //! `--judge <ticks> [seed..]`: does the economy live? What the war and its
-//! market come to over a run, and whether realms that hire fare better than
-//! they do in the same galaxy with no companies to hire.
+//! market come to over a run, and which arms of realms and companies fare
+//! best, each galaxy run with the arms handed round so luck evens out.
 
+use super::realm::Arm;
 use super::{Galaxy, REGION, Rules, SIDES, SYSTEMS};
 
-/// The share of systems the hiring realms hold, %.
-fn hiring(g: &Galaxy) -> f64 {
-    let (mut all, mut hire) = (0, 0);
+/// The share of systems each arm's realms hold, %.
+fn holdings(g: &Galaxy) -> [f64; 3] {
+    let mut held = [0.0; 3];
     for (_, r) in g.living() {
-        all += r.systems;
-        hire += r.systems * r.hires as u32;
+        held[r.arm as usize] += r.systems as f64;
     }
-    100.0 * hire as f64 / all.max(1) as f64
+    let all = held.iter().sum::<f64>().max(1.0);
+    held.map(|x| 100.0 * x / all)
+}
+
+/// Smart companies' share of companies' capital, %, and what each of the
+/// smart and the others is worth, on average.
+fn companies(g: &Galaxy) -> [f64; 3] {
+    let (mut sum, mut n) = ([0.0f64; 2], [0.0f64; 2]);
+    for c in &g.companies {
+        sum[c.smart as usize] += (c.capital(g.hull_rate) + g.lent(c.id)) as f64;
+        n[c.smart as usize] += 1.0;
+    }
+    let all = (sum[0] + sum[1]).max(1.0);
+    [
+        100.0 * sum[1] / all,
+        sum[1] / n[1].max(1.0),
+        sum[0] / n[0].max(1.0),
+    ]
 }
 
 fn mid(mut v: Vec<f32>, q: f32) -> f32 {
@@ -118,13 +135,13 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
     );
 }
 
-/// Hiring realms beside the others: what each has, for each system held.
+/// The arms beside each other: what each has, for each system held.
 fn arms(g: &Galaxy) {
-    for hires in [true, false] {
+    for arm in Arm::ALL {
         let (mut n, mut systems, mut vault, mut pilots, mut seats, mut income, mut broke) =
             (0, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0);
         let (mut tier, mut fronts) = (0.0f32, 0.0f32);
-        for (_, r) in g.living().filter(|(_, r)| r.hires == hires) {
+        for (_, r) in g.living().filter(|(_, r)| r.arm == arm) {
             n += 1;
             systems += r.systems as f32;
             vault += r.crystals;
@@ -139,20 +156,20 @@ fn arms(g: &Galaxy) {
         for (s, sys) in g.systems.iter().enumerate() {
             for f in 0..super::PEOPLES {
                 let r = sys.realms[f];
-                if r != super::realm::NONE && g.realms[r as usize].hires == hires {
+                if r != super::realm::NONE && g.realms[r as usize].arm == arm {
                     hulls += (sys.hulls[f] - g.crewed(s, f).0) as f32;
                 }
             }
         }
         for d in &g.debts {
-            if g.realms[d.realm as usize].hires == hires {
+            if g.realms[d.realm as usize].arm == arm {
                 owed += d.crystals;
             }
         }
         let per = systems.max(1.0);
         println!(
             "         {}: realms {n} systems {systems:.0}; a system: vault {:.1} owed {:.1} income {:.2} hulls {:.0} pilots {:.2} seats {:.2} fronts {:.3} tier {:.1}; can't pay 2 ticks {broke}",
-            if hires { "hirers" } else { "others" },
+            arm.name(),
             vault / per,
             owed / per,
             income / per,
@@ -403,38 +420,59 @@ pub fn replay(seeds: &[u64]) {
 }
 
 pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
-    let mut diffs = Vec::new();
+    let mut moved: Vec<[f64; 3]> = Vec::new();
+    let mut firms: Vec<f64> = Vec::new();
     for &seed in seeds {
-        let mut moved = [0.0; 2];
-        for (i, m) in moved.iter_mut().enumerate() {
-            if i == 1 && !arms {
-                break;
-            }
+        let turns = if arms { Arm::ALL.len() } else { 1 };
+        let (mut sum, mut firm) = ([0.0; 3], 0.0);
+        for turn in 0..turns {
             let mut rules = Rules::default();
             tweak(&mut rules);
-            let rules = Rules {
-                companies: if std::env::var("NONE").is_err() {
-                    rules.companies
-                } else {
-                    0
-                },
-                ..rules
-            };
-            println!("seed {seed} {}", ["companies", "swapped"][i]);
+            if std::env::var("NONE").is_ok() {
+                rules.companies = 0;
+            }
+            println!("seed {seed} turn {turn}");
             let mut g = Galaxy::with_size(seed, SYSTEMS, REGION, rules);
-            // The same galaxy, its hirers' and the others' marks swapped: what's
-            // luck in who's marked is against them then.
-            if i == 1 {
+            // The same galaxy, the arms handed round: what's luck in who's
+            // which evens out then.
+            for r in &mut g.realms {
+                r.arm = Arm::ALL[(r.arm as usize + turn) % Arm::ALL.len()];
+            }
+            // `WARM=ticks`: nobody's smart till the war's that old.
+            let warm = std::env::var("WARM")
+                .ok()
+                .and_then(|x| x.parse::<u64>().ok());
+            if let Some(warm) = warm {
+                let arms: Vec<Arm> = g.realms.iter().map(|r| r.arm).collect();
                 for r in &mut g.realms {
-                    r.hires = !r.hires;
+                    r.arm = Arm::Hire;
                 }
+                while g.tick < warm {
+                    // (those founded since too)
+                    for r in &mut g.realms {
+                        r.arm = Arm::Hire;
+                    }
+                    for c in &mut g.companies {
+                        c.smart = false;
+                    }
+                    g.tick_once();
+                }
+                for c in &mut g.companies {
+                    c.smart = c.id % 2 == 0;
+                }
+                for (i, r) in g.realms.iter_mut().enumerate() {
+                    r.arm = arms[i % arms.len()];
+                }
+            }
+            for c in &mut g.companies {
+                c.smart ^= turn % 2 == 1;
             }
             let t0 = std::time::Instant::now();
             let (mut last, mut was, mut at) = (g.books, 0.0, 0);
             let mut spans = Spans::of(&g);
             g.step();
-            let start = hiring(&g);
-            while g.tick < ticks {
+            let start = holdings(&g);
+            while g.tick < ticks + warm.unwrap_or(0) {
                 g.tick_once();
                 spans.watch(&g);
                 if g.tick >= at + ticks / 8 {
@@ -442,27 +480,54 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                     raids(&g, &last);
                     self::arms(&g);
                     spans.report(&g);
+                    let [share, smart, other] = companies(&g);
+                    println!(
+                        "         holdings {:.1?}; smart companies {share:.1}% of capital, worth {smart:.0} each against {other:.0}",
+                        holdings(&g)
+                    );
+                    for (i, name) in ["plain", "smart"].into_iter().enumerate() {
+                        let of = |k: usize| g.books.by_arm[i][k] - last.by_arm[i][k];
+                        let n = of(0).max(1.0);
+                        let [loot, paid, out, wages, sail] = [1, 2, 3, 4, 5].map(|k| of(k) / n);
+                        println!(
+                            "         {name} companies, each a tick: loot {loot:.2} contracts {paid:.2}, less setting out {out:.2} wages {wages:.2} sailing {sail:.2} upkeep {:.2}: {:+.2}",
+                            g.rules.ship_upkeep,
+                            loot + paid - out - wages - sail - g.rules.ship_upkeep as f64,
+                        );
+                    }
                     (last, was, at) = (g.books, g.destroyed, g.tick);
                 }
             }
-            *m = hiring(&g) - start;
+            let end = holdings(&g);
+            for a in 0..3 {
+                sum[a] += (end[a] - start[a]) / turns as f64;
+            }
+            firm += companies(&g)[0] / turns as f64;
             println!(
-                "  hiring realms {:+.2} points; {:.1} ms a tick",
-                *m,
+                "  arms {:+.2?} points; {:.1} ms a tick",
+                [0, 1, 2].map(|a| end[a] - start[a]),
                 t0.elapsed().as_secs_f64() * 1e3 / g.tick as f64
             );
         }
-        if arms {
-            diffs.push((moved[0] + moved[1]) / 2.0);
-        }
+        moved.push(sum);
+        firms.push(firm);
     }
     if arms {
-        let n = diffs.len().max(1) as f64;
-        let mean = diffs.iter().sum::<f64>() / n;
-        let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
-        println!(
-            "ARMS hiring realms, with the marks one way and swapped, on average: {mean:+.2} points (se {:.2}) {diffs:.2?}",
-            (var / n).sqrt()
-        );
+        let stat = |v: &[f64]| {
+            let n = v.len().max(1) as f64;
+            let mean = v.iter().sum::<f64>() / n;
+            let var = v.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
+            (mean, (var / n).sqrt())
+        };
+        for arm in Arm::ALL {
+            let v: Vec<f64> = moved.iter().map(|m| m[arm as usize]).collect();
+            let (mean, se) = stat(&v);
+            println!(
+                "ARMS {}: {mean:+.2} points (se {se:.2}) {v:.2?}",
+                arm.name()
+            );
+        }
+        let (mean, se) = stat(&firms);
+        println!("ARMS smart companies: {mean:.1}% of capital (se {se:.1}) {firms:.1?}");
     }
 }
