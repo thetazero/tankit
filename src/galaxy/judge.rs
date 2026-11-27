@@ -448,7 +448,17 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                     r.arm = Arm::Hire;
                 }
                 while g.tick < warm {
+                    // (those founded since too)
+                    for r in &mut g.realms {
+                        r.arm = Arm::Hire;
+                    }
+                    for c in &mut g.companies {
+                        c.smart = false;
+                    }
                     g.tick_once();
+                }
+                for c in &mut g.companies {
+                    c.smart = c.id % 2 == 0;
                 }
                 for (i, r) in g.realms.iter_mut().enumerate() {
                     r.arm = arms[i % arms.len()];
