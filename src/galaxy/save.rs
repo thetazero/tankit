@@ -100,6 +100,11 @@ struct Saved {
     /// Hulls in flight.
     #[serde(default)]
     fleets: Vec<super::Fleet>,
+    /// Every planet's tungsten cubes, and those in flight.
+    #[serde(default)]
+    stashes: Vec<super::cubes::Stash>,
+    #[serde(default)]
+    cargo: Vec<super::cubes::Cargo>,
     /// What a hull's worth in each system, and its best use this tick.
     #[serde(default)]
     hull_worth: Vec<(f32, f32)>,
@@ -484,6 +489,8 @@ impl Galaxy {
             taken_at: self.taken_at.clone(),
             fought_at: self.fought_at.clone(),
             fleets: self.fleets.clone(),
+            stashes: self.stashes.clone(),
+            cargo: self.cargo.clone(),
             hull_worth: self.hull_marks(),
             vaults: self
                 .vaults
@@ -767,6 +774,16 @@ impl Galaxy {
         (g.tick, g.splits, g.merges) = (s.tick, s.splits, s.merges);
         g.rng = Rng::from_state(s.rng);
         g.set_hull_marks(&s.hull_worth);
+        if s.stashes.len() == g.stashes.len() {
+            g.stashes = s.stashes;
+            g.cargo = s.cargo;
+            let systems = &g.systems;
+            g.cargo.retain(|x| {
+                systems
+                    .get(x.to as usize)
+                    .is_some_and(|sys| x.planet < sys.planets)
+            });
+        }
         g.fleets = s.fleets;
         let (systems, realms) = (g.systems.len() as u32, g.realms.len() as u32);
         g.fleets.retain(|x| {
@@ -1163,6 +1180,7 @@ mod tests {
             assert_eq!(a.realms, b.realms);
         }
         assert_eq!(g.living().count(), back.living().count());
+        assert_eq!(g.stashes, back.stashes);
         for (a, b) in g.realms.iter().zip(&back.realms) {
             assert_eq!((a.arm, a.rival), (b.arm, b.rival));
         }
@@ -1190,6 +1208,7 @@ mod tests {
             back.step();
         }
         assert_eq!(g.share, back.share);
+        assert_eq!(g.stashes, back.stashes);
     }
 }
 
