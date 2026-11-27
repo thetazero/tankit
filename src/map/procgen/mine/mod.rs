@@ -29,6 +29,7 @@ use crate::rng::Rng;
 
 pub use super::skeleton::Skeleton;
 pub(in crate::map) use dig::Dig;
+pub(in crate::map::procgen) use dig::cutting_rig;
 
 pub const DECK_HALF: f32 = 3.6;
 pub const DECK_TOP: f32 = 0.25;
@@ -93,6 +94,21 @@ pub(crate) fn line_distance(line: &[Vec2], p: Vec2) -> f32 {
         .map(|w| seg_squared(p, w[0], w[1]).0)
         .fold(f32::INFINITY, f32::min)
         .sqrt()
+}
+
+/// How far along `line` its nearest point to `p` is.
+pub(crate) fn along(line: &[Vec2], p: Vec2) -> f32 {
+    let mut gone = 0.0;
+    let mut best = (f32::INFINITY, 0.0);
+    for w in line.windows(2) {
+        let (d, t) = seg(p, w[0], w[1]);
+        let len = w[0].distance(w[1]);
+        if d < best.0 {
+            best = (d, gone + t * len);
+        }
+        gone += len;
+    }
+    best.1
 }
 
 /// Yaw that turns a box's local +z along `dir`.

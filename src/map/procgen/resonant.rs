@@ -158,7 +158,12 @@ impl Style for Resonant {
             | LotKind::Works(_)
             | LotKind::Spires
             | LotKind::Fins
-            | LotKind::Boulders => {}
+            | LotKind::Boulders
+            | LotKind::Outcrop
+            | LotKind::Cut
+            | LotKind::Rig
+            | LotKind::Warehouse
+            | LotKind::Loader => {}
             LotKind::Distant => {
                 let out = (-f.center)
                     .max(f.center - Vec2::splat(sk.size))

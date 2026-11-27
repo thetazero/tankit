@@ -351,13 +351,13 @@ impl TickSummary {
     }
 
     /// The system `time` seconds into the page: from as it was before the
-    /// battle to as it is now.
+    /// battle to as it is now, with the hulls back aboard their ships.
     pub fn at(&self, time: f32) -> Theater {
         let mut t = self.theater.clone();
         let u = ((time - Self::HOLD) / Self::RUN).clamp(0.0, 1.0);
         let u = u * u * (3.0 - 2.0 * u);
         let part = |c: &SideChange| {
-            (c.before as f32 + (c.now as f32 - c.before as f32) * u).round() as u32
+            (c.before as f32 + (c.left() as f32 - c.before as f32) * u).round() as u32
         };
         (t.hulls, t.mercs) = ([0; SIDES], [0; SIDES]);
         for c in &self.sides {
@@ -386,7 +386,17 @@ pub struct SideChange {
     pub merc: bool,
     pub before: u32,
     pub now: u32,
+    /// Of those gone, back aboard their ship as their contract ended: not
+    /// here any more, but not lost, so still counted (#645).
+    pub aboard: u32,
     pub moves: super::Moves,
+}
+
+impl SideChange {
+    /// What's left of its hulls, here or back aboard.
+    pub fn left(&self) -> u32 {
+        self.now + self.aboard
+    }
 }
 
 /// A system's name: two or three syllables, the same for every pilot (it
@@ -1252,9 +1262,11 @@ impl Galaxy {
             merc,
             before: (now as i64 - moves.net()).max(0) as u32,
             now,
+            // (those landed since are in `now`: not counted twice)
+            aboard: moves.released.saturating_sub(moves.hired),
             moves,
         };
-        let shown = |c: &SideChange| c.before > 0 || c.now > 0;
+        let shown = |c: &SideChange| c.before > 0 || c.left() > 0;
         // The companies' hulls on contract here, each side's.
         let mut field = [0u32; SIDES];
         for k in self.companies.iter().filter_map(|c| c.contract.as_ref()) {
@@ -1271,7 +1283,7 @@ impl Galaxy {
             })
             .filter(|(own, mercs)| shown(own) || shown(mercs))
             .collect();
-        pairs.sort_by_key(|(c, m)| std::cmp::Reverse((c.now + m.now, c.before + m.before)));
+        pairs.sort_by_key(|(c, m)| std::cmp::Reverse((c.left() + m.left(), c.before + m.before)));
         let mut sides = Vec::new();
         for (own, mercs) in pairs {
             sides.push(own);

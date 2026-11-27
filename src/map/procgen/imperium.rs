@@ -167,7 +167,12 @@ impl Style for Imperium {
             | LotKind::Works(_)
             | LotKind::Spires
             | LotKind::Fins
-            | LotKind::Boulders => Vec::new(),
+            | LotKind::Boulders
+            | LotKind::Outcrop
+            | LotKind::Cut
+            | LotKind::Rig
+            | LotKind::Warehouse
+            | LotKind::Loader => Vec::new(),
             LotKind::Distant => {
                 map.distant_block(rng, &lot.footprint, sk);
                 Vec::new()

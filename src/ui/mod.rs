@@ -12,6 +12,7 @@
 pub mod design;
 pub mod emblem;
 pub mod font;
+pub mod rank_icon;
 pub mod widgets;
 
 use glam::Vec2;

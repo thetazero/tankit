@@ -19,6 +19,7 @@ use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
 use crate::ui::design::UNIT;
+use crate::ui::rank_icon::rank_icon;
 use crate::ui::{Align, Hits, Layer, Painter, design, theme, with_alpha};
 use crate::work_view::{self, Board};
 
@@ -417,7 +418,7 @@ impl Menu {
         matches!(self.screen, Screen::Ships | Screen::Contract)
     }
 
-    /// Move the board's pick by the wheel. True if it moved.
+    /// Scroll the board by the wheel. True if it moved.
     pub fn scroll(&mut self, steps: i32) -> bool {
         self.screen == Screen::Ships && self.board.scroll(steps)
     }
@@ -875,9 +876,13 @@ impl Menu {
         // Who you are, and what you have to spend.
         let mut y = design::MARGIN;
         let r = profile.rank();
+        let icon = design::UNIT * 6.0;
+        let mid = Vec2::new(x, y) + Vec2::splat(icon * 0.5);
+        rank_icon(p, r.title(), mid, icon, 1.5, design::AMBER);
+        y += icon + design::UNIT * 2.0;
         p.text(
             Vec2::new(x, y),
-            &format!("{} {}", title(r.title()), r.level),
+            &format!("{} {}", title(r.title().name()), r.level),
             &design::BODY,
             Align::Left,
         );
@@ -1785,6 +1790,28 @@ mod tests {
             }
         }
         assert!(m.draw(&profile, 1600.0, 900.0, 0.0).verts.is_empty());
+    }
+
+    #[test]
+    fn contract_lines_fit_their_column() {
+        use crate::mission::Contract;
+        use crate::ui::measure;
+        use design::{BODY, COLUMN, SMALL};
+        let fits = |left: f32, right: f32, what: &str| {
+            let room = COLUMN - left - right;
+            assert!(room >= UNIT * 2.0, "{what}: {room} px between");
+        };
+        for name in ["SHIELD", "MINE", "FOUNDRY", "OUTPOST"] {
+            for letter in 'A'..='H' {
+                for c in [Contract::Attrition, Contract::Hold, Contract::Raid] {
+                    let name = format!("{name} {letter}");
+                    let (l, r) = (measure(&name, &BODY), measure(c.name(), &SMALL));
+                    fits(l, r, &format!("{name} / {}", c.name()));
+                }
+            }
+        }
+        let pay = measure("9999 cr + 999 a kill", &SMALL);
+        fits(measure("Pay", &SMALL), pay, "Pay");
     }
 
     /// Clicks the middle of `hit` where `draw` put it.

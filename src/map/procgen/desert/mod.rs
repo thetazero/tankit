@@ -1,14 +1,14 @@
 //! The desert biome: open land nobody's built on. Laid out as a skeleton
 //! (`skeleton`): its form (an erg, canyonlands, a basin, an escarpment),
 //! the high ground's cliffs and the ramps up them, the landmark's slot,
-//! each side's spawns placed for a fair drive, the lots. Checked for play
-//! on its greybox (a skeleton that fails is laid out again from the next
-//! draw), then dressed (`dress`): the cliffs sculpted as sandstone (the
-//! crystal mine's rock faces, without its seams), the landmark and the
-//! lots filled in from the library of natural pieces (spires, an arch, a
-//! crater's rim, fins, boulder fields), cover wherever the open ground's
-//! wide, a wall of boulders round the edge and the desert going on to the
-//! horizon past it.
+//! each side's spawns placed for a fair drive, the lots, a rig at work in a
+//! wash if there's one, great rocks on the high ground. Checked for play on
+//! its greybox (a skeleton that fails is laid out again from the next
+//! draw), then dressed (`dress`): the cliffs sculpted as sandstone, the
+//! landmark and the lots filled in from the library of pieces (spires, an
+//! arch, a crater's rim, fins, boulder fields), cover wherever the open
+//! ground's wide, a wall of boulders round the edge and the desert going on
+//! to the horizon past it.
 //!
 //! A reservoir town (`Biome::Reservoir`) is a desert with people in it: a
 //! layout of its own (`town`), dressed by the same hands.
@@ -134,9 +134,16 @@ fn lay_out(spec: &Spec) -> Skeleton {
             );
             continue;
         }
+        if generator && !town {
+            sk.place_doors(&mut Rng::new(spec.seed ^ 0xD00B_5EED));
+        }
         match town {
             true => sk.place_houses(&mut rng),
-            false => sk.place_lots(&mut rng, form),
+            false => {
+                sk.place_lots(&mut rng, form);
+                sk.work_wash(&mut rng);
+                sk.place_rocks(&mut rng);
+            }
         }
         if town && sk.houses().count() < town::MIN_HOUSES {
             log::debug!("town seed {} attempt {attempt}: too few houses", spec.seed);

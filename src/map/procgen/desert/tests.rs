@@ -128,7 +128,8 @@ fn the_floor_is_drivable() {
                     .ramps
                     .iter()
                     .any(|r| r.distance(p) < RAMP_HALF + 4.0);
-                if !(-3.0..EDGE_FALL + 3.0).contains(&s) && !by_ramp {
+                let by_rock = sk.land.tower_distance(p) < 4.0;
+                if !(-3.0..EDGE_FALL + 3.0).contains(&s) && !by_ramp && !by_rock {
                     let dx = sk.ground(Vec2::new(x + 1.0, z)) - sk.ground(Vec2::new(x - 1.0, z));
                     let dz = sk.ground(Vec2::new(x, z + 1.0)) - sk.ground(Vec2::new(x, z - 1.0));
                     let slope = Vec2::new(dx, dz).length() / 2.0;
@@ -249,7 +250,7 @@ fn the_shield_desert_comes_with_any_sides_generator() {
             m.open_spots.len()
         );
         assert_eq!(m.vistas.len(), 2, "{what}");
-        let site = dress::site(&sk, seed);
+        let site = &sk.landmarks[0];
         assert!(site.doors.len() >= 4, "{what}: {} doors", site.doors.len());
         let g = sk.ground(site.center);
         assert!(
@@ -302,7 +303,7 @@ fn the_generator_faces_every_side() {
     for seed in SEEDS {
         let spec = crate::shield_desert_spec(seed, crate::Generator::up(Faction::Uthenn));
         let sk = skeleton(&spec);
-        let site = dress::site(&sk, seed);
+        let site = &sk.landmarks[0];
         for &b in &sk.base_spots() {
             let to = (b - site.center).normalize();
             let best = site.doors.iter().map(|d| d.dot(to)).fold(-1.0, f32::max);
@@ -344,4 +345,19 @@ fn the_imperiums_generator_lets_tanks_in() {
             panic!("seed {seed}: {why}");
         }
     }
+}
+
+/// What a mine has, deserts do too: a rig at work in a wash, great rocks on
+/// the high ground.
+#[test]
+fn deserts_have_what_mines_do() {
+    let all: Vec<Skeleton> = (0..12).map(|s| skeleton(&spec(s))).collect();
+    let washes = all.iter().filter(|sk| !sk.land.washes.is_empty()).count();
+    let rigs = all
+        .iter()
+        .filter(|sk| sk.lots_of(LotKind::Rig).next().is_some())
+        .count();
+    let rocks = all.iter().filter(|sk| !sk.land.towers.is_empty()).count();
+    println!("{washes} washes, {rigs} rigs, {rocks} with rocks");
+    assert!(rigs > 0 && rocks > 2, "{rigs} rigs, {rocks} with rocks");
 }

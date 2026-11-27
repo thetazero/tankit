@@ -29,20 +29,52 @@ fn rank_span(level: u32) -> u32 {
     100 + 20 * (level - 1)
 }
 
-/// The Company's titles, each held for [`RANKS_PER_TITLE`] ranks; past the last,
-/// the last title holds.
-const TITLES: [&str; 10] = [
-    "RECRUIT",
-    "HIRELING",
-    "FREELANCE",
-    "GUNHAND",
-    "VETERAN",
-    "SERGEANT",
-    "LIEUTENANT",
-    "CAPTAIN",
-    "MARSHAL",
-    "WARLORD",
-];
+/// The Company's titles, lowest first, each held for [`RANKS_PER_TITLE`] ranks;
+/// past the last, the last title holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Title {
+    Recruit,
+    Hireling,
+    Freelance,
+    Gunhand,
+    Veteran,
+    Sergeant,
+    Lieutenant,
+    Captain,
+    Marshal,
+    Warlord,
+}
+
+impl Title {
+    pub const ALL: [Title; 10] = [
+        Title::Recruit,
+        Title::Hireling,
+        Title::Freelance,
+        Title::Gunhand,
+        Title::Veteran,
+        Title::Sergeant,
+        Title::Lieutenant,
+        Title::Captain,
+        Title::Marshal,
+        Title::Warlord,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Title::Recruit => "RECRUIT",
+            Title::Hireling => "HIRELING",
+            Title::Freelance => "FREELANCE",
+            Title::Gunhand => "GUNHAND",
+            Title::Veteran => "VETERAN",
+            Title::Sergeant => "SERGEANT",
+            Title::Lieutenant => "LIEUTENANT",
+            Title::Captain => "CAPTAIN",
+            Title::Marshal => "MARSHAL",
+            Title::Warlord => "WARLORD",
+        }
+    }
+}
+
 pub const RANKS_PER_TITLE: u32 = 5;
 
 /// Where your renown sits on the Company's ladder.
@@ -75,9 +107,9 @@ impl Rank {
     }
 
     /// The title that goes with the number.
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self) -> Title {
         let i = ((self.level - 1) / RANKS_PER_TITLE) as usize;
-        TITLES[i.min(TITLES.len() - 1)]
+        Title::ALL[i.min(Title::ALL.len() - 1)]
     }
 }
 
@@ -518,16 +550,16 @@ mod tests {
     #[test]
     fn ranks_are_many_and_titled() {
         assert_eq!(Rank::of(0).title(), Rank::of(399).title());
-        let top = TITLES.len() as u32 * RANKS_PER_TITLE;
+        let top = Title::ALL.len() as u32 * RANKS_PER_TITLE;
         assert!(top >= 50);
         // Renown to reach the last title's first rank.
         let to = |level: u32| (1..level).map(rank_span).sum::<u32>();
         let last = to(top - RANKS_PER_TITLE + 1);
-        assert_eq!(Rank::of(last).title(), "WARLORD");
-        assert_eq!(Rank::of(last - 1).title(), "MARSHAL");
+        assert_eq!(Rank::of(last).title(), Title::Warlord);
+        assert_eq!(Rank::of(last - 1).title(), Title::Marshal);
         // At ~60 renown a match, the top title is hundreds of matches off.
         assert!(last / 60 > 300, "{}", last / 60);
-        assert_eq!(Rank::of(to(top + 20)).title(), "WARLORD");
+        assert_eq!(Rank::of(to(top + 20)).title(), Title::Warlord);
         assert!(rank_span(40) > rank_span(2) * 3);
     }
 
