@@ -71,15 +71,15 @@ jobs:
   # or time things, so they're `ignore`d under `debug_assertions` and only run
   # here. A separate job, so it builds alongside the debug one.
   release-test:
-    name: Release-only tests (${{ matrix.shard }} of 2)
+    name: Release-only tests (${{ matrix.shard }} of 3)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Every test is in exactly one shard: the suite fills a runner's four
-    # cores, so a second runner halves it (#714).
+    # cores, so it is split over three runners (#714).
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 2
@@ -89,7 +89,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # (Both shards build the same thing.)
+          # (All shards build the same thing.)
           shared-key: release
         timeout-minutes: 3
 
@@ -101,13 +101,13 @@ jobs:
         run: cargo test --release --locked --no-run
         timeout-minutes: 12
 
-      # The time cap: each shard, half the optimized suite, takes about two
-      # minutes (#714); past this it's a hang or a regression. Every other
+      # The time cap: each shard, a third of the optimized suite, takes one to two
+      # minutes (#714); past this it's a hang or a regression. Every third
       # test goes in each, so a module's slow ones are shared out.
       - name: Run tests (release)
         env:
           SHARD: ${{ matrix.shard }}
-          SHARDS: 2
+          SHARDS: 3
         run: |
           set -o pipefail
           cargo test --release --locked -- --list --format terse |
