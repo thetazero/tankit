@@ -450,7 +450,7 @@ impl Bot {
                 (None, None, None) => world.map.center(),
             };
             if self.rng.chance(0.8) {
-                let ways = ways_toward(&world.map.routes, my2, front);
+                let ways = ways_toward(&world.map, t.pos, front);
                 if !ways.is_empty() {
                     self.way = ways[self.rng.index(ways.len())].clone();
                     self.replan_in = 0.0;
@@ -1078,16 +1078,21 @@ fn way_past(
 }
 
 /// The ways round (each taken from either end, joined at any point along
-/// it) that are about on the way from `from` to `front`: not much longer
+/// it, but at its near end if it's under rock and the bot isn't) that are
+/// about on the way from `from` to `front`: not much longer
 /// than going straight there, and ending nearer it. What's left of each
-/// to drive, from where it's joined.
-fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
+/// to drive, from where it's joined; one more than once, if it's to be taken
+/// more often.
+fn ways_toward(map: &crate::map::Map, from: Vec3, front: Vec2) -> Vec<Vec<Vec3>> {
+    let under = |p: Vec3| map.ground_height(p.x, p.z) > p.y + 4.0;
+    let inside = under(from);
+    let from = flat(from);
     let direct = from.distance(front);
     let mut out = Vec::new();
     if direct < 40.0 {
         return out;
     }
-    for way in ways {
+    for way in &map.routes {
         for reversed in [false, true] {
             let mut w = way.clone();
             if reversed {
@@ -1098,7 +1103,12 @@ fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
                 continue;
             }
             // Join it at its point nearest here, and drive the rest.
-            let Some(k) = (0..w.len()).min_by(|&a, &b| {
+            // (Under rock, nearest seen from above is no way in.)
+            let reach = match w.iter().position(|&p| under(p)) {
+                Some(n) if !inside && n > 0 => n,
+                _ => w.len(),
+            };
+            let Some(k) = (0..reach).min_by(|&a, &b| {
                 from.distance(flat(w[a]))
                     .total_cmp(&from.distance(flat(w[b])))
             }) else {
@@ -1119,7 +1129,11 @@ fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
                     k
                 };
                 if k < w.len() {
-                    out.push(w[k..].to_vec());
+                    // A long way under rock (a mine's drift) is there to be
+                    // used: as likely as three others.
+                    let covered = w[k..].iter().filter(|&&p| under(p)).count();
+                    let times = if covered >= 4 { 3 } else { 1 };
+                    out.extend(std::iter::repeat_n(w[k..].to_vec(), times));
                 }
             }
         }
@@ -1246,6 +1260,29 @@ mod tests {
             );
             prev = p;
         }
+    }
+
+    /// Going from one side to the other's by way of a mine, a bot's offered
+    /// the drift from its near mouth, not from its middle, under the rock.
+    #[test]
+    fn a_covered_way_is_joined_at_its_mouth() {
+        use crate::map::procgen::{self, Look};
+        let map = procgen::map(&crate::mine_spec(3, Look::Ithessar));
+        let under = |p: &Vec3| map.ground_height(p.x, p.z) > p.y + 4.0;
+        let base =
+            |k: usize| map.bases[k].iter().copied().sum::<Vec2>() / map.bases[k].len() as f32;
+        let mut dug = 0;
+        for (a, b) in [(0, 1), (1, 0)] {
+            let from = base(a);
+            let from = Vec3::new(from.x, map.ground_height(from.x, from.y), from.y);
+            for w in ways_toward(&map, from, base(b)) {
+                if w.iter().filter(|p| under(p)).count() >= 4 {
+                    assert!(!under(&w[0]), "joined under the rock, at {}", w[0]);
+                    dug += 1;
+                }
+            }
+        }
+        assert!(dug > 0, "no way by the mine");
     }
 
     #[test]

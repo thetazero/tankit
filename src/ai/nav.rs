@@ -787,6 +787,8 @@ mod dig_tests {
             ],
             pillars: Vec::new(),
             beam: None,
+            mouths: Vec::new(),
+            through: Vec::new(),
         }];
         let mut map = Map::empty(180.0);
         map.terrain = Some(Terrain::from_fn(Vec2::ZERO, 2.0, 91, 91, |_, _| 0.0));
