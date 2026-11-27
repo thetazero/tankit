@@ -47,6 +47,8 @@ pub struct Skeleton {
     /// Smaller things standing on the ground.
     pub decos: Vec<Deco>,
     pub repair_spots: Vec<Vec2>,
+    /// What joins its great buildings to its river.
+    pub conduits: Vec<super::conduit::Conduit>,
     /// Where roads cross valleys and ridges, and railroads washes.
     pub crossings: Vec<super::crossing::Crossing>,
     /// Railroads.

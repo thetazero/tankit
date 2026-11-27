@@ -609,6 +609,8 @@ enum Screen {
     Kill,
     /// The player's tank in a plasma river, from a second before the shot.
     Burning,
+    /// Likewise, as it goes in: its splash.
+    Splash,
     /// Raid: the player starts on the enemy's flag, and carries it.
     Carry,
 }
@@ -1070,10 +1072,11 @@ fn parse_args() -> Result<Args> {
                     Some("returning") => Screen::Returning,
                     Some("kill") => Screen::Kill,
                     Some("burning") => Screen::Burning,
+                    Some("splash") => Screen::Splash,
                     Some("carry") => Screen::Carry,
                     other => {
                         bail!(
-                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, returning, kill, burning or carry, got {other:?}"
+                            "--screen expects menu, missions, site, settings, controls, rebind, pause, results, dead, spent, spent-over, leaving, returning, kill, burning, splash or carry, got {other:?}"
                         )
                     }
                 })
@@ -1447,6 +1450,15 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             "--screen burning needs a map with a plasma river"
         );
         advance(&mut game, &mut cam, &mut garage, lead)
+    } else if args.screen == Some(Screen::Splash) {
+        // Caught as its crown's up.
+        let lead = 0.35f32.min(shot.time);
+        advance(&mut game, &mut cam, &mut garage, shot.time - lead);
+        anyhow::ensure!(
+            game.sink_player(),
+            "--screen splash needs a map with a plasma river"
+        );
+        advance(&mut game, &mut cam, &mut garage, lead)
     } else if args.screen == Some(Screen::Dead) {
         // Destroyed by the nearest enemy a few seconds before the shot.
         let lead = 3.5f32.min(shot.time);
@@ -1495,6 +1507,7 @@ fn screenshot(args: &Args, shot: &ShotArgs) -> Result<()> {
             game.effect_instances(1.0, &mut frame.instances);
             frame.particles.extend(game.ambience.particles());
             game.glow_particles(1.0, &mut frame.particles);
+            game.effect_lights(&mut frame.lights);
             frame
         };
         if args.cam.is_none() {

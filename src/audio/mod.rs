@@ -45,8 +45,8 @@ use mixer::{Inbox, Mixer, OneShot};
 pub use sounds::garage::Cue as GarageCue;
 pub use sounds::ui::Ui;
 use sounds::{
-    Play, arrival, beam, garage, guns, hits, hold, hull, knocks, places, repair, round, shield, ui,
-    vigil,
+    Play, arrival, beam, garage, guns, hits, hold, hull, knocks, places, plasma, repair, round,
+    shield, ui, vigil,
 };
 use voice::Layer;
 
@@ -291,6 +291,7 @@ impl Audio {
             }
 
             Sound::Impact { at, plasma } => hits::impact(at, plasma, jitter),
+            Sound::Splash { at, size } => plasma::splash(at, size, jitter),
             Sound::Bounce { at } => hits::bounce(at, jitter),
             Sound::Hit { at, victim } => hits::hit(at, victim, jitter),
             Sound::Kill { at } => hits::kill(at, jitter),

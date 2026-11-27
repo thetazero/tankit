@@ -101,6 +101,7 @@ pub fn run(
         game.ambience.focus = camera.pos;
         frame_scene.particles.extend(game.ambience.particles());
         game.glow_particles(alpha, &mut frame_scene.particles);
+        game.effect_lights(&mut frame_scene.lights);
         let t_scene = start.elapsed();
 
         let (w, h) = (width as f32, height as f32);

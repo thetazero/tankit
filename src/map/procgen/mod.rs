@@ -26,6 +26,7 @@ pub mod channel;
 pub mod check;
 pub mod city;
 mod civic;
+mod conduit;
 pub mod crossing;
 pub mod depot;
 pub mod desert;
@@ -1111,6 +1112,47 @@ mod tests {
                 c.bridges.len()
             );
         }
+    }
+
+    /// Every Sun and Weir is joined to the river, and what carries that
+    /// stands in no road.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn suns_and_weirs_are_joined_to_the_river() {
+        let mut seen = 0;
+        for seed in 0..6 {
+            let sk = skeleton(&crate::city_spec(seed, Look::Ithessar));
+            let c = sk.land.channel.as_ref().unwrap();
+            for (k, lm) in sk.landmarks.iter().enumerate() {
+                let Some(conduit) = sk.conduits.iter().find(|c| c.landmark == k) else {
+                    assert_eq!(lm.kind, LandmarkKind::Great(1), "seed {seed}");
+                    continue;
+                };
+                seen += 1;
+                assert!(
+                    c.local(conduit.way[2]).1.abs() < c.half,
+                    "seed {seed}: it ends short of the river"
+                );
+                assert!(conduit.portals.len() >= 3, "seed {seed}: {conduit:?}");
+                for leg in conduit.legs() {
+                    for s in &sk.streets {
+                        let keep = if s.rank == Rank::Avenue {
+                            s.clear
+                        } else {
+                            s.half
+                        };
+                        assert!(
+                            s.distance(leg) > keep,
+                            "seed {seed}: a leg at {leg} in {s:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(seen >= 3, "{seen}");
     }
 
     /// Bots drive over a river city's bridges, on their own and two meeting
