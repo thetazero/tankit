@@ -257,9 +257,17 @@ impl NavGrid {
                 }
             }
         }
+        // Where it's plainly level all round, there's nothing to keep back
+        // from.
+        let plain: Vec<bool> = (0..n * n)
+            .map(|i| nav.solid.is_some() && nav.level_round(i))
+            .collect();
         // Back from rock standing up out of a floor: a cliff, a dig's walls.
         if nav.solid.is_some() {
             for i in 0..n * n {
+                if plain[i] {
+                    continue;
+                }
                 let c = nav.center(i);
                 for l in 0..LEVELS {
                     let h = nav.floor[i][l];
@@ -275,6 +283,9 @@ impl NavGrid {
         }
         // Back from drops.
         for i in 0..n * n {
+            if plain[i] {
+                continue;
+            }
             let c = nav.center(i);
             for l in 0..LEVELS {
                 let h = nav.floor[i][l];
@@ -339,6 +350,27 @@ impl NavGrid {
         }
     }
 
+    /// Whether the cells round cell `i` are all one floor, at about one
+    /// height.
+    fn level_round(&self, i: usize) -> bool {
+        let n = self.n;
+        let (x, z) = (i % n, i / n);
+        let r = 2;
+        if x < r || z < r || x + r >= n || z + r >= n {
+            return false;
+        }
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for z in z - r..=z + r {
+            for f in &self.floor[z * n + x - r..=z * n + x + r] {
+                if !f[TOP + 1].is_nan() {
+                    return false;
+                }
+                (lo, hi) = (lo.min(f[TOP]), hi.max(f[TOP]));
+            }
+        }
+        hi - lo < 0.4
+    }
+
     fn ground(&self, p: Vec2) -> f32 {
         let solid = self.solid.as_ref().and_then(|s| s.top(p));
         solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)))
@@ -355,7 +387,25 @@ impl NavGrid {
                 n += 1;
             }
         };
-        let g = self.ground(p);
+        // The ground's own floors, the highest first.
+        let mut dug = [f32::NAN; 2 * LEVELS];
+        let mut m = 0;
+        if let Some(solid) = &self.solid {
+            for f in solid.over(p) {
+                let k = dug[..m].iter().position(|&d| f > d - 1e-3).unwrap_or(m);
+                if k < m && f <= dug[k] + 1e-3 {
+                    continue;
+                }
+                if m < dug.len() {
+                    m += 1;
+                }
+                if k < m {
+                    dug.copy_within(k..m - 1, k + 1);
+                    dug[k] = f;
+                }
+            }
+        }
+        let g = if m > 0 { dug[0] } else { self.ground(p) };
         // Decks and roofs laid over the ground.
         let (mut top, mut under) = (g, false);
         for s in &self.slabs {
@@ -371,13 +421,11 @@ impl NavGrid {
             put(g);
         }
         // What's dug out under the ground.
-        if let Some(solid) = &self.solid {
-            let mut over = g;
-            for f in solid.floors(p).into_iter().skip(1) {
-                if over - f >= HEADROOM {
-                    put(f);
-                    over = f;
-                }
+        let mut over = g;
+        for &f in &dug[1.min(m)..m] {
+            if over - f >= HEADROOM {
+                put(f);
+                over = f;
             }
         }
         out

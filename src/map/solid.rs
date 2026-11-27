@@ -142,7 +142,15 @@ impl Surface {
                         }
                     }
                     ids.push(s.verts.len() as u32);
-                    let p = (c.as_vec3() + sum / hits) * cell;
+                    let mut q = sum / hits;
+                    // (Its edges are straight: they meet other ground.)
+                    if x == 0 || x == d.nx - 2 {
+                        q.x = 0.5;
+                    }
+                    if z == 0 || z == d.nz - 2 {
+                        q.z = 0.5;
+                    }
+                    let p = (c.as_vec3() + q) * cell;
                     s.verts.push(Vec3::new(lo.x + p.x, p.y, lo.y + p.z));
                 }
             }
@@ -277,7 +285,7 @@ impl Surface {
 
     /// Every floor over `p`, in no order (one on a shared edge may come
     /// twice).
-    fn over(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
+    pub fn over(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
         let (x, z) = self.square(p);
         self.over[z * self.nx + x]
             .iter()
