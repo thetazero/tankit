@@ -381,6 +381,9 @@ impl NavGrid {
         let solid = self.solid.as_ref().and_then(|s| s.top(p));
         let g =
             solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)));
+        if self.rivers.is_empty() {
+            return g;
+        }
         let Some(&Some((k, seg))) = self.wet.get(self.cell(p)) else {
             return g;
         };
