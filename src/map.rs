@@ -592,12 +592,19 @@ impl Terrain {
         self.heights[iz * self.nx + ix]
     }
 
-    /// The tint at a point (its nearest vertex's).
+    /// The tint at a point.
     pub fn tint_at(&self, x: f32, z: f32) -> Vec3 {
-        let g = ((Vec2::new(x, z) - self.origin) / self.cell).round();
-        let (ix, iz) = (g.x.max(0.0) as usize, g.y.max(0.0) as usize);
-        let k = iz.min(self.nz - 1) * self.nx + ix.min(self.nx - 1);
-        self.tint.get(k).copied().unwrap_or(Vec3::ONE)
+        let most = Vec2::new(self.nx as f32 - 1.0, self.nz as f32 - 1.0);
+        let g = ((Vec2::new(x, z) - self.origin) / self.cell).clamp(Vec2::ZERO, most);
+        let (ix, iz) = (g.x as usize, g.y as usize);
+        let at = |dx: usize, dz: usize| {
+            let k = (iz + dz).min(self.nz - 1) * self.nx + (ix + dx).min(self.nx - 1);
+            self.tint.get(k).copied().unwrap_or(Vec3::ONE)
+        };
+        let f = g.fract();
+        at(0, 0)
+            .lerp(at(1, 0), f.x)
+            .lerp(at(0, 1).lerp(at(1, 1), f.x), f.y)
     }
 
     /// Bilinear height (close to, not exactly, the collider's triangles).
@@ -625,6 +632,7 @@ pub struct Map {
     pub terrain: Option<Terrain>,
     /// The play ground as a solid, in place of `terrain`'s surface: drawn
     /// and driven on. (`terrain` then only says what color the ground is.)
+    /// Every generated map has one.
     pub solid: Option<std::sync::Arc<solid::Surface>>,
     /// Visual-only ground beyond the arena (dunes to the horizon). Drawn
     /// instead of the flat apron; never collides.

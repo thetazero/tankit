@@ -604,8 +604,8 @@ pub(super) fn level(sk: &mut Skeleton) {
     if sk.land.platforms.is_empty() {
         land.level_round(sk.heart, 24.0, 16.0);
     }
-    // Ready for the crossings: both ends level with a bridge's deck; a
-    // tunnel's way dug down, the crest over it level with its roof.
+    // Ready for the crossings: their ends level with the deck or the
+    // tunnel's floor, the crest over a tunnel level.
     for x in &sk.crossings {
         let (d, yaw) = (x.dir(), x.dir().x.atan2(x.dir().y));
         let strip = |t0: f32, t1: f32, w: f32| OBox {
@@ -614,19 +614,18 @@ pub(super) fn level(sk: &mut Skeleton) {
             half: Vec2::new(w, (t1 - t0) * 0.5),
             ..OBox::default()
         };
-        match x.kind {
-            crossing::Kind::Bridge => {
-                land.level_at(strip(-9.0, 0.5, x.half + 1.0), 0.0, 7.0, x.top);
-                let len = x.len();
-                land.level_at(strip(len - 0.5, len + 9.0, x.half + 1.0), 0.0, 7.0, x.top);
-            }
+        let end = match x.kind {
+            crossing::Kind::Bridge => x.top,
             crossing::Kind::Tunnel => {
                 let (a, b) = x.roofed;
-                land.level_at(strip(a, b, x.half + 11.0), 0.0, 5.0, x.top);
-                // (Flat right across, and up again inside the walls.)
-                land.level_at(strip(-5.0, x.len() + 5.0, x.half + 3.2), 0.0, 1.4, x.floor);
+                land.level_at(strip(a, b, x.half + 2.5), 0.0, 5.0, x.top);
+                land.bores.push(x.bore());
+                x.floor
             }
-        }
+        };
+        let len = x.len();
+        land.level_at(strip(-9.0, 0.5, x.half + 1.0), 0.0, 7.0, end);
+        land.level_at(strip(len - 0.5, len + 9.0, x.half + 1.0), 0.0, 7.0, end);
     }
     sk.land = land;
 }
@@ -1456,32 +1455,28 @@ pub(super) fn crossings(sk: &mut Skeleton) {
             lay(sk, from, fine.len() - 1, true);
         }
     }
-    // A tunnel's approaches' walls, back from its mouths as far as they
-    // keep out of the other roads.
-    let streets = &sk.streets;
-    for x in &mut sk.crossings {
-        let (d, side) = (x.dir(), Vec2::new(-x.dir().y, x.dir().x));
-        let fouls = |t: f32| {
-            [0.3, crossing::WALL * 0.5, crossing::WALL + 0.3]
-                .iter()
-                .any(|w| {
-                    [-1.0f32, 1.0].iter().any(|e| {
-                        let p = x.from + d * t + side * e * (x.half + w);
-                        streets
-                            .iter()
-                            .any(|s| s.rank != Rank::Crossing && s.distance(p) < s.clear + 1.0)
-                    })
+    // Track runs straight over or through, as its line's road does.
+    for x in &sk.crossings {
+        for line in &mut sk.tracks {
+            let on = |p: Vec2| {
+                line.windows(2).position(|w| {
+                    let d = w[1] - w[0];
+                    let t = ((p - w[0]).dot(d) / d.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    p.distance(w[0] + d * t) < 0.2
                 })
-        };
-        let (a, b) = x.roofed;
-        let (mut t0, mut t1) = (a, b);
-        while t0 > 0.0 && !fouls(t0 - 1.0) {
-            t0 = (t0 - 1.0).max(0.0);
+            };
+            let (Some(a), Some(b)) = (on(x.from), on(x.to)) else {
+                continue;
+            };
+            let ends = if a <= b {
+                [x.from, x.to]
+            } else {
+                [x.to, x.from]
+            };
+            line.splice(a.min(b) + 1..a.max(b) + 1, ends);
+            // (None of its points twice.)
+            line.dedup_by(|p, q| p.distance(*q) < 0.05);
         }
-        while t1 < x.len() && !fouls(t1 + 1.0) {
-            t1 = (t1 + 1.0).min(x.len());
-        }
-        x.walled = (t0, t1);
     }
 }
 
@@ -1519,11 +1514,10 @@ fn crossing_at(
             top: end,
             floor: 0.0,
             roofed: (0.0, 0.0),
-            walled: (0.0, len),
         })
     } else {
         // Roofed where the crest's high enough to be.
-        let high = |t: f32| r.swell(a + (b - a) * t) > end + 5.6;
+        let high = |t: f32| r.swell(a + (b - a) * t) > end + 4.8 + crossing::COVER;
         let ts: Vec<f32> = (0..=40)
             .map(|k| k as f32 / 40.0)
             .filter(|&t| high(t))
@@ -1541,7 +1535,6 @@ fn crossing_at(
             top,
             floor: end,
             roofed: (t0 * len, t1 * len),
-            walled: (0.0, len),
         })
     }
 }

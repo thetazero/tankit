@@ -343,9 +343,26 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         sk.paint(t, st.road());
     }
     st.finish(&mut map);
+    let mut rock = st.ground() * glam::Vec3::new(0.9, 0.84, 0.78);
+    let mut banks = Vec::new();
     if spec.setting == setting::Setting::Desert {
-        setting::desert(&mut map, &sk, spec.seed, st.road());
+        (banks, rock) = setting::desert(&mut map, &sk, spec.seed, st.road());
     }
+    let heaped = |d: &[Drift], p: Vec2| {
+        d.iter()
+            // (Most are nowhere near.)
+            .filter(|d| {
+                let reach = d.b.half.length() + d.run * 2.0 + 4.0;
+                d.b.center.distance_squared(p) < reach * reach
+            })
+            .map(|d| d.height_at(p))
+            .fold(0.0, f32::max)
+    };
+    let mut ground = sk
+        .land
+        .plain_surface(sk.size, |p| heaped(&drifts, p) + heaped(&banks, p));
+    ground.rock = rock;
+    map.solid = Some(ground.into());
     map.drop_tiny_hitboxes();
     map.separate_coplanar_faces();
     sk.finish(&mut map);
@@ -959,6 +976,68 @@ mod tests {
                         .collect::<String>()
             );
         }
+    }
+
+    /// Every city's and foundry's and depot's ground is solid, and their
+    /// tunnels dug out of it: in at one end and out at the other along a
+    /// level floor, the ground carrying on over it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn tunnels_are_dug_out_of_solid_ground() {
+        let foundry = |s| crate::foundry_spec(s, Look::Imperium, foundry::Ground::Desert);
+        let specs = (0..8)
+            .map(spec)
+            .chain((0..16).map(foundry))
+            .chain((0..2).map(|s| crate::depot_spec(s, Look::Imperium)));
+        let mut tunnels = 0;
+        for sp in specs {
+            let sk = match sp.biome {
+                Biome::City => skeleton(&sp),
+                Biome::Depot => depot::skeleton(&sp),
+                _ => foundry::skeleton(&sp),
+            };
+            let m = sk.greybox(&sp.sides);
+            let solid = m.solid.as_ref().unwrap();
+            let nav = crate::ai::nav::NavGrid::build(&m);
+            for x in &sk.crossings {
+                if x.kind != crossing::Kind::Tunnel {
+                    continue;
+                }
+                tunnels += 1;
+                let side = x.dir().perp();
+                let mut t = 0.0;
+                while t < x.len() {
+                    for off in [-0.8, 0.0, 0.8] {
+                        let p = x.from + x.dir() * t + side * off * x.half;
+                        let f = solid.floors(p);
+                        let low = *f.last().unwrap();
+                        assert!(
+                            (low - x.floor).abs() < 0.3,
+                            "{} {:?} at {p}, {t} along {x:?}: {f:?}",
+                            sp.seed,
+                            sp.biome
+                        );
+                        let in_it = t > x.roofed.0 + 2.0 && t < x.roofed.1 - 2.0;
+                        let top = f[0] - low;
+                        assert!(
+                            !in_it || top > 5.5,
+                            "{} {:?} at {p}, {t} along: {f:?}",
+                            sp.seed,
+                            sp.biome
+                        );
+                        assert_eq!(f.len(), if in_it { 2 } else { f.len() }, "at {p}: {f:?}");
+                    }
+                    t += 1.0;
+                }
+                let end = |p: Vec2| glam::Vec3::new(p.x, x.floor, p.y);
+                let way = nav.route(end(x.from), end(x.to));
+                assert!(!way.is_empty(), "{} {:?} {x:?}", sp.seed, sp.biome);
+            }
+        }
+        assert!(tunnels > 3, "{tunnels}");
     }
 
     #[test]

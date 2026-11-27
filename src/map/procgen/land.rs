@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-use glam::{Vec2, Vec3};
+use glam::Vec2;
 
 use super::mine::{line_at, line_distance, line_len, seg};
 use super::skeleton::{Platform, smoothstep};
@@ -518,6 +518,55 @@ impl Dig {
     }
 }
 
+/// A road's way through a ridge: a level floor from `from` to `to`, `half`
+/// either side, open to the sky but for the stretch that's `roofed`.
+#[derive(Clone, Copy, Debug)]
+pub struct Bore {
+    pub from: Vec2,
+    pub to: Vec2,
+    pub half: f32,
+    pub floor: f32,
+    pub roofed: (f32, f32),
+    /// The roof's height over the floor.
+    pub clear: f32,
+}
+
+/// How far past its ends a bore's cut.
+const BORE_END: f32 = 2.0;
+
+impl Bore {
+    /// Along it, and off its line.
+    fn local(&self, p: Vec2) -> (f32, f32) {
+        let d = (self.to - self.from).normalize();
+        ((p - self.from).dot(d), d.perp_dot(p - self.from).abs())
+    }
+
+    /// Distance from its sides and ends, negative between them.
+    fn side(&self, p: Vec2) -> f32 {
+        let (t, off) = self.local(p);
+        let len = self.from.distance(self.to);
+        (off - self.half).max(-BORE_END - t).max(t - len - BORE_END)
+    }
+
+    /// How far it's roofed at `p` (from the nearer mouth; negative: not).
+    fn under(&self, p: Vec2) -> f32 {
+        let (t, _) = self.local(p);
+        (t - self.roofed.0).min(self.roofed.1 - t)
+    }
+
+    /// Distance to its rock at `p`, `y` up: negative in the open.
+    fn sdf(&self, p: Vec2, y: f32) -> f32 {
+        let rough = 0.6 * noise2((p.x + p.y) / 4.5, y / 3.2, 11);
+        let over = (y - self.floor - self.clear).min(self.under(p));
+        smax(self.side(p) - 0.9 + rough, over, 1.2).max(self.floor - y)
+    }
+
+    /// Is the floor at `p` the highest ground there?
+    fn open(&self, p: Vec2) -> bool {
+        self.side(p) < 0.5 && self.under(p) < 0.0
+    }
+}
+
 /// A round hollow with a rim (a crater), open `clear` m about.
 #[derive(Clone, Copy, Debug)]
 pub struct Bowl {
@@ -647,8 +696,35 @@ struct LandRock<'a, F> {
     heaps: F,
 }
 
-impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
-    fn column(&self, p: Vec2, ys: &[f32], out: &mut [f32]) {
+/// What there is of a `LandRock` over a point.
+struct LandColumn<'a> {
+    p: Vec2,
+    /// The plateau's distance, and whether a cliff's near.
+    s: f32,
+    near: bool,
+    /// The ground's height, the high ground's and the floor's.
+    only: f32,
+    top: f32,
+    foot: f32,
+    /// Towers' distances and heights.
+    towers: Vec<(f32, f32)>,
+    digs: Vec<&'a Dig>,
+    bores: Vec<&'a Bore>,
+}
+
+impl LandColumn<'_> {
+    /// Beds of rock, some worn back further than others.
+    fn bed(&self, y: f32) -> f32 {
+        let p = self.p;
+        0.7 * noise2(y / 1.3, p.dot(Vec2::ONE) / 40.0, 61)
+            + 0.5 * noise2(p.x / 4.0 + y / 9.0, p.y / 4.0, 62)
+    }
+}
+
+impl<'a, F: Fn(Vec2) -> f32> Rock for LandRock<'a, F> {
+    type Column = LandColumn<'a>;
+
+    fn column(&self, p: Vec2) -> LandColumn<'a> {
         let land = self.land;
         let s = land.plateau(p);
         let heap = (self.heaps)(p);
@@ -664,38 +740,62 @@ impl<F: Fn(Vec2) -> f32> Rock for LandRock<'_, F> {
             (true, true) => (only, level(0.0)),
             (true, false) => (level(1.0), only),
         };
-        let digs: Vec<&Dig> = land.digs.iter().filter(|d| d.distance(p) < 4.0).collect();
-        // Beds of rock, some worn back further than others.
-        let bed = |y: f32| {
-            0.7 * noise2(y / 1.3, p.dot(Vec2::ONE) / 40.0, 61)
-                + 0.5 * noise2(p.x / 4.0 + y / 9.0, p.y / 4.0, 62)
-        };
-        let towers: Vec<(f32, f32)> = land
-            .towers
-            .iter()
-            .map(|t| (t.sdf(p), t.height))
-            .filter(|t| t.0 < 5.0)
-            .collect();
-        for (&y, d) in ys.iter().zip(out) {
-            *d = y - only;
-            if near {
-                *d = (s + bed(y) - 0.6).max(y - top).min(y - foot);
-            }
-            for &(side, height) in &towers {
-                // Buttresses down its sides, its top broken up.
-                let rough = 5.0 * (noise2(p.x / 9.0, p.y / 9.0, 63) - 0.5) + 1.6 * bed(y);
-                // Leaning in as they rise, in a step or two; a broken top,
-                // higher at one side.
-                let up = ((y - only) / height).clamp(0.0, 1.0);
-                let lean = 3.0 * up + 3.5 * smoothstep(0.45, 0.6, up);
-                let broken = noise2(p.x / 13.0, p.y / 13.0, 64);
-                let cap = only + height * (0.45 + 0.6 * broken);
-                *d = d.min((side + rough + lean - 1.2).max(y - cap));
-            }
-            for dig in &digs {
-                *d = d.max(-dig.sdf(p, y));
-            }
+        LandColumn {
+            p,
+            s,
+            near,
+            only,
+            top,
+            foot,
+            towers: land
+                .towers
+                .iter()
+                .map(|t| (t.sdf(p), t.height))
+                .filter(|t| t.0 < 5.0)
+                .collect(),
+            digs: land.digs.iter().filter(|d| d.distance(p) < 4.0).collect(),
+            bores: land.bores.iter().filter(|b| b.side(p) < 4.0).collect(),
         }
+    }
+
+    fn span(&self, c: &LandColumn) -> (f32, f32) {
+        let tower = c.towers.iter().map(|t| t.1).fold(0.0, f32::max);
+        let dug = c
+            .digs
+            .iter()
+            .flat_map(|d| d.rooms.iter().map(|r| d.floor + r.floor))
+            .chain(c.bores.iter().map(|b| b.floor));
+        let low = dug.fold(c.only.min(c.top).min(c.foot), f32::min);
+        let filled = c.bores.iter().map(|b| b.floor).fold(f32::MIN, f32::max);
+        let high = c.only.max(c.top).max(c.foot).max(filled) + tower * 1.1;
+        (low, high)
+    }
+
+    fn distance(&self, c: &LandColumn, y: f32) -> f32 {
+        let p = c.p;
+        let mut d = y - c.only;
+        if c.near {
+            d = (c.s + c.bed(y) - 0.6).max(y - c.top).min(y - c.foot);
+        }
+        for &(side, height) in &c.towers {
+            // Buttresses down its sides, its top broken up.
+            let rough = 5.0 * (noise2(p.x / 9.0, p.y / 9.0, 63) - 0.5) + 1.6 * c.bed(y);
+            // Leaning in as they rise, in a step or two; a broken top,
+            // higher at one side.
+            let up = ((y - c.only) / height).clamp(0.0, 1.0);
+            let lean = 3.0 * up + 3.5 * smoothstep(0.45, 0.6, up);
+            let broken = noise2(p.x / 13.0, p.y / 13.0, 64);
+            let cap = c.only + height * (0.45 + 0.6 * broken);
+            d = d.min((side + rough + lean - 1.2).max(y - cap));
+        }
+        for dig in &c.digs {
+            d = d.max(-dig.sdf(p, y));
+        }
+        for b in &c.bores {
+            // Level under it, and open over that.
+            d = d.min(b.side(p).max(y - b.floor)).max(-b.sdf(p, y));
+        }
+        d
     }
 }
 
@@ -726,6 +826,7 @@ pub struct Land {
     pub dam: Option<Dam>,
     pub digs: Vec<Dig>,
     pub towers: Vec<Tower>,
+    pub bores: Vec<Bore>,
     /// A plasma river's, cut through all of it.
     pub channel: Option<super::channel::Channel>,
 }
@@ -868,6 +969,9 @@ impl Land {
 
     /// The ground's height at `p`.
     pub fn height(&self, p: Vec2) -> f32 {
+        if let Some(b) = self.bores.iter().find(|b| b.open(p)) {
+            return b.floor;
+        }
         let s = self.plateau(p);
         let tower = self
             .towers
@@ -949,17 +1053,19 @@ impl Land {
     /// back by turns.
     pub fn surface(&self, size: f32, cell: f32, heaps: impl Fn(Vec2) -> f32) -> Surface {
         let rock = LandRock { land: self, heaps };
-        let edge = 2.0 * cell;
-        Surface::of(
-            &rock,
-            Vec3::new(-edge, -8.0, -edge),
-            Vec3::new(
-                size + edge,
-                self.high.height + self.towers.iter().map(|t| t.height).fold(0.0, f32::max) + 10.0,
-                size + edge,
-            ),
-            cell,
-        )
+        let edge = Vec2::splat(2.0 * cell);
+        Surface::of(&rock, -edge, size + edge, cell)
+    }
+
+    /// The same for a place whose ground carries on at the same height past
+    /// its edge (`Map::scenery_terrain`): it stops on the edge itself.
+    pub fn plain_surface(&self, size: f32, heaps: impl Fn(Vec2) -> f32) -> Surface {
+        // (What's dug takes smaller cubes.)
+        let cell = if self.bores.is_empty() { 2.0 } else { 1.0 };
+        let rock = LandRock { land: self, heaps };
+        // Vertices are in the middles of the cubes.
+        let edge = Vec2::splat(0.5 * cell);
+        Surface::of(&rock, -edge, size + edge, cell)
     }
 
     /// How much of the dunes is left at `p` (`s`: the plateau's distance):
