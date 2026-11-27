@@ -153,8 +153,12 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
     city::plaza_dressing(&mut sk, rng);
     city::frontages(&mut sk, rng, plan);
     city::clear_courts(&mut sk, rng);
+    super::conduit::plan(&mut sk);
     cordon(&mut sk, rng);
     city::repairs(&mut sk, rng);
+    let legs: Vec<Vec2> = sk.conduits.iter().flat_map(|c| c.legs()).collect();
+    sk.repair_spots
+        .retain(|r| legs.iter().all(|l| l.distance(*r) > 5.0));
     city::level(&mut sk);
     sk
 }
