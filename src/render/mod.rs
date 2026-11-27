@@ -17,7 +17,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::stars::{MAX_COMPANIONS, SkyStar};
+use crate::companions::{MAX_COMPANIONS, SkyStar};
 use glam::camera::rh::proj::directx as proj;
 use glam::camera::rh::view::look_at_mat4;
 use mesh::{Instance, MeshData, MeshId, Vertex};
@@ -103,6 +103,8 @@ pub struct Atmosphere {
     pub stars: f32,
     /// The main star's companions (they light nothing).
     pub companions: [SkyStar; MAX_COMPANIONS],
+    /// How big the sun's disc and the glare round it are (1 ordinary).
+    pub sun_size: f32,
 }
 
 /// Desert sand, settled: `Atmosphere::settle` on most maps.
@@ -112,6 +114,14 @@ pub const SAND_SETTLE: Vec3 = Vec3::new(0.74, 0.6, 0.42);
 pub const HIDDEN: f32 = 0.04;
 
 impl Atmosphere {
+    /// How bright the light is on a wall in the shade (as the scene's shader
+    /// mixes it: half sky, half ground).
+    pub fn fill(&self) -> f32 {
+        let sky = self.sky_horizon.lerp(self.sky_zenith, 0.35);
+        let light = self.ground_color.lerp(sky, 0.5);
+        light.dot(Vec3::new(0.2126, 0.7152, 0.0722)) * self.ambient
+    }
+
     /// How far off a tank can be made out through the haze, m (bots see,
     /// guns assist and health bars show no further than this either).
     pub fn sight(&self) -> f32 {
@@ -139,6 +149,7 @@ impl Default for Atmosphere {
             ambient: 1.0,
             stars: 0.0,
             companions: Default::default(),
+            sun_size: 1.0,
         }
     }
 }
@@ -1983,7 +1994,7 @@ impl Renderer {
             light_view_proj: light_view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             cam_pos: scene.camera.pos.extend(1.0).to_array(),
-            sun_dir: sun.extend(0.0).to_array(),
+            sun_dir: sun.extend(scene.atmosphere.sun_size).to_array(),
             // .w channels carry the wind (x, z) and how much sand it blows.
             sun_color: scene
                 .atmosphere

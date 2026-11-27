@@ -431,7 +431,8 @@ pub const MENU_BACKDROP: Backdrop = (
     Conditions {
         time: crate::conditions::TimeOfDay::Day,
         weather: crate::conditions::Weather::Clear,
-        companions: [None; crate::stars::MAX_COMPANIONS],
+        companions: [None; crate::companions::MAX_COMPANIONS],
+        starlight: 1.0,
     },
     0,
 );

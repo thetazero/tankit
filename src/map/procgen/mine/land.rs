@@ -99,6 +99,7 @@ pub(super) fn atmosphere(ground: Ground, rng: &mut Rng) -> Atmosphere {
         ambient: 1.0,
         stars: 0.0,
         companions: Default::default(),
+        sun_size: 1.0,
     };
     match ground {
         Ground::Desert => sky,

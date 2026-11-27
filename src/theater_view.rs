@@ -23,6 +23,7 @@ use std::f32::consts::{PI, TAU};
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
+use crate::companions;
 use crate::faction::Faction;
 use crate::galaxy::theater::{Ended, Outcome, Ship, SiteView, Theater, TickSummary, planet_name};
 use crate::galaxy::{RAID, SIDES};
@@ -32,10 +33,9 @@ use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::scene::project;
 use crate::ship_model;
-use crate::stars;
+use crate::star::{ORDINARY, Star};
 use crate::ui::{Align, Hits, Painter, Rgba, design, theme, with_alpha};
 
-const STAR: Rgba = [1.0, 0.86, 0.62, 1.0];
 /// The fill behind the marks and labels: the black of space.
 const BG: Rgba = [0.025, 0.025, 0.03, 1.0];
 /// Height of the legend strip along the bottom.
@@ -136,11 +136,15 @@ fn world_look(system: usize, planet: usize) -> (u64, planet::Look) {
 
 /// Each star of system `system`: where it is from their middle, its radius
 /// (both in radii of a lone star), and its color.
-fn suns(system: usize, time: f32) -> Vec<(Vec3, f32, Vec3)> {
-    let main = Vec3::from_slice(&STAR[..3]);
-    let companions: Vec<_> = stars::companions(system).into_iter().flatten().collect();
+fn suns(system: usize, starlight: f32, time: f32) -> Vec<(Vec3, f32, Vec3)> {
+    let star = Star::of(starlight);
+    let (main, size) = (star.color(), star.size());
+    let companions: Vec<_> = companions::of_system(system)
+        .into_iter()
+        .flatten()
+        .collect();
     let Some(first) = companions.first() else {
-        return vec![(Vec3::ZERO, 1.0, main)];
+        return vec![(Vec3::ZERO, size, main)];
     };
     let round = |a: f32| Vec3::new(a.cos(), 0.0, -a.sin());
     // The close pair swing about their middle, the nearer it the heavier;
@@ -148,7 +152,7 @@ fn suns(system: usize, time: f32) -> Vec<(Vec3, f32, Vec3)> {
     let start = system as f32 * 2.4;
     let pair = round(start + time * 0.08);
     let mut all = vec![
-        (pair * -0.6, 0.72, main),
+        (pair * -0.6, 0.72 * size, main),
         (pair * 1.1, 0.72 * first.kind.size(), first.kind.color()),
     ];
     if let Some(third) = companions.get(1) {
@@ -202,15 +206,16 @@ impl SystemArt {
     /// or it and its companions turning round each other.
     pub fn stars(
         &self,
-        system: usize,
+        (system, starlight): (usize, f32),
         at: Vec3,
         r: f32,
         time: f32,
         instances: &mut Vec<(MeshId, Instance)>,
         particles: &mut Vec<Particle>,
     ) {
-        for (off, size, color) in suns(system, time) {
-            let hot = color.lerp(Vec3::ONE, 0.1);
+        let power = 0.11 * Star::of(starlight).glow();
+        for (off, size, color) in suns(system, starlight, time) {
+            let hot = Vec3::new(1.0, 0.88, 0.66) + (color - ORDINARY) * 0.8;
             let (at, r) = (at + off * r, size * r);
             instances.push((
                 self.ball,
@@ -223,7 +228,7 @@ impl SystemArt {
             for k in 0..24 {
                 let shell = r * (1.1 + 0.075 * k as f32);
                 let light = color.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
-                particles.push(Particle::glow(at, shell, light, 0.11, Vec3::ZERO));
+                particles.push(Particle::glow(at, shell, light, power, Vec3::ZERO));
             }
         }
     }
@@ -268,12 +273,12 @@ impl SystemArt {
 
 /// The light: the star's, from the left and a little toward the camera,
 /// so each world shows a lit crescent and a dark side.
-fn atmosphere(l: &Layout) -> Atmosphere {
+fn atmosphere(l: &Layout, star: Star) -> Atmosphere {
     let mid = l.worlds.iter().copied().sum::<Vec3>() / l.worlds.len().max(1) as f32;
     let sun_dir = (l.star - mid + Vec3::new(0.0, 25.0, 30.0)).normalize();
     Atmosphere {
         sun_dir,
-        sun_color: Vec3::new(2.2, 2.05, 1.85),
+        sun_color: Vec3::new(2.2, 2.05, 1.85) * star.light(),
         sky_zenith: Vec3::new(0.05, 0.055, 0.07),
         sky_horizon: Vec3::new(0.03, 0.03, 0.04),
         ground_color: Vec3::new(0.02, 0.02, 0.025),
@@ -285,6 +290,7 @@ fn atmosphere(l: &Layout) -> Atmosphere {
         ambient: 0.35,
         stars: 0.0,
         companions: Default::default(),
+        sun_size: 1.0,
     }
 }
 
@@ -418,8 +424,9 @@ fn system_scene(
     ));
     stars(camera.pos, &mut particles);
 
+    let star = Star::of(t.starlight);
     art.stars(
-        t.system,
+        (t.system, t.starlight),
         l.star,
         STAR_R,
         time,
@@ -464,7 +471,7 @@ fn system_scene(
         })
         .into_iter()
         .collect();
-    let atmosphere = atmosphere(&l);
+    let atmosphere = atmosphere(&l, star);
     Scene {
         camera,
         time,
@@ -961,11 +968,14 @@ fn jump_scene(art: &SystemArt, u: f32, time: f32) -> Scene {
     ship_parts(art, pose, &mut instances, &mut particles);
     let atmosphere = Atmosphere {
         sun_dir: Vec3::new(-0.3, 0.6, 0.75).normalize(),
-        ..atmosphere(&Layout {
-            star: Vec3::ZERO,
-            worlds: Vec::new(),
-            ship: None,
-        })
+        ..atmosphere(
+            &Layout {
+                star: Vec3::ZERO,
+                worlds: Vec::new(),
+                ship: None,
+            },
+            Star::of(1.0),
+        )
     };
     // The jump's own light, cold, round the hull.
     let lights = vec![PointLight {
@@ -1743,6 +1753,7 @@ mod tests {
             name: "TEST".into(),
             employer: 0,
             planets,
+            starlight: 1.0,
             mercs: [0; 5],
             hulls: [0; 5],
             held: [0; 5],
@@ -1790,7 +1801,7 @@ mod tests {
         let t = theater(3);
         for system in 0..300 {
             for time in (0..40).map(|k| k as f32 * 7.0) {
-                let all = suns(system, time);
+                let all = suns(system, [0.1, 1.0, 8.0][system % 3], time);
                 for (i, &(at, r, _)) in all.iter().enumerate() {
                     for &(b, q, _) in &all[..i] {
                         assert!(at.distance(b) > r + q, "system {system} at {time}");

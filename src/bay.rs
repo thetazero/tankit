@@ -111,6 +111,7 @@ pub fn atmosphere() -> Atmosphere {
         ambient: 1.0,
         stars: 0.0,
         companions: Default::default(),
+        sun_size: 1.0,
     }
 }
 

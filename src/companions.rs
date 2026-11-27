@@ -59,7 +59,7 @@ pub struct Companion {
 pub type Companions = [Option<Companion>; MAX_COMPANIONS];
 
 /// Those of system `system`, the same for every pilot.
-pub fn companions(system: usize) -> Companions {
+pub fn of_system(system: usize) -> Companions {
     let mut r = Rng::new(system as u64 ^ 0x0B1A_4157);
     let n = match r.f32() {
         x if x < TERNARY => 2,
@@ -115,7 +115,9 @@ pub fn light_up(companions: &Companions, night: bool, a: &mut Atmosphere) {
     for (sky, c) in a.companions.iter_mut().zip(companions) {
         *sky = SkyStar::default();
         let Some(c) = c else { continue };
-        let tan = |deg: i8| (deg as f32).to_radians().tan();
+        // Further off from a big sun, clear of its disc.
+        let wide = ((3.35 * a.sun_size + 3.0) / 6.5).max(1.0);
+        let tan = |deg: i8| (deg as f32 * wide).to_radians().tan();
         let d = (sun + right * tan(c.aside) + up * tan(c.above)).normalize();
         let y = d.y.max(LOWEST);
         let flat = Vec2::new(d.x, d.z).normalize_or(Vec2::X) * (1.0 - y * y).sqrt();
@@ -140,8 +142,8 @@ mod tests {
     fn some_systems_have_more_stars() {
         let mut of = [0; 3];
         for s in 0..10_000 {
-            let c = companions(s);
-            assert_eq!(c, companions(s));
+            let c = of_system(s);
+            assert_eq!(c, of_system(s));
             of[c.iter().flatten().count()] += 1;
         }
         assert!((6700..7300).contains(&of[0]), "{of:?}");
@@ -157,9 +159,10 @@ mod tests {
             for s in 0..2000 {
                 let mut a = Atmosphere {
                     sun_dir: Vec3::new((1.0 - y * y).sqrt(), y, 0.0),
+                    sun_size: [0.6, 1.0, 2.6][s % 3],
                     ..Default::default()
                 };
-                let c = companions(s);
+                let c = of_system(s);
                 light_up(&c, false, &mut a);
                 let mut up = vec![a.sun_dir];
                 for (k, sky) in a.companions.iter().enumerate() {
@@ -168,7 +171,12 @@ mod tests {
                         assert!(sky.dir.is_normalized() && sky.dir.y >= LOWEST - 1e-4);
                         for d in &up {
                             let apart = d.angle_between(sky.dir).to_degrees();
-                            assert!(apart > 6.5, "{apart} in system {s}");
+                            let clear = if *d == a.sun_dir {
+                                3.35 * a.sun_size + 2.5
+                            } else {
+                                6.5
+                            };
+                            assert!(apart > clear, "{apart} in system {s}");
                         }
                         up.push(sky.dir);
                     }
