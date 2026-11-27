@@ -82,6 +82,7 @@ pub mod ledger;
 pub mod merc;
 pub mod realm;
 pub mod save;
+mod smart;
 pub mod structure;
 pub mod theater;
 
@@ -2015,7 +2016,7 @@ impl Galaxy {
         };
         let help = plan(with, self.pilots_for(r, have + late + with));
         let start = if fresh && with > 0.0 { slowest } else { 0 };
-        if realm.hires
+        if realm.arm.hires()
             && (attacked || pool >= MIN_SEND)
             && self.hire(t, f, r, help, start, base)
             && best.1 == 0.0

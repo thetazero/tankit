@@ -209,6 +209,10 @@ pub struct Company {
     /// Its crew. Each pilot flies one hull at a time, so the crew caps how
     /// many of its hulls fire.
     pub pilots: Vec<Pilot>,
+    /// Whether it plans ahead (`smart`): one way or the other at random, to
+    /// see which fares better, and a company splitting off keeps its
+    /// parent's way.
+    pub smart: bool,
     /// How it prices pilots.
     pub pricing: Pricing,
     /// Ticks it'll wait to be paid back: it lends a realm what its income
@@ -558,6 +562,7 @@ impl Galaxy {
             idle_since: self.tick,
             id: self.next_company,
             pilots: Vec::new(),
+            smart: self.rng.chance(0.5),
             pricing: Pricing {
                 rule: RULES[self.rng.index(RULES.len())],
                 k: self.rng.range(0.5, 2.0),
@@ -2246,6 +2251,7 @@ impl Galaxy {
                 for (i, &p) in co.pilots.iter().enumerate() {
                     if i % 2 == 0 { keep.push(p) } else { go.push(p) }
                 }
+                self.companies[new].smart = co.smart;
                 self.companies[c].pilots = keep;
                 self.companies[new].pilots = go;
                 self.companies[new].margin = (co.margin * self.rng.range(0.8, 1.25)).max(0.0);
