@@ -178,12 +178,12 @@ impl Board {
         None
     }
 
-    /// The board over a `w` by `h` screen.
+    /// The board over a `w` by `h` screen, the pointer `over` something on it.
     pub fn draw(
         &self,
         p: &mut Painter,
         hits: &mut Hits<Hit>,
-        back_lit: bool,
+        over: Option<Hit>,
         time: f32,
         w: f32,
         h: f32,
@@ -191,15 +191,16 @@ impl Board {
         p.set_halo(None);
         p.rect(Vec2::ZERO, Vec2::new(w, h), [0.0, 0.0, 0.0, 0.95]);
         design::panel(p, h);
-        self.draw_filters(p, hits);
-        back_at_foot(p, hits, back_lit, h);
+        self.draw_filters(p, hits, over);
+        back_at_foot(p, hits, over == Some(Hit::Back), h);
 
         let x0 = MARGIN * 3.0 + design::COLUMN;
         let cols = Columns::new(x0, w - MARGIN);
         let mut y = MARGIN;
         for (k, (by, name)) in SORTS.into_iter().enumerate() {
             let on = self.sort.is_some_and(|(s, _)| s == by);
-            let style = SMALL.colored(if on { AMBER } else { TEXT_2 });
+            let color = if on { AMBER } else { TEXT_2 };
+            let style = SMALL.colored(design::hovered(color, over == Some(Hit::Sort(k))));
             let (x, align) = match by {
                 Sort::Strength => (cols.bar.0, Align::Left),
                 Sort::Gear => (cols.gear, Align::Left),
@@ -219,7 +220,7 @@ impl Board {
 
         // The contract you're on, to compare with.
         if let Some(mine) = &self.mine {
-            draw_row(p, &cols, y, mine, AMBER);
+            draw_row(p, &cols, y, mine, AMBER, false);
             y += ROW;
             let rule = with_alpha(AMBER, 0.6);
             p.rect(Vec2::new(x0, y), Vec2::new(cols.win - x0, 1.0), rule);
@@ -255,13 +256,13 @@ impl Board {
                 let k = if self.focus.is_none() { 1.0 } else { 0.3 };
                 p.rect(min, bar, with_alpha(AMBER, k));
             }
-            draw_row(p, &cols, y, o, TEXT);
+            draw_row(p, &cols, y, o, TEXT, over == Some(Hit::Row(i)));
             hits.add(p, min, size, Hit::Row(i));
             y += ROW;
         }
     }
 
-    fn draw_filters(&self, p: &mut Painter, hits: &mut Hits<Hit>) {
+    fn draw_filters(&self, p: &mut Painter, hits: &mut Hits<Hit>, over: Option<Hit>) {
         let x = MARGIN;
         let mut y = MARGIN;
         p.text(Vec2::new(x, y), "Find work", &HEAD, Align::Left);
@@ -290,8 +291,18 @@ impl Board {
                 };
                 let on = self.filters[k];
                 let lit = if on || any { 1.0 } else { 0.25 };
-                if on {
-                    p.rect(min, size, with_alpha(TEXT, 0.03));
+                let hover = over == Some(Hit::Filter(k));
+                // Emblems have no text to darken, so the box shows it too.
+                let fill = match (on, hover) {
+                    (true, _) => 0.03,
+                    (false, true) => 0.014,
+                    (false, false) => 0.0,
+                };
+                if fill > 0.0 {
+                    p.rect(min, size, with_alpha(TEXT, fill));
+                }
+                if hover {
+                    p.rect_outline(min, size, 1.0, TEXT_2);
                 }
                 if self.focus == Some(k) {
                     p.rect_outline(min, size, 1.0, AMBER);
@@ -302,7 +313,7 @@ impl Board {
                     emblem::emblem(p, f, c, 22.0, 1.5, with_alpha(f.ui(), lit));
                 } else {
                     let name = JOBS[i];
-                    let style = BODY.colored(with_alpha(TEXT, lit));
+                    let style = BODY.colored(design::hovered(with_alpha(TEXT, lit), hover));
                     let at = Vec2::new(x + UNIT * 1.5, c.y - BODY.size * 0.5);
                     p.text(at, name, &style, Align::Left);
                 }
@@ -339,8 +350,9 @@ impl Columns {
     }
 }
 
-/// An offer's row, its top at `y`.
-fn draw_row(p: &mut Painter, c: &Columns, y: f32, o: &Offer, color: Rgba) {
+/// An offer's row, its top at `y`, darker under the pointer (`hover`).
+fn draw_row(p: &mut Painter, c: &Columns, y: f32, o: &Offer, color: Rgba, hover: bool) {
+    let color = design::hovered(color, hover);
     let mid = y + ROW * 0.5;
     let top = mid - BODY.size * 0.5;
     for (x, f) in [(c.side, o.side), (c.enemy, o.enemy)] {
@@ -350,8 +362,9 @@ fn draw_row(p: &mut Painter, c: &Columns, y: f32, o: &Offer, color: Rgba) {
     let at = Vec2::new(c.job, top);
     p.text(at, &o.job(), &BODY.colored(color), Align::Left);
     share(p, o, Vec2::new(c.bar.0, mid), c.bar.1 - c.bar.0);
+    let gear = BODY.colored(design::hovered(TEXT, hover));
     let at = Vec2::new(c.gear, top);
-    p.text(at, &level_label(o.tier), &BODY, Align::Left);
+    p.text(at, &level_label(o.tier), &gear, Align::Left);
     let pay = o.wage.to_string();
     let at = Vec2::new(c.win, top);
     p.text(at, &pay, &BODY.colored(BLUE), Align::Right);
@@ -717,7 +730,7 @@ pub mod tests {
             for side in 0..4 {
                 let (mut p, mut q) = (Painter::new(1.0), Painter::new(1.0));
                 let mut hits = Hits::new();
-                b.draw(&mut p, &mut hits, false, 1.0, w, h);
+                b.draw(&mut p, &mut hits, None, 1.0, w, h);
                 assert!(hits.center_of(Hit::Row(29)).is_some(), "the pick's in view");
                 let o = offer(1, 0, side);
                 let mine = b.mine.as_ref();

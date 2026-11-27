@@ -1394,8 +1394,9 @@ pub fn tick_summary(t: &TickSummary, state: SummaryState, width: f32, height: f3
     let ready = !(state.going && state.loading);
     let lit = state.hover == Some(Hit::Continue);
     let (min, size) = crate::theater_view::aftermath(&mut p, t, state.time, ready, lit, w, h);
-    hits.add(&p, min, size, Hit::Continue);
-    if !ready {
+    if ready {
+        hits.add(&p, min, size, Hit::Continue);
+    } else {
         let c = min + Vec2::new(size.x + design::UNIT * 3.0, size.y * 0.5);
         spinner_small(&mut p, c, state.time);
     }

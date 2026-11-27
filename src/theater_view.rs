@@ -1028,7 +1028,8 @@ fn dot(p: &mut Painter, c: Vec2, r: f32, color: Rgba) {
 }
 
 /// The marks over the system view of `t`, on a screen `w` by `h` logical
-/// px, contested site `selected` marked. Each contested site's marker is a
+/// px, contested site `selected` marked
+/// and the one the pointer's `over` ringed. Each contested site's marker is a
 /// `Hit::Row` of its index in the list.
 /// While a `transfer` is playing, draws its caption instead.
 #[allow(clippy::too_many_arguments)]
@@ -1038,6 +1039,7 @@ pub fn draw(
     t: &Theater,
     transfer: Option<&Transfer>,
     selected: usize,
+    over: Option<usize>,
     w: f32,
     h: f32,
 ) {
@@ -1047,7 +1049,12 @@ pub fn draw(
         caption(p, t, tr, leg, min, max);
         return;
     }
-    worlds(p, hits, t, selected, w, h, |_, _, _| {});
+    let over = over.and_then(|k| t.contested_site(k));
+    worlds(p, hits, t, selected, w, h, |p, site, at| {
+        if over.is_some_and(|o| std::ptr::eq(o, site)) {
+            ring(p, at, 20.0, 1.5, design::TEXT);
+        }
+    });
     forces(p, t, None, min, max);
 }
 
