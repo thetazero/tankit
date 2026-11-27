@@ -71,9 +71,15 @@ jobs:
   # or time things, so they're `ignore`d under `debug_assertions` and only run
   # here. A separate job, so it builds alongside the debug one.
   release-test:
-    name: Release-only tests
+    name: Release-only tests (${{ matrix.shard }} of 2)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Every test is in exactly one shard: the suite fills a runner's four
+    # cores, so a second runner halves it (#714).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 2
@@ -83,7 +89,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release
+          # (Both shards build the same thing.)
+          shared-key: release
         timeout-minutes: 3
 
       - name: Install ALSA headers
@@ -94,9 +101,19 @@ jobs:
         run: cargo test --release --locked --no-run
         timeout-minutes: 12
 
-      # The time cap: the whole optimized suite, slow tests included, takes
-      # two to two and a half minutes (#613); past this it's a hang or a
-      # regression.
+      # The time cap: each shard, half the optimized suite, takes about two
+      # minutes (#714); past this it's a hang or a regression. Every other
+      # test goes in each, so a module's slow ones are shared out.
       - name: Run tests (release)
-        run: nproc; RUSTC_BOOTSTRAP=1 cargo test --release --locked -- -Zunstable-options --report-time
-        timeout-minutes: 15
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 2
+        run: |
+          set -o pipefail
+          cargo test --release --locked -- --list --format terse |
+            sed -n 's/: test$//p' |
+            awk -v k="$SHARD" -v n="$SHARDS" 'NR % n == k % n' > tests.txt
+          test -s tests.txt
+          mapfile -t tests < tests.txt
+          cargo test --release --locked -- --exact "${tests[@]}"
+        timeout-minutes: 4
