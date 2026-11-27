@@ -31,26 +31,23 @@ pub const NONE: u32 = u32::MAX;
 /// within this share of the reach of all of it.
 const FOLD_REACH: f32 = 0.8;
 
-/// How a realm runs its war: each is one of three at random, to see which
-/// fare better. A realm breaking away keeps its parent's way, and realms only
+/// How a realm runs its war: each is one of two at random, to see which
+/// fares better. A realm breaking away keeps its parent's way, and realms only
 /// fold together with their own kind. All play by the same rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm {
-    /// As realms always have, hiring no mercs.
-    NoHire,
-    /// As realms always have, mercs and all.
-    Hire,
+    /// As realms always have.
+    Plain,
     /// Plans its war (see `smart`).
     Smart,
 }
 
 impl Arm {
-    pub const ALL: [Arm; 3] = [Arm::NoHire, Arm::Hire, Arm::Smart];
+    pub const ALL: [Arm; 2] = [Arm::Plain, Arm::Smart];
 
     pub fn name(self) -> &'static str {
         match self {
-            Arm::NoHire => "no hire",
-            Arm::Hire => "hire",
+            Arm::Plain => "plain",
             Arm::Smart => "smart",
         }
     }
@@ -58,11 +55,6 @@ impl Arm {
     /// One at random.
     pub(crate) fn draw(rng: &mut crate::rng::Rng) -> Arm {
         Arm::ALL[rng.index(Arm::ALL.len())]
-    }
-
-    /// Whether it hires mercs at all.
-    pub fn hires(self) -> bool {
-        self != Arm::NoHire
     }
 }
 
@@ -133,7 +125,7 @@ impl Realm {
             seats_now: 0.0,
             seats_next: 0.0,
             hired: 0,
-            arm: Arm::Hire,
+            arm: Arm::Plain,
             rival: NONE,
             fronts: 0,
             fell: 0,

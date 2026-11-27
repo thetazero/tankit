@@ -486,7 +486,8 @@ fn hire_companies(mut g: Galaxy) -> (f32, f32) {
 #[test]
 fn defenders_hire() {
     let mut g = small_war();
-    for _ in 0..150 {
+    // (It's a while before companies have much to hire out.)
+    for _ in 0..450 {
         g.step();
     }
     let b = g.books;
@@ -559,8 +560,6 @@ fn companies_split_and_join() {
     let total: f32 = g.companies.iter().map(|c| c.crystals).sum();
     g.split_and_join();
     assert_eq!((g.books.splits, g.books.joins), (1, 1));
-    // The one that split off has its parent's arm.
-    assert_eq!(g.companies.last().unwrap().smart, g.companies[0].smart);
     assert_eq!(g.companies.len(), n);
     // Nothing's lost but the small one's fare over.
     let after: f32 = g.companies.iter().map(|c| c.crystals).sum();

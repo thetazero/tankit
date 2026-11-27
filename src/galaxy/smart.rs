@@ -1,4 +1,4 @@
-//! How smart realms and companies run their war.
+//! How smart realms, and companies, run their war.
 //!
 //! They play by the same rules as the others, knowing no more than they do:
 //! only what they decide differs.
@@ -14,10 +14,10 @@
 //! than others do and sticking with the neighbor it's begun on.
 //!
 //! **Hiring.** Where its own pilots are no match it looks for mercs, and
-//! takes only a good deal it can pay for. With a smart company it pays in
+//! takes only a good deal it can pay for. With a company it pays in
 //! instalments, keeping its pilots' pay by it.
 //!
-//! **Companies.** A smart company raids for the most crystal for its time,
+//! **Companies.** A company raids for the most crystal for its time,
 //! judging a world by the pilots there to fly its hulls and not by the
 //! hulls. It lends what a realm's income clears, and moves its margin with
 //! demand.
@@ -81,7 +81,7 @@ const GRUDGE: f32 = 1.5;
 /// it owes, is at most this share of its crystal.
 pub(crate) const BARGAIN: f32 = 1.0;
 pub(crate) const AT_MOST: f32 = 0.5;
-/// Raids a smart company weighs at a time, how often it looks, the ticks it
+/// Raids a company weighs at a time, how often it looks, the ticks it
 /// reckons it loses between two, and the pilots that make a world half as
 /// good a target.
 pub(crate) const LOOKS: usize = 20;
@@ -278,16 +278,15 @@ impl Galaxy {
 }
 
 impl Galaxy {
-    /// Whether company `co`, idle, looks for a raid this tick: now and then;
-    /// a smart one more often, and at once as it's done with its last work,
+    /// Whether company `co`, idle, looks for a raid this tick: now and then,
+    /// and at once as it's done with its last work,
     /// its crew still aboard.
     pub(crate) fn looks_for_raid(&self, co: &super::merc::Company) -> bool {
-        let every = if co.smart { RAID_LOOK } else { super::THINK };
-        (co.smart && co.idle_since == self.tick) || (self.tick + co.id as u64).is_multiple_of(every)
+        (co.idle_since == self.tick) || (self.tick + co.id as u64).is_multiple_of(RAID_LOOK)
     }
 }
 
-/// Ways a smart company thinks of raiding: hulls, and rookies it'd train at
+/// Ways a company thinks of raiding: hulls, and rookies it'd train at
 /// most. An unguarded world takes only a few pilots.
 pub(crate) const RAIDS: [(u32, u32); 10] = [
     (200, 0),
@@ -315,43 +314,33 @@ impl Galaxy {
     }
 }
 
-/// Share of a realm's income a smart company takes in instalments, the
+/// Share of a realm's income a company takes in instalments, the
 /// longest it waits for the last, and the least it spreads a bill over.
 const INSTALMENT: f32 = 0.3;
 const CREDIT: f32 = 120.0;
+/// Ticks of a realm's income a company lends against.
+pub(crate) const LENDS: f32 = INSTALMENT * CREDIT;
 /// A smart realm keeps this many ticks' payroll by it when it can pay a bill
 /// in instalments.
 const KEEP_BY: f32 = 10.0;
-/// How a smart company's margin moves with each contract, and each time it
+/// How a company's margin moves with each contract, and each time it
 /// goes a while without one; and how far.
 pub(crate) const MARGIN_UP: f32 = 1.1;
 const MARGIN_DOWN: f32 = 0.98;
 pub(crate) const MARGINS: (f32, f32) = (0.05, 1.0);
 
 impl Galaxy {
-    /// Ticks a smart company gives realm `r` to pay off `crystals`.
+    /// Ticks a company gives realm `r` to pay off `crystals`.
     pub(crate) fn term(&self, r: u32, crystals: f32) -> f32 {
         let income = self.realms[r as usize].income.max(0.01);
         (crystals / (INSTALMENT * income)).clamp(1.0, CREDIT)
     }
 
-    /// Ticks of a realm's income company `c` lends against.
-    pub(crate) fn patience_with(&self, c: usize) -> f32 {
-        let co = &self.companies[c];
-        if co.smart {
-            INSTALMENT * CREDIT
-        } else {
-            co.patience
-        }
-    }
-
-    /// What realm `r` pays company `c` at once of a bill of `bill`: all it
-    /// can; but a smart company takes instalments from a smart realm, which
-    /// keeps its pilots' pay by it.
-    pub(crate) fn down_payment(&self, r: u32, c: usize, bill: f32) -> f32 {
+    /// What realm `r` pays a company at once of a bill of `bill`, the rest in
+    /// instalments: all it can; but a smart realm keeps its pilots' pay by it.
+    pub(crate) fn down_payment(&self, r: u32, bill: f32) -> f32 {
         let realm = &self.realms[r as usize];
-        let plan = realm.arm == Arm::Smart && self.companies[c].smart;
-        let keep = if plan {
+        let keep = if realm.arm == Arm::Smart {
             KEEP_BY * realm.pilots as f32 * realm.pay(&self.rules)
         } else {
             0.0
@@ -359,14 +348,10 @@ impl Galaxy {
         bill.min((realm.crystals - keep).max(0.0))
     }
 
-    /// Smart companies long without a contract ask less.
+    /// Companies long without a contract ask less.
     pub(crate) fn thin_margins(&mut self) {
         let tick = self.tick;
-        for co in self
-            .companies
-            .iter_mut()
-            .filter(|c| c.smart && c.contract.is_none())
-        {
+        for co in self.companies.iter_mut().filter(|c| c.contract.is_none()) {
             if tick > co.idle_since && (tick - co.idle_since).is_multiple_of(super::THINK) {
                 co.margin = (co.margin * MARGIN_DOWN).max(MARGINS.0.min(co.margin));
             }
