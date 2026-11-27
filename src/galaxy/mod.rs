@@ -150,8 +150,7 @@ pub struct Rules {
     /// do in a played one (`--arena`: about 80 kills a round among 12).
     pub kill: f32,
     /// Seats a side has in a battle, as in a played one: an attacker under
-    /// an enemy's shield fights with `SHIELD_SEATS` fewer, its fire cut by
-    /// that share.
+    /// an enemy's shield fights with `SHIELD_SEATS` fewer.
     pub seats: f32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
@@ -1192,27 +1191,27 @@ impl Galaxy {
     /// fire with no shield in its way, a seat short for a side attacking
     /// under an enemy's shield up on the site's planet (#426).
     fn fire(&self, s: usize, t: usize) -> [f32; SIDES] {
-        let mut fire = self.open_fire(s);
         // A pilot fights one battle a tick: each side's are split between
         // all it's in.
         let in_battles = match self.engaged {
             Some((at, n)) if at == s => n,
             _ => self.battles_in(s),
         };
-        for f in 0..SIDES {
-            fire[f] /= in_battles[f].max(1) as f32;
-        }
         let planet = self.sites[t].planet as usize;
-        for f in 0..SIDES {
-            if f != self.sites[t].owner as usize && self.shields_up(s, f)[planet] > 0 {
-                fire[f] *= self.shield_cut();
-            }
-        }
-        fire
+        let owner = self.sites[t].owner as usize;
+        std::array::from_fn(|f| {
+            // Under an enemy's shield, a seat's closed: pilots with no seat
+            // don't fire.
+            let shielded = f != owner && self.shields_up(s, f)[planet] > 0;
+            let seats = self.seats_in(shielded);
+            let pilots = self.able(s, f) / in_battles[f].max(1) as f32;
+            pilots.min(seats) * crate::economy::damage_factor(self.gear(s, f))
+        })
     }
 
     /// Each side's fire in system `s` with no shield in its way: its
     /// strength, scaled to the hulls that fire (`firing`).
+    #[cfg(test)]
     fn open_fire(&self, s: usize) -> [f32; SIDES] {
         let hulls = self.systems[s].hulls;
         let mut fire = self.strength(s);
@@ -1295,10 +1294,10 @@ impl Galaxy {
         self.war_hulls = war;
     }
 
-    /// What's left of a side's fire under an enemy's shield: a seat short.
-    fn shield_cut(&self) -> f32 {
-        let seats = self.rules.seats.max(1.0);
-        (seats - SHIELD_SEATS as f32).max(0.0) / seats
+    /// A side's seats in a battle: one fewer under an enemy's shield.
+    pub(crate) fn seats_in(&self, shielded: bool) -> f32 {
+        let closed = if shielded { SHIELD_SEATS as f32 } else { 0.0 };
+        (self.rules.seats - closed).max(0.0)
     }
 
     /// Side `f`'s gear level in system `s` (#438): its realm's tier for the

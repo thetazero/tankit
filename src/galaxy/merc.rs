@@ -1102,7 +1102,7 @@ impl Galaxy {
             *he += more;
             *spare -= more;
         };
-        let cut = self.shield_cut();
+        let short = self.seats_in(true);
         let (k, seats, blitz) = (self.rules.kill, self.rules.seats, self.rules.blitz as f32);
         let (mut paid, mut length) = (0.0f32, 0.0f32);
         {
@@ -1152,22 +1152,28 @@ impl Galaxy {
                     } else {
                         theirs
                     };
-                    let front = seats * (fought + mine).max(1.0);
-                    // Its crews and its own pilots share the seats.
+                    let n = (fought + mine).max(1.0);
+                    let front = seats * n;
+                    // Its crews and its own pilots share the seats, split
+                    // between the battles: a seat's closed in each under an
+                    // enemy's shield.
                     let (crews, own_fire) = (hm.min(crew), ho.min(flown));
-                    let seated = (front / (crews + own_fire).max(1.0)).min(1.0);
-                    let ff = (crews * kit + own_fire) * pf * seated;
+                    let able = crews + own_fire;
+                    let fires = |seats: f32| {
+                        (crews * kit + own_fire) * pf * (seats * n / able.max(1.0)).min(1.0)
+                    };
+                    let ff = fires(seats);
+                    let ff_at = if gens >= 1.0 { fires(short) } else { ff };
                     let fe = he.min(crew_e).min(front) * pe;
                     // Battle by battle: theirs open to it (while generators
                     // are up, those and what they don't shield, a seat short),
                     // and its own.
-                    let n = (fought + mine).max(1.0);
                     let chance = |ff: f32, fe: f32| {
                         let kills = (k * ff / ae / n).min(he);
                         let dead = (k * fe / af / n).min(hf);
                         super::odds((kills, hf - dead), (dead, he - kills))
                     };
-                    let at = chance(if gens >= 1.0 { ff * cut } else { ff }, fe);
+                    let at = chance(ff_at, fe);
                     let won = (at * fought).min(theirs);
                     let lost = ((1.0 - chance(ff, fe)) * mine).min(mine);
                     gens = (gens - won).max(0.0);
@@ -1178,7 +1184,7 @@ impl Galaxy {
                     let left = 1.0 - (k * fe / af / hf).min(1.0);
                     ho *= left;
                     hm *= left;
-                    he = (he - k * ff / ae).max(0.0);
+                    he = (he - k * (ff_at * fought + ff * mine) / n / ae).max(0.0);
                 }
                 // A raid goes on till it has everything (or all but).
                 if raid && theirs < 0.3 {
