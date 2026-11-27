@@ -2,7 +2,7 @@
 //!
 //! - a courtyard's: a **kiln court**, a ring of curved wall in two shells,
 //!   its gates out of line, a blade in the middle.
-//! - a market's: a **lens hall**, a great slab of glass floating on crystal
+//! - a market's: a **lens hall**, a great slab of glass carried on crystal
 //!   legs.
 //! - a terrace's: the raised floor, with blades leaning over it.
 
