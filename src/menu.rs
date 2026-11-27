@@ -9,6 +9,7 @@
 //! body text. Colour is for signals only: who's hiring, and what's locked.
 
 use glam::Vec2;
+use std::cell::Cell;
 use winit::keyboard::KeyCode;
 
 use crate::binds::{self, ACTIONS, Binds, Context, SLOTS};
@@ -280,6 +281,8 @@ pub struct Menu {
     switched: bool,
     /// Index into the theater's contested sites.
     site: usize,
+    /// The contract page's list of fights, as scrolled.
+    fights: FightScroll,
     /// The contracts on offer (the app keeps them up to date).
     pub board: Board,
     /// The ship whose offer's deal is on screen (a `Company::id`).
@@ -307,6 +310,7 @@ impl Menu {
             clock: 0.0,
             switched: false,
             site: 0,
+            fights: FightScroll::default(),
             board: Board::default(),
             previewing: 0,
             setting: 0,
@@ -418,9 +422,15 @@ impl Menu {
         matches!(self.screen, Screen::Ships | Screen::Contract)
     }
 
-    /// Scroll the board by the wheel. True if it moved.
+    /// Scroll the board, or a contract's fights, by the wheel. True if it moved.
     pub fn scroll(&mut self, steps: i32) -> bool {
-        self.screen == Screen::Ships && self.board.scroll(steps)
+        match self.screen {
+            Screen::Ships => self.board.scroll(steps),
+            Screen::Missions if self.card.is_none() && self.transfer.is_none() => {
+                self.fights.scroll(steps as f32 * FIGHT * 2.0)
+            }
+            _ => false,
+        }
     }
 
     /// The offer whose deal is on screen.
@@ -1036,23 +1046,49 @@ impl Menu {
             .collect();
         let any = !fights.is_empty();
         let site = |k: usize| &t.sites[t.contested[k]];
-        // Set closer where there are too many to fit above the stakes.
-        let mut worlds: Vec<u8> = fights.iter().map(|&k| site(k).planet).collect();
-        worlds.dedup();
-        let room = stakes_y(h) - UNIT * 2.0 - y;
-        let (heading, gap, pitch) = fight_spacing(worlds.len(), fights.len(), room);
-        let mut world = None;
-        for &k in &fights {
-            let s = site(k);
-            if world != Some(s.planet) {
-                if world.is_some() {
-                    y += gap;
+        // Laid out from the list's top: each world's name, then its fights.
+        let mut heads = Vec::new();
+        let mut rows = Vec::new();
+        let mut at = UNIT;
+        for (n, &k) in fights.iter().enumerate() {
+            let planet = site(k).planet;
+            let first = n == 0 || site(fights[n - 1]).planet != planet;
+            let top = at;
+            if first {
+                if n > 0 {
+                    at += UNIT * 1.5;
                 }
-                world = Some(s.planet);
-                let name = planet_name(&t.name, s.planet);
-                p.text(Vec2::new(x, y), &name, &SMALL.colored(TEXT_2), Align::Left);
-                y += heading;
+                heads.push((planet, at));
+                at += UNIT * 3.0;
             }
+            rows.push((k, at, top));
+            at += FIGHT;
+        }
+        let tall = at;
+        // Scrolled and clipped to what's above the stakes, the pick in view
+        // when it's a new one.
+        let pad = (FIGHT - BODY.size) * 0.5;
+        let top = y - UNIT;
+        let view = stakes_y(h) - UNIT * 2.0 - top;
+        let picked = rows.iter().find(|r| r.0 == self.site);
+        let picked = picked.map(|&(k, at, above)| {
+            let key = (t.system, site(k).index);
+            (key, above - UNIT, at - pad + FIGHT)
+        });
+        let off = self.fights.place(picked, view, tall);
+        let clip = (
+            Vec2::new(0.0, top),
+            Vec2::new(right + UNIT * 4.0, top + view),
+        );
+        p.set_clip(Some(clip));
+        for (planet, at) in heads {
+            let name = planet_name(&t.name, planet);
+            let at = Vec2::new(x, top + at - off);
+            p.text(at, &name, &SMALL.colored(TEXT_2), Align::Left);
+        }
+        for &(k, at, _) in &rows {
+            let s = site(k);
+            let y = top + at - off;
             // Lettered, where a world has several of a kind.
             let alike: Vec<usize> = fights
                 .iter()
@@ -1074,14 +1110,24 @@ impl Menu {
             let at = Vec2::new(right, y + (BODY.size - SMALL.size) * 0.5);
             let style = SMALL.colored(design::hovered(TEXT_2, over));
             p.text(at, mode, &style, Align::Right);
-            let pad = (pitch - BODY.size) * 0.5;
-            hits.add(
-                p,
-                Vec2::new(x - UNIT * 2.0, y - pad),
-                Vec2::new(design::COLUMN + UNIT * 4.0, pitch),
-                Hit::Row(k),
-            );
-            y += pitch;
+            // Only what's in view of it can be clicked.
+            let (a, b) = (y - pad, y - pad + FIGHT);
+            let (a, b) = (a.max(clip.0.y), b.min(clip.1.y));
+            if b > a {
+                let size = Vec2::new(design::COLUMN + UNIT * 4.0, b - a);
+                hits.add(p, Vec2::new(x - UNIT * 2.0, a), size, Hit::Row(k));
+            }
+        }
+        p.set_clip(None);
+        // Scroll bar beside the list.
+        let over = tall - view;
+        if over > 0.5 {
+            let len = view * view / tall;
+            let at = Vec2::new(right + UNIT * 2.0, top + (view - len) * off / over);
+            p.rect(at, Vec2::new(2.0, len), TEXT_2);
+        }
+        if any {
+            y = top + tall.min(view);
         }
         let picked = self.selected_site().filter(|s| s.committed);
         let Some(site) = picked.filter(|_| any) else {
@@ -1121,16 +1167,39 @@ fn stakes_y(h: f32) -> f32 {
     design::foot(h, 1).y - UNIT * 2.0 - STAKE * 3.0
 }
 
-/// A contract page's list of `fights` on so many `worlds`: how far each
-/// world's heading is above its first fight, the gap above the next heading,
-/// and from one fight to the next. All closer together, if that's what it
-/// takes to fit in `room`.
-fn fight_spacing(worlds: usize, fights: usize, room: f32) -> (f32, f32, f32) {
-    let (heading, gap, pitch) = (UNIT * 3.0, UNIT * 1.5, UNIT * 3.5);
-    let tall =
-        heading * worlds as f32 + gap * worlds.saturating_sub(1) as f32 + pitch * fights as f32;
-    let k = (room / tall.max(1.0)).min(1.0);
-    (heading * k, gap * k, pitch * k)
+/// From one fight in a contract page's list to the next.
+const FIGHT: f32 = UNIT * 3.5;
+
+/// How far a contract page's list of fights is scrolled.
+#[derive(Default)]
+struct FightScroll {
+    /// How far down, px, and the furthest it goes (as last drawn).
+    off: Cell<f32>,
+    most: Cell<f32>,
+    /// The pick last brought into view: its system and site.
+    shown: Cell<Option<(usize, usize)>>,
+}
+
+impl FightScroll {
+    /// Scroll `by` px, stopping at the ends. True if it moved.
+    fn scroll(&self, by: f32) -> bool {
+        let was = self.off.get();
+        self.off.set((was + by).clamp(0.0, self.most.get()));
+        self.off.get() != was
+    }
+
+    /// How far down a list `tall` is, `view` of it showing; a new pick (its
+    /// system and site, top and bottom) is brought into view.
+    fn place(&self, picked: Option<((usize, usize), f32, f32)>, view: f32, tall: f32) -> f32 {
+        self.most.set((tall - view).max(0.0));
+        if let Some((key, top, bottom)) = picked
+            && self.shown.replace(Some(key)) != Some(key)
+        {
+            self.off.set(self.off.get().min(top).max(bottom - view));
+        }
+        self.scroll(0.0);
+        self.off.get()
+    }
 }
 
 /// The way back, as a button.
@@ -1841,7 +1910,7 @@ mod tests {
     /// Even where every site of the biggest system is fought over: three
     /// worlds, each with three of every kind.
     #[test]
-    fn a_big_systems_fights_fit_above_the_stakes() {
+    fn a_big_systems_fights_scroll_above_the_stakes() {
         use crate::galaxy::SiteKind;
         let mut t = theater(Faction::Ithessar).unwrap();
         let kinds = [
@@ -1868,26 +1937,35 @@ mod tests {
         let mut m = Menu::new();
         m.screen = Screen::Missions;
         m.set_theater(Some(t));
-        let hits = m.draw(&profile, 1600.0, 900.0, 1.0).hits;
-        // Each fight's line can be clicked, down the column, above the
-        // stakes and clear of the last.
-        let x = design::MARGIN;
-        let mut seen = Vec::new();
-        for y in 0..900 {
-            if let Some((Hit::Row(k), _)) = hits.at(Vec2::new(x, y as f32)) {
-                assert!((y as f32) < stakes_y(900.0) - UNIT, "row {k} at {y}");
-                if seen.last() != Some(&k) {
-                    seen.push(k);
+        // The fights that can be clicked, down the column, all above the stakes.
+        let seen = |m: &Menu| {
+            let hits = m.draw(&profile, 1600.0, 900.0, 1.0).hits;
+            let mut seen = Vec::new();
+            for y in 0..900 {
+                if let Some((Hit::Row(k), _)) = hits.at(Vec2::new(design::MARGIN, y as f32)) {
+                    assert!((y as f32) < stakes_y(900.0) - UNIT, "row {k} at {y}");
+                    if seen.last() != Some(&k) {
+                        seen.push(k);
+                    }
                 }
             }
+            seen
+        };
+        let top = seen(&m);
+        assert!(top[0] == 0 && top.len() < 27, "{top:?}");
+        // The wheel goes to the end and no further, the pick staying put.
+        assert!(m.scroll(50) && !m.scroll(1));
+        assert_eq!(seen(&m).last(), Some(&26));
+        assert!(!seen(&m).contains(&m.site));
+        assert!(m.scroll(-50) && !m.scroll(-1));
+        assert_eq!(seen(&m), top);
+        // Keys bring what they pick into view, round and round.
+        for _ in 0..27 {
+            m.input(Nav::Down);
+            assert!(seen(&m).contains(&m.site), "{}", m.site);
         }
-        assert_eq!(seen, (0..27).collect::<Vec<_>>());
-        // With room between lines, and a world's few fights as they were.
-        let room = stakes_y(900.0) - UNIT * 2.0 - design::MARGIN - UNIT * 7.0;
-        let (heading, _, pitch) = fight_spacing(3, 27, room);
-        assert!(pitch >= design::BODY.size + UNIT * 0.75, "{pitch}");
-        assert!(heading >= design::SMALL.size + UNIT * 0.75, "{heading}");
-        assert_eq!(fight_spacing(1, 9, room).2, UNIT * 3.5);
+        assert_eq!(m.site, 0);
+        assert_eq!(seen(&m), top);
     }
 
     /// Clicks the middle of `hit` where `draw` put it.
