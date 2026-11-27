@@ -87,8 +87,18 @@ pub(super) struct Mass {
 type On = Vec2;
 
 impl Mass {
+    /// Up to where it stands straight: over a tank's height, so what a tank
+    /// drives round is its footprint.
+    fn straight(&self) -> f32 {
+        if self.plinth > 0.0 {
+            self.y0 + (self.y1 - self.y0) * 0.34
+        } else {
+            self.y0
+        }
+    }
+
     fn rise(&self, y: f32) -> f32 {
-        let foot = self.y0 + self.plinth;
+        let foot = self.straight();
         ((y - foot) / (self.y1 - foot)).clamp(0.0, 1.0)
     }
 
@@ -190,8 +200,8 @@ impl Mass {
 
     /// The boxes it collides as.
     pub fn collide(&self, map: &mut Map) {
-        let n = ((self.y1 - self.y0 - self.plinth) / 1.8).ceil().max(2.0);
-        let body = self.y0 + self.plinth;
+        let n = ((self.y1 - self.straight()) / 1.8).ceil().max(2.0);
+        let body = self.straight();
         let mut spans = vec![];
         if self.plinth > 0.0 {
             spans.push((self.y0 - 0.5, body));
@@ -206,7 +216,7 @@ impl Mass {
             map.oboxes.push(OBox {
                 center: self.center,
                 yaw: self.turned(y),
-                half: self.half * self.scale(y) + 0.06,
+                half: self.half * self.scale(y),
                 y0: a,
                 y1: b,
                 color: self.color,
