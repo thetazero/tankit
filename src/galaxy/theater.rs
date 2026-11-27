@@ -712,7 +712,7 @@ impl Galaxy {
         present[f] && (0..SIDES).any(|g| present[g] && self.hostile(f, g))
     }
 
-    fn site_range(&self, s: usize) -> std::ops::Range<usize> {
+    pub(crate) fn site_range(&self, s: usize) -> std::ops::Range<usize> {
         let (a, b) = self.systems[s].sites;
         a as usize..b as usize
     }
@@ -722,8 +722,19 @@ impl Galaxy {
     /// too (left alone, a damaged one is working again by the next tick);
     /// and on each planet with none of an enemy's up, every enemy site
     /// there. Shields first: a planet's other sites wait for its
-    /// generators. The picks the tick's `battles` makes, in site order.
+    /// generators. (That's how sides choose, not a rule.) A smart realm in
+    /// a fight chooses for itself (`Galaxy::picks`). The picks the tick's
+    /// `battles` makes, in site order.
     pub fn targets(&self, s: usize, f: usize) -> Vec<usize> {
+        if self.chooses(self.systems[s].realms[f]) && f < PEOPLES && self.fighting(s, f) {
+            self.picks(s, f)
+        } else {
+            self.shields_first(s, f)
+        }
+    }
+
+    /// What most sides go for: see `targets`.
+    pub(crate) fn shields_first(&self, s: usize, f: usize) -> Vec<usize> {
         let up = self.shields_up(s, f);
         self.site_range(s)
             .filter(|&i| {
@@ -1441,6 +1452,7 @@ mod tests {
             let co = g.companies[c].clone();
             let k = co.contract.unwrap();
             g.crew = Some(co.id);
+            g.stay_on();
             let t = g.aboard(1).expect("a theater");
             let ship = t.ship.as_ref().unwrap();
             assert_eq!(ship.id, co.id);
