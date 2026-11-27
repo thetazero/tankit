@@ -1067,6 +1067,28 @@ mod tests {
         ]);
     }
 
+    /// The same for the open desert, whose big rocks once folded over
+    /// themselves (#701): an underside in seed 3, a top in seed 5.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn open_deserts_hardly_z_fight() {
+        use crate::faction::Faction;
+        use crate::map::procgen::foundry::Ground;
+        let camp = |seed| {
+            let made = crate::Generator::up(Faction::Imperium);
+            crate::make_map(crate::MapKind::ShieldCamp(Ground::Desert, made), seed)
+        };
+        hardly_z_fight([
+            ("desert", Map::desert(3)),
+            ("desert 9", Map::desert(9)),
+            ("shield-camp desert 3", camp(3)),
+            ("shield-camp desert 5", camp(5)),
+        ]);
+    }
+
     fn hardly_z_fight<const N: usize>(maps: [(&str, Map); N]) {
         for (name, map) in maps {
             let fights = map_fights(name, &map);
