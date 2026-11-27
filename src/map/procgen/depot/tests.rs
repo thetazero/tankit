@@ -157,7 +157,7 @@ fn bots_finish_a_raid() {
 fn different_seeds_make_different_depots() {
     let sk = [0, 1, 2].map(|s| skeleton(&spec(s, Look::Imperium)));
     assert!(sk[0].heart != sk[1].heart && sk[1].heart != sk[2].heart);
-    let again = skeleton(&spec(1, Look::Imperium));
+    let again = lay_out(&spec(1, Look::Imperium));
     assert_eq!(
         (again.heart, again.lots.len()),
         (sk[1].heart, sk[1].lots.len())

@@ -11,13 +11,20 @@ use glam::Vec3;
 
 use super::Spec;
 use super::foundry::{self, Ground};
+use super::memo::{Memo, SKELETONS};
 use super::skeleton::Skeleton;
 use crate::map::Map;
 use crate::rng::Rng;
 
 /// The depot `spec` lays out: the first, from its seed on, whose greybox is
 /// playable.
+/// Worked out only the first time it's asked for (the last few are kept).
 pub fn skeleton(spec: &Spec) -> Skeleton {
+    static KEPT: Memo<Spec, Skeleton, SKELETONS> = Memo::new();
+    KEPT.get(spec, || lay_out(spec))
+}
+
+fn lay_out(spec: &Spec) -> Skeleton {
     let mut last = None;
     for attempt in 0..16u64 {
         let mut rng =

@@ -2,6 +2,10 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// How many skeletons of each kind to keep. (The whole suite runs in one
+/// process, asking for the same ones over and over.)
+pub const SKELETONS: usize = if cfg!(test) { 64 } else { 8 };
+
 /// The results for the last `N` keys asked for. Each is worked out only
 /// once, however many threads ask for it together.
 pub struct Memo<K, V, const N: usize> {

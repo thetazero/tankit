@@ -44,7 +44,7 @@ pub mod ways;
 
 use glam::Vec2;
 
-use self::memo::Memo;
+use self::memo::{Memo, SKELETONS};
 use self::skeleton::*;
 use super::Map;
 use super::ruins::Drift;
@@ -194,7 +194,7 @@ pub enum Claim {
 /// it don't change it.
 pub fn skeleton(spec: &Spec) -> Skeleton {
     type Key = (u64, usize, city::Plan);
-    static KEPT: Memo<Key, Skeleton, 8> = Memo::new();
+    static KEPT: Memo<Key, Skeleton, SKELETONS> = Memo::new();
     let generator = matches!(spec.centerpiece, Centerpiece::ShieldGenerator(..));
     let mut plan = city::Plan::of(spec.seed, spec.sides.len(), generator);
     if spec.look == Look::Ithessar {

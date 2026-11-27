@@ -81,7 +81,7 @@ fn towns_lie_round_their_water() {
         let at = |k: usize| -> Vec<_> { sks[k].houses().map(|h| h.at()).collect() };
         assert_ne!(at(a), at(b));
     }
-    let again = skeleton(&spec(2));
+    let again = lay_out(&spec(2));
     assert_eq!(again.base_spots(), sks[2].base_spots());
     assert_eq!(again.lots.len(), sks[2].lots.len());
 }

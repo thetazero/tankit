@@ -13,6 +13,7 @@ use crate::map::procgen::check;
 use crate::map::procgen::crossing::{Crossing, Kind};
 use crate::map::procgen::desert::skeleton::{Form, PAD, RAMP_RUN};
 use crate::map::procgen::land::*;
+use crate::map::procgen::memo::{Memo, SKELETONS};
 use crate::map::procgen::mine::{SHED_HALF, line_at, line_distance, line_len};
 use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
@@ -1000,7 +1001,13 @@ fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skele
 }
 
 /// The mine `seed` names: the first, from it on, that holds together.
+/// Worked out only the first time it's asked for (the last few are kept).
 pub fn skeleton(seed: u64, sides: &[Faction]) -> Skeleton {
+    static KEPT: Memo<(u64, Vec<Faction>), Skeleton, SKELETONS> = Memo::new();
+    KEPT.get(&(seed, sides.to_vec()), || lay_out(seed, sides))
+}
+
+fn lay_out(seed: u64, sides: &[Faction]) -> Skeleton {
     // Settled once for all its draws: those with a wash fail more often, so
     // settled draw by draw few mines end up with one.
     let wet = Rng::new(seed.wrapping_mul(0x9E37_79B9) ^ 0x3A54).chance(WET);
