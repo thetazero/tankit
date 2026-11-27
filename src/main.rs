@@ -54,14 +54,14 @@ tankit [OPTIONS]
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
   --map <reservoir|sanctum|kiln|city|shield-site|foundry|mine|desert|shield-desert>
                           the reservoir (a generated desert town round a dam or a well, the default), the Sanctum (a Resonant church
-                          on a mesa, the Hold map), the Kiln (Ithessar ground), the city
+                          on a mesa, the Hold map; generated, map seed 0 the hand-made one: see --ground), the Kiln (Ithessar ground), the city
                           (a generated city, see --look), the shield site (the same, a shield
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
                           (generated: see --look), or the mine (a generated
                           crystal mine: caves, rails and stacked levels; see --look), the desert (generated open
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
-  --map-seed <n>          which one a generated map (reservoir, city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
+  --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --weather <clear|sandstorm>  the weather it's fought in (default: clear)
   --generator <faction>   (with --map shield-site or shield-desert) whose shield generator stands in it:
@@ -72,7 +72,7 @@ tankit [OPTIONS]
                           (with --map city, shield-site, foundry, depot or mine) who built it (default
                           imperium, a mine's ithessar; uthenn and ithessar only have foundries,
                           depots and mines of their own)
-  --ground <desert|tundra|grassland>  (with --map foundry) what kind of world it's on (default desert)
+  --ground <desert|tundra|grassland>  (with --map foundry or sanctum) what kind of world it's on (default desert)
   --in-desert             (with --map city or shield-site) the city stands in the desert
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
@@ -343,8 +343,10 @@ impl Args {
 /// Which arena to load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapKind {
-    /// The Sanctum: a Resonant church on a mesa (the Hold map).
-    Sanctum,
+    /// The Sanctum: a Resonant church on a mesa (the Hold map), on some
+    /// kind of ground. Generated: a different one for each map seed (0 is
+    /// the hand-made one).
+    Sanctum(map::procgen::foundry::Ground),
     /// Ithessar ground: crystal monoliths holding a plasma core.
     Kiln,
     /// A city in someone's style, half ruined round its great building:
@@ -389,17 +391,17 @@ impl MapKind {
             | MapKind::Depot(_)
             | MapKind::Mine(_) => true,
             MapKind::City(_, s) | MapKind::ShieldSite(_, s, _) => s == Setting::Desert,
-            MapKind::Foundry(_, g) => g == Ground::Desert,
-            MapKind::Sanctum | MapKind::Kiln => false,
+            MapKind::Foundry(_, g) | MapKind::Sanctum(g) => g == Ground::Desert,
+            MapKind::Kiln => false,
         }
     }
 }
 
 /// The map `kind` names; `seed` picks which one, for a generated kind (the
-/// hand-built ones are always the same).
+/// hand-built one is always the same).
 pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
     match kind {
-        MapKind::Sanctum => map::Map::sanctum(),
+        MapKind::Sanctum(g) => map::Map::sanctum_on(g, seed),
         MapKind::Kiln => map::Map::kiln(),
         MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
         MapKind::ShieldSite(l, s, g) => map::procgen::map(&shield_spec(seed, l, g).set_in(s)),
@@ -800,7 +802,9 @@ fn parse_args() -> Result<Args> {
             "--no-lod" => render::lod::disable(),
             "--map" => match args.next().as_deref() {
                 Some("reservoir") => map_kind = MapKind::Reservoir,
-                Some("sanctum") => map_kind = MapKind::Sanctum,
+                Some("sanctum") => {
+                    map_kind = MapKind::Sanctum(map::procgen::foundry::Ground::Desert)
+                }
                 Some("kiln") => map_kind = MapKind::Kiln,
                 Some("city") => {
                     map_kind = MapKind::City(map::procgen::Look::Imperium, Default::default())
@@ -1111,7 +1115,7 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
-    if let (MapKind::Foundry(_, g), Some(ground)) = (&mut map_kind, ground) {
+    if let (MapKind::Foundry(_, g) | MapKind::Sanctum(g), Some(ground)) = (&mut map_kind, ground) {
         *g = ground;
     }
     if let (MapKind::City(_, s) | MapKind::ShieldSite(_, s, _), true) = (&mut map_kind, in_desert) {

@@ -261,7 +261,7 @@ fn growth(map: &mut Map, sk: &Skeleton, land: &Land, ground: Ground, rng: &mut R
 }
 
 /// A tree past the edge: a trunk and a few rounds of leaf.
-fn tree(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32) {
+pub(in crate::map) fn tree(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32) {
     let h = rng.range(4.0, 7.0);
     map.segment(
         Vec3::new(p.x, g - 1.0, p.y),
