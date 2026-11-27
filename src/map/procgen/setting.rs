@@ -169,7 +169,7 @@ pub(in crate::map) fn green_or_white(
     }
 
     if snowy {
-        foundry::snow(map, sk, land.open);
+        foundry::snow(map, sk, land.open, |_| true);
         map.rock_dust = Some(land.open);
     }
     // Nothing grows through paving, wrecks or the river.

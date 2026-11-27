@@ -1267,7 +1267,11 @@ mod tests {
     #[test]
     fn a_covered_way_is_joined_at_its_mouth() {
         use crate::map::procgen::{self, Look};
-        let map = procgen::map(&crate::mine_spec(3, Look::Ithessar));
+        let map = procgen::map(&crate::mine_spec(
+            3,
+            Look::Ithessar,
+            crate::map::procgen::foundry::Ground::Desert,
+        ));
         let under = |p: &Vec3| map.ground_height(p.x, p.z) > p.y + 4.0;
         let base =
             |k: usize| map.bases[k].iter().copied().sum::<Vec2>() / map.bases[k].len() as f32;

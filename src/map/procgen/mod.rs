@@ -57,10 +57,11 @@ use crate::rng::Rng;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Biome {
     City,
-    /// A crystal mine dug into a desert escarpment.
-    Mine,
-    /// Open desert: dunes, buttes, spires, perhaps a dry wash.
-    Desert,
+    /// A crystal mine dug into an escarpment, on whichever ground.
+    Mine(foundry::Ground),
+    /// Open desert (dunes, buttes, spires, perhaps a dry wash), or the same
+    /// land under snow or grass.
+    Open(foundry::Ground),
     /// A small town in the desert, round a dry reservoir's dam or a well.
     Reservoir,
     /// A hull foundry, on whichever ground.
@@ -229,8 +230,8 @@ fn lay_out(spec: &Spec, plan: &city::Plan) -> Skeleton {
 fn build_map(spec: &Spec) -> Map {
     let mut map = match spec.biome {
         Biome::City => build(spec).0,
-        Biome::Mine => mine::build(spec),
-        Biome::Desert | Biome::Reservoir => desert::build(spec),
+        Biome::Mine(ground) => mine::build(spec, ground),
+        Biome::Open(_) | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot(ground) => depot::build(spec, ground),
     };
@@ -415,17 +416,17 @@ pub fn map(spec: &Spec) -> Map {
 fn planet(biome: Biome) -> crate::planet::Look {
     match biome {
         Biome::City => city::PLANET,
-        Biome::Mine => mine::PLANET,
-        Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
-        Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
+        Biome::Mine(ground) => mine::planet(ground),
+        Biome::Open(foundry::Ground::Desert) | Biome::Reservoir => desert::PALETTES[0].planet,
+        Biome::Open(ground) | Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
     }
 }
 
 /// The skeleton `spec` lays out, as its greybox.
 pub fn greybox(spec: &Spec) -> Map {
     match spec.biome {
-        Biome::Mine => return mine::greybox(spec),
-        Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
+        Biome::Mine(ground) => return mine::greybox(spec, ground),
+        Biome::Open(_) | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::Depot(ground) => return depot::greybox(spec, ground),
         Biome::City => {}
@@ -556,7 +557,11 @@ impl Map {
 
     /// The Ithessar crystal mine `seed` names (see `crate::mine_spec`).
     pub fn mine(seed: u64) -> Map {
-        map(&crate::mine_spec(seed, Look::Ithessar))
+        map(&crate::mine_spec(
+            seed,
+            Look::Ithessar,
+            foundry::Ground::Desert,
+        ))
     }
 
     /// The Imperium's hull foundry `seed` names, on desert (see

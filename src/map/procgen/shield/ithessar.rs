@@ -223,7 +223,8 @@ impl Map {
         self.glow_paths.push(channel(
             lm,
             a,
-            lm.radius + 6.8,
+            // (From the edge of the pool.)
+            lm.radius + 6.55,
             lm.radius + 0.15,
             base,
             0.3,
