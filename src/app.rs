@@ -1716,6 +1716,7 @@ impl App {
                 self.game.ambience.focus = camera.pos;
                 scene.particles.extend(self.game.ambience.particles());
                 self.game.glow_particles(alpha, &mut scene.particles);
+                self.game.effect_lights(&mut scene.lights);
                 scene
             };
             laps.lap("scene");

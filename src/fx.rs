@@ -5,8 +5,9 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::render::Particle;
 use crate::render::mesh::{Instance, MeshId};
+use crate::render::{Particle, PointLight};
+use crate::tank::ithessar::{PLASMA, PLASMA_HOT};
 
 /// Flame at its hottest: yellow-white.
 const FIRE_HOT: Vec3 = Vec3::new(1.0, 0.55, 0.14);
@@ -297,6 +298,128 @@ pub fn plasma_fire(at: Vec3, rot: Quat, time: f32, out: &mut Vec<Particle>) {
     ));
 }
 
+/// How fast a splash `size` m across is thrown up, m/s.
+fn splash_speed(size: f32) -> f32 {
+    5.2 * size.sqrt()
+}
+
+/// How long a splash `size` m across takes to fall back, s.
+pub fn splash_life(size: f32) -> f32 {
+    0.3 + 2.0 * splash_speed(size) / G * 1.1
+}
+
+/// Something going into a plasma river at `at` (on its surface), `t` s in: a
+/// crown of droplets thrown up round a sheet of plasma, a jet up the middle
+/// as it closes over, and a bright ring running out across the surface.
+/// `size` is about how far across what went in is, m.
+pub fn splash(at: Vec3, size: f32, t: f32, out: &mut Vec<Particle>) {
+    let seed = seed_at(at);
+    let up = splash_speed(size);
+    let end = splash_life(size);
+    // Where something thrown from `from` at `v` is, until it's back under.
+    let thrown = |from: Vec3, v: Vec3, t: f32| {
+        let p = from + v * t - Vec3::Y * 0.5 * G * t * t;
+        (t >= 0.0 && p.y >= at.y).then(|| (p, v - Vec3::Y * G * t))
+    };
+    let around = |k: u32, n: u32, off: u32| {
+        let a = (k as f32 + rand(seed, k + off)) / n as f32 * std::f32::consts::TAU;
+        Vec3::new(a.cos(), 0.0, a.sin())
+    };
+    // The sheet.
+    let n = 8 + (size * 3.0) as u32;
+    for k in 0..n {
+        let dir = around(k, n, 400);
+        let v = dir * up * 0.3 + Vec3::Y * up * (0.45 + 0.25 * rand(seed, k + 430));
+        let Some((p, _)) = thrown(at + dir * size * 0.35, v, t) else {
+            continue;
+        };
+        let f = t / end;
+        out.push(Particle::fire(
+            p,
+            size * (0.28 + 0.4 * f),
+            PLASMA,
+            2.2 * (1.0 - f).powi(2) * (t / 0.04).min(1.0),
+            Vec3::Y * 0.8,
+            rand(seed, k + 460) * 0.9 + t * 0.05,
+        ));
+    }
+    // The crown.
+    let n = 10 + (size * 8.0) as u32;
+    for k in 0..n {
+        let dir = around(k, n, 500);
+        let v = dir * up * (0.2 + 0.4 * rand(seed, k + 540))
+            + Vec3::Y * up * (0.5 + 0.5 * rand(seed, k + 580));
+        let Some((p, v)) = thrown(at + dir * size * 0.4, v, t) else {
+            continue;
+        };
+        out.push(Particle::glow(
+            p,
+            (0.05 + 0.035 * size) * (0.6 + 0.8 * rand(seed, k + 620)),
+            PLASMA_HOT.lerp(PLASMA, (t / end).min(1.0)),
+            2.8,
+            v.normalize_or_zero() * (1.2 + v.length() * 0.15),
+        ));
+    }
+    // The jet.
+    for k in 0..5 {
+        let late = 0.1 * size.sqrt();
+        let v = Vec3::Y * up * (1.0 - 0.13 * k as f32);
+        let Some((p, _)) = thrown(at, v, t - late) else {
+            continue;
+        };
+        out.push(Particle::glow(
+            p,
+            size * (0.1 + 0.03 * k as f32),
+            PLASMA_HOT.lerp(PLASMA, k as f32 / 5.0),
+            1.8,
+            Vec3::Y * 2.0,
+        ));
+    }
+    // The ring.
+    let f = (t / (end * 0.7)).min(1.0);
+    let r = size * (0.5 + 1.7 * (1.0 - (1.0 - f).powi(2)));
+    let n = 14 + (size * 4.0) as u32;
+    let wide = std::f32::consts::TAU * r / n as f32;
+    for k in 0..n {
+        let a = (k as f32 + seed) / n as f32 * std::f32::consts::TAU;
+        let dir = Vec3::new(a.cos(), 0.0, a.sin());
+        out.push(Particle::glow(
+            at + dir * r + Vec3::Y * 0.1,
+            wide * 0.45,
+            PLASMA_HOT,
+            0.9 * (1.0 - f).powi(2),
+            Vec3::Y.cross(dir) * 2.0,
+        ));
+    }
+    // And the flash.
+    let flash = splash_flash(size, t);
+    if flash > 0.01 {
+        let at = at + Vec3::Y * 0.25 * size;
+        out.push(Particle::glow(
+            at,
+            size * (1.2 + t),
+            PLASMA,
+            1.6 * flash,
+            Vec3::ZERO,
+        ));
+    }
+}
+
+/// How bright a splash's flash is (1 as it strikes), `t` s in.
+fn splash_flash(size: f32, t: f32) -> f32 {
+    (-t * 4.5 / size.sqrt()).exp()
+}
+
+/// The light a splash throws on what's round it, while there's any.
+pub fn splash_light(at: Vec3, size: f32, t: f32) -> Option<PointLight> {
+    let flash = splash_flash(size, t);
+    (flash > 0.04).then(|| PointLight {
+        pos: at + Vec3::Y * (0.6 + 0.6 * size),
+        color: PLASMA.lerp(PLASMA_HOT, 0.3) * 9.0 * size * flash,
+        radius: 4.0 + 5.0 * size,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +452,28 @@ mod tests {
             bytemuck::cast_slice::<_, u8>(&a),
             bytemuck::cast_slice::<_, u8>(&b)
         );
+    }
+
+    #[test]
+    fn a_splash_stays_over_the_surface_and_bigger_ones_go_higher() {
+        let at = Vec3::new(5.0, 2.0, 9.0);
+        let top = |size: f32| {
+            let mut top = 0.0f32;
+            for i in 0..(splash_life(size) / 0.02) as u32 {
+                let mut out = Vec::new();
+                splash(at, size, i as f32 * 0.02, &mut out);
+                assert!(out.iter().all(|p| p.pos[1] >= at.y));
+                top = out.iter().map(|p| p.pos[1] - at.y).fold(top, f32::max);
+            }
+            top
+        };
+        assert!(top(3.0) > 2.0 * top(0.8));
+        // It's all back under by the end but the ring, which has faded.
+        let mut out = Vec::new();
+        splash(at, 3.0, splash_life(3.0), &mut out);
+        assert!(out.iter().all(|p| p.glow < 0.01), "{out:?}");
+        assert!(splash_light(at, 3.0, 0.0).is_some());
+        assert!(splash_light(at, 3.0, splash_life(3.0)).is_none());
     }
 
     #[test]

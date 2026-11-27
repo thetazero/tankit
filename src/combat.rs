@@ -26,8 +26,8 @@ use crate::hold::{self, Hold};
 use crate::map::Map;
 use crate::mission::Contract;
 use crate::raid::{self, Raid};
-use crate::render::Particle;
 use crate::render::mesh::{Instance, MeshId};
+use crate::render::{Particle, PointLight};
 use crate::repair::Repairs;
 use crate::rng::Rng;
 use crate::sim::{Command, GRAVITY, HullKind, Tank, TurretKind, World, wrap_angle, yaw_of};
@@ -580,6 +580,8 @@ pub struct Fighter {
     pub burning: Burn,
     /// Burning in a plasma river: its surface's height there.
     pub in_plasma: Option<f32>,
+    /// Sunk under a plasma river's surface (a wreck too): it has splashed.
+    pub sunk: bool,
     /// A plasma river burned it down, the last time it died.
     pub burned: bool,
     /// Part upgrade levels (bots stay at M0), and new levels to fit at the next respawn.
@@ -646,6 +648,8 @@ pub enum BlastKind {
     Repair,
     /// Plasma bursting, `size` m across (Ithessar shots).
     Plasma(f32),
+    /// Something `size` m across going into a plasma river.
+    Splash(f32),
     /// Crystal light bursting out of a Vigil as it breaks, `size` m across.
     Shatter(f32),
     /// A mote of crystal light leaking off a husk, drifting up.
@@ -668,6 +672,30 @@ fn impact_kind(spec: &ShellSpec, hit: bool) -> BlastKind {
         _ => BlastKind::Impact,
     }
 }
+
+/// How big a splash a shot makes going into a plasma river, m across (none:
+/// fire's only light).
+fn shot_splash(s: &Shell) -> Option<f32> {
+    match s.spec.look {
+        Look::Tracer => Some(0.5 + s.damage / 60.0),
+        Look::Plasma { size } => Some(size * 0.9),
+        Look::Bolt { size } => Some(size * 0.6),
+        Look::Toll => Some(1.6),
+        Look::Flame => None,
+    }
+}
+
+/// How big a splash a tank (or its wreck) of `mass` kg makes going into one
+/// at `speed` m/s, m across.
+fn tank_splash(mass: f32, speed: f32) -> f32 {
+    3.0 * (mass / 18_000.0).cbrt() * (0.8 + 0.04 * speed).min(1.3)
+}
+
+/// A tank's in a plasma river once its middle (`HULL_MIDDLE` up from its
+/// foot) is this close over its surface, m, and out again at the second:
+/// between, a hover hull bobs on it without splashing.
+const SUNK: (f32, f32) = (0.2, 0.7);
+const HULL_MIDDLE: f32 = 0.8;
 
 pub struct Blast {
     pub pos: Vec3,
@@ -697,6 +725,7 @@ impl Blast {
             BlastKind::Smoke => 2.4,
             BlastKind::Repair => 0.7,
             BlastKind::Plasma(size) | BlastKind::Shatter(size) => 0.25 + size * 0.15,
+            BlastKind::Splash(size) => fx::splash_life(size),
             BlastKind::Mote => 0.9,
         }
     }
@@ -737,6 +766,11 @@ pub enum Sound {
     Impact {
         at: Vec3,
         plasma: bool,
+    },
+    /// Something about `size` m across going into a plasma river.
+    Splash {
+        at: Vec3,
+        size: f32,
     },
     /// An orb skipping off a wall.
     Bounce {
@@ -1669,6 +1703,7 @@ impl Match {
         self.outs();
         self.beams();
         self.rivers();
+        self.splashes();
         self.husks();
         self.aim_assist();
 
@@ -2267,6 +2302,7 @@ impl Match {
                     .map(|(c, ri)| (c, ri.time_of_impact, ri.normal))
             };
             let Some((c, toi, normal)) = hit else {
+                self.shot_in(s, s.pos, s.pos + step);
                 s.pos += step;
                 return true;
             };
@@ -2285,7 +2321,10 @@ impl Match {
                     step -= at - s.pos;
                     s.pos = at;
                 }
-                _ => return self.land(s, c, at, normal, heart),
+                _ => {
+                    self.shot_in(s, s.pos, at);
+                    return self.land(s, c, at, normal, heart);
+                }
             }
         }
     }
@@ -2387,7 +2426,8 @@ impl Match {
                 true
             }
             None => {
-                if s.spec.look != Look::Flame {
+                // (On a river's bed there's nothing to see: it splashed.)
+                if s.spec.look != Look::Flame && !self.in_river(at) {
                     self.blasts
                         .push(Blast::new(at, impact_kind(&s.spec, false)));
                     self.sounds.push(Sound::Impact {
@@ -2706,6 +2746,61 @@ impl Match {
                 }
             }
         }
+    }
+
+    /// A tank or wreck that's just sunk under a plasma river's surface
+    /// splashes.
+    fn splashes(&mut self) {
+        if self.world.map.rivers.is_empty() {
+            return;
+        }
+        for i in 0..self.fighters.len() {
+            let t = &self.world.tanks[i];
+            let at = t.pos + t.up() * HULL_MIDDLE;
+            let over = self
+                .world
+                .map
+                .rivers
+                .iter()
+                .find_map(|r| r.surface(flat(at), 0.0));
+            let was = self.fighters[i].sunk;
+            let line = if was { SUNK.1 } else { SUNK.0 };
+            let sunk = over.is_some_and(|y| at.y < y + line);
+            self.fighters[i].sunk = sunk;
+            if let Some(y) = over
+                && sunk
+                && !was
+            {
+                let size = tank_splash(t.chassis.mass, t.vel.length());
+                self.splash(Vec3::new(at.x, y, at.z), size);
+            }
+        }
+    }
+
+    /// Shot `s` splashes where it goes into a plasma river on its way
+    /// straight from `from` to `to`.
+    fn shot_in(&mut self, s: &Shell, from: Vec3, to: Vec3) {
+        let Some(size) = shot_splash(s) else {
+            return;
+        };
+        let rivers = &self.world.map.rivers;
+        if let Some(at) = rivers.iter().find_map(|r| r.entry(from, to)) {
+            self.splash(at, size);
+        }
+    }
+
+    fn splash(&mut self, at: Vec3, size: f32) {
+        self.blasts.push(Blast::new(at, BlastKind::Splash(size)));
+        self.sounds.push(Sound::Splash { at, size });
+    }
+
+    /// Under a plasma river's surface.
+    fn in_river(&self, p: Vec3) -> bool {
+        self.world
+            .map
+            .rivers
+            .iter()
+            .any(|r| r.surface(flat(p), 0.0).is_some_and(|y| p.y < y))
     }
 
     /// Run down every husk's time: light leaks out of its cracks, and when
@@ -3405,6 +3500,7 @@ impl Match {
                 BlastKind::Impact => fx::impact(b.pos, false, b.age, out),
                 BlastKind::Hit => fx::impact(b.pos, true, b.age, out),
                 BlastKind::Kill => fx::kill(b.pos, b.age, out),
+                BlastKind::Splash(size) => fx::splash(b.pos, size, b.age, out),
                 BlastKind::Smoke => fx::wreck_puff(b.pos, b.drift, b.age / b.life(), out),
                 _ => {}
             }
@@ -3448,6 +3544,14 @@ impl Match {
                 ));
             }
         }
+    }
+
+    /// The light the effects throw on what's round them.
+    pub fn effect_lights(&self, out: &mut Vec<PointLight>) {
+        out.extend(self.blasts.iter().filter_map(|b| match b.kind {
+            BlastKind::Splash(size) => fx::splash_light(b.pos, size, b.age),
+            _ => None,
+        }));
     }
 
     /// Shells, impacts, explosions and smoke as render instances.
@@ -3623,7 +3727,7 @@ impl Match {
                     Vec4::new(0.35, 1.0, 0.5, 2.5 * (1.0 - f)),
                 ),
                 // Plasma bursts are all light (`glow_particles`).
-                BlastKind::Plasma(_) => continue,
+                BlastKind::Plasma(_) | BlastKind::Splash(_) => continue,
                 BlastKind::Shatter(size) => {
                     let (cool, hot) = (CRYSTAL, CRYSTAL_HOT);
                     // The skin bursts: a flash that swells and thins out, and
@@ -3889,6 +3993,7 @@ fn fighter(team: usize, health: f32) -> Fighter {
         beam: None,
         burning: Burn::Air,
         in_plasma: None,
+        sunk: false,
         burned: false,
         levels: Levels::default(),
         next_levels: None,
@@ -4029,6 +4134,109 @@ mod tests {
             }
         }
         panic!("never burned out");
+    }
+
+    /// The sizes of the splashes since last asked.
+    fn splashed(m: &mut Match) -> Vec<f32> {
+        let sounds = std::mem::take(&mut m.sounds);
+        let sizes = sounds.iter().filter_map(|s| match s {
+            Sound::Splash { size, .. } => Some(*size),
+            _ => None,
+        });
+        sizes.collect()
+    }
+
+    fn drop_in(m: &mut Match, y: f32) {
+        let b = &mut m.world.physics.bodies[m.world.tanks[1].body];
+        b.set_translation(Vec3::new(100.0, y, 100.0), true);
+        b.set_linvel(Vec3::ZERO, true);
+    }
+
+    fn run(m: &mut Match, secs: f32) {
+        for _ in 0..(secs / DT) as usize {
+            m.step(Command::default(), false);
+        }
+    }
+
+    #[test]
+    fn tanks_and_wrecks_splash_once_going_in() {
+        let mut m = in_the_river(HullKind::Kataphrakt);
+        drop_in(&mut m, 5.0);
+        m.step(Command::default(), false);
+        assert!(splashed(&mut m).is_empty(), "still in the air");
+        run(&mut m, 2.0);
+        let tank = splashed(&mut m);
+        assert_eq!(tank.len(), 1, "{tank:?}");
+        let mut lights = Vec::new();
+        drop_in(&mut m, 5.0);
+        m.fighters[1].health = 0.0;
+        m.kill(0, 1);
+        assert!(!m.fighters[1].alive);
+        // Lit as it goes in.
+        for _ in 0..(3.0 / DT) as usize {
+            m.step(Command::default(), false);
+            m.effect_lights(&mut lights);
+        }
+        assert_eq!(splashed(&mut m).len(), 1);
+        assert!(!lights.is_empty());
+    }
+
+    #[test]
+    fn a_hover_tank_on_a_river_splashes_only_as_a_wreck() {
+        let mut m = in_the_river(HullKind::Sethuun);
+        drop_in(&mut m, 3.5);
+        for n in 0..240 {
+            m.step(Command::default(), false);
+            let y = m.world.tanks[1].pos.y;
+            assert!(splashed(&mut m).is_empty(), "step {n}, at {y}");
+        }
+        m.fighters[1].health = 0.0;
+        m.kill(0, 1);
+        run(&mut m, 3.0);
+        assert_eq!(splashed(&mut m).len(), 1);
+    }
+
+    #[test]
+    fn shells_splash_where_they_go_in() {
+        let into = |turret: TurretKind| {
+            let mut m = in_the_river(HullKind::Kataphrakt);
+            m.world.teleport(1, Vec2::new(30.0, 30.0), 0.0);
+            m.world.tanks[0].turret_kind = turret;
+            run(&mut m, 0.1);
+            splashed(&mut m);
+            let Action::Shell(spec) = gun(turret).action else {
+                unreachable!()
+            };
+            let mut s = Shell {
+                pos: Vec3::new(100.0, 6.0, 120.0),
+                prev: Vec3::ZERO,
+                vel: Vec3::ZERO,
+                owner: 0,
+                damage: gun(turret).damage,
+                age: 0.0,
+                spec,
+                bounces: spec.bounces,
+                seed: 0.0,
+                passed: Vec::new(),
+            };
+            m.blasts.clear();
+            m.travel(&mut s, Vec3::new(0.0, -10.0, -40.0));
+            let hits = |b: &&Blast| b.kind == BlastKind::Impact;
+            assert_eq!(m.blasts.iter().filter(hits).count(), 0, "{turret:?}");
+            if let Some(b) = m.blasts.first() {
+                assert!((b.pos.y - 2.0).abs() < 0.01, "{}", b.pos);
+            }
+            splashed(&mut m)
+        };
+        let [big, small] = [TurretKind::Kontos, TurretKind::Pelekys].map(into);
+        assert_eq!((big.len(), small.len()), (1, 1));
+        assert!(big[0] > small[0]);
+        for t in [TurretKind::Ammeth, TurretKind::Ossrin, TurretKind::Knell] {
+            assert_eq!(into(t).len(), 1, "{t:?}");
+        }
+        assert!(into(TurretKind::Hymn).is_empty());
+        // Any tank's is bigger than any shell's.
+        assert!(tank_splash(13_000.0, 0.0) > 1.6);
     }
 
     #[test]
