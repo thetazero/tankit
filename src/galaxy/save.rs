@@ -345,9 +345,6 @@ struct SavedRealm {
     /// Whether it hires mercs (older saves: they all do).
     #[serde(default)]
     hires: Option<bool>,
-    /// Whether it keeps a garrison (older saves: none do).
-    #[serde(default)]
-    garrisons: Option<bool>,
     /// Systems it was fighting in.
     #[serde(default)]
     fronts: u32,
@@ -436,7 +433,6 @@ impl Galaxy {
                     pilots: Some(r.pilots),
                     wage: r.wage,
                     hires: Some(r.hires),
-                    garrisons: Some(r.garrisons),
                     fronts: r.fronts,
                     senses: Some([r.pilot_worth, r.hull_worth, r.pilot_use, r.hull_use]),
                     seats: Some([r.seats, r.seats_next, r.seats_now]),
@@ -585,7 +581,6 @@ impl Galaxy {
                 }),
                 wage: r.wage,
                 hires: r.hires.unwrap_or(true),
-                garrisons: r.garrisons.unwrap_or(false),
                 fronts: r.fronts,
                 pilot_worth: r.senses.map_or(0.1, |x| x[0]),
                 hull_worth: r.senses.map_or(0.2, |x| x[1]),

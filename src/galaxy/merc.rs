@@ -279,22 +279,9 @@ pub struct Debt {
     pub due: f32,
 }
 
-/// How a realm arm (with a garrison, or without) has defended: its sites'
-/// battles (against realms, against raiders), those it held, those it had
-/// half a pilot or more a battle for; and what raiders took from it.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ArmBooks {
-    pub fought: [f64; 2],
-    pub held: [f64; 2],
-    pub manned: [f64; 2],
-    pub looted: f64,
-}
-
 /// The mercenary trade, all told (for charts and tuning).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Books {
-    /// Realms without a garrison, and with.
-    pub arms: [ArmBooks; 2],
     /// Raids companies set out on for themselves, those that got all there
     /// was, and what they took.
     /// Looks for a raid, by what came of them: nowhere rich in range, no

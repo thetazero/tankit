@@ -217,8 +217,8 @@ pub struct Rules {
     pub wage_cr: f32,
     /// A ship pays a pilot this share of their wage for each kill.
     pub kill_share: f32,
-    /// Of its income, and of its savings, what a realm that keeps a garrison
-    /// would spend on its pilots' pay a tick.
+    /// Of its income, and of its savings, what a realm would spend on its
+    /// garrison's pay a tick.
     pub garrison_income: f32,
     pub garrison_savings: f32,
     /// Share of a realm's pilots a tick who defect, when ships offer them
@@ -1150,10 +1150,6 @@ impl Galaxy {
         if w == RAID {
             self.vaults[v].crystals = 0.0;
             self.books.raided += loot as f64;
-            if vault.realm != NONE {
-                let arm = self.realms[vault.realm as usize].garrisons as usize;
-                self.books.arms[arm].looted += loot as f64;
-            }
             if let Some(c) = self.companies.iter_mut().find(|c| {
                 c.contract
                     .is_some_and(|k| k.target as usize == s && k.side as usize == RAID)
@@ -1485,16 +1481,6 @@ impl Galaxy {
             }
         }
         o.winner = Some(best.map_or(holder, |b| b.0));
-        let r = self.systems[s].realms[holder];
-        if r != NONE {
-            let battles = self.engaged.map_or(1, |e| e.1[holder].max(1)) as f32;
-            let manned = self.able(s, holder) / battles >= 0.5;
-            let arm = &mut self.books.arms[self.realms[r as usize].garrisons as usize];
-            let raid = attackers.contains(&RAID) as usize;
-            arm.fought[raid] += 1.0;
-            arm.held[raid] += (o.winner == Some(holder)) as u8 as f64;
-            arm.manned[raid] += manned as u8 as f64;
-        }
         o
     }
 
