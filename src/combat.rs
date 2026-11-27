@@ -4101,20 +4101,25 @@ mod tests {
         m.fighters[1].levels = Levels::all(20);
         assert_eq!(m.kill_nearest_enemy(), Some(1));
         assert!(m.scrap_pops.is_empty());
-        // In it: the wreck's hull and turret, each a fifth of a step.
+        // In it: the wreck's hull and turret, each by how far it's past yours.
         let mut m = duel(TurretKind::Kontos, 25.0);
         let mut known = Known::default();
         known.set(hull, 20.0);
+        // The earlier wreck's share is in where it stands.
+        let mut after = known;
+        after.scrap(kontos, 20);
+        let gained = after.scrap(kontos, 20);
         m.known = Some(known);
         m.fighters[1].levels = Levels::all(20);
         m.fighters[0].scrap.push((kontos, 20));
         m.kill_nearest_enemy();
         let pops: Vec<_> = m.scrap_pops.iter().map(|x| x.scrapped).collect();
-        assert_eq!(pops.len(), 1, "the hull's no better than what's known");
-        assert_eq!(pops[0].part, kontos);
-        assert!((pops[0].gained * 100.0 - 20.0).abs() < 0.5);
-        // The earlier wreck's 20% is in where it stands: 40% of the first step.
-        assert_eq!(pops[0].toward(), Some((40, 1)));
+        assert_eq!(pops.len(), 2);
+        let pop = |part| *pops.iter().find(|s| s.part == part).unwrap();
+        assert!((pop(kontos).gained - gained).abs() < 1e-3);
+        assert!((pop(kontos).known - after.of(kontos)).abs() < 1e-3);
+        // The hull's no better than what's known: it teaches a little.
+        assert!(pop(hull).gained > 0.0 && pop(hull).gained < pop(kontos).gained);
         // They fade.
         for _ in 0..(SCRAP_POP_TIME / DT) as usize + 2 {
             m.step(Command::default(), false);
