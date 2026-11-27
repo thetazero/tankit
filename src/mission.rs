@@ -189,12 +189,13 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
-    // A site's is in its founder's style (see `SiteView::map_kind`).
+    // A site's is in its founder's style, on its world's ground (see
+    // `SiteView::map_kind`).
     Mission {
         name: "DEAD LINE",
         contract: Contract::Attrition,
         map: "RAIL DEPOT",
-        map_kind: MapKind::Depot(Look::Imperium),
+        map_kind: MapKind::Depot(Look::Imperium, Ground::Desert),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -203,7 +204,7 @@ pub const MISSIONS: &[Mission] = &[
         name: "NIGHT FREIGHT",
         contract: Contract::Raid,
         map: "RAIL DEPOT",
-        map_kind: MapKind::Depot(Look::Imperium),
+        map_kind: MapKind::Depot(Look::Imperium, Ground::Desert),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
@@ -235,10 +236,15 @@ pub fn for_foundries(class: crate::galaxy::theater::Class) -> Vec<usize> {
 
 /// The missions a crystal mine on a `class` world can be fought with: on a
 /// desert world, those in a mine (#523). Other worlds have no mine maps, so
-/// any of theirs but the foundries.
+/// any of theirs but the foundries, and the depots (outposts').
 pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
     let mut pool = for_sites(class);
-    pool.retain(|&i| !matches!(MISSIONS[i].map_kind, MapKind::Foundry(..)));
+    pool.retain(|&i| {
+        !matches!(
+            MISSIONS[i].map_kind,
+            MapKind::Foundry(..) | MapKind::Depot(..)
+        )
+    });
     if class == crate::galaxy::theater::Class::Desert {
         pool.retain(|&i| matches!(MISSIONS[i].map_kind, MapKind::Mine(_)));
     }
@@ -342,7 +348,7 @@ mod tests {
             raids,
             [
                 MapKind::Mine(Look::Ithessar),
-                MapKind::Depot(Look::Imperium)
+                MapKind::Depot(Look::Imperium, Ground::Desert)
             ]
         );
     }

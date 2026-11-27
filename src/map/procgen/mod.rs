@@ -65,8 +65,8 @@ pub enum Biome {
     Reservoir,
     /// A hull foundry, on whichever ground.
     Foundry(foundry::Ground),
-    /// A rail depot on desert.
-    Depot,
+    /// A rail depot, on whichever ground.
+    Depot(foundry::Ground),
 }
 
 /// Whose place it is.
@@ -232,7 +232,7 @@ fn build_map(spec: &Spec) -> Map {
         Biome::Mine => mine::build(spec),
         Biome::Desert | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
-        Biome::Depot => depot::build(spec),
+        Biome::Depot(ground) => depot::build(spec, ground),
     };
     ways::lay(&mut map);
     map
@@ -409,8 +409,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
         Biome::City => city::PLANET,
         Biome::Mine => mine::PLANET,
         Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
-        Biome::Foundry(ground) => ground.planet(),
-        Biome::Depot => foundry::Ground::Desert.planet(),
+        Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
     }
 }
 
@@ -420,7 +419,7 @@ pub fn greybox(spec: &Spec) -> Map {
         Biome::Mine => return mine::greybox(spec),
         Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
-        Biome::Depot => return depot::greybox(spec),
+        Biome::Depot(ground) => return depot::greybox(spec, ground),
         Biome::City => {}
     }
     let sk = skeleton(spec);
@@ -563,10 +562,15 @@ impl Map {
         ))
     }
 
-    /// The Imperium's rail depot `seed` names (see `crate::depot_spec`).
+    /// The Imperium's rail depot `seed` names, on desert (see
+    /// `crate::depot_spec`).
     #[cfg(test)]
     pub fn depot(seed: u64) -> Map {
-        map(&crate::depot_spec(seed, Look::Imperium))
+        map(&crate::depot_spec(
+            seed,
+            Look::Imperium,
+            foundry::Ground::Desert,
+        ))
     }
 
     /// The open desert `seed` names (see `crate::desert_spec`).
@@ -1011,15 +1015,16 @@ mod tests {
     )]
     fn tunnels_are_dug_out_of_solid_ground() {
         let foundry = |s| crate::foundry_spec(s, Look::Imperium, foundry::Ground::Desert);
+        let depot = |s| crate::depot_spec(s, Look::Imperium, foundry::Ground::Desert);
         let specs = (0..8)
             .map(spec)
             .chain((0..16).map(foundry))
-            .chain((0..2).map(|s| crate::depot_spec(s, Look::Imperium)));
+            .chain((0..2).map(depot));
         let mut tunnels = 0;
         for sp in specs {
             let sk = match sp.biome {
                 Biome::City => skeleton(&sp),
-                Biome::Depot => depot::skeleton(&sp),
+                Biome::Depot(_) => depot::skeleton(&sp),
                 _ => foundry::skeleton(&sp),
             };
             let m = sk.greybox(&sp.sides);
