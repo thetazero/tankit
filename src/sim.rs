@@ -2522,7 +2522,6 @@ mod tests {
         for (name, m) in [
             ("reservoir", Map::reservoir(0)),
             ("sanctum", Map::sanctum()),
-            ("kiln", Map::kiln()),
         ] {
             assert!(!m.open_spots.is_empty(), "{name}: no open spots");
             for p in &m.open_spots {

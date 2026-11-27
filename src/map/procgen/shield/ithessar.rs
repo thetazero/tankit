@@ -1,5 +1,5 @@
 //! The Ithessar's shield generator. They shape plasma with crystal, and
-//! this is the same craft as the Kiln's sun, raised for a shield: great
+//! this is their craft raised for a shield: great
 //! crystals of their worked glass, near black, stand on the ring between
 //! the doors and lean in over a dais to hold a ball of plasma high between
 //! their tips, a seam of it lit up each. Plasma runs in channels in the
