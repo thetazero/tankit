@@ -981,7 +981,7 @@ fn rank_gain(p: &mut Painter, ledger: &Ledger, gained: u32, t: f32, at: Vec2, co
     let now = Rank::of(ledger.renown + shown);
     let up = now.level > start.level;
     let style = design::SMALL.colored(if up { design::AMBER } else { design::TEXT });
-    let name = format!("{} {}", now.title(), now.level);
+    let name = format!("{} {}", now.title().name(), now.level);
     p.text(at, &name, &style, Align::Left);
     let from = if up { 0.0 } else { start.progress() };
     gain_bar(p, at, col, from, now.progress());

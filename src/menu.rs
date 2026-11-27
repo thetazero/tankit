@@ -19,6 +19,7 @@ use crate::profile::{Profile, Settings};
 use crate::render::UiVertex;
 use crate::theater_view::Transfer;
 use crate::ui::design::UNIT;
+use crate::ui::rank_icon::rank_icon;
 use crate::ui::{Align, Hits, Layer, Painter, design, theme, with_alpha};
 use crate::work_view::{self, Board};
 
@@ -875,9 +876,13 @@ impl Menu {
         // Who you are, and what you have to spend.
         let mut y = design::MARGIN;
         let r = profile.rank();
+        let icon = design::UNIT * 6.0;
+        let mid = Vec2::new(x, y) + Vec2::splat(icon * 0.5);
+        rank_icon(p, r.title(), mid, icon, 1.5, design::AMBER);
+        y += icon + design::UNIT * 2.0;
         p.text(
             Vec2::new(x, y),
-            &format!("{} {}", title(r.title()), r.level),
+            &format!("{} {}", title(r.title().name()), r.level),
             &design::BODY,
             Align::Left,
         );
