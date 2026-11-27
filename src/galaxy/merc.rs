@@ -1173,9 +1173,15 @@ impl Galaxy {
                         let dead = (k * fe / af / n).min(hf);
                         super::odds((kills, hf - dead), (dead, he - kills))
                     };
-                    let at = chance(ff_at, fe);
+                    // (each worked out only if there's a battle for it)
+                    let held = if mine > 0.0 || gens < 1.0 {
+                        chance(ff, fe)
+                    } else {
+                        1.0
+                    };
+                    let at = if gens >= 1.0 { chance(ff_at, fe) } else { held };
                     let won = (at * fought).min(theirs);
-                    let lost = ((1.0 - chance(ff, fe)) * mine).min(mine);
+                    let lost = ((1.0 - held) * mine).min(mine);
                     gens = (gens - won).max(0.0);
                     mine += won - lost;
                     theirs += lost - won;

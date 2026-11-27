@@ -632,12 +632,18 @@ mod tests {
         assert!(!p.owns(PELEKYS));
         p.crystals = 100_000;
         assert_eq!(p.upgrade(PELEKYS), Err(Refusal::NotOwned));
-        // Wrecks of it: a hundredth of a step each, from T0.1 gear.
-        for _ in 0..99 {
-            p.scrap(&[(PELEKYS, 1)]);
-        }
-        assert!(!p.owns(PELEKYS), "not yet");
-        assert_eq!(p.scrap(&[(PELEKYS, 1)]), vec![PELEKYS], "now yours");
+        // Wrecks of it, from T0.1 gear: the one that makes a whole step.
+        let mut wrecks = 0;
+        let got = loop {
+            assert!(!p.owns(PELEKYS), "not yet");
+            wrecks += 1;
+            let got = p.scrap(&[(PELEKYS, 1)]);
+            if !got.is_empty() {
+                break got;
+            }
+        };
+        assert_eq!(got, vec![PELEKYS], "now yours");
+        assert_eq!(wrecks, 14, "each 0.08 of a step, and less as you learn");
         assert!(p.owns(PELEKYS));
         // Only as far as it's known.
         p.upgrade(PELEKYS).unwrap();

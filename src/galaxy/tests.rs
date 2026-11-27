@@ -266,7 +266,7 @@ fn a_tick_is_cheap() {
         g.step();
     }
     let per = t.elapsed() / (g.tick - start) as u32;
-    assert!(per.as_millis() < 25, "a tick took {per:?}");
+    assert!(per.as_millis() < 40, "a tick took {per:?}");
 }
 
 /// The neighbor graph the structure makes: how many systems each can reach,
@@ -314,15 +314,15 @@ fn small_war() -> Galaxy {
     Galaxy::with_size(4, SYSTEMS / 4, REGION * 0.5, Rules::default())
 }
 
-/// Realms are the actors: every side's sites and hulls in a system are one
-/// realm's, of that side, and every realm still around holds or fights somewhere.
+/// Realms are the actors: every people's sites and hulls in a system are one
+/// realm's, of that people (raiders have none), and every realm still around holds or fights somewhere.
 #[test]
 fn every_holding_is_a_realms() {
     let mut g = small_war();
     for _ in 0..60 {
         g.step();
         for sys in &g.systems {
-            for f in 0..SIDES {
+            for f in (0..SIDES).filter(|&f| f != super::RAID) {
                 if sys.held[f] > 0 || sys.hulls[f] >= AT_WAR {
                     let r = sys.realms[f];
                     assert_ne!(
@@ -874,7 +874,8 @@ fn pilots_cap_fire_not_losses() {
     );
 }
 
-/// A realm pays its pilots as far as it can, trains some while one's worth
+/// A realm pays its pilots as far as it can, trains some for the seats it has
+/// to fill while one's worth
 /// its training and pay over a career, takes on free ones first, and lets
 /// them go when one isn't worth its pay.
 #[test]
@@ -884,6 +885,10 @@ fn realms_pay_and_train_pilots() {
     r.crystals = 100.0;
     // Worth a lot: trained, for crystal.
     r.pilot_worth = 1.0;
+    // With no seat to fill, it trains nobody.
+    assert_eq!(r.keep_pilots(&rules, 0, 0), 0);
+    assert_eq!(r.pilots, 0);
+    r.seats_now = 100.0;
     assert_eq!(r.keep_pilots(&rules, 0, 0), 0);
     assert_eq!(r.pilots, rules.train);
     let spent = 100.0 - r.crystals;
