@@ -5,7 +5,7 @@ struct Globals {
     light_view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     cam_pos: vec4<f32>,
-    sun_dir: vec4<f32>,      // xyz: direction toward the sun
+    sun_dir: vec4<f32>,      // xyz: direction toward the sun, w: how big it is (1 ordinary)
     sun_color: vec4<f32>,
     sky_zenith: vec4<f32>,
     sky_horizon: vec4<f32>,
@@ -348,7 +348,8 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
         c = mix(g.sky_horizon.rgb, g.ground_color.rgb * 0.6, min(-t * 4.0, 1.0));
     }
     let sd = max(dot(dir, g.sun_dir.xyz), 0.0);
-    c += g.sun_color.rgb * (pow(sd, 2400.0) * 30.0 + pow(sd, 40.0) * 0.12 + pow(sd, 6.0) * 0.06);
+    let size = max(g.sun_dir.w, 0.1);
+    c += g.sun_color.rgb * (pow(sd, 2400.0 / (size * size)) * 30.0 + pow(sd, 40.0 / size) * 0.12 * size + pow(sd, 6.0) * 0.06);
     return c;
 }
 

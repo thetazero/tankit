@@ -35,6 +35,7 @@ mod scene;
 mod ship_model;
 mod showroom;
 mod sim;
+mod star;
 mod sweep;
 mod tank;
 mod theater_view;
@@ -64,6 +65,8 @@ tankit [OPTIONS]
   --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, mine, desert, shield-camp) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --weather <clear|sandstorm>  the weather it's fought in (default: clear)
+  --starlight <n>         how bright the system's star is: 1 an average one, the brightest 8 (default 1; with --shot,
+                          the missions and contract screens' systems' too)
   --generator <faction>   (with --map shield-site or shield-camp) whose shield generator stands in it:
                           imperium (the default), resonant, uthenn or ithessar
   --generator-down <n>    (with --map shield-site or shield-camp) the generator's down, n ticks of repair
@@ -190,6 +193,8 @@ pub struct Args {
     pub map: MapKind,
     /// --time-of-day and --weather.
     pub conditions: conditions::Conditions,
+    /// `--starlight`, if given (the menus' system shows its own otherwise).
+    pub starlight: Option<f32>,
     pub spawn: usize,
     pub bots: usize,
     pub contract: mission::Contract,
@@ -739,6 +744,7 @@ fn parse_args() -> Result<Args> {
     let mut employer: Option<faction::Faction> = None;
     let mut generator: Option<faction::Faction> = None;
     let mut conditions = conditions::Conditions::default();
+    let mut starlight = None;
     let mut look: Option<map::procgen::Look> = None;
     let mut ground: Option<map::procgen::foundry::Ground> = None;
     let mut in_desert = false;
@@ -808,6 +814,11 @@ fn parse_args() -> Result<Args> {
                 conditions.weather = conditions::Weather::by_name(&name).with_context(|| {
                     format!("--weather expects clear or sandstorm, got {name:?}")
                 })?;
+            }
+            "--starlight" => {
+                let n: f32 = args.next().context("--starlight needs a number")?.parse()?;
+                conditions.starlight = n;
+                starlight = Some(n);
             }
             "--greybox" => greybox = true,
             "--no-lod" => render::lod::disable(),
@@ -1231,6 +1242,7 @@ fn parse_args() -> Result<Args> {
         ticks,
         map: map_kind,
         conditions,
+        starlight,
         spawn,
         // Every side filled to the team size around you.
         bots: sides.len() * team_size.unwrap_or(6) - 1,
@@ -1831,6 +1843,15 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
                 }
                 menu.set_theater(Some(t));
             }
+            if let Some(light) = args.starlight
+                && let Some(mut t) = menu.theater().cloned()
+            {
+                t.starlight = light;
+                for s in &mut t.sites {
+                    s.starlight = light;
+                }
+                menu.set_theater(Some(t));
+            }
             if let Some(k) = args.site {
                 menu.pick_site(k);
             }
@@ -1851,7 +1872,11 @@ fn menu_shot(args: &Args, shot: &ShotArgs) -> Result<()> {
             menu.set_cluster(cluster_view::Cluster::of(&g));
             let rank = profile.rank().level;
             let mine = g.my_work(rank);
-            menu.board.set(g.open_work(rank), mine);
+            let mut work = g.open_work(rank);
+            if let Some(light) = args.starlight {
+                work.iter_mut().for_each(|o| o.starlight = light);
+            }
+            menu.board.set(work, mine);
             if args.tab > 0 {
                 menu.board.toggle(args.tab - 1);
             }

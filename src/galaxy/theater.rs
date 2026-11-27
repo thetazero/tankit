@@ -53,6 +53,8 @@ pub struct Theater {
     /// Who you're posted for: index into `Faction::ALL`.
     pub employer: usize,
     pub planets: u8,
+    /// How bright its star is (`System::starlight`).
+    pub starlight: f32,
     /// Each side's hulls here (and how many of them are mercs' own), and sites held.
     pub hulls: [u32; SIDES],
     pub mercs: [u32; SIDES],
@@ -230,6 +232,8 @@ pub struct SiteView {
     /// Which map a generated kind builds here: the site's own, the same
     /// each time it's fought over.
     pub map_seed: u64,
+    /// Its system's (`System::starlight`).
+    pub starlight: f32,
 }
 
 /// A contract on offer (another company's ship's), as the board compares them.
@@ -240,6 +244,8 @@ pub struct Offer {
     /// The system it's over: its index, and its name.
     pub at: usize,
     pub system: String,
+    /// How bright its star is (`System::starlight`).
+    pub starlight: f32,
     /// Who holds most of each of its worlds' sites.
     pub holders: Vec<usize>,
     /// Who hires, and who you'd fight most there.
@@ -577,6 +583,7 @@ impl SiteView {
             enemy: 1,
             mission: 0,
             map_seed: 0,
+            starlight: 1.0,
         }
     }
 
@@ -618,10 +625,10 @@ impl SiteView {
         }
     }
 
-    /// The time of day and weather it's fought in: the site's own, the same
+    /// The time of day and weather it's fought in, and its star: the site's own, the same
     /// each time it's fought over, like its map.
     pub fn conditions(&self) -> Conditions {
-        Conditions::of_site(self.map_seed, self.map_kind().sandy())
+        Conditions::of_site(self.map_seed, self.map_kind().sandy(), self.starlight)
     }
 
     /// Who built the place, whoever holds it now: a city's in their style.
@@ -924,6 +931,7 @@ impl Galaxy {
             id: co.id,
             at: s,
             system: system_name(s),
+            starlight: sys.starlight,
             holders: self.holders(s),
             side: f,
             enemy,
@@ -1359,6 +1367,7 @@ impl Galaxy {
                     enemy,
                     mission,
                     map_seed,
+                    starlight: sys.starlight,
                 }
             })
             .collect();
@@ -1368,6 +1377,7 @@ impl Galaxy {
             name: system_name(s),
             employer: f,
             planets: sys.planets,
+            starlight: sys.starlight,
             hulls: sys.hulls,
             mercs: {
                 let mut mercs = [0; SIDES];

@@ -32,9 +32,9 @@ use crate::render::mesh::{Instance, MeshData, MeshId};
 use crate::render::{Atmosphere, Camera, Particle, PointLight, Renderer, Scene};
 use crate::scene::project;
 use crate::ship_model;
+use crate::star::{ORDINARY, Star};
 use crate::ui::{Align, Hits, Painter, Rgba, design, theme, with_alpha};
 
-const STAR: Rgba = [1.0, 0.86, 0.62, 1.0];
 /// The fill behind the marks and labels: the black of space.
 const BG: Rgba = [0.025, 0.025, 0.03, 1.0];
 /// Height of the legend strip along the bottom.
@@ -173,28 +173,32 @@ impl SystemArt {
         }
     }
 
-    /// The star at `at`, `r` in radius: a white-hot ball in its own light,
-    /// and its glow.
+    /// Star `star` at `at`, `r` in radius if it's an ordinary one: a
+    /// white-hot ball in its own light, and its glow.
     pub fn star(
         &self,
+        star: Star,
         at: Vec3,
         r: f32,
         instances: &mut Vec<(MeshId, Instance)>,
         particles: &mut Vec<Particle>,
     ) {
-        let star = Vec3::from_slice(&STAR[..3]);
+        let r = r * star.size();
+        let (color, glow) = (star.color(), 0.11 * star.glow());
+        // The face is nearer white than its glow.
+        let face = Vec3::new(1.0, 0.88, 0.66) + (color - ORDINARY) * 0.8;
         instances.push((
             self.ball,
             Instance::new(
                 Mat4::from_scale_rotation_translation(Vec3::splat(r * 2.0), Quat::IDENTITY, at),
-                Vec4::new(1.0, 0.88, 0.66, 6.0),
+                face.extend(6.0),
             ),
         ));
         // Many faint shells, so no one's edge shows.
         for k in 0..24 {
             let shell = r * (1.1 + 0.075 * k as f32);
-            let light = star.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
-            particles.push(Particle::glow(at, shell, light, 0.11, Vec3::ZERO));
+            let light = color.lerp(Vec3::ONE, 0.3 * (1.0 - k as f32 / 24.0));
+            particles.push(Particle::glow(at, shell, light, glow, Vec3::ZERO));
         }
     }
 
@@ -238,12 +242,12 @@ impl SystemArt {
 
 /// The light: the star's, from the left and a little toward the camera,
 /// so each world shows a lit crescent and a dark side.
-fn atmosphere(l: &Layout) -> Atmosphere {
+fn atmosphere(l: &Layout, star: Star) -> Atmosphere {
     let mid = l.worlds.iter().copied().sum::<Vec3>() / l.worlds.len().max(1) as f32;
     let sun_dir = (l.star - mid + Vec3::new(0.0, 25.0, 30.0)).normalize();
     Atmosphere {
         sun_dir,
-        sun_color: Vec3::new(2.2, 2.05, 1.85),
+        sun_color: Vec3::new(2.2, 2.05, 1.85) * star.light(),
         sky_zenith: Vec3::new(0.05, 0.055, 0.07),
         sky_horizon: Vec3::new(0.03, 0.03, 0.04),
         ground_color: Vec3::new(0.02, 0.02, 0.025),
@@ -254,6 +258,7 @@ fn atmosphere(l: &Layout) -> Atmosphere {
         settle: Vec3::splat(0.2),
         ambient: 0.35,
         stars: 0.0,
+        sun_size: 1.0,
     }
 }
 
@@ -387,7 +392,8 @@ fn system_scene(
     ));
     stars(camera.pos, &mut particles);
 
-    art.star(l.star, STAR_R, &mut instances, &mut particles);
+    let star = Star::of(t.starlight);
+    art.star(star, l.star, STAR_R, &mut instances, &mut particles);
 
     // Orbits: hairline rings of faint light round the star.
     for w in &l.worlds {
@@ -426,7 +432,7 @@ fn system_scene(
         })
         .into_iter()
         .collect();
-    let atmosphere = atmosphere(&l);
+    let atmosphere = atmosphere(&l, star);
     Scene {
         camera,
         time,
@@ -923,11 +929,14 @@ fn jump_scene(art: &SystemArt, u: f32, time: f32) -> Scene {
     ship_parts(art, pose, &mut instances, &mut particles);
     let atmosphere = Atmosphere {
         sun_dir: Vec3::new(-0.3, 0.6, 0.75).normalize(),
-        ..atmosphere(&Layout {
-            star: Vec3::ZERO,
-            worlds: Vec::new(),
-            ship: None,
-        })
+        ..atmosphere(
+            &Layout {
+                star: Vec3::ZERO,
+                worlds: Vec::new(),
+                ship: None,
+            },
+            Star::of(1.0),
+        )
     };
     // The jump's own light, cold, round the hull.
     let lights = vec![PointLight {
@@ -1705,6 +1714,7 @@ mod tests {
             name: "TEST".into(),
             employer: 0,
             planets,
+            starlight: 1.0,
             mercs: [0; 5],
             hulls: [0; 5],
             held: [0; 5],

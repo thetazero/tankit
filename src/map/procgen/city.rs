@@ -40,6 +40,7 @@ pub fn atmosphere(rng: &mut Rng) -> crate::render::Atmosphere {
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
         stars: 0.0,
+        sun_size: 1.0,
     }
 }
 
