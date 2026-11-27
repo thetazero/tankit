@@ -1034,6 +1034,99 @@ mod tests {
         }
     }
 
+    /// Bots drive over a river city's bridges, on their own and two meeting
+    /// head on, without stopping on the way, climbing a parapet or going in.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn bots_cross_river_bridges() {
+        use glam::Vec3;
+
+        use crate::ai::{Bot, Contact, Objective, nav::NavGrid};
+        use crate::game::DT;
+        use crate::sim::{HullKind, TurretKind, World};
+        let mut runs = 0;
+        let mut bad = Vec::new();
+        // (In open, middling and cramped cities.)
+        for seed in [0, 1, 3] {
+            let m = build(&crate::city_spec(seed, Look::Ithessar)).0;
+            let c = m.skeleton.as_ref().unwrap().land.channel.clone().unwrap();
+            let nav = NavGrid::build(&m);
+            for hull in [HullKind::Kataphrakt, HullKind::Sethuun, HullKind::Gravis] {
+                for b in &c.bridges {
+                    let d = (b.ends[1] - b.ends[0]).normalize();
+                    // (Off the grid: a hover hull set down right along its
+                    // lines can miss the ground.)
+                    let ends = [(b.ends[0], -d), (b.ends[1], d)].map(|(p, out)| {
+                        nav.nearest_open_point(p + out * 8.0).unwrap() + Vec2::new(0.13, 0.17)
+                    });
+                    for two in [false, true] {
+                        let mut w = World::empty(m.clone());
+                        let n = if two { 2 } else { 1 };
+                        for k in 0..n {
+                            let to = ends[1 - k] - ends[k];
+                            w.spawn_tank(
+                                Vec3::ONE,
+                                ends[k],
+                                to.x.atan2(to.y),
+                                hull,
+                                TurretKind::Kontos,
+                            );
+                        }
+                        let contacts = [0, 1].map(|_| Contact {
+                            targetable: false,
+                            team: 0,
+                            health: 1.0,
+                        });
+                        let mut bots = [Bot::new(seed + 5), Bot::new(seed + 9)];
+                        let mut done = [None; 2];
+                        let mut tilt = 1.0f32;
+                        let mut stopped = 0.0;
+                        let mut wet = false;
+                        let mut t = 0.0;
+                        while t < 30.0 && done[..n].iter().any(|d| d.is_none()) {
+                            let cmds: Vec<_> = (0..n)
+                                .map(|k| {
+                                    let o = Objective {
+                                        at: ends[1 - k],
+                                        radius: 2.0,
+                                        level: f32::INFINITY,
+                                        fight: false,
+                                    };
+                                    bots[k].think(k, &w, &contacts, Some(o), &[], &nav, DT).0
+                                })
+                                .collect();
+                            w.step(&cmds);
+                            t += DT;
+                            for k in 0..n {
+                                let q = &w.tanks[k];
+                                let p = Vec2::new(q.pos.x, q.pos.z);
+                                if p.distance(ends[1 - k]) < 6.0 {
+                                    done[k].get_or_insert(t);
+                                }
+                                if t > 2.0 && done[k].is_none() {
+                                    tilt = tilt.min(q.up().y);
+                                    if q.speed().abs() < 1.0 {
+                                        stopped += DT;
+                                    }
+                                }
+                                wet |= q.pos.y < c.quay_at(b.t) - 2.0;
+                            }
+                        }
+                        runs += 1;
+                        let late = done[..n].iter().any(|d| d.is_none());
+                        if late || tilt < 0.9 || wet || stopped > if two { 2.0 } else { 0.5 } {
+                            bad.push((seed, hull, b.t, two, done, tilt, stopped, wet));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} of {runs}: {bad:#?}", bad.len());
+    }
+
     /// Draws the layouts of a few river cities, as they're seen from above
     /// (`DRAW_TO`: where).
     #[test]
