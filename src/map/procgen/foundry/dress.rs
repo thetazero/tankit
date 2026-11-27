@@ -44,6 +44,9 @@ pub fn dress(map: &mut Map, sk: &Skeleton, st: &dyn Works, ground: Ground, rng: 
             parts::build(map, f, part, sk.ground(f.center), Some(st));
         }
     }
+    if ground == Ground::Tundra {
+        snow(map, sk, land.open);
+    }
     edges(map, sk, rng, pal.wall, pal.wall_mat);
     bases(map, sk, pal.floor, pal.dark);
     growth(map, sk, &land, ground, rng);
@@ -102,6 +105,53 @@ fn terrain(sk: &Skeleton, land: &Land, ground: Ground) -> Terrain {
         c * (1.0 + (mottle - 1.0) * (1.0 - out))
     });
     t
+}
+
+/// Snow lying on every roof that's open to the sky, in places blown or
+/// melted off. Nothing solid.
+fn snow(map: &mut Map, sk: &Skeleton, color: Vec3) {
+    const DEEP: f32 = 0.14;
+    let mut lying = Vec::new();
+    for o in &map.oboxes {
+        let turn = o.rotation();
+        let up = turn * Vec3::Y;
+        let roof = o.half.min_element() > 0.9
+            && o.y1 - sk.ground(o.center) > 2.2
+            && up.y > 0.8
+            && !o.hidden
+            && !o.ramp
+            && o.rock.is_none();
+        if !roof || noise2(o.center.x / 5.0, o.center.y / 5.0, 230) < 0.22 {
+            continue;
+        }
+        let top = o.center3() + up * (o.y1 - o.y0) * 0.5;
+        let open = |x: f32, z: f32| {
+            let from = top + up * DEEP * 2.0 + turn * Vec3::new(x, 0.0, z);
+            !map.oboxes.iter().any(|q| q.ray_hit(from, Vec3::Y, 80.0))
+        };
+        // (A stepped roof's course shows only at its edges.)
+        let (x, z) = (o.half.x - 0.15, o.half.y - 0.15);
+        let bare =
+            open(0.0, 0.0) || (open(x, 0.0) && open(-x, 0.0)) || (open(0.0, z) && open(0.0, -z));
+        if !bare {
+            continue;
+        }
+        let c = top + up * (DEEP * 0.5 - 0.02);
+        lying.push(OBox {
+            center: Vec2::new(c.x, c.z),
+            half: o.half - Vec2::splat(0.06),
+            y0: c.y - DEEP * 0.5,
+            y1: c.y + DEEP * 0.5,
+            color,
+            side_mat: Material::Rubble,
+            top_mat: Material::Rubble,
+            solid: false,
+            chip: 0.0,
+            broken: false,
+            ..*o
+        });
+    }
+    map.oboxes.extend(lying);
 }
 
 /// What lies across where the roads leave.

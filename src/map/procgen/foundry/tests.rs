@@ -83,6 +83,24 @@ fn grounds_differ_only_in_looks() {
     assert!(lands[0] != lands[1] && lands[1] != lands[2]);
 }
 
+/// Snow lies on a tundra works' roofs whoever built it, changing no repair
+/// drop, and not on other grounds'.
+#[test]
+fn snow_lies_on_tundra_roofs() {
+    for look in LOOKS {
+        let built = |g: Ground| build(&crate::foundry_spec(2, look, g), g);
+        let lying = |m: &Map| {
+            let snow = Ground::Tundra.land().open;
+            let on = |o: &&crate::map::OBox| o.color == snow && o.rock.is_none();
+            m.oboxes.iter().filter(on).count()
+        };
+        let (tundra, desert) = (built(Ground::Tundra), built(Ground::Desert));
+        assert!(lying(&tundra) > 20, "{look:?}: {}", lying(&tundra));
+        assert_eq!(lying(&desert), 0, "{look:?}");
+        assert_eq!(tundra.repair_spots, desert.repair_spots, "{look:?}");
+    }
+}
+
 /// Two minutes of a 6v6 round: both sides score, and every bot gets out of
 /// its base.
 #[test]
