@@ -368,8 +368,16 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     st.finish(&mut map);
     let mut rock = st.ground() * glam::Vec3::new(0.9, 0.84, 0.78);
     let mut banks = Vec::new();
+    let ground = match spec.setting {
+        setting::Setting::Plain | setting::Setting::Desert => None,
+        setting::Setting::Tundra => Some(foundry::Ground::Tundra),
+        setting::Setting::Grassland => Some(foundry::Ground::Grassland),
+    };
     if spec.setting == setting::Setting::Desert {
         (banks, rock) = setting::desert(&mut map, &sk, spec.seed, st.road());
+    } else if let Some(g) = ground {
+        (banks, rock) =
+            setting::green_or_white(&mut map, &sk, spec.seed, g, st.ground(), st.road());
     }
     let heaped = |d: &[Drift], p: Vec2| {
         d.iter()
@@ -647,6 +655,33 @@ mod tests {
                 m.repair_spots
             );
             assert_eq!(m.vistas.len(), 2, "seed {seed}");
+        }
+    }
+
+    /// Whatever its ground, a seed's the same city, playable, under another
+    /// sky: snow on the roofs of the tundra's only.
+    #[test]
+    fn the_ground_changes_no_layout() {
+        use super::setting::Setting;
+        // (Every look, optimized: see `cities`.)
+        for (seed, look) in cities().filter(|&(s, _)| s < 1) {
+            let plain = crate::city_spec(seed, look);
+            let sk = skeleton(&plain);
+            let snow = foundry::Ground::Tundra.land().open;
+            let mut horizons = Vec::new();
+            for s in [Setting::Desert, Setting::Tundra, Setting::Grassland] {
+                let spec = plain.clone().set_in(s);
+                let m = map(&spec);
+                assert_eq!(skeleton(&spec).lots.len(), sk.lots.len());
+                if let Err(why) = check::playable(&m) {
+                    panic!("seed {seed} {look:?} {s:?}: {why}");
+                }
+                let lying = m.oboxes.iter().filter(|o| o.color == snow);
+                let lying = lying.filter(|o| o.rock.is_none()).count();
+                assert_eq!(lying > 20, s == Setting::Tundra, "{look:?} {s:?}: {lying}");
+                assert!(!horizons.contains(&m.atmosphere.sky_horizon));
+                horizons.push(m.atmosphere.sky_horizon);
+            }
         }
     }
 

@@ -241,6 +241,20 @@ mod tests {
                 2,
             ),
             (
+                MapKind::City(
+                    crate::map::procgen::Look::Imperium,
+                    crate::map::procgen::setting::Setting::Tundra,
+                ),
+                3,
+            ),
+            (
+                MapKind::City(
+                    crate::map::procgen::Look::Resonant,
+                    crate::map::procgen::setting::Setting::Grassland,
+                ),
+                4,
+            ),
+            (
                 MapKind::Foundry(
                     crate::map::procgen::Look::Uthenn,
                     crate::map::procgen::foundry::Ground::Tundra,

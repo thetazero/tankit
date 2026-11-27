@@ -931,6 +931,36 @@ mod tests {
         ]);
     }
 
+    /// The same for cities on tundra and grassland.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn snowy_and_green_cities_hardly_z_fight() {
+        use crate::map::procgen::{Look, setting::Setting};
+        let city = |seed, l, s| crate::make_map(crate::MapKind::City(l, s), seed);
+        hardly_z_fight([
+            ("city tundra", city(0, Look::Imperium, Setting::Tundra)),
+            (
+                "city grassland",
+                city(1, Look::Resonant, Setting::Grassland),
+            ),
+        ]);
+    }
+
+    /// The same for an Ithessar city in the snow.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn a_snowy_ithessar_city_hardly_z_fights() {
+        use crate::map::procgen::{Look, setting::Setting};
+        let kind = crate::MapKind::City(Look::Ithessar, Setting::Tundra);
+        hardly_z_fight([("ithessar city tundra", crate::make_map(kind, 0))]);
+    }
+
     /// The same for each faction's hull foundry.
     #[test]
     #[cfg_attr(

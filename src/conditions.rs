@@ -220,6 +220,7 @@ mod tests {
     use super::*;
     use crate::faction::Faction;
     use crate::map::procgen::Look;
+    use crate::map::procgen::setting::Setting;
     use crate::{Generator, MapKind, make_map};
 
     /// Every kind of map can be fought at any time of day: each darker than
@@ -240,6 +241,8 @@ mod tests {
             ),
             MapKind::City(Look::Imperium, Default::default()),
             MapKind::City(Look::Resonant, Default::default()),
+            MapKind::City(Look::Imperium, Setting::Tundra),
+            MapKind::City(Look::Resonant, Setting::Grassland),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
             MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Desert),
             MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Tundra),

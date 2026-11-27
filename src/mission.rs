@@ -236,13 +236,13 @@ pub fn for_foundries(class: crate::galaxy::theater::Class) -> Vec<usize> {
 
 /// The missions a crystal mine on a `class` world can be fought with: those
 /// in a mine (#523), if its ground has one, else any of theirs but the
-/// foundries and the depots (outposts').
+/// foundries, depots and cities (outposts').
 pub fn for_mines(class: crate::galaxy::theater::Class) -> Vec<usize> {
     let mut pool = for_sites(class);
     pool.retain(|&i| {
         !matches!(
             MISSIONS[i].map_kind,
-            MapKind::Foundry(..) | MapKind::Depot(..)
+            MapKind::Foundry(..) | MapKind::Depot(..) | MapKind::City(..)
         )
     });
     if class.ground().is_some() {
@@ -303,9 +303,13 @@ mod tests {
         }
         // Cities among them (two-sided, as every site's battle is).
         assert!(
-            for_sites(Class::Desert)
+            [Class::Desert, Class::Tundra, Class::Grassland]
                 .iter()
-                .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
+                .all(|&class| {
+                    for_outposts(class)
+                        .iter()
+                        .any(|&i| matches!(MISSIONS[i].map_kind, MapKind::City(..)))
+                })
         );
         // Every desert mission is there from the start: the open desert's
         // Hold and Attrition both, and the reservoir town's.
