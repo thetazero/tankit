@@ -1351,6 +1351,7 @@ fn river_roads(sk: &mut Skeleton, rng: &mut Rng, plan: &Plan) {
             out: false,
         });
     }
+    c.lay_slips(|p| inside(p, 8.0) && sk.out(p) < -6.0);
     sk.land.channel = Some(c);
 }
 

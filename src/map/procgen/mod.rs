@@ -1034,6 +1034,173 @@ mod tests {
         }
     }
 
+    /// Hover hulls drive down the slips, along the river and out of it, and
+    /// it's a way round they take where it's shorter; tracked ones keep off.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn hover_hulls_ride_the_river_and_tracked_ones_dont() {
+        use crate::ai::nav::NavGrid;
+        use glam::Vec3;
+        let mut rode = 0;
+        for seed in 0..3 {
+            let spec = crate::city_spec(seed, Look::Ithessar);
+            let sk = skeleton(&spec);
+            let m = build(&spec).0;
+            let c = sk.land.channel.as_ref().unwrap();
+            let start = std::time::Instant::now();
+            let tracked = NavGrid::build(&m);
+            let plain = start.elapsed();
+            let start = std::time::Instant::now();
+            let hover = NavGrid::build_hover(&m);
+            println!(
+                "seed {seed}: {} slips, grids {plain:?} and {:?}",
+                c.slips.len(),
+                start.elapsed()
+            );
+            assert!(c.slips.len() >= 2, "seed {seed}: {} slips", c.slips.len());
+            let length = |from: Vec3, r: &[Vec3]| {
+                let mut sum = 0.0;
+                let mut at = from;
+                for &p in r {
+                    sum += at.distance(p);
+                    at = p;
+                }
+                sum
+            };
+            let over = |p: Vec3| m.rivers[0].surface(Vec2::new(p.x, p.z), 0.0);
+            let wet = |from: Vec3, r: &[Vec3]| {
+                let mut at = from;
+                r.iter().any(|&p| {
+                    let a = std::mem::replace(&mut at, p);
+                    (0..=20).any(|k| {
+                        let q = a.lerp(p, k as f32 / 20.0);
+                        over(q).is_some_and(|y| q.y < y + 1.0)
+                    })
+                })
+            };
+            let mut open = 0;
+            for s in &c.slips {
+                let quay = c.point(s.t, s.side * (c.half + channel::WALL + 5.0));
+                let quay = Vec3::new(quay.x, s.top, quay.y);
+                let mid = c.point(s.t + s.down * (s.len() + 4.0), 0.0);
+                let mid = Vec3::new(mid.x, s.surface, mid.y);
+                let reach = |a: Vec3, b: Vec3| {
+                    let r = hover.route(a, b);
+                    !r.is_empty() && r.last().unwrap().distance(b) < 6.0 && length(a, &r) < 120.0
+                };
+                let both = reach(quay, mid) && reach(mid, quay);
+                if !both {
+                    println!(
+                        "seed {seed} slip {s:?}: {quay} {mid} floors {:?} {:?} route {:?}",
+                        hover.floor_at(quay),
+                        hover.floor_at(mid),
+                        hover.route(quay, mid)
+                    );
+                }
+                open += both as usize;
+                assert_eq!(tracked.floor_at(mid), None, "seed {seed}: {mid}");
+            }
+            assert!(
+                open * 10 >= c.slips.len() * 8,
+                "seed {seed}: {open} of {} slips open",
+                c.slips.len()
+            );
+            for s in &c.slips {
+                let at = |side: f32| {
+                    let p = c.point(s.t, side * (c.half + channel::WALL + 5.0));
+                    Vec3::new(p.x, s.top, p.y)
+                };
+                let (a, b) = (at(s.side), at(-s.side));
+                let (t, h) = (tracked.route(a, b), hover.route(a, b));
+                assert!(!wet(a, &t), "seed {seed}: {a} to {b}: {t:?}");
+                if wet(a, &h) && length(a, &h) < length(a, &t) * 0.95 {
+                    rode += 1;
+                }
+            }
+            for (k, &a) in m.open_spots.iter().enumerate().step_by(7) {
+                let b = m.open_spots[(k * 31 + 17) % m.open_spots.len()];
+                if c.wet(a, 4.0) || c.wet(b, 4.0) {
+                    continue;
+                }
+                let at = |p: Vec2| Vec3::new(p.x, m.ground_height(p.x, p.y), p.y);
+                let (a, b) = (at(a), at(b));
+                let t = tracked.route(a, b);
+                assert!(!wet(a, &t), "seed {seed}: {a} to {b}: {t:?}");
+            }
+        }
+        assert!(rode >= 10, "only {rode} routes ride the river");
+    }
+
+    /// A hover hull gets down a slip and back up it, in the physics and not
+    /// just on the grid.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn a_hover_hull_drives_down_a_slip_and_back_up() {
+        use crate::ai::nav::NavGrid;
+        use crate::sim::{Command, HullKind, TurretKind, World};
+        use glam::Vec3;
+        let spec = crate::city_spec(0, Look::Ithessar);
+        let sk = skeleton(&spec);
+        let m = build(&spec).0;
+        let nav = NavGrid::build_hover(&m);
+        let c = sk.land.channel.as_ref().unwrap();
+        let mut w = World::new(m, 0);
+        let mut failed = Vec::new();
+        for s in &c.slips {
+            let quay = c.point(s.t, s.side * (c.half + channel::WALL + 5.0));
+            let mid = c.point(s.t + s.down * (s.len() + 4.0), 0.0);
+            let quay = Vec3::new(quay.x, s.top, quay.y);
+            let mid = Vec3::new(mid.x, s.surface, mid.y);
+            let flat = |p: Vec3| Vec2::new(p.x, p.z);
+            w.spawn_tank(
+                Vec3::ONE,
+                flat(quay),
+                0.0,
+                HullKind::Sethuun,
+                TurretKind::Kontos,
+            );
+            let i = w.tanks.len() - 1;
+            let mut drive = |to: Vec3| {
+                let mut path = nav.route(w.tanks[i].pos, to);
+                for _ in 0..(60.0 / crate::game::DT) as usize {
+                    let t = &w.tanks[i];
+                    while path.first().is_some_and(|p| {
+                        flat(*p).distance(flat(t.pos)) < 3.0 && (p.y - t.pos.y).abs() < 3.0
+                    }) {
+                        path.remove(0);
+                    }
+                    let mut cmds = vec![Command::default(); w.tanks.len()];
+                    let Some(&p) = path.first() else {
+                        return (t.pos.y - to.y).abs() < 2.5 && t.up().y > 0.7;
+                    };
+                    let d = flat(p) - flat(t.pos);
+                    let err = crate::sim::wrap_angle(d.x.atan2(d.y) - t.yaw());
+                    cmds[i].steer = (err * 2.5).clamp(-1.0, 1.0);
+                    cmds[i].throttle = if err.abs() > 0.8 {
+                        (-t.speed() * 0.3).clamp(-1.0, 0.3)
+                    } else if t.speed() > 9.0 {
+                        0.0
+                    } else {
+                        0.7
+                    };
+                    w.step(&cmds);
+                }
+                false
+            };
+            let (down, up) = (drive(mid), drive(quay));
+            if !(down && up) {
+                failed.push((s, down, up, w.tanks[i].pos));
+            }
+        }
+        assert!(failed.is_empty(), "{failed:?}");
+    }
+
     /// Draws the layouts of a few river cities, as they're seen from above
     /// (`DRAW_TO`: where).
     #[test]

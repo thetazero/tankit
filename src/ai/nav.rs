@@ -9,6 +9,10 @@
 //!
 //! On a map with nothing stacked every cell has just the one floor, and the
 //! grid is the flat one it always was.
+//!
+//! Tracked hulls keep out of a plasma river; hover hulls ride on it, so they
+//! have a grid of their own where there's one (`build_hover`), its surface
+//! a floor like any other.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -41,6 +45,9 @@ const TANK_HEIGHT: f32 = 3.0;
 const DROP_MARGIN: f32 = 3.0;
 /// What counts as a drop there, m.
 const DROP: f32 = 2.0;
+/// How far past a plasma river's edge its channel's bed runs, m (inside its
+/// walls).
+const RIVER_MARGIN: f32 = 2.5;
 /// Floors further than this from a height aren't "at" it, m.
 const LEVEL_TOLERANCE: f32 = 2.5;
 
@@ -58,6 +65,10 @@ pub struct NavGrid {
     solid: Option<std::sync::Arc<crate::map::solid::Surface>>,
     /// Flat drivable slabs (decks, roofs): floors over the ground.
     slabs: Vec<OBox>,
+    /// For a hover hull: the rivers it rides on, and which cells they're by
+    /// (looking one up is slow, and most of a map's nowhere near).
+    rivers: std::sync::Arc<Vec<crate::map::river::River>>,
+    wet: Vec<bool>,
 }
 
 /// Which of `floors` is nearest height `h` (the higher, if two are), and
@@ -76,7 +87,18 @@ fn nearest(floors: &[f32; LEVELS], h: f32) -> (usize, f32) {
 type Spot = (usize, usize);
 
 impl NavGrid {
+    /// Where a tracked tank can drive.
     pub fn build(map: &Map) -> NavGrid {
+        NavGrid::build_for(map, false)
+    }
+
+    /// Where a hover hull can: over plasma rivers, too. (Where there are
+    /// none it's `build`'s.)
+    pub fn build_hover(map: &Map) -> NavGrid {
+        NavGrid::build_for(map, true)
+    }
+
+    fn build_for(map: &Map, hover: bool) -> NavGrid {
         let n = (map.size / NAV_CELL).ceil() as usize;
         let slabs = map
             .oboxes
@@ -91,7 +113,19 @@ impl NavGrid {
             terrain: map.terrain.clone(),
             solid: map.solid.clone(),
             slabs,
+            rivers: Default::default(),
+            wet: Vec::new(),
         };
+        if hover && !map.rivers.is_empty() {
+            nav.wet = (0..n * n)
+                .map(|i| {
+                    let near = RIVER_MARGIN + NAV_CELL;
+                    let c = nav.center(i);
+                    map.rivers.iter().any(|r| r.surface(c, near).is_some())
+                })
+                .collect();
+            nav.rivers = map.rivers.clone();
+        }
         nav.floor = (0..n * n).map(|i| nav.floors_at(nav.center(i))).collect();
 
         for s in &map.solids {
@@ -173,15 +207,17 @@ impl NavGrid {
                 }
             }
         }
-        // A plasma river's bed (its bridges are floors over it).
-        if !map.rivers.is_empty() {
+        // A plasma river's bed, and the slips down to it (its bridges are
+        // slabs over it).
+        if !hover && !map.rivers.is_empty() {
             for i in 0..n * n {
                 let c = nav.center(i);
-                let Some(y) = map.rivers.iter().find_map(|r| r.surface(c, 2.5)) else {
+                let Some(y) = map.rivers.iter().find_map(|r| r.surface(c, RIVER_MARGIN)) else {
                     continue;
                 };
+                let ground = nav.ground(c) + 0.1;
                 for l in 0..LEVELS {
-                    if nav.floor[i][l] < y + 1.0 {
+                    if nav.floor[i][l] < ground.max(y + 1.0) {
                         nav.blocked[i][l] = true;
                     }
                 }
@@ -288,7 +324,15 @@ impl NavGrid {
 
     fn ground(&self, p: Vec2) -> f32 {
         let solid = self.solid.as_ref().and_then(|s| s.top(p));
-        solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)))
+        let g =
+            solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)));
+        if !self.wet.get(self.cell(p)).is_some_and(|w| *w) {
+            return g;
+        }
+        self.rivers
+            .iter()
+            .filter_map(|r| r.surface(p, RIVER_MARGIN))
+            .fold(g, f32::max)
     }
 
     /// The floors at a point, the highest first (NaN past the last): those

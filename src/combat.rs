@@ -942,6 +942,8 @@ pub struct Match {
     /// picked, not one near your side.
     you_start: Option<(Vec2, f32)>,
     nav: NavGrid,
+    /// Hover hulls', where there's a plasma river for them to ride.
+    hover_nav: Option<NavGrid>,
     rng: Rng,
     /// Blowing sand, drifting dust, trickles, track dust (visual only).
     pub ambience: crate::ambience::Ambience,
@@ -963,6 +965,7 @@ impl Match {
     /// bases.
     pub fn new(map: Map, spawn: usize, bots: usize, seed: u64) -> Match {
         let nav = NavGrid::build(&map);
+        let hover_nav = (!map.rivers.is_empty()).then(|| NavGrid::build_hover(&map));
         let repairs = Repairs::new(&map);
         let factions = map.factions.clone();
         let mut world = World::new(map, spawn);
@@ -1039,6 +1042,7 @@ impl Match {
             started: false,
             you_start,
             nav,
+            hover_nav,
             rng,
         }
     }
@@ -1635,7 +1639,10 @@ impl Match {
                     &contacts,
                     objectives[i],
                     &crates,
-                    &self.nav,
+                    match &self.hover_nav {
+                        Some(nav) if self.world.tanks[i].chassis.hover => nav,
+                        _ => &self.nav,
+                    },
                     DT,
                 ),
                 None => (player, fire),

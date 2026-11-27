@@ -2,7 +2,8 @@
 //! dark glass, the surface well below the quays along both its banks, in
 //! level reaches with a drop between one and the next (it's plumbing: it
 //! doesn't follow the ground). Bridges are set from the quays, so their
-//! decks are always clear of it.
+//! decks are always clear of it. Slips run down to it along its walls: how
+//! hover hulls, which ride on it, get on and off.
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -39,6 +40,49 @@ pub struct Bridge {
     pub half: f32,
 }
 
+/// How wide a slip is, out from the wall it's along.
+const SLIP: f32 = 9.0;
+/// Half of how long its landing is, level with the quay at its top.
+const LANDING: f32 = 7.0;
+/// How far its landing runs on under the wall at its end.
+const LEDGE: f32 = 1.0;
+/// How steep it is (rise over run), and how far under the surface it goes.
+const SLIP_SLOPE: f32 = 0.4;
+const SLIP_FOOT: f32 = 1.0;
+/// The furthest one goes down.
+const SLIP_FALL: f32 = 9.0;
+
+/// A ramp from a quay down into the river, in the channel along its wall.
+#[derive(Clone, Copy, Debug)]
+pub struct Slip {
+    /// The middle of its landing, along the river.
+    pub t: f32,
+    /// Which bank, and which way along it's down.
+    pub side: f32,
+    pub down: f32,
+    /// Its top's height, and the river's surface by it.
+    pub top: f32,
+    pub surface: f32,
+}
+
+impl Slip {
+    /// From its landing's middle to its foot.
+    pub fn len(&self) -> f32 {
+        LANDING + (self.top - self.surface + SLIP_FOOT) / SLIP_SLOPE
+    }
+
+    /// Its height `u` down along it, if it's that long.
+    fn height(&self, u: f32) -> Option<f32> {
+        (u > -LANDING - LEDGE && u < self.len())
+            .then(|| self.top - (u - LANDING).max(0.0) * SLIP_SLOPE)
+    }
+
+    /// On its landing's stretch of the bank?
+    fn lands(&self, t: f32, side: f32) -> bool {
+        side == self.side && (t - self.t).abs() < LANDING + LEDGE
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Channel {
     /// Its middle, every `STEP` m along, from `from` (0's the middle of the
@@ -54,6 +98,7 @@ pub struct Channel {
     quay: Vec<f32>,
     surface: Vec<f32>,
     pub bridges: Vec<Bridge>,
+    pub slips: Vec<Slip>,
 }
 
 #[derive(Debug)]
@@ -148,6 +193,7 @@ impl Channel {
                 quay: Vec::new(),
                 surface: Vec::new(),
                 bridges: Vec::new(),
+                slips: Vec::new(),
             };
         }
     }
@@ -262,6 +308,19 @@ impl Channel {
         if a > self.reach() || self.quay.is_empty() {
             return h;
         }
+        for s in self.slips.iter().filter(|s| s.side * off > 0.0) {
+            let Some(y) = s.height((t - s.t) * s.down) else {
+                continue;
+            };
+            if s.lands(t, s.side) && a > self.half - SLIP - 0.7 && a < self.half + WALL {
+                // Level, over the wall and onto the quay.
+                let out = smoothstep(self.half + WALL * 0.5, self.half + WALL, a);
+                return y + (self.quay_at(t) - y) * out;
+            }
+            if a > self.half - SLIP - 0.7 && a < self.half + 2.0 {
+                return y;
+            }
+        }
         if a < self.half + 2.0 {
             return self.surface_at(t) - BED;
         }
@@ -288,6 +347,58 @@ impl Channel {
             half,
         });
         self.bridges.len() - 1
+    }
+
+    /// Slips, one on each bank of each stretch between bridges that has room
+    /// for them (so together they're a ford between two bridges), where `ok`
+    /// says a landing's quay may be.
+    pub fn lay_slips(&mut self, ok: impl Fn(Vec2) -> bool) {
+        let mut at: Vec<f32> = self.bridges.iter().map(|b| b.t).collect();
+        at.sort_by(f32::total_cmp);
+        for w in at.windows(2) {
+            for e in [-1.0f32, 1.0] {
+                let mut best: Option<(f32, Slip)> = None;
+                for down in [-1.0f32, 1.0] {
+                    let mut t = w[0];
+                    while t < w[1] {
+                        t += 2.0;
+                        let s = Slip {
+                            t,
+                            side: e,
+                            down,
+                            top: self.quay_at(t),
+                            surface: self.surface_at(t + down * 20.0),
+                        };
+                        let foot = s.len() + 6.0;
+                        let (lo, hi) = (t - LANDING - 3.0, t + down * foot);
+                        let (lo, hi) = if down > 0.0 {
+                            (lo, hi)
+                        } else {
+                            (hi, t + LANDING + 3.0)
+                        };
+                        let clear = s.top - s.surface < SLIP_FALL
+                            // All of it by the one reach.
+                            && [lo, t, hi]
+                                .iter()
+                                .all(|&t| (self.surface_at(t) - s.surface).abs() < 0.01)
+                            && (self.quay_at(t - LANDING) - self.quay_at(t + LANDING)).abs() < 0.7
+                            && self
+                                .bridges
+                                .iter()
+                                .all(|b| hi < b.t - b.half - 3.0 || lo > b.t + b.half + 3.0)
+                            && ok(self.point(t, e * (self.half + WALL + 4.0)))
+                            && ok(self.point(hi, 0.0))
+                            && ok(self.point(lo, 0.0));
+                        // In the middle of the stretch.
+                        let off = ((lo + hi) - (w[0] + w[1])).abs();
+                        if clear && best.as_ref().is_none_or(|b| off < b.0) {
+                            best = Some((off, s));
+                        }
+                    }
+                }
+                self.slips.extend(best.map(|(_, s)| s));
+            }
+        }
     }
 
     /// A bridge's deck's top.
@@ -372,7 +483,11 @@ impl Channel {
                     );
                 }
                 let long = chord(self.half) + 0.12;
-                if spanned {
+                let landing = self
+                    .slips
+                    .iter()
+                    .any(|s| [-0.5, 0.0, 0.5].iter().any(|k| s.lands(t + k * STEP, e)));
+                if spanned || landing {
                     continue;
                 }
                 // The lip: too low to stop a shove.
@@ -423,6 +538,38 @@ impl Channel {
                 // below.
                 lamps.push(Vec3::new(mid.x, s + 1.2, mid.y));
             }
+        }
+        // The slips' parapets: down their open side in steps, and across
+        // their landings' ends.
+        for s in &self.slips {
+            let bed = s.surface - BED - 1.0;
+            let step = 2.0;
+            let n = ((s.len() + LANDING) / step) as i32;
+            for k in 0..n {
+                let u = -LANDING + (k as f32 + 0.5) * step;
+                let t = s.t + s.down * u;
+                let h = self.heading(t);
+                let top = s.height(u - step * 0.5 + 0.01).unwrap_or(s.top) + 0.8;
+                let off = self.half - SLIP - 0.7;
+                put(
+                    self.point(t, s.side * off),
+                    h.x.atan2(h.y),
+                    Vec2::new(0.9, step * 0.5 + 0.1),
+                    (bed, top),
+                    glass * 1.5,
+                    Material::Vhaal,
+                );
+            }
+            let t = s.t - s.down * (LANDING + 1.3);
+            let h = self.heading(t);
+            put(
+                self.point(t, s.side * (self.half - SLIP * 0.5 - 0.5)),
+                h.x.atan2(h.y),
+                Vec2::new(SLIP * 0.5 + 1.1, 1.8),
+                (bed, s.top + 0.8),
+                glass * 1.5,
+                Material::Vhaal,
+            );
         }
         let stone = Vec3::new(0.09, 0.1, 0.14);
         for b in &self.bridges {
