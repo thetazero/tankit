@@ -529,13 +529,16 @@ impl Skeleton {
     /// Puts down the railways' track: rails on sleepers, over the ground or
     /// a bridge's deck. Nothing that stops a tank.
     pub fn lay_rails(&self, map: &mut Map) {
-        let y = |p: Vec2| {
-            let deck = self
-                .crossings
-                .iter()
-                .filter(|c| c.kind == super::crossing::Kind::Bridge && c.distance(p) < c.half)
-                .map(|c| c.top);
-            deck.fold(self.ground(p), f32::max)
+        // (Over or through a crossing only along it: not across its way.)
+        let y = |p: Vec2, d: Vec2| {
+            let along = |c: &&super::crossing::Crossing| {
+                c.dir().dot(d).abs() > 0.8 && c.distance(p) < c.half
+            };
+            let way = self.crossings.iter().find(along).map(|c| match c.kind {
+                super::crossing::Kind::Bridge => c.top.max(self.ground(p)),
+                super::crossing::Kind::Tunnel => c.floor,
+            });
+            way.unwrap_or_else(|| self.ground(p))
         };
         for line in &self.tracks {
             for w in line.windows(2) {
@@ -545,7 +548,7 @@ impl Skeleton {
                 let n = (len / 1.6).round().max(1.0) as i32;
                 for k in 0..n {
                     let p = w[0] + d * len * (k as f32 + 0.5) / n as f32;
-                    let h = y(p);
+                    let h = y(p, d);
                     map.oboxes.push(OBox {
                         center: p,
                         yaw,
@@ -560,7 +563,7 @@ impl Skeleton {
                     });
                 }
                 let side = Vec2::new(-d.y, d.x) * 0.75;
-                let (a, b) = (y(w[0]) + 0.16, y(w[1]) + 0.16);
+                let (a, b) = (y(w[0], d) + 0.16, y(w[1], d) + 0.16);
                 for s in [side, -side] {
                     let (p, q) = (w[0] + s, w[1] + s);
                     map.segment(
@@ -639,13 +642,12 @@ impl Skeleton {
             });
         };
         let yaw_of = |d: Vec2| (-d.y).atan2(d.x);
-        if !self.land.high.slabs.is_empty() {
-            // (What's dug is too fine for the coarse one to say if it's open.)
-            let cell = if self.land.digs.is_empty() { 2.0 } else { 1.0 };
-            let mut ground = self.land.surface(self.size, cell, |_| 0.0);
-            ground.rock = Vec3::new(0.55, 0.45, 0.35);
-            map.solid = Some(ground.into());
-        }
+        // (What's dug is too fine for the coarse one to say if it's open.)
+        let dug = !self.land.digs.is_empty() || !self.land.bores.is_empty();
+        let cell = if dug { 1.0 } else { 2.0 };
+        let mut ground = self.land.surface(self.size, cell, |_| 0.0);
+        ground.rock = Vec3::new(0.55, 0.45, 0.35);
+        map.solid = Some(ground.into());
         // The landmark: a ring wall, open at its doors and where it fell;
         // anything else, a low slab on its reach.
         for lm in &self.landmarks {

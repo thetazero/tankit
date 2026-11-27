@@ -131,7 +131,7 @@ fn styles_keep_to_the_parts() {
 fn bots_finish_a_raid() {
     use crate::combat::{Match, Phase};
     let mut taken = 0;
-    for seed in 0..2u64 {
+    for seed in 1..3u64 {
         let mut m = map(&spec(seed, LOOKS[seed as usize]));
         if seed % 2 == 1 {
             m.swap_sides(1);

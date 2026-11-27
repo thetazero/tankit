@@ -368,7 +368,6 @@ fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Optio
             top: super::DECK_TOP,
             floor: 0.0,
             roofed: (0.0, 0.0),
-            walled: (0.0, 0.0),
         });
         at.push(s);
     }

@@ -7,8 +7,73 @@ use glam::{IVec3, Vec2, Vec3};
 /// What's rock: negative in it, positive in the air, about the distance (m)
 /// to the surface near it.
 pub trait Rock {
-    /// The distances up the column over `p`, at each of `ys`.
-    fn column(&self, p: Vec2, ys: &[f32], out: &mut [f32]);
+    /// What's worked out once for the whole of a column.
+    type Column;
+    fn column(&self, p: Vec2) -> Self::Column;
+    /// From below the lowest of its surface to above the highest: it's all
+    /// rock under the one and all air over the other.
+    fn span(&self, c: &Self::Column) -> (f32, f32);
+    /// The distance `y` up it.
+    fn distance(&self, c: &Self::Column, y: f32) -> f32;
+}
+
+/// Samples of a rock on a grid, each column's only where its own surface or
+/// a neighbor's is.
+struct Samples {
+    nx: i32,
+    nz: i32,
+    /// Each column's first sample and its height (in cells), and how many.
+    columns: Vec<(usize, i32, i32)>,
+    d: Vec<f32>,
+}
+
+impl Samples {
+    fn of<R: Rock>(rock: &R, lo: Vec2, (nx, nz): (i32, i32), cell: f32) -> Samples {
+        let found: Vec<R::Column> = (0..nx * nz)
+            .map(|k| rock.column(lo + Vec2::new((k % nx) as f32, (k / nx) as f32) * cell))
+            .collect();
+        let spans: Vec<(i32, i32)> = found
+            .iter()
+            .map(|c| {
+                let (a, b) = rock.span(c);
+                ((a / cell).floor() as i32 - 1, (b / cell).ceil() as i32 + 1)
+            })
+            .collect();
+        let mut d = Vec::new();
+        let mut columns = Vec::with_capacity(found.len());
+        for (k, c) in found.iter().enumerate() {
+            let (x, z) = (k as i32 % nx, k as i32 / nx);
+            let (mut a, mut b) = spans[k];
+            for j in (z - 1).max(0)..=(z + 1).min(nz - 1) {
+                for i in (x - 1).max(0)..=(x + 1).min(nx - 1) {
+                    let s = spans[(j * nx + i) as usize];
+                    (a, b) = (a.min(s.0), b.max(s.1));
+                }
+            }
+            columns.push((d.len(), a, b - a + 1));
+            d.extend((a..=b).map(|y| rock.distance(c, y as f32 * cell)));
+        }
+        Samples { nx, nz, columns, d }
+    }
+
+    fn at(&self, c: IVec3) -> f32 {
+        let (from, low, n) = self.columns[(c.z * self.nx + c.x) as usize];
+        match c.y - low {
+            y if y < 0 => -1.0,
+            y if y >= n => 1.0,
+            y => self.d[from + y as usize],
+        }
+    }
+
+    /// The heights of the cubes over a square that may have surface in them.
+    fn cubes(&self, x: i32, z: i32) -> std::ops::Range<i32> {
+        let (mut a, mut b) = (i32::MAX, i32::MIN);
+        for (x, z) in [(x, z), (x + 1, z), (x, z + 1), (x + 1, z + 1)] {
+            let (_, low, n) = self.columns[(z * self.nx + x) as usize];
+            (a, b) = (a.min(low), b.max(low + n - 1));
+        }
+        a..b
+    }
 }
 
 /// The surface of a solid, as a mesh.
@@ -42,36 +107,27 @@ const SQUARE: f32 = 1.0;
 const FLOOR: f32 = 0.35;
 
 impl Surface {
-    /// Meshes `rock` from `lo` to `hi` in cubes `cell` across.
-    pub fn of(rock: &dyn Rock, lo: Vec3, hi: Vec3, cell: f32) -> Surface {
-        let n = ((hi - lo) / cell).ceil().as_ivec3() + 1;
-        let ys: Vec<f32> = (0..n.y).map(|y| lo.y + y as f32 * cell).collect();
-        let id = |c: IVec3| ((c.z * n.x + c.x) * n.y + c.y) as usize;
-        let mut d = vec![0.0f32; (n.x * n.y * n.z) as usize];
-        for z in 0..n.z {
-            for x in 0..n.x {
-                let p = Vec2::new(lo.x, lo.z) + Vec2::new(x as f32, z as f32) * cell;
-                let at = id(IVec3::new(x, 0, z));
-                rock.column(p, &ys, &mut d[at..at + n.y as usize]);
-            }
-        }
+    /// Meshes `rock` from `lo` to `hi` (all the way up and down) in cubes
+    /// `cell` across.
+    pub fn of<R: Rock>(rock: &R, lo: Vec2, hi: Vec2, cell: f32) -> Surface {
+        let n = ((hi - lo) / cell).ceil().as_ivec2() + 1;
+        let d = Samples::of(rock, lo, (n.x, n.y), cell);
         let mut s = Surface::default();
         // A vertex in every cube the surface passes through, in the middle
         // of where it crosses the cube's edges.
-        let mut ids = vec![u32::MAX; d.len()];
         let corner = |k: i32| IVec3::new(k & 1, (k >> 1) & 1, (k >> 2) & 1);
-        // Steps to a cube's corners in `d`, and whether it's all rock or all
-        // air (most are).
-        let steps: [usize; 8] = std::array::from_fn(|k| id(corner(k as i32)));
-        let whole = |at: usize| {
-            let rock = d[at] < 0.0;
-            steps[1..].iter().all(|s| (d[at + s] < 0.0) == rock)
-        };
-        for z in 0..n.z - 1 {
-            for x in 0..n.x - 1 {
-                for y in 0..n.y - 1 {
+        // (Over each square: its first cube's height, and their vertices.)
+        let mut ids: Vec<u32> = Vec::new();
+        let mut over: Vec<(usize, std::ops::Range<i32>)> = Vec::new();
+        for z in 0..d.nz - 1 {
+            for x in 0..d.nx - 1 {
+                let cubes = d.cubes(x, z);
+                over.push((ids.len(), cubes.clone()));
+                for y in cubes {
                     let c = IVec3::new(x, y, z);
-                    if whole(id(c)) {
+                    let at: [f32; 8] = std::array::from_fn(|k| d.at(c + corner(k as i32)));
+                    if at[1..].iter().all(|v| (*v < 0.0) == (at[0] < 0.0)) {
+                        ids.push(u32::MAX);
                         continue;
                     }
                     let (mut sum, mut hits) = (Vec3::ZERO, 0.0);
@@ -81,27 +137,42 @@ impl Surface {
                                 continue;
                             }
                             let (a, b) = (corner(k), corner(k | bit));
-                            let (da, db) = (d[id(c + a)], d[id(c + b)]);
+                            let (da, db) = (at[k as usize], at[(k | bit) as usize]);
                             if (da < 0.0) != (db < 0.0) {
                                 sum += a.as_vec3().lerp(b.as_vec3(), da / (da - db));
                                 hits += 1.0;
                             }
                         }
                     }
-                    if hits > 0.0 {
-                        ids[id(c)] = s.verts.len() as u32;
-                        s.verts.push(lo + (c.as_vec3() + sum / hits) * cell);
+                    ids.push(s.verts.len() as u32);
+                    let mut q = sum / hits;
+                    // (Its edges are straight: they meet other ground.)
+                    if x == 0 || x == d.nx - 2 {
+                        q.x = 0.5;
                     }
+                    if z == 0 || z == d.nz - 2 {
+                        q.z = 0.5;
+                    }
+                    let p = (c.as_vec3() + q) * cell;
+                    s.verts.push(Vec3::new(lo.x + p.x, p.y, lo.y + p.z));
                 }
             }
         }
+        let vertex = |c: IVec3| {
+            let (from, cubes) = &over[(c.z * (d.nx - 1) + c.x) as usize];
+            if cubes.contains(&c.y) {
+                ids[from + (c.y - cubes.start) as usize]
+            } else {
+                u32::MAX
+            }
+        };
         // A face across every grid edge the surface crosses, between the
         // four cubes round it.
-        for z in 0..n.z - 1 {
-            for x in 0..n.x - 1 {
-                for y in 0..n.y - 1 {
+        for z in 0..d.nz - 1 {
+            for x in 0..d.nx - 1 {
+                for y in d.cubes(x, z) {
                     let c = IVec3::new(x, y, z);
-                    if whole(id(c)) {
+                    if vertex(c) == u32::MAX {
                         continue;
                     }
                     for (axis, u, v) in [
@@ -109,14 +180,15 @@ impl Surface {
                         (IVec3::Y, IVec3::Z, IVec3::X),
                         (IVec3::Z, IVec3::X, IVec3::Y),
                     ] {
-                        if c.dot(u) < 1 || c.dot(v) < 1 {
+                        let low = c - u - v;
+                        if low.x < 0 || low.z < 0 {
                             continue;
                         }
-                        let (da, db) = (d[id(c)], d[id(c + axis)]);
+                        let (da, db) = (d.at(c), d.at(c + axis));
                         if (da < 0.0) == (db < 0.0) {
                             continue;
                         }
-                        let q = [c - u - v, c - v, c, c - u].map(|c| ids[id(c)]);
+                        let q = [c - u - v, c - v, c, c - u].map(vertex);
                         if q.contains(&u32::MAX) {
                             continue;
                         }
@@ -136,7 +208,7 @@ impl Surface {
     }
 
     /// Its normals, and which triangles are over each square.
-    fn finish(&mut self, lo: Vec3, hi: Vec3) {
+    fn finish(&mut self, lo: Vec2, hi: Vec2) {
         self.normals = vec![Vec3::ZERO; self.verts.len()];
         for t in &self.tris {
             let [a, b, c] = t.map(|k| self.verts[k as usize]);
@@ -149,9 +221,9 @@ impl Surface {
             *n = n.normalize_or(Vec3::Y);
         }
         self.driven = self.thinned();
-        self.lo = Vec2::new(lo.x, lo.z);
+        self.lo = lo;
         self.nx = ((hi.x - lo.x) / SQUARE).ceil() as usize + 1;
-        self.nz = ((hi.z - lo.z) / SQUARE).ceil() as usize + 1;
+        self.nz = ((hi.y - lo.y) / SQUARE).ceil() as usize + 1;
         // (square, floor)
         let mut filed: Vec<(u32, u32)> = Vec::new();
         for i in 0..self.driven.1.len() {
@@ -233,7 +305,7 @@ impl Surface {
 
     /// Every floor over `p`, in no order (one on a shared edge may come
     /// twice).
-    fn over(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
+    pub fn over(&self, p: Vec2) -> impl Iterator<Item = f32> + '_ {
         let (x, z) = self.square(p);
         let k = z * self.nx + x;
         self.over[self.starts[k] as usize..self.starts[k + 1] as usize]
@@ -307,23 +379,25 @@ mod tests {
     }
 
     impl Rock for Dug {
-        fn column(&self, p: Vec2, ys: &[f32], out: &mut [f32]) {
-            let q = Dug::local(p);
-            for (y, d) in ys.iter().zip(out) {
-                let rock = (-q.y).max(y - 10.0).min(*y);
-                let hall = (q.x.abs() - 4.0).max((y - 2.5).abs() - 2.5).max(q.y - 15.0);
-                *d = rock.max(-hall);
-            }
+        type Column = Vec2;
+
+        fn column(&self, p: Vec2) -> Vec2 {
+            Dug::local(p)
+        }
+
+        fn span(&self, _: &Vec2) -> (f32, f32) {
+            (0.0, 10.0)
+        }
+
+        fn distance(&self, q: &Vec2, y: f32) -> f32 {
+            let rock = (-q.y).max(y - 10.0).min(y);
+            let hall = (q.x.abs() - 4.0).max((y - 2.5).abs() - 2.5).max(q.y - 15.0);
+            rock.max(-hall)
         }
     }
 
     fn dug() -> Surface {
-        Surface::of(
-            &Dug,
-            Vec3::new(-30.0, -3.0, -30.0),
-            Vec3::new(30.0, 14.0, 30.0),
-            0.5,
-        )
+        Surface::of(&Dug, Vec2::splat(-30.0), Vec2::splat(30.0), 0.5)
     }
 
     #[test]
@@ -368,11 +442,10 @@ mod tests {
             let v = t.map(|k| s.verts[k as usize]);
             let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or_zero();
             let mid = (v[0] + v[1] + v[2]) / 3.0;
-            let mut d = [0.0; 2];
-            for (k, side) in [0.6, -0.6].into_iter().enumerate() {
+            let d = [0.6, -0.6].map(|side| {
                 let p = mid + n * side;
-                Dug.column(Vec2::new(p.x, p.z), &[p.y], &mut d[k..k + 1]);
-            }
+                Dug.distance(&Dug.column(Vec2::new(p.x, p.z)), p.y)
+            });
             assert!(n == Vec3::ZERO || d[0] > d[1], "{mid} faces {n}: {d:?}");
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);

@@ -24,6 +24,9 @@ pub fn dress(map: &mut Map, sk: &Skeleton, st: &dyn Works, ground: Ground, rng: 
     let land = ground.land();
     let pal = st.palette();
     map.terrain = Some(terrain(sk, &land, ground));
+    let mut solid = sk.land.plain_surface(sk.size, |_| 0.0);
+    solid.rock = land.rock;
+    map.solid = Some(solid.into());
     let stone = Stone {
         wall: pal.wall,
         mat: pal.wall_mat,
