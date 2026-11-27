@@ -135,7 +135,7 @@ pub fn build(spec: &Spec, ground: Ground) -> (Skeleton, Map) {
     settle(&mut map, &sk);
     // (Its own dice: what stands in the mine's the same on any ground.)
     let mut rng = Rng::new(spec.seed ^ 0x0006_2055);
-    ground_land::growth(&mut map, &sk, ground, &mut rng);
+    ground_land::growth(&mut map, &sk, ground, pal.sand, &mut rng, |_| true);
     (sk, map)
 }
 

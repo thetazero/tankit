@@ -14,7 +14,7 @@ pub mod dress;
 mod imperium;
 mod ithessar;
 mod kit;
-mod land;
+pub(in crate::map::procgen) mod land;
 pub mod plan;
 mod resonant;
 mod uthenn;

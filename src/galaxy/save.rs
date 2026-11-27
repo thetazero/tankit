@@ -1004,6 +1004,7 @@ mod tests {
         for c in &mut g.companies {
             c.contract = None;
             c.crystals = 100.0;
+            c.hulls = 0;
         }
         g.debts.clear();
         g.rules.merc_split = 1000.0;

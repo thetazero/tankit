@@ -500,6 +500,8 @@ pub(crate) struct Scene {
     crew_e: f32,
     gens0: f32,
     shielded: f32,
+    /// Its realm picks its battles (`Galaxy::picks`).
+    chooses: bool,
 }
 
 /// How a fight's expected to go (`Galaxy::forecast`).
@@ -1091,6 +1093,7 @@ impl Galaxy {
             crew_e,
             gens0,
             shielded,
+            chooses,
         } = scene;
         // (for the crew, theirs)
         let kit =
@@ -1156,6 +1159,19 @@ impl Galaxy {
                     } else {
                         theirs
                     };
+                    let pilots = hm.min(crew) + ho.min(flown);
+                    let fought = if chooses {
+                        // (all of them, with the pilots for it, else as
+                        // many as it fills the seats of)
+                        let full = (pilots / seats - mine).floor();
+                        if full >= theirs {
+                            theirs
+                        } else {
+                            fought.min(full.max(1.0))
+                        }
+                    } else {
+                        fought
+                    };
                     let n = (fought + mine).max(1.0);
                     let front = seats * n;
                     // Its crews and its own pilots share the seats, split
@@ -1186,7 +1202,13 @@ impl Galaxy {
                     let at = if gens >= 1.0 { chance(ff_at, fe) } else { held };
                     let won = (at * fought).min(theirs);
                     let lost = ((1.0 - held) * mine).min(mine);
-                    gens = (gens - won).max(0.0);
+                    // (of its wins, as many generators as of its battles)
+                    let spread = if chooses && gens >= 1.0 {
+                        (gens / fought).min(1.0)
+                    } else {
+                        1.0
+                    };
+                    gens = (gens - won * spread).max(0.0);
                     mine += won - lost;
                     theirs += lost - won;
                     // Fire's split between the sites' battles, so it's all
@@ -1326,13 +1348,16 @@ impl Galaxy {
             crew_e,
             gens0,
             shielded,
+            chooses: !raid && self.chooses(r),
         }
     }
 
     /// The seats side `f` has in system `t`'s battles: one battle for each
     /// site it can go for, and each of its own.
     pub(crate) fn seats_at(&self, t: usize, f: usize) -> u32 {
-        let battles = self.targets(t, f).len() as u32 + self.systems[t].held[f] as u32;
+        // (those it's fighting for, or could be, with more pilots)
+        let fought = self.targets(t, f).len().max(self.shields_first(t, f).len());
+        let battles = fought as u32 + self.systems[t].held[f] as u32;
         self.rules.seats as u32 * battles.max(1)
     }
 

@@ -36,7 +36,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::Mine(..) => &[],
         // Generated: each desert picks its own (by each side's spawns,
         // looking at the Needles).
-        MapKind::Desert | MapKind::Reservoir | MapKind::ShieldDesert(_) => &[],
+        MapKind::Desert | MapKind::Reservoir | MapKind::ShieldCamp(..) => &[],
     }
 }
 
@@ -239,6 +239,20 @@ mod tests {
             (
                 MapKind::City(crate::map::procgen::Look::Imperium, Default::default()),
                 2,
+            ),
+            (
+                MapKind::City(
+                    crate::map::procgen::Look::Imperium,
+                    crate::map::procgen::setting::Setting::Tundra,
+                ),
+                0,
+            ),
+            (
+                MapKind::City(
+                    crate::map::procgen::Look::Resonant,
+                    crate::map::procgen::setting::Setting::Grassland,
+                ),
+                1,
             ),
             (
                 MapKind::Foundry(

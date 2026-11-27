@@ -59,8 +59,9 @@ pub enum Biome {
     City,
     /// A crystal mine dug into an escarpment, on whichever ground.
     Mine(foundry::Ground),
-    /// Open desert: dunes, buttes, spires, perhaps a dry wash.
-    Desert,
+    /// Open desert (dunes, buttes, spires, perhaps a dry wash), or the same
+    /// land under snow or grass.
+    Open(foundry::Ground),
     /// A small town in the desert, round a dry reservoir's dam or a well.
     Reservoir,
     /// A hull foundry, on whichever ground.
@@ -230,7 +231,7 @@ fn build_map(spec: &Spec) -> Map {
     let mut map = match spec.biome {
         Biome::City => build(spec).0,
         Biome::Mine(ground) => mine::build(spec, ground),
-        Biome::Desert | Biome::Reservoir => desert::build(spec),
+        Biome::Open(_) | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot(ground) => depot::build(spec, ground),
     };
@@ -368,8 +369,16 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     st.finish(&mut map);
     let mut rock = st.ground() * glam::Vec3::new(0.9, 0.84, 0.78);
     let mut banks = Vec::new();
+    let ground = match spec.setting {
+        setting::Setting::Plain | setting::Setting::Desert => None,
+        setting::Setting::Tundra => Some(foundry::Ground::Tundra),
+        setting::Setting::Grassland => Some(foundry::Ground::Grassland),
+    };
     if spec.setting == setting::Setting::Desert {
         (banks, rock) = setting::desert(&mut map, &sk, spec.seed, st.road());
+    } else if let Some(g) = ground {
+        (banks, rock) =
+            setting::green_or_white(&mut map, &sk, spec.seed, g, st.ground(), st.road());
     }
     let heaped = |d: &[Drift], p: Vec2| {
         d.iter()
@@ -408,8 +417,8 @@ fn planet(biome: Biome) -> crate::planet::Look {
     match biome {
         Biome::City => city::PLANET,
         Biome::Mine(ground) => mine::planet(ground),
-        Biome::Desert | Biome::Reservoir => desert::PALETTES[0].planet,
-        Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
+        Biome::Open(foundry::Ground::Desert) | Biome::Reservoir => desert::PALETTES[0].planet,
+        Biome::Open(ground) | Biome::Foundry(ground) | Biome::Depot(ground) => ground.planet(),
     }
 }
 
@@ -417,7 +426,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
 pub fn greybox(spec: &Spec) -> Map {
     match spec.biome {
         Biome::Mine(ground) => return mine::greybox(spec, ground),
-        Biome::Desert | Biome::Reservoir => return desert::greybox(spec),
+        Biome::Open(_) | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::Depot(ground) => return depot::greybox(spec, ground),
         Biome::City => {}
@@ -647,6 +656,32 @@ mod tests {
                 m.repair_spots
             );
             assert_eq!(m.vistas.len(), 2, "seed {seed}");
+        }
+    }
+
+    /// Whatever its ground, a seed's the same city, playable, under another
+    /// sky: snow on the roofs of the tundra's only.
+    #[test]
+    fn the_ground_changes_no_layout() {
+        use super::setting::Setting;
+        // (One city each: they take seconds, and other tests build these too.)
+        for (seed, look, s) in [
+            (0, Look::Imperium, Setting::Tundra),
+            (1, Look::Resonant, Setting::Grassland),
+        ] {
+            let plain = crate::city_spec(seed, look);
+            let sk = skeleton(&plain);
+            let snow = foundry::Ground::Tundra.land().open;
+            let spec = plain.clone().set_in(s);
+            let (m, grey) = (map(&spec), map(&plain));
+            assert_eq!(skeleton(&spec).lots.len(), sk.lots.len());
+            if let Err(why) = check::playable(&m) {
+                panic!("seed {seed} {look:?} {s:?}: {why}");
+            }
+            let lying = m.oboxes.iter().filter(|o| o.color == snow);
+            let lying = lying.filter(|o| o.rock.is_none()).count();
+            assert_eq!(lying > 20, s == Setting::Tundra, "{look:?} {s:?}: {lying}");
+            assert_ne!(m.atmosphere.sky_horizon, grey.atmosphere.sky_horizon);
         }
     }
 
