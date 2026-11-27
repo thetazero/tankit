@@ -59,7 +59,7 @@ tankit [OPTIONS]
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
                           (generated: see --look), or the mine (a generated
-                          crystal mine: caves, rails and stacked levels; see --look), the desert (generated open
+                          crystal mine: caves, rails and stacked levels; see --look and --ground), the desert (generated open
                           desert) or the shield desert (the same, a shield generator in its landmark's slot)
   --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, mine, desert, shield-desert) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
@@ -72,7 +72,7 @@ tankit [OPTIONS]
                           (with --map city, shield-site, foundry, depot or mine) who built it (default
                           imperium, a mine's ithessar; uthenn and ithessar only have foundries,
                           depots and mines of their own)
-  --ground <desert|tundra|grassland>  (with --map foundry or sanctum) what kind of world it's on (default desert)
+  --ground <desert|tundra|grassland>  (with --map foundry, mine or sanctum) what kind of world it's on (default desert)
   --in-desert             (with --map city or shield-site) the city stands in the desert
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
   --no-lod                draw everything at full detail however far off (to compare against)
@@ -314,7 +314,7 @@ impl Args {
     pub fn map(&self) -> map::Map {
         let mut m = match (self.greybox, self.map) {
             (true, MapKind::City(l, _)) => map::procgen::greybox(&city_spec(self.map_seed, l)),
-            (true, MapKind::Mine(l)) => map::procgen::greybox(&mine_spec(self.map_seed, l)),
+            (true, MapKind::Mine(l, g)) => map::procgen::greybox(&mine_spec(self.map_seed, l, g)),
             (true, MapKind::Foundry(l, g)) => {
                 map::procgen::greybox(&foundry_spec(self.map_seed, l, g))
             }
@@ -366,9 +366,9 @@ pub enum MapKind {
     /// A rail depot, in someone's style, on desert. Generated: a different
     /// one for each map seed.
     Depot(map::procgen::Look),
-    /// A crystal mine in a desert escarpment, in someone's style, on three
-    /// levels. Generated: a different mine for each map seed.
-    Mine(map::procgen::Look),
+    /// A crystal mine in an escarpment, in someone's style on some kind of
+    /// ground, on three levels. Generated: a different mine for each map seed.
+    Mine(map::procgen::Look, map::procgen::foundry::Ground),
     /// Open desert: dunes, buttes and spires of sandstone round the
     /// Needles in the middle. Generated: a different desert for each seed.
     Desert,
@@ -385,13 +385,13 @@ impl MapKind {
     pub fn sandy(self) -> bool {
         use map::procgen::{foundry::Ground, setting::Setting};
         match self {
-            MapKind::Desert
-            | MapKind::ShieldDesert(_)
-            | MapKind::Reservoir
-            | MapKind::Depot(_)
-            | MapKind::Mine(_) => true,
+            MapKind::Desert | MapKind::ShieldDesert(_) | MapKind::Reservoir | MapKind::Depot(_) => {
+                true
+            }
             MapKind::City(_, s) | MapKind::ShieldSite(_, s, _) => s == Setting::Desert,
-            MapKind::Foundry(_, g) | MapKind::Sanctum(g) => g == Ground::Desert,
+            MapKind::Foundry(_, g) | MapKind::Mine(_, g) | MapKind::Sanctum(g) => {
+                g == Ground::Desert
+            }
             MapKind::Kiln => false,
         }
     }
@@ -406,7 +406,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::City(l, s) => map::procgen::map(&city_spec(seed, l).set_in(s)),
         MapKind::ShieldSite(l, s, g) => map::procgen::map(&shield_spec(seed, l, g).set_in(s)),
         MapKind::Foundry(l, g) => map::procgen::map(&foundry_spec(seed, l, g)),
-        MapKind::Mine(l) => map::procgen::map(&mine_spec(seed, l)),
+        MapKind::Mine(l, g) => map::procgen::map(&mine_spec(seed, l, g)),
         MapKind::Depot(l) => map::procgen::map(&depot_spec(seed, l)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
         MapKind::Reservoir => map::procgen::map(&reservoir_spec(seed)),
@@ -457,9 +457,13 @@ pub fn shield_spec(seed: u64, look: map::procgen::Look, g: Generator) -> map::pr
     }
 }
 
-/// The crystal mine `seed` names in `look`: its builders in the west, the
+/// The crystal mine `seed` names in `look` on `ground`: its builders in the west, the
 /// Resonant (the Ithessar, at the Resonant's own) in the east.
-pub fn mine_spec(seed: u64, look: map::procgen::Look) -> map::procgen::Spec {
+pub fn mine_spec(
+    seed: u64,
+    look: map::procgen::Look,
+    ground: map::procgen::foundry::Ground,
+) -> map::procgen::Spec {
     use faction::Faction;
     let owner = look.faction();
     let enemy = match owner {
@@ -468,7 +472,7 @@ pub fn mine_spec(seed: u64, look: map::procgen::Look) -> map::procgen::Spec {
     };
     map::procgen::Spec {
         seed,
-        biome: map::procgen::Biome::Mine,
+        biome: map::procgen::Biome::Mine(ground),
         setting: Default::default(),
         look,
         sides: vec![owner, enemy],
@@ -823,7 +827,12 @@ fn parse_args() -> Result<Args> {
                     )
                 }
                 Some("depot") => map_kind = MapKind::Depot(map::procgen::Look::Imperium),
-                Some("mine") => map_kind = MapKind::Mine(map::procgen::Look::Ithessar),
+                Some("mine") => {
+                    map_kind = MapKind::Mine(
+                        map::procgen::Look::Ithessar,
+                        map::procgen::foundry::Ground::Desert,
+                    )
+                }
                 Some("desert") => map_kind = MapKind::Desert,
                 Some("shield-desert") => {
                     map_kind = MapKind::ShieldDesert(Generator::up(faction::Faction::Imperium))
@@ -1115,7 +1124,9 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
-    if let (MapKind::Foundry(_, g) | MapKind::Sanctum(g), Some(ground)) = (&mut map_kind, ground) {
+    if let (MapKind::Foundry(_, g) | MapKind::Mine(_, g) | MapKind::Sanctum(g), Some(ground)) =
+        (&mut map_kind, ground)
+    {
         *g = ground;
     }
     if let (MapKind::City(_, s) | MapKind::ShieldSite(_, s, _), true) = (&mut map_kind, in_desert) {
@@ -1126,7 +1137,7 @@ fn parse_args() -> Result<Args> {
         | MapKind::ShieldSite(l, _, _)
         | MapKind::Foundry(l, _)
         | MapKind::Depot(l)
-        | MapKind::Mine(l),
+        | MapKind::Mine(l, _),
         Some(look),
     ) = (&mut map_kind, look)
     {

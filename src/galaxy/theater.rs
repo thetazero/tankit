@@ -471,7 +471,7 @@ pub enum Class {
     /// A desert world: its sites are generated (cities, mines,
     /// reservoir towns, open desert, Sanctums).
     Desert,
-    /// A frozen world: its foundries and Sanctums are generated, its other
+    /// A frozen world: its foundries, mines and Sanctums are generated, its other
     /// sites fought on the hand-built Kiln.
     Tundra,
     /// A green world, likewise.
@@ -490,7 +490,7 @@ impl Class {
         Class::Placeholder,
     ];
 
-    /// The ground its hull foundries stand on, if it has them.
+    /// The ground its hull foundries and crystal mines stand on, if it has them.
     pub fn ground(self) -> Option<Ground> {
         match self {
             Class::Desert => Some(Ground::Desert),
@@ -503,12 +503,10 @@ impl Class {
     /// Whether a mission's map is one this class's sites are fought on.
     pub fn fights_on(self, kind: MapKind) -> bool {
         match kind {
-            MapKind::City(..)
-            | MapKind::Mine(_)
-            | MapKind::Desert
-            | MapKind::Depot(_)
-            | MapKind::Reservoir => self == Class::Desert,
-            MapKind::Foundry(..) => self.ground().is_some(),
+            MapKind::City(..) | MapKind::Desert | MapKind::Depot(_) | MapKind::Reservoir => {
+                self == Class::Desert
+            }
+            MapKind::Foundry(..) | MapKind::Mine(..) => self.ground().is_some(),
             // Anywhere: each class has its own.
             MapKind::Sanctum(_) => true,
             MapKind::Kiln => self != Class::Desert,
@@ -604,7 +602,7 @@ impl SiteView {
     }
 
     /// The map it's fought on: its mission's, a city in its founder's style,
-    /// a depot or mine in its founder's own, a foundry too on its world's ground,
+    /// a depot in its founder's own, a foundry or mine too on its world's ground,
     /// and for a shield generator,
     /// the holder's model in the shape it's in.
     pub fn map_kind(&self) -> MapKind {
@@ -618,7 +616,10 @@ impl SiteView {
             return match kind {
                 MapKind::City(..) => MapKind::City(look, setting),
                 MapKind::Depot(_) => MapKind::Depot(Look::own(self.founder())),
-                MapKind::Mine(_) => MapKind::Mine(Look::own(self.founder())),
+                MapKind::Mine(_, ground) => MapKind::Mine(
+                    Look::own(self.founder()),
+                    self.class.ground().unwrap_or(ground),
+                ),
                 MapKind::Sanctum(ground) => MapKind::Sanctum(self.class.ground().unwrap_or(ground)),
                 MapKind::Foundry(_, ground) => MapKind::Foundry(
                     Look::own(self.founder()),
@@ -1924,10 +1925,10 @@ mod tests {
         assert!((0.35..0.65).contains(&share), "{share}");
     }
 
-    /// A desert world's crystal mines are fought in mines (#523) and its hull
-    /// foundries in foundries (#525). Either keeps its mission whoever's looking.
+    /// Crystal mines are fought in mines on their world's ground (#523, #684)
+    /// and hull foundries in foundries (#525), on every class with a ground. Either keeps its mission whoever's looking.
     #[test]
-    fn desert_crystal_mines_are_fought_in_mines() {
+    fn crystal_mines_are_fought_in_mines() {
         for mine in [true, false] {
             let mut g = galaxy();
             for site in &mut g.sites {
@@ -1939,20 +1940,24 @@ mod tests {
                 }
             }
             let mut in_mine = [0; 2];
+            let mut grounds = std::collections::HashSet::new();
             for sys in 0..g.systems.len() {
                 let sites = g.theater_at(sys, 0).sites;
                 for (s, other) in sites.iter().zip(&g.theater_at(sys, 1).sites) {
-                    if world(sys, s.planet as usize).0 != Class::Desert || !s.kind.produces() {
+                    let ground = world(sys, s.planet as usize).0.ground();
+                    let (Some(ground), true) = (ground, s.kind.produces()) else {
                         continue;
-                    }
+                    };
                     assert_eq!(s.kind_name() == CRYSTAL_MINE, mine);
                     assert_eq!((s.mission, s.map_seed), (other.mission, other.map_seed));
-                    in_mine[matches!(s.map_kind(), MapKind::Mine(l) if l == Look::own(s.founder()))
-                        as usize] += 1;
+                    let theirs = MapKind::Mine(Look::own(s.founder()), ground);
+                    in_mine[(s.map_kind() == theirs) as usize] += 1;
+                    grounds.extend(mine.then_some(ground));
                 }
             }
             assert!(in_mine[mine as usize] > 0, "{in_mine:?}");
             assert_eq!(in_mine[!mine as usize], 0, "{in_mine:?}");
+            assert_eq!(grounds.len(), if mine { 3 } else { 0 });
         }
     }
 

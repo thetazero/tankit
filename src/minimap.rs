@@ -384,7 +384,11 @@ mod tests {
     fn generated_maps_have_a_minimap() {
         for spec in [
             crate::city_spec(1, Look::Imperium),
-            crate::mine_spec(1, Look::Ithessar),
+            crate::mine_spec(
+                1,
+                Look::Ithessar,
+                crate::map::procgen::foundry::Ground::Desert,
+            ),
             crate::desert_spec(1),
         ] {
             let m = crate::map::procgen::map(&spec);

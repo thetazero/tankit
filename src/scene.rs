@@ -984,12 +984,12 @@ mod tests {
         ignore = "slow unoptimized: run with cargo test --release"
     )]
     fn mines_hardly_z_fight() {
-        use crate::map::procgen::Look;
-        let mine = |l| crate::make_map(crate::MapKind::Mine(l), 0);
+        use crate::map::procgen::{Look, foundry::Ground};
+        let mine = |l, g| crate::make_map(crate::MapKind::Mine(l, g), 0);
         hardly_z_fight([
-            ("mine imperium", mine(Look::Imperium)),
-            ("mine resonant", mine(Look::Resonant)),
-            ("mine uthenn", mine(Look::Uthenn)),
+            ("mine imperium", mine(Look::Imperium, Ground::Desert)),
+            ("mine resonant", mine(Look::Resonant, Ground::Tundra)),
+            ("mine uthenn", mine(Look::Uthenn, Ground::Grassland)),
         ]);
     }
 

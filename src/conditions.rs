@@ -242,7 +242,12 @@ mod tests {
             MapKind::City(Look::Resonant, Default::default()),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
             MapKind::Depot(Look::Imperium),
-            MapKind::Mine(Look::Ithessar),
+            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Desert),
+            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Tundra),
+            MapKind::Mine(
+                Look::Ithessar,
+                crate::map::procgen::foundry::Ground::Grassland,
+            ),
             MapKind::Desert,
             MapKind::ShieldDesert(g),
         ] {
@@ -308,7 +313,10 @@ mod tests {
     /// haze hides nothing a bot could see.
     #[test]
     fn a_sandstorm_cuts_sight() {
-        for kind in [MapKind::Desert, MapKind::Mine(Look::Ithessar)] {
+        for kind in [
+            MapKind::Desert,
+            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Desert),
+        ] {
             let own = make_map(kind, 1);
             assert!(own.atmosphere.sight() > 2.0 * crate::ai::SIGHT);
             assert!(!storming(&own.atmosphere));

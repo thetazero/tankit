@@ -47,7 +47,7 @@ pub fn dress(map: &mut Map, sk: &Skeleton, look: Look, ground: Ground, rng: &mut
         }
     }
     if ground == Ground::Tundra {
-        snow(map, sk, land.open);
+        snow(map, sk, land.open, |_| true);
     }
     edges(map, sk, rng, pal.wall, pal.wall_mat);
     bases(map, sk, pal.floor, pal.dark);
@@ -110,8 +110,8 @@ fn terrain(sk: &Skeleton, land: &Land, ground: Ground) -> Terrain {
 }
 
 /// Snow lying on every roof that's open to the sky, in places blown or
-/// melted off. Nothing solid.
-fn snow(map: &mut Map, sk: &Skeleton, color: Vec3) {
+/// melted off. Nothing solid. Only on boxes `on` allows, by their middles.
+pub(in crate::map) fn snow(map: &mut Map, sk: &Skeleton, color: Vec3, on: impl Fn(Vec2) -> bool) {
     const DEEP: f32 = 0.14;
     let mut lying = Vec::new();
     for o in &map.oboxes {
@@ -122,7 +122,8 @@ fn snow(map: &mut Map, sk: &Skeleton, color: Vec3) {
             && up.y > 0.8
             && !o.hidden
             && !o.ramp
-            && o.rock.is_none();
+            && o.rock.is_none()
+            && on(o.center);
         if !roof || noise2(o.center.x / 5.0, o.center.y / 5.0, 230) < 0.22 {
             continue;
         }
@@ -287,26 +288,42 @@ fn growth(map: &mut Map, sk: &Skeleton, land: &Land, ground: Ground, rng: &mut R
                 put(map, o);
             }
             Ground::Tundra => {
-                let half = Vec2::new(rng.range(1.0, 3.0), rng.range(0.7, 1.5));
-                let top = g + rng.range(0.12, 0.35);
-                let o = rocks::boulder(p, yaw, half, g - 0.8, top, land.open);
-                put(map, o);
+                snowdrift(map, rng, p, g, yaw, land.open);
             }
             Ground::Grassland => {
-                for k in 0..4 {
-                    let lean = Vec2::from_angle(yaw + k as f32 * 1.7) * rng.range(0.1, 0.3);
-                    let q = p + lean;
-                    map.segment(
-                        Vec3::new(p.x, g - 0.05, p.y),
-                        Vec3::new(q.x, g + rng.range(0.3, 0.7), q.y),
-                        0.035,
-                        land.open * rng.range(0.8, 1.35),
-                        Material::Grass,
-                        false,
-                    );
-                }
+                tuft(map, rng, p, g, yaw, land.open);
             }
         }
+    }
+}
+
+/// A low drift of snow at `p`, the ground there at `g`.
+pub(in crate::map) fn snowdrift(
+    map: &mut Map,
+    rng: &mut Rng,
+    p: Vec2,
+    g: f32,
+    yaw: f32,
+    color: Vec3,
+) {
+    let half = Vec2::new(rng.range(1.0, 3.0), rng.range(0.7, 1.5));
+    let top = g + rng.range(0.12, 0.35);
+    let o = rocks::boulder(p, yaw, half, g - 0.8, top, color);
+    map.oboxes.push(OBox { solid: false, ..o });
+}
+
+/// A tuft of grass at `p`, the ground there at `g`.
+pub(in crate::map) fn tuft(map: &mut Map, rng: &mut Rng, p: Vec2, g: f32, yaw: f32, color: Vec3) {
+    for k in 0..4 {
+        let q = p + Vec2::from_angle(yaw + k as f32 * 1.7) * rng.range(0.1, 0.3);
+        map.segment(
+            Vec3::new(p.x, g - 0.05, p.y),
+            Vec3::new(q.x, g + rng.range(0.3, 0.7), q.y),
+            0.035,
+            color * rng.range(0.8, 1.35),
+            Material::Grass,
+            false,
+        );
     }
 }
 

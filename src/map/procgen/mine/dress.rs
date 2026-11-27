@@ -1,46 +1,39 @@
 //! Dressing a mine's skeleton (see `plan`): the outside as a desert is, in
-//! red rock, and what stands in each dig, placed in the dig's own frame.
+//! its world's rock (`super::land`), and what stands in each dig, placed in the dig's own frame.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 
 use super::dig::Dig;
-use super::{MineStyle, PLANET, along, atmosphere, line_at, line_distance, plan, style};
+use super::{MineStyle, along, land as ground_land, line_at, line_distance, plan, style};
 use crate::ai::nav::NavGrid;
 use crate::map::procgen::Spec;
-use crate::map::procgen::desert::{self, Palette};
+use crate::map::procgen::desert;
+use crate::map::procgen::foundry::Ground;
 use crate::map::procgen::land::{self, Hollow};
 use crate::map::procgen::skeleton::{Lot, LotKind, Skeleton, TANK_CLEAR};
 use crate::map::{Ambient, Map};
 use crate::rng::Rng;
 
-/// Red rock and pale sand.
-const PALETTE: Palette = Palette {
-    sand: Vec3::new(0.72, 0.55, 0.38),
-    low: Vec3::new(0.56, 0.4, 0.27),
-    stone: Vec3::new(0.55, 0.32, 0.21),
-    stone_dark: Vec3::new(0.36, 0.2, 0.14),
-    stone_pale: Vec3::new(0.66, 0.46, 0.33),
-    planet: PLANET,
-};
-
 /// How far in from a wall its lamps and gear stand, m.
 const WALL: f32 = 0.35;
 
-/// Builds `spec`'s mine.
-pub fn build(spec: &Spec) -> (Skeleton, Map) {
+/// Builds `spec`'s mine on `ground`.
+pub fn build(spec: &Spec, ground: Ground) -> (Skeleton, Map) {
     let sk = plan::skeleton(spec.seed, &spec.sides);
     let mut rng = Rng::new(spec.seed ^ 0x5EED_D2E5);
     let st = style(spec.look);
-    let sky = atmosphere(&mut rng);
-    let (mut map, _) = desert::dressed(&sk, spec, &PALETTE, sky, spec.seed);
+    let sky = ground_land::atmosphere(ground, &mut rng);
+    let (pal, loose) = (ground_land::palette(ground), ground_land::loose(ground));
+    let (mut map, _) = desert::dressed(&sk, spec, &pal, sky, spec.seed);
     map.hold_name = st.hold_name();
     let mut b = Dig {
         map: &mut map,
         l: &sk,
         st,
         look: spec.look,
+        loose,
         inside: true,
     };
     b.railroad();
@@ -62,6 +55,7 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
                 l: &sk,
                 st,
                 look: spec.look,
+                loose,
                 inside: true,
             },
             d,
@@ -74,6 +68,7 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
         l: &sk,
         st,
         look: spec.look,
+        loose,
         inside: false,
     };
     for d in &sk.land.digs {
@@ -138,6 +133,9 @@ pub fn build(spec: &Spec) -> (Skeleton, Map) {
     }
     sounds(&mut map, &sk, st);
     settle(&mut map, &sk);
+    // (Its own dice: what stands in the mine's the same on any ground.)
+    let mut rng = Rng::new(spec.seed ^ 0x0006_2055);
+    ground_land::growth(&mut map, &sk, ground, &mut rng);
     (sk, map)
 }
 
@@ -471,7 +469,10 @@ mod tests {
     #[test]
     fn dressed_mines_are_playable() {
         for seed in 0..2 {
-            let (sk, mut m) = build(&crate::mine_spec(seed, Look::Ithessar));
+            let (sk, mut m) = build(
+                &crate::mine_spec(seed, Look::Ithessar, Ground::Desert),
+                Ground::Desert,
+            );
             crate::map::procgen::ways::lay(&mut m);
             let nav = NavGrid::build(&m);
             if let Err(why) = check::playable_on(&m, &nav) {
@@ -521,12 +522,15 @@ mod tests {
         ignore = "slow unoptimized: run with cargo test --release"
     )]
     fn any_faction_can_have_the_mine() {
-        let (sk, theirs) = build(&crate::mine_spec(0, Look::Ithessar));
+        let (sk, theirs) = build(
+            &crate::mine_spec(0, Look::Ithessar, Ground::Desert),
+            Ground::Desert,
+        );
         let line = |m: &Map| m.beams.iter().map(|b| (b.from, b.to)).collect::<Vec<_>>();
         assert!(!theirs.beams.is_empty());
         let mut colors = vec![theirs.beams[0].color];
         for look in [Look::Imperium, Look::Resonant, Look::Uthenn] {
-            let (other, m) = build(&crate::mine_spec(0, look));
+            let (other, m) = build(&crate::mine_spec(0, look, Ground::Desert), Ground::Desert);
             if let Err(why) = check::playable(&m) {
                 panic!("{look:?}: {why}");
             }
@@ -536,5 +540,31 @@ mod tests {
             assert!(!colors.contains(&m.beams[0].color), "{look:?}");
             colors.push(m.beams[0].color);
         }
+    }
+
+    /// A seed's the same mine on any ground: only its looks differ. Snow
+    /// lies on a tundra one's roofs, grass grows round a grassland one.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn grounds_differ_only_in_looks() {
+        let built = Ground::ALL.map(|g| build(&crate::mine_spec(1, Look::Imperium, g), g).1);
+        let solid = |m: &Map| {
+            let of = m.oboxes.iter().filter(|o| o.solid);
+            of.map(|o| (o.center, o.yaw, o.half, o.y0, o.y1))
+                .collect::<Vec<_>>()
+        };
+        let [desert, tundra, grass] = &built;
+        for m in [tundra, grass] {
+            assert!(solid(m) == solid(desert));
+            assert_eq!(m.bases, desert.bases);
+            assert_eq!(m.repair_spots, desert.repair_spots);
+            assert!(m.atmosphere.settle != desert.atmosphere.settle);
+            assert!(check::playable(m).is_ok());
+        }
+        assert!(tundra.oboxes.len() > desert.oboxes.len() + 50);
+        assert!(grass.oboxes.len() > desert.oboxes.len() + 50);
     }
 }
