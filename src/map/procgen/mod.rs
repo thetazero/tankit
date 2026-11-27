@@ -1248,6 +1248,119 @@ mod tests {
         assert!(bad.is_empty(), "{} of {runs}: {bad:#?}", bad.len());
     }
 
+    /// Hover hulls drive down a river's banks, over it and up the other
+    /// side, on the grid (where that's shorter than by a bridge) and in the
+    /// physics; tracked ones keep off.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn hover_hulls_cross_the_river_and_tracked_ones_dont() {
+        use crate::ai::nav::NavGrid;
+        use crate::sim::{Command, HullKind, TurretKind, World};
+        use glam::Vec3;
+        let m = build(&crate::city_spec(0, Look::Ithessar)).0;
+        let c = m.skeleton.as_ref().unwrap().land.channel.clone().unwrap();
+        let tracked = NavGrid::build(&m);
+        let hover = NavGrid::build_hover(&m);
+        let river = m.rivers[0].clone();
+        let flat = |p: Vec3| Vec2::new(p.x, p.z);
+        // Over the river, and not by a bridge. (Routes are straightened: the
+        // heights between their points don't say.)
+        let bridged = |p: Vec2| {
+            c.bridges.iter().any(|b| {
+                let (t, _) = c.local(p);
+                (t - b.t).abs() < b.half + 1.0
+            })
+        };
+        let wet = |from: Vec3, r: &[Vec3]| {
+            let mut at = from;
+            r.iter().any(|&p| {
+                let a = std::mem::replace(&mut at, p);
+                (0..=20).any(|k| {
+                    let q = flat(a.lerp(p, k as f32 / 20.0));
+                    river.surface(q, 0.0).is_some() && !bridged(q)
+                })
+            })
+        };
+        let length = |from: Vec3, r: &[Vec3]| {
+            let mut at = from;
+            r.iter()
+                .map(|&p| std::mem::replace(&mut at, p).distance(p))
+                .sum::<f32>()
+        };
+        let mut at: Vec<f32> = c.bridges.iter().map(|b| b.t).collect();
+        at.sort_by(f32::total_cmp);
+        let mut w = World::new(m, 0);
+        let (mut rode, mut crossed, mut tried) = (0, 0, 0);
+        for s in at.windows(2) {
+            let t = (s[0] + s[1]) * 0.5;
+            let off = c.half + channel::BANK + 5.0;
+            let ends = [-1.0f32, 1.0].map(|e| c.point(t, e * off));
+            if ends
+                .iter()
+                .any(|&p| hover.is_blocked(p) || tracked.is_blocked(p))
+            {
+                continue;
+            }
+            let [a, b] = ends.map(|p| Vec3::new(p.x, c.quay_at(t), p.y));
+            tried += 1;
+            let (dry, over) = (tracked.route(a, b), hover.route(a, b));
+            assert!(!wet(a, &dry), "{a} to {b}: {dry:?}");
+            let mid = c.point(t, 0.0);
+            let mid = Vec3::new(mid.x, c.surface_at(t), mid.y);
+            assert_eq!(tracked.floor_at(mid), None);
+            let floor = hover.floor_at(mid).expect("the river's open");
+            assert!((floor - mid.y).abs() < 0.5, "{floor} at {mid}");
+            if !wet(a, &over) || length(a, &over) > length(a, &dry) * 0.95 {
+                continue;
+            }
+            rode += 1;
+            w.spawn_tank(
+                Vec3::ONE,
+                flat(a),
+                0.0,
+                HullKind::Sethuun,
+                TurretKind::Kontos,
+            );
+            let i = w.tanks.len() - 1;
+            let mut path = over;
+            for _ in 0..(40.0 / crate::game::DT) as usize {
+                let t = &w.tanks[i];
+                while path.first().is_some_and(|p| {
+                    flat(*p).distance(flat(t.pos)) < 3.0 && (p.y - t.pos.y).abs() < 3.0
+                }) {
+                    path.remove(0);
+                }
+                let Some(&p) = path.first() else {
+                    break;
+                };
+                let d = flat(p) - flat(t.pos);
+                let err = crate::sim::wrap_angle(d.x.atan2(d.y) - t.yaw());
+                let mut cmds = vec![Command::default(); w.tanks.len()];
+                cmds[i].steer = (err * 2.5).clamp(-1.0, 1.0);
+                cmds[i].throttle = if err.abs() > 0.8 {
+                    (-t.speed() * 0.3).clamp(-1.0, 0.3)
+                } else if t.speed() > 9.0 {
+                    0.0
+                } else {
+                    0.7
+                };
+                w.step(&cmds);
+            }
+            let t = &w.tanks[i];
+            if path.is_empty() && t.up().y > 0.7 {
+                crossed += 1;
+            } else {
+                println!("from {a} to {b}: at {}, {path:?} left", t.pos);
+            }
+        }
+        println!("{crossed} crossed, {rode} rode, {tried} tried");
+        assert!(tried >= 3 && rode * 2 >= tried, "{rode} of {tried} ride it");
+        assert_eq!(crossed, rode);
+    }
+
     /// Draws the layouts of a few river cities, as they're seen from above
     /// (`DRAW_TO`: where).
     #[test]

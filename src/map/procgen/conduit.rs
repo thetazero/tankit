@@ -1,13 +1,13 @@
 //! What joins an Ithessar great building to the plasma river: a conduit
 //! carried overhead, down the way to the quay and out over the channel's
-//! wall, on portals that straddle the way. The Sun's runs down from its orb
+//! bank, on portals that straddle the way. The Sun's runs down from its orb
 //! and pours into the river; the Weir's is drawn up out of it.
 
 use std::f32::consts::FRAC_PI_2;
 
 use glam::{Vec2, Vec3};
 
-use super::channel::{Channel, WALL};
+use super::channel::{BANK, Channel};
 use super::skeleton::*;
 use crate::map::{Ambient, Map};
 use crate::render::PointLight;
@@ -109,7 +109,7 @@ fn route(sk: &Skeleton, c: &Channel, landmark: usize) -> Option<Conduit> {
     let d = *lm.doors.first()?;
     let to = (0..200)
         .map(|s| lm.center + d * s as f32)
-        .find(|&p| c.wet(p, -WALL))?;
+        .find(|&p| c.wet(p, -BANK))?;
     let (mid, off) = c.local(to);
     // Straight on, or as little aside as clears the bridges.
     let t = (0..30)
@@ -125,7 +125,7 @@ fn route(sk: &Skeleton, c: &Channel, landmark: usize) -> Option<Conduit> {
         t,
         portals: Vec::new(),
     };
-    // The last stands on the channel's wall, the rest beside the way.
+    // The last stands on the channel's bank, the rest beside the way.
     let last = conduit.len() - 5.0;
     let half = sk
         .avenues()
@@ -222,9 +222,7 @@ pub fn build(map: &mut Map, sk: &Skeleton, conduit: &Conduit, from: f32, high: [
         );
         for e in [-half, half] {
             let q = p + d.perp() * e;
-            let g = sk
-                .ground(q)
-                .max(if c.wet(q, 0.0) { quay } else { f32::MIN });
+            let g = sk.ground(q);
             map.block(
                 q,
                 Vec2::splat(LEG),

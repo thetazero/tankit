@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
-use super::channel::{Channel, WALL};
+use super::channel::{BANK, Channel};
 use super::city::{self, Plan};
 use super::land::{Land, Swell};
 use super::skeleton::*;
@@ -53,12 +53,12 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
         let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
         let p = c.point(t, side * (c.reach() + out - 4.0));
         if !inside(p, out + 2.0)
-            || !dry(&c, p, c.reach() - c.half - WALL + out - 12.0)
+            || !dry(&c, p, c.reach() - c.half - BANK + out - 12.0)
             || platforms.iter().any(|o| o.center.distance(p) < 190.0)
         {
             continue;
         }
-        let quay = c.point(t, side * (c.half + WALL + 10.0));
+        let quay = c.point(t, side * (c.half + BANK + 10.0));
         let d = (quay - p).normalize();
         let mut doors = vec![d];
         for turn in [1.9f32, -1.9] {
@@ -93,7 +93,7 @@ pub fn skeleton(rng: &mut Rng, sides: usize, plan: &Plan) -> Skeleton {
     }
     let heart = landmarks
         .first()
-        .map_or_else(|| c.point(0.0, c.half + WALL + 24.0), |l| l.center);
+        .map_or_else(|| c.point(0.0, c.half + BANK + 24.0), |l| l.center);
 
     // A court for each side, toward an end of the strip each, on whichever
     // bank.

@@ -9,6 +9,10 @@
 //!
 //! On a map with nothing stacked every cell has just the one floor, and the
 //! grid is the flat one it always was.
+//!
+//! Tracked hulls keep out of a plasma river; hover hulls ride on it, so they
+//! have a grid of their own where there's one (`build_hover`), its surface
+//! a floor like any other.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -48,6 +52,10 @@ const TANK_HEIGHT: f32 = 3.0;
 const DROP_MARGIN: f32 = 3.0;
 /// What counts as a drop there, m.
 const DROP: f32 = 2.0;
+/// How far past a plasma river's edge it's still drawn, m.
+const RIVER_MARGIN: f32 = 0.6;
+/// How far back from the top of its banks tracked hulls keep, m.
+const BANK_MARGIN: f32 = 1.0;
 /// Floors further than this from a height aren't "at" it, m.
 const LEVEL_TOLERANCE: f32 = 2.5;
 
@@ -68,6 +76,10 @@ pub struct NavGrid {
     slabs: Vec<Slab>,
     /// Each cell's ground, under any deck.
     ground: Vec<f32>,
+    /// For a hover hull: the rivers it rides on, and the one each cell's by,
+    /// with the stretch of it that's nearest (looking one up is slow).
+    rivers: std::sync::Arc<Vec<crate::map::river::River>>,
+    wet: Vec<Option<(u32, u32)>>,
 }
 
 /// A slab, with what's asked of it all the time worked out.
@@ -133,7 +145,18 @@ fn meets_deck(ramp: &OBox, decks: &[OBox]) -> bool {
 type Spot = (usize, usize);
 
 impl NavGrid {
+    /// Where a tracked tank can drive.
     pub fn build(map: &Map) -> NavGrid {
+        NavGrid::build_for(map, false)
+    }
+
+    /// Where a hover hull can: over plasma rivers, too. (Where there are
+    /// none it's `build`'s.)
+    pub fn build_hover(map: &Map) -> NavGrid {
+        NavGrid::build_for(map, true)
+    }
+
+    fn build_for(map: &Map, hover: bool) -> NavGrid {
         let n = (map.size / NAV_CELL).ceil() as usize;
         let drivable = || map.oboxes.iter().filter(|o| o.solid && o.ramp);
         let mut slabs: Vec<OBox> = drivable().filter(|o| !o.is_turned()).copied().collect();
@@ -150,7 +173,21 @@ impl NavGrid {
             solid: map.solid.clone(),
             slabs: slabs.into_iter().map(Slab::new).collect(),
             ground: Vec::new(),
+            rivers: Default::default(),
+            wet: Vec::new(),
         };
+        if hover && !map.rivers.is_empty() {
+            nav.wet = (0..n * n)
+                .map(|i| {
+                    let (near, c) = (RIVER_MARGIN + NAV_CELL, nav.center(i));
+                    map.rivers.iter().enumerate().find_map(|(k, r)| {
+                        let (_, seg) = r.surface_in(c, near, 0..r.points.len())?;
+                        Some((k as u32, seg as u32))
+                    })
+                })
+                .collect();
+            nav.rivers = map.rivers.clone();
+        }
         nav.ground = (0..n * n).map(|i| nav.ground(nav.center(i))).collect();
         nav.floor = (0..n * n).map(|i| nav.floors_at(nav.center(i))).collect();
 
@@ -233,15 +270,21 @@ impl NavGrid {
                 }
             }
         }
-        // A plasma river's bed (its bridges are floors over it).
-        if !map.rivers.is_empty() {
+        // A plasma river's bed and its banks, which a tracked hull would slide
+        // down (its bridges are slabs over them).
+        if !hover && !map.rivers.is_empty() {
             for i in 0..n * n {
                 let c = nav.center(i);
-                let Some(y) = map.rivers.iter().find_map(|r| r.surface(c, 2.5)) else {
+                let Some(y) = map
+                    .rivers
+                    .iter()
+                    .find_map(|r| r.surface(c, r.bank + BANK_MARGIN))
+                else {
                     continue;
                 };
+                let ground = nav.ground(c) + 0.1;
                 for l in 0..LEVELS {
-                    if nav.floor[i][l] < y + 1.0 {
+                    if nav.floor[i][l] < ground.max(y + 1.0) {
                         nav.blocked[i][l] = true;
                     }
                 }
@@ -408,7 +451,22 @@ impl NavGrid {
 
     fn ground(&self, p: Vec2) -> f32 {
         let solid = self.solid.as_ref().and_then(|s| s.top(p));
-        solid.unwrap_or_else(|| self.terrain_at(p))
+        self.afloat(p, solid.unwrap_or_else(|| self.terrain_at(p)))
+    }
+
+    /// The ground `g` at `p`, or the river's surface over it, if it's ridden.
+    fn afloat(&self, p: Vec2, g: f32) -> f32 {
+        if self.rivers.is_empty() {
+            return g;
+        }
+        let Some(&Some((k, seg))) = self.wet.get(self.cell(p)) else {
+            return g;
+        };
+        // (Only the stretch by this cell.)
+        let (r, seg) = (&self.rivers[k as usize], seg as usize);
+        let by = seg.saturating_sub(3)..seg + 5;
+        r.surface_in(p, RIVER_MARGIN, by)
+            .map_or(g, |(y, _)| g.max(y))
     }
 
     fn terrain_at(&self, p: Vec2) -> f32 {
@@ -444,7 +502,7 @@ impl NavGrid {
                 }
             }
         }
-        let g = if m > 0 { dug[0] } else { self.terrain_at(p) };
+        let g = self.afloat(p, if m > 0 { dug[0] } else { self.terrain_at(p) });
         // Decks and roofs laid over the ground.
         let (mut top, mut under) = (g, false);
         for s in &self.slabs {
