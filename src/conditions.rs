@@ -241,7 +241,12 @@ mod tests {
             MapKind::City(Look::Imperium, Default::default()),
             MapKind::City(Look::Resonant, Default::default()),
             MapKind::ShieldSite(Look::Imperium, Default::default(), g),
-            MapKind::Depot(Look::Imperium),
+            MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Desert),
+            MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Tundra),
+            MapKind::Depot(
+                Look::Imperium,
+                crate::map::procgen::foundry::Ground::Grassland,
+            ),
             MapKind::Mine(Look::Ithessar),
             MapKind::Desert,
             MapKind::ShieldDesert(g),

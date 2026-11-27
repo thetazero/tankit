@@ -9,7 +9,12 @@ use crate::map::procgen::{Look, check, map};
 const LOOKS: [Look; 4] = [Look::Imperium, Look::Resonant, Look::Uthenn, Look::Ithessar];
 
 fn spec(seed: u64, look: Look) -> Spec {
-    crate::depot_spec(seed, look)
+    crate::depot_spec(seed, look, ground_of(seed))
+}
+
+/// Every look gets every ground, over a dozen seeds.
+fn ground_of(seed: u64) -> Ground {
+    Ground::ALL[seed as usize % 3]
 }
 
 fn count(sk: &Skeleton, part: Part) -> usize {
@@ -162,4 +167,21 @@ fn different_seeds_make_different_depots() {
         (again.heart, again.lots.len()),
         (sk[1].heart, sk[1].lots.len())
     );
+}
+
+/// Whatever its ground, a seed's the same yard, under another sky.
+#[test]
+fn the_ground_changes_no_layout() {
+    let on = Ground::ALL.map(|g| {
+        let sp = crate::depot_spec(2, Look::Imperium, g);
+        (skeleton(&sp), map(&sp))
+    });
+    for (sk, m) in &on[1..] {
+        assert_eq!(sk.heart, on[0].0.heart);
+        assert_eq!(sk.lots.len(), on[0].0.lots.len());
+        let solid = |m: &Map| m.oboxes.iter().filter(|o| o.solid).count();
+        assert_eq!(solid(m), solid(&on[0].1));
+        assert_ne!(m.atmosphere.sky_horizon, on[0].1.atmosphere.sky_horizon);
+        assert_ne!(m.planet.unwrap().1, on[0].1.planet.unwrap().1);
+    }
 }
